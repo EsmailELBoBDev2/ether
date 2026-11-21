@@ -39,9 +39,7 @@ func TestMediaKindMediaClassRoleAndLevelValidation(t *testing.T) {
 				{Key: "composer", Type: "people", Label: "Composer", Indexed: true},
 			},
 			Present: core.Presentations{
-				Vela: &struct {
-					Type string `json:"type"`
-				}{Type: "shows"},
+				Vela: &core.VelaPresentation{Type: "shows"},
 			},
 			Browse: KindBrowseDecl{
 				Sorts:  []string{"title", "released", "added", "lastViewed"},

@@ -557,14 +557,17 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		return
 	}
 	if protocols == 0 {
-		if k.HasLibrary() {
-			add(base, "declare at least one protocol presentation, or adapterOnly with a frontend adapter")
-		}
+		// Present is optional: Ether infers per-app presentations from the
+		// kind's media class, level roles, and hierarchy shape.
 		return
 	}
 	levels := len(k.Levels)
 	if p.Vela != nil {
 		switch p.Vela.Type {
+		case "":
+			if p.Vela.Default == nil {
+				add(base+".vela.type", "must be movies or shows")
+			}
 		case "movies":
 		case "shows":
 			if levels < 2 {
@@ -576,6 +579,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
+		case "":
+			if p.Plex.Default == nil {
+				add(base+".plex.base", "must be movie, show, artist or photo")
+			}
 		case "movie", "photo", "artist":
 			// A single-level artist kind is a flat album list: its items
 			// present as albums (a level named artist/track presents as
@@ -589,7 +596,11 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		}
 	}
 	if p.MediaBrowser != nil {
-		if !mediaBrowserCollectionTypes[p.MediaBrowser.CollectionType] {
+		if p.MediaBrowser.CollectionType == "" {
+			if p.MediaBrowser.Default == nil && len(p.MediaBrowser.ItemTypes) == 0 {
+				add(base+".mediaBrowser.collectionType", "must be movies, tvshows, music, audiobooks, books, photos or homevideos")
+			}
+		} else if !mediaBrowserCollectionTypes[p.MediaBrowser.CollectionType] {
 			add(base+".mediaBrowser.collectionType", "must be movies, tvshows, music, audiobooks, books, photos or homevideos")
 		}
 		for level, itemType := range p.MediaBrowser.ItemTypes {
@@ -603,6 +614,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Stremio != nil {
 		switch p.Stremio.Type {
+		case "":
+			if p.Stremio.Default == nil {
+				add(base+".stremio.type", "must be movie, series, channel or tv")
+			}
 		case "movie", "channel", "tv":
 		case "series":
 			if levels < 2 {
@@ -614,6 +629,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Xtream != nil {
 		switch p.Xtream.Category {
+		case "":
+			if p.Xtream.Default == nil {
+				add(base+".xtream.category", "must be movie, series or live")
+			}
 		case "movie", "live":
 		case "series":
 			if levels < 2 {
@@ -623,8 +642,14 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 			add(base+".xtream.category", "must be movie, series or live")
 		}
 	}
-	if p.Silo != nil && !mediaBrowserItemTypes[p.Silo.Type] {
-		add(base+".silo.type", "must be a MediaBrowser item type such as Movie or Series")
+	if p.Silo != nil {
+		if p.Silo.Type == "" {
+			if p.Silo.Default == nil {
+				add(base+".silo.type", "must be movies, tvshows, or a MediaBrowser item type such as Movie or Series")
+			}
+		} else if !mediaBrowserItemTypes[p.Silo.Type] && !mediaBrowserCollectionTypes[p.Silo.Type] {
+			add(base+".silo.type", "must be movies, tvshows, or a MediaBrowser item type such as Movie or Series")
+		}
 	}
 }
 

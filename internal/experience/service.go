@@ -3362,6 +3362,21 @@ func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device 
 			}
 		}
 	}
+	if kind == "person" {
+		tmdb, ok, err := s.personFacetTMDB(ctx, id)
+		if err != nil {
+			return core.FacetValue{}, err
+		}
+		if ok {
+			if found, ok, err := s.resolvePersonFacet(ctx, viewer, viewID, id, tmdb); err != nil || ok {
+				return found, err
+			}
+		} else if isBuiltinView && s.d.PersonByFacetID != nil {
+			// The person vocabulary names every credited person: an id it
+			// does not know is no one's.
+			return core.FacetValue{}, core.ErrNotFound
+		}
+	}
 	if isBuiltinView {
 		if kind == "studio" && s.d.StudioByFacetID != nil {
 			// The studio vocabulary carries each name's identifier: one indexed
@@ -3377,21 +3392,6 @@ func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device 
 			// every viewer, not a count of this viewer's whole library.
 			if found, ok, err := s.resolveGlobalFacet(ctx, viewer, viewID, kind, name, id); err != nil || ok {
 				return found, err
-			}
-		}
-		if kind == "person" {
-			tmdb, ok, err := s.personFacetTMDB(ctx, id)
-			if err != nil {
-				return core.FacetValue{}, err
-			}
-			if ok {
-				if found, ok, err := s.resolvePersonFacet(ctx, viewer, viewID, id, tmdb); err != nil || ok {
-					return found, err
-				}
-			} else if s.d.PersonByFacetID != nil {
-				// The person vocabulary names every credited person: an id it
-				// does not know is no one's.
-				return core.FacetValue{}, core.ErrNotFound
 			}
 		}
 	}

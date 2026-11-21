@@ -986,6 +986,9 @@ type StreamRequest struct {
 	// into segmented output even when the client could draw it from the
 	// original file: HLS cannot carry image subtitles.
 	BurnImageSubtitles bool
+	// ReencodeVideo replaces a copied video stream with an encoded one: the
+	// client could not play the copy (a transcode rung of a replan ladder).
+	ReencodeVideo bool
 	// LazyStart leaves the encoder idle until a rendition is requested.
 	LazyStart bool
 	// Continuous uses one uniform segment clock, without adaptive discontinuities.
@@ -1262,6 +1265,13 @@ type ItemProgress interface {
 // PlaybackSourceKeyer reports the resolved source identity for a playback session.
 type PlaybackSourceKeyer interface {
 	SourceKey(playID string) string
+}
+
+// PlaybackSourceReader opens a session's current source for direct reads;
+// release ends the hold. A subtitle extraction uses it to read an indexed
+// text track line by line instead of the whole file.
+type PlaybackSourceReader interface {
+	SourceReader(playID string) (src io.ReaderAt, size int64, release func(), ok bool)
 }
 
 // SoftSubtitleServer serves soft ASS subtitles directly from an active HLS remux session.

@@ -46,6 +46,12 @@ func (noopHost) KVUsage(context.Context) (plugins.KVUsage, error) {
 func (noopHost) SecretGet(context.Context, string) (string, error) {
 	return "", plugins.ErrPermissionDenied
 }
+func (noopHost) SecretSet(context.Context, string, string, int64) error {
+	return plugins.ErrPermissionDenied
+}
+func (noopHost) SecretDelete(context.Context, string) error {
+	return plugins.ErrPermissionDenied
+}
 func (noopHost) HTTPFetch(context.Context, plugins.FetchRequest) (plugins.FetchResponse, error) {
 	return plugins.FetchResponse{}, plugins.ErrPermissionDenied
 }

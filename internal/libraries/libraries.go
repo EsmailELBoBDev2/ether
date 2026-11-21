@@ -19,6 +19,12 @@ import (
 )
 
 func init() {
+	const mig13 = `
+ALTER TABLE libraries ADD COLUMN present_overrides TEXT NOT NULL DEFAULT '{}';
+UPDATE libraries SET present_overrides = '{"adapterOnly":true}' WHERE source = 'plugin' AND present LIKE '%"adapterOnly":true%';
+`
+	store.Register("libraries", 13, mig13)
+	store.RegisterDialect("libraries", 13, store.Postgres, mig13)
 	store.Register("libraries", 12, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)
 	store.RegisterDialect("libraries", 12, store.Postgres, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)
 	store.Register("libraries", 10, "SELECT 1;")
@@ -123,9 +129,7 @@ func migrateVelaPresentation(ctx context.Context, tx *sql.Tx) error {
 		if velaType == "" {
 			continue
 		}
-		p.Vela = &struct {
-			Type string `json:"type"`
-		}{Type: velaType}
+		p.Vela = &core.VelaPresentation{Type: velaType}
 		b, err := json.Marshal(p)
 		if err != nil {
 			rows.Close()

@@ -302,12 +302,19 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 	m.jobs.Store(key, j)
 	go func() {
 		runtime.LockOSThread() // Do not unlock: this lowered-priority thread is discarded on return.
-		lowerJobPriority()
+		if !isResolver {
+			// A resolver job prepares playback a viewer is waiting on:
+			// it keeps normal priority and never waits for the server
+			// to go idle (active streams would otherwise stall it).
+			lowerJobPriority()
+		}
 		defer cancel()
 		defer close(j.done)
 		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
-			if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
-				return Response{}, err
+			if !isResolver {
+				if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
+					return Response{}, err
+				}
 			}
 			payload := map[string]json.RawMessage{}
 			_ = json.Unmarshal(initial, &payload)
@@ -318,7 +325,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				payload["continuation"] = token
 			}
 			encoded, _ := json.Marshal(payload)
-			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded})
+			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
 		})
 		if err != nil {
 			state := "error"

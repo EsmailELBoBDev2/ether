@@ -10,17 +10,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"net/http"
 	"net/url"
 	"runtime"
+	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/store"
+	"golang.org/x/net/http/httpguts"
 )
 
 const RemoteHashMaxBytes int64 = 64 << 30
 const RemoteHashDailyBytes int64 = 50 << 30
 const remoteHashFresh = 5 * time.Minute
+
+const (
+	maxHashHeaders     = 32
+	maxHashHeaderBytes = 16 << 10
+)
+
+var forbiddenHashHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Host":                true,
+	"Content-Length":      true,
+	"Range":               true,
+	"If-Range":            true,
+}
 
 func init() {
 	store.Register("plugins", 8, `
@@ -34,6 +60,12 @@ type HashRequest struct {
 	URL        string `json:"url"`
 	Algo       string `json:"algo"`
 	ExpectSize *int64 `json:"expectSize,omitempty"`
+	// Headers sends optional origin-confined request headers with the hash
+	// fetch. Values may use {secret:<name>} placeholders expanded via
+	// permissions.secrets; hop-by-hop and framing headers are rejected, headers
+	// are stripped on cross-origin redirects, and values are never logged or
+	// persisted in the hash cache.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // HashResult never includes remote bytes. All three digests share a single read.
@@ -58,6 +90,77 @@ type remoteHashEntry struct {
 	checked        int64
 }
 
+func validateHashHeaders(headers map[string]string, expanded bool) error {
+	if len(headers) == 0 {
+		return nil
+	}
+	if len(headers) > maxHashHeaders {
+		return &ValidationError{Fields: []FieldError{{
+			Field:   "headers",
+			Message: fmt.Sprintf("at most %d headers are allowed", maxHashHeaders),
+		}}}
+	}
+	seen := make(map[string]struct{}, len(headers))
+	totalBytes := 0
+	for name, val := range headers {
+		if name == "" || !httpguts.ValidHeaderFieldName(name) {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("invalid header name %q", name),
+			}}}
+		}
+		canonical := http.CanonicalHeaderKey(name)
+		if forbiddenHashHeaders[canonical] {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("header %q is not allowed", canonical),
+			}}}
+		}
+		if _, dup := seen[canonical]; dup {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("duplicate header %q", canonical),
+			}}}
+		}
+		seen[canonical] = struct{}{}
+		totalBytes += len(name) + len(val)
+		if totalBytes > maxHashHeaderBytes {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("headers exceed %d bytes", maxHashHeaderBytes),
+			}}}
+		}
+		if strings.ContainsAny(val, "\r\n\x00") || !httpguts.ValidHeaderFieldValue(val) {
+			msg := fmt.Sprintf("header %q has an invalid HTTP header value", canonical)
+			if expanded {
+				msg = fmt.Sprintf("header %q expanded to an invalid HTTP header value", canonical)
+			}
+			return &ValidationError{Fields: []FieldError{{Field: "headers", Message: msg}}}
+		}
+	}
+	return nil
+}
+
+func (h *host) expandHashHeaders(ctx context.Context, headers map[string]string) (map[string]string, error) {
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	if err := validateHashHeaders(headers, false); err != nil {
+		return nil, err
+	}
+	expanded, err := kindstream.ExpandHeaders(ctx, headers, h.SecretGet)
+	if err != nil {
+		if errors.Is(err, kindstream.ErrInvalidTemplate) {
+			return nil, &ValidationError{Fields: []FieldError{{Field: "headers", Message: err.Error()}}}
+		}
+		return nil, err
+	}
+	if err := validateHashHeaders(expanded, true); err != nil {
+		return nil, err
+	}
+	return expanded, nil
+}
+
 func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 	if req.Algo != "sha256" && req.Algo != "sha1" && req.Algo != "md5" {
 		return fmt.Errorf("plugins: hash algo must be sha256, sha1 or md5")
@@ -70,6 +173,9 @@ func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 		return ErrPermissionDenied
 	}
 	if err := h.allowNetworkURL(ctx, u); err != nil {
+		return err
+	}
+	if _, err := h.expandHashHeaders(ctx, req.Headers); err != nil {
 		return err
 	}
 	return nil
@@ -128,6 +234,10 @@ func (h *host) HTTPHash(ctx context.Context, req HashRequest) (HashResult, error
 	if _, _, err := h.record(ctx); err != nil {
 		return HashResult{}, err
 	}
+	workerReq := req
+	if len(req.Headers) > 0 {
+		workerReq.Headers = maps.Clone(req.Headers)
+	}
 	workCtx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
 	w := &remoteHashWork{key: key, cancel: cancel, done: make(chan struct{})}
 	m.remoteHashes[h.plugin] = w
@@ -144,7 +254,7 @@ func (h *host) HTTPHash(ctx context.Context, req HashRequest) (HashResult, error
 		// Waiting plugins consume a goroutine, never a dedicated OS thread.
 		runtime.LockOSThread()
 		lowerJobPriority()
-		w.err = h.computeRemoteHash(workCtx, req, key, e)
+		w.err = h.computeRemoteHash(workCtx, workerReq, key, e)
 		w.ended = m.now()
 		close(w.done)
 	}()
@@ -164,13 +274,27 @@ func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key strin
 	if err := wasm.WaitBackground(ctx, h.m.deps.Busy); err != nil {
 		return err
 	}
-	headers := map[string]string{"Accept-Encoding": "identity"}
+	expanded, err := h.expandHashHeaders(ctx, req.Headers)
+	if err != nil {
+		return err
+	}
+	headers := make(map[string]string, len(expanded)+3)
+	stripCrossOrigin := make([]string, 0, len(expanded))
+	for k, v := range expanded {
+		ck := http.CanonicalHeaderKey(k)
+		if ck == "Accept-Encoding" || ck == "If-None-Match" || ck == "If-Modified-Since" {
+			continue
+		}
+		headers[ck] = v
+		stripCrossOrigin = append(stripCrossOrigin, ck)
+	}
+	headers["Accept-Encoding"] = "identity"
 	if old.etag != "" {
 		headers["If-None-Match"] = old.etag
 	} else if old.modified != "" {
 		headers["If-Modified-Since"] = old.modified
 	}
-	resp, err := h.openFetch(ctx, FetchRequest{URL: req.URL, Headers: headers})
+	resp, err := h.openFetchWithOptions(ctx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
 	if err != nil {
 		return err
 	}

@@ -65,3 +65,37 @@ func (n *NZB) MovieHint() (MovieHint, bool) {
 	err := json.Unmarshal([]byte(n.MetaValue(MetaMovie)), &h)
 	return h, err == nil && (len(h.Titles) > 0 || len(h.WantedLanguages) > 0)
 }
+
+// MetaNonVideo carries non-video release selection intent (explicit posted
+// file, archive member, or media MIME) from a plugin release target into the
+// stream engine.
+const MetaNonVideo = "ether-nonvideo"
+
+// NonVideoHint tells the stream engine to serve a non-video file directly
+// (loose file or archive member) instead of running video-only heuristics.
+type NonVideoHint struct {
+	ExplicitFile bool   `json:"explicitFile,omitempty"`
+	ExactFile    string `json:"exactFile,omitempty"`
+	RawFile      bool   `json:"rawFile,omitempty"`
+	Member       string `json:"member,omitempty"`
+	MemberIndex  *int   `json:"memberIndex,omitempty"`
+	MIME         string `json:"mime,omitempty"`
+}
+
+func (h NonVideoHint) String() string { b, _ := json.Marshal(h); return string(b) }
+
+// NonVideoHint returns the document's non-video selection hint, if present.
+func (n *NZB) NonVideoHint() (NonVideoHint, bool) {
+	raw := strings.TrimSpace(n.MetaValue(MetaNonVideo))
+	if raw == "" {
+		return NonVideoHint{}, false
+	}
+	var h NonVideoHint
+	if err := json.Unmarshal([]byte(raw), &h); err != nil {
+		return NonVideoHint{}, false
+	}
+	if !h.ExplicitFile && !h.RawFile && h.Member == "" && h.MemberIndex == nil && !IsNonVideoMIME(h.MIME) {
+		return NonVideoHint{}, false
+	}
+	return h, true
+}

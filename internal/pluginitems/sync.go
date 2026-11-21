@@ -43,6 +43,60 @@ type syncWorker struct {
 	done   chan struct{}
 }
 
+type syncProgress struct {
+	running     bool
+	phase       string
+	syncedItems int
+	pages       int
+	itemsTotal  int
+}
+
+func (s *Service) setSyncProgress(pluginID, kindKey string, p syncProgress) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if s.syncProgress == nil {
+		s.syncProgress = map[string]syncProgress{}
+	}
+	s.syncProgress[key] = p
+	s.workersMu.Unlock()
+}
+
+func (s *Service) clearSyncProgress(pluginID, kindKey string) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	delete(s.syncProgress, key)
+	s.workersMu.Unlock()
+}
+
+func (s *Service) clearSyncProgressIfPhase(pluginID, kindKey, phase string) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if cur, ok := s.syncProgress[key]; ok && cur.phase == phase {
+		delete(s.syncProgress, key)
+	}
+	s.workersMu.Unlock()
+}
+
+func (s *Service) getSyncProgress(pluginID, kindKey string) (syncProgress, bool) {
+	if s == nil {
+		return syncProgress{}, false
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	p, ok := s.syncProgress[key]
+	s.workersMu.Unlock()
+	return p, ok
+}
+
 // SyncKind executes a pull sync for a registered plugin kind (spec §3.5, §4.4).
 //
 // Sync algorithm:
@@ -101,6 +155,12 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	_, _ = s.db.ExecContext(ctx,
 		`UPDATE plugin_sync_state SET last_started = ? WHERE plugin_id = ? AND kind_key = ?`,
 		nowStart, pluginID, kindKey)
+	s.setSyncProgress(pluginID, kindKey, syncProgress{
+		running:    true,
+		phase:      "syncing",
+		itemsTotal: storedCount,
+	})
+	defer s.clearSyncProgressIfPhase(pluginID, kindKey, "syncing")
 	libName := rec.Decl.Label
 	if libName == "" {
 		libName = kindKey
@@ -129,7 +189,7 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		if notSupported {
 			res, syncErr = s.syncRewalkDiff(ctx, caller, rec, storedCount, opts)
 		}
-	case storedCount == 0:
+	case storedCount == 0 || (state.Cursor == "" && state.LastOK.IsZero()):
 		res, syncErr = s.syncInitialWalk(ctx, caller, rec, opts)
 	default:
 		res, syncErr = s.syncRewalkDiff(ctx, caller, rec, storedCount, opts)
@@ -204,24 +264,59 @@ func exceedsDeleteGuard(storedCount, deleteCount int, force bool) bool {
 	return float64(deleteCount)/float64(storedCount) > DeleteGuardRatio
 }
 
-// syncInitialWalk performs the initial breadth-first walk over /browse and seeds
+// syncInitialWalk performs the initial breadth-first walk over /browse,
+// persisting each fetched page incrementally so items appear in frontends
+// immediately and partial progress survives errors or restarts, then seeds
 // cursor if the kind implements /changes.
 func (s *Service) syncInitialWalk(ctx context.Context, caller Caller, rec KindRecord, opts SyncOptions) (SyncResult, error) {
-	var res SyncResult
-	walked, retryAfter, err := s.walkBrowseTree(ctx, caller, rec, opts.Concurrency)
+	var (
+		res        SyncResult
+		progressMu sync.Mutex
+		pages      int
+		firstNoted bool
+	)
+	onPage := func(batch []core.KindItem) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		var pageUpserted int
+		for start := 0; start < len(batch); start += MaxUpsertBatch {
+			end := min(start+MaxUpsertBatch, len(batch))
+			n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, batch[start:end])
+			if err != nil {
+				return err
+			}
+			pageUpserted += n
+		}
+		totalNow, _ := s.countKindItems(ctx, rec.PluginID, rec.KindKey)
+		progressMu.Lock()
+		res.Upserted += pageUpserted
+		pages++
+		upsertedSoFar := res.Upserted
+		pagesSoFar := pages
+		notifyFirst := !firstNoted && totalNow > 0
+		if notifyFirst {
+			firstNoted = true
+		}
+		progressMu.Unlock()
+
+		s.setSyncProgress(rec.PluginID, rec.KindKey, syncProgress{
+			running:     true,
+			phase:       "syncing",
+			syncedItems: upsertedSoFar,
+			pages:       pagesSoFar,
+			itemsTotal:  totalNow,
+		})
+		if notifyFirst {
+			s.noteLibraryItems(rec.LibraryID, int64(totalNow), true)
+		}
+		return nil
+	}
+
+	_, retryAfter, err := s.walkBrowseTreeStream(ctx, caller, rec, opts.Concurrency, false, onPage)
 	res.RetryAfter = retryAfter
 	if err != nil {
 		return res, err
-	}
-	if len(walked) > 0 {
-		for start := 0; start < len(walked); start += MaxUpsertBatch {
-			end := min(start+MaxUpsertBatch, len(walked))
-			n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, walked[start:end])
-			if err != nil {
-				return res, err
-			}
-			res.Upserted += n
-		}
 	}
 	// Probe /changes with empty cursor to capture baseline NextCursor if supported.
 	page, notSupp, _, err := s.callKindChanges(ctx, caller, rec.PluginID, rec.KindKey, "", 1)
@@ -444,6 +539,10 @@ func (s *Service) incrementMissedWalks(ctx context.Context, pluginID, kindKey st
 // (parentId="") with limit=200, then breadth-first into child levels with bounded
 // concurrency (default MaxSyncConcurrency = 4).
 func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRecord, concurrency int) ([]core.KindItem, time.Duration, error) {
+	return s.walkBrowseTreeStream(ctx, caller, rec, concurrency, true, nil)
+}
+
+func (s *Service) walkBrowseTreeStream(ctx context.Context, caller Caller, rec KindRecord, concurrency int, collectAll bool, onPage func([]core.KindItem) error) ([]core.KindItem, time.Duration, error) {
 	if concurrency <= 0 {
 		concurrency = MaxSyncConcurrency
 	}
@@ -456,13 +555,18 @@ func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRec
 		}
 	}
 
-	rootItems, maxRetry, err := s.fetchAllBrowsePages(ctx, caller, rec.PluginID, rec.KindKey, rootLevel, "")
+	_, rootHasChildren := childLevelOf[rootLevel]
+	keepRoot := collectAll || rootHasChildren
+	rootItems, maxRetry, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, rootLevel, "", keepRoot, onPage)
 	if err != nil {
 		return nil, maxRetry, err
 	}
 
-	allItems := make([]core.KindItem, 0, len(rootItems))
-	allItems = append(allItems, rootItems...)
+	var allItems []core.KindItem
+	if collectAll {
+		allItems = make([]core.KindItem, 0, len(rootItems))
+		allItems = append(allItems, rootItems...)
+	}
 
 	currentWave := rootItems
 	currentLevel := rootLevel
@@ -472,6 +576,8 @@ func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRec
 		if !hasChildren || len(currentWave) == 0 {
 			break
 		}
+		_, nextHasChildren := childLevelOf[nextLevel]
+		keepNext := collectAll || nextHasChildren
 
 		type parentTask struct {
 			parentExtID string
@@ -509,7 +615,7 @@ func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRec
 				}
 				defer func() { <-sem }()
 
-				children, ra, err := s.fetchAllBrowsePages(ctx, caller, rec.PluginID, rec.KindKey, nextLevel, t.parentExtID)
+				children, ra, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, nextLevel, t.parentExtID, keepNext, onPage)
 				results[i] = taskResult{
 					idx:        i,
 					items:      children,
@@ -536,8 +642,12 @@ func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRec
 					r.items[j].Level = nextLevel
 				}
 			}
-			allItems = append(allItems, r.items...)
-			nextWave = append(nextWave, r.items...)
+			if collectAll {
+				allItems = append(allItems, r.items...)
+			}
+			if nextHasChildren {
+				nextWave = append(nextWave, r.items...)
+			}
 		}
 
 		currentWave = nextWave
@@ -548,6 +658,10 @@ func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRec
 }
 
 func (s *Service) fetchAllBrowsePages(ctx context.Context, caller Caller, pluginID, kindKey, level, parentID string) ([]core.KindItem, time.Duration, error) {
+	return s.fetchAllBrowsePagesStream(ctx, caller, pluginID, kindKey, level, parentID, true, nil)
+}
+
+func (s *Service) fetchAllBrowsePagesStream(ctx context.Context, caller Caller, pluginID, kindKey, level, parentID string, collect bool, onPage func([]core.KindItem) error) ([]core.KindItem, time.Duration, error) {
 	var (
 		all        []core.KindItem
 		cursor     string
@@ -579,7 +693,14 @@ func (s *Service) fetchAllBrowsePages(ctx context.Context, caller Caller, plugin
 				page.Items[i].ParentID = parentID
 			}
 		}
-		all = append(all, page.Items...)
+		if onPage != nil && len(page.Items) > 0 {
+			if err := onPage(page.Items); err != nil {
+				return nil, maxRetry, err
+			}
+		}
+		if collect {
+			all = append(all, page.Items...)
+		}
 		next := strings.TrimSpace(page.NextCursor)
 		if next == "" || len(page.Items) == 0 || seenCursor[next] {
 			break
@@ -727,12 +848,14 @@ func parseRetryAfter(resp plugins.Response) time.Duration {
 	return 0
 }
 
-// StartKindSync starts (or restarts) a background pull-sync worker for a kind.
+// StartKindSync starts (or restarts) a background pull-sync worker for a kind
+// without blocking the caller on an in-flight previous pass. Any superseded
+// worker is cancelled immediately and drained by the new worker goroutine
+// before starting the next pass, preserving strict per-kind serialization.
 func (s *Service) StartKindSync(parentCtx context.Context, pluginID, kindKey string, interval time.Duration) {
 	if s == nil {
 		return
 	}
-	s.StopKindSync(pluginID, kindKey)
 	if interval <= 0 {
 		interval = 15 * time.Minute
 	}
@@ -742,11 +865,38 @@ func (s *Service) StartKindSync(parentCtx context.Context, pluginID, kindKey str
 	key := workerKey(pluginID, kindKey)
 
 	s.workersMu.Lock()
+	var prevDone chan struct{}
+	if prev, ok := s.workers[key]; ok && prev != nil {
+		prev.cancel()
+		prevDone = prev.done
+	} else if d, ok := s.draining[key]; ok {
+		prevDone = d
+	}
+	var reindexDone chan struct{}
+	if rw, ok := s.reindexers[key]; ok && rw != nil {
+		reindexDone = rw.done
+	}
+	delete(s.draining, key)
 	s.workers[key] = &syncWorker{cancel: cancel, done: done}
 	s.workersMu.Unlock()
 
 	go func() {
 		defer close(done)
+		if prevDone != nil {
+			// prev was already cancelled; wait for it to finish so Close/StopKindSync
+			// transitively drain every superseded worker before returning.
+			<-prevDone
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if reindexDone != nil {
+			select {
+			case <-reindexDone:
+			case <-ctx.Done():
+				return
+			}
+		}
 		res, _ := s.SyncKind(ctx, pluginID, kindKey, SyncOptions{})
 		wait := interval
 		if res.RetryAfter > wait {
@@ -771,8 +921,28 @@ func (s *Service) StartKindSync(parentCtx context.Context, pluginID, kindKey str
 	}()
 }
 
-// StopKindSync stops the background sync worker for (pluginID, kindKey) and waits
-// for any in-flight pass to exit.
+// CancelKindSync cancels any running background sync worker for (pluginID,
+// kindKey) without blocking the caller on an in-flight network or plugin call.
+// Subsequent StartKindSync, StopKindSync, PurgeKind, or Close calls still wait
+// for the cancelled worker to exit.
+func (s *Service) CancelKindSync(pluginID, kindKey string) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if w, ok := s.workers[key]; ok {
+		delete(s.workers, key)
+		if w != nil {
+			s.draining[key] = w.done
+			w.cancel()
+		}
+	}
+	s.workersMu.Unlock()
+}
+
+// StopKindSync stops the background sync and reindex workers for (pluginID,
+// kindKey) and waits for any in-flight pass to exit.
 func (s *Service) StopKindSync(pluginID, kindKey string) {
 	if s == nil {
 		return
@@ -783,14 +953,25 @@ func (s *Service) StopKindSync(pluginID, kindKey string) {
 	if ok {
 		delete(s.workers, key)
 	}
+	drain := s.draining[key]
+	delete(s.draining, key)
+	rw := s.reindexers[key]
+	delete(s.reindexers, key)
 	s.workersMu.Unlock()
 	if ok && w != nil {
 		w.cancel()
 		<-w.done
 	}
+	if drain != nil {
+		<-drain
+	}
+	if rw != nil {
+		rw.cancel()
+		<-rw.done
+	}
 }
 
-// StopPluginSync stops all background sync workers belonging to pluginID.
+// StopPluginSync stops all background sync and reindex workers belonging to pluginID.
 func (s *Service) StopPluginSync(pluginID string) {
 	if s == nil {
 		return
@@ -798,12 +979,25 @@ func (s *Service) StopPluginSync(pluginID string) {
 	prefix := pluginID + "\x00"
 	s.workersMu.Lock()
 	var toWait []*syncWorker
+	var drains []chan struct{}
 	for k, w := range s.workers {
 		if strings.HasPrefix(k, prefix) {
 			delete(s.workers, k)
 			toWait = append(toWait, w)
 		}
 	}
+	for k, d := range s.draining {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.draining, k)
+			drains = append(drains, d)
+		}
+	}
+	for k, rw := range s.reindexers {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.reindexers, k)
+			toWait = append(toWait, rw)
+		}
+	}
 	s.workersMu.Unlock()
 	for _, w := range toWait {
 		if w != nil {
@@ -811,24 +1005,46 @@ func (s *Service) StopPluginSync(pluginID string) {
 			<-w.done
 		}
 	}
+	for _, d := range drains {
+		if d != nil {
+			<-d
+		}
+	}
 }
 
-// Close stops all background sync workers and planner statistics refreshes.
+// Close stops all background sync workers, reindexers, and planner statistics refreshes.
 func (s *Service) Close() {
 	if s == nil {
 		return
 	}
+	if s.bgCancel != nil {
+		s.bgCancel()
+	}
 	s.workersMu.Lock()
 	var toWait []*syncWorker
+	var drains []chan struct{}
 	for k, w := range s.workers {
 		delete(s.workers, k)
 		toWait = append(toWait, w)
+	}
+	for k, d := range s.draining {
+		delete(s.draining, k)
+		drains = append(drains, d)
+	}
+	for k, rw := range s.reindexers {
+		delete(s.reindexers, k)
+		toWait = append(toWait, rw)
 	}
 	s.workersMu.Unlock()
 	for _, w := range toWait {
 		if w != nil {
 			w.cancel()
 			<-w.done
+		}
+	}
+	for _, d := range drains {
+		if d != nil {
+			<-d
 		}
 	}
 	s.stats.close()

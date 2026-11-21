@@ -141,17 +141,46 @@ func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
 // sectionPivots are the top-level navigation pivots of a section.
 func sectionPivots(sec Section) []model.Pivot {
 	id := strconv.Itoa(sec.ID)
-	typeNum := "1"
-	if sec.Type == frontend.TypeShow {
-		typeNum = "2"
+	typeNum := strconv.Itoa(typeNumber(sec.Type))
+	playlistType := "video"
+	switch string(sec.Type) {
+	case plexBaseArtist:
+		playlistType = "audio"
+	case plexBasePhoto:
+		playlistType = "photo"
 	}
 	return []model.Pivot{
 		{ID: "recommended", Key: "/hubs/sections/" + id, Type: "hub", Title: "Recommended", Context: "content.discover", Symbol: "star"},
 		{ID: "library", Key: "/library/sections/" + id + "/all?type=" + typeNum, Type: "list", Title: "Library", Context: "content.library", Symbol: "library"},
 		{ID: "collections", Key: "/library/sections/" + id + "/collections", Type: "list", Title: "Collections", Context: "content.collections", Symbol: "stack"},
-		{ID: "playlists", Key: "/playlists?type=15&sectionID=" + id + "&playlistType=video", Type: "list", Title: "Playlists", Context: "content.playlists", Symbol: "playlist"},
+		{ID: "playlists", Key: "/playlists?type=15&sectionID=" + id + "&playlistType=" + playlistType, Type: "list", Title: "Playlists", Context: "content.playlists", Symbol: "playlist"},
 		{ID: "categories", Key: "/library/sections/" + id + "/categories", Type: "list", Title: "Categories", Context: "content.categories", Symbol: "stack"},
 	}
+}
+
+func providerTypes(secs []Section) string {
+	var hasVideo, hasAudio, hasPhoto bool
+	for _, sec := range secs {
+		switch string(sec.Type) {
+		case plexBaseArtist:
+			hasAudio = true
+		case plexBasePhoto:
+			hasPhoto = true
+		default:
+			hasVideo = true
+		}
+	}
+	var out []string
+	if hasVideo || (!hasAudio && !hasPhoto) {
+		out = append(out, "video")
+	}
+	if hasAudio {
+		out = append(out, "audio")
+	}
+	if hasPhoto {
+		out = append(out, "photo")
+	}
+	return strings.Join(out, ",")
 }
 
 func agentFor(t frontend.MediaType) (agent, scanner string) {
@@ -171,8 +200,9 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	now := s.now().Unix()
 	includePrefs := r.URL.Query().Get("includePreferences") == "1"
+	userSecs := s.userSections(u)
 	dirs := []model.ProviderDirectory{{HubKey: "/hubs", Title: "Home"}} // discovery only: no browse key
-	for _, sec := range s.userSections(u) {
+	for _, sec := range userSecs {
 		agent, scanner := agentFor(sec.Type)
 		id := strconv.Itoa(sec.ID)
 		dir := model.ProviderDirectory{
@@ -212,7 +242,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	provider := model.MediaProvider{
 		Identifier: model.LibraryIdentifier,
 		Title:      "Library",
-		Types:      "video",
+		Types:      providerTypes(userSecs),
 		Protocols:  "stream,download",
 		Feature: []model.Feature{
 			{Key: "/library/sections", Type: "content", Directory: dirs},

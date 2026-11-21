@@ -1,5 +1,6 @@
 import { sourceLabel } from "./CatalogueSources";
 import {
+  Badge,
   Button,
   EmptyState,
   Switch,
@@ -17,10 +18,11 @@ import {
   Pencil,
   Plug,
   Plus,
+  RefreshCw,
   Trash2,
   Tv,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ActionMenu } from "../../components/ActionMenu";
@@ -134,6 +136,15 @@ function LibrariesList() {
   const [busy, setBusy] = useState(false);
   const catalogHealth = health.find((h) => h.id === "catalog");
   const libs = list.data ?? [];
+  const anyPluginSyncing = libs.some((l) => l.source === "plugin" && l.sync?.running);
+
+  useEffect(() => {
+    if (!anyPluginSyncing) return;
+    const timer = window.setInterval(() => {
+      void list.reload();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [anyPluginSyncing, list.reload]);
 
   const act = async (run: () => Promise<unknown>, done?: string) => {
     setBusy(true);
@@ -311,6 +322,11 @@ function LibrariesList() {
                       level={catalogHealth.level}
                       label={catalogHealth.level === "ok" ? t("Healthy") : t("Needs attention")}
                     />
+                  ) : lib.source === "plugin" && lib.sync?.running ? (
+                    <Badge variant="secondary" className="gap-1">
+                      <RefreshCw size={11} className="animate-spin" aria-hidden />
+                      {lib.sync.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+                    </Badge>
                   ) : syncBad ? (
                     <LevelBadge
                       level={pluginDisabled ? "warn" : "error"}

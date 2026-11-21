@@ -119,14 +119,52 @@ func kindDTOs(items []core.KindItem) []kindItemDTO {
 
 type libraryDTO struct {
 	core.Library
-	EffectiveTabs  []core.LibraryTab      `json:"effectiveTabs,omitempty"`
-	ItemCount      *int                   `json:"itemCount,omitempty"`
-	StoredItems    *int                   `json:"storedItems,omitempty"`
-	PluginItems    *int                   `json:"pluginItems,omitempty"`
-	MaxPluginItems *int                   `json:"maxPluginItems,omitempty"`
-	Sync           *pluginitems.SyncState `json:"sync,omitempty"`
-	Kind           *plugins.MediaKindMeta `json:"kind,omitempty"`
-	PluginName     string                 `json:"pluginName,omitempty"`
+	EffectiveTabs  []core.LibraryTab           `json:"effectiveTabs,omitempty"`
+	Presentations  *core.ResolvedPresentations `json:"presentations,omitempty"`
+	ItemCount      *int                        `json:"itemCount,omitempty"`
+	StoredItems    *int                        `json:"storedItems,omitempty"`
+	PluginItems    *int                        `json:"pluginItems,omitempty"`
+	MaxPluginItems *int                        `json:"maxPluginItems,omitempty"`
+	Sync           *pluginitems.SyncState      `json:"sync,omitempty"`
+	Kind           *plugins.MediaKindMeta      `json:"kind,omitempty"`
+	PluginName     string                      `json:"pluginName,omitempty"`
+}
+
+func consoleKindPresentationInput(decl plugins.MediaKindMeta) libraries.KindPresentationInput {
+	levels := make([]libraries.KindPresentationLevel, len(decl.Levels))
+	for i, lv := range decl.Levels {
+		levels[i] = libraries.KindPresentationLevel{
+			Key:       lv.Key,
+			Role:      lv.Role,
+			Playable:  lv.Playable,
+			Container: lv.Container,
+		}
+	}
+	return libraries.KindPresentationInput{
+		Media:   decl.Media,
+		Levels:  levels,
+		Present: decl.Present,
+	}
+}
+
+func (c *librariesConsole) resolveLibraryPresentations(ctx context.Context, lib core.Library, kind *plugins.MediaKindMeta) core.ResolvedPresentations {
+	if lib.Source == core.LibraryPlugin {
+		if kind == nil {
+			if items, _, err := c.services(); err == nil && items != nil {
+				if rec, err := items.GetKindByLibrary(ctx, lib.ID); err == nil {
+					decl := rec.Decl
+					kind = &decl
+				}
+			}
+		}
+		if kind != nil {
+			return libraries.ResolveKindPresentations(consoleKindPresentationInput(*kind), lib.PresentOverrides)
+		}
+		return libraries.ResolveKindPresentations(libraries.KindPresentationInput{
+			Present: lib.Present,
+		}, lib.PresentOverrides)
+	}
+	return libraries.ResolveCataloguePresentations(lib.MediaType, lib.Present, lib.PresentOverrides, lib.Source == core.LibraryBuiltin)
 }
 
 func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libraryDTO {
@@ -194,6 +232,8 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 			dto.ItemCount = &n
 		}
 	}
+	resolved := c.resolveLibraryPresentations(ctx, lib, dto.Kind)
+	dto.Presentations = &resolved
 	return dto
 }
 
@@ -380,6 +420,7 @@ func (c *librariesConsole) handler() http.Handler {
 			}
 			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
 		}
+		c.app.publishLibrarySections()
 		libJSON(w, http.StatusCreated, c.decorate(r.Context(), lib))
 	})
 	mux.HandleFunc("GET /{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -395,23 +436,25 @@ func (c *librariesConsole) handler() http.Handler {
 			return
 		}
 		var body struct {
-			CollectionID      *int64                   `json:"collectionId"`
-			Sources           *[]string                `json:"sources"`
-			Name              *string                  `json:"name"`
-			Hidden            *bool                    `json:"hidden"`
-			Sort              *int                     `json:"sort"`
-			CardShape         *string                  `json:"cardShape"`
-			Present           *core.Presentations      `json:"present"`
-			Rules             *[]core.LibraryExclusion `json:"rules"`
-			VisibilityDefault *string                  `json:"visibilityDefault"`
-			QualityProfile    *string                  `json:"qualityProfile"`
-			Tabs              *[]core.LibraryTab       `json:"tabs"`
+			CollectionID      *int64                    `json:"collectionId"`
+			Sources           *[]string                 `json:"sources"`
+			Name              *string                   `json:"name"`
+			Hidden            *bool                     `json:"hidden"`
+			Sort              *int                      `json:"sort"`
+			CardShape         *string                   `json:"cardShape"`
+			Present           *core.Presentations       `json:"present"`
+			PresentApps       *libraries.AppSwitchPatch `json:"presentApps"`
+			Rules             *[]core.LibraryExclusion  `json:"rules"`
+			VisibilityDefault *string                   `json:"visibilityDefault"`
+			QualityProfile    *string                   `json:"qualityProfile"`
+			Tabs              *[]core.LibraryTab        `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
 			return
 		}
 		ctx := r.Context()
 		svc := c.app.libraries
+		sectionsChanged := false
 		if body.CollectionID != nil {
 			if err := svc.SetCollection(ctx, lib.ID, *body.CollectionID); err != nil {
 				libError(w, libErrStatus(err), "Could not update collection")
@@ -433,18 +476,21 @@ func (c *librariesConsole) handler() http.Handler {
 				libError(w, libErrStatus(err), "Could not rename the library")
 				return
 			}
+			sectionsChanged = true
 		}
 		if body.Hidden != nil {
 			if err := svc.SetHidden(ctx, lib.ID, *body.Hidden); err != nil {
 				libError(w, libErrStatus(err), "Could not update the library")
 				return
 			}
+			sectionsChanged = true
 		}
 		if body.Sort != nil {
 			if err := svc.SetSort(ctx, lib.ID, *body.Sort); err != nil {
 				libError(w, libErrStatus(err), "Could not reorder the library")
 				return
 			}
+			sectionsChanged = true
 		}
 		if body.CardShape != nil {
 			if err := svc.SetCardShape(ctx, lib.ID, *body.CardShape); err != nil {
@@ -452,11 +498,37 @@ func (c *librariesConsole) handler() http.Handler {
 				return
 			}
 		}
-		if body.Present != nil {
-			if err := svc.SetPresent(ctx, lib.ID, *body.Present); err != nil {
+		if body.PresentApps != nil {
+			resolved := c.resolveLibraryPresentations(ctx, lib, nil)
+			eff, ov, err := libraries.ApplyAppSwitches(resolved, lib.PresentOverrides, *body.PresentApps)
+			if err != nil {
+				libError(w, libErrStatus(err), strings.TrimPrefix(err.Error(), libraries.ErrInvalid.Error()+": "))
+				return
+			}
+			if err := svc.SetPresentAndOverrides(ctx, lib.ID, eff, ov); err != nil {
 				libError(w, libErrStatus(err), "Could not update where the library appears")
 				return
 			}
+			sectionsChanged = true
+		} else if body.Present != nil {
+			if err := libraries.ValidatePresentations(*body.Present); err != nil {
+				libError(w, libErrStatus(err), "Could not update where the library appears")
+				return
+			}
+			resolved := c.resolveLibraryPresentations(ctx, lib, nil)
+			eff, ov, err := libraries.OverridesFromLegacyPresent(resolved, lib.PresentOverrides, *body.Present)
+			if err != nil {
+				libError(w, libErrStatus(err), strings.TrimPrefix(err.Error(), libraries.ErrInvalid.Error()+": "))
+				return
+			}
+			if lib.Source != core.LibraryPlugin {
+				eff = *body.Present
+			}
+			if err := svc.SetPresentAndOverrides(ctx, lib.ID, eff, ov); err != nil {
+				libError(w, libErrStatus(err), "Could not update where the library appears")
+				return
+			}
+			sectionsChanged = true
 		}
 		if body.QualityProfile != nil {
 			name := strings.TrimSpace(*body.QualityProfile)
@@ -511,6 +583,9 @@ func (c *librariesConsole) handler() http.Handler {
 				}
 			}
 		}
+		if sectionsChanged {
+			c.app.publishLibrarySections()
+		}
 		fresh, err := svc.Get(ctx, lib.ID)
 		if err != nil {
 			libError(w, libErrStatus(err), "Library not found")
@@ -534,6 +609,7 @@ func (c *librariesConsole) handler() http.Handler {
 			libError(w, http.StatusInternalServerError, "Could not save visibility rules")
 			return
 		}
+		c.app.publishLibrarySections()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /{id}/tabs", c.handleTabsGet)
@@ -1255,9 +1331,10 @@ func (c *librariesConsole) setupHandler() http.Handler {
 			if name == "" {
 				name = rec.Name
 			}
+			resolved := libraries.ResolveKindPresentations(consoleKindPresentationInput(decl), core.PresentationOverrides{})
 			lib, err := c.app.libraries.RestorePluginLibrary(ctx, pluginID, decl.Key, libraries.PluginLibraryDecl{
 				Name:    name,
-				Present: decl.Present,
+				Present: resolved.Effective,
 			})
 			if err != nil {
 				libError(w, libErrStatus(err), "Could not create plugin library")
@@ -1271,6 +1348,7 @@ func (c *librariesConsole) setupHandler() http.Handler {
 		if c.app.pluginsRT.kindCatalog != nil {
 			c.app.pluginsRT.kindCatalog.RefreshPlugin(ctx, rec)
 		}
+		c.app.publishLibrarySections()
 		out, err := c.setupFor(ctx, pluginID)
 		if err != nil {
 			libError(w, http.StatusNotFound, "Plugin not found")

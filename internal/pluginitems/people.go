@@ -22,10 +22,31 @@ type PersonMatch struct {
 	Items       []core.KindItem
 }
 
+// isArtistStringField reports whether fd is a string/strings field carrying
+// music artist credits (e.g. "artists", "album_artists") rather than
+// type:"people". Indexing those values with synthetic plugin person IDs lets
+// MediaBrowser /Artists, AlbumArtists credits, and artist filters work
+// identically for plugins that declare artists as string facets.
+func isArtistStringField(fd plugins.KindField) bool {
+	if fd.Type != "string" && fd.Type != "strings" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(fd.Key)) {
+	case "artist", "artists", "album_artist", "album_artists", "albumartist", "albumartists":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPeopleIndexedField(fd plugins.KindField) bool {
+	return fd.Type == "people" || isArtistStringField(fd)
+}
+
 func declaredPeopleFields(decl plugins.MediaKindMeta) []string {
 	var out []string
 	for _, fd := range decl.Fields {
-		if fd.Type == "people" {
+		if isPeopleIndexedField(fd) {
 			out = append(out, fd.Key)
 		}
 	}

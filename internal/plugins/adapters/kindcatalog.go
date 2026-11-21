@@ -185,42 +185,35 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 	}
 
 	active := c.recordAllowsCatalogSync(ctx, r)
-	oldByKey := make(map[string]pluginitems.KindRecord, len(existing))
-	for _, old := range existing {
-		oldByKey[old.KindKey] = old
-	}
 	keep := make(map[string]bool, len(declared))
 	for _, k := range declared {
 		keep[k.Key] = true
 		libName := c.resolvePluginTextFallback(ctx, r.ID, k.Library.Name, k.Key)
+		presInput := kindPresentationInput(k)
+		initial := libraries.ResolveKindPresentations(presInput, core.PresentationOverrides{})
 		lib, err := c.libs.UpsertPluginLibrary(ctx, r.ID, k.Key, libraries.PluginLibraryDecl{
 			Name:    libName,
-			Present: k.Present,
+			Present: initial.Effective,
 		})
 		if errors.Is(err, libraries.ErrDeleted) {
-			c.items.StopKindSync(r.ID, k.Key)
+			c.items.CancelKindSync(r.ID, k.Key)
 			continue
 		}
 		if err != nil {
 			c.log.Warn("upsert plugin library failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			continue
 		}
-		// A plugin update that changes the declared presentation re-applies
-		// it to the kind's existing library; an unchanged declaration leaves
-		// the stored presentation (and any owner edit of it) alone. Levels
-		// and fields already flow through UpsertKind below, which stores the
-		// new declaration and reindexes only when the index shape changed.
-		if old, ok := oldByKey[k.Key]; ok && !presentationsEqual(old.Decl.Present, k.Present) {
-			next := k.Present
-			if next.Vela == nil {
-				// Keep the Vela publication chosen (or inferred) at
-				// install when the manifest stays silent about it.
-				next.Vela = lib.Present.Vela
-			}
-			if err := c.libs.SetPresent(ctx, lib.ID, next); err != nil {
-				c.log.Warn("re-apply plugin library presentation failed", "plugin", r.ID, "kind", k.Key, "err", err)
+		// Reconcile HOW each app sees the library from the current manifest
+		// and kind shape while honoring the owner's sticky on/off switches
+		// (lib.PresentOverrides). This heals pre-W170 stale rows on startup
+		// and applies updated itemTypes/bases on plugin updates without ever
+		// clobbering an owner toggle.
+		reconciled := libraries.ResolveKindPresentations(presInput, lib.PresentOverrides)
+		if !presentationsEqual(lib.Present, reconciled.Effective) {
+			if err := c.libs.SetPresent(ctx, lib.ID, reconciled.Effective); err != nil {
+				c.log.Warn("reconcile plugin library presentation failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			} else {
-				lib.Present = next
+				lib.Present = reconciled.Effective
 			}
 		}
 		q := c.setQuota(r.ID, lib.Key, k.Cache)
@@ -230,19 +223,20 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 				c.blobs.Namespace(lib.Key, q)
 			}
 		}
+		// Cancel any in-flight pull sync BEFORE UpsertKind so a running
+		// sync pass releases kindLock after at most one chunk rather than
+		// blocking plugin install/upgrade/disable.
+		c.items.CancelKindSync(r.ID, k.Key)
 		if _, err := c.items.UpsertKind(ctx, r.ID, lib.ID, k, false); err != nil {
 			c.log.Warn("upsert plugin kind failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			if c.mgr != nil {
 				c.mgr.RecordFailure(ctx, r.ID, err.Error())
 			}
-			c.items.StopKindSync(r.ID, k.Key)
 			continue
 		}
 		if active && k.Sync.Mode == plugins.KindSyncPull {
 			interval := parseKindDuration(k.Sync.Refresh, defaultKindRefresh)
 			c.items.StartKindSync(c.syncCtx, r.ID, k.Key, interval)
-		} else {
-			c.items.StopKindSync(r.ID, k.Key)
 		}
 	}
 
@@ -276,6 +270,23 @@ func presentationsEqual(a, b core.Presentations) bool {
 	aj, err1 := json.Marshal(a)
 	bj, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(aj) == string(bj)
+}
+
+func kindPresentationInput(k plugins.MediaKindMeta) libraries.KindPresentationInput {
+	levels := make([]libraries.KindPresentationLevel, len(k.Levels))
+	for i, lv := range k.Levels {
+		levels[i] = libraries.KindPresentationLevel{
+			Key:       lv.Key,
+			Role:      lv.Role,
+			Playable:  lv.Playable,
+			Container: lv.Container,
+		}
+	}
+	return libraries.KindPresentationInput{
+		Media:   k.Media,
+		Levels:  levels,
+		Present: k.Present,
+	}
 }
 
 func (c *KindCatalog) removePlugin(ctx context.Context, pluginID string) {
@@ -1423,53 +1434,12 @@ func levelIsPlayable(decl plugins.MediaKindMeta, levelKey string) bool {
 }
 
 // ResolveKindMediaClass derives the effective MediaClass for a declared kind
-// from MediaKindMeta.Media, KindLevel.Role, MediaBrowser/Plex presentation
-// metadata, and falls back to core.MediaClassVideo.
+// via the shared presentation resolver (MediaKindMeta.Media, KindLevel.Role,
+// presentation metadata, and level shape).
 func ResolveKindMediaClass(decl plugins.MediaKindMeta, present core.Presentations) core.MediaClass {
-	if core.ValidMediaClass(decl.Media) {
-		return core.MediaClass(decl.Media)
-	}
-	for _, lv := range decl.Levels {
-		switch core.MediaRole(lv.Role) {
-		case core.MediaRoleArtist, core.MediaRoleAlbum, core.MediaRoleTrack:
-			return core.MediaClassMusic
-		case core.MediaRoleAudiobook:
-			return core.MediaClassAudiobook
-		case core.MediaRoleBook:
-			return core.MediaClassBook
-		}
-	}
-	if present.MediaBrowser != nil {
-		switch strings.ToLower(strings.TrimSpace(present.MediaBrowser.CollectionType)) {
-		case "music":
-			return core.MediaClassMusic
-		case "books":
-			return core.MediaClassBook
-		case "photos":
-			return core.MediaClassPhoto
-		}
-		for _, itemType := range present.MediaBrowser.ItemTypes {
-			switch strings.ToLower(strings.TrimSpace(itemType)) {
-			case "musicartist", "musicalbum", "audio":
-				return core.MediaClassMusic
-			case "audiobook":
-				return core.MediaClassAudiobook
-			case "book":
-				return core.MediaClassBook
-			case "photo", "photoalbum":
-				return core.MediaClassPhoto
-			}
-		}
-	}
-	if present.Plex != nil {
-		switch strings.ToLower(strings.TrimSpace(present.Plex.Base)) {
-		case "artist":
-			return core.MediaClassMusic
-		case "photo":
-			return core.MediaClassPhoto
-		}
-	}
-	return core.MediaClassVideo
+	in := kindPresentationInput(decl)
+	in.Present = present
+	return libraries.ResolveKindPresentations(in, core.PresentationOverrides{}).MediaClass
 }
 
 func shouldSkipItemContinue(decl plugins.MediaKindMeta, present core.Presentations, levelKey string) bool {
@@ -2339,5 +2309,5 @@ func (c *KindCatalog) FacetPeopleAtLevel(ctx context.Context, lib core.Library, 
 			out[personIdx].SampleTitle = &t
 		}
 	}
-	return experience.PluginFacetPeoplePage{Items: out, More: page.More}, nil
+	return experience.PluginFacetPeoplePage{Items: out, Total: page.Total, More: page.More}, nil
 }

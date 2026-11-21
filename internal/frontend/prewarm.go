@@ -39,6 +39,12 @@ type MetadataProber interface {
 	ProbeMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
 
+// PlayMetadataProber joins or starts the shared resolve+probe flight for a
+// client's play-time metadata re-ask and waits bounded by ctx.
+type PlayMetadataProber interface {
+	ProbePlayMetadata(context.Context, *User, RatingKey, ClientCaps) error
+}
+
 // DetailRevealer schedules a background season-drop check when a viewer opens
 // a show, season, or episode detail page, subject to detail-burst gating.
 type DetailRevealer interface {

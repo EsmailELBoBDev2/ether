@@ -196,9 +196,15 @@ type rarVolumeFS struct {
 }
 
 func newRARVolumeFS(ctx context.Context, vols []Volume) *rarVolumeFS {
-	idx := make(map[string]int, len(vols))
+	idx := make(map[string]int, len(vols)*2)
 	for i := range vols {
 		idx[rarVirtualVolumeName(i)] = i
+		if i > 0 {
+			// Old-style RAR4 multi-volume sets (without NEWNUMBERING) derive
+			// continuation names as <base>.r00, .r01, ..., .r99, .s00, ...
+			letter := byte('r' + (i-1)/100)
+			idx[fmt.Sprintf("vol.part00001.%c%02d", letter, (i-1)%100)] = i
+		}
 	}
 	return &rarVolumeFS{
 		ctx:   ctx,

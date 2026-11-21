@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/libraries"
@@ -1360,6 +1362,7 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 			return host.SecretGet(sctx, name)
 		}
 	}
+	defaultMIME := kindDefaultMIME(rec.Decl)
 	return kindstream.Deps{
 		OpenFile: func(ctx context.Context, src core.PlayableSource) (kindstream.ByteSource, error) {
 			s := &StreamSources{mgr: r.mgr}
@@ -1382,14 +1385,18 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 			}
 			return &kindLocalFile{File: f, size: info.Size(), mime: src.MIME}, nil
 		},
-		HTTP:             r.http,
-		Cache:            ns,
-		OpenRelease:      r.openRelease,
-		Secret:           secretFn,
-		AllowHost:        allowHost,
-		MaxDownloadBytes: quota.EffectiveMaxBytes(),
-		ItemIndex:        effectiveItemIndex(item.Index, partIdx),
-		Backoff:          r.backoff,
+		HTTP:        r.http,
+		Cache:       ns,
+		OpenRelease: r.openRelease,
+		OpenReleaseSource: func(octx context.Context, src core.PlayableSource) (core.MediaSource, error) {
+			return r.openReleaseForSource(octx, src, defaultMIME, secretFn)
+		},
+		DefaultReleaseMIME: defaultMIME,
+		Secret:             secretFn,
+		AllowHost:          allowHost,
+		MaxDownloadBytes:   quota.EffectiveMaxBytes(),
+		ItemIndex:          effectiveItemIndex(item.Index, partIdx),
+		Backoff:            r.backoff,
 		OnSourceSkipped: func(failures []kindstream.SourceFailure, winning core.PlayableSource) {
 			if skipped != nil {
 				skipped.failures = append(skipped.failures, failures...)
@@ -1970,9 +1977,91 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 	return rel, nil
 }
 
+func kindDefaultMIME(decl plugins.MediaKindMeta) string {
+	// The kind-level media class is the source of truth; per-app
+	// presentations are only consulted when a manifest does not declare one.
+	switch strings.ToLower(strings.TrimSpace(string(decl.Media))) {
+	case "music", "audiobook", "podcast":
+		return "audio/*"
+	case "book":
+		return "application/epub+zip"
+	case "photo":
+		return "image/*"
+	case "video":
+		return ""
+	}
+	if decl.Present.MediaBrowser != nil {
+		switch strings.ToLower(strings.TrimSpace(decl.Present.MediaBrowser.CollectionType)) {
+		case "music", "audiobooks":
+			return "audio/*"
+		case "books":
+			return "application/epub+zip"
+		case "photos":
+			return "image/*"
+		}
+	}
+	if decl.Present.Plex != nil {
+		switch strings.ToLower(strings.TrimSpace(decl.Present.Plex.Base)) {
+		case "artist":
+			return "audio/*"
+		case "photo":
+			return "image/*"
+		}
+	}
+	return ""
+}
+
+func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME string) (core.Release, error) {
+	if src.Release == nil {
+		return core.Release{}, core.ErrSourceUnavailable
+	}
+	rel, err := releaseFromHint(*src.Release, defaultTitle)
+	if err != nil {
+		return core.Release{}, err
+	}
+	effMIME := nzb.NormalizeMIME(src.MIME)
+	if effMIME == "" {
+		effMIME = nzb.NormalizeMIME(fallbackMIME)
+	}
+	var member string
+	var memberIdx *int
+	if src.Container != nil {
+		member = strings.TrimSpace(src.Container.Member)
+		memberIdx = src.Container.MemberIndex
+	} else {
+		member = strings.TrimSpace(src.Release.FileHint)
+	}
+	if !strings.HasPrefix(effMIME, "video/") {
+		if rel.Target != nil {
+			if effMIME != "" {
+				rel.Target.MIME = effMIME
+			}
+			if member != "" {
+				rel.Target.Member = member
+			}
+			if memberIdx != nil {
+				rel.Target.MemberIndex = memberIdx
+			}
+		} else if nzb.IsNonVideoMIME(effMIME) || member != "" || memberIdx != nil {
+			rel.Target = &core.ReleaseTarget{
+				AllowNonVideo: true,
+				Member:        member,
+				MemberIndex:   memberIdx,
+				MIME:          effMIME,
+			}
+		}
+	}
+	if rel.Target != nil {
+		baseID := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+		selection, _ := json.Marshal(rel.Target)
+		rel.ID = baseID + fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+	}
+	return rel, nil
+}
+
 func playableSourceRelease(src core.PlayableSource, defaultTitle string) core.Release {
 	if strings.EqualFold(strings.TrimSpace(src.Pattern), kindstream.PatternRelease) && src.Release != nil {
-		if rel, err := releaseFromHint(*src.Release, defaultTitle); err == nil {
+		if rel, err := releaseFromSource(src, defaultTitle, ""); err == nil {
 			if rel.Size <= 0 && src.Size > 0 {
 				rel.Size = src.Size
 			}
@@ -2022,6 +2111,36 @@ func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (
 	if err != nil {
 		return nil, err
 	}
+	return r.openPreparedRelease(ctx, rel)
+}
+
+func (r *KindResolver) openReleaseForSource(ctx context.Context, src core.PlayableSource, fallbackMIME string, secretFn func(context.Context, string) (string, error)) (core.MediaSource, error) {
+	if r.engine == nil {
+		return nil, core.ErrSourceUnavailable
+	}
+	rel, err := releaseFromSource(src, "", fallbackMIME)
+	if err != nil {
+		return nil, err
+	}
+	if rel.Protocol == core.ProtocolUsenet && rel.Target != nil && rel.Target.AllowNonVideo && secretFn != nil {
+		pwSecret := ""
+		if src.Container != nil && strings.TrimSpace(src.Container.PasswordSecret) != "" {
+			pwSecret = strings.TrimSpace(src.Container.PasswordSecret)
+		} else if src.Release != nil {
+			pwSecret = strings.TrimSpace(src.Release.PasswordSecret)
+		}
+		if pwSecret != "" {
+			pw, err := secretFn(ctx, pwSecret)
+			if err != nil {
+				return nil, err
+			}
+			rel.Target.ArchivePassword = pw
+		}
+	}
+	return r.openPreparedRelease(ctx, rel)
+}
+
+func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (core.MediaSource, error) {
 	if rel.InfoHash != "" || rel.MagnetURL != "" {
 		if r.debrid == nil {
 			return nil, core.ErrSourceUnavailable
@@ -2038,13 +2157,35 @@ func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolUsenet
-		nzb, err := r.indexer.FetchNZB(ctx, rel)
+		nzbData, err := r.indexer.FetchNZB(ctx, rel)
 		if err != nil {
 			return nil, err
 		}
-		return r.engine.Open(ctx, rel.ID, nzb)
+		if rel.Target != nil && rel.Target.AllowNonVideo {
+			nzbData, err = ensureNonVideoNZB(nzbData, rel.Target)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return r.engine.Open(ctx, rel.ID, nzbData)
 	}
 	return nil, core.ErrSourceUnavailable
+}
+
+// ensureNonVideoNZB attaches ether-nonvideo metadata (and narrows explicit file
+// targets) when the underlying core.Indexer returned a raw NZB directly instead
+// of passing through debrid.Indexer.FetchNZB.
+func ensureNonVideoNZB(data []byte, target *core.ReleaseTarget) ([]byte, error) {
+	if target == nil || !target.AllowNonVideo {
+		return data, nil
+	}
+	if bytes.Contains(data, []byte(nzb.MetaNonVideo)) {
+		return data, nil
+	}
+	if !bytes.Contains(bytes.ToLower(data), []byte("<nzb")) {
+		return data, nil
+	}
+	return debrid.EpisodeNZB(data, target)
 }
 
 func extractItemDuration(item core.KindItem, decl plugins.MediaKindMeta) time.Duration {

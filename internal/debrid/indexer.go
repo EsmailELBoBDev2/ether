@@ -10,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/flight"
+	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
 // TorrentResolver fills a torrent release's info hash and magnet (by
@@ -465,10 +466,16 @@ func (x *Indexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) 
 			// A Usenet season pack plays as its wanted episode's files only.
 			return x.episodeNZB(ctx, r, data)
 		}
-		if r.Target.AllowNonVideo && (r.Target.FileIndex != nil || r.Target.ExactFile != "") {
-			// A plugin named one file in the NZB; narrow to it (and its
-			// archive set) like debrid's ChooseFile selects it.
-			return x.episodeNZB(ctx, r, data)
+		if r.Target.AllowNonVideo && (r.Target.FileIndex != nil || r.Target.ExactFile != "" ||
+			r.Target.Member != "" || r.Target.MemberIndex != nil || nzb.IsNonVideoMIME(r.Target.MIME)) {
+			// A plugin targeted a non-video file, archive member, or media MIME:
+			// narrow to an explicit file when named and carry non-video metadata
+			// into the stream engine.
+			out, err := EpisodeNZB(data, r.Target)
+			if err != nil && r.Target.ExactFile != "" && r.Target.FileIndex == nil && x.packNamer != nil && hasUnnamedFiles(data) {
+				return x.episodeNZB(ctx, r, data)
+			}
+			return out, err
 		}
 		if len(r.Target.MovieTitles) > 0 || len(r.Target.WantedLanguages) > 0 {
 			if out, merr := EpisodeNZB(data, r.Target); merr == nil {

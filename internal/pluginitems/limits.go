@@ -150,11 +150,12 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 			}
 			cleanedFields[k] = raw
 			indexed = append(indexed, vals...)
-			if fdecl.Type == "people" {
+			if isPeopleIndexedField(fdecl) {
 				if len(texts) > 0 {
 					peopleParts = append(peopleParts, strings.Join(texts, " "))
 				}
-			} else if searchFieldSet[k] && len(texts) > 0 {
+			}
+			if fdecl.Type != "people" && searchFieldSet[k] && len(texts) > 0 {
 				searchParts = append(searchParts, strings.Join(texts, " "))
 			}
 		}
@@ -220,7 +221,13 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 		if utf8.RuneCountInString(s) > MaxFieldRunes {
 			return nil, nil, fmt.Errorf("string exceeds %d runes", MaxFieldRunes)
 		}
-		return []IndexedFieldValue{{Field: f.Key, Text: s, Fold: FoldFieldText(s)}}, []string{s}, nil
+		var pid int64
+		if isArtistStringField(f) {
+			if clean := strings.TrimSpace(s); clean != "" {
+				pid = core.PluginPersonID(clean)
+			}
+		}
+		return []IndexedFieldValue{{Field: f.Key, Text: s, Fold: FoldFieldText(s), Int: pid}}, []string{s}, nil
 
 	case "enum":
 		var s string
@@ -283,6 +290,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 		seen := make(map[string]bool, len(arr))
 		out := make([]IndexedFieldValue, 0, len(arr))
 		texts := make([]string, 0, len(arr))
+		artistString := isArtistStringField(f)
 		for _, s := range arr {
 			if utf8.RuneCountInString(s) > MaxFieldRunes {
 				return nil, nil, fmt.Errorf("string element exceeds %d runes", MaxFieldRunes)
@@ -290,7 +298,13 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 			texts = append(texts, s)
 			if !seen[s] {
 				seen[s] = true
-				out = append(out, IndexedFieldValue{Field: f.Key, Text: s, Fold: FoldFieldText(s)})
+				var pid int64
+				if artistString {
+					if clean := strings.TrimSpace(s); clean != "" {
+						pid = core.PluginPersonID(clean)
+					}
+				}
+				out = append(out, IndexedFieldValue{Field: f.Key, Text: s, Fold: FoldFieldText(s), Int: pid})
 			}
 		}
 		return out, texts, nil

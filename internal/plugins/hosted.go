@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strings"
 	"time"
@@ -208,7 +209,7 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 		headers = cloneHeaders(headers)
 		headers["X-Ether-Locale"] = req.Locale
 	}
-	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType})
+	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground})
 	if err != nil {
 		return Response{}, err
 	}
@@ -434,6 +435,31 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "secret.get":
 		v, err := b.h.SecretGet(ctx, str(0))
 		return result(v, err)
+	case "secret.set":
+		if len(args) < 2 {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set takes (name, value, ttlSec?)"}
+		}
+		var secName, secVal string
+		if err := json.Unmarshal(args[0], &secName); err != nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set name must be a string"}
+		}
+		if err := json.Unmarshal(args[1], &secVal); err != nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set value must be a string"}
+		}
+		var ttlSec int64
+		if len(args) > 2 && len(args[2]) > 0 && string(args[2]) != "null" {
+			var ttl float64
+			if err := json.Unmarshal(args[2], &ttl); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set ttlSec must be a number"}
+			}
+			if math.IsNaN(ttl) || math.IsInf(ttl, 0) || math.Trunc(ttl) != ttl || ttl < 0 || ttl > float64(MaxDerivedSecretTTLSec) {
+				return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: fmt.Sprintf("secret.set ttlSec must be an integer between 0 and %d", MaxDerivedSecretTTLSec)}
+			}
+			ttlSec = int64(ttl)
+		}
+		return result(nil, b.h.SecretSet(ctx, secName, secVal, ttlSec))
+	case "secret.delete":
+		return result(nil, b.h.SecretDelete(ctx, str(0)))
 	case "http.fetch":
 		var req struct {
 			Method  string            `json:"method"`

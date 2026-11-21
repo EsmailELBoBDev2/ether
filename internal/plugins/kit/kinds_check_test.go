@@ -19,10 +19,7 @@ func kitKind() plugins.MediaKindMeta {
 			{Key: "track", Label: "Track", Playable: true},
 		},
 		Present: core.Presentations{
-			MediaBrowser: &struct {
-				CollectionType string            `json:"collectionType"`
-				ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-			}{CollectionType: "music"},
+			MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "music"},
 		},
 		Sync: plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
 	}

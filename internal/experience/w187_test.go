@@ -129,9 +129,7 @@ func TestPluginContinueExclusionLocalizationAndLevelDelegation(t *testing.T) {
 		ID: 55, Key: "lib55", Name: "Library 55",
 		Source: core.LibraryPlugin, PluginID: "p.test", KindKey: "items",
 		Present: core.Presentations{
-			Vela: &struct {
-				Type string `json:"type"`
-			}{Type: "movies"},
+			Vela: &core.VelaPresentation{Type: "movies"},
 		},
 	}
 	item1 := core.Title{Key: core.PluginKey(101), LibraryID: 55, Type: core.TypeMovie, Title: "Item 1"}

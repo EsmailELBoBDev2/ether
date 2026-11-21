@@ -146,14 +146,21 @@ func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hu
 			}
 		}
 	}
+	kindSec := renderSec != nil && isPluginKindSection(*renderSec)
 	build := func() []frontend.Title {
+		if kindSec {
+			return h.Items
+		}
 		if loader, ok := s.catalog().(frontend.RowFactsLoader); ok {
 			h.Items = loader.LoadRowFacts(ctx, h.Items)
 		}
 		unavailable := s.sameDayUnavailableFunc(ctx, pr, h.Items)
-		return (s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: vis, PrioritizeAvailable: s.prioritizeAvailable(),
+		if sel := s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: vis, PrioritizeAvailable: s.prioritizeAvailable(),
 			SameDayUnavailable: func(_ context.Context, t *frontend.Title) bool { return unavailable(t) },
-		})).Items(ctx, pr.User, h)
+		}); sel != nil {
+			return sel.Items(ctx, pr.User, h)
+		}
+		return h.Items
 	}
 	// Filter the section and availability before rendering or paging. The
 	// resulting wire list is the canonical generation (including its counts).
@@ -175,7 +182,17 @@ func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hu
 			sourceItems = sourceItems[:hc.visible]
 			h.More = true
 		}
-		return s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec})
+		md := s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec})
+		if kindSec && len(md) > 0 {
+			byKey := make(map[string]*frontend.Title, len(sourceItems))
+			for i := range sourceItems {
+				byKey[sourceItems[i].Key.String()] = &sourceItems[i]
+			}
+			for i := range md {
+				md[i].Type = kindTypeForBase(string(renderSec.Type), md[i].Type, byKey[md[i].RatingKey])
+			}
+		}
+		return md
 	}
 	var md []model.Metadata
 	generation := ""
@@ -1019,6 +1036,16 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		if len(sections) > 0 && !containsInt(sections, sec.ID) {
 			continue
 		}
+		if isPluginKindSection(sec) && !isKindMusicSection(sec) {
+			_, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
+			for hid, h := range kindServed {
+				if matchHubID(hid, candidates) {
+					h.ID = id
+					return hubSpec{Hub: h}, true
+				}
+			}
+			continue
+		}
 		if !isVideoSection(sec) {
 			continue
 		}
@@ -1225,6 +1252,10 @@ type peopleBatchCatalog interface {
 	CachedVisibilityRows(ctx context.Context, keys []frontend.RatingKey, facts frontend.TitleFacts) (map[frontend.RatingKey]frontend.Title, error)
 }
 
+type discoveryVisibilityCatalog interface {
+	DiscoveryVisibleForViewer(*frontend.User, *frontend.Title) bool
+}
+
 type reasonedTitle struct {
 	title       frontend.Title
 	reason      string
@@ -1380,7 +1411,6 @@ func personSearchDirectory(sec Section, person frontend.Person, kind string, cou
 		model.A("filter", kind+"="+idStr),
 		model.A("tag", person.Name),
 		model.A("tagType", tagType),
-		model.A("tagKey", "tmdb-person-"+idStr),
 	)
 	if person.ThumbPath != "" && thumbKey != 0 {
 		attrs = append(attrs, model.A("thumb", "/library/metadata/"+thumbKey.String()+"/person/"+kind+"/"+base64.RawURLEncoding.EncodeToString([]byte(person.ThumbPath))))
@@ -1465,8 +1495,11 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 	if err != nil || len(candidates) == 0 {
 		return out
 	}
-	// An explicit search: rules the owner limited to browsing do not apply.
+	// An explicit search: rules the owner limited to browsing do not apply to
+	// reasoned title hits. Section directory pills link to /library/sections/{id}/all
+	// (Browse), so they only count titles Browse itself will return (#653).
 	catVis, _ := s.catalog().(frontend.SearchVisibilityCatalog)
+	browseVis, _ := s.catalog().(discoveryVisibilityCatalog)
 	// The batched path judges rows; it resolves their shows from rows too.
 	vis := s.visibility()
 	now := s.now()
@@ -1506,8 +1539,9 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 	// titles carry only what their visibility needs; the ones a hub can
 	// show are read in full below.
 	type personTitles struct {
-		titles []frontend.Title
-		role   func(t *frontend.Title, kind string) (frontend.Person, bool)
+		titles    []frontend.Title
+		browsable func(frontend.RatingKey) bool
+		role      func(t *frontend.Title, kind string) (frontend.Person, bool)
 	}
 	byPerson := make([]personTitles, len(walked))
 	batch, batched := s.catalog().(peopleBatchCatalog)
@@ -1525,8 +1559,12 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 		}
 		for i, p := range walked {
 			roles := map[frontend.RatingKey]map[string]frontend.Person{}
+			browsableKeys := map[frontend.RatingKey]bool{}
 			var titles []frontend.Title
 			for _, cr := range credits[p.TMDB] {
+				if cr.Browsable {
+					browsableKeys[cr.Key] = true
+				}
 				if roles[cr.Key] == nil {
 					roles[cr.Key] = map[string]frontend.Person{}
 					if t, ok := rows[cr.Key]; ok {
@@ -1537,10 +1575,14 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 					roles[cr.Key][cr.Kind] = cr.Person
 				}
 			}
-			byPerson[i] = personTitles{titles: titles, role: func(t *frontend.Title, kind string) (frontend.Person, bool) {
-				person, ok := roles[t.Key][kind]
-				return person, ok
-			}}
+			byPerson[i] = personTitles{
+				titles:    titles,
+				browsable: func(k frontend.RatingKey) bool { return browsableKeys[k] },
+				role: func(t *frontend.Title, kind string) (frontend.Person, bool) {
+					person, ok := roles[t.Key][kind]
+					return person, ok
+				},
+			}
 		}
 	} else {
 		for i, p := range walked {
@@ -1549,17 +1591,21 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 				continue
 			}
 			tmdbID := p.TMDB
-			byPerson[i] = personTitles{titles: s.getTitles(withStoredPolicy(ctx), keys), role: func(t *frontend.Title, kind string) (frontend.Person, bool) {
-				if kind == "cast" {
-					return personInList(t.Cast, tmdbID)
-				}
-				return personInList(t.Directors, tmdbID)
-			}}
+			byPerson[i] = personTitles{
+				titles:    s.getTitles(withStoredPolicy(ctx), keys),
+				browsable: func(frontend.RatingKey) bool { return true },
+				role: func(t *frontend.Title, kind string) (frontend.Person, bool) {
+					if kind == "cast" {
+						return personInList(t.Cast, tmdbID)
+					}
+					return personInList(t.Directors, tmdbID)
+				},
+			}
 		}
 	}
 	var actorTitles, directorTitles []reasonedTitle
 	for ci, cand := range walked {
-		titles, role := byPerson[ci].titles, byPerson[ci].role
+		titles, browsable, role := byPerson[ci].titles, byPerson[ci].browsable, byPerson[ci].role
 		if len(titles) == 0 {
 			continue
 		}
@@ -1586,8 +1632,9 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 				continue
 			}
 			sec, hasSec := s.sectionFor(t.Type)
+			secBrowsable := hasSec && t.Type == sec.Type && browsable(t.Key) && (browseVis == nil || browseVis.DiscoveryVisibleForViewer(pr.User, &t))
 			if p, ok := role(&t, "cast"); ok {
-				if hasSec {
+				if secBrowsable {
 					h := actorSecs[sec.ID]
 					if h == nil {
 						h = &secHit{}
@@ -1607,7 +1654,7 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 				})
 			}
 			if p, ok := role(&t, "director"); ok {
-				if hasSec {
+				if secBrowsable {
 					h := directorSecs[sec.ID]
 					if h == nil {
 						h = &secHit{}

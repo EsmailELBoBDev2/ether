@@ -169,6 +169,9 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 		m["MediaType"] = mediaType
 	}
 	attachParentIdentity(m, t)
+	if (kind == "MusicAlbum" || kind == "Audio") && len(t.Cast) > 0 {
+		attachMusicArtistCredits(m, t)
+	}
 	if i.protocol == "emby" {
 		i.embyItemDTO(m, t, state)
 		// Movies and shows belong to their configured library. Episodes and
@@ -690,7 +693,7 @@ func (i *instance) browseRoutes() error {
 	endpoints := []struct {
 		path    string
 		handler http.HandlerFunc
-	}{{"/UserViews", views}, {"/Users/{userId}/Views", views}, {"/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/Users/{userId}/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/UserItems/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Users/{userId}/Items/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Shows/NextUp", rowHandler(frontend.RowNextUp, false)}, {"/Items", i.items}, {"/Users/{userId}/Items", i.items}, {"/Items/{id}/Similar", i.similar}, {"/Items/{id}/Collections", i.itemCollections}, {"/Items/{id}/Ancestors", i.ancestors}, {"/Items/{id}/LocalTrailers", i.localTrailers}, {"/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Users/{userId}/Items/{id}/LocalTrailers", i.localTrailers}, {"/Users/{userId}/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Items/{id}/Intros", i.intros}, {"/Users/{userId}/Items/{id}/Intros", i.intros}, {"/Search/Hints", i.search}, {"/Genres", i.facets("genre")}, {"/Studios", i.facets("studio")}, {"/Persons", i.facets("person")}, {"/Shows/{id}/Seasons", i.children}, {"/Shows/{id}/Episodes", i.episodes}, {"/Shows//Episodes", i.episodes}, {"/Items/{id}", detail}, {"/Users/{userId}/Items/{id}", detail}}
+	}{{"/UserViews", views}, {"/Users/{userId}/Views", views}, {"/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/Users/{userId}/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/UserItems/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Users/{userId}/Items/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Shows/NextUp", rowHandler(frontend.RowNextUp, false)}, {"/Items", i.items}, {"/Users/{userId}/Items", i.items}, {"/Items/{id}/Similar", i.similar}, {"/Items/{id}/Collections", i.itemCollections}, {"/Items/{id}/Ancestors", i.ancestors}, {"/Items/{id}/LocalTrailers", i.localTrailers}, {"/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Users/{userId}/Items/{id}/LocalTrailers", i.localTrailers}, {"/Users/{userId}/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Items/{id}/Intros", i.intros}, {"/Users/{userId}/Items/{id}/Intros", i.intros}, {"/Search/Hints", i.search}, {"/Genres", i.facets("genre")}, {"/MusicGenres", i.facets("musicgenre")}, {"/Studios", i.facets("studio")}, {"/Persons", i.facets("person")}, {"/Shows/{id}/Seasons", i.children}, {"/Shows/{id}/Episodes", i.episodes}, {"/Shows//Episodes", i.episodes}, {"/Items/{id}", detail}, {"/Users/{userId}/Items/{id}", detail}}
 	for _, e := range endpoints {
 		if err := add("GET", e.path, e.handler); err != nil {
 			return err
@@ -1291,7 +1294,11 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		i.pageWithExtra(w, r, v, result.Page, q.Offset, 0, "", nil, extra)
 		return
 	}
-	if len(parent) == 0 || parent[0] == "" {
+	if artistKey, ok := artistParentKey(r); ok && (len(parent) == 0 || parent[0] == "" || func() bool { _, e := ids.ParseGUID(ids.View, parent[0]); return e == nil }()) {
+		artistQuery := q
+		artistQuery.Recursive = true
+		page, err = i.host.Experience.Children(r.Context(), v, device(r), artistKey, artistQuery)
+	} else if len(parent) == 0 || parent[0] == "" {
 		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil && ids.PersonalView(id) {
 		i.writePersonalItems(w, r, v, id)

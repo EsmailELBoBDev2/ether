@@ -185,6 +185,9 @@ type retiredSession struct {
 
 // Broker coordinates playback admission for every protocol, including Plex.
 type Broker struct {
+	// subtitleWarm holds the session tracks whose extraction warmSubtitle
+	// started and has not finished.
+	subtitleWarm     sync.Map
 	timelineReserved int
 	timelineEffects  []timelineEffect
 	timelineRunning  bool

@@ -1060,6 +1060,9 @@ func (s *Server) extractEmbeddedSubtitle(ctx context.Context, playID string, st 
 	if keyer, ok := s.playback().(frontend.PlaybackSourceKeyer); ok {
 		ctx = frontend.WithSubtitleSource(ctx, keyer.SourceKey(playID))
 	}
+	if reader, ok := s.playback().(frontend.PlaybackSourceReader); ok {
+		ctx = frontend.WithSubtitleReader(ctx, func() (io.ReaderAt, int64, func(), bool) { return reader.SourceReader(playID) })
+	}
 	var buf bytes.Buffer
 	if err := ex.ExtractSubtitle(ctx, input, st.Index, st.Codec, &buf); err != nil || buf.Len() == 0 {
 		return nil, "", false

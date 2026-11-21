@@ -18,13 +18,15 @@ type mbLevelExperience struct {
 	frontendtest.Experience
 	lastFacetLevel string
 	lastFacetView  string
+	lastFacetKind  string
 	lastQuery      frontend.ItemQuery
 	lastDeviceLang string
 }
 
-func (e *mbLevelExperience) FacetsAtLevel(_ context.Context, _ *core.Viewer, dev core.Device, viewID, level, _ string) ([]core.FacetValue, error) {
+func (e *mbLevelExperience) FacetsAtLevel(_ context.Context, _ *core.Viewer, dev core.Device, viewID, level, kind string) ([]core.FacetValue, error) {
 	e.lastFacetView = viewID
 	e.lastFacetLevel = level
+	e.lastFacetKind = kind
 	e.lastDeviceLang = dev.Language
 	return []core.FacetValue{{ID: "g1", Key: "Jazz", Title: "Jazz", Count: 3}}, nil
 }
@@ -34,6 +36,17 @@ func TestMediaBrowserLevelFacetsArtistsAndLanguage(t *testing.T) {
 	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
 
 	exp := &mbLevelExperience{}
+	exp.ViewsFunc = func(context.Context, *core.Viewer) ([]frontend.View, error) {
+		return []frontend.View{{
+			ID:        "77",
+			LibraryID: 77,
+			Name:      "Music",
+			Type:      core.TypeShow,
+			PluginID:  "community.example.music",
+			KindKey:   "music",
+			Native:    "music",
+		}}, nil
+	}
 	exp.LibraryItemsFunc = func(_ context.Context, _ *core.Viewer, dev core.Device, _ string, q frontend.ItemQuery) (core.Page, error) {
 		exp.lastQuery = q
 		exp.lastDeviceLang = dev.Language
@@ -66,8 +79,18 @@ func TestMediaBrowserLevelFacetsArtistsAndLanguage(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("/Genres status = %d %s", w.Code, w.Body.String())
 	}
-	if exp.lastFacetView != "77" || exp.lastFacetLevel != "MusicAlbum" || exp.lastDeviceLang != "de-DE,de;q=0.9" {
-		t.Fatalf("FacetsAtLevel = (view=%q level=%q lang=%q), want (77, MusicAlbum, de-DE,de;q=0.9)", exp.lastFacetView, exp.lastFacetLevel, exp.lastDeviceLang)
+	if exp.lastFacetView != "77" || exp.lastFacetLevel != "MusicAlbum" || exp.lastFacetKind != "genre" || exp.lastDeviceLang != "de-DE,de;q=0.9" {
+		t.Fatalf("FacetsAtLevel = (view=%q level=%q kind=%q lang=%q), want (77, MusicAlbum, genre, de-DE,de;q=0.9)", exp.lastFacetView, exp.lastFacetLevel, exp.lastFacetKind, exp.lastDeviceLang)
+	}
+
+	// 1b. /MusicGenres?ParentId={view}&IncludeItemTypes=MusicAlbum also maps musicgenre -> genre via FacetsAtLevel.
+	exp.lastFacetView, exp.lastFacetLevel, exp.lastFacetKind = "", "", ""
+	req = httptest.NewRequest(http.MethodGet, "/MusicGenres?ParentId="+viewGUID+"&IncludeItemTypes=MusicAlbum", nil)
+	req.Header.Set("X-Emby-Token", "grant")
+	w = httptest.NewRecorder()
+	inst.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || exp.lastFacetView != "77" || exp.lastFacetLevel != "MusicAlbum" || exp.lastFacetKind != "genre" {
+		t.Fatalf("/MusicGenres status=%d view=%q level=%q kind=%q", w.Code, exp.lastFacetView, exp.lastFacetLevel, exp.lastFacetKind)
 	}
 
 	// 2. /Artists?ParentId={view} browses MusicArtist items recursively.

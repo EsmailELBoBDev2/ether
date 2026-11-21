@@ -1048,3 +1048,87 @@ func TestPlaybackASSSidecarAndFontBundle(t *testing.T) {
 		t.Fatalf("expected 404 on unknown track for /fonts, got %d", missing.Code)
 	}
 }
+
+// Embedded text subtitles must be on screen with the picture, never behind a
+// whole-file extraction: original-file playback names the stream for the
+// player's own demux, and a server HLS stream carries it as a WebVTT rendition.
+func TestEmbeddedSubtitleNeedsNoWholeFileArtifact(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 7}
+	sessionID := "4f7c2a9e-2b51-4a43-8d0e-5c3b5d8e9a10"
+	media := frontend.MediaInfo{Container: "mkv", Duration: time.Hour, Streams: []frontend.StreamInfo{
+		{Type: "video", Index: 0, Codec: "h264"},
+		{Type: "audio", Index: 1, Codec: "aac", Language: "eng"},
+		{Type: "subtitle", Index: 4, Codec: "subrip", Language: "eng"},
+	}}
+	kind := core.DecisionDirectPlay
+	session := frontendtest.Sessions{
+		PlanFunc: func(context.Context, frontend.PlanRequest) (frontend.PlayPlan, error) {
+			return frontend.PlayPlan{ID: "plan-sub", Media: media, Decision: frontend.Decision{Kind: kind, VideoCopy: true, AudioCopy: true, AudioStream: 1, SubtitleStream: 4}}, nil
+		},
+		OpenFunc: func(context.Context, frontend.OpenRequest) (frontend.Session, error) {
+			return frontend.Session{ID: sessionID}, nil
+		},
+		StartStreamFunc: func(_ context.Context, _ frontend.SessionAccess, _ string, req frontend.StreamRequest) (string, error) {
+			if req.Format == frontend.StreamHLS {
+				return "/sessions/media/" + sessionID + "/scoped/master.m3u8", nil
+			}
+			return "/sessions/media/" + sessionID + "/scoped/file", nil
+		},
+		SubtitleURLFunc: func(_ context.Context, _ frontend.SessionAccess, id string, track int, format string) (string, error) {
+			if format == "hls" {
+				if kind == core.DecisionDirectPlay {
+					return "", frontend.ErrNotFound
+				}
+				return "/sessions/media/" + id + "/scoped/text-" + strconv.Itoa(track) + "/index.m3u8", nil
+			}
+			return "/sessions/media/" + id + "/scoped/subtitles/" + strconv.Itoa(track) + "." + format, nil
+		},
+	}
+	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
+	inst, err := (Frontend{MachineID: "test"}).Mount(context.Background(), frontend.Host{
+		Identity: testDeviceIdentity(ident, viewer), Sessions: testScopedMedia{session}, Capabilities: frontendtest.Capabilities{},
+		VersionHandles: testVersionHandles{}, SourceOffers: testSourceOffers{}, IDs: ids.Codecs{Allocator: fileIDs{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func() map[string]any {
+		body := `{"protocol_version":3,"file_id":"101","profile_id":"7","installation_id":"` + inst.(*instance).installationID() + `","playback_attempt_id":"attempt-sub","subtitle_fidelity_preference":"preserve","client_features":["playback_plan_v3","embedded_subtitles_v1","hls_subtitle_renditions_v1","hls_remux_subtitle_renditions_v1"],"client_capabilities":{"codecs_video":["h264"]},"client_playback_context":{"deliveries":{"original_http":{"enabled":true,"supported_on_device":true,"subtitles":{"ass_styling":true,"native_embedded":[{"container":"mkv","codecs":["subrip","ass","hdmv_pgs_subtitle"],"track_identity":"ffmpeg_stream_index","ass_styling":true,"font_attachments":true}]}},"hls":{"enabled":true,"supported_on_device":true}}}}`
+		req := httptest.NewRequest("POST", "/api/v2/playback/start", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer account-secret")
+		req.Header.Set("X-Silo-Device-Id", "tv")
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("start: %d %s", w.Code, w.Body.String())
+		}
+		if doc := spectest.Document(t, "silo"); doc != nil {
+			if err := doc.Validate("POST", "/api/v2/playback/start", w.Code, w.Header().Get("Content-Type"), w.Body.Bytes()); err != nil {
+				t.Fatalf("spec: %v\n%s", err, w.Body.String())
+			}
+		}
+		var out struct {
+			Plan struct {
+				Subtitle map[string]any `json:"subtitle"`
+			} `json:"playback_plan"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Plan.Subtitle
+	}
+	direct := start()
+	embedded, _ := direct["embedded"].(map[string]any)
+	if direct["mode"] != "render" || direct["artifact"] != nil || embedded == nil || embedded["stream_index"] != float64(4) {
+		t.Fatalf("direct play subtitle: %+v", direct)
+	}
+	if row := direct["inventory"].([]any)[0].(map[string]any); !strings.Contains(row["url"].(string), "embedded_stream_index=4") {
+		t.Fatalf("inventory row does not name its stream: %+v", row)
+	}
+	kind = core.DecisionTranscode
+	hls := start()
+	rendition, _ := hls["hls_rendition"].(map[string]any)
+	if hls["mode"] != "convert" || hls["artifact"] != nil || hls["embedded"] != nil || rendition == nil || rendition["group_id"] != "subs" || rendition["name"] != "eng (4)" {
+		t.Fatalf("HLS subtitle: %+v", hls)
+	}
+}

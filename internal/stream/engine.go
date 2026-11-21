@@ -362,7 +362,7 @@ func (e *Engine) openRelease(ctx context.Context, releaseID, feedbackID string, 
 		}
 		cancel()
 	}
-	if cb := e.opts.OnLayout; cb != nil && !p.restored && (e.opts.WantLayout == nil || e.opts.WantLayout(feedbackID)) {
+	if cb := e.opts.OnLayout; cb != nil && !p.restored && !p.rawNonVideo && p.kind != kindArchiveRaw && (e.opts.WantLayout == nil || e.opts.WantLayout(feedbackID)) {
 		p.report.Do(func() {
 			e.mu.Lock()
 			defer e.mu.Unlock()
@@ -378,9 +378,54 @@ func (e *Engine) openRelease(ctx context.Context, releaseID, feedbackID string, 
 			})
 		})
 	}
+	if p.kind == kindArchiveRaw {
+		return e.openArchiveVolumesSource(rel, p, releaseID, liveStart, missingStart), nil
+	}
 	src := newSource(e, rel, p, releaseID)
 	src.liveStart, src.missingStart = liveStart, missingStart
 	return src, nil
+}
+
+// openArchiveVolumesSource builds an archiveVolumesSource backed by either one
+// concatenated stream (for byte-split RAR archives) or one source per archive
+// volume, holding exact ref-counts on rel so closing the returned source
+// balances every reference.
+func (e *Engine) openArchiveVolumesSource(rel *release, p *plan, releaseID string, liveStart, missingStart uint64) core.MediaSource {
+	if p.archiveConcat || len(p.vols) <= 1 {
+		src := newSource(e, rel, p, releaseID)
+		src.liveStart, src.missingStart = liveStart, missingStart
+		name := p.name
+		if len(p.vols) > 0 {
+			name = p.vols[0].Name()
+		}
+		return &archiveVolumesSource{
+			vols:      []*source{src},
+			format:    p.archiveFormat,
+			member:    p.member,
+			name:      name,
+			releaseID: releaseID,
+		}
+	}
+	e.mu.Lock()
+	rel.refs += len(p.vols) - 1
+	e.mu.Unlock()
+	vols := make([]*source, len(p.vols))
+	for i, pf := range p.vols {
+		sz := p.info[i].size
+		vp := newPlan(rel, kindPlain, pf.Name(), sz, []*postedFile{pf}, []volInfo{{size: sz, dataSize: sz}}, []bool{true})
+		vp.rawNonVideo = true
+		_ = vp.init()
+		s := newSource(e, rel, vp, releaseID)
+		s.liveStart, s.missingStart = liveStart, missingStart
+		vols[i] = s
+	}
+	return &archiveVolumesSource{
+		vols:      vols,
+		format:    p.archiveFormat,
+		member:    p.member,
+		name:      p.vols[0].Name(),
+		releaseID: releaseID,
+	}
 }
 
 // Prefetch warms [offset, offset+length) of the main video into the

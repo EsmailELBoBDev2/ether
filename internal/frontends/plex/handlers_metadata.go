@@ -63,10 +63,12 @@ func (s *Server) titleVisible(u *frontend.User, t *frontend.Title) bool {
 
 // metadataKeys parses a detail key. Numeric rating keys stay as they are.
 // A plex:// guid (More Ways to Watch keeps the discover identity and asks
-// this server for it) resolves through the local mapping. A variant part id
-// resolves to the title that owns that part, so a re-read of the part the
+// this server for it) resolves through the local mapping, falling back to a
+// bounded live verification for a single movie/show identity when the local
+// row is cold or withheld pending rule-2 verification (#654). A variant part
+// id resolves to the title that owns that part, so a re-read of the part the
 // client just selected still shows the subtitle.
-func (s *Server) metadataKeys(ctx context.Context, raw string) ([]frontend.RatingKey, error) {
+func (s *Server) metadataKeys(ctx, lookupParent context.Context, raw string) ([]frontend.RatingKey, error) {
 	raw = strings.TrimSpace(raw)
 	if decoded, err := url.PathUnescape(raw); err == nil && decoded != "" {
 		raw = decoded
@@ -87,6 +89,14 @@ func (s *Server) metadataKeys(ctx context.Context, raw string) ([]frontend.Ratin
 			k, err := guidSrc.ExactKey(ctx, guid)
 			if err != nil {
 				if len(guids) == 1 {
+					if errors.Is(err, frontend.ErrNotFound) {
+						lookupCtx, cancel := context.WithTimeout(lookupParent, 5*time.Second)
+						k, err = guidSrc.Lookup(lookupCtx, guid)
+						cancel()
+						if err == nil {
+							return []frontend.RatingKey{k}, nil
+						}
+					}
 					return nil, err
 				}
 				if errors.Is(err, frontend.ErrNotFound) {
@@ -128,7 +138,8 @@ func (s *Server) handleMetadataGUIDPath(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	// Serve stored catalogue details while bounded enrichment fills the mirror.
-	ctx := s.exp().NoProviderWait(r.Context())
+	reqCtx := r.Context()
+	ctx := s.exp().NoProviderWait(reqCtx)
 	if !reqmemo.Active(ctx) {
 		ctx = reqmemo.With(ctx)
 	}
@@ -147,7 +158,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	keys, err := s.metadataKeys(ctx, chi.URLParam(r, "key"))
+	keys, err := s.metadataKeys(ctx, reqCtx, chi.URLParam(r, "key"))
 	if err != nil {
 		writeHTTPError(w, http.StatusNotFound)
 		return
@@ -247,6 +258,18 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 						user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,
 					})
 				}
+				// Plezy reuses this row at Play and trusts only its
+				// selected subtitle: arm (or answer) its play-time
+				// re-ask so first play sees probed tracks (#618). Run
+				// before RefillSearchCache and scheduleDetailWarm so a
+				// play re-ask starts or promotes the foreground flight
+				// directly instead of spawning a competing speculative
+				// search or warm-up; browsing fetches return
+				// immediately and still run both below.
+				s.plezyFirstPlay(ctx, reqCtx, pr, t, q)
+				if reqCtx.Err() != nil {
+					return
+				}
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
@@ -263,10 +286,6 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				s.scheduleDetailWarm(ctx, pr, t)
-				// Plezy reuses this row at Play and trusts only its
-				// selected subtitle: arm (or answer) its play-time
-				// re-ask so first play sees probed tracks (#618).
-				s.plezyFirstPlay(ctx, pr, t, q)
 			}
 			// Live session intent (#32): a single-item detail open.
 			s.recordDetailIntent(ctx, pr, t)

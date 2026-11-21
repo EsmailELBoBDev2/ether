@@ -26,7 +26,9 @@ type KindRecord struct {
 	SchemaVersion int64
 }
 
-// SyncState is the persisted sync status for one (plugin, kind) (spec §2.3).
+// SyncState is the persisted sync status for one (plugin, kind) (spec §2.3),
+// enriched with live in-memory progress while a background sync or reindex pass
+// is running.
 type SyncState struct {
 	PluginID    string    `json:"pluginId"`
 	KindKey     string    `json:"kindKey"`
@@ -36,6 +38,10 @@ type SyncState struct {
 	LastOK      time.Time `json:"lastOk,omitzero"`
 	LastError   string    `json:"lastError,omitempty"`
 	Items       int64     `json:"items"`
+	Running     bool      `json:"running,omitempty"`
+	Phase       string    `json:"phase,omitempty"`
+	SyncedItems int       `json:"syncedItems,omitempty"`
+	Pages       int       `json:"pages,omitempty"`
 }
 
 const itemCols = `item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx, title, sort_title, summary, year, released, rating, playable, child_count, leaf_count, hints, fields, etag, unavailable, added_at`
@@ -191,7 +197,6 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		return KindRecord{}, err
 	}
 	declHash := decl.DeclHash()
-	isPG := store.DialectOf(s.db) == store.Postgres
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -200,10 +205,11 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	defer tx.Rollback()
 
 	var (
-		oldDeclJSON string
-		oldHash     string
-		schemaVer   int64
-		purged      bool
+		oldDeclJSON     string
+		oldHash         string
+		schemaVer       int64
+		purged          bool
+		scheduleReindex bool
 	)
 	err = tx.QueryRowContext(ctx,
 		`SELECT decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
@@ -211,21 +217,23 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		schemaVer = 1
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO plugin_kinds(plugin_id, kind_key, library_id, decl, decl_hash, schema_version, fts_version) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-			pluginID, decl.Key, int64(libraryID), string(declJSON), declHash, schemaVer, currentFTSVersion); err != nil {
-			return KindRecord{}, err
-		}
 		var preExisting int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ? AND kind_key = ?`,
 			pluginID, decl.Key).Scan(&preExisting); err != nil {
 			return KindRecord{}, err
 		}
+		ftsVer := currentFTSVersion
 		if preExisting > 0 {
-			if err := reindexKindTx(ctx, tx, isPG, true, pluginID, decl.Key, libraryID, decl); err != nil {
-				return KindRecord{}, err
-			}
+			// Defer reindexing existing rows to a chunked background worker
+			// rather than holding the SQLite write lock across the install request.
+			ftsVer = 0
+			scheduleReindex = true
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO plugin_kinds(plugin_id, kind_key, library_id, decl, decl_hash, schema_version, fts_version) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			pluginID, decl.Key, int64(libraryID), string(declJSON), declHash, schemaVer, ftsVer); err != nil {
+			return KindRecord{}, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO plugin_sync_state(plugin_id, kind_key) VALUES(?, ?) ON CONFLICT(plugin_id, kind_key) DO NOTHING`,
@@ -257,15 +265,21 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 			}
 			schemaVer++
 		}
+		ftsVer := currentFTSVersion
+		if needReindex {
+			var existingItems int64
+			_ = tx.QueryRowContext(ctx,
+				`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ?`,
+				int64(libraryID)).Scan(&existingItems)
+			if existingItems > 0 {
+				ftsVer = 0
+				scheduleReindex = true
+			}
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE plugin_kinds SET library_id = ?, decl = ?, decl_hash = ?, schema_version = ?, fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
-			int64(libraryID), string(declJSON), declHash, schemaVer, currentFTSVersion, pluginID, decl.Key); err != nil {
+			int64(libraryID), string(declJSON), declHash, schemaVer, ftsVer, pluginID, decl.Key); err != nil {
 			return KindRecord{}, err
-		}
-		if needReindex {
-			if err := reindexKindTx(ctx, tx, isPG, true, pluginID, decl.Key, libraryID, decl); err != nil {
-				return KindRecord{}, err
-			}
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO plugin_sync_state(plugin_id, kind_key) VALUES(?, ?) ON CONFLICT(plugin_id, kind_key) DO NOTHING`,
@@ -279,6 +293,11 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	}
 	if purged {
 		s.forgetLibraryStats(libraryID)
+	}
+	if scheduleReindex {
+		s.startKindReindex(pluginID, decl.Key, libraryID, decl)
+	} else if !purged && s.kindHasUnindexedArtistStrings(ctx, libraryID, decl) {
+		s.startKindReindex(pluginID, decl.Key, libraryID, decl)
 	}
 	return KindRecord{
 		PluginID:      pluginID,
@@ -404,25 +423,26 @@ func (s *Service) UpsertItemsWithStats(ctx context.Context, pluginID, kindKey st
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
-	return s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true)
+	return s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true, true)
 }
 
 // upsertItemsForSync writes a batch as part of a pull SyncKind pass; SyncKind
-// notifies the planner-statistics refresher once the full sync completes.
+// sets last_ok only when the complete pass finishes and notifies the planner
+// statistics refresher once items are present.
 func (s *Service) upsertItemsForSync(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error) {
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
-	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, false)
+	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, false, false)
 	return stats.Accepted, err
 }
 
 func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, error) {
-	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen, true)
+	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen, true, true)
 	return stats.Accepted, err
 }
 
-func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, notifyStats bool) (UpsertStats, error) {
+func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, markOK, notifyStats bool) (UpsertStats, error) {
 	kind, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
 		return UpsertStats{}, err
@@ -507,8 +527,11 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 	stats := UpsertStats{Accepted: len(items)}
 	var totalItems int64
 	for start := 0; start < len(prepared); start += upsertChunkSize {
+		if err := ctx.Err(); err != nil {
+			return stats, err
+		}
 		end := min(start+upsertChunkSize, len(prepared))
-		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared))
+		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK)
 		if err != nil {
 			// The failed chunk rolled back; only earlier committed
 			// chunks are counted.
@@ -834,25 +857,256 @@ func (s *Service) reindexPendingKinds(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
 			continue
 		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if err := reindexKindTx(ctx, tx, isPG, true, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
-			currentFTSVersion, k.pluginID, k.kindKey); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
+		if err := s.reindexKindChunked(ctx, isPG, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// scheduleStaleArtistReindexes checks existing kinds that declare string-typed
+// artist fields ("artists", "album_artists", etc.) and triggers a non-blocking
+// chunked background reindex when pre-upgrade rows still have v_int = 0.
+func (s *Service) scheduleStaleArtistReindexes(ctx context.Context) {
+	if s == nil || s.db == nil {
+		return
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT plugin_id, kind_key, library_id, decl FROM plugin_kinds ORDER BY plugin_id, kind_key`)
+	if err != nil {
+		return
+	}
+	var all []pendingKindRow
+	for rows.Next() {
+		var r pendingKindRow
+		var libID int64
+		if err := rows.Scan(&r.pluginID, &r.kindKey, &libID, &r.declJSON); err != nil {
+			rows.Close()
+			return
+		}
+		r.libraryID = core.LibraryID(libID)
+		all = append(all, r)
+	}
+	rows.Close()
+	for _, k := range all {
+		var decl plugins.MediaKindMeta
+		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
+			continue
+		}
+		if s.kindHasUnindexedArtistStrings(ctx, k.libraryID, decl) {
+			s.startKindReindex(k.pluginID, k.kindKey, k.libraryID, decl)
+		}
+	}
+}
+
+func (s *Service) kindHasUnindexedArtistStrings(ctx context.Context, libraryID core.LibraryID, decl plugins.MediaKindMeta) bool {
+	if s == nil || s.db == nil || libraryID <= 0 {
+		return false
+	}
+	for _, fd := range decl.Fields {
+		if !isArtistStringField(fd) {
+			continue
+		}
+		var one int
+		err := s.db.QueryRowContext(ctx, `
+SELECT 1
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE i.library_id = ? AND f.field = ? AND f.v_text <> '' AND f.v_int = 0
+LIMIT 1`, int64(libraryID), fd.Key).Scan(&one)
+		if err == nil && one == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// startKindReindex schedules a chunked background reindex for (pluginID, kindKey)
+// so index-shape upgrades return immediately from plugin install without holding
+// the SQLite write lock across the library.
+func (s *Service) startKindReindex(pluginID, kindKey string, libraryID core.LibraryID, decl plugins.MediaKindMeta) {
+	if s == nil || s.db == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	var prevDone chan struct{}
+	if old, ok := s.reindexers[key]; ok && old != nil {
+		old.cancel()
+		prevDone = old.done
+	}
+	parent := s.bgCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	s.reindexers[key] = &syncWorker{cancel: cancel, done: done}
+	s.workersMu.Unlock()
+
+	isPG := store.DialectOf(s.db) == store.Postgres
+	go func() {
+		defer func() {
+			s.clearSyncProgressIfPhase(pluginID, kindKey, "reindexing")
+			s.workersMu.Lock()
+			if cur, ok := s.reindexers[key]; ok && cur.done == done {
+				delete(s.reindexers, key)
+			}
+			s.workersMu.Unlock()
+			close(done)
+		}()
+		if prevDone != nil {
+			<-prevDone
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.reindexKindChunked(ctx, isPG, pluginID, kindKey, libraryID, decl); err != nil && !errors.Is(err, context.Canceled) {
+			if s.log != nil {
+				s.log.Warn("background kind reindex failed", "plugin", pluginID, "kind", kindKey, "err", err)
+			}
+		}
+	}()
+}
+
+// reindexKindChunked rebuilds plugin_item_fields, FTS, and field tallies for one
+// kind in bounded upsertChunkSize transactions so the database write gate is
+// released between chunks.
+func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
+	totalItems, _ := s.countKindItems(ctx, pluginID, kindKey)
+	s.setSyncProgress(pluginID, kindKey, syncProgress{
+		running:    true,
+		phase:      "reindexing",
+		itemsTotal: totalItems,
+	})
+	defer s.clearSyncProgressIfPhase(pluginID, kindKey, "reindexing")
+
+	cursor := ""
+	processed := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		mu := s.kindLock(pluginID, kindKey)
+		mu.Lock()
+		n, nextCursor, done, err := s.reindexKindOneChunkLocked(ctx, isPG, pluginID, kindKey, fallbackLibID, decl, cursor)
+		mu.Unlock()
+		if err != nil {
+			return err
+		}
+		processed += n
+		cursor = nextCursor
+		s.setSyncProgress(pluginID, kindKey, syncProgress{
+			running:     true,
+			phase:       "reindexing",
+			syncedItems: processed,
+			itemsTotal:  max(totalItems, processed),
+		})
+		if done {
+			break
+		}
+	}
+
+	mu := s.kindLock(pluginID, kindKey)
+	mu.Lock()
+	defer mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	dialect := store.SQLite
+	if isPG {
+		dialect = store.Postgres
+	}
+	if hasTableTx(ctx, tx, dialect, "plugin_item_field_tally") {
+		if err := rebuildKindFieldTallyTx(ctx, tx, pluginID, kindKey, fallbackLibID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
+		currentFTSVersion, pluginID, kindKey); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.syncGen.Add(1)
+	return nil
+}
+
+func (s *Service) reindexKindOneChunkLocked(ctx context.Context, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta, cursor string) (int, string, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, cursor, false, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT item_ref, seq, library_id, title, fields
+FROM plugin_items
+WHERE plugin_id = ? AND kind_key = ? AND item_ref > ?
+ORDER BY item_ref ASC
+LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
+	if err != nil {
+		return 0, cursor, false, err
+	}
+	var batch []reindexItemRow
+	for rows.Next() {
+		var r reindexItemRow
+		var libID int64
+		if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.title, &r.fieldsJSON); err != nil {
+			rows.Close()
+			return 0, cursor, false, err
+		}
+		if libID > 0 {
+			r.libraryID = core.LibraryID(libID)
+		} else {
+			r.libraryID = fallbackLibID
+		}
+		batch = append(batch, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, cursor, false, err
+	}
+	rows.Close()
+	if len(batch) == 0 {
+		return 0, cursor, true, nil
+	}
+	for _, r := range batch {
+		indexed, searchFields, searchPeople := extractIndexData(decl, r.fieldsJSON)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, r.itemRef); err != nil {
+			return 0, cursor, false, err
+		}
+		for _, fv := range indexed {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+				r.itemRef, fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
+				return 0, cursor, false, err
+			}
+		}
+		if isPG {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_items
+SET search_tsv = setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
+WHERE item_ref = ?`,
+				r.title, searchFields, searchPeople, r.itemRef); err != nil {
+				return 0, cursor, false, err
+			}
+		} else {
+			if err := sqliteIndexFTS(ctx, tx, r.seq, core.ItemRef(r.itemRef), r.libraryID, r.title, searchFields, searchPeople); err != nil {
+				return 0, cursor, false, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, cursor, false, err
+	}
+	nextCursor := batch[len(batch)-1].itemRef
+	return len(batch), nextCursor, len(batch) < upsertChunkSize, nil
 }
 
 type reindexItemRow struct {
@@ -1038,11 +1292,12 @@ func extractIndexData(decl plugins.MediaKindMeta, fieldsJSON string) ([]IndexedF
 			continue
 		}
 		indexed = append(indexed, vals...)
-		if fdecl.Type == "people" {
+		if isPeopleIndexedField(fdecl) {
 			if len(texts) > 0 {
 				peopleParts = append(peopleParts, strings.Join(texts, " "))
 			}
-		} else if searchFieldSet[k] && len(texts) > 0 {
+		}
+		if fdecl.Type != "people" && searchFieldSet[k] && len(texts) > 0 {
 			searchParts = append(searchParts, strings.Join(texts, " "))
 		}
 	}
@@ -1288,7 +1543,7 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
 // bumpKindSyncStateTx records a new generation and the kind's item
 // count from the per-level tally (maintained in the same transactions as
 // the items), never a COUNT(*) over the kind's items (#646).
-func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, libraryID core.LibraryID, nowUnix int64) (int64, error) {
+func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, libraryID core.LibraryID, nowUnix int64, markOK bool) (int64, error) {
 	var totalItems int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ?`,
@@ -1296,6 +1551,16 @@ func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID,
 		return 0, err
 	}
 	gen := int64(s.syncGen.Add(1))
+	if !markOK {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_sync_state(plugin_id, kind_key, generation, last_started, last_ok, last_error, items)
+VALUES(?, ?, ?, 0, 0, '', ?)
+ON CONFLICT(plugin_id, kind_key) DO UPDATE SET
+	generation = excluded.generation,
+	items      = excluded.items`,
+			pluginID, kindKey, gen, totalItems)
+		return totalItems, err
+	}
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO plugin_sync_state(plugin_id, kind_key, generation, last_started, last_ok, last_error, items)
 VALUES(?, ?, ?, 0, ?, '', ?)
@@ -1355,7 +1620,7 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 		return err
 	}
 	if bumpGen {
-		if _, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, s.now().Unix()); err != nil {
+		if _, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, s.now().Unix(), true); err != nil {
 			return err
 		}
 	}
@@ -1731,6 +1996,15 @@ WHERE plugin_id = ? AND kind_key = ?`, pluginID, kindKey).Scan(
 	}
 	if lastOK > 0 {
 		st.LastOK = time.Unix(lastOK, 0).UTC()
+	}
+	if prog, ok := s.getSyncProgress(pluginID, kindKey); ok && prog.running {
+		st.Running = true
+		st.Phase = prog.phase
+		st.SyncedItems = prog.syncedItems
+		st.Pages = prog.pages
+		if int64(prog.itemsTotal) > st.Items {
+			st.Items = int64(prog.itemsTotal)
+		}
 	}
 	return st, nil
 }

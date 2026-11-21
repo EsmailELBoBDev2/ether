@@ -28,7 +28,7 @@ type upsertChunkResult struct {
 // rewritten — no plugin_items index churn, no FTS replace, no field or
 // art delete/reinsert — only their seen bookkeeping is refreshed, in one
 // statement, and only when it would change.
-func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen bool) (upsertChunkResult, error) {
+func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen, markOK bool) (upsertChunkResult, error) {
 	var res upsertChunkResult
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -270,7 +270,7 @@ INSERT INTO plugin_items(
 		return res, err
 	}
 	if bumpGen {
-		total, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, nowUnix)
+		total, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, nowUnix, markOK)
 		if err != nil {
 			return res, err
 		}

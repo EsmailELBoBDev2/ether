@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -38,6 +39,12 @@ func IsTextSubtitle(codec string) bool { return transcode.IsTextSubtitle(codec) 
 
 func WithSubtitleSource(ctx context.Context, source string) context.Context {
 	return transcode.WithSubtitleSource(ctx, source)
+}
+
+// WithSubtitleReader hands a subtitle extraction the opened source, so an
+// indexed text track is read line by line instead of from the whole file.
+func WithSubtitleReader(ctx context.Context, open func() (io.ReaderAt, int64, func(), bool)) context.Context {
+	return transcode.WithSubtitleReader(ctx, open)
 }
 
 func HasQuirk(product, platform, device, model, version, name string) bool {

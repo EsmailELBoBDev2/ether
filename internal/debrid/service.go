@@ -16,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -758,6 +759,15 @@ func payloadKey(rel core.Release) string {
 		}
 		if rel.Target.AllowNonVideo {
 			k += "|allowNonVideo"
+		}
+		if rel.Target.Member != "" {
+			k += fmt.Sprintf("|member:%q", rel.Target.Member)
+		}
+		if rel.Target.MemberIndex != nil {
+			k += fmt.Sprintf("|memberIndex:%d", *rel.Target.MemberIndex)
+		}
+		if rel.Target.MIME != "" {
+			k += fmt.Sprintf("|mime:%s", nzb.NormalizeMIME(rel.Target.MIME))
 		}
 	}
 	return k

@@ -21,6 +21,13 @@ import (
 )
 
 func init() {
+	// v10: sealed derived secrets written by plugins (#660). Kept separate from
+	// plugins_settings.secrets so plugins can never overwrite owner-configured
+	// credentials and derived session tokens stay out of settings UI/caches.
+	store.Register("plugins", 10, `
+CREATE TABLE IF NOT EXISTS plugins_derived_secrets(plugin TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,expires_at INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(plugin,name));
+`)
+
 	// v9: pushed poster overlay badges owned by plugins (#594).
 	store.Register("plugins", 9, `
 CREATE TABLE IF NOT EXISTS plugin_poster_badges(plugin_id TEXT NOT NULL,set_key TEXT NOT NULL,title_key TEXT NOT NULL,labels_json TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(plugin_id,set_key,title_key));
@@ -472,6 +479,92 @@ func (s *storage) openSecret(plugin, name, stored string) (string, error) {
 	return plain, err
 }
 
+func derivedSealContext(plugin, name string) []string {
+	return []string{"plugins_derived_secrets", "secrets", plugin, name}
+}
+
+func (s *storage) sealDerivedSecret(plugin, name, plain string) (string, error) {
+	return config.SealWith(s.sealer, plain, derivedSealContext(plugin, name)...)
+}
+
+func (s *storage) openDerivedSecret(plugin, name, stored string) (string, error) {
+	plain, _, err := config.OpenWith(s.sealer, stored, derivedSealContext(plugin, name)...)
+	return plain, err
+}
+
+func (s *storage) derivedSecret(ctx context.Context, plugin, name string) (string, bool, error) {
+	var stored string
+	var expiresAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT value,expires_at FROM plugins_derived_secrets WHERE plugin=? AND name=?`, plugin, name).Scan(&stored, &expiresAt)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if expiresAt > 0 && s.now().Unix() >= expiresAt {
+		return "", false, nil
+	}
+	plain, err := s.openDerivedSecret(plugin, name, stored)
+	if err != nil {
+		return "", false, err
+	}
+	return plain, true, nil
+}
+
+func (s *storage) derivedSecretCount(ctx context.Context, plugin string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugins_derived_secrets WHERE plugin=? AND (expires_at=0 OR expires_at>?)`, plugin, s.now().Unix()).Scan(&n)
+	return n, err
+}
+
+func (s *storage) hasDerivedSecret(ctx context.Context, plugin, name string) (bool, error) {
+	var dummy int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM plugins_derived_secrets WHERE plugin=? AND name=?`, plugin, name).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *storage) putDerivedSecret(ctx context.Context, plugin, name, plain string, expiresAt int64) error {
+	sealed, err := s.sealDerivedSecret(plugin, name, plain)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plugins_derived_secrets(plugin,name,value,expires_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(plugin,name) DO UPDATE SET value=excluded.value,expires_at=excluded.expires_at,updated_at=excluded.updated_at`,
+		plugin, name, sealed, expiresAt, s.now().Unix())
+	return err
+}
+
+func (s *storage) deleteDerivedSecret(ctx context.Context, plugin, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM plugins_derived_secrets WHERE plugin=? AND name=?`, plugin, name)
+	return err
+}
+
+func (s *storage) allDerivedSecrets(ctx context.Context, plugin string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name,value FROM plugins_derived_secrets WHERE plugin=?`, plugin)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, stored string
+		if err := rows.Scan(&name, &stored); err != nil {
+			return nil, err
+		}
+		plain, err := s.openDerivedSecret(plugin, name, stored)
+		if err != nil {
+			return nil, err
+		}
+		if plain != "" {
+			out[name] = plain
+		}
+	}
+	return out, rows.Err()
+}
+
 // --- KV ---
 
 func (s *storage) kvUsed(ctx context.Context, plugin string) (int64, error) {
@@ -799,6 +892,17 @@ func (s *storage) redactKnown(ctx context.Context, plugin, value string) string 
 			value = strings.ReplaceAll(value, string(encoded[1:len(encoded)-1]), "[redacted]")
 		}
 	}
+	derived, err := s.allDerivedSecrets(ctx, plugin)
+	if err != nil {
+		return "[redacted]"
+	}
+	for _, secret := range derived {
+		value = strings.ReplaceAll(value, secret, "[redacted]")
+		encoded, _ := json.Marshal(secret)
+		if len(encoded) > 2 {
+			value = strings.ReplaceAll(value, string(encoded[1:len(encoded)-1]), "[redacted]")
+		}
+	}
 	return logredact.String(value)
 }
 
@@ -894,6 +998,7 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM onair_feed_values WHERE plugin=?`,
 		`DELETE FROM plugins_grants WHERE plugin=?`,
 		`DELETE FROM plugins_settings WHERE plugin=?`,
+		`DELETE FROM plugins_derived_secrets WHERE plugin=?`,
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
 		`DELETE FROM plugin_poster_badges WHERE plugin_id=?`,

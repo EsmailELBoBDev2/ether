@@ -449,8 +449,7 @@ func (i *instance) userImage(w http.ResponseWriter, r *http.Request) {
 		mediaBrowserError(w, r, http.StatusNotFound)
 		return
 	}
-	if len(tags) == 1 && tags[0] != "" {
-		i.host.ImageGrants.Serve(w, r, tags[0])
+	if len(tags) == 1 && tags[0] != "" && i.serveImageTag(w, r, tags[0]) {
 		return
 	}
 	v, token, err := i.authenticate(r)
@@ -502,8 +501,7 @@ func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tags := route.Query(r.URL.Query(), "tag")
-	if len(tags) == 1 && tags[0] != "" {
-		i.host.ImageGrants.Serve(w, r, tags[0])
+	if len(tags) == 1 && tags[0] != "" && i.serveImageTag(w, r, tags[0]) {
 		return
 	}
 	if len(tags) > 1 {
@@ -533,9 +531,9 @@ func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 //     anyone — and every unresolvable id — stays the same 404, so the
 //     anonymous path is not an oracle for restricted titles.
 //
-// A tag that is present but invalid never reaches here: it goes to
-// Serve and 404s there, so a forged tag cannot fall through to either
-// tag-less path.
+// A tag that is expired, invalid or forged falls back here once Serve
+// declines it. The tag carries no authority of its own, so the request is
+// authorized exactly as the same URL without a tag would be.
 func (i *instance) serveTaglessImage(w http.ResponseWriter, r *http.Request) {
 	wireID, imageType := r.PathValue("itemId"), r.PathValue("imageType")
 	index := 0
@@ -784,3 +782,46 @@ func (i *instance) itemImages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(images)
 }
+
+// serveImageTag serves a tagged image request through its grant and reports
+// whether the grant answered. Jellyfin treats tag as a cache-buster: clients
+// cache item rows (and their tags) for hours, so an expired, invalid or
+// forged tag is not a refusal. The caller then authorizes the request as
+// the tag-less URL.
+func (i *instance) serveImageTag(w http.ResponseWriter, r *http.Request, tag string) bool {
+	miss := &grantMissWriter{ResponseWriter: w}
+	i.host.ImageGrants.Serve(miss, r, tag)
+	if !miss.missed {
+		return true
+	}
+	for _, key := range []string{"Content-Type", "Content-Length", "X-Content-Type-Options", "Cache-Control"} {
+		w.Header().Del(key)
+	}
+	return false
+}
+
+// grantMissWriter passes a grant's response through unless the grant answers
+// 404, which it swallows so the caller can fall back.
+type grantMissWriter struct {
+	http.ResponseWriter
+	missed, wrote bool
+}
+
+func (w *grantMissWriter) WriteHeader(code int) {
+	if !w.wrote && code == http.StatusNotFound {
+		w.missed = true
+		return
+	}
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *grantMissWriter) Write(b []byte) (int, error) {
+	if w.missed {
+		return len(b), nil
+	}
+	w.wrote = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *grantMissWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,19 +36,27 @@ type startRequest struct {
 				ASSStyling      bool `json:"ass_styling"`
 				FontAttachments bool `json:"font_attachments"`
 				SidecarText     bool `json:"sidecar_text"`
+				// NativeEmbedded lists the container/codec pairs the player
+				// demuxes and renders itself from the original file.
+				NativeEmbedded []struct {
+					Container string   `json:"container"`
+					Codecs    []string `json:"codecs"`
+					Identity  string   `json:"track_identity"`
+				} `json:"native_embedded"`
 			} `json:"subtitles"`
 		} `json:"deliveries"`
 	} `json:"client_playback_context"`
-	FileID           string  `json:"file_id"`
-	ProfileID        string  `json:"profile_id"`
-	InstallationID   string  `json:"installation_id"`
-	Attempt          string  `json:"playback_attempt_id"`
-	Protocol         int     `json:"protocol_version"`
-	Quality          string  `json:"quality_preference"`
-	Position         float64 `json:"start_position"`
-	Audio            *int    `json:"audio_track_index"`
-	Subtitle         *int    `json:"subtitle_track_index"`
-	SubtitleFidelity string  `json:"subtitle_fidelity_preference"`
+	Features         []string `json:"client_features"`
+	FileID           string   `json:"file_id"`
+	ProfileID        string   `json:"profile_id"`
+	InstallationID   string   `json:"installation_id"`
+	Attempt          string   `json:"playback_attempt_id"`
+	Protocol         int      `json:"protocol_version"`
+	Quality          string   `json:"quality_preference"`
+	Position         float64  `json:"start_position"`
+	Audio            *int     `json:"audio_track_index"`
+	Subtitle         *int     `json:"subtitle_track_index"`
+	SubtitleFidelity string   `json:"subtitle_fidelity_preference"`
 	Capabilities     struct {
 		Video      []string `json:"codecs_video"`
 		Audio      []string `json:"codecs_audio"`
@@ -90,6 +99,9 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	// A server HLS stream carries the selected embedded text track as a WebVTT
+	// rendition, read with the picture instead of extracted from the file.
+	cap.Client.HLSTextRenditions = slices.Contains(b.Features, "hls_subtitle_renditions_v1")
 	scope := frontend.VersionScope{Viewer: v, Device: d, Protocol: "silo", Caps: cap.Client}
 	// A channel GUID or live channel file_id tunes through the same live
 	// session as Jellyfin and Plex instead of a catalogue file.
@@ -343,6 +355,27 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	subtitle := map[string]any{"mode": "off"}
 	ordinal := 0
 	audioOrdinal := 0
+	// Original-file playback demuxes every embedded track in the player
+	// (embedded_subtitles_v1). A track it renders natively needs no server
+	// artifact: the plan names its stream and the subtitle is on screen as
+	// soon as the video is, with no whole-file extraction.
+	native := func(track frontend.StreamInfo) bool {
+		if format != frontend.StreamDirect || track.External || track.ExternalURL != "" || !slices.Contains(b.Features, "embedded_subtitles_v1") {
+			return false
+		}
+		return b.nativeEmbedded(plan.Media.Container, track.Codec)
+	}
+	// hls_subtitle_renditions_v1 covers a transcode; a copy remux needs
+	// hls_remux_subtitle_renditions_v1 as well.
+	hlsRendition := func(track frontend.StreamInfo) map[string]any {
+		if format != frontend.StreamHLS || liveFile || track.External || !cap.Client.HLSTextRenditions || (delivery == "server_remux_hls" && !slices.Contains(b.Features, "hls_remux_subtitle_renditions_v1")) {
+			return nil
+		}
+		if _, err := i.host.Sessions.SubtitleURL(r.Context(), access, session.ID, track.Index, "hls"); err != nil {
+			return nil
+		}
+		return map[string]any{"group_id": frontend.HLSTextRenditionGroup, "name": frontend.HLSTextRenditionName(track.Title, track.Language, track.Index), "format": "vtt", "mime_type": "text/vtt"}
+	}
 	for _, track := range plan.Media.Streams {
 		if track.Type == "audio" {
 			if track.Index == plan.Decision.AudioStream {
@@ -378,12 +411,30 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 				entry["font_bundle_url"] = "/api/v2/stream/" + session.ID + "/subtitles/" + strconv.Itoa(track.Index) + "/fonts"
 			}
 		}
+		nativeTrack := native(track)
+		if url, ok := entry["url"].(string); ok && nativeTrack {
+			// The player switches to this stream in its own demux; the row
+			// names it on the URL, where the inventory schema allows it.
+			sep := "?"
+			if strings.Contains(url, "?") {
+				sep = "&"
+			}
+			entry["url"] = url + sep + "embedded_stream_index=" + strconv.Itoa(track.Index)
+		}
 		inventory = append(inventory, entry)
 		if track.Index == plan.Decision.SubtitleStream {
 			selected["subtitle"] = map[string]any{"id": trackID, "index": ordinal}
 			if plan.Decision.BurnSubtitles {
 				subtitle["mode"] = "burn_in"
 				subtitle["track_id"] = trackID
+			} else if nativeTrack {
+				subtitle["mode"] = "render"
+				subtitle["track_id"] = trackID
+				subtitle["embedded"] = map[string]any{"stream_index": track.Index}
+			} else if rendition := hlsRendition(track); rendition != nil {
+				subtitle["mode"] = "convert"
+				subtitle["track_id"] = trackID
+				subtitle["hls_rendition"] = rendition
 			} else if url, e := entry["url"].(string); e {
 				if preserveTrackASS {
 					subtitle["mode"] = "render"
@@ -453,7 +504,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		}
 		output["livePolicy"] = live.LatencyPolicy()
 	}
-	document := map[string]any{"outcome": "playable", "protocol_version": 3, "server_features": []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"}, "session_id": session.ID, "playback_plan": output}
+	document := map[string]any{"outcome": "playable", "protocol_version": 3, "server_features": siloServerFeatures, "session_id": session.ID, "playback_plan": output}
 	i.rememberPlan(session.ID, playbackPlan{format: format, live: liveFile, baseID: plan.ID, delivery: delivery, requireAuthored: requireAuthoredFidelity, body: document})
 	reply(w, 201, document)
 }
@@ -821,7 +872,7 @@ func (i *instance) playbackCapabilities(w http.ResponseWriter, r *http.Request) 
 	if !allowed {
 		state = "not_configured"
 	}
-	features := []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"}
+	features := slices.Clone(siloServerFeatures)
 	if i.host.WatchParty != nil {
 		features = append(features, "watch_party_coordinator_v1", "fixed_media_file_v1")
 	}
@@ -974,7 +1025,9 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 			siloAdaptationUnavailable(w, id)
 			return
 		}
-		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: chosen.format, Position: pos}); err != nil {
+		// The transcode rung must encode: the copy it replaces is what the
+		// player refused, and serving that stream again only fails again.
+		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: chosen.format, Position: pos, ReencodeVideo: chosen.delivery == "server_transcode_hls"}); err != nil {
 			if errors.Is(err, frontend.ErrNotAvailable) {
 				siloAdaptationUnavailable(w, id)
 				return
@@ -1000,6 +1053,9 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 	plan["plan_id"] = nextKey
 	plan["plan_attempt_key"] = nextKey
 	plan["delivery"] = nextDelivery
+	if nextDelivery != "original_http" {
+		withoutNativeSubtitles(plan)
+	}
 	if nextReason != "" {
 		plan["decision_reason"] = nextReason
 	}
@@ -1050,7 +1106,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 func siloAdaptationUnavailable(w http.ResponseWriter, sessionID string) {
 	reply(w, http.StatusOK, map[string]any{
 		"protocol_version": 3,
-		"server_features":  []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"},
+		"server_features":  siloServerFeatures,
 		"outcome":          "adaptation_unavailable",
 		"session_id":       sessionID,
 		"terminal": map[string]any{
@@ -1191,3 +1247,86 @@ func (i *instance) playbackRoutes() error {
 	}
 	return nil
 }
+
+// nativeEmbedded reports whether the client declared that it renders codec
+// from container itself during original-file playback.
+func (b startRequest) nativeEmbedded(container, codec string) bool {
+	d, ok := b.Context.Deliveries["original_http"]
+	if !ok {
+		return false
+	}
+	container = siloContainerName(container)
+	codec = siloSubtitleCodecName(codec)
+	for _, n := range d.Subtitles.NativeEmbedded {
+		if (n.Identity != "" && n.Identity != "ffmpeg_stream_index") || siloContainerName(n.Container) != container {
+			continue
+		}
+		for _, c := range n.Codecs {
+			if siloSubtitleCodecName(c) == codec {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func siloContainerName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "matroska" || strings.HasPrefix(name, "matroska,") {
+		return "mkv"
+	}
+	return name
+}
+
+// siloSubtitleCodecName is the FFmpeg codec name the client compares with.
+func siloSubtitleCodecName(codec string) string {
+	switch codec = strings.ToLower(strings.TrimSpace(codec)); codec {
+	case "srt":
+		return "subrip"
+	case "vtt":
+		return "webvtt"
+	case "tx3g":
+		return "mov_text"
+	case "pgs", "pgssub":
+		return "hdmv_pgs_subtitle"
+	case "dvdsub", "vobsub":
+		return "dvd_subtitle"
+	case "dvbsub":
+		return "dvb_subtitle"
+	}
+	return codec
+}
+
+// withoutNativeSubtitles turns a plan's player-rendered embedded subtitle
+// into its sidecar artifact when the delivery leaves the original file: only
+// original-file playback demuxes embedded tracks in the player.
+func withoutNativeSubtitles(plan map[string]any) {
+	subtitle, _ := plan["subtitle"].(map[string]any)
+	if subtitle == nil {
+		return
+	}
+	inventory, _ := subtitle["inventory"].([]any)
+	if _, embedded := subtitle["embedded"]; !embedded {
+		return
+	}
+	delete(subtitle, "embedded")
+	trackID, _ := subtitle["track_id"].(string)
+	for _, raw := range inventory {
+		row, _ := raw.(map[string]any)
+		if url, ok := row["url"].(string); ok && row["track_id"] == trackID && strings.Contains(url, ".vtt") {
+			subtitle["mode"] = "convert"
+			subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
+			return
+		}
+	}
+	subtitle["mode"] = "off"
+	delete(subtitle, "track_id")
+	if selected, ok := plan["selected_tracks"].(map[string]any); ok {
+		delete(selected, "subtitle")
+	}
+}
+
+// siloServerFeatures are the playback features every plan document declares.
+// The subtitle rendition features tell the player that a server HLS stream
+// can carry its embedded text track (transcode and copy remux alike).
+var siloServerFeatures = []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1", "hls_subtitle_renditions_v1", "hls_remux_subtitle_renditions_v1"}

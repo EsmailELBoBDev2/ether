@@ -93,6 +93,7 @@ type PluginFacetPerson struct {
 // PluginFacetPeoplePage is one page of people for a plugin library's people tab.
 type PluginFacetPeoplePage struct {
 	Items []PluginFacetPerson
+	Total int
 	More  bool
 }
 
@@ -665,7 +666,15 @@ func (s *Service) pluginBrowseQuery(ctx context.Context, v *core.User, lib core.
 }
 
 func pluginCursorPrefix(scope string, q frontend.ItemQuery) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%v|%v|%v|%v|%v|%+v", scope, q.Level, q.Sort, q.Desc, q.Recursive, q.Types, q.UnservedTypes, q.ExcludedTypes, q.Filter)))
+	watched := "any"
+	if q.Watched != nil {
+		if *q.Watched {
+			watched = "played"
+		} else {
+			watched = "unplayed"
+		}
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%v|%v|%v|%v|%v|%s|%+v", scope, q.Level, q.Sort, q.Desc, q.Recursive, q.Types, q.UnservedTypes, q.ExcludedTypes, watched, q.Filter)))
 	return hex.EncodeToString(sum[:16]) + "|"
 }
 
@@ -873,8 +882,9 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 	}
 
 	// Children carries no ItemQuery to the store, so its SQL page can only
-	// be trusted when no viewer predicate would filter it in process.
-	if v != nil && pluginQuerySQLReady(q) && len(q.ExcludedTypes) == 0 && len(q.UnservedTypes) == 0 && q.Watched == nil && v.MaxContentRating == "" && q.Filter.MaxContentRating == "" &&
+	// be trusted when no viewer predicate or type/level filter would filter it in process.
+	if v != nil && pluginQuerySQLReady(q) && q.Level == "" && len(q.Types) == 0 && len(q.UnservedTypes) == 0 && len(q.ExcludedTypes) == 0 &&
+		q.Watched == nil && v.MaxContentRating == "" && q.Filter.MaxContentRating == "" &&
 		len(q.Filter.ExcludeKeys) == 0 && len(q.Filter.ExcludeGenres) == 0 && s.pluginPolicyPassive(v) && q.Sort == "" && q.Limit > 0 {
 		prefix := pluginCursorPrefix("child:"+parent.String(), q)
 		cursor := ""
@@ -1344,6 +1354,21 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 	return frontend.FacetCollectionPage{Items: items, More: raw.More}, nil
 }
 
+// isArtistStringFacet reports whether a plugin view facet carries artist
+// credits using string/strings type (e.g. Deezer's "artists" facet) rather
+// than type:"people".
+func isArtistStringFacet(f frontend.ViewFacet) bool {
+	if f.Type != "string" && f.Type != "strings" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(f.ID)) {
+	case "artist", "artists", "album_artist", "album_artists", "albumartist", "albumartists":
+		return true
+	default:
+		return false
+	}
+}
+
 // LibraryFacetPeople implements frontend.LibraryFacetPeople.
 func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetPersonPage, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
@@ -1363,7 +1388,7 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 		p, _ := pres.Presentation(ctx, lib)
 		declaredPeople := false
 		for _, f := range p.Facets {
-			if f.ID == field && f.Type == "people" {
+			if f.ID == field && (f.Type == "people" || isArtistStringFacet(f)) {
 				declaredPeople = true
 				break
 			}
@@ -1390,10 +1415,34 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 				continue
 			}
 			var artKey core.RatingKey
+			var images []frontend.Image
 			if entry.SampleTitle != nil {
 				piv := PluginItemView{Library: lib, Title: *entry.SampleTitle}
 				if s.pluginItemAllowed(ctx, v, piv) {
 					artKey = entry.SampleTitle.Key
+					if entry.HasThumb {
+						for _, group := range [][]core.Person{entry.SampleTitle.Cast, entry.SampleTitle.Directors, entry.SampleTitle.Writers, entry.SampleTitle.Crew} {
+							for _, p := range group {
+								if p.TMDB == entry.PersonID && p.ThumbPath != "" {
+									images = append(images, frontend.Image{
+										Kind:    frontend.ImagePerson,
+										Path:    p.ThumbPath,
+										Subject: "tmdb:" + strconv.FormatInt(p.TMDB, 10),
+									})
+									break
+								}
+							}
+							if len(images) > 0 {
+								break
+							}
+						}
+					}
+					if entry.SampleTitle.PosterPath != "" {
+						images = append(images, frontend.Image{
+							Kind: frontend.ImagePoster,
+							Path: entry.SampleTitle.PosterPath,
+						})
+					}
 				}
 			}
 			items = append(items, frontend.FacetPerson{
@@ -1402,11 +1451,12 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 					Name:        entry.Name,
 					TMDB:        entry.PersonID,
 					ArtworkItem: artKey,
+					Images:      images,
 				},
 				ItemCount: entry.Count,
 			})
 		}
-		return frontend.FacetPersonPage{Items: items, More: raw.More}, nil
+		return frontend.FacetPersonPage{Items: items, Total: raw.Total, More: raw.More}, nil
 	}
 
 	canonFacet, ok := core.NormalizeCatalogueTabFacet(core.TabPeople, field)

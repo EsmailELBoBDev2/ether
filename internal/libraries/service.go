@@ -28,6 +28,9 @@ var allowedMediaBrowserItemTypes = map[string]bool{
 	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
 
+// ValidatePresentations validates stored or API-supplied protocol presentations.
+func ValidatePresentations(p core.Presentations) error { return validatePresentations(p) }
+
 func validatePresentations(p core.Presentations) error {
 	if p.Vela != nil {
 		switch p.Vela.Type {
@@ -328,9 +331,7 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 	// Vela unless the plugin says otherwise, set once when the library is
 	// created; the owner can switch it off in Show in apps.
 	if t := inferVelaType(decl.Present); t != "" {
-		decl.Present.Vela = &struct {
-			Type string `json:"type"`
-		}{Type: t}
+		decl.Present.Vela = &core.VelaPresentation{Type: t}
 	}
 	existing, err := s.libraryForPluginKind(ctx, pluginID, kindKey)
 	if err == nil {
@@ -423,6 +424,35 @@ func (s *Service) SetPresent(ctx context.Context, id core.LibraryID, p core.Pres
 		return err
 	}
 	return s.setColumn(ctx, id, "present", string(b))
+}
+
+// SetPresentAndOverrides atomically saves the effective Presentations and
+// sticky per-app owner overrides for library id.
+func (s *Service) SetPresentAndOverrides(ctx context.Context, id core.LibraryID, p core.Presentations, overrides core.PresentationOverrides) error {
+	if err := validatePresentations(p); err != nil {
+		return err
+	}
+	pb, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	ob := []byte("{}")
+	if !overrides.IsEmpty() {
+		ob, err = json.Marshal(overrides)
+		if err != nil {
+			return err
+		}
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE libraries SET present=?, present_overrides=?, updated_at=? WHERE id=?`,
+		string(pb), string(ob), s.now().Unix(), int64(id))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return core.ErrNotFound
+	}
+	s.gen.Add(1)
+	return nil
 }
 
 // SetCardShape sets the owner-chosen card shape ("", "poster", "landscape", or

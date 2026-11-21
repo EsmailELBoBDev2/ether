@@ -42,13 +42,11 @@ func validMediaKind() MediaKindMeta {
 		},
 		Art: []KindArt{{Role: "waveform", Label: "Waveform"}},
 		Present: core.Presentations{
-			Plex: &struct {
-				Base string `json:"base"`
-			}{Base: "show"},
-			MediaBrowser: &struct {
-				CollectionType string            `json:"collectionType"`
-				ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-			}{CollectionType: "music", ItemTypes: map[string]string{"album": "MusicAlbum", "track": "Audio"}},
+			Plex: &core.PlexPresentation{Base: "show"},
+			MediaBrowser: &core.MediaBrowserPresentation{
+				CollectionType: "music",
+				ItemTypes:      map[string]string{"album": "MusicAlbum", "track": "Audio"},
+			},
 		},
 		Browse: KindBrowseDecl{Sorts: []string{"title", "added"}, Facets: []string{"genre"}, Search: true, SearchFields: []string{"recordist"}},
 		Sync:   KindSyncDecl{Mode: KindSyncPull, Refresh: "1h"},
@@ -91,21 +89,35 @@ func TestContentManifestValidates(t *testing.T) {
 	// Vela-only presentation (movies on 1 level, shows on >=2 levels) validates.
 	m = contentManifest()
 	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{
-		Vela: &struct {
-			Type string `json:"type"`
-		}{Type: "shows"},
+		Vela: &core.VelaPresentation{Type: "shows"},
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("vela shows kind: %v", err)
 	}
 	m.Ether.Contributes.MediaKinds[0].Levels = []KindLevel{{Key: "film", Label: "Film", Playable: true}}
 	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{
-		Vela: &struct {
-			Type string `json:"type"`
-		}{Type: "movies"},
+		Vela: &core.VelaPresentation{Type: "movies"},
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("vela movies flat kind: %v", err)
+	}
+	// Empty present validates: Ether infers per-app presentations from kind media/roles/shape.
+	m = contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Media = "music"
+	m.Ether.Contributes.MediaKinds[0].Levels[0].Role = "album"
+	m.Ether.Contributes.MediaKinds[0].Levels[1].Role = "track"
+	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("inferred presentation with media+roles: %v", err)
+	}
+	// Manifest default-off hint without repeating inferred type validates.
+	off := false
+	m = contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{
+		Stremio: &core.StremioPresentation{Default: &off},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("default-off hint: %v", err)
 	}
 	// Adapter-only presentation with the adapter declared.
 	m = contentManifest()
@@ -316,22 +328,19 @@ func TestContentManifestRules(t *testing.T) {
 		}, "browse.searchFields[0]"},
 		{"search fields without search", func(m *Manifest) { kind(m).Browse.Search = false }, "browse.search"},
 		{"builtin art role", func(m *Manifest) { kind(m).Art[0].Role = "poster" }, "art[0].role"},
-		{"no presentation", func(m *Manifest) { kind(m).Present = core.Presentations{} }, ".present"},
+		{"invalid media class", func(m *Manifest) { kind(m).Media = "games" }, ".media"},
+		{"invalid level role", func(m *Manifest) { kind(m).Levels[0].Role = "chapter" }, ".levels[0].role"},
 		{"adapter only without adapter", func(m *Manifest) {
 			kind(m).Present = core.Presentations{AdapterOnly: true}
 		}, ".present.adapterOnly"},
 		{"vela shows one level", func(m *Manifest) {
 			kind(m).Levels = []KindLevel{{Key: "track", Label: "Track", Playable: true}}
 			kind(m).Present = core.Presentations{
-				Vela: &struct {
-					Type string `json:"type"`
-				}{Type: "shows"},
+				Vela: &core.VelaPresentation{Type: "shows"},
 			}
 		}, "present.vela.type"},
 		{"vela bad type", func(m *Manifest) {
-			kind(m).Present.Vela = &struct {
-				Type string `json:"type"`
-			}{Type: "music"}
+			kind(m).Present.Vela = &core.VelaPresentation{Type: "music"}
 		}, "present.vela.type"},
 		{"plex show one level", func(m *Manifest) {
 			kind(m).Levels = []KindLevel{{Key: "track", Label: "Track", Playable: true}}

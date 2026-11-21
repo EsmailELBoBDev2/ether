@@ -122,6 +122,13 @@ func personPortrait(person frontend.PersonDetail) (frontend.Image, bool) {
 			return img, true
 		}
 	}
+	if person.KnownFor == "MusicArtist" {
+		for _, img := range person.Images {
+			if img.Kind == frontend.ImagePoster && img.Path != "" {
+				return img, true
+			}
+		}
+	}
 	return frontend.Image{}, false
 }
 
@@ -205,7 +212,16 @@ func (i *instance) issuePersonGrants(r *http.Request, people []frontend.PersonDe
 }
 
 func (i *instance) personItemDTO(person frontend.PersonDetail, grant string, img frontend.Image, detail bool) map[string]any {
-	dto := map[string]any{"Id": person.ID, "Name": person.Name, "Type": "Person", "ServerId": i.info.ID, "IsFolder": false}
+	itemType := "Person"
+	isFolder := false
+	if person.KnownFor == "MusicArtist" {
+		itemType = "MusicArtist"
+		isFolder = true
+	}
+	dto := map[string]any{"Id": person.ID, "Name": person.Name, "Type": itemType, "ServerId": i.info.ID, "IsFolder": isFolder}
+	if itemType == "MusicArtist" {
+		dto["SortName"] = person.Name
+	}
 	if grant != "" {
 		dto["ImageTags"] = map[string]string{"Primary": grant}
 		i.addImageMetadata(dto, "Primary", grant, img)

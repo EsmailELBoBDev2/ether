@@ -34,7 +34,8 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/Localization/Options", i.emptyOptionalArray},
 		{"/System/WakeOnLanInfo", i.emptyOptionalArray},
 		{"/Users/{userId}/HomeSections", i.homeSections},
-		{"/Artists", i.emptyOptionalItems}, {"/Artists/AlbumArtists", i.emptyOptionalItems},
+		{"/Artists", i.artists(false)}, {"/Artists/AlbumArtists", i.artists(true)},
+		{"/Artists/{name}", i.artistByName},
 		{"/Items/{id}/InstantMix", i.emptyItemCompanions},
 		{"/LiveTv/Timers", i.emptyOptionalItems}, {"/LiveTv/SeriesTimers", i.emptyOptionalItems},
 		{"/LiveTv/Recordings/Folders", i.emptyOptionalItems},
@@ -347,11 +348,14 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 	add("Resume", "")
 	add("NextUp", "")
 	for _, view := range views {
-		if view.Type != "movie" && view.Type != "show" {
+		if view.Type == "livetv" || view.Type == "boxsets" {
 			continue
 		}
 		n, err := ids.ParseDecimal(view.ID)
-		if err != nil {
+		if err != nil || ids.PersonalView(n) {
+			continue
+		}
+		if view.Type != "movie" && view.Type != "show" && view.KindKey == "" {
 			continue
 		}
 		id, err := ids.GUID(ids.View, n)

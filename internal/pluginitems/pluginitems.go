@@ -428,8 +428,14 @@ type Service struct {
 	locksMu   sync.Mutex
 	kindLocks map[string]*sync.Mutex
 
-	workersMu sync.Mutex
-	workers   map[string]*syncWorker
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+
+	workersMu    sync.Mutex
+	workers      map[string]*syncWorker
+	draining     map[string]chan struct{}
+	reindexers   map[string]*syncWorker
+	syncProgress map[string]syncProgress
 
 	stats *statsRefresher
 }
@@ -448,6 +454,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	if o.MaxPluginItems <= 0 {
 		o.MaxPluginItems = DefaultMaxPluginItems
 	}
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	s := &Service{
 		db:                db,
 		log:               o.Logger.With("component", "pluginitems"),
@@ -460,7 +467,12 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		maxPluginItems:    o.MaxPluginItems,
 		maxPluginItemsFor: o.MaxPluginItemsFor,
 		kindLocks:         map[string]*sync.Mutex{},
+		bgCtx:             bgCtx,
+		bgCancel:          bgCancel,
 		workers:           map[string]*syncWorker{},
+		draining:          map[string]chan struct{}{},
+		reindexers:        map[string]*syncWorker{},
+		syncProgress:      map[string]syncProgress{},
 	}
 	// Seed the sequence row if a test opened the table without data, and
 	// load the highest stored sync generation so PageFreshness never rewinds.
@@ -470,6 +482,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	if err := s.reindexPendingKinds(ctx); err != nil {
 		return nil, fmt.Errorf("pluginitems: reindex pending kinds: %w", err)
 	}
+	s.scheduleStaleArtistReindexes(ctx)
 	var maxGen int64
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation), 0) FROM plugin_sync_state`).Scan(&maxGen); err != nil {
 		return nil, fmt.Errorf("pluginitems: load sync generation: %w", err)

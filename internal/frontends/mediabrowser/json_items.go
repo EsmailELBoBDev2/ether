@@ -16,13 +16,19 @@ import (
 // image grants are appended per request, so a miss does not re-encode the
 // static fragment through reflection.
 
+type itemJSONGen struct {
+	catalog   uint64
+	libraries uint64
+	kindSync  uint64
+}
+
 type itemJSONCache struct {
 	mu    sync.Mutex
-	gen   uint64
+	gen   itemJSONGen
 	items map[string][]byte
 }
 
-func (c *itemJSONCache) get(gen uint64, key string) ([]byte, bool) {
+func (c *itemJSONCache) get(gen itemJSONGen, key string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.gen != gen || c.items == nil {
@@ -35,7 +41,7 @@ func (c *itemJSONCache) get(gen uint64, key string) ([]byte, bool) {
 	return frag, true
 }
 
-func (c *itemJSONCache) put(gen uint64, key string, frag []byte) {
+func (c *itemJSONCache) put(gen itemJSONGen, key string, frag []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.gen != gen || c.items == nil || len(c.items) >= 1024 {
@@ -55,9 +61,10 @@ func dynamicItemKey(key string) bool {
 }
 
 func (i *instance) replyItems(w http.ResponseWriter, r *http.Request, v any) {
-	gen := uint64(0)
+	var gen itemJSONGen
 	if i.host.PageFreshness != nil {
-		gen = i.host.PageFreshness().Catalog
+		f := i.host.PageFreshness()
+		gen = itemJSONGen{catalog: f.Catalog, libraries: f.Libraries, kindSync: f.KindSync}
 	}
 	lang := ""
 	if r != nil {
@@ -71,7 +78,7 @@ func (i *instance) replyItems(w http.ResponseWriter, r *http.Request, v any) {
 	jsonReply(w, v)
 }
 
-func (i *instance) encodeItemJSON(gen uint64, lang string, v any) ([]byte, bool) {
+func (i *instance) encodeItemJSON(gen itemJSONGen, lang string, v any) ([]byte, bool) {
 	switch body := v.(type) {
 	case []any:
 		list, ok := i.encodeItemList(gen, lang, body)
@@ -118,7 +125,7 @@ func (i *instance) encodeItemJSON(gen uint64, lang string, v any) ([]byte, bool)
 	return nil, false
 }
 
-func (i *instance) encodeItemList(gen uint64, lang string, items []any) ([]byte, bool) {
+func (i *instance) encodeItemList(gen itemJSONGen, lang string, items []any) ([]byte, bool) {
 	var buf bytes.Buffer
 	buf.WriteByte('[')
 	for n, raw := range items {
@@ -145,7 +152,7 @@ func (i *instance) encodeItemList(gen uint64, lang string, items []any) ([]byte,
 	return buf.Bytes(), true
 }
 
-func (i *instance) encodeItemObject(gen uint64, lang string, item map[string]any) ([]byte, bool) {
+func (i *instance) encodeItemObject(gen itemJSONGen, lang string, item map[string]any) ([]byte, bool) {
 	id, _ := item["Id"].(string)
 	static := make(map[string]any, len(item))
 	dynamic := map[string]any{}

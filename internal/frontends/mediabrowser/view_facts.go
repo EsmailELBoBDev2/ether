@@ -20,8 +20,14 @@ type indexedLibraryCounter interface {
 	IndexedLibraryCount(context.Context, *frontend.Viewer, string) (int, error)
 }
 
+type viewFactGen struct {
+	catalog   uint64
+	libraries uint64
+	kindSync  uint64
+}
+
 type viewFact struct {
-	gen   uint64
+	gen   viewFactGen
 	count int
 }
 
@@ -101,11 +107,12 @@ func (c *viewFactCache) store(key viewFactKey, fact viewFact) {
 	c.m[key] = fact
 }
 
-func (i *instance) viewFactKey(viewer *frontend.Viewer, viewID string) (viewFactKey, uint64, bool) {
+func (i *instance) viewFactKey(viewer *frontend.Viewer, viewID string) (viewFactKey, viewFactGen, bool) {
 	if i.host.PageFreshness == nil || viewer == nil {
-		return viewFactKey{}, 0, false
+		return viewFactKey{}, viewFactGen{}, false
 	}
 	sections := append([]frontend.LibraryID(nil), viewer.AllowedLibraries...)
 	slices.Sort(sections)
-	return viewFactKey{viewer: viewer.ID, view: viewID, rating: viewer.MaxContentRating, sections: fmt.Sprint(sections)}, i.host.PageFreshness().Catalog, true
+	f := i.host.PageFreshness()
+	return viewFactKey{viewer: viewer.ID, view: viewID, rating: viewer.MaxContentRating, sections: fmt.Sprint(sections)}, viewFactGen{catalog: f.Catalog, libraries: f.Libraries, kindSync: f.KindSync}, true
 }

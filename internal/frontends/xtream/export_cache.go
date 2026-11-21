@@ -34,7 +34,7 @@ func (i *instance) listRequest(r *http.Request, l login, kind string) (listcache
 	fresh := i.host.PageFreshness()
 	state := listcache.State{Catalog: fresh.Catalog, At: i.exports.Now()}
 	h := sha256.New()
-	fmt.Fprintf(h, "%d|%d|%d|%d|%d\n", fresh.Config, fresh.Accounts, fresh.Safety, fresh.Hidden, fresh.Images)
+	fmt.Fprintf(h, "%d|%d|%d|%d|%d|%d|%d\n", fresh.Config, fresh.Accounts, fresh.Safety, fresh.Hidden, fresh.Images, fresh.Libraries, fresh.KindSync)
 	for _, v := range views {
 		if string(v.Type) != kind || cat != "" && cat != v.ID {
 			continue

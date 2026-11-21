@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/events"
@@ -427,6 +428,112 @@ func (p *Preview) resolve() error {
 	return nil
 }
 
+// cachedSourceEntry holds a recently fetched remote package/manifest so a
+// PreviewInstall immediately followed by Install avoids downloading twice.
+type cachedSourceEntry struct {
+	raw     []byte
+	files   map[string][]byte
+	expires time.Time
+}
+
+const (
+	previewSourceCacheTTL = 2 * time.Minute
+	previewCheckCacheTTL  = 5 * time.Minute
+	previewSourceCacheMax = 8
+	previewCheckCacheMax  = 16
+)
+
+func previewSourceCacheKey(src Source) string {
+	if src.Kind != "url" && src.Kind != "catalogue" {
+		return ""
+	}
+	if strings.TrimSpace(src.URL) == "" {
+		return ""
+	}
+	return src.Kind + "\x00" + strings.TrimSpace(src.URL) + "\x00" + strings.ToLower(strings.TrimSpace(src.SHA256))
+}
+
+func (m *Manager) loadSourceCached(ctx context.Context, src Source) ([]byte, map[string][]byte, error) {
+	key := previewSourceCacheKey(src)
+	now := m.now()
+	if key != "" {
+		m.previewMu.Lock()
+		if entry, ok := m.sourceCache[key]; ok && now.Before(entry.expires) {
+			raw := append([]byte(nil), entry.raw...)
+			files := make(map[string][]byte, len(entry.files))
+			for k, v := range entry.files {
+				files[k] = append([]byte(nil), v...)
+			}
+			m.previewMu.Unlock()
+			return raw, files, nil
+		}
+		m.previewMu.Unlock()
+	}
+	raw, files, err := m.loadSource(ctx, src)
+	if err != nil {
+		return nil, nil, err
+	}
+	if key != "" {
+		rawCopy := append([]byte(nil), raw...)
+		filesCopy := make(map[string][]byte, len(files))
+		for k, v := range files {
+			filesCopy[k] = append([]byte(nil), v...)
+		}
+		m.previewMu.Lock()
+		if m.sourceCache == nil {
+			m.sourceCache = map[string]cachedSourceEntry{}
+		}
+		if len(m.sourceCache) >= previewSourceCacheMax {
+			for k, e := range m.sourceCache {
+				if !now.Before(e.expires) || len(m.sourceCache) >= previewSourceCacheMax {
+					delete(m.sourceCache, k)
+				}
+			}
+		}
+		m.sourceCache[key] = cachedSourceEntry{raw: rawCopy, files: filesCopy, expires: now.Add(previewSourceCacheTTL)}
+		m.previewMu.Unlock()
+	}
+	return raw, files, nil
+}
+
+func (m *Manager) checkPackageCached(ctx context.Context, raw []byte, files map[string][]byte) error {
+	if m.deps.CheckPackage == nil {
+		return nil
+	}
+	digest := pkgDigest(files)
+	if digest == "" {
+		digest = digestOf(raw)
+	}
+	now := m.now()
+	if digest != "" {
+		m.previewMu.Lock()
+		if exp, ok := m.checkedDigests[digest]; ok && now.Before(exp) {
+			m.previewMu.Unlock()
+			return nil
+		}
+		m.previewMu.Unlock()
+	}
+	if err := m.deps.CheckPackage(ctx, raw, files); err != nil {
+		return err
+	}
+	if digest != "" {
+		m.previewMu.Lock()
+		if m.checkedDigests == nil {
+			m.checkedDigests = map[string]time.Time{}
+		}
+		if len(m.checkedDigests) >= previewCheckCacheMax {
+			for k, exp := range m.checkedDigests {
+				if !now.Before(exp) || len(m.checkedDigests) >= previewCheckCacheMax {
+					delete(m.checkedDigests, k)
+				}
+			}
+		}
+		m.checkedDigests[digest] = now.Add(previewCheckCacheTTL)
+		m.previewMu.Unlock()
+	}
+	return nil
+}
+
 // PreviewInstall fetches and validates a source without installing it.
 func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, error) {
 	resolved, err := m.resolveCatalogueSource(ctx, src)
@@ -434,7 +541,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		return nil, err
 	}
 	src = resolved
-	raw, files, err := m.loadSource(ctx, src)
+	raw, files, err := m.loadSourceCached(ctx, src)
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +602,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 	// The conformance kit checks packages Ether runs; a plain Stremio add-on
 	// is a remote service whose manifest was validated above.
 	if m.deps.CheckPackage != nil && !man.IsStremioOnly() {
-		if err := m.deps.CheckPackage(ctx, raw, files); err != nil {
+		if err := m.checkPackageCached(ctx, raw, files); err != nil {
 			return nil, err
 		}
 	}
@@ -556,6 +663,11 @@ func mediaKindsOf(m Manifest) []MediaKindMeta {
 
 // Install installs (or updates to) a previewed source.
 func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) (Record, error) {
+	if key := previewSourceCacheKey(p.source); key != "" {
+		m.previewMu.Lock()
+		delete(m.sourceCache, key)
+		m.previewMu.Unlock()
+	}
 	man := p.Manifest
 	if cat := m.getCatalogue(); cat != nil {
 		if p.source.Kind == "catalogue" {

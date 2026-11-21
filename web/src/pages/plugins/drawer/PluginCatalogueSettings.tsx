@@ -51,9 +51,12 @@ export function PluginCatalogueSettings({
                 limit: formatNumber(lib.maxPluginItems, 0),
               })
             : "";
-        const status =
-          lib.sync?.lastError ??
-          (lib.sync?.lastOk ? formatDateTime(lib.sync.lastOk) : t("Not synced yet"));
+        const status = lib.sync?.running
+          ? lib.sync.phase === "reindexing"
+            ? t("Updating search index…")
+            : t("Syncing in background…")
+          : (lib.sync?.lastError ??
+            (lib.sync?.lastOk ? formatDateTime(lib.sync.lastOk) : t("Not synced yet")));
         return (
           <SettingsRow
             key={lib.id}

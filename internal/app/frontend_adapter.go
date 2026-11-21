@@ -90,9 +90,19 @@ func (a *App) buildAdapterController(registry *frontend.Registry) (*frontendadap
 	}
 	a.pluginsRT.adapterCtrl = ctrl
 	// OnSync fires for every already-installed plugin immediately, so the
-	// initial registration is the same call path as later changes.
-	a.pluginsRT.mgr.OnSync(func(ctx context.Context, _ plugins.Record) { a.syncAdapters(ctx) })
-	a.pluginsRT.mgr.OnRemove(func(ctx context.Context, _ string) { a.syncAdapters(ctx) })
+	// initial registration is the same call path as later changes. Skip the
+	// frontend lifecycle lock and reconcile when the synced plugin neither
+	// declares a frontend adapter nor affects any currently live adapter.
+	a.pluginsRT.mgr.OnSync(func(ctx context.Context, r plugins.Record) {
+		if r.Manifest.HasCapability(plugins.CapFrontendAdapter) || len(ctrl.Live()) > 0 {
+			a.syncAdapters(ctx)
+		}
+	})
+	a.pluginsRT.mgr.OnRemove(func(ctx context.Context, _ string) {
+		if len(ctrl.Live()) > 0 {
+			a.syncAdapters(ctx)
+		}
+	})
 	return ctrl, nil
 }
 

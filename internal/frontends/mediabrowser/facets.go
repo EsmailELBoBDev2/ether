@@ -45,16 +45,20 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 				return
 			}
 		}
+		queryKind := kind
+		if kind == "musicgenre" {
+			queryKind = "genre"
+		}
 		offset, limit := queryInt(r, "StartIndex", 0), queryInt(r, "Limit", 50)
 		var page []frontend.FacetValue
 		total := 0
 		if pager, ok := i.host.Experience.(frontend.FacetPager); ok {
 			// A page of names and their count, not every studio listed
 			// to slice fifty.
-			page, total, err = pager.FacetPage(r.Context(), v, device(r), facetView(r), kind, offset, limit)
+			page, total, err = pager.FacetPage(r.Context(), v, device(r), facetView(r), queryKind, offset, limit)
 		} else {
 			var facets []frontend.FacetValue
-			facets, err = i.host.Experience.Facets(r.Context(), v, device(r), facetView(r), kind)
+			facets, err = i.host.Experience.Facets(r.Context(), v, device(r), facetView(r), queryKind)
 			page, total = paging.Slice(facets, offset, limit), len(facets)
 		}
 		if err != nil {
@@ -63,7 +67,7 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 			return
 		}
 		items := make([]any, 0, len(page))
-		typeName := map[string]string{"genre": "Genre", "studio": "Studio", "person": "Person"}[kind]
+		typeName := map[string]string{"genre": "Genre", "musicgenre": "MusicGenre", "studio": "Studio", "person": "Person"}[kind]
 		for _, facet := range page {
 			items = append(items, map[string]any{"Id": facet.ID, "Name": facet.Title, "Type": typeName, "ServerId": i.info.ID})
 		}
@@ -110,9 +114,31 @@ func (i *instance) logFacetFailure(kind string, err error) {
 
 func (i *instance) resolveFilters(r *http.Request, v *frontend.Viewer, q *frontend.ItemQuery) error {
 	view := facetView(r)
-	for _, field := range []struct{ name, kind string }{{"GenreIds", "genre"}, {"StudioIds", "studio"}, {"PersonIds", "person"}} {
+	for _, field := range []struct {
+		name, kind string
+		allowKey   bool
+	}{
+		{"GenreIds", "genre", false},
+		{"StudioIds", "studio", false},
+		{"PersonIds", "person", false},
+		{"ArtistIds", "person", true},
+		{"AlbumArtistIds", "person", true},
+		{"ContributingArtistIds", "person", true},
+	} {
 		for _, value := range route.Query(r.URL.Query(), field.name) {
 			for _, id := range strings.Split(value, ",") {
+				id = strings.TrimSpace(id)
+				if id == "" {
+					continue
+				}
+				if field.allowKey {
+					// Hierarchical MusicArtist items carry a RatingKey GUID
+					// handled by artistParentKey in items(); skip person-facet
+					// resolution for those.
+					if _, e := ids.ParseRatingKeyGUID(id); e == nil {
+						continue
+					}
+				}
 				id, err := i.resolveNamedFacetWireID(r.Context(), field.kind, id)
 				if err != nil {
 					return err
@@ -136,6 +162,27 @@ func (i *instance) resolveFilters(r *http.Request, v *frontend.Viewer, q *fronte
 					}
 					q.Filter.Person = n
 				}
+			}
+		}
+	}
+	if q.Filter.Person == 0 {
+		for _, value := range route.Query(r.URL.Query(), "Artists") {
+			for _, name := range strings.Split(value, ",") {
+				name = strings.TrimSpace(name)
+				if name == "" {
+					continue
+				}
+				pid := frontend.PluginPersonID(name)
+				fid := frontend.FacetID("person", strconv.FormatInt(pid, 10))
+				facet, e := i.host.Experience.ResolveFacet(r.Context(), v, device(r), view, "person", fid)
+				if e != nil {
+					return e
+				}
+				n, e := strconv.ParseInt(facet.Key, 10, 64)
+				if e != nil || n <= 0 || (q.Filter.Person != 0 && q.Filter.Person != n) {
+					return strconv.ErrSyntax
+				}
+				q.Filter.Person = n
 			}
 		}
 	}

@@ -40,6 +40,16 @@ func (s *surfaceExperience) personArtwork(ctx context.Context, viewer *frontend.
 				}
 			}
 		}
+		if len(result.Images) == 0 && (person.KnownFor == "MusicArtist" || title.MBItemType == "MusicAlbum" || title.MBItemType == "Audio" || title.MBItemType == "MusicArtist") && s.artwork != nil {
+			if art, _, aErr := s.artwork.List(frontend.WithArtworkTitle(ctx, &title), frontend.ArtworkRequest{Viewer: current, Device: device, Item: credit.ArtworkItem}); aErr == nil {
+				for _, image := range art {
+					if image.Kind == frontend.ImagePoster && image.Path != "" {
+						result.Images = append(result.Images, image)
+						break
+					}
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -195,10 +205,22 @@ func (s *surfaceExperience) LibraryFacetPeople(ctx context.Context, viewer *fron
 				}
 			}
 			subject := "tmdb:" + strconv.FormatInt(credit.TMDB, 10)
+			foundPortrait := false
 			for _, image := range images {
 				if image.Kind == frontend.ImagePerson && image.Subject == subject && image.Path != "" {
 					res.Items[targetIdx].Person.Images = []frontend.Image{image}
+					foundPortrait = true
 					break
+				}
+			}
+			if !foundPortrait && (title.MBItemType == "MusicAlbum" || title.MBItemType == "Audio" || title.MBItemType == "MusicArtist") && s.artwork != nil {
+				if art, _, aErr := s.artwork.List(frontend.WithArtworkTitle(ctx, &title), frontend.ArtworkRequest{Viewer: current, Device: device, Item: title.Key}); aErr == nil {
+					for _, image := range art {
+						if image.Kind == frontend.ImagePoster && image.Path != "" {
+							res.Items[targetIdx].Person.Images = []frontend.Image{image}
+							break
+						}
+					}
 				}
 			}
 			return nil

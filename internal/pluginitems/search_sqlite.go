@@ -97,6 +97,7 @@ ORDER BY
 		ELSE 2
 	END ASC,
 	bm25(f.plugin_item_fts, 10.0, 2.0, 1.0) ASC,
+	i.rating DESC,
 	i.sort_title ASC,
 	i.item_ref ASC
 LIMIT ?`

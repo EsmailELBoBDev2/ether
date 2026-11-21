@@ -10,6 +10,7 @@ import (
 )
 
 func TestProjectFactsResolveI18nFieldLabelsAndKeepCleanSummary(t *testing.T) {
+	factTrue := true
 	decl := plugins.MediaKindMeta{
 		Key:   "book",
 		Label: "Books",
@@ -18,12 +19,18 @@ func TestProjectFactsResolveI18nFieldLabelsAndKeepCleanSummary(t *testing.T) {
 			{Key: "book", Label: "Book", Role: string(core.MediaRoleBook), Playable: true},
 		},
 		Fields: []plugins.KindField{
-			{Key: "authors", Type: "people", Label: "$t:field.authors"},
-			{Key: "publisher", Type: "string", Label: "$t:field.publisher"},
-			{Key: "imprint", Type: "string", Label: "$t:field.missing"},
-			{Key: "language", Type: "string", Label: "$t:field.recursive"},
-			{Key: "pages", Type: "int", Label: "Pages"},
-			{Key: "isbn", Type: "string", Label: ""},
+			{Key: "authors", Type: "people", Label: "$t:field.authors", Fact: &factTrue},
+			{Key: "publisher", Type: "string", Label: "$t:field.publisher", Fact: &factTrue},
+			{Key: "imprint", Type: "string", Label: "$t:field.missing", Fact: &factTrue},
+			{Key: "language", Type: "string", Label: "$t:field.recursive", Fact: &factTrue},
+			{Key: "pages", Type: "int", Label: "Pages", Fact: &factTrue},
+			{Key: "isbn", Type: "string", Label: "", Fact: &factTrue},
+			// Unmarked fields and internal IDs/popularity must NOT appear in MediaFacts.
+			{Key: "popularity", Type: "int", Label: "Popularity"},
+			{Key: "upc", Type: "string", Label: "UPC", Fact: &factTrue},
+			{Key: "decade", Type: "string", Label: "Era"},
+			{Key: "curation", Type: "string", Label: "Featured"},
+			{Key: "tagline_dup", Type: "string", Label: "Title Dup", Fact: &factTrue},
 		},
 	}
 	item := core.KindItem{
@@ -32,12 +39,17 @@ func TestProjectFactsResolveI18nFieldLabelsAndKeepCleanSummary(t *testing.T) {
 		Title:   "The Left Hand of Darkness",
 		Summary: "A classic novel.",
 		Fields: map[string]json.RawMessage{
-			"authors":   json.RawMessage(`["Ursula K. Le Guin"]`),
-			"publisher": json.RawMessage(`"Ace Books"`),
-			"imprint":   json.RawMessage(`"Ace Science Fiction"`),
-			"language":  json.RawMessage(`"English"`),
-			"pages":     json.RawMessage(`304`),
-			"isbn":      json.RawMessage(`"978-0441478125"`),
+			"authors":     json.RawMessage(`["Ursula K. Le Guin"]`),
+			"publisher":   json.RawMessage(`"Ace Books"`),
+			"imprint":     json.RawMessage(`"Ace Science Fiction"`),
+			"language":    json.RawMessage(`"English"`),
+			"pages":       json.RawMessage(`304`),
+			"isbn":        json.RawMessage(`"978-0441478125"`),
+			"popularity":  json.RawMessage(`998877`),
+			"upc":         json.RawMessage(`"886444889841"`),
+			"decade":      json.RawMessage(`"1960s"`),
+			"curation":    json.RawMessage(`"Classic"`),
+			"tagline_dup": json.RawMessage(`"The Left Hand of Darkness"`),
 		},
 	}
 
@@ -80,6 +92,14 @@ func TestProjectFactsResolveI18nFieldLabelsAndKeepCleanSummary(t *testing.T) {
 	}
 	if _, hasAuthors := facts["Authors"]; hasAuthors {
 		t.Errorf("people credit field should not be duplicated in MediaFacts: %+v", got.MediaFacts)
+	}
+	for _, forbidden := range []string{"Popularity", "UPC", "Era", "Featured", "Title Dup"} {
+		if _, leaked := facts[forbidden]; leaked {
+			t.Errorf("forbidden/unmarked fact %q leaked into MediaFacts: %+v", forbidden, got.MediaFacts)
+		}
+	}
+	if got.Popularity != 998877 {
+		t.Errorf("Popularity = %v, want 998877", got.Popularity)
 	}
 
 	// Calling Project without a resolver must still never emit "$t:" and must

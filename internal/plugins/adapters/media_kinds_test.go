@@ -175,7 +175,7 @@ func TestKindCatalogParentsSyntheticSeriesAndPartialContainerHydration(t *testin
 							map[string]any{"key": "series_number", "type": "string", "label": "Number"},
 							map[string]any{"key": "format", "type": "string", "label": "Format"},
 							map[string]any{"key": "pages", "type": "int", "label": "Pages"},
-							map[string]any{"key": "publisher", "type": "string", "label": "Publisher"},
+							map[string]any{"key": "publisher", "type": "string", "label": "Publisher", "fact": true},
 						},
 						"browse": map[string]any{"sorts": []string{"title", "index"}, "facets": []string{"series", "author"}},
 						"sync":   map[string]any{"mode": "push"},
@@ -294,8 +294,220 @@ func TestKindCatalogParentsSyntheticSeriesAndPartialContainerHydration(t *testin
 	if bk.MediaReading == nil || bk.MediaReading.Format != "epub" || bk.MediaReading.Pages != 96 {
 		t.Fatalf("book MediaReading = %+v", bk.MediaReading)
 	}
-	// Publisher is kept in facts; series/series_number/format/pages/author are NOT duplicated.
+	// Publisher is marked fact:true and kept; series/series_number/format/pages/author are NOT duplicated.
 	if len(bk.MediaFacts) != 1 || bk.MediaFacts[0].Label != "Publisher" || bk.MediaFacts[0].Value != "Orbit" {
 		t.Fatalf("book MediaFacts = %+v, want [Publisher: Orbit]", bk.MediaFacts)
+	}
+}
+
+func TestMusicFactsArtistReleaseOrderingAndExactSearchRanking(t *testing.T) {
+	h := newKindTestHarness(t, 0, nil)
+	ctx := context.Background()
+
+	const musicPlugin = "community.music-ranking"
+	musicMan := map[string]any{
+		"id":      musicPlugin,
+		"name":    "Music",
+		"version": "1.0.0",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Music test plugin",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"contributes": map[string]any{
+				"mediaKinds": []any{
+					map[string]any{
+						"key":     "music",
+						"label":   "Music",
+						"media":   "music",
+						"library": map[string]any{"name": "Music", "card": "square"},
+						"levels": []any{
+							map[string]any{"key": "artist", "label": "Artist", "role": "artist", "container": true},
+							map[string]any{"key": "album", "label": "Album", "role": "album", "container": true},
+							map[string]any{"key": "track", "label": "Track", "role": "track", "playable": true},
+						},
+						"fields": []any{
+							map[string]any{"key": "genres", "type": "strings", "label": "Genres", "indexed": true},
+							map[string]any{"key": "decade", "type": "enum", "label": "Era", "indexed": true, "enum": []string{"1970s", "1980s", "2010s", "2020s"}},
+							map[string]any{"key": "curation", "type": "strings", "label": "Featured", "indexed": true},
+							map[string]any{"key": "releaseType", "type": "enum", "label": "Release type", "indexed": true, "enum": []string{"album", "ep", "single", "compilation", "remix"}},
+							map[string]any{"key": "popularity", "type": "int", "label": "Popularity"},
+							map[string]any{"key": "artist", "type": "string", "label": "Artist"},
+							map[string]any{"key": "album", "type": "string", "label": "Album"},
+							map[string]any{"key": "label", "type": "string", "label": "Label", "fact": true},
+							map[string]any{"key": "tracks", "type": "int", "label": "Tracks"},
+							map[string]any{"key": "discs", "type": "int", "label": "Discs"},
+							map[string]any{"key": "upc", "type": "string", "label": "UPC", "fact": true},
+							map[string]any{"key": "parentEcho", "type": "string", "label": "Echo", "fact": true},
+						},
+						"browse": map[string]any{
+							"sorts":  []string{"title", "rating", "released"},
+							"facets": []string{"genres", "releaseType", "decade", "curation"},
+							"search": true,
+						},
+						"sync": map[string]any{"mode": "push"},
+					},
+				},
+			},
+		},
+	}
+
+	installStudioManifest(t, h.mgr, musicMan, nil)
+	var musicLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == musicPlugin {
+			musicLib = lib
+		}
+	}
+	if musicLib.ID == 0 {
+		t.Fatal("expected music library")
+	}
+
+	// Seed AC/DC with mixed release types inserted remix/B-side first, plus tribute & cover matches for "Back In Black".
+	if _, err := h.items.KindUpsert(ctx, musicPlugin, "music", []core.KindItem{
+		{
+			ID: "ar-acdc", Level: "artist", Title: "AC/DC", ChildCount: 5,
+			Fields: map[string]json.RawMessage{
+				"genres":     json.RawMessage(`["Rock"]`),
+				"decade":     json.RawMessage(`"1980s"`),
+				"curation":   json.RawMessage(`["Classic"]`),
+				"popularity": json.RawMessage(`5000000`),
+				"artist":     json.RawMessage(`"AC/DC"`),
+			},
+		},
+		{
+			ID: "al-remix", Level: "album", ParentID: "ar-acdc", Title: "Back In Black (Club Remixes)", Year: 2024, Released: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"remix"`)},
+		},
+		{
+			ID: "al-comp", Level: "album", ParentID: "ar-acdc", Title: "Greatest Hits", Year: 2023, Released: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"compilation"`)},
+		},
+		{
+			ID: "al-single", Level: "album", ParentID: "ar-acdc", Title: "Thunderstruck (Single)", Year: 1990, Released: time.Date(1990, 9, 10, 0, 0, 0, 0, time.UTC).Unix(),
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"single"`)},
+		},
+		{
+			ID: "al-ep", Level: "album", ParentID: "ar-acdc", Title: "74 Jailbreak", Year: 1984, Released: time.Date(1984, 10, 15, 0, 0, 0, 0, time.UTC).Unix(),
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"ep"`)},
+		},
+		{
+			ID: "al-hth", Level: "album", ParentID: "ar-acdc", Title: "Highway to Hell", Year: 1979, Released: time.Date(1979, 7, 27, 0, 0, 0, 0, time.UTC).Unix(),
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"album"`), "label": json.RawMessage(`"Atlantic"`)},
+		},
+		{
+			ID: "al-bib", Level: "album", ParentID: "ar-acdc", Title: "Back In Black", Year: 1980, Released: time.Date(1980, 7, 25, 0, 0, 0, 0, time.UTC).Unix(),
+			Fields: map[string]json.RawMessage{
+				"genres":      json.RawMessage(`["Rock","Metal"]`),
+				"decade":      json.RawMessage(`"1980s"`),
+				"curation":    json.RawMessage(`["Classic"]`),
+				"releaseType": json.RawMessage(`"album"`),
+				"popularity":  json.RawMessage(`331817`),
+				"artist":      json.RawMessage(`"AC/DC"`),
+				"album":       json.RawMessage(`"Back In Black"`),
+				"label":       json.RawMessage(`"Columbia"`),
+				"tracks":      json.RawMessage(`10`),
+				"discs":       json.RawMessage(`1`),
+				"upc":         json.RawMessage(`"886444889841"`),
+				"parentEcho":  json.RawMessage(`"AC/DC"`),
+			},
+		},
+		{
+			ID: "tr-bib", Level: "track", ParentID: "al-bib", Title: "Back In Black", Playable: true, Index: 6, Year: 1980,
+			Fields: map[string]json.RawMessage{
+				"releaseType": json.RawMessage(`"album"`),
+				"popularity":  json.RawMessage(`966294`),
+			},
+		},
+		// Competing matches for "Back In Black": tribute artist + obscure cover singles + less popular album.
+		{
+			ID: "ar-tribute", Level: "artist", Title: "Back In Black", Year: 2025,
+			Fields: map[string]json.RawMessage{"popularity": json.RawMessage(`3591`)},
+		},
+		{
+			ID: "ar-cover1", Level: "artist", Title: "Tony & the Kiki",
+		},
+		{
+			ID: "al-cover1", Level: "album", ParentID: "ar-cover1", Title: "Back In Black",
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"single"`)},
+		},
+		{
+			ID: "ar-whodini", Level: "artist", Title: "Whodini",
+		},
+		{
+			ID: "al-whodini", Level: "album", ParentID: "ar-whodini", Title: "Back in Black", Year: 1986,
+			Fields: map[string]json.RawMessage{"releaseType": json.RawMessage(`"album"`), "popularity": json.RawMessage(`621`)},
+		},
+	}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+
+	// 1. Facts cleanliness (#7): ONLY explicit fact:true fields that are not internal IDs or repeated title/parent/credits.
+	bibRec, _, err := h.items.GetByExternal(ctx, musicPlugin, "music", "al-bib")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bibView, err := h.catalog.Item(ctx, bibRec.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bibView.Title.MediaFacts) != 1 || bibView.Title.MediaFacts[0].Label != "Label" || bibView.Title.MediaFacts[0].Value != "Columbia" {
+		t.Fatalf("album MediaFacts = %+v, want ONLY [Label: Columbia]", bibView.Title.MediaFacts)
+	}
+	if bibView.Title.Popularity != 331817 {
+		t.Fatalf("album Popularity = %v, want 331817", bibView.Title.Popularity)
+	}
+
+	// 2. Artist children ordering (#8): studio albums (newest first) > EP > single > compilation > remix.
+	acdcRec, _, err := h.items.GetByExternal(ctx, musicPlugin, "music", "ar-acdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chPage, err := h.catalog.Children(ctx, acdcRec.Key, false, "", 50)
+	if err != nil {
+		t.Fatalf("Children(artist): %v", err)
+	}
+	gotTitles := make([]string, len(chPage.Items))
+	for i, it := range chPage.Items {
+		gotTitles[i] = it.Title
+	}
+	wantTitles := []string{
+		"Back In Black",                // album 1980
+		"Highway to Hell",              // album 1979
+		"74 Jailbreak",                 // EP 1984
+		"Thunderstruck (Single)",       // single 1990
+		"Greatest Hits",                // compilation 2023
+		"Back In Black (Club Remixes)", // remix 2024
+	}
+	if len(gotTitles) != len(wantTitles) {
+		t.Fatalf("artist children = %v, want %v", gotTitles, wantTitles)
+	}
+	for i := range wantTitles {
+		if gotTitles[i] != wantTitles[i] {
+			t.Fatalf("artist children[%d] = %q, want %q (all=%v)", i, gotTitles[i], wantTitles[i], gotTitles)
+		}
+	}
+
+	// 3. Search ranking (#9): "Back In Black" ranks AC/DC track & album at #1 and #2, ahead of cover singles and tribute artist.
+	hits, err := h.catalog.Search(ctx, musicLib, "Back In Black", frontend.ItemQuery{Limit: 20}, 20)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) < 4 {
+		t.Fatalf("expected >= 4 search hits, got %d", len(hits))
+	}
+	topTwo := map[core.MediaRole]bool{}
+	for i := 0; i < 2; i++ {
+		if hits[i].Popularity < 300000 {
+			t.Fatalf("hit[%d] = %q (role=%q pop=%v score=%v), expected AC/DC Back In Black in top 2", i, hits[i].Title, hits[i].MediaRole, hits[i].Popularity, hits[i].SearchScore)
+		}
+		topTwo[hits[i].MediaRole] = true
+	}
+	if !topTwo[core.MediaRoleAlbum] || !topTwo[core.MediaRoleTrack] {
+		t.Fatalf("expected AC/DC album and track in top 2, got roles %+v (%+v, %+v)", topTwo, hits[0].Title, hits[1].Title)
+	}
+	if hits[0].SearchScore <= 1.05 || hits[1].SearchScore <= 1.05 {
+		t.Fatalf("expected AC/DC exact album/track scores > 1.05 to beat low-popularity TV episodes, got %.4f / %.4f", hits[0].SearchScore, hits[1].SearchScore)
 	}
 }

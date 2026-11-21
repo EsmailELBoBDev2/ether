@@ -1161,7 +1161,10 @@ func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query str
 	}
 	if len(out) > 1 {
 		sort.SliceStable(out, func(i, j int) bool {
-			return out[i].SearchScore > out[j].SearchScore
+			if out[i].SearchScore != out[j].SearchScore {
+				return out[i].SearchScore > out[j].SearchScore
+			}
+			return out[i].Popularity > out[j].Popularity
 		})
 	}
 	return out, nil

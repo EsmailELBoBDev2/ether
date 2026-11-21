@@ -670,8 +670,18 @@ func flatPlayableAlbum(decl plugins.MediaKindMeta, present core.Presentations) b
 // playable child: same item and Key, typed as the leaf (Audio), naming
 // itself as its album.
 func flatAlbumIncarnation(t core.Title) core.Title {
+	origRole := t.MediaRole
+	if origRole == "" {
+		origRole = core.MediaRoleAlbum
+	}
+	parent := core.TitleParent{Key: t.Key, Title: t.Title, Role: origRole}
+	parents := make([]core.TitleParent, 0, len(t.MediaParents)+1)
+	parents = append(parents, parent)
+	parents = append(parents, t.MediaParents...)
 	t.SelfChild = true
 	t.MBItemType = "Audio"
+	t.MediaRole = core.MediaRoleTrack
+	t.MediaParents = parents
 	t.ParentKey = t.Key
 	t.ParentTitle = t.Title
 	t.ChildCount = 0
@@ -1287,53 +1297,65 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	if c != nil && c.mgr != nil {
 		resolveText = c.mgr.ResolveTextFunc(ctx, rec.PluginID, "")
 	}
-	rootCache := make(map[string]core.Title)
-	resolveRoot := func(parentID string) (core.Title, bool) {
-		if parentID == "" {
-			return core.Title{}, false
-		}
-		if t, ok := rootCache[parentID]; ok {
-			return t, t.Key != 0
-		}
-		curID := parentID
-		var root core.KindItem
-		found := false
-		for depth := 0; depth < 4 && curID != ""; depth++ {
-			p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, curID)
-			if err != nil || pLib != lib.ID {
-				break
-			}
-			root = p
-			found = true
-			curID = p.ParentID
-		}
-		if !found {
-			rootCache[parentID] = core.Title{}
-			return core.Title{}, false
-		}
-		rt := pluginitems.ProjectWithText(root, rec.Decl, lib.Present, resolveText, lib.CardShape)
-		rt.LibraryID = lib.ID
-		if rt.ContentRating == "" {
-			rt.ContentRating = extractContentRating(root.Fields)
-		}
-		rootCache[parentID] = rt
-		return rt, true
+	type cachedParent struct {
+		title    core.Title
+		parentID string
+		ok       bool
 	}
-
-	parentCache := make(map[string]core.Title)
-	resolveParent := func(parentID string) (core.Title, bool) {
-		if t, ok := parentCache[parentID]; ok {
-			return t, t.Key != 0
+	itemCache := make(map[string]cachedParent)
+	lookupItem := func(extID string) cachedParent {
+		if extID == "" {
+			return cachedParent{}
 		}
-		p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, parentID)
+		if entry, ok := itemCache[extID]; ok {
+			return entry
+		}
+		p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, extID)
 		if err != nil || pLib != lib.ID {
-			parentCache[parentID] = core.Title{}
-			return core.Title{}, false
+			itemCache[extID] = cachedParent{}
+			return cachedParent{}
 		}
 		pt := pluginitems.ProjectWithText(p, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		pt.LibraryID = lib.ID
-		parentCache[parentID] = pt
-		return pt, true
+		if pt.ContentRating == "" {
+			pt.ContentRating = extractContentRating(p.Fields)
+		}
+		entry := cachedParent{title: pt, parentID: p.ParentID, ok: true}
+		itemCache[extID] = entry
+		return entry
+	}
+
+	// resolveChain returns ancestors ordered nearest-first (up to 4 hops) and
+	// the root ancestor title.
+	resolveChain := func(parentID string) (parents []core.TitleParent, immediate core.Title, root core.Title, ok bool) {
+		curID := parentID
+		seen := make(map[string]bool, 4)
+		for depth := 0; depth < 4 && curID != ""; depth++ {
+			if seen[curID] {
+				break
+			}
+			seen[curID] = true
+			entry := lookupItem(curID)
+			if !entry.ok {
+				break
+			}
+			if depth == 0 {
+				immediate = entry.title
+			}
+			root = entry.title
+			ok = true
+			role := entry.title.MediaRole
+			if role == "" {
+				role = core.MediaRoleCollection
+			}
+			parents = append(parents, core.TitleParent{
+				Key:   entry.title.Key,
+				Title: entry.title.Title,
+				Role:  role,
+			})
+			curID = entry.parentID
+		}
+		return parents, immediate, root, ok
 	}
 
 	flatAlbum := flatPlayableAlbum(rec.Decl, lib.Present)
@@ -1354,19 +1376,29 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 			t.ContentRating = extractContentRating(it.Fields)
 		}
 		if it.ParentID != "" {
-			// Immediate parent for every hierarchy (track -> album,
-			// album -> artist); the root naming below is the video
-			// projection's show identity.
-			if parent, ok := resolveParent(it.ParentID); ok {
+			if parents, parent, root, ok := resolveChain(it.ParentID); ok {
 				t.ParentKey = parent.Key
 				t.ParentTitle = parent.Title
-			}
-		}
-		if (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) && it.ParentID != "" {
-			if root, ok := resolveRoot(it.ParentID); ok {
-				t.ShowKey = root.Key
-				t.ShowTitle = root.Title
-				t.ShowYear = root.Year
+				hasSeries := false
+				for _, p := range parents {
+					if p.Role == core.MediaRoleSeries {
+						hasSeries = true
+						break
+					}
+				}
+				if !hasSeries && len(t.MediaParents) > 0 {
+					merged := make([]core.TitleParent, 0, len(parents)+len(t.MediaParents))
+					merged = append(merged, parents...)
+					merged = append(merged, t.MediaParents...)
+					t.MediaParents = merged
+				} else {
+					t.MediaParents = parents
+				}
+				if t.Type == core.TypeSeason || t.Type == core.TypeEpisode {
+					t.ShowKey = root.Key
+					t.ShowTitle = root.Title
+					t.ShowYear = root.Year
+				}
 			}
 		}
 		out[i] = t

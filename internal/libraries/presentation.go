@@ -269,8 +269,19 @@ func ResolveKindPresentations(in KindPresentationInput, overrides core.Presentat
 		}
 	}
 
+	var levelRoles map[string]core.MediaRole
+	if len(in.Levels) > 0 && len(roles) == len(in.Levels) {
+		levelRoles = make(map[string]core.MediaRole, len(in.Levels))
+		for i, lv := range in.Levels {
+			if lv.Key != "" && roles[i] != "" {
+				levelRoles[lv.Key] = roles[i]
+			}
+		}
+	}
+
 	return core.ResolvedPresentations{
 		MediaClass:  class,
+		LevelRoles:  levelRoles,
 		AdapterOnly: adapterOnly,
 		Effective:   eff,
 		Available:   avail,

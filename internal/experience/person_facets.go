@@ -52,6 +52,19 @@ func (s *Service) PersonFacetIDs(ctx context.Context, viewer *core.Viewer, _ cor
 			}
 		}
 	}
+	for _, c := range title.MediaCredits {
+		if c.TMDB <= 0 || c.Name == "" {
+			continue
+		}
+		id := personFacetID(c.TMDB)
+		if old, ok := seen[id]; ok && old != c.TMDB {
+			return nil, errors.New("experience: facet identifier collision")
+		}
+		seen[id] = c.TMDB
+		if wanted[c.TMDB] {
+			result[c.TMDB] = id
+		}
+	}
 	return result, nil
 }
 

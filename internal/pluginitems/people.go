@@ -298,7 +298,7 @@ GROUP BY f.field`, roleArgs...)
 				var fk string
 				var cnt int
 				if roleRows.Scan(&fk, &cnt) == nil && cnt > 0 {
-					roles[peopleFieldBucket(fk)] += cnt
+					roles[creditRoleForField(fk)] += cnt
 				}
 			}
 			roleRows.Close()
@@ -313,8 +313,8 @@ GROUP BY f.field`, roleArgs...)
 		Roles:       roles,
 	}
 	for _, it := range items {
-		cast, dirs, wris := extractProjectedPeople(it.Fields, rec.Decl)
-		for _, group := range [][]core.Person{cast, dirs, wris} {
+		cast, dirs, wris, crew, _ := extractProjectedPeople(it.Fields, rec.Decl)
+		for _, group := range [][]core.Person{cast, dirs, wris, crew} {
 			for _, p := range group {
 				if p.TMDB == personID {
 					if p.Name != "" && pm.Name == fallbackName {

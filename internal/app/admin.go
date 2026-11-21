@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -410,7 +411,6 @@ func (a *App) listPlexUsers(ctx context.Context) ([]plextv.SharedUser, error) {
 		communityCount  int
 		communityList   []plextv.CommunityFriend
 	)
-
 	cfg := a.cfg.Get()
 	etherToken := cfg.Plex.Token
 	ownerUsername := strings.TrimSpace(cfg.Plex.OwnerUsername)

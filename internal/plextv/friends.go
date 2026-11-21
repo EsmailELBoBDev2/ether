@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -613,7 +614,7 @@ func resolveSharedUserByLogin(users []SharedUser, name string) (*SharedUser, boo
 // pending v2 server shares across all owned servers.
 func (c *Client) SharedServerUsers(ctx context.Context, ownerToken string) ([]SharedUser, error) {
 	dir := NewSharedUserDirectory()
-	addInvited := func(u v2InvitedUser, fallbackID int64, fallbackEmail, machineID string) {
+	addInvited := func(u v2InvitedUser, fallbackID int64, fallbackEmail, machineID string, accepted, pending bool) {
 		uid := u.ID
 		if uid <= 0 {
 			uid = fallbackID
@@ -625,19 +626,30 @@ func (c *Client) SharedServerUsers(ctx context.Context, ownerToken string) ([]Sh
 		if email == "" {
 			email = fallbackEmail
 		}
-		var servers []string
+		var (
+			servers        []string
+			pendingServers []string
+		)
 		if machineID != "" {
-			servers = []string{machineID}
+			if accepted {
+				servers = []string{machineID}
+			}
+			if pending {
+				pendingServers = []string{machineID}
+			}
 		}
 		dir.Merge(SharedUser{
-			PlexID:       uid,
-			UUID:         u.UUID,
-			Username:     u.Username,
-			Title:        u.Title,
-			FriendlyName: u.FriendlyName,
-			Email:        email,
-			Thumb:        u.Thumb,
-			Servers:      servers,
+			PlexID:         uid,
+			UUID:           u.UUID,
+			Username:       u.Username,
+			Title:          u.Title,
+			FriendlyName:   u.FriendlyName,
+			Email:          email,
+			Thumb:          u.Thumb,
+			AcceptedShare:  accepted,
+			PendingShare:   pending,
+			Servers:        servers,
+			PendingServers: pendingServers,
 		})
 	}
 
@@ -646,7 +658,7 @@ func (c *Client) SharedServerUsers(ctx context.Context, ownerToken string) ([]Sh
 	if accepted, err := c.fetchV2AcceptedShares(ctx, ownerToken); err == nil {
 		okCount++
 		for _, s := range accepted {
-			addInvited(s.Invited, s.InvitedID, s.InvitedEmail, s.MachineIdentifier)
+			addInvited(s.Invited, s.InvitedID, s.InvitedEmail, s.MachineIdentifier, true, false)
 		}
 	} else {
 		firstErr = err
@@ -656,7 +668,7 @@ func (c *Client) SharedServerUsers(ctx context.Context, ownerToken string) ([]Sh
 		okCount++
 		for _, inv := range pending {
 			if len(inv.SharedServers) == 0 {
-				addInvited(inv.Invited, inv.InvitedID, inv.InvitedEmail, "")
+				addInvited(inv.Invited, inv.InvitedID, inv.InvitedEmail, "", false, true)
 				continue
 			}
 			for _, s := range inv.SharedServers {
@@ -669,7 +681,7 @@ func (c *Client) SharedServerUsers(ctx context.Context, ownerToken string) ([]Sh
 				if femail == "" {
 					femail = inv.InvitedEmail
 				}
-				addInvited(u, fid, femail, s.MachineIdentifier)
+				addInvited(u, fid, femail, s.MachineIdentifier, false, true)
 			}
 		}
 	} else if firstErr == nil {
@@ -1078,19 +1090,25 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 
 // SharedUser is an entry of the owner's friends/home list (v2 server users).
 type SharedUser struct {
-	PlexID        int64
-	UUID          string
-	Username      string
-	Title         string
-	FriendlyName  string
-	Email         string
-	Thumb         string
-	Home          bool
-	Restricted    bool
-	PlexPass      bool
-	PlexPassKnown bool
-	// Servers are the machine identifiers shared with the user.
+	PlexID          int64
+	UUID            string
+	Username        string
+	Title           string
+	FriendlyName    string
+	Email           string
+	Thumb           string
+	Home            bool
+	Restricted      bool
+	PlexPass        bool
+	PlexPassKnown   bool
+	AcceptedShare   bool
+	PendingShare    bool
+	Friend          bool
+	CommunityFriend bool
+	// Servers are the machine identifiers with accepted shares for the user.
 	Servers []string
+	// PendingServers are the machine identifiers with pending invites for the user.
+	PendingServers []string
 }
 
 // Users lists the owner's friends and home users from the observed v2 API.
@@ -1099,7 +1117,17 @@ func (c *Client) Users(ctx context.Context, ownerToken string) ([]SharedUser, er
 	if err != nil {
 		return nil, err
 	}
-	return parseSharedUsers(resp.body)
+	users, err := parseSharedUsers(resp.body)
+	if err != nil {
+		return nil, err
+	}
+	for i := range users {
+		users[i].AcceptedShare = true
+		if c.id.ClientIdentifier != "" && !slices.Contains(users[i].Servers, c.id.ClientIdentifier) {
+			users[i].Servers = append(users[i].Servers, c.id.ClientIdentifier)
+		}
+	}
+	return users, nil
 }
 
 // AccountUsers lists all friends and Plex Home users on the owner's plex.tv
@@ -1109,7 +1137,17 @@ func (c *Client) AccountUsers(ctx context.Context, ownerToken string) ([]SharedU
 	if err != nil {
 		return nil, err
 	}
-	return parseSharedUsers(resp.body)
+	users, err := parseSharedUsers(resp.body)
+	if err != nil {
+		return nil, err
+	}
+	for i := range users {
+		users[i].Friend = true
+		if len(users[i].Servers) > 0 {
+			users[i].AcceptedShare = true
+		}
+	}
+	return users, nil
 }
 
 func parseSharedUsers(body []byte) ([]SharedUser, error) {

@@ -3665,6 +3665,7 @@
   "m_0b55ba7601fc22": "OMDb connected",
   "m_0b55c237cebf50": "Storage backend",
   "m_0b55c5e1d23824": "Restore and start",
+  "m_0b56fb040956c5": "Uses your configured language model",
   "m_0b571527985d9c": "Stop position",
   "m_0b590594d9dacc": {
     "one": "{count} provider healthy · {active}/{configured} connections busy",

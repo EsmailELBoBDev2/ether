@@ -49,9 +49,11 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
+	dev := requestDevice(r)
+	avatar := i.viewerAvatar(r, v, token, dev)
 	// Credentials scope the image grants and cursor scope includes the complete
 	// viewer policy. Do not reuse wire responses between refresh families/devices.
-	scope := hashJSON([]any{v, requestDevice(r), token, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.capabilitiesRevision(), i.signInMethods()})
+	scope := hashJSON([]any{v, dev, token, avatar, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.capabilitiesRevision(), i.signInMethods()})
 	if local, ok := i.host.Experience.(interface {
 		NoProviderWait(context.Context) context.Context
 	}); ok {
@@ -119,7 +121,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 				buildRequest = buildRequest.WithContext(source.BeginBootstrapRead(buildRequest.Context(), v, before))
 			}
 		}
-		out, buildErr := i.buildBootstrap(buildRequest, v, token, attempt > 0)
+		out, buildErr := i.buildBootstrap(buildRequest, v, token, avatar, attempt > 0)
 		var payload json.RawMessage
 		if buildErr == nil {
 			payload, buildErr = json.Marshal(out)
@@ -173,5 +175,5 @@ func (i *instance) bootstrapFreshness() frontend.PageFreshness {
 		return frontend.PageFreshness{}
 	}
 	f := i.host.PageFreshness()
-	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, KindSync: f.KindSync}
+	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, Images: f.Images, KindSync: f.KindSync}
 }

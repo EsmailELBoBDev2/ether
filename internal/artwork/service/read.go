@@ -48,6 +48,20 @@ func (a Source) Read(ctx context.Context, req frontend.ArtworkRequest, img front
 		}
 		return a.transform(ctx, img.Path, data, ct, transform)
 	}
+	if strings.HasPrefix(img.Path, frontend.ViewerAvatarPrefix) {
+		if a.ViewerAvatar == nil {
+			return nil, "", core.ErrNotAvailable
+		}
+		current, ok := frontend.ViewerAvatarImage(req.Viewer)
+		if !ok || !frontend.SameImage(current, img) {
+			return nil, "", core.ErrUnauthorized
+		}
+		data, ct, err := a.ViewerAvatar(ctx, req.Viewer)
+		if err != nil {
+			return nil, "", err
+		}
+		return a.transform(ctx, img.Path, data, ct, transform)
+	}
 	if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
 		if a.LibraryLiveThumb == nil || a.URLImages == nil {
 			return nil, "", core.ErrNotAvailable

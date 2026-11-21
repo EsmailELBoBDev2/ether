@@ -147,6 +147,7 @@ type hostEntry struct {
 }
 
 type diskImageMeta struct {
+	ContentType  string    `json:"contentType,omitempty"`
 	ETag         string    `json:"etag,omitempty"`
 	LastModified string    `json:"lastModified,omitempty"`
 	CacheControl string    `json:"cacheControl,omitempty"`
@@ -310,6 +311,56 @@ func validTMDBSizeSegment(size string) bool {
 		}
 	}
 	return true
+}
+
+// GetLoaded caches caller-loaded image bytes (such as Plex viewer avatars) in
+// memory and on disk with single-flight coalescing. Load errors are not cached.
+func (im *Images) GetLoaded(ctx context.Context, key string, load func(context.Context) ([]byte, string, error)) ([]byte, string, error) {
+	im.mu.Lock()
+	if img, ok := im.items.Get(key); ok {
+		im.mu.Unlock()
+		return img.data, img.ct, nil
+	}
+	im.mu.Unlock()
+	img, err := im.inflight.Do(ctx, key, func(ctx context.Context) (*memImage, error) {
+		im.mu.Lock()
+		if img, ok := im.items.Get(key); ok {
+			im.mu.Unlock()
+			return img, nil
+		}
+		im.mu.Unlock()
+		if entry, ok := im.readDiskEntry(key); ok {
+			im.mu.Lock()
+			im.addLocked(entry)
+			im.mu.Unlock()
+			return entry, nil
+		}
+		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		data, ct, err := load(fctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := fctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
+			return nil, ErrNotFound
+		}
+		if ct == "" {
+			ct = sniff(data)
+		}
+		entry := &memImage{key: key, data: data, ct: ct, hasMeta: true}
+		im.writeDiskEntry(key, entry)
+		im.mu.Lock()
+		im.addLocked(entry)
+		im.mu.Unlock()
+		return entry, nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return img.data, img.ct, nil
 }
 
 // get caches local derived bytes (such as resized provider posters) in memory and on disk.
@@ -827,10 +878,14 @@ func (im *Images) readDiskEntry(key string) (*memImage, bool) {
 		if len(body) == 0 {
 			return nil, false
 		}
+		ct := meta.ContentType
+		if ct == "" {
+			ct = sniff(body)
+		}
 		return &memImage{
 			key:          key,
 			data:         body,
-			ct:           sniff(body),
+			ct:           ct,
 			etag:         meta.ETag,
 			lastModified: meta.LastModified,
 			cacheControl: meta.CacheControl,
@@ -852,6 +907,7 @@ func (im *Images) writeDiskEntry(key string, img *memImage) {
 		return
 	}
 	metaBytes, err := json.Marshal(diskImageMeta{
+		ContentType:  img.ct,
 		ETag:         img.etag,
 		LastModified: img.lastModified,
 		CacheControl: img.cacheControl,

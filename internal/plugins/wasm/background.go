@@ -56,12 +56,30 @@ func GrantedLimitsPath(path string) bool {
 }
 
 // BackgroundPoolPath reports whether path is a background job, sync, or event
-// delivery call bounded to at most PoolSize-1 service instances so interactive
-// viewer resolves, frontend adapter requests and health checks always retain at
-// least one free instance.
+// delivery call bounded below PoolSize so interactive viewer resolves,
+// frontend adapter requests and health checks retain free instances.
 func BackgroundPoolPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
 	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p) || p == "/ether/event"
+}
+
+// ResolvePoolPath reports whether path is a playback resolution or stream-open
+// call that receives priority access and a reserved pool lane so slow
+// frontend-adapter requests or background jobs cannot starve playback.
+func ResolvePoolPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	if strings.HasPrefix(p, "/ether/open") || strings.HasPrefix(p, "/stream/") {
+		return true
+	}
+	return strings.HasPrefix(p, "/ether/v1/kinds/") &&
+		(strings.HasSuffix(p, "/resolve") || strings.HasSuffix(p, "/match"))
+}
+
+// FrontendAdapterPath reports whether path targets a plugin-contributed
+// frontend adapter route (/ether/v1/frontend/*).
+func FrontendAdapterPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	return strings.HasPrefix(p, "/ether/v1/frontend/") && len(p) > len("/ether/v1/frontend/")
 }
 
 // UnitsForDeadline converts a call deadline into its matching governance unit

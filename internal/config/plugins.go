@@ -44,5 +44,5 @@ type PluginRuntimeLimits struct {
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
-	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default and max 4
+	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default 4, max 16
 }

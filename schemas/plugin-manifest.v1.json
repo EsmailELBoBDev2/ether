@@ -1734,7 +1734,7 @@
                 },
                 "poolSize": {
                   "default": 2,
-                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (max 4). Background jobs hold at most poolSize - 1 instances so interactive viewer and health calls keep a free instance.",
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize >= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
                   "minimum": 0,
                   "type": "integer"
                 },

@@ -47,6 +47,7 @@ func hashNZBBytes(data []byte) string {
 }
 
 func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.SourceCandidate) (core.UsenetCheckResult, error) {
+	cand = r.stripCandidateAuth(cand)
 	releaseKey := normalizeNZBKey(cand.NZBURL)
 	if releaseKey == "" {
 		return core.UsenetCheckResult{}, fmt.Errorf("kindresolver: usenet_check requires an nzbUrl")
@@ -507,8 +508,21 @@ func (r *KindResolver) usenetPlaybackFailed(src core.PlayableSource) bool {
 		return false
 	}
 	nzbURL := src.Release.NZBURL
-	if nzbURL == "" && src.Release.Candidate != nil {
-		nzbURL = src.Release.Candidate.NZBURL
+	var indexer, indexerID string
+	if src.Release.Candidate != nil {
+		if nzbURL == "" {
+			nzbURL = src.Release.Candidate.NZBURL
+		}
+		indexer = src.Release.Candidate.Indexer
+		indexerID = src.Release.Candidate.IndexerID
+	}
+	if nzbURL != "" {
+		nzbURL = r.stripReleaseAuth(core.Release{
+			NZBURL:    nzbURL,
+			Indexer:   indexer,
+			IndexerID: indexerID,
+			Protocol:  core.ProtocolUsenet,
+		}).NZBURL
 	}
 	key := normalizeNZBKey(nzbURL)
 	if key == "" {

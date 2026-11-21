@@ -306,16 +306,21 @@ SDK) inside a hosted handler returns the **effective** `deadline` and
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 
-Plugins request higher memory, time, instance pool (`poolSize`, default 2, max 4),
-download or archive limits in `ether.runtime.limits` in `manifest.json`. Background
-jobs and sync calls hold at most `poolSize - 1` instances so viewer, adapter and
-health calls retain a free instance; waiting for a busy instance returns a retryable
-busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
+Plugins request higher memory, time, instance pool (`poolSize`, default 2, default owner ceiling 4, raisable up to 16),
+download or archive limits in `ether.runtime.limits` in `manifest.json`. With
+`poolSize >= 3`, at least one instance is reserved exclusively for playback resolves
+(`/ether/v1/kinds/*/resolve`, `/match`, `/ether/open*`, `/stream/*`) and background
+jobs/sync calls hold at most `poolSize - 2` instances; with `poolSize == 2`,
+background jobs and frontend-adapter requests (`/ether/v1/frontend/*`) share at most
+one instance so playback resolves and health checks retain a free instance. Queued
+playback resolves take priority ahead of non-resolve waiters and start their execution
+deadline once an instance is acquired (with a bounded wait limit); waiting for a busy
+instance returns a retryable busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
 ceilings in **Plugins → Settings**, or override them for a single plugin in that
 plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
 and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).
 A per-plugin override can raise a trusted plugin above the global ceiling (up to
-4 GiB WASM memory and one year for background work). Viewer routes stay capped at
+4 GiB WASM memory, 16 pool instances, and one year for background work). Viewer routes stay capped at
 their route deadlines so browsing and playback remain responsive; offload multi-step
 or long-running work to `/ether/job/*` (including `{pending: true, retryInMs, job}`
 from kind `/resolve` and `/match`).

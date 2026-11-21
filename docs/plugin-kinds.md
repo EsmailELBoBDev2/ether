@@ -297,7 +297,14 @@ Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
-names are rejected. Invalid categories are rejected. Stremio/addon sources do
+names are rejected. Same-origin `nzbUrl` and `torrentUrl` links returned by
+`indexer_search` have the indexer's API key and secrets stripped (standard
+`apikey` query parameters are removed; non-standard credential placements use
+URL-safe origin-confined tokens), and Ether re-attaches credentials only at
+fetch time on the originating indexer's origin when the candidate is handed
+back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
+keyed on the key-less link, so plugins can persist candidates in KV without
+storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio/addon sources do
 not support category filters and reject scoped searches. Omit `category` for
 the default media search. Results and acquired files are cached separately by
 category and file selection. The wire shapes are documented in
@@ -829,8 +836,12 @@ recovery on a later owner action after restart; Ether does not resume eagerly.
 archive and catalogue-item resources within owner-controlled global/per-plugin ceilings.
 Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
 12h, effectively unlimited background work units, 2 hosted WASM instances (`poolSize`,
-requestable up to the owner ceiling, default and max 4; background jobs and sync calls
-hold at most `poolSize - 1` instances so viewer calls keep one), 8 GiB download/member,
+requestable up to the owner ceiling, default ceiling 4 and raisable up to 16; with
+`poolSize >= 3` at least one instance is reserved exclusively for playback resolves
+and background jobs hold at most `poolSize - 2`; with `poolSize == 2` background jobs
+and frontend adapters share at most one instance so playback resolves and health
+checks keep one free; queued resolves also take priority and start their execution
+deadline once an instance is acquired), 8 GiB download/member,
 32 GiB total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
 (`maxItems`, with no upper cap when raised by the owner). Remote plugins can
 also request data and `maxItems` limits. The library cache quota further bounds

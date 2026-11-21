@@ -127,7 +127,9 @@ type RuntimeLimits struct {
 	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"`
-	PoolSize             int    `json:"poolSize,omitempty"`
+	// PoolSize requests the hosted WASM instance pool size (default 2; default
+	// owner ceiling 4, raisable up to 16).
+	PoolSize int `json:"poolSize,omitempty"`
 }
 
 // HealthDecl configures periodic health checks.

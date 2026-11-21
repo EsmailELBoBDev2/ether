@@ -75,7 +75,8 @@ func TestInstanceWaitDoesNotCancelJobs(t *testing.T) {
 		t.Fatalf("job final state = %q, want done (error=%q)", state, job.snapshot().Error)
 	}
 
-	// Verify poolSize manifest requests respect defaults, cap, and owner ceilings.
+	// Verify poolSize manifest requests respect defaults, default ceiling (4),
+	// raised owner ceilings (up to MaxPoolSize = 16), and per-plugin overrides.
 	base := Manifest{
 		ID:      "community.test.pool",
 		Version: "1.0.0",
@@ -85,12 +86,35 @@ func TestInstanceWaitDoesNotCancelJobs(t *testing.T) {
 		t.Fatalf("default PoolSize = %d, want %d", lim.PoolSize, wasm.DefaultPoolSize)
 	}
 	base.Ether.Runtime.Limits = &RuntimeLimits{PoolSize: 8}
-	if lim := runtimeLimitsWithCeilings(base, defaultRuntimeCeilings()); lim.PoolSize != wasm.MaxPoolSize {
-		t.Fatalf("capped PoolSize = %d, want %d", lim.PoolSize, wasm.MaxPoolSize)
+	if lim := runtimeLimitsWithCeilings(base, defaultRuntimeCeilings()); lim.PoolSize != wasm.DefaultPoolCeiling {
+		t.Fatalf("default-capped PoolSize = %d, want %d", lim.PoolSize, wasm.DefaultPoolCeiling)
 	}
 	customCeilings := applyRuntimeCeilings(defaultRuntimeCeilings(), config.PluginRuntimeLimits{PoolSize: 3})
 	if lim := runtimeLimitsWithCeilings(base, customCeilings); lim.PoolSize != 3 {
 		t.Fatalf("owner-capped PoolSize = %d, want 3", lim.PoolSize)
+	}
+	raisedCeilings := applyRuntimeCeilings(defaultRuntimeCeilings(), config.PluginRuntimeLimits{PoolSize: 12})
+	if lim := runtimeLimitsWithCeilings(base, raisedCeilings); lim.PoolSize != 8 {
+		t.Fatalf("raised-ceiling PoolSize = %d, want 8", lim.PoolSize)
+	}
+	overCapCeilings := applyRuntimeCeilings(defaultRuntimeCeilings(), config.PluginRuntimeLimits{PoolSize: 99})
+	if overCapCeilings.poolSize != wasm.MaxPoolSize {
+		t.Fatalf("hard-capped ceiling PoolSize = %d, want %d", overCapCeilings.poolSize, wasm.MaxPoolSize)
+	}
+	baseNoReq := Manifest{
+		ID:      "community.test.pool.override",
+		Version: "1.0.0",
+		Ether:   &EtherBlock{Runtime: RuntimeDecl{Kind: "hosted", Entry: "index.js"}},
+	}
+	env.m.deps.ReadRuntimeConfig = func() config.Plugins {
+		return config.Plugins{
+			RuntimeOverrides: map[string]config.PluginRuntimeLimits{
+				baseNoReq.ID: {PoolSize: 10},
+			},
+		}
+	}
+	if granted := env.m.grantedRuntimeLimits(baseNoReq); granted == nil || granted.PoolSize != 10 {
+		t.Fatalf("per-plugin override PoolSize = %+v, want 10", granted)
 	}
 }
 

@@ -206,7 +206,10 @@ type ReleaseFile struct {
 
 // SourceCandidate is one Ether-found release for a resolver to rank.
 // Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
-// nzbUrl; Usenet candidates carry nzbUrl.
+// nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
+// indexer_search are stripped of indexer API keys and secrets so candidates
+// can be cached safely; Ether re-attaches credentials at fetch time on the
+// originating indexer's origin using indexerId.
 type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`

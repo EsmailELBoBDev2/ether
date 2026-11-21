@@ -12,7 +12,7 @@ export function runtimeLimitFields() {
     { key: "memoryBytes", label: t("Memory (MiB)"), scale: 1048576, fallback: 2048, max: 4096 },
     { key: "deadline", label: t("Time (hours)"), scale: 1, fallback: 12, max: 8760 },
     { key: "unitBudget", label: t("Work units"), scale: 1, fallback: 0 },
-    { key: "poolSize", label: t("Instances"), scale: 1, fallback: 4, max: 4 },
+    { key: "poolSize", label: t("Instances"), scale: 1, fallback: 4, max: 16 },
     { key: "fetchBytes", label: t("Download (GiB)"), scale: 1073741824, fallback: 8 },
     {
       key: "archiveMemberBytes",

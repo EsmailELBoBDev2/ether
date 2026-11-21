@@ -306,3 +306,230 @@ func TestPoolExhaustionLogsHoldingRoutesAndUpdatesStats(t *testing.T) {
 		t.Fatalf("holder call failed: %v", err)
 	}
 }
+
+func TestResolveLaneProtectedFromSlowFrontendAdapters(t *testing.T) {
+	eng := NewEngine(slog.New(slog.NewTextHandler(&lockedBuffer{}, nil)))
+	defer eng.Close()
+
+	t.Run("poolSize2", func(t *testing.T) {
+		feEntered := make(chan struct{}, 2)
+		releaseFE := make(chan struct{})
+		p := &Plugin{
+			id:      "fe-pool2",
+			version: "1.0.0",
+			eng:     eng,
+			lim:     Limits{PoolSize: 2, Deadline: 2 * time.Second},
+			caps:    caps{Handle: true},
+		}
+		p.lim.normalize()
+		p.initPools(func(context.Context) (instance, error) {
+			return &fakeInstance{
+				handleFn: func(ctx context.Context, _ *callState, reqJSON []byte) ([]byte, *Error) {
+					var req Request
+					_ = json.Unmarshal(reqJSON, &req)
+					if FrontendAdapterPath(req.Path) {
+						feEntered <- struct{}{}
+						select {
+						case <-releaseFE:
+							return []byte(`{"status":200}`), nil
+						case <-ctx.Done():
+							return nil, &Error{Status: StatusTimeout, Message: ctx.Err().Error()}
+						}
+					}
+					return []byte(`{"status":200}`), nil
+				},
+			}, nil
+		}, func(context.Context) (instance, error) { return &fakeInstance{}, nil })
+		defer p.Close()
+
+		fe1Done := make(chan error, 1)
+		go func() {
+			_, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ether/v1/frontend/subsonic/getCoverArt"})
+			fe1Done <- err
+		}()
+		<-feEntered
+
+		// A second slow frontend-adapter call queues on the shared work lane
+		// rather than taking the second pool instance.
+		fe2Done := make(chan error, 1)
+		go func() {
+			_, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ether/v1/frontend/subsonic/getAlbum"})
+			fe2Done <- err
+		}()
+
+		// Playback resolve runs immediately on the free second instance.
+		if _, err := p.Call(context.Background(), Request{Method: "POST", Path: "/ether/v1/kinds/music/resolve"}); err != nil {
+			t.Fatalf("resolve blocked by slow frontend adapters: %v", err)
+		}
+		if _, err := p.Call(context.Background(), Request{Method: "POST", Path: "/ether/v1/kinds/music/match"}); err != nil {
+			t.Fatalf("match blocked by slow frontend adapters: %v", err)
+		}
+
+		close(releaseFE)
+		if err := <-fe1Done; err != nil {
+			t.Fatalf("fe1 failed: %v", err)
+		}
+		if err := <-fe2Done; err != nil {
+			t.Fatalf("fe2 failed: %v", err)
+		}
+	})
+
+	t.Run("poolSize3", func(t *testing.T) {
+		jobEntered := make(chan struct{}, 1)
+		feEntered := make(chan struct{}, 1)
+		releaseWork := make(chan struct{})
+		p := &Plugin{
+			id:      "fe-pool3",
+			version: "1.0.0",
+			eng:     eng,
+			lim:     Limits{PoolSize: 3, Deadline: 2 * time.Second},
+			caps:    caps{Handle: true},
+		}
+		p.lim.normalize()
+		p.initPools(func(context.Context) (instance, error) {
+			return &fakeInstance{
+				handleFn: func(ctx context.Context, _ *callState, reqJSON []byte) ([]byte, *Error) {
+					var req Request
+					_ = json.Unmarshal(reqJSON, &req)
+					switch {
+					case BackgroundPoolPath(req.Path):
+						jobEntered <- struct{}{}
+						<-releaseWork
+					case FrontendAdapterPath(req.Path):
+						feEntered <- struct{}{}
+						<-releaseWork
+					}
+					return []byte(`{"status":200}`), nil
+				},
+			}, nil
+		}, func(context.Context) (instance, error) { return &fakeInstance{}, nil })
+		defer p.Close()
+
+		jobDone := make(chan error, 1)
+		go func() {
+			_, err := p.Call(context.Background(), Request{Method: "POST", Path: "/ether/job/sync"})
+			jobDone <- err
+		}()
+		<-jobEntered
+
+		feDone := make(chan error, 1)
+		go func() {
+			_, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ether/v1/frontend/subsonic/search"})
+			feDone <- err
+		}()
+		<-feEntered
+
+		// Both non-resolve slots (PoolSize-1 = 2) are occupied; an extra
+		// non-resolve call queues, while resolve still has its reserved instance.
+		extraDone := make(chan error, 1)
+		go func() {
+			_, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ether/v1/frontend/subsonic/getArtist"})
+			extraDone <- err
+		}()
+
+		if _, err := p.Call(context.Background(), Request{Method: "POST", Path: "/ether/v1/kinds/music/resolve"}); err != nil {
+			t.Fatalf("resolve starved on poolSize=3: %v", err)
+		}
+
+		close(releaseWork)
+		for _, ch := range []chan error{jobDone, feDone, extraDone} {
+			if err := <-ch; err != nil {
+				t.Fatalf("work call failed: %v", err)
+			}
+		}
+	})
+}
+
+func TestResolvePriorityAndPostWaitExecutionDeadline(t *testing.T) {
+	eng := NewEngine(slog.New(slog.NewTextHandler(&lockedBuffer{}, nil)))
+	defer eng.Close()
+
+	holderEntered := make(chan struct{}, 1)
+	releaseHolder := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	var resolveRemaining time.Duration
+
+	p := &Plugin{
+		id:      "prio-plugin",
+		version: "1.0.0",
+		eng:     eng,
+		lim:     Limits{PoolSize: 1, Deadline: 300 * time.Millisecond},
+		caps:    caps{Handle: true},
+	}
+	p.lim.normalize()
+	p.initPools(func(context.Context) (instance, error) {
+		return &fakeInstance{
+			handleFn: func(ctx context.Context, _ *callState, reqJSON []byte) ([]byte, *Error) {
+				var req Request
+				_ = json.Unmarshal(reqJSON, &req)
+				if req.Path == "/ether/v1/frontend/hold" {
+					holderEntered <- struct{}{}
+					<-releaseHolder
+					return []byte(`{"status":200}`), nil
+				}
+				mu.Lock()
+				order = append(order, req.Path)
+				if req.Path == "/ether/v1/kinds/music/resolve" {
+					if dl, ok := ctx.Deadline(); ok {
+						resolveRemaining = time.Until(dl)
+					}
+				}
+				mu.Unlock()
+				return []byte(`{"status":200}`), nil
+			},
+		}, nil
+	}, func(context.Context) (instance, error) { return &fakeInstance{}, nil })
+	defer p.Close()
+
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ether/v1/frontend/hold"})
+		holderDone <- err
+	}()
+	<-holderEntered
+
+	// Queue a normal non-resolve waiter first, then a resolve waiter behind it.
+	normalDone := make(chan error, 1)
+	go func() {
+		_, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ether/v1/frontend/next"})
+		normalDone <- err
+	}()
+	for p.PoolStats().Waiting < 1 {
+		time.Sleep(time.Millisecond)
+	}
+
+	resolveDone := make(chan error, 1)
+	go func() {
+		_, err := p.Call(context.Background(), Request{
+			Method:   "POST",
+			Path:     "/ether/v1/kinds/music/resolve",
+			Deadline: 200 * time.Millisecond,
+		})
+		resolveDone <- err
+	}()
+	for p.PoolStats().Waiting < 2 {
+		time.Sleep(time.Millisecond)
+	}
+
+	// Keep the holder busy for > half the resolve's 200ms execution deadline
+	// before releasing, then verify the resolve ran ahead of the normal waiter
+	// AND received a fresh 200ms execution deadline after acquiring the instance.
+	time.Sleep(120 * time.Millisecond)
+	close(releaseHolder)
+
+	for _, ch := range []chan error{holderDone, resolveDone, normalDone} {
+		if err := <-ch; err != nil {
+			t.Fatalf("call failed: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "/ether/v1/kinds/music/resolve" || order[1] != "/ether/v1/frontend/next" {
+		t.Fatalf("execution order = %v, want resolve ahead of normal waiter", order)
+	}
+	if resolveRemaining < 120*time.Millisecond {
+		t.Fatalf("resolve remaining execution deadline = %s after 120ms wait, want fresh ~200ms deadline", resolveRemaining)
+	}
+}

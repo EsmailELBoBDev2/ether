@@ -209,8 +209,11 @@ type RuntimeLimits struct {
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
 	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline
-	// PoolSize is the hosted WASM instance pool size (default 2, ceiling owner-controlled up to 4).
-	// Background jobs hold at most PoolSize-1 instances so interactive calls retain a free instance.
+	// PoolSize is the hosted WASM instance pool size (default 2; default owner
+	// ceiling 4, raisable up to 16). With poolSize >= 3 at least one instance is
+	// reserved exclusively for playback resolves and background jobs hold at
+	// most poolSize-2; with poolSize == 2 background jobs and frontend adapters
+	// share at most one instance so resolves and health checks keep one free.
 	PoolSize int `json:"poolSize,omitempty"`
 }
 
@@ -1073,6 +1076,9 @@ type Request struct {
 	// (playback resolution). It never yields to background throttling.
 	// Host-side only; never sent to the plugin.
 	Foreground bool `json:"-"`
+	// Deadline carries the effective per-call deadline computed by the manager
+	// (including live overrides) for hosted runtimes. Host-side only.
+	Deadline time.Duration `json:"-"`
 }
 
 // FrontendBlob asks the host to serve cached bytes without passing them through

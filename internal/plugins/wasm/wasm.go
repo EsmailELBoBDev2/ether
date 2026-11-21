@@ -91,6 +91,10 @@ type Request struct {
 	// Foreground keeps an /ether/job/ call off the background throttle
 	// because a viewer is waiting on it. Host-side only.
 	Foreground bool `json:"-"`
+	// Deadline optionally tightens the call deadline for this invocation
+	// (e.g. a live per-plugin override). Zero uses the plugin's Limits.
+	// Host-side only.
+	Deadline time.Duration `json:"-"`
 }
 
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
@@ -149,9 +153,13 @@ const (
 	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
-	// DefaultPoolSize and MaxPoolSize bound instances per hosted plugin pool.
-	DefaultPoolSize = 2
-	MaxPoolSize     = 4
+	// DefaultPoolSize, DefaultPoolCeiling and MaxPoolSize bound instances per
+	// hosted plugin pool. Plugins get DefaultPoolSize by default, manifest
+	// requests clamp to the owner ceiling (default DefaultPoolCeiling), and
+	// owners may raise the ceiling up to MaxPoolSize.
+	DefaultPoolSize    = 2
+	DefaultPoolCeiling = 4
+	MaxPoolSize        = 16
 	// MinDataReadBytes and MaxDataReadBytes bound the per-call readBytes grant
 	// derived from memoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB).
 	MinDataReadBytes = 8 << 20
@@ -274,7 +282,7 @@ type Limits struct {
 	UnitBudget  int64         // per handle call; default UnitsForDeadline(Deadline)
 	Stremio     bool          // plugin answers Stremio add-on routes (uses StremioDeadline)
 	Busy        func() bool   // background work yields while playback or host load is high
-	PoolSize    int           // instances per pool; default DefaultPoolSize (2), max MaxPoolSize (4)
+	PoolSize    int           // instances per pool; default DefaultPoolSize (2), default ceiling DefaultPoolCeiling (4), max MaxPoolSize (16)
 	// Hot-path budgets. A manifest may lower these, never raise them:
 	// normalize clamps to the defaults below.
 	RankPerCandidate time.Duration // default (and max) 2ms
@@ -719,18 +727,24 @@ type poolLeaseInfo struct {
 	since time.Time
 }
 
+type poolWaiter struct {
+	ch       chan instance
+	priority bool
+}
+
 type pool struct {
 	makeFn      func(context.Context) (instance, error)
 	size        int
-	idle        chan instance
-	slots       chan struct{} // one token per live instance: idle, lent or building
 	warm        bool
-	mu          sync.Mutex // orders returning an instance against close and protects counters/holders
-	done        atomic.Bool
-	doneCh      chan struct{}
+	mu          sync.Mutex // guards done, idle, live, inUse, building, waiting, waiters and holders
+	done        bool
+	idle        []instance
+	live        int // idle + lent + building + in-flight waiter handoffs (<= size)
 	inUse       int
 	building    int
 	waiting     int
+	prioWaiters []*poolWaiter
+	normWaiters []*poolWaiter
 	exhaustions atomic.Int64
 	nextLease   uint64
 	holders     map[uint64]poolLeaseInfo
@@ -740,9 +754,7 @@ func newPool(size int, makeFn func(context.Context) (instance, error)) *pool {
 	return &pool{
 		makeFn:  makeFn,
 		size:    size,
-		idle:    make(chan instance, size),
-		slots:   make(chan struct{}, size),
-		doneCh:  make(chan struct{}),
+		idle:    make([]instance, 0, size),
 		holders: make(map[uint64]poolLeaseInfo, size),
 	}
 }
@@ -753,9 +765,13 @@ func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool
 	return p
 }
 
-func (p *pool) acquireLease(route string, track bool) uint64 {
+func (p *pool) isClosed() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.done
+}
+
+func (p *pool) acquireLeaseLocked(route string, track bool) uint64 {
 	p.inUse++
 	if !track {
 		return 0
@@ -766,9 +782,7 @@ func (p *pool) acquireLease(route string, track bool) uint64 {
 	return id
 }
 
-func (p *pool) releaseLease(leaseID uint64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *pool) releaseLeaseLocked(leaseID uint64) {
 	if leaseID != 0 {
 		if _, ok := p.holders[leaseID]; ok {
 			delete(p.holders, leaseID)
@@ -825,14 +839,8 @@ func (p *pool) snapshot() PoolStats {
 	return stats
 }
 
-func (p *pool) buildInstance(ctx context.Context) (in instance, err error) {
-	p.mu.Lock()
-	p.building++
-	p.mu.Unlock()
+func (p *pool) runMakeFn(ctx context.Context) (in instance, err error) {
 	defer func() {
-		p.mu.Lock()
-		p.building--
-		p.mu.Unlock()
 		if r := recover(); r != nil {
 			in = nil
 			err = &Error{Status: StatusError, Message: fmt.Sprintf("plugin instance build panic: %v", r), Trap: true}
@@ -842,65 +850,144 @@ func (p *pool) buildInstance(ctx context.Context) (in instance, err error) {
 }
 
 func (p *pool) get(ctx context.Context) (instance, error) {
-	in, _, err := p.getInternal(ctx, "", false)
+	in, _, err := p.getInternal(ctx, "", false, false)
 	return in, err
 }
 
 func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64, error) {
-	return p.getInternal(ctx, route, true)
+	return p.getInternal(ctx, route, true, false)
 }
 
-func (p *pool) getInternal(ctx context.Context, route string, track bool) (instance, uint64, error) {
-	if p.done.Load() {
+func (p *pool) getForRoutePriority(ctx context.Context, route string, priority bool) (instance, uint64, error) {
+	return p.getInternal(ctx, route, true, priority)
+}
+
+func (p *pool) removeWaiterLocked(target *poolWaiter) bool {
+	list := &p.normWaiters
+	if target.priority {
+		list = &p.prioWaiters
+	}
+	for i, w := range *list {
+		if w == target {
+			copy((*list)[i:], (*list)[i+1:])
+			(*list)[len(*list)-1] = nil
+			*list = (*list)[:len(*list)-1]
+			return true
+		}
+	}
+	return false
+}
+
+func (p *pool) popWaiterLocked() *poolWaiter {
+	if len(p.prioWaiters) > 0 {
+		w := p.prioWaiters[0]
+		copy(p.prioWaiters, p.prioWaiters[1:])
+		p.prioWaiters[len(p.prioWaiters)-1] = nil
+		p.prioWaiters = p.prioWaiters[:len(p.prioWaiters)-1]
+		return w
+	}
+	if len(p.normWaiters) > 0 {
+		w := p.normWaiters[0]
+		copy(p.normWaiters, p.normWaiters[1:])
+		p.normWaiters[len(p.normWaiters)-1] = nil
+		p.normWaiters = p.normWaiters[:len(p.normWaiters)-1]
+		return w
+	}
+	return nil
+}
+
+func (p *pool) hasWaitersLocked() bool {
+	return len(p.prioWaiters) > 0 || len(p.normWaiters) > 0
+}
+
+func (p *pool) getInternal(ctx context.Context, route string, track, priority bool) (instance, uint64, error) {
+	p.mu.Lock()
+	if p.done {
+		p.mu.Unlock()
 		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
-	select {
-	case in := <-p.idle:
-		return in, p.acquireLease(route, track), nil
-	default:
-	}
-	p.mu.Lock()
-	p.waiting++
-	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		p.waiting--
+	if len(p.idle) > 0 && (priority || len(p.prioWaiters) == 0) {
+		n := len(p.idle) - 1
+		in := p.idle[n]
+		p.idle[n] = nil
+		p.idle = p.idle[:n]
+		leaseID := p.acquireLeaseLocked(route, track)
 		p.mu.Unlock()
-	}()
-	if p.warm {
-		// A free slot means an earlier build failed; retry it off-path.
-		p.refill()
-		select {
-		case in := <-p.idle:
-			return in, p.acquireLease(route, track), nil
-		case <-p.doneCh:
-			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
-		case <-ctx.Done():
-			return nil, 0, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
-		}
+		return in, leaseID, nil
 	}
-	select {
-	case in := <-p.idle:
-		return in, p.acquireLease(route, track), nil
-	case p.slots <- struct{}{}:
-		if p.done.Load() {
-			<-p.slots
-			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
-		}
-		in, err := p.buildInstance(ctx)
+	if !p.warm && p.live < p.size {
+		p.live++
+		p.building++
+		p.mu.Unlock()
+		in, err := p.runMakeFn(ctx)
 		if err != nil {
-			<-p.slots
+			p.mu.Lock()
+			p.building--
+			p.live--
+			// If this caller gave up while other waiters are queued, keep a
+			// replacement build going so waiting callers do not stall.
+			if ctx.Err() != nil && p.hasWaitersLocked() {
+				p.refillLocked()
+			}
+			p.mu.Unlock()
 			return nil, 0, err
 		}
-		if p.done.Load() {
+		p.mu.Lock()
+		p.building--
+		if p.done {
+			p.live--
+			p.mu.Unlock()
 			in.closeInstance()
-			<-p.slots
 			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		}
-		return in, p.acquireLease(route, track), nil
-	case <-p.doneCh:
-		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		leaseID := p.acquireLeaseLocked(route, track)
+		p.mu.Unlock()
+		return in, leaseID, nil
+	}
+	w := &poolWaiter{ch: make(chan instance, 1), priority: priority}
+	if priority {
+		p.prioWaiters = append(p.prioWaiters, w)
+	} else {
+		p.normWaiters = append(p.normWaiters, w)
+	}
+	p.waiting++
+	// A free slot means an earlier build failed or retired; retry it off-path.
+	if p.live < p.size {
+		p.refillLocked()
+	}
+	p.mu.Unlock()
+
+	select {
+	case in, ok := <-w.ch:
+		p.mu.Lock()
+		p.waiting--
+		if !ok || in == nil {
+			p.mu.Unlock()
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
+		if p.done {
+			p.live--
+			p.mu.Unlock()
+			in.closeInstance()
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
+		leaseID := p.acquireLeaseLocked(route, track)
+		p.mu.Unlock()
+		return in, leaseID, nil
 	case <-ctx.Done():
+		p.mu.Lock()
+		p.waiting--
+		removed := p.removeWaiterLocked(w)
+		p.mu.Unlock()
+		if !removed {
+			// A producer already popped w and delivered (or closed) w.ch.
+			if in, ok := <-w.ch; ok && in != nil {
+				p.adopt(in)
+			}
+			if p.isClosed() {
+				return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+			}
+		}
 		return nil, 0, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
 }
@@ -910,87 +997,127 @@ func (p *pool) put(in instance, healthy bool) {
 }
 
 func (p *pool) putLease(in instance, leaseID uint64, healthy bool) {
-	p.releaseLease(leaseID)
+	p.mu.Lock()
+	p.releaseLeaseLocked(leaseID)
 	if !healthy {
-		in.closeInstance()
-		<-p.slots
-		if p.warm {
-			p.refill()
+		p.live--
+		needRefill := p.warm || p.hasWaitersLocked()
+		if needRefill {
+			p.refillLocked()
 		}
+		p.mu.Unlock()
+		in.closeInstance()
 		return
 	}
-	p.adopt(in)
+	closeInst := p.adoptLocked(in)
+	p.mu.Unlock()
+	if closeInst {
+		in.closeInstance()
+	}
 }
 
-// adopt returns a usable instance to the idle set, or closes it when the
-// pool is closed or already full.
+// adopt returns a usable instance to the highest-priority waiter or idle set,
+// or closes it when the pool is closed or already full.
 func (p *pool) adopt(in instance) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.done.Load() {
-		select {
-		case p.idle <- in:
-			return
-		default:
+	closeInst := p.adoptLocked(in)
+	p.mu.Unlock()
+	if closeInst {
+		in.closeInstance()
+	}
+}
+
+func (p *pool) adoptLocked(in instance) (closeInst bool) {
+	if !p.done {
+		if w := p.popWaiterLocked(); w != nil {
+			w.ch <- in
+			return false
+		}
+		if len(p.idle) < p.size {
+			p.idle = append(p.idle, in)
+			return false
 		}
 	}
-	in.closeInstance()
-	<-p.slots
+	p.live--
+	return true
 }
 
 // fill builds instances synchronously until the pool is full or a build
 // fails. Plugins call it at load, off any request path.
 func (p *pool) fill() {
-	for !p.done.Load() {
-		select {
-		case p.slots <- struct{}{}:
-		default:
+	for {
+		p.mu.Lock()
+		if p.done || p.live >= p.size {
+			p.mu.Unlock()
 			return
 		}
-		in, err := p.buildInstance(context.Background())
+		p.live++
+		p.building++
+		p.mu.Unlock()
+		in, err := p.runMakeFn(context.Background())
 		if err != nil {
-			<-p.slots
+			p.mu.Lock()
+			p.building--
+			p.live--
+			p.mu.Unlock()
 			return
 		}
-		p.adopt(in)
+		p.mu.Lock()
+		p.building--
+		closeInst := p.adoptLocked(in)
+		p.mu.Unlock()
+		if closeInst {
+			in.closeInstance()
+		}
 	}
 }
 
-// refill builds one replacement in the background if a slot is free. The
-// slot is held while building, so builds never exceed the pool size.
-func (p *pool) refill() {
-	if p.done.Load() {
+// refillLocked builds one replacement in the background if a slot is free.
+// Caller must hold p.mu.
+func (p *pool) refillLocked() {
+	if p.done || p.live >= p.size {
 		return
 	}
-	select {
-	case p.slots <- struct{}{}:
-	default:
-		return
-	}
+	p.live++
+	p.building++
 	go func() {
-		in, err := p.buildInstance(context.Background())
+		in, err := p.runMakeFn(context.Background())
 		if err != nil {
-			<-p.slots
+			p.mu.Lock()
+			p.building--
+			p.live--
+			p.mu.Unlock()
 			return
 		}
-		p.adopt(in)
+		p.mu.Lock()
+		p.building--
+		closeInst := p.adoptLocked(in)
+		p.mu.Unlock()
+		if closeInst {
+			in.closeInstance()
+		}
 	}()
 }
 
 func (p *pool) close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.done.Swap(true) && p.doneCh != nil {
-		close(p.doneCh)
+	if p.done {
+		p.mu.Unlock()
+		return
 	}
-	for {
-		select {
-		case in := <-p.idle:
-			in.closeInstance()
-			<-p.slots
-		default:
-			return
-		}
+	p.done = true
+	toClose := p.idle
+	p.idle = nil
+	p.live -= len(toClose)
+	waiters := append(p.prioWaiters, p.normWaiters...)
+	p.prioWaiters = nil
+	p.normWaiters = nil
+	for _, w := range waiters {
+		close(w.ch)
+	}
+	p.mu.Unlock()
+	for _, in := range toClose {
+		in.closeInstance()
 	}
 }
 
@@ -1028,25 +1155,31 @@ func (e *Engine) Close() error {
 // Plugin is one loaded hosted plugin. Call serves the request ABI;
 // RankBatch and CondMatch serve the hot path. Safe for concurrent use.
 type Plugin struct {
-	id, version string
-	eng         *Engine
-	host        Host
-	lim         Limits
-	caps        caps
-	svc         *pool
-	hot         *pool
-	jobSlots    chan struct{} // sized PoolSize-1 so background jobs leave >= 1 instance for viewer calls
-	closeCh     chan struct{}
-	stats       counters
-	memo        *memo
-	source      string // JS source (rebuild counts / cold start), raw: ""
-	closed      atomic.Bool
+	id, version     string
+	eng             *Engine
+	host            Host
+	lim             Limits
+	caps            caps
+	svc             *pool
+	hot             *pool
+	jobSlots        chan struct{} // PoolSize>=3: sized PoolSize-2 so background jobs leave interactive + resolve slots
+	nonResolveSlots chan struct{} // PoolSize>=3: sized PoolSize-1 so playback resolves always keep >= 1 reserved instance
+	sharedWorkSlots chan struct{} // PoolSize==2: sized 1 for background jobs + frontend adapters so resolves/health keep 1 instance
+	closeCh         chan struct{}
+	stats           counters
+	memo            *memo
+	source          string // JS source (rebuild counts / cold start), raw: ""
+	closed          atomic.Bool
 }
 
 func (p *Plugin) initPools(makeSvc, makeHot func(context.Context) (instance, error)) {
 	p.closeCh = make(chan struct{})
-	if p.lim.PoolSize > 1 {
-		p.jobSlots = make(chan struct{}, p.lim.PoolSize-1)
+	switch {
+	case p.lim.PoolSize >= 3:
+		p.nonResolveSlots = make(chan struct{}, p.lim.PoolSize-1)
+		p.jobSlots = make(chan struct{}, p.lim.PoolSize-2)
+	case p.lim.PoolSize == 2:
+		p.sharedWorkSlots = make(chan struct{}, 1)
 	}
 	p.svc = newPool(p.lim.PoolSize, makeSvc)
 	p.hot = newWarmPool(p.lim.PoolSize, makeHot)
@@ -1132,6 +1265,21 @@ func (p *Plugin) Call(ctx context.Context, req Request) (Response, error) {
 	return resp, err
 }
 
+func (p *Plugin) acquireLane(ctx context.Context, lane chan struct{}, route string) *Error {
+	if lane == nil {
+		return nil
+	}
+	select {
+	case lane <- struct{}{}:
+		return nil
+	case <-p.closeCh:
+		return &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+	case <-ctx.Done():
+		p.recordPoolExhaustion(route)
+		return &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+	}
+}
+
 // CallDetailed is Call plus the Outcome (units, duration, trap flag).
 func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, out Outcome, callRetErr error) {
 	start := time.Now()
@@ -1154,58 +1302,128 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 		return Response{}, out, &Error{Status: StatusError, Message: err.Error(), Err: ErrRequestEncode}
 	}
 	lim := limitsForRequest(p.lim, req.Path)
-	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
-	defer cancel()
+	if req.Deadline > 0 && req.Deadline < lim.Deadline {
+		lim.Deadline = req.Deadline
+		if ViewerRequestPath(req.Path) {
+			lim.UnitBudget = min(lim.UnitBudget, UnitsForDeadline(lim.Deadline))
+		}
+	}
 
+	isResolve := ResolvePoolPath(req.Path)
 	background := strings.HasPrefix(req.Path, "/ether/job/") && !req.Foreground
-	if background {
-		// Wait while Ether is busy BEFORE taking a job slot or plugin instance:
-		// a background job must never hold a pool instance while paused on Busy().
-		if err := WaitBackground(callCtx, lim.Busy); err != nil {
-			out.Status = StatusTimeout
-			return Response{}, out, &Error{Status: StatusTimeout, Message: err.Error(), Err: err}
-		}
-	}
 
-	if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
-		// Cap background jobs/syncs at PoolSize-1 so interactive viewer calls,
-		// frontend adapter requests and health checks always retain a free
-		// instance. The defer runs after p.svc.putLease returns the instance.
-		select {
-		case p.jobSlots <- struct{}{}:
-			defer func() { <-p.jobSlots }()
-		case <-p.closeCh:
-			out.Status = StatusError
-			return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
-		case <-callCtx.Done():
-			p.recordPoolExhaustion(req.Path)
+	var (
+		callCtx context.Context
+		cancel  context.CancelFunc
+		in      instance
+		leaseID uint64
+		cs      *callState
+	)
+	if isResolve {
+		// Playback resolves bound queue waiting separately from execution so a
+		// brief pool wait never eats into the resolve's execution deadline.
+		waitCtx, waitCancel := context.WithTimeout(ctx, lim.Deadline)
+		in, leaseID, err = p.svc.getForRoutePriority(waitCtx, req.Path, true)
+		waitCancel()
+		if err != nil {
+			if errors.Is(err, ErrPoolBusy) {
+				p.recordPoolExhaustion(req.Path)
+			}
 			out.Status = StatusTimeout
-			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+			if e, ok := err.(*Error); ok {
+				out.Status = e.Status
+			}
+			return Response{}, out, err
 		}
-	}
-	cs := &callState{
-		ctx:            callCtx,
-		host:           p.host,
-		lim:            &lim,
-		path:           req.Path,
-		start:          start,
-		last:           start,
-		background:     background,
-		backgroundPool: BackgroundPoolPath(req.Path) && !req.Foreground,
-		units:          BaseCallUnits,
-		logger:         p.eng.logger,
-		pluginID:       p.id,
-	}
-	in, leaseID, err := p.svc.getForRoute(callCtx, req.Path)
-	if err != nil {
-		if errors.Is(err, ErrPoolBusy) {
-			p.recordPoolExhaustion(req.Path)
+		execStart := time.Now()
+		callCtx, cancel = context.WithTimeout(ctx, lim.Deadline)
+		defer cancel()
+		if waited := execStart.Sub(start); waited >= 50*time.Millisecond && req.Headers != nil {
+			if rawDL := req.Headers["X-Ether-Deadline"]; rawDL != "" {
+				if parsed, perr := time.Parse(time.RFC3339, rawDL); perr == nil {
+					hdrs := make(map[string]string, len(req.Headers))
+					for k, v := range req.Headers {
+						hdrs[k] = v
+					}
+					hdrs["X-Ether-Deadline"] = parsed.Add(waited).UTC().Format(time.RFC3339)
+					reqCopy := req
+					reqCopy.Headers = hdrs
+					if updated, merr := json.Marshal(reqCopy); merr == nil {
+						reqJSON = updated
+					}
+				}
+			}
 		}
-		out.Status = StatusTimeout
-		if e, ok := err.(*Error); ok {
-			out.Status = e.Status
+		cs = &callState{
+			ctx:      callCtx,
+			host:     p.host,
+			lim:      &lim,
+			path:     req.Path,
+			start:    execStart,
+			last:     execStart,
+			units:    BaseCallUnits,
+			logger:   p.eng.logger,
+			pluginID: p.id,
 		}
-		return Response{}, out, err
+	} else {
+		callCtx, cancel = context.WithTimeout(ctx, lim.Deadline)
+		defer cancel()
+		if background {
+			// Wait while Ether is busy BEFORE taking a lane slot or plugin instance:
+			// a background job must never hold a pool instance while paused on Busy().
+			if err := WaitBackground(callCtx, lim.Busy); err != nil {
+				out.Status = StatusTimeout
+				return Response{}, out, &Error{Status: StatusTimeout, Message: err.Error(), Err: err}
+			}
+		}
+		// Strict semaphore order (jobSlots -> nonResolveSlots, or sharedWorkSlots -> svc)
+		// with LIFO defer release guarantees putLease returns the instance before
+		// freeing lane slots and prevents deadlocks.
+		if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
+			if laneErr := p.acquireLane(callCtx, p.jobSlots, req.Path); laneErr != nil {
+				out.Status = laneErr.Status
+				return Response{}, out, laneErr
+			}
+			defer func() { <-p.jobSlots }()
+		}
+		if p.nonResolveSlots != nil {
+			if laneErr := p.acquireLane(callCtx, p.nonResolveSlots, req.Path); laneErr != nil {
+				out.Status = laneErr.Status
+				return Response{}, out, laneErr
+			}
+			defer func() { <-p.nonResolveSlots }()
+		}
+		if p.sharedWorkSlots != nil && (BackgroundPoolPath(req.Path) || FrontendAdapterPath(req.Path)) {
+			if laneErr := p.acquireLane(callCtx, p.sharedWorkSlots, req.Path); laneErr != nil {
+				out.Status = laneErr.Status
+				return Response{}, out, laneErr
+			}
+			defer func() { <-p.sharedWorkSlots }()
+		}
+		cs = &callState{
+			ctx:            callCtx,
+			host:           p.host,
+			lim:            &lim,
+			path:           req.Path,
+			start:          start,
+			last:           start,
+			background:     background,
+			backgroundPool: BackgroundPoolPath(req.Path) && !req.Foreground,
+			units:          BaseCallUnits,
+			logger:         p.eng.logger,
+			pluginID:       p.id,
+		}
+		in, leaseID, err = p.svc.getForRoutePriority(callCtx, req.Path, false)
+		if err != nil {
+			if errors.Is(err, ErrPoolBusy) {
+				p.recordPoolExhaustion(req.Path)
+			}
+			out.Status = StatusTimeout
+			if e, ok := err.(*Error); ok {
+				out.Status = e.Status
+			}
+			return Response{}, out, err
+		}
 	}
 	healthy := false
 	defer func() {

@@ -195,9 +195,12 @@ omitted guest heap requests still use **32 MiB**, allocated only as needed.
 The default call/job time ceiling is **12 hours** and background compute is
 effectively unlimited (2^60 units per call); owners and manifests may lower it.
 The hosted WASM instance pool defaults to **2 instances** and manifests may
-request up to the owner ceiling (default and max **4**, `poolSize`); background
-jobs and sync calls hold at most `poolSize - 1` instances so viewer resolves,
-adapter requests and health checks retain a free instance.
+request up to the owner ceiling (default **4**, raisable up to **16**, `poolSize`);
+with `poolSize >= 3` at least one instance is reserved exclusively for playback
+resolves and background jobs hold at most `poolSize - 2`; with `poolSize == 2`
+background jobs and frontend adapters share at most one instance so resolves
+and health checks retain a free instance. Queued resolves take priority and
+start their execution deadline when an instance is acquired.
 The default download and expanded-member ceilings are **8 GiB** each, total
 archive expansion **32 GiB**, archive members **65,535**, and stored catalogue
 items **2,000,000** (`maxItems`, owner-adjustable with no upper bound). Downloads also obey

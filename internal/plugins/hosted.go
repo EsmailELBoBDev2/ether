@@ -209,7 +209,7 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 		headers = cloneHeaders(headers)
 		headers["X-Ether-Locale"] = req.Locale
 	}
-	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground})
+	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground, Deadline: req.Deadline})
 	if err != nil {
 		return Response{}, err
 	}

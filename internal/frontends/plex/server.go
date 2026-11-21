@@ -196,6 +196,7 @@ type Server struct {
 	readCaps          *readCapabilityStore
 	deliveryGrants    *deliveryGrantStore
 	recentClients     recentPartClients
+	liveManifests     liveManifestRefetches
 	extraPlay         *extraPlayStore
 	subtitleOffers    subtitleOffers
 	subtitlePicks     subtitlePicks

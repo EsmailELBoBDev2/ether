@@ -1734,6 +1734,12 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 
 // handleStartHLS is /video/:/transcode/universal/start.m3u8.
 func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
+	if id, ok := liveManifestRefetchFrom(r.Context()); ok {
+		// A native player refetching the Live TV playlist it was just handed
+		// (see authenticateLiveManifestRefetch).
+		s.serveLiveManifestRefetch(w, r, id)
+		return
+	}
 	if s.refuseCapability(w, r) {
 		return
 	}

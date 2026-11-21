@@ -162,3 +162,296 @@ func TestProbeMetadataDisabledWarmupDoesNoSourceIOUnderDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestPlayProbeMetadataWaitCap(t *testing.T) {
+	t.Parallel()
+	// Browsing ProbeMetadata remains capped at 4 s.
+	longCtx, cancelLong := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelLong()
+	if got := probeMetadataWait(longCtx); got != maxProbeMetadataWait {
+		t.Fatalf("browsing probeMetadataWait(30s) = %s, want %s", got, maxProbeMetadataWait)
+	}
+	// Play-intent re-ask wait allows up to 12 s (exceeding the 4 s browsing cap).
+	if got := playProbeMetadataWait(longCtx); got != maxPlayProbeMetadataWait {
+		t.Fatalf("playProbeMetadataWait(30s) = %s, want %s", got, maxPlayProbeMetadataWait)
+	}
+	if got := playProbeMetadataWait(context.Background()); got != maxPlayProbeMetadataWait {
+		t.Fatalf("playProbeMetadataWait(background) = %s, want %s", got, maxPlayProbeMetadataWait)
+	}
+	midCtx, cancelMid := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancelMid()
+	if got := playProbeMetadataWait(midCtx); got <= maxProbeMetadataWait || got > 8*time.Second {
+		t.Fatalf("playProbeMetadataWait(8s) = %s, want in (%s, 8s]", got, maxProbeMetadataWait)
+	}
+}
+
+type playProbeGatingResolver struct {
+	core.Resolver
+	rejectSpec bool
+	gate       <-chan struct{}
+	entered    chan struct{}
+	lastSpec   bool
+	lastPurp   string
+}
+
+func (r *playProbeGatingResolver) Resolve(ctx context.Context, req core.ResolveRequest) (*core.Resolution, error) {
+	spec := core.IsSpeculative(ctx) || core.SpeculativeIndexerWork(ctx)
+	if r.rejectSpec && spec {
+		return nil, core.ErrForegroundOnly
+	}
+	if r.entered != nil {
+		select {
+		case r.entered <- struct{}{}:
+		default:
+		}
+	}
+	if r.gate != nil {
+		select {
+		case <-r.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	r.lastSpec = core.IsSpeculative(ctx)
+	r.lastPurp = core.IndexerPurpose(ctx)
+	return r.Resolver.Resolve(ctx, req)
+}
+
+func TestProbePlayMetadataIgnoresLocalResponseWarmMissAndSpeculationOff(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	caps := defaultCaps("plezy-tv")
+	id := identity{userID: owner.ID, clientID: caps.ClientID, key: movieKey, surface: h.m.playbackSurface(string(caps.Protocol))}
+
+	// Populate a warmMiss from a failed speculative detail warm-up.
+	gating := &playProbeGatingResolver{Resolver: h.resolver, rejectSpec: true}
+	h.m.deps.Resolver = gating
+	if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}) {
+		t.Fatal("initial speculative prewarm skipped")
+	}
+	waitWarmGone(t, h, id)
+
+	// Turn off speculation/detail warm-up and pass LocalResponse, matching a
+	// detail handler with warm-ups disabled and a cached negative.
+	cfg := h.m.config()
+	cfg.Cache.DisableSpeculation = true
+	cfg.Cache.DetailWarmup = "off"
+	h.m.SetConfig(cfg)
+
+	ctx, cancel := context.WithTimeout(core.WithLocalResponse(context.Background()), 12*time.Second)
+	defer cancel()
+	if err := h.m.ProbePlayMetadata(ctx, owner, movieKey, caps); err != nil {
+		t.Fatalf("ProbePlayMetadata failed: %v", err)
+	}
+	if gating.lastSpec || gating.lastPurp != core.IndexerPurposePlayback {
+		t.Fatalf("play probe ran with speculative=%v purpose=%q, want false/%q", gating.lastSpec, gating.lastPurp, core.IndexerPurposePlayback)
+	}
+	if info, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok || info.Estimated || len(info.Streams) == 0 {
+		t.Fatalf("WarmProbeInfo missing probed streams: ok=%v info=%+v", ok, info)
+	}
+	// The following Prepare must adopt the same warm entry without re-resolving or re-probing.
+	if _, err := h.m.Prepare(context.Background(), owner, movieKey, caps); err != nil {
+		t.Fatalf("Prepare after ProbePlayMetadata: %v", err)
+	}
+	if r, p := counts(h); r != 1 || p != 1 {
+		t.Fatalf("Prepare repeated work after ProbePlayMetadata: resolves=%d probes=%d", r, p)
+	}
+}
+
+func TestProbePlayMetadataJoinsInFlightAndRetriesSpeculativeFailure(t *testing.T) {
+	t.Run("joins-and-promotes-inflight", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+		gate := make(chan struct{})
+		entered := make(chan struct{}, 1)
+		gating := &playProbeGatingResolver{Resolver: h.resolver, gate: gate, entered: entered}
+		h.m.deps.Resolver = gating
+		caps := defaultCaps("plezy-join")
+
+		if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}) {
+			t.Fatal("speculative prewarm skipped")
+		}
+		<-entered
+
+		done := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer cancel()
+			done <- h.m.ProbePlayMetadata(ctx, owner, movieKey, caps)
+		}()
+
+		// Wait until ProbePlayMetadata promotes the in-flight entry before releasing Resolve.
+		id := identity{userID: owner.ID, clientID: caps.ClientID, key: movieKey, surface: h.m.playbackSurface(string(caps.Protocol))}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			h.m.mu.Lock()
+			e := h.m.warm[id]
+			h.m.mu.Unlock()
+			if e != nil && e.isPromoted() {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(gate)
+
+		if err := <-done; err != nil {
+			t.Fatalf("ProbePlayMetadata join failed: %v", err)
+		}
+		if r, p := counts(h); r != 1 || p != 1 {
+			t.Fatalf("joined flight repeated work: resolves=%d probes=%d", r, p)
+		}
+	})
+
+	t.Run("retries-after-speculative-failure", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+		specGate := make(chan struct{})
+		specEntered := make(chan struct{}, 1)
+		// First resolve (speculative) blocks until Play joins, then fails;
+		// the foreground retry must run and succeed.
+		h.m.deps.Resolver = &playProbeFuncResolver{
+			Resolver: h.resolver,
+			fn: func(ctx context.Context, req core.ResolveRequest) (*core.Resolution, error) {
+				if core.IndexerPurpose(ctx) == core.IndexerPurposeWarmup {
+					select {
+					case specEntered <- struct{}{}:
+					default:
+					}
+					<-specGate
+					return nil, core.ErrForegroundOnly
+				}
+				return h.resolver.Resolve(ctx, req)
+			},
+		}
+		caps := defaultCaps("plezy-retry")
+
+		if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}) {
+			t.Fatal("speculative prewarm skipped")
+		}
+		<-specEntered
+
+		done := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer cancel()
+			done <- h.m.ProbePlayMetadata(ctx, owner, movieKey, caps)
+		}()
+
+		id := identity{userID: owner.ID, clientID: caps.ClientID, key: movieKey, surface: h.m.playbackSurface(string(caps.Protocol))}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			h.m.mu.Lock()
+			e := h.m.warm[id]
+			h.m.mu.Unlock()
+			if e != nil && e.isPromoted() {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(specGate)
+
+		if err := <-done; err != nil {
+			t.Fatalf("ProbePlayMetadata retry failed: %v", err)
+		}
+		if info, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok || info.Estimated || len(info.Streams) == 0 {
+			t.Fatalf("retry did not publish probed tracks: ok=%v info=%+v", ok, info)
+		}
+	})
+}
+
+type playProbeFuncResolver struct {
+	core.Resolver
+	fn func(context.Context, core.ResolveRequest) (*core.Resolution, error)
+}
+
+func (r *playProbeFuncResolver) Resolve(ctx context.Context, req core.ResolveRequest) (*core.Resolution, error) {
+	return r.fn(ctx, req)
+}
+
+func TestProbePlayMetadataCancellationKeepsFlight(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	h.m.deps.Resolver = &playProbeGatingResolver{Resolver: h.resolver, gate: gate, entered: entered}
+	caps := defaultCaps("plezy-cancel")
+
+	cctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- h.m.ProbePlayMetadata(cctx, owner, movieKey, caps)
+	}()
+	<-entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled ProbePlayMetadata returned %v, want context.Canceled", err)
+	}
+	close(gate)
+	waitWarm(t, h, owner.ID, caps.ClientID, movieKey)
+	if _, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok {
+		t.Fatal("shared flight lost after caller cancelled")
+	}
+}
+
+func TestTakeWarmResolutionAdoptsPlayProbeForClientlessStream(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	h.m.deps.Resolver = &playProbeGatingResolver{Resolver: h.resolver, gate: gate, entered: entered}
+	plezyCaps := defaultCaps("plezy-tv")
+
+	// Metadata re-ask starts the shared playProbe flight and then gives up its wait.
+	cctx, cancel := context.WithCancel(context.Background())
+	metaDone := make(chan error, 1)
+	go func() {
+		metaDone <- h.m.ProbePlayMetadata(cctx, owner, movieKey, plezyCaps)
+	}()
+	<-entered
+	cancel()
+	if err := <-metaDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled ProbePlayMetadata returned %v, want context.Canceled", err)
+	}
+
+	// Clientless libmpv file.mkv arrives under a synthetic native-* device ID
+	// while the flight is still resolving and must join and adopt it directly.
+	nativeCaps := defaultCaps("native-deadbeef")
+	nativeID := identity{
+		userID:   owner.ID,
+		clientID: nativeCaps.ClientID,
+		key:      movieKey,
+		surface:  h.m.playbackSurface(string(nativeCaps.Protocol)),
+	}
+	profile := h.m.selectProfile(nativeCaps, owner, movieKey)
+	takeDone := make(chan *warmEntry, 1)
+	go func() {
+		takeDone <- h.m.takeWarmResolution(context.Background(), nativeID, profile, nativeCaps, "", "")
+	}()
+	close(gate)
+
+	warm := <-takeDone
+	if warm == nil || warm.res == nil || warm.probe == nil {
+		t.Fatalf("clientless stream did not adopt in-flight playProbe warm entry: %+v", warm)
+	}
+	if r, p := counts(h); r != 1 || p != 1 {
+		t.Fatalf("clientless stream repeated work: resolves=%d probes=%d, want 1/1", r, p)
+	}
+
+	// A non-playProbe, non-promoted warm entry stays scoped to its own clientID.
+	h2 := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	otherCaps := defaultCaps("other-client")
+	if !h2.m.Prewarm(context.Background(), owner, movieKey, otherCaps, core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("speculative prewarm did not start")
+	}
+	waitWarm(t, h2, owner.ID, otherCaps.ClientID, movieKey)
+	otherNative := defaultCaps("native-other")
+	otherNativeID := identity{
+		userID:   owner.ID,
+		clientID: otherNative.ClientID,
+		key:      movieKey,
+		surface:  h2.m.playbackSurface(string(otherNative.Protocol)),
+	}
+	if got := h2.m.takeWarmResolution(context.Background(), otherNativeID, h2.m.selectProfile(otherNative, owner, movieKey), otherNative, "", ""); got != nil {
+		t.Fatalf("non-playProbe speculative entry cross-adopted by another clientID: %+v", got)
+	}
+}

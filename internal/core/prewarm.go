@@ -85,3 +85,14 @@ type WarmProbeWaiter interface {
 type MetadataProber interface {
 	ProbeMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
+
+// PlayMetadataProber joins or starts the shared resolve+probe flight for a
+// client's play-time metadata re-ask (such as Plezy's first play) and waits
+// until the probe lands or the caller's deadline/context expires. Unlike
+// MetadataProber (detail browsing), this carries explicit play intent: it
+// runs under playback resolution rules, bypasses speculative warm-up gates
+// and negative memos, and publishes into the warm cache so the following
+// stream request adopts the same resolved source and probe.
+type PlayMetadataProber interface {
+	ProbePlayMetadata(context.Context, *User, RatingKey, ClientCaps) error
+}

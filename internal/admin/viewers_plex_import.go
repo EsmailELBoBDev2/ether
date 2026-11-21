@@ -143,8 +143,8 @@ func compactName(s string) string {
 // home users in strict priority order:
 // 1. Exact PlexID match (when !acct.Owner && acct.ID > 0).
 // 2. Unique case-insensitive Username or Email match.
-// 3. Unique case-insensitive Title match.
-// 4. Unique space-insensitive Username or Title match.
+// 3. Unique case-insensitive Title or FriendlyName match.
+// 4. Unique space-insensitive Username, Title, or FriendlyName match.
 func resolvePlexUser(acct plexwatch.PMSAccount, plexUsers []plextv.SharedUser) *plextv.SharedUser {
 	if acct.Owner || len(plexUsers) == 0 {
 		return nil
@@ -177,7 +177,8 @@ func resolvePlexUser(acct plexwatch.PMSAccount, plexUsers []plextv.SharedUser) *
 	var byTitle []*plextv.SharedUser
 	for i := range plexUsers {
 		u := &plexUsers[i]
-		if u.Title != "" && strings.EqualFold(strings.TrimSpace(u.Title), target) {
+		if (u.Title != "" && strings.EqualFold(strings.TrimSpace(u.Title), target)) ||
+			(u.FriendlyName != "" && strings.EqualFold(strings.TrimSpace(u.FriendlyName), target)) {
 			byTitle = append(byTitle, u)
 		}
 	}
@@ -192,7 +193,8 @@ func resolvePlexUser(acct plexwatch.PMSAccount, plexUsers []plextv.SharedUser) *
 	for i := range plexUsers {
 		u := &plexUsers[i]
 		if (u.Username != "" && compactName(u.Username) == wantCompact) ||
-			(u.Title != "" && compactName(u.Title) == wantCompact) {
+			(u.Title != "" && compactName(u.Title) == wantCompact) ||
+			(u.FriendlyName != "" && compactName(u.FriendlyName) == wantCompact) {
 			byCompact = append(byCompact, u)
 		}
 	}
@@ -480,6 +482,9 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 						status = "imported"
 					}
 				}
+				if newViewerID == 0 && resolved == nil {
+					resolved = resolvePlexUser(*acct, h.listPlexUsers(r.Context()))
+				}
 			}
 		}
 		// If resolved on Plex.tv but not yet in auth_users (e.g. pending share),
@@ -493,7 +498,11 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 				}
 			}
 			if newViewerID == 0 && h.deps.EnsurePlexFriend != nil {
-				if id, err := h.deps.EnsurePlexFriend(r.Context(), *resolved); err == nil && id > 0 {
+				friend := *resolved
+				if strings.TrimSpace(friend.Title) == "" {
+					friend.Title = strings.TrimSpace(friend.FriendlyName)
+				}
+				if id, err := h.deps.EnsurePlexFriend(r.Context(), friend); err == nil && id > 0 {
 					newViewerID = id
 					status = "imported"
 				}
@@ -743,6 +752,10 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 						}
 					}
 				}
+				if vID == 0 && resolved == nil && sharedPlex {
+					plexUsers = h.listPlexUsers(r.Context())
+					resolved = resolvePlexUser(acct, plexUsers)
+				}
 				if vID == 0 && resolved != nil {
 					for i := range viewers {
 						if viewers[i].PlexID == resolved.PlexID {
@@ -752,7 +765,11 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 						}
 					}
 					if vID == 0 && h.deps.EnsurePlexFriend != nil {
-						if id, err := h.deps.EnsurePlexFriend(r.Context(), *resolved); err == nil && id > 0 {
+						friend := *resolved
+						if strings.TrimSpace(friend.Title) == "" {
+							friend.Title = strings.TrimSpace(friend.FriendlyName)
+						}
+						if id, err := h.deps.EnsurePlexFriend(r.Context(), friend); err == nil && id > 0 {
 							vID = id
 							status = "imported"
 							viewers = append(viewers, ViewerRecord{
@@ -760,7 +777,7 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 									ID:       id,
 									PlexID:   resolved.PlexID,
 									Username: resolved.Username,
-									Title:    firstNonEmpty(resolved.Title, resolved.Username, name),
+									Title:    firstNonEmpty(resolved.Title, resolved.FriendlyName, resolved.Username, name),
 									Email:    resolved.Email,
 								},
 								Origin:  "friend",

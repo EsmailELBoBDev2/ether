@@ -2867,11 +2867,16 @@ const (
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `path` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | may be omitted (see validation for conditions) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) |  |
+| `code` | `string` | may be omitted (see validation for conditions) |  |
 | `state` | `string` | emitted (validation may require a value) | running, done, canceled, error |
 | `progress` | `string` | may be omitted (see validation for conditions) |  |
+| `outcome` | `string` | may be omitted (see validation for conditions) |  |
 | `error` | `string` | may be omitted (see validation for conditions) |  |
 | `attempts` | `int` | emitted (validation may require a value) |  |
 | `started` | `time.Time` | emitted (validation may require a value) |  |
+| `finished` | `time.Time` | may be omitted (see validation for conditions) |  |
 | `totalLimitMs` | `int64` | emitted (validation may require a value) |  |
 | `attemptLimit` | `int` | emitted (validation may require a value) |  |
 
@@ -2883,11 +2888,16 @@ const (
 // KV when they must survive a server restart; tokens are only passed between calls.
 type ActionJobStatus struct {
 	Path         string    `json:"path"`
+	Label        string    `json:"label,omitempty"`
+	Kind         string    `json:"kind,omitempty"`
+	Code         string    `json:"code,omitempty"`
 	State        string    `json:"state"` // running, done, canceled, error
 	Progress     string    `json:"progress,omitempty"`
+	Outcome      string    `json:"outcome,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	Attempts     int       `json:"attempts"`
 	Started      time.Time `json:"started"`
+	Finished     time.Time `json:"finished,omitzero"`
 	TotalLimitMS int64     `json:"totalLimitMs"`
 	AttemptLimit int       `json:"attemptLimit"`
 }
@@ -2923,6 +2933,164 @@ func (j *actionJob) finish(state, reason string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.status.State, j.status.Error = state, reason
+	j.status.Finished = time.Now().UTC()
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#HostJobHandle.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/action_jobs.go#HostJobHandle
+
+``````
+// HostJobHandle tracks a host-driven background job (such as a plugin library
+// sync) in the plugin's job list so Activity and Overview show live progress
+// and final outcome alongside plugin-started jobs.
+type HostJobHandle struct {
+	m        *Manager
+	pluginID string
+	job      *actionJob
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*HostJobHandle.SetProgress
+
+``````
+// SetProgress updates the human-readable progress line on a host-tracked job.
+func (h *HostJobHandle) SetProgress(progress string) {
+	if h == nil || h.job == nil {
+		return
+	}
+	if len(progress) > 1024 {
+		progress = progress[:1024]
+	}
+	h.job.mu.Lock()
+	h.job.status.Progress = progress
+	h.job.status.Attempts++
+	h.job.mu.Unlock()
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*HostJobHandle.Finish
+
+``````
+// Finish marks a host-tracked job terminal with optional code, outcome and error.
+func (h *HostJobHandle) Finish(state, code, outcome, errMsg string) {
+	if h == nil || h.job == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if h.m != nil && h.m.now != nil {
+		now = h.m.now()
+	}
+	if len(outcome) > 1024 {
+		outcome = outcome[:1024]
+	}
+	if len(errMsg) > 1024 {
+		errMsg = errMsg[:1024]
+	}
+	h.job.mu.Lock()
+	h.job.status.State = state
+	h.job.status.Code = code
+	h.job.status.Outcome = outcome
+	h.job.status.Error = errMsg
+	h.job.status.Finished = now
+	if state == "done" {
+		h.job.status.Progress = ""
+	}
+	h.job.mu.Unlock()
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*Manager.BeginHostJob
+
+``````
+// BeginHostJob records a host-managed background job for pluginID in m.jobs
+// without consuming the plugin's ActionJobConcurrency slots. Cancelling the job
+// from the Activity API calls cancel.
+func (m *Manager) BeginHostJob(pluginID, dedupKey, routePath, label, kind string, cancel context.CancelFunc) *HostJobHandle {
+	if m == nil || pluginID == "" || dedupKey == "" {
+		return nil
+	}
+	if cancel == nil {
+		cancel = func() {}
+	}
+	key := pluginID + "|host|" + dedupKey
+	m.jobsMu.Lock()
+	defer m.jobsMu.Unlock()
+	count := 0
+	oldestKey := ""
+	var oldest time.Time
+	m.jobs.Range(func(k, v any) bool {
+		ks := k.(string)
+		if !strings.HasPrefix(ks, pluginID+"|") {
+			return true
+		}
+		s := v.(*actionJob).snapshot()
+		count++
+		if s.State != "running" && (oldestKey == "" || s.Started.Before(oldest)) {
+			oldestKey, oldest = ks, s.Started
+		}
+		return true
+	})
+	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {
+		m.jobs.Delete(oldestKey)
+	}
+	started := time.Now().UTC()
+	if m.now != nil {
+		started = m.now()
+	}
+	done := make(chan struct{})
+	close(done)
+	j := &actionJob{
+		cancel: cancel,
+		done:   done,
+		status: ActionJobStatus{
+			Path:    routePath,
+			Label:   label,
+			Kind:    kind,
+			State:   "running",
+			Started: started,
+		},
+	}
+	m.jobs.Store(key, j)
+	return &HostJobHandle{m: m, pluginID: pluginID, job: j}
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*Manager.UpdateHostJob
+
+``````
+// UpdateHostJob updates an existing non-running host-managed job (for example
+// when the owner acknowledges a paused delete guard and chooses to keep items).
+func (m *Manager) UpdateHostJob(pluginID, dedupKey, state, code, outcome, errMsg string) {
+	if m == nil || pluginID == "" || dedupKey == "" {
+		return
+	}
+	key := pluginID + "|host|" + dedupKey
+	v, ok := m.jobs.Load(key)
+	if !ok {
+		return
+	}
+	j := v.(*actionJob)
+	now := time.Now().UTC()
+	if m.now != nil {
+		now = m.now()
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.status.State == "running" {
+		return
+	}
+	j.status.State = state
+	j.status.Code = code
+	j.status.Outcome = outcome
+	j.status.Error = errMsg
+	j.status.Progress = ""
+	j.status.Finished = now
 }
 ``````
 
@@ -3037,6 +3205,7 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 		return false, nil
 	}
 	resolverPrefix := pluginID + "|resolver|"
+	hostPrefix := pluginID + "|host|"
 	activeAction, count := 0, 0
 	oldestKey := ""
 	var oldest time.Time
@@ -3048,7 +3217,7 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 		s := v.(*actionJob).snapshot()
 		count++
 		if s.State == "running" {
-			if !strings.HasPrefix(ks, resolverPrefix) {
+			if !strings.HasPrefix(ks, resolverPrefix) && !strings.HasPrefix(ks, hostPrefix) {
 				activeAction++
 			}
 		} else if oldestKey == "" || s.Started.Before(oldest) {
@@ -3156,6 +3325,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 	}
 	isResolver := suffix != ""
 	resolverPrefix := pluginID + "|resolver|"
+	hostPrefix := pluginID + "|host|"
 	activeAction, activeResolver, count := 0, 0, 0
 	oldestKey := ""
 	var oldest time.Time
@@ -3169,7 +3339,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 		if s.State == "running" {
 			if strings.HasPrefix(ks, resolverPrefix) {
 				activeResolver++
-			} else {
+			} else if !strings.HasPrefix(ks, hostPrefix) {
 				activeAction++
 			}
 		} else if oldestKey == "" || s.Started.Before(oldest) {
@@ -3403,6 +3573,8 @@ func (m *Manager) handleActionJobs(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(k.(string), id+"|") {
 			s := v.(*actionJob).snapshot()
 			s.Progress = m.store.redactKnown(r.Context(), id, s.Progress)
+			s.Outcome = m.store.redactKnown(r.Context(), id, s.Outcome)
+			s.Error = m.store.redactKnown(r.Context(), id, s.Error)
 			jobs = append(jobs, s)
 		}
 		return true
@@ -27721,6 +27893,7 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 				}
 				metaBytes, err := json.Marshal(meta)
 				if err != nil {
+					ab.Free()
 					return nil, err
 				}
 				obj := qc.NewObject()
@@ -27732,29 +27905,37 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 			}
 		})
 	}
-	if _, err := qc.Eval("ether-codecs.js", qjs.Code(codecPrelude)); err != nil {
+	if v, err := qc.Eval("ether-codecs.js", qjs.Code(codecPrelude)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "codecs prelude: " + err.Error(), Trap: true}
+	} else {
+		v.Free()
 	}
-	if _, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
+	if v, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "prelude: " + err.Error(), Trap: true}
+	} else {
+		v.Free()
 	}
-	if _, err := qc.Eval("plugin.js", qjs.Code(source)); err != nil {
+	if v, err := qc.Eval("plugin.js", qjs.Code(source)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "load plugin: " + firstLine(err.Error()), Trap: false}
+	} else {
+		v.Free()
 	}
 	v, err := qc.Eval("ether-probe.js", qjs.Code(exportProbe))
 	if err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "probe exports: " + err.Error(), Trap: true}
 	}
+	probeJSON := v.String()
+	v.Free()
 	var found struct {
 		Handle    bool `json:"handle"`
 		RankKey   bool `json:"rank_key"`
 		CondMatch bool `json:"cond_match"`
 	}
-	if err := json.Unmarshal([]byte(v.String()), &found); err != nil {
+	if err := json.Unmarshal([]byte(probeJSON), &found); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "probe exports: " + err.Error(), Trap: true}
 	}
@@ -27880,7 +28061,11 @@ func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte)
 		}
 	}()
 	g := in.qc.Global()
-	v, err := in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
+	fn := in.globalFn("__ether_dispatch_handle")
+	reqVal := in.qc.NewString(string(reqJSON))
+	v, err := in.qc.Invoke(fn, g, reqVal)
+	reqVal.Free()
+	fn.Free()
 	if err != nil {
 		return nil, classifyJSError(ctx, cs, err)
 	}
@@ -27893,8 +28078,9 @@ func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte)
 	if v == nil {
 		return []byte("{}"), nil
 	}
-	defer v.Free()
-	return []byte(v.String()), nil
+	res := v.String()
+	v.Free()
+	return []byte(res), nil
 }
 ``````
 
@@ -27933,10 +28119,19 @@ func (in *jsInstance) loadBatch(ctx context.Context, cs *callState, cands [][]by
 	}
 	loadCtx, cancel := context.WithTimeout(ctx, lim.hotKill())
 	defer cancel()
-	_, err := in.jsCall(loadCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_load_batch"), in.qc.Global(),
-			in.qc.NewString(string(candsJSON)), in.qc.NewString(string(arg)))
+	v, err := in.jsCall(loadCtx, cs, func() (*qjs.Value, error) {
+		fn := in.globalFn("__ether_load_batch")
+		candsVal := in.qc.NewString(string(candsJSON))
+		argVal := in.qc.NewString(string(arg))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), candsVal, argVal)
+		argVal.Free()
+		candsVal.Free()
+		fn.Free()
+		return res, err
 	})
+	if v != nil {
+		v.Free()
+	}
 	return err
 }
 ``````
@@ -27953,14 +28148,22 @@ func (in *jsInstance) rankBatch(ctx context.Context, cs *callState, cands [][]by
 	runtime.LockOSThread() // the budget reads this thread's CPU clock
 	defer runtime.UnlockOSThread()
 	v, err := in.jsCall(runCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_rank_batch"), in.qc.Global(),
-			in.qc.NewFloat64(budgetMs(lim.RankPerCandidate)), in.qc.NewFloat64(budgetMs(lim.RankBatch)))
+		fn := in.globalFn("__ether_rank_batch")
+		perVal := in.qc.NewFloat64(budgetMs(lim.RankPerCandidate))
+		batchVal := in.qc.NewFloat64(budgetMs(lim.RankBatch))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), perVal, batchVal)
+		batchVal.Free()
+		perVal.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	raw := v.String()
+	v.Free()
 	var out []*int64
-	if uerr := json.Unmarshal([]byte(v.String()), &out); uerr != nil {
+	if uerr := json.Unmarshal([]byte(raw), &out); uerr != nil {
 		return nil, &Error{Status: StatusError, Message: "rank_key returned a non-numeric result: " + uerr.Error()}
 	}
 	if len(out) != len(cands) {
@@ -28008,14 +28211,24 @@ func (in *jsInstance) condBatch(ctx context.Context, cs *callState, cands [][]by
 	runtime.LockOSThread() // the budget reads this thread's CPU clock
 	defer runtime.UnlockOSThread()
 	v, err := in.jsCall(runCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_cond_batch"), in.qc.Global(), in.qc.NewString(op),
-			in.qc.NewFloat64(budgetMs(lim.RankPerCandidate)), in.qc.NewFloat64(budgetMs(lim.RankBatch)))
+		fn := in.globalFn("__ether_cond_batch")
+		opVal := in.qc.NewString(op)
+		perVal := in.qc.NewFloat64(budgetMs(lim.RankPerCandidate))
+		batchVal := in.qc.NewFloat64(budgetMs(lim.RankBatch))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), opVal, perVal, batchVal)
+		batchVal.Free()
+		perVal.Free()
+		opVal.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	raw := v.String()
+	v.Free()
 	var out []*bool
-	if err := json.Unmarshal([]byte(v.String()), &out); err != nil || len(out) != len(cands) {
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out) != len(cands) {
 		return nil, &Error{Status: StatusError, Message: "invalid condition batch result"}
 	}
 	return out, nil
@@ -28028,14 +28241,23 @@ func (in *jsInstance) condBatch(ctx context.Context, cs *callState, cands [][]by
 func (in *jsInstance) condOne(ctx context.Context, cs *callState, cand []byte, op string, val []byte) (bool, *Error) {
 	v, err := in.jsCall(ctx, cs, func() (*qjs.Value, error) {
 		g := in.qc.Global()
+		fn := in.globalFn("cond_match")
 		c := in.qc.ParseJSON(string(cand))
+		opVal := in.qc.NewString(op)
 		value := in.qc.ParseJSON(string(val))
-		return in.qc.Invoke(in.globalFn("cond_match"), g, c, in.qc.NewString(op), value)
+		res, err := in.qc.Invoke(fn, g, c, opVal, value)
+		value.Free()
+		opVal.Free()
+		c.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return false, err
 	}
-	return v.Bool(), nil
+	b := v.Bool()
+	v.Free()
+	return b, nil
 }
 ``````
 
@@ -28091,7 +28313,7 @@ func (in *jsInstance) installDispatch() (err error) {
 			err = &Error{Status: StatusError, Message: fmt.Sprintf("install dispatch: %v", r), Trap: true}
 		}
 	}()
-	_, err2 := in.qc.Eval("ether-dispatch.js", qjs.Code(`
+	v, err2 := in.qc.Eval("ether-dispatch.js", qjs.Code(`
 globalThis.__ether_dispatch_handle = (reqJson) => {
   const res = handle(JSON.parse(reqJson));
   if (res && typeof res.then === "function") return res.then((r) => JSON.stringify(r == null ? {} : r));
@@ -28100,6 +28322,7 @@ globalThis.__ether_dispatch_handle = (reqJson) => {
 	if err2 != nil {
 		return &Error{Status: StatusError, Message: "install dispatch: " + err2.Error(), Trap: true}
 	}
+	v.Free()
 	return nil
 }
 ``````

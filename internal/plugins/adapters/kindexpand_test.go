@@ -492,3 +492,120 @@ func TestKindCatalogExpandMissingRouteIsNoOp(t *testing.T) {
 		t.Fatalf("after 501 no-op: Expanding=%v calls=%d, want false and 1", page2.Expanding, calls.Load())
 	}
 }
+
+func TestKindCatalogMaybeExpandBoundsSlowFirstOpenAndContinuesInBackground(t *testing.T) {
+	// Default first-open wait must stay bounded (~1.8s, never 20s).
+	if got := adapters.FirstOpenWait(); got <= 0 || got > 2*time.Second {
+		t.Fatalf("default FirstOpenWait = %v, want bounded (0, 2s]", got)
+	}
+
+	h := newKindTestHarness(t, 0, nil)
+	ctx := context.Background()
+	const pluginID = "community.example.slowpersonexpand"
+
+	releaseExpand := make(chan struct{})
+	startedExpand := make(chan core.KindExpandRequest, 2)
+	h.rt.mu.Lock()
+	h.rt.routes["/ether/v1/kinds/games/expand"] = func(req plugins.Request) (plugins.Response, error) {
+		var er core.KindExpandRequest
+		if err := json.Unmarshal(req.Body, &er); err != nil {
+			return plugins.Response{Status: http.StatusBadRequest}, nil
+		}
+		startedExpand <- er
+		<-releaseExpand
+		body, _ := json.Marshal(core.KindExpandResponse{
+			Items: []core.KindItem{{
+				ID:       "g-expanded",
+				Level:    "game",
+				Title:    "Luigi's Mansion",
+				Playable: true,
+				Fields: map[string]json.RawMessage{
+					"voiceCast": json.RawMessage(`["Charles Martinet"]`),
+				},
+			}},
+		})
+		return plugins.Response{Status: http.StatusOK, Body: body}, nil
+	}
+	h.rt.mu.Unlock()
+
+	installStudioManifest(t, h.mgr, gamesExpandManifest(pluginID, map[string]any{
+		"facets": []string{"voiceCast"},
+	}), gamesExpandLocaleFiles())
+
+	var gameLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			gameLib = lib
+		}
+	}
+	if _, err := h.mgr.HostFor(pluginID).KindUpsert(ctx, "games", []core.KindItem{{
+		ID:       "g1",
+		Level:    "game",
+		Title:    "Super Mario 64",
+		Playable: true,
+		Fields: map[string]json.RawMessage{
+			"voiceCast": json.RawMessage(`["Charles Martinet"]`),
+		},
+	}}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+	fp, err := h.catalog.FacetPeople(ctx, gameLib, "voiceCast", "name", "", 0, 10)
+	if err != nil || len(fp.Items) != 1 {
+		t.Fatalf("FacetPeople = %+v, err=%v", fp, err)
+	}
+	personID := fp.Items[0].PersonID
+
+	// Bound first-open wait to 120ms while the plugin /expand stays blocked:
+	// cold open must return promptly with Expanding=true and existing stored item.
+	defer adapters.SetFirstOpenWait(120 * time.Millisecond)()
+	exp := h.experienceFor(t, "vela")
+	viewer := h.users[1]
+	viewID := strconv.FormatInt(int64(gameLib.ID), 10)
+
+	start := time.Now()
+	coldPage, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
+		Filter: core.Filter{Person: personID},
+		Limit:  1,
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("cold LibraryItems: %v", err)
+	}
+	if !coldPage.Expanding || len(coldPage.Items) != 1 {
+		t.Fatalf("cold page = %+v, want Expanding=true and 1 stored item", coldPage)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("cold LibraryItems took %v, expected bounded wait ~120ms", elapsed)
+	}
+	select {
+	case <-startedExpand:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected background expand to start")
+	}
+
+	// Unblock background expansion and confirm it finishes and populates warm reads.
+	close(releaseExpand)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok, _ := h.items.GetFacetExpansion(ctx, pluginID, "games", "voiceCast", strconv.FormatInt(personID, 10))
+		if ok && rec.State == pluginitems.ExpansionStateDone && !h.mgr.IsExpandJobRunning(pluginID, "games\x00voiceCast\x00"+strconv.FormatInt(personID, 10)) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	warmStart := time.Now()
+	warmPage, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
+		Filter: core.Filter{Person: personID},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("warm LibraryItems: %v", err)
+	}
+	if warmPage.Expanding || len(warmPage.Items) != 2 {
+		t.Fatalf("warm page = %+v, want Expanding=false and 2 items", warmPage)
+	}
+	if time.Since(warmStart) > 500*time.Millisecond {
+		t.Fatalf("warm LibraryItems took %v, expected fast local read", time.Since(warmStart))
+	}
+}

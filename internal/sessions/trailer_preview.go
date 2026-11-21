@@ -1,17 +1,20 @@
 package sessions
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 )
 
 type PreviewRequest = frontend.TrailerPreviewRequest
@@ -375,7 +378,7 @@ func (b *Broker) servePreview(protocol frontend.Protocol, access *frontend.Sessi
 	defer done()
 	w.Header().Set("Content-Type", s.grant.MIMEType)
 	w.Header().Set("Cache-Control", "private, no-store")
-	http.ServeContent(w, r.WithContext(ctx), "preview.mp4", info.ModTime(), previewReadSeeker{File: file, ctx: ctx})
+	rangefile.Serve(w, r.WithContext(ctx), "preview.mp4", cmp.Or(s.source.SourceGeneration, filepath.Base(file.Name())), info.Size(), info.ModTime(), previewReadSeeker{File: file, ctx: ctx})
 	return true
 }
 

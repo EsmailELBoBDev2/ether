@@ -268,12 +268,22 @@ func TestVelaBookDetailCanPlayFalseRefusesPlaybackAndReadsViaGrant(t *testing.T)
 		t.Fatalf("range body mismatch: got %x want %x", rangeRec.Body.Bytes(), epubBytes[:10])
 	}
 
-	// HEAD also succeeds with exact MIME.
+	// HEAD also succeeds with exact MIME and matching strong ETag for If-Range resume.
 	headReq := httptest.NewRequest(http.MethodHead, grant.URL, nil)
 	headRec := httptest.NewRecorder()
 	inst.Handler().ServeHTTP(headRec, headReq)
-	if headRec.Code != http.StatusOK || headRec.Header().Get("Content-Type") != "application/epub+zip" {
-		t.Fatalf("HEAD read ticket = (%d, %q)", headRec.Code, headRec.Header().Get("Content-Type"))
+	readETag := headRec.Header().Get("ETag")
+	if headRec.Code != http.StatusOK || headRec.Header().Get("Content-Type") != "application/epub+zip" ||
+		readETag == "" || strings.HasPrefix(readETag, "W/") || readETag != rangeRec.Header().Get("ETag") {
+		t.Fatalf("HEAD read ticket = (%d, %q, etag=%q vs %q)", headRec.Code, headRec.Header().Get("Content-Type"), readETag, rangeRec.Header().Get("ETag"))
+	}
+	ifRangeReq := httptest.NewRequest(http.MethodGet, grant.URL, nil)
+	ifRangeReq.Header.Set("Range", "bytes=10-19")
+	ifRangeReq.Header.Set("If-Range", readETag)
+	ifRangeRec := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(ifRangeRec, ifRangeReq)
+	if ifRangeRec.Code != http.StatusPartialContent || !bytes.Equal(ifRangeRec.Body.Bytes(), epubBytes[10:20]) {
+		t.Fatalf("If-Range read ticket = (%d, len=%d)", ifRangeRec.Code, ifRangeRec.Body.Len())
 	}
 
 	// 5. Non-book title refused on /read with 400 not_readable.

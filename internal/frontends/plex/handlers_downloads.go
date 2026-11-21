@@ -1,11 +1,13 @@
 package plex
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -524,12 +527,92 @@ func (s *Server) handleDownloadItemDecision(w http.ResponseWriter, r *http.Reque
 	}
 	s.downloads.Lock()
 	m := itemModel(it)
+	status, size, dur, vCodec, aCodec := it.Status, it.Size, it.Duration, it.VideoCodec, it.AudioCodec
 	s.downloads.Unlock()
 	mc := s.itemContainer(t.Type)
-	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true})
+	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true, session: true})
 	decisionItem(&md)
+	if len(md.Media) > 0 {
+		chosen := md.Media[0]
+		chosen.Selected = model.Ptr(true)
+		chosen.SetAlphabetical()
+		if len(chosen.Part) > 0 {
+			chosen.Part[0].Selected = model.Ptr(true)
+			chosen.Part[0].SetAlphabetical()
+			for i := range chosen.Part[0].Stream {
+				chosen.Part[0].Stream[i].SetAlphabetical()
+			}
+		}
+		if status != downloadDeciding && status != downloadError {
+			chosen.Container = "mp4"
+			chosen.Protocol = "http"
+			chosen.OptimizedForStreaming = model.Ptr(1)
+			if dur > 0 {
+				chosen.Duration = ms(dur)
+				md.Duration = chosen.Duration
+			}
+			if vCodec != "" {
+				chosen.VideoCodec = plexCodec(vCodec)
+			}
+			if aCodec != "" {
+				chosen.AudioCodec = plexCodec(aCodec)
+			}
+			if size > 0 && dur > 0 {
+				if sec := dur.Seconds(); sec > 0 {
+					if kbps := int(float64(size*8) / 1000 / sec); kbps > 0 {
+						chosen.Bitrate = kbps
+					}
+				}
+			}
+			if len(chosen.Part) > 0 {
+				part := &chosen.Part[0]
+				part.Decision = "transcode"
+				part.Protocol = "http"
+				part.Container = "mp4"
+				part.Key = ""
+				part.File = ""
+				part.OptimizedForStreaming = model.Ptr(true)
+				if size > 0 {
+					part.Size = size
+				} else {
+					part.Size = 0
+				}
+				if dur > 0 {
+					part.Duration = ms(dur)
+				}
+				videoMarked, audioMarked := false, false
+				for i := range part.Stream {
+					switch part.Stream[i].StreamType {
+					case 1:
+						if !videoMarked {
+							part.Stream[i].Decision = "copy"
+							part.Stream[i].Location = "direct"
+							videoMarked = true
+						}
+					case 2:
+						if part.Stream[i].Selected != nil && *part.Stream[i].Selected {
+							part.Stream[i].Decision = "copy"
+							part.Stream[i].Location = "direct"
+							audioMarked = true
+						}
+					}
+				}
+				if !audioMarked {
+					for i := range part.Stream {
+						if part.Stream[i].StreamType == 2 {
+							part.Stream[i].Decision = "copy"
+							part.Stream[i].Location = "direct"
+							break
+						}
+					}
+				}
+			}
+		}
+		md.Media = []model.Media{chosen}
+	}
 	mc.Metadata = []model.Metadata{md}
 	mc.Size = 1
+	mc.SetDecision()
 	dr := m.Decision
 	mc.Extra = []model.Attr{
 		model.A("directPlayDecisionCode", dr.DirectPlayDecisionCode),
@@ -541,11 +624,15 @@ func (s *Server) handleDownloadItemDecision(w http.ResponseWriter, r *http.Reque
 		model.A("mdeDecisionCode", dr.MDEDecisionCode),
 		model.A("mdeDecisionText", dr.MDEDecisionText),
 	}
+	if rs := cmp.Or(pr.SessionID, pr.ClientID); rs != "" {
+		mc.Extra = append(mc.Extra, model.A("resourceSession", rs))
+	}
 	s.write(w, r, mc)
 }
 
 // GET /downloadQueue/{queue}/item/{item}/media — the remuxed MP4 with
-// Range support; 503 + Retry-After while it is still being produced.
+// Range support and stable validators; 503 + Retry-After while it is still
+// being produced.
 func (s *Server) handleDownloadItemMedia(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDownloads(w, r) {
 		return
@@ -586,7 +673,10 @@ func (s *Server) handleDownloadItemMedia(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Content-Disposition", contentDisposition(name))
 	cw := s.newCountWriter(w, r)
-	http.ServeContent(cw, r, name, readyAt, f)
+	if err := rangefile.ServeFile(cw, r, name, filepath.Base(p), readyAt, f); err != nil {
+		writeHTTPError(w, http.StatusGone)
+		return
+	}
 	cw.finish()
 }
 

@@ -1,6 +1,7 @@
 package frontendadapter
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
@@ -195,7 +197,7 @@ func (h *MediaHandler) serve(w http.ResponseWriter, r *http.Request, media *fron
 	// time, and a range source would otherwise make one upstream request
 	// per copy (#666).
 	ra := kindstream.ReadAhead(r.Context(), media.ReaderAt, media.Size)
-	http.ServeContent(w, r, name, time.Time{}, io.NewSectionReader(ra, 0, media.Size))
+	rangefile.Serve(w, r, name, cmp.Or(media.Release.ID, name), media.Size, media.Release.PubDate, io.NewSectionReader(ra, 0, media.Size))
 }
 
 // parseAccept splits an Accept header into media types, lowercased and

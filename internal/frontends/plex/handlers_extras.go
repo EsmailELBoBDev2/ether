@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -731,13 +733,11 @@ func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		defer file.Close()
-		info, err := file.Stat()
-		if err != nil {
+		w.Header().Set("Content-Type", "video/mp4")
+		if err := rangefile.ServeFile(w, r, "extra.mp4", filepath.Base(resolved.LocalPath), time.Time{}, file); err != nil {
 			writeHTTPError(w, http.StatusBadGateway)
 			return true
 		}
-		w.Header().Set("Content-Type", "video/mp4")
-		http.ServeContent(w, r, "extra.mp4", info.ModTime(), file)
 		return true
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)

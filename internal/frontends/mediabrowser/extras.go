@@ -7,12 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
@@ -257,13 +259,11 @@ func (i *instance) serveExtra(w http.ResponseWriter, r *http.Request, viewer *fr
 		file, mime, err := cached.OpenCachedExtra(r.Context(), key)
 		if err == nil {
 			defer file.Close()
-			info, err := file.Stat()
-			if err != nil {
+			w.Header().Set("Content-Type", mime)
+			if err := rangefile.ServeFile(w, r, "trailer.mp4", "extra:"+key.String()+":"+filepath.Base(file.Name()), time.Time{}, file); err != nil {
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", mime)
-			http.ServeContent(w, r, "trailer.mp4", info.ModTime(), file)
 			return
 		}
 		if !errors.Is(err, frontend.ErrNotAvailable) {
@@ -412,5 +412,5 @@ func (i *instance) servePreroll(w http.ResponseWriter, r *http.Request, viewer *
 		i.host.Prerolls.Started(context.WithoutCancel(r.Context()), viewer, device(r), key)
 	}
 	w.Header().Set("Content-Type", "video/mp4")
-	http.ServeContent(w, r, "", modified, file)
+	rangefile.ServeSeeker(w, r, "", "preroll:"+key.String(), modified, file)
 }

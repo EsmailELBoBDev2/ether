@@ -1,15 +1,16 @@
 package mediabrowser
 
 import (
+	"cmp"
 	"errors"
 	"io"
 	"mime"
 	"net/http"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
@@ -96,6 +97,11 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachm
 	}
 	mediasafety.SetHeaders(w)
 	w.Header().Set("Cache-Control", "no-store")
+	identity := cmp.Or(media.Release.ID, "book:"+key.String()+":"+filename)
+	modTime := media.Release.PubDate
+	if modTime.IsZero() {
+		modTime = detail.Title.UpdatedAt
+	}
 	sr := io.NewSectionReader(reading.ContextReaderAt(r.Context(), media.ReaderAt), 0, media.Size)
-	http.ServeContent(w, r, filename, time.Time{}, sr)
+	rangefile.Serve(w, r, filename, identity, media.Size, modTime, sr)
 }

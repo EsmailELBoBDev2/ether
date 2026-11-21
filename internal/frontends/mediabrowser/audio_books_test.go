@@ -363,8 +363,18 @@ func TestMediaBrowserBookDetailAndDownloadFile(t *testing.T) {
 	headReq := httptest.NewRequest(http.MethodHead, "/Items/"+bookID+"/Download?api_key=grant", nil)
 	headRec := httptest.NewRecorder()
 	jf.Handler().ServeHTTP(headRec, headReq)
-	if headRec.Code != http.StatusOK || headRec.Header().Get("Content-Type") != "application/epub+zip" || headRec.Body.Len() != 0 {
-		t.Fatalf("HEAD /Download = (%d, %q, len=%d)", headRec.Code, headRec.Header().Get("Content-Type"), headRec.Body.Len())
+	etag := headRec.Header().Get("ETag")
+	if headRec.Code != http.StatusOK || headRec.Header().Get("Content-Type") != "application/epub+zip" || headRec.Body.Len() != 0 ||
+		etag == "" || strings.HasPrefix(etag, "W/") || etag != dlRec.Header().Get("ETag") {
+		t.Fatalf("HEAD /Download = (%d, %q, etag=%q vs %q, len=%d)", headRec.Code, headRec.Header().Get("Content-Type"), etag, dlRec.Header().Get("ETag"), headRec.Body.Len())
+	}
+	resumeReq := httptest.NewRequest(http.MethodGet, "/Items/"+bookID+"/Download?api_key=grant", nil)
+	resumeReq.Header.Set("Range", "bytes=4-11")
+	resumeReq.Header.Set("If-Range", etag)
+	resumeRec := httptest.NewRecorder()
+	jf.Handler().ServeHTTP(resumeRec, resumeReq)
+	if resumeRec.Code != http.StatusPartialContent || !bytes.Equal(resumeRec.Body.Bytes(), epubBytes[4:12]) {
+		t.Fatalf("If-Range GET /Download = (%d, len=%d)", resumeRec.Code, resumeRec.Body.Len())
 	}
 
 	// 3. Preparing error maps to 503 + Retry-After; unauth -> 401; movie & unavailable book -> 404.

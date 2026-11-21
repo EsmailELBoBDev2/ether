@@ -169,7 +169,8 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		return "", core.ErrNotAvailable
 	}
 	tracksChanged := req.AudioStream != nil || req.SubtitleStream != nil
-	if !tracksChanged && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
+	reencode := req.ReencodeVideo && s.opts.DirectStream
+	if !tracksChanged && !reencode && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
 		if hs, ok := b.transcodeSession(id); ok && hs != nil {
 			if !req.PrepareOnly && s.format != req.Format {
 				b.mu.Lock()
@@ -198,8 +199,13 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 
 	dec := s.decision
-	if tracksChanged || dec.Reason == "original_runtime" || (req.Format == frontend.StreamHLS && dec.Kind == core.DecisionDirectPlay) {
+	if tracksChanged || reencode || dec.Reason == "original_runtime" || (req.Format == frontend.StreamHLS && dec.Kind == core.DecisionDirectPlay) {
 		options := s.opts
+		if reencode {
+			// No copy: the client refused the copied video. Later restarts
+			// (seeks) keep encoding.
+			options.DirectStream = false
+		}
 		if req.AudioStream != nil {
 			if !validObservedTrack(ps.Info, "audio", *req.AudioStream) {
 				return "", core.ErrNotAvailable

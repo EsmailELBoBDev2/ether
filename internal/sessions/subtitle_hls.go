@@ -30,6 +30,15 @@ type hlsTextSubtitles interface {
 // renditions. Profiles are in the client's order of preference: one that
 // declares an External text profile first keeps its sidecars.
 func hlsTextRenditionClient(protocol string, caps core.ClientCaps) bool {
+	if caps.HLSTextRenditions {
+		return true
+	}
+	return hlsOnlyTextClient(protocol, caps)
+}
+
+// hlsOnlyTextClient is a Jellyfin client whose only way to show an embedded
+// text track is an HLS rendition, so selecting one rules out direct play.
+func hlsOnlyTextClient(protocol string, caps core.ClientCaps) bool {
 	if protocol != "jellyfin" || caps.Profiles == nil {
 		return false
 	}
@@ -124,14 +133,7 @@ func textRenditionTags(s *brokerSession, hs core.HLSSession, info core.MediaInfo
 		if track.Forced {
 			forced = "YES"
 		}
-		name := track.Title
-		if name == "" {
-			name = track.Language
-		}
-		if name == "" {
-			name = "Subtitle"
-		}
-		fmt.Fprintf(&tags, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"%s (%d)\",", clean(name), track.Index)
+		fmt.Fprintf(&tags, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"%s\",NAME=\"%s\",", frontend.HLSTextRenditionGroup, frontend.HLSTextRenditionName(track.Title, track.Language, track.Index))
 		if track.Language != "" {
 			fmt.Fprintf(&tags, "LANGUAGE=\"%s\",", clean(track.Language))
 		}

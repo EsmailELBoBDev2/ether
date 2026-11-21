@@ -624,6 +624,53 @@ LIMIT ?`, cursor, batchSize)
 	}
 }
 
+func applyMigration12(ctx context.Context, tx *sql.Tx) error {
+	const batchSize = 500
+	cursor := ""
+	for {
+		rows, err := tx.QueryContext(ctx, `
+SELECT item_ref, title, sort_title FROM plugin_items
+WHERE item_ref > ?
+ORDER BY item_ref ASC
+LIMIT ?`, cursor, batchSize)
+		if err != nil {
+			return err
+		}
+		type itemSort struct {
+			ref, title, sortTitle string
+		}
+		var batch []itemSort
+		for rows.Next() {
+			var it itemSort
+			if err := rows.Scan(&it.ref, &it.title, &it.sortTitle); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, it)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, it := range batch {
+			want := core.FoldedSortTitleForRow(it.title, it.sortTitle)
+			if want != "" && want != it.sortTitle {
+				if _, err := tx.ExecContext(ctx, `UPDATE plugin_items SET sort_title = ?, content_hash = '' WHERE item_ref = ?`, want, it.ref); err != nil {
+					return err
+				}
+			}
+		}
+		cursor = batch[len(batch)-1].ref
+		if len(batch) < batchSize {
+			return nil
+		}
+	}
+}
+
 func applyMigration4(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err

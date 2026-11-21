@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"math"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/contentrating"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
 func hashJSON(v any) string { b, _ := json.Marshal(v); return hash(string(b)) }
@@ -36,6 +38,9 @@ func key(r *http.Request) (frontend.RatingKey, error) {
 	return ids.ParseRatingKeyGUID(r.PathValue("id"))
 }
 func titleWire(t frontend.Title) object {
+	return titleWireForRegions(t, []string{"US"})
+}
+func titleWireForRegions(t frontend.Title, regions []string) object {
 	kind := "movie"
 	switch t.Key.Kind() {
 	case frontend.KindShow:
@@ -71,8 +76,11 @@ func titleWire(t frontend.Title) object {
 	if t.Runtime > 0 {
 		out["durationSeconds"] = t.Runtime.Seconds()
 	}
-	if t.ContentRating != "" {
-		out["rating"] = t.ContentRating
+	if label, country := contentrating.Display(t.ContentRating, t.ContentRatings, regions...); label != "" {
+		out["rating"] = label
+		if country != "" {
+			out["ratingCountry"] = country
+		}
 	}
 	if t.ShowKey != 0 {
 		out["showId"] = ids.RatingKeyGUID(t.ShowKey)
@@ -244,9 +252,10 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 	if source, ok := i.host.Experience.(frontend.CachedRatings); ok {
 		ratings = source.PageCachedRatings(r.Context(), v, ts)
 	}
+	regions := i.preferredRatingRegions(r)
 	out := []object{}
 	for _, t := range ts {
-		item := titleWire(t)
+		item := titleWireForRegions(t, regions)
 		scores := append([]frontend.RatingScore(nil), ratings[t.Key]...)
 		if t.VoteCount > 0 && t.Rating >= 0 && t.Rating <= 10 && !math.IsNaN(t.Rating) {
 			scores = append(scores, frontend.RatingScore{Source: "tmdb", Kind: "audience", Value: t.Rating, Scale: 10, Votes: int64(t.VoteCount)})
@@ -744,6 +753,7 @@ func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
 	if id := r.PathValue("id"); id != "" {
 		for _, row := range rows {
 			if row["id"] == id {
+				varyLanguage(w)
 				cache(w, r, row)
 				return
 			}
@@ -755,6 +765,7 @@ func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
 	if more {
 		continuation = "unknown"
 	}
+	varyLanguage(w)
 	cache(w, r, object{"items": rows, "continuation": continuation})
 }
 func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
@@ -817,6 +828,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.warmDetail(r, v, d)
+	varyLanguage(w)
 	cacheDetail(w, r, out, pending)
 }
 func (i *instance) children(w http.ResponseWriter, r *http.Request) {
@@ -849,6 +861,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	if len(ts) == limit(r) {
 		c = "unknown"
 	}
+	varyLanguage(w)
 	cacheDetail(w, r, object{"items": ts, "continuation": c}, pending)
 }
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {

@@ -282,6 +282,11 @@ type BrowseQuery struct {
 	// NoTotal skips counting the filter's matches, which reads every title
 	// the filter admits. Page.Total is then offset plus the items returned.
 	NoTotal bool
+	// CheapTotal, when set alongside NoTotal, returns an exact Page.Total
+	// (with Page.TotalExact = true) only when an exact count is available
+	// cheaply (tallies, cached counts, or bounded index counts). Otherwise
+	// it skips counting and leaves Page.TotalExact false.
+	CheapTotal bool
 	// SuppressExpand skips starting background plugin facet or person
 	// expansion when sampling rows or fanning out search queries.
 	SuppressExpand bool
@@ -305,6 +310,9 @@ type ListRows struct {
 type Page struct {
 	Items []Title
 	Total int
+	// TotalExact reports whether Total is an exact count of all items matching
+	// the query (never a page-window estimate).
+	TotalExact bool
 	// Expanding reports whether a background plugin facet or person expansion
 	// is currently running for this slice.
 	Expanding bool

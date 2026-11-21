@@ -1097,10 +1097,7 @@ func (pr *Request) pageOf(limit int) (offset, size int) {
 }
 
 func titleSortKey(t frontend.Title) string {
-	if t.SortTitle != "" {
-		return strings.ToLower(t.SortTitle)
-	}
-	return strings.ToLower(t.Title)
+	return frontend.EffectiveSortTitle(t.Title, t.SortTitle)
 }
 
 // browse runs a catalogue query honouring paging and watch-state filters.

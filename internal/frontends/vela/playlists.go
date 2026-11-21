@@ -374,6 +374,7 @@ func (i *instance) playlistDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		out["continuation"], out["nextCursor"] = "more", next
 	}
+	varyLanguage(w)
 	cache(w, r, out)
 }
 

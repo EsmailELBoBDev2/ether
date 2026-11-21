@@ -45,6 +45,12 @@ ALTER TABLE plugin_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';
 	store.Register("pluginitems", 11, `
 ALTER TABLE plugin_resolutions ADD COLUMN candidates TEXT NOT NULL DEFAULT '';
 `)
+	// Migration 12: backfill plugin_items.sort_title with the shared sort-key
+	// rules (leading non-alphanumerics stripped before leading English article,
+	// diacritic/ligature folding, and numeric collation) while preserving
+	// genuine custom source sort titles.
+	store.Register("pluginitems", 12, `SELECT 1;`)
+	store.RegisterApply("pluginitems", 12, applyMigration12)
 
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain

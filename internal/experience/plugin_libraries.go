@@ -24,6 +24,7 @@ import (
 type PluginBrowsePage struct {
 	Items      []core.Title
 	Total      int
+	TotalExact bool
 	NextCursor string
 }
 
@@ -778,14 +779,17 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 			}
 		}
 		// Advance keyset cursor up to offset without retaining skipped pages.
+		stepQ := q
+		stepQ.NoTotal = true
+		stepQ.CheapTotal = false
 		for curOffset < offset {
 			step := min(offset-curOffset, 500)
-			page, err := s.d.PluginLibraries.Browse(ctx, lib, q, cursor, step)
+			page, err := s.d.PluginLibraries.Browse(ctx, lib, stepQ, cursor, step)
 			if err != nil {
 				return core.Page{}, err
 			}
 			if len(page.Items) == 0 || page.NextCursor == "" {
-				return core.Page{Items: []core.Title{}, Total: page.Total}, nil
+				return core.Page{Items: []core.Title{}, Total: curOffset + len(page.Items), TotalExact: true}, nil
 			}
 			curOffset += len(page.Items)
 			cursor = page.NextCursor
@@ -803,7 +807,7 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 		if page.Items == nil {
 			page.Items = []core.Title{}
 		}
-		return core.Page{Items: page.Items, Total: page.Total}, nil
+		return core.Page{Items: page.Items, Total: page.Total, TotalExact: page.TotalExact}, nil
 	}
 
 	// In-process keyset scan for the predicates with no SQL form (anchors,
@@ -816,8 +820,12 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 	needAll := q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0
 	wantEnd := offset + limit
 	totalMatched := 0
+	exhausted := false
+	scanQ := q
+	scanQ.NoTotal = true
+	scanQ.CheapTotal = false
 	for {
-		page, err := s.d.PluginLibraries.Browse(ctx, lib, q, cursor, 200)
+		page, err := s.d.PluginLibraries.Browse(ctx, lib, scanQ, cursor, 200)
 		if err != nil {
 			return core.Page{}, err
 		}
@@ -832,6 +840,7 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 			totalMatched++
 		}
 		if page.NextCursor == "" || len(page.Items) == 0 || page.NextCursor == cursor {
+			exhausted = true
 			break
 		}
 		if !needAll && totalMatched >= wantEnd && q.NoTotal {
@@ -843,7 +852,7 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 		if permitted == nil {
 			permitted = []core.Title{}
 		}
-		return core.Page{Items: permitted, Total: totalMatched}, nil
+		return core.Page{Items: permitted, Total: totalMatched, TotalExact: exhausted}, nil
 	}
 	return slicePluginTitles(permitted, q)
 }

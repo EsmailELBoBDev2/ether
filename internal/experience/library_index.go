@@ -43,34 +43,41 @@ func (s *Service) indexedLibraryPage(ctx context.Context, v *core.User, library 
 		return core.Page{}, false, nil
 	}
 	if none {
-		return core.Page{Items: []core.Title{}}, true, nil
+		return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, true, nil
 	}
 	filter, fits, none, err := s.userStateFilter(ctx, v, filter, q)
 	if err != nil || !fits {
 		return core.Page{}, false, err
 	} else if none {
-		return core.Page{Items: []core.Title{}}, true, nil
+		return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, true, nil
 	}
-	bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, NoTotal: q.NoTotal}
+	bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, NoTotal: q.NoTotal, CheapTotal: q.CheapTotal}
 	if q.Sort.IsLastViewed() {
 		bq.Sort = core.SortTitle
 		bq.SortLastViewed = true
 		bq.SortViewerID = v.ID
 	}
-	countWatched := q.Watched != nil && !q.NoTotal && s.d.CountWatched != nil
+	countWatched := q.Watched != nil && (!q.NoTotal || q.CheapTotal) && s.d.CountWatched != nil
 	if countWatched {
 		// A state predicate is not a cacheable count: counting it scanned
 		// the whole type on every page. The total comes from the viewer's
-		// watch rows instead (and the type's cached count for unplayed).
+		// watch rows instead (and the type's cached/tallied count for unplayed).
 		bq.NoTotal = true
+		bq.CheapTotal = false
 	}
 	page, err := s.browsePageEnd(ctx, v, bq)
 	if err != nil {
 		return core.Page{}, false, err
 	}
 	if countWatched {
-		if page.Total, err = s.watchedTotal(ctx, v, filter, *q.Watched); err != nil {
-			return core.Page{}, false, err
+		total, exact, werr := s.watchedTotal(ctx, v, filter, *q.Watched, q.NoTotal && q.CheapTotal)
+		if werr != nil {
+			return core.Page{}, false, werr
+		}
+		if exact {
+			page.Total, page.TotalExact = total, true
+		} else {
+			page.TotalExact = false
 		}
 	}
 	if !s.indexedPageHolds(ctx, v, page.Items, q, ex.AvailabilityInSQL) {
@@ -90,14 +97,14 @@ func (s *Service) browsePageEnd(ctx context.Context, v *core.User, q core.Browse
 	if s.cursors != nil && q.Limit > 0 && core.BrowseSeekable(q) {
 		cf := q.Filter
 		cf.MovieGateCutoff, cf.ShowGateCutoff, cf.EpisodeGateCutoff, cf.GateNow, cf.GateRev = cf.MovieGateCutoff/60, cf.ShowGateCutoff/60, cf.EpisodeGateCutoff/60, cf.GateNow/60, 0
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%+v|%s|%v|%v", v.ID, cf, q.Sort, q.Desc, q.NoTotal)))
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%+v|%s|%v|%v|%v", v.ID, cf, q.Sort, q.Desc, q.NoTotal, q.CheapTotal)))
 		key = "page|" + hex.EncodeToString(sum[:16]) + "|"
 		if after, ok := s.cursors.get(key + strconv.Itoa(q.Offset)); ok && q.Offset > 0 {
 			seek := q
 			seek.AfterKey, seek.Offset = after, 0
 			page, err := s.d.Browse(ctx, seek)
 			if err == nil {
-				if q.NoTotal {
+				if q.NoTotal && !page.TotalExact {
 					page.Total += q.Offset
 				}
 				s.rememberPageEnd(key, q.Offset, page)
@@ -166,7 +173,7 @@ func boolPtr(b bool) *bool { return &b }
 // titles matching the filter, read from their watch rows, or the type's
 // (cached) count less those. filter carries the state predicate, which is
 // removed for both counts.
-func (s *Service) watchedTotal(ctx context.Context, v *core.User, filter core.Filter, watched bool) (int, error) {
+func (s *Service) watchedTotal(ctx context.Context, v *core.User, filter core.Filter, watched, cheapOnly bool) (int, bool, error) {
 	plain := filter
 	if g := plain.Group; g != nil {
 		if g.Unwatched != nil && g.UserID == v.ID && g.Operator == "" {
@@ -177,14 +184,25 @@ func (s *Service) watchedTotal(ctx context.Context, v *core.User, filter core.Fi
 		}
 	}
 	played, err := s.d.CountWatched(ctx, plain, v.ID)
-	if err != nil || watched {
-		return played, err
-	}
-	all, err := s.d.Browse(ctx, core.BrowseQuery{Filter: plain, Limit: 1})
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return max(all.Total-played, 0), nil
+	if watched {
+		return played, true, nil
+	}
+	bq := core.BrowseQuery{Filter: plain, Limit: 1}
+	if cheapOnly {
+		bq.NoTotal = true
+		bq.CheapTotal = true
+	}
+	all, err := s.d.Browse(ctx, bq)
+	if err != nil {
+		return 0, false, err
+	}
+	if cheapOnly && !all.TotalExact {
+		return 0, false, nil
+	}
+	return max(all.Total-played, 0), true, nil
 }
 
 // viewerBrowseFilter folds what the viewer may not see into filter for a

@@ -330,7 +330,7 @@ func (s *Service) libraryCollectionItems(ctx context.Context, v *core.User, devi
 	if q.Limit > 0 {
 		end = min(start+q.Limit, total)
 	}
-	return core.Page{Items: filtered[start:end], Total: total}, nil
+	return core.Page{Items: filtered[start:end], Total: total, TotalExact: true}, nil
 }
 
 // collectionHasVisibleMember reads bounded pages and stops at the first member

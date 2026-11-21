@@ -441,7 +441,9 @@ func cacheDetail(w http.ResponseWriter, r *http.Request, out object, pending *fr
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("ETag", tag)
-	w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	if w.Header().Get("Vary") == "" {
+		w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	}
 	_, _ = w.Write(b)
 }
 
@@ -455,7 +457,9 @@ func cache(w http.ResponseWriter, r *http.Request, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	w.Header().Set("ETag", tag)
-	w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	if w.Header().Get("Vary") == "" {
+		w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	}
 	for _, candidate := range strings.Split(r.Header.Get("If-None-Match"), ",") {
 		if strings.TrimSpace(candidate) == tag || strings.TrimSpace(candidate) == "*" {
 			w.WriteHeader(304)

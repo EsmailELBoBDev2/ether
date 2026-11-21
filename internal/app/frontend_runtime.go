@@ -395,6 +395,11 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 				return ""
 			}
 			return a.cfg.Get().Catalog.Language
+		}, CatalogRegion: func() string {
+			if a.cfg == nil {
+				return ""
+			}
+			return a.cfg.Get().Catalog.Region
 		}, AudioOrder: trackprefs.AudioOrder, PickAudio: experiencepkg.PickAudio, PersonalHomes: a.personalHomeDisk(), CacheDir: a.frontendCacheDir(id), ClientsDir: a.frontendClientsDir()}
 	})
 	r.control = newFrontendControl(r.registry, a.cfg)

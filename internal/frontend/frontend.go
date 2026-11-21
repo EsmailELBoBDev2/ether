@@ -507,6 +507,9 @@ type Host struct {
 	// MetadataLanguage is the catalog language (config catalog.language).
 	// Empty skips that step of the no-list audio chain.
 	MetadataLanguage func() string
+	// CatalogRegion is the server's configured country (config catalog.region,
+	// ISO 3166-1 alpha-2). Empty falls back to US.
+	CatalogRegion func() string
 	// AudioOrder is the shared no-choice language chain. Frontends call it
 	// instead of importing the track-preference package. Nil keeps the
 	// caller's own fallback.

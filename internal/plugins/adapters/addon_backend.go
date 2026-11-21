@@ -148,6 +148,8 @@ func (b *addonBackend) Search(ctx context.Context, req core.SearchRequest, reser
 	seen := map[string]bool{}
 	var totalNoHash, totalAmbiguous int
 	var firstErr error
+	incomplete := false
+	addonFailed := false
 	succeeded := 0
 	for _, look := range looks {
 		if len(merged) >= maxAddonResults {
@@ -155,12 +157,22 @@ func (b *addonBackend) Search(ctx context.Context, req core.SearchRequest, reser
 		}
 		if err := reserve(ctx, "hit"); err != nil {
 			if succeeded > 0 {
+				incomplete = true
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("add-on stream lookup skipped", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", err)
 				break
 			}
 			return nil, err
 		}
 		if err := b.s.spendSearch(ctx, rec); err != nil {
 			if succeeded > 0 {
+				incomplete = true
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("add-on stream lookup skipped", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", err)
 				break
 			}
 			return nil, err
@@ -177,32 +189,50 @@ func (b *addonBackend) Search(ctx context.Context, req core.SearchRequest, reser
 				b.s.noteFailure(rec.ID)
 				return nil, err
 			}
+			incomplete = true
+			addonFailed = true
 			if firstErr == nil {
 				firstErr = err
 			}
+			slog.Default().Warn("add-on stream lookup failed", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", err)
 			continue
 		}
 		if resp.Status < 200 || resp.Status > 299 {
 			he := &stremio.HTTPError{Status: resp.Status, RetryAfter: header(resp.Headers, "Retry-After")}
 			if he.RateLimited() {
+				rl := &newznab.RateLimitError{RetryAfter: he.RetryAfter, Err: he}
 				if succeeded > 0 {
+					incomplete = true
+					addonFailed = true
+					if firstErr == nil {
+						firstErr = rl
+					}
+					newznab.NoteBackendRateLimit(ctx, rl)
+					slog.Default().Warn("add-on stream lookup rate-limited", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", he)
 					break
 				}
 				b.s.noteFailure(rec.ID)
-				return nil, &newznab.RateLimitError{RetryAfter: he.RetryAfter, Err: he}
+				return nil, rl
 			}
+			incomplete = true
+			addonFailed = true
 			if firstErr == nil {
 				firstErr = he
 			}
+			slog.Default().Warn("add-on stream lookup failed", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", he)
 			continue
 		}
 		var answer struct {
 			Streams []stremio.Stream `json:"streams"`
 		}
 		if err := json.Unmarshal(resp.Body, &answer); err != nil {
+			jerr := errors.New("the add-on answered with invalid stream JSON")
+			incomplete = true
+			addonFailed = true
 			if firstErr == nil {
-				firstErr = errors.New("the add-on answered with invalid stream JSON")
+				firstErr = jerr
 			}
+			slog.Default().Warn("add-on stream lookup failed", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", jerr)
 			continue
 		}
 		succeeded++
@@ -220,9 +250,17 @@ func (b *addonBackend) Search(ctx context.Context, req core.SearchRequest, reser
 			}
 		}
 	}
-	if succeeded == 0 && firstErr != nil {
-		b.s.noteFailure(rec.ID)
+	if incomplete {
+		core.NoteSearchIncomplete(ctx)
+	}
+	if len(merged) == 0 && firstErr != nil {
+		if addonFailed {
+			b.s.noteFailure(rec.ID)
+		}
 		return nil, firstErr
+	}
+	if addonFailed {
+		b.s.noteFailure(rec.ID)
 	}
 	b.logSkipped(totalNoHash, totalAmbiguous)
 	return merged, nil

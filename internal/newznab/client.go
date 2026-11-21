@@ -1289,11 +1289,13 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 		return nil, err
 	}
 	if c.Config().UsesBackend() {
-		results, err := c.backendSearch(ctx, req)
+		results, incomplete, err := c.backendSearch(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		c.cachePut(ctx, key, results)
+		if !incomplete {
+			c.cachePut(ctx, key, results)
+		}
 		return results, nil
 	}
 	media := config.IdentityMediaTypeForSearch(req)
@@ -1566,6 +1568,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 		// searches by identifier, so another title asks the same question).
 		var merged []core.Release
 		seen := map[string]bool{}
+		incomplete := false
+		var firstErr error
 		appendUnique := func(rs []core.Release) {
 			for _, r := range rs {
 				k := r.ID
@@ -1578,28 +1582,52 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 				}
 			}
 		}
+		run := func(r core.SearchRequest) error {
+			rs, inc, err := c.backendSearch(ctx, r)
+			if inc {
+				incomplete = true
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return err
+				}
+				incomplete = true
+				core.NoteSearchIncomplete(ctx)
+				if firstErr == nil {
+					firstErr = err
+				}
+				return nil
+			}
+			appendUnique(rs)
+			return nil
+		}
 		if !cfg.IsStremio() && !cfg.IsAddon() && req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
 			alt := req
 			alt.Title, alt.OriginalTitle = req.OriginalTitle, ""
-			if rs, err := c.backendSearch(ctx, alt); err == nil {
-				appendUnique(rs)
+			if err := run(alt); err != nil {
+				return nil, err
 			}
 		}
 		if req.Season > 0 && req.Episode > 0 {
 			if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
 				tvdbPack := req
 				tvdbPack.Season, tvdbPack.Episode = req.CourTVDBSeason, 0
-				if rs, err := c.backendSearch(ctx, tvdbPack); err == nil {
-					appendUnique(rs)
+				if err := run(tvdbPack); err != nil {
+					return nil, err
 				}
 			}
 			packReq := req
 			packReq.Episode = 0
-			if rs, err := c.backendSearch(ctx, packReq); err == nil {
-				appendUnique(rs)
+			if err := run(packReq); err != nil {
+				return nil, err
 			}
 		}
-		c.cachePut(ctx, key, merged)
+		if len(merged) == 0 && firstErr != nil {
+			return nil, firstErr
+		}
+		if !incomplete {
+			c.cachePut(ctx, key, merged)
+		}
 		return merged, nil
 	}
 	media := config.IdentityMediaTypeForSearch(req)
@@ -1707,7 +1735,11 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	if len(merged) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
-	c.cachePut(ctx, key, merged)
+	if firstErr != nil {
+		core.NoteSearchIncomplete(ctx)
+	} else {
+		c.cachePut(ctx, key, merged)
+	}
 	return merged, nil
 }
 
@@ -1961,15 +1993,24 @@ func (c *Client) backend() (Backend, error) {
 }
 
 // backendSearch runs a built-in indexer's search and stamps the results
-// the way Newznab results are stamped.
-func (c *Client) backendSearch(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
+// the way Newznab results are stamped. incomplete is true when the backend
+// returned a partial answer (some lookups failed, were rate-limited or
+// stopped by budget); callers must not cache an incomplete answer and the
+// caller's fleet search coverage is marked incomplete.
+func (c *Client) backendSearch(ctx context.Context, req core.SearchRequest) ([]core.Release, bool, error) {
 	b, err := c.backend()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return c.stampBackend(ctx, "search", func(ctx context.Context, reserve func(context.Context, string) error) ([]core.Release, error) {
+	subCtx, subCov := core.WithSearchCoverage(ctx)
+	rels, err := c.stampBackend(subCtx, "search", func(ctx context.Context, reserve func(context.Context, string) error) ([]core.Release, error) {
 		return b.Search(ctx, req, reserve)
 	})
+	incomplete := subCov.Incomplete()
+	if incomplete {
+		core.NoteSearchIncomplete(ctx)
+	}
+	return rels, incomplete, err
 }
 
 // backendRecent lists a built-in site's latest releases.
@@ -2010,7 +2051,9 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 	if c.Config().IsStremio() {
 		hostURL = c.Config().URL
 	}
-	results, err := c.guardSearch(ctx, hostURL, false, 0, func(ctx context.Context) ([]core.Release, error) {
+	prl := &partialRateLimit{}
+	runCtx := context.WithValue(ctx, partialRateLimitKey{}, prl)
+	results, err := c.guardSearch(runCtx, hostURL, false, 0, func(ctx context.Context) ([]core.Release, error) {
 		admitted = true
 		started = time.Now()
 		return run(ctx, reserve)
@@ -2020,6 +2063,8 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		if errors.As(err, &rl) {
 			err = c.recordRateLimit(ctx, rl.RetryAfter, err)
 		}
+	} else if rl := prl.get(); rl != nil {
+		_ = c.recordRateLimit(ctx, rl.RetryAfter, rl)
 	}
 	if err == nil {
 		name, id := c.Name(), c.indexerID()

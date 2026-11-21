@@ -846,6 +846,7 @@ func TestIdleExpiryAndTimeline(t *testing.T) {
 	h := newHarness(t, []*fakeRelease{mkv("A", 10_000, time.Minute)}, []string{"A"},
 		func(h *harness, o *Options) { o.IdleTimeout = 10 * time.Minute; o.StoppedGrace = time.Minute })
 	ps := h.prepare(owner, movieKey, "c1")
+	h.m.Timeline(owner.ID, movieKey, "playing")
 	h.clock.Advance(9 * time.Minute)
 	h.m.expire()
 	if _, ok := h.m.Session(ps.ID); !ok {

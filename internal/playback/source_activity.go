@@ -42,7 +42,7 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 	prevProgressAt := s.lastProgressAt
 	firstPos := s.viewerAt.IsZero() || s.viewerState != state
 	s.viewerPosition = position
-	s.viewerAt = time.Now()
+	s.viewerAt = now
 	s.lastProgressAt = now
 	s.setViewerStateLocked(state, now)
 	if state == "paused" || state == "stopped" {

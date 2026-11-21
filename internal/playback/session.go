@@ -253,6 +253,7 @@ type session struct {
 	stopCancel  context.CancelFunc
 	failSem     chan struct{} // serialises failovers
 	bytes       atomic.Int64
+	mediaBytes  atomic.Int64 // client-facing media bytes delivered (excludes ffmpeg loopback / background probes)
 	activeReads atomic.Int32
 	rate        rateMeter
 
@@ -292,6 +293,8 @@ type session struct {
 	exact            bool   // exact selection must never switch releases
 	lastActive       time.Time
 	lastRead         time.Time
+	lastMediaAt      time.Time // last client-facing media bytes / segment / direct redirect served (zero until media delivered)
+	openedAt         time.Time // last Prepare/MarkSurfaceOpened time for StartupGrace
 	pausedAt         time.Time // set when viewerState enters "paused"
 	stopAt           time.Time // set by a "stopped" timeline; expiry after a grace
 	decision         core.DecisionKind
@@ -346,8 +349,8 @@ func newSession(id string, ident identity, user *core.User, caps core.ClientCaps
 		profileKey:       profileKey,
 		originalLanguage: titleLanguage(title),
 		startedAt:        now,
+		openedAt:         now,
 		lastActive:       now,
-		lastRead:         now,
 		failSem:          make(chan struct{}, 1),
 		rate:             rateMeter{},
 		genSince:         now,
@@ -434,7 +437,7 @@ func (s *session) setViewerStateLocked(state string, now time.Time) {
 func (s *session) touch(now time.Time) {
 	s.mu.Lock()
 	s.lastActive = now
-	s.lastRead = now
+	s.openedAt = now
 	s.stopAt = time.Time{}
 	s.stoppedBySurface = false
 	if s.viewerState == "stopped" {
@@ -443,21 +446,31 @@ func (s *session) touch(now time.Time) {
 	s.mu.Unlock()
 }
 
-// touchMedia records media delivery. Unlike touch it must not clear a
-// client stop: a player that already reported "stopped" can keep draining
-// segments or an open range, and those reads are not the viewer coming
-// back (#410). Only a new play (touch) or a playing/paused timeline
+// touchMedia records client-facing media delivery. Unlike touch it must not
+// clear a client stop: a player that already reported "stopped" can keep
+// draining segments or an open range, and those reads are not the viewer
+// coming back (#410). Only a new play (touch) or a playing/paused timeline
 // (touchTimeline) cancels a stop.
 func (s *session) touchMedia(now time.Time) {
 	s.mu.Lock()
 	s.lastActive = now
 	s.lastRead = now
+	s.lastMediaAt = now
 	s.mu.Unlock()
+}
+
+func (s *session) recordMediaBytes(n int, now time.Time) {
+	if n <= 0 {
+		return
+	}
+	s.mediaBytes.Add(int64(n))
+	s.touchMedia(now)
 }
 
 func (s *session) touchTimeline(now time.Time) {
 	s.mu.Lock()
 	s.lastActive = now
+	s.lastProgressAt = now
 	s.stopAt = time.Time{}
 	if s.viewerState == "stopped" {
 		s.setViewerStateLocked("", now)

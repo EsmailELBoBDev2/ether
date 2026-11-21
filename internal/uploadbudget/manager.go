@@ -417,7 +417,7 @@ func (m *Manager) snapshotActiveStreams() []ActiveStream {
 	}
 	out := make([]ActiveStream, 0, len(sessions))
 	for _, ps := range sessions {
-		if ps == nil || ps.PreparedOnly || ps.ViewerState == "stopped" {
+		if !core.SessionActiveStream(ps) {
 			continue
 		}
 		isLive := ps.LiveChannel != nil

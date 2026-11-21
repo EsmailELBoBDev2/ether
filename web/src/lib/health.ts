@@ -1082,6 +1082,12 @@ export interface NowPlaying {
   ratingKey: number;
   /** Selected subtitle, e.g. "English SRT" or "English PGS (burned)". */
   subtitle: string;
+  /** Shared server liveness classification: "playing" or "paused". */
+  liveness?: string;
+  /** Last client-reported timeline state: "playing", "paused", or "stopped". */
+  viewerState?: string;
+  /** True only when the client explicitly reported paused. */
+  paused?: boolean;
   /** Viewer-experience accounting on the live session, when playback was requested. */
   startMs?: number | null;
   bufferEvents?: number | null;
@@ -1142,6 +1148,9 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       buffered = Math.min(1, (progress ?? 0) + bufferedBytes / size);
     const userId = num(pick(s, "UserID", "userId"));
     const platform = str(pick(client, "platform", "Platform"));
+    const liveness = str(pick(s, "liveness", "Liveness"));
+    const viewerState = str(pick(s, "viewerState", "ViewerState"));
+    const paused = liveness === "paused" || (!liveness && viewerState === "paused");
     return {
       node: str(s.node),
       processor: isPlainObject(s.encoder) ? str(s.encoder.processor) : undefined,
@@ -1195,9 +1204,19 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       container: str(pick(s, "container", "Container")),
       ratingKey: num(pick(s, "ratingKey", "RatingKey")),
       subtitle: str(pick(s, "subtitle", "Subtitle")),
+      ...(liveness ? { liveness } : {}),
+      ...(viewerState ? { viewerState } : {}),
+      ...(paused ? { paused } : {}),
       ...(exp ? { startMs, bufferEvents, bufferMs } : {}),
     };
   });
+}
+
+/** True only when the session is explicitly paused under the shared server liveness rule. */
+export function isPausedSession(
+  s: Pick<NowPlaying, "paused" | "liveness" | "viewerState">,
+): boolean {
+  return s.paused === true || s.liveness === "paused" || (!s.liveness && s.viewerState === "paused");
 }
 
 /** Selected channel, independent of the programme title. */

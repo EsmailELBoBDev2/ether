@@ -128,6 +128,15 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 	}
 	a.playback.Subscribe(func(ev playback.Event) {
 		a.onPlaybackSubtitleEvent(ev)
+		if ev.Kind == "stop" && ev.Session != nil && ev.Session.ID != "" && a.frontends != nil && a.frontends.broker != nil {
+			broker := a.frontends.broker
+			playID := ev.Session.ID
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				broker.CleanupStoppedPlayback(ctx, playID)
+			}()
+		}
 		a.notifySessionsChanged()
 	})
 	a.closers = append(a.closers, func() { a.playback.Close() })

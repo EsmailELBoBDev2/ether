@@ -85,7 +85,7 @@ func (a *App) buildUploadBudget() {
 			return a.cfg.Read().Transcode.VideoTranscodingOff()
 		},
 		ActiveSessions: func() []*core.PlaySession {
-			return (ownerPlayback{Playback: a.playback, app: a}).localSessions()
+			return (ownerPlayback{Playback: a.playback, app: a}).activeLocalSessions()
 		},
 		AdaptiveInfo: func(sessionID string) ([]int, int, bool) {
 			if txID := a.transcodeSessionIDForPlay(sessionID); txID != "" && a.transcoder != nil {

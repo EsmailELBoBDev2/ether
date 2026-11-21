@@ -1431,45 +1431,65 @@ func (m *Manager) lookup(id string) *session {
 	return m.sessions[id]
 }
 
-// sessionCountsForLimit reports whether s is actively streaming or within
-// StreamActivityTimeout of its last media/segment read and has not been
-// stopped or closed by the client.
-func (m *Manager) sessionCountsForLimit(s *session, now time.Time) bool {
+// sessionLiveness evaluates s under the shared core liveness rule.
+func (m *Manager) sessionLiveness(s *session, now time.Time) core.SessionLiveness {
 	if s == nil {
-		return false
+		return core.SessionLiveness{State: core.SessionLivenessStopped, Expired: true}
 	}
 	s.mu.Lock()
-	closed := s.closed
-	stoppedBySurface := s.stoppedBySurface
-	stopAt := s.stopAt
-	viewerState := s.viewerState
-	last := s.lastRead
-	if last.IsZero() {
-		last = s.lastActive
+	in := core.SessionLivenessInput{
+		Closed:           s.closed,
+		PreparedOnly:     s.preparedOnly,
+		StoppedBySurface: s.stoppedBySurface,
+		BackgroundHeld:   s.preparedOnly && s.backgroundHold.active(now),
+		StopAt:           s.stopAt,
+		StartedAt:        s.startedAt,
+		OpenedAt:         s.openedAt,
+		IsHLS:            s.decision == core.DecisionTranscode || s.decision == core.DecisionRemux,
+		ViewerState:      s.viewerState,
+		PausedAt:         s.pausedAt,
+		LastProgressAt:   s.lastProgressAt,
+		HasPosition:      !s.viewerAt.IsZero(),
+		ActiveReads:      s.activeReads.Load(),
+		MediaBytes:       s.mediaBytes.Load(),
+		LastMediaAt:      s.lastMediaAt,
+		LastActive:       s.lastActive,
+		StartupGrace:     m.opts.StreamActivityTimeout,
+		IdleTimeout:      m.opts.IdleTimeout,
 	}
 	s.mu.Unlock()
-	if closed || stoppedBySurface || !stopAt.IsZero() || viewerState == "stopped" {
-		return false
-	}
-	if s.activeReads.Load() > 0 {
-		return true
-	}
-	if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
-		if la := hls.LastAccess(); la.After(last) {
-			last = la
+	if m.deps.HLSLookup != nil {
+		if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
+			in.IsHLS = true
+			var la time.Time
+			if tracker, ok := hls.(core.MediaAccessTracker); ok {
+				la = tracker.LastMediaAccess()
+			} else {
+				la = hls.LastAccess()
+			}
+			if la.After(in.LastMediaAt) {
+				in.LastMediaAt = la
+			}
 		}
 	}
-	window := m.opts.StreamActivityTimeout
-	if window <= 0 {
-		window = 12 * time.Second
-	}
-	return now.Sub(last) <= window
+	return core.EvaluateSessionLiveness(in, now)
 }
 
-// SessionActive reports whether a playback session is live for stream limits
-// and active session listings.
+// sessionCountsForLimit reports whether s occupies a stream-limit slot under
+// the shared liveness rule. Paused, idle, abandoned, and stopped sessions do not.
+func (m *Manager) sessionCountsForLimit(s *session, now time.Time) bool {
+	return m.sessionLiveness(s, now).CountsForLimit()
+}
+
+// SessionActive reports whether a playback session occupies a stream-limit slot.
 func (m *Manager) SessionActive(id string) bool {
 	return m.sessionCountsForLimit(m.lookup(id), m.now())
+}
+
+// SessionVisible reports whether a playback session is visible in Activity and
+// Overview under the shared liveness rule (playing or explicitly paused).
+func (m *Manager) SessionVisible(id string) bool {
+	return m.sessionLiveness(m.lookup(id), m.now()).Visible()
 }
 
 // BeginMediaRead records an active client media or segment read and returns
@@ -1498,6 +1518,7 @@ func (m *Manager) Session(id string) (*core.PlaySession, bool) {
 
 func (m *Manager) snapshotWithEncoder(s *session, now time.Time) *core.PlaySession {
 	ps := s.snapshot(now)
+	ps.Liveness = m.sessionLiveness(s, now).State
 	if m.deps.HLSLookup == nil {
 		return ps
 	}
@@ -1635,8 +1656,8 @@ func (m *Manager) setSurfacePrepared(id string, prepared bool) bool {
 		s.stoppedBySurface = true
 	} else {
 		s.stoppedBySurface = false
+		s.openedAt = now
 		s.lastActive = now
-		s.lastRead = now
 		s.stopAt = time.Time{}
 		if s.viewerState == "stopped" {
 			s.setViewerStateLocked("", now)
@@ -1749,19 +1770,25 @@ func (m *Manager) Sessions() []*core.PlaySession {
 	return out
 }
 
-// KeepAlive renews only an existing session's activity. An open control stream
-// is not media delivery or a new play: leave lastRead, timeline and stop intact.
+// KeepAlive checks an existing session and renews control activity only for
+// sessions that have already started or been explicitly paused. An open
+// control stream is not media delivery or a new play: it never prevents a
+// never-started session from expiring after AbandonedSessionTimeout or a
+// client stop from completing.
 func (m *Manager) KeepAlive(id string) bool {
 	s := m.lookup(id)
 	if s == nil {
 		return false
 	}
+	now := m.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return false
 	}
-	s.lastActive = m.now()
+	if !s.lastMediaAt.IsZero() || s.mediaBytes.Load() > 0 || !s.lastProgressAt.IsZero() || !s.viewerAt.IsZero() || s.viewerState == "playing" || s.viewerState == "paused" {
+		s.lastActive = now
+	}
 	return true
 }
 
@@ -1946,9 +1973,11 @@ func (m *Manager) Timeline(userID int64, key core.RatingKey, state string) {
 			s.mu.Unlock()
 		}
 	}
-	if state == "stopped" {
+	if state == "stopped" || state == "paused" {
 		m.reg.poke()
-		m.kickPins()
+		if state == "stopped" {
+			m.kickPins()
+		}
 	}
 }
 
@@ -2000,8 +2029,10 @@ func (m *Manager) janitor() {
 	}
 }
 
-// expire stops sessions idle longer than IdleTimeout (an HLS session's last
-// access counts as activity) and stopped sessions past their grace.
+// expire stops sessions that have expired under the shared liveness rule:
+// stopped sessions past their grace, never-started sessions past
+// AbandonedSessionTimeout (~2m), idle sessions past IdleTimeout, and paused
+// sessions past PausedSessionRetention.
 func (m *Manager) expire() {
 	now := m.now()
 	m.mu.Lock()
@@ -2011,33 +2042,9 @@ func (m *Manager) expire() {
 	}
 	m.mu.Unlock()
 	for _, s := range list {
-		s.mu.Lock()
-		last, stopAt, viewerState := s.lastActive, s.stopAt, s.viewerState
-		backgroundHeld := s.preparedOnly && s.backgroundHold.active(now)
-		s.mu.Unlock()
-		if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
-			if la := hls.LastAccess(); la.After(last) {
-				last = la
-			}
-		}
-		// Clients without a liveness signal (Plex, Jellyfin) may go quiet
-		// while paused, so a paused session keeps its source for
-		// PausedSessionRetention. Vela, which holds an events stream, ends a
-		// crashed player's session itself within seconds.
-		idleTimeout := m.opts.IdleTimeout
-		if viewerState == "paused" {
-			idleTimeout = max(idleTimeout, core.PausedSessionRetention)
-		}
-		inFlight := s.activeReads.Load() > 0
-		switch {
-		// A client stop ends at stopAt regardless of media activity after
-		// it: segment reads from the stopped player must not disarm the
-		// stop (#410). Coming back clears stopAt (touch/touchTimeline).
-		case !stopAt.IsZero() && !now.Before(stopAt):
-			m.log.Debug("session stopped by client", "session", s.id)
-			m.Stop(s.id)
-		case !backgroundHeld && !inFlight && now.Sub(last) > idleTimeout:
-			m.log.Debug("session idle", "session", s.id, "idle", now.Sub(last))
+		l := m.sessionLiveness(s, now)
+		if l.Expired {
+			m.log.Debug("session expired", "session", s.id, "liveness", l.State)
 			m.Stop(s.id)
 		}
 	}

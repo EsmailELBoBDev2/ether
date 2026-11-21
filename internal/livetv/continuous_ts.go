@@ -56,6 +56,8 @@ func (s *Service) ServeContinuous(w http.ResponseWriter, r *http.Request, id str
 	if r.Method == http.MethodHead {
 		return true
 	}
+	ss.activeReads.Add(1)
+	defer ss.activeReads.Add(-1)
 	for {
 		seg, err := tl.segment(r.Context(), seq)
 		if errors.Is(err, core.ErrNotFound) && r.Context().Err() == nil && !ss.isClosed() {
@@ -105,6 +107,8 @@ func (s *Service) serveBroadcastContinuous(w http.ResponseWriter, r *http.Reques
 	if r.Method == http.MethodHead {
 		return
 	}
+	ss.activeReads.Add(1)
+	defer ss.activeReads.Add(-1)
 	for {
 		seg, err := index.Wait(r.Context(), after)
 		if err != nil || !s.broadcastSegmentAllowed(r.Context(), ss, seg) || ss.isClosed() {

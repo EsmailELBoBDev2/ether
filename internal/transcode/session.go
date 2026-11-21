@@ -65,6 +65,7 @@ type Session struct {
 	log                 *slog.Logger
 	created             time.Time
 	lastAccess          atomic.Int64 // unix nanos
+	lastMediaAccess     atomic.Int64 // unix nanos of last non-HEAD segment/init delivery (0 until media served)
 	pauseUntil          atomic.Int64 // bounded authenticated player pause
 	stoppedAt           atomic.Int64 // authenticated player stop; fetches after it do not revive
 	mu                  sync.Mutex
@@ -283,6 +284,25 @@ func (s *Session) ID() string { return s.id }
 
 // LastAccess implements core.HLSSession.
 func (s *Session) LastAccess() time.Time { return time.Unix(0, s.lastAccess.Load()) }
+
+// LastMediaAccess implements core.MediaAccessTracker. It stays zero until a
+// client-facing media/init segment is served (creation, playlists, and paused
+// timelines do not advance it).
+func (s *Session) LastMediaAccess() time.Time {
+	ns := s.lastMediaAccess.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+var _ core.MediaAccessTracker = (*Session)(nil)
+
+func (s *Session) touchMediaAccess() {
+	now := time.Now().UnixNano()
+	s.lastAccess.Store(now)
+	s.lastMediaAccess.Store(now)
+}
 
 // Touch marks the session as in use (e.g. on a Plex timeline ping while the
 // client is paused) so the idle reaper keeps it.

@@ -26,7 +26,11 @@ func (s *Session) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {
 // serveSegment writes segment n of track t, waiting for ffmpeg and
 // restarting it when n is behind or far ahead of the encoder.
 func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int) {
-	s.Touch()
+	if r == nil || r.Method != http.MethodHead {
+		s.touchMediaAccess()
+	} else {
+		s.Touch()
+	}
 	if warm := s.resumeSession(n); warm != nil {
 		warm.serveSegment(w, r, t, n)
 		return
@@ -599,7 +603,11 @@ func (s *Session) rungDwellLocked(media bool, n int) time.Duration {
 // serveInit writes the init segment of track t, waiting for ffmpeg to
 // write it.
 func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
-	s.Touch()
+	if r == nil || r.Method != http.MethodHead {
+		s.touchMediaAccess()
+	} else {
+		s.Touch()
+	}
 	if !hasInitSegment(s.container) || t < 0 || t >= len(s.done) {
 		http.NotFound(w, r)
 		return

@@ -677,10 +677,14 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		b.deps.Live.Serve(w, r, viewer, s.playID, strings.Join(tail[1:], "/"), liveBase)
 		return
 	}
-	if !s.live && s.playID != "" {
-		if reader, ok := b.deps.Playback.(interface{ BeginMediaRead(string) func() }); ok {
-			defer reader.BeginMediaRead(s.playID)()
+	beginMediaRead := func() func() {
+		if r.Method == http.MethodHead || s.live || s.playID == "" {
+			return func() {}
 		}
+		if reader, ok := b.deps.Playback.(interface{ BeginMediaRead(string) func() }); ok {
+			return reader.BeginMediaRead(s.playID)
+		}
+		return func() {}
 	}
 	if len(tail) == 2 && tail[0] == "subtitles" {
 		b.serveSubtitle(w, r, s, tail[1])
@@ -720,6 +724,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 				return
 			}
 			if n, ok := transcode.ParseSegmentName(tail[0]); ok {
+				defer beginMediaRead()()
 				hs.ServeSegment(w, r, n)
 				return
 			}
@@ -737,6 +742,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 							return
 						}
 						if n, ok := transcode.ParseSegmentName(name); ok {
+							defer beginMediaRead()()
 							ls.ServeRungSegment(w, r, rung, n)
 							return
 						}
@@ -748,6 +754,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 					return
 				}
 				if n, ok := transcode.ParseSegmentName(name); ok {
+					defer beginMediaRead()()
 					hs.ServeSegment(w, r, n)
 					return
 				}
@@ -768,10 +775,12 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 			rep, err := strconv.Atoi(tail[2])
 			if err == nil && rep >= 0 {
 				if tail[3] == "header" {
+					defer beginMediaRead()()
 					ds.ServeInit(w, r, rep)
 					return
 				}
 				if n, ok := transcode.ParseSegmentName(tail[3]); ok && n >= 0 {
+					defer beginMediaRead()()
 					ds.ServeMedia(w, r, rep, n)
 					return
 				}

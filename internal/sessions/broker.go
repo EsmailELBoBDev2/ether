@@ -1228,6 +1228,7 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 		return nil, err
 	}
 	b.mu.Lock()
+	visChecker, checkVisible := b.deps.Playback.(interface{ SessionVisible(string) bool })
 	liveness, checkLiveness := b.deps.Playback.(interface{ SessionActive(string) bool })
 	var out []frontend.Session
 	isolated := map[string]bool{}
@@ -1239,8 +1240,14 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 		}
 	}
 	for _, s := range b.sessions {
-		if checkLiveness && !s.live && s.playID != "" && !liveness.SessionActive(s.playID) {
-			continue
+		if !s.live && s.playID != "" {
+			if checkVisible {
+				if !visChecker.SessionVisible(s.playID) {
+					continue
+				}
+			} else if checkLiveness && !liveness.SessionActive(s.playID) {
+				continue
+			}
 		}
 		if owner || s.public.ViewerID == v.ID {
 			out = append(out, s.public)
@@ -1701,6 +1708,35 @@ func (b *Broker) stopLocked(ctx context.Context, s *brokerSession) error {
 	}
 	b.publish(ctx, sessionEvent("SessionStopped", s.public, nil))
 	return nil
+}
+
+// CleanupStoppedPlayback retires local broker sessions whose underlying
+// playback session has already ended or expired, releasing their encoders,
+// lazy bindings, and grants cleanly without issuing a cluster stop command.
+func (b *Broker) CleanupStoppedPlayback(ctx context.Context, playID string) bool {
+	if b == nil || playID == "" {
+		return false
+	}
+	b.mu.Lock()
+	var entries []brokerSession
+	for _, s := range b.sessions {
+		if !s.live && s.playID == playID {
+			entries = append(entries, *s)
+		}
+	}
+	b.mu.Unlock()
+	if len(entries) == 0 {
+		return false
+	}
+	for i := range entries {
+		s := &entries[i]
+		unlock, err := b.gates.Acquire(ctx, fmt.Sprintf("broker/owner/%d/%s", s.public.ViewerID, s.clientID))
+		if err == nil {
+			_ = b.stopLocked(ctx, s)
+			unlock()
+		}
+	}
+	return true
 }
 
 // StopPlayback stops every local broker session fed by a source ID.

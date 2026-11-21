@@ -454,7 +454,7 @@ func (s *Service) viewerTitleChoiceForResolve(req core.ResolveRequest, exclude m
 	if !ok || vc.Scope != "title" || vc.Release.ID == "" {
 		return nil
 	}
-	if exclude[vc.Release.ID] || s.isBadRelease(vc.Release) || s.recentlyFailedRelease(vc.Release) || s.rejectedFor(req.Title.Key, vc.Release) {
+	if exclude[vc.Release.ID] || excludedByRelease(req.ExcludeReleases, vc.Release) || s.isBadRelease(vc.Release) || s.recentlyFailedRelease(vc.Release) || s.rejectedFor(req.Title.Key, vc.Release) {
 		return nil
 	}
 	return &vc

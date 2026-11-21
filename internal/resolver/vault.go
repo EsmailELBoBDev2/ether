@@ -34,7 +34,7 @@ func reachesVaultCutoff(c candidate, p core.QualityProfile) bool {
 }
 
 func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest, search core.SearchRequest, p core.QualityProfile, fp string, tr *Trace, bypass bool) ([]core.Release, *core.Resolution, bool) {
-	if s.vault == nil || channelAvailabilityCheck(ctx) || core.SpeculativeIndexerWork(ctx) || core.IsSpeculative(ctx) || len(req.Exclude) > 0 {
+	if s.vault == nil || channelAvailabilityCheck(ctx) || core.SpeculativeIndexerWork(ctx) || core.IsSpeculative(ctx) || len(req.Exclude) > 0 || len(req.ExcludeReleases) > 0 {
 		return nil, nil, false
 	}
 	entries, err := s.vault.Search(ctx, search)

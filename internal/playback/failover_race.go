@@ -188,12 +188,13 @@ func (m *Manager) drainRace(s *session, results chan raceResult, n int) {
 }
 
 type initialRaceResult struct {
-	alt      core.Release
-	g        *generation
-	burned   bool
-	preferOK bool
-	err      error
-	fetch    bool
+	alt         core.Release
+	g           *generation
+	burned      bool
+	preferOK    bool
+	audioReject bool
+	err         error
+	fetch       bool
 }
 
 type initialRaceOutcome struct {
@@ -201,6 +202,7 @@ type initialRaceOutcome struct {
 	fallbackGen    *generation
 	fallbackBurned bool
 	failed         []string
+	audioRejected  []core.Release
 	attempted      int
 	lastErr        error
 	allUncached    bool
@@ -214,7 +216,7 @@ type initialRaceOutcome struct {
 // untouched. Any alternates ineligible for racing (on-demand add-on links or
 // releases needing unknown-audio probe accounting) are returned in remaining
 // for the sequential loop.
-func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, profile core.QualityProfile, tried []string, alternates []core.Release, fallback func(int64) core.MediaInfo, width, maxBudget int) initialRaceOutcome {
+func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, profile core.QualityProfile, tried []string, audioRejected []core.Release, alternates []core.Release, fallback func(int64) core.MediaInfo, width, maxBudget int) initialRaceOutcome {
 	if m.deps.FetchNZB == nil || len(alternates) < 2 {
 		return initialRaceOutcome{remaining: alternates, allUncached: true}
 	}
@@ -230,7 +232,7 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 	for _, alt := range alternates {
 		if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) ||
 			slices.Contains(tried, alt.ID) || slices.Contains(s.caps.BroadcastExclude, alt.ID) ||
-			openFailed[alt.ID] || m.titleReleaseRejected(openCtx, s.ident.key, alt) || !releaseMatchesTitle(alt, s.title) {
+			openFailed[alt.ID] || m.titleReleaseRejected(openCtx, s.ident.key, alt) || audioExcluded(audioRejected, alt) || !releaseMatchesTitle(alt, s.title) {
 			continue
 		}
 		if m.releaseNamesakeRejected(openCtx, s, alt) {
@@ -274,14 +276,14 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 			if len(res.NZB) > 0 {
 				res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 			}
-			if m.titleReleaseRejected(rctx, s.ident.key, res.Release) {
-				results <- initialRaceResult{alt: alt, err: core.ErrReleaseRejected}
+			if m.titleReleaseRejected(rctx, s.ident.key, res.Release) || audioExcluded(audioRejected, res.Release) {
+				results <- initialRaceResult{alt: res.Release, err: core.ErrReleaseRejected}
 				return
 			}
 			cached := m.persistedProbe(rctx, s.ident.userID, s.ident.key, res.Release.ID, res.NZB)
 			g, err := m.openGeneration(rctx, s, res, fallback, cached)
 			if err != nil {
-				results <- initialRaceResult{alt: alt, err: err}
+				results <- initialRaceResult{alt: res.Release, err: err}
 				return
 			}
 			if m.videoTranscodingOff() {
@@ -298,24 +300,30 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 						Detail:  reason,
 					})
 					m.dropGeneration(g)
-					results <- initialRaceResult{alt: alt, err: core.ErrVideoTranscodingDisabled}
+					results <- initialRaceResult{alt: res.Release, err: core.ErrVideoTranscodingDisabled}
 					return
 				}
 			}
 			burned := m.knownHardSubbed(rctx, g)
 			if burned && m.hardSubtitleBlocked(rctx, res.Release) {
 				m.dropGeneration(g)
-				results <- initialRaceResult{alt: alt, err: core.ErrReleaseRejected}
+				results <- initialRaceResult{alt: res.Release, err: core.ErrReleaseRejected}
 				return
 			}
-			if reqReason := probedRequiredAudioRejection(profile, s.title, res.Release, g.infoSnapshot(), false); reqReason != "" {
+			info := g.infoSnapshot()
+			if reqReason := probedRequiredAudioRejection(profile, s.title, res.Release, info, false); reqReason != "" {
+				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
 				m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reqReason)
 				m.dropGeneration(g)
-				results <- initialRaceResult{alt: alt, err: errors.New(reqReason)}
+				results <- initialRaceResult{alt: res.Release, audioReject: true, err: errors.New(reqReason)}
 				return
 			}
-			preferOK := !burned && m.probedAudioAcceptable(s, profile, g.infoSnapshot())
-			results <- initialRaceResult{alt: alt, g: g, burned: burned, preferOK: preferOK}
+			audioOK := m.probedAudioAcceptable(s, profile, info)
+			if !audioOK {
+				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
+			}
+			preferOK := !burned && audioOK
+			results <- initialRaceResult{alt: res.Release, g: g, burned: burned, preferOK: preferOK, audioReject: !audioOK}
 		}()
 	}
 	for running < width && next < len(cands) && openCtx.Err() == nil {
@@ -374,6 +382,9 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 				})
 				out.allUncached = false
 				out.failed = append(out.failed, r.alt.ID)
+				if r.audioReject {
+					out.audioRejected = append(out.audioRejected, r.alt)
+				}
 				out.attempted++
 				if held == nil || (heldBurned && !r.burned) {
 					if held != nil {
@@ -412,6 +423,9 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 			return out
 		}
 		out.failed = append(out.failed, r.alt.ID)
+		if r.audioReject {
+			out.audioRejected = append(out.audioRejected, r.alt)
+		}
 		if !errors.Is(r.err, core.ErrWrongContent) {
 			out.attempted++
 		}

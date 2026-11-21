@@ -800,18 +800,37 @@ func absoluteEpisode(sreq core.SearchRequest) int {
 	return 0
 }
 
+func excludedByRelease(excluded []core.Release, rel core.Release) bool {
+	for _, ex := range excluded {
+		if core.SameReleaseContent(ex, rel) {
+			return true
+		}
+	}
+	return false
+}
+
 func flightKey(req core.ResolveRequest, profile core.QualityProfile) string {
 	ex := append([]string(nil), req.Exclude...)
 	sort.Strings(ex)
+	var exRel []string
+	if len(req.ExcludeReleases) > 0 {
+		exRel = make([]string, len(req.ExcludeReleases))
+		for i, r := range req.ExcludeReleases {
+			exRel[i] = r.ReleaseContentKey()
+		}
+		sort.Strings(exRel)
+	}
 	capsJSON, _ := json.Marshal(req.Client)
 	profileJSON, _ := json.Marshal(profile)
 	// Without profile languages the viewer's own audio languages decide
 	// which releases are acceptable (acceptedAudio), so they key the flight.
 	var audio []string
+	preferOriginal := false
 	if len(profile.PreferredLanguages) == 0 && req.User != nil {
 		audio = req.User.AudioLanguages
+		preferOriginal = req.User.PreferOriginal
 	}
-	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%t|%t|%s", req.Title.Key, profile.Name, strings.Join(ex, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec+"|"+req.PlayedRelease, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","))
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%t|%t|%s|%t", req.Title.Key, profile.Name, strings.Join(ex, ","), strings.Join(exRel, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec+"|"+req.PlayedRelease, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","), preferOriginal)
 }
 
 // Resolve implements core.Resolver. Concurrent calls for the same
@@ -904,7 +923,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// incomplete; nothing found then does not prove the title unavailable.
 	ctx, coverage := core.WithSearchCoverage(ctx)
 	t := req.Title
-	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name, At: s.now(), Failover: len(req.Exclude) > 0}
+	hasExclude := len(req.Exclude) > 0 || len(req.ExcludeReleases) > 0
+	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name, At: s.now(), Failover: hasExclude}
 	trace.Limits = &TraceLimits{ProfileMinHeight: profile.MinHeight, ProfileMaxHeight: profile.MaxHeight, ProfileConfiguredMaxHeight: traceConfiguredMaxHeight(profile), ClientMaxHeight: req.Client.MaxHeight, ClientMaxBitrateKbps: req.Client.MaxBitrateKbps, AllowHDR: profile.AllowHDR, AllowDolbyVision: profile.AllowDolbyVision}
 	defer func() {
 		trace.TotalDuration = time.Since(started)
@@ -1014,7 +1034,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	defer early.close()
 	ctx = context.WithValue(ctx, searchPreparationKey{}, early)
 	var discovered []core.Release
-	if !retry && !forgotten && s.discovered != nil && pin == nil && showVC == nil && req.Prefer == "" && len(req.Exclude) == 0 {
+	if !retry && !forgotten && s.discovered != nil && pin == nil && showVC == nil && req.Prefer == "" && !hasExclude {
 		discovered = filterOutPlaceholders(s.discovered(ctx, t))
 		if len(discovered) > 0 {
 			trace.Discovery = append(trace.Discovery, DiscoveryTrace{Path: "feed", Count: len(discovered)})
@@ -1074,7 +1094,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// request that already knows about specific releases, the viewer
 	// picked a specific version, or the owner pinned a release.
 	forceFresh := retry || forgotten
-	if !forceFresh && len(req.Exclude) == 0 && req.Prefer == "" && pin == nil && len(discovered) == 0 && len(library) == 0 {
+	if !forceFresh && !hasExclude && req.Prefer == "" && pin == nil && len(discovered) == 0 && len(library) == 0 {
 		if e, ok := s.getAvailability(ctx, int64(t.Key)); ok && !e.available {
 			// With cached-only off, a remembered unavailable answer older
 			// than unavailableRecheck may predate a download that has since
@@ -1272,7 +1292,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 		// Client/profile restrictions and temporary source skips do not prove
 		// that the title is unavailable for everyone.
-		if !clientRejected && !rescueSkipped && len(req.Exclude) == 0 && searchErr == nil && !coverage.Incomplete() {
+		if !clientRejected && !rescueSkipped && !hasExclude && searchErr == nil && !coverage.Incomplete() {
 			s.setAvailability(ctx, int64(t.Key), false, s.cooloffFor(t))
 		}
 		if isFreshRelease(t, s.now()) {
@@ -1537,7 +1557,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 	// A capped warm-up did not check every candidate, so it proves nothing.
 	totalMembers := countGroupedMembers(cands)
-	if !clientRejected && !rescueSkipped && len(req.Exclude) == 0 && totalMembers <= maxHealthAttempts && !(core.IsSpeculative(ctx) && totalMembers > speculativeHealthAttempts) && !coverage.Incomplete() {
+	if !clientRejected && !rescueSkipped && !hasExclude && totalMembers <= maxHealthAttempts && !(core.IsSpeculative(ctx) && totalMembers > speculativeHealthAttempts) && !coverage.Incomplete() {
 		s.setAvailability(ctx, int64(t.Key), false, min(s.cooloff(), failedHealthTTL))
 	}
 	trace.Err = "no healthy candidates"
@@ -1864,6 +1884,7 @@ func (s *Service) rankCandidatesWith(ctx context.Context, req core.ResolveReques
 	for _, id := range req.Exclude {
 		env.exclude[id] = true
 	}
+	env.excludeReleases = req.ExcludeReleases
 	env.rcfg = s.resolverCfg()
 	env.lang = s.catalogLanguage()
 	env.audio(profile, req)
@@ -1879,6 +1900,7 @@ type rankEnv struct {
 	hot                   RankingSession
 	seaDex                *seaDexEntry
 	exclude               map[string]bool
+	excludeReleases       []core.Release
 	rcfg                  config.Resolver
 	lang                  string
 	wanted, accepted      []string
@@ -2063,7 +2085,9 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		var reason string
 		identityReason := identity.reject(rel, t, sreq)
 		identityEv := identity.evidence(rel, t, sreq)
-		if rcfg.HardSubtitles == "exclude" && hardSubbed {
+		if excludedByRelease(env.excludeReleases, rel) {
+			reason = "excluded (already tried)"
+		} else if rcfg.HardSubtitles == "exclude" && hardSubbed {
 			reason = "blocked hardcoded subtitles"
 		} else if s.rejectedFor(t.Key, rel) {
 			reason = "release rejected for this title"

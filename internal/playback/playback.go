@@ -103,6 +103,10 @@ type Deps struct {
 	// OnVersionProbed notifies listeners when a background header probe stores
 	// new container tracks for a release.
 	OnVersionProbed func(key core.RatingKey, rel core.Release)
+	// ViewerAudioPreferences returns the viewer's saved audio language list
+	// and prefer-original flag (for probed-audio checks and release ranking).
+	// When nil, playback falls back to the fields on core.User.
+	ViewerAudioPreferences func(ctx context.Context, userID int64) (audioLanguages []string, preferOriginal bool)
 	// HeaderProbeBudget bounds bytes read per low-priority container header
 	// probe (0 uses transcode.DefaultHeaderProbeBudget).
 	HeaderProbeBudget int

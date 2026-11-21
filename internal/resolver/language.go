@@ -77,6 +77,8 @@ func wantedAudio(profile core.QualityProfile, user *core.User, serverLang string
 		out = append(out, profile.PreferredLanguages...)
 	case user != nil && len(user.AudioLanguages) > 0:
 		out = append(out, user.AudioLanguages...)
+	case user != nil && user.PreferOriginal:
+		return nil
 	case strings.TrimSpace(serverLang) != "":
 		base, _, _ := strings.Cut(strings.TrimSpace(serverLang), "-")
 		out = append(out, base)
@@ -124,6 +126,11 @@ func acceptedAudio(profile core.QualityProfile, user *core.User, serverLang stri
 	}
 	out := wantedAudio(profile, user, serverLang)
 	if len(out) == 0 {
+		if user != nil && user.PreferOriginal {
+			if lang := titleOriginalLanguage(t); lang != "" {
+				return []string{lang}
+			}
+		}
 		return nil
 	}
 	if lang := titleOriginalLanguage(t); lang != "" {

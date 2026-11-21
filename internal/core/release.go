@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Source is the release source parsed from a release name.
@@ -505,4 +506,67 @@ func (r Release) ReportedTitleIDs() IDs {
 		return IDs{}
 	}
 	return r.TitleIDs
+}
+
+// SameReleaseContent reports whether a and b represent the same underlying
+// media release (same ID, content/source/info/stream identity, GUID on the
+// same indexer, or normalized release name). Content-level rejections such as
+// a probed audio language mismatch use this to avoid retrying reposts or
+// vault/indexer copies of the same release within one start without preventing
+// broken-upload repost failover.
+func SameReleaseContent(a, b Release) bool {
+	if a.ID != "" && a.ID == b.ID {
+		return true
+	}
+	if ac, bc := a.EffectiveContentID(), b.EffectiveContentID(); ac != "" && ac == bc {
+		return true
+	}
+	if a.InfoHash != "" && strings.EqualFold(a.InfoHash, b.InfoHash) {
+		return true
+	}
+	if a.SourceHash != "" && a.SourceHash == b.SourceHash {
+		return true
+	}
+	if a.StreamURL != "" && a.StreamURL == b.StreamURL {
+		return true
+	}
+	if a.GUID != "" && a.GUID == b.GUID && a.Indexer != "" && a.Indexer == b.Indexer {
+		return true
+	}
+	an, bn := normalizedReleaseIdentity(a.Name), normalizedReleaseIdentity(b.Name)
+	return an != "" && an == bn
+}
+
+// ReleaseContentKey returns a canonical string summarizing a release's
+// content-equivalence keys for deduplication and flight keying.
+func (r Release) ReleaseContentKey() string {
+	return strings.Join([]string{
+		r.ID,
+		r.EffectiveContentID(),
+		strings.ToLower(r.InfoHash),
+		r.SourceHash,
+		r.StreamURL,
+		normalizedReleaseIdentity(r.Name),
+	}, "\x00")
+}
+
+func normalizedReleaseIdentity(name string) string {
+	s := strings.TrimSpace(name)
+	if s == "" {
+		return ""
+	}
+	if dot := strings.LastIndexByte(s, '.'); dot > 0 {
+		switch strings.ToLower(s[dot+1:]) {
+		case "mkv", "mp4", "m4v", "avi", "ts", "m2ts", "mov", "webm", "nzb":
+			s = s[:dot]
+		}
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

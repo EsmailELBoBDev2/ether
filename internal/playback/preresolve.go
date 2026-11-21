@@ -659,6 +659,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 				return
 			}
 		}
+		u = m.effectiveResolveUser(ctx, u)
 		session := newSession(randomID(16), id, &u, caps, title, e.profileKey, m.now())
 		defer session.stopCancel()
 		defer session.sources.seal()
@@ -671,6 +672,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		}
 		var (
 			tried              []string
+			audioRejected      []core.Release
 			alternates         []core.Release
 			unknownAudioProbes int
 			fallbackGen        *generation
@@ -725,8 +727,10 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 							res, err, detailOnly = last, nil, true
 						}
 					}
+				} else if playProbe {
+					res, err = m.nextResolutionTracking(ctx, session, &tried, audioRejected, alternates)
 				} else {
-					res, err = m.nextWarmResolution(ctx, session, &tried, alternates)
+					res, err = m.nextWarmResolution(ctx, session, &tried, audioRejected, alternates)
 				}
 				if err != nil || res == nil {
 					lastErr = err
@@ -740,7 +744,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 				res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 			}
 			if !cachedMetadata && !detailOnly {
-				if m.titleReleaseRejected(ctx, key, res.Release) {
+				if m.titleReleaseRejected(ctx, key, res.Release) || audioExcluded(audioRejected, res.Release) {
 					tried = append(tried, res.Release.ID)
 					if len(res.Alternates) > 0 {
 						alternates = res.Alternates
@@ -830,7 +834,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 				res = nil
 				continue
 			}
-			if reqReason := probedRequiredAudioRejection(profile, title, res.Release, generation.infoSnapshot(), fromResume); reqReason != "" {
+			info := generation.infoSnapshot()
+			if reqReason := probedRequiredAudioRejection(profile, title, res.Release, info, fromResume); reqReason != "" {
+				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
 				m.log.Debug("prewarm skipped: required audio absent", "key", key, "release", res.Release.Name, "reason", reqReason)
 				m.dropGeneration(generation)
 				lastRel, lastErr = res.Release, errors.New(reqReason)
@@ -841,32 +847,41 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 					attempt--
 				}
 				tried = append(tried, res.Release.ID)
+				audioRejected = append(audioRejected, res.Release)
 				if len(res.Alternates) > 0 {
 					alternates = res.Alternates
 				}
 				res = nil
 				continue
 			}
-			if !cachedMetadata && !detailOnly && !fromResume && (burned || !m.probedAudioAcceptable(session, profile, generation.infoSnapshot())) {
-				skipReason := "probed release lacks viewer audio language"
-				if burned {
-					skipReason = "burned-in subtitles detected"
-				}
-				m.log.Debug("prewarm trying next candidate", "key", key, "release", res.Release.Name, "reason", skipReason)
-				if fallbackGen == nil || (fallbackBurned && !burned) {
-					if fallbackGen != nil {
-						m.dropGeneration(fallbackGen)
+			if !cachedMetadata && !detailOnly && !fromResume {
+				audioOK := m.probedAudioAcceptable(session, profile, info)
+				if burned || !audioOK {
+					skipReason := "probed release lacks viewer audio language"
+					if burned {
+						skipReason = "burned-in subtitles detected"
+					} else {
+						m.noteReleaseProbeMemory(res.Release, res.NZB, info)
 					}
-					fallbackGen, fallbackRes, fallbackBurned = generation, res, burned
-				} else {
-					m.dropGeneration(generation)
+					m.log.Debug("prewarm trying next candidate", "key", key, "release", res.Release.Name, "reason", skipReason)
+					if fallbackGen == nil || (fallbackBurned && !burned) {
+						if fallbackGen != nil {
+							m.dropGeneration(fallbackGen)
+						}
+						fallbackGen, fallbackRes, fallbackBurned = generation, res, burned
+					} else {
+						m.dropGeneration(generation)
+					}
+					tried = append(tried, res.Release.ID)
+					if !audioOK {
+						audioRejected = append(audioRejected, res.Release)
+					}
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
 				}
-				tried = append(tried, res.Release.ID)
-				if len(res.Alternates) > 0 {
-					alternates = res.Alternates
-				}
-				res = nil
-				continue
 			}
 			if caps.BroadcastBitrateKbps > 0 {
 				file := res.Release
@@ -1007,7 +1022,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 	return true
 }
 
-func (m *Manager) nextWarmResolution(ctx context.Context, s *session, tried *[]string, alternates []core.Release) (*core.Resolution, error) {
+func (m *Manager) nextWarmResolution(ctx context.Context, s *session, tried *[]string, audioRejected []core.Release, alternates []core.Release) (*core.Resolution, error) {
 	if m.deps.Vault == nil || len(alternates) == 0 {
 		return nil, core.ErrNotAvailable
 	}
@@ -1020,7 +1035,7 @@ func (m *Manager) nextWarmResolution(ctx context.Context, s *session, tried *[]s
 	}
 	m.mu.Unlock()
 	for i, alt := range alternates {
-		if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || !releaseMatchesTitle(alt, s.title) {
+		if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || audioExcluded(audioRejected, alt) || !releaseMatchesTitle(alt, s.title) {
 			continue
 		}
 		vk := vault.KeyOf(alt)

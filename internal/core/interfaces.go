@@ -679,6 +679,10 @@ type ResolveRequest struct {
 	PlayedRelease string
 	// Exclude releases already tried (failover).
 	Exclude []string
+	// ExcludeReleases excludes every copy/repost matching these releases
+	// (same content/source/info/stream identity or normalized release name),
+	// used for content-level rejections such as probed audio language mismatch.
+	ExcludeReleases []Release
 	// Prefer is a release ID to try first (the viewer picked a version in
 	// Plex's "Play Version" picker). It is health-checked like any other
 	// candidate; when it is unavailable, normal ranking applies (additive).

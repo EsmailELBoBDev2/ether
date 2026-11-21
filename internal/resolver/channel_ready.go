@@ -46,7 +46,7 @@ func (s *Service) readyChannelFrom(ctx context.Context, req core.ResolveRequest,
 		if len(pool) >= 32 {
 			break
 		}
-		if req.Prefer != "" && r.ID != req.Prefer || slices.Contains(req.Exclude, r.ID) || r.Size <= 0 || r.Info.FullSeason || s.isBadRelease(r) || s.recentlyFailedRelease(r) || !s.ChannelSourceAllowed(r, req.Client, req.Title) {
+		if req.Prefer != "" && r.ID != req.Prefer || slices.Contains(req.Exclude, r.ID) || excludedByRelease(req.ExcludeReleases, r) || r.Size <= 0 || r.Info.FullSeason || s.isBadRelease(r) || s.recentlyFailedRelease(r) || !s.ChannelSourceAllowed(r, req.Client, req.Title) {
 			continue
 		}
 		at, ok := s.verifiedAtRelease(ctx, r)

@@ -151,6 +151,9 @@ type Permissions struct {
 	Secrets     []string           `json:"secrets,omitempty"`
 	// Sources lets a kind resolver ask Ether to find bytes: ""|none|search|acquire.
 	Sources string `json:"sources,omitempty"`
+	// AI lets a plugin call AIComplete on the owner's configured language model
+	// (""|none|complete; actions, jobs, sync, and other non-viewer routes only).
+	AI string `json:"ai,omitempty"`
 }
 
 // ViewerPermissions scopes viewer identity and watch-history access.

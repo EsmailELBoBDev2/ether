@@ -770,6 +770,7 @@ type fakeHost struct {
 	blobs       map[string][]byte
 	notices     []string
 	logs        []string
+	aiComplete  func(pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 }
 
 func newFakeHost() *fakeHost {
@@ -1067,6 +1068,13 @@ func (f *fakeHost) StreamURL(_ context.Context, pluginID string, viewerID int64,
 
 func (f *fakeHost) PublishEvent(_ context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error {
 	return nil
+}
+
+func (f *fakeHost) AIComplete(_ context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	if f.aiComplete != nil {
+		return f.aiComplete(pluginID, req)
+	}
+	return plugins.AICompleteResponse{}, ErrNotConfigured
 }
 
 func (f *fakeHost) NotifyOwner(_ context.Context, pluginID, text string) error {
@@ -1982,5 +1990,84 @@ func TestRemoteHostFrontendStreamURLSourceOption(t *testing.T) {
 	}
 	if optHost.gotPlugin != "plug.a" || optHost.gotViewer != 7 || optHost.gotItem != "pk:plug.a:book:1" || optHost.gotOpts.PartIndex == nil || *optHost.gotOpts.PartIndex != 1 || optHost.gotOpts.Source != "epub" {
 		t.Fatalf("unexpected forwarded args: plugin=%q viewer=%d item=%q opts=%+v", optHost.gotPlugin, optHost.gotViewer, optHost.gotItem, optHost.gotOpts)
+	}
+}
+
+type fakeAIHost struct {
+	*fakeHost
+	fn func(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+}
+
+func (f *fakeAIHost) AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	return f.fn(ctx, pluginID, req)
+}
+
+func TestRemoteHostAIComplete(t *testing.T) {
+	t.Parallel()
+
+	var respErr error
+	var respVal plugins.AICompleteResponse
+	aiHost := &fakeAIHost{
+		fakeHost: newFakeHost(),
+		fn: func(_ context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+			if pluginID != "plug.ai" {
+				return plugins.AICompleteResponse{}, ErrPermissionDenied
+			}
+			return respVal, respErr
+		},
+	}
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: aiHost,
+		Auth: remotetest.Credentials{"cred-ai": "plug.ai"},
+	}))
+	defer srv.Close()
+
+	post := func(body string, viewerTok string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/ai/complete", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-ai")
+		req.Header.Set("Content-Type", "application/json")
+		if viewerTok != "" {
+			req.Header.Set(HeaderViewerToken, viewerTok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	// Viewer-token requests are rejected before invoking host.
+	status, body := post(`{"messages":[{"role":"user","content":"hi"}]}`, "vt-1")
+	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "permission_denied" {
+		t.Fatalf("viewer token: status=%d body=%+v", status, body)
+	}
+
+	// Unconfigured returns 501 not_configured.
+	respErr = ErrNotConfigured
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}]}`, "")
+	if status != http.StatusNotImplemented || body["error"].(map[string]any)["code"] != "not_configured" {
+		t.Fatalf("not_configured: status=%d body=%+v", status, body)
+	}
+
+	// Schema mismatch returns 502 invalid_output.
+	respErr = ErrInvalidOutput
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}]}`, "")
+	if status != http.StatusBadGateway || body["error"].(map[string]any)["code"] != "invalid_output" {
+		t.Fatalf("invalid_output: status=%d body=%+v", status, body)
+	}
+
+	// Success returns text + json.
+	respErr = nil
+	respVal = plugins.AICompleteResponse{Text: `{"tag":"noir"}`, JSON: json.RawMessage(`{"tag":"noir"}`)}
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}]}`, "")
+	if status != http.StatusOK || body["text"] != `{"tag":"noir"}` {
+		t.Fatalf("success: status=%d body=%+v", status, body)
 	}
 }

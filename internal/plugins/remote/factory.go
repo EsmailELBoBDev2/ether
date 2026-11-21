@@ -299,6 +299,10 @@ func mapHostErr(err error) error {
 		return fmt.Errorf("%w: %v", ErrNotFound, err)
 	case errors.Is(err, plugins.ErrUnavailable):
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	case errors.Is(err, plugins.ErrNotConfigured):
+		return fmt.Errorf("%w: %v", ErrNotConfigured, err)
+	case errors.Is(err, plugins.ErrInvalidOutput):
+		return fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	case errors.Is(err, plugins.ErrQuotaExceeded):
 		return fmt.Errorf("%w: %w", ErrTooLarge, err)
 	case errors.Is(err, plugins.ErrRateLimited):
@@ -604,6 +608,15 @@ func (a HostAdapter) PublishEvent(ctx context.Context, pluginID, key string, pay
 		return err
 	}
 	return mapHostErr(h.PublishEvent(ctx, key, payload, corr))
+}
+
+func (a HostAdapter) AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.AICompleteResponse{}, err
+	}
+	resp, err := h.AIComplete(ctx, req)
+	return resp, mapHostErr(err)
 }
 
 func (a HostAdapter) NotifyOwner(ctx context.Context, pluginID, text string) error {

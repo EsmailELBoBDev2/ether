@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // PreviewFetch performs a draft plugin's http.fetch for Studio's preview:
@@ -87,4 +88,28 @@ func (m *Manager) PreviewCatalogGet(ctx context.Context, id string) (json.RawMes
 	}
 	out, err := m.deps.Backends.CatalogGet(ctx, id)
 	return out, true, err
+}
+
+// PreviewAIComplete runs a Studio draft's ai.complete call against the owner's
+// configured language model with the same input validation, schema checks, rate
+// limits, and secret-safe error mapping as an installed plugin.
+func (m *Manager) PreviewAIComplete(ctx context.Context, projectKey string, req AICompleteRequest) (AICompleteResponse, error) {
+	compiled, err := ValidateAICompleteRequest(req)
+	if err != nil {
+		return AICompleteResponse{}, err
+	}
+	backend := m.deps.Backends.AIComplete
+	if backend == nil {
+		return AICompleteResponse{}, ErrNotConfigured
+	}
+	rateKey := "preview:" + projectKey
+	limit := m.aiCompletePerMin()
+	if !m.rateOK(m.aiCompleteTimes, rateKey, limit, time.Minute) {
+		return AICompleteResponse{}, fmt.Errorf("%w: ai.complete is limited to %d calls per minute", ErrRateLimited, limit)
+	}
+	resp, err := executeAIComplete(ctx, m.log, rateKey, backend, compiled)
+	if errors.Is(err, ErrNotConfigured) {
+		m.rateRefund(m.aiCompleteTimes, rateKey)
+	}
+	return resp, err
 }

@@ -610,6 +610,21 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 		h.mu.Unlock()
 		return json.RawMessage("null"), nil
 
+	case "ai.complete":
+		if h.manifest.Ether == nil || !strings.EqualFold(strings.TrimSpace(h.manifest.Ether.Permissions.AI), "complete") {
+			return nil, wasm.Forbidden("ai: complete permission not declared in manifest")
+		}
+		var req plugins.AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if _, err := plugins.ValidateAICompleteRequest(req); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return nil, &wasm.Fault{Code: "not_configured", Message: "language model is not available in dry-run replay"}
+
 	case "secret.get":
 		secName := str(0)
 		if !h.secretDeclared(secName) {

@@ -806,6 +806,44 @@ class FlowActionResponse(TypedDict, total=False):
     branch: str
 
 
+class AIMessage(TypedDict):
+    role: str
+    content: str
+
+
+class AICompleteRequest(TypedDict, total=False):
+    messages: List[AIMessage]
+    schema: Dict[str, Any]
+    maxTokens: int
+    temperature: float
+    timeoutMs: int
+
+
+class AICompleteResponse(TypedDict, total=False):
+    text: str
+    json: Any
+
+
+class HostError(RuntimeError):
+    """Structured error returned by Ether's plugin-host API, carrying `.code` and `.status`."""
+
+    def __init__(self, message: str, code: str = "", status: int = 0) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+class _AIClient:
+    """Client for Ether's owner-configured language model host service (`ai.complete`)."""
+
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def complete(self, req: AICompleteRequest) -> AICompleteResponse:
+        res = self._call("POST", "/ether/plugin-host/ai/complete", dict(req))
+        return res if isinstance(res, dict) else {"text": ""}  # type: ignore[return-value]
+
+
 class _EventsClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -900,6 +938,7 @@ class RemoteHostClient:
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
         self.events = _EventsClient(self._call_json)
+        self.ai = _AIClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -984,13 +1023,18 @@ class RemoteHostClient:
             if allow_404 and exc.code == 404:
                 return None
             raw = exc.read().decode("utf-8", errors="replace")
+            code = ""
             try:
                 parsed = json.loads(raw)
-                msg = parsed.get("error", {}).get("message")
+                err_obj = parsed.get("error", {}) if isinstance(parsed, dict) else {}
+                msg = err_obj.get("message") if isinstance(err_obj, dict) else None
+                code = str(err_obj.get("code") or "") if isinstance(err_obj, dict) else ""
             except Exception:
                 msg = None
-            raise RuntimeError(
-                msg or f"Host call {method} {path} failed with HTTP {exc.code}"
+            raise HostError(
+                msg or f"Host call {method} {path} failed with HTTP {exc.code}",
+                code=code,
+                status=int(exc.code),
             ) from exc
 
     def settings_get(self) -> Dict[str, Any]:
@@ -2533,6 +2577,7 @@ class MockHostClient:
             "headers": {"Content-Type": "application/json"},
             "body": "{}",
         }
+        self.ai_handler: Optional[Callable[[AICompleteRequest], AICompleteResponse]] = None
 
         self.kv = self._KV(self)
         self.badges = self._Badges(self)
@@ -2559,6 +2604,7 @@ class MockHostClient:
         self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
         self.events = self._Events(self)
+        self.ai = self._AI(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
@@ -3014,6 +3060,15 @@ class MockHostClient:
             if correlation is not None:
                 entry["correlation"] = dict(correlation)
             self._p.published_events.append(entry)
+
+    class _AI:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def complete(self, req: AICompleteRequest) -> AICompleteResponse:
+            if self._p.ai_handler is None:
+                raise HostError("Language model is not configured", code="not_configured", status=501)
+            return self._p.ai_handler(req)
 
     class _Notify:
         def __init__(self, parent: "MockHostClient") -> None:

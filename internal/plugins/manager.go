@@ -69,6 +69,9 @@ type Backends struct {
 	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
 	// ResolveBadgeTitles maps (type, tmdb, imdb) refs to local canonical rating keys (#594).
 	ResolveBadgeTitles func(ctx context.Context, refs []BadgeTitleRef) ([]string, error)
+	// AIComplete runs one completion on the owner's configured language model (#669).
+	// Returns ErrNotConfigured when no model is enabled/configured.
+	AIComplete func(ctx context.Context, req AICompleteBackendRequest) (string, error)
 }
 
 // Deps are the plugin host's explicit dependencies.
@@ -138,13 +141,15 @@ type Manager struct {
 	scheduleInFlight map[string]*scheduleFlight
 	scheduleJobs     map[string]*actionJob
 	scheduleWG       sync.WaitGroup
-	// rate-limit bookkeeping for host log, notify, custom event publish, and usenet_check
+	// rate-limit bookkeeping for host log, notify, custom event publish, usenet_check, and ai.complete
 	notifyTimes       map[string][]time.Time
 	logTimes          map[string][]time.Time
 	eventPublishTimes map[string][]time.Time
 	eventPublishLimit int
 	usenetCheckTimes  map[string][]time.Time
 	usenetCheckLimit  int
+	aiCompleteTimes   map[string][]time.Time
+	aiCompleteLimit   int
 	// eventBridgeMu guards the single events.Bus bridge subscription for plugins.
 	eventBridgeMu  sync.Mutex
 	eventBridgeSub *events.Subscription
@@ -232,6 +237,7 @@ func New(deps Deps) (*Manager, error) {
 		logTimes:          map[string][]time.Time{},
 		eventPublishTimes: map[string][]time.Time{},
 		usenetCheckTimes:  map[string][]time.Time{},
+		aiCompleteTimes:   map[string][]time.Time{},
 	}
 	return m, nil
 }
@@ -709,7 +715,7 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 	req.Headers = cloneHeaders(req.Headers)
 	vctx, releaseViewer := m.bindAdapterViewer(ctx, pluginID, &req, deadline)
 	defer releaseViewer()
-	cctx, cancel := context.WithTimeout(vctx, deadline)
+	cctx, cancel := context.WithTimeout(withCallPath(vctx, req.Path), deadline)
 	defer cancel()
 	req.Headers["X-Ether-Deadline"] = start.Add(deadline).UTC().Format(time.RFC3339)
 	if req.Locale != "" {
@@ -1414,6 +1420,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	m.mu.Lock()
 	delete(m.eventPublishTimes, id)
 	delete(m.usenetCheckTimes, id)
+	delete(m.aiCompleteTimes, id)
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {
 			delete(m.nextRun, key)

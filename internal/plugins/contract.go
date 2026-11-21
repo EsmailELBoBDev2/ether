@@ -250,7 +250,10 @@ type Permissions struct {
 	Folders     string      `json:"folders,omitempty" yaml:"folders,omitempty"`         // ""|none|read
 	// Sources lets a kind resolver ask Ether to find bytes through the
 	// owner's indexers and debrid accounts (spec §4.5).
-	Sources string   `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
+	Sources string `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
+	// AI lets a plugin send bounded completion requests to the owner's
+	// configured language model (actions/jobs/sync only, never viewer paths).
+	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 
@@ -1262,10 +1265,60 @@ type Host interface {
 	// and rate-limited.
 	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// AIComplete runs a bounded text or JSON-Schema-validated completion against
+	// the owner's configured language model (Settings -> Integrations -> Language
+	// model). Requires permissions.ai: "complete" and is refused on viewer/client
+	// request paths (actions, jobs, sync, tools, events, setup, and scheduled
+	// routes only). Returns ErrNotConfigured when no model is configured.
+	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+
 	// NotifyOwner posts a console notice (rate-limited).
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
 	Log(ctx context.Context, level, msg string, attrs map[string]any) error
+}
+
+// AIMessage is one chat turn sent to Host.AIComplete.
+type AIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// AICompleteRequest configures one completion on the owner's configured
+// language model (#669).
+type AICompleteRequest struct {
+	Messages []AIMessage `json:"messages"`
+	// Schema is an optional JSON Schema object. When set, the host extracts
+	// JSON from the reply, validates it against Schema, and populates JSON
+	// (returning ErrInvalidOutput if validation fails). External $ref URLs
+	// are rejected.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// MaxTokens bounds output tokens (default DefaultAIMaxTokens, max MaxAIMaxTokens).
+	MaxTokens int `json:"maxTokens,omitempty"`
+	// Temperature optionally adjusts sampling in [0, 2]. Providers or models
+	// that disallow explicit temperature ignore it safely.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout
+	// and the enclosing call deadline).
+	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+}
+
+// AICompleteResponse is the completion returned by Host.AIComplete.
+type AICompleteResponse struct {
+	// Text is the assistant reply (with reasoning blocks stripped). When
+	// Schema was provided, Text holds the compact canonical JSON of JSON.
+	Text string `json:"text"`
+	// JSON holds the validated JSON value when Schema was provided.
+	JSON json.RawMessage `json:"json,omitempty"`
+}
+
+// AICompleteBackendRequest is passed from the plugin host to Backends.AIComplete
+// after permissions, route policy, input bounds, and rate limits have been checked.
+type AICompleteBackendRequest struct {
+	Messages    []AIMessage
+	JSONMode    bool
+	MaxTokens   int
+	Temperature *float64
 }
 
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
@@ -1416,6 +1469,8 @@ var (
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
+	ErrNotConfigured    = errors.New("plugins: language model is not configured")
+	ErrInvalidOutput    = errors.New("plugins: invalid language model output")
 	ErrBusy             = errors.New("plugins: plugin is busy")
 	// ErrUnsupportedBody reports a request body Ether could not encode for
 	// the plugin at all: the guest never ran, so it is never a plugin crash.

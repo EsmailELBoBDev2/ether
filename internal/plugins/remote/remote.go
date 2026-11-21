@@ -84,6 +84,10 @@ var (
 	ErrInvalid = errors.New("remote: invalid request")
 	// ErrRateLimited reports a host service rate limit exceeded.
 	ErrRateLimited = errors.New("remote: rate limit exceeded")
+	// ErrNotConfigured reports that the owner has not configured a language model.
+	ErrNotConfigured = errors.New("remote: not configured")
+	// ErrInvalidOutput reports that the language model returned invalid or schema-mismatched output.
+	ErrInvalidOutput = errors.New("remote: invalid output")
 	// ErrUnavailable is returned when a service is not wired yet.
 	ErrUnavailable = errors.New("remote: unavailable")
 	// ErrClosed reports use of a closed runtime.

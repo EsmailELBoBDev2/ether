@@ -46,6 +46,16 @@ func (c *Context) PublishEvent(key string, payload any, corr *EventCorrelation) 
 	return fmt.Errorf("events.publish is not supported by this host")
 }
 
+// AIComplete runs a bounded completion against the owner's configured language
+// model. Requires permissions.ai: "complete" and must only be called from
+// actions, jobs, sync, or other non-viewer routes.
+func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) {
+	if ah, ok := c.Ether.(AIHost); ok {
+		return ah.AIComplete(c.Context, req)
+	}
+	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
+}
+
 // Routes holds the capability handlers for a Plugin.
 type Routes struct {
 	Catalog          func(ctx *Context, req CatalogRequest) (CatalogResponse, error)

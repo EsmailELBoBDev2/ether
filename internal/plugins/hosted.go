@@ -711,6 +711,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "ai.complete":
+		var req AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		v, err := b.h.AIComplete(ctx, req)
+		return result(v, err)
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
 	case "log":
@@ -747,6 +756,12 @@ func mapHostError(err error) error {
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
 	case errors.Is(err, ErrPermissionDenied):
 		return wasm.Forbidden(err.Error())
+	case errors.Is(err, ErrNotConfigured):
+		return &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
+	case errors.Is(err, ErrInvalidOutput):
+		return &wasm.Fault{Code: "invalid_output", Message: strings.TrimPrefix(err.Error(), "plugins: invalid language model output: ")}
+	case errors.Is(err, ErrUnavailable):
+		return &wasm.Fault{Code: "unavailable", Message: err.Error()}
 	case errors.Is(err, ErrQuotaExceeded):
 		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
 	case errors.Is(err, ErrRateLimited):

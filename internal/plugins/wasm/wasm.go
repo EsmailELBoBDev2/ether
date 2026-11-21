@@ -128,6 +128,7 @@ var DefaultCosts = map[string]int64{
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
+	"ai.complete": 200,
 }
 
 const (
@@ -198,12 +199,20 @@ func HostResultBytes(memoryBytes uint64) int64 {
 type unitChargerKey struct{}
 type callLimitsKey struct{}
 type backgroundCallKey struct{}
+type callPathKey struct{}
 
 // IsBackgroundCall reports whether ctx belongs to a background hosted plugin
 // call (non-foreground /ether/job/*, kind sync, Live TV sync, or /ether/event).
 func IsBackgroundCall(ctx context.Context) bool {
 	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
 	return bg
+}
+
+// CallPath returns the route path of the active hosted plugin call, or "" outside
+// a hosted call.
+func CallPath(ctx context.Context) string {
+	p, _ := ctx.Value(callPathKey{}).(string)
+	return p
 }
 
 // hostCallTimeout returns the hard per-host-call deadline ceiling for a guest
@@ -221,7 +230,7 @@ func hostCallTimeout(name string) time.Duration {
 	switch name {
 	case "http.fetch":
 		return 60 * time.Second
-	case "sources.resolve":
+	case "sources.resolve", "ai.complete":
 		return 35 * time.Second
 	case "http.fetchToCache", "http.hash",
 		"archive.list", "archive.open", "archive.read", "archive.extract",
@@ -557,6 +566,9 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 	}
 	if cs.backgroundPool {
 		hostCtx = context.WithValue(hostCtx, backgroundCallKey{}, true)
+	}
+	if cs.path != "" {
+		hostCtx = context.WithValue(hostCtx, callPathKey{}, cs.path)
 	}
 
 	type hostCallResult struct {

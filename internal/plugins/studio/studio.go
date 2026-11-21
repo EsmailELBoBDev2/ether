@@ -1459,6 +1459,48 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 		h.s.mu.Unlock()
 		return json.RawMessage("null"), nil
 
+	case "ai.complete":
+		man, _ := plugins.ParseManifest([]byte(p.Files["manifest.json"]))
+		projectKey := p.ID
+		h.s.mu.Unlock()
+		if man.Ether == nil || !strings.EqualFold(strings.TrimSpace(man.Ether.Permissions.AI), "complete") {
+			return nil, wasm.Forbidden("ai: complete permission is not declared in manifest")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("ai.complete cannot run on viewer or client request path " + callPath)
+		}
+		var req plugins.AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if h.s.mgr == nil {
+			if _, err := plugins.ValidateAICompleteRequest(req); err != nil {
+				return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+			}
+			return nil, &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
+		}
+		resp, err := h.s.mgr.PreviewAIComplete(ctx, projectKey, req)
+		if err != nil {
+			var valid *plugins.ValidationError
+			switch {
+			case errors.As(err, &valid):
+				return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
+			case errors.Is(err, plugins.ErrNotConfigured):
+				return nil, &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
+			case errors.Is(err, plugins.ErrInvalidOutput):
+				return nil, &wasm.Fault{Code: "invalid_output", Message: strings.TrimPrefix(err.Error(), "plugins: invalid language model output: ")}
+			case errors.Is(err, plugins.ErrRateLimited):
+				return nil, &wasm.Fault{Code: "rate_limited", Message: err.Error()}
+			case errors.Is(err, context.DeadlineExceeded):
+				return nil, &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
+			default:
+				return nil, &wasm.Fault{Code: "unavailable", Message: err.Error()}
+			}
+		}
+		return json.Marshal(resp)
+
 	case "http.fetch":
 		// Previews use real data: the draft's declared network permissions
 		// gate the same guarded client an installed plugin gets.

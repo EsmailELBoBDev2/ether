@@ -121,12 +121,12 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		Disc:          extractDiscNumber(item),
 		MediaParents:  seriesParents,
 		MediaReading:  reading,
-		MediaFacts:    extractMediaFacts(item, decl, resolve, reading != nil, seriesField),
 		Title:         item.Title,
 		SortTitle:     sortTitle,
 		Summary:       strings.TrimSpace(item.Summary),
 		Year:          item.Year,
 		Rating:        item.Rating,
+		Popularity:    extractPopularity(item),
 		ChildCount:    item.ChildCount,
 		LeafCount:     item.LeafCount,
 	}
@@ -213,6 +213,7 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 	if len(credits) > 0 {
 		t.MediaCredits = credits
 	}
+	t.MediaFacts = extractMediaFacts(item, decl, resolve, reading != nil, seriesField, credits)
 
 	return t
 }
@@ -704,17 +705,48 @@ func extractTitleReading(item core.KindItem) *core.TitleReading {
 	return &core.TitleReading{Format: format, Pages: pages}
 }
 
-func isStructuralFactField(fd plugins.KindField, hasReading bool) bool {
+func extractPopularity(item core.KindItem) float64 {
+	if len(item.Fields) == 0 {
+		return 0
+	}
+	for _, key := range []string{"popularity", "fans", "listeners"} {
+		raw, ok := item.Fields[key]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		trimmed := bytes.TrimSpace(raw)
+		var f float64
+		if json.Unmarshal(trimmed, &f) == nil && f > 0 {
+			return f
+		}
+		if n, err := parseJSONInt64(trimmed); err == nil && n > 0 {
+			return float64(n)
+		}
+	}
+	return 0
+}
+
+func isBlockedFactField(fd plugins.KindField, hasReading bool) bool {
 	if isPeopleIndexedField(fd) || fd.Type == "duration" {
 		return true
 	}
-	switch strings.ToLower(strings.TrimSpace(fd.Key)) {
+	rawKey := strings.TrimSpace(fd.Key)
+	low := strings.ToLower(rawKey)
+	if low == "id" || strings.HasSuffix(low, "_id") || strings.HasSuffix(rawKey, "Id") || strings.HasSuffix(rawKey, "ID") {
+		return true
+	}
+	switch low {
 	case "genre", "genres", "tag", "tags",
 		"duration", "runtime", "length", "durationsec", "duration_sec",
 		"contentrating", "certification", "mpaa",
 		"parts",
-		"disc", "discnumber", "disc_number",
-		"indexdisplay", "seriesnumber", "series_number", "booknumber", "book_number":
+		"disc", "discnumber", "disc_number", "discs", "disccount", "disc_count",
+		"tracks", "trackcount", "track_count", "childcount", "child_count",
+		"indexdisplay", "seriesnumber", "series_number", "booknumber", "book_number",
+		"popularity", "fans", "listeners", "score", "rank",
+		"upc", "ean", "isrc", "asin", "mbid", "tmdb", "imdb", "tvdb", "olid",
+		"curation", "featured", "decade", "era",
+		"artist", "artists", "albumartist", "album_artist", "album", "author", "authors", "narrator", "narrators", "series":
 		return true
 	case "format", "readingformat", "fileformat", "file_format", "pages", "pagecount", "page_count":
 		return hasReading
@@ -723,17 +755,24 @@ func isStructuralFactField(fd plugins.KindField, hasReading bool) bool {
 	}
 }
 
-func extractMediaFacts(item core.KindItem, decl plugins.MediaKindMeta, resolve TextResolver, hasReading bool, seriesField string) []core.TitleFact {
+func extractMediaFacts(item core.KindItem, decl plugins.MediaKindMeta, resolve TextResolver, hasReading bool, seriesField string, credits []core.MediaCredit) []core.TitleFact {
 	if len(item.Fields) == 0 || len(decl.Fields) == 0 {
 		return nil
 	}
+	titleNorm := strings.ToLower(strings.TrimSpace(item.Title))
+	creditNames := make(map[string]bool, len(credits))
+	for _, c := range credits {
+		if n := strings.ToLower(strings.TrimSpace(c.Name)); n != "" {
+			creditNames[n] = true
+		}
+	}
 	var facts []core.TitleFact
 	for _, fd := range decl.Fields {
-		if fd.Fact != nil {
-			if !*fd.Fact {
-				continue
-			}
-		} else if isStructuralFactField(fd, hasReading) || (seriesField != "" && fd.Key == seriesField) {
+		// Opt-in only: surface fields explicitly marked as facts by the plugin.
+		if fd.Fact == nil || !*fd.Fact {
+			continue
+		}
+		if isBlockedFactField(fd, hasReading) || (seriesField != "" && fd.Key == seriesField) {
 			continue
 		}
 		raw, ok := item.Fields[fd.Key]
@@ -742,6 +781,10 @@ func extractMediaFacts(item core.KindItem, decl plugins.MediaKindMeta, resolve T
 		}
 		val := formatRawField(fd, raw)
 		if val == "" {
+			continue
+		}
+		valNorm := strings.ToLower(strings.TrimSpace(val))
+		if (titleNorm != "" && valNorm == titleNorm) || creditNames[valNorm] {
 			continue
 		}
 		label := plugins.ResolveTextValue(fd.Label, fd.Key, resolve)

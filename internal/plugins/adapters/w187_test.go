@@ -570,8 +570,8 @@ func TestKindCatalogProjectSummaryResolvesPluginStrings(t *testing.T) {
 						},
 						"fields": []any{
 							map[string]any{"key": "authors", "type": "people", "label": "$t:field.authors", "indexed": true},
-							map[string]any{"key": "language", "type": "string", "label": "$t:field.language", "indexed": false},
-							map[string]any{"key": "publisher", "type": "string", "label": "$t:field.missing", "indexed": true},
+							map[string]any{"key": "language", "type": "string", "label": "$t:field.language", "indexed": false, "fact": true},
+							map[string]any{"key": "publisher", "type": "string", "label": "$t:field.missing", "indexed": true, "fact": true},
 						},
 						"present": map[string]any{
 							"vela": map[string]any{"type": "movies"},

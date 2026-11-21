@@ -71,6 +71,7 @@ ORDER BY
 		ELSE 2
 	END ASC,
 	ts_rank(i.search_tsv, to_tsquery('simple', ?)) DESC,
+	i.rating DESC,
 	i.sort_title ASC,
 	i.item_ref ASC
 LIMIT ?`

@@ -288,6 +288,11 @@ func episodePosterShow(title frontend.Title) frontend.RatingKey {
 	if title.Key.Kind() != frontend.KindEpisode && title.Type != frontend.TypeEpisode {
 		return 0
 	}
+	if nonVideoMedia(title) {
+		// Music tracks, audiobook parts and book items carry their own
+		// (square or cover) art; a grandparent artist photo is never theirs.
+		return 0
+	}
 	if title.ShowKey != 0 {
 		return title.ShowKey
 	}
@@ -324,7 +329,16 @@ func titleCardArtwork(title frontend.Title, images []frontend.GrantedImage) []fr
 	if title.Key.Kind() != frontend.KindEpisode && title.Type != frontend.TypeEpisode {
 		return images
 	}
+	if nonVideoMedia(title) {
+		return images
+	}
 	return selectEpisodeArtwork(images)
+}
+
+// nonVideoMedia reports a plugin title of a non-video media class (music,
+// audiobook, book, podcast, photo), whose artwork is not episode artwork.
+func nonVideoMedia(title frontend.Title) bool {
+	return title.MediaClass != "" && title.MediaClass != frontend.MediaClassVideo
 }
 
 func selectLandscapeCardArtwork(images []frontend.GrantedImage) []frontend.GrantedImage {

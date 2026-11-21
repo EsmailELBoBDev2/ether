@@ -6,14 +6,66 @@ import type { VisibilityRule } from "./browser/LibraryVisibility";
 
 export type LibraryCardShape = "poster" | "landscape" | "square";
 
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
+export type PresentationAppKey = "vela" | "plex" | "mediaBrowser" | "stremio" | "xtream" | "silo";
+
+export type PresentationSource = "plugin" | "inferred" | "unavailable";
+
 export interface Presentations {
   adapterOnly?: boolean;
-  vela?: { type: string };
-  plex?: { base: string };
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
-  stremio?: { type: string };
-  xtream?: { category: string };
-  silo?: { type: string };
+  vela?: { type?: string; default?: boolean };
+  plex?: { base?: string; default?: boolean };
+  mediaBrowser?: {
+    collectionType?: string;
+    itemTypes?: Record<string, string>;
+    default?: boolean;
+  };
+  stremio?: { type?: string; default?: boolean };
+  xtream?: { category?: string; default?: boolean };
+  silo?: { type?: string; default?: boolean };
+}
+
+export interface ResolvedAppPresentation {
+  app: PresentationAppKey;
+  available: boolean;
+  enabled: boolean;
+  defaultOn: boolean;
+  overridden?: boolean;
+  source: PresentationSource;
+  hintValue?: string;
+  reason?: string;
+}
+
+export interface ResolvedPresentations {
+  mediaClass: MediaClass;
+  adapterOnly?: boolean;
+  effective: Presentations;
+  available: Presentations;
+  apps: ResolvedAppPresentation[];
+}
+
+export interface AppSwitchPatch {
+  adapterOnly?: boolean;
+  vela?: boolean;
+  plex?: boolean;
+  mediaBrowser?: boolean;
+  stremio?: boolean;
+  xtream?: boolean;
+  silo?: boolean;
 }
 
 export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view" | "live";
@@ -152,6 +204,7 @@ export interface LibraryLiveSession {
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -165,6 +218,7 @@ export interface KindField {
 export interface MediaKind {
   key: string;
   label: string;
+  media?: MediaClass;
   library: {
     name: string;
     icon?: string;
@@ -174,7 +228,7 @@ export interface MediaKind {
   levels: KindLevel[];
   fields?: KindField[];
   art?: { role: string; label: string }[];
-  present: Presentations;
+  present?: Presentations;
   browse: { sorts?: string[]; facets?: string[]; search: boolean; searchFields?: string[] };
   sync: { mode: string; refresh?: string };
   cache?: { maxBytes?: number; ttl?: string };
@@ -223,6 +277,8 @@ export interface Library {
   /** Owner card-shape choice ("poster" | "landscape" | "square"); omitted/"" = default. */
   cardShape?: "" | LibraryCardShape;
   present?: Presentations;
+  /** Server-resolved per-app presentations separating HOW (plugin/inferred/unavailable) from WHETHER (owner switches). */
+  presentations?: ResolvedPresentations;
   /** Quality profile titles in this library rank with; "" = Default. */
   qualityProfile?: string;
   tabs?: LibraryTab[];

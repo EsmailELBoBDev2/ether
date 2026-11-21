@@ -2823,7 +2823,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
       source: "plugin",
       pluginId: "demo",
       kindKey: "book",
-      present: {},
+      present: {
+        vela: { type: "movies" },
+        mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+      },
       sort: 3,
       hidden: false,
       createdAt: "2026-01-01T00:00:00Z",
@@ -2833,8 +2836,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
       kind: {
         key: "book",
         label: "Books",
+        media: "book",
         library: { name: "Books" },
-        levels: [{ key: "book", label: "Book", playable: true }],
+        levels: [{ key: "book", label: "Book", role: "book", playable: true }],
         fields: [
           { key: "author", type: "people", label: "Author", indexed: true },
           { key: "subject", type: "strings", label: "Subject", indexed: true },
@@ -2931,9 +2935,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
     source: "plugin",
     pluginId: "demo-clips",
     kindKey: "clip",
-    present: { vela: { type: "movies" } },
+    present: {
+      vela: { type: "movies" },
+      plex: { base: "movie" },
+      mediaBrowser: { collectionType: "movies", itemTypes: { clip: "Movie" } },
+      stremio: { type: "movie" },
+      xtream: { category: "movie" },
+      silo: { type: "movies" },
+    },
     sort: 8,
-    hidden: true,
+    hidden: false,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     itemCount: 24,
@@ -2941,13 +2952,55 @@ export function createFakeServer(opts: FakeOptions = {}) {
     kind: {
       key: "clip",
       label: "Clips",
+      media: "video",
       library: { name: "Studio Clips", card: "landscape" },
-      levels: [{ key: "clip", label: "Clip", playable: true }],
+      levels: [{ key: "clip", label: "Clip", role: "item", playable: true }],
       present: { vela: { type: "movies" } },
       browse: { sorts: ["added", "title"], search: true },
       sync: { mode: "push" },
     },
     sync: { pluginId: "demo-clips", kindKey: "clip", generation: 1, items: 24 },
+  });
+  mockLibs.push({
+    id: 9,
+    key: "pk-demo-music",
+    name: "Field Recordings",
+    source: "plugin",
+    pluginId: "demo-music",
+    kindKey: "recording",
+    present: {
+      vela: { type: "shows" },
+      plex: { base: "artist" },
+      mediaBrowser: {
+        collectionType: "music",
+        itemTypes: { album: "MusicAlbum", track: "Audio" },
+      },
+    },
+    sort: 9,
+    hidden: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    itemCount: 18,
+    pluginName: "Field Recordings",
+    kind: {
+      key: "recording",
+      label: "Field recordings",
+      media: "music",
+      library: { name: "Field Recordings", card: "square" },
+      levels: [
+        { key: "album", label: "Album", role: "album", container: true },
+        { key: "track", label: "Track", role: "track", playable: true },
+      ],
+      present: {
+        mediaBrowser: {
+          collectionType: "music",
+          itemTypes: { album: "MusicAlbum", track: "Audio" },
+        },
+      },
+      browse: { sorts: ["title", "added"], search: true },
+      sync: { mode: "push" },
+    },
+    sync: { pluginId: "demo-music", kindKey: "recording", generation: 1, items: 18 },
   });
   lookupMockLib = (id) => mockLibs.find((l) => Number(l.id) === id);
   listMockLibs = () => mockLibs;
@@ -2958,6 +3011,182 @@ export function createFakeServer(opts: FakeOptions = {}) {
     toCard: card,
   });
   const mockMatches: Record<string, unknown>[] = [];
+  function mockResolvePresentations(lib: Record<string, unknown>) {
+    const present = (lib.present && typeof lib.present === "object" ? lib.present : {}) as Record<
+      string,
+      unknown
+    >;
+    const adapterOnly = Boolean(present.adapterOnly);
+    if (lib.source !== "plugin") {
+      const isShow = lib.mediaType === "show";
+      const avail: Record<string, unknown> = {
+        vela: { type: isShow ? "shows" : "movies" },
+        plex: { base: isShow ? "show" : "movie" },
+        mediaBrowser: { collectionType: isShow ? "tvshows" : "movies" },
+        stremio: { type: isShow ? "series" : "movie" },
+        xtream: { category: isShow ? "series" : "movie" },
+        silo: { type: isShow ? "tvshows" : "movies" },
+      };
+      const hints: Record<string, string> = {
+        vela: isShow ? "shows" : "movies",
+        plex: isShow ? "show" : "movie",
+        mediaBrowser: isShow ? "tvshows" : "movies",
+        stremio: isShow ? "series" : "movie",
+        xtream: isShow ? "series" : "movie",
+        silo: isShow ? "tvshows" : "movies",
+      };
+      const isBuiltin = lib.source === "builtin";
+      return {
+        mediaClass: "video",
+        adapterOnly: !isBuiltin && adapterOnly,
+        effective: present,
+        available: avail,
+        apps: ["vela", "plex", "mediaBrowser", "stremio", "xtream", "silo"].map((app) => ({
+          app,
+          available: true,
+          enabled: isBuiltin ? true : !adapterOnly && Boolean(present[app]),
+          defaultOn: isBuiltin,
+          source: "inferred",
+          hintValue: hints[app],
+        })),
+      };
+    }
+    const kind = (lib.kind && typeof lib.kind === "object" ? lib.kind : {}) as {
+      media?: string;
+      levels?: { key: string; role?: string }[];
+      present?: Record<string, Record<string, unknown>>;
+    };
+    const kp = kind.present ?? {};
+    const levels = kind.levels ?? [];
+    const multi = levels.length >= 2;
+    const mediaClass =
+      kind.media ||
+      (levels.some((l) => l.key === "book")
+        ? "book"
+        : levels.some((l) => l.key === "album" || l.key === "track")
+          ? "music"
+          : "video");
+    const avail: Record<string, unknown> = {};
+    const apps: Record<string, unknown>[] = [];
+    const velaHint = String(kp.vela?.type ?? (multi ? "shows" : "movies"));
+    avail.vela = { type: velaHint };
+    apps.push({
+      app: "vela",
+      available: true,
+      enabled: !adapterOnly && Boolean(present.vela),
+      defaultOn: true,
+      source: kp.vela?.type ? "plugin" : "inferred",
+      hintValue: velaHint,
+    });
+    if (
+      kp.plex?.base ||
+      mediaClass === "video" ||
+      mediaClass === "music" ||
+      mediaClass === "photo"
+    ) {
+      const plexBase = String(
+        kp.plex?.base ??
+          (mediaClass === "music"
+            ? "artist"
+            : mediaClass === "photo"
+              ? "photo"
+              : multi
+                ? "show"
+                : "movie"),
+      );
+      avail.plex = { base: plexBase };
+      apps.push({
+        app: "plex",
+        available: true,
+        enabled: !adapterOnly && Boolean(present.plex),
+        defaultOn: true,
+        source: kp.plex?.base ? "plugin" : "inferred",
+        hintValue: plexBase,
+      });
+    } else {
+      apps.push({
+        app: "plex",
+        available: false,
+        enabled: false,
+        defaultOn: false,
+        source: "unavailable",
+        reason:
+          mediaClass === "book"
+            ? "Plex does not have a book library type."
+            : mediaClass === "audiobook"
+              ? "Plex does not have an audiobook library type."
+              : "Plex does not have a podcast library type.",
+      });
+    }
+    const mbType = String(
+      kp.mediaBrowser?.collectionType ??
+        (mediaClass === "music"
+          ? "music"
+          : mediaClass === "book"
+            ? "books"
+            : mediaClass === "audiobook"
+              ? "audiobooks"
+              : mediaClass === "photo"
+                ? "photos"
+                : multi
+                  ? "tvshows"
+                  : "movies"),
+    );
+    avail.mediaBrowser = { collectionType: mbType };
+    apps.push({
+      app: "mediaBrowser",
+      available: true,
+      enabled: !adapterOnly && Boolean(present.mediaBrowser),
+      defaultOn: true,
+      source: kp.mediaBrowser?.collectionType ? "plugin" : "inferred",
+      hintValue: mbType,
+    });
+    for (const [app, field, val, reason] of [
+      [
+        "stremio",
+        "type",
+        multi ? "series" : "movie",
+        "Stremio only supports movies, shows, and channels.",
+      ],
+      [
+        "xtream",
+        "category",
+        multi ? "series" : "movie",
+        "Xtream only supports movies, series, and live TV.",
+      ],
+      [
+        "silo",
+        "type",
+        multi ? "tvshows" : "movies",
+        "Silo only supports movie and TV show libraries.",
+      ],
+    ] as const) {
+      const declared = kp[app]?.[field];
+      if (declared || mediaClass === "video") {
+        const hint = String(declared ?? val);
+        avail[app] = { [field]: hint };
+        apps.push({
+          app,
+          available: true,
+          enabled: !adapterOnly && Boolean(present[app]),
+          defaultOn: true,
+          source: declared ? "plugin" : "inferred",
+          hintValue: hint,
+        });
+      } else {
+        apps.push({
+          app,
+          available: false,
+          enabled: false,
+          defaultOn: false,
+          source: "unavailable",
+          reason,
+        });
+      }
+    }
+    return { mediaClass, adapterOnly, effective: present, available: avail, apps };
+  }
+
   function hydrateLib(lib: Record<string, unknown>) {
     if (!lib.sources)
       lib.sources = [
@@ -2976,6 +3205,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     lib.tabsCustomized = tabsDto.customized;
     lib.tabs = tabsDto.tabs;
     lib.effectiveTabs = tabsDto.effectiveTabs;
+    lib.presentations = mockResolvePresentations(lib);
     return lib;
   }
   function mockLibraries(method: string, seg: string[], url: URL, body: unknown): Response {
@@ -3168,8 +3398,44 @@ export function createFakeServer(opts: FakeOptions = {}) {
     hydrateLib(lib);
     if (!seg[2]) {
       if (method === "PATCH") {
-        Object.assign(lib, b);
+        if (b.presentApps && typeof b.presentApps === "object") {
+          const resolved = mockResolvePresentations(lib);
+          const patch = b.presentApps as Record<string, boolean | undefined>;
+          const curPresent = (
+            lib.present && typeof lib.present === "object"
+              ? { ...(lib.present as Record<string, unknown>) }
+              : {}
+          ) as Record<string, unknown>;
+          const nextAdapter =
+            patch.adapterOnly !== undefined ? patch.adapterOnly : Boolean(curPresent.adapterOnly);
+          if (nextAdapter) {
+            lib.present = { adapterOnly: true };
+          } else {
+            delete curPresent.adapterOnly;
+            for (const app of resolved.apps as {
+              app: string;
+              available: boolean;
+              reason?: string;
+            }[]) {
+              const val = patch[app.app];
+              if (val === undefined) continue;
+              if (!app.available) {
+                if (val) return err(400, "validation", app.reason ?? "Unavailable");
+                continue;
+              }
+              if (val) curPresent[app.app] = resolved.available[app.app];
+              else delete curPresent[app.app];
+            }
+            lib.present = curPresent;
+          }
+          const rest = { ...b };
+          delete rest.presentApps;
+          Object.assign(lib, rest);
+        } else {
+          Object.assign(lib, b);
+        }
         if (b.cardShape === "") delete lib.cardShape;
+        hydrateLib(lib);
         return json(lib);
       }
       if (method === "DELETE") {

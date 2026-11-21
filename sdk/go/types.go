@@ -256,33 +256,41 @@ type BadgeUsage struct {
 	QuotaTitles int64 `json:"quotaTitles"`
 }
 
-// Presentations declares how a library is published per protocol.
+// Presentations declares how a library is seen per protocol. Each app block
+// describes how that app renders the library (never whether it is published,
+// though Default may suggest starting off for an app). When an app block is
+// omitted, Ether infers a fitting presentation from the kind's media class,
+// level roles, and hierarchy shape.
 type Presentations struct {
 	AdapterOnly bool `json:"adapterOnly,omitempty"`
 	Vela        *struct {
-		Type string `json:"type"` // movies|shows
+		Type    string `json:"type,omitempty"`    // movies|shows
+		Default *bool  `json:"default,omitempty"` // optional default on/off suggestion
 	} `json:"vela,omitempty"`
 	Plex *struct {
-		Base string `json:"base"` // movie|show|artist|photo
+		Base    string `json:"base,omitempty"`    // movie|show|artist|photo
+		Default *bool  `json:"default,omitempty"` // optional default on/off suggestion
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {
-		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		CollectionType string `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
 		// ItemTypes maps each level key to its Jellyfin/Emby item type:
 		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
-		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
-		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
-		// IncludeItemTypes filtering; unmapped levels keep the video
-		// projection, so declare every level of a music/book kind.
+		// AudioBook|Book|PhotoAlbum|Photo. Unmapped levels are inferred from
+		// the kind's media class, level roles, and hierarchy shape.
 		ItemTypes map[string]string `json:"itemTypes,omitempty"`
+		Default   *bool             `json:"default,omitempty"` // optional default on/off suggestion
 	} `json:"mediaBrowser,omitempty"`
 	Stremio *struct {
-		Type string `json:"type"`
+		Type    string `json:"type,omitempty"`
+		Default *bool  `json:"default,omitempty"`
 	} `json:"stremio,omitempty"`
 	Xtream *struct {
-		Category string `json:"category"`
+		Category string `json:"category,omitempty"`
+		Default  *bool  `json:"default,omitempty"`
 	} `json:"xtream,omitempty"`
 	Silo *struct {
-		Type string `json:"type"`
+		Type    string `json:"type,omitempty"`
+		Default *bool  `json:"default,omitempty"`
 	} `json:"silo,omitempty"`
 }
 
@@ -290,11 +298,12 @@ type Presentations struct {
 type MediaKindMeta struct {
 	Key     string          `json:"key"`
 	Label   string          `json:"label"`
+	Media   string          `json:"media,omitempty"` // video|music|audiobook|book|podcast|photo
 	Library KindLibraryDecl `json:"library"`
 	Levels  []KindLevel     `json:"levels"`
 	Fields  []KindField     `json:"fields,omitempty"`
 	Art     []KindArt       `json:"art,omitempty"`
-	Present Presentations   `json:"present"`
+	Present Presentations   `json:"present,omitempty"`
 	Browse  KindBrowseDecl  `json:"browse"`
 	Sync    KindSyncDecl    `json:"sync"`
 	Cache   *KindCacheDecl  `json:"cache,omitempty"`
@@ -368,6 +377,7 @@ type KindLibraryShelf struct {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
+	Role      string `json:"role,omitempty"` // item|artist|album|track|series|book|audiobook|part|show|episode|collection
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
 }

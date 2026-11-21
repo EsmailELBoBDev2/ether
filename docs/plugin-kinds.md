@@ -363,32 +363,53 @@ Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
 is the natural unit); containers themselves carry no progress.
 
-## Publishing (`present`)
+## Publishing (`media`, `levels[].role`, and `present`)
 
-Each library publishes per protocol; the owner can override your
-defaults per library afterwards.
+A kind's media class and level roles are **facts about the kind**:
 
-- `vela: {type: "movies"|"shows"}` — Ether's own app (`shows` needs at
-  least two levels).
-- `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
+- `mediaKinds[].media`: `"video" | "music" | "audiobook" | "book" | "podcast" | "photo"`
+- `mediaKinds[].levels[].role`: `"item" | "artist" | "album" | "track" | "series" | "book" | "audiobook" | "part" | "show" | "episode" | "collection"`
+
+Ether derives a fitting presentation for every app from `(media, levels[].role, levels)`
+using one shared inference table. When `media` or `role` is omitted, Ether infers them
+from declared `present.mediaBrowser` hints (`MusicArtist→artist`, `MusicAlbum→album`,
+`Audio→track`, `AudioBook→audiobook`, `Book→book`, `Photo→photo`), then from `present.plex.base`,
+then from the level keys and hierarchy depth (one playable level → movies; multi-level → shows;
+album/track → music; photo → photos; book/audiobook → books/audiobooks).
+
+An optional `present` block overrides **how** specific apps see the library (types,
+base, `itemTypes`) and may suggest `default: false` to start an app switched off. The
+manifest never owns **whether** an app publishes a library: owner switches in the
+Console's **Show in apps** section are sticky across plugin updates and restarts. When
+a plugin update changes a kind's `media`, `levels[].role`, or `present`, Ether updates
+each app's presentation shape (such as `itemTypes` or `plex.base`) without turning on a
+library the owner switched off or turning off one the owner switched on. Where an app
+has no fitting library type (for example books or audiobooks on Plex, or non-video
+kinds on Stremio, Xtream, and Silo), that app stays off with a plain-language reason
+unless the plugin explicitly declares a custom mapping.
+
+- `vela: {type?: "movies"|"shows", default?: boolean}` — Ether's own app (`shows` needs at
+  least two levels). Fits every media class.
+- `plex: {base?: "movie"|"show"|"artist"|"photo", default?: boolean}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
   A single-level `artist` kind is a flat album list in a music
   section: its items present as albums, never as artists (name the
-  level `artist` or `track` to present as that instead).
-- `mediaBrowser: {collectionType, itemTypes}` — Jellyfin/Emby.
+  level `artist` or `track` to present as that instead). Fits video,
+  music, and photo kinds; book, audiobook, and podcast kinds stay off
+  unless explicitly declared.
+- `mediaBrowser: {collectionType?, itemTypes?, default?}` — Jellyfin/Emby.
   `collectionType` is one of `movies, tvshows, music, audiobooks,
   books, photos, homevideos`. `itemTypes` maps each level key to
   one of `Movie, Series, Season, Episode, MusicArtist, MusicAlbum,
   Audio, AudioBook, Book, PhotoAlbum, Photo` (anything else is a
-  manifest error). The declared type drives the item's `Type`, its
+  manifest error). Any unmapped level is inferred from `media`,
+  `levels[].role`, and hierarchy shape. The resolved type drives the item's `Type`, its
   `MediaType` (`Audio` for `Audio`/`AudioBook`, `Book` for `Book`,
   `Photo` for `Photo`, `Video` for `Movie`/`Episode`), `IsFolder`
   (`MusicArtist`/`MusicAlbum`/`PhotoAlbum`/`Series`/`Season` hold
   children), parent links (a track's `Album`/`AlbumId` name its
-  album) and `IncludeItemTypes` filtering. Unmapped levels keep
-  the video projection (`Movie`/`Series`/`Season`/`Episode`), so
-  declare every level of a music, book or audiobook kind. Audio
+  album) and `IncludeItemTypes` filtering. Audio
   items serve through the same media routes; their MediaSources
   carry only the streams the source actually has.
   A single-level kind whose one playable level is typed
@@ -399,13 +420,9 @@ defaults per library afterwards.
   which is what Jellyfin's album play button and Songs tab ask
   for. Plex gets the same shape as one synthetic track under the
   album.
-
-When a plugin update changes a kind's `present`, the new
-presentation is re-applied to the kind's existing library (owner
-edits to where a library appears are kept when the declaration
-did not change). Level and field changes follow the upgrade
-rules and reindex only when the indexed shape changed.
-- `stremio: {type}`, `xtream: {category}`, `silo: {type}`.
+- `stremio: {type?, default?}`, `xtream: {category?, default?}`, `silo: {type?, default?}` —
+  inferred for video kinds; stay off for music, books, audiobooks, podcasts, and photos
+  unless explicitly declared.
 - `adapterOnly: true` — no generic mapping fits; ship a
   `frontend_adapter` and serve the protocol yourself. Embed
   `/ether/v1/kind-media/{itemId}` stream URLs for bytes (the SDKs'

@@ -422,31 +422,54 @@ export interface Contributes {
 }
 
 /** A Jellyfin/Emby item type a level can present as. */
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
 export type MediaBrowserItemType =
   | "Movie" | "Series" | "Season" | "Episode"
   | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
   | "Book" | "PhotoAlbum" | "Photo";
 
-/** How a library is published per protocol (Ether v0.3.8 content kinds). */
+/**
+ * How a library is seen per protocol. Each app block overrides how that app
+ * presents the library and may suggest `default: false` to start off. Omitted
+ * apps are inferred by Ether from `media`, `levels[].role`, and level shape.
+ */
 export interface Presentations {
   adapterOnly?: boolean;
-  vela?: { type: "movies" | "shows" };
-  plex?: { base: "movie" | "show" | "artist" | "photo" };
+  vela?: { type?: "movies" | "shows"; default?: boolean };
+  plex?: { base?: "movie" | "show" | "artist" | "photo"; default?: boolean };
   /**
-   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; the
-   * declared type drives the item's Type, MediaType (Audio/Book/Photo/
-   * Video), IsFolder and IncludeItemTypes filtering. Unmapped levels keep
-   * the video projection, so declare every level of a music/book kind.
+   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; any
+   * unmapped level is inferred from the kind's media class, level roles, and
+   * hierarchy shape.
    */
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, MediaBrowserItemType> };
-  stremio?: { type: "movie" | "series" | "channel" | "tv" };
-  xtream?: { category: string };
-  silo?: { type: string };
+  mediaBrowser?: {
+    collectionType?: string;
+    itemTypes?: Record<string, MediaBrowserItemType>;
+    default?: boolean;
+  };
+  stremio?: { type?: "movie" | "series" | "channel" | "tv"; default?: boolean };
+  xtream?: { category?: string; default?: boolean };
+  silo?: { type?: string; default?: boolean };
 }
 
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -540,11 +563,12 @@ export interface KindBrowseExpand {
 export interface MediaKindMeta {
   key: string;
   label: string;
+  media?: MediaClass;
   library: KindLibraryDecl;
   levels: KindLevel[];
   fields?: KindField[];
   art?: KindArt[];
-  present: Presentations;
+  present?: Presentations;
   browse: {
     sorts?: string[];
     facets?: string[];

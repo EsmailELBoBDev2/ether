@@ -688,6 +688,21 @@
                         },
                         "playable": {
                           "type": "boolean"
+                        },
+                        "role": {
+                          "enum": [
+                            "item",
+                            "artist",
+                            "album",
+                            "track",
+                            "series",
+                            "book",
+                            "audiobook",
+                            "part",
+                            "show",
+                            "episode",
+                            "collection"
+                          ]
                         }
                       },
                       "type": "object"
@@ -953,6 +968,16 @@
                     },
                     "type": "object"
                   },
+                  "media": {
+                    "enum": [
+                      "video",
+                      "music",
+                      "audiobook",
+                      "book",
+                      "podcast",
+                      "photo"
+                    ]
+                  },
                   "present": {
                     "properties": {
                       "adapterOnly": {
@@ -962,6 +987,9 @@
                         "properties": {
                           "collectionType": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           },
                           "itemTypes": {
                             "additionalProperties": {
@@ -976,12 +1004,18 @@
                         "properties": {
                           "base": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           }
                         },
                         "type": "object"
                       },
                       "silo": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -990,6 +1024,9 @@
                       },
                       "stremio": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -998,6 +1035,9 @@
                       },
                       "vela": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -1008,6 +1048,9 @@
                         "properties": {
                           "category": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           }
                         },
                         "type": "object"

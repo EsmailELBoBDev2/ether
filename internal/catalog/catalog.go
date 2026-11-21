@@ -186,6 +186,10 @@ CREATE INDEX catalog_credits_person_kind ON catalog_credits(person_tmdb, kind, k
 	// backfilled lazily on refresh while leaving displayed content_rating
 	// untouched.
 	store.Register("catalog", 64, `ALTER TABLE catalog_titles ADD COLUMN enforcement_rating TEXT NOT NULL DEFAULT '';`)
+	// certifications holds the JSON map of uppercase ISO 3166-1 country codes
+	// to bare certificates (for example {"GB":"12A","US":"PG-13"}) so
+	// viewer-localized surfaces can pick the viewer's preferred region.
+	store.Register("catalog", 65, `ALTER TABLE catalog_titles ADD COLUMN certifications TEXT NOT NULL DEFAULT '';`)
 }
 
 // dropUnkeyableEpisodes removes mirrored seasons and episodes whose numbers

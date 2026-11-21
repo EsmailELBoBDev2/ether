@@ -480,7 +480,7 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
 	if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
-		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0}, nil
+		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 	}
 	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
 	if err != nil {
@@ -488,7 +488,7 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 	}
 	level, levels, anyLevel, matched := browseLevelsForQuery(rec.Decl, lib.Present, q)
 	if !matched {
-		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0}, nil
+		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 	}
 	policy, err := c.items.LibraryPolicy(ctx, lib)
 	if err != nil {
@@ -496,6 +496,7 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 	}
 	bq := pluginitems.BrowseQuery{
 		NoTotal:          q.NoTotal,
+		CheapTotal:       q.CheapTotal,
 		Policy:           policy,
 		LibraryID:        lib.ID,
 		ViewerID:         core.CatalogViewerID(ctx),
@@ -534,6 +535,7 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 	return experience.PluginBrowsePage{
 		Items:      titles,
 		Total:      page.Total,
+		TotalExact: page.TotalExact,
 		NextCursor: page.NextCursor,
 	}, nil
 }
@@ -733,11 +735,12 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 			// A flat playable album has no track items to list; present
 			// the album itself once as its playable child.
 			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
-			return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1}, nil
+			return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1, TotalExact: true}, nil
 		}
 		return experience.PluginBrowsePage{
 			Items:      c.projectItems(ctx, rec, lib, page.Items),
 			Total:      page.Total,
+			TotalExact: page.TotalExact,
 			NextCursor: page.NextCursor,
 		}, nil
 	}
@@ -1462,25 +1465,14 @@ func searchWords(s string) []string {
 }
 
 func normalizeArticleSort(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	for _, prefix := range []string{"the ", "an ", "a "} {
-		if rest, ok := strings.CutPrefix(s, prefix); ok {
-			if rest = strings.TrimSpace(rest); rest != "" {
-				return rest
-			}
-		}
-	}
-	return s
+	return core.TitleSortKey(s)
 }
 
 func scorePluginSearchHit(t core.Title, query string) float64 {
 	qNorm := strings.ToLower(strings.TrimSpace(query))
 	qSort := normalizeArticleSort(query)
 	tNorm := strings.ToLower(strings.TrimSpace(t.Title))
-	tSort := strings.ToLower(strings.TrimSpace(t.SortTitle))
-	if tSort == "" {
-		tSort = normalizeArticleSort(t.Title)
-	}
+	tSort := core.EffectiveSortTitle(t.Title, t.SortTitle)
 	if qNorm != "" && (tNorm == qNorm || (qSort != "" && tSort == qSort)) {
 		return 1.0
 	}

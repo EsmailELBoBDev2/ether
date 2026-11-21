@@ -389,6 +389,11 @@ type ItemQuery struct {
 	// which reads every title the filter admits; Page.Total is Offset plus
 	// the items returned. Other pages still report their exact total.
 	NoTotal bool
+	// CheapTotal, when paired with NoTotal, populates Page.Total and sets
+	// Page.TotalExact only when an exact count is available cheaply (tallies,
+	// cached counts, or bounded index counts); otherwise Page.TotalExact stays
+	// false and no full-library count runs.
+	CheapTotal bool
 	// SuppressExpand disables on-demand background plugin facet/person expansion
 	// for internal shelf probes and search fan-out.
 	SuppressExpand bool

@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -14,6 +15,41 @@ import (
 	"github.com/braedonsaunders/ether/internal/schedule"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
+
+func encodeCertifications(certs map[string]string) string {
+	if len(certs) == 0 {
+		return ""
+	}
+	clean := make(map[string]string, len(certs))
+	for k, v := range certs {
+		cc := strings.ToUpper(strings.TrimSpace(k))
+		lbl := strings.TrimSpace(v)
+		if contentrating.Alpha2(cc) == "" || lbl == "" {
+			continue
+		}
+		clean[cc] = lbl
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(clean)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func decodeCertifications(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // Content ratings. catalog_titles keeps the chosen certification in
 // contentrating's stored form (content_rating), its age Level
@@ -246,19 +282,19 @@ func (c *Catalog) backfillChildRatings(ctx context.Context) error {
 // childRatingsBatch covers the next series after key after: it returns how
 // many series it read and the last key.
 func (c *Catalog) childRatingsBatch(ctx context.Context, after int64) (int, int64, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT key,content_rating,content_rating_source,enforcement_rating FROM catalog_titles
+	rows, err := c.db.QueryContext(ctx, `SELECT key,content_rating,content_rating_source,enforcement_rating,certifications FROM catalog_titles
 		WHERE type='show' AND key>? ORDER BY key ASC LIMIT ?`, after, childRatingsBatch)
 	if err != nil {
 		return 0, 0, err
 	}
 	type series struct {
-		key              int64
-		rating, src, enf string
+		key                     int64
+		rating, src, enf, certs string
 	}
 	var batch []series
 	for rows.Next() {
 		var s series
-		if err := rows.Scan(&s.key, &s.rating, &s.src, &s.enf); err != nil {
+		if err := rows.Scan(&s.key, &s.rating, &s.src, &s.enf, &s.certs); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
@@ -275,15 +311,15 @@ func (c *Catalog) childRatingsBatch(ctx context.Context, after int64) (int, int6
 	defer tx.Rollback()
 	var changed int64
 	for _, s := range batch {
-		if s.rating == "" && s.enf == "" {
+		if s.rating == "" && s.enf == "" && s.certs == "" {
 			continue
 		}
 		enf := s.enf
 		if enf == "" {
 			enf = contentrating.EnforceRating(s.rating)
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE catalog_titles SET content_rating=?,content_rating_rank=?,content_rating_source=?,enforcement_rating=?
-			WHERE show_key=? AND type IN ('season','episode') AND content_rating=''`, s.rating, titleRatingRank(s.rating, enf), s.src, enf, s.key)
+		res, err := tx.ExecContext(ctx, `UPDATE catalog_titles SET content_rating=?,content_rating_rank=?,content_rating_source=?,enforcement_rating=?,certifications=CASE WHEN ?<>'' THEN ? ELSE certifications END
+			WHERE show_key=? AND type IN ('season','episode') AND content_rating=''`, s.rating, titleRatingRank(s.rating, enf), s.src, enf, s.certs, s.certs, s.key)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -378,6 +414,7 @@ func (c *Catalog) RefreshRatings(ctx context.Context, limit int) (int, error) {
 	type result struct {
 		sel        contentrating.Selection
 		enf        string
+		certs      map[string]string
 		done, gone bool // fetched; or TMDB no longer has the title
 	}
 	results := make([]result, len(items))
@@ -404,7 +441,7 @@ func (c *Catalog) RefreshRatings(ctx context.Context, limit int) (int, error) {
 			case errors.Is(err, core.ErrNotFound):
 				results[i] = result{done: true, gone: true}
 			case err == nil:
-				results[i] = result{sel: contentrating.Select(certs, region), enf: contentrating.EnforceCertifications(certs, region), done: true}
+				results[i] = result{sel: contentrating.Select(certs, region), enf: contentrating.EnforceCertifications(certs, region), certs: contentrating.ByCountry(certs), done: true}
 			}
 		}()
 	}
@@ -419,7 +456,7 @@ func (c *Catalog) RefreshRatings(ctx context.Context, limit int) (int, error) {
 			break // retry this title and the rest next tick
 		}
 		if !r.gone {
-			if err := c.storeRating(ctx, core.RatingKey(it.key), it.typ == string(core.TypeShow), r.sel.Value, r.enf, r.sel.Source, homeRating(r.sel.Value, r.sel.Source, region)); err != nil {
+			if err := c.storeRating(ctx, core.RatingKey(it.key), it.typ == string(core.TypeShow), r.sel.Value, r.enf, r.sel.Source, r.certs, homeRating(r.sel.Value, r.sel.Source, region)); err != nil {
 				return done, err
 			}
 		}
@@ -448,24 +485,25 @@ func (c *Catalog) refreshRatingsLoop(ctx context.Context) {
 // storeRating writes a selected rating to a title (and, for a show, its
 // seasons and episodes) with the upsert's precedence: a home rating always
 // wins; otherwise a provider rating already stored is kept.
-func (c *Catalog) storeRating(ctx context.Context, key core.RatingKey, show bool, value, enf, source string, home bool) error {
+func (c *Catalog) storeRating(ctx context.Context, key core.RatingKey, show bool, value, enf, source string, certs map[string]string, home bool) error {
 	if enf == "" {
 		enf = contentrating.EnforceRating(value)
 	}
 	rank := titleRatingRank(value, enf)
+	certsJSON := encodeCertifications(certs)
 	enfExpr := `?`
 	if enf == "" {
 		enfExpr = `CASE WHEN catalog_titles.enforcement_rating='` + contentrating.UncertifiedAdult + `' OR catalog_titles.adult<>0 OR (` + adultKeywordsExistsSQL("catalog_titles.key") + `) THEN '` + contentrating.UncertifiedAdult + `' ELSE '' END`
 	}
-	q := `UPDATE catalog_titles SET content_rating=?,content_rating_rank=?,content_rating_source=?,enforcement_rating=` + enfExpr + `
+	q := `UPDATE catalog_titles SET content_rating=?,content_rating_rank=?,content_rating_source=?,enforcement_rating=` + enfExpr + `,certifications=CASE WHEN ?<>'' THEN ? ELSE certifications END
 		WHERE (key=?` + map[bool]string{true: ` OR (show_key=? AND type IN ('season','episode'))`, false: ``}[show] + `)
 		AND (?=1 OR NOT (content_rating_source IN ('omdb','mdblist') AND content_rating_rank>0))
-		AND (content_rating<>? OR content_rating_source<>? OR content_rating_rank<>? OR enforcement_rating<>(` + enfExpr + `))`
+		AND (content_rating<>? OR content_rating_source<>? OR content_rating_rank<>? OR enforcement_rating<>(` + enfExpr + `) OR (?<>'' AND certifications<>?))`
 	args := []any{value, rank, source}
 	if enf != "" {
 		args = append(args, enf)
 	}
-	args = append(args, int64(key))
+	args = append(args, certsJSON, certsJSON, int64(key))
 	if show {
 		args = append(args, int64(key))
 	}
@@ -477,6 +515,7 @@ func (c *Catalog) storeRating(ctx context.Context, key core.RatingKey, show bool
 	if enf != "" {
 		args = append(args, enf)
 	}
+	args = append(args, certsJSON, certsJSON)
 	res, err := c.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return err
@@ -499,8 +538,8 @@ func (c *Catalog) ApplyProviderCertification(ctx context.Context, key core.Ratin
 	if key.Kind() != core.KindMovie && key.Kind() != core.KindShow {
 		return nil
 	}
-	var value, source string
-	err := c.db.QueryRowContext(ctx, `SELECT content_rating,content_rating_source FROM catalog_titles WHERE key=?`, int64(key)).Scan(&value, &source)
+	var value, source, certsRaw string
+	err := c.db.QueryRowContext(ctx, `SELECT content_rating,content_rating_source,certifications FROM catalog_titles WHERE key=?`, int64(key)).Scan(&value, &source, &certsRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -510,8 +549,13 @@ func (c *Catalog) ApplyProviderCertification(ctx context.Context, key core.Ratin
 	if homeRating(value, source, c.config().Region) || (source == "" && value != "" && contentrating.Parse(value).Country == "US" && contentrating.LevelOf(value) != contentrating.Unrated) {
 		return nil
 	}
+	certs := decodeCertifications(certsRaw)
+	if certs == nil {
+		certs = map[string]string{}
+	}
+	certs["US"] = label
 	qualified := contentrating.Qualify("US", label)
-	return c.storeRating(ctx, key, key.Kind() == core.KindShow, qualified, contentrating.EnforceRating(qualified), provider, true)
+	return c.storeRating(ctx, key, key.Kind() == core.KindShow, qualified, contentrating.EnforceRating(qualified), provider, certs, true)
 }
 
 // UnratedTitles lists browsable, detailed movies and shows without a rated

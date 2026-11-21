@@ -65,7 +65,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
 	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s|tab:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback, q.Filter.TabRules, q.Filter.TabFallback)
-	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal)
+	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal, q.CheapTotal)
 	cacheable := !filterHasViewerState(q.Filter)
 	// An export page holds partial titles (ListRows) and is read once per
 	// export: it neither serves from nor fills the page cache.
@@ -88,7 +88,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		}
 		c.cacheMu.RUnlock()
 		c.kickMovieYears(items)
-		return core.Page{Items: items, Total: ent.page.Total}, nil
+		return core.Page{Items: items, Total: ent.page.Total, TotalExact: ent.page.TotalExact}, nil
 	}
 	if ent, ok := c.browseCache[rkey]; rank != nil && pageCacheable && !q.SortLastViewed && ok && ent.gen == gen && ent.minute == minBucket {
 		items := make([]core.Title, len(ent.page.Items))
@@ -101,7 +101,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			return core.Page{}, err
 		}
 		c.kickMovieYears(items)
-		return core.Page{Items: items, Total: ent.page.Total}, nil
+		return core.Page{Items: items, Total: ent.page.Total, TotalExact: ent.page.TotalExact}, nil
 	}
 	cntEnt, hasCnt := c.countCache[ckey]
 	if !cacheable {
@@ -115,6 +115,9 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			return core.Page{}, err
 		}
 		if empty {
+			if q.CheapTotal {
+				return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+			}
 			return core.Page{Items: []core.Title{}, Total: offset}, nil
 		}
 	}
@@ -123,12 +126,22 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		return core.Page{}, err
 	}
 	var total int
+	totalExact := true
 	switch {
-	case q.NoTotal:
+	case q.NoTotal && !q.CheapTotal:
 		// The page query alone; the total is set from the page below.
 		total = offset + limit
+		totalExact = false
 	case hasCnt && cntEnt.gen == gen && cntEnt.minute == minBucket:
 		total = cntEnt.total
+	case q.NoTotal && q.CheapTotal:
+		total, totalExact, err = c.countBrowseCheap(ctx, q.Filter, ckey, where, args, cacheable)
+		if err != nil {
+			return core.Page{}, err
+		}
+		if !totalExact {
+			total = offset + limit
+		}
 	default:
 		if !cacheable {
 			// A viewer's state filter is never cached, but an unwatched
@@ -144,8 +157,8 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			return core.Page{}, err
 		}
 	}
-	if total == 0 || offset >= total {
-		page := core.Page{Items: []core.Title{}, Total: total}
+	if totalExact && (total == 0 || offset >= total) {
+		page := core.Page{Items: []core.Title{}, Total: total, TotalExact: true}
 		if pageCacheable && !q.SortLastViewed && c.writeGen.Load() == gen {
 			c.cacheMu.Lock()
 			if len(c.browseCache) >= 512 {
@@ -161,21 +174,21 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if err != nil {
 			return core.Page{}, err
 		}
-		if q.NoTotal {
+		if q.NoTotal && !totalExact {
 			total = offset + len(items)
 		}
-		return core.Page{Items: items, Total: total}, nil
+		return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 	}
 	if q.AfterKey > 0 && seekableBrowse(q) {
 		items, err := c.seekPage(ctx, q, where, args, offset, limit)
 		if err != nil {
 			return core.Page{}, err
 		}
-		if q.NoTotal {
+		if q.NoTotal && !totalExact {
 			total = offset + len(items)
 		}
 		c.kickMovieYears(items)
-		return core.Page{Items: items, Total: total}, nil
+		return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 	}
 	if q.Filter.CollectionMembers != 0 {
 		// A collection library reads its page straight from the semi-join:
@@ -193,8 +206,11 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if items == nil {
 			items = []core.Title{}
 		}
+		if q.NoTotal && !totalExact {
+			total = offset + len(items)
+		}
 		c.kickMovieYears(items)
-		return core.Page{Items: items, Total: total}, nil
+		return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 	}
 	pageWhere, pageArgs := where, args
 	// A title-sorted page probes a positive studio filter per row instead of
@@ -335,7 +351,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	if items == nil {
 		items = []core.Title{}
 	}
-	if q.NoTotal {
+	if q.NoTotal && !totalExact {
 		total = offset + len(items)
 	}
 	key := bkey
@@ -353,11 +369,11 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if len(c.browseCache) >= 512 {
 			c.browseCache = map[string]cachedBrowse{}
 		}
-		c.browseCache[key] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket, partial: partial}
+		c.browseCache[key] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total, TotalExact: totalExact}, gen: gen, minute: minBucket, partial: partial}
 		c.cacheMu.Unlock()
 	}
 	c.kickMovieYears(items)
-	return core.Page{Items: items, Total: total}, nil
+	return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 }
 
 func prefixedCols(prefix string) string {
@@ -1319,6 +1335,42 @@ var recountEvery = 30 * time.Second
 // countBrowse counts a browse filter's matches and caches the total. Library
 // listings are answered from the maintained tally (browse_tally.go); other
 // filters count their matches.
+// cheapCountableFilter reports whether counting f directly via SELECT COUNT(*)
+// is bounded by an indexed small membership set rather than scaling with the
+// full catalogue.
+func cheapCountableFilter(f core.Filter) bool {
+	return f.IncludeKeys != nil || f.CollectionMembers != 0 || f.Collection > 0 || f.Person > 0 || (f.Group != nil && watchedOnly(*f.Group))
+}
+
+func (c *Catalog) countBrowseCheap(ctx context.Context, f core.Filter, ckey, where string, args []any, cacheable bool) (int, bool, error) {
+	if f.IncludeKeys != nil && len(f.IncludeKeys) == 0 {
+		return 0, true, nil
+	}
+	gen := c.writeGen.Load()
+	minBucket := c.minuteBucket()
+	total, ok, err := c.tallyTotal(ctx, f, where, args)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		if !cheapCountableFilter(f) {
+			return 0, false, nil
+		}
+		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t`+c.topicIndexHint(f)+` WHERE `+where, args...).Scan(&total); err != nil {
+			return 0, false, err
+		}
+	}
+	if cacheable {
+		c.cacheMu.Lock()
+		if len(c.countCache) >= 1024 {
+			c.countCache = map[string]cachedCount{}
+		}
+		c.countCache[ckey] = cachedCount{total: total, gen: gen, minute: minBucket, counted: time.Now()}
+		c.cacheMu.Unlock()
+	}
+	return total, true, nil
+}
+
 func (c *Catalog) countBrowse(ctx context.Context, f core.Filter, ckey, where string, args []any) (int, error) {
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()

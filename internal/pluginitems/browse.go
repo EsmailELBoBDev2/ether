@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -21,8 +22,13 @@ import (
 // (spec §2.3, §3.4).
 type BrowseQuery struct {
 	// NoTotal avoids count queries for clients using cursor continuation.
-	NoTotal   bool
-	Policy    *libraryfilter.Filter
+	NoTotal bool
+	// CheapTotal, when combined with NoTotal, still populates Total (and sets
+	// BrowsePage.TotalExact) when the exact count is available cheaply from
+	// plugin_item_tally or a single-parent child count, without scanning the
+	// whole library.
+	CheapTotal bool
+	Policy     *libraryfilter.Filter
 	TabPolicy *libraryfilter.Filter
 	ViewerID  int64
 	Hidden    bool
@@ -59,6 +65,7 @@ type BrowseQuery struct {
 type BrowsePage struct {
 	Items      []core.KindItem `json:"items"`
 	Total      int             `json:"total"`
+	TotalExact bool            `json:"-"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 }
 
@@ -183,7 +190,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 			return BrowsePage{}, err
 		}
 		if !ok {
-			return BrowsePage{Items: []core.KindItem{}, Total: 0}, nil
+			return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: true}, nil
 		}
 		driveFromFields = true
 	}
@@ -289,33 +296,9 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	}
 
 	// Compute total count.
-	var total int
-	if q.NoTotal {
-		// Count-free request: the page and cursor below are sufficient.
-	} else if !hasFacets && parentRef == "" && level != "" {
-		_ = s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
-			int64(q.LibraryID), level).Scan(&total)
-	} else if !hasFacets && parentRef == "" && level == "" {
-		// Root level: look up the kind's root level from plugin_kinds if available,
-		// falling back to COUNT(*).
-		if k, err := s.GetKindByLibrary(ctx, q.LibraryID); err == nil && len(k.Decl.Levels) > 0 {
-			_ = s.db.QueryRowContext(ctx,
-				`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
-				int64(q.LibraryID), k.Decl.Levels[0].Key).Scan(&total)
-		} else {
-			if err := s.db.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere.String(),
-				baseArgs...).Scan(&total); err != nil {
-				return BrowsePage{}, err
-			}
-		}
-	} else {
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere.String(),
-			baseArgs...).Scan(&total); err != nil {
-			return BrowsePage{}, err
-		}
+	total, totalExact, err := s.browseTotal(ctx, q, baseWhere.String(), baseArgs, hasFacets, parentRef, level)
+	if err != nil {
+		return BrowsePage{}, err
 	}
 
 	pageWhere := baseWhere.String()
@@ -397,14 +380,58 @@ LIMIT ?`
 		}
 	}
 
-	if q.NoTotal {
+	if q.NoTotal && !totalExact {
 		total = len(items)
 	}
 	return BrowsePage{
 		Items:      items,
 		Total:      total,
+		TotalExact: totalExact,
 		NextCursor: nextCursor,
 	}, nil
+}
+
+func (s *Service) browseTotal(ctx context.Context, q BrowseQuery, baseWhere string, baseArgs []any, hasFacets bool, parentRef, level string) (int, bool, error) {
+	if q.NoTotal && !q.CheapTotal {
+		return 0, false, nil
+	}
+	var total int
+	if !hasFacets && parentRef == "" && level != "" {
+		err := s.db.QueryRowContext(ctx,
+			`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
+			int64(q.LibraryID), level).Scan(&total)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, err
+		}
+		return total, true, nil
+	}
+	if !hasFacets && parentRef == "" && level == "" {
+		if k, err := s.GetKindByLibrary(ctx, q.LibraryID); err == nil && len(k.Decl.Levels) > 0 {
+			err = s.db.QueryRowContext(ctx,
+				`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
+				int64(q.LibraryID), k.Decl.Levels[0].Key).Scan(&total)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, false, err
+			}
+			return total, true, nil
+		}
+		if q.NoTotal && q.CheapTotal {
+			return 0, false, nil
+		}
+	}
+	if q.NoTotal && q.CheapTotal {
+		// Allow an exact child count for a single parent; avoid scanning a full
+		// filtered plugin library.
+		if parentRef == "" || hasFacets {
+			return 0, false, nil
+		}
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere,
+		baseArgs...).Scan(&total); err != nil {
+		return 0, false, err
+	}
+	return total, true, nil
 }
 
 const smallPluginLibraryMax = 5000

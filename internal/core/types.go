@@ -136,6 +136,10 @@ type Title struct {
 	// ContentRatingSource records where ContentRating came from: "tmdb:US:6"
 	// (TMDB, country, movie release type), "tmdb:CA" (TV), "omdb", "mdblist".
 	ContentRatingSource string `json:"contentRatingSource,omitempty"`
+	// ContentRatings holds per-country bare certificates keyed by uppercase
+	// ISO 3166-1 country code (for example "US": "PG-13", "GB": "12A", "DE": "12")
+	// so viewer-localized surfaces can pick the viewer's preferred region.
+	ContentRatings map[string]string `json:"-"`
 	// EnforcementRating maps certifications to the US scale ("G", "PG",
 	// "PG-13", "R", "NC-17") or marks uncertified adult/adult-keyword titles
 	// ("XXX") for viewer rating enforcement without altering ContentRating.

@@ -52,8 +52,9 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	dev := requestDevice(r)
 	avatar := i.viewerAvatar(r, v, token, dev)
 	// Credentials scope the image grants and cursor scope includes the complete
-	// viewer policy. Do not reuse wire responses between refresh families/devices.
-	scope := hashJSON([]any{v, dev, token, avatar, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.capabilitiesRevision(), i.signInMethods()})
+	// viewer policy. Do not reuse wire responses between refresh families/devices
+	// or certificate-region preferences.
+	scope := hashJSON([]any{v, dev, token, avatar, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r)})
 	if local, ok := i.host.Experience.(interface {
 		NoProviderWait(context.Context) context.Context
 	}); ok {
@@ -88,6 +89,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 			if entry != nil && time.Now().Before(entry.expires) && entry.revision == before && entry.freshness == freshness {
 				payload := entry.payload
 				i.bootstrapMu.Unlock()
+				varyLanguage(w)
 				cache(w, r, payload)
 				return
 			}
@@ -161,6 +163,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 			fail(w, buildErr, r)
 			return
 		}
+		varyLanguage(w)
 		cache(w, r, payload)
 		return
 	}

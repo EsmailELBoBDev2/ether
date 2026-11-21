@@ -55,10 +55,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		mbItemType = present.MediaBrowser.ItemTypes[item.Level]
 	}
 
-	sortTitle := FoldSortTitle(item.SortTitle)
-	if sortTitle == "" {
-		sortTitle = SortTitle(item.Title)
-	}
+	sortTitle := core.EffectiveSortTitle(item.Title, item.SortTitle)
 
 	dateDisplay := ""
 	if decl.Library.EffectiveDateDisplay() == core.DateDisplayDate {

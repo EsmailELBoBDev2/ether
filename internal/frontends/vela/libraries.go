@@ -271,7 +271,7 @@ func offeredFacet(filters object, field string) bool {
 }
 
 func libraryQuery(r *http.Request, view frontend.View, library object) (frontend.ItemQuery, string, string, int) {
-	q := frontend.ItemQuery{Limit: limit(r), NoTotal: true}
+	q := frontend.ItemQuery{Limit: limit(r), NoTotal: true, CheapTotal: true}
 	options := library["browse"].(object)
 	sorts := options["sorts"].([]object)
 	filters := options["filters"].(object)
@@ -558,22 +558,32 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, object{"id": title["id"], "kind": "title", "title": title, "receiptToken": ""})
 	}
 	out := object{"library": library, "items": entries, "sort": sort, "direction": direction, "continuation": "exhausted"}
+	if page.TotalExact && page.Total >= 0 {
+		out["total"] = page.Total
+	}
 	expanding := page.Expanding
 	if len(page.Items) == q.Limit {
-		// Ask for one next item only after the page establishes its keyset end.
-		// This preserves neutral paging caches and avoids counts or hydration walks.
-		nextQuery := q
-		nextQuery.Offset += len(page.Items)
-		nextQuery.Limit = 1
-		more, e := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), id, nextQuery)
-		if e != nil {
-			fail(w, e, r)
-			return
+		hasMore := false
+		if page.TotalExact && page.Total >= 0 {
+			hasMore = c.Offset+len(page.Items) < page.Total
+		} else {
+			// Ask for one next item only after the page establishes its keyset end.
+			// This preserves neutral paging caches and avoids counts or hydration walks.
+			nextQuery := q
+			nextQuery.Offset += len(page.Items)
+			nextQuery.Limit = 1
+			nextQuery.CheapTotal = false
+			more, e := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), id, nextQuery)
+			if e != nil {
+				fail(w, e, r)
+				return
+			}
+			// The one-item lookahead never reports a fill: the first page already
+			// waited for it, and a flag here would make the client reload the list.
+			hasMore = len(more.Items) > 0
 		}
-		// The one-item lookahead never reports a fill: the first page already
-		// waited for it, and a flag here would make the client reload the list.
-		if len(more.Items) > 0 {
-			next, e := i.nextLiveCursor(c, nextQuery.Offset, snapshot)
+		if hasMore {
+			next, e := i.nextLiveCursor(c, c.Offset+len(page.Items), snapshot)
 			if e != nil {
 				fail(w, e, r)
 				return
@@ -584,6 +594,7 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 	if expanding {
 		out["expanding"] = true
 	}
+	varyLanguage(w)
 	cache(w, r, out)
 }
 
@@ -783,6 +794,7 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			}
 			out["continuation"], out["nextCursor"] = "more", next
 		}
+		varyLanguage(w)
 		cache(w, r, out)
 		return
 	}
@@ -809,6 +821,7 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 	if more {
 		continuation = "unknown"
 	}
+	varyLanguage(w)
 	cache(w, r, object{"items": rows, "continuation": continuation})
 }
 

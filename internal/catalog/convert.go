@@ -6,8 +6,6 @@ import (
 	"time"
 	"unicode"
 
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -15,142 +13,30 @@ import (
 )
 
 // SortTitle returns the normalized lowercase sort key for a display title:
-// strips invisible format characters, removes a leading English article
-// ("the ", "a ", "an "), and folds Latin accents/diacritics and ligatures to
-// their base ASCII letters so titleSort and firstCharacter share one collation.
+// strips invisible format characters, ignores leading non-alphanumerics,
+// removes a leading English article ("the ", "a ", "an "), folds Latin
+// accents/diacritics and ligatures to base ASCII letters, and applies numeric
+// collation so every frontend's title sort and firstCharacter share one order.
 func SortTitle(s string) string {
-	return sortTitle(s)
+	return core.TitleSortKey(s)
 }
 
 func sortTitle(s string) string {
-	l := strings.ToLower(strings.TrimSpace(stripFormatRunes(s)))
-	for _, p := range []string{"the ", "a ", "an "} {
-		if strings.HasPrefix(l, p) {
-			if rest := strings.TrimSpace(l[len(p):]); rest != "" {
-				l = rest
-			}
-			break
-		}
-	}
-	return foldSortTitle(l)
-}
-
-func legacySortTitle(s string) string {
-	l := strings.ToLower(strings.TrimSpace(s))
-	for _, p := range []string{"the ", "a ", "an "} {
-		if strings.HasPrefix(l, p) {
-			if rest := strings.TrimSpace(l[len(p):]); rest != "" {
-				return rest
-			}
-		}
-	}
-	return l
+	return core.TitleSortKey(s)
 }
 
 func foldedSortTitleForRow(title, stored string) string {
-	want := sortTitle(title)
-	if stored != "" && stored != want && stored != legacySortTitle(title) {
-		if folded := foldSortTitle(stored); folded != "" {
-			return folded
-		}
-	}
-	return want
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
-
-func stripFormatRunes(s string) string {
-	if isASCII(s) {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Cf, r) {
-			return -1
-		}
-		return r
-	}, s)
+	return core.FoldedSortTitleForRow(title, stored)
 }
 
 // FoldSortTitle normalizes an explicit sort title to lowercase with Latin
-// diacritics and ligatures folded to their base ASCII letters.
+// diacritics and ligatures folded to base ASCII letters and numeric collation.
 func FoldSortTitle(s string) string {
-	return foldSortTitle(s)
+	return core.FoldSortTitle(s)
 }
 
 func foldSortTitle(s string) string {
-	s = strings.ToLower(strings.TrimSpace(stripFormatRunes(s)))
-	if s == "" || isASCII(s) {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	lastLatin := false
-	for _, r := range s {
-		if unicode.Is(unicode.Cf, r) {
-			continue
-		}
-		if lastLatin && (unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r) || unicode.Is(unicode.Me, r)) {
-			continue
-		}
-		switch r {
-		case 'æ':
-			b.WriteString("ae")
-			lastLatin = true
-			continue
-		case 'œ':
-			b.WriteString("oe")
-			lastLatin = true
-			continue
-		case 'ß':
-			b.WriteString("ss")
-			lastLatin = true
-			continue
-		case 'ø':
-			b.WriteByte('o')
-			lastLatin = true
-			continue
-		case 'ł':
-			b.WriteByte('l')
-			lastLatin = true
-			continue
-		case 'đ', 'ð':
-			b.WriteByte('d')
-			lastLatin = true
-			continue
-		case 'þ':
-			b.WriteString("th")
-			lastLatin = true
-			continue
-		case 'ı':
-			b.WriteByte('i')
-			lastLatin = true
-			continue
-		}
-		if unicode.Is(unicode.Latin, r) {
-			lastLatin = true
-			if r < 0x80 {
-				b.WriteByte(byte(r))
-				continue
-			}
-			for _, d := range norm.NFD.String(string(r)) {
-				if unicode.Is(unicode.Mn, d) || unicode.Is(unicode.Mc, d) || unicode.Is(unicode.Me, d) {
-					continue
-				}
-				b.WriteRune(unicode.ToLower(d))
-			}
-			continue
-		}
-		lastLatin = false
-		b.WriteRune(r)
-	}
-	return b.String()
+	return core.FoldSortTitle(s)
 }
 
 func (c *Catalog) genreNames(ctx context.Context, mediaType string, ids []int, full []tmdb.Genre) []string {
@@ -398,6 +284,7 @@ func (c *Catalog) movieDetailsToTitle(ctx context.Context, d *tmdb.MovieDetails)
 	region := c.config().Region
 	sel := contentrating.Select(certs, region)
 	t.ContentRating, t.ContentRatingSource = sel.Value, sel.Source
+	t.ContentRatings = contentrating.ByCountry(certs)
 	t.EnforcementRating = contentrating.EffectiveEnforcement(contentrating.EnforceCertifications(certs, region), sel.Value, t.Adult, t.Keywords)
 	return t
 }
@@ -486,6 +373,7 @@ func (c *Catalog) tvDetailsToTitle(ctx context.Context, d *tmdb.TVDetails) core.
 	region := c.config().Region
 	sel := contentrating.Select(certs, region)
 	t.ContentRating, t.ContentRatingSource = sel.Value, sel.Source
+	t.ContentRatings = contentrating.ByCountry(certs)
 	t.EnforcementRating = contentrating.EffectiveEnforcement(contentrating.EnforceCertifications(certs, region), sel.Value, t.Adult, t.Keywords)
 	return t
 }
@@ -506,7 +394,7 @@ func seasonToTitle(show core.Title, s tmdb.SeasonSummary) core.Title {
 		SeasonTitle: name, Season: s.SeasonNumber, Title: name, SortTitle: sortTitle(name),
 		Summary: s.Overview, Released: rel, PosterPath: s.PosterPath, BackdropPath: show.BackdropPath,
 		ChildCount: s.EpisodeCount, Rating: s.VoteAverage,
-		Genres: show.Genres, ContentRating: show.ContentRating, EnforcementRating: show.EnforcementRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
+		Genres: show.Genres, ContentRating: show.ContentRating, ContentRatings: show.ContentRatings, EnforcementRating: show.EnforcementRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
 	}
 	if t.PosterPath == "" {
 		t.PosterPath = show.PosterPath
@@ -530,7 +418,7 @@ func episodeToTitle(show core.Title, seasonName string, e tmdb.Episode) core.Tit
 		Title: title, SortTitle: sortTitle(title), Summary: e.Overview, Released: rel,
 		StillPath: e.StillPath, PosterPath: e.StillPath, BackdropPath: show.BackdropPath,
 		Rating: e.VoteAverage, VoteCount: e.VoteCount,
-		Genres: show.Genres, ContentRating: show.ContentRating, EnforcementRating: show.EnforcementRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
+		Genres: show.Genres, ContentRating: show.ContentRating, ContentRatings: show.ContentRatings, EnforcementRating: show.EnforcementRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
 	}
 	if e.Runtime != nil && *e.Runtime > 0 {
 		t.Runtime = time.Duration(*e.Runtime) * time.Minute

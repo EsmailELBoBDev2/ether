@@ -98,5 +98,5 @@ func (s *Service) collectionLibraryScan(ctx context.Context, v *core.User, libra
 	if q.Limit > 0 {
 		end = min(start+q.Limit, total)
 	}
-	return core.Page{Items: kept[start:end], Total: total}, nil
+	return core.Page{Items: kept[start:end], Total: total, TotalExact: true}, nil
 }

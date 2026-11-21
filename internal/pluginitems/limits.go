@@ -107,11 +107,7 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 		}
 	}
 
-	if strings.TrimSpace(it.SortTitle) == "" {
-		it.SortTitle = SortTitle(it.Title)
-	} else {
-		it.SortTitle = FoldSortTitle(it.SortTitle)
-	}
+	it.SortTitle = core.EffectiveSortTitle(it.Title, it.SortTitle)
 	if it.SortTitle == "" {
 		it.SortTitle = strings.ToLower(strings.TrimSpace(it.Title))
 	}

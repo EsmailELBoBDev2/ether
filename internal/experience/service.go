@@ -479,7 +479,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	// can present can never match: answer empty without listing #405's
 	// Person/Music* favorites asks used to scan the whole TV library.
 	if !s.requestedTypesServable(ctx, v, q) {
-		return core.Page{Items: []core.Title{}}, nil
+		return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 	}
 	if q.FilterByProviderIDs {
 		return s.providerIDLibraryItems(ctx, v, viewID, q)
@@ -607,7 +607,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			if q.StartAt != 0 || q.AdjacentTo != 0 {
 				return core.Page{}, core.ErrNotFound
 			}
-			return core.Page{Items: []core.Title{}, Total: 0}, nil
+			return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 		}
 	}
 	wantShowChildren := q.Recursive && (len(q.Types) == 0 || containsMediaType(q.Types, core.TypeSeason))
@@ -877,7 +877,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			}
 		}
 		if plainTotal && len(candidatesPage) == len(page.Items) && totalMatched == len(candidatesPage) && len(permitted) >= q.Limit {
-			return core.Page{Items: permitted[:q.Limit], Total: page.Total}, nil
+			return core.Page{Items: permitted[:q.Limit], Total: page.Total, TotalExact: page.TotalExact}, nil
 		}
 		offset += len(page.Items)
 		if offset >= page.Total {
@@ -896,7 +896,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		}
 	}
 	if bounded {
-		return core.Page{Items: permitted, Total: totalMatched}, nil
+		return core.Page{Items: permitted, Total: totalMatched, TotalExact: true}, nil
 	}
 	if expand {
 		if err := s.sortTitles(ctx, permitted, q); err != nil {
@@ -915,7 +915,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	if q.Limit > 0 {
 		end = min(start+q.Limit, total)
 	}
-	return core.Page{Items: permitted[start:end], Total: total}, nil
+	return core.Page{Items: permitted[start:end], Total: total, TotalExact: true}, nil
 }
 
 func plainItemFilter(f core.Filter) bool {
@@ -2506,14 +2506,7 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		cmp := 0
 		switch q.Sort {
 		case core.SortTitle:
-			at, bt := a.SortTitle, b.SortTitle
-			if at == "" {
-				at = a.Title
-			}
-			if bt == "" {
-				bt = b.Title
-			}
-			cmp = strings.Compare(strings.ToLower(at), strings.ToLower(bt))
+			cmp = strings.Compare(core.EffectiveSortTitle(a.Title, a.SortTitle), core.EffectiveSortTitle(b.Title, b.SortTitle))
 		case core.SortAdded:
 			ad, bd := addedTime(a), addedTime(b)
 			if ad.Before(bd) {

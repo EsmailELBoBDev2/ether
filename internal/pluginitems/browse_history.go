@@ -25,29 +25,9 @@ func (s *Service) browseLastViewed(
 	desc bool,
 	limit int,
 ) (BrowsePage, error) {
-	var total int
-	if q.NoTotal {
-		// Count-free request: page and cursor continuation suffice.
-	} else if !hasFacets && parentRef == "" && level != "" {
-		_ = s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
-			int64(q.LibraryID), level).Scan(&total)
-	} else if !hasFacets && parentRef == "" && level == "" {
-		if k, err := s.GetKindByLibrary(ctx, q.LibraryID); err == nil && len(k.Decl.Levels) > 0 {
-			_ = s.db.QueryRowContext(ctx,
-				`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
-				int64(q.LibraryID), k.Decl.Levels[0].Key).Scan(&total)
-		} else if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere,
-			baseArgs...).Scan(&total); err != nil {
-			return BrowsePage{}, err
-		}
-	} else {
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere,
-			baseArgs...).Scan(&total); err != nil {
-			return BrowsePage{}, err
-		}
+	total, totalExact, err := s.browseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, level)
+	if err != nil {
+		return BrowsePage{}, err
 	}
 
 	var cur browseCursor
@@ -201,7 +181,7 @@ LIMIT ?`
 			return BrowsePage{}, err
 		}
 	}
-	if q.NoTotal {
+	if q.NoTotal && !totalExact {
 		total = len(items)
 	}
 	if items == nil {
@@ -210,6 +190,7 @@ LIMIT ?`
 	return BrowsePage{
 		Items:      items,
 		Total:      total,
+		TotalExact: totalExact,
 		NextCursor: nextCursor,
 	}, nil
 }

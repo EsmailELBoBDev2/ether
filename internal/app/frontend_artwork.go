@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,16 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	source.PluginItem = a.sharedPluginArtworkItem
 	source.LibraryLiveThumb = func(ctx context.Context, viewer *core.Viewer, viewID string, path string) (string, error) {
 		return surfaceLibraryLive{app: a}.AuthorizeLibraryLiveThumb(ctx, viewer, viewID, path)
+	}
+	source.ViewerAvatar = func(ctx context.Context, viewer *core.Viewer) ([]byte, string, error) {
+		if viewer == nil || viewer.ID <= 0 || viewer.PlexID <= 0 || strings.TrimSpace(viewer.Thumb) == "" {
+			return nil, "", core.ErrNotFound
+		}
+		token := ""
+		if a.cfg != nil {
+			token = strings.TrimSpace(a.cfg.Read().Plex.Token)
+		}
+		return a.cachedPlexAvatar(ctx, token, viewer.Thumb)
 	}
 	variants := artworkservice.NewVariantsQueue(ctx, a.tmdb.CachedArtworkVariants, a.tmdb.ArtworkVariants)
 	source.Variants = variants.Get

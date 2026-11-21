@@ -668,7 +668,7 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	return wire, nil
 }
 
-func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, refresh bool) (object, error) {
+func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, avatar object, refresh bool) (object, error) {
 	sources := map[string]heroSource{}
 	rows, _, e := i.homeVisit(r, v, t, refresh, sources)
 	if e != nil {
@@ -684,7 +684,7 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 			heroes, shelves = heroesFromRows(append(rows, fill...), sources)
 		}
 	}
-	viewer, err := i.viewerPolicyWire(r, v, requestDevice(r))
+	viewer, err := i.viewerPolicyWire(r, v, requestDevice(r), avatar)
 	if err != nil {
 		return nil, err
 	}

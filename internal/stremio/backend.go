@@ -193,6 +193,7 @@ func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 	seen := map[string]bool{}
 	var totalNoHash, totalAmbiguous int
 	var firstErr error
+	incomplete := false
 	succeeded := 0
 	for _, look := range looks {
 		if len(merged) >= maxResults {
@@ -200,6 +201,11 @@ func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 		}
 		if err := reserve(ctx, "hit"); err != nil {
 			if succeeded > 0 {
+				incomplete = true
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("stremio: stream lookup skipped", "host", b.base.Host, "kind", look.kind, "id", look.id, "err", err)
 				break
 			}
 			return nil, err
@@ -210,17 +216,26 @@ func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 		if err := getJSON(ctx, b.client, b.base, "/stream/"+look.kind+"/"+url.PathEscape(look.id)+".json", maxStreams, &answer); err != nil {
 			var he *httpError
 			if errors.As(err, &he) && (he.status == http.StatusTooManyRequests || he.status == http.StatusServiceUnavailable && he.retry != "") {
+				rl := &newznab.RateLimitError{RetryAfter: he.retry, Err: err}
 				if succeeded > 0 {
+					incomplete = true
+					if firstErr == nil {
+						firstErr = rl
+					}
+					newznab.NoteBackendRateLimit(ctx, rl)
+					slog.Default().Warn("stremio: stream lookup rate-limited", "host", b.base.Host, "kind", look.kind, "id", look.id, "err", err)
 					break
 				}
-				return nil, &newznab.RateLimitError{RetryAfter: he.retry, Err: err}
+				return nil, rl
 			}
 			if ctx.Err() != nil {
 				return nil, err
 			}
+			incomplete = true
 			if firstErr == nil {
 				firstErr = err
 			}
+			slog.Default().Warn("stremio: stream lookup failed", "host", b.base.Host, "kind", look.kind, "id", look.id, "err", err)
 			continue
 		}
 		succeeded++
@@ -240,7 +255,10 @@ func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 			}
 		}
 	}
-	if succeeded == 0 && firstErr != nil {
+	if incomplete {
+		core.NoteSearchIncomplete(ctx)
+	}
+	if len(merged) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
 	b.logSkipped(totalNoHash, totalAmbiguous)

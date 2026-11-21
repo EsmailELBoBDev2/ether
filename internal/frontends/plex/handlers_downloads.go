@@ -749,11 +749,33 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			if it.User != nil {
 				viewerID = it.User.ID
 			}
-			subtitle := -1
-			sel := resolveSelection(s.selections.get(viewerID, int64(it.Key)), ps.Info)
+			prefCtx := withRequest(ctx, &Request{User: it.User, ClientID: it.Caps.ClientID})
+			original := ""
 			if title, err := s.catalog().Get(ctx, it.Key); err == nil && title != nil {
-				sel = s.preferredSelection(ctx, it.User, it.Key, ps.Info, title.Language, sel)
+				original = title.Language
 			}
+			sel := resolveSelection(s.selections.get(viewerID, int64(it.Key)), ps.Info)
+			sel = s.preferredSelection(prefCtx, it.User, it.Key, ps.Info, original, sel)
+			audioPos := -1
+			if sel.audioSet {
+				audioPos = sel.audio
+			}
+			if audioPos < 0 || audioPos >= len(ps.Info.Streams) {
+				audioPos = pickAudio(ps.Info, s.audioLanguages(it.User))
+			}
+			audio := -1
+			if audioPos >= 0 && audioPos < len(ps.Info.Streams) && ps.Info.Streams[audioPos].Type == "audio" {
+				st := ps.Info.Streams[audioPos]
+				audio = st.Index
+				if st.Codec != "" {
+					s.downloads.Lock()
+					if ctx.Err() == nil {
+						it.AudioCodec = st.Codec
+					}
+					s.downloads.Unlock()
+				}
+			}
+			subtitle := -1
 			if sel.subtitleSet && sel.subtitle >= 0 && sel.subtitle < len(ps.Info.Streams) {
 				st := ps.Info.Streams[sel.subtitle]
 				if st.Type == "subtitle" && !st.External {
@@ -762,7 +784,7 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			}
 			return frontend.DecideOptions{
 				DirectPlay: false, DirectStream: true,
-				MaxBitrateKbps: it.Bandwidth, MaxHeight: it.Caps.MaxHeight, AudioStream: -1, SubtitleStream: subtitle,
+				MaxBitrateKbps: it.Bandwidth, MaxHeight: it.Caps.MaxHeight, AudioStream: audio, SubtitleStream: subtitle,
 				BurnSubtitles: it.Burn,
 			}, nil
 		}, Progress: func(f float64) {

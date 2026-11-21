@@ -921,3 +921,136 @@ func TestVelaMusicArtistDetailTopTracksRow(t *testing.T) {
 		t.Fatalf("unexpected first track item: %v", firstTitle)
 	}
 }
+
+type peopleReaderExperience struct {
+	frontendtest.Experience
+	person frontend.PersonDetail
+}
+
+func (p peopleReaderExperience) People(context.Context, *frontend.Viewer, frontend.Device, frontend.PeopleQuery) ([]frontend.PersonDetail, error) {
+	return []frontend.PersonDetail{p.person}, nil
+}
+
+func (p peopleReaderExperience) Person(context.Context, *frontend.Viewer, frontend.Device, string, frontend.PersonReadOptions) (frontend.PersonDetail, error) {
+	return p.person, nil
+}
+
+func (p peopleReaderExperience) PersonCredit(context.Context, *frontend.Viewer, frontend.Device, frontend.RatingKey, int64) (frontend.PersonDetail, error) {
+	return p.person, nil
+}
+
+func TestVelaPersonTitlesFansOutMultiplePluginViewsConcurrently(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(db, castMembers{}, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer, err := grants.Issue(ctx, 1, nil, "vela", core.Device{ID: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	personTMDB := core.PluginPersonID("James Clear")
+	personID := "52737b19test"
+	bookKey := core.PluginKey(8101)
+	audioKey := core.PluginKey(8102)
+
+	// Rendezvous barrier proves both plugin views run concurrently rather than sequentially.
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+
+	exp := peopleReaderExperience{
+		person: frontend.PersonDetail{
+			ID:   personID,
+			TMDB: personTMDB,
+			Name: "James Clear",
+		},
+		Experience: frontendtest.Experience{
+			ViewsFunc: func(context.Context, *core.Viewer) ([]frontend.View, error) {
+				return []frontend.View{
+					{ID: "35", LibraryID: 35, Name: "Books", Type: core.TypeMovie, PluginID: "community.books", KindKey: "book", Media: core.MediaClassBook},
+					{ID: "36", LibraryID: 36, Name: "Audiobooks", Type: core.TypeMovie, PluginID: "community.books", KindKey: "audiobook", Media: core.MediaClassAudiobook},
+				}, nil
+			},
+			LibraryItemsFunc: func(_ context.Context, _ *core.Viewer, _ core.Device, viewID string, _ frontend.ItemQuery) (core.Page, error) {
+				entered <- viewID
+				<-release
+				switch viewID {
+				case "35":
+					return core.Page{
+						Items:     []core.Title{{Key: bookKey, LibraryID: 35, Type: core.TypeMovie, Title: "Atomic Habits", Year: 2018, Released: time.Date(2018, 10, 16, 0, 0, 0, 0, time.UTC), MediaClass: core.MediaClassBook, MediaRole: core.MediaRoleBook}},
+						Expanding: true,
+					}, nil
+				case "36":
+					return core.Page{
+						Items:     []core.Title{{Key: audioKey, LibraryID: 36, Type: core.TypeMovie, Title: "Atomic Habits (Audio)", Year: 2018, Released: time.Date(2018, 10, 17, 0, 0, 0, 0, time.UTC), MediaClass: core.MediaClassAudiobook, MediaRole: core.MediaRoleAudiobook}},
+						Expanding: false,
+					}, nil
+				default:
+					return core.Page{}, nil
+				}
+			},
+		},
+	}
+
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &instance{
+		ctx:     ctx,
+		db:      db,
+		seal:    seal,
+		replays: make(map[string]*replay),
+		mux:     http.NewServeMux(),
+		host: frontend.Host{
+			Identity:       identityFake{},
+			Experience:     exp,
+			ServerIdentity: frontend.ServerIdentity{MachineID: "srv-1", FriendlyName: "Ether", Version: "0.3.17"},
+		},
+	}
+	inst.routes()
+
+	go func() {
+		// Both views MUST arrive concurrently before we release either.
+		<-entered
+		<-entered
+		close(release)
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/vela/v0/people/"+personID+"/titles?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("X-Vela-Device-Id", "web")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		inst.serve(rec, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("person titles did not fan out plugin views concurrently (deadlocked waiting for 2nd view)")
+	}
+	if rec.Code != 200 {
+		t.Fatalf("GET /vela/v0/people/{id}/titles status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["expanding"] != true {
+		t.Fatalf("expected expanding=true when any view is expanding, got %v", out)
+	}
+	if out["continuation"] != "more" {
+		t.Fatalf("expected continuation=more for limit=1 over 2 titles, got %v", out)
+	}
+	items := out["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["title"].(map[string]any)["name"] != "Atomic Habits (Audio)" {
+		t.Fatalf("unexpected first person title: %v", items)
+	}
+}

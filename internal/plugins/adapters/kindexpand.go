@@ -38,8 +38,10 @@ type containerHydrateCall struct {
 // firstOpenWait bounds how long the first page of a studio or performer
 // waits for its fill's first page: the plugin returns the newest titles first,
 // so once that page is stored the first screen is already right, and the rest
-// of the catalogue keeps filling in behind the viewer's scroll.
-var firstOpenWait = 20 * time.Second
+// of the catalogue keeps filling in behind the viewer's scroll. Matches
+// containerHydrateWait so cold person/facet opens stay responsive (~1.8s)
+// while background expansion completes.
+var firstOpenWait = 1800 * time.Millisecond
 
 var (
 	_              experience.PluginSliceExpander = (*KindCatalog)(nil)
@@ -225,7 +227,15 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	if q.Offset != 0 || q.StartAt != 0 || q.AdjacentTo != 0 || len(waits) == 0 || firstOpenWait <= 0 {
 		return true
 	}
-	timer := time.NewTimer(firstOpenWait)
+	wait := firstOpenWait
+	if dl, ok := ctx.Deadline(); ok {
+		if rem := time.Until(dl); rem <= 0 {
+			return true
+		} else if rem < wait {
+			wait = rem
+		}
+	}
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for _, ch := range waits {
 		select {
@@ -367,6 +377,8 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 					totalAccepted += acc
 					totalAdded += add
 					stepAdded += add
+					c.items.BumpGeneration()
+					firstPage()
 				}
 				return nil
 			})

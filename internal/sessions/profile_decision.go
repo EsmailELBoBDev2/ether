@@ -743,7 +743,17 @@ func profileDirectAllowed(p *core.ClientCapabilityProfiles, info core.MediaInfo,
 	if !profileRestrictions(p, info, video, audio, d.AudioStream) {
 		return false
 	}
+	audioOnly := video == "" && audio != ""
 	for _, candidate := range p.DirectPlay {
+		if audioOnly {
+			// Music and audiobooks: an audio-only source matches the
+			// client's audio (or untyped) direct-play profiles; video
+			// codec lists say nothing about it.
+			if (candidate.MediaType == "" || strings.EqualFold(candidate.MediaType, "audio")) && profileContains(candidate.Containers, info.Container) && profileContains(candidate.AudioCodecs, audio) {
+				return true
+			}
+			continue
+		}
 		if (candidate.MediaType == "" || strings.EqualFold(candidate.MediaType, "video")) && profileContains(candidate.Containers, info.Container) && profileContains(candidate.VideoCodecs, video) && profileContains(candidate.AudioCodecs, audio) {
 			return true
 		}

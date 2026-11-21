@@ -1348,6 +1348,22 @@ func sourceMIME(container string) string {
 		return "video/mp2t"
 	case "avi":
 		return "video/x-msvideo"
+	case "flac":
+		return "audio/flac"
+	case "mp3":
+		return "audio/mpeg"
+	case "aac", "adts":
+		return "audio/aac"
+	case "m4a", "m4b":
+		return "audio/mp4"
+	case "ogg", "opus":
+		return "audio/ogg"
+	case "wav":
+		return "audio/wav"
+	case "epub":
+		return "application/epub+zip"
+	case "pdf":
+		return "application/pdf"
 	}
 	return "application/octet-stream"
 }

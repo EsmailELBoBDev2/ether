@@ -82,11 +82,6 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	key = s.queues.TimelineQueue(pr.User.ID, pr.ClientID, key, q.Get("playQueueItemID"), q.Has("playQueueItemID"))
-	offsetCheck, durationCheck := msParam(q.Get("time")), msParam(q.Get("duration"))
-	if durationCheck > 0 && offsetCheck > durationCheck {
-		writeHTTPError(w, http.StatusBadRequest)
-		return
-	}
 	// Pre-rolls and trailers are synthetic extras, not catalog titles.
 	// Acknowledge their timelines without writing feature watch progress.
 	if key.Kind() == frontend.KindExtra {
@@ -188,21 +183,6 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if saved, ok := s.progressiveStops.get(user.ID, pr.ClientID, pr.SessionID, key, s.now()); ok {
 		offset, duration = saved.offset, saved.duration
 	}
-	// Some clients carry the previous queue item's playhead into the first
-	// timeline for the next item. A position past the item's end is not
-	// evidence of watching it: keep the last real position for this item and
-	// handle the report (session, stop, encoders) as usual.
-	if impossiblePlayhead(offset, duration) {
-		s.log.Debug("ignoring impossible playhead", "key", key, "position", offset, "duration", duration)
-		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
-	}
-	// A failed start cannot write a resume point or consume the completion latch.
-	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
-	stalled := s.checkStartStall(pr, key, state, offset, tids)
-	if failedProgressive || stalled != "" || s.playbackNeverDelivered(ps, tids) {
-		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
-		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
-	}
 	if ps != nil {
 		// Client duration can be a stale queue estimate. Only a probed duration is
 		// authoritative for an active source; estimates cannot establish completion.
@@ -211,11 +191,31 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		} else {
 			duration = 0
 		}
-		if state == "stopped" {
-			// EOF after a decoder crash is not a played position. The last nonterminal
-			// report is the evidence of where this viewer actually got to.
-			offset = min(offset, s.lastKnownOffset(ctx, user.ID, tid, key))
-		}
+	}
+	// Some clients carry the previous queue item's playhead into the first
+	// timeline for the next item. A position past the item's end is not
+	// evidence of watching it: keep the last real position for this item and
+	// handle the report (session, stop, encoders) as usual without mutating
+	// watch state. Small overshoots near EOF clamp to duration, matching other
+	// frontends' progress reports.
+	impossible := impossiblePlayhead(offset, duration)
+	if impossible {
+		s.log.Debug("ignoring impossible playhead", "key", key, "position", offset, "duration", duration)
+		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
+	} else if duration > 0 && offset > duration {
+		offset = duration
+	}
+	// A failed start cannot write a resume point or consume the completion latch.
+	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
+	stalled := s.checkStartStall(pr, key, state, offset, tids)
+	if impossible || failedProgressive || stalled != "" || s.playbackNeverDelivered(ps, tids) {
+		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
+		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
+	}
+	if ps != nil && state == "stopped" {
+		// EOF after a decoder crash is not a played position. The last nonterminal
+		// report is the evidence of where this viewer actually got to.
+		offset = min(offset, s.lastKnownOffset(ctx, user.ID, tid, key))
 	}
 	ctx, watchResult, watchErr := s.timelineWatch(ctx, pr, key, offset, duration, state, r)
 	if watchErr != nil {

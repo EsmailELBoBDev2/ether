@@ -1395,8 +1395,8 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		rollbackSequence()
 		return err
 	}
-	if t.Duration <= 0 {
-		if source, ok := b.deps.Playback.Session(s.playID); ok && source != nil && source.Info.Duration > 0 {
+	if source, ok := b.deps.Playback.Session(s.playID); ok && source != nil && source.Info.Duration > 0 {
+		if t.Duration <= 0 || !source.Info.Estimated {
 			t.Duration = source.Info.Duration
 		}
 	}

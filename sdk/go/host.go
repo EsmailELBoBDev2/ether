@@ -157,6 +157,14 @@ type PartStreamHost interface {
 	StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error)
 }
 
+// StreamURLOptionsHost mints a short-lived, scoped ticket for a specific
+// zero-based part and/or resolver PlayableSource.ID of a kind item (#576, #661).
+// RemoteHostClient and MockHost implement it; Context.StreamURLWithOptions
+// uses it automatically.
+type StreamURLOptionsHost interface {
+	StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+}
+
 // CacheDeleteHost deletes cached blobs from this plugin's own library cache
 // namespaces. RemoteHostClient and MockHost implement it.
 type CacheDeleteHost interface {
@@ -795,11 +803,30 @@ func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, it
 	if partIndex < 0 {
 		return "", fmt.Errorf("stream url: partIndex must be non-negative")
 	}
+	return c.StreamURLWithOptions(ctx, viewerID, itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+
+// StreamURLWithOptions mints a scoped stream ticket for one of this plugin's
+// own kind items, optionally pinned to a zero-based part and/or resolver
+// PlayableSource.ID (#576, #661).
+func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", fmt.Errorf("stream url: source must not be blank")
+	}
+	payload := map[string]any{"viewerId": viewerID, "itemRef": itemRef}
+	if opts.PartIndex != nil {
+		payload["partIndex"] = *opts.PartIndex
+	}
+	if opts.Source != "" {
+		payload["source"] = opts.Source
+	}
 	var out struct {
 		URL string `json:"url"`
 	}
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
-		map[string]any{"viewerId": viewerID, "itemRef": itemRef, "partIndex": partIndex}, &out, false)
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", payload, &out, false)
 	if err != nil {
 		return "", err
 	}

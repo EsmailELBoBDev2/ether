@@ -142,21 +142,44 @@ func TestKindResolverReleaseExplicitSelectorsEnableAllowNonVideo(t *testing.T) {
 	}
 }
 
-type releaseFilesIndexer struct{ nzbs map[string][]byte }
+type releaseFilesIndexer struct {
+	nzbs          map[string][]byte
+	torrents      map[string]core.Release
+	fetchNZBCalls int
+	resolveCalls  int
+}
 
-func (i releaseFilesIndexer) Name() string { return "release-files-idx" }
-func (i releaseFilesIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+func (i *releaseFilesIndexer) Name() string { return "release-files-idx" }
+func (i *releaseFilesIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
 	return nil, nil
 }
-func (i releaseFilesIndexer) FetchNZB(_ context.Context, rel core.Release) ([]byte, error) {
+func (i *releaseFilesIndexer) FetchNZB(_ context.Context, rel core.Release) ([]byte, error) {
+	i.fetchNZBCalls++
 	if b, ok := i.nzbs[rel.NZBURL]; ok {
 		return b, nil
 	}
 	return nil, core.ErrNotAvailable
 }
+func (i *releaseFilesIndexer) ResolveTorrent(_ context.Context, rel core.Release) (core.Release, error) {
+	i.resolveCalls++
+	if resolved, ok := i.torrents[rel.NZBURL]; ok {
+		return resolved, nil
+	}
+	return rel, core.ErrReleaseRejected
+}
+
+type stubNZBListEngine struct {
+	stubEngine
+	files []core.ReleaseFile
+}
+
+func (s stubNZBListEngine) ListFiles(_ context.Context, _ string, _ []byte) ([]core.ReleaseFile, error) {
+	return s.files, nil
+}
 
 // release_files lists a cached torrent's files through debrid and an
-// NZB's files through its indexer; an uncached torrent answers empty.
+// NZB's files through its indexer; an uncached torrent without .torrent
+// metainfo answers empty.
 func TestResolveSourcesReleaseFiles(t *testing.T) {
 	ctx := context.Background()
 	deb := &captureDebridBackend{files: []core.ReleaseFile{
@@ -164,12 +187,13 @@ func TestResolveSourcesReleaseFiles(t *testing.T) {
 		{Index: 1, Path: "Collection/Second.2021.mp4", Size: 222},
 	}}
 	nzbDoc := []byte(`<nzb>` +
-		`<file poster="p" date="1" subject="&quot;First.2020.mp4&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">a@x</segment></segments></file>` +
-		`<file poster="p" date="1" subject="&quot;Second.2021.mp4&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="200" number="1">b@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="&quot;First.2020.mp4&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="1031" number="1">a@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="&quot;Second.2021.mp4&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="2062" number="1">b@x</segment></segments></file>` +
 		`</nzb>`)
+	idx := &releaseFilesIndexer{nzbs: map[string][]byte{"https://idx.test/nzb/1": nzbDoc}}
 	kr := NewKindResolver(KindResolverDeps{
 		Debrid:  deb,
-		Indexer: releaseFilesIndexer{nzbs: map[string][]byte{"https://idx.test/nzb/1": nzbDoc}},
+		Indexer: idx,
 	})
 
 	out, err := kr.ResolveSources(ctx, "plug", core.SourceQuery{Kind: "release_files", InfoHash: "ABCDEF"})
@@ -192,6 +216,8 @@ func TestResolveSourcesReleaseFiles(t *testing.T) {
 		t.Fatalf("uncached release_files = %+v, want cached=false no files", out)
 	}
 
+	// Without an engine, NZB release_files falls back to segment-derived
+	// decoded estimates marked SizeApproximate=true (never the raw encoded sum).
 	out, err = kr.ResolveSources(ctx, "plug", core.SourceQuery{
 		Kind:      "release_files",
 		Candidate: &core.SourceCandidate{NZBURL: "https://idx.test/nzb/1", Indexer: "idx"},
@@ -199,7 +225,118 @@ func TestResolveSourcesReleaseFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 1 || len(out[0].Files) != 2 || out[0].Files[0].Path != "First.2020.mp4" || out[0].Files[0].Size != 100 {
-		t.Fatalf("nzb release_files = %+v", out)
+	if len(out) != 1 || len(out[0].Files) != 2 || out[0].Files[0].Path != "First.2020.mp4" ||
+		out[0].Files[0].Size != 1000 || !out[0].Files[0].SizeApproximate {
+		t.Fatalf("nzb fallback release_files = %+v, want decoded estimate 1000 with SizeApproximate=true", out)
+	}
+
+	// With a streaming engine that implements ListFiles, exact decoded sizes
+	// are returned with SizeApproximate=false.
+	krExact := NewKindResolver(KindResolverDeps{
+		Indexer: idx,
+		Engine: stubNZBListEngine{files: []core.ReleaseFile{
+			{Index: 0, Path: "First.2020.mp4", Size: 987, SizeApproximate: false},
+			{Index: 1, Path: "Second.2021.mp4", Size: 1974, SizeApproximate: false},
+		}},
+	})
+	out, err = krExact.ResolveSources(ctx, "plug", core.SourceQuery{
+		Kind:      "release_files",
+		Candidate: &core.SourceCandidate{NZBURL: "https://idx.test/nzb/1", Indexer: "idx"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || len(out[0].Files) != 2 || out[0].Files[0].Size != 987 || out[0].Files[0].SizeApproximate {
+		t.Fatalf("nzb exact release_files = %+v, want exact 987 with SizeApproximate=false", out)
+	}
+}
+
+// Cardigann torrent candidates carry their HTML release page or .torrent link
+// in TorrentURL (never NZBURL). release_files and openRelease must use the
+// torrent resolution path (ResolveTorrent -> debrid or .torrent metainfo) and
+// never call FetchNZB.
+func TestCardigannTorrentCandidateUsesTorrentPathNeverFetchNZB(t *testing.T) {
+	ctx := context.Background()
+	const resolvedHash = "0123456789abcdef0123456789abcdef01234567"
+	const pageURL = "https://limetorrents.example/Artist-Album-FLAC-torrent-12345.html"
+	metaFiles := []core.ReleaseFile{
+		{Index: 0, Path: "Album/01 - Opening.flac", Size: 25_000_000},
+		{Index: 1, Path: "Album/02 - Finale.flac", Size: 30_000_000},
+	}
+	idx := &releaseFilesIndexer{
+		torrents: map[string]core.Release{
+			pageURL: {
+				Name:         "Artist - Album [FLAC]",
+				Protocol:     core.ProtocolTorrent,
+				InfoHash:     resolvedHash,
+				MagnetURL:    "magnet:?xt=urn:btih:" + resolvedHash,
+				TorrentFiles: metaFiles,
+			},
+		},
+	}
+
+	// 1. Cached on debrid: ResolveTorrent resolves the Cardigann link and
+	//    debrid supplies the provider file list; FetchNZB is never called.
+	debridFiles := []core.ReleaseFile{
+		{Index: 0, Path: "Album/01 - Opening.flac", Size: 25_000_000},
+		{Index: 1, Path: "Album/02 - Finale.flac", Size: 30_000_000},
+	}
+	deb := &captureDebridBackend{files: debridFiles}
+	kr := NewKindResolver(KindResolverDeps{
+		Debrid:  deb,
+		Indexer: idx,
+		Engine:  stubEngine{},
+	})
+	cand := &core.SourceCandidate{
+		TorrentURL: pageURL,
+		Title:      "Artist - Album [FLAC]",
+		Indexer:    "LimeTorrents",
+		IndexerID:  "cardigann-lime",
+	}
+	out, err := kr.ResolveSources(ctx, "music", core.SourceQuery{
+		Kind:      "release_files",
+		Candidate: cand,
+	})
+	if err != nil {
+		t.Fatalf("release_files cached Cardigann torrent: %v", err)
+	}
+	if idx.fetchNZBCalls != 0 {
+		t.Fatalf("FetchNZB called %d times for Cardigann torrent candidate, want 0", idx.fetchNZBCalls)
+	}
+	if idx.resolveCalls != 1 {
+		t.Fatalf("ResolveTorrent called %d times, want 1", idx.resolveCalls)
+	}
+	if len(out) != 1 || !out[0].Cached || out[0].InfoHash != resolvedHash || out[0].NZBURL != "" || len(out[0].Files) != 2 {
+		t.Fatalf("cached Cardigann release_files = %+v", out)
+	}
+
+	// 2. Uncached on debrid: falls back to .torrent metainfo files with Cached=false.
+	deb.files = nil
+	out, err = kr.ResolveSources(ctx, "music", core.SourceQuery{
+		Kind:      "release_files",
+		Candidate: cand,
+	})
+	if err != nil {
+		t.Fatalf("release_files uncached Cardigann torrent: %v", err)
+	}
+	if idx.fetchNZBCalls != 0 {
+		t.Fatalf("FetchNZB called %d times, want 0", idx.fetchNZBCalls)
+	}
+	if len(out) != 1 || out[0].Cached || out[0].InfoHash != resolvedHash || len(out[0].Files) != 2 || out[0].Files[0].Path != "Album/01 - Opening.flac" {
+		t.Fatalf("uncached metainfo fallback = %+v", out)
+	}
+
+	// 3. openRelease with TorrentURL directly resolves via ResolveTorrent -> debrid.Acquire.
+	deb.lastRelease = core.Release{}
+	ms, err := kr.openRelease(ctx, core.ReleaseHint{Candidate: cand})
+	if err != nil {
+		t.Fatalf("openRelease with TorrentURL: %v", err)
+	}
+	_ = ms.Close()
+	if idx.fetchNZBCalls != 0 {
+		t.Fatalf("openRelease called FetchNZB %d times, want 0", idx.fetchNZBCalls)
+	}
+	if deb.lastRelease.InfoHash != resolvedHash || deb.lastRelease.Protocol != core.ProtocolTorrent {
+		t.Fatalf("debrid.Acquire saw %+v, want torrent %s", deb.lastRelease, resolvedHash)
 	}
 }

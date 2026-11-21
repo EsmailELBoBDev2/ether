@@ -82,10 +82,17 @@ func titleWireForRegions(t frontend.Title, regions []string) object {
 			out["ratingCountry"] = country
 		}
 	}
-	if t.ShowKey != 0 {
+	if t.ShowKey != 0 && (t.MediaClass == "" || t.MediaClass == frontend.MediaClassVideo) {
 		out["showId"] = ids.RatingKeyGUID(t.ShowKey)
-		out["seasonNumber"] = t.Season
-		out["episodeNumber"] = t.Episode
+		if kind == "season" || kind == "episode" {
+			out["seasonNumber"] = t.Season
+		}
+		if kind == "episode" {
+			out["episodeNumber"] = t.Episode
+		}
+	}
+	if media := titleMediaWire(t); media != nil {
+		out["media"] = media
 	}
 	return out
 }
@@ -787,6 +794,10 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
+	if rawID := r.PathValue("id"); strings.HasPrefix(rawID, "facet:") {
+		i.facetSeriesDetail(w, r, v, t, rawID)
+		return
+	}
 	k, e := key(r)
 	if e != nil {
 		problem(w, 404, "not-found", "not_found")
@@ -852,7 +863,25 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
-	if !noCursor(w, r) {
+	rawID := r.PathValue("id")
+	if strings.HasPrefix(rawID, "facet:") {
+		i.facetSeriesChildren(w, r, v, t, rawID)
+		return
+	}
+	lim := limit(r)
+	var cur liveCursor
+	if i.seal != nil {
+		scope, err := i.livePageScope(r, v, t)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		cur, err = i.readLiveCursor(r, scope, hashJSON([]any{"children", rawID, lim}))
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+	} else if !noCursor(w, r) {
 		return
 	}
 	k, e := key(r)
@@ -862,22 +891,37 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
 	r = r.WithContext(ctx)
-	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Limit: limit(r), NoTotal: true})
+	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Offset: cur.Offset, Limit: lim + 1, NoTotal: true})
 	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	ts, e := i.titles(r, v, t, p.Items)
+	hasMore := len(p.Items) > lim
+	items := p.Items
+	if hasMore {
+		items = items[:lim]
+	}
+	ts, e := i.titles(r, v, t, items)
 	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	c := "exhausted"
-	if len(ts) == limit(r) {
-		c = "unknown"
+	resp := object{"items": ts, "continuation": "exhausted"}
+	if hasMore {
+		if i.seal != nil {
+			next, err := i.nextLiveCursor(cur, cur.Offset+len(items), "children")
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			resp["continuation"] = "more"
+			resp["nextCursor"] = next
+		} else {
+			resp["continuation"] = "unknown"
+		}
 	}
 	varyLanguage(w)
-	cacheDetail(w, r, object{"items": ts, "continuation": c}, pending)
+	cacheDetail(w, r, resp, pending)
 }
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(frontend.WithSearchMemo(r.Context()))

@@ -432,12 +432,13 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Frontend stream tickets & visibility
 
-Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL, and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
+Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL (accepting an optional positional partIndex or { partIndex?, source? } to pin a zero-based part and/or an exact resolver PlayableSource.id with no failover), and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
 
 ```ts
 const page = ether.kinds.browse("comic", { limit: 50 });
 const allowed = ether.kinds.visible("comic", ["c1", "c2"]);
 const url = ether.frontend.streamURL("item-ref");
+const exact = ether.frontend.streamURL("item-ref", { source: "epub" });
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -808,7 +809,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
-| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
+| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
 | `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
@@ -924,10 +925,14 @@ order. Patterns:
   ambiguity.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
-polynomial as 8 hex digits) and `size`. Ether checks them against the bytes
-actually served — for a release, the selected file; for a container, the
-member (whose size the archive directory reveals before any data is read).
-Bytes that fit `maxBytes` are read into the library cache and verified
+polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
+when `size` is a decoded estimate rather than an exact byte length). Ether
+checks them against the bytes actually served — for a release, the selected
+file; for a container, the member (whose size the archive directory reveals
+before any data is read). Exact sizes (`sizeApproximate` false or omitted)
+require exact byte equality; approximate sizes (`sizeApproximate: true`) are
+treated as a hint with a tolerance band. Bytes that fit `maxBytes` are read
+into the library cache and verified
 before serving; larger sources are hashed as they stream and the read
 fails at the end on a mismatch. A mismatch is an ordinary open failure:
 the next candidate source is tried. When several sources are returned and
@@ -968,23 +973,55 @@ owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
 
-`ResolveSources({kind: "release_files", infoHash})` (or `magnet`, or
-`candidate` carrying an `indexer_search` result back) returns one
-candidate whose `files` lists what is inside the release:
-`[{index, path, size, members?}]` in the order Ether's own file selection
-counts (provider file-list order for torrents, NZB document order for Usenet).
-Torrents are listed only when a debrid provider already holds them
-cached — an uncached hash answers with `cached: false` and no files,
-and is never added. NZBs are fetched through their originating indexer
-(the same fetch playback makes, so the NZB is vaulted for playback). When
-an NZB contains RAR, 7z, or ZIP archives, Ether also reads the archive
-directory (bounded and cached per NZB digest, reusing Ether's archive
-readers) and populates `members: [{index, path, size, stored?}]` on the
-first volume's entry so a plugin can see inner filenames before opening.
-Match a file to your item by name and return the release with
-`release.file` or `release.fileIndex` set (and `release.fileHint` set to
-an exact member path from `members`, or `release.track` when matching by
-disc/track/title); the choice is honoured on Usenet as on debrid.
+`ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
+`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+one candidate whose `files` lists what is inside the release:
+`[{index, path, size, sizeApproximate?, members?}]` in the order Ether's own
+file selection counts (provider file-list order for torrents, NZB document order
+for Usenet). Torrent candidates carry their download or details page link in
+`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
+`torrentUrl` through the originating indexer first, populates `infoHash` and
+`magnet` on the returned candidate, lists files from a debrid provider when
+cached, and falls back to `.torrent` metainfo files (with `cached: false`)
+when uncached or when no debrid provider is configured. NZBs are fetched
+through their originating indexer (the same fetch playback makes, so the NZB
+is vaulted for playback), reporting exact decoded sizes from PAR2 or yEnc
+`=ybegin size=` headers when readable and falling back to a segment-derived
+decoded estimate with `sizeApproximate: true` when only the encoded segment
+sum is known. When an NZB contains RAR, 7z, or ZIP archives, Ether also reads
+the archive directory (bounded and cached per NZB digest, reusing Ether's
+archive readers) and populates `members: [{index, path, size, stored?}]` on the
+first volume's entry so a plugin can see inner filenames before opening. Match a
+file to your item by name, then return the release with `release.file` or
+`release.fileIndex` set (propagating `sizeApproximate` when copying `file.size`
+to `source.size`, and setting `release.fileHint` to an exact member path from
+`members` or `release.track` when matching by disc/track/title); the choice is
+honoured on Usenet as on debrid.
+
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+NZB's article availability on demand before your resolver offers it, using the
+same `sources: "search"` permission as `debrid_check` and `release_files`. It
+returns a single candidate with `usenetCheck: {available, checked, missing,
+cached?, playbackFailed?, reason?, checkedAt?}`:
+
+- **Bounded & playback-safe:** runs Ether's sampled, bounded STAT/BODY check
+  (capped at 32 articles per NZB, regardless of file or segment count) at
+  background (`prefetch`) NNTP priority through the owner's shared provider
+  connection limits and live-reserve rules, so resolver checks never starve
+  active playback.
+- **Shared verdict & playback-failure cache:** verdicts are cached per NZB
+  (indexed by release NZB URL and raw NZB SHA-256 hash) for a bounded TTL
+  (15 min for available verdicts, 30 min for missing/failed verdicts). Real
+  playback-time article or release failures (`ErrArticleMissing`,
+  `ErrArticleCorrupt`, `ErrReleaseRejected`, etc., at open time or mid-stream)
+  are recorded against the same cache entry with `playbackFailed: true` and
+  `available: false`, so subsequent `usenet_check` calls agree with real
+  playback without hitting the indexer or NNTP again. Transient provider or
+  indexer errors are not cached as unavailable.
+- **On-demand & rate-limited:** limited per plugin (`20` checks per minute;
+  excess calls fail with `rate_limited` / HTTP 429) and refused during
+  background/scheduled plugin tasks (`schedule`, catalog sync, container
+  expand) so it never runs as an eager background library sweep.
 
 ### Multi-file items (`hints.parts` and resolve-time `parts`)
 
@@ -1025,17 +1062,28 @@ part:
   without a part selector) resolve `partIndex: 0` for single-part items and
   deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
   parts (`0 .. N-1`).
-- **Per-part opens** let frontend adapters and multi-file clients fetch each
-  file individually:
-  - Mint a part-scoped ticket URL with `ether.frontend.streamURL(itemRef, partIndex).url`
-    (hosted JS), `streamUrl(ctx, itemRef, partIndex)` (TypeScript SDK),
+- **Per-part and per-source opens** let frontend adapters and multi-file clients
+  fetch a specific file or a specific resolver `PlayableSource.id`:
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+    (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
+    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
     `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
-    `ctx.stream_url(item_ref, part_index)` (Python SDK) — backed by
-    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"}`.
-  - Or pass `?part=N` on an unpinned item ticket (`/ether/v1/kind-media/{ticket}?part=0`).
+    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+  - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
+    to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
+    with no failover to other sources and without clobbering the shared default resolution
+    or candidate cache. A plugin that ignores `source` still works: Ether picks the source
+    with the matching `id` from its response, or answers `409 no_source` if it is absent.
+  - `partIndex` is bounded by the item's declared parts: a playable item that declares no
+    parts rejects any `partIndex` with `404 item_not_found`.
+  - Unpinned item tickets also accept `?part=N` (`/ether/v1/kind-media/{ticket}?part=0`).
     A malformed or negative `part` answers `400 invalid_part`, an out-of-range
-    part answers `404 item_not_found`, and a `?part=N` that disagrees with a
-    part-scoped ticket answers `404 ticket_invalid`.
+    part (or a part index on a playable item with no declared parts) answers
+    `404 item_not_found`, and a `?part=N` that disagrees with a part-scoped
+    ticket answers `404 ticket_invalid`. `source` is bound strictly in the
+    ticket grant and cannot be supplied or overridden by query parameters.
 
 Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
@@ -1468,8 +1516,8 @@ the two-slot owner/scheduled pool); if all four resolver slots are running, Ethe
 returns `503` with `code: "jobs_busy"`, `Retry-After`, and the refusal message,
 and records the refused job on the plugin Jobs view. A real empty `sources: []`
 answer stays `409` `no_source`. A job receives the original request body (including `partIndex` when
-resolving a multi-part item), uses promoted deadlines and continuation replies,
-and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
+resolving a multi-part item and `source` when opening a source-scoped stream ticket), uses promoted deadlines and continuation replies,
+and is deduplicated per plugin/kind/item (and `partIndex` / `source`). Job completion wakes
 the next resolve.
 
 For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.
@@ -2141,14 +2189,16 @@ type KindMatchResponse struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files, so an NZB is fetched through its indexer. |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link for torrent indexers that do not emit an info hash or magnet in search results. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when the plugin does not pass a full Candidate from indexer_search. |
+| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer. |
 
 
 ## Source: internal/core/kinditem.go#SourceQuery
@@ -2157,7 +2207,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -2168,8 +2218,15 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// TorrentURL carries a torrent download or details page link for torrent
+	// indexers that do not emit an info hash or magnet in search results.
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	// NZBURL carries a Usenet NZB link for usenet_check when the plugin does
+	// not pass a full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
-	// back for release_files, so an NZB is fetched through its indexer.
+	// back for release_files or usenet_check, so an NZB or torrent link is
+	// resolved through its originating indexer.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
 ``````
@@ -2198,6 +2255,46 @@ type ReleaseMember struct {
 }
 ``````
 
+## Source: internal/core/kinditem.go#UsenetCheckResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `available` | `bool` | emitted (validation may require a value) |  |
+| `checked` | `int` | emitted (validation may require a value) |  |
+| `missing` | `int` | emitted (validation may require a value) |  |
+| `cached` | `bool` | may be omitted (see validation for conditions) | Cached is true when this verdict came from Ether's bounded per-NZB cache (including a recorded playback failure) rather than a fresh NNTP check on this call. |
+| `playbackFailed` | `bool` | may be omitted (see validation for conditions) | PlaybackFailed is true when a previous real playback attempt against this NZB failed with an article or release error (such as missing or corrupt articles), overriding or pre-empting any sampled check. |
+| `reason` | `string` | may be omitted (see validation for conditions) | Reason carries a short diagnostic code when Available is false (e.g. "articles_missing", "playback_article_missing", "playback_article_corrupt", "playback_release_rejected"). |
+| `checkedAt` | `int64` | may be omitted (see validation for conditions) | CheckedAt is the Unix timestamp (seconds) when this verdict or playback failure was recorded. |
+
+
+## Source: internal/core/kinditem.go#UsenetCheckResult
+
+``````
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release, as returned by a usenet_check source query.
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a previous real playback attempt against
+	// this NZB failed with an article or release error (such as missing or
+	// corrupt articles), overriding or pre-empting any sampled check.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false
+	// (e.g. "articles_missing", "playback_article_missing",
+	// "playback_article_corrupt", "playback_release_rejected").
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
+}
+``````
+
 ## Source: internal/core/kinditem.go#ReleaseFile.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2205,6 +2302,7 @@ type ReleaseMember struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `path` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate is true when Size is a segment-derived decoded estimate rather than an exact byte count (e.g. a Usenet NZB whose PAR2/yEnc headers could not be read). Exact sizes leave it false/omitted. |
 | `members` | `[]ReleaseMember` | may be omitted (see validation for conditions) |  |
 
 
@@ -2219,10 +2317,14 @@ type ReleaseMember struct {
 // of a readable RAR, 7z, or ZIP archive on Usenet, Members lists the
 // non-directory files inside that archive.
 type ReleaseFile struct {
-	Index   int             `json:"index"`
-	Path    string          `json:"path"`
-	Size    int64           `json:"size"`
-	Members []ReleaseMember `json:"members,omitempty"`
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte count (e.g. a Usenet NZB whose PAR2/yEnc
+	// headers could not be read). Exact sizes leave it false/omitted.
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	Members         []ReleaseMember `json:"members,omitempty"`
 }
 ``````
 
@@ -2232,6 +2334,7 @@ type ReleaseFile struct {
 |---|---|---|---|
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
 | `title` | `string` | may be omitted (see validation for conditions) |  |
@@ -2245,6 +2348,7 @@ type ReleaseFile struct {
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query: the files inside this candidate release. |
+| `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query: the sampled article availability verdict and any recorded playback failure for this NZB release. |
 
 
 ## Source: internal/core/kinditem.go#SourceCandidate
@@ -2252,10 +2356,13 @@ type ReleaseFile struct {
 ``````
 // SourceCandidate is one Ether-found release for a resolver to rank,
 // carrying the release-hint fields plus the facts matching needs.
+// Torrent candidates carry their infoHash, magnet, and/or torrentUrl and never
+// populate nzbUrl; Usenet candidates populate nzbUrl.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -2278,6 +2385,10 @@ type SourceCandidate struct {
 	// Files is populated only by a release_files query: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query: the sampled
+	// article availability verdict and any recorded playback failure for
+	// this NZB release.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 }
 ``````
 
@@ -2326,6 +2437,7 @@ func libraryKeySlug(s string) string {
 | `pattern` | `string` | emitted (validation may require a value) | "range" \| "download" \| "direct" \| "container" \| "release" \| "file" |
 | `mime` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count: kindstream applies a tolerance band instead of failing on exact byte inequality, while exact sizes (false/omitted) remain strict. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
@@ -2346,23 +2458,28 @@ func libraryKeySlug(s string) string {
 // PlayableSource is one candidate way to acquire bytes for a KindItem or one of
 // its parts (spec §4.1). Multiple sources are tried in order.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // "range" | "download" | "direct" | "container" | "release" | "file"
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // "range" | "download" | "direct" | "container" | "release" | "file"
+	MIME    string `json:"mime"`
+	Size    int64  `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count:
+	// kindstream applies a tolerance band instead of failing on exact byte
+	// inequality, while exact sizes (false/omitted) remain strict.
+	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
+	DurationSec     float64           `json:"durationSec,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	BlobRef         string            `json:"blobRef,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are the digests content catalogues actually publish
 	// (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared
 	// digest — and Size, when set — is checked against the bytes actually
 	// served, including a release's selected file or container member.
-	SHA1      string        `json:"sha1,omitempty"`
-	CRC32     string        `json:"crc32,omitempty"`
+	SHA1      string         `json:"sha1,omitempty"`
+	CRC32     string         `json:"crc32,omitempty"`
 	MaxBytes  int64          `json:"maxBytes,omitempty"`
 	ExpiresAt int64          `json:"expiresAt,omitempty"`
 	Container *ContainerRef  `json:"container,omitempty"`
@@ -2449,6 +2566,7 @@ type TrackHint struct {
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
@@ -2459,15 +2577,17 @@ type TrackHint struct {
 ## Source: internal/core/kinditem.go#ReleaseHint
 
 ``````
-// ReleaseHint hands an NZB, magnet, infohash, or pre-built Candidate to Ether's
-// existing Usenet / debrid / torrent acquisition pipeline (spec §4.1, §4.3).
+// ReleaseHint hands an NZB, magnet, infohash, torrent link, or pre-built
+// Candidate to Ether's existing Usenet / debrid / torrent acquisition pipeline
+// (spec §4.1, §4.3).
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string     `json:"file,omitempty"`
 	FileHint       string     `json:"fileHint,omitempty"`
@@ -2483,6 +2603,7 @@ type ReleaseHint struct {
 | `libraryKey` | `string` | emitted (validation may require a value) |  |
 | `item` | `KindItem` | emitted (validation may require a value) |  |
 | `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
 | `client` | `map[string]any` | may be omitted (see validation for conditions) |  |
 
 
@@ -2495,6 +2616,7 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
 }
 ``````
@@ -4844,6 +4966,7 @@ type KindLevel struct {
 | `label` | `string` | emitted (validation may require a value) |  |
 | `indexed` | `bool` | may be omitted (see validation for conditions) | gets a typed column in the item store |
 | `enum` | `[]string` | may be omitted (see validation for conditions) |  |
+| `fact` | `*bool` | may be omitted (see validation for conditions) | Fact controls whether this field is surfaced in TitleMedia.facts. Nil follows the default rule (non-structural fields appear as facts); explicit true/false overrides it. |
 
 
 ## Source: internal/plugins/contract.go#KindField
@@ -4856,6 +4979,10 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"` // gets a typed column in the item store
 	Enum    []string `json:"enum,omitempty"`
+	// Fact controls whether this field is surfaced in TitleMedia.facts.
+	// Nil follows the default rule (non-structural fields appear as facts);
+	// explicit true/false overrides it.
+	Fact *bool `json:"fact,omitempty"`
 }
 ``````
 
@@ -5438,6 +5565,7 @@ type Host interface {
 	// refused. Bytes are then served by Ether, never by the plugin.
 	StreamURL(ctx context.Context, itemRef string) (string, error)
 	StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error)
+	StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error)
 
 	// FoldersList and FoldersStat need folders: read and an owner-picked
 	// root. They never return file contents.
@@ -5464,6 +5592,25 @@ type Host interface {
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
 	Log(ctx context.Context, level, msg string, attrs map[string]any) error
+}
+``````
+
+## Source: internal/plugins/contract.go#StreamURLOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#StreamURLOptions
+
+``````
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 ``````
 
@@ -6930,7 +7077,7 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	defer m.scheduleWG.Done()
 	defer flight.cancel()
 	startedAt := m.now()
-	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
+	resp, err := m.Call(WithBackgroundCall(ctx), pluginID, Request{Method: "POST", Path: callPath})
 	var started *actionJob
 	var startErr error
 	if err == nil && ctx.Err() == nil && resp.Status >= 200 && resp.Status < 300 && len(resp.Body) > 0 {
@@ -11630,8 +11777,9 @@ type KindBackends struct {
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
-	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
-	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
 }
 ``````
 
@@ -11656,6 +11804,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.CacheDelete = b.CacheDelete
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
+	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
 	m.mu.Unlock()
 }
 ``````
@@ -11667,20 +11816,21 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:      m.deps.Backends.KindUpsert,
-		KindUpsertStats: m.deps.Backends.KindUpsertStats,
-		KindDelete:      m.deps.Backends.KindDelete,
-		KindItems:       m.deps.Backends.KindItems,
-		KindItemsByID:   m.deps.Backends.KindItemsByID,
-		KindItemCount:   m.deps.Backends.KindItemCount,
-		KindVisible:     m.deps.Backends.KindVisible,
-		KindBrowse:      m.deps.Backends.KindBrowse,
-		ResolveSources:  m.deps.Backends.ResolveSources,
-		CachePut:        m.deps.Backends.CachePut,
-		CacheOpen:       m.deps.Backends.CacheOpen,
-		CacheDelete:     m.deps.Backends.CacheDelete,
-		StreamURL:       m.deps.Backends.StreamURL,
-		StreamPartURL:   m.deps.Backends.StreamPartURL,
+		KindUpsert:       m.deps.Backends.KindUpsert,
+		KindUpsertStats:  m.deps.Backends.KindUpsertStats,
+		KindDelete:       m.deps.Backends.KindDelete,
+		KindItems:        m.deps.Backends.KindItems,
+		KindItemsByID:    m.deps.Backends.KindItemsByID,
+		KindItemCount:    m.deps.Backends.KindItemCount,
+		KindVisible:      m.deps.Backends.KindVisible,
+		KindBrowse:       m.deps.Backends.KindBrowse,
+		ResolveSources:   m.deps.Backends.ResolveSources,
+		CachePut:         m.deps.Backends.CachePut,
+		CacheOpen:        m.deps.Backends.CacheOpen,
+		CacheDelete:      m.deps.Backends.CacheDelete,
+		StreamURL:        m.deps.Backends.StreamURL,
+		StreamPartURL:    m.deps.Backends.StreamPartURL,
+		StreamURLOptions: m.deps.Backends.StreamURLOptions,
 	}
 }
 ``````
@@ -12082,6 +12232,46 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#DefaultUsenetCheckPerMin
+
+``````
+// DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls
+// per minute so a resolver cannot flood Usenet indexers or NNTP providers.
+const DefaultUsenetCheckPerMin = 20
+``````
+
+## Source: internal/plugins/host_kinds.go#backgroundCallKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_kinds.go#backgroundCallKey
+
+``````
+type backgroundCallKey struct{}
+``````
+
+## Source: internal/plugins/host_kinds.go#WithBackgroundCall
+
+``````
+// WithBackgroundCall marks a plugin invocation context as background work
+// (such as a scheduled job or catalog sync/expand). On-demand-only host
+// queries such as usenet_check refuse background contexts.
+func WithBackgroundCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundCallKey{}, true)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isBackgroundCall
+
+``````
+func isBackgroundCall(ctx context.Context) bool {
+	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
+	return bg
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.ResolveSources
 
 ``````
@@ -12113,18 +12303,33 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet or candidate",
+				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+			}}}
+		}
+	case "usenet_check":
+		if isBackgroundCall(ctx) {
+			h.noteDenied("usenet_check_background")
+			return nil, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
+		}
+		nzbURL := strings.TrimSpace(q.NZBURL)
+		if nzbURL == "" && q.Candidate != nil {
+			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
+		}
+		if nzbURL == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "nzbUrl",
+				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "debrid_acquire needs an info hash or magnet",
+				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	default:
@@ -12142,6 +12347,15 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	backend := h.m.kindBackends().ResolveSources
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	if q.Kind == "usenet_check" {
+		limit := h.m.usenetCheckLimit
+		if limit <= 0 {
+			limit = DefaultUsenetCheckPerMin
+		}
+		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
+			return nil, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+		}
 	}
 	return backend(ctx, h.plugin, q)
 }
@@ -12331,6 +12545,34 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#maxStreamSourceIDLen
+
+``````
+const maxStreamSourceIDLen = 1024
+``````
+
+## Source: internal/plugins/host_kinds.go#validateStreamSourceID
+
+``````
+func validateStreamSourceID(source string) error {
+	if source == "" {
+		return nil
+	}
+	if strings.TrimSpace(source) == "" {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not be blank"}}}
+	}
+	if len(source) > maxStreamSourceIDLen {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source exceeds maximum length"}}}
+	}
+	for _, r := range source {
+		if r < 0x20 || r == 0x7f {
+			return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not contain control characters"}}}
+		}
+	}
+	return nil
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.StreamURL
 
 ``````
@@ -12340,7 +12582,7 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 // X-Ether-Viewer. The backend re-checks that the item belongs to this plugin
 // and that the viewer may see its library.
 func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
-	return h.StreamPartURL(ctx, itemRef, nil)
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{})
 }
 ``````
 
@@ -12348,6 +12590,14 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 
 ``````
 func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error) {
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{PartIndex: partIndex})
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*host.StreamURLWithOptions
+
+``````
+func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error) {
 	rec, _, err := h.record(ctx)
 	if err != nil {
 		return "", err
@@ -12365,25 +12615,34 @@ func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int
 	if strings.TrimSpace(itemRef) == "" {
 		return "", fmt.Errorf("plugins: stream url needs an item ref")
 	}
-	if partIndex != nil && *partIndex < 0 {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", fmt.Errorf("plugins: stream url partIndex must be non-negative")
 	}
+	if err := validateStreamSourceID(opts.Source); err != nil {
+		return "", err
+	}
 	backends := h.m.kindBackends()
+	if backends.StreamURLOptions != nil {
+		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
+	}
+	if opts.Source != "" {
+		return "", ErrUnavailable
+	}
 	if backends.StreamPartURL != nil {
-		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, partIndex)
+		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, opts.PartIndex)
 	}
 	if backends.StreamURL == nil {
 		return "", ErrUnavailable
 	}
 	u, err := backends.StreamURL(ctx, h.plugin, viewerID, itemRef)
-	if err != nil || partIndex == nil {
+	if err != nil || opts.PartIndex == nil {
 		return u, err
 	}
 	sep := "?"
 	if strings.Contains(u, "?") {
 		sep = "&"
 	}
-	return u + sep + "part=" + strconv.Itoa(*partIndex), nil
+	return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 }
 ``````
 
@@ -13245,15 +13504,29 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		page, err := b.h.KindBrowse(ctx, str(0), q)
 		return result(page, err)
 	case "frontend.streamURL":
-		var partIdx *int
-		if len(args) > 1 && string(args[1]) != "null" {
-			var n int
-			if err := json.Unmarshal(args[1], &n); err != nil || n < 0 {
-				return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+		var opts StreamURLOptions
+		if len(args) > 1 {
+			rawArg := bytes.TrimSpace(args[1])
+			if len(rawArg) > 0 && string(rawArg) != "null" {
+				if rawArg[0] == '{' {
+					dec := json.NewDecoder(bytes.NewReader(rawArg))
+					dec.DisallowUnknownFields()
+					if err := dec.Decode(&opts); err != nil {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+					}
+					if opts.PartIndex != nil && *opts.PartIndex < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+				} else {
+					var n int
+					if err := json.Unmarshal(rawArg, &n); err != nil || n < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+					opts.PartIndex = &n
+				}
 			}
-			partIdx = &n
 		}
-		u, err := b.h.StreamPartURL(ctx, str(0), partIdx)
+		u, err := b.h.StreamURLWithOptions(ctx, str(0), opts)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
@@ -20293,11 +20566,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, ResolverTotal)
 	defer cancel()
-	// One job per plugin/kind/item (and part index when set), even across
+	// One job per plugin/kind/item (and part index / source when set), even across
 	// simultaneous Plays. Include the request body when older callers do not
 	// supply an item reference.
 	var identity struct {
-		PartIndex *int `json:"partIndex"`
+		PartIndex *int   `json:"partIndex"`
+		Source    string `json:"source"`
 		Item      struct {
 			Ref        string `json:"ref"`
 			ExternalID string `json:"id"`
@@ -20310,8 +20584,13 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	}
 	if item == "" {
 		item = string(req.Body)
-	} else if identity.PartIndex != nil {
-		item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
+	} else {
+		if identity.PartIndex != nil {
+			item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
+		}
+		if identity.Source != "" {
+			item = fmt.Sprintf("%s#source:%s", item, identity.Source)
+		}
 	}
 	suffix := fmt.Sprintf("|%x", sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimSuffix(req.Path, "/resolve"), "/match")+"|"+item)))
 	started := false
@@ -21129,6 +21408,7 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		ViewerID  int64  `json:"viewerId"`
 		ItemRef   string `json:"itemRef"`
 		PartIndex *int   `json:"partIndex,omitempty"`
+		Source    string `json:"source,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
@@ -21137,12 +21417,32 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		writeHostError(w, http.StatusBadRequest, "bad_arguments", "partIndex must be non-negative")
 		return
 	}
+	if body.Source != "" && strings.TrimSpace(body.Source) == "" {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "source must not be blank")
+		return
+	}
 	var (
 		u   string
 		err error
 	)
-	if body.PartIndex != nil {
-		if ph, ok := h.host.(interface {
+	if body.Source != "" {
+		oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		})
+		if !ok {
+			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support source-scoped stream URLs")
+			return
+		}
+		u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
+			PartIndex: body.PartIndex,
+			Source:    body.Source,
+		})
+	} else if body.PartIndex != nil {
+		if oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		}); ok {
+			u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
+		} else if ph, ok := h.host.(interface {
 			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 		}); ok {
 			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
@@ -25754,7 +26054,7 @@ globalThis.ether = (() => {
              rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]),
              delete: (blobRef) => call("cache.delete", [blobRef]) },
     archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
-    frontend: { streamURL: (itemRef, partIndex) => call("frontend.streamURL", partIndex == null ? [itemRef] : [itemRef, partIndex]) },
+    frontend: { streamURL: (itemRef, opts) => call("frontend.streamURL", opts == null ? [itemRef] : [itemRef, opts]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
                hashPoll: (id) => call("folders.hashPoll", [id]),
@@ -30184,7 +30484,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
             "indexer_search",
             "debrid_check",
             "debrid_acquire",
-            "release_files"
+            "release_files",
+            "usenet_check"
           ]
         },
         "query": {
@@ -30211,9 +30512,57 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+        },
+        "nzbUrl": {
+          "type": "string",
+          "description": "Usenet NZB download link for usenet_check when not passing a full candidate."
+        },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
-          "description": "A candidate from indexer_search handed back for release_files, so an NZB is fetched through its originating indexer."
+          "description": "A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer."
+        }
+      }
+    },
+    "usenetCheckResult": {
+      "type": "object",
+      "required": [
+        "available",
+        "checked",
+        "missing"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "True when all sampled NZB articles were confirmed available and no playback failure is recorded for this NZB."
+        },
+        "checked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled articles evaluated (bounded by Ether's per-check sample cap)."
+        },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled or playback-observed articles confirmed missing."
+        },
+        "cached": {
+          "type": "boolean",
+          "description": "True when the verdict was served from Ether's bounded per-NZB cache (including a recorded playback failure) without running a fresh NNTP check."
+        },
+        "playbackFailed": {
+          "type": "boolean",
+          "description": "True when a real playback attempt against this NZB failed with an article or release error."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Short diagnostic code when available is false (e.g. articles_missing, segment_absent_from_nzb, playback_article_missing, playback_article_corrupt, playback_release_rejected)."
+        },
+        "checkedAt": {
+          "type": "integer",
+          "description": "Unix timestamp (seconds) when this verdict or playback failure was recorded."
         }
       }
     },
@@ -30260,7 +30609,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           "type": "string"
         },
         "size": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Decoded file size in bytes (exact when known from torrent/debrid, PAR2, or yEnc headers; segment-derived estimate when sizeApproximate is true)."
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is a segment-derived decoded estimate rather than an exact byte count."
         },
         "members": {
           "type": "array",
@@ -30299,8 +30653,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers; torrent candidates never populate nzbUrl."
+        },
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "description": "Usenet NZB download link; populated only for Usenet candidates."
         },
         "title": {
           "type": "string"
@@ -30347,6 +30706,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
             "$ref": "#/$defs/releaseFile"
           },
           "description": "Files inside this release; populated only by a release_files query."
+        },
+        "usenetCheck": {
+          "$ref": "#/$defs/usenetCheckResult",
+          "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
         }
       }
     },
@@ -30360,6 +30723,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           "type": "string"
         },
         "infoHash": {
+          "type": "string"
+        },
+        "torrentUrl": {
           "type": "string"
         },
         "passwordSecret": {
@@ -30805,7 +31171,7 @@ If a call is still `pending` after the 25-second wait budget, Ether answers
 default) on `kind-media`, Vela, Jellyfin and Plex API routes without caching a
 negative resolution; only a real empty `sources: []` / `404` answer becomes `409`
 `no_source`. For slow searches, also return `job:"/ether/job/prepare"`. Ether
-deduplicates running jobs per plugin, kind, item and `partIndex`, passes the
+deduplicates running jobs per plugin, kind, item, `partIndex`, and `source`, passes the
 original request body, and uses the existing promoted job deadline and
 continuation protocol. A completed
 job wakes the resolver before the retry timer. Persist results in KV; never do
@@ -30855,22 +31221,32 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
-Hosted adapters can return a redirect to a host-minted item stream URL (or a
-specific zero-based part when an item declares `hints.parts`):
+Hosted adapters can return a redirect to a host-minted item stream URL, a
+specific zero-based part when an item declares `hints.parts`, and/or a specific
+resolver `PlayableSource.id`:
 
 ```js
 // Whole item (concatenated sequence for multi-part items):
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
 // Single part (resolves with KindResolveRequest.partIndex = partIndex):
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
+// Specific resolver source (and optional partIndex) with no failover:
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, {partIndex, source: "epub"}).url}};
 ```
 
-In the SDKs, call `streamUrl(ctx, itemRef, partIndex?)` (TypeScript),
-`ctx.StreamPartURL(itemRef, partIndex)` (Go), or `ctx.stream_url(item_ref, part_index)`
-(Python); an unpinned item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`.
-Multi-file items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]`
-(or a declared `parts` field) so Ether resolves and caches each part with its
-zero-based `KindResolveRequest.partIndex`.
+In the SDKs, call `streamUrl(ctx, itemRef, partIndexOrOpts?)` (TypeScript),
+`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` or
+`ctx.StreamPartURL(itemRef, partIndex)` (Go), or
+`ctx.stream_url(item_ref, part_index=..., source=...)` (Python); an unpinned
+item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Multi-file
+items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]` (or a
+declared `parts` field) so Ether resolves and caches each part with its
+zero-based `KindResolveRequest.partIndex`; playable items with no declared parts
+reject any `partIndex` with `404 item_not_found`. When `source` is set on the
+ticket grant, Ether passes `KindResolveRequest.source` to `/resolve` and opens
+only the matching `PlayableSource.id` without failing over to other sources (a
+plugin that ignores `source` still works because Ether selects the matching id
+or returns `409 no_source` if absent).
 
 Only root-relative local redirect URLs are forwarded. External URLs, authority
 changes, control characters, backslashes and known account credential query
@@ -40449,6 +40825,18 @@ type PartStreamHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#StreamURLOptionsHost
+
+``````
+// StreamURLOptionsHost mints a short-lived, scoped ticket for a specific
+// zero-based part and/or resolver PlayableSource.ID of a kind item (#576, #661).
+// RemoteHostClient and MockHost implement it; Context.StreamURLWithOptions
+// uses it automatically.
+type StreamURLOptionsHost interface {
+	StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+}
+``````
+
 ## Source: sdk/go/host.go#CacheDeleteHost
 
 ``````
@@ -41288,11 +41676,34 @@ func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, it
 	if partIndex < 0 {
 		return "", fmt.Errorf("stream url: partIndex must be non-negative")
 	}
+	return c.StreamURLWithOptions(ctx, viewerID, itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.StreamURLWithOptions
+
+``````
+// StreamURLWithOptions mints a scoped stream ticket for one of this plugin's
+// own kind items, optionally pinned to a zero-based part and/or resolver
+// PlayableSource.ID (#576, #661).
+func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", fmt.Errorf("stream url: source must not be blank")
+	}
+	payload := map[string]any{"viewerId": viewerID, "itemRef": itemRef}
+	if opts.PartIndex != nil {
+		payload["partIndex"] = *opts.PartIndex
+	}
+	if opts.Source != "" {
+		payload["source"] = opts.Source
+	}
 	var out struct {
 		URL string `json:"url"`
 	}
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
-		map[string]any{"viewerId": viewerID, "itemRef": itemRef, "partIndex": partIndex}, &out, false)
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", payload, &out, false)
 	if err != nil {
 		return "", err
 	}
@@ -41766,14 +42177,16 @@ type KindChangesRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files. |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link when an indexer did not supply an infoHash or magnet. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when not passing a full Candidate from indexer_search. |
+| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files or usenet_check. |
 
 
 ## Source: sdk/go/kinds.go#SourceQuery
@@ -41781,7 +42194,7 @@ type KindChangesRequest struct {
 ``````
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -41792,7 +42205,14 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// Candidate carries an indexer_search candidate back for release_files.
+	// TorrentURL carries a torrent download or details page link when an
+	// indexer did not supply an infoHash or magnet.
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
+	// Candidate carries an indexer_search candidate back for release_files
+	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
 ``````
@@ -41820,6 +42240,43 @@ type ReleaseMember struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#UsenetCheckResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `available` | `bool` | emitted (validation may require a value) |  |
+| `checked` | `int` | emitted (validation may require a value) |  |
+| `missing` | `int` | emitted (validation may require a value) |  |
+| `cached` | `bool` | may be omitted (see validation for conditions) | Cached is true when this verdict came from Ether's bounded per-NZB cache (including a recorded playback failure) rather than a fresh NNTP check on this call. |
+| `playbackFailed` | `bool` | may be omitted (see validation for conditions) | PlaybackFailed is true when a prior real playback attempt against this NZB failed with an article or release error. |
+| `reason` | `string` | may be omitted (see validation for conditions) | Reason carries a short diagnostic code when Available is false. |
+| `checkedAt` | `int64` | may be omitted (see validation for conditions) | CheckedAt is the Unix timestamp (seconds) when this verdict or playback failure was recorded. |
+
+
+## Source: sdk/go/kinds.go#UsenetCheckResult
+
+``````
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release (usenet_check).
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a prior real playback attempt against this
+	// NZB failed with an article or release error.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false.
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#ReleaseFile.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -41827,6 +42284,7 @@ type ReleaseMember struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `path` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate is true when Size is a segment-derived decoded estimate rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc headers). Exact sizes leave it false/omitted. |
 | `members` | `[]ReleaseMember` | may be omitted (see validation for conditions) |  |
 
 
@@ -41835,10 +42293,14 @@ type ReleaseMember struct {
 ``````
 // ReleaseFile is one file inside a candidate release (release_files).
 type ReleaseFile struct {
-	Index   int             `json:"index"`
-	Path    string          `json:"path"`
-	Size    int64           `json:"size"`
-	Members []ReleaseMember `json:"members,omitempty"`
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc
+	// headers). Exact sizes leave it false/omitted.
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	Members         []ReleaseMember `json:"members,omitempty"`
 }
 ``````
 
@@ -41848,6 +42310,7 @@ type ReleaseFile struct {
 |---|---|---|---|
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
 | `title` | `string` | may be omitted (see validation for conditions) |  |
@@ -41861,16 +42324,20 @@ type ReleaseFile struct {
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query. |
+| `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query. |
 
 
 ## Source: sdk/go/kinds.go#SourceCandidate
 
 ``````
 // SourceCandidate is one Ether-found release for a resolver to rank.
+// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
+// nzbUrl; Usenet candidates carry nzbUrl.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -41888,6 +42355,8 @@ type SourceCandidate struct {
 	Codec      string `json:"codec,omitempty"`
 	// Files is populated only by a release_files query.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -41907,6 +42376,8 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
 	default:
@@ -41988,6 +42459,7 @@ type KindMatchResponse struct {
 | `pattern` | `string` | emitted (validation may require a value) | range\|download\|direct\|container\|release\|file |
 | `mime` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
@@ -42009,21 +42481,24 @@ type KindMatchResponse struct {
 // carry {itemIndex}, {pageNumber}, {byteStart}, {byteEnd} and {byteRange}
 // placeholders that Ether substitutes.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // range|download|direct|container|release|file
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // range|download|direct|container|release|file
+	MIME    string `json:"mime"`
+	Size    int64  `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count.
+	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
+	DurationSec     float64           `json:"durationSec,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	BlobRef         string            `json:"blobRef,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are hex digests checked against the served bytes,
 	// including a release's selected file or container member; Size too.
-	SHA1      string        `json:"sha1,omitempty"`
-	CRC32     string        `json:"crc32,omitempty"`
+	SHA1      string         `json:"sha1,omitempty"`
+	CRC32     string         `json:"crc32,omitempty"`
 	MaxBytes  int64          `json:"maxBytes,omitempty"`
 	ExpiresAt int64          `json:"expiresAt,omitempty"`
 	Container *ContainerRef  `json:"container,omitempty"`
@@ -42107,6 +42582,7 @@ type TrackHint struct {
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
@@ -42120,11 +42596,12 @@ type TrackHint struct {
 // ReleaseHint hands a release to Ether's Usenet/debrid/torrent pipeline.
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string     `json:"file,omitempty"`
 	FileHint       string     `json:"fileHint,omitempty"`
@@ -42140,6 +42617,7 @@ type ReleaseHint struct {
 | `libraryKey` | `string` | emitted (validation may require a value) |  |
 | `item` | `KindItem` | emitted (validation may require a value) |  |
 | `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
 | `client` | `map[string]any` | may be omitted (see validation for conditions) |  |
 
 
@@ -42152,7 +42630,27 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#StreamURLOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#StreamURLOptions
+
+``````
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 ``````
 
@@ -42557,28 +43055,54 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 // a multi-file kind item (#576) and returns the Ether stream URL to embed in a
 // frontend adapter response.
 func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	return c.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+``````
+
+## Source: sdk/go/kinds.go#*Context.StreamURLWithOptions
+
+``````
+// StreamURLWithOptions mints a short-lived, scoped ticket for one of this
+// plugin's own kind items, optionally pinned to a zero-based part and/or a
+// specific resolver PlayableSource.ID (#576, #661).
+func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
 	if c.Ether == nil {
 		return "", errors.New("stream url: no host service available")
 	}
-	if partIndex < 0 {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", errors.New("stream url: source must not be blank")
 	}
 	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
 	if err != nil || viewerID <= 0 {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
-	if ph, ok := c.Ether.(PartStreamHost); ok {
-		return ph.StreamPartURL(c.Context, viewerID, itemRef, partIndex)
+	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
+		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
 	}
-	u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
-	if err != nil {
-		return "", err
+	if opts.Source != "" {
+		return "", errors.New("stream url: host does not support source-scoped stream tickets")
 	}
-	sep := "?"
-	if strings.Contains(u, "?") {
-		sep = "&"
+	if opts.PartIndex != nil {
+		if ph, ok := c.Ether.(PartStreamHost); ok {
+			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+		}
+		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		if err != nil {
+			return "", err
+		}
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
-	return u + sep + "part=" + strconv.Itoa(partIndex), nil
+	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
 }
 ``````
 
@@ -50267,6 +50791,16 @@ def _check_part_index(part_index: Optional[int]) -> Optional[int]:
     return part_index
 
 
+def _check_stream_source(source: Optional[str]) -> Optional[str]:
+    if source is None or source == "":
+        return None
+    if not isinstance(source, str):
+        raise ValueError("stream url: source must be a string")
+    if source.strip() == "":
+        raise ValueError("stream url: source must not be blank")
+    return source
+
+
 class _FrontendClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -50276,11 +50810,15 @@ class _FrontendClient:
         viewer_id: int,
         item_ref: str,
         part_index: Optional[int] = None,
+        source: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
+        if checked_source is not None:
+            payload["source"] = checked_source
         result = self._call(
             "POST",
             "/ether/plugin-host/frontend/stream-url",
@@ -50460,14 +50998,21 @@ class PluginContext:
     def t(self, key: str, params: Optional[Dict[str, Any]] = None) -> str:
         return self.i18n.t(key, params=params, locale=self.locale)
 
-    def stream_url(self, item_ref: str, part_index: Optional[int] = None) -> str:
+    def stream_url(
+        self,
+        item_ref: str,
+        part_index: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), or for one zero-based part when part_index is set
-        (#576). The viewer is the one Ether authenticated on this request
-        (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
+        a resolver PlayableSource.id (#661). The viewer is the one Ether
+        authenticated on this request (X-Ether-Viewer); bytes are served by
+        Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -50475,6 +51020,10 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        if checked_source is not None:
+            return self.ether.frontend.stream_url(
+                viewer_id, str(item_ref), checked, source=checked_source
+            )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
         return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
@@ -51928,6 +52477,7 @@ class MockHostClient:
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
+        self.last_stream_url_source: Optional[str] = None
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -51981,10 +52531,13 @@ class MockHostClient:
             viewer_id: int,
             item_ref: str,
             part_index: Optional[int] = None,
+            source: Optional[str] = None,
         ) -> str:
             checked = _check_part_index(part_index)
+            checked_source = _check_stream_source(source)
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
+            self._p.last_stream_url_source = checked_source
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
             return base if checked is None else f"{base}?part={checked}"
 
@@ -52118,7 +52671,7 @@ class MockHostClient:
                 out["nextCursor"] = page[-1].get("id")
             return out
 
-        def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
             return list(self._p.sources)
 
     class _Cache:
@@ -52793,6 +53346,64 @@ class KindLibraryDecl(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class UsenetCheckResult(TypedDict, total=False):
+    """Sampled Usenet article availability verdict for one NZB (usenet_check)."""
+
+    available: bool
+    checked: int
+    missing: int
+    cached: bool
+    playbackFailed: bool
+    reason: str
+    checkedAt: int
+
+
+class ReleaseFile(TypedDict, total=False):
+    """One file inside a candidate release returned by release_files."""
+
+    index: int
+    path: str
+    size: int
+    sizeApproximate: bool
+
+
+class SourceCandidate(TypedDict, total=False):
+    """One Ether-found release candidate returned by sources.resolve."""
+
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    fileIndex: int
+    title: str
+    size: int
+    seeders: int
+    cached: bool
+    indexer: str
+    indexerId: str
+    score: int
+    resolution: int
+    source: str
+    codec: str
+    files: List[ReleaseFile]
+    usenetCheck: UsenetCheckResult
+
+
+class SourceQuery(TypedDict, total=False):
+    """Host sources.resolve query payload."""
+
+    kind: Literal["indexer_search", "debrid_check", "debrid_acquire", "release_files", "usenet_check"]
+    query: str
+    category: str
+    profile: str
+    infoHashes: List[str]
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    candidate: SourceCandidate
+
+
 class CatalogProvider:
     """Serve browse/detail for one declared kind. Items are plain dicts in
     the KindItem wire shape; requests are dicts with an extra ``kind`` key."""
@@ -52860,6 +53471,8 @@ def candidate_ref(candidate: Dict[str, Any]) -> str:
         return "infohash:" + str(candidate["infoHash"]).lower()
     if candidate.get("magnet"):
         return "magnet:" + str(candidate["magnet"])
+    if candidate.get("torrentUrl"):
+        return "torrent:" + str(candidate["torrentUrl"])
     if candidate.get("nzbUrl"):
         return "nzb:" + str(candidate["nzbUrl"])
     return str(candidate.get("title") or "")
@@ -52869,11 +53482,13 @@ def stream_url(
     ctx: PluginContext,
     item_ref: str,
     part_index: Optional[int] = None,
+    source: Optional[str] = None,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5) or one zero-based part (#576). Kept as a thin wrapper over
+    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
+    resolver PlayableSource.id (#661). Kept as a thin wrapper over
     PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index)
+    return ctx.stream_url(item_ref, part_index=part_index, source=source)
 
 
 def kinds_visible(
@@ -52958,19 +53573,27 @@ class _KindsClient:
         )
         return result or {"items": []}
 
-    def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics; with empty query,
-        fetches up to 100 recent releases) and profile (quality profile name for
-        video release scoring; default uses owner default). Video candidates
-        include score, resolution, source and codec alongside indexer/indexerId;
-        non-video candidates omit those video fields. A release source may set
-        release.fileIndex or candidate.fileIndex (zero-based provider torrent
-        list), or release.file (exact path/unique basename), to open any file
-        kind. Invalid selections fail; omitted selectors retain video selection.
-        Explicit file selection is supported for torrents, not NZB members.
+    def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
+        """Find or inspect owner sources via ``sources.resolve``.
+
+        Supported ``kind`` values:
+        - ``indexer_search``: accepts ``category`` (comma-separated Newznab IDs
+          or family names, e.g. music/books/comics; with empty ``query``,
+          fetches up to 100 recent releases) and ``profile`` (quality profile
+          name for video release scoring; default uses owner default). Video
+          candidates include ``score``, ``resolution``, ``source`` and ``codec``
+          alongside ``indexer``/``indexerId``; non-video candidates omit those
+          video fields.
+        - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
+        - ``release_files``: list files inside a torrent or NZB candidate.
+        - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
+          for a Usenet ``candidate`` (or ``nzbUrl``). Returns one candidate
+          with ``usenetCheck`` (``{available, checked, missing, cached?,
+          playbackFailed?, reason?, checkedAt?}``), backed by Ether's bounded
+          per-NZB verdict and playback-failure cache at background NNTP
+          priority. Refused inside background/scheduled calls.
         """
-        result = self._call("POST", "/ether/plugin-host/sources/resolve", query)
+        result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
 
 
@@ -53740,6 +54363,32 @@ function checkPartIndex(partIndex: number | undefined): void {
   }
 }
 
+export function normalizeStreamUrlOptions(
+  partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions,
+): import("./types.ts").StreamUrlOptions {
+  if (partIndexOrOpts === undefined) return {};
+  if (typeof partIndexOrOpts === "number") {
+    checkPartIndex(partIndexOrOpts);
+    return { partIndex: partIndexOrOpts };
+  }
+  if (partIndexOrOpts === null || typeof partIndexOrOpts !== "object" || Array.isArray(partIndexOrOpts)) {
+    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source? }");
+  }
+  checkPartIndex(partIndexOrOpts.partIndex);
+  if (partIndexOrOpts.source !== undefined) {
+    if (typeof partIndexOrOpts.source !== "string") {
+      throw new Error("stream url: source must be a string");
+    }
+    if (partIndexOrOpts.source !== "" && partIndexOrOpts.source.trim() === "") {
+      throw new Error("stream url: source must not be blank");
+    }
+  }
+  const out: import("./types.ts").StreamUrlOptions = {};
+  if (partIndexOrOpts.partIndex !== undefined) out.partIndex = partIndexOrOpts.partIndex;
+  if (partIndexOrOpts.source) out.source = partIndexOrOpts.source;
+  return out;
+}
+
 function encodeData(data: Uint8Array): string {
   const parts: string[] = [];
   for (let i = 0; i < data.length; i += 3) {
@@ -54071,11 +54720,11 @@ export interface EtherHost {
   /**
    * Frontend-adapter host services (spec §6.5). streamUrl mints a scoped,
    * short-lived Ether stream URL for one of this plugin's own kind items
-   * (or one zero-based part of a multi-file item when partIndex is given);
+   * (optionally scoped to a zero-based partIndex and/or resolver source id);
    * bytes are then served by Ether, never by the plugin.
    */
   frontend?: {
-    streamUrl(viewerId: number, itemRef: string, partIndex?: number): MaybePromise<string>;
+    streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): MaybePromise<string>;
   };
   log(level: string, message: string, attrs?: Record<string, unknown>): MaybePromise<void>;
   abort(message?: string): never;
@@ -54152,7 +54801,7 @@ interface GlobalEtherBindings {
       browse: (kind: string, query?: import("./types.ts").KindBrowseQuery) => import("./types.ts").KindPage;
     };
     frontend: {
-      streamURL: (itemRef: string, partIndex?: number) => { url: string };
+      streamURL: (itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions) => { url: string };
     };
   };
 }
@@ -54448,15 +55097,20 @@ export function createHostedClient(): EtherHost {
       },
     },
     frontend: {
-      streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
+      streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
         // argument is accepted for parity with the remote client.
         void viewerId;
-        checkPartIndex(partIndex);
-        const r = callHost<{ url: string }>(
-          "frontend.streamURL",
-          partIndex === undefined ? [itemRef] : [itemRef, partIndex],
-        );
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
+        let args: unknown[];
+        if (opts.source !== undefined) {
+          args = [itemRef, opts];
+        } else if (opts.partIndex !== undefined) {
+          args = [itemRef, opts.partIndex];
+        } else {
+          args = [itemRef];
+        }
+        const r = callHost<{ url: string }>("frontend.streamURL", args);
         return r?.url ?? "";
       },
     },
@@ -54813,12 +55467,13 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     frontend: {
-      async streamUrl(viewerId: number, itemRef: string, partIndex?: number): Promise<string> {
-        checkPartIndex(partIndex);
+      async streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): Promise<string> {
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
           viewerId,
           itemRef,
-          ...(partIndex === undefined ? {} : { partIndex }),
+          ...(opts.partIndex === undefined ? {} : { partIndex: opts.partIndex }),
+          ...(opts.source === undefined ? {} : { source: opts.source }),
         });
         return r?.url ?? "";
       },
@@ -55094,7 +55749,7 @@ export {
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
-import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText } from "./host.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText, normalizeStreamUrlOptions } from "./host.ts";
 import type {
   KindBrowseQuery,
   KindBrowseRequest,
@@ -55118,6 +55773,7 @@ import type {
   SetupTestRequest,
   SetupTestResult,
   SourceCandidate,
+  StreamUrlOptions,
 } from "./types.ts";
 
 export { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS };
@@ -55167,35 +55823,37 @@ export interface SetupTester<S = Record<string, unknown>> {
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";
 }
 
 /**
  * Mint a scoped, short-lived Ether stream URL for one of this plugin's own
- * kind items (spec §6.5), or for a single zero-based part of a multi-file item
- * when `partIndex` is provided (#576). The viewer is the one Ether
- * authenticated on this request (X-Ether-Viewer); bytes are served by Ether,
- * never by the plugin.
+ * kind items (spec §6.5), optionally scoped to a zero-based part (`partIndex`)
+ * and/or a specific resolver `PlayableSource.id` (`source`) (#576, #661). The
+ * viewer is the one Ether authenticated on this request (X-Ether-Viewer);
+ * bytes are served by Ether, never by the plugin.
  */
 export async function streamUrl<S = Record<string, unknown>>(
   ctx: PluginContext<S>,
   itemRef: string,
-  partIndex?: number,
+  partIndexOrOpts?: number | StreamUrlOptions,
 ): Promise<string> {
   if (!ctx.ether?.frontend) throw new Error("stream url: no host service available");
-  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
-    throw new Error("stream url: partIndex must be a non-negative integer");
-  }
+  const opts = normalizeStreamUrlOptions(partIndexOrOpts);
   const raw = ctx.headers["X-Ether-Viewer"] ?? ctx.headers["x-ether-viewer"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   const viewerId = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  return partIndex === undefined
+  if (opts.source !== undefined) {
+    return ctx.ether.frontend.streamUrl(viewerId, itemRef, opts);
+  }
+  return opts.partIndex === undefined
     ? ctx.ether.frontend.streamUrl(viewerId, itemRef)
-    : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
+    : ctx.ether.frontend.streamUrl(viewerId, itemRef, opts.partIndex);
 }
 
 function readViewerToken<S>(ctx: PluginContext<S>): string {
@@ -58411,7 +59069,7 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files";
+  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files" | "usenet_check";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
@@ -58420,7 +59078,11 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** A candidate from indexer_search handed back for release_files, so an NZB is fetched through its indexer. */
+  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  torrentUrl?: string;
+  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  nzbUrl?: string;
+  /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
 }
 
@@ -58432,11 +59094,28 @@ export interface ReleaseMember {
   stored?: boolean;
 }
 
+/** Sampled Usenet article availability verdict for one NZB release (usenet_check). */
+export interface UsenetCheckResult {
+  available: boolean;
+  checked: number;
+  missing: number;
+  /** True when served from Ether's bounded per-NZB cache (including a recorded playback failure). */
+  cached?: boolean;
+  /** True when a real playback attempt against this NZB failed with an article or release error. */
+  playbackFailed?: boolean;
+  /** Short diagnostic code when available is false (e.g. articles_missing, playback_article_missing). */
+  reason?: string;
+  /** Unix timestamp (seconds) when this verdict or playback failure was recorded. */
+  checkedAt?: number;
+}
+
 /** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
 export interface ReleaseFile {
   index: number;
   path: string;
   size: number;
+  /** True when size is a segment-derived decoded estimate rather than an exact byte length. */
+  sizeApproximate?: boolean;
   /** Inner non-directory files when this entry is the first volume of a readable Usenet archive. */
   members?: ReleaseMember[];
 }
@@ -58451,6 +59130,8 @@ export interface TrackHint {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
+  /** Torrent download or details page link for torrent indexers (never placed in nzbUrl). */
+  torrentUrl?: string;
   nzbUrl?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
@@ -58467,6 +59148,8 @@ export interface SourceCandidate {
   codec?: string;
   /** Files inside this release; populated only by a release_files query. */
   files?: ReleaseFile[];
+  /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
+  usenetCheck?: UsenetCheckResult;
 }
 
 export interface KindMatchRequest {
@@ -58489,6 +59172,8 @@ export interface PlayableSource {
   pattern: "range" | "download" | "direct" | "container" | "release" | "file";
   mime: string;
   size?: number;
+  /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
+  sizeApproximate?: boolean;
   durationSec?: number;
   url?: string;
   headers?: Record<string, string>;
@@ -58510,6 +59195,7 @@ export interface PlayableSource {
     nzbUrl?: string;
     magnet?: string;
     infoHash?: string;
+    torrentUrl?: string;
     candidate?: SourceCandidate;
     /** Zero-based torrent file index; overrides candidate.fileIndex. Invalid selections fail. */
     fileIndex?: number;
@@ -58529,7 +59215,15 @@ export interface KindResolveRequest {
   libraryKey: string;
   item: KindItem;
   partIndex?: number;
+  /** Optional PlayableSource.id chosen by a frontend adapter stream ticket (#661). */
+  source?: string;
   client?: Record<string, unknown>;
+}
+
+/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+export interface StreamUrlOptions {
+  partIndex?: number;
+  source?: string;
 }
 
 export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }

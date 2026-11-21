@@ -95,6 +95,22 @@ func (f *File) Bytes() int64 {
 	return n
 }
 
+// EstimatedDecodedBytes estimates the decoded payload length from the listed
+// yEnc-encoded segment byte sizes, removing the ~3.1% yEnc escaping and CRLF
+// expansion (1.5625% byte-escaping + 1.5625% line breaks). Callers that rely
+// on this estimate must treat it as approximate rather than exact.
+func (f *File) EstimatedDecodedBytes() int64 {
+	n := f.Bytes()
+	if n <= 0 {
+		return 0
+	}
+	est := n - (n*31)/1031
+	if est < 1 {
+		return 1
+	}
+	return est
+}
+
 // SegmentCount is the number of part slots the file has: the highest
 // segment number seen or announced by the subject.
 func (f *File) SegmentCount() int {

@@ -841,6 +841,16 @@ def _check_part_index(part_index: Optional[int]) -> Optional[int]:
     return part_index
 
 
+def _check_stream_source(source: Optional[str]) -> Optional[str]:
+    if source is None or source == "":
+        return None
+    if not isinstance(source, str):
+        raise ValueError("stream url: source must be a string")
+    if source.strip() == "":
+        raise ValueError("stream url: source must not be blank")
+    return source
+
+
 class _FrontendClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -850,11 +860,15 @@ class _FrontendClient:
         viewer_id: int,
         item_ref: str,
         part_index: Optional[int] = None,
+        source: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
+        if checked_source is not None:
+            payload["source"] = checked_source
         result = self._call(
             "POST",
             "/ether/plugin-host/frontend/stream-url",
@@ -1034,14 +1048,21 @@ class PluginContext:
     def t(self, key: str, params: Optional[Dict[str, Any]] = None) -> str:
         return self.i18n.t(key, params=params, locale=self.locale)
 
-    def stream_url(self, item_ref: str, part_index: Optional[int] = None) -> str:
+    def stream_url(
+        self,
+        item_ref: str,
+        part_index: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), or for one zero-based part when part_index is set
-        (#576). The viewer is the one Ether authenticated on this request
-        (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
+        a resolver PlayableSource.id (#661). The viewer is the one Ether
+        authenticated on this request (X-Ether-Viewer); bytes are served by
+        Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -1049,6 +1070,10 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        if checked_source is not None:
+            return self.ether.frontend.stream_url(
+                viewer_id, str(item_ref), checked, source=checked_source
+            )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
         return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
@@ -2502,6 +2527,7 @@ class MockHostClient:
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
+        self.last_stream_url_source: Optional[str] = None
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -2555,10 +2581,13 @@ class MockHostClient:
             viewer_id: int,
             item_ref: str,
             part_index: Optional[int] = None,
+            source: Optional[str] = None,
         ) -> str:
             checked = _check_part_index(part_index)
+            checked_source = _check_stream_source(source)
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
+            self._p.last_stream_url_source = checked_source
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
             return base if checked is None else f"{base}?part={checked}"
 
@@ -2692,7 +2721,7 @@ class MockHostClient:
                 out["nextCursor"] = page[-1].get("id")
             return out
 
-        def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
             return list(self._p.sources)
 
     class _Cache:
@@ -3367,6 +3396,64 @@ class KindLibraryDecl(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class UsenetCheckResult(TypedDict, total=False):
+    """Sampled Usenet article availability verdict for one NZB (usenet_check)."""
+
+    available: bool
+    checked: int
+    missing: int
+    cached: bool
+    playbackFailed: bool
+    reason: str
+    checkedAt: int
+
+
+class ReleaseFile(TypedDict, total=False):
+    """One file inside a candidate release returned by release_files."""
+
+    index: int
+    path: str
+    size: int
+    sizeApproximate: bool
+
+
+class SourceCandidate(TypedDict, total=False):
+    """One Ether-found release candidate returned by sources.resolve."""
+
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    fileIndex: int
+    title: str
+    size: int
+    seeders: int
+    cached: bool
+    indexer: str
+    indexerId: str
+    score: int
+    resolution: int
+    source: str
+    codec: str
+    files: List[ReleaseFile]
+    usenetCheck: UsenetCheckResult
+
+
+class SourceQuery(TypedDict, total=False):
+    """Host sources.resolve query payload."""
+
+    kind: Literal["indexer_search", "debrid_check", "debrid_acquire", "release_files", "usenet_check"]
+    query: str
+    category: str
+    profile: str
+    infoHashes: List[str]
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    candidate: SourceCandidate
+
+
 class CatalogProvider:
     """Serve browse/detail for one declared kind. Items are plain dicts in
     the KindItem wire shape; requests are dicts with an extra ``kind`` key."""
@@ -3434,6 +3521,8 @@ def candidate_ref(candidate: Dict[str, Any]) -> str:
         return "infohash:" + str(candidate["infoHash"]).lower()
     if candidate.get("magnet"):
         return "magnet:" + str(candidate["magnet"])
+    if candidate.get("torrentUrl"):
+        return "torrent:" + str(candidate["torrentUrl"])
     if candidate.get("nzbUrl"):
         return "nzb:" + str(candidate["nzbUrl"])
     return str(candidate.get("title") or "")
@@ -3443,11 +3532,13 @@ def stream_url(
     ctx: PluginContext,
     item_ref: str,
     part_index: Optional[int] = None,
+    source: Optional[str] = None,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5) or one zero-based part (#576). Kept as a thin wrapper over
+    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
+    resolver PlayableSource.id (#661). Kept as a thin wrapper over
     PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index)
+    return ctx.stream_url(item_ref, part_index=part_index, source=source)
 
 
 def kinds_visible(
@@ -3532,19 +3623,27 @@ class _KindsClient:
         )
         return result or {"items": []}
 
-    def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics; with empty query,
-        fetches up to 100 recent releases) and profile (quality profile name for
-        video release scoring; default uses owner default). Video candidates
-        include score, resolution, source and codec alongside indexer/indexerId;
-        non-video candidates omit those video fields. A release source may set
-        release.fileIndex or candidate.fileIndex (zero-based provider torrent
-        list), or release.file (exact path/unique basename), to open any file
-        kind. Invalid selections fail; omitted selectors retain video selection.
-        Explicit file selection is supported for torrents, not NZB members.
+    def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
+        """Find or inspect owner sources via ``sources.resolve``.
+
+        Supported ``kind`` values:
+        - ``indexer_search``: accepts ``category`` (comma-separated Newznab IDs
+          or family names, e.g. music/books/comics; with empty ``query``,
+          fetches up to 100 recent releases) and ``profile`` (quality profile
+          name for video release scoring; default uses owner default). Video
+          candidates include ``score``, ``resolution``, ``source`` and ``codec``
+          alongside ``indexer``/``indexerId``; non-video candidates omit those
+          video fields.
+        - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
+        - ``release_files``: list files inside a torrent or NZB candidate.
+        - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
+          for a Usenet ``candidate`` (or ``nzbUrl``). Returns one candidate
+          with ``usenetCheck`` (``{available, checked, missing, cached?,
+          playbackFailed?, reason?, checkedAt?}``), backed by Ether's bounded
+          per-NZB verdict and playback-failure cache at background NNTP
+          priority. Refused inside background/scheduled calls.
         """
-        result = self._call("POST", "/ether/plugin-host/sources/resolve", query)
+        result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
 
 

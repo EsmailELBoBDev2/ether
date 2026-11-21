@@ -6,7 +6,7 @@
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
-import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText } from "./host.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText, normalizeStreamUrlOptions } from "./host.ts";
 import type {
   KindBrowseQuery,
   KindBrowseRequest,
@@ -30,6 +30,7 @@ import type {
   SetupTestRequest,
   SetupTestResult,
   SourceCandidate,
+  StreamUrlOptions,
 } from "./types.ts";
 
 export { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS };
@@ -79,35 +80,37 @@ export interface SetupTester<S = Record<string, unknown>> {
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";
 }
 
 /**
  * Mint a scoped, short-lived Ether stream URL for one of this plugin's own
- * kind items (spec §6.5), or for a single zero-based part of a multi-file item
- * when `partIndex` is provided (#576). The viewer is the one Ether
- * authenticated on this request (X-Ether-Viewer); bytes are served by Ether,
- * never by the plugin.
+ * kind items (spec §6.5), optionally scoped to a zero-based part (`partIndex`)
+ * and/or a specific resolver `PlayableSource.id` (`source`) (#576, #661). The
+ * viewer is the one Ether authenticated on this request (X-Ether-Viewer);
+ * bytes are served by Ether, never by the plugin.
  */
 export async function streamUrl<S = Record<string, unknown>>(
   ctx: PluginContext<S>,
   itemRef: string,
-  partIndex?: number,
+  partIndexOrOpts?: number | StreamUrlOptions,
 ): Promise<string> {
   if (!ctx.ether?.frontend) throw new Error("stream url: no host service available");
-  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
-    throw new Error("stream url: partIndex must be a non-negative integer");
-  }
+  const opts = normalizeStreamUrlOptions(partIndexOrOpts);
   const raw = ctx.headers["X-Ether-Viewer"] ?? ctx.headers["x-ether-viewer"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   const viewerId = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  return partIndex === undefined
+  if (opts.source !== undefined) {
+    return ctx.ether.frontend.streamUrl(viewerId, itemRef, opts);
+  }
+  return opts.partIndex === undefined
     ? ctx.ether.frontend.streamUrl(viewerId, itemRef)
-    : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
+    : ctx.ether.frontend.streamUrl(viewerId, itemRef, opts.partIndex);
 }
 
 function readViewerToken<S>(ctx: PluginContext<S>): string {

@@ -296,7 +296,7 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 		}
 
 		callStart := time.Now()
-		resp, err := run.Call(jobCtx, plugins.Request{
+		resp, err := run.Call(plugins.WithBackgroundCall(jobCtx), plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
 			Path:     routePath,
@@ -437,8 +437,8 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 		c.hydrateMu.Unlock()
 		return
 	}
-	hasChildren, sampleAt, childErr := c.items.ChildrenFreshness(ctx, lib.ID, parentItem.Ref)
-	if childErr == nil && hasChildren && !sampleAt.IsZero() && now.Sub(sampleAt) < ttl {
+	childCount, sampleAt, childErr := c.items.ChildrenCountAndFreshness(ctx, lib.ID, parentItem.Ref)
+	if childErr == nil && childCount > 0 && (parentItem.ChildCount <= 0 || childCount >= parentItem.ChildCount) && !sampleAt.IsZero() && now.Sub(sampleAt) < ttl {
 		c.hydrateMu.Unlock()
 		return
 	}
@@ -573,7 +573,7 @@ func (c *KindCatalog) runContainerHydration(
 		if mErr != nil {
 			return nil, "", false, false, mErr
 		}
-		resp, cErr := c.mgr.Call(bgCtx, rec.PluginID, plugins.Request{
+		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
 			Path:     expandPath,
@@ -608,7 +608,7 @@ func (c *KindCatalog) runContainerHydration(
 		if mErr != nil {
 			return nil, "", false, mErr
 		}
-		resp, cErr := c.mgr.Call(bgCtx, rec.PluginID, plugins.Request{
+		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
 			Path:     browsePath,

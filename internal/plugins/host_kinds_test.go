@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -155,8 +156,14 @@ func TestHostKindServices(t *testing.T) {
 	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "indexer_search", Query: "dawn"}); err != nil {
 		t.Fatalf("source search: %v", err)
 	}
+	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "release_files", TorrentURL: "https://tracker.example/album.html"}); err != nil {
+		t.Fatalf("release_files with torrentUrl: %v", err)
+	}
 	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "debrid_acquire", Magnet: "magnet:?xt=x"}); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("acquire beyond the search grant: %v", err)
+	}
+	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "debrid_acquire", TorrentURL: "https://tracker.example/album.torrent"}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("debrid_acquire with torrentUrl beyond search grant: %v", err)
 	}
 	// The cache namespace must be one of this plugin's own libraries.
 	if _, err := h.CachePut(ctx, "pk-community-example-other-book", "cover", strings.NewReader("x")); !errors.Is(err, ErrPermissionDenied) {
@@ -416,6 +423,9 @@ func (h *memHost) CacheDelete(context.Context, string) error {
 }
 func (h *memHost) StreamURL(context.Context, string) (string, error) { return "", ErrUnavailable }
 func (h *memHost) StreamPartURL(context.Context, string, *int) (string, error) {
+	return "", ErrUnavailable
+}
+func (h *memHost) StreamURLWithOptions(context.Context, string, StreamURLOptions) (string, error) {
 	return "", ErrUnavailable
 }
 func (h *memHost) BadgesSet(context.Context, string, []BadgeEntry) error { return ErrUnavailable }
@@ -828,5 +838,121 @@ func TestCacheDelete(t *testing.T) {
 	}
 	if err := hA.CacheDelete(ctx, keptRef); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("disabled roles CacheDelete = %v, want ErrPermissionDenied", err)
+	}
+}
+
+func TestHostUsenetCheckValidationRateLimitAndBackgroundGuard(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	env.m.now = func() time.Time { return now }
+
+	installResolver := func(id, sourcesLevel string) Record {
+		t.Helper()
+		man := contentManifest()
+		man.ID = id
+		man.Name = id
+		man.Ether.Contributes.MediaKinds[0].Key = strings.ReplaceAll(id, ".", "-")
+		man.Ether.Contributes.MediaKinds[0].Sync = KindSyncDecl{Mode: KindSyncPush}
+		man.Ether.Permissions.Sources = sourcesLevel
+		raw, err := json.Marshal(man)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := env.m.PreviewInstall(ctx, Source{
+			Kind:     "studio",
+			Manifest: raw,
+			Files:    map[string][]byte{"dist/plugin.js": []byte("// resolver")},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, err := env.m.Install(ctx, p, InstallOptions{AcceptAddedPermissions: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+
+	recA := installResolver("community.example.useneta", "search")
+	recB := installResolver("community.example.usenetb", "search")
+	recNoPerm := installResolver("community.example.usenetnone", "none")
+
+	var backendCalls int
+	env.m.SetKindBackends(KindBackends{
+		ResolveSources: func(_ context.Context, _ string, q core.SourceQuery) ([]core.SourceCandidate, error) {
+			backendCalls++
+			nzbURL := q.NZBURL
+			if nzbURL == "" && q.Candidate != nil {
+				nzbURL = q.Candidate.NZBURL
+			}
+			return []core.SourceCandidate{{
+				NZBURL:      nzbURL,
+				UsenetCheck: &core.UsenetCheckResult{Available: true, Checked: 12, Missing: 0},
+			}}, nil
+		},
+	})
+
+	hA := env.m.HostFor(recA.ID)
+	hB := env.m.HostFor(recB.ID)
+	hNone := env.m.HostFor(recNoPerm.ID)
+
+	// Missing nzbUrl fails validation without consuming rate limit.
+	var ve *ValidationError
+	if _, err := hA.ResolveSources(ctx, core.SourceQuery{Kind: "usenet_check"}); !errors.As(err, &ve) {
+		t.Fatalf("empty usenet_check err = %v, want *ValidationError", err)
+	}
+
+	// Missing sources permission is denied.
+	if _, err := hNone.ResolveSources(ctx, core.SourceQuery{Kind: "usenet_check", NZBURL: "https://idx.example/1.nzb"}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("no-perm usenet_check err = %v, want ErrPermissionDenied", err)
+	}
+
+	// Background / scheduled contexts are refused (on-demand only).
+	if _, err := hA.ResolveSources(WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/bg.nzb",
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("background usenet_check err = %v, want ErrPermissionDenied", err)
+	}
+	if backendCalls != 0 {
+		t.Fatalf("backend called %d times for rejected queries, want 0", backendCalls)
+	}
+
+	// Candidate form and direct nzbUrl form both succeed up to DefaultUsenetCheckPerMin.
+	for i := 0; i < DefaultUsenetCheckPerMin; i++ {
+		var q core.SourceQuery
+		if i%2 == 0 {
+			q = core.SourceQuery{Kind: "usenet_check", NZBURL: fmt.Sprintf("https://idx.example/%d.nzb", i)}
+		} else {
+			q = core.SourceQuery{
+				Kind:      "usenet_check",
+				Candidate: &core.SourceCandidate{NZBURL: fmt.Sprintf("https://idx.example/%d.nzb", i)},
+			}
+		}
+		got, err := hA.ResolveSources(ctx, q)
+		if err != nil {
+			t.Fatalf("call %d/%d failed: %v", i+1, DefaultUsenetCheckPerMin, err)
+		}
+		if len(got) != 1 || got[0].UsenetCheck == nil || !got[0].UsenetCheck.Available {
+			t.Fatalf("call %d unexpected result: %+v", i+1, got)
+		}
+	}
+
+	// Next call from plugin A exceeds its per-plugin rate limit.
+	if _, err := hA.ResolveSources(ctx, core.SourceQuery{Kind: "usenet_check", NZBURL: "https://idx.example/over.nzb"}); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("call %d err = %v, want ErrRateLimited", DefaultUsenetCheckPerMin+1, err)
+	}
+
+	// Plugin B has an independent per-plugin bucket and still succeeds.
+	if _, err := hB.ResolveSources(ctx, core.SourceQuery{Kind: "usenet_check", NZBURL: "https://idx.example/other-plugin.nzb"}); err != nil {
+		t.Fatalf("plugin B unexpectedly limited: %v", err)
+	}
+
+	// Advancing clock past 1 minute resets plugin A's window.
+	now = now.Add(61 * time.Second)
+	if _, err := hA.ResolveSources(ctx, core.SourceQuery{Kind: "usenet_check", NZBURL: "https://idx.example/after-window.nzb"}); err != nil {
+		t.Fatalf("plugin A after rate window failed: %v", err)
 	}
 }

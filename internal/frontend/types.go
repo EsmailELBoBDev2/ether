@@ -17,13 +17,12 @@ type RatingKey = core.RatingKey
 type ItemRef = core.ItemRef
 type Playlist = core.Playlist
 type MediaType = core.MediaType
-type Page = core.Page
-type WatchStatus = core.WatchStatus
-type ReadingProgress = core.ReadingProgress
-type TitleParent = core.TitleParent
-type TitleReading = core.TitleReading
 type MediaClass = core.MediaClass
 type MediaRole = core.MediaRole
+type TitleParent = core.TitleParent
+type MediaCredit = core.MediaCredit
+type TitleReading = core.TitleReading
+type TitleFact = core.TitleFact
 
 const (
 	MediaClassVideo     = core.MediaClassVideo
@@ -32,7 +31,9 @@ const (
 	MediaClassBook      = core.MediaClassBook
 	MediaClassPodcast   = core.MediaClassPodcast
 	MediaClassPhoto     = core.MediaClassPhoto
+)
 
+const (
 	MediaRoleItem       = core.MediaRoleItem
 	MediaRoleArtist     = core.MediaRoleArtist
 	MediaRoleAlbum      = core.MediaRoleAlbum
@@ -45,6 +46,10 @@ const (
 	MediaRoleEpisode    = core.MediaRoleEpisode
 	MediaRoleCollection = core.MediaRoleCollection
 )
+
+type Page = core.Page
+type WatchStatus = core.WatchStatus
+type ReadingProgress = core.ReadingProgress
 type StreamInfo = core.StreamInfo
 type MediaInfo = core.MediaInfo
 type DecideOptions = core.DecideOptions

@@ -81,6 +81,88 @@ func TestAdapterStreamURLRefusesForeignAndUnknown(t *testing.T) {
 	}
 }
 
+func TestAdapterStreamURLOptionsSourceAndBoundedPartIndex(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+	if a.libraries == nil || a.pluginsRT == nil || a.pluginsRT.pluginitems == nil {
+		t.Skip("no libraries or plugin runtime in this build")
+	}
+
+	local, err := identity.NewLocal(a.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerID, err := local.CreateViewer(ctx, "ticket-viewer", "password-1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.users.RefreshViewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const pluginID = "plug.books"
+	lib, err := a.libraries.UpsertPluginLibrary(ctx, pluginID, "book", libraries.PluginLibraryDecl{Name: "Books"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := plugins.MediaKindMeta{
+		Key:     "book",
+		Label:   "Books",
+		Library: plugins.KindLibraryDecl{Name: "Books"},
+		Levels:  []plugins.KindLevel{{Key: "book", Label: "Book", Playable: true}},
+		Present: core.Presentations{AdapterOnly: true},
+		Sync:    plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	if _, err := a.pluginsRT.pluginitems.UpsertKind(ctx, pluginID, lib.ID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pluginsRT.pluginitems.UpsertItems(ctx, pluginID, "book", []core.KindItem{
+		{ID: "solo", Level: "book", Title: "Solo Book", Playable: true},
+		{
+			ID: "multi", Level: "book", Title: "Multi Book", Playable: true,
+			Hints: json.RawMessage(`{"parts":[{"name":"Part 1"},{"name":"Part 2"}]}`),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	issuer := frontendadapter.NewTicketIssuer()
+	fn := a.adapterStreamURLOptions(issuer)
+	soloRef := core.NewItemRef(pluginID, "book", "solo").String()
+	multiRef := core.NewItemRef(pluginID, "book", "multi").String()
+
+	// Playable item with NO declared parts rejects any partIndex at mint time.
+	zero := 0
+	if _, err := fn(ctx, pluginID, viewerID, soloRef, plugins.StreamURLOptions{PartIndex: &zero}); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("partIndex on item with no parts err = %v, want ErrNotFound", err)
+	}
+	// Source-scoped ticket without partIndex succeeds and records Source in grant.
+	u, err := fn(ctx, pluginID, viewerID, soloRef, plugins.StreamURLOptions{Source: "pdf"})
+	if err != nil {
+		t.Fatalf("source-scoped mint: %v", err)
+	}
+	tok := u[len(frontendadapter.KindMediaPath):]
+	grant, err := issuer.Redeem(tok)
+	if err != nil || grant.Source != "pdf" || grant.PartIndex != nil || grant.ItemID != soloRef {
+		t.Fatalf("redeemed source grant = %+v, err = %v", grant, err)
+	}
+
+	// Multi-part item accepts valid partIndex + source and rejects out-of-range partIndex.
+	one := 1
+	u2, err := fn(ctx, pluginID, viewerID, multiRef, plugins.StreamURLOptions{PartIndex: &one, Source: "epub"})
+	if err != nil {
+		t.Fatalf("part+source mint: %v", err)
+	}
+	grant2, err := issuer.Redeem(u2[len(frontendadapter.KindMediaPath):])
+	if err != nil || grant2.Source != "epub" || grant2.PartIndex == nil || *grant2.PartIndex != 1 {
+		t.Fatalf("redeemed part+source grant = %+v, err = %v", grant2, err)
+	}
+	two := 2
+	if _, err := fn(ctx, pluginID, viewerID, multiRef, plugins.StreamURLOptions{PartIndex: &two, Source: "epub"}); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("out-of-range partIndex err = %v, want ErrNotFound", err)
+	}
+}
+
 // Exercise the real controller, registry, listener owner and HTTP mux across
 // version/prefix replacement, repeated sync, disable, and re-enable.
 func TestAdapterListenerUpgrade(t *testing.T) {

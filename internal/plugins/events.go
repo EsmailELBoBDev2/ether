@@ -449,7 +449,7 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	defer m.scheduleWG.Done()
 	defer flight.cancel()
 	startedAt := m.now()
-	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
+	resp, err := m.Call(WithBackgroundCall(ctx), pluginID, Request{Method: "POST", Path: callPath})
 	var started *actionJob
 	var startErr error
 	if err == nil && ctx.Err() == nil && resp.Status >= 200 && resp.Status < 300 && len(resp.Body) > 0 {

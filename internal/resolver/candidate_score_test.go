@@ -153,3 +153,74 @@ func TestScoreSourceCandidatesVideoAndNonVideo(t *testing.T) {
 		t.Fatalf("unknown profile err = %v, want ErrUnknownProfile", err)
 	}
 }
+
+// Cardigann and Torznab torrent releases carry their download/details link in
+// Release.NZBURL internally, but SourceCandidate must never expose a torrent
+// link in nzbUrl — it belongs in torrentUrl (or magnet if it is a magnet URI).
+func TestScoreSourceCandidatesTypesTorrentLinksOutsideNZBURL(t *testing.T) {
+	ctx := context.Background()
+	svc := New(nil, nil, nil, config.Defaults(""), Options{})
+	const magnetHash = "0123456789abcdef0123456789abcdef01234567"
+
+	rels := []core.Release{
+		{
+			ID:        "cardigann-html",
+			Name:      "Artist - Album (2024) [FLAC]",
+			Protocol:  core.ProtocolTorrent,
+			NZBURL:    "https://limetorrents.example/Artist-Album-torrent-12345.html",
+			Indexer:   "LimeTorrents",
+			IndexerID: "cardigann-lime",
+			Seeders:   18,
+		},
+		{
+			ID:        "torznab-dot-torrent",
+			Name:      "Artist - EP (2024) [FLAC]",
+			Protocol:  core.ProtocolTorrent,
+			InfoHash:  magnetHash,
+			NZBURL:    "https://tracker.example/download/ep.torrent",
+			Indexer:   "Tracker",
+			IndexerID: "tz-1",
+		},
+		{
+			ID:        "cardigann-magnet-in-dl",
+			Name:      "Artist - Single (2024) [FLAC]",
+			Protocol:  core.ProtocolTorrent,
+			NZBURL:    "magnet:?xt=urn:btih:" + magnetHash + "&dn=Single",
+			Indexer:   "PublicSite",
+			IndexerID: "cardigann-pub",
+		},
+		{
+			ID:        "usenet-nzb",
+			Name:      "Artist - Album (2024) [FLAC]",
+			Protocol:  core.ProtocolUsenet,
+			NZBURL:    "https://nzb.example/api?t=get&id=99",
+			Indexer:   "NZBGeek",
+			IndexerID: "geek",
+		},
+	}
+
+	got, err := ScoreSourceCandidates(ctx, svc, "", rels)
+	if err != nil {
+		t.Fatalf("ScoreSourceCandidates: %v", err)
+	}
+	if len(got) != len(rels) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(rels))
+	}
+
+	// Cardigann torrent without infoHash: torrentUrl set, nzbUrl empty.
+	if got[0].NZBURL != "" || got[0].TorrentURL != rels[0].NZBURL || got[0].InfoHash != "" {
+		t.Fatalf("cardigann html candidate = %+v, want torrentUrl=%q nzbUrl empty", got[0], rels[0].NZBURL)
+	}
+	// Torznab torrent with infoHash + .torrent link: torrentUrl set, nzbUrl empty.
+	if got[1].NZBURL != "" || got[1].TorrentURL != rels[1].NZBURL || got[1].InfoHash != magnetHash {
+		t.Fatalf("torznab candidate = %+v, want torrentUrl=%q infoHash=%q nzbUrl empty", got[1], rels[1].NZBURL, magnetHash)
+	}
+	// Magnet URI in download link: promoted to magnet + infoHash, neither nzbUrl nor torrentUrl set.
+	if got[2].NZBURL != "" || got[2].TorrentURL != "" || got[2].Magnet != rels[2].NZBURL || got[2].InfoHash != magnetHash {
+		t.Fatalf("magnet-in-dl candidate = %+v, want magnet + infoHash only", got[2])
+	}
+	// Usenet release: nzbUrl set, torrentUrl empty.
+	if got[3].NZBURL != rels[3].NZBURL || got[3].TorrentURL != "" {
+		t.Fatalf("usenet candidate = %+v, want nzbUrl=%q torrentUrl empty", got[3], rels[3].NZBURL)
+	}
+}

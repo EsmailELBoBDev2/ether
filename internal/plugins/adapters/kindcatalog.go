@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -758,8 +759,18 @@ func flatPlayableAlbum(decl plugins.MediaKindMeta, present core.Presentations) b
 // playable child: same item and Key, typed as the leaf (Audio), naming
 // itself as its album.
 func flatAlbumIncarnation(t core.Title) core.Title {
+	origRole := t.MediaRole
+	if origRole == "" {
+		origRole = core.MediaRoleAlbum
+	}
+	parent := core.TitleParent{Key: t.Key, Title: t.Title, Role: origRole}
+	parents := make([]core.TitleParent, 0, len(t.MediaParents)+1)
+	parents = append(parents, parent)
+	parents = append(parents, t.MediaParents...)
 	t.SelfChild = true
 	t.MBItemType = "Audio"
+	t.MediaRole = core.MediaRoleTrack
+	t.MediaParents = parents
 	t.ParentKey = t.Key
 	t.ParentTitle = t.Title
 	t.ChildCount = 0
@@ -815,8 +826,54 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
 	_, levelIdx, _ := rec.Decl.Level(parentItem.Level)
+	_, parentRole := pluginitems.ResolveMediaClassAndRole(parentItem.Level, rec.Decl, lib.Present)
 	if cursor == "" {
 		c.maybeHydrateContainer(ctx, rec, lib, parentItem, levelIdx)
+	}
+	if !recursive && parentRole == core.MediaRoleArtist {
+		policy, e := c.items.LibraryPolicy(ctx, lib)
+		if e != nil {
+			return experience.PluginBrowsePage{}, e
+		}
+		var all []core.KindItem
+		const maxArtistReleases = 1000
+		childCursor := ""
+		for len(all) < maxArtistReleases {
+			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Cursor: childCursor, Limit: 200, Policy: policy, Sort: "index"})
+			if err != nil {
+				return experience.PluginBrowsePage{}, err
+			}
+			all = append(all, page.Items...)
+			if page.NextCursor == "" || len(page.Items) == 0 {
+				break
+			}
+			childCursor = page.NextCursor
+		}
+		if len(all) > maxArtistReleases {
+			all = all[:maxArtistReleases]
+		}
+		sortArtistReleaseItems(all)
+		offset := 0
+		if cursor != "" {
+			if n, err := strconv.Atoi(cursor); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+		if limit <= 0 {
+			limit = 200
+		}
+		start := min(offset, len(all))
+		end := min(start+limit, len(all))
+		next := ""
+		if end < len(all) {
+			next = strconv.Itoa(end)
+		}
+		return experience.PluginBrowsePage{
+			Items:      c.projectItems(ctx, rec, lib, all[start:end]),
+			Total:      len(all),
+			TotalExact: true,
+			NextCursor: next,
+		}, nil
 	}
 	if !recursive || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels)-2 {
 		policy, e := c.items.LibraryPolicy(ctx, lib)
@@ -1182,8 +1239,14 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		}
 	}
 	for i := range projected {
-		projected[i].SearchScore = scorePluginSearchHit(projected[i], query)
+		projected[i].SearchScore = scorePluginSearchHit(projected[i], allowed[i], query)
 	}
+	sort.SliceStable(projected, func(i, j int) bool {
+		if projected[i].SearchScore != projected[j].SearchScore {
+			return projected[i].SearchScore > projected[j].SearchScore
+		}
+		return projected[i].Popularity > projected[j].Popularity
+	})
 	return projected, nil
 }
 
@@ -1394,53 +1457,66 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	if c != nil && c.mgr != nil {
 		resolveText = c.mgr.ResolveTextFunc(ctx, rec.PluginID, "")
 	}
-	rootCache := make(map[string]core.Title)
-	resolveRoot := func(parentID string) (core.Title, bool) {
-		if parentID == "" {
-			return core.Title{}, false
-		}
-		if t, ok := rootCache[parentID]; ok {
-			return t, t.Key != 0
-		}
-		curID := parentID
-		var root core.KindItem
-		found := false
-		for depth := 0; depth < 4 && curID != ""; depth++ {
-			p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, curID)
-			if err != nil || pLib != lib.ID {
-				break
-			}
-			root = p
-			found = true
-			curID = p.ParentID
-		}
-		if !found {
-			rootCache[parentID] = core.Title{}
-			return core.Title{}, false
-		}
-		rt := pluginitems.ProjectWithText(root, rec.Decl, lib.Present, resolveText, lib.CardShape)
-		rt.LibraryID = lib.ID
-		if rt.ContentRating == "" {
-			rt.ContentRating = extractContentRating(root.Fields)
-		}
-		rootCache[parentID] = rt
-		return rt, true
+	type cachedParent struct {
+		title    core.Title
+		parentID string
+		ok       bool
 	}
-
-	parentCache := make(map[string]core.Title)
-	resolveParent := func(parentID string) (core.Title, bool) {
-		if t, ok := parentCache[parentID]; ok {
-			return t, t.Key != 0
+	itemCache := make(map[string]cachedParent)
+	lookupItem := func(extID string) cachedParent {
+		if extID == "" {
+			return cachedParent{}
 		}
-		p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, parentID)
+		if entry, ok := itemCache[extID]; ok {
+			return entry
+		}
+		p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, extID)
 		if err != nil || pLib != lib.ID {
-			parentCache[parentID] = core.Title{}
-			return core.Title{}, false
+			itemCache[extID] = cachedParent{}
+			return cachedParent{}
 		}
 		pt := pluginitems.ProjectWithText(p, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		pt.LibraryID = lib.ID
-		parentCache[parentID] = pt
-		return pt, true
+		scopeTitleMediaParents(&pt, lib.ID)
+		if pt.ContentRating == "" {
+			pt.ContentRating = extractContentRating(p.Fields)
+		}
+		entry := cachedParent{title: pt, parentID: p.ParentID, ok: true}
+		itemCache[extID] = entry
+		return entry
+	}
+
+	// resolveChain returns ancestors ordered nearest-first (up to 4 hops) and
+	// the root ancestor title.
+	resolveChain := func(parentID string) (parents []core.TitleParent, immediate core.Title, root core.Title, ok bool) {
+		curID := parentID
+		seen := make(map[string]bool, 4)
+		for depth := 0; depth < 4 && curID != ""; depth++ {
+			if seen[curID] {
+				break
+			}
+			seen[curID] = true
+			entry := lookupItem(curID)
+			if !entry.ok {
+				break
+			}
+			if depth == 0 {
+				immediate = entry.title
+			}
+			root = entry.title
+			ok = true
+			role := entry.title.MediaRole
+			if role == "" {
+				role = core.MediaRoleCollection
+			}
+			parents = append(parents, core.TitleParent{
+				Key:   entry.title.Key,
+				Title: entry.title.Title,
+				Role:  role,
+			})
+			curID = entry.parentID
+		}
+		return parents, immediate, root, ok
 	}
 
 	flatAlbum := flatPlayableAlbum(rec.Decl, lib.Present)
@@ -1453,6 +1529,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	for i, it := range items {
 		t := pluginitems.ProjectWithText(it, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		t.LibraryID = lib.ID
+		scopeTitleMediaParents(&t, lib.ID)
 		if nParts := partCounts[it.Ref]; nParts > 1 && t.ChildCount == 0 {
 			t.ChildCount = nParts
 			if t.LeafCount == 0 {
@@ -1478,24 +1555,183 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 			t.ContentRating = extractContentRating(it.Fields)
 		}
 		if it.ParentID != "" {
-			// Immediate parent for every hierarchy (track -> album,
-			// album -> artist); the root naming below is the video
-			// projection's show identity.
-			if parent, ok := resolveParent(it.ParentID); ok {
+			if parents, parent, root, ok := resolveChain(it.ParentID); ok {
 				t.ParentKey = parent.Key
 				t.ParentTitle = parent.Title
+				hasSeries := false
+				for _, p := range parents {
+					if p.Role == core.MediaRoleSeries {
+						hasSeries = true
+						break
+					}
+				}
+				if !hasSeries && len(t.MediaParents) > 0 {
+					merged := make([]core.TitleParent, 0, len(parents)+len(t.MediaParents))
+					merged = append(merged, parents...)
+					merged = append(merged, t.MediaParents...)
+					t.MediaParents = merged
+				} else {
+					t.MediaParents = parents
+				}
+				if t.Type == core.TypeSeason || t.Type == core.TypeEpisode {
+					t.ShowKey = root.Key
+					t.ShowTitle = root.Title
+					t.ShowYear = root.Year
+				}
 			}
 		}
-		if (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) && it.ParentID != "" {
-			if root, ok := resolveRoot(it.ParentID); ok {
-				t.ShowKey = root.Key
-				t.ShowTitle = root.Title
-				t.ShowYear = root.Year
-			}
-		}
+		dedupeMediaFacts(&t)
 		out[i] = t
 	}
 	return out
+}
+
+func scopeTitleMediaParents(t *core.Title, libID core.LibraryID) {
+	if t == nil || libID <= 0 || len(t.MediaParents) == 0 {
+		return
+	}
+	prefix := "facet:" + strconv.FormatInt(int64(libID), 10) + ":"
+	for i := range t.MediaParents {
+		fid := t.MediaParents[i].FacetID
+		if !strings.HasPrefix(fid, "facet:") {
+			continue
+		}
+		rest := strings.TrimPrefix(fid, "facet:")
+		first, after, ok := strings.Cut(rest, ":")
+		if !ok || first == "" || after == "" {
+			continue
+		}
+		// Already library-scoped if the first segment after "facet:" is a positive integer.
+		if n, err := strconv.ParseInt(first, 10, 64); err == nil && n > 0 && strconv.FormatInt(n, 10) == first {
+			continue
+		}
+		t.MediaParents[i].FacetID = prefix + rest
+	}
+}
+
+func dedupeMediaFacts(t *core.Title) {
+	if t == nil || len(t.MediaFacts) == 0 {
+		return
+	}
+	blocked := make(map[string]bool, 4+len(t.MediaParents)+len(t.MediaCredits))
+	add := func(s string) {
+		if n := strings.ToLower(strings.TrimSpace(s)); n != "" {
+			blocked[n] = true
+		}
+	}
+	add(t.Title)
+	add(t.ParentTitle)
+	add(t.ShowTitle)
+	for _, p := range t.MediaParents {
+		add(p.Title)
+	}
+	for _, c := range t.MediaCredits {
+		add(c.Name)
+	}
+	kept := t.MediaFacts[:0]
+	for _, f := range t.MediaFacts {
+		if blocked[strings.ToLower(strings.TrimSpace(f.Value))] {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	if len(kept) == 0 {
+		t.MediaFacts = nil
+	} else {
+		t.MediaFacts = kept
+	}
+}
+
+func itemFieldString(fields map[string]json.RawMessage, keys ...string) string {
+	for _, k := range keys {
+		raw, ok := fields[k]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func itemFieldPopularity(fields map[string]json.RawMessage) float64 {
+	for _, k := range []string{"popularity", "fans", "listeners"} {
+		raw, ok := fields[k]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var f float64
+		if json.Unmarshal(raw, &f) == nil && f > 0 {
+			return f
+		}
+	}
+	return 0
+}
+
+// releaseTypeRank orders music releases for artist pages and search tie-breaking:
+// album (0) > EP (1) > single (2) > compilation/live (3) > remix/b-side (4) > other (5).
+func releaseTypeRank(it core.KindItem) int {
+	rt := strings.ToLower(itemFieldString(it.Fields, "releaseType", "release_type", "albumType", "album_type", "type"))
+	switch rt {
+	case "album", "studio", "studio album", "lp":
+		return 0
+	case "ep":
+		return 1
+	case "single":
+		return 2
+	case "compilation", "greatest hits", "anthology", "live", "soundtrack":
+		return 3
+	case "remix", "remixes", "b-side", "b-sides", "bsides", "instrumental", "karaoke":
+		return 4
+	}
+	titleLow := strings.ToLower(it.Title)
+	switch {
+	case strings.Contains(titleLow, "remix") || strings.Contains(titleLow, "b-side") || strings.Contains(titleLow, "b side"):
+		return 4
+	case strings.Contains(titleLow, "greatest hits") || strings.Contains(titleLow, "best of") || strings.Contains(titleLow, "anthology") || strings.Contains(titleLow, "compilation"):
+		return 3
+	case rt == "":
+		return 0
+	default:
+		return 5
+	}
+}
+
+func releaseDateKey(it core.KindItem) int64 {
+	if it.Released > 0 {
+		return it.Released
+	}
+	if it.Year > 0 {
+		return time.Date(it.Year, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	}
+	return 0
+}
+
+func sortArtistReleaseItems(items []core.KindItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		ri, rj := releaseTypeRank(items[i]), releaseTypeRank(items[j])
+		if ri != rj {
+			return ri < rj
+		}
+		di, dj := releaseDateKey(items[i]), releaseDateKey(items[j])
+		if di != dj {
+			return di > dj
+		}
+		pi, pj := itemFieldPopularity(items[i].Fields), itemFieldPopularity(items[j].Fields)
+		if pi != pj {
+			return pi > pj
+		}
+		si := core.EffectiveSortTitle(items[i].Title, items[i].SortTitle)
+		sj := core.EffectiveSortTitle(items[j].Title, items[j].SortTitle)
+		if si != sj {
+			return si < sj
+		}
+		return items[i].Key < items[j].Key
+	})
 }
 
 func extractContentRating(fields map[string]json.RawMessage) string {
@@ -1839,39 +2075,68 @@ func normalizeArticleSort(s string) string {
 	return core.TitleSortKey(s)
 }
 
-func scorePluginSearchHit(t core.Title, query string) float64 {
+func scorePluginSearchHit(t core.Title, raw core.KindItem, query string) float64 {
 	qNorm := strings.ToLower(strings.TrimSpace(query))
 	qSort := normalizeArticleSort(query)
 	tNorm := strings.ToLower(strings.TrimSpace(t.Title))
 	tSort := core.EffectiveSortTitle(t.Title, t.SortTitle)
-	if qNorm != "" && (tNorm == qNorm || (qSort != "" && tSort == qSort)) {
-		return 1.0
-	}
-	if qNorm != "" && (strings.HasPrefix(tNorm, qNorm) || (qSort != "" && strings.HasPrefix(tSort, qSort))) {
-		return 0.97
-	}
-	qTokens := searchWords(query)
-	if len(qTokens) > 0 {
-		tWords := searchWords(t.Title)
-		allInTitle := len(tWords) > 0
-		for _, qt := range qTokens {
-			found := false
-			for _, tw := range tWords {
-				if strings.HasPrefix(tw, qt) {
-					found = true
+
+	var base float64
+	exact := false
+	switch {
+	case qNorm != "" && (tNorm == qNorm || (qSort != "" && tSort == qSort)):
+		base = 1.0
+		exact = true
+	case qNorm != "" && (strings.HasPrefix(tNorm, qNorm) || (qSort != "" && strings.HasPrefix(tSort, qSort))):
+		base = 0.90
+	default:
+		qTokens := searchWords(query)
+		allInTitle := false
+		if len(qTokens) > 0 {
+			tWords := searchWords(t.Title)
+			allInTitle = len(tWords) > 0
+			for _, qt := range qTokens {
+				found := false
+				for _, tw := range tWords {
+					if strings.HasPrefix(tw, qt) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					allInTitle = false
 					break
 				}
 			}
-			if !found {
-				allInTitle = false
-				break
-			}
 		}
 		if allInTitle {
-			return 0.93
+			base = 0.85
+		} else {
+			base = 0.60
 		}
 	}
-	return 0.60
+
+	// Popularity prior aligned with catalog search_titles.go (0..0.08),
+	// separating iconic works from obscure covers/matches of the same title.
+	if t.Popularity > 0 {
+		base += 0.08 * min(1.0, math.Log10(1+t.Popularity)/6.0)
+	}
+	// On exact title matches in music libraries, prefer studio albums and
+	// tracks over tribute artists, cover singles, or remixes.
+	if exact && t.MediaClass == core.MediaClassMusic {
+		switch t.MediaRole {
+		case core.MediaRoleAlbum:
+			switch releaseTypeRank(raw) {
+			case 0:
+				base += 0.015
+			case 1:
+				base += 0.006
+			}
+		case core.MediaRoleTrack:
+			base += 0.012
+		}
+	}
+	return base
 }
 
 func mapBrowseSort(sortBy core.SortOrder, desc bool) string {

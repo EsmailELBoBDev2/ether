@@ -137,7 +137,7 @@ type KindChangesRequest struct {
 
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -148,7 +148,14 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// Candidate carries an indexer_search candidate back for release_files.
+	// TorrentURL carries a torrent download or details page link when an
+	// indexer did not supply an infoHash or magnet.
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
+	// Candidate carries an indexer_search candidate back for release_files
+	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
 
@@ -161,19 +168,46 @@ type ReleaseMember struct {
 	Stored bool   `json:"stored,omitempty"`
 }
 
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release (usenet_check).
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a prior real playback attempt against this
+	// NZB failed with an article or release error.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false.
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
+}
+
 // ReleaseFile is one file inside a candidate release (release_files).
 type ReleaseFile struct {
-	Index   int             `json:"index"`
-	Path    string          `json:"path"`
-	Size    int64           `json:"size"`
-	Members []ReleaseMember `json:"members,omitempty"`
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc
+	// headers). Exact sizes leave it false/omitted.
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	Members         []ReleaseMember `json:"members,omitempty"`
 }
 
 // SourceCandidate is one Ether-found release for a resolver to rank.
+// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
+// nzbUrl; Usenet candidates carry nzbUrl.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -191,6 +225,8 @@ type SourceCandidate struct {
 	Codec      string `json:"codec,omitempty"`
 	// Files is populated only by a release_files query.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -206,6 +242,8 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
 	default:
@@ -240,21 +278,24 @@ type KindMatchResponse struct {
 // carry {itemIndex}, {pageNumber}, {byteStart}, {byteEnd} and {byteRange}
 // placeholders that Ether substitutes.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // range|download|direct|container|release|file
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // range|download|direct|container|release|file
+	MIME    string `json:"mime"`
+	Size    int64  `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count.
+	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
+	DurationSec     float64           `json:"durationSec,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	BlobRef         string            `json:"blobRef,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are hex digests checked against the served bytes,
 	// including a release's selected file or container member; Size too.
-	SHA1      string        `json:"sha1,omitempty"`
-	CRC32     string        `json:"crc32,omitempty"`
+	SHA1      string         `json:"sha1,omitempty"`
+	CRC32     string         `json:"crc32,omitempty"`
 	MaxBytes  int64          `json:"maxBytes,omitempty"`
 	ExpiresAt int64          `json:"expiresAt,omitempty"`
 	Container *ContainerRef  `json:"container,omitempty"`
@@ -290,11 +331,12 @@ type TrackHint struct {
 // ReleaseHint hands a release to Ether's Usenet/debrid/torrent pipeline.
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string     `json:"file,omitempty"`
 	FileHint       string     `json:"fileHint,omitempty"`
@@ -308,7 +350,15 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
+}
+
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // KindResolveResponse is a resolver's ordered sources.
@@ -503,28 +553,50 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 // a multi-file kind item (#576) and returns the Ether stream URL to embed in a
 // frontend adapter response.
 func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	return c.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+
+// StreamURLWithOptions mints a short-lived, scoped ticket for one of this
+// plugin's own kind items, optionally pinned to a zero-based part and/or a
+// specific resolver PlayableSource.ID (#576, #661).
+func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
 	if c.Ether == nil {
 		return "", errors.New("stream url: no host service available")
 	}
-	if partIndex < 0 {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", errors.New("stream url: source must not be blank")
 	}
 	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
 	if err != nil || viewerID <= 0 {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
-	if ph, ok := c.Ether.(PartStreamHost); ok {
-		return ph.StreamPartURL(c.Context, viewerID, itemRef, partIndex)
+	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
+		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
 	}
-	u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
-	if err != nil {
-		return "", err
+	if opts.Source != "" {
+		return "", errors.New("stream url: host does not support source-scoped stream tickets")
 	}
-	sep := "?"
-	if strings.Contains(u, "?") {
-		sep = "&"
+	if opts.PartIndex != nil {
+		if ph, ok := c.Ether.(PartStreamHost); ok {
+			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+		}
+		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		if err != nil {
+			return "", err
+		}
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
-	return u + sep + "part=" + strconv.Itoa(partIndex), nil
+	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
 }
 
 func (c *Context) viewerToken() string {

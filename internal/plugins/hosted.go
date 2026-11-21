@@ -579,15 +579,29 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		page, err := b.h.KindBrowse(ctx, str(0), q)
 		return result(page, err)
 	case "frontend.streamURL":
-		var partIdx *int
-		if len(args) > 1 && string(args[1]) != "null" {
-			var n int
-			if err := json.Unmarshal(args[1], &n); err != nil || n < 0 {
-				return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+		var opts StreamURLOptions
+		if len(args) > 1 {
+			rawArg := bytes.TrimSpace(args[1])
+			if len(rawArg) > 0 && string(rawArg) != "null" {
+				if rawArg[0] == '{' {
+					dec := json.NewDecoder(bytes.NewReader(rawArg))
+					dec.DisallowUnknownFields()
+					if err := dec.Decode(&opts); err != nil {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+					}
+					if opts.PartIndex != nil && *opts.PartIndex < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+				} else {
+					var n int
+					if err := json.Unmarshal(rawArg, &n); err != nil || n < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+					opts.PartIndex = &n
+				}
 			}
-			partIdx = &n
 		}
-		u, err := b.h.StreamPartURL(ctx, str(0), partIdx)
+		u, err := b.h.StreamURLWithOptions(ctx, str(0), opts)
 		if err != nil {
 			return nil, mapHostError(err)
 		}

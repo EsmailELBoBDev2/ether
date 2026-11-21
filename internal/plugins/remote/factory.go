@@ -566,15 +566,19 @@ func (a HostAdapter) CacheDelete(ctx context.Context, pluginID, blobRef string) 
 }
 
 func (a HostAdapter) StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
-	return a.StreamPartURL(ctx, pluginID, viewerID, itemRef, nil)
+	return a.StreamURLWithOptions(ctx, pluginID, viewerID, itemRef, plugins.StreamURLOptions{})
 }
 
 func (a HostAdapter) StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
+	return a.StreamURLWithOptions(ctx, pluginID, viewerID, itemRef, plugins.StreamURLOptions{PartIndex: partIndex})
+}
+
+func (a HostAdapter) StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
 	h, err := a.host(pluginID)
 	if err != nil {
 		return "", err
 	}
-	u, err := h.StreamPartURL(plugins.WithViewer(ctx, viewerID), itemRef, partIndex)
+	u, err := h.StreamURLWithOptions(plugins.WithViewer(ctx, viewerID), itemRef, opts)
 	return u, mapHostErr(err)
 }
 

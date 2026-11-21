@@ -24,6 +24,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -805,19 +808,65 @@ func queryTitles(req core.SearchRequest) []string {
 		seen[k] = true
 		out = append(out, s)
 	}
-	add(req.Title)
+	// Indexers match release names, which never carry punctuation such as
+	// colons, and often drop diacritics. Like Sonarr and Radarr, search the
+	// cleaned title; an accented title is also searched unaccented.
+	addClean := func(s string) {
+		c := cleanSearchTitle(s)
+		add(c)
+		if f := foldSearchTitle(c); f != c {
+			add(f)
+		}
+	}
+	addClean(req.Title)
 	if req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
-		add(req.OriginalTitle)
+		addClean(req.OriginalTitle)
 	}
 	for _, a := range releaseparse.TitleAliases(req.Title) {
-		add(a)
+		addClean(a)
 	}
 	if req.OriginalTitle != "" {
 		for _, a := range releaseparse.TitleAliases(req.OriginalTitle) {
-			add(a)
+			addClean(a)
 		}
 	}
 	return out
+}
+
+// cleanSearchTitle drops the punctuation release names never contain
+// (colons, quotes, brackets, commas…) and collapses spaces; hyphens stay
+// ("Spider-Man"). Apostrophes are
+// removed without a gap ("Ocean's" → "Oceans"); "&" is kept.
+func cleanSearchTitle(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		switch {
+		case r == '\'' || r == '’' || r == '‘' || r == '`':
+			continue
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '&' || r == '-':
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			b.WriteRune(r)
+		default:
+			space = true
+		}
+	}
+	return b.String()
+}
+
+// foldSearchTitle removes diacritics ("Anéis" → "Aneis").
+func foldSearchTitle(s string) string {
+	var b strings.Builder
+	for _, r := range norm.NFD.String(s) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return norm.NFC.String(b.String())
 }
 
 // isTVRequest reports whether a search asks about a show rather than a movie.

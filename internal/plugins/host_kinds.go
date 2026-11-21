@@ -52,8 +52,9 @@ type KindBackends struct {
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
-	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
-	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
 }
 
 // SetKindBackends wires the kind host services into the Manager's
@@ -74,6 +75,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.CacheDelete = b.CacheDelete
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
+	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
 	m.mu.Unlock()
 }
 
@@ -81,20 +83,21 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:      m.deps.Backends.KindUpsert,
-		KindUpsertStats: m.deps.Backends.KindUpsertStats,
-		KindDelete:      m.deps.Backends.KindDelete,
-		KindItems:       m.deps.Backends.KindItems,
-		KindItemsByID:   m.deps.Backends.KindItemsByID,
-		KindItemCount:   m.deps.Backends.KindItemCount,
-		KindVisible:     m.deps.Backends.KindVisible,
-		KindBrowse:      m.deps.Backends.KindBrowse,
-		ResolveSources:  m.deps.Backends.ResolveSources,
-		CachePut:        m.deps.Backends.CachePut,
-		CacheOpen:       m.deps.Backends.CacheOpen,
-		CacheDelete:     m.deps.Backends.CacheDelete,
-		StreamURL:       m.deps.Backends.StreamURL,
-		StreamPartURL:   m.deps.Backends.StreamPartURL,
+		KindUpsert:       m.deps.Backends.KindUpsert,
+		KindUpsertStats:  m.deps.Backends.KindUpsertStats,
+		KindDelete:       m.deps.Backends.KindDelete,
+		KindItems:        m.deps.Backends.KindItems,
+		KindItemsByID:    m.deps.Backends.KindItemsByID,
+		KindItemCount:    m.deps.Backends.KindItemCount,
+		KindVisible:      m.deps.Backends.KindVisible,
+		KindBrowse:       m.deps.Backends.KindBrowse,
+		ResolveSources:   m.deps.Backends.ResolveSources,
+		CachePut:         m.deps.Backends.CachePut,
+		CacheOpen:        m.deps.Backends.CacheOpen,
+		CacheDelete:      m.deps.Backends.CacheDelete,
+		StreamURL:        m.deps.Backends.StreamURL,
+		StreamPartURL:    m.deps.Backends.StreamPartURL,
+		StreamURLOptions: m.deps.Backends.StreamURLOptions,
 	}
 }
 
@@ -433,6 +436,24 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 	return page, nil
 }
 
+// DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls
+// per minute so a resolver cannot flood Usenet indexers or NNTP providers.
+const DefaultUsenetCheckPerMin = 20
+
+type backgroundCallKey struct{}
+
+// WithBackgroundCall marks a plugin invocation context as background work
+// (such as a scheduled job or catalog sync/expand). On-demand-only host
+// queries such as usenet_check refuse background contexts.
+func WithBackgroundCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundCallKey{}, true)
+}
+
+func isBackgroundCall(ctx context.Context) bool {
+	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
+	return bg
+}
+
 func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
@@ -461,18 +482,33 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet or candidate",
+				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+			}}}
+		}
+	case "usenet_check":
+		if isBackgroundCall(ctx) {
+			h.noteDenied("usenet_check_background")
+			return nil, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
+		}
+		nzbURL := strings.TrimSpace(q.NZBURL)
+		if nzbURL == "" && q.Candidate != nil {
+			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
+		}
+		if nzbURL == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "nzbUrl",
+				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "debrid_acquire needs an info hash or magnet",
+				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	default:
@@ -490,6 +526,15 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	backend := h.m.kindBackends().ResolveSources
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	if q.Kind == "usenet_check" {
+		limit := h.m.usenetCheckLimit
+		if limit <= 0 {
+			limit = DefaultUsenetCheckPerMin
+		}
+		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
+			return nil, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+		}
 	}
 	return backend(ctx, h.plugin, q)
 }
@@ -630,16 +675,40 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 	return grant.viewerID, true
 }
 
+const maxStreamSourceIDLen = 1024
+
+func validateStreamSourceID(source string) error {
+	if source == "" {
+		return nil
+	}
+	if strings.TrimSpace(source) == "" {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not be blank"}}}
+	}
+	if len(source) > maxStreamSourceIDLen {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source exceeds maximum length"}}}
+	}
+	for _, r := range source {
+		if r < 0x20 || r == 0x7f {
+			return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not contain control characters"}}}
+		}
+	}
+	return nil
+}
+
 // StreamURL mints a scoped stream ticket for one of the plugin's own kind
 // items and returns the Ether stream URL (spec §6.5). The viewer is the one
 // the proxied request authenticated, carried on the call context as
 // X-Ether-Viewer. The backend re-checks that the item belongs to this plugin
 // and that the viewer may see its library.
 func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
-	return h.StreamPartURL(ctx, itemRef, nil)
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{})
 }
 
 func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error) {
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{PartIndex: partIndex})
+}
+
+func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error) {
 	rec, _, err := h.record(ctx)
 	if err != nil {
 		return "", err
@@ -657,25 +726,34 @@ func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int
 	if strings.TrimSpace(itemRef) == "" {
 		return "", fmt.Errorf("plugins: stream url needs an item ref")
 	}
-	if partIndex != nil && *partIndex < 0 {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", fmt.Errorf("plugins: stream url partIndex must be non-negative")
 	}
+	if err := validateStreamSourceID(opts.Source); err != nil {
+		return "", err
+	}
 	backends := h.m.kindBackends()
+	if backends.StreamURLOptions != nil {
+		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
+	}
+	if opts.Source != "" {
+		return "", ErrUnavailable
+	}
 	if backends.StreamPartURL != nil {
-		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, partIndex)
+		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, opts.PartIndex)
 	}
 	if backends.StreamURL == nil {
 		return "", ErrUnavailable
 	}
 	u, err := backends.StreamURL(ctx, h.plugin, viewerID, itemRef)
-	if err != nil || partIndex == nil {
+	if err != nil || opts.PartIndex == nil {
 		return u, err
 	}
 	sep := "?"
 	if strings.Contains(u, "?") {
 		sep = "&"
 	}
-	return u + sep + "part=" + strconv.Itoa(*partIndex), nil
+	return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 }
 
 func validateBlobRef(blobRef string) error {

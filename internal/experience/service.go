@@ -1864,7 +1864,12 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		// not land behind every loose catalogue match.
 		items = append(items, pluginHits...)
 		if !aiMerged {
-			sort.SliceStable(items, func(i, j int) bool { return items[i].SearchScore > items[j].SearchScore })
+			sort.SliceStable(items, func(i, j int) bool {
+				if items[i].SearchScore != items[j].SearchScore {
+					return items[i].SearchScore > items[j].SearchScore
+				}
+				return items[i].Popularity > items[j].Popularity
+			})
 		}
 	}
 	if err = s.sortTitles(ctx, items, q); err != nil {

@@ -62,19 +62,7 @@ func (s *Service) allowedPluginPeopleLibraries(ctx context.Context, v *core.User
 }
 
 func rolesFromCounts(counts map[string]int) []string {
-	if len(counts) == 0 {
-		return []string{}
-	}
-	roles := make([]string, 0, len(counts))
-	for _, dept := range canonicalPersonDepartments {
-		if counts[dept] > 0 {
-			roles = append(roles, dept)
-		}
-	}
-	sort.SliceStable(roles, func(a, b int) bool {
-		return counts[roles[a]] > counts[roles[b]]
-	})
-	return roles
+	return sortPersonRoleCounts(counts)
 }
 
 func mergeRoleBucketCounts(dst map[string]int, raw map[string]int) {
@@ -83,11 +71,7 @@ func mergeRoleBucketCounts(dst map[string]int, raw map[string]int) {
 			continue
 		}
 		dept := creditDepartment(k)
-		if dept == "" {
-			dept = k
-		}
-		switch dept {
-		case "Acting", "Directing", "Writing", "Crew":
+		if dept != "" {
 			dst[dept] += n
 		}
 	}
@@ -449,6 +433,24 @@ func (s *Service) pluginPersonRoles(ctx context.Context, v *core.User, personID 
 		}
 		seenDeptPerTitle := map[core.RatingKey]map[string]bool{}
 		for _, t := range visibleTitles {
+			if len(t.MediaCredits) > 0 && t.MediaClass != "" && t.MediaClass != core.MediaClassVideo {
+				for _, cr := range t.MediaCredits {
+					if cr.TMDB == personID && strings.TrimSpace(cr.Name) != "" {
+						dept := creditDepartment(cr.Role)
+						if dept == "" {
+							continue
+						}
+						if seenDeptPerTitle[t.Key] == nil {
+							seenDeptPerTitle[t.Key] = map[string]bool{}
+						}
+						if !seenDeptPerTitle[t.Key][dept] {
+							seenDeptPerTitle[t.Key][dept] = true
+							counts[dept]++
+						}
+					}
+				}
+				continue
+			}
 			for _, g := range []struct {
 				dept   string
 				people []core.Person

@@ -11,13 +11,16 @@ import (
 // Detail and Play build the same declaration with current network and owner rules.
 func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c client) (frontend.CapabilityResult, error) {
 	audioCodecs := strings.Join(c.AudioCodecs, ",")
-	audioContainers := velaAudioDirectContainers(c.Containers, c.AudioCodecs)
 	profile := caps.DeviceProfile{
 		MaxStreamingBitrate: c.MaxBitrate,
 		DirectPlayProfiles: []caps.DirectPlayProfile{
 			{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
-			{Type: "Audio", Container: audioContainers, AudioCodec: audioCodecs},
 		},
+	}
+	if containers := velaAudioContainers(c.Containers, c.AudioCodecs); len(containers) > 0 {
+		// Music and audiobooks: the declared audio codecs imply the
+		// audio-only containers this client plays as files.
+		profile.DirectPlayProfiles = append(profile.DirectPlayProfiles, caps.DirectPlayProfile{Type: "Audio", Container: strings.Join(containers, ","), AudioCodec: audioCodecs})
 	}
 	audioTranscodeCodecs := audioCodecs
 	if audioTranscodeCodecs == "" {
@@ -61,46 +64,40 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 	return result, err
 }
 
-func velaAudioDirectContainers(containers, audioCodecs []string) string {
+// velaAudioContainers lists the audio-only file containers implied by a Vela
+// client's declared audio codecs, plus any audio containers it declared.
+func velaAudioContainers(containers, audioCodecs []string) []string {
 	seen := map[string]bool{}
 	var out []string
-	add := func(s string) {
-		s = strings.ToLower(strings.TrimSpace(s))
-		if s == "" || seen[s] {
-			return
+	add := func(names ...string) {
+		for _, n := range names {
+			if !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
 		}
-		seen[s] = true
-		out = append(out, s)
 	}
 	for _, c := range containers {
-		add(c)
-		if strings.EqualFold(strings.TrimSpace(c), "mp4") {
-			add("m4a")
-			add("m4b")
+		switch strings.ToLower(c) {
+		case "flac", "mp3", "aac", "m4a", "m4b", "ogg", "wav":
+			add(strings.ToLower(c))
+		case "mp4":
+			add("m4a", "m4b", "mp4")
 		}
 	}
-	for _, codec := range audioCodecs {
-		switch strings.ToLower(strings.TrimSpace(codec)) {
-		case "mp3":
-			add("mp3")
+	for _, a := range audioCodecs {
+		switch strings.ToLower(a) {
 		case "flac":
 			add("flac")
+		case "mp3":
+			add("mp3")
 		case "aac":
-			add("aac")
-			add("mp4")
-			add("m4a")
-			add("m4b")
+			add("aac", "m4a", "m4b", "mp4")
 		case "opus", "vorbis":
 			add("ogg")
-			add("opus")
-			add("webm")
-		case "alac":
-			add("mp4")
-			add("m4a")
-			add("m4b")
-		case "pcm", "pcm_s16le", "wav":
+		case "pcm", "pcm_s16le", "pcm_s24le":
 			add("wav")
 		}
 	}
-	return strings.Join(out, ",")
+	return out
 }

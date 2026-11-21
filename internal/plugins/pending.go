@@ -41,11 +41,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, ResolverTotal)
 	defer cancel()
-	// One job per plugin/kind/item (and part index when set), even across
+	// One job per plugin/kind/item (and part index / source when set), even across
 	// simultaneous Plays. Include the request body when older callers do not
 	// supply an item reference.
 	var identity struct {
-		PartIndex *int `json:"partIndex"`
+		PartIndex *int   `json:"partIndex"`
+		Source    string `json:"source"`
 		Item      struct {
 			Ref        string `json:"ref"`
 			ExternalID string `json:"id"`
@@ -58,8 +59,13 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	}
 	if item == "" {
 		item = string(req.Body)
-	} else if identity.PartIndex != nil {
-		item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
+	} else {
+		if identity.PartIndex != nil {
+			item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
+		}
+		if identity.Source != "" {
+			item = fmt.Sprintf("%s#source:%s", item, identity.Source)
+		}
 	}
 	suffix := fmt.Sprintf("|%x", sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimSuffix(req.Path, "/resolve"), "/match")+"|"+item)))
 	started := false

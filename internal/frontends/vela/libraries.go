@@ -202,7 +202,7 @@ func libraryWire(view frontend.View) object {
 	if view.DateDisplay == "date" {
 		dateDisplay = "date"
 	}
-	return object{
+	wire := object{
 		"id":           view.ID,
 		"name":         view.Name,
 		"kind":         kind,
@@ -212,6 +212,10 @@ func libraryWire(view frontend.View) object {
 		"tabs":         tabs,
 		"browse":       object{"sorts": sorts, "defaultSort": defaultSort, "defaultDirection": defaultDirection, "filters": filters},
 	}
+	if view.Media != "" {
+		wire["media"] = string(view.Media)
+	}
+	return wire
 }
 
 func (i *instance) libraries(w http.ResponseWriter, r *http.Request) {

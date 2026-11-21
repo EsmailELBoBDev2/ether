@@ -570,7 +570,8 @@ func TestKindCatalogProjectSummaryResolvesPluginStrings(t *testing.T) {
 						},
 						"fields": []any{
 							map[string]any{"key": "authors", "type": "people", "label": "$t:field.authors", "indexed": true},
-							map[string]any{"key": "publisher", "type": "string", "label": "$t:field.missing", "indexed": true},
+							map[string]any{"key": "language", "type": "string", "label": "$t:field.language", "indexed": false, "fact": true},
+							map[string]any{"key": "publisher", "type": "string", "label": "$t:field.missing", "indexed": true, "fact": true},
 						},
 						"present": map[string]any{
 							"vela": map[string]any{"type": "movies"},
@@ -590,7 +591,8 @@ func TestKindCatalogProjectSummaryResolvesPluginStrings(t *testing.T) {
 		"kind.books": "Books",
 		"library.books": "Books",
 		"level.book": "Book",
-		"field.authors": "Authors"
+		"field.authors": "Authors",
+		"field.language": "Language"
 	}`)
 	installStudioManifest(t, h.mgr, rawMan, map[string][]byte{"i18n/en.json": enStrings})
 	if err := h.mgr.Start(ctx); err != nil {
@@ -616,6 +618,7 @@ func TestKindCatalogProjectSummaryResolvesPluginStrings(t *testing.T) {
 			Playable: true,
 			Fields: map[string]json.RawMessage{
 				"authors":   json.RawMessage(`["Frank Herbert"]`),
+				"language":  json.RawMessage(`"English"`),
 				"publisher": json.RawMessage(`"Chilton Books"`),
 			},
 		},
@@ -624,31 +627,43 @@ func TestKindCatalogProjectSummaryResolvesPluginStrings(t *testing.T) {
 		t.Fatalf("KindUpsert: %v", err)
 	}
 
-	// Browse projection resolves $t:field.authors -> "Authors" and falls back
-	// to field key "publisher" when $t:field.missing is absent from en.json.
+	// Browse projection keeps clean Summary, maps people into MediaCredits, and
+	// resolves $t:field.language -> "Language" while falling back to "publisher"
+	// when $t:field.missing is absent from en.json.
 	page, err := h.catalog.Browse(ctx, bookLib, frontend.ItemQuery{Sort: core.SortTitle}, "", 20)
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("Browse = %+v, err=%v", page, err)
 	}
-	summary := page.Items[0].Summary
-	if strings.Contains(summary, "$t:") {
-		t.Fatalf("Browse summary leaked raw $t: token: %q", summary)
+	checkProjected := func(label string, title core.Title) {
+		t.Helper()
+		if title.Summary != "Desert planet saga." {
+			t.Fatalf("%s summary = %q, want clean summary", label, title.Summary)
+		}
+		if len(title.MediaCredits) != 1 || title.MediaCredits[0].Name != "Frank Herbert" || title.MediaCredits[0].Role != "author" {
+			t.Fatalf("%s MediaCredits = %+v", label, title.MediaCredits)
+		}
+		facts := map[string]string{}
+		for _, f := range title.MediaFacts {
+			if strings.Contains(f.Label, "$t:") || strings.Contains(f.Value, "$t:") {
+				t.Fatalf("%s MediaFacts leaked raw $t: token: %+v", label, f)
+			}
+			facts[f.Label] = f.Value
+		}
+		if facts["Language"] != "English" {
+			t.Fatalf("%s MediaFacts did not resolve $t:field.language: %+v", label, title.MediaFacts)
+		}
+		if facts["publisher"] != "Chilton Books" {
+			t.Fatalf("%s MediaFacts did not fall back to field key for missing $t: key: %+v", label, title.MediaFacts)
+		}
 	}
-	if !strings.Contains(summary, "Authors: Frank Herbert") {
-		t.Fatalf("Browse summary did not resolve $t:field.authors: %q", summary)
-	}
-	if !strings.Contains(summary, "publisher: Chilton Books") {
-		t.Fatalf("Browse summary did not fall back to field key for missing $t: key: %q", summary)
-	}
+	checkProjected("Browse", page.Items[0])
 
 	// Single-item read and Presentation facet labels also resolve without leaking "$t:".
 	piv, err := h.catalog.Item(ctx, page.Items[0].Key)
 	if err != nil {
 		t.Fatalf("Item: %v", err)
 	}
-	if strings.Contains(piv.Title.Summary, "$t:") || !strings.Contains(piv.Title.Summary, "Authors: Frank Herbert") {
-		t.Fatalf("Item summary = %q", piv.Title.Summary)
-	}
+	checkProjected("Item", piv.Title)
 	pres, ok := h.catalog.Presentation(ctx, bookLib)
 	if !ok {
 		t.Fatal("Presentation returned ok=false")

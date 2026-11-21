@@ -14,18 +14,68 @@ const personRoleSummaryLimit = 64
 var canonicalPersonDepartments = []string{"Acting", "Directing", "Writing", "Crew"}
 
 func creditDepartment(kind string) string {
-	switch kind {
-	case "cast":
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "cast", "actor", "acting":
 		return "Acting"
-	case "director":
+	case "director", "directing":
 		return "Directing"
-	case "writer":
+	case "writer", "writing":
 		return "Writing"
 	case "crew":
 		return "Crew"
+	case "author":
+		return "Author"
+	case "narrator":
+		return "Narrator"
+	case "artist":
+		return "Artist"
+	case "albumartist", "album_artist":
+		return "Album Artist"
+	case "composer":
+		return "Composer"
+	case "illustrator":
+		return "Illustrator"
+	case "translator":
+		return "Translator"
+	case "host":
+		return "Host"
+	case "producer":
+		return "Producer"
+	case "lyricist":
+		return "Lyricist"
 	default:
-		return ""
+		trimmed := strings.TrimSpace(kind)
+		if trimmed == "" {
+			return ""
+		}
+		return strings.ToUpper(trimmed[:1]) + trimmed[1:]
 	}
+}
+
+func sortPersonRoleCounts(counts map[string]int) []string {
+	if len(counts) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]bool, len(counts))
+	roles := make([]string, 0, len(counts))
+	for _, dept := range canonicalPersonDepartments {
+		if counts[dept] > 0 {
+			roles = append(roles, dept)
+			seen[dept] = true
+		}
+	}
+	var extra []string
+	for k, n := range counts {
+		if n > 0 && !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	roles = append(roles, extra...)
+	sort.SliceStable(roles, func(a, b int) bool {
+		return counts[roles[a]] > counts[roles[b]]
+	})
+	return roles
 }
 
 func (s *Service) enrichPersonDetail(ctx context.Context, viewer *core.Viewer, detail frontend.PersonDetail, prefetch bool) (frontend.PersonDetail, error) {
@@ -122,15 +172,7 @@ func (s *Service) enrichPersonDetail(ctx context.Context, viewer *core.Viewer, d
 			}
 		}
 	}
-	roles := make([]string, 0, len(counts))
-	for _, dept := range canonicalPersonDepartments {
-		if counts[dept] > 0 {
-			roles = append(roles, dept)
-		}
-	}
-	sort.SliceStable(roles, func(a, b int) bool {
-		return counts[roles[a]] > counts[roles[b]]
-	})
+	roles := sortPersonRoleCounts(counts)
 	detail.Roles = roles
 	if !core.IsPluginPersonID(detail.TMDB) && s.d.PersonMetadata != nil {
 		meta := s.d.PersonMetadata(ctx, detail.TMDB, prefetch)

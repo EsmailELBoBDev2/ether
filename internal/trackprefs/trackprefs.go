@@ -480,6 +480,9 @@ func pick(streams []core.StreamInfo, kind string, want []string, style string, f
 			// file's default flag.
 			n += 2
 		}
+		if kind == "audio" && langtag.TrackRole(t.Title, t.Commentary, t.VisualImpaired) != langtag.RoleMain {
+			n -= 150
+		}
 		if kind == "subtitle" {
 			if (style == "sdh") == sdh(t) {
 				n += 10

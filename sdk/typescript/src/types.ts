@@ -694,7 +694,7 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files";
+  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files" | "usenet_check";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
@@ -703,7 +703,11 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** A candidate from indexer_search handed back for release_files, so an NZB is fetched through its indexer. */
+  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  torrentUrl?: string;
+  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  nzbUrl?: string;
+  /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
 }
 
@@ -715,11 +719,28 @@ export interface ReleaseMember {
   stored?: boolean;
 }
 
+/** Sampled Usenet article availability verdict for one NZB release (usenet_check). */
+export interface UsenetCheckResult {
+  available: boolean;
+  checked: number;
+  missing: number;
+  /** True when served from Ether's bounded per-NZB cache (including a recorded playback failure). */
+  cached?: boolean;
+  /** True when a real playback attempt against this NZB failed with an article or release error. */
+  playbackFailed?: boolean;
+  /** Short diagnostic code when available is false (e.g. articles_missing, playback_article_missing). */
+  reason?: string;
+  /** Unix timestamp (seconds) when this verdict or playback failure was recorded. */
+  checkedAt?: number;
+}
+
 /** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
 export interface ReleaseFile {
   index: number;
   path: string;
   size: number;
+  /** True when size is a segment-derived decoded estimate rather than an exact byte length. */
+  sizeApproximate?: boolean;
   /** Inner non-directory files when this entry is the first volume of a readable Usenet archive. */
   members?: ReleaseMember[];
 }
@@ -734,6 +755,8 @@ export interface TrackHint {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
+  /** Torrent download or details page link for torrent indexers (never placed in nzbUrl). */
+  torrentUrl?: string;
   nzbUrl?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
@@ -750,6 +773,8 @@ export interface SourceCandidate {
   codec?: string;
   /** Files inside this release; populated only by a release_files query. */
   files?: ReleaseFile[];
+  /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
+  usenetCheck?: UsenetCheckResult;
 }
 
 export interface KindMatchRequest {
@@ -772,6 +797,8 @@ export interface PlayableSource {
   pattern: "range" | "download" | "direct" | "container" | "release" | "file";
   mime: string;
   size?: number;
+  /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
+  sizeApproximate?: boolean;
   durationSec?: number;
   url?: string;
   headers?: Record<string, string>;
@@ -793,6 +820,7 @@ export interface PlayableSource {
     nzbUrl?: string;
     magnet?: string;
     infoHash?: string;
+    torrentUrl?: string;
     candidate?: SourceCandidate;
     /** Zero-based torrent file index; overrides candidate.fileIndex. Invalid selections fail. */
     fileIndex?: number;
@@ -812,7 +840,15 @@ export interface KindResolveRequest {
   libraryKey: string;
   item: KindItem;
   partIndex?: number;
+  /** Optional PlayableSource.id chosen by a frontend adapter stream ticket (#661). */
+  source?: string;
   client?: Record<string, unknown>;
+}
+
+/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+export interface StreamUrlOptions {
+  partIndex?: number;
+  source?: string;
 }
 
 export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }

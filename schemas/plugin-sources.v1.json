@@ -14,7 +14,8 @@
             "indexer_search",
             "debrid_check",
             "debrid_acquire",
-            "release_files"
+            "release_files",
+            "usenet_check"
           ]
         },
         "query": {
@@ -41,9 +42,57 @@
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+        },
+        "nzbUrl": {
+          "type": "string",
+          "description": "Usenet NZB download link for usenet_check when not passing a full candidate."
+        },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
-          "description": "A candidate from indexer_search handed back for release_files, so an NZB is fetched through its originating indexer."
+          "description": "A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer."
+        }
+      }
+    },
+    "usenetCheckResult": {
+      "type": "object",
+      "required": [
+        "available",
+        "checked",
+        "missing"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "True when all sampled NZB articles were confirmed available and no playback failure is recorded for this NZB."
+        },
+        "checked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled articles evaluated (bounded by Ether's per-check sample cap)."
+        },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled or playback-observed articles confirmed missing."
+        },
+        "cached": {
+          "type": "boolean",
+          "description": "True when the verdict was served from Ether's bounded per-NZB cache (including a recorded playback failure) without running a fresh NNTP check."
+        },
+        "playbackFailed": {
+          "type": "boolean",
+          "description": "True when a real playback attempt against this NZB failed with an article or release error."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Short diagnostic code when available is false (e.g. articles_missing, segment_absent_from_nzb, playback_article_missing, playback_article_corrupt, playback_release_rejected)."
+        },
+        "checkedAt": {
+          "type": "integer",
+          "description": "Unix timestamp (seconds) when this verdict or playback failure was recorded."
         }
       }
     },
@@ -90,7 +139,12 @@
           "type": "string"
         },
         "size": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Decoded file size in bytes (exact when known from torrent/debrid, PAR2, or yEnc headers; segment-derived estimate when sizeApproximate is true)."
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is a segment-derived decoded estimate rather than an exact byte count."
         },
         "members": {
           "type": "array",
@@ -129,8 +183,13 @@
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers; torrent candidates never populate nzbUrl."
+        },
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "description": "Usenet NZB download link; populated only for Usenet candidates."
         },
         "title": {
           "type": "string"
@@ -177,6 +236,10 @@
             "$ref": "#/$defs/releaseFile"
           },
           "description": "Files inside this release; populated only by a release_files query."
+        },
+        "usenetCheck": {
+          "$ref": "#/$defs/usenetCheckResult",
+          "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
         }
       }
     },
@@ -190,6 +253,9 @@
           "type": "string"
         },
         "infoHash": {
+          "type": "string"
+        },
+        "torrentUrl": {
           "type": "string"
         },
         "passwordSecret": {

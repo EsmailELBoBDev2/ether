@@ -36,6 +36,9 @@ type MediaDeps struct {
 	// the granted viewer (#576). Used when the ticket is part-scoped or when
 	// the request names ?part=<n>.
 	OpenPart func(ctx context.Context, viewer *core.Viewer, itemRef string, partIndex int, accept []string) (*frontend.KindMedia, error)
+	// OpenSource opens one exact resolver source (and optional zero-based part)
+	// for a source-scoped ticket (#661), with no failover to other sources.
+	OpenSource func(ctx context.Context, viewer *core.Viewer, itemRef string, partIndex *int, source string, accept []string) (*frontend.KindMedia, error)
 	// Log records each refused request with its cause (optional).
 	Log *slog.Logger
 }
@@ -94,13 +97,20 @@ func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	accept := parseAccept(r.Header.Get("Accept"))
 	var media *frontend.KindMedia
-	if partIdx != nil {
+	switch {
+	case grant.Source != "":
+		if h.deps.OpenSource == nil {
+			h.refuse(w, http.StatusConflict, "no_source", "The item has no playable source.", core.ErrNotAvailable, grant.ItemID)
+			return
+		}
+		media, err = h.deps.OpenSource(r.Context(), viewer, grant.ItemID, partIdx, grant.Source, accept)
+	case partIdx != nil:
 		if h.deps.OpenPart == nil {
 			h.refuse(w, http.StatusNotFound, "item_not_found", "The requested item part is not available.", core.ErrNotFound, grant.ItemID)
 			return
 		}
 		media, err = h.deps.OpenPart(r.Context(), viewer, grant.ItemID, *partIdx, accept)
-	} else {
+	default:
 		media, err = h.deps.Open(r.Context(), viewer, grant.ItemID, accept)
 	}
 	if err != nil || media == nil {

@@ -139,11 +139,12 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 		if err != nil {
 			return nil, err
 		}
-		if src.Size > 0 && cached.Size() != src.Size {
+		d := digestsOf(src)
+		if err := d.checkSize(cached.Size()); err != nil {
 			_ = cached.Close()
-			return nil, fmt.Errorf("kindstream: blobRef size %d != declared %d", cached.Size(), src.Size)
+			return nil, err
 		}
-		if d := digestsOf(src); d.hasHash() {
+		if d.hasHash() {
 			if err := d.verifyReaderAt(cached, cached.Size()); err != nil {
 				_ = cached.Close()
 				return nil, err
@@ -213,8 +214,8 @@ func classifyNonVideoRelease(cand core.PlayableSource, defaultMIME string) (nonV
 
 	r := cand.Release
 	hasNZB := strings.TrimSpace(r.NZBURL) != "" || (r.Candidate != nil && strings.TrimSpace(r.Candidate.NZBURL) != "")
-	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" ||
-		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != ""))
+	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" || strings.TrimSpace(r.TorrentURL) != "" ||
+		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != "" || strings.TrimSpace(r.Candidate.TorrentURL) != ""))
 	isUsenet = hasNZB && !hasTorrent
 	proto := "torrent"
 	if isUsenet {
@@ -308,17 +309,25 @@ func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (B
 	if err != nil {
 		return nil, err
 	}
+	knownSize := src.Size
+	if src.SizeApproximate {
+		knownSize = 0
+	}
 	hr, err := newHTTPReaderAt(ctx, httpReaderConfig{
 		Template:  tmpl,
 		Headers:   hdrs,
 		ItemIndex: deps.ItemIndex,
-		KnownSize: src.Size,
+		KnownSize: knownSize,
 		MIME:      src.MIME,
 		Client:    deps.HTTP,
 		AllowHost: deps.AllowHost,
 		Backoff:   deps.Backoff,
 	})
 	if err == nil {
+		if derr := digestsOf(src).checkSize(hr.Size()); derr != nil {
+			_ = hr.Close()
+			return nil, derr
+		}
 		resolvedMIME, merr := verifyAndResolveMIME(hr.SniffBytes(), src.MIME, hr.Name())
 		if merr != nil {
 			_ = hr.Close()
@@ -454,7 +463,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 			defer resp.Body.Close()
 
 			expectedSize := int64(-1)
-			if src.Size > 0 {
+			if src.Size > 0 && !src.SizeApproximate {
 				expectedSize = src.Size
 			} else if resp.ContentLength > 0 {
 				expectedSize = resp.ContentLength
@@ -495,8 +504,10 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 		return nil, err
 	}
 	defer resp.Body.Close()
-	expectedSize := src.Size
-	if expectedSize <= 0 && resp.ContentLength > 0 {
+	expectedSize := int64(0)
+	if src.Size > 0 && !src.SizeApproximate {
+		expectedSize = src.Size
+	} else if resp.ContentLength > 0 {
 		expectedSize = resp.ContentLength
 	}
 	return readIntoMemoryByteSource(resp.Body, limit, expectedSize, digestsOf(src), name, src.MIME)
@@ -596,7 +607,7 @@ func (d *DirectSource) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func (d *DirectSource) Size() int64 {
-	if d.src.Size > 0 {
+	if d.src.Size > 0 && !d.src.SizeApproximate {
 		return d.src.Size
 	}
 	if bs, err := d.ensureDelegate(); err == nil {

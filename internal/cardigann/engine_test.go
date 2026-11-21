@@ -133,6 +133,9 @@ func TestPublicHTMLTracker(t *testing.T) {
 	if resolved.InfoHash != wantHash || !strings.Contains(resolved.MagnetURL, wantHash) || !strings.Contains(resolved.MagnetURL, "tracker.test") {
 		t.Fatalf("resolved = %+v", resolved)
 	}
+	if len(resolved.TorrentFiles) != 1 || resolved.TorrentFiles[0].Path != "The.Signal.1999.1080p" || resolved.TorrentFiles[0].Size <= 0 {
+		t.Fatalf("resolved.TorrentFiles = %+v, want parsed .torrent file entry", resolved.TorrentFiles)
+	}
 	if b.grabs != 1 {
 		t.Fatalf("grabs = %d", b.grabs)
 	}

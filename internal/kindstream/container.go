@@ -628,10 +628,11 @@ func selectArchiveMember(members []archive.Member, wantName string, wantIndex *i
 }
 
 // selectArchiveMemberForMIME extends selectArchiveMember for release archives:
-// when no member name or index was given and declaredMIME is a non-video media
-// type, it selects the best matching non-empty member (highest MIME rank, then
-// largest size) instead of blindly returning nonDir[0] (such as cover.jpg).
-func selectArchiveMemberForMIME(members []archive.Member, wantName string, wantIndex *int, declaredMIME string) (archive.Member, int, error) {
+// when no member name or index was given, it honors a structured TrackHint
+// first (failing on ambiguity), else selects the best matching non-empty member
+// for declaredMIME (highest MIME rank, then largest size) instead of blindly
+// returning nonDir[0] (such as cover.jpg).
+func selectArchiveMemberForMIME(members []archive.Member, wantName string, wantIndex *int, track *core.TrackHint, declaredMIME string) (archive.Member, int, error) {
 	if strings.TrimSpace(wantName) != "" || wantIndex != nil {
 		m, idx, err := selectArchiveMember(members, wantName, wantIndex)
 		if err == nil || wantIndex != nil {
@@ -649,6 +650,31 @@ func selectArchiveMemberForMIME(members []archive.Member, wantName string, wantI
 			return nonDir[idx], idx, nil
 		}
 		return archive.Member{}, -1, err
+	}
+	if track != nil && (track.Number > 0 || strings.TrimSpace(track.Title) != "") {
+		var nonDir []archive.Member
+		var names []string
+		for _, mm := range members {
+			if !mm.Dir {
+				nonDir = append(nonDir, mm)
+				names = append(names, mm.Name)
+			}
+		}
+		if len(nonDir) == 0 {
+			return archive.Member{}, -1, fmt.Errorf("kindstream: archive contains no non-directory members: %w", core.ErrNoUsableFile)
+		}
+		nt := nzb.TrackHint{Disc: track.Disc, Number: track.Number, Title: strings.TrimSpace(track.Title)}
+		idx, ok, ambig := nzb.MatchTrackIndex(names, nt, declaredMIME)
+		if ambig {
+			return archive.Member{}, -1, fmt.Errorf("kindstream: track hint (disc=%d number=%d title=%q) matched multiple members: %w", nt.Disc, nt.Number, nt.Title, core.ErrWrongContent)
+		}
+		if !ok {
+			return archive.Member{}, -1, fmt.Errorf("kindstream: archive holds no track matching (disc=%d number=%d title=%q): %w", nt.Disc, nt.Number, nt.Title, core.ErrNoUsableFile)
+		}
+		if nonDir[idx].Size <= 0 {
+			return archive.Member{}, -1, fmt.Errorf("kindstream: archive member %q is empty: %w", nonDir[idx].Name, core.ErrNoUsableFile)
+		}
+		return nonDir[idx], idx, nil
 	}
 	if !nzb.IsNonVideoMIME(declaredMIME) {
 		return selectArchiveMember(members, "", nil)

@@ -217,6 +217,10 @@ type Engine struct {
 	sources     sync.Map     // *source -> struct{}: open sources (fair share of connections)
 
 	par2Loaded, par2Failed, par2Skipped, par2Named, par2Saved, par2Verified, par2Mismatches atomic.Int64
+
+	archiveListMu      sync.Mutex
+	archiveList        map[string]*archiveListCacheEntry
+	archiveListFlights map[string]*archiveListFlight
 }
 
 // HealthTrace describes the most recent release validation phases.

@@ -71,15 +71,28 @@ func (n *NZB) MovieHint() (MovieHint, bool) {
 // stream engine.
 const MetaNonVideo = "ether-nonvideo"
 
+// TrackHint identifies a track inside a multi-track audio release or archive.
+type TrackHint struct {
+	Disc   int    `json:"disc,omitempty"`
+	Number int    `json:"number,omitempty"`
+	Title  string `json:"title,omitempty"`
+}
+
+// NonEmpty reports whether the hint specifies a track number or title.
+func (t *TrackHint) NonEmpty() bool {
+	return t != nil && (t.Number > 0 || strings.TrimSpace(t.Title) != "")
+}
+
 // NonVideoHint tells the stream engine to serve a non-video file directly
 // (loose file or archive member) instead of running video-only heuristics.
 type NonVideoHint struct {
-	ExplicitFile bool   `json:"explicitFile,omitempty"`
-	ExactFile    string `json:"exactFile,omitempty"`
-	RawFile      bool   `json:"rawFile,omitempty"`
-	Member       string `json:"member,omitempty"`
-	MemberIndex  *int   `json:"memberIndex,omitempty"`
-	MIME         string `json:"mime,omitempty"`
+	ExplicitFile bool       `json:"explicitFile,omitempty"`
+	ExactFile    string     `json:"exactFile,omitempty"`
+	RawFile      bool       `json:"rawFile,omitempty"`
+	Member       string     `json:"member,omitempty"`
+	MemberIndex  *int       `json:"memberIndex,omitempty"`
+	Track        *TrackHint `json:"track,omitempty"`
+	MIME         string     `json:"mime,omitempty"`
 }
 
 func (h NonVideoHint) String() string { b, _ := json.Marshal(h); return string(b) }
@@ -94,7 +107,7 @@ func (n *NZB) NonVideoHint() (NonVideoHint, bool) {
 	if err := json.Unmarshal([]byte(raw), &h); err != nil {
 		return NonVideoHint{}, false
 	}
-	if !h.ExplicitFile && !h.RawFile && h.Member == "" && h.MemberIndex == nil && !IsNonVideoMIME(h.MIME) {
+	if !h.ExplicitFile && !h.RawFile && h.Member == "" && h.MemberIndex == nil && !h.Track.NonEmpty() && !IsNonVideoMIME(h.MIME) {
 		return NonVideoHint{}, false
 	}
 	return h, true

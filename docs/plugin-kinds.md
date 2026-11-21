@@ -259,8 +259,13 @@ order. Patterns:
   prefer a path when the provider's ordering is unknown. On an NZB release
   the same selectors narrow the NZB to that file (and its archive/PAR2 set):
   `fileIndex` counts NZB document order and `file` matches a full name or
-  unique basename. `fileHint` retains its existing meaning as an archive
-  member hint.
+  unique basename. `fileHint` retains its exact archive member path or
+  unique basename matching semantics unchanged. When inner filenames inside
+  a multi-track audio release or scene RAR cannot be known before opening,
+  set `release.track` (`{disc?, number?, title?}`) instead: Ether matches
+  candidates by disc and track number first (using `title` to break ties),
+  then by normalised title tokens when no number matches, failing on
+  ambiguity.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size`. Ether checks them against the bytes
@@ -310,23 +315,34 @@ rank the candidates yourself (or in `/match`), and return a
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`, or
 `candidate` carrying an `indexer_search` result back) returns one
 candidate whose `files` lists what is inside the release:
-`[{index, path, size}]` in the order Ether's own file selection counts
-(provider file-list order for torrents, NZB document order for Usenet).
+`[{index, path, size, members?}]` in the order Ether's own file selection
+counts (provider file-list order for torrents, NZB document order for Usenet).
 Torrents are listed only when a debrid provider already holds them
 cached — an uncached hash answers with `cached: false` and no files,
 and is never added. NZBs are fetched through their originating indexer
-(the same fetch playback makes, so the NZB is vaulted for playback).
-Match a file to your item by name, then return the release with
-`release.file` or `release.fileIndex` set; the choice is honoured on
-Usenet as on debrid.
+(the same fetch playback makes, so the NZB is vaulted for playback). When
+an NZB contains RAR, 7z, or ZIP archives, Ether also reads the archive
+directory (bounded and cached per NZB digest, reusing Ether's archive
+readers) and populates `members: [{index, path, size, stored?}]` on the
+first volume's entry so a plugin can see inner filenames before opening.
+Match a file to your item by name and return the release with
+`release.file` or `release.fileIndex` set (and `release.fileHint` set to
+an exact member path from `members`, or `release.track` when matching by
+disc/track/title); the choice is honoured on Usenet as on debrid.
 
-### Multi-file items (`hints.parts`)
+### Multi-file items (`hints.parts` and resolve-time `parts`)
 
 When one playable item consists of several ordered files (multi-disc sets,
 CUE + BIN tracks, multi-part audiobooks, split archives), list its parts on the
-item in `hints.parts` (an array of `{name, mime?, size?, durationSec?}` objects
+item in `hints.parts` (an array of `{name, mime?, size?, durationSec?, fileIndex?}` objects
 or filenames; Ether also reads a declared `fields.parts` array when
-`hints.parts` is absent):
+`hints.parts` is absent), or return `parts` at resolve time on
+`KindResolveResponse.parts` (or `PlayableSource.parts`) — useful on both push
+and pull kinds when the part list is only learned from the resolved archive or
+release. Ether persists ordered parts with stable child `RatingKey`s (`role:
+"part"`), exposes them as children of the parent item, and lets per-part plays
+target `part.fileIndex` against a cached parent release or resolve with
+zero-based `partIndex`:
 
 ```json
 {

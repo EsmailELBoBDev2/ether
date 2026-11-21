@@ -347,6 +347,15 @@ func (b *builder) nonVideoCandidates(files []*postedFile, hint nzb.NonVideoHint)
 				pf := loose[idx]
 				out = append(out, candidate{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3})
 			}
+		} else if hint.Track.NonEmpty() {
+			names := make([]string, len(loose))
+			for i, pf := range loose {
+				names[i] = pf.file.Name
+			}
+			if idx, ok, _ := nzb.MatchTrackIndex(names, *hint.Track, hint.MIME); ok {
+				pf := loose[idx]
+				out = append(out, candidate{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3})
+			}
 		} else if hint.MemberIndex == nil && nzb.IsNonVideoMIME(hint.MIME) {
 			for _, pf := range loose {
 				if rank := nzb.NonVideoMatchRank(pf.file.Name, hint.MIME); rank > 0 {

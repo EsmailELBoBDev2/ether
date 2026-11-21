@@ -639,6 +639,8 @@ export interface KindItemPart {
   mime?: string;
   size?: number;
   durationSec?: number;
+  /** Optional zero-based file index inside a resolved multi-file release. */
+  fileIndex?: number;
 }
 
 export interface KindPage {
@@ -705,11 +707,28 @@ export interface SourceQuery {
   candidate?: SourceCandidate;
 }
 
+/** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */
+export interface ReleaseMember {
+  index: number;
+  path: string;
+  size: number;
+  stored?: boolean;
+}
+
 /** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
 export interface ReleaseFile {
   index: number;
   path: string;
   size: number;
+  /** Inner non-directory files when this entry is the first volume of a readable Usenet archive. */
+  members?: ReleaseMember[];
+}
+
+/** Structured track hint matched by disc/track number first, then normalised title tokens, failing on ambiguity. */
+export interface TrackHint {
+  disc?: number;
+  number?: number;
+  title?: string;
 }
 
 export interface SourceCandidate {
@@ -779,10 +798,13 @@ export interface PlayableSource {
     fileIndex?: number;
     /** Exact torrent path or unique basename, including non-video files. */
     file?: string;
-    /** Archive member name when composing a release with container extraction. */
+    /** Exact archive member path or unique basename when composing a release with container extraction. */
     fileHint?: string;
+    /** Structured track hint ({disc?, number?, title?}) matched by disc/track number first, then title tokens. */
+    track?: TrackHint;
     passwordSecret?: string;
   };
+  parts?: KindItemPart[];
 }
 
 export interface KindResolveRequest {
@@ -800,6 +822,7 @@ export interface KindResolveResponse {
   retryInMs?: number;
   job?: string;
   sources: PlayableSource[];
+  parts?: KindItemPart[];
   ttlSec?: number;
 }
 

@@ -56,6 +56,17 @@ func hasUnnamedFiles(data []byte) bool {
 	return false
 }
 
+func coreTrackToNZB(t *core.TrackHint) *nzb.TrackHint {
+	if t == nil || (t.Number <= 0 && strings.TrimSpace(t.Title) == "") {
+		return nil
+	}
+	return &nzb.TrackHint{
+		Disc:   t.Disc,
+		Number: t.Number,
+		Title:  strings.TrimSpace(t.Title),
+	}
+}
+
 // EpisodeNZB narrows the NZB of a Usenet season pack to the files of the
 // wanted episode (its video, or its archive set, plus its PAR2 index).
 // The stream engine then plays that episode like any single-episode
@@ -64,7 +75,7 @@ func EpisodeNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 	if t != nil && t.AllowNonVideo && (t.FileIndex != nil || t.ExactFile != "") {
 		return exactFileNZB(data, t)
 	}
-	if t != nil && t.AllowNonVideo && (t.Member != "" || t.MemberIndex != nil || nzb.IsNonVideoMIME(t.MIME)) {
+	if t != nil && t.AllowNonVideo && (t.Member != "" || t.MemberIndex != nil || coreTrackToNZB(t.Track) != nil || nzb.IsNonVideoMIME(t.MIME)) {
 		return nonVideoNZB(data, t)
 	}
 	if t != nil && t.Episode <= 0 && (len(t.MovieTitles) > 0 || len(t.WantedLanguages) > 0) {
@@ -188,7 +199,7 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 	// unwrap the archive set unless the caller explicitly asked for a raw
 	// wrapper-archive MIME with no member selector.
 	unwrapArchive := selected.Info.Kind.IsArchive() &&
-		(!nzb.IsArchiveMIME(t.MIME) || t.Member != "" || t.MemberIndex != nil)
+		(!nzb.IsArchiveMIME(t.MIME) || t.Member != "" || t.MemberIndex != nil || coreTrackToNZB(t.Track) != nil)
 	rawFile := !unwrapArchive
 
 	keep := map[*nzb.File]bool{selected: true}
@@ -225,6 +236,7 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 		RawFile:      rawFile,
 		Member:       strings.TrimSpace(t.Member),
 		MemberIndex:  t.MemberIndex,
+		Track:        coreTrackToNZB(t.Track),
 		MIME:         nzb.NormalizeMIME(t.MIME),
 	}
 	extra := map[string]string{nzb.MetaNonVideo: hint.String()}
@@ -251,6 +263,7 @@ func nonVideoNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 	hint := nzb.NonVideoHint{
 		Member:      strings.TrimSpace(t.Member),
 		MemberIndex: t.MemberIndex,
+		Track:       coreTrackToNZB(t.Track),
 		MIME:        nzb.NormalizeMIME(t.MIME),
 	}
 	extra := map[string]string{nzb.MetaNonVideo: hint.String()}

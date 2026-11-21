@@ -47,6 +47,32 @@
         }
       }
     },
+    "releaseMember": {
+      "type": "object",
+      "required": [
+        "index",
+        "path",
+        "size"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based non-directory member index inside the archive."
+        },
+        "path": {
+          "type": "string",
+          "description": "Inner member path inside the archive; hand back as release.fileHint (or container.member) to open that exact member."
+        },
+        "size": {
+          "type": "integer"
+        },
+        "stored": {
+          "type": "boolean",
+          "description": "True when the member is stored uncompressed and can stream directly by byte range."
+        }
+      }
+    },
     "releaseFile": {
       "type": "object",
       "required": [
@@ -65,6 +91,32 @@
         },
         "size": {
           "type": "integer"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/releaseMember"
+          },
+          "description": "Non-directory files inside this archive (RAR, 7z, ZIP), populated on the first volume of readable Usenet archives."
+        }
+      }
+    },
+    "trackHint": {
+      "type": "object",
+      "properties": {
+        "disc": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional one-based disc number for multi-disc releases."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based track number; matched first alongside disc."
+        },
+        "title": {
+          "type": "string",
+          "description": "Optional track title used to disambiguate track-number ties or match by normalised title tokens when track numbers are absent."
         }
       }
     },
@@ -157,7 +209,11 @@
         },
         "fileHint": {
           "type": "string",
-          "description": "Archive member hint when composing a release with container extraction."
+          "description": "Exact archive member path or unique basename when composing a release with container extraction."
+        },
+        "track": {
+          "$ref": "#/$defs/trackHint",
+          "description": "Structured audio track hint ({disc?, number?, title?}) matched against release files or archive members by disc/track number first, then normalised title tokens, failing on ambiguity."
         }
       }
     }

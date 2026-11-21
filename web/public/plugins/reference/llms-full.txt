@@ -915,8 +915,13 @@ order. Patterns:
   prefer a path when the provider's ordering is unknown. On an NZB release
   the same selectors narrow the NZB to that file (and its archive/PAR2 set):
   `fileIndex` counts NZB document order and `file` matches a full name or
-  unique basename. `fileHint` retains its existing meaning as an archive
-  member hint.
+  unique basename. `fileHint` retains its exact archive member path or
+  unique basename matching semantics unchanged. When inner filenames inside
+  a multi-track audio release or scene RAR cannot be known before opening,
+  set `release.track` (`{disc?, number?, title?}`) instead: Ether matches
+  candidates by disc and track number first (using `title` to break ties),
+  then by normalised title tokens when no number matches, failing on
+  ambiguity.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size`. Ether checks them against the bytes
@@ -966,23 +971,34 @@ rank the candidates yourself (or in `/match`), and return a
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`, or
 `candidate` carrying an `indexer_search` result back) returns one
 candidate whose `files` lists what is inside the release:
-`[{index, path, size}]` in the order Ether's own file selection counts
-(provider file-list order for torrents, NZB document order for Usenet).
+`[{index, path, size, members?}]` in the order Ether's own file selection
+counts (provider file-list order for torrents, NZB document order for Usenet).
 Torrents are listed only when a debrid provider already holds them
 cached — an uncached hash answers with `cached: false` and no files,
 and is never added. NZBs are fetched through their originating indexer
-(the same fetch playback makes, so the NZB is vaulted for playback).
-Match a file to your item by name, then return the release with
-`release.file` or `release.fileIndex` set; the choice is honoured on
-Usenet as on debrid.
+(the same fetch playback makes, so the NZB is vaulted for playback). When
+an NZB contains RAR, 7z, or ZIP archives, Ether also reads the archive
+directory (bounded and cached per NZB digest, reusing Ether's archive
+readers) and populates `members: [{index, path, size, stored?}]` on the
+first volume's entry so a plugin can see inner filenames before opening.
+Match a file to your item by name and return the release with
+`release.file` or `release.fileIndex` set (and `release.fileHint` set to
+an exact member path from `members`, or `release.track` when matching by
+disc/track/title); the choice is honoured on Usenet as on debrid.
 
-### Multi-file items (`hints.parts`)
+### Multi-file items (`hints.parts` and resolve-time `parts`)
 
 When one playable item consists of several ordered files (multi-disc sets,
 CUE + BIN tracks, multi-part audiobooks, split archives), list its parts on the
-item in `hints.parts` (an array of `{name, mime?, size?, durationSec?}` objects
+item in `hints.parts` (an array of `{name, mime?, size?, durationSec?, fileIndex?}` objects
 or filenames; Ether also reads a declared `fields.parts` array when
-`hints.parts` is absent):
+`hints.parts` is absent), or return `parts` at resolve time on
+`KindResolveResponse.parts` (or `PlayableSource.parts`) — useful on both push
+and pull kinds when the part list is only learned from the resolved archive or
+release. Ether persists ordered parts with stable child `RatingKey`s (`role:
+"part"`), exposes them as children of the parent item, and lets per-part plays
+target `part.fileIndex` against a cached parent release or resolve with
+zero-based `partIndex`:
 
 ```json
 {
@@ -1772,19 +1788,21 @@ type KindItem struct {
 | `mime` | `string` | may be omitted (see validation for conditions) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+| `fileIndex` | `*int` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#KindItemPart
 
 ``````
-// KindItemPart describes one declared file/part of a multi-file KindItem in
-// hints.parts (spec §3.2, §4.1, #576).
+// KindItemPart describes one declared or resolved file/part of a multi-file
+// KindItem (spec §3.2, §4.1, #576).
 type KindItemPart struct {
 	Index       int     `json:"index"`
 	Name        string  `json:"name,omitempty"`
 	MIME        string  `json:"mime,omitempty"`
 	Size        int64   `json:"size,omitempty"`
 	DurationSec float64 `json:"durationSec,omitempty"`
+	FileIndex   *int    `json:"fileIndex,omitempty"`
 }
 ``````
 
@@ -1851,6 +1869,7 @@ func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
 			ByteSize    int64   `json:"byteSize"`
 			DurationSec float64 `json:"durationSec"`
 			Duration    float64 `json:"duration"`
+			FileIndex   *int    `json:"fileIndex"`
 		}
 		if err := json.Unmarshal(raw, &obj); err == nil {
 			for _, cand := range []string{obj.Name, obj.File, obj.Filename, obj.Path, obj.ROM, obj.Label, obj.Title, obj.ID} {
@@ -1876,6 +1895,10 @@ func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
 					part.DurationSec = dur
 					break
 				}
+			}
+			if obj.FileIndex != nil && *obj.FileIndex >= 0 {
+				v := *obj.FileIndex
+				part.FileIndex = &v
 			}
 		}
 		out = append(out, part)
@@ -2151,6 +2174,30 @@ type SourceQuery struct {
 }
 ``````
 
+## Source: internal/core/kinditem.go#ReleaseMember.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `path` | `string` | emitted (validation may require a value) |  |
+| `size` | `int64` | emitted (validation may require a value) |  |
+| `stored` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/kinditem.go#ReleaseMember
+
+``````
+// ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
+// returned by a release_files source query. Hand Path back as
+// ReleaseHint.FileHint (or ContainerRef.Member) to open that exact member.
+type ReleaseMember struct {
+	Index  int    `json:"index"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Stored bool   `json:"stored,omitempty"`
+}
+``````
+
 ## Source: internal/core/kinditem.go#ReleaseFile.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2158,6 +2205,7 @@ type SourceQuery struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `path` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
+| `members` | `[]ReleaseMember` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#ReleaseFile
@@ -2167,11 +2215,14 @@ type SourceQuery struct {
 // release_files source query. Index is the position Ether's own file
 // selection counts: the debrid provider's file-list order for torrents,
 // NZB document order for Usenet. Hand it back as ReleaseHint.FileIndex,
-// or match Path with ReleaseHint.File.
+// or match Path with ReleaseHint.File. When the file is the first volume
+// of a readable RAR, 7z, or ZIP archive on Usenet, Members lists the
+// non-directory files inside that archive.
 type ReleaseFile struct {
-	Index int    `json:"index"`
-	Path  string `json:"path"`
-	Size  int64  `json:"size"`
+	Index   int             `json:"index"`
+	Path    string          `json:"path"`
+	Size    int64           `json:"size"`
+	Members []ReleaseMember `json:"members,omitempty"`
 }
 ``````
 
@@ -2286,6 +2337,7 @@ func libraryKeySlug(s string) string {
 | `expiresAt` | `int64` | may be omitted (see validation for conditions) |  |
 | `container` | `*ContainerRef` | may be omitted (see validation for conditions) |  |
 | `release` | `*ReleaseHint` | may be omitted (see validation for conditions) |  |
+| `parts` | `[]KindItemPart` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#PlayableSource
@@ -2311,10 +2363,11 @@ type PlayableSource struct {
 	// served, including a release's selected file or container member.
 	SHA1      string        `json:"sha1,omitempty"`
 	CRC32     string        `json:"crc32,omitempty"`
-	MaxBytes  int64         `json:"maxBytes,omitempty"`
-	ExpiresAt int64         `json:"expiresAt,omitempty"`
-	Container *ContainerRef `json:"container,omitempty"`
-	Release   *ReleaseHint  `json:"release,omitempty"`
+	MaxBytes  int64          `json:"maxBytes,omitempty"`
+	ExpiresAt int64          `json:"expiresAt,omitempty"`
+	Container *ContainerRef  `json:"container,omitempty"`
+	Release   *ReleaseHint   `json:"release,omitempty"`
+	Parts     []KindItemPart `json:"parts,omitempty"`
 }
 ``````
 
@@ -2365,6 +2418,29 @@ type VolumeRef struct {
 }
 ``````
 
+## Source: internal/core/kinditem.go#TrackHint.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `disc` | `int` | may be omitted (see validation for conditions) |  |
+| `number` | `int` | may be omitted (see validation for conditions) |  |
+| `title` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/kinditem.go#TrackHint
+
+``````
+// TrackHint identifies one track inside a multi-track audio release or archive
+// when exact filenames cannot be known before opening (for example scene RARs).
+// Ether matches by disc/track number first, then normalised title tokens,
+// failing on ambiguity. Exact fileHint semantics remain unchanged.
+type TrackHint struct {
+	Disc   int    `json:"disc,omitempty"`
+	Number int    `json:"number,omitempty"`
+	Title  string `json:"title,omitempty"`
+}
+``````
+
 ## Source: internal/core/kinditem.go#ReleaseHint.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2376,6 +2452,7 @@ type VolumeRef struct {
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
+| `track` | `*TrackHint` | may be omitted (see validation for conditions) |  |
 | `passwordSecret` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -2392,9 +2469,10 @@ type ReleaseHint struct {
 	InfoHash  string           `json:"infoHash,omitempty"`
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
-	File           string `json:"file,omitempty"`
-	FileHint       string `json:"fileHint,omitempty"`
-	PasswordSecret string `json:"passwordSecret,omitempty"`
+	File           string     `json:"file,omitempty"`
+	FileHint       string     `json:"fileHint,omitempty"`
+	Track          *TrackHint `json:"track,omitempty"`
+	PasswordSecret string     `json:"passwordSecret,omitempty"`
 }
 ``````
 
@@ -2429,6 +2507,7 @@ type KindResolveRequest struct {
 | `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
 | `job` | `string` | may be omitted (see validation for conditions) |  |
 | `sources` | `[]PlayableSource` | emitted (validation may require a value) |  |
+| `parts` | `[]KindItemPart` | may be omitted (see validation for conditions) |  |
 | `ttlSec` | `int` | may be omitted (see validation for conditions) |  |
 
 
@@ -2442,6 +2521,7 @@ type KindResolveResponse struct {
 	RetryInMS int64            `json:"retryInMs,omitempty"`
 	Job       string           `json:"job,omitempty"`
 	Sources   []PlayableSource `json:"sources"`
+	Parts     []KindItemPart   `json:"parts,omitempty"`
 	TTLSec    int              `json:"ttlSec,omitempty"`
 }
 ``````
@@ -30137,6 +30217,32 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         }
       }
     },
+    "releaseMember": {
+      "type": "object",
+      "required": [
+        "index",
+        "path",
+        "size"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based non-directory member index inside the archive."
+        },
+        "path": {
+          "type": "string",
+          "description": "Inner member path inside the archive; hand back as release.fileHint (or container.member) to open that exact member."
+        },
+        "size": {
+          "type": "integer"
+        },
+        "stored": {
+          "type": "boolean",
+          "description": "True when the member is stored uncompressed and can stream directly by byte range."
+        }
+      }
+    },
     "releaseFile": {
       "type": "object",
       "required": [
@@ -30155,6 +30261,32 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         },
         "size": {
           "type": "integer"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/releaseMember"
+          },
+          "description": "Non-directory files inside this archive (RAR, 7z, ZIP), populated on the first volume of readable Usenet archives."
+        }
+      }
+    },
+    "trackHint": {
+      "type": "object",
+      "properties": {
+        "disc": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional one-based disc number for multi-disc releases."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based track number; matched first alongside disc."
+        },
+        "title": {
+          "type": "string",
+          "description": "Optional track title used to disambiguate track-number ties or match by normalised title tokens when track numbers are absent."
         }
       }
     },
@@ -30247,7 +30379,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         },
         "fileHint": {
           "type": "string",
-          "description": "Archive member hint when composing a release with container extraction."
+          "description": "Exact archive member path or unique basename when composing a release with container extraction."
+        },
+        "track": {
+          "$ref": "#/$defs/trackHint",
+          "description": "Structured audio track hint ({disc?, number?, title?}) matched against release files or archive members by disc/track number first, then normalised title tokens, failing on ambiguity."
         }
       }
     }
@@ -41426,20 +41562,23 @@ type KindItem struct {
 | `mime` | `string` | may be omitted (see validation for conditions) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+| `fileIndex` | `*int` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#KindItemPart
 
 ``````
-// KindItemPart describes one declared file/part in hints.parts on a multi-file
+// KindItemPart describes one declared or resolve-time file/part on a multi-file
 // KindItem (#576). Ether passes the zero-based index back in
-// KindResolveRequest.PartIndex when resolving each part.
+// KindResolveRequest.PartIndex when resolving each part, or targets FileIndex
+// inside a resolved multi-file release.
 type KindItemPart struct {
 	Index       int     `json:"index"`
 	Name        string  `json:"name,omitempty"`
 	MIME        string  `json:"mime,omitempty"`
 	Size        int64   `json:"size,omitempty"`
 	DurationSec float64 `json:"durationSec,omitempty"`
+	FileIndex   *int    `json:"fileIndex,omitempty"`
 }
 ``````
 
@@ -41658,6 +41797,29 @@ type SourceQuery struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#ReleaseMember.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `path` | `string` | emitted (validation may require a value) |  |
+| `size` | `int64` | emitted (validation may require a value) |  |
+| `stored` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#ReleaseMember
+
+``````
+// ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
+// returned by a release_files source query.
+type ReleaseMember struct {
+	Index  int    `json:"index"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Stored bool   `json:"stored,omitempty"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#ReleaseFile.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -41665,6 +41827,7 @@ type SourceQuery struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `path` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
+| `members` | `[]ReleaseMember` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#ReleaseFile
@@ -41672,9 +41835,10 @@ type SourceQuery struct {
 ``````
 // ReleaseFile is one file inside a candidate release (release_files).
 type ReleaseFile struct {
-	Index int    `json:"index"`
-	Path  string `json:"path"`
-	Size  int64  `json:"size"`
+	Index   int             `json:"index"`
+	Path    string          `json:"path"`
+	Size    int64           `json:"size"`
+	Members []ReleaseMember `json:"members,omitempty"`
 }
 ``````
 
@@ -41835,6 +41999,7 @@ type KindMatchResponse struct {
 | `expiresAt` | `int64` | may be omitted (see validation for conditions) |  |
 | `container` | `*ContainerRef` | may be omitted (see validation for conditions) |  |
 | `release` | `*ReleaseHint` | may be omitted (see validation for conditions) |  |
+| `parts` | `[]KindItemPart` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#PlayableSource
@@ -41859,10 +42024,11 @@ type PlayableSource struct {
 	// including a release's selected file or container member; Size too.
 	SHA1      string        `json:"sha1,omitempty"`
 	CRC32     string        `json:"crc32,omitempty"`
-	MaxBytes  int64         `json:"maxBytes,omitempty"`
-	ExpiresAt int64         `json:"expiresAt,omitempty"`
-	Container *ContainerRef `json:"container,omitempty"`
-	Release   *ReleaseHint  `json:"release,omitempty"`
+	MaxBytes  int64          `json:"maxBytes,omitempty"`
+	ExpiresAt int64          `json:"expiresAt,omitempty"`
+	Container *ContainerRef  `json:"container,omitempty"`
+	Release   *ReleaseHint   `json:"release,omitempty"`
+	Parts     []KindItemPart `json:"parts,omitempty"`
 }
 ``````
 
@@ -41912,6 +42078,27 @@ type VolumeRef struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#TrackHint.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `disc` | `int` | may be omitted (see validation for conditions) |  |
+| `number` | `int` | may be omitted (see validation for conditions) |  |
+| `title` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#TrackHint
+
+``````
+// TrackHint identifies one track inside a multi-track audio release or archive
+// when exact inner filenames are unknown before opening.
+type TrackHint struct {
+	Disc   int    `json:"disc,omitempty"`
+	Number int    `json:"number,omitempty"`
+	Title  string `json:"title,omitempty"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#ReleaseHint.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -41923,6 +42110,7 @@ type VolumeRef struct {
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
+| `track` | `*TrackHint` | may be omitted (see validation for conditions) |  |
 | `passwordSecret` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -41938,9 +42126,10 @@ type ReleaseHint struct {
 	InfoHash  string           `json:"infoHash,omitempty"`
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
-	File           string `json:"file,omitempty"`
-	FileHint       string `json:"fileHint,omitempty"`
-	PasswordSecret string `json:"passwordSecret,omitempty"`
+	File           string     `json:"file,omitempty"`
+	FileHint       string     `json:"fileHint,omitempty"`
+	Track          *TrackHint `json:"track,omitempty"`
+	PasswordSecret string     `json:"passwordSecret,omitempty"`
 }
 ``````
 
@@ -41975,6 +42164,7 @@ type KindResolveRequest struct {
 | `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
 | `job` | `string` | may be omitted (see validation for conditions) |  |
 | `sources` | `[]PlayableSource` | emitted (validation may require a value) |  |
+| `parts` | `[]KindItemPart` | may be omitted (see validation for conditions) |  |
 | `ttlSec` | `int` | may be omitted (see validation for conditions) |  |
 
 
@@ -41987,6 +42177,7 @@ type KindResolveResponse struct {
 	RetryInMS int64            `json:"retryInMs,omitempty"`
 	Job       string           `json:"job,omitempty"`
 	Sources   []PlayableSource `json:"sources"`
+	Parts     []KindItemPart   `json:"parts,omitempty"`
 	TTLSec    int              `json:"ttlSec,omitempty"`
 }
 ``````
@@ -58165,6 +58356,8 @@ export interface KindItemPart {
   mime?: string;
   size?: number;
   durationSec?: number;
+  /** Optional zero-based file index inside a resolved multi-file release. */
+  fileIndex?: number;
 }
 
 export interface KindPage {
@@ -58231,11 +58424,28 @@ export interface SourceQuery {
   candidate?: SourceCandidate;
 }
 
+/** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */
+export interface ReleaseMember {
+  index: number;
+  path: string;
+  size: number;
+  stored?: boolean;
+}
+
 /** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
 export interface ReleaseFile {
   index: number;
   path: string;
   size: number;
+  /** Inner non-directory files when this entry is the first volume of a readable Usenet archive. */
+  members?: ReleaseMember[];
+}
+
+/** Structured track hint matched by disc/track number first, then normalised title tokens, failing on ambiguity. */
+export interface TrackHint {
+  disc?: number;
+  number?: number;
+  title?: string;
 }
 
 export interface SourceCandidate {
@@ -58305,10 +58515,13 @@ export interface PlayableSource {
     fileIndex?: number;
     /** Exact torrent path or unique basename, including non-video files. */
     file?: string;
-    /** Archive member name when composing a release with container extraction. */
+    /** Exact archive member path or unique basename when composing a release with container extraction. */
     fileHint?: string;
+    /** Structured track hint ({disc?, number?, title?}) matched by disc/track number first, then title tokens. */
+    track?: TrackHint;
     passwordSecret?: string;
   };
+  parts?: KindItemPart[];
 }
 
 export interface KindResolveRequest {
@@ -58326,6 +58539,7 @@ export interface KindResolveResponse {
   retryInMs?: number;
   job?: string;
   sources: PlayableSource[];
+  parts?: KindItemPart[];
   ttlSec?: number;
 }
 

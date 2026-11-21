@@ -783,6 +783,18 @@ func chooseNonVideoFile(files []File, target *core.ReleaseTarget) (File, error) 
 		return File{}, fmt.Errorf("debrid: no archive for memberIndex %d (%s): %w", *target.MemberIndex, torrentFileSummary(files), errNoUsableNonVideo)
 	}
 
+	if th := coreTrackToNZB(target.Track); th != nil {
+		if idx, ok, ambig := nzb.MatchTrackIndex(names, *th, target.MIME); ok {
+			return nonEmpty[idx], nil
+		} else if ambig {
+			return File{}, fmt.Errorf("debrid: track hint (disc=%d number=%d title=%q) matched multiple files: %w", th.Disc, th.Number, th.Title, core.ErrWrongContent)
+		}
+		if arc, ok := singleArchive(); ok {
+			return arc, nil
+		}
+		return File{}, fmt.Errorf("debrid: no file or archive matching track hint (disc=%d number=%d title=%q) (%s): %w", th.Disc, th.Number, th.Title, torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
 	best := -1
 	bestRank := 0
 	for i, f := range nonEmpty {
@@ -853,7 +865,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	}
 
 	if target != nil && target.AllowNonVideo &&
-		(target.Member != "" || target.MemberIndex != nil || nzb.IsNonVideoMIME(target.MIME)) {
+		(target.Member != "" || target.MemberIndex != nil || coreTrackToNZB(target.Track) != nil || nzb.IsNonVideoMIME(target.MIME)) {
 		return chooseNonVideoFile(files, target)
 	}
 

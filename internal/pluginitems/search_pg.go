@@ -70,12 +70,16 @@ ORDER BY
 		WHEN LOWER(i.title) LIKE ? ESCAPE '\' OR i.sort_title LIKE ? ESCAPE '\' THEN 1
 		ELSE 2
 	END ASC,
+	CASE
+		WHEN LOWER(i.title) = ? OR i.sort_title = ? OR LOWER(i.title) LIKE ? ESCAPE '\' OR i.sort_title LIKE ? ESCAPE '\' THEN i.rating
+		ELSE 0
+	END DESC,
 	ts_rank(i.search_tsv, to_tsquery('simple', ?)) DESC,
 	i.rating DESC,
 	i.sort_title ASC,
 	i.item_ref ASC
 LIMIT ?`
-	qArgs := append(append([]any(nil), args...), exactTitle, exactSort, prefixTitle, prefixSort, tsQuery, limit)
+	qArgs := append(append([]any(nil), args...), exactTitle, exactSort, prefixTitle, prefixSort, exactTitle, exactSort, prefixTitle, prefixSort, tsQuery, limit)
 	items, err := s.queryItems(ctx, querySQL, qArgs, true)
 	if err != nil {
 		return BrowsePage{}, err

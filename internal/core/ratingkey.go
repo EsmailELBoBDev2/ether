@@ -64,6 +64,13 @@ const (
 	// PluginKeyOffset is the base integer added to plugin_items.seq to produce
 	// its RatingKey: RatingKey(PluginKeyOffset + seq) == PluginKey(seq).
 	PluginKeyOffset int64 = int64(KindLocal)*keyBase + PluginKeyBase
+
+	// PluginPartKeyBase carves out [PluginPartKeyBase+PluginPartStride, ...)
+	// inside KindLocal for synthetic per-part RatingKeys of multi-part plugin
+	// items (hints.parts / fields.parts), keeping every key strictly below 2^53.
+	PluginPartKeyBase int64 = 7_000_000_000_000
+	PluginPartStride  int64 = 10_000
+	PluginPartMaxSeq  int64 = 19_900_000
 )
 
 // PluginPersonIDBase and PluginPersonIDSpan carve out deterministic positive
@@ -115,8 +122,14 @@ func PluginKey(seq int64) RatingKey {
 	return RatingKey(int64(KindLocal)*keyBase + PluginKeyBase + seq)
 }
 
-// IsPluginKey reports whether k is a plugin item RatingKey (spec §2.2).
+// IsPluginKey reports whether k is a plugin item RatingKey or a synthetic
+// per-part RatingKey derived from a multi-part plugin item (spec §2.2).
 func (k RatingKey) IsPluginKey() bool {
+	return k.IsPluginItemKey() || k.IsPluginPartKey()
+}
+
+// IsPluginItemKey reports whether k is a stored plugin_items RatingKey.
+func (k RatingKey) IsPluginItemKey() bool {
 	if k.Kind() != KindLocal {
 		return false
 	}
@@ -124,10 +137,49 @@ func (k RatingKey) IsPluginKey() bool {
 	return p > PluginKeyBase && p < PluginKeyBase+PluginKeyMaxSeq
 }
 
+// PluginPartKey builds a deterministic synthetic RatingKey for zero-based
+// partIndex of a stored plugin item RatingKey. Every valid result stays below
+// 2^53 so JavaScript clients parse it safely.
+func PluginPartKey(parent RatingKey, partIndex int) (RatingKey, bool) {
+	if !parent.IsPluginItemKey() || partIndex < 0 || int64(partIndex) >= PluginPartStride {
+		return 0, false
+	}
+	seq := parent.PluginSeq()
+	if seq < 1 || seq >= PluginPartMaxSeq {
+		return 0, false
+	}
+	return RatingKey(int64(KindLocal)*keyBase + PluginPartKeyBase + seq*PluginPartStride + int64(partIndex)), true
+}
+
+// PluginPart unpacks a synthetic part RatingKey into its stored parent plugin
+// RatingKey and zero-based partIndex.
+func (k RatingKey) PluginPart() (parent RatingKey, partIndex int, ok bool) {
+	if k.Kind() != KindLocal {
+		return 0, 0, false
+	}
+	p := k.payload()
+	if p < PluginPartKeyBase+PluginPartStride || p >= PluginPartKeyBase+PluginPartMaxSeq*PluginPartStride {
+		return 0, 0, false
+	}
+	off := p - PluginPartKeyBase
+	seq := off / PluginPartStride
+	idx := int(off % PluginPartStride)
+	if seq < 1 || seq >= PluginPartMaxSeq {
+		return 0, 0, false
+	}
+	return PluginKey(seq), idx, true
+}
+
+// IsPluginPartKey reports whether k is a synthetic per-part plugin RatingKey.
+func (k RatingKey) IsPluginPartKey() bool {
+	_, _, ok := k.PluginPart()
+	return ok
+}
+
 // PluginSeq returns the stored sequence number (1 .. PluginKeyMaxSeq-1) of a
-// plugin item RatingKey, or 0 when k is not a plugin key.
+// stored plugin item RatingKey, or 0 when k is not a stored plugin item key.
 func (k RatingKey) PluginSeq() int64 {
-	if !k.IsPluginKey() {
+	if !k.IsPluginItemKey() {
 		return 0
 	}
 	return k.payload() - PluginKeyBase

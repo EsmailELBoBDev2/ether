@@ -482,3 +482,57 @@ func TestVersionHeaderProbeYieldsImmediatelyToActivePlayback(t *testing.T) {
 		t.Fatal("canceled probe must not store partial facts")
 	}
 }
+
+func TestCachedItemProbePersistsPluginChaptersAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, nil, nil)
+	db := store.OpenTest(t)
+	dir := t.TempDir()
+	cfg := config.Defaults(dir)
+
+	bookKey := core.PluginKey(42001)
+	probed := core.MediaInfo{
+		Container: "mp3",
+		Size:      161_032_192,
+		Duration:  20_120 * time.Second,
+		Streams:   []core.StreamInfo{{Index: 0, Type: "audio", Codec: "mp3", Channels: 2}},
+		Chapters: []core.Chapter{
+			{ID: 0, Title: "Opening Credits", Start: 0, End: 16 * time.Second},
+			{ID: 1, Title: "Epigraph", Start: 16 * time.Second, End: 44 * time.Second},
+			{ID: 2, Title: "Introduction: My Story", Start: 44 * time.Second, End: 1057 * time.Second},
+		},
+	}
+
+	deps := Deps{
+		Resolver:   h.resolver,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB: db,
+	}
+	m1, err := New(deps, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1.persistItemProbe(ctx, bookKey, probed)
+	got1, ok := m1.CachedItemProbe(bookKey)
+	if !ok || len(got1.Chapters) != 3 || got1.Chapters[2].Title != "Introduction: My Story" {
+		t.Fatalf("m1.CachedItemProbe = (%+v, %v), want 3 chapters", got1, ok)
+	}
+	m1.Close()
+
+	// Fresh Manager simulating restart must preload chapters from release_probes.
+	m2, err := New(deps, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+
+	got2, ok := m2.CachedItemProbe(bookKey)
+	if !ok || got2.Estimated || len(got2.Chapters) != 3 || got2.Chapters[0].Title != "Opening Credits" || got2.Chapters[2].Start != 44*time.Second {
+		t.Fatalf("m2.CachedItemProbe after restart = (%+v, %v), want 3 persisted chapters", got2, ok)
+	}
+}

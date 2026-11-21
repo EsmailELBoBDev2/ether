@@ -180,6 +180,10 @@ func (s *Service) storedEpisodePage(ctx context.Context, v *core.User, library *
 // checks the library walk applies: the series is visible, and the episode
 // is visible under it and matches the query.
 func (s *Service) visibleEpisodes(ctx context.Context, v *core.User, batch []core.Title, q frontend.ItemQuery, availabilityInSQL bool) ([]core.Title, error) {
+	return s.visibleEpisodesWith(ctx, v, batch, q, availabilityInSQL, false)
+}
+
+func (s *Service) visibleEpisodesWith(ctx context.Context, v *core.User, batch []core.Title, q frontend.ItemQuery, availabilityInSQL, skipSectionCheck bool) ([]core.Title, error) {
 	keys := make([]core.RatingKey, 0, 8)
 	seen := map[core.RatingKey]bool{}
 	for _, t := range batch {
@@ -192,15 +196,20 @@ func (s *Service) visibleEpisodes(ctx context.Context, v *core.User, batch []cor
 	if err != nil {
 		return nil, err
 	}
+	vis := s.d.Visibility
+	if skipSectionCheck {
+		vis = withoutSectionCheck(vis)
+	}
 	shown := map[core.RatingKey]bool{}
 	for k, parent := range parents {
 		if availabilityInSQL {
-			shown[k] = parent.Key == k && s.d.Visibility.Playable(ctx, v, &parent)
+			shown[k] = parent.Key == k && vis.Playable(ctx, v, &parent)
+		} else if skipSectionCheck {
+			shown[k] = parent.Key == k && vis.Visible(ctx, v, &parent)
 		} else {
 			shown[k] = parent.Key == k && s.visible(ctx, v, &parent)
 		}
 	}
-	vis := s.d.Visibility
 	vis.GetTitle = func(_ context.Context, key core.RatingKey) (*core.Title, error) {
 		title, ok := parents[key]
 		if !ok || title.Key != key {
@@ -214,14 +223,19 @@ func (s *Service) visibleEpisodes(ctx context.Context, v *core.User, batch []cor
 		if !shown[title.ShowKey] {
 			continue
 		}
-		id, ok := vis.SectionFor(title.Type)
 		var allowed bool
 		if availabilityInSQL {
 			allowed = vis.Playable(ctx, v, &title)
 		} else {
 			allowed = vis.Visible(ctx, v, &title)
 		}
-		if !ok || !SectionAllowed(v, id) || !allowed {
+		if !skipSectionCheck {
+			id, ok := vis.SectionFor(title.Type)
+			if !ok || !SectionAllowed(v, id) {
+				continue
+			}
+		}
+		if !allowed {
 			continue
 		}
 		match, err := s.matchesUserQuery(ctx, v, title, q)

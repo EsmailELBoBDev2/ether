@@ -456,13 +456,36 @@ func (s *Server) recentlyAddedHub(ctx context.Context, pr *Request, sec Section,
 }
 
 func (s *Server) recentlyAddedHubPage(ctx context.Context, pr *Request, sec Section, count int, noTotal bool) (hubSpec, error) {
-	recent := s.exp().NewRecent(frontend.RecentOptions{Visibility: s.sectionVisibility(sec), Unrestricted: func(u *frontend.User) bool { return !s.viewerRestricted(u) }})
-	items, more, err := recent.Added(ctx, pr.User, sec.Type, count, func(ctx context.Context, q frontend.BrowseQuery) (frontend.Page, error) {
-		q.NoTotal = noTotal
-		return s.catalogBrowse(ctx, q)
-	})
-	if err != nil {
-		return hubSpec{}, err
+	var (
+		items []frontend.Title
+		more  bool
+		err   error
+	)
+	if isKindSection(sec) && s.exp() != nil {
+		page, lerr := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), frontend.ItemQuery{
+			Filter:  frontend.Filter{KnownAddedDate: true},
+			Sort:    frontend.SortAdded,
+			Desc:    true,
+			Limit:   count + 1,
+			NoTotal: true,
+		})
+		if lerr != nil {
+			return hubSpec{}, lerr
+		}
+		items = page.Items
+		if len(items) > count {
+			more = true
+			items = items[:count]
+		}
+	} else {
+		recent := s.exp().NewRecent(frontend.RecentOptions{Visibility: s.sectionVisibility(sec), Unrestricted: func(u *frontend.User) bool { return !s.viewerRestricted(u) }})
+		items, more, err = recent.Added(ctx, pr.User, sec.Type, count, func(ctx context.Context, q frontend.BrowseQuery) (frontend.Page, error) {
+			q.NoTotal = noTotal
+			return s.catalogBrowse(ctx, q)
+		})
+		if err != nil {
+			return hubSpec{}, err
+		}
 	}
 	id := strconv.Itoa(sec.ID)
 	hs := hubSpec{Hub: frontend.Hub{Title: "Recently Added in " + sec.Title, Type: sec.Type, Style: "shelf", Promoted: true, Items: items}}

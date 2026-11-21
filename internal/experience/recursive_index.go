@@ -12,8 +12,11 @@ import (
 // writer while sign-ins wait). Catalogue child queries carry parent policy and
 // availability in SQL; only the returned page needs host authorization.
 func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, library *Library, q frontend.ItemQuery) (core.Page, bool, error) {
+	plainFilter := q.Filter
+	plainFilter.KnownAddedDate = false
+	plainFilter.SaferPlexRating = false
 	if library == nil || library.Type != core.TypeShow || !q.Recursive || q.Limit <= 0 || q.Season != nil || q.StartAt != 0 || q.AdjacentTo != 0 ||
-		!plainRecursiveFilter(q.Filter, library.Type) || s.d.Browse == nil || s.d.PageExclusions == nil || s.d.ParentTitles == nil || !s.d.StoredEpisodes.complete() || (q.Favorite != nil && *q.Favorite) {
+		!plainRecursiveFilter(plainFilter, library.Type) || s.d.Browse == nil || s.d.PageExclusions == nil || s.d.ParentTitles == nil || !s.d.StoredEpisodes.complete() || (q.Favorite != nil && *q.Favorite) {
 		return core.Page{}, false, nil
 	}
 	// Custom episode groups have synthetic children not in the stored index.
@@ -54,6 +57,11 @@ func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, librar
 		if none {
 			continue
 		}
+		if typ == core.TypeEpisode || typ == core.TypeSeason {
+			child := filter
+			child.ChildVisibility = nil
+			filter.ChildVisibility = &child
+		}
 		filter, fits, none, err := s.userStateFilter(ctx, v, filter, q)
 		if err != nil {
 			return core.Page{}, true, err
@@ -80,7 +88,7 @@ func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, librar
 		// show-stamped filter would fail every episode's match check.
 		check.Filter.Type = ""
 		if typ == core.TypeEpisode || typ == core.TypeSeason {
-			kept, err = s.visibleEpisodes(ctx, v, page.Items, check, ex.AvailabilityInSQL)
+			kept, err = s.visibleEpisodesWith(ctx, v, page.Items, check, ex.AvailabilityInSQL, true)
 			if err != nil {
 				return core.Page{}, true, err
 			}

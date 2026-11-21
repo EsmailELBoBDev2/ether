@@ -14,6 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
 func hashJSON(v any) string { b, _ := json.Marshal(v); return hash(string(b)) }
@@ -856,8 +857,14 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := object{"title": ts[0], "extras": extras, "chapters": detailChapters(d), "cast": cast, "crew": crew}
-	if d.Title.MediaClass == frontend.MediaClassBook || d.Title.MBItemType == "Book" {
+	if reading.IsBookTitle(d.Title) {
 		out["canPlay"] = false
+		canRead := i.host.KindStreams != nil && d.Title.Key.IsPluginKey() && d.Unavailable == nil &&
+			d.Title.Type != frontend.TypeShow && d.Title.Type != frontend.TypeSeason
+		if d.CanRead != nil {
+			canRead = canRead && *d.CanRead
+		}
+		out["canRead"] = canRead
 	} else if d.CanPlay != nil {
 		out["canPlay"] = *d.CanPlay
 	}

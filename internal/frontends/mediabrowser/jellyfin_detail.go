@@ -4,8 +4,13 @@ import "github.com/braedonsaunders/ether/internal/frontend"
 
 // jellyfinItemDetailDTO reports only the host's policy-backed estimate.
 func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[string]any) {
-	if detail.CanPlay != nil {
-		if *detail.CanPlay {
+	canAccess := detail.CanPlay
+	if mbIsBookItem(detail.Title) {
+		readable := i.bookReadable(detail)
+		canAccess = &readable
+	}
+	if canAccess != nil {
+		if *canAccess {
 			dto["PlayAccess"] = "Full"
 		} else {
 			dto["PlayAccess"] = "None"

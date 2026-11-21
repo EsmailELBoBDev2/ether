@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 	"log/slog"
 	"math"
 	"net/http"
@@ -209,7 +210,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if item.IsPluginKey() && i.isBookTitle(r, v, item) {
-			problem(w, 400, "request", "not_playable")
+			problemMessage(w, 400, "request", "not_playable", "This title is a book and opens via reading rather than playback.")
 			return
 		}
 		// Omission delegates resume to current server-owned watch state. An
@@ -1402,7 +1403,7 @@ func (i *instance) isBookTitle(r *http.Request, v *frontend.Viewer, key frontend
 	if err != nil {
 		return false
 	}
-	return d.Title.MediaClass == frontend.MediaClassBook || d.Title.MBItemType == "Book"
+	return reading.IsBookTitle(d.Title)
 }
 
 func audioSourceMIME(container, codec string) string {

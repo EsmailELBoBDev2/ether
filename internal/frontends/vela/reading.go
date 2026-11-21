@@ -1,18 +1,17 @@
 package vela
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"io"
 	"math"
 	"net/http"
-	"path"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
 const (
@@ -23,7 +22,7 @@ const (
 	maxLabelBytes    = 512
 )
 
-var readingFormats = []string{"epub", "pdf", "cbz"}
+var readingFormats = reading.Formats
 
 type readTicket struct {
 	mu        sync.RWMutex
@@ -93,13 +92,12 @@ func (i *instance) read(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
-	if !k.IsPluginKey() ||
-		(detail.Title.MediaClass != "" && detail.Title.MediaClass != frontend.MediaClassBook) ||
-		(detail.Title.MediaClass == "" && detail.Title.MBItemType != "" && detail.Title.MBItemType != "Book") {
+	if !k.IsPluginKey() || !reading.IsBookTitle(detail.Title) ||
+		detail.Unavailable != nil || (detail.CanRead != nil && !*detail.CanRead) {
 		problem(w, 400, "request", "not_readable")
 		return
 	}
-	media, e := i.host.KindStreams.OpenKind(r.Context(), v, k, []string{"range", "download", "container", "release"})
+	media, e := i.host.KindStreams.OpenKind(r.Context(), v, k, reading.AcceptPatterns)
 	if e != nil {
 		fail(w, e, r)
 		return
@@ -108,7 +106,7 @@ func (i *instance) read(w http.ResponseWriter, r *http.Request) {
 		fail(w, frontend.ErrNotAvailable, r)
 		return
 	}
-	format, mimeType, ok := detectReadingFormat(media, detail.Title)
+	format, mimeType, ok := reading.DetectFormat(media, detail.Title)
 	if !ok {
 		if media.Closer != nil {
 			_ = media.Closer.Close()
@@ -136,7 +134,7 @@ func (i *instance) read(w http.ResponseWriter, r *http.Request) {
 		key:       k,
 		format:    format,
 		mimeType:  mimeType,
-		name:      readFilename(media.Name, format),
+		name:      reading.Filename(media.Name, detail.Title.Title, format),
 		size:      media.Size,
 		createdAt: now,
 		expiresAt: expires,
@@ -185,7 +183,7 @@ func (i *instance) readFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "sandbox")
 	w.Header().Set("Cache-Control", "no-store")
-	sr := io.NewSectionReader(entry.media.ReaderAt, 0, entry.size)
+	sr := io.NewSectionReader(reading.ContextReaderAt(r.Context(), entry.media.ReaderAt), 0, entry.size)
 	http.ServeContent(w, r, entry.name, time.Time{}, sr)
 }
 
@@ -342,59 +340,4 @@ func readingProgressWire(r *frontend.ReadingProgress) object {
 		out["updatedAt"] = r.UpdatedAt.UTC().Format(time.RFC3339)
 	}
 	return out
-}
-
-func canonicalReadingFormat(raw string) (format, mimeType string, ok bool) {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	if i := strings.IndexByte(s, ';'); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	}
-	switch s {
-	case "epub", ".epub", "application/epub+zip":
-		return "epub", "application/epub+zip", true
-	case "pdf", ".pdf", "application/pdf":
-		return "pdf", "application/pdf", true
-	case "cbz", ".cbz", "application/vnd.comicbook+zip", "application/x-cbz":
-		return "cbz", "application/vnd.comicbook+zip", true
-	default:
-		return "", "", false
-	}
-}
-
-func detectReadingFormat(media *frontend.KindMedia, title frontend.Title) (format, mimeType string, ok bool) {
-	if media != nil {
-		if f, m, ok := canonicalReadingFormat(media.MIME); ok {
-			return f, m, true
-		}
-		if ext := path.Ext(media.Name); ext != "" {
-			if f, m, ok := canonicalReadingFormat(ext); ok {
-				return f, m, true
-			}
-		}
-	}
-	if title.MediaReading != nil {
-		if f, m, ok := canonicalReadingFormat(title.MediaReading.Format); ok {
-			return f, m, true
-		}
-	}
-	if media != nil && media.ReaderAt != nil && media.Size >= 5 {
-		var hdr [64]byte
-		n, _ := media.ReadAt(hdr[:], 0)
-		b := hdr[:n]
-		if len(b) >= 5 && bytes.Equal(b[:5], []byte("%PDF-")) {
-			return "pdf", "application/pdf", true
-		}
-		if len(b) >= 4 && bytes.Equal(b[:4], []byte{'P', 'K', 0x03, 0x04}) && bytes.Contains(b, []byte("application/epub+zip")) {
-			return "epub", "application/epub+zip", true
-		}
-	}
-	return "", "", false
-}
-
-func readFilename(name, format string) string {
-	base := path.Base(strings.TrimSpace(name))
-	if base == "" || base == "." || base == "/" {
-		return "book." + format
-	}
-	return base
 }

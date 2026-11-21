@@ -1170,8 +1170,13 @@ func (s *surfaceExperience) Item(ctx context.Context, req frontend.ItemRequest) 
 	if req.Key.IsPluginKey() || detail.Title.Key.IsPluginKey() {
 		if s.pluginLibs != nil {
 			if piv, pErr := s.pluginLibs.Item(ctx, detail.Title.Key); pErr == nil {
-				playable := piv.Playable && piv.Title.MediaClass != core.MediaClassBook && piv.Title.MBItemType != "Book"
+				isBook := piv.Title.MediaClass == core.MediaClassBook || piv.Title.MBItemType == "Book"
+				playable := piv.Playable && !isBook
 				detail.CanPlay = &playable
+				if isBook {
+					readable := piv.Playable && piv.Unavailable == nil
+					detail.CanRead = &readable
+				}
 			}
 		}
 		if s.artwork == nil || req.Viewer == nil {

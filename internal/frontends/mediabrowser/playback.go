@@ -1076,6 +1076,16 @@ func (i *instance) playbackRoutes() error {
 		if err := i.router.Handle(method, "/Audio/{id}/{name}", http.HandlerFunc(i.streamAlias)); err != nil {
 			return err
 		}
+		if err := i.router.Handle(method, "/Items/{id}/Download", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			i.serveBookFile(w, r, true)
+		})); err != nil {
+			return err
+		}
+		if err := i.router.Handle(method, "/Items/{id}/File", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			i.serveBookFile(w, r, false)
+		})); err != nil {
+			return err
+		}
 	}
 	if err := i.router.Handle("GET", "/MediaSegments/{itemId}", http.HandlerFunc(i.mediaSegments)); err != nil {
 		return err

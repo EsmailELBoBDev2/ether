@@ -94,7 +94,7 @@ func cacheableBrowse(r *http.Request) bool {
 		return false
 	}
 	p := r.URL.Path
-	if strings.Contains(p, "/Images/") || strings.Contains(p, "/Playback") || strings.Contains(p, "/Download") || strings.Contains(p, "/Subtitles/") || strings.Contains(p, "/Videos/") {
+	if strings.Contains(p, "/Images/") || strings.Contains(p, "/Playback") || strings.Contains(p, "/Download") || strings.Contains(p, "/File") || strings.Contains(p, "/Subtitles/") || strings.Contains(p, "/Videos/") {
 		return false
 	}
 	// Library lists fill personalized shelves after the first response. Caching

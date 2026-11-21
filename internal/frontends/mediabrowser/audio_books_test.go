@@ -1,6 +1,8 @@
 package mediabrowser
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -137,5 +139,262 @@ func TestMediaBrowserBookRefusalAudioTranscodeUniversalAndReadingPercentage(t *t
 	})
 	if pct, ok := ud["PlayedPercentage"].(float64); !ok || pct < 41.9 || pct > 42.1 {
 		t.Fatalf("userDataDTO PlayedPercentage = %v, want 42", ud["PlayedPercentage"])
+	}
+}
+
+type fakeBookKindStreams struct {
+	openFn func(context.Context, *core.Viewer, core.RatingKey, []string) (*frontend.KindMedia, error)
+}
+
+func (f fakeBookKindStreams) OpenKind(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string) (*frontend.KindMedia, error) {
+	return f.openFn(ctx, viewer, key, accept)
+}
+
+func (f fakeBookKindStreams) KindLeaves(context.Context, *core.Viewer, core.RatingKey) ([]frontend.KindLeaf, error) {
+	return nil, nil
+}
+
+func sampleBookEPUB(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Write([]byte("application/epub+zip"))
+	ch, err := zw.CreateHeader(&zip.FileHeader{Name: "OEBPS/ch1.xhtml", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = ch.Write([]byte("<html><body>Dune</body></html>"))
+	_ = zw.Close()
+	return buf.Bytes()
+}
+
+func TestMediaBrowserBookDetailAndDownloadFile(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 1}
+	userID, err := ids.GUID(ids.User, viewer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookKey := core.PluginKey(501)
+	pdfKey := core.PluginKey(502)
+	unavailKey := core.PluginKey(503)
+	movieKey := core.MovieKey(504)
+	epubBytes := sampleBookEPUB(t)
+	pdfBytes := []byte("%PDF-1.7\nhello world\n%%EOF\n")
+
+	var preparing atomic.Bool
+	yes, no := true, false
+
+	exp := frontendtest.Experience{
+		ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+			switch req.Key {
+			case bookKey:
+				return frontend.ItemDetail{
+					Title: frontend.Title{
+						Key:          bookKey,
+						Type:         frontend.TypeMovie,
+						Title:        "Dune",
+						MediaClass:   core.MediaClassBook,
+						MBItemType:   "Book",
+						MediaReading: &core.TitleReading{Format: "epub", Pages: 606},
+					},
+					CanPlay: &no,
+					CanRead: &yes,
+				}, nil
+			case pdfKey:
+				return frontend.ItemDetail{
+					Title: frontend.Title{
+						Key:          pdfKey,
+						Type:         frontend.TypeMovie,
+						Title:        "Manual",
+						MediaClass:   core.MediaClassBook,
+						MBItemType:   "Book",
+						MediaReading: &core.TitleReading{Format: "pdf"},
+					},
+					CanPlay: &no,
+					CanRead: &yes,
+				}, nil
+			case unavailKey:
+				return frontend.ItemDetail{
+					Title: frontend.Title{
+						Key:          unavailKey,
+						Type:         frontend.TypeMovie,
+						Title:        "Missing Book",
+						MediaClass:   core.MediaClassBook,
+						MBItemType:   "Book",
+						MediaReading: &core.TitleReading{Format: "epub"},
+					},
+					CanPlay:     &no,
+					CanRead:     &no,
+					Unavailable: &core.ItemUnavailable{Code: "removed"},
+				}, nil
+			default:
+				return frontend.ItemDetail{
+					Title: frontend.Title{Key: movieKey, Type: frontend.TypeMovie, Title: "Film"},
+				}, nil
+			}
+		},
+	}
+
+	ks := fakeBookKindStreams{
+		openFn: func(_ context.Context, _ *core.Viewer, key core.RatingKey, accept []string) (*frontend.KindMedia, error) {
+			if preparing.Load() {
+				return nil, &frontend.PreparingError{RetryAfter: 3 * time.Second}
+			}
+			switch key {
+			case bookKey:
+				return &frontend.KindMedia{
+					ReaderAt: bytes.NewReader(epubBytes),
+					Size:     int64(len(epubBytes)),
+					Name:     "Dune.epub",
+					MIME:     "application/epub+zip",
+				}, nil
+			case pdfKey:
+				return &frontend.KindMedia{
+					ReaderAt: bytes.NewReader(pdfBytes),
+					Size:     int64(len(pdfBytes)),
+					Name:     "Manual.pdf",
+					MIME:     "application/pdf",
+				}, nil
+			default:
+				return nil, core.ErrNotFound
+			}
+		},
+	}
+
+	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
+	host := frontend.Host{
+		Identity:     ident,
+		Experience:   exp,
+		KindStreams:  ks,
+		Capabilities: frontendtest.Capabilities{},
+	}
+
+	jf, err := (Jellyfin{MachineID: "jf"}).Mount(context.Background(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	em, err := (Emby{MachineID: "em"}).Mount(context.Background(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bookID := ids.RatingKeyGUID(bookKey)
+	pdfID := ids.RatingKeyGUID(pdfKey)
+	unavailID := ids.RatingKeyGUID(unavailKey)
+	movieID := ids.RatingKeyGUID(movieKey)
+
+	// 1. Jellyfin detail exposes Path/Container/CanDownload/PlayAccess:Full without MediaSources.
+	detailReq := httptest.NewRequest(http.MethodGet, "/Users/"+userID+"/Items/"+bookID+"?api_key=grant", nil)
+	detailRec := httptest.NewRecorder()
+	jf.Handler().ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("jellyfin book detail = (%d) %s", detailRec.Code, detailRec.Body.String())
+	}
+	var jfDTO map[string]any
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &jfDTO); err != nil {
+		t.Fatal(err)
+	}
+	if jfDTO["Type"] != "Book" || jfDTO["MediaType"] != "Book" || jfDTO["Path"] != "/Books/Dune.epub" ||
+		jfDTO["Container"] != "epub" || jfDTO["CanDownload"] != true || jfDTO["PlayAccess"] != "Full" {
+		t.Fatalf("unexpected jellyfin book detail: %+v", jfDTO)
+	}
+	if _, hasSources := jfDTO["MediaSources"]; hasSources {
+		t.Fatalf("book detail must not advertise MediaSources: %+v", jfDTO["MediaSources"])
+	}
+
+	// Emby detail also exposes MimeType and FileName for books.
+	emReq := httptest.NewRequest(http.MethodGet, "/emby/Users/"+userID+"/Items/"+bookID+"?api_key=grant", nil)
+	emRec := httptest.NewRecorder()
+	em.Handler().ServeHTTP(emRec, emReq)
+	if emRec.Code != http.StatusOK {
+		t.Fatalf("emby book detail = (%d) %s", emRec.Code, emRec.Body.String())
+	}
+	var emDTO map[string]any
+	if err := json.Unmarshal(emRec.Body.Bytes(), &emDTO); err != nil {
+		t.Fatal(err)
+	}
+	if emDTO["Path"] != "/Books/Dune.epub" || emDTO["Container"] != "epub" || emDTO["CanDownload"] != true ||
+		emDTO["MimeType"] != "application/epub+zip" || emDTO["FileName"] != "Dune.epub" {
+		t.Fatalf("unexpected emby book detail: %+v", emDTO)
+	}
+
+	// Unavailable book omits Path/Container and sets CanDownload:false / PlayAccess:None.
+	uReq := httptest.NewRequest(http.MethodGet, "/Users/"+userID+"/Items/"+unavailID+"?api_key=grant", nil)
+	uRec := httptest.NewRecorder()
+	jf.Handler().ServeHTTP(uRec, uReq)
+	var uDTO map[string]any
+	if err := json.Unmarshal(uRec.Body.Bytes(), &uDTO); err != nil {
+		t.Fatal(err)
+	}
+	if uDTO["CanDownload"] != false || uDTO["PlayAccess"] != "None" {
+		t.Fatalf("unavailable book detail flags = %+v", uDTO)
+	}
+	if _, hasPath := uDTO["Path"]; hasPath {
+		t.Fatalf("unavailable book must omit Path: %+v", uDTO["Path"])
+	}
+
+	// 2. GET/HEAD /Items/{id}/Download and /Items/{id}/File serve EPUB & PDF with range + safety headers.
+	dlReq := httptest.NewRequest(http.MethodGet, "/Items/"+bookID+"/Download?api_key=grant", nil)
+	dlRec := httptest.NewRecorder()
+	jf.Handler().ServeHTTP(dlRec, dlReq)
+	if dlRec.Code != http.StatusOK || dlRec.Header().Get("Content-Type") != "application/epub+zip" ||
+		!strings.HasPrefix(dlRec.Header().Get("Content-Disposition"), "attachment;") ||
+		dlRec.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		!strings.Contains(dlRec.Header().Get("Content-Security-Policy"), "sandbox") ||
+		dlRec.Header().Get("Cache-Control") != "no-store" ||
+		!bytes.Equal(dlRec.Body.Bytes(), epubBytes) {
+		t.Fatalf("GET /Download = (%d, headers=%v, len=%d)", dlRec.Code, dlRec.Header(), dlRec.Body.Len())
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, "/emby/Items/"+pdfID+"/File?api_key=grant", nil)
+	rangeReq.Header.Set("Range", "bytes=0-7")
+	rangeRec := httptest.NewRecorder()
+	em.Handler().ServeHTTP(rangeRec, rangeReq)
+	if rangeRec.Code != http.StatusPartialContent || rangeRec.Header().Get("Content-Type") != "application/pdf" ||
+		!strings.HasPrefix(rangeRec.Header().Get("Content-Disposition"), "inline;") ||
+		!bytes.Equal(rangeRec.Body.Bytes(), pdfBytes[:8]) {
+		t.Fatalf("Range GET /File = (%d, headers=%v, body=%q)", rangeRec.Code, rangeRec.Header(), rangeRec.Body.String())
+	}
+
+	headReq := httptest.NewRequest(http.MethodHead, "/Items/"+bookID+"/Download?api_key=grant", nil)
+	headRec := httptest.NewRecorder()
+	jf.Handler().ServeHTTP(headRec, headReq)
+	if headRec.Code != http.StatusOK || headRec.Header().Get("Content-Type") != "application/epub+zip" || headRec.Body.Len() != 0 {
+		t.Fatalf("HEAD /Download = (%d, %q, len=%d)", headRec.Code, headRec.Header().Get("Content-Type"), headRec.Body.Len())
+	}
+
+	// 3. Preparing error maps to 503 + Retry-After; unauth -> 401; movie & unavailable book -> 404.
+	preparing.Store(true)
+	prepReq := httptest.NewRequest(http.MethodGet, "/Items/"+bookID+"/Download?api_key=grant", nil)
+	prepRec := httptest.NewRecorder()
+	jf.Handler().ServeHTTP(prepRec, prepReq)
+	if prepRec.Code != http.StatusServiceUnavailable || prepRec.Header().Get("Retry-After") != "3" {
+		t.Fatalf("preparing /Download = (%d, Retry-After=%q)", prepRec.Code, prepRec.Header().Get("Retry-After"))
+	}
+	preparing.Store(false)
+
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+		want int
+	}{
+		{"unauth download", httptest.NewRequest(http.MethodGet, "/Items/"+bookID+"/Download", nil), http.StatusUnauthorized},
+		{"unauth file", httptest.NewRequest(http.MethodGet, "/Items/"+bookID+"/File", nil), http.StatusUnauthorized},
+		{"movie download", httptest.NewRequest(http.MethodGet, "/Items/"+movieID+"/Download?api_key=grant", nil), http.StatusNotFound},
+		{"unavailable book", httptest.NewRequest(http.MethodGet, "/Items/"+unavailID+"/Download?api_key=grant", nil), http.StatusNotFound},
+	} {
+		rec := httptest.NewRecorder()
+		jf.Handler().ServeHTTP(rec, tc.req)
+		if rec.Code != tc.want {
+			t.Fatalf("%s: got %d, want %d", tc.name, rec.Code, tc.want)
+		}
+	}
+
+	if cacheableBrowse(httptest.NewRequest(http.MethodGet, "/Items/"+bookID+"/File", nil)) {
+		t.Fatal("cacheableBrowse(/Items/{id}/File) = true, want false")
 	}
 }

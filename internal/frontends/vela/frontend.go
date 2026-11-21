@@ -352,7 +352,10 @@ func send(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func problem(w http.ResponseWriter, status int, class, code string) {
-	send(w, status, object{"error": object{"class": class, "code": code, "message": strings.ReplaceAll(code, "_", " "), "retry": object{"allowed": false}}})
+	problemMessage(w, status, class, code, strings.ReplaceAll(code, "_", " "))
+}
+func problemMessage(w http.ResponseWriter, status int, class, code, message string) {
+	send(w, status, object{"error": object{"class": class, "code": code, "message": message, "retry": object{"allowed": false}}})
 }
 func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 	var bedtime *frontend.ErrBedtime

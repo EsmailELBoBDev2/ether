@@ -33,6 +33,7 @@ type PlexCandidateServer struct {
 	ServerID           int64                  `json:"serverId"`
 	ServerName         string                 `json:"serverName"`
 	PlexDirectoryTotal int                    `json:"plexDirectoryTotal,omitempty"`
+	FilteredOutCount   int                    `json:"filteredOutCount,omitempty"`
 	Accounts           []PlexCandidateAccount `json:"accounts"`
 }
 
@@ -431,6 +432,28 @@ func classifyPlexCandidate(acct plexwatch.PMSAccount, u *plextv.SharedUser, pmsM
 	return plexUsername, relation, sources
 }
 
+// isActivePlexUserWithEmail reports whether a resolved plex.tv account is an
+// active (accepted, non-pending-only) Plex user with an email address.
+func isActivePlexUserWithEmail(u *plextv.SharedUser, pmsMachineID, etherMachineID string) bool {
+	if u == nil {
+		return false
+	}
+	email := strings.TrimSpace(u.Email)
+	if !strings.Contains(email, "@") {
+		return false
+	}
+	hasAccepted := u.AcceptedShare ||
+		(pmsMachineID != "" && slices.Contains(u.Servers, pmsMachineID)) ||
+		(etherMachineID != "" && slices.Contains(u.Servers, etherMachineID))
+	if hasAccepted {
+		return true
+	}
+	if u.PendingShare || len(u.PendingServers) > 0 || u.Home || u.Friend || u.CommunityFriend {
+		return false
+	}
+	return true
+}
+
 func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 	access, _ := RequestAccess(r.Context())
 	if !access.Owner {
@@ -467,8 +490,18 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("plex candidates accounts error", "server", srv.ID, "err", err)
 			continue
 		}
-		var list []PlexCandidateAccount
+		list := make([]PlexCandidateAccount, 0)
+		filteredOut := 0
 		for _, acct := range accounts {
+			var resolvedPlex *plextv.SharedUser
+			if !acct.Owner && hasPlexDirectory {
+				resolvedPlex = resolvePlexUser(acct, plexUsers)
+				if !isActivePlexUserWithEmail(resolvedPlex, srv.MachineID, etherMachineID) {
+					filteredOut++
+					continue
+				}
+			}
+
 			matchedID := acct.UserID
 			var (
 				suggestedID     int64
@@ -496,10 +529,6 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			var resolvedPlex *plextv.SharedUser
-			if !acct.Owner && hasPlexDirectory {
-				resolvedPlex = resolvePlexUser(acct, plexUsers)
-			}
 			plexUsername, plexRelation, plexSources := classifyPlexCandidate(acct, resolvedPlex, srv.MachineID, etherMachineID, hasPlexDirectory)
 
 			list = append(list, PlexCandidateAccount{
@@ -522,6 +551,7 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 			ServerID:           srv.ID,
 			ServerName:         srv.Name,
 			PlexDirectoryTotal: len(plexUsers),
+			FilteredOutCount:   filteredOut,
 			Accounts:           list,
 		})
 	}
@@ -831,7 +861,11 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 	)
 	viewers, _ := h.storedViewers(r.Context())
 	plexUsers := h.listPlexUsers(r.Context())
-<<<<<<< HEAD
+	hasPlexDirectory := len(plexUsers) > 0
+	var etherMachineID string
+	if h.deps.Config != nil {
+		etherMachineID = h.deps.Config.Get().Server.MachineIdentifier
+	}
 
 	finalize := func(serverID int64, acct plexwatch.PMSAccount, name string, direction int, vID int64, status string, matched *ViewerRecord, sharedPlex bool, shareErr string) bulkImportResultItem {
 		var inviteURL string
@@ -912,6 +946,18 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 					Reason:    "already_mapped",
 				})
 				continue
+			}
+			if !acct.Owner && hasPlexDirectory {
+				if resolved := resolvePlexUser(acct, plexUsers); !isActivePlexUserWithEmail(resolved, srv.MachineID, etherMachineID) {
+					results = append(results, bulkImportResultItem{
+						Name:      name,
+						ServerID:  srv.ID,
+						AccountID: acct.ID,
+						Status:    "skipped",
+						Reason:    "ineligible_plex_account",
+					})
+					continue
+				}
 			}
 
 			var (
@@ -1032,20 +1078,6 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 	if sharedAny && h.deps.SyncPlexFriends != nil {
 		if err := h.deps.SyncPlexFriends(r.Context()); err != nil {
 			h.log.Warn("sync plex friends error after bulk import", "err", err)
-		}
-	}
-
-	if len(needsEnrich) > 0 && h.deps.EnsurePlexFriend != nil {
-		if enrichedUsers := h.listPlexUsers(r.Context()); len(enrichedUsers) > 0 {
-			for _, acct := range needsEnrich {
-				if u := resolvePlexUser(acct, enrichedUsers); u != nil {
-					friend := *u
-					if strings.TrimSpace(friend.Title) == "" {
-						friend.Title = strings.TrimSpace(friend.FriendlyName)
-					}
-					_, _ = h.deps.EnsurePlexFriend(r.Context(), friend)
-				}
-			}
 		}
 	}
 

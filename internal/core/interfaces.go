@@ -953,6 +953,21 @@ type MediaInfo struct {
 	CopyTimeline *CopyTimeline   `json:",omitempty"`
 }
 
+// HasPlayableMedia reports whether probed facts describe something a client
+// can play: a video stream, or (for music, audiobooks and other audio-only
+// items) at least one audio stream.
+func (m MediaInfo) HasPlayableMedia() bool {
+	if m.Video() != nil {
+		return true
+	}
+	for i := range m.Streams {
+		if m.Streams[i].Type == "audio" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m MediaInfo) Video() *StreamInfo {
 	for i := range m.Streams {
 		if m.Streams[i].Type == "video" {

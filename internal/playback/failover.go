@@ -829,7 +829,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	var facts *probeCache
 	prober := "cache"
 	if len(cached) > 0 && cached[0] != nil && cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() && !cached[0].info.Estimated &&
-		(s.caps.Protocol != "vela" || (cached[0].info.Duration > 0 && cached[0].info.Video() != nil)) &&
+		(s.caps.Protocol != "vela" || (cached[0].info.Duration > 0 && cached[0].info.HasPlayableMedia())) &&
 		(cached[0].nzbHash == "" || (len(res.NZB) > 0 && cached[0].nzbHash == nzbHash(res.NZB))) {
 		facts = cached[0]
 		copy := facts.info
@@ -873,7 +873,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// Vela publishes stable source track identities in its initial plan. A
 	// failed/incomplete probe cannot supply those identities. Let the bounded
 	// candidate loop try another release, without blacklisting this one.
-	if s.caps.Protocol == "vela" && (mi.Estimated || mi.Duration <= 0 || mi.Video() == nil || len(mi.Streams) == 0) {
+	if s.caps.Protocol == "vela" && (mi.Estimated || mi.Duration <= 0 || !mi.HasPlayableMedia() || len(mi.Streams) == 0) {
 		m.log.Warn("source lacks verified playback facts", "session", s.id, "release", res.Release.Name, "sourceSize", src.Size(), "releaseSize", res.Release.Size, "duration", mi.Duration, "estimated", mi.Estimated, "probeError", perr)
 		m.dropGeneration(g)
 		return nil, fmt.Errorf("probe %s: %w", res.Release.Name, frontend.ErrTrackSourceUnavailable)

@@ -75,7 +75,7 @@ func persistedProbeFacts(info core.MediaInfo) (core.MediaInfo, bool) {
 		s.ExternalURL = ""
 		out.Streams = append(out.Streams, s)
 	}
-	if len(out.Streams) == 0 || out.Video() == nil {
+	if len(out.Streams) == 0 || !out.HasPlayableMedia() {
 		return core.MediaInfo{}, false
 	}
 	out.Chapters = append([]core.Chapter(nil), info.Chapters...)

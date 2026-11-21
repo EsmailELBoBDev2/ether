@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1857,13 +1858,21 @@ func (s *Server) peopleVisibilityRows(ctx context.Context, batch peopleBatchCata
 	return nil
 }
 
+func (s *Server) searchRequestContext(ctx context.Context) context.Context {
+	return frontend.WithExplicitSearch(frontend.WithSearchMemo(s.exp().NoProviderWait(ctx)))
+}
+
 func (s *Server) searchTypes(u *frontend.User, sectionID int) []frontend.MediaType {
 	var out []frontend.MediaType
+	seen := map[frontend.MediaType]bool{}
 	for _, sec := range s.userSections(u) {
 		if sectionID > 0 && sec.ID != sectionID {
 			continue
 		}
-		out = append(out, sec.Type)
+		if !seen[sec.Type] {
+			seen[sec.Type] = true
+			out = append(out, sec.Type)
+		}
 	}
 	return out
 }
@@ -1995,7 +2004,7 @@ func searchLimit(w http.ResponseWriter, r *http.Request, fallback, ceiling int) 
 }
 
 func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(frontend.WithSearchMemo(s.exp().NoProviderWait(r.Context())))
+	r = r.WithContext(s.searchRequestContext(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2259,7 +2268,7 @@ func searchScore(i, n int) float64 {
 
 // handleSearch is the legacy flat /search?query=.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
+	r = r.WithContext(s.searchRequestContext(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2278,10 +2287,83 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, mc)
 }
 
+type librarySearchFilter struct {
+	filtered             bool
+	allow                map[frontend.MediaType]bool
+	wantPeople           bool
+	wantCollections      bool
+	wantOwnedCollections bool
+	wantPlaylists        bool
+	wantSeasons          bool
+	wantEpisodes         bool
+}
+
+// parseLibrarySearchTypes parses all searchTypes query values (both comma-
+// separated lists and repeated parameters) case-insensitively.
+func parseLibrarySearchTypes(q url.Values) librarySearchFilter {
+	var f librarySearchFilter
+	if q.Get("includeCollections") == "1" {
+		f.wantCollections = true
+		f.wantOwnedCollections = true
+	}
+	for _, raw := range q["searchTypes"] {
+		for _, tok := range strings.Split(raw, ",") {
+			tok = strings.ToLower(strings.TrimSpace(tok))
+			if tok == "" {
+				continue
+			}
+			f.filtered = true
+			if f.allow == nil {
+				f.allow = map[frontend.MediaType]bool{}
+			}
+			switch tok {
+			case "movies", "movie":
+				f.allow[frontend.TypeMovie] = true
+				f.wantPlaylists = true
+			case "collections", "collection":
+				f.wantCollections = true
+				f.wantOwnedCollections = true
+			case "tv", "shows", "show":
+				f.allow[frontend.TypeShow] = true
+				f.allow[frontend.TypeEpisode] = true
+				f.wantPlaylists = true
+			case "seasons", "season":
+				f.allow[frontend.TypeSeason] = true
+				f.wantSeasons = true
+			case "episodes", "episode":
+				f.allow[frontend.TypeEpisode] = true
+				f.wantEpisodes = true
+			case "music":
+				f.allow[plexBaseArtist] = true
+				f.allow[plexBaseAlbum] = true
+				f.allow[plexBaseTrack] = true
+			case "artists", "artist":
+				f.allow[plexBaseArtist] = true
+			case "albums", "album":
+				f.allow[plexBaseAlbum] = true
+			case "tracks", "track":
+				f.allow[plexBaseTrack] = true
+			case "photos", "photo":
+				f.allow[plexBasePhoto] = true
+			case "people", "person", "actors", "actor", "directors", "director":
+				f.wantPeople = true
+			case "playlists", "playlist":
+				f.wantPlaylists = true
+			}
+		}
+	}
+	if !f.filtered {
+		f.wantPeople = true
+		f.wantCollections = true
+		f.wantPlaylists = true
+	}
+	return f
+}
+
 // handleLibrarySearch is /library/search, used by the newer apps: results
 // wrapped in SearchResult with a score.
 func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
+	r = r.WithContext(s.searchRequestContext(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2290,16 +2372,10 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	if !valid {
 		return
 	}
+	sf := parseLibrarySearchTypes(q)
 	// People are searched beside titles when the request wants them.
-	wantPeople := q.Get("searchTypes") == ""
-	for _, v := range strings.Split(q.Get("searchTypes"), ",") {
-		switch strings.TrimSpace(v) {
-		case "people", "person", "actors", "actor", "directors", "director":
-			wantPeople = true
-		}
-	}
 	var peopleDone chan peopleSearchResult
-	if wantPeople {
+	if sf.wantPeople {
 		peopleDone = make(chan peopleSearchResult, 1)
 		peopleCtx := ctx // ctx is reassigned below
 		go func() {
@@ -2308,9 +2384,41 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			peopleDone <- mergePeopleSearchResults(catPeople, plugPeople, limit)
 		}()
 	}
-	pluginItems := s.searchPluginTitles(ctx, pr, query, 0, limit)
+	baseTypes := s.searchTypes(pr.User, 0)
+	queryTypes := baseTypes
+	if sf.filtered {
+		queryTypes = nil
+		hasShow := false
+		for _, mt := range baseTypes {
+			if mt == frontend.TypeShow {
+				hasShow = true
+			}
+			if sf.allow[mt] {
+				queryTypes = append(queryTypes, mt)
+			}
+		}
+		if hasShow {
+			if sf.wantSeasons && !slices.Contains(queryTypes, frontend.TypeSeason) {
+				queryTypes = append(queryTypes, frontend.TypeSeason)
+			}
+			if sf.wantEpisodes && !slices.Contains(queryTypes, frontend.TypeEpisode) {
+				queryTypes = append(queryTypes, frontend.TypeEpisode)
+			}
+		}
+	}
+	fetch := s.saferFetchCount(pr.User, limit)
+	var pluginItems []frontend.Title
+	if !sf.filtered || len(sf.allow) > 0 {
+		pluginItems = s.searchPluginTitles(ctx, pr, query, 0, limit)
+	}
 	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
-	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, 0), limit, true)
+	var result frontend.SearchResults
+	var err error
+	if len(queryTypes) > 0 {
+		result, err = s.searchExperience().Resolve(ctx, pr.User, query, queryTypes, fetch, true)
+	} else if sf.wantCollections && len(baseTypes) > 0 {
+		result, err = s.searchExperience().Resolve(ctx, pr.User, query, baseTypes, fetch, true)
+	}
 	var people peopleSearchResult
 	if peopleDone != nil {
 		people = <-peopleDone
@@ -2319,42 +2427,18 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	vibe, res, isVibe := result.Collection, mergePluginSearchResults(result.Items, pluginItems, result.AIItems, limit), result.CollectionSearch
+	vibe, res, isVibe := result.Collection, mergePluginSearchResults(result.Items, pluginItems, result.AIItems, fetch), result.CollectionSearch
 	aiKeys := map[frontend.RatingKey]bool{}
 	for i := 0; i < min(result.AIItems, len(res)); i++ {
 		aiKeys[res[i].Key] = true
 	}
-	searchCollections := false
-	searchPeopleFlag := q.Get("searchTypes") == ""
-	if st := q.Get("searchTypes"); st != "" {
-		allow := map[frontend.MediaType]bool{}
-		for _, v := range strings.Split(st, ",") {
-			switch strings.TrimSpace(v) {
-			case "movies", "movie":
-				allow[frontend.TypeMovie] = true
-			case "collections", "collection":
-				searchCollections = true
-			case "tv", "shows", "show":
-				allow[frontend.TypeShow] = true
-				allow[frontend.TypeEpisode] = true
-			case "artists", "artist":
-				allow[plexBaseArtist] = true
-			case "albums", "album":
-				allow[plexBaseAlbum] = true
-			case "tracks", "track":
-				allow[plexBaseTrack] = true
-			case "photos", "photo":
-				allow[plexBasePhoto] = true
-			case "people", "person", "actors", "actor", "directors", "director":
-				searchPeopleFlag = true
-			}
-		}
-		if len(allow) == 0 {
+	if sf.filtered {
+		if len(sf.allow) == 0 {
 			res = nil
 		} else {
 			filtered := res[:0:0]
 			for _, t := range res {
-				if allow[t.Type] || allow[frontend.MediaType(s.plexTypeFor(&t))] {
+				if sf.allow[t.Type] || sf.allow[frontend.MediaType(s.plexTypeFor(&t))] {
 					filtered = append(filtered, t)
 				}
 			}
@@ -2378,7 +2462,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			sc := max(0.96, math.Round((1-float64(i)*0.0001)*10000)/10000)
 			leading = append(leading, model.SearchResult{Score: sc, Metadata: &aiMD[i]})
 		}
-		if isVibe && vibe != nil && (searchCollections || q.Get("searchTypes") == "") {
+		if isVibe && vibe != nil && sf.wantCollections {
 			d := s.collectionDirectory(ctx, vibe)
 			sc := 0.96
 			if len(leading) == 0 {
@@ -2389,7 +2473,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	}
 	var peopleDirs []model.Directory
 	var peopleScores []float64
-	if searchPeopleFlag {
+	if sf.wantPeople {
 		peopleDirs = append(peopleDirs, people.actors...)
 		peopleDirs = append(peopleDirs, people.directors...)
 		peopleScores = append(append(peopleScores, people.actorScores...), people.directorScores...)
@@ -2417,12 +2501,32 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: math.Round(peopleScores[i]*10000) / 10000, Directory: &d})
 		raw = append(raw, peopleScores[i])
 	}
-	if q.Get("searchTypes") == "" || containsExactSearchToken(q.Get("searchTypes"), "movies") || containsExactSearchToken(q.Get("searchTypes"), "tv") {
+	if sf.wantOwnedCollections {
+		dirs, _, _ := s.searchCollections(ctx, pr, query, 0, limit)
+		seenCol := map[string]bool{}
+		if isVibe && vibe != nil {
+			seenCol["/library/collections/"+vibe.Key.String()+"/children"] = true
+		}
+		for _, d := range dirs {
+			if seenCol[d.Key] {
+				continue
+			}
+			seenCol[d.Key] = true
+			sc := playlistSearchScore(d.Title, query)
+			if sc <= 0 {
+				sc = 0.5
+			}
+			dir := d
+			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: math.Round(sc*10000) / 10000, Directory: &dir})
+			raw = append(raw, sc)
+		}
+	}
+	if sf.wantPlaylists {
 		directories := q.Get("contentDirectoryID")
-		if directories == "" && q.Get("searchTypes") != "" {
+		if directories == "" && sf.filtered && (sf.allow[frontend.TypeMovie] || sf.allow[frontend.TypeShow]) {
 			var ids []string
 			for _, sec := range s.userSections(pr.User) {
-				if sec.Type == frontend.TypeMovie && containsExactSearchToken(q.Get("searchTypes"), "movies") || sec.Type == frontend.TypeShow && containsExactSearchToken(q.Get("searchTypes"), "tv") {
+				if sec.Type == frontend.TypeMovie && sf.allow[frontend.TypeMovie] || sec.Type == frontend.TypeShow && sf.allow[frontend.TypeShow] {
 					ids = append(ids, strconv.Itoa(sec.ID))
 				}
 			}
@@ -2453,7 +2557,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		mc.SearchResult = append(leading, ranked...)
 	} else {
 		mc.SearchResult = ranked
-		if isVibe && vibe != nil && (searchCollections || q.Get("searchTypes") == "") {
+		if isVibe && vibe != nil && sf.wantCollections {
 			d := s.collectionDirectory(ctx, vibe)
 			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 1, Directory: &d})
 		}

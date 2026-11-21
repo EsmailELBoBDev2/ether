@@ -224,6 +224,7 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 	case "unscrobble":
 		ws.ViewCount = 0
 		ws.ViewOffset = 0
+		ws.Reading = nil
 	default:
 		if strings.HasPrefix(w.progress.state, "explicit-") {
 			if w.progress.duration > 0 {

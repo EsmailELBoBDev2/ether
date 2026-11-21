@@ -966,7 +966,7 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
-		playable := piv.Playable
+		playable := piv.Playable && piv.Title.MediaClass != core.MediaClassBook && piv.Title.MBItemType != "Book"
 		return frontend.ItemDetail{
 			Title:               piv.Title,
 			Images:              piv.Images,
@@ -1017,7 +1017,7 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
-		playable := piv.Playable
+		playable := piv.Playable && piv.Title.MediaClass != core.MediaClassBook && piv.Title.MBItemType != "Book"
 		d := frontend.ItemDetail{
 			Title:               piv.Title,
 			Images:              piv.Images,
@@ -2373,6 +2373,19 @@ func (s *Service) SetPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 }
 func (s *Service) SetUnplayed(ctx context.Context, v *core.Viewer, k core.RatingKey) error {
 	return s.setPlayed(ctx, v, k, false)
+}
+
+var _ frontend.ReadingProgressWriter = (*Service)(nil)
+
+func (s *Service) SetReadingProgress(ctx context.Context, v *core.Viewer, k core.RatingKey, progress frontend.ReadingProgress) error {
+	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.d.Protocol})
+	return s.mutate(ctx, v, k, func(u *core.User) error {
+		rs, ok := s.d.State.(core.ReadingState)
+		if !ok || rs == nil {
+			return core.ErrNotAvailable
+		}
+		return rs.SetReadingProgress(ctx, u.ID, k, progress)
+	})
 }
 func (s *Service) SetNotInterested(ctx context.Context, v *core.Viewer, k core.RatingKey, on bool) error {
 	return s.mutate(ctx, v, k, func(u *core.User) error {

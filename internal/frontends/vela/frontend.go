@@ -226,6 +226,8 @@ type instance struct {
 	warmMu          sync.Mutex
 	warmClients     map[string]negotiatedClient
 	warmPending     map[string]bool
+	readMu          sync.Mutex
+	readTickets     map[string]*readTicket
 }
 
 func (i *instance) cursorNonce(domain string, plain []byte) ([]byte, error) {
@@ -275,6 +277,7 @@ func (i *instance) Close(context.Context) error {
 		s.mu.Unlock()
 	}
 	i.mu.Unlock()
+	i.closeReadTickets()
 	return nil
 }
 func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -644,6 +647,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		i.mux.ServeHTTP(out, r)
 		var saveErr error
 		if (out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback") ||
+			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/read") && out.Header().Get("Retry-After") != "") ||
 			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/commands") && out.Header().Get("Retry-After") != "") ||
 			(out.Code == http.StatusTooManyRequests && strings.HasSuffix(r.URL.Path, "/approve") && out.Header().Get("Retry-After") != "") {
 			_, saveErr = i.db.ExecContext(r.Context(), `DELETE FROM vela_replays WHERE key=? AND response IS NULL`, key)
@@ -735,6 +739,10 @@ func (i *instance) routes() {
 	i.route("GET", "/live/guide", i.guide)
 	i.route("POST", "/live/guide/window", i.guideWindow)
 	i.route("POST", "/titles/{id}/watch", i.watch)
+	i.route("POST", "/titles/{id}/read", i.read)
+	i.route("GET", "/read/{ticket}", i.readFile)
+	i.route("HEAD", "/read/{ticket}", i.readFile)
+	i.route("POST", "/titles/{id}/reading-progress", i.readingProgress)
 	i.route("GET", "/titles/{id}/playlists", i.titlePlaylists)
 	i.route("GET", "/playlists", i.listPlaylists)
 	i.route("POST", "/playlists", i.createPlaylist)
@@ -803,7 +811,7 @@ func (i *instance) capabilities() object {
 	passwordAvail := auth.Password && methods.Password
 	plexAvail := auth.PlexAccountSignIn && methods.Plex
 	quickAvail := auth.QuickConnect && methods.QuickConnect
-	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if plexAvail {
 		caps["plexAccountSignIn"] = true
 	}

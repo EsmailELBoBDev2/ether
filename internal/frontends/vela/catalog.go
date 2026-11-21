@@ -99,6 +99,19 @@ func watchWire(s frontend.WatchStatus) object {
 	if !s.LastViewedAt.IsZero() {
 		out["lastViewedAt"] = s.LastViewedAt.UTC().Format(time.RFC3339)
 	}
+	if s.Reading != nil {
+		reading := object{
+			"locator":  s.Reading.Locator,
+			"fraction": s.Reading.Fraction,
+		}
+		if s.Reading.Label != "" {
+			reading["label"] = s.Reading.Label
+		}
+		if !s.Reading.UpdatedAt.IsZero() {
+			reading["updatedAt"] = s.Reading.UpdatedAt.UTC().Format(time.RFC3339)
+		}
+		out["reading"] = reading
+	}
 	return out
 }
 
@@ -817,7 +830,9 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := object{"title": ts[0], "extras": extras, "chapters": []object{}, "cast": cast, "crew": crew}
-	if d.CanPlay != nil {
+	if d.Title.MediaClass == frontend.MediaClassBook || d.Title.MBItemType == "Book" {
+		out["canPlay"] = false
+	} else if d.CanPlay != nil {
 		out["canPlay"] = *d.CanPlay
 	}
 	if summary := mediaSummary(d); summary != nil {

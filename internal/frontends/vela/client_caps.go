@@ -10,10 +10,31 @@ import (
 
 // Detail and Play build the same declaration with current network and owner rules.
 func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c client) (frontend.CapabilityResult, error) {
-	profile := caps.DeviceProfile{MaxStreamingBitrate: c.MaxBitrate, DirectPlayProfiles: []caps.DirectPlayProfile{{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}}
+	audioCodecs := strings.Join(c.AudioCodecs, ",")
+	audioContainers := velaAudioDirectContainers(c.Containers, c.AudioCodecs)
+	profile := caps.DeviceProfile{
+		MaxStreamingBitrate: c.MaxBitrate,
+		DirectPlayProfiles: []caps.DirectPlayProfile{
+			{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
+			{Type: "Audio", Container: audioContainers, AudioCodec: audioCodecs},
+		},
+	}
+	audioTranscodeCodecs := audioCodecs
+	if audioTranscodeCodecs == "" {
+		audioTranscodeCodecs = "aac,mp3,opus"
+	}
+	profile.TranscodingProfiles = append(profile.TranscodingProfiles, caps.TranscodingProfile{
+		Type:       "Audio",
+		Protocol:   "http",
+		Container:  "mp4,aac,mp3,ogg,webm",
+		AudioCodec: audioTranscodeCodecs,
+	})
 	if c.HLS || c.MSE {
 		container := "mp4"
-		profile.TranscodingProfiles = []caps.TranscodingProfile{{Type: "Video", Protocol: "hls", Container: container, VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}
+		profile.TranscodingProfiles = append(profile.TranscodingProfiles,
+			caps.TranscodingProfile{Type: "Video", Protocol: "hls", Container: container, VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
+			caps.TranscodingProfile{Type: "Audio", Protocol: "hls", Container: "mp4,ts", AudioCodec: audioTranscodeCodecs},
+		)
 	}
 	for _, format := range c.SubtitleFormats {
 		if (c.HLS || c.MSE) && format == "webvtt" {
@@ -38,4 +59,48 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 		}
 	}
 	return result, err
+}
+
+func velaAudioDirectContainers(containers, audioCodecs []string) string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	for _, c := range containers {
+		add(c)
+		if strings.EqualFold(strings.TrimSpace(c), "mp4") {
+			add("m4a")
+			add("m4b")
+		}
+	}
+	for _, codec := range audioCodecs {
+		switch strings.ToLower(strings.TrimSpace(codec)) {
+		case "mp3":
+			add("mp3")
+		case "flac":
+			add("flac")
+		case "aac":
+			add("aac")
+			add("mp4")
+			add("m4a")
+			add("m4b")
+		case "opus", "vorbis":
+			add("ogg")
+			add("opus")
+			add("webm")
+		case "alac":
+			add("mp4")
+			add("m4a")
+			add("m4b")
+		case "pcm", "pcm_s16le", "wav":
+			add("wav")
+		}
+	}
+	return strings.Join(out, ",")
 }

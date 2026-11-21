@@ -1565,7 +1565,7 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 		if sts, sErr := s.d.State.InProgress(ctx, v.ID, 200); sErr == nil && len(sts) > 0 {
 			var keys []core.RatingKey
 			for _, st := range sts {
-				if st.ViewOffset > 0 && st.Key.IsPluginKey() {
+				if (st.ViewOffset > 0 || (st.Reading != nil && st.Reading.Locator != "" && st.Reading.Fraction > 0 && st.Reading.Fraction < 0.98)) && st.Key.IsPluginKey() {
 					keys = append(keys, st.Key)
 				}
 			}

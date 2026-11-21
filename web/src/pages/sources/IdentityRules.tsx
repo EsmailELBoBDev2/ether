@@ -24,6 +24,7 @@ import { TestButton, type TestState } from "../../components/fields";
 import { SettingsRow } from "../../components/SettingsRow";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { t, tn } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api, errorMessage, newId } from "../../lib/api";
 import type {
@@ -532,6 +533,7 @@ function RuleEditorDrawer({
   onSave: (rule: IdentityRule) => void;
   onRemove?: () => void;
 }) {
+  const { locale } = useLocale();
   const [draft, setDraft] = useState<IdentityRule | null>(initialRule);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [fieldError, setFieldError] = useState<string>("");
@@ -557,12 +559,12 @@ function RuleEditorDrawer({
 
   const targetOptions = useMemo(
     () => TARGET_KINDS.map((value) => ({ value, label: targetKindLabel(value) })),
-    [],
+    [locale],
   );
 
   const profileOptions = useMemo(
     () => PROFILE_IDS.map((value) => ({ value, label: identityProfileLabel(value) })),
-    [],
+    [locale],
   );
 
   const previewRules = useMemo(() => {

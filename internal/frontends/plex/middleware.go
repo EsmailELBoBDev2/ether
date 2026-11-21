@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +185,12 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 		s.notifyRequestLog(r, sr.status)
 		if sr.status == http.StatusUnauthorized {
 			failures.Fail(errors.New("unauthorized"))
+			if traceTranscodePath(r.URL.Path) {
+				// Native players drop credentials on refetches; the path,
+				// parameter names and agent identify which one refused.
+				log.Debug("request unauthorized", "method", r.Method, "path", r.URL.Path, "params", queryParamNames(r.URL.Query()),
+					"agent", r.UserAgent(), "peer", FromContext(r.Context()).RemoteIP.String())
+			}
 			return
 		}
 		pr := FromContext(r.Context())
@@ -349,6 +356,8 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		authorized := s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) || s.authenticateDeliveryGrant(r, pr)
 		if !authorized {
 			if refetch, ok := s.authenticateManifestRefetch(r, pr); ok {
+				r, authorized = refetch, true
+			} else if refetch, ok := s.authenticateLiveManifestRefetch(r, pr); ok {
 				r, authorized = refetch, true
 			}
 		}
@@ -715,4 +724,14 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.log.Warn("request failed", "path", r.URL.Path, "err", err)
 		writeHTTPError(w, http.StatusInternalServerError)
 	}
+}
+
+// queryParamNames lists a query's parameter names, never their values.
+func queryParamNames(q url.Values) string {
+	names := make([]string, 0, len(q))
+	for k := range q {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }

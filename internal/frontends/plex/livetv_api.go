@@ -982,6 +982,7 @@ func (s *Server) handleLiveTVPlayback(w http.ResponseWriter, r *http.Request) bo
 	}
 	// Native players can retry this endpoint without following a redirect.
 	// The Live TV playlist already uses rooted, authenticated child URLs.
+	s.noteLiveManifestServed(r, id, pr)
 	s.svc().liveTV.ServePlaylist(w, r, id, pr.User)
 	return true
 }

@@ -128,7 +128,7 @@ func (st *plezyReaskStore) forget(k plezyReaskKey) {
 // disarming; once at least plezyReaskMinAge has elapsed, the re-ask is
 // the play tap and waits (bounded by reqCtx and plezyPlayProbeWait) on
 // the shared foreground resolve+probe flight.
-func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *frontend.Title, q url.Values) {
+func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *frontend.Title, q url.Values, rawQuery string) {
 	if pr == nil || pr.User == nil || t == nil || !plezyClient(pr) || libraryToolClient(pr) {
 		return
 	}
@@ -140,7 +140,15 @@ func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *fro
 		s.plezyReasks.forget(k)
 		return
 	}
-	if !s.plezyReasks.checkOrArm(k, s.now()) {
+	// Plezy's playback fetch (getVideoPlaybackData) is the only Plezy read
+	// that puts includeMarkers before includeChapters; every browsing read
+	// (detail screen, season-row focus header, shared row, extras) puts
+	// includeChapters first. Plezy on Android and Android TV has no episode
+	// detail page: a season row plays its episode directly, and its single
+	// play-time fetch is that title's first. That shape is play intent on
+	// its own, with no arming fetch before it.
+	play := plezyPlaybackFetch(rawQuery)
+	if !play && !s.plezyReasks.checkOrArm(k, s.now()) {
 		// Initial detail open or follow-up burst fetch inside
 		// plezyReaskMinAge: never wait; this response goes out
 		// incomplete (see projectFileAvailability) while keeping
@@ -221,4 +229,16 @@ func (s *Server) plezyPartProbed(ctx context.Context, pr *Request, part *model.P
 		}
 	}
 	return false
+}
+
+// plezyPlaybackFetch reports whether a /library/metadata/<id> query has the
+// shape of Plezy's playback-metadata read (Plezy 2.24-2.26 getVideoPlaybackData:
+// includeMarkers, includeChapters, checkFiles, includeStreams, in that order).
+// Plezy serialises query parameters in insertion order, and no browsing read
+// it makes lists includeMarkers first. Season-row focus fetches use the
+// browsing shape, so focus never waits.
+func plezyPlaybackFetch(rawQuery string) bool {
+	markers := strings.Index(rawQuery, "includeMarkers=1")
+	chapters := strings.Index(rawQuery, "includeChapters=1")
+	return markers >= 0 && chapters > markers && strings.Contains(rawQuery, "checkFiles=1") && strings.Contains(rawQuery, "includeStreams=1")
 }

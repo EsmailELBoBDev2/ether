@@ -545,3 +545,45 @@ func partTag(body string) string {
 	}
 	return rest
 }
+
+// Plezy on Android has no episode detail page: a season row plays directly,
+// so the play-time fetch is the title's first. Its query shape (Plezy's
+// playback read lists includeMarkers first) is play intent on its own, while
+// the browsing shape (season-row focus header) never waits.
+func TestPlezyFirstPlaySeasonRowPlaybackShape(t *testing.T) {
+	info := core.MediaInfo{
+		Container: "mkv", Duration: 25 * time.Minute, BitrateKbps: 8000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080, Default: true},
+			{Index: 1, Type: "audio", Codec: "eac3", Language: "en", Channels: 6, Default: true},
+			{Index: 2, Type: "subtitle", Codec: "subrip", Language: "en"},
+		},
+	}
+	f, _, _ := newIssue459Fixture(t, info, "en")
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	cold := &plezyColdPlayback{fakePlayback: f.playback, probed: info, block: release, entered: entered}
+	f.srv.setPlayback(cold)
+	f.playback.info = estimateInfo
+	hdr := []string{"X-Plex-Product", "Plezy", "X-Plex-Version", "2.26.0", "X-Plex-Platform", "Android", "X-Plex-Client-Identifier", "plezy-row", "X-Plex-Session-Identifier", "plezy-row-session"}
+	base := "/library/metadata/" + fightClub.Key.String()
+
+	if resp := f.get(t, base+"?includeChapters=1&includeMarkers=1&checkFiles=1&includeStreams=1", hdr...); resp.Code != 200 || cold.calls.Load() != 0 {
+		t.Fatalf("focus fetch waited or failed: %d calls=%d", resp.Code, cold.calls.Load())
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- f.get(t, base+"?includeMarkers=1&includeChapters=1&checkFiles=1&includeStreams=1", hdr...)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("playback-shaped first fetch did not wait on the probe")
+	}
+	close(release)
+	resp := <-done
+	selected := selectedTag(subtitleTags(resp.Body.String()))
+	if resp.Code != 200 || !strings.Contains(selected, `index="2"`) {
+		t.Fatalf("season-row play did not select the English subtitle: %d %q", resp.Code, selected)
+	}
+}

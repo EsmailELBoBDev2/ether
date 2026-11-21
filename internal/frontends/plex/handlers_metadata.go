@@ -266,7 +266,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				// directly instead of spawning a competing speculative
 				// search or warm-up; browsing fetches return
 				// immediately and still run both below.
-				s.plezyFirstPlay(ctx, reqCtx, pr, t, q)
+				s.plezyFirstPlay(ctx, reqCtx, pr, t, q, r.URL.RawQuery)
 				if reqCtx.Err() != nil {
 					return
 				}

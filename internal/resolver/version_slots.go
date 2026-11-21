@@ -160,7 +160,34 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 		}
 		out[i] = v
 	}
-	return out, nil
+	return dedupeVersionSlots(out), nil
+}
+
+// dedupeVersionSlots drops a filled slot whose release is already listed by
+// an earlier slot: the same release from two indexers (two IDs, one exact
+// size), including a remembered or pinned pick that resolves to it.
+func dedupeVersionSlots(in []core.ReleaseVariant) []core.ReleaseVariant {
+	out := in[:0]
+	seenID := map[string]bool{}
+	seenSize := map[int64]bool{}
+	for _, v := range in {
+		placeholder := v.Release.ID == "" || strings.HasPrefix(v.Release.ID, core.VersionSelectorPrefix)
+		if !placeholder {
+			size := v.Info.Size
+			if size <= 0 || v.Info.Estimated {
+				size = v.Release.Size
+			}
+			if seenID[v.Release.ID] || (size > 0 && seenSize[size]) {
+				continue
+			}
+			seenID[v.Release.ID] = true
+			if size > 0 {
+				seenSize[size] = true
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 func (s *Service) configuredSlots(profile core.QualityProfile, caps core.ClientCaps, limit int) []versionSlot {
 	if limit <= 0 || limit > core.MaxVariants {

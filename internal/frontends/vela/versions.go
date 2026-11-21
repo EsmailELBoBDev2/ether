@@ -217,6 +217,7 @@ func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.View
 	autoID := ""
 	anyRemembered := false
 	cold := false
+	itemReleases := make([]string, 0, len(variants))
 	for _, variant := range variants {
 		selector := variantSelectorID(variant)
 		if selector == "" {
@@ -231,6 +232,7 @@ func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.View
 		}
 		item := formatVersionItem(handle, variant)
 		items = append(items, item)
+		itemReleases = append(itemReleases, variant.Release.ID)
 		if variant.Auto && autoID == "" {
 			autoID = handle
 		}
@@ -252,6 +254,15 @@ func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.View
 					selectedID = items[idx]["id"]
 					break
 				}
+			}
+		}
+	}
+	if selectedID == nil && activeHandle != "" && activeReleaseID != "" {
+		// The playing slot folded into another that lists the same release.
+		for idx, id := range itemReleases {
+			if id == activeReleaseID {
+				selectedID = items[idx]["id"]
+				break
 			}
 		}
 	}

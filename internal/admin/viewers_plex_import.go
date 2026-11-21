@@ -126,40 +126,186 @@ func suggestMatchingViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount) *V
 	return nil
 }
 
-func (h *Handler) shareViewerPlex(ctx context.Context, usernameOrEmail string) error {
-	// Note: PMS accounts from /accounts have local sequence IDs (e.g. 1 for owner, 2, 3),
-	// NOT global Plex.tv user IDs. Passing userID 0 ensures Plex.tv shares by username/email.
-	return h.shareViewerPlexTarget(ctx, usernameOrEmail, 0)
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
-func (h *Handler) shareViewerPlexViewer(ctx context.Context, v *ViewerRecord, fallbackName string) error {
+func compactName(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), ""))
+}
+
+// resolvePlexUser matches a PMS account against the owner's plex.tv friends and
+// home users in strict priority order via plextv.ResolveSharedUser.
+func resolvePlexUser(acct plexwatch.PMSAccount, plexUsers []plextv.SharedUser) *plextv.SharedUser {
+	if acct.Owner || len(plexUsers) == 0 {
+		return nil
+	}
+	return plextv.ResolveSharedUser(plexUsers, acct.ID, acct.Name)
+}
+
+func findViewerByPlexID(viewers []ViewerRecord, plexID int64) *ViewerRecord {
+	if plexID <= 0 {
+		return nil
+	}
+	for i := range viewers {
+		if viewers[i].PlexID == plexID {
+			return &viewers[i]
+		}
+	}
+	return nil
+}
+
+func findSyncedFriendViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount, resolved *plextv.SharedUser) *ViewerRecord {
+	if m := findExactViewer(viewers, acct); m != nil {
+		return m
+	}
+	var resolvedID int64
+	if resolved != nil && resolved.PlexID > 0 {
+		resolvedID = resolved.PlexID
+		if m := findViewerByPlexID(viewers, resolvedID); m != nil {
+			return m
+		}
+	}
+	compatible := func(v ViewerRecord) bool {
+		if v.Origin != "friend" || v.PlexID <= 0 {
+			return false
+		}
+		if resolvedID > 0 && v.PlexID != resolvedID {
+			return false
+		}
+		return true
+	}
+	target := strings.TrimSpace(acct.Name)
+	unique := func(pred func(v ViewerRecord) bool) (*ViewerRecord, bool) {
+		var matched *ViewerRecord
+		for i := range viewers {
+			v := viewers[i]
+			if !compatible(v) || !pred(v) {
+				continue
+			}
+			if matched != nil && matched.ID != v.ID {
+				return nil, true
+			}
+			matched = &viewers[i]
+		}
+		return matched, false
+	}
+	if m, amb := unique(func(v ViewerRecord) bool {
+		if target != "" && (strings.EqualFold(strings.TrimSpace(v.Username), target) || strings.EqualFold(strings.TrimSpace(v.Email), target)) {
+			return true
+		}
+		if resolved != nil {
+			if resolved.Username != "" && strings.EqualFold(strings.TrimSpace(v.Username), strings.TrimSpace(resolved.Username)) {
+				return true
+			}
+			if resolved.Email != "" && strings.EqualFold(strings.TrimSpace(v.Email), strings.TrimSpace(resolved.Email)) {
+				return true
+			}
+		}
+		return false
+	}); m != nil || amb {
+		return m
+	}
+	if target != "" {
+		if m, amb := unique(func(v ViewerRecord) bool {
+			return v.Title != "" && strings.EqualFold(strings.TrimSpace(v.Title), target)
+		}); m != nil || amb {
+			return m
+		}
+		wantCompact := compactName(target)
+		if m, _ := unique(func(v ViewerRecord) bool {
+			return (v.Username != "" && compactName(v.Username) == wantCompact) ||
+				(v.Title != "" && compactName(v.Title) == wantCompact)
+		}); m != nil {
+			return m
+		}
+	}
+	return nil
+}
+
+func (h *Handler) ensureResolvedViewer(ctx context.Context, viewers *[]ViewerRecord, resolved *plextv.SharedUser, fallbackName string) (int64, string) {
+	if resolved == nil || resolved.PlexID <= 0 {
+		return 0, ""
+	}
+	if existing := findViewerByPlexID(*viewers, resolved.PlexID); existing != nil {
+		if existing.IsOwner {
+			return existing.ID, "matched"
+		}
+		return existing.ID, "imported"
+	}
+	if h.deps.EnsurePlexFriend == nil {
+		return 0, ""
+	}
+	friend := *resolved
+	if strings.TrimSpace(friend.Title) == "" {
+		friend.Title = strings.TrimSpace(friend.FriendlyName)
+	}
+	id, err := h.deps.EnsurePlexFriend(ctx, friend)
+	if err != nil {
+		h.log.Warn("ensure plex friend error", "plexId", resolved.PlexID, "err", err)
+		return 0, ""
+	}
+	if id <= 0 {
+		return 0, ""
+	}
+	*viewers = append(*viewers, ViewerRecord{
+		User: core.User{
+			ID:       id,
+			PlexID:   resolved.PlexID,
+			Username: resolved.Username,
+			Title:    firstNonEmpty(resolved.Title, resolved.FriendlyName, resolved.Username, fallbackName),
+			Email:    resolved.Email,
+		},
+		Origin:  "friend",
+		HasPlex: true,
+	})
+	return id, "imported"
+}
+
+func (h *Handler) listPlexUsers(ctx context.Context) []plextv.SharedUser {
+	if h.deps.ListPlexUsers == nil {
+		return nil
+	}
+	users, err := h.deps.ListPlexUsers(ctx)
+	if err != nil {
+		h.log.Warn("list plex.tv users error", "err", err)
+		return nil
+	}
+	return users
+}
+
+func (h *Handler) shareViewerPlex(ctx context.Context, usernameOrEmail string, userID int64, batch bool) error {
+	return h.shareViewerPlexTarget(ctx, usernameOrEmail, userID, batch)
+}
+
+func (h *Handler) shareViewerPlexViewer(ctx context.Context, v *ViewerRecord, fallbackName string, batch bool) error {
 	if v == nil {
-		return h.shareViewerPlexTarget(ctx, fallbackName, 0)
+		return h.shareViewerPlexTarget(ctx, fallbackName, 0, batch)
 	}
-	target := strings.TrimSpace(v.Email)
-	if target == "" {
-		target = strings.TrimSpace(v.Username)
-	}
-	if target == "" {
-		target = strings.TrimSpace(v.Title)
-	}
-	if target == "" {
-		target = strings.TrimSpace(fallbackName)
-	}
-	return h.shareViewerPlexTarget(ctx, target, v.PlexID)
+	target := firstNonEmpty(v.Email, v.Username, v.Title, fallbackName)
+	return h.shareViewerPlexTarget(ctx, target, v.PlexID, batch)
 }
 
-func (h *Handler) shareViewerPlexTarget(ctx context.Context, usernameOrEmail string, userID int64) error {
+func (h *Handler) shareViewerPlexTarget(ctx context.Context, usernameOrEmail string, userID int64, batch bool) error {
 	usernameOrEmail = strings.TrimSpace(usernameOrEmail)
 	if usernameOrEmail == "" && userID <= 0 {
-		return errors.New("plextv: username or email required")
+		return errors.New("plextv: username, email or user ID required")
 	}
-	if h.deps.SharePlexViewer != nil {
-		err := h.deps.SharePlexViewer(ctx, usernameOrEmail, userID)
+	shareFn := h.deps.SharePlexViewer
+	if batch && h.deps.SharePlexViewerNoSync != nil {
+		shareFn = h.deps.SharePlexViewerNoSync
+	}
+	if shareFn != nil {
+		err := shareFn(ctx, usernameOrEmail, userID)
 		if err != nil {
-			h.log.Warn("share plex library error", "account", usernameOrEmail, "err", err)
+			h.log.Warn("share plex library error", "account", usernameOrEmail, "userId", userID, "err", err)
 		} else {
-			h.log.Info("shared server libraries on plex.tv", "account", usernameOrEmail)
+			h.log.Info("shared server libraries on plex.tv", "account", usernameOrEmail, "userId", userID)
 		}
 		return err
 	}
@@ -186,9 +332,9 @@ func (h *Handler) shareViewerPlexTarget(ctx context.Context, usernameOrEmail str
 	}
 	err = client.ShareServer(ctx, token, usernameOrEmail, userID, nil)
 	if err != nil {
-		h.log.Warn("share plex library error", "account", usernameOrEmail, "err", err)
+		h.log.Warn("share plex library error", "account", usernameOrEmail, "userId", userID, "err", err)
 	} else {
-		h.log.Info("shared server libraries on plex.tv", "account", usernameOrEmail)
+		h.log.Info("shared server libraries on plex.tv", "account", usernameOrEmail, "userId", userID)
 	}
 	return err
 }
@@ -323,7 +469,10 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 		direction = 3 // Bidirectional for owner
 	}
 
-	var matched *ViewerRecord
+	var (
+		matched  *ViewerRecord
+		resolved *plextv.SharedUser
+	)
 	// 1. Check if an existing viewer matches EXACTLY (mapping, owner, stable Plex ID)
 	if m := findExactViewer(viewers, *acct); m != nil {
 		matched = m
@@ -331,29 +480,50 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 		status = "matched"
 	}
 
-	// 2. If no exact match and not owner, attempt to grant library access on Plex.tv first.
+	// 2. If no exact match and not owner, resolve against Plex.tv users (when available)
+	// and attempt to grant library access on Plex.tv first.
 	// Sharing on Plex.tv synchronizes authoritative Plex friend membership into auth_users,
 	// creating/updating the Plex user record with their global Plex ID before we fall back
 	// to creating a local tokenless viewer.
-	if newViewerID == 0 && !acct.Owner && strings.TrimSpace(acct.Name) != "" {
-		if err := h.shareViewerPlex(r.Context(), acct.Name); err != nil {
-			shareErr = err.Error()
-		} else {
-			sharedPlex = true
-			if reloaded, err := h.storedViewers(r.Context()); err == nil {
-				viewers = reloaded
-				if matched := findExactViewer(viewers, *acct); matched != nil {
-					newViewerID = matched.ID
-					status = "imported"
+	if newViewerID == 0 && !acct.Owner {
+		resolved = resolvePlexUser(*acct, h.listPlexUsers(r.Context()))
+		if resolved != nil && resolved.PlexID > 0 {
+			if existing := findViewerByPlexID(viewers, resolved.PlexID); existing != nil && existing.IsOwner {
+				matched = existing
+				newViewerID = existing.ID
+				status = "matched"
+			}
+		}
+		if newViewerID == 0 {
+			shareTarget := acct.Name
+			var shareUserID int64
+			if resolved != nil {
+				shareUserID = resolved.PlexID
+				shareTarget = firstNonEmpty(resolved.Email, resolved.Username, acct.Name)
+			}
+			if shareUserID > 0 || strings.TrimSpace(shareTarget) != "" {
+				if err := h.shareViewerPlex(r.Context(), shareTarget, shareUserID, false); err != nil {
+					shareErr = err.Error()
 				} else {
-					for i := range viewers {
-						v := &viewers[i]
-						if v.Origin == "friend" && (strings.EqualFold(v.Username, acct.Name) || strings.EqualFold(v.Email, acct.Name)) {
-							newViewerID = v.ID
+					sharedPlex = true
+					if reloaded, err := h.storedViewers(r.Context()); err == nil {
+						viewers = reloaded
+						if synced := findSyncedFriendViewer(viewers, *acct, resolved); synced != nil {
+							newViewerID = synced.ID
 							status = "imported"
-							break
 						}
 					}
+					if newViewerID == 0 && resolved == nil {
+						resolved = resolvePlexUser(*acct, h.listPlexUsers(r.Context()))
+					}
+				}
+			}
+			// If resolved on Plex.tv but not yet in auth_users (e.g. pending share),
+			// create/update the friend viewer with full Plex profile instead of a blank invite.
+			if newViewerID == 0 && resolved != nil {
+				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, displayName); id > 0 {
+					newViewerID = id
+					status = st
 				}
 			}
 		}
@@ -383,10 +553,10 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 	}
 
 	// 5. If matched in step 1 and not yet shared on Plex.tv, share library access now.
-	// Only share if the matched viewer is a Plex-authenticated user (PlexID > 0).
+	// Only share if the matched viewer is a non-owner Plex-authenticated user (PlexID > 0).
 	// For local viewers (PlexID == 0), sharing on Plex.tv would sync a duplicate friend into auth_users.
-	if !acct.Owner && (matched != nil && matched.PlexID > 0) && !sharedPlex && shareErr == "" {
-		if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name); err != nil {
+	if !acct.Owner && matched != nil && !matched.IsOwner && matched.PlexID > 0 && !sharedPlex && shareErr == "" {
+		if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name, false); err != nil {
 			shareErr = err.Error()
 		} else {
 			sharedPlex = true
@@ -461,25 +631,23 @@ func (h *Handler) handleMatchPlexViewer(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Grant access on Plex.tv if not owner and the viewer is a Plex-authenticated user (PlexID > 0).
+	// Grant access on Plex.tv if not owner and the viewer is a non-owner Plex-authenticated user (PlexID > 0).
 	// For local viewers (PlexID == 0), sharing on Plex.tv would sync a duplicate friend into auth_users.
 	var (
 		sharedPlex bool
 		shareErr   string
 	)
-	var isPlexViewer bool
 	var matchedViewer *ViewerRecord
 	if viewers, err := h.storedViewers(r.Context()); err == nil {
 		for i := range viewers {
 			if viewers[i].ID == body.ViewerID {
 				matchedViewer = &viewers[i]
-				isPlexViewer = viewers[i].PlexID > 0
 				break
 			}
 		}
 	}
-	if !isOwner && isPlexViewer && acctName != "" {
-		if err := h.shareViewerPlexViewer(r.Context(), matchedViewer, acctName); err != nil {
+	if !isOwner && matchedViewer != nil && !matchedViewer.IsOwner && matchedViewer.PlexID > 0 {
+		if err := h.shareViewerPlexViewer(r.Context(), matchedViewer, acctName, false); err != nil {
 			shareErr = err.Error()
 		} else {
 			sharedPlex = true
@@ -527,8 +695,84 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 		Error      string `json:"error,omitempty"`
 	}
 
-	var results []bulkImportResultItem
+	type deferredImport struct {
+		resultIdx int
+		serverID  int64
+		acct      plexwatch.PMSAccount
+		name      string
+		direction int
+		shareErr  string
+	}
+
+	var (
+		results       []bulkImportResultItem
+		deferred      []deferredImport
+		sharedPlexIDs = make(map[int64]bool)
+		sharedAny     bool
+	)
 	viewers, _ := h.storedViewers(r.Context())
+	plexUsers := h.listPlexUsers(r.Context())
+
+	finalize := func(serverID int64, acct plexwatch.PMSAccount, name string, direction int, vID int64, status string, matched *ViewerRecord, sharedPlex bool, shareErr string) bulkImportResultItem {
+		var inviteURL string
+		// Fall back to local invite viewer if not matched/resolved.
+		if vID == 0 {
+			id, secret, err := h.deps.Invites.CreateViewer(r.Context(), name)
+			if err != nil {
+				return bulkImportResultItem{
+					Name:      name,
+					ServerID:  serverID,
+					AccountID: acct.ID,
+					Status:    "failed",
+					Error:     "could not create viewer: " + err.Error(),
+				}
+			}
+			vID = id
+			inviteURL = h.inviteURL(secret)
+			viewers = append(viewers, ViewerRecord{User: core.User{ID: id, Title: name}})
+		}
+
+		if _, err := h.deps.PlexServers.MapAccount(r.Context(), serverID, acct.ID, plexwatch.PMSMappingInput{
+			UserID:    vID,
+			Direction: direction,
+			Interval:  10,
+		}); err != nil {
+			return bulkImportResultItem{
+				ID:        vID,
+				Name:      name,
+				ServerID:  serverID,
+				AccountID: acct.ID,
+				Status:    "failed",
+				Error:     "map account failed: " + err.Error(),
+			}
+		}
+
+		// If matched in step 1 and not yet shared on Plex.tv, share now.
+		// Only share if the matched viewer is a non-owner Plex-authenticated user (PlexID > 0).
+		// For local viewers (PlexID == 0), sharing on Plex.tv would sync a duplicate friend into auth_users.
+		if !acct.Owner && matched != nil && !matched.IsOwner && matched.PlexID > 0 && !sharedPlex && shareErr == "" {
+			if sharedPlexIDs[matched.PlexID] {
+				sharedPlex = true
+			} else if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name, true); err != nil {
+				shareErr = err.Error()
+			} else {
+				sharedPlex = true
+				sharedAny = true
+				sharedPlexIDs[matched.PlexID] = true
+			}
+		}
+
+		return bulkImportResultItem{
+			ID:         vID,
+			Name:       name,
+			InviteURL:  inviteURL,
+			ServerID:   serverID,
+			AccountID:  acct.ID,
+			Status:     status,
+			SharedPlex: sharedPlex,
+			ShareError: shareErr,
+		}
+	}
 
 	for _, srv := range servers {
 		accounts, err := h.deps.PlexServers.Accounts(r.Context(), srv.ID)
@@ -552,17 +796,17 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 
 			var (
 				vID        int64
-				inviteURL  string
 				status     = "imported"
 				direction  = 2
 				sharedPlex bool
 				shareErr   string
+				matched    *ViewerRecord
+				resolved   *plextv.SharedUser
 			)
 			if acct.Owner {
 				direction = 3
 			}
 
-			var matched *ViewerRecord
 			// 1. Check for EXACT match among existing viewers (mapping, owner, stable Plex ID).
 			if m := findExactViewer(viewers, acct); m != nil {
 				matched = m
@@ -570,87 +814,95 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 				status = "matched"
 			}
 
-			// 2. If not matched and not owner, attempt to grant library access on Plex.tv first.
-			if vID == 0 && !acct.Owner && strings.TrimSpace(acct.Name) != "" {
-				if err := h.shareViewerPlex(r.Context(), acct.Name); err != nil {
-					shareErr = err.Error()
-				} else {
-					sharedPlex = true
-					if reloaded, err := h.storedViewers(r.Context()); err == nil {
-						viewers = reloaded
-						if matched := findExactViewer(viewers, acct); matched != nil {
-							vID = matched.ID
-							status = "imported"
+			// 2. If not matched and not owner, resolve against Plex.tv users and grant library access on Plex.tv.
+			if vID == 0 && !acct.Owner {
+				resolved = resolvePlexUser(acct, plexUsers)
+				if resolved != nil && resolved.PlexID > 0 {
+					if existing := findViewerByPlexID(viewers, resolved.PlexID); existing != nil && existing.IsOwner {
+						matched = existing
+						vID = existing.ID
+						status = "matched"
+					}
+				}
+				if vID == 0 {
+					shareTarget := acct.Name
+					var shareUserID int64
+					if resolved != nil {
+						shareUserID = resolved.PlexID
+						shareTarget = firstNonEmpty(resolved.Email, resolved.Username, acct.Name)
+					}
+					if shareUserID > 0 && sharedPlexIDs[shareUserID] {
+						sharedPlex = true
+					} else if shareUserID > 0 || strings.TrimSpace(shareTarget) != "" {
+						if err := h.shareViewerPlex(r.Context(), shareTarget, shareUserID, true); err != nil {
+							shareErr = err.Error()
 						} else {
-							for i := range viewers {
-								v := &viewers[i]
-								if v.Origin == "friend" && (strings.EqualFold(v.Username, acct.Name) || strings.EqualFold(v.Email, acct.Name)) {
-									vID = v.ID
-									status = "imported"
-									break
+							sharedPlex = true
+							sharedAny = true
+							if shareUserID > 0 {
+								sharedPlexIDs[shareUserID] = true
+							}
+							// When using a legacy single-call SharePlexViewer hook (e.g. tests),
+							// check ViewerDirectory for a newly synced friend row.
+							if h.deps.SharePlexViewerNoSync == nil {
+								if reloaded, err := h.storedViewers(r.Context()); err == nil {
+									viewers = reloaded
+									if synced := findSyncedFriendViewer(viewers, acct, resolved); synced != nil {
+										vID = synced.ID
+										status = "imported"
+									}
 								}
 							}
+						}
+					}
+					// Defer post-share resolution so ListPlexUsers runs at most once
+					// for the entire batch instead of once per unresolved account.
+					if vID == 0 && resolved == nil && sharedPlex {
+						idx := len(results)
+						results = append(results, bulkImportResultItem{})
+						deferred = append(deferred, deferredImport{
+							resultIdx: idx,
+							serverID:  srv.ID,
+							acct:      acct,
+							name:      name,
+							direction: direction,
+							shareErr:  shareErr,
+						})
+						continue
+					}
+					if vID == 0 && resolved != nil {
+						if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, name); id > 0 {
+							vID = id
+							status = st
 						}
 					}
 				}
 			}
 
-			// 3. Fall back to local invite viewer if not matched/synced.
-			if vID == 0 {
-				id, secret, err := h.deps.Invites.CreateViewer(r.Context(), name)
-				if err != nil {
-					results = append(results, bulkImportResultItem{
-						Name:      name,
-						ServerID:  srv.ID,
-						AccountID: acct.ID,
-						Status:    "failed",
-						Error:     "could not create viewer: " + err.Error(),
-					})
-					continue
-				}
-				vID = id
-				inviteURL = h.inviteURL(secret)
-				viewers = append(viewers, ViewerRecord{User: core.User{ID: id, Title: name}})
-			}
+			results = append(results, finalize(srv.ID, acct, name, direction, vID, status, matched, sharedPlex, shareErr))
+		}
+	}
 
-			_, err = h.deps.PlexServers.MapAccount(r.Context(), srv.ID, acct.ID, plexwatch.PMSMappingInput{
-				UserID:    vID,
-				Direction: direction,
-				Interval:  10,
-			})
-			if err != nil {
-				results = append(results, bulkImportResultItem{
-					ID:        vID,
-					Name:      name,
-					ServerID:  srv.ID,
-					AccountID: acct.ID,
-					Status:    "failed",
-					Error:     "map account failed: " + err.Error(),
-				})
-				continue
-			}
-
-			// 4. If matched in step 1 and not yet shared on Plex.tv, share now.
-			// Only share if the matched viewer is a Plex-authenticated user (PlexID > 0).
-			// For local viewers (PlexID == 0), sharing on Plex.tv would sync a duplicate friend into auth_users.
-			if !acct.Owner && (matched != nil && matched.PlexID > 0) && !sharedPlex && shareErr == "" {
-				if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name); err != nil {
-					shareErr = err.Error()
-				} else {
-					sharedPlex = true
+	if len(deferred) > 0 {
+		plexUsers = h.listPlexUsers(r.Context())
+		for _, d := range deferred {
+			var (
+				vID    int64
+				status = "imported"
+			)
+			if resolved := resolvePlexUser(d.acct, plexUsers); resolved != nil {
+				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, d.name); id > 0 {
+					vID = id
+					status = st
 				}
 			}
+			results[d.resultIdx] = finalize(d.serverID, d.acct, d.name, d.direction, vID, status, nil, true, d.shareErr)
+		}
+	}
 
-			results = append(results, bulkImportResultItem{
-				ID:         vID,
-				Name:       name,
-				InviteURL:  inviteURL,
-				ServerID:   srv.ID,
-				AccountID:  acct.ID,
-				Status:     status,
-				SharedPlex: sharedPlex,
-				ShareError: shareErr,
-			})
+	if sharedAny && h.deps.SyncPlexFriends != nil {
+		if err := h.deps.SyncPlexFriends(r.Context()); err != nil {
+			h.log.Warn("sync plex friends error after bulk import", "err", err)
 		}
 	}
 

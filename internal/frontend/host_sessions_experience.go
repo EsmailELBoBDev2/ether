@@ -1807,10 +1807,25 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 	}
 }
 
+func isCommentaryOrADStream(st core.StreamInfo) bool {
+	if (st.Commentary != nil && *st.Commentary) || (st.VisualImpaired != nil && *st.VisualImpaired) {
+		return true
+	}
+	title := strings.ToLower(strings.TrimSpace(st.Title))
+	if title == "" {
+		return false
+	}
+	return strings.Contains(title, "commentary") ||
+		strings.Contains(title, "audio description") ||
+		strings.Contains(title, "descriptive") ||
+		strings.Contains(title, "visual impaired")
+}
+
 // PickAudio selects an audio stream position, or -1 when none exists.
 func PickAudio(info core.MediaInfo, langs []string) int {
 	for _, lang := range langs {
-		// Within one wanted language the best tier wins (exact before
+		// Within one wanted language, non-commentary/non-AD always beats
+		// commentary/AD; then the best language tier wins (exact before
 		// generic-want×regional before regional-want×generic); preference
 		// order across languages still dominates.
 		best, bestTier, bestPenalized := -1, 0, false
@@ -1822,8 +1837,8 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 			if tier == 0 {
 				continue
 			}
-			penalized := (st.Commentary != nil && *st.Commentary) || (st.VisualImpaired != nil && *st.VisualImpaired)
-			if tier > bestTier || (tier == bestTier && bestPenalized && !penalized) {
+			penalized := isCommentaryOrADStream(st)
+			if best < 0 || (!penalized && bestPenalized) || (penalized == bestPenalized && tier > bestTier) {
 				best, bestTier, bestPenalized = i, tier, penalized
 			}
 		}
@@ -1831,19 +1846,26 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 			return best
 		}
 	}
-	first := -1
+	first, firstPenalized := -1, -1
 	for i, st := range info.Streams {
 		if st.Type != "audio" {
 			continue
 		}
-		if st.Default {
+		penalized := isCommentaryOrADStream(st)
+		if st.Default && !penalized {
 			return i
 		}
-		if first < 0 {
+		if !penalized && first < 0 {
 			first = i
 		}
+		if firstPenalized < 0 {
+			firstPenalized = i
+		}
 	}
-	return first
+	if first >= 0 {
+		return first
+	}
+	return firstPenalized
 }
 
 // ResolveSubtitle maps a stored choice onto a stream position, or -1.

@@ -1,6 +1,7 @@
 package vela
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/base64"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
@@ -33,6 +35,8 @@ type readTicket struct {
 	format    string
 	mimeType  string
 	name      string
+	identity  string
+	modTime   time.Time
 	size      int64
 	createdAt time.Time
 	expiresAt time.Time
@@ -128,13 +132,20 @@ func (i *instance) read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires := now.Add(readTicketTTL)
+	name := reading.Filename(media.Name, detail.Title.Title, format)
+	modTime := media.Release.PubDate
+	if modTime.IsZero() {
+		modTime = detail.Title.UpdatedAt
+	}
 	entry := &readTicket{
 		media:     media,
 		viewerID:  v.ID,
 		key:       k,
 		format:    format,
 		mimeType:  mimeType,
-		name:      reading.Filename(media.Name, detail.Title.Title, format),
+		name:      name,
+		identity:  cmp.Or(media.Release.ID, "book:"+k.String()+":"+name),
+		modTime:   modTime,
 		size:      media.Size,
 		createdAt: now,
 		expiresAt: expires,
@@ -184,7 +195,7 @@ func (i *instance) readFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "sandbox")
 	w.Header().Set("Cache-Control", "no-store")
 	sr := io.NewSectionReader(reading.ContextReaderAt(r.Context(), entry.media.ReaderAt), 0, entry.size)
-	http.ServeContent(w, r, entry.name, time.Time{}, sr)
+	rangefile.Serve(w, r, entry.name, entry.identity, entry.size, entry.modTime, sr)
 }
 
 func (i *instance) readingProgress(w http.ResponseWriter, r *http.Request) {

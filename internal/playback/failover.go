@@ -2339,7 +2339,7 @@ func recoverableSourceFailure(err error) bool {
 	return errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// probedAudioAcceptable reports whether a probed foreign-title release carries
+// probedAudioAcceptable reports whether a probed release carries
 // at least one audio stream in the viewer's wanted language (or an untagged
 // audio stream). When every audio stream is explicitly tagged in a non-wanted
 // language (e.g. a Spanish/Portuguese ".DUAL" release on an English server),
@@ -2358,11 +2358,7 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 	}
 	var wanted []string
 	switch {
-	case profileLang == core.ProfileLanguageOriginal:
-		if orig != "" {
-			wanted = append(wanted, orig)
-		}
-	case profileLang != "" && releaseparse.KnownLanguage(profileLang):
+	case profileLang != "" && profileLang != core.ProfileLanguageOriginal && releaseparse.KnownLanguage(profileLang):
 		wanted = append(wanted, profileLang)
 	case len(profile.PreferredLanguages) > 0:
 		wanted = append(wanted, profile.PreferredLanguages...)
@@ -2373,6 +2369,9 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 			base, _, _ := strings.Cut(serverLang, "-")
 			wanted = append(wanted, base)
 		}
+	}
+	if profileLang == core.ProfileLanguageOriginal && orig != "" {
+		wanted = append(wanted, orig)
 	}
 	if len(wanted) == 0 {
 		return true

@@ -1807,20 +1807,6 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 	}
 }
 
-func isCommentaryOrADStream(st core.StreamInfo) bool {
-	if (st.Commentary != nil && *st.Commentary) || (st.VisualImpaired != nil && *st.VisualImpaired) {
-		return true
-	}
-	title := strings.ToLower(strings.TrimSpace(st.Title))
-	if title == "" {
-		return false
-	}
-	return strings.Contains(title, "commentary") ||
-		strings.Contains(title, "audio description") ||
-		strings.Contains(title, "descriptive") ||
-		strings.Contains(title, "visual impaired")
-}
-
 // PickAudio selects an audio stream position, or -1 when none exists.
 func PickAudio(info core.MediaInfo, langs []string) int {
 	for _, lang := range langs {
@@ -1837,7 +1823,7 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 			if tier == 0 {
 				continue
 			}
-			penalized := isCommentaryOrADStream(st)
+			penalized := langtag.TrackRole(st.Title, st.Commentary, st.VisualImpaired) != langtag.RoleMain
 			if best < 0 || (!penalized && bestPenalized) || (penalized == bestPenalized && tier > bestTier) {
 				best, bestTier, bestPenalized = i, tier, penalized
 			}
@@ -1851,7 +1837,7 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 		if st.Type != "audio" {
 			continue
 		}
-		penalized := isCommentaryOrADStream(st)
+		penalized := langtag.TrackRole(st.Title, st.Commentary, st.VisualImpaired) != langtag.RoleMain
 		if st.Default && !penalized {
 			return i
 		}

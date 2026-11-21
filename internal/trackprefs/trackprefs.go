@@ -457,20 +457,6 @@ func rankStreamLanguage(t core.StreamInfo, want []string) int {
 	return 0
 }
 
-func isCommentaryOrAD(t core.StreamInfo) bool {
-	if (t.Commentary != nil && *t.Commentary) || (t.VisualImpaired != nil && *t.VisualImpaired) {
-		return true
-	}
-	title := strings.ToLower(strings.TrimSpace(t.Title))
-	if title == "" {
-		return false
-	}
-	return strings.Contains(title, "commentary") ||
-		strings.Contains(title, "audio description") ||
-		strings.Contains(title, "descriptive") ||
-		strings.Contains(title, "visual impaired")
-}
-
 func pick(streams []core.StreamInfo, kind string, want []string, style string, forcedOnly bool, memory *Choice, original string) int {
 	best, score := -1, -100000
 	for i, t := range streams {
@@ -494,7 +480,7 @@ func pick(streams []core.StreamInfo, kind string, want []string, style string, f
 			// file's default flag.
 			n += 2
 		}
-		if kind == "audio" && isCommentaryOrAD(t) {
+		if kind == "audio" && langtag.TrackRole(t.Title, t.Commentary, t.VisualImpaired) != langtag.RoleMain {
 			n -= 150
 		}
 		if kind == "subtitle" {

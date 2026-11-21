@@ -512,7 +512,11 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/vela/v0/") {
-		webclient.ServeVelaWithBrand(w, r, i.assets, i.velaBrand())
+		brand := i.velaBrand()
+		if origin, ok := i.host.Origin(r); ok {
+			brand.RedirectPrefix = origin.Prefix
+		}
+		webclient.ServeVelaWithBrand(w, r, i.assets, brand)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

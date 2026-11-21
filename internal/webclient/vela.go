@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
@@ -38,10 +39,11 @@ type VelaIconAsset struct {
 // VelaBrand carries the owner's optional Vela app name and icon resolver for
 // dynamic index.html, manifest.webmanifest, and PWA icon serving.
 type VelaBrand struct {
-	AppName     string
-	IconVersion string
-	IconIsSVG   bool
-	IconAsset   func(name string) (VelaIconAsset, bool)
+	AppName        string
+	IconVersion    string
+	IconIsSVG      bool
+	IconAsset      func(name string) (VelaIconAsset, bool)
+	RedirectPrefix string
 }
 
 var velaPWAIconPaths = map[string]string{
@@ -109,7 +111,7 @@ func ServeVelaWithBrand(w http.ResponseWriter, r *http.Request, dir string, bran
 	}
 	if r.URL.Path == "/vela/" {
 		w.Header().Set("Cache-Control", veladist.CacheControlRevalidate)
-		target := url.URL{Path: "/vela", RawQuery: r.URL.RawQuery, Fragment: r.URL.Fragment, RawFragment: r.URL.RawFragment}
+		target := url.URL{Path: clientnet.RedirectPath(brand.RedirectPrefix, "", "/vela"), RawQuery: r.URL.RawQuery, Fragment: r.URL.Fragment, RawFragment: r.URL.RawFragment}
 		// Browsers retain an incoming fragment across a redirect whose Location
 		// omits one; ordinary HTTP requests never transmit that fragment.
 		http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)

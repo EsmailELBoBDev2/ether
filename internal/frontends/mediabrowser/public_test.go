@@ -105,7 +105,7 @@ func TestConnectionPageLocaleCoverage(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/web", nil)
 			r.Header.Set("Accept-Language", lang)
 			w := httptest.NewRecorder()
-			webPage(w, r)
+			webPage(w, r, nil)
 			if !strings.Contains(w.Body.String(), `lang="`+lang+`"`) {
 				t.Fatalf("wrong locale: %s", w.Body.String())
 			}
@@ -140,5 +140,39 @@ func TestSystemEndpointReportsCallerNetwork(t *testing.T) {
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got["IsLocal"] != tc.local || got["IsInNetwork"] != tc.lan {
 			t.Fatalf("%s from %s: %d %s", tc.path, tc.remote, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestSystemInfoPublicHonoursTrustedProxyHeaders(t *testing.T) {
+	r := &route.Router{}
+	if err := PublicRoutes(r, PublicInfo{ID: "123", ServerName: "Ether", Version: "10.10.0", ProductName: "Jellyfin Server"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Trusted loopback proxy with subdomain + path prefix.
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/System/Info/Public", nil)
+	req.RemoteAddr = "127.0.0.1:50000"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "media.example.com")
+	req.Header.Set("X-Forwarded-Prefix", "/jellyfin")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var body struct {
+		LocalAddress string `json:"LocalAddress"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.LocalAddress != "https://media.example.com/jellyfin" {
+		t.Fatalf("trusted proxy LocalAddress = %q (code %d)", body.LocalAddress, w.Code)
+	}
+
+	// Untrusted remote peer spoofing X-Forwarded-* headers must be ignored.
+	spoof := httptest.NewRequest("GET", "http://192.168.1.5:8096/System/Info/Public", nil)
+	spoof.RemoteAddr = "203.0.113.9:50000"
+	spoof.Header.Set("X-Forwarded-Proto", "https")
+	spoof.Header.Set("X-Forwarded-Host", "evil.example.com")
+	spoof.Header.Set("X-Forwarded-Prefix", "/evil")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, spoof)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.LocalAddress != "http://192.168.1.5:8096" {
+		t.Fatalf("untrusted proxy LocalAddress = %q (code %d)", body.LocalAddress, w.Code)
 	}
 }

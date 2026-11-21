@@ -5,6 +5,10 @@ export type ReachabilityStatus = {
   mounted?: boolean;
   addresses?: string[] | null;
   connectUrls?: string[];
+  /** Recent client-visible addresses (host and path prefix) Ether answered requests on. */
+  observedAddresses?: string[];
+  /** Optional owner-configured published addresses for QR codes, invites, and share links. */
+  publishedAddresses?: string[];
   lan?: string;
   lanReason?: string;
   lanCheckedAt?: string;

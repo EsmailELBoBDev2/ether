@@ -144,7 +144,13 @@ function localRank(item: ParsedAddress, preferredPort: string): number {
   return score;
 }
 
-function secondaryLabel(item: ParsedAddress): string {
+function secondaryLabel(
+  item: ParsedAddress,
+  publishedSet: ReadonlySet<string>,
+  observedSet: ReadonlySet<string>,
+): string {
+  if (publishedSet.has(item.raw)) return t("Published");
+  if (observedSet.has(item.raw)) return t("Seen recently");
   if (item.isSharedFallback) {
     if (item.isTailscale) return t("Tailscale (also reachable at)");
     return t("Also reachable at");
@@ -161,7 +167,13 @@ function secondaryLabel(item: ParsedAddress): string {
   return t("Remote");
 }
 
-function secondarySortWeight(item: ParsedAddress): number {
+function secondarySortWeight(
+  item: ParsedAddress,
+  publishedSet: ReadonlySet<string>,
+  observedSet: ReadonlySet<string>,
+): number {
+  if (publishedSet.has(item.raw)) return 5;
+  if (observedSet.has(item.raw)) return 8;
   if (item.isSharedFallback && !item.isTailscale && !item.isIPv6) return 10;
   if (item.isTailscale && !item.isIPv6 && !item.isSharedFallback) return 20;
   if (!item.isLocal && !item.isTailscale) return 30;
@@ -172,32 +184,46 @@ function secondarySortWeight(item: ParsedAddress): number {
 
 export function classifyAppAddresses(
   status: ReachabilityStatus | null | undefined,
-  options?: { preferredPort?: string; configuredRemote?: string },
+  options?: { preferredPort?: string; configuredRemote?: string; publishedAddresses?: string[] },
 ): {
   primary?: string;
   others: { address: string; label: string }[];
+  hasRemoteAddress: boolean;
 } {
   const seen = new Set<string>();
+  const publishedSet = new Set<string>();
+  const observedSet = new Set<string>();
   const parsed: ParsedAddress[] = [];
-  for (const candidate of usableAddresses(status)) {
-    const item = parseAddress(candidate);
-    if (!item || seen.has(item.raw)) continue;
+  const addItem = (
+    raw: string,
+    bucket?: Set<string>,
+    filter?: (item: ParsedAddress) => boolean,
+  ) => {
+    const item = parseAddress(raw);
+    if (!item || (filter && !filter(item))) return;
+    if (bucket) bucket.add(item.raw);
+    if (seen.has(item.raw)) return;
     seen.add(item.raw);
     parsed.push(item);
+  };
+
+  for (const candidate of usableAddresses(status)) {
+    addItem(candidate);
+  }
+  for (const candidate of options?.publishedAddresses ?? []) {
+    addItem(candidate, publishedSet);
+  }
+  for (const candidate of status?.publishedAddresses ?? []) {
+    addItem(candidate, publishedSet);
+  }
+  for (const candidate of status?.observedAddresses ?? []) {
+    addItem(candidate, observedSet);
   }
   if (options?.configuredRemote) {
-    const remoteItem = parseAddress(options.configuredRemote);
-    if (remoteItem && !remoteItem.isLocal && !seen.has(remoteItem.raw)) {
-      seen.add(remoteItem.raw);
-      parsed.push(remoteItem);
-    }
+    addItem(options.configuredRemote, undefined, (item) => !item.isLocal);
   }
   if (status?.wanAddress) {
-    const wanItem = parseAddress(status.wanAddress);
-    if (wanItem && !wanItem.isLocal && !wanItem.isTailscale && !seen.has(wanItem.raw)) {
-      seen.add(wanItem.raw);
-      parsed.push(wanItem);
-    }
+    addItem(status.wanAddress, undefined, (item) => !item.isLocal && !item.isTailscale);
   }
 
   const preferredPort = options?.preferredPort ?? "";
@@ -214,13 +240,18 @@ export function classifyAppAddresses(
   const primaryItem = localIPv4[0] ?? tailscaleIPv4[0] ?? localAny[0] ?? parsed[0];
   const others = parsed
     .filter((item) => item.raw !== primaryItem?.raw)
-    .sort((a, b) => secondarySortWeight(a) - secondarySortWeight(b))
+    .sort(
+      (a, b) =>
+        secondarySortWeight(a, publishedSet, observedSet) -
+        secondarySortWeight(b, publishedSet, observedSet),
+    )
     .map((item) => ({
       address: item.raw,
-      label: secondaryLabel(item),
+      label: secondaryLabel(item, publishedSet, observedSet),
     }));
 
-  return { primary: primaryItem?.raw, others };
+  const hasRemoteAddress = parsed.some((item) => !item.isLocal);
+  return { primary: primaryItem?.raw, others, hasRemoteAddress };
 }
 
 export type PortConflict = {
@@ -395,6 +426,12 @@ function deriveServerAddresses(
 
   const plex = frontends.find((f) => f.descriptor.id === "plex");
   for (const url of usableAddresses(plex?.status)) {
+    addOrigin(url, true);
+  }
+  for (const url of plex?.status.observedAddresses ?? []) {
+    addOrigin(url, true);
+  }
+  for (const url of plex?.status.publishedAddresses ?? []) {
     addOrigin(url, true);
   }
   if (plex?.status.wanAddress) {
@@ -780,6 +817,8 @@ export function AppOverviewRow({
 export function AppAddressCard({
   info,
   configuredRemote,
+  publishedAddresses,
+  onEditPublishedAddresses,
   port,
   onPortChange,
   onSavePlexPort,
@@ -789,6 +828,8 @@ export function AppAddressCard({
 }: {
   info: HubFrontendInfo;
   configuredRemote?: string;
+  publishedAddresses?: string[];
+  onEditPublishedAddresses?: () => void;
   port?: number;
   onPortChange?: (port: number | undefined) => void;
   onSavePlexPort?: (port: number) => Promise<void>;
@@ -805,10 +846,19 @@ export function AppAddressCard({
       ? { tone: "ok" as const, text: t("Listening") }
       : live;
   const preferredPort = String(conflict?.actualPort ?? port ?? info.descriptor.defaultPort ?? "");
-  const { primary, others } = classifyAppAddresses(info.status, {
+  const effectivePublished = publishedAddresses ?? info.status.publishedAddresses ?? [];
+  const { primary, others, hasRemoteAddress } = classifyAppAddresses(info.status, {
     preferredPort,
     configuredRemote,
+    publishedAddresses: effectivePublished,
   });
+  const showRemoteHint =
+    info.enabled &&
+    Boolean(primary) &&
+    !hasRemoteAddress &&
+    id !== "dlna" &&
+    info.descriptor.auth !== "none_lan";
+  const remoteSetupPath = id === "plex" ? "/apps/plex/remote" : "/apps/overview";
   const [showOthers, setShowOthers] = useState(true);
   const savedPlexPort = port ?? serverPort ?? 32400;
   const [plexPortText, setPlexPortText] = useState(String(savedPlexPort));
@@ -874,18 +924,32 @@ export function AppAddressCard({
 
       <div className="space-y-3 px-5 py-4">
         {info.enabled && primary ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-subtle px-3.5 py-2.5">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-fg-muted">{t("Primary address")}</p>
-              <a
-                href={primary}
-                className="mt-0.5 block break-all font-mono text-sm font-medium text-primary hover:underline"
-              >
-                {primary}
-              </a>
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-subtle px-3.5 py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-fg-muted">{t("Primary address")}</p>
+                <a
+                  href={primary}
+                  className="mt-0.5 block break-all font-mono text-sm font-medium text-primary hover:underline"
+                >
+                  {primary}
+                </a>
+              </div>
+              <CopyAddressButton address={primary} ariaLabel={t("Copy address")} />
             </div>
-            <CopyAddressButton address={primary} ariaLabel={t("Copy address")} />
-          </div>
+            {showRemoteHint ? (
+              <p className="text-xs text-fg-muted">
+                {tx("Only local requests seen so far. {link} to reach {app} away from home.", {
+                  link: (
+                    <Link to={remoteSetupPath} className="font-medium text-primary hover:underline">
+                      {t("Set up remote access")}
+                    </Link>
+                  ),
+                  app: name,
+                })}
+              </p>
+            ) : null}
+          </>
         ) : !info.enabled ? (
           <p className="text-sm text-fg-muted">
             {t("Turn on {app} to start listening for connections.", { app: name })}
@@ -1016,6 +1080,24 @@ export function AppAddressCard({
           }
         />
       )}
+      {onEditPublishedAddresses ? (
+        <SettingsRow
+          setting="publishedAddresses"
+          title={t("Published addresses")}
+          description={
+            effectivePublished.length > 0
+              ? t("Used for QR codes, invites, and share links.")
+              : t("Optional. Set addresses to use in QR codes, invites, and share links.")
+          }
+          control={
+            <Button type="button" variant="outline" size="sm" onClick={onEditPublishedAddresses}>
+              {effectivePublished.length > 0
+                ? t("Edit ({count})", { count: String(effectivePublished.length) })
+                : t("Add")}
+            </Button>
+          }
+        />
+      ) : null}
     </SettingsSection>
   );
 }
@@ -1175,38 +1257,46 @@ function connectInstructions(
 export function ConnectDeviceCard({
   info,
   configuredRemote,
+  publishedAddresses,
   preferredPort,
   serverName,
 }: {
   info: HubFrontendInfo;
   configuredRemote?: string;
+  publishedAddresses?: string[];
   preferredPort?: string;
   serverName: string;
 }) {
   const id = info.descriptor.id;
   const conflict = portConflictInfo(info.status);
+  const effectivePublished = publishedAddresses ?? info.status.publishedAddresses ?? [];
   const { primary } = classifyAppAddresses(info.status, {
     preferredPort: String(
       conflict?.actualPort ?? preferredPort ?? info.descriptor.defaultPort ?? "",
     ),
     configuredRemote,
+    publishedAddresses: effectivePublished,
   });
+  const shareAddress = effectivePublished[0] ?? primary;
   const displayAddress =
-    primary ||
+    shareAddress ||
     (info.descriptor.defaultPort
       ? `http://<server-ip>:${info.descriptor.defaultPort}`
       : `http://<server-ip>:32400/${id === "plex" ? "" : id}`);
-  const showQR = info.enabled && Boolean(primary) && PHONE_QR_APPS.has(id);
+  const showQR = info.enabled && Boolean(shareAddress) && PHONE_QR_APPS.has(id);
   const [qr, setQR] = useState<string>();
 
   useEffect(() => {
-    if (!showQR || !primary) {
+    if (!showQR || !shareAddress) {
       setQR(undefined);
       return;
     }
     const controller = new AbortController();
     let objectURL: string | undefined;
-    void apiBlob(`${API_BASE}/frontends/qr?url=${encodeURIComponent(primary)}`, controller.signal)
+    void apiBlob(
+      `${API_BASE}/frontends/qr?url=${encodeURIComponent(shareAddress)}`,
+      controller.signal,
+    )
       .then((blob) => {
         if (!controller.signal.aborted) {
           objectURL = URL.createObjectURL(blob);
@@ -1219,7 +1309,7 @@ export function ConnectDeviceCard({
       if (objectURL) URL.revokeObjectURL(objectURL);
       setQR(undefined);
     };
-  }, [showQR, primary]);
+  }, [showQR, shareAddress]);
 
   const guide = connectInstructions(info, displayAddress, serverName || "Ether");
 

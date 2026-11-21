@@ -3765,9 +3765,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
           });
         if (surface === "jellyfin" || surface === "emby" || surface === "silo") {
           const viewer = state.users.find((u) => String(u.id) === id) ?? state.users[0];
+          const published = state.config.frontends?.[surface]?.publishedAddresses?.[0];
           return json({
             surface,
-            url: `http://ether.local/${surface}`,
+            url: published || `http://ether.local/${surface}`,
             username: viewer?.username || id,
             password: "mock-app-password",
             qr,
@@ -3776,6 +3777,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
         if (surface.startsWith("plugin:")) {
           const key = surface.split(":").at(-1) || "adapter";
           return json({ surface, url: `http://ether.local/${key}`, token: "mock-grant", qr });
+        }
+        const published = state.config.frontends?.[surface]?.publishedAddresses?.[0];
+        if (published) {
+          const trimmed = published.replace(/\/+$/, "");
+          const suffix =
+            surface === "m3u" ? "/mock-grant/playlist.m3u" : "/mock-grant/manifest.json";
+          return json({ surface, url: `${trimmed}${suffix}`, qr });
         }
         const path =
           surface === "m3u" ? "m3u/mock-grant/playlist.m3u" : "stremio/mock-grant/manifest.json";
@@ -3928,7 +3936,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
           `http://100.64.0.20:${port}`,
           `http://[fd00::20]:${port}`,
           `http://192.168.1.20:${state.config.server.port}/${id}`,
-          `https://${id}.example.com`,
         ];
       }
       if (id === "vela") {
@@ -3942,6 +3949,22 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (id === "stremio" || id === "webdav" || id === "dlna" || id === "m3u" || id === "xtream") {
         return [`http://192.168.1.20:${state.config.server.port}/${id}`];
       }
+      return [];
+    };
+    const mockObservedAddresses = (id: string, enabled: boolean): string[] => {
+      if (!enabled) return [];
+      if (id === "jellyfin") {
+        return ["https://jellyfin.example.com", "https://media.example.com/jellyfin"];
+      }
+      return [];
+    };
+    const mockPublishedAddresses = (id: string): string[] => {
+      if (id === "plex") {
+        return [...(state.config.plex?.customUrls ?? [])];
+      }
+      const entry = state.config.frontends?.[id];
+      if (entry?.publishedAddresses?.length) return [...entry.publishedAddresses];
+      if (entry?.publicUrl) return [entry.publicUrl];
       return [];
     };
     // Settings schemas mirror internal/frontend (WS1d): keep beside the
@@ -4055,6 +4078,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
               : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
           const runtime = mockRuntimePort(descriptor.id, configuredPort);
           const port = runtime.actualPort;
+          const observed = mockObservedAddresses(descriptor.id, enabled);
+          const published = mockPublishedAddresses(descriptor.id);
           return {
             descriptor,
             enabled,
@@ -4065,6 +4090,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
                   : descriptor.id === "jellyfin",
               addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
               connectUrls: enabled ? mockConnectUrls(descriptor.id, port) : [],
+              ...(observed.length ? { observedAddresses: observed } : {}),
+              ...(published.length ? { publishedAddresses: published } : {}),
               ...(enabled && runtime.busyPort
                 ? {
                     busyPort: runtime.busyPort,
@@ -4104,10 +4131,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
             : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
         const runtime = mockRuntimePort(id ?? "", configuredPort);
         const port = runtime.actualPort;
+        const observed = mockObservedAddresses(id ?? "", enabled);
+        const published = mockPublishedAddresses(id ?? "");
         return json({
           webPlayerReady: id === "vela" ? opts.velaInstalled === true : id === "jellyfin",
           addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
           connectUrls: enabled ? mockConnectUrls(id ?? "", port) : [],
+          ...(observed.length ? { observedAddresses: observed } : {}),
+          ...(published.length ? { publishedAddresses: published } : {}),
           ...(enabled && runtime.busyPort
             ? {
                 busyPort: runtime.busyPort,
@@ -4128,13 +4159,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
           conformance: "unknown",
         });
       }
-      if (action === "settings" && method === "GET")
+      if (action === "settings" && method === "GET") {
+        const published = mockPublishedAddresses(id!);
         return json({
           ...state.config.frontends?.[id!]?.settings,
+          ...(id !== "plex" && published.length ? { publishedAddresses: published } : {}),
           ...((state.config.frontendPorts?.[id!] ?? descriptor.defaultPort)
             ? { port: state.config.frontendPorts?.[id!] ?? descriptor.defaultPort }
             : {}),
         });
+      }
       const entries =
         state.config.frontends ?? (state.config.frontends = { plex: { enabled: true } });
       const entry = entries[id!] ?? (entries[id!] = { enabled: id === "vela" });
@@ -4147,7 +4181,29 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json(uploaded.body, uploaded.status);
       }
       if (action === "settings" && method === "PUT") {
-        const { port, ...settings } = body as Record<string, unknown>;
+        const { port, publishedAddresses, publicUrl, ...settings } = body as Record<
+          string,
+          unknown
+        >;
+        if (publishedAddresses !== undefined) {
+          if (id === "plex") {
+            return err(400, "invalid", "configure Plex published addresses under Plex settings");
+          }
+          if (!Array.isArray(publishedAddresses)) {
+            return err(400, "invalid", "publishedAddresses must be a list of URLs");
+          }
+          const clean = publishedAddresses
+            .map((v) => String(v).trim().replace(/\/+$/, ""))
+            .filter(Boolean);
+          if (clean.length) entry.publishedAddresses = clean;
+          else delete entry.publishedAddresses;
+          delete entry.publicUrl;
+        } else if (typeof publicUrl === "string") {
+          const clean = publicUrl.trim().replace(/\/+$/, "");
+          if (clean) entry.publishedAddresses = [clean];
+          else delete entry.publishedAddresses;
+          delete entry.publicUrl;
+        }
         if (id === "vela") {
           if (typeof settings.appName === "string") {
             const trimmed = settings.appName.trim();

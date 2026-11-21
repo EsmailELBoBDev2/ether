@@ -3,15 +3,30 @@ package admin
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/remote"
 )
 
 func (h *Handler) presentConnectURLs(r *http.Request, info FrontendInfo) FrontendInfo {
 	if h.deps.Config == nil {
 		return info
 	}
-	info.Status.ConnectURLs = consoleConnectURLs(r, string(info.Descriptor.ID), info.Status.ConnectURLs, h.deps.Config.Get(), h.proxyPrefixes())
+	cfg := h.deps.Config.Get()
+	id := string(info.Descriptor.ID)
+	info.Status.ConnectURLs = consoleConnectURLs(r, id, info.Status.ConnectURLs, cfg, h.proxyPrefixes())
+	if len(info.Status.PublishedAddresses) == 0 {
+		if consoleFrontendPolicy(id).MainListener {
+			for _, raw := range cfg.Plex.CustomURLs {
+				if c, err := remote.ParseCustomURL(strings.TrimSpace(raw)); err == nil {
+					info.Status.PublishedAddresses = append(info.Status.PublishedAddresses, strings.TrimRight(c.URI, "/"))
+				}
+			}
+		} else {
+			info.Status.PublishedAddresses = frontendPublishedURLs(cfg, id)
+		}
+	}
 	return info
 }
 

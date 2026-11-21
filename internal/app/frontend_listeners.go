@@ -28,6 +28,8 @@ type frontendListeners struct {
 	log               *slog.Logger
 	perf              *perfObserver
 	failures401       map[frontend.Protocol]*faillog.Tracker
+	observed          *observedAddresses
+	trustedProxies    func() []netip.Prefix
 	mu                sync.Mutex
 	opMu              sync.Mutex
 	registry          *frontend.Registry
@@ -50,7 +52,7 @@ type runningFrontend struct {
 }
 
 func newFrontendListeners(r *frontend.Registry) *frontendListeners {
-	return &frontendListeners{registry: r, running: make(map[frontend.Protocol]*runningFrontend), failures: make(map[frontend.Protocol]string)}
+	return &frontendListeners{registry: r, running: make(map[frontend.Protocol]*runningFrontend), failures: make(map[frontend.Protocol]string), observed: newObservedAddresses()}
 }
 func (m *frontendListeners) start(ctx context.Context, id frontend.Protocol) error {
 	m.opMu.Lock()
@@ -128,7 +130,11 @@ func (m *frontendListeners) start(ctx context.Context, id frontend.Protocol) err
 				run.busyPortHolder = lookupPortHolder(reqNum)
 			}
 		}
-		handler := m.observe(id, inst.Handler())
+		mountPrefix := strings.TrimSuffix(spec.PathPrefix, "/")
+		if mountPrefix == "/" {
+			mountPrefix = ""
+		}
+		handler := m.observe(id, mountPrefix, inst.Handler())
 		if handler == nil {
 			err = errors.New("frontend returned nil handler")
 			break
@@ -212,6 +218,27 @@ func (m *frontendListeners) start(ctx context.Context, id frontend.Protocol) err
 func (m *frontendListeners) sharedHandler(path string) http.Handler {
 	m.mu.Lock()
 	var chosen frontend.Protocol
+	var matchedPrefix string
+	for id, running := range m.running {
+		for _, prefix := range running.sharedPrefixes {
+			if (path == prefix || strings.HasPrefix(path, prefix+"/")) && len(prefix) > len(matchedPrefix) {
+				chosen, matchedPrefix = id, prefix
+			}
+		}
+	}
+	m.mu.Unlock()
+	if matchedPrefix == "" {
+		return nil
+	}
+	if instance, ok := m.registry.Instance(chosen); ok {
+		return m.observe(chosen, matchedPrefix, instance.Handler())
+	}
+	return nil
+}
+
+func (m *frontendListeners) sharedHandlerWithPrefix(path, mountPrefix string) http.Handler {
+	m.mu.Lock()
+	var chosen frontend.Protocol
 	longest := 0
 	for id, running := range m.running {
 		for _, prefix := range running.sharedPrefixes {
@@ -225,7 +252,7 @@ func (m *frontendListeners) sharedHandler(path string) http.Handler {
 		return nil
 	}
 	if instance, ok := m.registry.Instance(chosen); ok {
-		return m.observe(chosen, instance.Handler())
+		return m.observe(chosen, mountPrefix, instance.Handler())
 	}
 	return nil
 }
@@ -313,6 +340,9 @@ func (m *frontendListeners) status(ctx context.Context, id frontend.Protocol) fr
 	}
 	if failure != "" {
 		st.Error = failure
+	}
+	if m.observed != nil {
+		st.ObservedAddresses = m.observed.list(id)
 	}
 	return st
 }
@@ -471,37 +501,56 @@ func connectionURLs(address, prefix string, interfaces []net.Addr) []string {
 	return out
 }
 
-// observe aggregates authentication failures per protocol, across mounts. Request
+// observe aggregates authentication failures per protocol and records recent
+// client-visible base addresses in memory on successful responses. Request
 // paths, credentials and client identifiers never enter failure summaries.
-func (m *frontendListeners) observe(id frontend.Protocol, next http.Handler) http.Handler {
-	return m.perf.wrap(string(id), m.observeFailures(id, next))
+func (m *frontendListeners) observe(id frontend.Protocol, mountPrefix string, next http.Handler) http.Handler {
+	if next == nil {
+		return nil
+	}
+	return m.perf.wrap(string(id), m.observeTraffic(id, mountPrefix, next))
 }
 
-func (m *frontendListeners) observeFailures(id frontend.Protocol, next http.Handler) http.Handler {
-	if next == nil || m.log == nil || id == "plex" {
-		return next
-	}
-	m.mu.Lock()
-	if m.failures401 == nil {
-		m.failures401 = make(map[frontend.Protocol]*faillog.Tracker)
-	}
-	tracker := m.failures401[id]
-	if tracker == nil {
-		tracker = faillog.New(m.log.With("frontend", id), "authentication")
-		m.failures401[id] = tracker
-	}
-	m.mu.Unlock()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorder := &statusReasonWriter{ResponseWriter: middleware.NewWrapResponseWriter(w, r.ProtoMajor)}
-		next.ServeHTTP(recorder, r)
-		status := recorder.Status()
-		if status == http.StatusUnauthorized {
-			tracker.Fail(errors.New("unauthorized"))
+func (m *frontendListeners) observeTraffic(id frontend.Protocol, mountPrefix string, next http.Handler) http.Handler {
+	var tracker *faillog.Tracker
+	if m.log != nil && id != "plex" {
+		m.mu.Lock()
+		if m.failures401 == nil {
+			m.failures401 = make(map[frontend.Protocol]*faillog.Tracker)
 		}
-		if (id == "jellyfin" || id == "emby") && status != 0 && status != http.StatusUnauthorized && (status < 200 || status >= 300) {
-			// Path only: query strings carry tokens. Infuse 503s were silent
-			// because this wrapper used to count 401s and ignore the rest.
-			m.log.Warn("frontend response", "frontend", id, "method", r.Method, "route", r.URL.Path, "status", status, "reason", recorder.reason())
+		tracker = m.failures401[id]
+		if tracker == nil {
+			tracker = faillog.New(m.log.With("frontend", id), "authentication")
+			m.failures401[id] = tracker
+		}
+		m.mu.Unlock()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(frontend.WithMountPrefix(r.Context(), id, mountPrefix))
+		var status int
+		if tracker != nil {
+			recorder := &statusReasonWriter{ResponseWriter: middleware.NewWrapResponseWriter(w, r.ProtoMajor)}
+			next.ServeHTTP(recorder, r)
+			status = recorder.Status()
+			if status == http.StatusUnauthorized {
+				tracker.Fail(errors.New("unauthorized"))
+			}
+			if (id == "jellyfin" || id == "emby") && status != 0 && status != http.StatusUnauthorized && (status < 200 || status >= 300) {
+				// Path only: query strings carry tokens. Infuse 503s were silent
+				// because this wrapper used to count 401s and ignore the rest.
+				m.log.Warn("frontend response", "frontend", id, "method", r.Method, "route", r.URL.Path, "status", status, "reason", recorder.reason())
+			}
+		} else {
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			next.ServeHTTP(ww, r)
+			status = ww.Status()
+		}
+		if m.observed != nil && status >= 200 && status < 400 {
+			var trusted []netip.Prefix
+			if m.trustedProxies != nil {
+				trusted = m.trustedProxies()
+			}
+			m.observed.recordRequest(id, r, mountPrefix, status, trusted)
 		}
 	})
 }

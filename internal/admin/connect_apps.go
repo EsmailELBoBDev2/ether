@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/url"
 	"sort"
@@ -155,25 +157,17 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		writeError(w, 404, "not_found", "app unavailable")
 		return
 	}
-	if h.deps.ViewerPortalURL == nil {
-		writeError(w, 503, "address_unavailable", "Server address unavailable. Ask the server owner to set a reachable server address, then try again.")
-		return
+	pluginDesc, isPlugin := pluginAdapters[surface]
+	pathPrefix := "/" + surface
+	if isPlugin {
+		pathPrefix = pluginDesc.PathPrefix
 	}
-	address := h.deps.ViewerPortalURL
-	if surface == "stremio" {
-		address = h.deps.StremioPortalURL
-		if address == nil {
+	u, err := h.resolveAppAddress(r.Context(), r, surface, pathPrefix, surface == "stremio")
+	if err != nil {
+		if surface == "stremio" {
 			writeError(w, 503, "stremio_https_required", "Stremio needs HTTPS. Ask the server owner to give this server a secure (HTTPS) address, then try again.")
 			return
 		}
-	}
-	portal, err := address(r.Context(), r)
-	if err != nil && surface == "stremio" {
-		writeError(w, 503, "stremio_https_required", "Stremio needs HTTPS. Ask the server owner to give this server a secure (HTTPS) address, then try again.")
-		return
-	}
-	u, parseErr := url.Parse(portal)
-	if err != nil || parseErr != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || (surface == "stremio" && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/ether/me") {
 		writeError(w, 503, "address_unavailable", "Server address unavailable. Ask the server owner to set a reachable server address, then try again.")
 		return
 	}
@@ -182,7 +176,6 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		writeError(w, 503, "unavailable", "app unavailable")
 		return
 	}
-	pluginDesc, isPlugin := pluginAdapters[surface]
 	clientName := surface
 	if isPlugin && strings.TrimSpace(pluginDesc.Name) != "" {
 		clientName = strings.TrimSpace(pluginDesc.Name)
@@ -198,34 +191,34 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		writeError(w, 404, "not_found", "viewer unavailable")
 		return
 	}
-	prefix := strings.TrimSuffix(u.Path, "/ether/me")
 	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	basePath := strings.TrimRight(u.Path, "/")
 	result := map[string]string{"surface": surface}
 	switch {
 	case consoleFrontendPolicy(surface).PasswordConnect:
-		u.Path = prefix + "/" + surface
-		result["url"] = u.String()
+		u.Path = basePath
+		result["url"] = strings.TrimRight(u.String(), "/")
 		result["username"] = connectAppUsername(viewer)
 		result["password"] = secret
 	case surface == "stremio":
-		u.Path = prefix + "/stremio/" + secret + "/manifest.json"
+		u.Path = basePath + "/" + secret + "/manifest.json"
 		result["url"] = u.String()
 	case surface == "xtream":
-		u.Path = prefix + "/xtream"
-		result["url"] = u.String()
+		u.Path = basePath
+		result["url"] = strings.TrimRight(u.String(), "/")
 		result["username"] = xtreamUsername
 		result["password"] = xtreamPassword
 	case surface == "m3u":
-		u.Path = prefix + "/m3u/" + secret + "/playlist.m3u"
+		u.Path = basePath + "/" + secret + "/playlist.m3u"
 		result["url"] = u.String()
 	case surface == "webdav":
-		u.Path = prefix + "/webdav/"
+		u.Path = basePath + "/"
 		result["url"] = u.String()
 		result["username"] = strconv.FormatInt(viewer.ID, 10)
 		result["password"] = secret
 	case isPlugin:
-		u.Path = prefix + pluginDesc.PathPrefix
-		result["url"] = u.String()
+		u.Path = basePath
+		result["url"] = strings.TrimRight(u.String(), "/")
 		if pluginDesc.Auth == "basic" {
 			result["username"] = connectAppUsername(viewer)
 			result["password"] = secret
@@ -250,25 +243,65 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	writeJSON(w, 200, result)
 }
 
+// resolveAppAddress delegates to the shared app-level address resolver when
+// wired (Deps.AppAddress), and applies the exact same published-address then
+// server-origin+path fallback when Deps.AppAddress is absent in unit tests.
+func (h *Handler) resolveAppAddress(ctx context.Context, r *http.Request, surface, pathPrefix string, requireHTTPS bool) (*url.URL, error) {
+	if h.deps.AppAddress != nil {
+		raw, err := h.deps.AppAddress(ctx, frontend.Protocol(surface), r, requireHTTPS)
+		if err != nil {
+			return nil, err
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || (requireHTTPS && u.Scheme != "https") || u.Host == "" {
+			return nil, errors.New("app address unavailable")
+		}
+		u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+		return u, nil
+	}
+	if h.deps.Config != nil {
+		for _, raw := range frontendPublishedURLs(h.deps.Config.Get(), surface) {
+			parsed, err := url.Parse(raw)
+			if err != nil || parsed == nil || parsed.Host == "" {
+				continue
+			}
+			if requireHTTPS && parsed.Scheme != "https" {
+				continue
+			}
+			parsed.RawPath, parsed.RawQuery, parsed.Fragment = "", "", ""
+			return parsed, nil
+		}
+	}
+	address := h.deps.ViewerPortalURL
+	if requireHTTPS {
+		address = h.deps.StremioPortalURL
+	}
+	if address == nil {
+		return nil, errors.New("portal address unavailable")
+	}
+	portal, err := address(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(portal)
+	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || (requireHTTPS && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/ether/me") {
+		return nil, errors.New("portal address unavailable")
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/ether/me") + pathPrefix
+	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	return u, nil
+}
+
 // Credentials are decrypted only after owner authentication and explicit CSRF admission.
 // xtreamServerURL is the server address IPTV apps sign in to, or "" when the
 // server has no reachable viewer address. It is not secret, so existing logins
 // can show it after the one-time create response is gone.
 func (h *Handler) xtreamServerURL(r *http.Request) string {
-	if h.deps.ViewerPortalURL == nil {
-		return ""
-	}
-	portal, err := h.deps.ViewerPortalURL(r.Context(), r)
+	u, err := h.resolveAppAddress(r.Context(), r, "xtream", "/xtream", false)
 	if err != nil {
 		return ""
 	}
-	u, err := url.Parse(portal)
-	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/ether/me") {
-		return ""
-	}
-	u.Path = strings.TrimSuffix(u.Path, "/ether/me") + "/xtream"
-	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
-	return u.String()
+	return strings.TrimRight(u.String(), "/")
 }
 
 func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {

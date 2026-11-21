@@ -226,11 +226,24 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		}
 	}
 	for _, id := range sortedFrontendIDs(cfg) {
-		raw := cfg.Frontends[id].PublicURL
+		fe := cfg.Frontends[id]
+		if len(fe.PublishedAddresses) > 16 {
+			v.add("frontends."+id+".publishedAddresses", "Enter at most 16 published addresses.")
+		}
+		for _, raw := range fe.PublishedAddresses {
+			if strings.TrimSpace(raw) == "" {
+				continue
+			}
+			if _, err := remote.ParsePublishedURL(raw); err != nil {
+				v.add("frontends."+id+".publishedAddresses", "Enter full http:// or https:// addresses, with an optional path.")
+				break
+			}
+		}
+		raw := fe.PublicURL
 		if strings.TrimSpace(raw) == "" {
 			continue
 		}
-		if _, err := remote.ParseCustomURL(raw); err != nil {
+		if _, err := remote.ParsePublishedURL(raw); err != nil {
 			v.add("frontends."+id+".publicUrl", "Enter a full http:// or https:// address, or leave it blank.")
 		}
 	}

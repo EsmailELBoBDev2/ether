@@ -226,6 +226,9 @@ func (s *Store) attachShared(ctx context.Context, b SharedBackend, o SharedOptio
 		if upgradeClientIdentity(stored) {
 			dropped = true
 		}
+		if upgradeFrontendPublishedAddresses(stored) {
+			dropped = true
+		}
 		reset := resetPreStandardQuality(stored)
 		settled = normalizeSharedDocument(stored)
 		if !dropped && !reset && len(settled) == 0 {

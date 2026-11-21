@@ -147,7 +147,7 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 	for _, t := range page.Items {
 		item := titleDTO(t, state[t.Key])
 		if granted, ok := cards[t.Key]; ok {
-			paintCatalogArtwork(r, granted, item)
+			i.paintCatalogArtwork(r, granted, item)
 		} else {
 			i.artwork(r, v, token, t.Key, item)
 		}
@@ -382,11 +382,8 @@ func (i *instance) catalogCards(r *http.Request, v *frontend.Viewer, token strin
 
 // paintCatalogArtwork writes the fields artwork writes for a list card: the
 // first signed image of each kind and its thumbhash.
-func paintCatalogArtwork(r *http.Request, granted []frontend.GrantedImage, out map[string]any) {
-	prefix := ""
-	if r.Context().Value(sharedPrefix{}) != nil {
-		prefix = "/silo"
-	}
+func (i *instance) paintCatalogArtwork(r *http.Request, granted []frontend.GrantedImage, out map[string]any) {
+	prefix := i.pathPrefix(r)
 	fields := map[string]string{frontend.ImagePoster: "poster_url", frontend.ImageBackdrop: "backdrop_url", frontend.ImageLogo: "logo_url"}
 	hashes := map[string]string{frontend.ImagePoster: "poster_thumbhash", frontend.ImageBackdrop: "backdrop_thumbhash"}
 	for _, grant := range granted {

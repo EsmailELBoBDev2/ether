@@ -15,6 +15,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
@@ -49,28 +50,30 @@ type ListenerSpec struct {
 	Shared bool `json:"shared,omitempty"`
 }
 type Status struct {
-	WebPlayerReady   bool      `json:"webPlayerReady,omitempty"`
-	Mounted          bool      `json:"mounted"`
-	Addresses        []string  `json:"addresses"`
-	ConnectURLs      []string  `json:"connectUrls,omitempty"`
-	LAN              string    `json:"lan"`
-	LANReason        string    `json:"lanReason,omitempty"`
-	LANCheckedAt     time.Time `json:"lanCheckedAt,omitzero"`
-	WAN              string    `json:"wan"`
-	WANReason        string    `json:"wanReason,omitempty"`
-	WANAddress       string    `json:"wanAddress,omitempty"`
-	WANCheckedAt     time.Time `json:"wanCheckedAt,omitzero"`
-	Clients24h       int       `json:"clients24h"`
-	Clients24hKnown  bool      `json:"clients24hKnown"`
-	LiveStreams      int       `json:"liveStreams"`
-	LiveStreamsKnown bool      `json:"liveStreamsKnown"`
-	TargetVersion    string    `json:"targetVersion"`
-	Conformance      string    `json:"conformance"`
-	BusyPort         int       `json:"busyPort,omitempty"`
-	ActualPort       int       `json:"actualPort,omitempty"`
-	BusyPortHolder   string    `json:"busyPortHolder,omitempty"`
-	Error            string    `json:"error,omitempty"`
-	Warnings         []string  `json:"warnings,omitempty"`
+	WebPlayerReady     bool      `json:"webPlayerReady,omitempty"`
+	Mounted            bool      `json:"mounted"`
+	Addresses          []string  `json:"addresses"`
+	ConnectURLs        []string  `json:"connectUrls,omitempty"`
+	ObservedAddresses  []string  `json:"observedAddresses,omitempty"`
+	PublishedAddresses []string  `json:"publishedAddresses,omitempty"`
+	LAN                string    `json:"lan"`
+	LANReason          string    `json:"lanReason,omitempty"`
+	LANCheckedAt       time.Time `json:"lanCheckedAt,omitzero"`
+	WAN                string    `json:"wan"`
+	WANReason          string    `json:"wanReason,omitempty"`
+	WANAddress         string    `json:"wanAddress,omitempty"`
+	WANCheckedAt       time.Time `json:"wanCheckedAt,omitzero"`
+	Clients24h         int       `json:"clients24h"`
+	Clients24hKnown    bool      `json:"clients24hKnown"`
+	LiveStreams        int       `json:"liveStreams"`
+	LiveStreamsKnown   bool      `json:"liveStreamsKnown"`
+	TargetVersion      string    `json:"targetVersion"`
+	Conformance        string    `json:"conformance"`
+	BusyPort           int       `json:"busyPort,omitempty"`
+	ActualPort         int       `json:"actualPort,omitempty"`
+	BusyPortHolder     string    `json:"busyPortHolder,omitempty"`
+	Error              string    `json:"error,omitempty"`
+	Warnings           []string  `json:"warnings,omitempty"`
 }
 type Announcer interface {
 	Start(context.Context) error
@@ -212,6 +215,31 @@ func WithClientIP(ctx context.Context, ip netip.Addr) context.Context {
 func ClientIP(ctx context.Context) (netip.Addr, bool) {
 	ip, ok := ctx.Value(clientIPKey{}).(netip.Addr)
 	return ip, ok && ip.IsValid()
+}
+
+type mountPrefixKey struct{}
+
+type mountPrefixBinding struct {
+	id     Protocol
+	prefix string
+}
+
+// WithMountPrefix records the shared-listener path prefix (or "" for root /
+// dedicated listeners) matched before the frontend handler stripped it.
+func WithMountPrefix(ctx context.Context, id Protocol, prefix string) context.Context {
+	return context.WithValue(ctx, mountPrefixKey{}, mountPrefixBinding{id: id, prefix: prefix})
+}
+
+// MountPrefix returns the matched mount prefix recorded for id by WithMountPrefix.
+func MountPrefix(ctx context.Context, id Protocol) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	b, ok := ctx.Value(mountPrefixKey{}).(mountPrefixBinding)
+	if !ok || b.id != id {
+		return "", false
+	}
+	return b.prefix, true
 }
 
 // BindIdentity prevents a frontend from choosing a different authentication surface.
@@ -537,6 +565,9 @@ type Host struct {
 	RemoteClientSeen func(address string)
 	// ClientIP resolves the transport peer using the configured trusted proxies.
 	ClientIP func(*http.Request) (netip.Addr, bool)
+	// RequestOrigin derives the client-visible scheme, host and optional
+	// X-Forwarded-Prefix from r, honouring forwarding headers only from trusted proxies.
+	RequestOrigin func(*http.Request) (clientnet.RequestOrigin, bool)
 	// PageFreshness invalidates cached browse bodies. Nil disables the cache.
 	PageFreshness func() PageFreshness
 	// CacheDir is a node-local directory this frontend alone may fill with
@@ -551,6 +582,16 @@ type Host struct {
 	// PersonalHomes keeps the last personalized library list so the first
 	// UserViews after a restart can include it. Nil keeps that list in memory.
 	PersonalHomes PersonalHomeStore
+}
+
+// Origin derives the client-visible scheme, host, and optional trusted-proxy
+// prefix for r, falling back to loopback-only proxy trust when RequestOrigin
+// was not wired (e.g. in standalone frontend tests).
+func (h Host) Origin(r *http.Request) (clientnet.RequestOrigin, bool) {
+	if h.RequestOrigin != nil {
+		return h.RequestOrigin(r)
+	}
+	return clientnet.Origin(r)
 }
 
 // PersonalHomeStore persists one viewer's personalized library list.

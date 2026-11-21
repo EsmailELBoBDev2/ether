@@ -87,13 +87,81 @@ type Frontend struct {
 	// CapabilitiesRevision survives restarts so Vela clients can observe sign-in method changes.
 	CapabilitiesRevision uint64 `json:"capabilitiesRevision,omitempty"`
 	Enabled              bool   `json:"enabled"`
-	// PublicURL is the optional address viewers use to reach this one app
-	// from outside the home network (e.g. https://jelly.example.com), for
-	// owners who route each app through its own host name. Empty keeps the
-	// server-wide address. Plex ignores it: Plex apps use Plex.CustomURLs,
-	// which is also what plex.tv receives.
-	PublicURL string         `json:"publicUrl,omitempty"`
-	Settings  map[string]any `json:"settings,omitempty"`
+	// PublicURL is kept for backwards compatibility with configs that stored a
+	// single per-app public address; new saves write PublishedAddresses.
+	PublicURL string `json:"publicUrl,omitempty"`
+	// PublishedAddresses is the optional list of URLs Ether hands out for this
+	// app when there is no app-scoped request in hand (QR codes, invites,
+	// console share links). Both subdomain (https://jellyfin.example.com) and
+	// path (https://example.com/jellyfin) forms are supported. Plex ignores it
+	// and uses Plex.CustomURLs.
+	PublishedAddresses []string       `json:"publishedAddresses,omitempty"`
+	Settings           map[string]any `json:"settings,omitempty"`
+}
+
+// EffectivePublishedAddresses returns the configured published addresses for
+// this frontend, falling back to legacy PublicURL when the list is empty.
+func (f Frontend) EffectivePublishedAddresses() []string {
+	if len(f.PublishedAddresses) > 0 {
+		out := make([]string, 0, len(f.PublishedAddresses))
+		for _, raw := range f.PublishedAddresses {
+			if s := strings.TrimSpace(raw); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if s := strings.TrimSpace(f.PublicURL); s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+// upgradeFrontendPublishedAddresses migrates legacy per-frontend publicUrl
+// values into publishedAddresses and removes the retired key.
+func upgradeFrontendPublishedAddresses(doc map[string]any) bool {
+	frontends, ok := doc["frontends"].(map[string]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for id, rawEntry := range frontends {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			continue
+		}
+		rawPub, hasLegacy := entry["publicUrl"]
+		if !hasLegacy {
+			continue
+		}
+		changed = true
+		delete(entry, "publicUrl")
+		if id == "plex" {
+			continue
+		}
+		s, _ := rawPub.(string)
+		s = strings.TrimRight(strings.TrimSpace(s), "/")
+		if s == "" {
+			continue
+		}
+		var existing []any
+		if list, ok := entry["publishedAddresses"].([]any); ok {
+			existing = list
+		}
+		dup := false
+		for _, item := range existing {
+			if prev, ok := item.(string); ok && strings.TrimRight(strings.TrimSpace(prev), "/") == s {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			entry["publishedAddresses"] = append(existing, s)
+		}
+	}
+	return changed
 }
 
 type Server struct {
@@ -994,6 +1062,7 @@ func decodeOverDefaults(defaults Config, b []byte) (Config, bool, error) {
 	}
 	stripRetiredLiveTV(file)
 	upgradeClientIdentity(file)
+	upgradeFrontendPublishedAddresses(file)
 	keepStoredAutoUpdate(file)
 	doc := toDoc(defaults)
 	mergeDoc(doc, file)
@@ -1053,6 +1122,9 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 		dropped = true
 	}
 	if upgradeClientIdentity(file) {
+		dropped = true
+	}
+	if upgradeFrontendPublishedAddresses(file) {
 		dropped = true
 	}
 	doc := toDoc(defaults)

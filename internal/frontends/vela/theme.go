@@ -33,7 +33,7 @@ func (i *instance) detailTheme(r *http.Request, token string, t frontend.Title) 
 	if err != nil {
 		return nil
 	}
-	origin := themeOrigin(r)
+	origin := i.themeOrigin(r)
 	now := time.Now()
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -67,7 +67,7 @@ func (i *instance) theme(w http.ResponseWriter, r *http.Request) {
 	grant, ok := i.themes[r.PathValue("secret")]
 	i.mu.Unlock()
 	scopes, has := i.host.Identity.(frontend.GrantScopes)
-	if !ok || !has || i.host.ThemeTitle == nil || !i.themeAvailable() || !grant.expires.After(time.Now()) || grant.host != themeOrigin(r) {
+	if !ok || !has || i.host.ThemeTitle == nil || !i.themeAvailable() || !grant.expires.After(time.Now()) || grant.host != i.themeOrigin(r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -84,7 +84,10 @@ func (i *instance) theme(w http.ResponseWriter, r *http.Request) {
 	i.host.Themes.ServeTheme(w, r, *title)
 }
 
-func themeOrigin(r *http.Request) string {
+func (i *instance) themeOrigin(r *http.Request) string {
+	if origin, ok := i.host.Origin(r); ok {
+		return strings.ToLower(origin.Scheme + "://" + origin.Host)
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"

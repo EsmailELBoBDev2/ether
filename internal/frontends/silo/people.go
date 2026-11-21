@@ -39,10 +39,7 @@ func (i *instance) personDTOGrant(r *http.Request, credential string, person fro
 			if err != nil || token == "" {
 				continue
 			}
-			prefix := ""
-			if r.Context().Value(sharedPrefix{}) != nil {
-				prefix = "/silo"
-			}
+			prefix := i.pathPrefix(r)
 			out["photo_url"] = siloImageURL(r, prefix+"/api/v2/images/"+token, frontend.ImagePerson)
 			if image.ThumbHash != "" {
 				out["photo_thumbhash"] = image.ThumbHash

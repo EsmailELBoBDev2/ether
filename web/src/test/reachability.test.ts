@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizePublishedAddress, validatePublishedAddress } from "../pages/apps/plex-account";
 import {
   awaySummary,
   claimSummary,
@@ -85,5 +86,28 @@ describe("app reachability copy", () => {
   it("names the Plex account that claimed the server", () => {
     expect(claimSummary(true, "alex")).toBe("Claimed by the Plex account alex.");
     expect(claimSummary(false)).toMatch(/Not claimed/);
+  });
+
+  it("normalizes and validates published addresses for subdomains and path prefixes", () => {
+    expect(normalizePublishedAddress("https://Jellyfin.Example.com/")).toBe(
+      "https://jellyfin.example.com",
+    );
+    expect(normalizePublishedAddress("https://example.com/jellyfin/")).toBe(
+      "https://example.com/jellyfin",
+    );
+    expect(normalizePublishedAddress("http://203.0.113.10:8096/media/")).toBe(
+      "http://203.0.113.10:8096/media",
+    );
+    expect(normalizePublishedAddress("https://[2001:db8::1]:8443/jf")).toBe(
+      "https://[2001:db8::1]:8443/jf",
+    );
+
+    expect(validatePublishedAddress("https://example.com/jellyfin")).toBeUndefined();
+    expect(validatePublishedAddress("http://localhost:8096")).toBeDefined();
+    expect(validatePublishedAddress("http://127.0.0.1:8096")).toBeDefined();
+    expect(validatePublishedAddress("https://user:pass@example.com")).toBeDefined();
+    expect(validatePublishedAddress("https://example.com/jf?x=1")).toBeDefined();
+    expect(validatePublishedAddress("https://example.com/jf//a")).toBeDefined();
+    expect(validatePublishedAddress("https://example.com/../a")).toBeDefined();
   });
 });

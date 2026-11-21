@@ -456,8 +456,8 @@ func (i *instance) itemCounts(w http.ResponseWriter, r *http.Request) {
 // LogPath, TranscodingTempPath, InternalMetadataPath, ItemsByNamePath,
 // WebPath, EncoderLocation) are deliberately never sent.
 func (i *instance) systemInfoDTO(r *http.Request) map[string]any {
-	address := requestAddress(i.info, r)
-	port := requestPort(r)
+	address := requestAddress(i.info, r, i.host.Origin, i.host.SurfaceURL)
+	port := requestPort(r, i.host.Origin)
 	if port == 0 {
 		port = i.listenerPort()
 	}

@@ -368,7 +368,7 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		newViewerID = id
-		inviteURL = "/ether/me#invite=" + secret
+		inviteURL = h.inviteURL(secret)
 	}
 
 	// 4. Map account in plexwatch.Servers
@@ -609,7 +609,7 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 					continue
 				}
 				vID = id
-				inviteURL = "/ether/me#invite=" + secret
+				inviteURL = h.inviteURL(secret)
 				viewers = append(viewers, ViewerRecord{User: core.User{ID: id, Title: name}})
 			}
 

@@ -163,7 +163,7 @@ func NewLibraryRefresh(deps Deps) flows.ActionHandler {
 		Idempotent:  true,
 		SideEffect:  true,
 		Params: []flows.ParamSchema{
-			{Key: "libraryId", Type: events.FieldString, Label: "Library", Description: "Library ID or key to refresh.", Template: true, Picker: "library"},
+			{Key: "libraryId", Type: events.FieldString, Label: "Library", Description: "Library ID or key to refresh.", Template: true, Picker: flows.PickerLibrary},
 			{Key: "collectionId", Type: events.FieldString, Label: "Collection ID", Description: "Collection ID to rebuild instead of refreshing a library.", Template: true},
 			{Key: "fullSync", Type: events.FieldBool, Label: "Full sync", Description: "Force a full scan/walk when the library source supports incremental sync.", Default: false},
 		},
@@ -270,7 +270,7 @@ func NewLibraryExport(deps Deps) flows.ActionHandler {
 					{Value: "item", Label: "Single item"},
 				},
 			},
-			{Key: "targetId", Type: events.FieldString, Label: "Target ID", Description: "Library, collection, playlist, or item key (optional for server scope).", Template: true, Picker: "library"},
+			{Key: "targetId", Type: events.FieldString, Label: "Target ID", Description: "Library, collection, playlist, or item key (optional for server scope).", Template: true, Picker: flows.PickerLibrary},
 			{
 				Key:     "format",
 				Type:    events.FieldEnum,

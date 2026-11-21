@@ -43,7 +43,7 @@ func NewPlaybackStopSession(deps Deps) flows.ActionHandler {
 					{Value: "viewer_oldest", Label: "Viewer's oldest stream"},
 				},
 			},
-			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID for viewer_oldest selector (defaults to trigger event's viewer).", Template: true, Picker: "viewer"},
+			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID for viewer_oldest selector (defaults to trigger event's viewer).", Template: true, Picker: flows.PickerViewer},
 			{Key: "message", Type: events.FieldString, Label: "Viewer message", Description: "Reason message displayed on the viewer's client.", Default: defaultStopSessionMessage, Template: true},
 			{Key: "excludeSessionId", Type: events.FieldString, Label: "Exclude session ID", Description: "Never terminate this session ID when using a dynamic selector.", Template: true},
 			{Key: "excludeViewerTags", Type: events.FieldStringList, Label: "Protected viewer tags", Description: "Skip sessions belonging to viewers carrying any of these tags (for example vip or owner).", Template: true},

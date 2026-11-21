@@ -12,7 +12,7 @@ func jbopsRecipeEntries() []templateEntry {
 		Label:       "Alert channels",
 		Description: "Notification channels to inform when this rule acts.",
 		Default:     []string{"*"},
-		Picker:      "channel",
+		Picker:      flows.PickerChannel,
 	}
 
 	return []templateEntry{
@@ -559,7 +559,7 @@ func jbopsRecipeEntries() []templateEntry {
 				Category:    "home",
 				Icon:        "radio",
 				Params: []flows.ParamSchema{
-					{Key: "brokerId", Type: events.FieldString, Label: "MQTT broker channel", Required: true, Default: "mqtt-home", Picker: "channel"},
+					{Key: "brokerId", Type: events.FieldString, Label: "MQTT broker channel", Required: true, Default: "mqtt-home", Picker: flows.PickerChannel},
 					{Key: "topic", Type: events.FieldString, Label: "MQTT topic", Default: "ether/livingroom/playback"},
 					{Key: "clientName", Type: events.FieldString, Label: "Player / client name filter", Default: "Living Room Apple TV"},
 				},
@@ -632,7 +632,7 @@ func jbopsRecipeEntries() []templateEntry {
 							{Value: "library", Label: "Single library"},
 						},
 					},
-					{Key: "targetId", Type: events.FieldString, Label: "Library ID (when scope is library)", Picker: "library"},
+					{Key: "targetId", Type: events.FieldString, Label: "Library ID (when scope is library)", Picker: flows.PickerLibrary},
 					{
 						Key:     "format",
 						Type:    events.FieldEnum,

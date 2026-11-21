@@ -7,6 +7,7 @@
  */
 import {
   autoLayoutGraph,
+  FLOW_PICKER,
   LEGACY_NOTIFY_TO_CANONICAL,
   validateTemplateSyntax,
   wouldCreateCycle,
@@ -625,7 +626,7 @@ export const FLOW_ACTIONS: ActionSpec[] = [
     icon: "Bell",
     sideEffect: true,
     params: [
-      { key: "channelIds", type: "string_list", label: "Channels", picker: "notifyChannels" },
+      { key: "channelIds", type: "string_list", label: "Channels", picker: FLOW_PICKER.channel },
       { key: "title", type: "string", label: "Title", template: true },
       { key: "message", type: "string", label: "Message", required: true, template: true },
       { key: "posterUrl", type: "string", label: "Poster URL", template: true },
@@ -757,8 +758,8 @@ export const FLOW_ACTIONS: ActionSpec[] = [
     idempotent: true,
     sideEffect: true,
     params: [
-      { key: "libraryId", type: "string", label: "Library", picker: "libraries" },
-      { key: "collectionId", type: "string", label: "Collection", picker: "collections" },
+      { key: "libraryId", type: "string", label: "Library", picker: FLOW_PICKER.library },
+      { key: "collectionId", type: "string", label: "Collection" },
     ],
     outputs: [],
   },
@@ -781,7 +782,7 @@ export const FLOW_ACTIONS: ActionSpec[] = [
           { value: "collection", label: "One collection" },
         ],
       },
-      { key: "libraryId", type: "string", label: "Library", picker: "libraries" },
+      { key: "libraryId", type: "string", label: "Library", picker: FLOW_PICKER.library },
       {
         key: "format",
         type: "enum",
@@ -903,7 +904,8 @@ const NOTIFY_PARAM = [
     key: "channelIds",
     type: "string_list" as const,
     label: "Send to channels",
-    picker: "notifyChannels",
+    default: ["*"],
+    picker: FLOW_PICKER.channel,
   },
 ];
 

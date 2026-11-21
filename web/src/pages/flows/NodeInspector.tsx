@@ -17,7 +17,7 @@ import type {
   PickerFieldGroup,
   SwitchCase,
 } from "./types";
-import { actionGroupLabel, describeCron, domainLabel } from "./types";
+import { FLOW_PICKER, actionGroupLabel, describeCron, domainLabel } from "./types";
 
 const DURATION_PRESETS = localized(() => [
   { value: "5m", label: t("5 minutes") },
@@ -170,49 +170,76 @@ function ParamEditor({
   onChange: (v: unknown) => void;
   fieldGroups: PickerFieldGroup[];
   sample?: Record<string, unknown>;
-  channels: { id: string; name: string }[];
+  channels: { id: string; name: string; kind?: string }[];
 }) {
   const label = param.label + (param.required ? " *" : "");
-  if (param.picker === "notifyChannels") {
-    const selected = new Set((Array.isArray(value) ? value : []).map(String));
-    return (
-      <Field
-        label={label}
-        hint={
-          channels.length === 0
-            ? t(
-                "No channels yet — add one under Notifications, or leave empty to use all enabled channels.",
-              )
-            : t("Leave empty to use all enabled channels.")
-        }
-      >
-        <div className="flex flex-wrap gap-1">
-          {channels.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              aria-pressed={selected.has(c.id)}
-              onClick={() => {
-                const next = new Set(selected);
-                if (next.has(c.id)) next.delete(c.id);
-                else next.add(c.id);
-                onChange([...next]);
-              }}
-              className={cn(
-                "rounded-full border px-2.5 py-1 text-xs transition-colors",
-                selected.has(c.id)
-                  ? "border-primary bg-primary-subtle text-primary"
-                  : "border-border text-fg-muted hover:text-fg",
-              )}
-            >
-              {c.name || c.id}
-            </button>
-          ))}
-        </div>
-      </Field>
-    );
+  if (param.picker === FLOW_PICKER.channel) {
+    if (param.type === "string_list") {
+      const selected = new Set(
+        (Array.isArray(value) ? value : []).map(String).filter((id) => id !== "" && id !== "*"),
+      );
+      return (
+        <Field
+          label={label}
+          hint={
+            channels.length === 0
+              ? t(
+                  "No channels yet — add one under Notifications, or leave empty to use all enabled channels.",
+                )
+              : t("Leave empty to use all enabled channels.")
+          }
+        >
+          <div className="flex flex-wrap gap-1">
+            {channels.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                aria-pressed={selected.has(c.id)}
+                onClick={() => {
+                  const next = new Set(selected);
+                  if (next.has(c.id)) next.delete(c.id);
+                  else next.add(c.id);
+                  onChange(next.size > 0 ? [...next] : ["*"]);
+                }}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                  selected.has(c.id)
+                    ? "border-primary bg-primary-subtle text-primary"
+                    : "border-border text-fg-muted hover:text-fg",
+                )}
+              >
+                {c.name || c.id}
+              </button>
+            ))}
+          </div>
+        </Field>
+      );
+    }
+    const strValue = String(value ?? "");
+    const matching =
+      param.key === "brokerId" && channels.some((c) => c.kind === "mqtt")
+        ? channels.filter((c) => c.kind === "mqtt")
+        : channels;
+    if (matching.length > 0 && !strValue.includes("{{")) {
+      return (
+        <Field label={label} hint={param.description}>
+          <Select
+            aria-label={param.label}
+            value={strValue}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            <option value="">{t("Choose…")}</option>
+            {matching.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name || c.id}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      );
+    }
   }
-  if (param.picker === "libraries") {
+  if (param.picker === FLOW_PICKER.library && param.type === "string") {
     return (
       <Field label={label}>
         <Select
@@ -328,6 +355,7 @@ export function NodeInspector({
   const channels = (notices.data?.channels ?? []).map((c) => ({
     id: c.id,
     name: c.name || c.kind,
+    kind: c.kind,
   }));
 
   return (
@@ -707,7 +735,7 @@ function ActionEditor({
   catalogue: Catalogue;
   fieldGroups: PickerFieldGroup[];
   sample?: Record<string, unknown>;
-  channels: { id: string; name: string }[];
+  channels: { id: string; name: string; kind?: string }[];
 }) {
   const actionType = String(cfg.actionType ?? "");
   const spec = catalogue.actionsByType.get(actionType);

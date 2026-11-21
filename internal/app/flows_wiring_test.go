@@ -51,10 +51,11 @@ func TestFlowsAppWiringEndToEnd(t *testing.T) {
 			Idempotent: true,
 			SideEffect: true,
 			Params: []flows.ParamSchema{
-				{Key: "channelIds", Type: events.FieldStringList, Label: "Channels", Required: true},
+				{Key: "channelIds", Type: events.FieldStringList, Label: "Channels", Required: true, Picker: flows.PickerChannel},
 				{Key: "title", Type: events.FieldString, Label: "Title", Template: true},
 				{Key: "message", Type: events.FieldString, Label: "Message", Template: true},
-				{Key: "severity", Type: events.FieldString, Label: "Severity"},
+				{Key: "color", Type: events.FieldString, Label: "Accent color", Template: true},
+				{Key: "priority", Type: events.FieldInt, Label: "Priority", Template: true},
 				{Key: "bypassDigest", Type: events.FieldBool, Label: "Bypass digest"},
 			},
 		},

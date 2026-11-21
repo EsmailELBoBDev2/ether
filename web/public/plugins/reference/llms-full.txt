@@ -2493,6 +2493,7 @@ type ReleaseFile struct {
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
 | `indexer` | `string` | may be omitted (see validation for conditions) | Indexer and IndexerID name the indexer an indexer_search result came from, so a plugin that hands the candidate back can be fetched through that indexer (an NZB needs its originating indexer). |
 | `indexerId` | `string` | may be omitted (see validation for conditions) |  |
+| `category` | `int` | may be omitted (see validation for conditions) | Category is the standard Newznab/Torznab category ID reported for this release when known, preserving media type for follow-up downloads. |
 | `score` | `*int` | may be omitted (see validation for conditions) | Score, Resolution, Source and Codec are populated on indexer_search candidates whose release name identifies video, scored against the requested (or owner default) quality profile; non-video candidates leave them empty. |
 | `resolution` | `int` | may be omitted (see validation for conditions) |  |
 | `source` | `string` | may be omitted (see validation for conditions) |  |
@@ -2524,6 +2525,9 @@ type SourceCandidate struct {
 	// through that indexer (an NZB needs its originating indexer).
 	Indexer   string `json:"indexer,omitempty"`
 	IndexerID string `json:"indexerId,omitempty"`
+	// Category is the standard Newznab/Torznab category ID reported for this
+	// release when known, preserving media type for follow-up downloads.
+	Category int `json:"category,omitempty"`
 	// Score, Resolution, Source and Codec are populated on indexer_search
 	// candidates whose release name identifies video, scored against the
 	// requested (or owner default) quality profile; non-video candidates
@@ -19478,10 +19482,6 @@ func validateContributes(m Manifest, add func(string, string)) {
 	if len(c.FlowActions) > MaxPluginFlowActions {
 		add("ether.contributes.flowActions", fmt.Sprintf("must declare at most %d flow actions", MaxPluginFlowActions))
 	}
-	validPickers := map[string]bool{
-		"": true, "channel": true, "viewer": true, "library": true,
-		"source": true, "event": true, "plugin": true,
-	}
 	seenActions := map[string]bool{}
 	for i, fa := range c.FlowActions {
 		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
@@ -19530,7 +19530,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 				seenEnum[opt.Value] = true
 				optDesc(ebase+".label", opt.Label, 60)
 			}
-			if !validPickers[p.Picker] {
+			if !flows.ValidPicker(p.Picker) {
 				add(pbase+".picker", "unknown picker "+strconv.Quote(p.Picker))
 			}
 		}

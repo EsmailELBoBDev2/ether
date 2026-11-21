@@ -306,7 +306,7 @@ func NewViewerRestrict(deps Deps) flows.ActionHandler {
 		Idempotent:  true,
 		SideEffect:  true,
 		Params: []flows.ParamSchema{
-			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID to restrict.", Required: true, Template: true, Picker: "viewer"},
+			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID to restrict.", Required: true, Template: true, Picker: flows.PickerViewer},
 			{Key: "remoteDisabled", Type: events.FieldBool, Label: "Disable remote playback", Description: "Prevent playback from outside the local network."},
 			{Key: "maxBitrateKbps", Type: events.FieldInt, Label: "Max bitrate", Description: "Cap streaming bitrate in kbps (0 removes cap).", Unit: "kbps"},
 			{Key: "streamLimit", Type: events.FieldInt, Label: "Concurrent stream limit", Description: "Cap concurrent streams for this viewer."},
@@ -444,7 +444,7 @@ func NewViewerUnrestrict(deps Deps) flows.ActionHandler {
 		Idempotent:  true,
 		SideEffect:  true,
 		Params: []flows.ParamSchema{
-			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID to unrestrict.", Required: true, Template: true, Picker: "viewer"},
+			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID to unrestrict.", Required: true, Template: true, Picker: flows.PickerViewer},
 			{Key: "resetStreamLimit", Type: events.FieldBool, Label: "Reset stream limit", Description: "Also reset the viewer's stream limit to server default when no saved baseline exists.", Default: false},
 		},
 		Outputs: []events.FieldSchema{

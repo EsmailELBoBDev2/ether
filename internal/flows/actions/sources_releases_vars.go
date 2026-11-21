@@ -41,7 +41,7 @@ func NewSourceRefresh(deps Deps) flows.ActionHandler {
 					{Value: "plugin", Label: "Plugin source"},
 				},
 			},
-			{Key: "sourceId", Type: events.FieldString, Label: "Source ID", Description: "Specific source, viewer, or plugin ID (required for livetv_source, livetv_vod, and plugin).", Template: true, Picker: "source"},
+			{Key: "sourceId", Type: events.FieldString, Label: "Source ID", Description: "Specific source, viewer, or plugin ID (required for livetv_source, livetv_vod, and plugin).", Template: true, Picker: flows.PickerSource},
 		},
 		Outputs: []events.FieldSchema{
 			{Name: "refreshed", Type: events.FieldBool, Label: "Refreshed"},

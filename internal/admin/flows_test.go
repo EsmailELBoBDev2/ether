@@ -16,6 +16,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/flows"
+	"github.com/braedonsaunders/ether/internal/flows/actions"
 	"github.com/braedonsaunders/ether/internal/notify"
 )
 
@@ -716,20 +717,55 @@ func TestDefaultFlowTemplatesAreValid(t *testing.T) {
 	if len(templates) == 0 {
 		t.Fatal("no default templates")
 	}
+	evReg := events.NewBuiltinRegistry()
+	actReg, err := actions.NewRegistry(actions.Deps{})
+	if err != nil {
+		t.Fatalf("actions.NewRegistry: %v", err)
+	}
+	trigReg := flows.NewTriggerRegistry()
+	opts := flows.ValidateOptions{
+		Events:   evReg,
+		Actions:  actReg,
+		Triggers: trigReg,
+	}
+
 	seen := map[string]bool{}
 	for _, tmpl := range templates {
 		if seen[tmpl.ID] {
 			t.Fatalf("duplicate template id %q", tmpl.ID)
 		}
 		seen[tmpl.ID] = true
-		if res := flows.ValidateGraph(tmpl.Graph, flows.ValidateOptions{}); !res.Valid {
-			t.Fatalf("template %q graph invalid: %+v", tmpl.ID, res.Errors)
+
+		params := map[string]any{}
+		for _, p := range tmpl.Params {
+			if !flows.ValidPicker(p.Picker) {
+				t.Fatalf("template %q param %q uses non-canonical picker %q", tmpl.ID, p.Key, p.Picker)
+			}
+			// Supply a sample value only for required params that have no default.
+			if p.Required && p.Default == nil {
+				params[p.Key] = "sample-value"
+			}
+		}
+
+		flow, ferrs := InstantiateFlowTemplate(tmpl, "", "", nil, params)
+		if len(ferrs) > 0 {
+			t.Fatalf("template %q instantiate failed: %+v", tmpl.ID, ferrs)
+		}
+		if res := flows.ValidateFlow(flow, opts); !res.Valid {
+			t.Fatalf("template %q instantiated flow invalid: %+v", tmpl.ID, res.Errors)
 		}
 	}
 }
 
 func TestFlowsFromTemplate(t *testing.T) {
-	env := newFlowsTestEnv(t, nil)
+	actReg, err := actions.NewRegistry(actions.Deps{})
+	if err != nil {
+		t.Fatalf("actions.NewRegistry: %v", err)
+	}
+	env := newFlowsTestEnv(t, func(d *FlowsDeps) {
+		d.Events = events.NewBuiltinRegistry()
+		d.Actions = actReg
+	})
 	rec := env.do(t, http.MethodGet, "/templates", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("templates: %d", rec.Code)
@@ -740,26 +776,52 @@ func TestFlowsFromTemplate(t *testing.T) {
 		t.Fatal("empty template gallery")
 	}
 
-	// Required channelIds param missing -> 400.
-	rec = env.do(t, http.MethodPost, "/from-template/notify-critical-alerts", map[string]any{})
+	// Required param with no default (brokerId) missing -> 400.
+	rec = env.do(t, http.MethodPost, "/from-template/home-assistant-cinema-lighting", map[string]any{})
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("from-template without params: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("from-template without required brokerId: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = env.do(t, http.MethodPost, "/from-template/notify-critical-alerts", map[string]any{
-		"params": map[string]any{"channelIds": []string{"ch_1"}},
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("from-template: %d %s", rec.Code, rec.Body.String())
+
+	// Every notification template succeeds with omitted params (defaulting
+	// channelIds to ["*"]), empty channelIds ([]), and explicit channelIds.
+	notifyTemplates := []string{
+		"notify-critical-alerts",
+		"notify-playback-issues",
+		"notify-provider-outages",
+		"notify-updates",
+		"notify-weekly-newsletter",
+		"new-device-alert",
+		"concurrent-stream-guard",
+		"relieve-buffering-transcode",
+		"livetv-failover-alert",
+		"auto-unpin-dead-pin",
 	}
-	var wrap struct {
-		Flow flows.Flow `json:"flow"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &wrap)
-	if wrap.Flow.TemplateID != "notify-critical-alerts" || wrap.Flow.ID == "" {
-		t.Fatalf("instantiated flow = %+v", wrap.Flow)
-	}
-	if !strings.Contains(string(firstActionConfig(t, wrap.Flow)), "ch_1") {
-		t.Fatalf("channelIds not substituted: %s", firstActionConfig(t, wrap.Flow))
+	for _, id := range notifyTemplates {
+		for _, tc := range []struct {
+			name   string
+			body   map[string]any
+			expect string
+		}{
+			{name: "default", body: map[string]any{}, expect: `"*"`},
+			{name: "empty", body: map[string]any{"params": map[string]any{"channelIds": []string{}}}, expect: `"*"`},
+			{name: "explicit", body: map[string]any{"params": map[string]any{"channelIds": []string{"ch_1"}}}, expect: `"ch_1"`},
+		} {
+			rec = env.do(t, http.MethodPost, "/from-template/"+id, tc.body)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("from-template %s (%s): %d %s", id, tc.name, rec.Code, rec.Body.String())
+			}
+			var wrap struct {
+				Flow flows.Flow `json:"flow"`
+			}
+			_ = json.Unmarshal(rec.Body.Bytes(), &wrap)
+			if wrap.Flow.TemplateID != id || wrap.Flow.ID == "" {
+				t.Fatalf("instantiated %s (%s) flow = %+v", id, tc.name, wrap.Flow)
+			}
+			cfg := string(notifyActionConfig(t, wrap.Flow))
+			if !strings.Contains(cfg, tc.expect) {
+				t.Fatalf("%s (%s): channelIds %s not substituted in %s", id, tc.name, tc.expect, cfg)
+			}
+		}
 	}
 
 	rec = env.do(t, http.MethodPost, "/from-template/nope", map[string]any{})
@@ -768,14 +830,18 @@ func TestFlowsFromTemplate(t *testing.T) {
 	}
 }
 
-func firstActionConfig(t *testing.T, f flows.Flow) []byte {
+func notifyActionConfig(t *testing.T, f flows.Flow) []byte {
 	t.Helper()
 	for _, n := range f.Graph.Nodes {
-		if n.Kind == flows.NodeAction {
+		if n.Kind != flows.NodeAction {
+			continue
+		}
+		var cfg flows.ActionNodeConfig
+		if err := json.Unmarshal(n.Config, &cfg); err == nil && cfg.ActionType == "notify.send" {
 			return n.Config
 		}
 	}
-	t.Fatal("no action node")
+	t.Fatal("no notify.send action node")
 	return nil
 }
 

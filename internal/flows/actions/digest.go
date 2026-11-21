@@ -50,7 +50,7 @@ func NewDigestGenerate(deps Deps) flows.ActionHandler {
 					{Value: "combined", Label: "Recently added + activity"},
 				},
 			},
-			{Key: "libraryIds", Type: events.FieldStringList, Label: "Libraries", Description: "Optional list of library IDs to include.", Picker: "library"},
+			{Key: "libraryIds", Type: events.FieldStringList, Label: "Libraries", Description: "Optional list of library IDs to include.", Picker: flows.PickerLibrary},
 			{Key: "mediaTypes", Type: events.FieldStringList, Label: "Media types", Description: "Optional filter (movie, show, episode)."},
 			{Key: "groupEpisodes", Type: events.FieldBool, Label: "Group episodes by show & season", Description: "Collapse multiple new episodes from the same show and season into one compact summary.", Default: true},
 			{Key: "includeActivity", Type: events.FieldBool, Label: "Include activity stats", Description: "Include play counts, unique viewers, and top titles when kind is activity or combined.", Default: true},

@@ -44,6 +44,23 @@ export interface EventSchema {
   sample?: Record<string, unknown>;
 }
 
+/**
+ * Canonical console editor picker IDs for ParamSchema.picker.
+ * Keep in sync with Picker* constants in internal/flows/registry.go and
+ * FlowActionParamMeta.picker in sdk/typescript/src/types.ts
+ * (enforced by TestPickerConstantsMatchWeb in internal/flows).
+ */
+export const FLOW_PICKER = {
+  channel: "channel",
+  viewer: "viewer",
+  library: "library",
+  source: "source",
+  event: "event",
+  plugin: "plugin",
+} as const;
+
+export type FlowPicker = (typeof FLOW_PICKER)[keyof typeof FLOW_PICKER];
+
 export interface ParamSchema {
   key: string;
   type: FieldType;
@@ -55,7 +72,7 @@ export interface ParamSchema {
   default?: unknown;
   enum?: EnumOption[];
   unit?: string;
-  picker?: string;
+  picker?: FlowPicker;
 }
 
 export interface ActionSpec {
@@ -1151,7 +1168,7 @@ export function defaultConfigForNode(kind: NodeKind, actionType?: string): Recor
                         : actionType === "flow.set_variable"
                           ? { key: "reason", value: "{{ payload.error }}" }
                           : {
-                              channelIds: [],
+                              channelIds: ["*"],
                               title: "{{ payload.titleName }}",
                               message: "{{ payload.viewer.username }} · {{ event.type }}",
                             },

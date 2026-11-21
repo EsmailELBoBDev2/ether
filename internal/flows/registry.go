@@ -13,6 +13,39 @@ import (
 	"github.com/braedonsaunders/ether/internal/events"
 )
 
+// Canonical console editor picker IDs for ParamSchema.Picker.
+// Keep in sync with FLOW_PICKER in web/src/pages/flows/types.ts and
+// FlowActionParamMeta.picker in sdk/typescript/src/types.ts
+// (enforced by TestPickerConstantsMatchWeb).
+const (
+	PickerChannel = "channel"
+	PickerViewer  = "viewer"
+	PickerLibrary = "library"
+	PickerSource  = "source"
+	PickerEvent   = "event"
+	PickerPlugin  = "plugin"
+)
+
+// AllPickers lists every canonical ParamSchema.Picker value.
+var AllPickers = []string{
+	PickerChannel,
+	PickerViewer,
+	PickerLibrary,
+	PickerSource,
+	PickerEvent,
+	PickerPlugin,
+}
+
+// ValidPicker reports whether picker is empty or one of the canonical picker IDs.
+func ValidPicker(picker string) bool {
+	switch picker {
+	case "", PickerChannel, PickerViewer, PickerLibrary, PickerSource, PickerEvent, PickerPlugin:
+		return true
+	default:
+		return false
+	}
+}
+
 // ParamSchema defines one configurable parameter of a Flow action or manual trigger.
 type ParamSchema struct {
 	Key         string              `json:"key"`
@@ -25,8 +58,7 @@ type ParamSchema struct {
 	Default     any                 `json:"default,omitempty"`
 	Enum        []events.EnumOption `json:"enum,omitempty"`
 	Unit        string              `json:"unit,omitempty"`
-	// Picker is an optional console editor hint ("channel", "viewer", "library",
-	// "source", "event", "plugin").
+	// Picker is an optional console editor hint (one of the Picker* constants).
 	Picker string `json:"picker,omitempty"`
 }
 
@@ -102,6 +134,9 @@ func (s ActionSpec) Validate() error {
 		}
 		if p.Type == events.FieldEnum && len(p.Enum) == 0 {
 			return fmt.Errorf("flows: action %q enum param %q requires enum values", s.Type, p.Key)
+		}
+		if !ValidPicker(p.Picker) {
+			return fmt.Errorf("flows: action %q param %q has unknown picker %q", s.Type, p.Key, p.Picker)
 		}
 	}
 	return nil

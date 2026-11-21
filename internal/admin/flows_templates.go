@@ -43,6 +43,14 @@ var legacyNotifyToCanonical = map[string]string{
 // DefaultFlowTemplates returns Ether's curated starter flow templates, covering
 // the one-click notification presets and common operational automation recipes.
 func DefaultFlowTemplates() []flows.Template {
+	channelParam := flows.ParamSchema{
+		Key:     "channelIds",
+		Type:    events.FieldStringList,
+		Label:   "Notification channels",
+		Default: []string{"*"},
+		Picker:  flows.PickerChannel,
+	}
+
 	return []flows.Template{
 		// ---- Notification presets (Section 8) ----
 		{
@@ -53,13 +61,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Icon:         "alert-triangle",
 			NotifyPreset: "critical",
 			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
+				channelParam,
 				{
 					Key:     "cooldown",
 					Type:    events.FieldString,
@@ -107,7 +109,8 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds":   "{{ param.channelIds }}",
 								"title":        "Critical alert: {{ event.type }}",
 								"message":      "Event {{ event.type }} occurred on {{ event.node }}.",
-								"severity":     "error",
+								"color":        "#EF4444",
+								"priority":     1,
 								"bypassDigest": true,
 							},
 						}),
@@ -127,13 +130,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Icon:         "play-circle",
 			NotifyPreset: "playback_issues",
 			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
+				channelParam,
 				{
 					Key:     "threshold",
 					Type:    events.FieldInt,
@@ -184,7 +181,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Playback issue: {{ payload.titleName }}",
 								"message":    "{{ event.type }} for {{ payload.viewerName }} ({{ payload.titleName }}).",
-								"severity":   "warning",
+								"color":      "#F59E0B",
 							},
 						}),
 					},
@@ -202,15 +199,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Category:     "notifications",
 			Icon:         "cloud-off",
 			NotifyPreset: "provider_outages",
-			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
-			},
+			Params:       []flows.ParamSchema{channelParam},
 			Graph: flows.Graph{
 				SchemaVersion: flows.SchemaVersion,
 				Nodes: []flows.Node{
@@ -239,7 +228,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Service status: {{ event.type }}",
 								"message":    "Status changed to {{ event.type }} ({{ payload.name }}).",
-								"severity":   "warning",
+								"color":      "#F59E0B",
 							},
 						}),
 					},
@@ -256,15 +245,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Category:     "notifications",
 			Icon:         "download",
 			NotifyPreset: "updates",
-			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
-			},
+			Params:       []flows.ParamSchema{channelParam},
 			Graph: flows.Graph{
 				SchemaVersion: flows.SchemaVersion,
 				Nodes: []flows.Node{
@@ -292,7 +273,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Ether update: {{ event.type }}",
 								"message":    "Version {{ payload.version }} ({{ event.type }}).",
-								"severity":   "info",
+								"color":      "#3B82F6",
 							},
 						}),
 					},
@@ -310,13 +291,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Icon:         "mail",
 			NotifyPreset: "weekly_newsletter",
 			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
+				channelParam,
 				{
 					Key:     "cron",
 					Type:    events.FieldString,
@@ -417,9 +392,9 @@ func DefaultFlowTemplates() []flows.Template {
 						Config: flows.MustMarshalConfig(flows.ConditionNodeConfig{
 							Condition: flows.ConditionGroup{
 								Rules: []flows.ConditionRule{
-									{Field: "payload.transcode", Op: flows.OpIsTrue},
-									{Field: "payload.isRemote", Op: flows.OpIsTrue},
-									{Field: "payload.videoHeight", Op: flows.OpGte, Value: 2160},
+									{Field: "payload.stream.videoDecision", Op: flows.OpEq, Value: "transcode"},
+									{Field: "payload.network.location", Op: flows.OpEq, Value: "wan"},
+									{Field: "payload.source.videoHeight", Op: flows.OpGte, Value: 2160},
 								},
 							},
 						}),
@@ -433,7 +408,7 @@ func DefaultFlowTemplates() []flows.Template {
 							ActionType: "playback.stop_session",
 							Params: map[string]any{
 								"sessionId": "{{ correlation.sessionId }}",
-								"reason":    "{{ param.message }}",
+								"message":   "{{ param.message }}",
 							},
 						}),
 					},
@@ -496,7 +471,7 @@ func DefaultFlowTemplates() []flows.Template {
 							ActionType: "playback.stop_session",
 							Params: map[string]any{
 								"sessionId": "{{ correlation.sessionId }}",
-								"reason":    "{{ param.message }}",
+								"message":   "{{ param.message }}",
 							},
 						}),
 					},
@@ -526,13 +501,7 @@ func DefaultFlowTemplates() []flows.Template {
 					Label:   "Sliding window",
 					Default: "2m",
 				},
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
+				channelParam,
 			},
 			Graph: flows.Graph{
 				SchemaVersion: flows.SchemaVersion,
@@ -568,7 +537,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Repeated buffering: {{ payload.titleName }}",
 								"message":    "Session {{ correlation.sessionId }} stalled repeatedly for {{ payload.viewerName }}.",
-								"severity":   "warning",
+								"color":      "#F59E0B",
 							},
 						}),
 					},
@@ -586,13 +555,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Category:    "security",
 			Icon:        "shield",
 			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
+				channelParam,
 				{
 					Key:     "cooldown",
 					Type:    events.FieldString,
@@ -636,7 +599,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Account alert: {{ event.type }}",
 								"message":    "Viewer {{ payload.viewerName }} triggered {{ event.type }}.",
-								"severity":   "warning",
+								"color":      "#F59E0B",
 							},
 						}),
 					},
@@ -659,7 +622,7 @@ func DefaultFlowTemplates() []flows.Template {
 					Type:     events.FieldString,
 					Label:    "MQTT broker",
 					Required: true,
-					Picker:   "mqtt.brokers",
+					Picker:   flows.PickerChannel,
 				},
 				{
 					Key:     "topic",
@@ -780,9 +743,16 @@ func DefaultFlowTemplates() []flows.Template {
 				},
 				{
 					Key:     "scope",
-					Type:    events.FieldString,
+					Type:    events.FieldEnum,
 					Label:   "Library scope",
-					Default: "all",
+					Default: "server",
+					Enum: []events.EnumOption{
+						{Value: "server", Label: "Entire server"},
+						{Value: "library", Label: "Library"},
+						{Value: "collection", Label: "Collection"},
+						{Value: "playlist", Label: "Playlist"},
+						{Value: "item", Label: "Single item"},
+					},
 				},
 			},
 			Graph: flows.Graph{
@@ -822,15 +792,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Automatically unpin a pinned release when it becomes unhealthy and notify the owner.",
 			Category:    "resolver",
 			Icon:        "pin-off",
-			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
-			},
+			Params:      []flows.ParamSchema{channelParam},
 			Graph: flows.Graph{
 				SchemaVersion: flows.SchemaVersion,
 				Nodes: []flows.Node{
@@ -851,7 +813,7 @@ func DefaultFlowTemplates() []flows.Template {
 						Config: flows.MustMarshalConfig(flows.ActionNodeConfig{
 							ActionType: "release.unpin",
 							Params: map[string]any{
-								"ratingKey": "{{ correlation.ratingKey }}",
+								"titleKey": "{{ payload.titleKey }}",
 							},
 						}),
 					},
@@ -865,8 +827,8 @@ func DefaultFlowTemplates() []flows.Template {
 							Params: map[string]any{
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Unpinned unhealthy release",
-								"message":    "Automatically unpinned unhealthy release for {{ correlation.ratingKey }}.",
-								"severity":   "warning",
+								"message":    "Automatically unpinned unhealthy release for {{ payload.titleKey }}.",
+								"color":      "#F59E0B",
 							},
 						}),
 					},
@@ -883,15 +845,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Notify when a viewer signs in on a brand-new device for the first time.",
 			Category:    "security",
 			Icon:        "smartphone",
-			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
-			},
+			Params:      []flows.ParamSchema{channelParam},
 			Graph: flows.Graph{
 				SchemaVersion: flows.SchemaVersion,
 				Nodes: []flows.Node{
@@ -928,7 +882,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "New device: {{ payload.deviceName }}",
 								"message":    "{{ payload.viewerName }} signed in on a new device ({{ payload.deviceName }}).",
-								"severity":   "info",
+								"color":      "#3B82F6",
 							},
 						}),
 					},
@@ -946,13 +900,7 @@ func DefaultFlowTemplates() []flows.Template {
 			Category:    "livetv",
 			Icon:        "tv",
 			Params: []flows.ParamSchema{
-				{
-					Key:      "channelIds",
-					Type:     events.FieldStringList,
-					Label:    "Notification channels",
-					Required: true,
-					Picker:   "notify.channels",
-				},
+				channelParam,
 				{
 					Key:     "cooldown",
 					Type:    events.FieldString,
@@ -996,7 +944,7 @@ func DefaultFlowTemplates() []flows.Template {
 								"channelIds": "{{ param.channelIds }}",
 								"title":      "Live TV: {{ event.type }}",
 								"message":    "Channel {{ correlation.channelId }} triggered {{ event.type }}.",
-								"severity":   "warning",
+								"color":      "#F59E0B",
 							},
 						}),
 					},
@@ -1121,9 +1069,19 @@ func isEmptyParamValue(v any) bool {
 	case string:
 		return strings.TrimSpace(x) == ""
 	case []any:
-		return len(x) == 0
+		for _, item := range x {
+			if s, ok := item.(string); !ok || strings.TrimSpace(s) != "" {
+				return false
+			}
+		}
+		return true
 	case []string:
-		return len(x) == 0
+		for _, s := range x {
+			if strings.TrimSpace(s) != "" {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -1311,7 +1269,8 @@ func applyTypedTemplateOverrides(kind flows.NodeKind, cfgAny any, params map[str
 			if cond, ok := m["condition"].(map[string]any); ok {
 				if rules, ok := cond["rules"].([]any); ok {
 					for _, r := range rules {
-						if rm, ok := r.(map[string]any); ok && rm["field"] == "payload.videoHeight" {
+						if rm, ok := r.(map[string]any); ok &&
+							(rm["field"] == "payload.source.videoHeight" || rm["field"] == "payload.videoHeight") {
 							rm["value"] = n
 						}
 					}

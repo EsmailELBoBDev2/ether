@@ -749,10 +749,6 @@ func validateContributes(m Manifest, add func(string, string)) {
 	if len(c.FlowActions) > MaxPluginFlowActions {
 		add("ether.contributes.flowActions", fmt.Sprintf("must declare at most %d flow actions", MaxPluginFlowActions))
 	}
-	validPickers := map[string]bool{
-		"": true, "channel": true, "viewer": true, "library": true,
-		"source": true, "event": true, "plugin": true,
-	}
 	seenActions := map[string]bool{}
 	for i, fa := range c.FlowActions {
 		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
@@ -801,7 +797,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 				seenEnum[opt.Value] = true
 				optDesc(ebase+".label", opt.Label, 60)
 			}
-			if !validPickers[p.Picker] {
+			if !flows.ValidPicker(p.Picker) {
 				add(pbase+".picker", "unknown picker "+strconv.Quote(p.Picker))
 			}
 		}

@@ -12,7 +12,7 @@ func notificationPresetEntries() []templateEntry {
 		Label:       "Notification channels",
 		Description: "Destination notification channels (defaults to all enabled channels).",
 		Default:     []string{"*"},
-		Picker:      "channel",
+		Picker:      flows.PickerChannel,
 	}
 
 	return []templateEntry{

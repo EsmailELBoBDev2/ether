@@ -24,7 +24,7 @@ func NewNotifySend(deps Deps) flows.ActionHandler {
 		Idempotent:  false,
 		SideEffect:  true,
 		Params: []flows.ParamSchema{
-			{Key: "channelIds", Type: events.FieldStringList, Label: "Channels", Description: "Target notification channel IDs, or [\"*\"] for all enabled channels.", Required: true, Template: true, Picker: "channel"},
+			{Key: "channelIds", Type: events.FieldStringList, Label: "Channels", Description: "Target notification channel IDs, or [\"*\"] for all enabled channels.", Required: true, Template: true, Picker: flows.PickerChannel},
 			{Key: "title", Type: events.FieldString, Label: "Title", Description: "Notification headline or email subject.", Required: true, Template: true},
 			{Key: "message", Type: events.FieldString, Label: "Message", Description: "Plain-text notification body.", Required: true, Template: true},
 			{Key: "html", Type: events.FieldString, Label: "HTML body", Description: "Optional HTML content for email and HTML-capable channels.", Template: true},
@@ -214,7 +214,7 @@ func NewMQTTPublish(deps Deps) flows.ActionHandler {
 		Idempotent:  true,
 		SideEffect:  true,
 		Params: []flows.ParamSchema{
-			{Key: "brokerId", Type: events.FieldString, Label: "MQTT broker", Description: "ID of a configured MQTT broker notification channel.", Required: true, Template: true, Picker: "channel"},
+			{Key: "brokerId", Type: events.FieldString, Label: "MQTT broker", Description: "ID of a configured MQTT broker notification channel.", Required: true, Template: true, Picker: flows.PickerChannel},
 			{Key: "topic", Type: events.FieldString, Label: "Topic", Description: "MQTT topic to publish to (wildcards are not allowed).", Required: true, Template: true},
 			{Key: "payload", Type: events.FieldString, Label: "Payload", Description: "Message body (plain text or templated JSON).", Required: true, Template: true},
 			{Key: "qos", Type: events.FieldInt, Label: "QoS", Description: "MQTT QoS level (0, 1, or 2).", Default: 0},

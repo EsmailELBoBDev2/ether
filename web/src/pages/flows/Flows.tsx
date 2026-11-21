@@ -50,7 +50,7 @@ import { FlowEditor } from "./Editor";
 import { StepTrace } from "./RunTrace";
 import { RunStatusBadge, useCatalogue } from "./shared";
 import { TestRunDrawer } from "./TestRunDrawer";
-import type { Flow, FlowTemplate, Run, RunStatus } from "./types";
+import { FLOW_PICKER, type Flow, type FlowTemplate, type Run, type RunStatus } from "./types";
 
 const TABS = localized(
   () =>
@@ -492,7 +492,13 @@ function TemplatesTab() {
   );
 }
 
-function UseTemplateDrawer({ template, onClose }: { template: FlowTemplate; onClose: () => void }) {
+export function UseTemplateDrawer({
+  template,
+  onClose,
+}: {
+  template: FlowTemplate;
+  onClose: () => void;
+}) {
   const navigate = useNavigate();
   const [name, setName] = useState(template.name);
   const [enabled, setEnabled] = useState(true);
@@ -503,7 +509,10 @@ function UseTemplateDrawer({ template, onClose }: { template: FlowTemplate; onCl
     () => apiFetch<NotificationsData>("/notifications/").catch(() => null),
     [],
   );
-  const wantsChannels = (template.params ?? []).some((p) => p.picker === "notifyChannels");
+  const channelParam = (template.params ?? []).find(
+    (p) => p.picker === FLOW_PICKER.channel && p.type === "string_list",
+  );
+  const wantsChannels = Boolean(channelParam);
 
   const create = async () => {
     setBusy(true);
@@ -512,7 +521,9 @@ function UseTemplateDrawer({ template, onClose }: { template: FlowTemplate; onCl
       const flow = await flowsApi.createFromTemplate(template.id, {
         name: name.trim() || template.name,
         enabled,
-        params: wantsChannels ? { channelIds: channels } : undefined,
+        params: channelParam
+          ? { [channelParam.key]: channels.length > 0 ? channels : ["*"] }
+          : undefined,
       });
       toast.success(t("Flow created from template"));
       onClose();

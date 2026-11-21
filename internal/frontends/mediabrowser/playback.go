@@ -139,6 +139,14 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 		http.Error(w, msgVideoTranscodingOff, http.StatusUnprocessableEntity)
 		return
 	}
+	if errors.Is(err, frontend.ErrArchiveUnstreamable) {
+		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, frontend.ErrReleaseRejected) || errors.Is(err, frontend.ErrArticleMissing) || errors.Is(err, frontend.ErrArticleCorrupt) {
+		http.Error(w, "The source is incomplete or cannot be played.", http.StatusUnprocessableEntity)
+		return
+	}
 
 	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone) {
 		if protocol == "jellyfin" {

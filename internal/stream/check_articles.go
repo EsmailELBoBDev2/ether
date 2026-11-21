@@ -40,7 +40,16 @@ func (e *Engine) CheckArticles(ctx context.Context, releaseID string, nzbData []
 	}
 	defer e.release(rel)
 
-	files := e.selectArticleCheckFiles(ctx, rel)
+	files, missingVols := e.selectArticleCheckFiles(ctx, rel)
+	if missingVols > 0 {
+		capped := min(missingVols, MaxArticleCheckSamples)
+		return core.UsenetCheckResult{
+			Available: false,
+			Checked:   capped,
+			Missing:   capped,
+			Reason:    "volumes_missing",
+		}, nil
+	}
 	if len(files) == 0 {
 		return core.UsenetCheckResult{
 			Available: false,
@@ -98,11 +107,12 @@ func (e *Engine) CheckArticles(ctx context.Context, releaseID string, nzbData []
 	}, nil
 }
 
-// selectArticleCheckFiles chooses the payload files of an NZB to sample. For
+// selectArticleCheckFiles chooses the payload files of an NZB to sample and
+// reports any archive volumes missing from the selected archive set(s). For
 // video/archive releases it mirrors CheckRelease's primary candidate (skipping
 // sample clips, PAR2, and NFO); for loose non-video releases (audio albums,
 // books, comics, ROMs) it selects all non-auxiliary payload files.
-func (e *Engine) selectArticleCheckFiles(ctx context.Context, rel *release) []*postedFile {
+func (e *Engine) selectArticleCheckFiles(ctx context.Context, rel *release) ([]*postedFile, int) {
 	var payload []*postedFile
 	var payloadBytes int64
 	var nonPar2 []*postedFile
@@ -127,13 +137,34 @@ func (e *Engine) selectArticleCheckFiles(ctx context.Context, rel *release) []*p
 	b := &builder{e: e, rel: rel, prio: healthPriority(ctx)}
 	cands := b.candidates(rel.files)
 	if len(cands) > 0 && len(cands[0].files) > 0 && (payloadBytes == 0 || cands[0].bytes*2 >= payloadBytes) {
-		return cands[0].files
+		missingVols := 0
+		if cands[0].set != nil {
+			missingVols = len(cands[0].set.Missing)
+		}
+		return cands[0].files, missingVols
 	}
+	selected := rel.files
 	if len(payload) > 0 {
-		return payload
+		selected = payload
+	} else if len(nonPar2) > 0 {
+		selected = nonPar2
 	}
-	if len(nonPar2) > 0 {
-		return nonPar2
+	return selected, missingArchiveVolumes(rel, selected)
+}
+
+func missingArchiveVolumes(rel *release, files []*postedFile) int {
+	rel.infoMu.RLock()
+	var vols []*nzb.File
+	for _, pf := range files {
+		if pf.file.Info.Kind.IsArchive() {
+			vols = append(vols, pf.file)
+		}
 	}
-	return rel.files
+	sets := nzb.GroupSets(vols)
+	rel.infoMu.RUnlock()
+	missing := 0
+	for _, s := range sets {
+		missing += len(s.Missing)
+	}
+	return missing
 }

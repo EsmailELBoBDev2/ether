@@ -243,8 +243,11 @@ func classifyNonVideoRelease(cand core.PlayableSource, defaultMIME string) (nonV
 // OpenSources tries each candidate core.PlayableSource in order, returning the first
 // ByteSource that opens and validates cleanly. When every candidate fails with
 // core.ErrArchiveUnstreamable, that error is preserved rather than masked as
-// core.ErrSourceUnavailable; otherwise all-failed candidates wrap
-// core.ErrSourceUnavailable (spec §4.5).
+// core.ErrSourceUnavailable; when every candidate fails with a permanent
+// rejection (e.g. core.ErrReleaseRejected, archive.ErrMissingVolume,
+// core.ErrNoUsableFile, core.ErrArticleMissing), the returned error wraps
+// core.ErrReleaseRejected rather than core.ErrSourceUnavailable; otherwise
+// all-failed candidates wrap core.ErrSourceUnavailable (spec §4.5).
 //
 // For non-video release candidates (#659), OpenSources caps Usenet release
 // grabs per play (DefaultMaxNonVideoReleaseGrabs) and stops trying further
@@ -264,6 +267,7 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	var errs []error
 	var failures []SourceFailure
 	allUnstreamable := true
+	allRejected := true
 	for i, cand := range sources {
 		if err := ctx.Err(); err != nil {
 			return nil, core.PlayableSource{}, err
@@ -273,10 +277,15 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			if prev, failed := structuralFailed[shape]; failed {
 				errs = append(errs, fmt.Errorf("source %q (%s): skipped after same-shape structural failure: %w", cand.ID, cand.Pattern, prev))
 				allUnstreamable = false
+				if !isPermanentRejection(prev) {
+					allRejected = false
+				}
 				continue
 			}
 			if isUsenet && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
 				errs = append(errs, fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", cand.ID, cand.Pattern, maxUsenetGrabs))
+				allUnstreamable = false
+				allRejected = false
 				continue
 			}
 			if isUsenet {
@@ -309,13 +318,45 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if !errors.Is(err, core.ErrArchiveUnstreamable) {
 			allUnstreamable = false
 		}
+		if !isPermanentRejection(err) {
+			allRejected = false
+		}
 		failures = append(failures, SourceFailure{Source: cand, Err: err})
 		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, err))
 	}
 	if allUnstreamable && len(errs) > 0 {
 		return nil, core.PlayableSource{}, errors.Join(errs...)
 	}
+	if allRejected && len(errs) > 0 {
+		joined := errors.Join(errs...)
+		if errors.Is(joined, core.ErrReleaseRejected) {
+			return nil, core.PlayableSource{}, joined
+		}
+		return nil, core.PlayableSource{}, fmt.Errorf("%w: %w", core.ErrReleaseRejected, joined)
+	}
 	return nil, core.PlayableSource{}, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, errors.Join(errs...))
+}
+
+func isPermanentRejection(err error) bool {
+	for _, target := range []error{
+		core.ErrReleaseRejected,
+		core.ErrArchiveUnstreamable,
+		core.ErrNoUsableFile,
+		core.ErrArticleMissing,
+		core.ErrArticleCorrupt,
+		archive.ErrMissingVolume,
+		archive.ErrCorrupt,
+		archive.ErrCompressed,
+		archive.ErrEncrypted,
+		archive.ErrSolid,
+		archive.ErrUnsupported,
+		nzb.ErrInvalid,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {

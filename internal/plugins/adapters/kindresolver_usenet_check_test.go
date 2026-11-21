@@ -368,3 +368,93 @@ func TestKindResolverUsenetCheckCacheBoundedSize(t *testing.T) {
 		t.Fatalf("cache exceeded bound %d: entries=%d byRel=%d byHash=%d", maxUsenetCheckCacheEntries, entries, byRel, byHash)
 	}
 }
+
+type zeroCallArticleFetcher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *zeroCallArticleFetcher) Stat(_ context.Context, _ string) (bool, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return true, nil
+}
+
+func (f *zeroCallArticleFetcher) Body(_ context.Context, _ string, _ []string, _ core.Priority) ([]byte, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return []byte("unused"), nil
+}
+
+func (f *zeroCallArticleFetcher) BodyPart(_ context.Context, _ string, _ []string, _ core.Priority) ([]byte, core.ArticlePart, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return []byte("unused"), core.ArticlePart{}, nil
+}
+
+func TestKindResolverUsenetCheckFailsOnMissingRARVolumes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 21, 18, 0, 0, 0, time.UTC)
+
+	missingVolNZB := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p" date="1700000000" subject="&quot;Album.part12.rar&quot; yEnc (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="1024" number="1">p12@test</segment></segments></file>
+  <file poster="p" date="1700000000" subject="&quot;Album.part13.rar&quot; yEnc (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="1024" number="1">p13@test</segment></segments></file>
+  <file poster="p" date="1700000000" subject="&quot;Album.part16.rar&quot; yEnc (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="1024" number="1">p16@test</segment></segments></file>
+</nzb>`)
+
+	idx := &stubUsenetIndexer{
+		nzbs: map[string][]byte{
+			"https://idx.example/missing-vol.nzb": missingVolNZB,
+		},
+	}
+	fetcher := &zeroCallArticleFetcher{}
+	eng := stream.New(fetcher, nil, stream.Options{}, nil)
+	defer eng.Close()
+
+	kr := NewKindResolver(KindResolverDeps{
+		Indexer:       idx,
+		Engine:        eng,
+		UsenetServing: func() bool { return true },
+		Now:           func() time.Time { return now },
+	})
+
+	cands, err := kr.ResolveSources(ctx, "p.comics", core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/missing-vol.nzb",
+	})
+	if err != nil {
+		t.Fatalf("usenet_check: %v", err)
+	}
+	if len(cands) != 1 || cands[0].UsenetCheck == nil {
+		t.Fatalf("unexpected candidates: %+v", cands)
+	}
+	uc := cands[0].UsenetCheck
+	if uc.Available || uc.Reason != "volumes_missing" || uc.Missing < 2 || uc.Cached {
+		t.Fatalf("first usenet_check = %+v, want unavailable volumes_missing", uc)
+	}
+	fetcher.mu.Lock()
+	calls := fetcher.calls
+	fetcher.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("NNTP calls = %d, want 0", calls)
+	}
+
+	// Second check serves the cached negative verdict without re-fetching the NZB.
+	cands2, err := kr.ResolveSources(ctx, "p.comics", core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/missing-vol.nzb",
+	})
+	if err != nil {
+		t.Fatalf("second usenet_check: %v", err)
+	}
+	if !cands2[0].UsenetCheck.Cached || cands2[0].UsenetCheck.Available || cands2[0].UsenetCheck.Reason != "volumes_missing" {
+		t.Fatalf("cached verdict = %+v, want cached unavailable volumes_missing", cands2[0].UsenetCheck)
+	}
+	if idx.fetches() != 1 {
+		t.Fatalf("indexer fetches = %d, want 1", idx.fetches())
+	}
+}

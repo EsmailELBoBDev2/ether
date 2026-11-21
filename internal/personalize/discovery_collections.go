@@ -79,6 +79,24 @@ func (c *reviewCollections) List(ctx context.Context, u *core.User, typ core.Med
 	return c.withReviews(ctx, u, typ, out), nil
 }
 
+// ListOwned forwards the engine's listing without derived franchises (Plex
+// collection search), plus the viewer's Year in Review collections.
+func (c *reviewCollections) ListOwned(ctx context.Context, u *core.User, typ core.MediaType) ([]core.Collection, error) {
+	var out []core.Collection
+	if c.base != nil {
+		var e error
+		if owned, ok := c.base.(core.OwnedCollectionLister); ok {
+			out, e = owned.ListOwned(ctx, u, typ)
+		} else {
+			out, e = c.base.List(ctx, u, typ)
+		}
+		if e != nil {
+			return nil, e
+		}
+	}
+	return c.withReviews(ctx, u, typ, out), nil
+}
+
 // ListComplete forwards the engine's complete listing (errors included, never
 // a partial result) and adds the viewer's Year in Review collections, so
 // consumers that advertise exact totals (Jellyfin BoxSets) see every

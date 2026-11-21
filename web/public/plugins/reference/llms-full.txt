@@ -4886,6 +4886,7 @@ type KindLevel struct {
 | `label` | `string` | emitted (validation may require a value) |  |
 | `indexed` | `bool` | may be omitted (see validation for conditions) | gets a typed column in the item store |
 | `enum` | `[]string` | may be omitted (see validation for conditions) |  |
+| `fact` | `*bool` | may be omitted (see validation for conditions) | Fact controls whether this field is surfaced in TitleMedia.facts. Nil follows the default rule (non-structural fields appear as facts); explicit true/false overrides it. |
 
 
 ## Source: internal/plugins/contract.go#KindField
@@ -4898,6 +4899,10 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"` // gets a typed column in the item store
 	Enum    []string `json:"enum,omitempty"`
+	// Fact controls whether this field is surfaced in TitleMedia.facts.
+	// Nil follows the default rule (non-structural fields appear as facts);
+	// explicit true/false overrides it.
+	Fact *bool `json:"fact,omitempty"`
 }
 ``````
 

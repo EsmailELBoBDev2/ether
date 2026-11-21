@@ -46,6 +46,7 @@ const (
 	MediaRoleEpisode    = core.MediaRoleEpisode
 	MediaRoleCollection = core.MediaRoleCollection
 )
+
 type Page = core.Page
 type WatchStatus = core.WatchStatus
 type StreamInfo = core.StreamInfo

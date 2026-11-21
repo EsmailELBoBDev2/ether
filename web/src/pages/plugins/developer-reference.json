@@ -853,11 +853,11 @@
   },
   {
     "path": "internal/plugins/contract.go#KindField.fields.md",
-    "code": "| Field | Go type | Wire presence | Description |\n|---|---|---|---|\n| `key` | `string` | emitted (validation may require a value) | ^[a-z][a-zA-Z0-9_]{0,39}$ |\n| `type` | `string` | emitted (validation may require a value) | string\\|int\\|float\\|bool\\|date\\|duration\\|enum\\|strings\\|people |\n| `label` | `string` | emitted (validation may require a value) |  |\n| `indexed` | `bool` | may be omitted (see validation for conditions) | gets a typed column in the item store |\n| `enum` | `[]string` | may be omitted (see validation for conditions) |  |\n"
+    "code": "| Field | Go type | Wire presence | Description |\n|---|---|---|---|\n| `key` | `string` | emitted (validation may require a value) | ^[a-z][a-zA-Z0-9_]{0,39}$ |\n| `type` | `string` | emitted (validation may require a value) | string\\|int\\|float\\|bool\\|date\\|duration\\|enum\\|strings\\|people |\n| `label` | `string` | emitted (validation may require a value) |  |\n| `indexed` | `bool` | may be omitted (see validation for conditions) | gets a typed column in the item store |\n| `enum` | `[]string` | may be omitted (see validation for conditions) |  |\n| `fact` | `*bool` | may be omitted (see validation for conditions) | Fact controls whether this field is surfaced in TitleMedia.facts. Nil follows the default rule (non-structural fields appear as facts); explicit true/false overrides it. |\n"
   },
   {
     "path": "internal/plugins/contract.go#KindField",
-    "code": "// KindField is one declared item field.\ntype KindField struct {\n\tKey     string   `json:\"key\"`  // ^[a-z][a-zA-Z0-9_]{0,39}$\n\tType    string   `json:\"type\"` // string|int|float|bool|date|duration|enum|strings|people\n\tLabel   string   `json:\"label\"`\n\tIndexed bool     `json:\"indexed,omitempty\"` // gets a typed column in the item store\n\tEnum    []string `json:\"enum,omitempty\"`\n}"
+    "code": "// KindField is one declared item field.\ntype KindField struct {\n\tKey     string   `json:\"key\"`  // ^[a-z][a-zA-Z0-9_]{0,39}$\n\tType    string   `json:\"type\"` // string|int|float|bool|date|duration|enum|strings|people\n\tLabel   string   `json:\"label\"`\n\tIndexed bool     `json:\"indexed,omitempty\"` // gets a typed column in the item store\n\tEnum    []string `json:\"enum,omitempty\"`\n\t// Fact controls whether this field is surfaced in TitleMedia.facts.\n\t// Nil follows the default rule (non-structural fields appear as facts);\n\t// explicit true/false overrides it.\n\tFact *bool `json:\"fact,omitempty\"`\n}"
   },
   {
     "path": "internal/plugins/contract.go#KindArt.fields.md",

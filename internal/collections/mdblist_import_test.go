@@ -130,8 +130,8 @@ func TestMDBListMatchingDigitalGateAndImportMembership(t *testing.T) {
 	if created, err = svc.Rebuild(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if sawDefaultLimit != "100" {
-		t.Fatalf("expected bounded default MDBList page size limit=100, got %q", sawDefaultLimit)
+	if sawDefaultLimit != "1000" {
+		t.Fatalf("expected bounded default MDBList page size limit=1000, got %q", sawDefaultLimit)
 	}
 	if created.ItemCount != 4 {
 		t.Fatalf("expected 4 matched items, got %d (warnings=%v)", created.ItemCount, created.Warnings)

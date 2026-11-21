@@ -174,6 +174,127 @@ func TestNameFromSubject(t *testing.T) {
 	}
 }
 
+func TestNameFromSubjectRealWorldUnquoted(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+		want    string
+	}{
+		{
+			name:    "quoted with spaces",
+			subject: `"Concert Recording 2019 Full Show.mkv" yEnc (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "unquoted with spaces and segment counter",
+			subject: `Concert Recording 2019 Full Show.mkv (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "unquoted with spaces and hyphen in title",
+			subject: `Some Show - Episode Title 1080p.mp4 yEnc (1/50)`,
+			want:    "Some Show - Episode Title 1080p.mp4",
+		},
+		{
+			name:    "unquoted with parens and bracket tag",
+			subject: `My Holiday Video (Part 2) [Extended].mp4 yEnc (1/80)`,
+			want:    "My Holiday Video (Part 2) [Extended].mp4",
+		},
+		{
+			name:    "leading bracket counter with dash",
+			subject: `[1/50] - name.ext yEnc (1/50)`,
+			want:    "name.ext",
+		},
+		{
+			name:    "leading bracket counter with spaces in filename",
+			subject: `[01/42] - Concert Recording 2019 Full Show.mkv yEnc (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "leading counter with spaces in multipart rar",
+			subject: `[03/20] - Some Show - Episode Title.part03.rar yEnc (1/50)`,
+			want:    "Some Show - Episode Title.part03.rar",
+		},
+		{
+			name:    "post title and mid counter before unquoted filename",
+			subject: `Movie 2024 [03/42] - Movie 2024 Part 3.r01 yEnc (12/50)`,
+			want:    "Movie 2024 Part 3.r01",
+		},
+		{
+			name:    "leading paren counter and of wording",
+			subject: `(01 of 10) - Artist Name - 01 Track Title.flac yEnc (1/20)`,
+			want:    "Artist Name - 01 Track Title.flac",
+		},
+		{
+			name:    "bare leading counter without brackets",
+			subject: `01/10 - Concert Recording 2019.7z.001 yEnc (1/50)`,
+			want:    "Concert Recording 2019.7z.001",
+		},
+		{
+			name:    "reply prefix plus counter and size noise",
+			subject: `Re: [01/10] - Concert Recording 2019 Full Show.mkv - 1.2 GB - yEnc (1/50)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "mid-title of wording is preserved",
+			subject: `Book 1 of 3 - The Beginning.epub yEnc (1/5)`,
+			want:    "Book 1 of 3 - The Beginning.epub",
+		},
+		{
+			name:    "mid-title size token is preserved",
+			subject: `Linux Live 4GB Edition.iso yEnc (1/50)`,
+			want:    "Linux Live 4GB Edition.iso",
+		},
+		{
+			name:    "embedded dotted codec bracket does not steal unquoted filename",
+			subject: `Show Name [H.264] [1080p].mkv yEnc (1/50)`,
+			want:    "Show Name [H.264] [1080p].mkv",
+		},
+		{
+			name:    "yEnc with byte size before segment counter",
+			subject: `Concert Recording 2019 Full Show.mkv yEnc 52428800 (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "segment counter before yEnc",
+			subject: `Concert Recording 2019 Full Show.mkv (1/120) yEnc`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "plain filename ending in digits without yEnc trailer",
+			subject: `Concert Recording 2019.mp4`,
+			want:    "Concert Recording 2019.mp4",
+		},
+		{
+			name:    "plain 7z split without yEnc trailer",
+			subject: `Concert Recording 2019.7z.001`,
+			want:    "Concert Recording 2019.7z.001",
+		},
+		{
+			name:    "standalone bracketed filename still extracted",
+			subject: `[#a.b.moovee@EFNet]-[FULL]-[Movie.2024.part01.rar] yEnc (1/50)`,
+			want:    "Movie.2024.part01.rar",
+		},
+		{
+			name:    "second quote with known extension beats dotted first quote",
+			subject: `Post "Mr. Smith" - "Movie.2024.mkv" yEnc (1/50)`,
+			want:    "Movie.2024.mkv",
+		},
+		{
+			name:    "trailing promo domain does not override real extension",
+			subject: `Concert Recording 2019.mkv - Visit Site.com yEnc (1/50)`,
+			want:    "Concert Recording 2019.mkv",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NameFromSubject(tc.subject); got != tc.want {
+				t.Errorf("NameFromSubject(%q) = %q, want %q", tc.subject, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSubjectCounters(t *testing.T) {
 	i, n := subjectFileCounter(`[03/42] - "Movie.r01" yEnc (12/50)`)
 	if i != 3 || n != 42 {

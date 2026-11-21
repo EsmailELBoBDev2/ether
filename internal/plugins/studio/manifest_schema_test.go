@@ -36,6 +36,10 @@ func schemaType(typ reflect.Type) map[string]any {
 			props[name] = schemaType(f.Type)
 		}
 		switch typ {
+		case reflect.TypeFor[plugins.MediaKindMeta]():
+			props["media"] = map[string]any{"enum": []string{"video", "music", "audiobook", "book", "podcast", "photo"}}
+		case reflect.TypeFor[plugins.KindLevel]():
+			props["role"] = map[string]any{"enum": []string{"item", "artist", "album", "track", "series", "book", "audiobook", "part", "show", "episode", "collection"}}
 		case reflect.TypeFor[plugins.KindField]():
 			props["type"] = map[string]any{"enum": []string{"string", "int", "float", "bool", "date", "duration", "enum", "strings", "people"}}
 		case reflect.TypeFor[plugins.KindLibraryDecl]():

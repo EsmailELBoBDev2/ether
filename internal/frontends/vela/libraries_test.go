@@ -27,21 +27,14 @@ func TestProjectLibrary(t *testing.T) {
 		{
 			name: "plex and mediabrowser alone do not publish to vela",
 			present: frontend.Presentations{
-				Plex: &struct {
-					Base string `json:"base"`
-				}{Base: "movie"},
-				MediaBrowser: &struct {
-					CollectionType string            `json:"collectionType"`
-					ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-				}{CollectionType: "tvshows"},
+				Plex:         &frontend.PlexPresentation{Base: "movie"},
+				MediaBrowser: &frontend.MediaBrowserPresentation{CollectionType: "tvshows"},
 			},
 		},
 		{
 			name: "vela movies",
 			present: frontend.Presentations{
-				Vela: &struct {
-					Type string `json:"type"`
-				}{Type: "movies"},
+				Vela: &frontend.VelaPresentation{Type: "movies"},
 			},
 			wantType:   frontend.TypeMovie,
 			wantNative: "movies",
@@ -50,9 +43,7 @@ func TestProjectLibrary(t *testing.T) {
 		{
 			name: "vela shows",
 			present: frontend.Presentations{
-				Vela: &struct {
-					Type string `json:"type"`
-				}{Type: "shows"},
+				Vela: &frontend.VelaPresentation{Type: "shows"},
 			},
 			wantType:   frontend.TypeShow,
 			wantNative: "shows",
@@ -62,17 +53,13 @@ func TestProjectLibrary(t *testing.T) {
 			name: "adapterOnly hides vela",
 			present: frontend.Presentations{
 				AdapterOnly: true,
-				Vela: &struct {
-					Type string `json:"type"`
-				}{Type: "movies"},
+				Vela:        &frontend.VelaPresentation{Type: "movies"},
 			},
 		},
 		{
 			name: "unknown vela type is ignored",
 			present: frontend.Presentations{
-				Vela: &struct {
-					Type string `json:"type"`
-				}{Type: "music"},
+				Vela: &frontend.VelaPresentation{Type: "music"},
 			},
 		},
 	}

@@ -178,10 +178,6 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 	}
 
 	active := c.recordAllowsCatalogSync(ctx, r)
-	oldByKey := make(map[string]pluginitems.KindRecord, len(existing))
-	for _, old := range existing {
-		oldByKey[old.KindKey] = old
-	}
 	keep := make(map[string]bool, len(declared))
 	for _, k := range declared {
 		keep[k.Key] = true
@@ -189,9 +185,11 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 		if strings.TrimSpace(libName) == "" {
 			libName = k.Key
 		}
+		presInput := kindPresentationInput(k)
+		initial := libraries.ResolveKindPresentations(presInput, core.PresentationOverrides{})
 		lib, err := c.libs.UpsertPluginLibrary(ctx, r.ID, k.Key, libraries.PluginLibraryDecl{
 			Name:    libName,
-			Present: k.Present,
+			Present: initial.Effective,
 		})
 		if errors.Is(err, libraries.ErrDeleted) {
 			c.items.StopKindSync(r.ID, k.Key)
@@ -201,22 +199,17 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 			c.log.Warn("upsert plugin library failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			continue
 		}
-		// A plugin update that changes the declared presentation re-applies
-		// it to the kind's existing library; an unchanged declaration leaves
-		// the stored presentation (and any owner edit of it) alone. Levels
-		// and fields already flow through UpsertKind below, which stores the
-		// new declaration and reindexes only when the index shape changed.
-		if old, ok := oldByKey[k.Key]; ok && !presentationsEqual(old.Decl.Present, k.Present) {
-			next := k.Present
-			if next.Vela == nil {
-				// Keep the Vela publication chosen (or inferred) at
-				// install when the manifest stays silent about it.
-				next.Vela = lib.Present.Vela
-			}
-			if err := c.libs.SetPresent(ctx, lib.ID, next); err != nil {
-				c.log.Warn("re-apply plugin library presentation failed", "plugin", r.ID, "kind", k.Key, "err", err)
+		// Reconcile HOW each app sees the library from the current manifest
+		// and kind shape while honoring the owner's sticky on/off switches
+		// (lib.PresentOverrides). This heals pre-W170 stale rows on startup
+		// and applies updated itemTypes/bases on plugin updates without ever
+		// clobbering an owner toggle.
+		reconciled := libraries.ResolveKindPresentations(presInput, lib.PresentOverrides)
+		if !presentationsEqual(lib.Present, reconciled.Effective) {
+			if err := c.libs.SetPresent(ctx, lib.ID, reconciled.Effective); err != nil {
+				c.log.Warn("reconcile plugin library presentation failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			} else {
-				lib.Present = next
+				lib.Present = reconciled.Effective
 			}
 		}
 		q := c.setQuota(r.ID, lib.Key, k.Cache)
@@ -272,6 +265,23 @@ func presentationsEqual(a, b core.Presentations) bool {
 	aj, err1 := json.Marshal(a)
 	bj, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(aj) == string(bj)
+}
+
+func kindPresentationInput(k plugins.MediaKindMeta) libraries.KindPresentationInput {
+	levels := make([]libraries.KindPresentationLevel, len(k.Levels))
+	for i, lv := range k.Levels {
+		levels[i] = libraries.KindPresentationLevel{
+			Key:       lv.Key,
+			Role:      lv.Role,
+			Playable:  lv.Playable,
+			Container: lv.Container,
+		}
+	}
+	return libraries.KindPresentationInput{
+		Media:   k.Media,
+		Levels:  levels,
+		Present: k.Present,
+	}
 }
 
 func (c *KindCatalog) removePlugin(ctx context.Context, pluginID string) {

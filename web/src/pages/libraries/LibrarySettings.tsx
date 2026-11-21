@@ -25,9 +25,13 @@ import { useQuality } from "../releases/useQuality";
 import {
   librariesApi,
   publishedTo,
+  type AppSwitchPatch,
   type Library,
   type LibraryCardShape,
+  type PresentationAppKey,
   type Presentations,
+  type ResolvedAppPresentation,
+  type ResolvedPresentations,
 } from "./api";
 import { LibraryCacheCard } from "./LibraryCache";
 import { TitlesComeFrom } from "./TitlesComeFrom";
@@ -64,72 +68,105 @@ function presentationHint(value: string): string {
   return hints[value] ?? value;
 }
 
-function defaultPlexBase(lib: Library): string {
-  if (lib.source === "plugin") {
-    const declared = lib.kind?.present?.plex?.base;
-    if (declared) return declared;
-    return (lib.kind?.levels.length ?? 1) >= 3 ? "show" : "movie";
-  }
-  return lib.mediaType === "show" ? "show" : "movie";
+function unavailableReason(reason?: string): string {
+  if (!reason) return t("Not available for this library type.");
+  const localized: Record<string, string> = {
+    "Plex does not have a book library type.": t("Plex does not have a book library type."),
+    "Plex does not have an audiobook library type.": t(
+      "Plex does not have an audiobook library type.",
+    ),
+    "Plex does not have a podcast library type.": t("Plex does not have a podcast library type."),
+    "Stremio only supports movies, shows, and channels.": t(
+      "Stremio only supports movies, shows, and channels.",
+    ),
+    "Xtream only supports movies, series, and live TV.": t(
+      "Xtream only supports movies, series, and live TV.",
+    ),
+    "Silo only supports movie and TV show libraries.": t(
+      "Silo only supports movie and TV show libraries.",
+    ),
+  };
+  return localized[reason] ?? reason;
 }
 
-interface DerivedPresentations {
-  vela: NonNullable<Presentations["vela"]>;
-  plex: NonNullable<Presentations["plex"]>;
-  mediaBrowser: NonNullable<Presentations["mediaBrowser"]>;
-  stremio: NonNullable<Presentations["stremio"]>;
-  xtream: NonNullable<Presentations["xtream"]>;
-  silo: NonNullable<Presentations["silo"]>;
-}
+const APP_ORDER: PresentationAppKey[] = [
+  "vela",
+  "plex",
+  "mediaBrowser",
+  "stremio",
+  "xtream",
+  "silo",
+];
 
-function derivedPresentations(lib: Library): DerivedPresentations {
-  const plexBase = defaultPlexBase(lib);
-  if (lib.source !== "plugin") {
-    const isShow = plexBase === "show";
-    return {
+function fallbackResolved(lib: Library): ResolvedPresentations {
+  const isShow = lib.mediaType === "show";
+  const p = lib.present ?? {};
+  const specs: { app: PresentationAppKey; hint: string }[] = [
+    { app: "vela", hint: isShow ? "shows" : "movies" },
+    { app: "plex", hint: isShow ? "show" : "movie" },
+    { app: "mediaBrowser", hint: isShow ? "tvshows" : "movies" },
+    { app: "stremio", hint: isShow ? "series" : "movie" },
+    { app: "xtream", hint: isShow ? "series" : "movie" },
+    { app: "silo", hint: isShow ? "tvshows" : "movies" },
+  ];
+  return {
+    mediaClass: "video",
+    adapterOnly: Boolean(p.adapterOnly),
+    effective: p,
+    available: {
       vela: { type: isShow ? "shows" : "movies" },
-      plex: { base: plexBase },
+      plex: { base: isShow ? "show" : "movie" },
       mediaBrowser: { collectionType: isShow ? "tvshows" : "movies" },
       stremio: { type: isShow ? "series" : "movie" },
       xtream: { category: isShow ? "series" : "movie" },
       silo: { type: isShow ? "tvshows" : "movies" },
-    };
-  }
-  const kp = lib.kind?.present;
-  const mbType = kp?.mediaBrowser?.collectionType ?? (plexBase === "show" ? "tvshows" : "movies");
-  const mbItemTypes = kp?.mediaBrowser?.itemTypes;
-  const velaType =
-    kp?.vela?.type ??
-    (mbType === "tvshows"
-      ? "shows"
-      : mbType === "movies"
-        ? "movies"
-        : plexBase === "show"
-          ? "shows"
-          : "movies");
-  return {
-    vela: { type: velaType },
-    plex: { base: plexBase },
-    mediaBrowser: mbItemTypes
-      ? { collectionType: mbType, itemTypes: mbItemTypes }
-      : { collectionType: mbType },
-    stremio: { type: kp?.stremio?.type ?? (plexBase === "show" ? "series" : "movie") },
-    xtream: { category: kp?.xtream?.category ?? (plexBase === "show" ? "series" : "movie") },
-    silo: { type: kp?.silo?.type ?? mbType },
+    },
+    apps: specs.map(({ app, hint }) => ({
+      app,
+      available: true,
+      enabled: Boolean(!p.adapterOnly && p[app]),
+      defaultOn: lib.source === "builtin",
+      source: "inferred",
+      hintValue: hint,
+    })),
   };
 }
 
-function materializePresent(lib: Library, present: Presentations): Presentations {
-  const derived = derivedPresentations(lib);
+function initialAppSwitches(resolved: ResolvedPresentations): AppSwitchPatch {
+  const out: AppSwitchPatch = { adapterOnly: Boolean(resolved.adapterOnly) };
+  for (const app of resolved.apps) {
+    out[app.app] = app.available ? app.enabled : false;
+  }
+  return out;
+}
+
+function previewPresent(resolved: ResolvedPresentations, switches: AppSwitchPatch): Presentations {
+  if (switches.adapterOnly) return { adapterOnly: true };
   const next: Presentations = {};
-  if (lib.source === "plugin" && present.adapterOnly) next.adapterOnly = true;
-  if (present.vela) next.vela = derived.vela;
-  if (present.plex) next.plex = derived.plex;
-  if (present.mediaBrowser) next.mediaBrowser = derived.mediaBrowser;
-  if (present.stremio) next.stremio = derived.stremio;
-  if (present.xtream) next.xtream = derived.xtream;
-  if (present.silo) next.silo = derived.silo;
+  for (const app of resolved.apps) {
+    if (app.available && switches[app.app]) {
+      const avail = resolved.available[app.app];
+      if (avail) (next as Record<string, unknown>)[app.app] = avail;
+    }
+  }
   return next;
+}
+
+function appTitle(app: PresentationAppKey): string {
+  switch (app) {
+    case "vela":
+      return "Vela";
+    case "plex":
+      return "Plex";
+    case "mediaBrowser":
+      return t("Jellyfin & Emby");
+    case "stremio":
+      return "Stremio";
+    case "xtream":
+      return "Xtream";
+    case "silo":
+      return "Silo";
+  }
 }
 
 function libraryKindValue(lib: Library): string {
@@ -206,40 +243,31 @@ function CardShapeRow({
 function PresentationsEditor({
   library,
   name,
-  present,
+  resolved,
+  switches,
   onChange,
 }: {
   library: Library;
   name: string;
-  present: Presentations;
-  onChange: (value: Presentations) => void;
+  resolved: ResolvedPresentations;
+  switches: AppSwitchPatch;
+  onChange: (value: AppSwitchPatch) => void;
 }) {
-  const derived = derivedPresentations(library);
-  const toggle = (key: keyof Presentations, on: boolean, make: () => unknown) => {
-    const next: Presentations = { ...present };
-    if (on) (next as Record<string, unknown>)[key] = make();
-    else delete (next as Record<string, unknown>)[key];
-    onChange(next);
-  };
-
-  const row = (
-    key: "vela" | "plex" | "mediaBrowser" | "stremio" | "xtream" | "silo",
-    title: string,
-    hintValue: string,
-    make: () => unknown,
-  ) => (
-    <SettingsRow
-      title={title}
-      description={presentationHint(hintValue)}
-      control={
-        <Switch
-          aria-label={t("Show in {app}", { app: title })}
-          checked={Boolean(present[key])}
-          onChange={(e) => toggle(key, e.target.checked, make)}
-        />
-      }
-    />
+  const adapterOnly = Boolean(switches.adapterOnly);
+  const byApp = new Map<PresentationAppKey, ResolvedAppPresentation>(
+    resolved.apps.map((a) => [a.app, a]),
   );
+
+  const appDescription = (info: ResolvedAppPresentation): string => {
+    if (!info.available) return unavailableReason(info.reason);
+    if (adapterOnly) return t("Off while “Only in its own app” is on.");
+    const hint = presentationHint(info.hintValue ?? "");
+    if (library.source === "plugin") {
+      if (info.source === "plugin") return t("{hint} (from plugin)", { hint });
+      if (info.source === "inferred") return t("{hint} (inferred)", { hint });
+    }
+    return hint;
+  };
 
   return (
     <SettingsSection
@@ -253,17 +281,28 @@ function PresentationsEditor({
         description={t("What this library holds.")}
         control={<span className="text-sm font-medium text-fg">{libraryKindValue(library)}</span>}
       />
-      {row("vela", "Vela", derived.vela.type, () => derived.vela)}
-      {row("plex", "Plex", derived.plex.base, () => derived.plex)}
-      {row(
-        "mediaBrowser",
-        t("Jellyfin & Emby"),
-        derived.mediaBrowser.collectionType,
-        () => derived.mediaBrowser,
-      )}
-      {row("stremio", "Stremio", derived.stremio.type, () => derived.stremio)}
-      {row("xtream", "Xtream", derived.xtream.category, () => derived.xtream)}
-      {row("silo", "Silo", derived.silo.type, () => derived.silo)}
+      {APP_ORDER.map((key) => {
+        const info = byApp.get(key);
+        if (!info) return null;
+        const title = appTitle(key);
+        const disabled = !info.available || adapterOnly;
+        const checked = !disabled && Boolean(switches[key]);
+        return (
+          <SettingsRow
+            key={key}
+            title={title}
+            description={appDescription(info)}
+            control={
+              <Switch
+                aria-label={t("Show in {app}", { app: title })}
+                checked={checked}
+                disabled={disabled}
+                onChange={(e) => onChange({ ...switches, [key]: e.target.checked })}
+              />
+            }
+          />
+        );
+      })}
       {library.source === "plugin" ? (
         <SettingsRow
           title={t("Only in its own app")}
@@ -273,8 +312,8 @@ function PresentationsEditor({
           control={
             <Switch
               aria-label={t("Only in its own app")}
-              checked={Boolean(present.adapterOnly)}
-              onChange={(e) => toggle("adapterOnly", e.target.checked, () => true)}
+              checked={adapterOnly}
+              onChange={(e) => onChange({ ...switches, adapterOnly: e.target.checked })}
             />
           }
         />
@@ -351,19 +390,23 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       : library.cardShape === "landscape" || library.cardShape === "square"
         ? library.cardShape
         : "poster";
+  const resolvedPresentations = useMemo(
+    () => library.presentations ?? fallbackResolved(library),
+    [library],
+  );
   const stored = useMemo(
     () => ({
       name: library.name,
       hidden: library.hidden,
       cardShape: storedCardShape,
-      present: library.present ?? {},
+      presentApps: initialAppSwitches(resolvedPresentations),
       qualityProfile: library.qualityProfile ?? "",
       sources: library.sources ?? [],
       collectionId: library.collectionId,
       cacheMaxBytes: cache.data?.maxBytes ?? 0,
       cacheTTL: cache.data?.ttlSeconds ?? 0,
     }),
-    [library, storedCardShape, cache.data],
+    [library, resolvedPresentations, storedCardShape, cache.data],
   );
   const { draft, setDraft, dirty, reset } = useDraft(stored);
   const [saving, setSaving] = useState(false);
@@ -387,7 +430,20 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       }
       if (library.source !== "plugin" && draft.qualityProfile !== stored.qualityProfile)
         body.qualityProfile = draft.qualityProfile;
-      if (library.source !== "builtin") body.present = materializePresent(library, draft.present);
+      if (
+        library.source !== "builtin" &&
+        JSON.stringify(draft.presentApps) !== JSON.stringify(stored.presentApps)
+      ) {
+        const patch: AppSwitchPatch = {};
+        if (draft.presentApps.adapterOnly !== stored.presentApps.adapterOnly)
+          patch.adapterOnly = draft.presentApps.adapterOnly;
+        for (const app of resolvedPresentations.apps) {
+          if (app.available && draft.presentApps[app.app] !== stored.presentApps[app.app]) {
+            patch[app.app] = draft.presentApps[app.app];
+          }
+        }
+        body.presentApps = patch;
+      }
       if (JSON.stringify(draft.sources) !== JSON.stringify(stored.sources))
         body.sources = draft.sources;
       if (draft.collectionId !== stored.collectionId) body.collectionId = draft.collectionId;
@@ -406,7 +462,11 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       setSaving(false);
     }
   };
-  const summaryLibrary = { ...library, hidden: draft.hidden, present: draft.present };
+  const summaryLibrary = {
+    ...library,
+    hidden: draft.hidden,
+    present: previewPresent(resolvedPresentations, draft.presentApps),
+  };
   return (
     <>
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -487,8 +547,9 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
             <PresentationsEditor
               library={library}
               name={draft.name}
-              present={draft.present}
-              onChange={(present) => setDraft({ ...draft, present })}
+              resolved={resolvedPresentations}
+              switches={draft.presentApps}
+              onChange={(presentApps) => setDraft({ ...draft, presentApps })}
             />
           )}
           {library.source !== "plugin" && (
@@ -552,7 +613,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
           <div className="flex items-center gap-3">
             {library.source === "plugin" ? (
               <Plug size={24} />
-            ) : defaultPlexBase(library) === "show" ? (
+            ) : library.mediaType === "show" ? (
               <Tv size={24} />
             ) : (
               <Film size={24} />

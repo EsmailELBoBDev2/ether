@@ -485,6 +485,7 @@ type CommandMeta struct {
 type MediaKindMeta struct {
 	Key     string             `json:"key"` // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
 	Label   string             `json:"label"`
+	Media   string             `json:"media,omitempty"` // video|music|audiobook|book|podcast|photo
 	Library KindLibraryDecl    `json:"library,omitzero"`
 	Levels  []KindLevel        `json:"levels"`           // 1..5, first is the root
 	Fields  []KindField        `json:"fields,omitempty"` //
@@ -735,6 +736,7 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
+	Role      string `json:"role,omitempty"`      // item|artist|album|track|series|book|audiobook|part|show|episode|collection
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
 }

@@ -358,3 +358,188 @@ func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
 		t.Fatalf("recreated sections: %+v", sections)
 	}
 }
+
+func TestLibrariesConsolePresentAppsAndFreshness(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+
+	// Seed a book plugin library and a video plugin library with declared kinds.
+	bookDecl := plugins.MediaKindMeta{
+		Key:     "book",
+		Label:   "Books",
+		Media:   string(core.MediaClassBook),
+		Library: plugins.KindLibraryDecl{Name: "Books"},
+		Levels:  []plugins.KindLevel{{Key: "book", Label: "Book", Playable: true}},
+		Browse:  plugins.KindBrowseDecl{Search: true},
+		Sync:    plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	bookRes := libraries.ResolveKindPresentations(libraries.KindPresentationInput{
+		Media:  bookDecl.Media,
+		Levels: []libraries.KindPresentationLevel{{Key: "book", Playable: true}},
+	}, core.PresentationOverrides{})
+	bookLib, err := a.libraries.UpsertPluginLibrary(ctx, "demo.books", "book", libraries.PluginLibraryDecl{
+		Name:    "Books",
+		Present: bookRes.Effective,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clipDecl := plugins.MediaKindMeta{
+		Key:     "clip",
+		Label:   "Clips",
+		Media:   string(core.MediaClassVideo),
+		Library: plugins.KindLibraryDecl{Name: "Studio Clips"},
+		Levels:  []plugins.KindLevel{{Key: "clip", Label: "Clip", Playable: true}},
+		Browse:  plugins.KindBrowseDecl{Search: true},
+		Sync:    plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	clipRes := libraries.ResolveKindPresentations(libraries.KindPresentationInput{
+		Media:  clipDecl.Media,
+		Levels: []libraries.KindPresentationLevel{{Key: "clip", Playable: true}},
+	}, core.PresentationOverrides{})
+	clipLib, err := a.libraries.UpsertPluginLibrary(ctx, "demo.clips", "clip", libraries.PluginLibraryDecl{
+		Name:    "Studio Clips",
+		Present: clipRes.Effective,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &librariesConsole{app: a}
+	items, _, err := c.services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := items.UpsertKind(ctx, "demo.books", bookLib.ID, bookDecl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := items.UpsertKind(ctx, "demo.clips", clipLib.ID, clipDecl, false); err != nil {
+		t.Fatal(err)
+	}
+
+	h := c.handler()
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		var r *http.Request
+		if body != "" {
+			r = httptest.NewRequest(method, path, strings.NewReader(body))
+		} else {
+			r = httptest.NewRequest(method, path, nil)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	bookPath := "/" + strconv.FormatInt(int64(bookLib.ID), 10)
+	clipPath := "/" + strconv.FormatInt(int64(clipLib.ID), 10)
+
+	// GET returns resolved presentations showing Plex unavailable on Books.
+	w := call("GET", bookPath, "")
+	if w.Code != 200 {
+		t.Fatalf("GET book %d %s", w.Code, w.Body)
+	}
+	var dto libraryDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Presentations == nil || dto.Presentations.MediaClass != core.MediaClassBook {
+		t.Fatalf("book presentations = %+v", dto.Presentations)
+	}
+	var plexApp core.ResolvedAppPresentation
+	for _, ap := range dto.Presentations.Apps {
+		if ap.App == "plex" {
+			plexApp = ap
+		}
+	}
+	if plexApp.Available || !strings.Contains(plexApp.Reason, "book") {
+		t.Fatalf("book plex app = %+v, want unavailable with book reason", plexApp)
+	}
+
+	// Attempting to turn Plex ON for Books returns HTTP 400 with plain-language reason.
+	bad := call("PATCH", bookPath, `{"presentApps":{"plex":true}}`)
+	if bad.Code != 400 || !strings.Contains(bad.Body.String(), "Plex does not have a book library type.") {
+		t.Fatalf("enabling plex on book = %d %s, want 400", bad.Code, bad.Body)
+	}
+
+	// Turning MediaBrowser OFF saves sticky override and bumps Libraries freshness.
+	genBefore := a.browseFreshness().Libraries
+	w = call("PATCH", bookPath, `{"presentApps":{"mediaBrowser":false}}`)
+	if w.Code != 200 {
+		t.Fatalf("PATCH mediaBrowser off = %d %s", w.Code, w.Body)
+	}
+	if a.browseFreshness().Libraries <= genBefore {
+		t.Fatalf("Libraries freshness did not advance after PATCH presentApps")
+	}
+	stored, err := a.libraries.Get(ctx, bookLib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Present.MediaBrowser != nil || stored.Present.Vela == nil {
+		t.Fatalf("book stored present = %+v", stored.Present)
+	}
+	if stored.PresentOverrides.MediaBrowser == nil || *stored.PresentOverrides.MediaBrowser {
+		t.Fatalf("book stored overrides = %+v", stored.PresentOverrides)
+	}
+
+	// AdapterOnly toggles all apps off and back while keeping sticky mediaBrowser=false.
+	if w := call("PATCH", bookPath, `{"presentApps":{"adapterOnly":true}}`); w.Code != 200 {
+		t.Fatalf("PATCH adapterOnly true = %d %s", w.Code, w.Body)
+	}
+	stored, _ = a.libraries.Get(ctx, bookLib.ID)
+	if !stored.Present.AdapterOnly || stored.Present.Vela != nil {
+		t.Fatalf("adapterOnly true present = %+v", stored.Present)
+	}
+	if w := call("PATCH", bookPath, `{"presentApps":{"adapterOnly":false}}`); w.Code != 200 {
+		t.Fatalf("PATCH adapterOnly false = %d %s", w.Code, w.Body)
+	}
+	stored, _ = a.libraries.Get(ctx, bookLib.ID)
+	if stored.Present.AdapterOnly || stored.Present.Vela == nil || stored.Present.MediaBrowser != nil {
+		t.Fatalf("adapterOnly false present = %+v (want vela on, mediaBrowser still off)", stored.Present)
+	}
+
+	// Turning Plex OFF on a video plugin library persists sticky Plex=false override.
+	if w := call("PATCH", clipPath, `{"presentApps":{"plex":false}}`); w.Code != 200 {
+		t.Fatalf("PATCH clip plex off = %d %s", w.Code, w.Body)
+	}
+	storedClip, err := a.libraries.Get(ctx, clipLib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedClip.Present.Plex != nil || storedClip.PresentOverrides.Plex == nil || *storedClip.PresentOverrides.Plex {
+		t.Fatalf("clip library after plex off = present:%+v overrides:%+v", storedClip.Present, storedClip.PresentOverrides)
+	}
+
+	// Turning Plex OFF on a published catalogue library immediately removes it from Plex sections.
+	customLib, err := a.libraries.Create(ctx, "Studio Picks", core.TypeMovie, nil, "show", core.Presentations{
+		Plex: &core.PlexPresentation{Base: "movie"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	customPath := "/" + strconv.FormatInt(int64(customLib.ID), 10)
+	plexExp, err := a.newSurfaceExperience("plex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := plex.NewServer(plex.Deps{Host: frontend.Host{Experience: plexExp, Sessions: sessions.NewLocalRuntime(sessions.LocalRuntimeDeps{})}, DisableEnrichment: true})
+	defer srv.Close()
+
+	hasCustom := func() bool {
+		for _, s := range srv.LibrarySections() {
+			if s.ID == int(customLib.ID) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasCustom() {
+		t.Fatalf("custom library missing from Plex before toggle: %+v", srv.LibrarySections())
+	}
+	if w := call("PATCH", customPath, `{"presentApps":{"plex":false}}`); w.Code != 200 {
+		t.Fatalf("PATCH custom plex off = %d %s", w.Code, w.Body)
+	}
+	if hasCustom() {
+		t.Fatalf("custom library still in Plex after turning Plex switch off: %+v", srv.LibrarySections())
+	}
+}

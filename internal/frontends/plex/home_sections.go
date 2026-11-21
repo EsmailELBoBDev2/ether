@@ -15,6 +15,10 @@ func isVideoSection(sec Section) bool {
 	return sec.PluginID == "" && (sec.Type == frontend.TypeMovie || sec.Type == frontend.TypeShow)
 }
 
+func isPluginKindSection(sec Section) bool {
+	return sec.PluginID != ""
+}
+
 func isKindMusicSection(sec Section) bool {
 	return isKindSection(sec) && string(sec.Type) == plexBaseArtist
 }
@@ -42,7 +46,7 @@ func (s *Server) allowedContentSections(u *frontend.User, ids []int) []Section {
 		if seen[id] {
 			continue
 		}
-		if sec, ok := s.sectionByID(id); ok && (isVideoSection(sec) || isKindMusicSection(sec)) && s.canSeeSection(u, id) {
+		if sec, ok := s.sectionByID(id); ok && (isVideoSection(sec) || isKindSection(sec)) && s.canSeeSection(u, id) {
 			seen[id] = true
 			out = append(out, sec)
 		}
@@ -90,11 +94,16 @@ func sectionHubID(id string, sec Section) string {
 		return id
 	}
 	prefix := "movie."
-	if sec.Type == frontend.TypeShow {
+	switch string(sec.Type) {
+	case plexBaseShow:
 		prefix = "tv."
+	case plexBaseArtist:
+		prefix = "music."
+	case plexBasePhoto:
+		prefix = "photo."
 	}
 	out := id
-	if !strings.HasPrefix(out, "movie.") && !strings.HasPrefix(out, "tv.") {
+	if !strings.HasPrefix(out, "movie.") && !strings.HasPrefix(out, "tv.") && !strings.HasPrefix(out, "music.") && !strings.HasPrefix(out, "photo.") {
 		out = prefix + out
 	}
 	if isKindSection(sec) {
@@ -136,7 +145,7 @@ func (s *Server) candidateHubIDs(id string, sections []int) []string {
 			add(cur)
 		}
 	}
-	for _, prefix := range []string{"movie.", "tv."} {
+	for _, prefix := range []string{"movie.", "tv.", "music.", "photo."} {
 		if trimmed, ok := strings.CutPrefix(cur, prefix); ok {
 			add(trimmed)
 		}
@@ -226,6 +235,113 @@ func (s *Server) kindMusicArtistsHub(ctx context.Context, pr *Request, sec Secti
 	}, true
 }
 
+func (s *Server) kindSectionHubs(ctx context.Context, pr *Request, sec Section, visibleCount int) ([]model.Hub, map[string]frontend.Hub) {
+	exp := s.exp()
+	if exp == nil || visibleCount <= 0 {
+		return nil, nil
+	}
+	secCopy := sec
+	vis := s.sectionVisibility(sec)
+	id := sec.IDString()
+	served := map[string]frontend.Hub{}
+	var hubs []model.Hub
+
+	renderRow := func(rowID, title string, rawItems []frontend.Title, total int, keyOverride string) (model.Hub, frontend.Hub, bool) {
+		if len(rawItems) == 0 {
+			return model.Hub{}, frontend.Hub{}, false
+		}
+		items := rawItems
+		hasExtra := len(items) > visibleCount
+		if hasExtra {
+			items = items[:visibleCount]
+		}
+		byKey := make(map[string]*frontend.Title, len(items))
+		for i := range items {
+			byKey[items[i].Key.String()] = &items[i]
+		}
+		md := s.renderTitles(ctx, pr, items, renderOpts{media: true, storedOnly: true, vis: &vis, section: &secCopy})
+		if len(md) == 0 {
+			return model.Hub{}, frontend.Hub{}, false
+		}
+		keys := make([]string, 0, len(md))
+		for i := range md {
+			md[i].Type = kindTypeForBase(string(sec.Type), md[i].Type, byKey[md[i].RatingKey])
+			keys = append(keys, md[i].RatingKey)
+		}
+		hubID := sectionHubID(rowID, sec)
+		fh := frontend.Hub{
+			ID:       hubID,
+			Title:    title,
+			Type:     sec.Type,
+			Items:    rawItems,
+			Promoted: true,
+		}
+		s.rememberHub(ctx, pr, hubSpec{Hub: fh}, hubCtx{section: sec.ID})
+		key := keyOverride
+		if key == "" {
+			key = hubItemsKey(fh, hubCtx{section: sec.ID})
+		}
+		tot := max(total, len(rawItems))
+		if hasExtra && tot <= len(md) {
+			tot = len(md) + 1
+		}
+		ctxName := "hub." + string(sec.Type) + ".recentlyadded"
+		if rowID == "library" {
+			ctxName = "hub." + string(sec.Type) + ".library"
+		}
+		return model.Hub{
+			HubKey:        "/library/metadata/" + strings.Join(keys, ","),
+			Key:           key,
+			Title:         title,
+			Type:          string(sec.Type),
+			HubIdentifier: hubID,
+			Context:       ctxName,
+			Size:          len(md),
+			TotalSize:     model.Ptr(tot),
+			More:          hasExtra || tot > len(md),
+			Style:         "shelf",
+			Promoted:      model.Ptr(true),
+			Metadata:      md,
+		}, fh, true
+	}
+
+	if reader, ok := exp.(frontend.PluginLibraryRowsReader); ok {
+		rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), id)
+		if err != nil {
+			s.log.Warn("plugin section rows", "section", sec.ID, "err", err)
+		}
+		for _, row := range rows {
+			items := row.Items
+			if len(items) == 0 && len(row.Entries) > 0 {
+				for _, e := range row.Entries {
+					if e.Title != nil {
+						items = append(items, *e.Title)
+					}
+				}
+			}
+			if mh, fh, ok := renderRow(row.ID, row.Title, items, len(items), ""); ok {
+				hubs = append(hubs, mh)
+				served[mh.HubIdentifier] = fh
+			}
+		}
+	}
+
+	if len(hubs) == 0 {
+		page, err := exp.LibraryItems(ctx, pr.User, plexDevice(pr), id, frontend.ItemQuery{Limit: visibleCount + 1})
+		if err != nil {
+			s.log.Warn("plugin section hubs fallback", "section", sec.ID, "err", err)
+			return nil, nil
+		}
+		allKey := "/library/sections/" + id + "/all?type=" + strconv.Itoa(typeNumber(sec.Type))
+		title := "Recently Added in " + sec.Title
+		if mh, fh, ok := renderRow("recentlyadded", title, page.Items, page.Total, allKey); ok {
+			hubs = append(hubs, mh)
+			served[mh.HubIdentifier] = fh
+		}
+	}
+	return hubs, served
+}
+
 func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly bool) homeBuild {
 	batch := &shelfBatch{}
 	ctx := withStoredPolicy(context.WithValue(r.Context(), shelfBatchKey{}, batch))
@@ -244,10 +360,11 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		mc.Size = len(mc.Hub)
 		return homeBuild{mc: mc, section: sec.ID}
 	}
-	if sec.PluginID != "" && (sec.Type == frontend.TypeMovie || sec.Type == frontend.TypeShow) {
-		mc.Hub = s.pluginSectionHubs(ctx, pr, sec, visibleCount)
+	if isPluginKindSection(sec) {
+		hubs, served := s.kindSectionHubs(ctx, pr, sec, visibleCount)
+		mc.Hub = stableHomeHubs(hubs)
 		mc.Size = len(mc.Hub)
-		return homeBuild{mc: mc, section: sec.ID}
+		return homeBuild{mc: mc, served: served, section: sec.ID}
 	}
 	if !isVideoSection(sec) {
 		return homeBuild{mc: mc, section: sec.ID}
@@ -427,6 +544,19 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 			}
 			continue
 		}
+		if isPluginKindSection(sec) {
+			kindHubs, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
+			for _, mh := range kindHubs {
+				if selected != nil && !selected[mh.HubIdentifier] {
+					continue
+				}
+				if src, ok := kindServed[mh.HubIdentifier]; ok {
+					served[mh.HubIdentifier] = src
+				}
+				allRows = append(allRows, mh)
+			}
+			continue
+		}
 		secCopy := sec
 		renderHC := hubCtx{visible: count, renderSec: &secCopy}
 		pc := s.hubContext(pr, sec.ID)
@@ -549,64 +679,4 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 		buildSec = allowedSecs[0].ID
 	}
 	return homeBuild{mc: mc, served: served, section: buildSec, provisional: provisional}
-}
-
-// pluginSectionHubs renders a plugin library's own Recommended shelves, the
-// rows every other surface shows for it. Built-in recommendations rank the
-// whole movie or show catalogue and must not appear in a plugin library.
-func (s *Server) pluginSectionHubs(ctx context.Context, pr *Request, sec Section, visibleCount int) []model.Hub {
-	reader, ok := s.exp().(frontend.PluginLibraryRowsReader)
-	if !ok || visibleCount <= 0 {
-		return nil
-	}
-	rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), sec.IDString())
-	if err != nil {
-		s.log.Warn("plugin section hubs", "section", sec.ID, "err", err)
-		return nil
-	}
-	secCopy := sec
-	vis := s.sectionVisibility(sec)
-	id := sec.IDString()
-	var hubs []model.Hub
-	for n, row := range rows {
-		items := row.Items
-		more := row.More
-		if len(items) > visibleCount {
-			items, more = items[:visibleCount], true
-		}
-		if len(items) == 0 {
-			continue
-		}
-		byKey := make(map[string]*frontend.Title, len(items))
-		for i := range items {
-			byKey[items[i].Key.String()] = &items[i]
-		}
-		md := s.renderTitles(ctx, pr, items, renderOpts{media: true, storedOnly: true, vis: &vis, section: &secCopy})
-		if len(md) == 0 {
-			continue
-		}
-		keys := make([]string, 0, len(md))
-		for i := range md {
-			md[i].Type = kindTypeForBase(string(sec.Type), md[i].Type, byKey[md[i].RatingKey])
-			keys = append(keys, md[i].RatingKey)
-		}
-		rowID := row.ID
-		if rowID == "" {
-			rowID = strconv.Itoa(n)
-		}
-		hubs = append(hubs, model.Hub{
-			HubKey:        "/library/metadata/" + strings.Join(keys, ","),
-			Key:           "/library/sections/" + id + "/all",
-			Title:         row.Title,
-			Type:          md[0].Type,
-			HubIdentifier: "plugin." + id + "." + rowID,
-			Context:       "hub.plugin.library",
-			Size:          len(md),
-			More:          more,
-			Style:         "shelf",
-			Promoted:      model.Ptr(true),
-			Metadata:      md,
-		})
-	}
-	return hubs
 }

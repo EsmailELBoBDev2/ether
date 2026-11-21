@@ -12,18 +12,18 @@ import (
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
-const libraryCols = `sources, id, key, name, source, media_type, plugin_id, kind_key, collection_id, rules, visibility_default, tabs, card_shape, quality_profile, present, sort, hidden, created_at, updated_at`
+const libraryCols = `sources, id, key, name, source, media_type, plugin_id, kind_key, collection_id, rules, visibility_default, tabs, card_shape, quality_profile, present, present_overrides, sort, hidden, created_at, updated_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanLibrary(sc scanner) (core.Library, error) {
 	var lib core.Library
 	var id, sort, created, updated int64
-	var source, mediaType, rulesJSON, visDefault, tabsJSON, presentJSON string
+	var source, mediaType, rulesJSON, visDefault, tabsJSON, presentJSON, overridesJSON string
 	var hidden int
 	var sourcesJSON string
 	if err := sc.Scan(&sourcesJSON, &id, &lib.Key, &lib.Name, &source, &mediaType, &lib.PluginID, &lib.KindKey,
-		&lib.CollectionID, &rulesJSON, &visDefault, &tabsJSON, &lib.CardShape, &lib.QualityProfile, &presentJSON, &sort, &hidden, &created, &updated); err != nil {
+		&lib.CollectionID, &rulesJSON, &visDefault, &tabsJSON, &lib.CardShape, &lib.QualityProfile, &presentJSON, &overridesJSON, &sort, &hidden, &created, &updated); err != nil {
 		return core.Library{}, err
 	}
 	lib.ID = core.LibraryID(id)
@@ -67,6 +67,11 @@ func scanLibrary(sc scanner) (core.Library, error) {
 			return core.Library{}, err
 		}
 	}
+	if overridesJSON != "" && overridesJSON != "{}" {
+		if err := json.Unmarshal([]byte(overridesJSON), &lib.PresentOverrides); err != nil {
+			return core.Library{}, err
+		}
+	}
 	if err := json.Unmarshal([]byte(sourcesJSON), &lib.Sources); err != nil {
 		return core.Library{}, err
 	}
@@ -99,15 +104,23 @@ func (s *Service) insert(ctx context.Context, tx *sql.Tx, lib core.Library) (cor
 	if err != nil {
 		return core.Library{}, err
 	}
+	overridesJSON := "{}"
+	if !lib.PresentOverrides.IsEmpty() {
+		b, err := json.Marshal(lib.PresentOverrides)
+		if err != nil {
+			return core.Library{}, err
+		}
+		overridesJSON = string(b)
+	}
 	hidden := 0
 	if lib.Hidden {
 		hidden = 1
 	}
 	sourceData, _ := json.Marshal(defaultSources(lib))
 	lib.Sources = defaultSources(lib)
-	_, err = tx.ExecContext(ctx, `INSERT INTO libraries(`+libraryCols+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO libraries(`+libraryCols+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(sourceData), int64(lib.ID), lib.Key, lib.Name, string(lib.Source), string(lib.MediaType), lib.PluginID, lib.KindKey,
-		lib.CollectionID, rulesJSON, lib.VisibilityDefault, tabsJSON, lib.CardShape, lib.QualityProfile, string(presentJSON), lib.Sort, hidden, lib.CreatedAt.Unix(), lib.UpdatedAt.Unix())
+		lib.CollectionID, rulesJSON, lib.VisibilityDefault, tabsJSON, lib.CardShape, lib.QualityProfile, string(presentJSON), overridesJSON, lib.Sort, hidden, lib.CreatedAt.Unix(), lib.UpdatedAt.Unix())
 	if err != nil {
 		return core.Library{}, err
 	}

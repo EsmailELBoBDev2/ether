@@ -1018,32 +1018,53 @@ Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
 is the natural unit); containers themselves carry no progress.
 
-## Publishing (`present`)
+## Publishing (`media`, `levels[].role`, and `present`)
 
-Each library publishes per protocol; the owner can override your
-defaults per library afterwards.
+A kind's media class and level roles are **facts about the kind**:
 
-- `vela: {type: "movies"|"shows"}` — Ether's own app (`shows` needs at
-  least two levels).
-- `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
+- `mediaKinds[].media`: `"video" | "music" | "audiobook" | "book" | "podcast" | "photo"`
+- `mediaKinds[].levels[].role`: `"item" | "artist" | "album" | "track" | "series" | "book" | "audiobook" | "part" | "show" | "episode" | "collection"`
+
+Ether derives a fitting presentation for every app from `(media, levels[].role, levels)`
+using one shared inference table. When `media` or `role` is omitted, Ether infers them
+from declared `present.mediaBrowser` hints (`MusicArtist→artist`, `MusicAlbum→album`,
+`Audio→track`, `AudioBook→audiobook`, `Book→book`, `Photo→photo`), then from `present.plex.base`,
+then from the level keys and hierarchy depth (one playable level → movies; multi-level → shows;
+album/track → music; photo → photos; book/audiobook → books/audiobooks).
+
+An optional `present` block overrides **how** specific apps see the library (types,
+base, `itemTypes`) and may suggest `default: false` to start an app switched off. The
+manifest never owns **whether** an app publishes a library: owner switches in the
+Console's **Show in apps** section are sticky across plugin updates and restarts. When
+a plugin update changes a kind's `media`, `levels[].role`, or `present`, Ether updates
+each app's presentation shape (such as `itemTypes` or `plex.base`) without turning on a
+library the owner switched off or turning off one the owner switched on. Where an app
+has no fitting library type (for example books or audiobooks on Plex, or non-video
+kinds on Stremio, Xtream, and Silo), that app stays off with a plain-language reason
+unless the plugin explicitly declares a custom mapping.
+
+- `vela: {type?: "movies"|"shows", default?: boolean}` — Ether's own app (`shows` needs at
+  least two levels). Fits every media class.
+- `plex: {base?: "movie"|"show"|"artist"|"photo", default?: boolean}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
   A single-level `artist` kind is a flat album list in a music
   section: its items present as albums, never as artists (name the
-  level `artist` or `track` to present as that instead).
-- `mediaBrowser: {collectionType, itemTypes}` — Jellyfin/Emby.
+  level `artist` or `track` to present as that instead). Fits video,
+  music, and photo kinds; book, audiobook, and podcast kinds stay off
+  unless explicitly declared.
+- `mediaBrowser: {collectionType?, itemTypes?, default?}` — Jellyfin/Emby.
   `collectionType` is one of `movies, tvshows, music, audiobooks,
   books, photos, homevideos`. `itemTypes` maps each level key to
   one of `Movie, Series, Season, Episode, MusicArtist, MusicAlbum,
   Audio, AudioBook, Book, PhotoAlbum, Photo` (anything else is a
-  manifest error). The declared type drives the item's `Type`, its
+  manifest error). Any unmapped level is inferred from `media`,
+  `levels[].role`, and hierarchy shape. The resolved type drives the item's `Type`, its
   `MediaType` (`Audio` for `Audio`/`AudioBook`, `Book` for `Book`,
   `Photo` for `Photo`, `Video` for `Movie`/`Episode`), `IsFolder`
   (`MusicArtist`/`MusicAlbum`/`PhotoAlbum`/`Series`/`Season` hold
   children), parent links (a track's `Album`/`AlbumId` name its
-  album) and `IncludeItemTypes` filtering. Unmapped levels keep
-  the video projection (`Movie`/`Series`/`Season`/`Episode`), so
-  declare every level of a music, book or audiobook kind. Audio
+  album) and `IncludeItemTypes` filtering. Audio
   items serve through the same media routes; their MediaSources
   carry only the streams the source actually has.
   A single-level kind whose one playable level is typed
@@ -1054,13 +1075,9 @@ defaults per library afterwards.
   which is what Jellyfin's album play button and Songs tab ask
   for. Plex gets the same shape as one synthetic track under the
   album.
-
-When a plugin update changes a kind's `present`, the new
-presentation is re-applied to the kind's existing library (owner
-edits to where a library appears are kept when the declaration
-did not change). Level and field changes follow the upgrade
-rules and reindex only when the indexed shape changed.
-- `stremio: {type}`, `xtream: {category}`, `silo: {type}`.
+- `stremio: {type?, default?}`, `xtream: {category?, default?}`, `silo: {type?, default?}` —
+  inferred for video kinds; stay off for music, books, audiobooks, podcasts, and photos
+  unless explicitly declared.
 - `adapterOnly: true` — no generic mapping fits; ship a
   `frontend_adapter` and serve the protocol yourself. Embed
   `/ether/v1/kind-media/{itemId}` stream URLs for bytes (the SDKs'
@@ -2776,12 +2793,19 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 	m.jobs.Store(key, j)
 	go func() {
 		runtime.LockOSThread() // Do not unlock: this lowered-priority thread is discarded on return.
-		lowerJobPriority()
+		if !isResolver {
+			// A resolver job prepares playback a viewer is waiting on:
+			// it keeps normal priority and never waits for the server
+			// to go idle (active streams would otherwise stall it).
+			lowerJobPriority()
+		}
 		defer cancel()
 		defer close(j.done)
 		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
-			if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
-				return Response{}, err
+			if !isResolver {
+				if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
+					return Response{}, err
+				}
 			}
 			payload := map[string]json.RawMessage{}
 			_ = json.Unmarshal(initial, &payload)
@@ -2792,7 +2816,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				payload["continuation"] = token
 			}
 			encoded, _ := json.Marshal(payload)
-			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded})
+			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
 		})
 		if err != nil {
 			state := "error"
@@ -4010,6 +4034,7 @@ type CommandMeta struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) | ^[a-z][a-z0-9-]{0,31}$, unique in the plugin |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `media` | `string` | may be omitted (see validation for conditions) | video\|music\|audiobook\|book\|podcast\|photo |
 | `library` | `KindLibraryDecl` | may be omitted (see validation for conditions) |  |
 | `levels` | `[]KindLevel` | emitted (validation may require a value) | 1..5, first is the root |
 | `fields` | `[]KindField` | may be omitted (see validation for conditions) |  |
@@ -4028,6 +4053,7 @@ type CommandMeta struct {
 type MediaKindMeta struct {
 	Key     string             `json:"key"` // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
 	Label   string             `json:"label"`
+	Media   string             `json:"media,omitempty"` // video|music|audiobook|book|podcast|photo
 	Library KindLibraryDecl    `json:"library,omitzero"`
 	Levels  []KindLevel        `json:"levels"`           // 1..5, first is the root
 	Fields  []KindField        `json:"fields,omitempty"` //
@@ -4472,6 +4498,7 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `role` | `string` | may be omitted (see validation for conditions) | item\|artist\|album\|track\|series\|book\|audiobook\|part\|show\|episode\|collection |
 | `playable` | `bool` | may be omitted (see validation for conditions) | leaves the resolver can open; at least one level |
 | `container` | `bool` | may be omitted (see validation for conditions) | item is a container other leaves are extracted from |
 
@@ -4483,6 +4510,7 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
+	Role      string `json:"role,omitempty"`      // item|artist|album|track|series|book|audiobook|part|show|episode|collection
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
 }
@@ -4814,6 +4842,10 @@ type Request struct {
 	ContentType string `json:"contentType,omitempty"`
 	// Locale is the console locale for calls that return copy.
 	Locale string `json:"locale,omitempty"`
+	// Foreground marks an /ether/job/ call that a viewer is waiting on
+	// (playback resolution). It never yields to background throttling.
+	// Host-side only; never sent to the plugin.
+	Foreground bool `json:"-"`
 }
 ``````
 
@@ -12309,7 +12341,7 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 		headers = cloneHeaders(headers)
 		headers["X-Ether-Locale"] = req.Locale
 	}
-	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType})
+	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground})
 	if err != nil {
 		return Response{}, err
 	}
@@ -18372,6 +18404,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		add(base+".key", "must be lower case letters, digits and dashes, at most 32 characters")
 	}
 	label(base+".label", k.Label, 60)
+	if k.Media != "" && !core.ValidMediaClass(k.Media) {
+		add(base+".media", "must be video, music, audiobook, book, podcast or photo")
+	}
 	if !k.Library.IsZero() {
 		label(base+".library.name", k.Library.Name, 60)
 		if unsafePath(k.Library.Icon) {
@@ -18418,6 +18453,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		levelKeys[lv.Key] = true
 		label(lbase+".label", lv.Label, 40)
+		if lv.Role != "" && !core.ValidMediaRole(lv.Role) {
+			add(lbase+".role", "must be item, artist, album, track, series, book, audiobook, part, show, episode or collection")
+		}
 		if lv.Playable {
 			playable = true
 		}
@@ -18786,14 +18824,17 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		return
 	}
 	if protocols == 0 {
-		if k.HasLibrary() {
-			add(base, "declare at least one protocol presentation, or adapterOnly with a frontend adapter")
-		}
+		// Present is optional: Ether infers per-app presentations from the
+		// kind's media class, level roles, and hierarchy shape.
 		return
 	}
 	levels := len(k.Levels)
 	if p.Vela != nil {
 		switch p.Vela.Type {
+		case "":
+			if p.Vela.Default == nil {
+				add(base+".vela.type", "must be movies or shows")
+			}
 		case "movies":
 		case "shows":
 			if levels < 2 {
@@ -18805,6 +18846,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
+		case "":
+			if p.Plex.Default == nil {
+				add(base+".plex.base", "must be movie, show, artist or photo")
+			}
 		case "movie", "photo", "artist":
 			// A single-level artist kind is a flat album list: its items
 			// present as albums (a level named artist/track presents as
@@ -18818,7 +18863,11 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		}
 	}
 	if p.MediaBrowser != nil {
-		if !mediaBrowserCollectionTypes[p.MediaBrowser.CollectionType] {
+		if p.MediaBrowser.CollectionType == "" {
+			if p.MediaBrowser.Default == nil && len(p.MediaBrowser.ItemTypes) == 0 {
+				add(base+".mediaBrowser.collectionType", "must be movies, tvshows, music, audiobooks, books, photos or homevideos")
+			}
+		} else if !mediaBrowserCollectionTypes[p.MediaBrowser.CollectionType] {
 			add(base+".mediaBrowser.collectionType", "must be movies, tvshows, music, audiobooks, books, photos or homevideos")
 		}
 		for level, itemType := range p.MediaBrowser.ItemTypes {
@@ -18832,6 +18881,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Stremio != nil {
 		switch p.Stremio.Type {
+		case "":
+			if p.Stremio.Default == nil {
+				add(base+".stremio.type", "must be movie, series, channel or tv")
+			}
 		case "movie", "channel", "tv":
 		case "series":
 			if levels < 2 {
@@ -18843,6 +18896,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Xtream != nil {
 		switch p.Xtream.Category {
+		case "":
+			if p.Xtream.Default == nil {
+				add(base+".xtream.category", "must be movie, series or live")
+			}
 		case "movie", "live":
 		case "series":
 			if levels < 2 {
@@ -18852,8 +18909,14 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 			add(base+".xtream.category", "must be movie, series or live")
 		}
 	}
-	if p.Silo != nil && !mediaBrowserItemTypes[p.Silo.Type] {
-		add(base+".silo.type", "must be a MediaBrowser item type such as Movie or Series")
+	if p.Silo != nil {
+		if p.Silo.Type == "" {
+			if p.Silo.Default == nil {
+				add(base+".silo.type", "must be movies, tvshows, or a MediaBrowser item type such as Movie or Series")
+			}
+		} else if !mediaBrowserItemTypes[p.Silo.Type] && !mediaBrowserCollectionTypes[p.Silo.Type] {
+			add(base+".silo.type", "must be movies, tvshows, or a MediaBrowser item type such as Movie or Series")
+		}
 	}
 }
 ``````
@@ -26092,6 +26155,9 @@ type Request struct {
 	// body arrives only in BodyBase64.
 	BodyBase64  string `json:"bodyBase64,omitempty"`
 	ContentType string `json:"contentType,omitempty"`
+	// Foreground keeps an /ether/job/ call off the background throttle
+	// because a viewer is waiting on it. Host-side only.
+	Foreground bool `json:"-"`
 }
 ``````
 
@@ -27170,7 +27236,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 		}
 	}
 	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
-		background: strings.HasPrefix(req.Path, "/ether/job/"),
+		background: strings.HasPrefix(req.Path, "/ether/job/") && !req.Foreground,
 		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}
 	in, err := p.svc.get(callCtx)
 	if err != nil {
@@ -27345,6 +27411,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].levels[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].playable` | `boolean` | false | {} |
+| `ether.contributes.mediaKinds[].levels[].role` | `any` | false | {"enum":["item","artist","album","track","series","book","audiobook","part","show","episode","collection"]} |
 | `ether.contributes.mediaKinds[].library` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].library.card` | `any` | false | {"enum":["poster","landscape","square"]} |
 | `ether.contributes.mediaKinds[].library.dateDisplay` | `any` | false | {"enum":["year","date"]} |
@@ -27400,21 +27467,28 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
+| `ether.contributes.mediaKinds[].media` | `any` | false | {"enum":["video","music","audiobook","book","podcast","photo"]} |
 | `ether.contributes.mediaKinds[].present` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.adapterOnly` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.mediaBrowser` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.mediaBrowser.collectionType` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].present.mediaBrowser.default` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.mediaBrowser.itemTypes` | `object` | false | {"additionalProperties":{"type":"string"}} |
 | `ether.contributes.mediaKinds[].present.plex` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.plex.base` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].present.plex.default` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.silo` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].present.silo.default` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.silo.type` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].present.stremio` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].present.stremio.default` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.stremio.type` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].present.vela` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].present.vela.default` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.vela.type` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].present.xtream` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.xtream.category` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].present.xtream.default` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].sync` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].sync.mode` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].sync.refresh` | `string` | false | {} |
@@ -28207,6 +28281,21 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         },
                         "playable": {
                           "type": "boolean"
+                        },
+                        "role": {
+                          "enum": [
+                            "item",
+                            "artist",
+                            "album",
+                            "track",
+                            "series",
+                            "book",
+                            "audiobook",
+                            "part",
+                            "show",
+                            "episode",
+                            "collection"
+                          ]
                         }
                       },
                       "type": "object"
@@ -28472,6 +28561,16 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                     },
                     "type": "object"
                   },
+                  "media": {
+                    "enum": [
+                      "video",
+                      "music",
+                      "audiobook",
+                      "book",
+                      "podcast",
+                      "photo"
+                    ]
+                  },
                   "present": {
                     "properties": {
                       "adapterOnly": {
@@ -28481,6 +28580,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         "properties": {
                           "collectionType": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           },
                           "itemTypes": {
                             "additionalProperties": {
@@ -28495,12 +28597,18 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         "properties": {
                           "base": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           }
                         },
                         "type": "object"
                       },
                       "silo": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -28509,6 +28617,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                       },
                       "stremio": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -28517,6 +28628,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                       },
                       "vela": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -28527,6 +28641,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         "properties": {
                           "category": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           }
                         },
                         "type": "object"
@@ -45892,62 +46009,74 @@ type BadgeUsage struct {
 |---|---|---|---|
 | `adapterOnly` | `bool` | may be omitted (see validation for conditions) |  |
 | `vela` | `*struct {
-		Type string `json:"type"` // movies|shows
+		Type    string `json:"type,omitempty"`    // movies|shows
+		Default *bool  `json:"default,omitempty"` // optional default on/off suggestion
 	}` | may be omitted (see validation for conditions) |  |
 | `plex` | `*struct {
-		Base string `json:"base"` // movie|show|artist|photo
+		Base    string `json:"base,omitempty"`    // movie|show|artist|photo
+		Default *bool  `json:"default,omitempty"` // optional default on/off suggestion
 	}` | may be omitted (see validation for conditions) |  |
 | `mediaBrowser` | `*struct {
-		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		CollectionType string `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
 		// ItemTypes maps each level key to its Jellyfin/Emby item type:
 		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
-		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
-		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
-		// IncludeItemTypes filtering; unmapped levels keep the video
-		// projection, so declare every level of a music/book kind.
+		// AudioBook|Book|PhotoAlbum|Photo. Unmapped levels are inferred from
+		// the kind's media class, level roles, and hierarchy shape.
 		ItemTypes map[string]string `json:"itemTypes,omitempty"`
+		Default   *bool             `json:"default,omitempty"` // optional default on/off suggestion
 	}` | may be omitted (see validation for conditions) |  |
 | `stremio` | `*struct {
-		Type string `json:"type"`
+		Type    string `json:"type,omitempty"`
+		Default *bool  `json:"default,omitempty"`
 	}` | may be omitted (see validation for conditions) |  |
 | `xtream` | `*struct {
-		Category string `json:"category"`
+		Category string `json:"category,omitempty"`
+		Default  *bool  `json:"default,omitempty"`
 	}` | may be omitted (see validation for conditions) |  |
 | `silo` | `*struct {
-		Type string `json:"type"`
+		Type    string `json:"type,omitempty"`
+		Default *bool  `json:"default,omitempty"`
 	}` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#Presentations
 
 ``````
-// Presentations declares how a library is published per protocol.
+// Presentations declares how a library is seen per protocol. Each app block
+// describes how that app renders the library (never whether it is published,
+// though Default may suggest starting off for an app). When an app block is
+// omitted, Ether infers a fitting presentation from the kind's media class,
+// level roles, and hierarchy shape.
 type Presentations struct {
 	AdapterOnly bool `json:"adapterOnly,omitempty"`
 	Vela        *struct {
-		Type string `json:"type"` // movies|shows
+		Type    string `json:"type,omitempty"`    // movies|shows
+		Default *bool  `json:"default,omitempty"` // optional default on/off suggestion
 	} `json:"vela,omitempty"`
 	Plex *struct {
-		Base string `json:"base"` // movie|show|artist|photo
+		Base    string `json:"base,omitempty"`    // movie|show|artist|photo
+		Default *bool  `json:"default,omitempty"` // optional default on/off suggestion
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {
-		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		CollectionType string `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
 		// ItemTypes maps each level key to its Jellyfin/Emby item type:
 		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
-		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
-		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
-		// IncludeItemTypes filtering; unmapped levels keep the video
-		// projection, so declare every level of a music/book kind.
+		// AudioBook|Book|PhotoAlbum|Photo. Unmapped levels are inferred from
+		// the kind's media class, level roles, and hierarchy shape.
 		ItemTypes map[string]string `json:"itemTypes,omitempty"`
+		Default   *bool             `json:"default,omitempty"` // optional default on/off suggestion
 	} `json:"mediaBrowser,omitempty"`
 	Stremio *struct {
-		Type string `json:"type"`
+		Type    string `json:"type,omitempty"`
+		Default *bool  `json:"default,omitempty"`
 	} `json:"stremio,omitempty"`
 	Xtream *struct {
-		Category string `json:"category"`
+		Category string `json:"category,omitempty"`
+		Default  *bool  `json:"default,omitempty"`
 	} `json:"xtream,omitempty"`
 	Silo *struct {
-		Type string `json:"type"`
+		Type    string `json:"type,omitempty"`
+		Default *bool  `json:"default,omitempty"`
 	} `json:"silo,omitempty"`
 }
 ``````
@@ -45958,11 +46087,12 @@ type Presentations struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `media` | `string` | may be omitted (see validation for conditions) | video\|music\|audiobook\|book\|podcast\|photo |
 | `library` | `KindLibraryDecl` | emitted (validation may require a value) |  |
 | `levels` | `[]KindLevel` | emitted (validation may require a value) |  |
 | `fields` | `[]KindField` | may be omitted (see validation for conditions) |  |
 | `art` | `[]KindArt` | may be omitted (see validation for conditions) |  |
-| `present` | `Presentations` | emitted (validation may require a value) |  |
+| `present` | `Presentations` | may be omitted (see validation for conditions) |  |
 | `browse` | `KindBrowseDecl` | emitted (validation may require a value) |  |
 | `sync` | `KindSyncDecl` | emitted (validation may require a value) |  |
 | `cache` | `*KindCacheDecl` | may be omitted (see validation for conditions) |  |
@@ -45976,11 +46106,12 @@ type Presentations struct {
 type MediaKindMeta struct {
 	Key     string          `json:"key"`
 	Label   string          `json:"label"`
+	Media   string          `json:"media,omitempty"` // video|music|audiobook|book|podcast|photo
 	Library KindLibraryDecl `json:"library"`
 	Levels  []KindLevel     `json:"levels"`
 	Fields  []KindField     `json:"fields,omitempty"`
 	Art     []KindArt       `json:"art,omitempty"`
-	Present Presentations   `json:"present"`
+	Present Presentations   `json:"present,omitempty"`
 	Browse  KindBrowseDecl  `json:"browse"`
 	Sync    KindSyncDecl    `json:"sync"`
 	Cache   *KindCacheDecl  `json:"cache,omitempty"`
@@ -46147,6 +46278,7 @@ type KindLibraryShelf struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `role` | `string` | may be omitted (see validation for conditions) | item\|artist\|album\|track\|series\|book\|audiobook\|part\|show\|episode\|collection |
 | `playable` | `bool` | may be omitted (see validation for conditions) |  |
 | `container` | `bool` | may be omitted (see validation for conditions) |  |
 
@@ -46158,6 +46290,7 @@ type KindLibraryShelf struct {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
+	Role      string `json:"role,omitempty"` // item|artist|album|track|series|book|audiobook|part|show|episode|collection
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
 }
@@ -56873,31 +57006,54 @@ export interface Contributes {
 }
 
 /** A Jellyfin/Emby item type a level can present as. */
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
 export type MediaBrowserItemType =
   | "Movie" | "Series" | "Season" | "Episode"
   | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
   | "Book" | "PhotoAlbum" | "Photo";
 
-/** How a library is published per protocol (Ether v0.3.8 content kinds). */
+/**
+ * How a library is seen per protocol. Each app block overrides how that app
+ * presents the library and may suggest `default: false` to start off. Omitted
+ * apps are inferred by Ether from `media`, `levels[].role`, and level shape.
+ */
 export interface Presentations {
   adapterOnly?: boolean;
-  vela?: { type: "movies" | "shows" };
-  plex?: { base: "movie" | "show" | "artist" | "photo" };
+  vela?: { type?: "movies" | "shows"; default?: boolean };
+  plex?: { base?: "movie" | "show" | "artist" | "photo"; default?: boolean };
   /**
-   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; the
-   * declared type drives the item's Type, MediaType (Audio/Book/Photo/
-   * Video), IsFolder and IncludeItemTypes filtering. Unmapped levels keep
-   * the video projection, so declare every level of a music/book kind.
+   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; any
+   * unmapped level is inferred from the kind's media class, level roles, and
+   * hierarchy shape.
    */
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, MediaBrowserItemType> };
-  stremio?: { type: "movie" | "series" | "channel" | "tv" };
-  xtream?: { category: string };
-  silo?: { type: string };
+  mediaBrowser?: {
+    collectionType?: string;
+    itemTypes?: Record<string, MediaBrowserItemType>;
+    default?: boolean;
+  };
+  stremio?: { type?: "movie" | "series" | "channel" | "tv"; default?: boolean };
+  xtream?: { category?: string; default?: boolean };
+  silo?: { type?: string; default?: boolean };
 }
 
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -56991,11 +57147,12 @@ export interface KindBrowseExpand {
 export interface MediaKindMeta {
   key: string;
   label: string;
+  media?: MediaClass;
   library: KindLibraryDecl;
   levels: KindLevel[];
   fields?: KindField[];
   art?: KindArt[];
-  present: Presentations;
+  present?: Presentations;
   browse: {
     sorts?: string[];
     facets?: string[];

@@ -70,9 +70,7 @@ func TestPluginLiveServiceCacheThumbsResolveAndConsole(t *testing.T) {
 	lib, err := a.libraries.UpsertPluginLibrary(ctx, "esports", "matches", libraries.PluginLibraryDecl{
 		Name: "Esports",
 		Present: core.Presentations{
-			Vela: &struct {
-				Type string `json:"type"`
-			}{Type: "movies"},
+			Vela: &core.VelaPresentation{Type: "movies"},
 		},
 	})
 	if err != nil {
@@ -242,9 +240,7 @@ func TestPluginLiveDirectStreamReResolvePlumbing(t *testing.T) {
 	lib, err := a.libraries.UpsertPluginLibrary(ctx, "directory", "live", libraries.PluginLibraryDecl{
 		Name: "Live Directory",
 		Present: core.Presentations{
-			Vela: &struct {
-				Type string `json:"type"`
-			}{Type: "movies"},
+			Vela: &core.VelaPresentation{Type: "movies"},
 		},
 	})
 	if err != nil {

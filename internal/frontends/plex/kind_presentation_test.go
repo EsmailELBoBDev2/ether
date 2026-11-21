@@ -495,9 +495,7 @@ func TestIssue558PluginMusicSectionHubsAndArtistBrowse(t *testing.T) {
 			PluginID:  "subsonic",
 			KindKey:   "artists",
 			MediaType: core.TypeShow,
-			Present: core.Presentations{Plex: &struct {
-				Base string `json:"base"`
-			}{Base: plexBaseArtist}},
+			Present:   core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseArtist}},
 		},
 		artists: []core.Title{artist1, artist2},
 		albums:  []core.Title{album1},
@@ -736,9 +734,7 @@ func TestCustomLibrarySectionBrowseSortAndFilter(t *testing.T) {
 			PluginID:  "subsonic",
 			KindKey:   "artists",
 			MediaType: core.TypeShow,
-			Present: core.Presentations{Plex: &struct {
-				Base string `json:"base"`
-			}{Base: plexBaseArtist}},
+			Present:   core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseArtist}},
 		},
 		extra: []core.Library{{
 			ID:                4,
@@ -753,9 +749,7 @@ func TestCustomLibrarySectionBrowseSortAndFilter(t *testing.T) {
 				Match:     "all",
 				Rules:     core.LibraryPredicateConditions(core.Filter{YearFrom: 2000}),
 			}},
-			Present: core.Presentations{Plex: &struct {
-				Base string `json:"base"`
-			}{Base: plexBaseMovie}},
+			Present: core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseMovie}},
 		}},
 		artists:               []core.Title{artist1, artist2},
 		rejectUndeclaredQuery: true,
@@ -823,5 +817,248 @@ func TestCustomLibrarySectionBrowseSortAndFilter(t *testing.T) {
 		if !slices.Equal(got, tc.want) {
 			t.Fatalf("%s = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+type kindVideoHubExperience struct {
+	frontend.Experience
+	withRows bool
+}
+
+func (e *kindVideoHubExperience) PublishedViews(context.Context) ([]frontend.View, error) {
+	return []frontend.View{
+		{ID: "1", LibraryID: 1, Name: "Movies", Type: core.TypeMovie, Native: plexBaseMovie},
+		{ID: "7", LibraryID: 7, Name: "Field Recordings", Type: core.TypeShow, Virtual: true, KindKey: "recordings", PluginID: "fieldrec", Native: plexBaseArtist},
+		{ID: "8", LibraryID: 8, Name: "Snapshots", Type: core.TypeShow, Virtual: true, KindKey: "snapshots", PluginID: "fieldrec", Native: plexBasePhoto},
+		{ID: "9", LibraryID: 9, Name: "Studio Clips", Type: core.TypeMovie, Virtual: true, KindKey: "clips", PluginID: "studio", Native: plexBaseMovie},
+	}, nil
+}
+
+func kindClipItems() []core.Title {
+	return []core.Title{
+		{Key: core.PluginKey(901), Type: core.TypeMovie, Title: "Opening Cut", Year: 2025, KindLevel: "clip", LibraryID: 9},
+		{Key: core.PluginKey(902), Type: core.TypeMovie, Title: "Behind The Lens", Year: 2025, KindLevel: "clip", LibraryID: 9},
+	}
+}
+
+func (e *kindVideoHubExperience) LibraryItems(_ context.Context, _ *frontend.Viewer, _ frontend.Device, viewID string, _ frontend.ItemQuery) (core.Page, error) {
+	if viewID == "9" {
+		items := kindClipItems()
+		return core.Page{Items: items, Total: len(items)}, nil
+	}
+	return core.Page{}, nil
+}
+
+type kindVideoHubRowsExperience struct {
+	*kindVideoHubExperience
+}
+
+func (e *kindVideoHubRowsExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+	if viewID != "9" {
+		return nil, nil
+	}
+	return []frontend.Row{
+		{ID: "studio.featured", Title: "Featured Clips", Items: kindClipItems()},
+		{ID: "studio.recent", Title: "Recently Added Clips", Items: kindClipItems()[:1]},
+	}, nil
+}
+
+func TestKindVideoHubsAndContinuation(t *testing.T) {
+	f := newFixture()
+	defer f.srv.Close()
+	directExp := experience.NewDirectService(experience.ServiceDeps{
+		Catalog:   f.catalog,
+		State:     f.state,
+		Playlists: f.pls,
+	})
+	base := &kindVideoHubExperience{Experience: directExp, withRows: true}
+	srv := newTestServer(testServerDeps{
+		Catalog:    f.catalog,
+		State:      f.state,
+		Experience: &kindVideoHubRowsExperience{base},
+	})
+
+	// 1. /hubs/sections/9 renders the plugin video shelves.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/hubs/sections/9?count=12", nil)
+	req.Header.Set("Accept", "application/json")
+	req = req.WithContext(withRequest(req.Context(), &Request{User: &ownerUser, Format: model.JSON}))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("section", "9")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	srv.handleSectionHubs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/hubs/sections/9 status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var secOut struct {
+		MediaContainer struct {
+			Hub []struct {
+				Title         string `json:"title"`
+				HubIdentifier string `json:"hubIdentifier"`
+				HubKey        string `json:"hubKey"`
+				Metadata      []struct {
+					Title string `json:"title"`
+				} `json:"Metadata"`
+			} `json:"Hub"`
+		} `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &secOut); err != nil {
+		t.Fatalf("decode section hubs: %v", err)
+	}
+	if len(secOut.MediaContainer.Hub) != 2 {
+		t.Fatalf("section hubs = %+v, want 2 plugin shelves", secOut.MediaContainer.Hub)
+	}
+	if secOut.MediaContainer.Hub[0].Title != "Featured Clips" || len(secOut.MediaContainer.Hub[0].Metadata) != 2 {
+		t.Fatalf("first shelf = %+v", secOut.MediaContainer.Hub[0])
+	}
+
+	// 2. /hubs/items continuation resolves the plugin shelf by hubIdentifier.
+	contID := secOut.MediaContainer.Hub[0].HubIdentifier
+	contRec := httptest.NewRecorder()
+	contReq := httptest.NewRequest(http.MethodGet, "/hubs/items?identifier="+contID+"&contentDirectoryID=9", nil)
+	contReq.Header.Set("Accept", "application/json")
+	contReq = contReq.WithContext(withRequest(contReq.Context(), &Request{User: &ownerUser, Format: model.JSON}))
+	srv.handleHubItems(contRec, contReq)
+	if contRec.Code != http.StatusOK || !strings.Contains(contRec.Body.String(), "Opening Cut") {
+		t.Fatalf("/hubs/items(%s) = %d %s", contID, contRec.Code, contRec.Body.String())
+	}
+
+	// 3. /hubs?contentDirectoryID=1,9 includes the plugin video library's shelf on Home.
+	homeRec := httptest.NewRecorder()
+	homeReq := httptest.NewRequest(http.MethodGet, "/hubs?contentDirectoryID=1,9&count=12", nil)
+	homeReq.Header.Set("Accept", "application/json")
+	homeReq = homeReq.WithContext(withRequest(homeReq.Context(), &Request{User: &ownerUser, Format: model.JSON}))
+	srv.handleHubs(homeRec, homeReq)
+	if homeRec.Code != http.StatusOK || !strings.Contains(homeRec.Body.String(), "Featured Clips") {
+		t.Fatalf("/hubs?contentDirectoryID=1,9 = %d %s", homeRec.Code, homeRec.Body.String())
+	}
+
+	// 4. Fallback without PluginLibraryRowsReader still renders a shelf from LibraryItems.
+	fallbackSrv := newTestServer(testServerDeps{Experience: &kindVideoHubExperience{Experience: frontend.NoopExperience()}})
+	fbRec := httptest.NewRecorder()
+	fbReq := httptest.NewRequest(http.MethodGet, "/hubs/sections/9?count=12", nil)
+	fbReq.Header.Set("Accept", "application/json")
+	fbReq = fbReq.WithContext(withRequest(fbReq.Context(), &Request{User: &ownerUser, Format: model.JSON}))
+	fbRctx := chi.NewRouteContext()
+	fbRctx.URLParams.Add("section", "9")
+	fbReq = fbReq.WithContext(context.WithValue(fbReq.Context(), chi.RouteCtxKey, fbRctx))
+	fallbackSrv.handleSectionHubs(fbRec, fbReq)
+	if fbRec.Code != http.StatusOK || !strings.Contains(fbRec.Body.String(), "Opening Cut") {
+		t.Fatalf("fallback /hubs/sections/9 = %d %s", fbRec.Code, fbRec.Body.String())
+	}
+}
+
+func TestKindMediaProvidersTypesAndPivots(t *testing.T) {
+	srv := newTestServer(testServerDeps{Experience: &kindVideoHubExperience{Experience: frontend.NoopExperience()}})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/media/providers", nil)
+	req.Header.Set("Accept", "application/json")
+	req = req.WithContext(withRequest(req.Context(), &Request{User: &ownerUser, Format: model.JSON}))
+	srv.handleProviders(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/media/providers status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		MediaContainer struct {
+			MediaProvider []struct {
+				Types   string `json:"types"`
+				Feature []struct {
+					Type      string `json:"type"`
+					Directory []struct {
+						ID    string `json:"id"`
+						Title string `json:"title"`
+						Type  string `json:"type"`
+						Pivot []struct {
+							ID   string `json:"id"`
+							Key  string `json:"key"`
+							Type string `json:"type"`
+						} `json:"Pivot"`
+					} `json:"Directory"`
+				} `json:"Feature"`
+			} `json:"MediaProvider"`
+		} `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode /media/providers: %v", err)
+	}
+	if len(out.MediaContainer.MediaProvider) == 0 {
+		t.Fatalf("no MediaProvider returned: %s", rec.Body.String())
+	}
+	mp := out.MediaContainer.MediaProvider[0]
+	if mp.Types != "video,audio,photo" {
+		t.Fatalf("MediaProvider.Types = %q, want video,audio,photo", mp.Types)
+	}
+
+	var musicPlaylistsKey, musicLibraryKey, photoPlaylistsKey, photoLibraryKey string
+	for _, f := range mp.Feature {
+		for _, d := range f.Directory {
+			switch d.ID {
+			case "7":
+				if d.Type != plexBaseArtist {
+					t.Fatalf("music directory type = %q, want %s", d.Type, plexBaseArtist)
+				}
+				for _, p := range d.Pivot {
+					if p.ID == "library" {
+						musicLibraryKey = p.Key
+					}
+					if p.ID == "playlists" {
+						musicPlaylistsKey = p.Key
+					}
+				}
+			case "8":
+				if d.Type != plexBasePhoto {
+					t.Fatalf("photo directory type = %q, want %s", d.Type, plexBasePhoto)
+				}
+				for _, p := range d.Pivot {
+					if p.ID == "library" {
+						photoLibraryKey = p.Key
+					}
+					if p.ID == "playlists" {
+						photoPlaylistsKey = p.Key
+					}
+				}
+			}
+		}
+	}
+	if !strings.Contains(musicLibraryKey, "type=8") || !strings.Contains(musicPlaylistsKey, "playlistType=audio") {
+		t.Fatalf("music pivots: libraryKey=%q playlistsKey=%q", musicLibraryKey, musicPlaylistsKey)
+	}
+	if !strings.Contains(photoLibraryKey, "type=13") || !strings.Contains(photoPlaylistsKey, "playlistType=photo") {
+		t.Fatalf("photo pivots: libraryKey=%q playlistsKey=%q", photoLibraryKey, photoPlaylistsKey)
+	}
+}
+
+func TestUntitledSectionForPrefersNonKindSection(t *testing.T) {
+	srv := newTestServer(testServerDeps{Experience: &kindVideoHubExperience{Experience: frontend.NoopExperience()}})
+	sec, ok := srv.untitledSectionFor(core.TypeMovie)
+	if !ok {
+		t.Fatal("expected movie section")
+	}
+	if sec.ID != 1 || sec.KindKey != "" {
+		t.Fatalf("untitledSectionFor(movie) = %+v, want builtin section 1", sec)
+	}
+}
+
+func TestHomeStampsInvalidateOnLibrariesAndKindSync(t *testing.T) {
+	fresh := frontend.PageFreshness{Layout: 1, Config: 1, Catalog: 1, Libraries: 1, KindSync: 1}
+	srv := newTestServer(testServerDeps{Experience: frontend.NoopExperience()})
+	srv.bindHost(frontend.Host{
+		Experience:    frontend.NoopExperience(),
+		PageFreshness: func() frontend.PageFreshness { return fresh },
+	})
+	pr := &Request{User: &ownerUser}
+	rev := frontend.HomeRevision{Viewer: "v1"}
+
+	h0, _ := srv.homeStamps(pr, rev)
+	fresh.Libraries = 2
+	hLib, _ := srv.homeStamps(pr, rev)
+	if hLib == h0 {
+		t.Fatalf("homeStamps hard stamp did not change when Libraries bumped: %q", h0)
+	}
+	fresh.KindSync = 2
+	hSync, _ := srv.homeStamps(pr, rev)
+	if hSync == hLib {
+		t.Fatalf("homeStamps hard stamp did not change when KindSync bumped: %q", hLib)
 	}
 }

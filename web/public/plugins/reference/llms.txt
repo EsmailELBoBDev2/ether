@@ -151,7 +151,15 @@ signing the updated index.
 
 Copy rules apply to contribution labels too: sentence case, no exclamation marks,
 no em/en dashes, no “simply”, “just”, or “easily”. Setting secrets are sealed by
-Ether; read with SecretGet only where needed, never echo them into views/logs.
+Ether; read with `SecretGet` only where needed, never echo them into views/logs.
+To store a plugin-derived credential (for example a session cookie or short-lived
+token) without writing plaintext into resolution or candidate caches, declare its
+name in `permissions.secrets` (not as a `settings.schema.json` secret field),
+store it with `ether.secret.set(name, value, ttlSec?)` (or `SecretWriteHost` /
+`PUT /ether/plugin-host/secrets/{name}` from remote plugins; empty value or
+`ether.secret.delete(name)` removes it), and reference it as `{secret:<name>}` in
+playable source headers and `http.hash`. Owner-configured settings secrets can never
+be overwritten or deleted by a plugin.
 
 ## Capability → routes → host services
 
@@ -466,11 +474,16 @@ remote request (including streaming into cache) by the remaining call deadline.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 
-`ether.http.hash({url,algo:"sha256",expectSize:12345})` returns either
-`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` is
-optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams on the host,
-without a blob or guest bytes, through the same network permissions and safe
-fetch rules as fetch. It starts only when called. One worker per plugin and
+`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"}})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` and
+`headers` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
+on the host, without a blob or guest bytes, through the same network permissions
+and safe fetch rules as fetch. Optional `headers` expand `{secret:<name>}`
+placeholders using the plugin's `permissions.secrets` grant (including derived
+secrets stored via `secret.set`), reject hop-by-hop/framing headers (`Connection`,
+`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), stay
+origin-confined (stripped on cross-origin redirects), are never logged, and are
+not part of the hash cache key. It starts only when called. One worker per plugin and
 two globally run below playback priority and yield during playback contention.
 Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per
 UTC day (including unsuccessful reads), 12 hours per task. The daily cap logs

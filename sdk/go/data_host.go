@@ -221,10 +221,12 @@ func (c *RemoteHostClient) ArchiveExtract(ctx context.Context, blob string, memb
 }
 
 // HashRequest requests an on-demand host-side remote digest without storing bytes.
+// Optional Headers are origin-confined and expand {secret:<name>} placeholders.
 type HashRequest struct {
-	URL        string `json:"url"`
-	Algo       string `json:"algo"`
-	ExpectSize *int64 `json:"expectSize,omitempty"`
+	URL        string            `json:"url"`
+	Algo       string            `json:"algo"`
+	ExpectSize *int64            `json:"expectSize,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 type HashResult struct {
 	Pending   bool   `json:"pending,omitempty"`

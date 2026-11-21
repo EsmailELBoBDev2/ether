@@ -141,29 +141,116 @@ func (h *host) Settings(ctx context.Context) (map[string]any, error) {
 	return NonSecretSettings(row.Settings, row.Schema, settingsSecrets(r)), nil
 }
 
-func (h *host) SecretGet(ctx context.Context, name string) (string, error) {
+const (
+	// MaxDerivedSecretBytes caps a single plugin-written derived secret value.
+	MaxDerivedSecretBytes = 16 << 10
+	// MaxDerivedSecrets caps the number of derived secrets a plugin may store.
+	MaxDerivedSecrets = 32
+	// MaxDerivedSecretTTLSec caps an explicit derived-secret TTL (1 year).
+	MaxDerivedSecretTTLSec int64 = 365 * 24 * 3600
+)
+
+func (h *host) checkSecretAccess(ctx context.Context, name string) (Record, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
-		return "", err
+		return Record{}, err
 	}
 	declared := false
 	for _, s := range r.Manifest.Ether.Permissions.Secrets {
 		if s == name {
 			declared = true
+			break
 		}
 	}
 	if err := h.deny(r, g, "secrets", "", func(string) bool { return declared }); err != nil {
+		return Record{}, err
+	}
+	return r, nil
+}
+
+func (h *host) SecretGet(ctx context.Context, name string) (string, error) {
+	if _, err := h.checkSecretAccess(ctx, name); err != nil {
 		return "", err
 	}
 	row, err := h.m.store.settings(ctx, h.plugin)
 	if err != nil {
 		return "", err
 	}
-	stored, ok := row.Secrets[name]
-	if !ok {
-		return "", fmt.Errorf("%w: secret %s is not saved", ErrUnavailable, name)
+	if stored, ok := row.Secrets[name]; ok && stored != "" {
+		return h.m.store.openSecret(h.plugin, name, stored)
 	}
-	return h.m.store.openSecret(h.plugin, name, stored)
+	if plain, ok, err := h.m.store.derivedSecret(ctx, h.plugin, name); err != nil {
+		return "", err
+	} else if ok {
+		return plain, nil
+	}
+	return "", fmt.Errorf("%w: secret %s is not saved", ErrUnavailable, name)
+}
+
+func (h *host) SecretSet(ctx context.Context, name, value string, ttlSec int64) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	if _, err := h.checkSecretAccess(ctx, name); err != nil {
+		return err
+	}
+	if ttlSec < 0 || ttlSec > MaxDerivedSecretTTLSec {
+		return &ValidationError{Fields: []FieldError{{
+			Field:   "ttlSec",
+			Message: fmt.Sprintf("must be between 0 and %d seconds", MaxDerivedSecretTTLSec),
+		}}}
+	}
+	row, err := h.m.store.settings(ctx, h.plugin)
+	if err != nil {
+		return err
+	}
+	if secretFieldNames(row.Schema)[name] || row.Secrets[name] != "" {
+		return fmt.Errorf("%w: secret %s is owner-configured and cannot be modified by the plugin", ErrPermissionDenied, name)
+	}
+	if value == "" {
+		return h.m.store.deleteDerivedSecret(ctx, h.plugin, name)
+	}
+	if len(value) > MaxDerivedSecretBytes {
+		return fmt.Errorf("%w: secret %s exceeds %d bytes", ErrQuotaExceeded, name, MaxDerivedSecretBytes)
+	}
+	if strings.ContainsRune(value, 0) {
+		return &ValidationError{Fields: []FieldError{{Field: "value", Message: "must not contain NUL bytes"}}}
+	}
+	exists, err := h.m.store.hasDerivedSecret(ctx, h.plugin, name)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		count, err := h.m.store.derivedSecretCount(ctx, h.plugin)
+		if err != nil {
+			return err
+		}
+		if count >= MaxDerivedSecrets {
+			return fmt.Errorf("%w: derived secret limit (%d) reached", ErrQuotaExceeded, MaxDerivedSecrets)
+		}
+	}
+	var expiresAt int64
+	if ttlSec > 0 {
+		expiresAt = h.m.now().Unix() + ttlSec
+	}
+	return h.m.store.putDerivedSecret(ctx, h.plugin, name, value, expiresAt)
+}
+
+func (h *host) SecretDelete(ctx context.Context, name string) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	if _, err := h.checkSecretAccess(ctx, name); err != nil {
+		return err
+	}
+	row, err := h.m.store.settings(ctx, h.plugin)
+	if err != nil {
+		return err
+	}
+	if secretFieldNames(row.Schema)[name] || row.Secrets[name] != "" {
+		return fmt.Errorf("%w: secret %s is owner-configured and cannot be modified by the plugin", ErrPermissionDenied, name)
+	}
+	return h.m.store.deleteDerivedSecret(ctx, h.plugin, name)
 }
 
 // AllowNetworkHost reports whether pluginID is enabled, still holds its
@@ -253,7 +340,22 @@ func fetchError(host string, err error) error {
 	return fmt.Errorf("%w: %s: %s", ErrFetchFailed, host, reason)
 }
 
+type fetchOptions struct {
+	stripCrossOriginHeaders []string
+}
+
+func sameOriginURL(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && safefetch.SameOrigin(a.String(), b.String())
+}
+
 func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response, error) {
+	return h.openFetchWithOptions(ctx, req, fetchOptions{})
+}
+
+func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts fetchOptions) (*http.Response, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
 		return nil, err
@@ -298,6 +400,8 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	}
 	// Recheck the current grant before every redirect, as well as the SSRF
 	// guard's own redirect policy. A redirect is another network request.
+	// Credentials and caller-supplied origin-confined headers never follow a
+	// redirect off the initial origin (even if a later hop returns to it).
 	// When ctx already has a deadline, let Request.Context govern both headers
 	// and body reads so timeouts always surface context.DeadlineExceeded rather
 	// than net/http's non-unwrapping Client.Timeout error.
@@ -306,9 +410,21 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		client.Timeout = 0
 	}
 	lastURL := u
+	leftOrigin := false
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
+		if !sameOriginURL(u, next.URL) {
+			leftOrigin = true
+		}
+		if leftOrigin {
+			for _, k := range []string{"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Referer"} {
+				next.Header.Del(k)
+			}
+			for _, k := range opts.stripCrossOriginHeaders {
+				next.Header.Del(k)
+			}
+		}
 		current, grants, err := h.record(next.Context())
 		if err != nil {
 			return err

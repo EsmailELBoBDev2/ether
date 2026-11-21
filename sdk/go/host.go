@@ -128,6 +128,14 @@ type KVUsageHost interface {
 	KVUsage(ctx context.Context) (KVUsage, error)
 }
 
+// SecretWriteHost stores and removes sealed derived secrets declared in
+// permissions.secrets (#660). Owner-configured settings secrets cannot be
+// overwritten. RemoteHostClient and MockHost implement it.
+type SecretWriteHost interface {
+	SecretSet(ctx context.Context, name, value string, ttlSec int64) error
+	SecretDelete(ctx context.Context, name string) error
+}
+
 // BadgesHost pushes, clears, and inspects plugin-owned poster badges (#594).
 // RemoteHostClient and MockHost implement it.
 type BadgesHost interface {
@@ -408,6 +416,24 @@ func (c *RemoteHostClient) BadgesUsage(ctx context.Context) (BadgeUsage, error) 
 // SecretGet is only available in hosted mode; remote plugins receive secrets via /ether/configure.
 func (c *RemoteHostClient) SecretGet(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("secret.get is only available in hosted plugins; remote plugins receive secrets via /ether/configure")
+}
+
+// SecretSet stores a sealed derived secret under a name declared in
+// permissions.secrets (#660). Passing an empty value deletes it.
+func (c *RemoteHostClient) SecretSet(ctx context.Context, name, value string, ttlSec int64) error {
+	payload := map[string]any{"value": value}
+	if ttlSec != 0 {
+		payload["ttlSec"] = ttlSec
+	}
+	_, err := c.callJSON(ctx, http.MethodPut, "/ether/plugin-host/secrets/"+url.PathEscape(name), payload, nil, false)
+	return err
+}
+
+// SecretDelete removes a plugin-written derived secret declared in
+// permissions.secrets (#660).
+func (c *RemoteHostClient) SecretDelete(ctx context.Context, name string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/secrets/"+url.PathEscape(name), nil, nil, false)
+	return err
 }
 
 // Fetch performs an outbound HTTP request.

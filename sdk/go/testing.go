@@ -310,6 +310,29 @@ func (m *MockHost) SecretGet(_ context.Context, name string) (string, error) {
 	return m.Secrets[name], nil
 }
 
+// SecretSet stores (or deletes when empty) a derived secret in the in-memory secrets map.
+func (m *MockHost) SecretSet(_ context.Context, name, value string, _ int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if value == "" {
+		delete(m.Secrets, name)
+		return nil
+	}
+	if m.Secrets == nil {
+		m.Secrets = map[string]string{}
+	}
+	m.Secrets[name] = value
+	return nil
+}
+
+// SecretDelete removes a derived secret from the in-memory secrets map.
+func (m *MockHost) SecretDelete(_ context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Secrets, name)
+	return nil
+}
+
 // Fetch invokes FetchHandler if set, or returns a 200 "{}" response.
 func (m *MockHost) Fetch(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error) {
 	if m.FetchHandler != nil {

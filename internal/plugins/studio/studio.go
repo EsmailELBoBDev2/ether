@@ -1182,13 +1182,13 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 
 	// Real catalogue reads must obey the same declaration as installed plugins.
 	// Preview is an owner surface, but silently granting access hides defects.
-	if name == "catalog.search" || name == "catalog.get" || name == "secret.get" {
+	if name == "catalog.search" || name == "catalog.get" || name == "secret.get" || name == "secret.set" || name == "secret.delete" {
 		man, err := plugins.ParseManifest([]byte(p.Files["manifest.json"]))
 		if err != nil || man.Ether == nil {
 			h.s.mu.Unlock()
 			return nil, wasm.Forbidden("a valid permission declaration is required")
 		}
-		if name == "secret.get" {
+		if name == "secret.get" || name == "secret.set" || name == "secret.delete" {
 			declared := false
 			for _, key := range man.Ether.Permissions.Secrets {
 				if key == str(0) {

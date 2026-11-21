@@ -1098,6 +1098,9 @@ func (m *Manager) Configure(ctx context.Context, id string, incoming map[string]
 	if err := m.store.putSettings(ctx, id, row); err != nil {
 		return nil, err
 	}
+	for k := range secrets {
+		_ = m.store.deleteDerivedSecret(ctx, id, k)
+	}
 	// Deliver to the plugin. No runtime yet (WS8) is not an error: the
 	// settings are stored and will be delivered on first start.
 	merged, err := m.mergedSettings(ctx, id)

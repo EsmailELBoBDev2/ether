@@ -638,11 +638,26 @@ class _ArchiveClient:
         return res if isinstance(res, dict) else {}  # type: ignore[return-value]
 
 
+class _SecretClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def set(self, name: str, value: str, ttl_sec: Optional[int] = None) -> None:
+        body: Dict[str, Any] = {"value": str(value)}
+        if ttl_sec is not None:
+            body["ttlSec"] = int(ttl_sec)
+        self._call("PUT", f"/ether/plugin-host/secrets/{urllib.parse.quote(name, safe='')}", body)
+
+    def delete(self, name: str) -> None:
+        self._call("DELETE", f"/ether/plugin-host/secrets/{urllib.parse.quote(name, safe='')}")
+
+
 class _HttpClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
 
     def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Request a host-side digest (`{url, algo, expectSize?, headers?}`)."""
         return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
 
     def fetch_to_cache(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -865,6 +880,7 @@ class RemoteHostClient:
         self.viewer_token = (viewer_token or "").strip()
         self.kv = _KVClient(self._call_json)
         self.badges = _BadgesClient(self._call_json)
+        self.secret = _SecretClient(self._call_json)
         self.http = _HttpClient(self._call_json)
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
@@ -2899,6 +2915,15 @@ class MockHostClient:
 
         def get(self, name: str) -> str:
             return self._p.secrets_store.get(name, "")
+
+        def set(self, name: str, value: str, ttl_sec: Optional[int] = None) -> None:
+            if value == "":
+                self._p.secrets_store.pop(name, None)
+            else:
+                self._p.secrets_store[name] = str(value)
+
+        def delete(self, name: str) -> None:
+            self._p.secrets_store.pop(name, None)
 
     class _Http:
         def __init__(self, parent: "MockHostClient") -> None:

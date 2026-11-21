@@ -989,8 +989,17 @@ type Host interface {
 	BadgesUsage(ctx context.Context) (BadgeUsage, error)
 
 	// SecretGet returns a sealed setting the manifest declared in
-	// permissions.secrets. Hosted plugins only.
+	// permissions.secrets (owner-configured first, then plugin-written derived
+	// secrets). Hosted plugins only.
 	SecretGet(ctx context.Context, name string) (string, error)
+	// SecretSet stores a sealed derived secret under a name declared in
+	// permissions.secrets that is not an owner-configured settings secret.
+	// Passing an empty value deletes the derived secret. ttlSec <= 0 means no
+	// expiry; positive values expire after ttlSec seconds.
+	SecretSet(ctx context.Context, name, value string, ttlSec int64) error
+	// SecretDelete removes a plugin-written derived secret declared in
+	// permissions.secrets. Owner-configured settings secrets cannot be deleted.
+	SecretDelete(ctx context.Context, name string) error
 
 	// HTTPFetch fetches through egress and safefetch; only manifest
 	// network hosts are allowed. Observed hosts feed the privacy label.

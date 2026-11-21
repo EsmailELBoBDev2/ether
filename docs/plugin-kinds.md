@@ -777,7 +777,14 @@ resolving a multi-part item), uses promoted deadlines and continuation replies,
 and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
 the next resolve.
 
-For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.
 A miss returns pending while a bounded host worker streams digests without
-storing bytes; the next resolve reads the cached result. See the worked example
+storing bytes; the next resolve reads the cached result. Optional `headers` are
+origin-confined (stripped on cross-origin redirects), reject hop-by-hop and
+framing headers, expand `{secret:<name>}` placeholders via `permissions.secrets`
+just like playable sources, and are never logged or persisted in the hash cache.
+Plugins that derive temporary session credentials can store them sealed with
+`ether.secret.set(name, value, ttlSec?)` (and clear them with `ether.secret.delete(name)`)
+under a declared non-owner name in `permissions.secrets`, then reference them as
+`{secret:<name>}` in source headers and `http.hash`. See the worked example
 and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).

@@ -29,7 +29,13 @@ export interface HostFetchResponse {
   bodyBase64?: string;
 }
 
-export interface HashRequest { url: string; algo: "sha256" | "sha1" | "md5"; expectSize?: number }
+export interface HashRequest {
+  url: string;
+  algo: "sha256" | "sha1" | "md5";
+  expectSize?: number;
+  /** Optional origin-confined request headers; values may include `{secret:<name>}` placeholders. */
+  headers?: Record<string, string>;
+}
 export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
 export const MinDataReadBytes = 8 * 1024 * 1024;
@@ -368,6 +374,10 @@ export interface EtherHost {
   };
   secret: {
     get(name: string): MaybePromise<string>;
+    /** Store a sealed derived secret under a name declared in permissions.secrets (non-owner setting). Empty value deletes it. */
+    set(name: string, value: string, ttlSec?: number): MaybePromise<void>;
+    /** Delete a plugin-written derived secret declared in permissions.secrets. */
+    delete(name: string): MaybePromise<void>;
   };
   http: {
     fetch(req: HostFetchRequest): MaybePromise<HostFetchResponse>;
@@ -480,6 +490,8 @@ interface GlobalEtherBindings {
     };
     secret: {
       get: (name: string) => string;
+      set?: (name: string, value: string, ttlSec?: number) => void;
+      delete?: (name: string) => void;
     };
     http: {
       fetch: (req: HostFetchRequest) => HostFetchResponse;
@@ -654,6 +666,20 @@ export function createHostedClient(): EtherHost {
           if (err instanceof Error && /is not saved/i.test(err.message)) return "";
           throw err;
         }
+      },
+      set(name: string, value: string, ttlSec?: number): void {
+        if (g.ether?.secret?.set) {
+          g.ether.secret.set(name, value, ttlSec);
+          return;
+        }
+        callHost("secret.set", ttlSec === undefined ? [name, value] : [name, value, ttlSec]);
+      },
+      delete(name: string): void {
+        if (g.ether?.secret?.delete) {
+          g.ether.secret.delete(name);
+          return;
+        }
+        callHost("secret.delete", [name]);
       },
     },
     http: {
@@ -978,6 +1004,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
             "secret.get is only available in hosted plugins; remote plugins receive secrets via /ether/configure",
           ),
         );
+      },
+      async set(name: string, value: string, ttlSec?: number): Promise<void> {
+        const body: Record<string, unknown> = { value: String(value) };
+        if (ttlSec !== undefined) body.ttlSec = ttlSec;
+        await callJson("PUT", `/ether/plugin-host/secrets/${encodeURIComponent(name)}`, body);
+      },
+      async delete(name: string): Promise<void> {
+        await callJson("DELETE", `/ether/plugin-host/secrets/${encodeURIComponent(name)}`);
       },
     },
     http: {

@@ -357,6 +357,22 @@ func (a HostAdapter) KVUsage(ctx context.Context, pluginID string) (plugins.KVUs
 	return usage, mapHostErr(err)
 }
 
+func (a HostAdapter) SecretSet(ctx context.Context, pluginID, name, value string, ttlSec int64) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.SecretSet(ctx, name, value, ttlSec))
+}
+
+func (a HostAdapter) SecretDelete(ctx context.Context, pluginID, name string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.SecretDelete(ctx, name))
+}
+
 func (a HostAdapter) BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error {
 	h, err := a.host(pluginID)
 	if err != nil {

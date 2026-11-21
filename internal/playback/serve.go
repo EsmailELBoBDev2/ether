@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -177,9 +178,16 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		contentType:           s.contentType,
 		deferStatusOnZeroRead: true,
 	}
+	if s.cur != nil {
+		if ct := contentTypeForInfo(s.cur.infoSnapshot(), s.cur.src.Name(), sourceMIME(s.cur.src)); ct != "" && ct != "application/octet-stream" {
+			rep.contentType = ct
+		}
+	}
 	policy, customResponse := core.RangeResponseFrom(r.Context())
 	if customResponse && policy.MIME != nil {
-		rep.contentType = policy.MIME(s.name)
+		if pm := policy.MIME(s.name); pm != "" && (pm != "application/octet-stream" || !strings.HasPrefix(rep.contentType, "audio/")) {
+			rep.contentType = pm
+		}
 	}
 	s.mu.Unlock()
 	rep.body = func(w io.Writer, start, length int64) error {
@@ -741,7 +749,7 @@ func (m *Manager) serveLoopback(w http.ResponseWriter, r *http.Request) {
 	rep := representation{
 		size:        size,
 		etag:        `"` + sum + "-" + g.token[:8] + `"`,
-		contentType: contentTypeFor("", g.src.Name()),
+		contentType: contentTypeForInfo(g.infoSnapshot(), g.src.Name(), sourceMIME(g.src)),
 	}
 	background := r.URL.Query().Get("background") == "1"
 	if background {

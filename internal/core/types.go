@@ -43,6 +43,20 @@ type Person struct {
 	ThumbPath string `json:"thumbPath,omitempty"`
 }
 
+// TitleParent names one ancestor container of a plugin kind item (nearest
+// first), used to render parent breadcrumbs and music/book/audiobook lineage.
+type TitleParent struct {
+	Key   RatingKey `json:"-"`
+	Title string    `json:"title"`
+	Role  MediaRole `json:"role"`
+}
+
+// TitleReading describes reading metadata for book items.
+type TitleReading struct {
+	Format string `json:"format"`
+	Pages  int    `json:"pages,omitempty"`
+}
+
 // Title is a catalogue item: movie, show, season or episode. Image paths are
 // TMDB paths ("/abc.jpg"); the front end turns them into URLs.
 type Title struct {
@@ -54,12 +68,16 @@ type Title struct {
 	// declared MediaKindMeta level key a projected plugin item came from
 	// (empty for catalogue titles); LibraryID is the owning library, set so
 	// protocols can type and section a plugin item without a re-lookup.
-	KindLevel     string    `json:"kindLevel,omitempty"`
-	LibraryID     LibraryID `json:"-"`
-	ItemIndex     int       `json:"-"`
-	PluginAddedAt int64     `json:"-"`
-	LandscapeCard bool      `json:"-"`
-	DateDisplay   string    `json:"-"`
+	KindLevel     string        `json:"kindLevel,omitempty"`
+	LibraryID     LibraryID     `json:"-"`
+	ItemIndex     int           `json:"-"`
+	PluginAddedAt int64         `json:"-"`
+	LandscapeCard bool          `json:"-"`
+	DateDisplay   string        `json:"-"`
+	MediaClass    MediaClass    `json:"-"`
+	MediaRole     MediaRole     `json:"-"`
+	MediaParents  []TitleParent `json:"-"`
+	MediaReading  *TitleReading `json:"-"`
 	// MBItemType is the MediaBrowser (Jellyfin/Emby) item type the owning
 	// kind's presentation declares for KindLevel (MusicAlbum, Audio, Book,
 	// AudioBook, …); empty for catalogue titles and for levels the kind

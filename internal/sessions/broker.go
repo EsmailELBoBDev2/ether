@@ -149,6 +149,7 @@ type brokerSession struct {
 	decision              core.Decision
 	allowTranscoding      *bool
 	format                frontend.StreamFormat
+	httpExt               string
 	streamPosition        time.Duration
 	segmentDuration       time.Duration
 	live                  bool
@@ -825,7 +826,12 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
 	}
 	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-		if allowed, _ := b.hlsPlanOutput(ps, req, dec); !allowed {
+		hlsAllowed, _ := b.hlsPlanOutput(ps, req, dec)
+		httpAllowed := false
+		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+			httpAllowed, _ = b.httpPlanOutput(ps, req, dec)
+		}
+		if !hlsAllowed && !httpAllowed {
 			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
 			if req.Channel == "" && b.videoTranscodingOff() {
 				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
@@ -870,11 +876,12 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)
 	hls, hlsContainer := b.hlsPlanOutput(ps, req, dec)
+	httpOK, httpContainer := b.httpPlanOutput(ps, req, dec)
 	relID := ""
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
 }
 func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()

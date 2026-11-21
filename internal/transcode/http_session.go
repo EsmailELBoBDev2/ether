@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,8 +19,37 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+const (
+	audioSpoolMaxDuration = 30 * time.Minute
+	audioSpoolMaxBytes    = 64 << 20
+)
+
+type audioSpool struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	path     string
+	written  int64
+	done     bool
+	err      error
+	overflow bool
+	proc     Process
+	cancel   context.CancelFunc
+}
+
+func (sp *audioSpool) stop() {
+	sp.mu.Lock()
+	proc, cancel := sp.proc, sp.cancel
+	sp.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if proc != nil {
+		proc.Stop()
+	}
+}
+
 // httpSession is one protocol=http conversion: ffmpeg writes streamable
-// Matroska to stdout and the client's reads pace the pipe.
+// Matroska (video) or the target audio container (audio-only) to stdout.
 type httpSession struct {
 	m    *Manager
 	id   string
@@ -31,6 +61,7 @@ type httpSession struct {
 	mu             sync.Mutex
 	proc           Process
 	pipe           *io.PipeReader
+	spool          *audioSpool
 	requestSeq     uint64
 	closed         bool
 	softwareDecode bool
@@ -56,7 +87,7 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 	if err := m.claimEncoderID(ctx, id, life); err != nil {
 		return nil, err
 	}
-	encoding := !req.Decision.VideoCopy
+	encoding := req.Info.Video() != nil && !req.Decision.VideoCopy
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -152,6 +183,10 @@ func (s *httpSession) SwapInput(ctx context.Context, inputURL string, info core.
 		_ = s.pipe.CloseWithError(errors.New("transcode: input changed"))
 		s.pipe = nil
 	}
+	if s.spool != nil {
+		s.spool.stop()
+		s.spool = nil
+	}
 	s.req.InputURL = inputURL
 	s.req.Info = info
 	s.req.StartOffset = at
@@ -207,16 +242,279 @@ func rangeStartsAfterZero(rng string) bool {
 	return err == nil && n > 0
 }
 
+func (s *httpSession) httpContentType() string {
+	audioOnly := s.req.Info.Video() == nil
+	if !audioOnly {
+		return "video/x-matroska"
+	}
+	switch normalizeHTTPAudioContainer(s.req.Decision.Container) {
+	case "mp3":
+		return "audio/mpeg"
+	case "aac":
+		return "audio/aac"
+	case "mp4":
+		return "audio/mp4"
+	case "ogg", "opus":
+		return "audio/ogg"
+	case "webm":
+		return "audio/webm"
+	case "flac":
+		return "audio/flac"
+	case "wav":
+		return "audio/wav"
+	case ContainerMPEGTS:
+		return "video/mp2t"
+	default:
+		return "audio/x-matroska"
+	}
+}
+
+func (s *httpSession) isSpoolableAudio() bool {
+	if s.req.LiveInput || s.req.Info.Video() != nil || s.req.StartOffset > 0 {
+		return false
+	}
+	if s.req.Info.Duration > audioSpoolMaxDuration {
+		return false
+	}
+	return true
+}
+
 func (s *httpSession) writeHTTPHeaders(w http.ResponseWriter) {
 	h := w.Header()
-	h.Set("Content-Type", "video/x-matroska")
+	h.Set("Content-Type", s.httpContentType())
 	h.Set("Accept-Ranges", "none")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Connection", "close")
 	w.WriteHeader(http.StatusOK)
 }
 
+func (s *httpSession) ensureAudioSpoolLocked() (*audioSpool, error) {
+	if s.spool != nil {
+		return s.spool, nil
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, err
+	}
+	spoolPath := filepath.Join(s.dir, "audio.stream")
+	f, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	scopeHeaders, err := encoderScopeHeaders(s.req.InputLease, s.req.InputURL)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	spec := runSpec{
+		InputHeaders:      s.req.InputHeaders,
+		InputScopeHeaders: scopeHeaders,
+		Input:             s.req.InputURL,
+		Info:              s.req.Info,
+		Decision:          s.req.Decision,
+		Start:             s.req.StartOffset,
+		Accel:             core.HWAccel{Name: AccelNone},
+		Features:          s.m.feat,
+		Protocol:          core.ProtocolHTTP,
+		InputTimeout:      s.m.opts.stallTimeout,
+	}
+	pr, pw := io.Pipe()
+	stderr := newTailBuffer(40)
+	cmd := Command{
+		Path:       s.m.ffmpeg,
+		Args:       buildArgs(spec),
+		Stdout:     pw,
+		Stderr:     &lineWriter{fn: stderr.add},
+		Background: !s.req.LiveInput,
+	}
+	work, err := s.life.runWork(false)
+	if err != nil {
+		_ = f.Close()
+		_ = pw.Close()
+		_ = pr.Close()
+		return nil, err
+	}
+	proc, err := s.m.runner.Start(cmd)
+	if err != nil {
+		for _, item := range work {
+			item.finish()
+		}
+		_ = f.Close()
+		_ = pw.Close()
+		_ = pr.Close()
+		return nil, err
+	}
+	s.life.fenceProcess(proc, work[2])
+	s.life.markStarted()
+	ctx, cancel := context.WithCancel(context.Background())
+	sp := &audioSpool{path: spoolPath, proc: proc, cancel: cancel}
+	sp.cond = sync.NewCond(&sp.mu)
+	s.spool = sp
+	go func() {
+		<-proc.Done()
+		_ = pw.Close()
+		work[0].finish()
+	}()
+	go func() {
+		defer work[1].finish()
+		defer f.Close()
+		defer pr.Close()
+		stopCancel := context.AfterFunc(ctx, func() {
+			_ = pr.CloseWithError(context.Canceled)
+			proc.Stop()
+		})
+		defer stopCancel()
+		buf := make([]byte, 32*1024)
+		var copyErr error
+		var written int64
+		overflow := false
+		for {
+			n, rerr := pr.Read(buf)
+			if n > 0 {
+				if written+int64(n) > audioSpoolMaxBytes {
+					overflow = true
+					proc.Stop()
+					break
+				}
+				if _, werr := f.Write(buf[:n]); werr != nil {
+					copyErr = werr
+					proc.Stop()
+					break
+				}
+				written += int64(n)
+				sp.mu.Lock()
+				sp.written = written
+				sp.cond.Broadcast()
+				sp.mu.Unlock()
+			}
+			if rerr != nil {
+				if !errors.Is(rerr, io.EOF) {
+					copyErr = rerr
+				}
+				break
+			}
+		}
+		<-proc.Done()
+		procErr := proc.Err()
+		sp.mu.Lock()
+		sp.overflow = overflow
+		if copyErr != nil {
+			sp.err = copyErr
+		} else if !overflow && procErr != nil && sp.written == 0 {
+			sp.err = procErr
+		}
+		sp.done = true
+		sp.proc = nil
+		sp.cond.Broadcast()
+		sp.mu.Unlock()
+	}()
+	return sp, nil
+}
+
+func (s *httpSession) serveAudioSpool(w http.ResponseWriter, r *http.Request) bool {
+	s.mu.Lock()
+	if s.closed || s.life.isSealed() {
+		s.mu.Unlock()
+		http.Error(w, "session closed", http.StatusGone)
+		return true
+	}
+	s.lastAccess = time.Now()
+	sp, err := s.ensureAudioSpoolLocked()
+	s.mu.Unlock()
+	if err != nil {
+		return false
+	}
+	stopWake := context.AfterFunc(r.Context(), func() {
+		sp.mu.Lock()
+		sp.cond.Broadcast()
+		sp.mu.Unlock()
+	})
+	defer stopWake()
+
+	hasRange := r.Header.Get("Range") != ""
+	sp.mu.Lock()
+	if hasRange || r.Method == http.MethodHead {
+		for !sp.done && r.Context().Err() == nil {
+			sp.cond.Wait()
+		}
+	} else {
+		for !sp.done && sp.written == 0 && r.Context().Err() == nil {
+			sp.cond.Wait()
+		}
+	}
+	done, written, overflow, spoolErr := sp.done, sp.written, sp.overflow, sp.err
+	sp.mu.Unlock()
+
+	if r.Context().Err() != nil {
+		return true
+	}
+	if overflow {
+		return false
+	}
+	if done && (spoolErr != nil || written == 0) {
+		http.Error(w, "transcode failed", http.StatusBadGateway)
+		return true
+	}
+	if done {
+		f, err := os.Open(sp.path)
+		if err != nil {
+			http.Error(w, "transcode failed", http.StatusBadGateway)
+			return true
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", s.httpContentType())
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Accept-Ranges", "bytes")
+		s.delivered.Store(true)
+		http.ServeContent(w, r, "", time.Time{}, f)
+		return true
+	}
+	// Open-ended GET while audio transcode is still writing: stream bytes as
+	// they arrive without blocking on full track completion.
+	f, err := os.Open(sp.path)
+	if err != nil {
+		http.Error(w, "transcode failed", http.StatusBadGateway)
+		return true
+	}
+	defer f.Close()
+	s.writeHTTPHeaders(w)
+	fw := &httpWriteTracker{writer: flushWriter{ResponseWriter: w, s: s, timeout: s.m.opts.httpWriteTimeout}}
+	var off int64
+	buf := make([]byte, 32*1024)
+	for {
+		sp.mu.Lock()
+		for off >= sp.written && !sp.done && r.Context().Err() == nil {
+			sp.cond.Wait()
+		}
+		avail, finished, ov := sp.written, sp.done, sp.overflow
+		sp.mu.Unlock()
+		if r.Context().Err() != nil || ov {
+			return true
+		}
+		for off < avail {
+			n, rerr := f.ReadAt(buf, off)
+			if n > 0 {
+				if _, werr := fw.Write(buf[:n]); werr != nil {
+					return true
+				}
+				off += int64(n)
+			}
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				return true
+			}
+			if n == 0 {
+				break
+			}
+		}
+		if finished && off >= avail {
+			return true
+		}
+	}
+}
+
 func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.isSpoolableAudio() && s.serveAudioSpool(w, r) {
+		return
+	}
 	s.mu.Lock()
 	if s.closed || s.life.isSealed() {
 		s.mu.Unlock()
@@ -286,7 +584,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		pr, pw := io.Pipe()
 		stderr := newTailBuffer(40)
 		cmd := Command{Path: s.m.ffmpeg, Args: buildArgs(spec), Stdout: pw, Stderr: &lineWriter{fn: stderr.add}}
-		encoding := !s.req.Decision.VideoCopy
+		encoding := s.req.Info.Video() != nil && !s.req.Decision.VideoCopy
 		work, err := s.life.runWork(encoding)
 		if err != nil {
 			s.mu.Unlock()
@@ -428,9 +726,14 @@ func (s *httpSession) Close() error {
 	s.closed = true
 	proc := s.proc
 	pipe := s.pipe
+	spool := s.spool
 	s.pipe = nil
 	s.proc = nil
+	s.spool = nil
 	s.mu.Unlock()
+	if spool != nil {
+		spool.stop()
+	}
 	if pipe != nil {
 		_ = pipe.CloseWithError(errors.New("transcode: session closed"))
 	}
@@ -523,9 +826,12 @@ func (s *httpSession) detachOwnedHTTP() {
 	s.mu.Lock()
 	s.closed = true
 	s.requestSeq++
-	proc, pipe := s.proc, s.pipe
-	s.proc, s.pipe = nil, nil
+	proc, pipe, spool := s.proc, s.pipe, s.spool
+	s.proc, s.pipe, s.spool = nil, nil, nil
 	s.mu.Unlock()
+	if spool != nil {
+		spool.stop()
+	}
 	if pipe != nil {
 		_ = pipe.CloseWithError(errors.New("transcode: session retired"))
 	}

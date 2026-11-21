@@ -19,6 +19,32 @@ type Playlist = core.Playlist
 type MediaType = core.MediaType
 type Page = core.Page
 type WatchStatus = core.WatchStatus
+type ReadingProgress = core.ReadingProgress
+type TitleParent = core.TitleParent
+type TitleReading = core.TitleReading
+type MediaClass = core.MediaClass
+type MediaRole = core.MediaRole
+
+const (
+	MediaClassVideo     = core.MediaClassVideo
+	MediaClassMusic     = core.MediaClassMusic
+	MediaClassAudiobook = core.MediaClassAudiobook
+	MediaClassBook      = core.MediaClassBook
+	MediaClassPodcast   = core.MediaClassPodcast
+	MediaClassPhoto     = core.MediaClassPhoto
+
+	MediaRoleItem       = core.MediaRoleItem
+	MediaRoleArtist     = core.MediaRoleArtist
+	MediaRoleAlbum      = core.MediaRoleAlbum
+	MediaRoleTrack      = core.MediaRoleTrack
+	MediaRoleSeries     = core.MediaRoleSeries
+	MediaRoleBook       = core.MediaRoleBook
+	MediaRoleAudiobook  = core.MediaRoleAudiobook
+	MediaRolePart       = core.MediaRolePart
+	MediaRoleShow       = core.MediaRoleShow
+	MediaRoleEpisode    = core.MediaRoleEpisode
+	MediaRoleCollection = core.MediaRoleCollection
+)
 type StreamInfo = core.StreamInfo
 type MediaInfo = core.MediaInfo
 type DecideOptions = core.DecideOptions

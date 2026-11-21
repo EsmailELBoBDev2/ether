@@ -904,6 +904,12 @@ type Experience interface {
 	RemoveFromContinue(context.Context, *core.Viewer, core.RatingKey) error
 }
 
+// ReadingProgressWriter is an optional interface implemented by Experience
+// hosts that persist book reading progress alongside video/audio watch state.
+type ReadingProgressWriter interface {
+	SetReadingProgress(ctx context.Context, viewer *core.Viewer, key core.RatingKey, progress core.ReadingProgress) error
+}
+
 type PlayIntent struct {
 	// OriginalPlayback declares an installed demux/decoder runtime independently
 	// of native media element capabilities. Originals are pinned for byte reads.
@@ -1052,6 +1058,12 @@ type PlayPlan struct {
 	// output decision (mpegts, fmp4, or mkv). Empty means unknown or ineligible;
 	// it is not the source container or an encoder-capacity reservation.
 	HLSContainer string
+	// HTTP reports whether this resolved source can be delivered as a
+	// progressive HTTP transcode stream under the declared client profile.
+	HTTP bool
+	// HTTPContainer is the authoritative container from the resolved HTTP
+	// progressive transcode decision (for example mp4, aac, mp3, ogg, mkv).
+	HTTPContainer string
 	// ETag identifies the resolved immutable source when available; it is
 	// empty when the backend cannot prove a stable source identity.
 	ETag string

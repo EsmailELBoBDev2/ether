@@ -258,7 +258,12 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
 	}
 	if s.public.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-		if allowed, _ := b.hlsPlanOutput(ps, planReq, dec); !allowed {
+		hlsAllowed, _ := b.hlsPlanOutput(ps, planReq, dec)
+		httpAllowed := false
+		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+			httpAllowed, _ = b.httpPlanOutput(ps, planReq, dec)
+		}
+		if !hlsAllowed && !httpAllowed {
 			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, planReq)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 		}
 	}
@@ -347,6 +352,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 
 	direct, remux, transcoding := b.planAlternatives(ps, planReq)
 	hls, hlsContainer := b.hlsPlanOutput(ps, planReq, dec)
+	httpOK, httpContainer := b.httpPlanOutput(ps, planReq, dec)
 	return frontend.PlayPlan{
 		SourceChosenAt:      sourceChosenAt,
 		DecisionAt:          decisionAt,
@@ -359,6 +365,8 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		VideoTranscodingOff: b.videoTranscodingOff(),
 		HLS:                 hls,
 		HLSContainer:        hlsContainer,
+		HTTP:                httpOK,
+		HTTPContainer:       httpContainer,
 		ETag:                etag,
 		VersionHandle:       normHandle,
 		ReleaseID:           relID,

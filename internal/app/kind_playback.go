@@ -43,6 +43,9 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 			return nil, core.ErrNotFound
 		}
 		title := piv.Title
+		if title.MediaClass == core.MediaClassBook || title.MBItemType == "Book" {
+			return nil, core.ErrNoUsableFile
+		}
 		in := &core.KindInput{
 			Title:         &title,
 			SourceID:      key.String(),
@@ -111,4 +114,5 @@ func (k kindMediaSource) Name() string {
 	return k.releaseID
 }
 func (k kindMediaSource) ReleaseID() string { return k.releaseID }
+func (k kindMediaSource) MIME() string      { return k.media.MIME }
 func (k kindMediaSource) Close() error      { return k.media.Close() }

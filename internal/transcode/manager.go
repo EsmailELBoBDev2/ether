@@ -791,11 +791,19 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		d.AudioCodec = a.Codec
 	}
 	if proto == core.ProtocolHTTP {
-		d.Container = ContainerMatroska
-		if a := findStream(req.Info, d.AudioStream, "audio"); a != nil && d.AudioCopy && strings.EqualFold(a.Codec, "aac") {
-			// ADTS AAC cannot be copied into a piped Matroska header.
-			d.AudioCopy = false
-			d.AudioCodec = "aac"
+		if v != nil {
+			d.Container = ContainerMatroska
+		} else if c := normalizeHTTPAudioContainer(d.Container); c != "" {
+			d.Container = c
+		} else {
+			d.Container = defaultHTTPAudioContainer(d.AudioCodec)
+		}
+		if d.Container == ContainerMatroska {
+			if a := findStream(req.Info, d.AudioStream, "audio"); a != nil && d.AudioCopy && strings.EqualFold(a.Codec, "aac") {
+				// ADTS AAC cannot be copied into a piped Matroska header.
+				d.AudioCopy = false
+				d.AudioCodec = "aac"
+			}
 		}
 		req.Decision = d
 		req.Protocol = proto

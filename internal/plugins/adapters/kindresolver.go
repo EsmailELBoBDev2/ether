@@ -811,13 +811,11 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
-<<<<<<< HEAD
-	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
-		return r.OpenKindPartExcluding(ctx, viewer, parentKey, partIdx, accept, exclude)
-=======
 	if core.IndexerPurpose(ctx) == "" {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
->>>>>>> 678b754bd2487463fef33b614c8f66df581f2886
+	}
+	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
+		return r.OpenKindPartExcluding(ctx, viewer, parentKey, partIdx, accept, exclude)
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
@@ -930,13 +928,11 @@ func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.V
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
-<<<<<<< HEAD
-	if parentKey, _, isPart := key.PluginPart(); isPart {
-		key = parentKey
-=======
 	if core.IndexerPurpose(ctx) == "" {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
->>>>>>> 678b754bd2487463fef33b614c8f66df581f2886
+	}
+	if parentKey, _, isPart := key.PluginPart(); isPart {
+		key = parentKey
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {

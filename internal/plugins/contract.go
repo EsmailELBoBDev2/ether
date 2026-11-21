@@ -1341,6 +1341,12 @@ type FetchRequest struct {
 	URL       string            `json:"url"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Body      []byte            `json:"body,omitempty"`
+	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
+	// patterns (within permissions.network / granted hosts) that may keep
+	// credentials and caller headers across redirects when the target is not
+	// already the same origin or a strict same-site subdomain. Never applies
+	// across HTTPS -> HTTP downgrades.
+	KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect,omitempty"`
 }
 
 // FetchResponse is the answer to a FetchRequest (body capped at 10 MiB).

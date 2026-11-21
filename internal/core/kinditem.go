@@ -608,8 +608,14 @@ type PlayableSource struct {
 	DurationSec     float64           `json:"durationSec,omitempty"`
 	URL             string            `json:"url,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
-	BlobRef         string            `json:"blobRef,omitempty"`
-	SHA256          string            `json:"sha256,omitempty"`
+	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
+	// patterns (within permissions.network / granted hosts) that may keep
+	// credentials and caller headers across redirects when the target is not
+	// already the same origin or a strict same-site subdomain. Never applies
+	// across HTTPS -> HTTP downgrades.
+	KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string   `json:"blobRef,omitempty"`
+	SHA256                string   `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are the digests content catalogues actually publish
 	// (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared
 	// digest — and Size, when set — is checked against the bytes actually
@@ -635,10 +641,11 @@ type ContainerRef struct {
 
 // VolumeRef locates one archive volume by URL or blobcache reference (spec §4.1).
 type VolumeRef struct {
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	BlobRef string            `json:"blobRef,omitempty"`
-	Size    int64             `json:"size"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	Size                  int64             `json:"size"`
 }
 
 // TrackHint identifies one track inside a multi-track audio release or archive

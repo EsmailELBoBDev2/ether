@@ -60,12 +60,18 @@ type HashRequest struct {
 	URL        string `json:"url"`
 	Algo       string `json:"algo"`
 	ExpectSize *int64 `json:"expectSize,omitempty"`
-	// Headers sends optional origin-confined request headers with the hash
-	// fetch. Values may use {secret:<name>} placeholders expanded via
-	// permissions.secrets; hop-by-hop and framing headers are rejected, headers
-	// are stripped on cross-origin redirects, and values are never logged or
-	// persisted in the hash cache.
+	// Headers sends optional request headers with the hash fetch. Values may
+	// use {secret:<name>} placeholders expanded via permissions.secrets;
+	// hop-by-hop and framing headers are rejected, headers follow redirects
+	// only under Ether's redirect credential policy (same origin, strict
+	// same-site subdomain, or KeepHeadersOnRedirect within granted hosts), and
+	// values are never logged or persisted in the hash cache.
 	Headers map[string]string `json:"headers,omitempty"`
+	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
+	// patterns (within permissions.network / granted hosts) that may keep
+	// credentials and caller headers across redirects. Never applies across
+	// HTTPS -> HTTP downgrades.
+	KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect,omitempty"`
 }
 
 // HashResult never includes remote bytes. All three digests share a single read.
@@ -174,6 +180,18 @@ func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 	}
 	if err := h.allowNetworkURL(ctx, u); err != nil {
 		return err
+	}
+	if len(req.KeepHeadersOnRedirect) > 0 {
+		r, g, err := h.record(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := validateKeepHeadersOnRedirect(r.Manifest, g, req.KeepHeadersOnRedirect); err != nil {
+			if errors.Is(err, ErrPermissionDenied) {
+				h.noteDenied("network")
+			}
+			return err
+		}
 	}
 	if _, err := h.expandHashHeaders(ctx, req.Headers); err != nil {
 		return err
@@ -296,7 +314,14 @@ func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key strin
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	resp, err := h.openFetchWithOptions(fetchCtx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
+	resp, err := h.openFetchWithOptions(fetchCtx, FetchRequest{
+		URL:                   req.URL,
+		Headers:               headers,
+		KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+	}, fetchOptions{
+		stripCrossOriginHeaders: stripCrossOrigin,
+		stripAllCallerHeaders:   true,
+	})
 	if err != nil {
 		return err
 	}

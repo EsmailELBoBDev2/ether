@@ -430,19 +430,25 @@ func openVolumeRef(ctx context.Context, v core.VolumeRef, maxBytes int64, deps D
 	if err != nil {
 		return nil, err
 	}
+	redirectPatterns, err := validateRedirectHeaderPatterns(v.KeepHeadersOnRedirect, deps.AllowHost)
+	if err != nil {
+		return nil, err
+	}
 	hdrs, err := ExpandHeaders(ctx, v.Headers, deps.Secret)
 	if err != nil {
 		return nil, err
 	}
 	hr, err := newHTTPReaderAt(ctx, httpReaderConfig{
-		Template:  tmpl,
-		Headers:   hdrs,
-		ItemIndex: deps.ItemIndex,
-		KnownSize: v.Size,
-		MIME:      "application/octet-stream",
-		Client:    deps.HTTP,
-		AllowHost: deps.AllowHost,
-		Backoff:   deps.Backoff,
+		Template:              tmpl,
+		Headers:               hdrs,
+		SecretHeaderKeys:      secretHeaderNames(v.Headers),
+		KeepHeadersOnRedirect: redirectPatterns,
+		ItemIndex:             deps.ItemIndex,
+		KnownSize:             v.Size,
+		MIME:                  "application/octet-stream",
+		Client:                deps.HTTP,
+		AllowHost:             deps.AllowHost,
+		Backoff:               deps.Backoff,
 	})
 	if err == nil {
 		return hr, nil
@@ -463,12 +469,13 @@ func ensureVolumeCached(ctx context.Context, v core.VolumeRef, maxBytes int64, d
 		return deps.Cache.Open(blobcache.Ref(strings.TrimSpace(v.BlobRef)))
 	}
 	ps := core.PlayableSource{
-		Pattern:  PatternDownload,
-		URL:      v.URL,
-		Headers:  v.Headers,
-		Size:     v.Size,
-		MaxBytes: maxBytes,
-		MIME:     "application/octet-stream",
+		Pattern:               PatternDownload,
+		URL:                   v.URL,
+		Headers:               v.Headers,
+		KeepHeadersOnRedirect: v.KeepHeadersOnRedirect,
+		Size:                  v.Size,
+		MaxBytes:              maxBytes,
+		MIME:                  "application/octet-stream",
 	}
 	return openDownloadSource(ctx, ps, deps)
 }

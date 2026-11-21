@@ -16,11 +16,12 @@ import (
 
 // HostFetchRequest describes an outbound HTTP call via the host service.
 type HostFetchRequest struct {
-	TimeoutMS int64             `json:"timeoutMs,omitempty"`
-	Method    string            `json:"method,omitempty"`
-	URL       string            `json:"url"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Body      string            `json:"body,omitempty"`
+	TimeoutMS             int64             `json:"timeoutMs,omitempty"`
+	Method                string            `json:"method,omitempty"`
+	URL                   string            `json:"url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	Body                  string            `json:"body,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 
 // HostFetchResponse is returned by Host.Fetch.

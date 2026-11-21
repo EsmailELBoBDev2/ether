@@ -611,12 +611,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		value, err = service.HTTPHash(ctx, req)
 	} else if name == "http.fetchToCache" {
 		var req struct {
-			TimeoutMS  int64             `json:"timeoutMs"`
-			Method     string            `json:"method"`
-			URL        string            `json:"url"`
-			Headers    map[string]string `json:"headers"`
-			LibraryKey string            `json:"libraryKey"`
-			Name       string            `json:"name"`
+			TimeoutMS             int64             `json:"timeoutMs"`
+			Method                string            `json:"method"`
+			URL                   string            `json:"url"`
+			Headers               map[string]string `json:"headers"`
+			KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect"`
+			LibraryKey            string            `json:"libraryKey"`
+			Name                  string            `json:"name"`
 		}
 		if len(args) != 1 {
 			return nil, fmt.Errorf("plugins: fetchToCache takes one request")
@@ -634,9 +635,15 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, ErrUnavailable
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{
-			FetchRequest: FetchRequest{TimeoutMS: req.TimeoutMS, Method: req.Method, URL: req.URL, Headers: req.Headers},
-			LibraryKey:   req.LibraryKey,
-			Name:         req.Name,
+			FetchRequest: FetchRequest{
+				TimeoutMS:             req.TimeoutMS,
+				Method:                req.Method,
+				URL:                   req.URL,
+				Headers:               req.Headers,
+				KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+			},
+			LibraryKey: req.LibraryKey,
+			Name:       req.Name,
 		})
 	} else if name == "cache.rasterize" {
 		if len(args) < 3 || len(args) > 4 {

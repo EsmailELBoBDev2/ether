@@ -43,11 +43,12 @@ type ArchiveReadResult struct {
 	Body   []byte `json:"body"`
 }
 type FetchCacheRequest struct {
-	TimeoutMS  int64             `json:"timeoutMs,omitempty"`
-	URL        string            `json:"url"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	LibraryKey string            `json:"libraryKey"`
-	Name       string            `json:"name"`
+	TimeoutMS             int64             `json:"timeoutMs,omitempty"`
+	URL                   string            `json:"url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	LibraryKey            string            `json:"libraryKey"`
+	Name                  string            `json:"name"`
 }
 type FetchCacheResult struct {
 	Blob   string `json:"blob"`
@@ -221,12 +222,15 @@ func (c *RemoteHostClient) ArchiveExtract(ctx context.Context, blob string, memb
 }
 
 // HashRequest requests an on-demand host-side remote digest without storing bytes.
-// Optional Headers are origin-confined and expand {secret:<name>} placeholders.
+// Optional Headers expand {secret:<name>} placeholders and follow redirects
+// only within the same origin, strict same-site subdomains, or
+// KeepHeadersOnRedirect (within granted network hosts, never across HTTPS->HTTP).
 type HashRequest struct {
-	URL        string            `json:"url"`
-	Algo       string            `json:"algo"`
-	ExpectSize *int64            `json:"expectSize,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
+	URL                   string            `json:"url"`
+	Algo                  string            `json:"algo"`
+	ExpectSize            *int64            `json:"expectSize,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 type HashResult struct {
 	Pending   bool   `json:"pending,omitempty"`

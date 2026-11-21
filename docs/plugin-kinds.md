@@ -314,7 +314,13 @@ URLs may carry `{itemIndex}`, `{pageNumber}` (= itemIndex + 1),
 `{byteStart}`, `{byteEnd}` and `{byteRange}` placeholders; Ether
 substitutes integers only. Resolver `headers` may use
 `{secret:name}` placeholders, substituted host-side — never put a
-raw secret in a response (responses are logged). Returning zero
+raw secret in a response (responses are logged). Redirects on playable
+sources (`range`, `download`, `direct`, and `container` volumes) recheck
+network permissions on every hop and keep credentials/headers only within
+the same origin, strict same-site subdomains (verified via the Public Suffix
+List, with no port change or HTTPS→HTTP downgrade), or hosts listed in
+optional `keepHeadersOnRedirect` (still within granted network hosts and
+never across HTTPS→HTTP downgrades). Returning zero
 sources means "not available right now" and is cached briefly.
 
 With `permissions.sources: "search"` (or `"acquire"` to open debrid
@@ -712,14 +718,17 @@ const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.i
 // {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
-`http.fetchToCache({url, headers?, libraryKey, name})` performs a GET, streams
+`http.fetchToCache({url, headers?, keepHeadersOnRedirect?, libraryKey, name})` performs a GET, streams
 up to the owner download ceiling (8 GiB by default), further bounded by the library cache quota, into the plugin's own library cache, and returns
 `{blob, size, crc32, md5, sha1, status}`. SHA-256 is the blob reference.
 Digests cover the stored response bytes in one pass. Compare the digest with
 trusted catalogue metadata before serving a verified download. Non-2xx responses,
 network failures, size overflow and quota failures return errors; they do not
 publish a truncated blob. Redirects recheck the live network grant and the
-existing SSRF policy. The existing content capability, network host declaration
+existing SSRF policy, and follow the same redirect credential policy as
+`http.fetch` (keep credentials/headers on same origin, strict same-site
+subdomains, or explicit `keepHeadersOnRedirect` hosts within granted network
+permissions; never across HTTPS→HTTP downgrades). The existing content capability, network host declaration
 and library cache quota apply; no new permission is needed. The operation is
 synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
@@ -880,12 +889,14 @@ resolving a multi-part item and `source` when opening a source-scoped stream tic
 and is deduplicated per plugin/kind/item (and `partIndex` / `source`). Job completion wakes
 the next resolve.
 
-For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers,keepHeadersOnRedirect})`.
 A miss returns pending while a bounded host worker streams digests without
-storing bytes; the next resolve reads the cached result. Optional `headers` are
-origin-confined (stripped on cross-origin redirects), reject hop-by-hop and
-framing headers, expand `{secret:<name>}` placeholders via `permissions.secrets`
-just like playable sources, and are never logged or persisted in the hash cache.
+storing bytes; the next resolve reads the cached result. Optional `headers`
+reject hop-by-hop and framing headers, expand `{secret:<name>}` placeholders via
+`permissions.secrets` just like playable sources, follow redirects only under
+Ether's redirect credential policy (same origin, strict same-site subdomains, or
+explicit `keepHeadersOnRedirect` hosts within granted network permissions; never
+across HTTPS→HTTP downgrades), and are never logged or persisted in the hash cache.
 Plugins that derive temporary session credentials can store them sealed with
 `ether.secret.set(name, value, ttlSec?)` (and clear them with `ether.secret.delete(name)`)
 under a declared non-owner name in `permissions.secrets`, then reference them as

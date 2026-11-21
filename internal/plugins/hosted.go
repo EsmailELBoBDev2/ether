@@ -468,8 +468,9 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			Headers map[string]string `json:"headers"`
 			Body    string            `json:"body"`
 			// BodyBase64 carries a binary request body; it wins over Body.
-			BodyBase64 string `json:"bodyBase64"`
-			TimeoutMS  int64  `json:"timeoutMs"`
+			BodyBase64            string   `json:"bodyBase64"`
+			TimeoutMS             int64    `json:"timeoutMs"`
+			KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect"`
 		}
 		if len(args) > 0 {
 			if err := json.Unmarshal(args[0], &req); err != nil {
@@ -487,7 +488,14 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 			body = decoded
 		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body, TimeoutMS: req.TimeoutMS})
+		resp, err := b.h.HTTPFetch(ctx, FetchRequest{
+			Method:                req.Method,
+			URL:                   req.URL,
+			Headers:               req.Headers,
+			Body:                  body,
+			TimeoutMS:             req.TimeoutMS,
+			KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+		})
 		if err != nil {
 			return nil, mapHostError(err)
 		}

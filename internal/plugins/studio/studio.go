@@ -1510,11 +1510,12 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 			return json.RawMessage("null"), nil
 		}
 		var req struct {
-			Method     string            `json:"method"`
-			URL        string            `json:"url"`
-			Headers    map[string]string `json:"headers"`
-			Body       string            `json:"body"`
-			BodyBase64 string            `json:"bodyBase64"`
+			Method                string            `json:"method"`
+			URL                   string            `json:"url"`
+			Headers               map[string]string `json:"headers"`
+			Body                  string            `json:"body"`
+			BodyBase64            string            `json:"bodyBase64"`
+			KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect"`
 		}
 		if len(args) > 0 {
 			_ = json.Unmarshal(args[0], &req)
@@ -1525,7 +1526,13 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 				body = b
 			}
 		}
-		resp, err := h.s.mgr.PreviewFetch(ctx, man.Ether.Permissions.Network, plugins.FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body})
+		resp, err := h.s.mgr.PreviewFetch(ctx, man.Ether.Permissions.Network, plugins.FetchRequest{
+			Method:                req.Method,
+			URL:                   req.URL,
+			Headers:               req.Headers,
+			Body:                  body,
+			KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+		})
 		if err != nil {
 			return nil, wasm.Forbidden(err.Error())
 		}

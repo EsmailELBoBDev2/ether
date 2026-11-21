@@ -20,6 +20,8 @@ export interface HostFetchRequest {
   headers?: Record<string, string>;
   body?: string;
   bodyBase64?: string;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
 }
 
 export interface HostFetchResponse {
@@ -33,8 +35,10 @@ export interface HashRequest {
   url: string;
   algo: "sha256" | "sha1" | "md5";
   expectSize?: number;
-  /** Optional origin-confined request headers; values may include `{secret:<name>}` placeholders. */
+  /** Optional request headers; values may include `{secret:<name>}` placeholders. Follow redirects only within the same origin, strict same-site subdomains, or `keepHeadersOnRedirect`. */
   headers?: Record<string, string>;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
 }
 export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
@@ -93,6 +97,8 @@ export interface FetchCacheRequest {
   timeoutMs?: number;
   url: string;
   headers?: Record<string, string>;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
   libraryKey: string;
   name: string;
 }
@@ -777,6 +783,7 @@ export function createHostedClient(): EtherHost {
           method: req.method ?? "GET",
           url: req.url,
           headers: req.headers ?? {},
+          ...(req.keepHeadersOnRedirect !== undefined ? { keepHeadersOnRedirect: req.keepHeadersOnRedirect } : {}),
           ...(req.bodyBase64 !== undefined ? { bodyBase64: req.bodyBase64 } : { body: req.body ?? "" }),
         };
         if (g.ether?.http) return g.ether.http.fetch(normalized);

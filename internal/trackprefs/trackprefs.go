@@ -480,6 +480,9 @@ func pick(streams []core.StreamInfo, kind string, want []string, style string, f
 			// file's default flag.
 			n += 2
 		}
+		if kind == "audio" && ((t.Commentary != nil && *t.Commentary) || (t.VisualImpaired != nil && *t.VisualImpaired)) {
+			n -= 20
+		}
 		if kind == "subtitle" {
 			if (style == "sdh") == sdh(t) {
 				n += 10

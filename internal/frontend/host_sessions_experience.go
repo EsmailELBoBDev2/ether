@@ -1813,13 +1813,18 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 		// Within one wanted language the best tier wins (exact before
 		// generic-want×regional before regional-want×generic); preference
 		// order across languages still dominates.
-		best, bestTier := -1, 0
+		best, bestTier, bestPenalized := -1, 0, false
 		for i, st := range info.Streams {
 			if st.Type != "audio" {
 				continue
 			}
-			if tier := langtag.MatchTier(lang, st.Language); tier > bestTier {
-				best, bestTier = i, tier
+			tier := langtag.MatchTier(lang, st.Language)
+			if tier == 0 {
+				continue
+			}
+			penalized := (st.Commentary != nil && *st.Commentary) || (st.VisualImpaired != nil && *st.VisualImpaired)
+			if tier > bestTier || (tier == bestTier && bestPenalized && !penalized) {
+				best, bestTier, bestPenalized = i, tier, penalized
 			}
 		}
 		if best >= 0 {

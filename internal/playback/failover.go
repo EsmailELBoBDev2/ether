@@ -2376,11 +2376,6 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 	if len(wanted) == 0 {
 		return true
 	}
-	for _, w := range wanted {
-		if releaseparse.LanguageMatch(orig, w) != releaseparse.LanguageNoMatch {
-			return true
-		}
-	}
 	audioCount := 0
 	for _, st := range info.Streams {
 		if st.Type != "audio" {

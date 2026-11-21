@@ -27,11 +27,16 @@ const (
 // KV when they must survive a server restart; tokens are only passed between calls.
 type ActionJobStatus struct {
 	Path         string    `json:"path"`
+	Label        string    `json:"label,omitempty"`
+	Kind         string    `json:"kind,omitempty"`
+	Code         string    `json:"code,omitempty"`
 	State        string    `json:"state"` // running, done, canceled, error
 	Progress     string    `json:"progress,omitempty"`
+	Outcome      string    `json:"outcome,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	Attempts     int       `json:"attempts"`
 	Started      time.Time `json:"started"`
+	Finished     time.Time `json:"finished,omitzero"`
 	TotalLimitMS int64     `json:"totalLimitMs"`
 	AttemptLimit int       `json:"attemptLimit"`
 }
@@ -48,6 +53,138 @@ func (j *actionJob) finish(state, reason string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.status.State, j.status.Error = state, reason
+	j.status.Finished = time.Now().UTC()
+}
+
+// HostJobHandle tracks a host-driven background job (such as a plugin library
+// sync) in the plugin's job list so Activity and Overview show live progress
+// and final outcome alongside plugin-started jobs.
+type HostJobHandle struct {
+	m        *Manager
+	pluginID string
+	job      *actionJob
+}
+
+// SetProgress updates the human-readable progress line on a host-tracked job.
+func (h *HostJobHandle) SetProgress(progress string) {
+	if h == nil || h.job == nil {
+		return
+	}
+	if len(progress) > 1024 {
+		progress = progress[:1024]
+	}
+	h.job.mu.Lock()
+	h.job.status.Progress = progress
+	h.job.status.Attempts++
+	h.job.mu.Unlock()
+}
+
+// Finish marks a host-tracked job terminal with optional code, outcome and error.
+func (h *HostJobHandle) Finish(state, code, outcome, errMsg string) {
+	if h == nil || h.job == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if h.m != nil && h.m.now != nil {
+		now = h.m.now()
+	}
+	if len(outcome) > 1024 {
+		outcome = outcome[:1024]
+	}
+	if len(errMsg) > 1024 {
+		errMsg = errMsg[:1024]
+	}
+	h.job.mu.Lock()
+	h.job.status.State = state
+	h.job.status.Code = code
+	h.job.status.Outcome = outcome
+	h.job.status.Error = errMsg
+	h.job.status.Finished = now
+	if state == "done" {
+		h.job.status.Progress = ""
+	}
+	h.job.mu.Unlock()
+}
+
+// BeginHostJob records a host-managed background job for pluginID in m.jobs
+// without consuming the plugin's ActionJobConcurrency slots. Cancelling the job
+// from the Activity API calls cancel.
+func (m *Manager) BeginHostJob(pluginID, dedupKey, routePath, label, kind string, cancel context.CancelFunc) *HostJobHandle {
+	if m == nil || pluginID == "" || dedupKey == "" {
+		return nil
+	}
+	if cancel == nil {
+		cancel = func() {}
+	}
+	key := pluginID + "|host|" + dedupKey
+	m.jobsMu.Lock()
+	defer m.jobsMu.Unlock()
+	count := 0
+	oldestKey := ""
+	var oldest time.Time
+	m.jobs.Range(func(k, v any) bool {
+		ks := k.(string)
+		if !strings.HasPrefix(ks, pluginID+"|") {
+			return true
+		}
+		s := v.(*actionJob).snapshot()
+		count++
+		if s.State != "running" && (oldestKey == "" || s.Started.Before(oldest)) {
+			oldestKey, oldest = ks, s.Started
+		}
+		return true
+	})
+	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {
+		m.jobs.Delete(oldestKey)
+	}
+	started := time.Now().UTC()
+	if m.now != nil {
+		started = m.now()
+	}
+	done := make(chan struct{})
+	close(done)
+	j := &actionJob{
+		cancel: cancel,
+		done:   done,
+		status: ActionJobStatus{
+			Path:    routePath,
+			Label:   label,
+			Kind:    kind,
+			State:   "running",
+			Started: started,
+		},
+	}
+	m.jobs.Store(key, j)
+	return &HostJobHandle{m: m, pluginID: pluginID, job: j}
+}
+
+// UpdateHostJob updates an existing non-running host-managed job (for example
+// when the owner acknowledges a paused delete guard and chooses to keep items).
+func (m *Manager) UpdateHostJob(pluginID, dedupKey, state, code, outcome, errMsg string) {
+	if m == nil || pluginID == "" || dedupKey == "" {
+		return
+	}
+	key := pluginID + "|host|" + dedupKey
+	v, ok := m.jobs.Load(key)
+	if !ok {
+		return
+	}
+	j := v.(*actionJob)
+	now := time.Now().UTC()
+	if m.now != nil {
+		now = m.now()
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.status.State == "running" {
+		return
+	}
+	j.status.State = state
+	j.status.Code = code
+	j.status.Outcome = outcome
+	j.status.Error = errMsg
+	j.status.Progress = ""
+	j.status.Finished = now
 }
 
 // ExpandJobRunner executes plugin calls and optional /ether/job/... continuations
@@ -132,6 +269,7 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 		return false, nil
 	}
 	resolverPrefix := pluginID + "|resolver|"
+	hostPrefix := pluginID + "|host|"
 	activeAction, count := 0, 0
 	oldestKey := ""
 	var oldest time.Time
@@ -143,7 +281,7 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 		s := v.(*actionJob).snapshot()
 		count++
 		if s.State == "running" {
-			if !strings.HasPrefix(ks, resolverPrefix) {
+			if !strings.HasPrefix(ks, resolverPrefix) && !strings.HasPrefix(ks, hostPrefix) {
 				activeAction++
 			}
 		} else if oldestKey == "" || s.Started.Before(oldest) {
@@ -243,6 +381,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 	}
 	isResolver := suffix != ""
 	resolverPrefix := pluginID + "|resolver|"
+	hostPrefix := pluginID + "|host|"
 	activeAction, activeResolver, count := 0, 0, 0
 	oldestKey := ""
 	var oldest time.Time
@@ -256,7 +395,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 		if s.State == "running" {
 			if strings.HasPrefix(ks, resolverPrefix) {
 				activeResolver++
-			} else {
+			} else if !strings.HasPrefix(ks, hostPrefix) {
 				activeAction++
 			}
 		} else if oldestKey == "" || s.Started.Before(oldest) {
@@ -473,6 +612,8 @@ func (m *Manager) handleActionJobs(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(k.(string), id+"|") {
 			s := v.(*actionJob).snapshot()
 			s.Progress = m.store.redactKnown(r.Context(), id, s.Progress)
+			s.Outcome = m.store.redactKnown(r.Context(), id, s.Outcome)
+			s.Error = m.store.redactKnown(r.Context(), id, s.Error)
 			jobs = append(jobs, s)
 		}
 		return true

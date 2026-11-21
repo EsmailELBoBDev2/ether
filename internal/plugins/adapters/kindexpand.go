@@ -279,7 +279,7 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 		}
 		for start := 0; start < len(normalized); start += pluginitems.MaxUpsertBatch {
 			end := min(start+pluginitems.MaxUpsertBatch, len(normalized))
-			acc, add, uErr := c.items.UpsertItemsWithAdded(jobCtx, rec.PluginID, rec.KindKey, normalized[start:end])
+			acc, add, uErr := c.items.UpsertPinnedItemsWithAdded(jobCtx, rec.PluginID, rec.KindKey, normalized[start:end])
 			if uErr != nil {
 				return accepted, added, uErr
 			}
@@ -558,7 +558,7 @@ func (c *KindCatalog) runContainerHydration(
 		}
 		for start := 0; start < len(normalized); start += pluginitems.MaxUpsertBatch {
 			end := min(start+pluginitems.MaxUpsertBatch, len(normalized))
-			acc, add, uErr := c.items.UpsertItemsWithAdded(bgCtx, rec.PluginID, rec.KindKey, normalized[start:end])
+			acc, add, uErr := c.items.UpsertPinnedItemsWithAdded(bgCtx, rec.PluginID, rec.KindKey, normalized[start:end])
 			if uErr != nil {
 				return accepted, added, uErr
 			}

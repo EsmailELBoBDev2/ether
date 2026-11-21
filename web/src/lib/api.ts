@@ -250,18 +250,19 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     }
   }
   if (!res.ok) {
-    const err = (
-      data as {
-        error?: { code?: string; message?: string; fields?: FieldError[]; phase?: string };
-      } | null
-    )?.error;
-    const error = new ApiError(
-      res.status,
-      err?.code ?? "http",
-      err?.message ?? t("Request failed ({status})", { status: res.status }),
-      err?.fields,
-    );
-    error.phase = err?.phase;
+    const body = data as {
+      code?: string;
+      error?: string | { code?: string; message?: string; fields?: FieldError[]; phase?: string };
+    } | null;
+    const rawErr = body?.error;
+    const errObj = typeof rawErr === "object" && rawErr !== null ? rawErr : null;
+    const errMsg =
+      typeof rawErr === "string"
+        ? rawErr
+        : (errObj?.message ?? t("Request failed ({status})", { status: res.status }));
+    const errCode = errObj?.code ?? body?.code ?? "http";
+    const error = new ApiError(res.status, errCode, errMsg, errObj?.fields);
+    error.phase = errObj?.phase;
     throw error;
   }
   return data as T;

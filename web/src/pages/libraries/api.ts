@@ -236,6 +236,24 @@ export interface MediaKind {
   match?: { thresholdDefault?: number };
 }
 
+export interface LibrarySyncDeleteGuard {
+  source: "walk" | "changes" | string;
+  missing: number;
+  total: number;
+  protected?: number;
+}
+
+export interface LibrarySyncOutcome {
+  mode: string;
+  upserted?: number;
+  deleted?: number;
+  skipped?: number;
+  protected?: number;
+  total: number;
+  summary: string;
+  finishedAt?: string;
+}
+
 export interface LibrarySync {
   pluginId: string;
   kindKey: string;
@@ -243,11 +261,31 @@ export interface LibrarySync {
   lastStarted?: string;
   lastOk?: string;
   lastError?: string;
+  deleteGuard?: LibrarySyncDeleteGuard;
+  lastOutcome?: LibrarySyncOutcome;
   items: number;
   running?: boolean;
   phase?: string;
   syncedItems?: number;
   pages?: number;
+}
+
+export interface LibrarySyncRequest {
+  fullWalk?: boolean;
+  force?: boolean;
+  keepExisting?: boolean;
+}
+
+export interface LibrarySyncResponse {
+  started?: boolean;
+  alreadyRunning?: boolean;
+  running?: boolean;
+  kept?: boolean;
+  upserted?: number;
+  deleted?: number;
+  skipped?: number;
+  protected?: number;
+  sync?: LibrarySync;
 }
 
 export interface CatalogueSource {
@@ -492,11 +530,13 @@ export const librariesApi = {
       kind?: MediaKind;
       resolution?: Record<string, unknown>;
     }>(`/libraries/${id}/item/${encodeURIComponent(ref)}`, { signal }),
-  sync: (id: number, fullWalk = false) =>
-    apiFetch<{ upserted: number; deleted: number; skipped: number }>(`/libraries/${id}/sync`, {
+  sync: (id: number, opts: boolean | LibrarySyncRequest = false) => {
+    const body: LibrarySyncRequest = typeof opts === "boolean" ? { fullWalk: opts } : opts;
+    return apiFetch<LibrarySyncResponse>(`/libraries/${id}/sync`, {
       method: "POST",
-      body: JSON.stringify({ fullWalk }),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
   pinMatch: (id: number, ref: string, candidateRef: string) =>
     apiFetch<{ matches: MatchRecord[] }>(`/libraries/${id}/item/${encodeURIComponent(ref)}/match`, {
       method: "PUT",

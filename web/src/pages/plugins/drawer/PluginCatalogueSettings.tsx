@@ -1,79 +1,154 @@
 import { sourceName } from "../../libraries/CatalogueSources";
-import { Button, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
-import { useState } from "react";
+import { Badge, Button, SettingsSection, cn, toast } from "@braedonsaunders/appkit-ui";
+import { RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../../../components/SettingsRow";
 import { t, tn } from "../../../i18n";
 import { errorMessage } from "../../../lib/api";
-import { formatDateTime, formatNumber } from "../../../lib/format";
 import { useAsync } from "../../../lib/hooks";
-import { librariesApi } from "../../libraries/api";
+import { librariesApi, type LibrarySyncRequest } from "../../libraries/api";
+import {
+  DeleteGuardChoice,
+  formatItemStorageSummary,
+  formatSyncStatusLine,
+  notifySyncError,
+  notifySyncResponse,
+  resolveDeleteGuard,
+} from "../../libraries/syncStatus";
+
+type SyncAction = "sync" | "full" | "keep" | "force";
+
 export function PluginCatalogueSettings({
   pluginId,
   onSetup,
+  onSyncActivity,
 }: {
   pluginId: string;
   onSetup: () => void;
+  onSyncActivity?: () => void;
 }) {
   const libraries = useAsync(
     (signal) => librariesApi.setup(pluginId, signal).then((setup) => setup.libraries),
     [pluginId],
   );
   const sources = useAsync((signal) => librariesApi.catalogueSources(signal), [pluginId]);
-  const [busy, setBusy] = useState(false);
-  const sync = async (id: number, full: boolean) => {
-    setBusy(true);
-    try {
-      await librariesApi.sync(id, full);
-      toast.success(t("Settings saved"));
-    } catch (e) {
-      toast.error(errorMessage(e));
-    } finally {
-      void libraries.reload();
-      void sources.reload();
-      setBusy(false);
-    }
-  };
+  const [busyLib, setBusyLib] = useState<{ id: number; action: SyncAction } | null>(null);
+  const [busySource, setBusySource] = useState<string | null>(null);
+
   const owned = libraries.data?.filter((lib) => lib.pluginId === pluginId) ?? [];
   const catalogues =
     sources.data?.filter((source) => source.pluginId === pluginId && source.group === "stremio") ??
     [];
+
+  const anyRunning = owned.some((lib) => Boolean(lib.sync?.running));
+  const wasRunning = useRef(false);
+
+  useEffect(() => {
+    if (wasRunning.current && !anyRunning) {
+      onSyncActivity?.();
+      void sources.reload();
+    }
+    wasRunning.current = anyRunning;
+  }, [anyRunning, onSyncActivity, sources.reload]);
+
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = window.setInterval(() => {
+      void libraries.reload();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [anyRunning, libraries.reload]);
+
+  const runSync = async (id: number, action: SyncAction, opts: LibrarySyncRequest) => {
+    setBusyLib({ id, action });
+    try {
+      const res = await librariesApi.sync(id, opts);
+      notifySyncResponse(res);
+    } catch (e) {
+      notifySyncError(e);
+    } finally {
+      await libraries.reload();
+      void sources.reload();
+      onSyncActivity?.();
+      setBusyLib(null);
+    }
+  };
+
   if (!owned.length && !catalogues.length) return null;
   return (
     <SettingsSection title={t("Keeping it up to date")}>
       {owned.map((lib) => {
-        const used = lib.storedItems ?? lib.itemCount;
-        const countAgainstCap =
-          typeof used === "number" &&
-          typeof lib.maxPluginItems === "number" &&
-          lib.maxPluginItems > 0
-            ? t("{used} of {limit} items", {
-                used: formatNumber(used, 0),
-                limit: formatNumber(lib.maxPluginItems, 0),
-              })
-            : "";
-        const status = lib.sync?.running
-          ? lib.sync.phase === "reindexing"
-            ? t("Updating search index…")
-            : t("Syncing in background…")
-          : (lib.sync?.lastError ??
-            (lib.sync?.lastOk ? formatDateTime(lib.sync.lastOk) : t("Not synced yet")));
+        const capSummary = formatItemStorageSummary(lib);
+        const running = Boolean(lib.sync?.running);
+        const guard = running ? null : resolveDeleteGuard(lib.sync);
+        const libAction = busyLib?.id === lib.id ? busyLib.action : null;
+        const isBusy = Boolean(libAction) || running;
+        const status = guard
+          ? ""
+          : formatSyncStatusLine(lib.sync, {
+              count: lib.storedItems ?? lib.itemCount ?? 0,
+            });
+        const summaryLine =
+          capSummary && status ? `${capSummary} · ${status}` : capSummary || status;
+        const description = (
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              {summaryLine ? <span>{summaryLine}</span> : null}
+              {running ? (
+                <Badge variant="secondary" className="gap-1">
+                  <RefreshCw size={11} className="animate-spin" aria-hidden />
+                  {lib.sync?.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+                </Badge>
+              ) : guard ? (
+                <Badge variant="outline" className="border-warning/50 text-warning">
+                  {t("Needs review")}
+                </Badge>
+              ) : null}
+            </div>
+            {guard ? (
+              <DeleteGuardChoice
+                guard={guard}
+                busyAction={libAction}
+                onKeep={() => void runSync(lib.id, "keep", { keepExisting: true })}
+                onRemoveMissing={() =>
+                  void runSync(lib.id, "force", {
+                    force: true,
+                    fullWalk: guard.source === "walk",
+                  })
+                }
+              />
+            ) : null}
+          </div>
+        );
         return (
           <SettingsRow
             key={lib.id}
             title={lib.kind?.label ?? lib.name}
-            description={countAgainstCap ? `${countAgainstCap} · ${status}` : status}
+            description={description}
             control={
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy}
-                  onClick={() => void sync(lib.id, true)}
+                  disabled={isBusy}
+                  onClick={() => void runSync(lib.id, "full", { fullWalk: true })}
                 >
+                  {libAction === "full" ? (
+                    <RefreshCw size={13} className="animate-spin" aria-hidden />
+                  ) : null}
                   {t("Full re-sync")}
                 </Button>
-                <Button size="sm" disabled={busy} onClick={() => void sync(lib.id, false)}>
-                  {t("Sync now")}
+                <Button
+                  size="sm"
+                  disabled={isBusy}
+                  onClick={() => void runSync(lib.id, "sync", { fullWalk: false })}
+                >
+                  <RefreshCw
+                    size={13}
+                    className={cn((libAction === "sync" || running) && "animate-spin")}
+                    aria-hidden
+                  />{" "}
+                  {running ? t("Syncing…") : t("Sync now")}
                 </Button>
               </div>
             }
@@ -100,17 +175,18 @@ export function PluginCatalogueSettings({
             control={
               <Button
                 size="sm"
-                disabled={busy}
+                disabled={busySource === source.id}
                 onClick={async () => {
-                  setBusy(true);
+                  setBusySource(source.id);
                   try {
                     await librariesApi.syncCatalogueSource(source.id);
-                    toast.success(t("Settings saved"));
+                    toast.success(t("Catalogue refreshed"));
                   } catch (e) {
                     toast.error(errorMessage(e));
                   } finally {
                     void sources.reload();
-                    setBusy(false);
+                    onSyncActivity?.();
+                    setBusySource(null);
                   }
                 }}
               >

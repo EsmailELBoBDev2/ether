@@ -572,6 +572,7 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	if e != nil || hidden {
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
+	c.items.PinItemAsync(item.Ref)
 	titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
 	parts := syntheticAudiobookParts(item, titles[0])
 	if len(parts) == 0 && item.Playable && item.Unavailable == nil {
@@ -606,6 +607,7 @@ func (c *KindCatalog) projectPartView(ctx context.Context, part pluginitems.Stor
 	if e != nil || hidden {
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
+	c.items.PinItemAsync(parentItem.Ref)
 	parentTitles := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
 	landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
 	return experience.PluginItemView{
@@ -682,6 +684,7 @@ func (c *KindCatalog) syntheticPartItemView(ctx context.Context, parentKey core.
 	if e != nil || hidden {
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
+	c.items.PinItemAsync(item.Ref)
 	titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
 	parts := syntheticAudiobookParts(item, titles[0])
 	if partIdx < 0 || partIdx >= len(parts) {
@@ -1596,7 +1599,7 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 	if err := json.Unmarshal(resp.Body, &page); err != nil || len(page.Items) == 0 {
 		return
 	}
-	if _, err := c.items.UpsertItems(bgCtx, rec.PluginID, rec.KindKey, page.Items); err != nil {
+	if _, err := c.items.UpsertPinnedItems(bgCtx, rec.PluginID, rec.KindKey, page.Items); err != nil {
 		c.log.Debug("live search upsert failed", "plugin", rec.PluginID, "kind", rec.KindKey, "err", err)
 		return
 	}

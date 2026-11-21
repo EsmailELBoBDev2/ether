@@ -57,6 +57,7 @@ func (c *librariesConsole) services() (*pluginitems.Service, *blobcache.Cache, e
 		if c.app.pluginsRT != nil && c.app.pluginsRT.mgr != nil {
 			opts.Caller = c.app.pluginsRT.mgr
 			opts.Health = c.app.pluginsRT.mgr
+			opts.Jobs = pluginSyncJobTracker{mgr: c.app.pluginsRT.mgr}
 			opts.MaxPluginItemsFor = c.app.pluginsRT.mgr.MaxPluginItems
 		}
 		if c.items, c.err = pluginitems.New(ctx, c.app.db, opts); c.err != nil {
@@ -1188,22 +1189,122 @@ func (c *librariesConsole) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Force    bool `json:"force"`
-		FullWalk bool `json:"fullWalk"`
+		Force        bool `json:"force"`
+		FullWalk     bool `json:"fullWalk"`
+		KeepExisting bool `json:"keepExisting"`
 	}
 	if r.Body != nil && r.ContentLength != 0 && !decodeLibBody(w, r, &body) {
 		return
 	}
-	res, err := items.SyncKind(r.Context(), lib.PluginID, lib.KindKey, pluginitems.SyncOptions{
-		Force: body.Force, FullWalk: body.FullWalk,
-	})
-	if err != nil {
-		libError(w, http.StatusBadGateway, "Sync failed")
+	if body.KeepExisting {
+		st, err := items.KeepExistingItems(r.Context(), lib.PluginID, lib.KindKey)
+		if err != nil {
+			libError(w, http.StatusInternalServerError, "Could not update sync state")
+			return
+		}
+		libJSON(w, http.StatusOK, map[string]any{
+			"kept":    true,
+			"running": false,
+			"sync":    st,
+		})
 		return
 	}
-	libJSON(w, http.StatusOK, map[string]any{
-		"upserted": res.Upserted, "deleted": res.Deleted, "skipped": res.Skipped,
+	done, alreadyRunning := items.StartManualSync(lib.PluginID, lib.KindKey, pluginitems.SyncOptions{
+		Force:    body.Force,
+		FullWalk: body.FullWalk,
+		Manual:   true,
 	})
+	if alreadyRunning {
+		st, _ := items.SyncStateOf(r.Context(), lib.PluginID, lib.KindKey)
+		libJSON(w, http.StatusAccepted, map[string]any{
+			"started":        false,
+			"alreadyRunning": true,
+			"running":        true,
+			"sync":           st,
+		})
+		return
+	}
+	// Wait briefly so fast syncs (and immediate delete-guard aborts) return
+	// their final outcome directly while long syncs return 202 Accepted and
+	// report live progress via sync state and plugin Activity jobs.
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case run := <-done:
+		st, _ := items.SyncStateOf(r.Context(), lib.PluginID, lib.KindKey)
+		if run.Err != nil {
+			var dg *pluginitems.DeleteGuardError
+			if errors.As(run.Err, &dg) {
+				libJSON(w, http.StatusConflict, map[string]any{
+					"error":       dg.PlainMessage(),
+					"code":        "delete_guard",
+					"deleteGuard": dg.State(),
+					"sync":        st,
+				})
+				return
+			}
+			msg := strings.TrimSpace(run.Err.Error())
+			if msg == "" {
+				msg = "Sync failed"
+			}
+			libJSON(w, http.StatusBadGateway, map[string]any{
+				"error": msg,
+				"sync":  st,
+			})
+			return
+		}
+		libJSON(w, http.StatusOK, map[string]any{
+			"upserted":  run.Result.Upserted,
+			"deleted":   run.Result.Deleted,
+			"skipped":   run.Result.Skipped,
+			"protected": run.Result.Protected,
+			"running":   false,
+			"sync":      st,
+		})
+	case <-timer.C:
+		st, _ := items.SyncStateOf(r.Context(), lib.PluginID, lib.KindKey)
+		libJSON(w, http.StatusAccepted, map[string]any{
+			"started": true,
+			"running": true,
+			"sync":    st,
+		})
+	case <-r.Context().Done():
+		return
+	}
+}
+
+type pluginSyncJobTracker struct {
+	mgr *plugins.Manager
+}
+
+func (t pluginSyncJobTracker) BeginSyncJob(pluginID, kindKey, routePath, label string, cancel context.CancelFunc) pluginitems.SyncJobHandle {
+	if t.mgr == nil {
+		return nil
+	}
+	h := t.mgr.BeginHostJob(pluginID, "sync:"+kindKey, routePath, label, kindKey, cancel)
+	if h == nil {
+		return nil
+	}
+	return pluginSyncJobHandle{h: h}
+}
+
+func (t pluginSyncJobTracker) UpdateSyncJob(pluginID, kindKey, state, code, outcome, errMsg string) {
+	if t.mgr == nil {
+		return
+	}
+	t.mgr.UpdateHostJob(pluginID, "sync:"+kindKey, state, code, outcome, errMsg)
+}
+
+type pluginSyncJobHandle struct {
+	h *plugins.HostJobHandle
+}
+
+func (j pluginSyncJobHandle) SetProgress(progress string) {
+	j.h.SetProgress(progress)
+}
+
+func (j pluginSyncJobHandle) Finish(state, code, outcome, errMsg string) {
+	j.h.Finish(state, code, outcome, errMsg)
 }
 
 // --- per-library blob cache (spec §11 Cache row, §15.5) ---

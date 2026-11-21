@@ -69,8 +69,9 @@ type KindResolverDeps struct {
 }
 
 type resolveFlightKey struct {
-	ref  core.ItemRef
-	part int
+	ref    core.ItemRef
+	part   int
+	source string
 }
 
 type resolveFlight struct {
@@ -210,12 +211,15 @@ func (r *KindResolver) openSingleSource(ctx context.Context, rec pluginitems.Kin
 		return nil, err
 	}
 	parts := core.ExtractKindItemPartsFromItem(item)
-	dur := extractItemDuration(item, rec.Decl)
+	var dur time.Duration
 	if partIdx != nil && *partIdx < len(parts) {
 		bs = withPartDefaults(bs, parts[*partIdx], item.Title)
-		if dur == 0 && parts[*partIdx].DurationSec > 0 {
+		if parts[*partIdx].DurationSec > 0 {
 			dur = time.Duration(parts[*partIdx].DurationSec * float64(time.Second))
 		}
+	}
+	if dur == 0 && len(parts) <= 1 {
+		dur = extractItemDuration(item, rec.Decl)
 	}
 	if dur == 0 && targetSrc.DurationSec > 0 {
 		dur = time.Duration(targetSrc.DurationSec * float64(time.Second))
@@ -239,11 +243,35 @@ func (r *KindResolver) openSingleSource(ctx context.Context, rec pluginitems.Kin
 	}, nil
 }
 
+func matchPlayableSource(sources []core.PlayableSource, defaultTitle, sourceID string, nowUnix int64) (core.PlayableSource, bool) {
+	if sourceID == "" {
+		return core.PlayableSource{}, false
+	}
+	for _, src := range sources {
+		if src.ExpiresAt > 0 && nowUnix >= src.ExpiresAt {
+			continue
+		}
+		if src.ID == sourceID {
+			return src, true
+		}
+	}
+	for _, src := range sources {
+		if src.ExpiresAt > 0 && nowUnix >= src.ExpiresAt {
+			continue
+		}
+		if playableSourceRelease(src, defaultTitle).ID == sourceID {
+			return src, true
+		}
+	}
+	return core.PlayableSource{}, false
+}
+
 // OpenKindSource opens exactly one plugin kind source by its stable candidate
-// release id (a version-slot pick). It reuses the in-memory and persisted
-// resolution candidate caches so a warm list does not re-run the plugin, opens
-// only the matching candidate, and leaves the shared default winner untouched.
-// A source id not among the current non-expired candidates returns ErrNotAvailable.
+// release id (a version-slot pick) or PlayableSource.ID. It reuses the
+// in-memory and persisted resolution candidate caches so a warm list does not
+// re-run the plugin, opens only the matching candidate, and leaves the shared
+// default winner untouched. A source id not among the current non-expired
+// candidates returns ErrNotAvailable.
 func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sourceID string, accept []string) (*frontend.KindMedia, error) {
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
@@ -268,16 +296,105 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	if err != nil {
 		return nil, err
 	}
-	nowUnix := r.now().Unix()
-	for _, src := range sources {
-		if src.ExpiresAt > 0 && nowUnix >= src.ExpiresAt {
-			continue
-		}
-		if playableSourceRelease(src, item.Title).ID == sourceID {
-			return r.openSingleSource(ctx, rec, lib, item, partIdx, src)
-		}
+	src, matched := matchPlayableSource(sources, item.Title, sourceID, r.now().Unix())
+	if !matched {
+		return nil, core.ErrNotAvailable
 	}
-	return nil, core.ErrNotAvailable
+	return r.openSingleSource(ctx, rec, lib, item, partIdx, src)
+}
+
+// OpenKindPartSource opens exactly one resolver source (and optional zero-based
+// part) for a source-scoped frontend adapter stream ticket (#661). It passes
+// KindResolveRequest.Source to /resolve, opens only the matching source via
+// openSingleSource with no failover to other sources, and leaves the shared
+// default winner and candidate caches untouched. A plugin that ignores
+// KindResolveRequest.Source still works: Ether picks the source with the
+// matching PlayableSource.ID from the response, or returns ErrNotAvailable if
+// it is absent.
+func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex *int, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
+		return nil, core.ErrNotFound
+	}
+	if partIndex != nil && *partIndex < 0 {
+		return nil, core.ErrNotFound
+	}
+	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok {
+		return nil, core.ErrNotFound
+	}
+
+	targetItem := item
+	var effectivePart *int
+	if lv.Playable && item.Playable {
+		parts := core.ExtractKindItemPartsFromItem(item)
+		if partIndex != nil {
+			if len(parts) == 0 || *partIndex >= len(parts) {
+				return nil, core.ErrNotFound
+			}
+			idx := *partIndex
+			effectivePart = &idx
+		} else {
+			p, ok := singlePartIndex(item)
+			if !ok {
+				return nil, core.ErrNotAvailable
+			}
+			effectivePart = p
+		}
+	} else {
+		if partIndex == nil {
+			return nil, core.ErrNotAvailable
+		}
+		leaves, err := r.collectPlayableLeaves(ctx, rec, item)
+		if err != nil {
+			return nil, err
+		}
+		if *partIndex >= len(leaves) {
+			return nil, core.ErrNotFound
+		}
+		targetItem = leaves[*partIndex]
+		p, ok := singlePartIndex(targetItem)
+		if !ok {
+			return nil, core.ErrNotAvailable
+		}
+		effectivePart = p
+	}
+
+	fk := flightKeyForItemSource(targetItem.Ref, effectivePart, sourceID)
+	if cached, ok := r.cachedCandidates(fk); ok {
+		if src, matched := matchPlayableSource(cached, targetItem.Title, sourceID, r.now().Unix()); matched {
+			km, oerr := r.openSingleSource(ctx, rec, lib, targetItem, effectivePart, src)
+			if oerr == nil {
+				return km, nil
+			}
+			if ctx.Err() != nil {
+				return nil, oerr
+			}
+		}
+		// Cached source expired or went stale upstream: drop and re-resolve once.
+		r.deleteCandidates(fk)
+	}
+
+	sources, err := r.resolveItemSourcesForSource(ctx, rec, lib, targetItem, effectivePart, sourceID, accept)
+	if err != nil {
+		return nil, err
+	}
+	src, matched := matchPlayableSource(sources, targetItem.Title, sourceID, r.now().Unix())
+	if !matched {
+		return nil, core.ErrNotAvailable
+	}
+	km, err := r.openSingleSource(ctx, rec, lib, targetItem, effectivePart, src)
+	if err != nil {
+		return nil, err
+	}
+	r.storeCandidates(fk, []core.PlayableSource{src})
+	return km, nil
 }
 
 // KindVersions lists the playable version menu of a plugin kind item in the
@@ -666,7 +783,7 @@ func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, ke
 	}
 	if lv.Playable && item.Playable {
 		parts := core.ExtractKindItemPartsFromItem(item)
-		if len(parts) > 0 && partIndex >= len(parts) {
+		if len(parts) == 0 || partIndex >= len(parts) {
 			return nil, core.ErrNotFound
 		}
 		idx := partIndex
@@ -1431,7 +1548,11 @@ func (r *KindResolver) openItemByteSource(ctx context.Context, rec pluginitems.K
 }
 
 func flightKeyForItem(ref core.ItemRef, partIdx *int) resolveFlightKey {
-	fk := resolveFlightKey{ref: ref, part: -1}
+	return flightKeyForItemSource(ref, partIdx, "")
+}
+
+func flightKeyForItemSource(ref core.ItemRef, partIdx *int, source string) resolveFlightKey {
+	fk := resolveFlightKey{ref: ref, part: -1, source: source}
 	if partIdx != nil {
 		fk.part = *partIdx
 	}
@@ -1742,11 +1863,52 @@ func (r *KindResolver) resolveItemSourcesExcluding(ctx context.Context, rec plug
 		v := *partIdx
 		partCopy = &v
 	}
-	sources, err := r.callPluginResolve(ctx, rec, lib, item, partCopy, accept, exclude)
+	sources, err := r.callPluginResolve(ctx, rec, lib, item, partCopy, "", accept, exclude)
 	if err == nil && len(sources) > 0 {
 		r.storeCandidates(fk, sources)
 	}
 	return sources, err
+}
+
+func (r *KindResolver) resolveItemSourcesForSource(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, sourceID string, accept []string) ([]core.PlayableSource, error) {
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	if r.mgr == nil {
+		return nil, core.ErrSourceUnavailable
+	}
+	fk := flightKeyForItemSource(item.Ref, partIdx, sourceID)
+	var partCopy *int
+	if partIdx != nil {
+		v := *partIdx
+		partCopy = &v
+	}
+
+	r.flightMu.Lock()
+	fl, ok := r.flights[fk]
+	if !ok {
+		fl = &resolveFlight{done: make(chan struct{})}
+		r.flights[fk] = fl
+		go func() {
+			defer func() {
+				r.flightMu.Lock()
+				delete(r.flights, fk)
+				r.flightMu.Unlock()
+				close(fl.done)
+			}()
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
+			defer cancel()
+			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, sourceID, accept, nil)
+		}()
+	}
+	r.flightMu.Unlock()
+
+	select {
+	case <-fl.done:
+		return fl.sources, fl.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, accept []string) ([]core.PlayableSource, error) {
@@ -1783,7 +1945,7 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 			// rather than racing parent context cancellation (#580).
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
 			defer cancel()
-			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, accept, nil)
+			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, "", accept, nil)
 			if fl.err == nil && len(fl.sources) > 0 {
 				r.storeCandidates(fk, fl.sources)
 				if r.items != nil {
@@ -1810,7 +1972,7 @@ func parsePreparingReply(body []byte) error {
 	return core.PreparingFromPending(pending.RetryInMS)
 }
 
-func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, accept, exclude []string) ([]core.PlayableSource, error) {
+func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, source string, accept, exclude []string) ([]core.PlayableSource, error) {
 	pr, err := r.mgr.Get(ctx, rec.PluginID)
 	if err != nil || !pr.Enabled || !pr.Manifest.HasCapability(plugins.CapKindResolver) {
 		return nil, core.ErrSourceUnavailable
@@ -1829,6 +1991,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		LibraryKey: lib.Key,
 		Item:       item,
 		PartIndex:  partIdx,
+		Source:     source,
 		Client:     clientMap,
 	})
 	if err != nil {
@@ -1855,7 +2018,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		return nil, parsePreparingReply(resp.Body)
 	}
 	if resp.Status == http.StatusNotFound {
-		_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
+		if source == "" {
+			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
+		}
 		return nil, core.ErrNotAvailable
 	}
 	if resp.Status != http.StatusOK {
@@ -1877,7 +2042,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		}
 	}
 	if len(resolved.Sources) == 0 {
-		_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
+		if source == "" {
+			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
+		}
 		return nil, core.ErrNotAvailable
 	}
 	if err := r.validateNoRawSecretsInHeaders(ctx, pr.ID, pr.Manifest.Ether.Permissions.Secrets, resolved.Sources); err != nil {

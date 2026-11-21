@@ -621,6 +621,7 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		ViewerID  int64  `json:"viewerId"`
 		ItemRef   string `json:"itemRef"`
 		PartIndex *int   `json:"partIndex,omitempty"`
+		Source    string `json:"source,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
@@ -629,12 +630,32 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		writeHostError(w, http.StatusBadRequest, "bad_arguments", "partIndex must be non-negative")
 		return
 	}
+	if body.Source != "" && strings.TrimSpace(body.Source) == "" {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "source must not be blank")
+		return
+	}
 	var (
 		u   string
 		err error
 	)
-	if body.PartIndex != nil {
-		if ph, ok := h.host.(interface {
+	if body.Source != "" {
+		oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		})
+		if !ok {
+			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support source-scoped stream URLs")
+			return
+		}
+		u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
+			PartIndex: body.PartIndex,
+			Source:    body.Source,
+		})
+	} else if body.PartIndex != nil {
+		if oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		}); ok {
+			u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
+		} else if ph, ok := h.host.(interface {
 			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 		}); ok {
 			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)

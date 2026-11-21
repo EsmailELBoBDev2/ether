@@ -152,7 +152,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
-| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
+| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
 | `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
@@ -353,17 +353,28 @@ part:
   without a part selector) resolve `partIndex: 0` for single-part items and
   deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
   parts (`0 .. N-1`).
-- **Per-part opens** let frontend adapters and multi-file clients fetch each
-  file individually:
-  - Mint a part-scoped ticket URL with `ether.frontend.streamURL(itemRef, partIndex).url`
-    (hosted JS), `streamUrl(ctx, itemRef, partIndex)` (TypeScript SDK),
+- **Per-part and per-source opens** let frontend adapters and multi-file clients
+  fetch a specific file or a specific resolver `PlayableSource.id`:
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+    (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
+    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
     `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
-    `ctx.stream_url(item_ref, part_index)` (Python SDK) — backed by
-    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"}`.
-  - Or pass `?part=N` on an unpinned item ticket (`/ether/v1/kind-media/{ticket}?part=0`).
+    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+  - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
+    to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
+    with no failover to other sources and without clobbering the shared default resolution
+    or candidate cache. A plugin that ignores `source` still works: Ether picks the source
+    with the matching `id` from its response, or answers `409 no_source` if it is absent.
+  - `partIndex` is bounded by the item's declared parts: a playable item that declares no
+    parts rejects any `partIndex` with `404 item_not_found`.
+  - Unpinned item tickets also accept `?part=N` (`/ether/v1/kind-media/{ticket}?part=0`).
     A malformed or negative `part` answers `400 invalid_part`, an out-of-range
-    part answers `404 item_not_found`, and a `?part=N` that disagrees with a
-    part-scoped ticket answers `404 ticket_invalid`.
+    part (or a part index on a playable item with no declared parts) answers
+    `404 item_not_found`, and a `?part=N` that disagrees with a part-scoped
+    ticket answers `404 ticket_invalid`. `source` is bound strictly in the
+    ticket grant and cannot be supplied or overridden by query parameters.
 
 Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
@@ -796,8 +807,8 @@ the two-slot owner/scheduled pool); if all four resolver slots are running, Ethe
 returns `503` with `code: "jobs_busy"`, `Retry-After`, and the refusal message,
 and records the refused job on the plugin Jobs view. A real empty `sources: []`
 answer stays `409` `no_source`. A job receives the original request body (including `partIndex` when
-resolving a multi-part item), uses promoted deadlines and continuation replies,
-and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
+resolving a multi-part item and `source` when opening a source-scoped stream ticket), uses promoted deadlines and continuation replies,
+and is deduplicated per plugin/kind/item (and `partIndex` / `source`). Job completion wakes
 the next resolve.
 
 For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.

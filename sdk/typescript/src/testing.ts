@@ -34,6 +34,7 @@ import {
   MaxBadgeEntriesPerCall,
   MaxBadgeLabelLen,
   MaxBadgeLabelsPerTitle,
+  normalizeStreamUrlOptions,
   PosterBadgeQuotaTitles,
   type CatalogTitleSummary,
   type EtherHost,
@@ -167,6 +168,8 @@ export interface MockHostState {
   lastStreamUrl?: [number, string];
   /** Zero-based part index of the most recent part-scoped frontend.streamUrl call. */
   lastStreamUrlPart?: number;
+  /** PlayableSource.id of the most recent source-scoped frontend.streamUrl call (#661). */
+  lastStreamUrlSource?: string;
 }
 
 export interface MockHostClient extends EtherHost {
@@ -480,14 +483,13 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       },
     },
     frontend: {
-      streamUrl: (viewerId: number, itemRef: string, partIndex?: number) => {
-        if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
-          throw new Error("stream url: partIndex must be a non-negative integer");
-        }
+      streamUrl: (viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions) => {
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         state.lastStreamUrl = [viewerId, itemRef];
-        state.lastStreamUrlPart = partIndex;
+        state.lastStreamUrlPart = opts.partIndex;
+        state.lastStreamUrlSource = opts.source;
         const base = `/ether/v1/kind-media/mock-${viewerId}`;
-        return partIndex === undefined ? base : `${base}?part=${partIndex}`;
+        return opts.partIndex === undefined ? base : `${base}?part=${opts.partIndex}`;
       },
     },
     events: {

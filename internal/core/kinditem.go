@@ -481,6 +481,7 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
 }
 

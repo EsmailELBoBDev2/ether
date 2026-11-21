@@ -1909,3 +1909,78 @@ func TestHostHandlerDerivedSecrets(t *testing.T) {
 		t.Fatal("derived secret still present after DELETE")
 	}
 }
+
+type fakeOptionsHost struct {
+	*fakeHost
+	gotPlugin string
+	gotViewer int64
+	gotItem   string
+	gotOpts   plugins.StreamURLOptions
+}
+
+func (f *fakeOptionsHost) StreamURLWithOptions(_ context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
+	f.gotPlugin = pluginID
+	f.gotViewer = viewerID
+	f.gotItem = itemRef
+	f.gotOpts = opts
+	return "/ether/v1/kind-media/remote-src", nil
+}
+
+func TestRemoteHostFrontendStreamURLSourceOption(t *testing.T) {
+	t.Parallel()
+
+	// Host without StreamURLWithOptions refuses source-scoped requests cleanly with 503.
+	plainSrv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: newFakeHost(),
+		Auth: remotetest.Credentials{"cred-1": "plug.a"},
+	}))
+	defer plainSrv.Close()
+
+	post := func(base, body string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, base+"/ether/plugin-host/frontend/stream-url", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-1")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	resp := post(plainSrv.URL, `{"viewerId":7,"itemRef":"pk:plug.a:book:1","source":"pdf"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("source without options host status = %d, want 503", resp.StatusCode)
+	}
+
+	optHost := &fakeOptionsHost{fakeHost: newFakeHost()}
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: optHost,
+		Auth: remotetest.Credentials{"cred-1": "plug.a"},
+	}))
+	defer srv.Close()
+
+	// Blank source is rejected with 400.
+	resp = post(srv.URL, `{"viewerId":7,"itemRef":"pk:plug.a:book:1","source":"   "}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blank source status = %d, want 400", resp.StatusCode)
+	}
+
+	// Source + partIndex forwards to StreamURLWithOptions.
+	resp = post(srv.URL, `{"viewerId":7,"itemRef":"pk:plug.a:book:1","partIndex":1,"source":"epub"}`)
+	var out struct {
+		URL string `json:"url"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || out.URL != "/ether/v1/kind-media/remote-src" {
+		t.Fatalf("source+part response: status=%d out=%+v", resp.StatusCode, out)
+	}
+	if optHost.gotPlugin != "plug.a" || optHost.gotViewer != 7 || optHost.gotItem != "pk:plug.a:book:1" || optHost.gotOpts.PartIndex == nil || *optHost.gotOpts.PartIndex != 1 || optHost.gotOpts.Source != "epub" {
+		t.Fatalf("unexpected forwarded args: plugin=%q viewer=%d item=%q opts=%+v", optHost.gotPlugin, optHost.gotViewer, optHost.gotItem, optHost.gotOpts)
+	}
+}

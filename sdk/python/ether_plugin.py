@@ -841,6 +841,16 @@ def _check_part_index(part_index: Optional[int]) -> Optional[int]:
     return part_index
 
 
+def _check_stream_source(source: Optional[str]) -> Optional[str]:
+    if source is None or source == "":
+        return None
+    if not isinstance(source, str):
+        raise ValueError("stream url: source must be a string")
+    if source.strip() == "":
+        raise ValueError("stream url: source must not be blank")
+    return source
+
+
 class _FrontendClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -850,11 +860,15 @@ class _FrontendClient:
         viewer_id: int,
         item_ref: str,
         part_index: Optional[int] = None,
+        source: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
+        if checked_source is not None:
+            payload["source"] = checked_source
         result = self._call(
             "POST",
             "/ether/plugin-host/frontend/stream-url",
@@ -1034,14 +1048,21 @@ class PluginContext:
     def t(self, key: str, params: Optional[Dict[str, Any]] = None) -> str:
         return self.i18n.t(key, params=params, locale=self.locale)
 
-    def stream_url(self, item_ref: str, part_index: Optional[int] = None) -> str:
+    def stream_url(
+        self,
+        item_ref: str,
+        part_index: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), or for one zero-based part when part_index is set
-        (#576). The viewer is the one Ether authenticated on this request
-        (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
+        a resolver PlayableSource.id (#661). The viewer is the one Ether
+        authenticated on this request (X-Ether-Viewer); bytes are served by
+        Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -1049,6 +1070,10 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        if checked_source is not None:
+            return self.ether.frontend.stream_url(
+                viewer_id, str(item_ref), checked, source=checked_source
+            )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
         return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
@@ -2502,6 +2527,7 @@ class MockHostClient:
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
+        self.last_stream_url_source: Optional[str] = None
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -2555,10 +2581,13 @@ class MockHostClient:
             viewer_id: int,
             item_ref: str,
             part_index: Optional[int] = None,
+            source: Optional[str] = None,
         ) -> str:
             checked = _check_part_index(part_index)
+            checked_source = _check_stream_source(source)
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
+            self._p.last_stream_url_source = checked_source
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
             return base if checked is None else f"{base}?part={checked}"
 
@@ -3443,11 +3472,13 @@ def stream_url(
     ctx: PluginContext,
     item_ref: str,
     part_index: Optional[int] = None,
+    source: Optional[str] = None,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5) or one zero-based part (#576). Kept as a thin wrapper over
+    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
+    resolver PlayableSource.id (#661). Kept as a thin wrapper over
     PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index)
+    return ctx.stream_url(item_ref, part_index=part_index, source=source)
 
 
 def kinds_visible(

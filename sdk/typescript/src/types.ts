@@ -790,7 +790,15 @@ export interface KindResolveRequest {
   libraryKey: string;
   item: KindItem;
   partIndex?: number;
+  /** Optional PlayableSource.id chosen by a frontend adapter stream ticket (#661). */
+  source?: string;
   client?: Record<string, unknown>;
+}
+
+/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+export interface StreamUrlOptions {
+  partIndex?: number;
+  source?: string;
 }
 
 export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }

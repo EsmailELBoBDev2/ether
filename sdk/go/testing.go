@@ -127,10 +127,12 @@ type MockHost struct {
 	Notifications    []string
 	Logs             []RecordedLog
 	FetchHandler     func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
-	// LastStreamURLViewer/Item/Part record the most recent StreamURL or StreamPartURL call.
+	// LastStreamURLViewer/Item/Part/Source record the most recent StreamURL,
+	// StreamPartURL, or StreamURLWithOptions call.
 	LastStreamURLViewer int64
 	LastStreamURLItem   string
 	LastStreamURLPart   *int
+	LastStreamURLSource string
 }
 
 // NewMockHost creates an initialized MockHost.
@@ -756,12 +758,7 @@ func (m *MockHost) CacheDelete(_ context.Context, blobRef string) error {
 // StreamURL mints a deterministic stand-in URL and records the last call, so
 // a plugin's frontend adapter can be tested without a real ticket issuer.
 func (m *MockHost) StreamURL(_ context.Context, viewerID int64, itemRef string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.LastStreamURLViewer = viewerID
-	m.LastStreamURLItem = itemRef
-	m.LastStreamURLPart = nil
-	return "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10), nil
+	return m.StreamURLWithOptions(context.Background(), viewerID, itemRef, StreamURLOptions{})
 }
 
 // StreamPartURL mints a deterministic part-scoped stand-in URL and records the
@@ -770,13 +767,34 @@ func (m *MockHost) StreamPartURL(_ context.Context, viewerID int64, itemRef stri
 	if partIndex < 0 {
 		return "", fmt.Errorf("stream url: partIndex must be non-negative")
 	}
+	return m.StreamURLWithOptions(context.Background(), viewerID, itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+
+// StreamURLWithOptions mints a deterministic stand-in URL and records the
+// viewer, item, optional part index, and optional source id (#576, #661).
+func (m *MockHost) StreamURLWithOptions(_ context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", fmt.Errorf("stream url: source must not be blank")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cp := partIndex
 	m.LastStreamURLViewer = viewerID
 	m.LastStreamURLItem = itemRef
-	m.LastStreamURLPart = &cp
-	return "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10) + "?part=" + strconv.Itoa(partIndex), nil
+	if opts.PartIndex != nil {
+		cp := *opts.PartIndex
+		m.LastStreamURLPart = &cp
+	} else {
+		m.LastStreamURLPart = nil
+	}
+	m.LastStreamURLSource = opts.Source
+	u := "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10)
+	if opts.PartIndex != nil {
+		u += "?part=" + strconv.Itoa(*opts.PartIndex)
+	}
+	return u, nil
 }
 
 // AssertValidViewSpec validates a ViewSpecDocument for structural rules and

@@ -1,12 +1,14 @@
 package adapters_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -292,5 +294,252 @@ func TestKindVersionsCachingOpenSourceAndRememberedChoice(t *testing.T) {
 	v1Cleared, err := krFresh.KindVersions(ctx, viewer1, key, nil, true)
 	if err != nil || len(v1Cleared) != 3 || v1Cleared[0].Remembered || v1Cleared[0].Release.ID != "kind:"+hash4K {
 		t.Fatalf("viewer1 KindVersions after clear = %+v, err=%v", v1Cleared, err)
+	}
+}
+
+func TestKindResolverOpenKindPartSourceAndBoundedPartIndex(t *testing.T) {
+	payloads := map[string][]byte{
+		"/book/epub":   []byte("EPUB-DATA"),
+		"/book/pdf":    []byte("PDF-DATA"),
+		"/multi/p0/hd": []byte("PART0-HD"),
+		"/multi/p0/sd": []byte("PART0-SD"),
+		"/multi/p1/hd": []byte("PART1-HD"),
+		"/multi/p1/sd": []byte("PART1-SD"),
+	}
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/book/broken" {
+			http.Error(w, "upstream broken", http.StatusInternalServerError)
+			return
+		}
+		data, ok := payloads[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, r.URL.Path, time.Unix(1_700_000_000, 0), bytes.NewReader(data))
+	}))
+	defer mediaSrv.Close()
+
+	httpClient := &http.Client{
+		Transport: hostRewriteTransport{target: mediaSrv.URL, base: mediaSrv.Client().Transport},
+	}
+	h := newKindTestHarness(t, 0, httpClient)
+	ctx := context.Background()
+
+	var (
+		mu       sync.Mutex
+		seenReqs []core.KindResolveRequest
+	)
+	h.rt.callContext = func(_ context.Context, req plugins.Request) (plugins.Response, error) {
+		switch req.Path {
+		case "/ether/health":
+			return plugins.Response{Status: http.StatusOK, Body: json.RawMessage(`{"status":"ok"}`)}, nil
+		case "/ether/v1/kinds/recordings/resolve":
+			var body core.KindResolveRequest
+			if err := json.Unmarshal(req.Body, &body); err != nil {
+				return plugins.Response{Status: http.StatusBadRequest}, nil
+			}
+			mu.Lock()
+			seenReqs = append(seenReqs, body)
+			mu.Unlock()
+
+			switch body.Item.ID {
+			case "aware-book":
+				// Resolver honours KindResolveRequest.Source when set.
+				var srcs []core.PlayableSource
+				switch body.Source {
+				case "":
+					srcs = []core.PlayableSource{
+						{ID: "epub", Pattern: "range", MIME: "application/epub+zip", Size: int64(len(payloads["/book/epub"])), URL: "https://media.example/book/epub"},
+						{ID: "pdf", Pattern: "range", MIME: "application/pdf", Size: int64(len(payloads["/book/pdf"])), URL: "https://media.example/book/pdf"},
+					}
+				case "pdf":
+					srcs = []core.PlayableSource{
+						{ID: "pdf", Pattern: "range", MIME: "application/pdf", Size: int64(len(payloads["/book/pdf"])), URL: "https://media.example/book/pdf"},
+					}
+				case "broken":
+					srcs = []core.PlayableSource{
+						{ID: "broken", Pattern: "range", MIME: "application/octet-stream", Size: 10, URL: "https://media.example/book/broken"},
+						{ID: "epub", Pattern: "range", MIME: "application/epub+zip", Size: int64(len(payloads["/book/epub"])), URL: "https://media.example/book/epub"},
+					}
+				default:
+					return plugins.Response{Status: http.StatusNotFound, Body: json.RawMessage(`{"sources":[]}`)}, nil
+				}
+				raw, _ := json.Marshal(core.KindResolveResponse{TTLSec: 600, Sources: srcs})
+				return plugins.Response{Status: http.StatusOK, Body: raw}, nil
+
+			case "ignore-book":
+				// Legacy resolver ignores KindResolveRequest.Source and returns all sources.
+				raw, _ := json.Marshal(core.KindResolveResponse{
+					TTLSec: 600,
+					Sources: []core.PlayableSource{
+						{ID: "epub", Pattern: "range", MIME: "application/epub+zip", Size: int64(len(payloads["/book/epub"])), URL: "https://media.example/book/epub"},
+						{ID: "broken", Pattern: "range", MIME: "application/octet-stream", Size: 10, URL: "https://media.example/book/broken"},
+						{ID: "pdf", Pattern: "range", MIME: "application/pdf", Size: int64(len(payloads["/book/pdf"])), URL: "https://media.example/book/pdf"},
+					},
+				})
+				return plugins.Response{Status: http.StatusOK, Body: raw}, nil
+
+			case "multi-book":
+				p := -1
+				if body.PartIndex != nil {
+					p = *body.PartIndex
+				}
+				if p < 0 || p > 1 {
+					return plugins.Response{Status: http.StatusBadRequest}, nil
+				}
+				hdPath := "/multi/p" + string(rune('0'+p)) + "/hd"
+				sdPath := "/multi/p" + string(rune('0'+p)) + "/sd"
+				raw, _ := json.Marshal(core.KindResolveResponse{
+					TTLSec: 600,
+					Sources: []core.PlayableSource{
+						{ID: "hd", Pattern: "range", MIME: "application/octet-stream", Size: int64(len(payloads[hdPath])), URL: "https://media.example" + hdPath},
+						{ID: "sd", Pattern: "range", MIME: "application/octet-stream", Size: int64(len(payloads[sdPath])), URL: "https://media.example" + sdPath},
+					},
+				})
+				return plugins.Response{Status: http.StatusOK, Body: raw}, nil
+			}
+			return plugins.Response{Status: http.StatusNotFound}, nil
+		default:
+			return plugins.Response{Status: http.StatusNotFound}, nil
+		}
+	}
+
+	const pluginID = "community.example.sourcepick"
+	decl := recordingsKindDecl(true)
+	decl["sync"] = map[string]any{"mode": "push"}
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Source Pick Test",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Source pick test",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"permissions":  map[string]any{"network": []string{"media.example"}},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes":  map[string]any{"mediaKinds": []map[string]any{decl}},
+		},
+	}, map[string][]byte{"i18n/en.json": []byte(`{"lib_name":"Books"}`)})
+
+	host := h.mgr.HostFor(pluginID)
+	if _, err := host.KindUpsert(ctx, "recordings", []core.KindItem{
+		{ID: "alb-1", Level: "album", Title: "Shelf"},
+		{ID: "aware-book", Level: "track", ParentID: "alb-1", Index: 1, Title: "Aware Book", Playable: true},
+		{ID: "ignore-book", Level: "track", ParentID: "alb-1", Index: 2, Title: "Legacy Book", Playable: true},
+		{
+			ID: "multi-book", Level: "track", ParentID: "alb-1", Index: 3, Title: "Multi Book", Playable: true,
+			Hints: json.RawMessage(`{"parts":[{"name":"Part 1","size":8},{"name":"Part 2","size":8}]}`),
+		},
+	}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+
+	awareItem, _, err := h.items.GetByExternal(ctx, pluginID, "recordings", "aware-book")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ignoreItem, _, err := h.items.GetByExternal(ctx, pluginID, "recordings", "ignore-book")
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiItem, _, err := h.items.GetByExternal(ctx, pluginID, "recordings", "multi-book")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+
+	readAll := func(t *testing.T, km interface {
+		ReadAt([]byte, int64) (int, error)
+		Close() error
+	}, sz int64) string {
+		t.Helper()
+		defer km.Close()
+		b := make([]byte, sz)
+		if _, err := km.ReadAt(b, 0); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("ReadAt: %v", err)
+		}
+		return string(b)
+	}
+
+	// 1. Bounded PartIndex: playable item with NO declared parts rejects any partIndex without calling /resolve.
+	if _, err := h.resolver.OpenKindPart(ctx, viewer, awareItem.Key, 0, nil); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("OpenKindPart on item with no parts err = %v, want ErrNotFound", err)
+	}
+	zero := 0
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, awareItem.Key, &zero, "pdf", nil); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("OpenKindPartSource with partIndex on item with no parts err = %v, want ErrNotFound", err)
+	}
+	mu.Lock()
+	if len(seenReqs) != 0 {
+		t.Fatalf("expected 0 /resolve calls for rejected partIndex, got %d", len(seenReqs))
+	}
+	mu.Unlock()
+
+	// 2. Source-aware plugin receives KindResolveRequest.Source and opens only that source.
+	kmPDF, err := h.resolver.OpenKindPartSource(ctx, viewer, awareItem.Key, nil, "pdf", nil)
+	if err != nil {
+		t.Fatalf("OpenKindPartSource(aware, pdf): %v", err)
+	}
+	if got := readAll(t, kmPDF, kmPDF.Size); got != "PDF-DATA" {
+		t.Fatalf("aware pdf bytes = %q, want PDF-DATA", got)
+	}
+	mu.Lock()
+	if len(seenReqs) != 1 || seenReqs[0].Source != "pdf" || seenReqs[0].PartIndex != nil {
+		t.Fatalf("aware /resolve request = %+v, want Source=pdf PartIndex=nil", seenReqs)
+	}
+	mu.Unlock()
+
+	// 3. Unknown source returns ErrNotAvailable and must NOT negative-cache the item for default OpenKind.
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, awareItem.Key, nil, "missing", nil); !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("missing source err = %v, want ErrNotAvailable", err)
+	}
+	kmDefault, err := h.resolver.OpenKind(ctx, viewer, awareItem.Key, nil)
+	if err != nil {
+		t.Fatalf("default OpenKind after missing/source-scoped open: %v", err)
+	}
+	if got := readAll(t, kmDefault, kmDefault.Size); got != "EPUB-DATA" {
+		t.Fatalf("default OpenKind bytes = %q, want EPUB-DATA (shared default untouched)", got)
+	}
+
+	// 4. Broken chosen source fails with NO failover to the healthy epub source.
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, awareItem.Key, nil, "broken", nil); err == nil {
+		t.Fatal("broken source succeeded (unexpected failover)")
+	}
+
+	// 5. Plugin that ignores KindResolveRequest.Source still works: Ether picks matching id,
+	// refuses failover on broken id, and returns ErrNotAvailable when absent.
+	kmLegacyPDF, err := h.resolver.OpenKindPartSource(ctx, viewer, ignoreItem.Key, nil, "pdf", nil)
+	if err != nil {
+		t.Fatalf("OpenKindPartSource(ignore, pdf): %v", err)
+	}
+	if got := readAll(t, kmLegacyPDF, kmLegacyPDF.Size); got != "PDF-DATA" {
+		t.Fatalf("legacy pdf bytes = %q, want PDF-DATA", got)
+	}
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, ignoreItem.Key, nil, "broken", nil); err == nil {
+		t.Fatal("legacy broken source succeeded (unexpected failover)")
+	}
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, ignoreItem.Key, nil, "absent", nil); !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("legacy absent source err = %v, want ErrNotAvailable", err)
+	}
+
+	// 6. Multi-part item combines partIndex + source, rejects missing partIndex (ErrNotAvailable) and out-of-range (ErrNotFound).
+	part1 := 1
+	kmMultiSD, err := h.resolver.OpenKindPartSource(ctx, viewer, multiItem.Key, &part1, "sd", nil)
+	if err != nil {
+		t.Fatalf("OpenKindPartSource(multi, part=1, sd): %v", err)
+	}
+	if got := readAll(t, kmMultiSD, kmMultiSD.Size); got != "PART1-SD" {
+		t.Fatalf("multi part=1 sd bytes = %q, want PART1-SD", got)
+	}
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, multiItem.Key, nil, "sd", nil); !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("multi without partIndex err = %v, want ErrNotAvailable", err)
+	}
+	part9 := 9
+	if _, err := h.resolver.OpenKindPartSource(ctx, viewer, multiItem.Key, &part9, "sd", nil); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("multi out-of-range partIndex err = %v, want ErrNotFound", err)
 	}
 }

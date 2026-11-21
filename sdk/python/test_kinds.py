@@ -209,9 +209,19 @@ class KindsConformanceTest(unittest.TestCase):
         part_url = ctx.stream_url("pk:recordings:a", 2)
         self.assertTrue(part_url.endswith("?part=2"))
         self.assertEqual(host.last_stream_url_part, 2)
+        self.assertIsNone(host.last_stream_url_source)
         self.assertEqual(stream_url(ctx, "pk:recordings:a", 2), part_url)
         with self.assertRaises(ValueError):
             ctx.stream_url("pk:recordings:a", -1)
+
+        src_url = ctx.stream_url("pk:recordings:a", 1, source="pdf")
+        self.assertTrue(src_url.endswith("?part=1"))
+        self.assertEqual(host.last_stream_url_part, 1)
+        self.assertEqual(host.last_stream_url_source, "pdf")
+        self.assertEqual(stream_url(ctx, "pk:recordings:a", source="epub"), "/ether/v1/kind-media/mock-7")
+        self.assertEqual(host.last_stream_url_source, "epub")
+        with self.assertRaises(ValueError):
+            ctx.stream_url("pk:recordings:a", source="   ")
 
         seen = []
         remote = RemoteHostClient(base_url="http://ether.local", credential="cred")
@@ -230,9 +240,13 @@ class KindsConformanceTest(unittest.TestCase):
             i18n=None,
         )
         self.assertEqual(rctx.stream_url("pk:recordings:a", 3), "/ether/v1/kind-media/remote-part")
+        self.assertEqual(rctx.stream_url("pk:recordings:a", 1, source="epub"), "/ether/v1/kind-media/remote-part")
         self.assertEqual(
             seen,
-            [("POST", "/ether/plugin-host/frontend/stream-url", {"viewerId": 7, "itemRef": "pk:recordings:a", "partIndex": 3})],
+            [
+                ("POST", "/ether/plugin-host/frontend/stream-url", {"viewerId": 7, "itemRef": "pk:recordings:a", "partIndex": 3}),
+                ("POST", "/ether/plugin-host/frontend/stream-url", {"viewerId": 7, "itemRef": "pk:recordings:a", "partIndex": 1, "source": "epub"}),
+            ],
         )
 
         # No viewer header: refused.

@@ -53,9 +53,9 @@ type ServiceDeps struct {
 	// KeysByProviderID resolves one external provider id ("tmdb", "imdb",
 	// "tvdb", case-insensitive) to candidate rating keys via indexed lookup,
 	// never scanning the catalogue.
-	KeysByProviderID    func(context.Context, string, string, []core.MediaType) ([]core.RatingKey, error)
-	Active              func(context.Context, int64) (*core.User, error)
-	Libraries           []Library
+	KeysByProviderID func(context.Context, string, string, []core.MediaType) ([]core.RatingKey, error)
+	Active           func(context.Context, int64) (*core.User, error)
+	Libraries        []Library
 	// LiveLibraries, when set, is read on each surface call so configured
 	// names stay current. IDs and media types stay stable. Nil uses Libraries.
 	LiveLibraries   func() []Library

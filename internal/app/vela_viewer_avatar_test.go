@@ -37,11 +37,11 @@ func makeTestAvatarPNG(t *testing.T, w, h int, c color.RGBA) []byte {
 }
 
 type plexViewerAvatarRoundTripper struct {
-	mu           sync.Mutex
-	machineID    string
-	ownerThumb   string
-	kidThumb     string
-	avatars      map[string][]byte
+	mu            sync.Mutex
+	machineID     string
+	ownerThumb    string
+	kidThumb      string
+	avatars       map[string][]byte
 	avatarFetches map[string]int
 }
 

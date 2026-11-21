@@ -194,7 +194,7 @@ type Deps struct {
 	// identity for ix under policy.
 	TestIndexerIdentity func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error)
 	// IndexerPreview renders the masked sample requests for a rule or indexer draft.
-	IndexerPreview func(req IndexerPreviewRequest) (any, error)
+	IndexerPreview    func(req IndexerPreviewRequest) (any, error)
 	TestDebrid        func(ctx context.Context, p config.DebridProvider) error
 	TestTMDB          func(ctx context.Context, key string) error
 	TestOpenSubtitles func(ctx context.Context, cfg config.OpenSubtitles) error

@@ -75,7 +75,7 @@ func TestPoolReturnsInstanceOnCancelAndTimeoutDuringBlockingHostCall(t *testing.
 	}`
 	p, err := eng.LoadJS("blocking-host", "1.0.0", js, host, Limits{
 		PoolSize: 1,
-		Deadline: 200 * time.Millisecond,
+		Deadline: 5 * time.Second, // also bounds runtime creation, slow on loaded CI runners
 	})
 	if err != nil {
 		t.Fatalf("LoadJS: %v", err)

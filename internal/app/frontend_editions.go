@@ -89,7 +89,11 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 		return nil, nil
 	}
 	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
-		variants, err := s.app.pluginKindVersions(ctx, req.User, req.Title.Key)
+		vctx := ctx
+		if core.IndexerPurpose(vctx) == "" {
+			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
+		}
+		variants, err := s.app.pluginKindVersions(vctx, req.User, req.Title.Key)
 		if err != nil || len(variants) == 0 {
 			return nil, err
 		}
@@ -113,7 +117,7 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 }
 
 func (s surfaceEditions) RefillSearchCache(t *core.Title) <-chan struct{} {
-	if s.app == nil || s.app.resolver == nil {
+	if s.app == nil || s.app.resolver == nil || t == nil || t.Key.IsPluginKey() {
 		return nil
 	}
 	return s.app.resolver.RefillSearchCache(t)
@@ -138,7 +142,11 @@ func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveReque
 		if !labels {
 			return nil, nil
 		}
-		variants, err := s.app.pluginKindVersions(ctx, req.User, req.Title.Key)
+		vctx := ctx
+		if core.IndexerPurpose(vctx) == "" {
+			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
+		}
+		variants, err := s.app.pluginKindVersions(vctx, req.User, req.Title.Key)
 		if err != nil || len(variants) == 0 {
 			return nil, err
 		}

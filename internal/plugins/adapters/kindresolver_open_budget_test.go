@@ -14,12 +14,16 @@ import (
 )
 
 type blockingTestIndexer struct {
-	fetchFn func(ctx context.Context, rel core.Release) ([]byte, error)
+	searchFn func(ctx context.Context, req core.SearchRequest) ([]core.Release, error)
+	fetchFn  func(ctx context.Context, rel core.Release) ([]byte, error)
 }
 
 func (b *blockingTestIndexer) Name() string { return "blocking-test-indexer" }
 
-func (b *blockingTestIndexer) Search(context.Context, core.SearchRequest) ([]core.Release, error) {
+func (b *blockingTestIndexer) Search(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
+	if b.searchFn != nil {
+		return b.searchFn(ctx, req)
+	}
 	return nil, nil
 }
 
@@ -170,5 +174,49 @@ func TestKindResolverInvalidatePluginCancelsFlightsAndClearsCache(t *testing.T) 
 	}
 	if _, ok := r.cachedCandidates(fkB); !ok {
 		t.Fatal("unrelated plugin-b candidate cache was cleared")
+	}
+}
+
+func TestResolveSourcesSpeculativeBudgetCooloffDoesNotBlockPlayback(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	var searches int
+	r := NewKindResolver(KindResolverDeps{
+		Now: func() time.Time { return now },
+		Indexer: &blockingTestIndexer{
+			searchFn: func(ctx context.Context, _ core.SearchRequest) ([]core.Release, error) {
+				searches++
+				if core.SpeculativeIndexerWork(ctx) {
+					return nil, core.ErrBudgetExhausted
+				}
+				return []core.Release{{ID: "r1", Name: "Album FLAC", NZBURL: "https://indexer.example/nzb/1"}}, nil
+			},
+		},
+	})
+
+	detailCtx := core.WithIndexerPurpose(context.Background(), core.IndexerPurposeDetail)
+	if _, err := r.ResolveSources(detailCtx, "music", core.SourceQuery{Kind: "indexer_search", Query: "Album 1"}); err != nil {
+		t.Fatalf("first detail search err = %v", err)
+	}
+	if searches != 1 {
+		t.Fatalf("after first detail search: searches=%d, want 1", searches)
+	}
+
+	// Second speculative detail search during cooloff must not hit the indexer again.
+	if _, err := r.ResolveSources(detailCtx, "music", core.SourceQuery{Kind: "indexer_search", Query: "Album 2"}); err != nil {
+		t.Fatalf("second detail search err = %v", err)
+	}
+	if searches != 1 {
+		t.Fatalf("second detail search during cooloff hit indexer: searches=%d, want 1", searches)
+	}
+
+	// Foreground playback search must bypass the speculative cooloff immediately.
+	playCtx := core.WithIndexerPurpose(context.Background(), core.IndexerPurposePlayback)
+	cands, err := r.ResolveSources(playCtx, "music", core.SourceQuery{Kind: "indexer_search", Query: "Album 2"})
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("playback search = (%d cands, %v), want (1, nil)", len(cands), err)
+	}
+	if searches != 2 {
+		t.Fatalf("playback search count = %d, want 2", searches)
 	}
 }

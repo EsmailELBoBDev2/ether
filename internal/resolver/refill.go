@@ -11,7 +11,7 @@ import (
 const (
 	maxSearchRefills   = 2
 	searchRefillBudget = 45 * time.Second
-	refillRetryDelay   = 15 * time.Second // after a budget refusal only
+	refillRetryDelay   = 5 * time.Minute // after a budget refusal only
 )
 
 var (
@@ -50,8 +50,12 @@ func (s *Service) RefillWarmupSearchCache(title *core.Title) <-chan struct{} {
 }
 
 func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan struct{} {
-	if title == nil {
+	if title == nil || title.Key.IsPluginKey() {
 		return nil
+	}
+	purpose := core.IndexerPurposeDetail
+	if unattended {
+		purpose = core.IndexerPurposeWarmup
 	}
 	req := searchRequestFor(title)
 	if !unattended && req.Anime {
@@ -67,6 +71,9 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 	}
 	if done := s.refills[key]; done != nil {
 		return done
+	}
+	if until, ok := s.speculativeBudgetUntil[purpose]; ok && s.now().Before(until) {
+		return nil
 	}
 	if mark := s.refillRetryAfter[key]; s.now().Before(mark.until) {
 		return nil
@@ -103,8 +110,13 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 			boundMap(s.refillRetryAfter, maxSearchCache, func(m refillMark) bool { return !s.now().Before(m.until) })
 			next := cooloff
 			if errors.Is(err, core.ErrBudgetExhausted) {
-				// Refused before any request: the share may allow it later.
+				// Refused before any request: pause further speculative discovery
+				// for this purpose instead of fanning out on every browsed item.
 				next = refillRetryDelay
+				if s.speculativeBudgetUntil == nil {
+					s.speculativeBudgetUntil = make(map[string]time.Time)
+				}
+				s.speculativeBudgetUntil[purpose] = s.now().Add(refillRetryDelay)
 			}
 			found, _ := s.peekSearchCache(key)
 			s.refillRetryAfter[key] = refillMark{until: s.now().Add(next), missed: len(found) == 0}
@@ -121,4 +133,34 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 		}
 	}()
 	return done
+}
+
+func (s *Service) speculativeBudgetPaused(ctx context.Context) bool {
+	if !core.SpeculativeIndexerWork(ctx) {
+		return false
+	}
+	purpose := core.IndexerPurpose(ctx)
+	if purpose == "" {
+		return false
+	}
+	s.bgMu.Lock()
+	until := s.speculativeBudgetUntil[purpose]
+	s.bgMu.Unlock()
+	return s.now().Before(until)
+}
+
+func (s *Service) noteSpeculativeBudgetExhausted(ctx context.Context) {
+	if !core.SpeculativeIndexerWork(ctx) {
+		return
+	}
+	purpose := core.IndexerPurpose(ctx)
+	if purpose == "" {
+		return
+	}
+	s.bgMu.Lock()
+	if s.speculativeBudgetUntil == nil {
+		s.speculativeBudgetUntil = make(map[string]time.Time)
+	}
+	s.speculativeBudgetUntil[purpose] = s.now().Add(refillRetryDelay)
+	s.bgMu.Unlock()
 }

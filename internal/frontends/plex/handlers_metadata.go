@@ -273,19 +273,23 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
-				if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && !s.detailBurst(pr, t.Key) && variants != nil {
-					// Repeated metadata fetches while the same page is being
-					// watched must not retry a failed search on every fetch.
-					watchKey := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)
-					s.variantWatch.mu.Lock()
-					watching := s.variantWatch.pending[watchKey]
-					s.variantWatch.mu.Unlock()
-					if !watching {
-						pr.detailRefillRequested = true
-						pr.detailRefill = variants.RefillSearchCache(t)
+				// Plugin items resolve through their plugin rather than the
+				// built-in catalogue search cache or detail prewarmer.
+				if !t.Key.IsPluginKey() {
+					if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && !s.detailBurst(pr, t.Key) && variants != nil {
+						// Repeated metadata fetches while the same page is being
+						// watched must not retry a failed search on every fetch.
+						watchKey := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)
+						s.variantWatch.mu.Lock()
+						watching := s.variantWatch.pending[watchKey]
+						s.variantWatch.mu.Unlock()
+						if !watching {
+							pr.detailRefillRequested = true
+							pr.detailRefill = variants.RefillSearchCache(t)
+						}
 					}
+					s.scheduleDetailWarm(ctx, pr, t)
 				}
-				s.scheduleDetailWarm(ctx, pr, t)
 			}
 			// Live session intent (#32): a single-item detail open.
 			s.recordDetailIntent(ctx, pr, t)
@@ -498,7 +502,7 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 		}
 		rendered := s.renderTitles(ctx, pr, uniqueTitles, renderOpts{
 			detail:         true,
-			batchDetail:    !includeChildren,
+			batchDetail:    true,
 			skipLeafCounts: true,
 			media:          true,
 		})
@@ -1634,7 +1638,7 @@ func (s *Server) detailBurst(pr *Request, key frontend.RatingKey) bool {
 // Detail-family GETs schedule preparation. Flagged Plex clients retain their
 // bounded cached-source probe exception so their first subtitle picker works.
 func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *frontend.Title) {
-	if t == nil || pr == nil || pr.User == nil || !isPlayable(t.Type) || libraryToolClient(pr) {
+	if t == nil || pr == nil || pr.User == nil || t.Key.IsPluginKey() || !isPlayable(t.Type) || libraryToolClient(pr) {
 		return
 	}
 	// Persisted tracks already describe the selected resume source. Version

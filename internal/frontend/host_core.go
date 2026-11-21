@@ -174,6 +174,14 @@ func WithLocalResponse(ctx context.Context) context.Context {
 	return core.WithLocalResponse(ctx)
 }
 
+const IndexerPurposePlayback = core.IndexerPurposePlayback
+
+// WithIndexerPurpose tags ctx with the indexer usage purpose (for example
+// IndexerPurposePlayback so explicit Play is never gated by discovery shares).
+func WithIndexerPurpose(ctx context.Context, purpose string) context.Context {
+	return core.WithIndexerPurpose(ctx, purpose)
+}
+
 // WithColdDetail identifies the single title page allowed a minimum cold fill.
 func WithColdDetail(ctx context.Context, key RatingKey) context.Context {
 	return core.WithColdDetail(ctx, key)

@@ -337,6 +337,7 @@ type Service struct {
 	detailVariantWorkers     int                                        // bgMu
 	refills                  map[string]chan struct{}                   // episode search key -> completion; guarded by bgMu
 	refillRetryAfter         map[string]refillMark                      // next detail discovery allowed; guarded by bgMu
+	speculativeBudgetUntil   map[string]time.Time                       // purpose -> cooloff after discovery-share exhaustion; guarded by bgMu
 	seaDexQueue              []seaDexJob                                // guarded by bgMu
 	seaDexPending            map[string]bool                            // guarded by bgMu
 	seaDexRunning            bool                                       // guarded by bgMu
@@ -1743,6 +1744,9 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 	if ok && !fresh && s.now().Before(e.expires) {
 		return append([]core.Release(nil), e.results...), true, nil
 	}
+	if !fresh && s.speculativeBudgetPaused(ctx) {
+		return nil, false, core.ErrBudgetExhausted
+	}
 	coverage := core.SearchCoverageFrom(ctx)
 	if coverage == nil {
 		ctx, coverage = core.WithSearchCoverage(ctx)
@@ -1758,6 +1762,9 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 		results, err = s.indexer.Search(ctx, req)
 	}
 	if err != nil {
+		if errors.Is(err, core.ErrBudgetExhausted) {
+			s.noteSpeculativeBudgetExhausted(ctx)
+		}
 		return nil, false, err
 	}
 	results = s.normalizeSearchResults(req, results)

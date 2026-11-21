@@ -48,7 +48,7 @@ func (s *Server) projectFileAvailability(r *http.Request, mc *model.MediaContain
 			for k := range md.Media[j].Part {
 				part := &md.Media[j].Part[k]
 				key, release, found := s.partTitle(part.ID)
-				if !found {
+				if !found || key.IsPluginKey() {
 					continue
 				}
 				t := target{key, release}

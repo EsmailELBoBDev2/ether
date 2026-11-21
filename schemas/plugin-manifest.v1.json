@@ -1606,6 +1606,13 @@
         },
         "permissions": {
           "properties": {
+            "ai": {
+              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).",
+              "enum": [
+                "none",
+                "complete"
+              ]
+            },
             "catalog": {
               "enum": [
                 "none",

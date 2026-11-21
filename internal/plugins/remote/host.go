@@ -69,6 +69,11 @@ type Host interface {
 
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// AIComplete runs a bounded completion against the owner's configured
+	// language model (requires permissions.ai: "complete"; never call from a
+	// viewer/client request path).
+	AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
 }
@@ -78,6 +83,7 @@ type Host interface {
 const (
 	maxKVValueBytes    = 5 << 20
 	maxHostBodyBytes   = 2 << 20
+	maxAIBodyBytes     = 128 << 10
 	maxCollectionBytes = 2 << 20
 	maxKindUpsertBytes = 8 << 20
 	maxCacheBlobBytes  = 256 << 20
@@ -146,6 +152,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
 	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
+	mux.HandleFunc("POST /ether/plugin-host/ai/complete", h.aiComplete)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -720,6 +727,22 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.Header.Get(HeaderViewerToken)) != "" {
+		writeHostError(w, http.StatusForbidden, "permission_denied", "ai.complete cannot run on viewer or client request paths")
+		return
+	}
+	var req plugins.AICompleteRequest
+	if !h.decode(w, r, maxAIBodyBytes, &req) {
+		return
+	}
+	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), req)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *HostHandler) notify(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
@@ -815,6 +838,10 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
 	case errors.Is(err, ErrRateLimited):
 		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
+	case errors.Is(err, ErrNotConfigured):
+		writeHostError(w, http.StatusNotImplemented, "not_configured", "Language model is not configured")
+	case errors.Is(err, ErrInvalidOutput):
+		writeHostError(w, http.StatusBadGateway, "invalid_output", "Language model returned invalid or oversized output")
 	case errors.Is(err, ErrUnavailable):
 		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service is not available")
 	case errors.Is(err, ErrUnauthorized):

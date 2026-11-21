@@ -48,6 +48,13 @@ Python SDK clients: `runtime.limits`, `http.fetchToCache`, `cache.read`, `archiv
 See `plugin-kinds.md` for the wire shapes, grant rules, archive safety bounds, and
 why a 10 MiB direct fetch can still exceed a 32 MiB guest's available heap.
 
+The owner language model host service (`ai.complete`, `permissions.ai: "complete"`)
+is generated from `host_ai.go`, `contract.go`, `remote/host.go`, and the SDK
+clients. It reuses the owner's configured language model from Integrations,
+validates optional JSON Schemas on the host, applies fixed per-plugin rate/size/timeout
+bounds, hides provider credentials and raw upstream errors from plugins, and is
+refused on interactive viewer/client request paths.
+
 Agents can read `/ether/plugins/reference/llms.txt` for the entry guide and topic
 index, or `llms-full.txt` for every authored chapter and generated declaration.
 The Reference header's “Copy for your AI assistant” button fetches the full text

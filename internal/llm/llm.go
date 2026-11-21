@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -101,6 +102,19 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// ErrNotConfigured is returned when the owner has not enabled and configured
+// a language model under Settings -> Integrations.
+var ErrNotConfigured = errors.New("llm not configured")
+
+// CompleteOptions configures one direct completion against the owner's
+// configured model. Zero/nil optional fields use safe defaults.
+type CompleteOptions struct {
+	Messages    []Message
+	JSONMode    bool
+	MaxTokens   int
+	Temperature *float64
+}
+
 // temperature keeps suggestions varied without drifting off the request.
 const temperature = 0.4
 
@@ -130,6 +144,56 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, jsonMode bool) (strin
 		return "", err
 	}
 	return StripReasoning(content), nil
+}
+
+// Complete sends a bounded completion request to the owner's configured
+// language model, reusing the same provider implementations as Chat while
+// honoring caller-specified MaxTokens and optional Temperature.
+func (c *Client) Complete(ctx context.Context, opts CompleteOptions) (string, error) {
+	cfg := c.config()
+	p, base := cfg.Endpoint()
+	if !cfg.Enabled || base == "" || cfg.Model == "" {
+		return "", ErrNotConfigured
+	}
+	budget := opts.MaxTokens
+	if budget <= 0 {
+		budget = defaultChatMaxTokens
+	}
+	var content string
+	var err error
+	switch p.API {
+	case config.LLMAPIAnthropic:
+		content, err = c.anthropicChatBudget(ctx, base, cfg, opts.Messages, budget)
+	case config.LLMAPIGoogle:
+		content, err = c.openAIComplete(ctx, base+"/openai", cfg, opts.Messages, opts.JSONMode, budget, opts.Temperature)
+	default:
+		content, err = c.openAIComplete(ctx, base, cfg, opts.Messages, opts.JSONMode, budget, opts.Temperature)
+	}
+	if err != nil {
+		return "", err
+	}
+	return StripReasoning(content), nil
+}
+
+func (c *Client) openAIComplete(ctx context.Context, base string, cfg config.LLM, msgs []Message, jsonMode bool, budget int, temp *float64) (string, error) {
+	useTemp := temp
+	for {
+		content, status, err := c.chatOnceBudget(ctx, base, cfg, msgs, jsonMode, budget, useTemp)
+		if err == nil || (status != http.StatusBadRequest && status != http.StatusUnprocessableEntity) {
+			return content, err
+		}
+		switch {
+		case useTemp != nil && strings.Contains(strings.ToLower(err.Error()), "temperature"):
+			useTemp = nil
+		case jsonMode:
+			jsonMode = false
+		case useTemp != nil:
+			useTemp = nil
+		default:
+			return "", err
+		}
+		c.log.Debug("llm rejected a request option, retrying without it", "err", err)
+	}
 }
 
 // openAIChat first asks for response_format=json_object (when jsonMode is
@@ -198,18 +262,30 @@ func useMaxCompletionTokens(cfg config.LLM) bool {
 }
 
 func (c *Client) chatOnce(ctx context.Context, base string, cfg config.LLM, msgs []Message, jsonMode, temp bool) (string, int, error) {
-	cr := chatRequest{Model: cfg.Model, Messages: msgs}
 	budget := defaultChatMaxTokens
 	if b, ok := ctx.Value(chatBudgetKey{}).(int); ok {
 		budget = b
+	}
+	var tempPtr *float64
+	if temp {
+		t := temperature
+		tempPtr = &t
+	}
+	return c.chatOnceBudget(ctx, base, cfg, msgs, jsonMode, budget, tempPtr)
+}
+
+func (c *Client) chatOnceBudget(ctx context.Context, base string, cfg config.LLM, msgs []Message, jsonMode bool, budget int, temp *float64) (string, int, error) {
+	cr := chatRequest{Model: cfg.Model, Messages: msgs}
+	if budget <= 0 {
+		budget = defaultChatMaxTokens
 	}
 	if useMaxCompletionTokens(cfg) {
 		cr.MaxCompletionTokens = budget
 	} else {
 		cr.MaxTokens = budget
 	}
-	if temp {
-		t := temperature
+	if temp != nil {
+		t := *temp
 		cr.Temperature = &t
 	}
 	if jsonMode {

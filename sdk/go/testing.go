@@ -127,6 +127,7 @@ type MockHost struct {
 	Notifications    []string
 	Logs             []RecordedLog
 	FetchHandler     func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
+	AIHandler        func(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 	// LastStreamURLViewer/Item/Part/Source record the most recent StreamURL,
 	// StreamPartURL, or StreamURLWithOptions call.
 	LastStreamURLViewer int64
@@ -469,6 +470,18 @@ func (m *MockHost) NotifyOwner(_ context.Context, text string) error {
 	defer m.mu.Unlock()
 	m.Notifications = append(m.Notifications, text)
 	return nil
+}
+
+// AIComplete invokes AIHandler if set, or returns a *HostError with Code "not_configured".
+func (m *MockHost) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
+	if m.AIHandler != nil {
+		return m.AIHandler(ctx, req)
+	}
+	return AICompleteResponse{}, &HostError{
+		Status:  http.StatusNotImplemented,
+		Code:    "not_configured",
+		Message: "Language model is not configured",
+	}
 }
 
 // Log appends a RecordedLog entry to Logs.

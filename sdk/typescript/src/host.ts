@@ -51,6 +51,40 @@ export const MAX_KIND_VISIBLE_IDS = 500;
 export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
 export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
+export const DefaultAICompletePerMin = 20;
+export const MaxAIMessages = 20;
+export const MaxAIInputBytes = 32 * 1024;
+export const MaxAISchemaBytes = 32 * 1024;
+export const DefaultAIMaxTokens = 1024;
+export const MaxAIMaxTokens = 4096;
+export const DefaultAITimeoutMs = 30_000;
+export const MaxAITimeoutMs = 30_000;
+export const MaxAIResponseBytes = 64 * 1024;
+
+export interface AIMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface AICompleteRequest {
+  messages: AIMessage[];
+  /** Optional JSON Schema object for structured output; the host extracts JSON and validates it before returning. External $ref URLs are rejected. */
+  schema?: Record<string, unknown>;
+  /** Output token cap (default 1024, max 4096). */
+  maxTokens?: number;
+  /** Optional sampling temperature in [0, 2]; ignored safely by providers/models that forbid it. */
+  temperature?: number;
+  /** Optional tighter timeout in milliseconds (clamped to 30000 and the call deadline). */
+  timeoutMs?: number;
+}
+
+export interface AICompleteResponse<T = unknown> {
+  /** Assistant reply text (with reasoning blocks stripped). When `schema` was given, holds compact canonical JSON. */
+  text: string;
+  /** Validated JSON value returned when `schema` was provided. */
+  json?: T;
+}
+
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
 export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
@@ -449,6 +483,15 @@ export interface EtherHost {
       correlation?: EventCorrelation,
     ): MaybePromise<void>;
   };
+  /**
+   * Owner-configured language model completions (Settings -> Integrations -> Language model).
+   * Requires `permissions.ai: "complete"`. Refused on interactive viewer/client request paths
+   * (actions, jobs, sync, tools, events, setup, and scheduled routes only). Throws an Error
+   * with `code: "not_configured"` when no language model is configured.
+   */
+  ai?: {
+    complete<T = unknown>(req: AICompleteRequest): MaybePromise<AICompleteResponse<T>>;
+  };
   notify: {
     owner(text: string): MaybePromise<void>;
   };
@@ -556,6 +599,9 @@ interface GlobalEtherBindings {
     notify: {
       owner: (text: string) => void;
     };
+    ai?: {
+      complete: <T = unknown>(req: AICompleteRequest) => AICompleteResponse<T>;
+    };
     kinds?: {
       upsert: (kind: string, items: import("./types.ts").KindItem[]) => { accepted: number } | number;
       delete: (kind: string, externalIds: string[]) => void;
@@ -585,8 +631,22 @@ export function createHostedClient(): EtherHost {
 
   const callHost = <T>(name: string, args: unknown[]): T => {
     if (typeof g.__ether_host === "function") {
-      const raw = g.__ether_host(name, JSON.stringify(args));
-      return (raw ? JSON.parse(raw) : null) as T;
+      try {
+        const raw = g.__ether_host(name, JSON.stringify(args));
+        return (raw ? JSON.parse(raw) : null) as T;
+      } catch (e) {
+        const message = String(e && (e as { message?: unknown }).message || e);
+        const at = message.indexOf("__ETHER_FAULT__");
+        if (at >= 0 && e && typeof e === "object") {
+          try {
+            const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)) as { code?: string; Code?: string };
+            (e as { code?: string }).code = fault.code || fault.Code;
+          } catch {
+            // ignore parse errors
+          }
+        }
+        throw e;
+      }
     }
     throw new Error(`Host service ${name} is not available outside the Ether runtime`);
   };
@@ -808,6 +868,14 @@ export function createHostedClient(): EtherHost {
         );
       },
     },
+    ai: {
+      complete<T = unknown>(req: AICompleteRequest): AICompleteResponse<T> {
+        if (g.ether?.ai?.complete) {
+          return g.ether.ai.complete<T>(req);
+        }
+        return callHost<AICompleteResponse<T>>("ai.complete", [req]);
+      },
+    },
     notify: {
       owner(text: string): void {
         if (g.ether?.notify) {
@@ -966,9 +1034,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     if (!resp.ok) {
       const errObj =
         parsed && typeof parsed.error === "object" ? (parsed.error as Record<string, string>) : null;
-      throw new Error(
+      const err = new Error(
         errObj?.message ?? `Host call ${method} ${path} failed with HTTP ${resp.status}`,
-      );
+      ) as Error & { code?: string; status?: number };
+      if (errObj?.code) err.code = errObj.code;
+      err.status = resp.status;
+      throw err;
     }
     return parsed as T;
   };
@@ -1239,6 +1310,11 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
           ...(opts.source === undefined ? {} : { source: opts.source }),
         });
         return r?.url ?? "";
+      },
+    },
+    ai: {
+      async complete<T = unknown>(req: AICompleteRequest): Promise<AICompleteResponse<T>> {
+        return (await callJson<AICompleteResponse<T>>("POST", "/ether/plugin-host/ai/complete", req)) ?? { text: "" };
       },
     },
     async log(level: string, message: string, attrs?: Record<string, unknown>): Promise<void> {

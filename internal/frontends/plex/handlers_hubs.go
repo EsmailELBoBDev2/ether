@@ -146,14 +146,21 @@ func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hu
 			}
 		}
 	}
+	kindSec := renderSec != nil && isPluginKindSection(*renderSec)
 	build := func() []frontend.Title {
+		if kindSec {
+			return h.Items
+		}
 		if loader, ok := s.catalog().(frontend.RowFactsLoader); ok {
 			h.Items = loader.LoadRowFacts(ctx, h.Items)
 		}
 		unavailable := s.sameDayUnavailableFunc(ctx, pr, h.Items)
-		return (s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: vis, PrioritizeAvailable: s.prioritizeAvailable(),
+		if sel := s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: vis, PrioritizeAvailable: s.prioritizeAvailable(),
 			SameDayUnavailable: func(_ context.Context, t *frontend.Title) bool { return unavailable(t) },
-		})).Items(ctx, pr.User, h)
+		}); sel != nil {
+			return sel.Items(ctx, pr.User, h)
+		}
+		return h.Items
 	}
 	// Filter the section and availability before rendering or paging. The
 	// resulting wire list is the canonical generation (including its counts).
@@ -175,7 +182,17 @@ func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hu
 			sourceItems = sourceItems[:hc.visible]
 			h.More = true
 		}
-		return s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec})
+		md := s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec})
+		if kindSec && len(md) > 0 {
+			byKey := make(map[string]*frontend.Title, len(sourceItems))
+			for i := range sourceItems {
+				byKey[sourceItems[i].Key.String()] = &sourceItems[i]
+			}
+			for i := range md {
+				md[i].Type = kindTypeForBase(string(renderSec.Type), md[i].Type, byKey[md[i].RatingKey])
+			}
+		}
+		return md
 	}
 	var md []model.Metadata
 	generation := ""
@@ -1019,7 +1036,7 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		if len(sections) > 0 && !containsInt(sections, sec.ID) {
 			continue
 		}
-		if isKindSection(sec) && !isKindMusicSection(sec) {
+		if isPluginKindSection(sec) && !isKindMusicSection(sec) {
 			_, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
 			for hid, h := range kindServed {
 				if matchHubID(hid, candidates) {

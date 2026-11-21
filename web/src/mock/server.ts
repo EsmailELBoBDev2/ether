@@ -3406,8 +3406,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
               ? { ...(lib.present as Record<string, unknown>) }
               : {}
           ) as Record<string, unknown>;
-          const nextAdapter =
-            patch.adapterOnly !== undefined ? patch.adapterOnly : Boolean(curPresent.adapterOnly);
+          const wasAdapter = Boolean(curPresent.adapterOnly);
+          const nextAdapter = patch.adapterOnly !== undefined ? patch.adapterOnly : wasAdapter;
           if (nextAdapter) {
             lib.present = { adapterOnly: true };
           } else {
@@ -3415,10 +3415,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
             for (const app of resolved.apps as {
               app: string;
               available: boolean;
+              defaultOn: boolean;
               reason?: string;
             }[]) {
               const val = patch[app.app];
-              if (val === undefined) continue;
+              if (val === undefined) {
+                if (wasAdapter && app.available && app.defaultOn) {
+                  curPresent[app.app] = resolved.available[app.app];
+                }
+                continue;
+              }
               if (!app.available) {
                 if (val) return err(400, "validation", app.reason ?? "Unavailable");
                 continue;

@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/libraries"
 )
 
 // musicKindManifest builds a two-level album/track content plugin whose
@@ -237,5 +238,139 @@ func TestFlatPlayableAlbumChildrenAndSongs(t *testing.T) {
 	both, err := h.catalog.Browse(ctx, lib, frontend.ItemQuery{Recursive: true, UnservedTypes: []string{"musicalbum", "audio"}}, "", 10)
 	if err != nil || len(both.Items) != 2 || both.Items[0].MBItemType != "MusicAlbum" || both.Items[0].SelfChild {
 		t.Fatalf("album+audio browse = %+v %v", both.Items, err)
+	}
+}
+
+// TestKindSyncSelfHealsStaleRowsAndPreservesOwnerSwitches proves that pre-W170
+// stale plugin library rows (missing Plex / Vela / MediaBrowser.ItemTypes) are
+// healed on sync from kind-level media+levels inference, while owner publish
+// overrides (both OFF and explicit ON over manifest default:false) survive
+// plugin updates even when the plugin's presentation shape changes.
+func TestKindSyncSelfHealsStaleRowsAndPreservesOwnerSwitches(t *testing.T) {
+	h := newKindTestHarness(t, 0, nil)
+	ctx := context.Background()
+	const pluginID = "community.example.clips"
+
+	// Pre-seed a stale pre-W170 library row missing Plex, Vela, and itemTypes.
+	stale, err := h.libs.UpsertPluginLibrary(ctx, pluginID, "clips", libraries.PluginLibraryDecl{
+		Name: "Studio Clips",
+		Present: core.Presentations{
+			MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "movies"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Strip the legacy Vela backfill so the row matches a true pre-W170 DB row
+	// (only mediaBrowser.collectionType set, no plex, no vela, no itemTypes,
+	// empty present_overrides).
+	if err := h.libs.SetPresent(ctx, stale.ID, core.Presentations{
+		MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "movies"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err = h.libs.Get(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Present.Plex != nil || stale.Present.Vela != nil {
+		t.Fatalf("expected stale pre-heal row without plex/vela, got %+v", stale.Present)
+	}
+
+	makeManifest := func(version string, present map[string]any) map[string]any {
+		return map[string]any{
+			"id":      pluginID,
+			"version": version,
+			"name":    "Studio Clips",
+			"ether": map[string]any{
+				"protocol":     1,
+				"kind":         "content",
+				"summary":      "Studio video clips",
+				"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+				"capabilities": []string{"catalog_provider", "kind_resolver"},
+				"contributes": map[string]any{
+					"mediaKinds": []map[string]any{{
+						"key":     "clips",
+						"label":   "Clips",
+						"media":   "video",
+						"library": map[string]any{"name": "Studio Clips"},
+						"levels": []map[string]any{
+							{"key": "clip", "label": "Clip", "playable": true},
+						},
+						"present": present,
+						"browse":  map[string]any{"sorts": []string{"title"}, "search": true},
+						"sync":    map[string]any{"mode": "push"},
+					}},
+				},
+			},
+		}
+	}
+
+	// Install v1.0.0: 1-level playable video -> heals stale row via inference,
+	// while respecting manifest default:false for Stremio.
+	installStudioManifest(t, h.mgr, makeManifest("1.0.0", map[string]any{
+		"stremio": map[string]any{"default": false},
+	}), nil)
+
+	var lib core.Library
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		lib = pluginLibraryOf(t, h, pluginID)
+		if lib.Present.Plex != nil && lib.Present.Vela != nil &&
+			lib.Present.MediaBrowser != nil && lib.Present.MediaBrowser.ItemTypes["clip"] == "Movie" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if lib.Present.Plex == nil || lib.Present.Plex.Base != "movie" {
+		t.Fatalf("stale row plex not healed: %+v", lib.Present.Plex)
+	}
+	if lib.Present.Vela == nil || lib.Present.Vela.Type != "movies" {
+		t.Fatalf("stale row vela not healed: %+v", lib.Present.Vela)
+	}
+	if lib.Present.MediaBrowser == nil || lib.Present.MediaBrowser.ItemTypes["clip"] != "Movie" {
+		t.Fatalf("stale row itemTypes not healed: %+v", lib.Present.MediaBrowser)
+	}
+	if lib.Present.Stremio != nil {
+		t.Fatalf("manifest stremio default:false ignored: %+v", lib.Present.Stremio)
+	}
+
+	// Owner explicitly turns Plex OFF and Stremio ON (overriding default:false).
+	on, off := true, false
+	ownerPresent := lib.Present
+	ownerPresent.Plex = nil
+	ownerPresent.Stremio = &core.StremioPresentation{Type: "movie"}
+	if err := h.libs.SetPresentAndOverrides(ctx, lib.ID, ownerPresent, core.PresentationOverrides{
+		Plex:    &off,
+		Stremio: &on,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Upgrade to v1.1.0 changing manifest HOW (mediaBrowser -> homevideos,
+	// stremio -> channel with default:false): HOW refreshes on the existing row,
+	// while sticky owner overrides (Plex OFF, Stremio ON) persist.
+	installStudioManifest(t, h.mgr, makeManifest("1.1.0", map[string]any{
+		"mediaBrowser": map[string]any{"collectionType": "homevideos"},
+		"stremio":      map[string]any{"type": "channel", "default": false},
+	}), nil)
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		lib = pluginLibraryOf(t, h, pluginID)
+		if lib.Present.MediaBrowser != nil && lib.Present.MediaBrowser.CollectionType == "homevideos" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if lib.Present.MediaBrowser == nil || lib.Present.MediaBrowser.CollectionType != "homevideos" ||
+		lib.Present.MediaBrowser.ItemTypes["clip"] != "Movie" {
+		t.Fatalf("v1.1.0 HOW not refreshed: %+v", lib.Present.MediaBrowser)
+	}
+	if lib.Present.Plex != nil {
+		t.Fatalf("owner Plex OFF override lost across update: %+v", lib.Present.Plex)
+	}
+	if lib.Present.Stremio == nil || lib.Present.Stremio.Type != "channel" {
+		t.Fatalf("owner Stremio ON override lost or stale HOW across update: %+v", lib.Present.Stremio)
 	}
 }

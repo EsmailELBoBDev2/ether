@@ -410,6 +410,9 @@ func ApplyAppSwitches(resolved core.ResolvedPresentations, overrides core.Presen
 			continue
 		}
 		enabled := info.Enabled
+		if resolved.AdapterOnly && !adapterOnly {
+			enabled = info.DefaultOn
+		}
 		if ov := nextOv.Get(info.App); ov != nil {
 			enabled = *ov
 		}

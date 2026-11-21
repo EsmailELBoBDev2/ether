@@ -15,6 +15,10 @@ func isVideoSection(sec Section) bool {
 	return sec.PluginID == "" && (sec.Type == frontend.TypeMovie || sec.Type == frontend.TypeShow)
 }
 
+func isPluginKindSection(sec Section) bool {
+	return sec.PluginID != ""
+}
+
 func isKindMusicSection(sec Section) bool {
 	return isKindSection(sec) && string(sec.Type) == plexBaseArtist
 }
@@ -356,7 +360,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		mc.Size = len(mc.Hub)
 		return homeBuild{mc: mc, section: sec.ID}
 	}
-	if isKindSection(sec) {
+	if isPluginKindSection(sec) {
 		hubs, served := s.kindSectionHubs(ctx, pr, sec, visibleCount)
 		mc.Hub = stableHomeHubs(hubs)
 		mc.Size = len(mc.Hub)
@@ -540,7 +544,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 			}
 			continue
 		}
-		if isKindSection(sec) {
+		if isPluginKindSection(sec) {
 			kindHubs, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
 			for _, mh := range kindHubs {
 				if selected != nil && !selected[mh.HubIdentifier] {

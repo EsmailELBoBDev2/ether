@@ -1825,6 +1825,7 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 		for _, tbl := range []string{
 			"plugin_item_fields",
 			"plugin_item_art",
+			"plugin_item_parts",
 			"plugin_matches",
 			"plugin_items",
 		} {
@@ -2159,6 +2160,12 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 				delArgs...); err != nil {
 				return err
 			}
+			partArgs := append([]any{offset}, args...)
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM state_watch WHERE rating_key IN (SELECT ? + seq FROM plugin_item_parts WHERE item_ref IN (SELECT item_ref FROM plugin_items WHERE `+whereItems+`))`,
+				partArgs...); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -2172,6 +2179,7 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 	for _, tbl := range []string{
 		"plugin_item_fields",
 		"plugin_item_art",
+		"plugin_item_parts",
 		"plugin_matches",
 	} {
 		if _, err := tx.ExecContext(ctx,

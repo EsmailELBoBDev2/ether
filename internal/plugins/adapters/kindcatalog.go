@@ -551,6 +551,9 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	}
 	item, libID, err := c.items.GetByKey(ctx, key)
 	if err != nil {
+		if part, parentItem, partLibID, perr := c.items.GetPartByKey(ctx, key); perr == nil {
+			return c.projectPartView(ctx, part, parentItem, partLibID)
+		}
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
 	lib, err := c.libs.Get(ctx, libID)
@@ -576,6 +579,78 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	}, nil
 }
 
+func (c *KindCatalog) projectPartView(ctx context.Context, part pluginitems.StoredPart, parentItem core.KindItem, libID core.LibraryID) (experience.PluginItemView, error) {
+	lib, err := c.libs.Get(ctx, libID)
+	if err != nil {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, libID)
+	if err != nil {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	hidden, e := c.items.ItemHidden(core.WithExplicitSearch(ctx), lib, parentItem.Ref)
+	if e != nil || hidden {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	parentTitles := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
+	landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
+	return experience.PluginItemView{
+		Library:      lib,
+		Title:        projectPartTitle(rec, lib, parentTitles[0], part),
+		Images:       projectImages(parentItem.Art, landscape),
+		Unavailable:  parentItem.Unavailable,
+		Playable:     parentItem.Unavailable == nil && parentItem.Playable && levelIsPlayable(rec.Decl, parentItem.Level),
+		SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, parentItem.Level),
+	}, nil
+}
+
+func projectPartTitle(rec pluginitems.KindRecord, lib core.Library, parent core.Title, part pluginitems.StoredPart) core.Title {
+	title := part.Name
+	if title == "" {
+		title = fmt.Sprintf("Part %d", part.PartIndex+1)
+	}
+	mediaClass := parent.MediaClass
+	if mediaClass == "" {
+		mediaClass = core.MediaClass(rec.Decl.Media)
+	}
+	parents := make([]core.TitleParent, 0, len(parent.MediaParents)+1)
+	parents = append(parents, core.TitleParent{
+		Key:   parent.Key,
+		Title: parent.Title,
+		Role:  parent.MediaRole,
+	})
+	parents = append(parents, parent.MediaParents...)
+
+	mbType := parent.MBItemType
+	switch mediaClass {
+	case core.MediaClassAudiobook:
+		mbType = "AudioBook"
+	case core.MediaClassMusic, core.MediaClassPodcast:
+		mbType = "Audio"
+	}
+
+	out := parent
+	out.Key = part.Key
+	out.Title = title
+	out.SortTitle = title
+	out.LibraryID = lib.ID
+	out.ParentKey = parent.Key
+	out.ParentTitle = parent.Title
+	out.ItemIndex = part.PartIndex + 1
+	out.ChildCount = 0
+	out.LeafCount = 0
+	out.MediaClass = mediaClass
+	out.MediaRole = core.MediaRolePart
+	out.MediaParents = parents
+	out.MBItemType = mbType
+	if part.DurationSec > 0 {
+		out.Runtime = time.Duration(part.DurationSec * float64(time.Second))
+	} else {
+		out.Runtime = 0
+	}
+	return out
+}
+
 // ItemsMany implements experience.PluginLibraries using batched item, artwork,
 // and visibility queries per library rather than one query per key.
 func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]experience.PluginItemView, error) {
@@ -584,18 +659,20 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		return out, nil
 	}
 	keyed, err := c.items.GetByKeys(ctx, keys)
-	if err != nil || len(keyed) == 0 {
+	if err != nil {
 		return out, err
 	}
 	byLib := make(map[core.LibraryID][]core.KindItem)
 	var libOrder []core.LibraryID
 	seenKey := make(map[core.RatingKey]bool, len(keyed))
+	var missing []core.RatingKey
 	for _, key := range keys {
 		if !key.IsPluginKey() || seenKey[key] {
 			continue
 		}
 		ki, ok := keyed[key]
 		if !ok {
+			missing = append(missing, key)
 			continue
 		}
 		seenKey[key] = true
@@ -603,6 +680,17 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 			libOrder = append(libOrder, ki.LibraryID)
 		}
 		byLib[ki.LibraryID] = append(byLib[ki.LibraryID], ki.Item)
+	}
+	if len(missing) > 0 {
+		if parts, perr := c.items.GetPartsByKeys(ctx, missing); perr == nil && len(parts) > 0 {
+			for k, part := range parts {
+				if parentItem, libID, gerr := c.items.GetByRef(ctx, part.ItemRef); gerr == nil {
+					if view, verr := c.projectPartView(ctx, part, parentItem, libID); verr == nil {
+						out[k] = view
+					}
+				}
+			}
+		}
 	}
 
 	visCtx := core.WithExplicitSearch(ctx)
@@ -740,11 +828,30 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 			return experience.PluginBrowsePage{}, err
 		}
 		if len(page.Items) == 0 && page.Total == 0 && cursor == "" && limit != 0 &&
-			parentItem.Playable && parentItem.Unavailable == nil && flatPlayableAlbum(rec.Decl, lib.Present) {
-			// A flat playable album has no track items to list; present
-			// the album itself once as its playable child.
-			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
-			return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1, TotalExact: true}, nil
+			parentItem.Playable && parentItem.Unavailable == nil {
+			if parts, perr := c.items.EnsurePartsFromHints(ctx, parentItem); perr == nil && len(parts) > 0 {
+				parentTitles := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
+				if len(parentTitles) > 0 {
+					partTitles := make([]core.Title, 0, len(parts))
+					for _, part := range parts {
+						partTitles = append(partTitles, projectPartTitle(rec, lib, parentTitles[0], part))
+						if limit > 0 && len(partTitles) >= limit {
+							break
+						}
+					}
+					return experience.PluginBrowsePage{
+						Items:      partTitles,
+						Total:      len(parts),
+						TotalExact: true,
+					}, nil
+				}
+			}
+			if flatPlayableAlbum(rec.Decl, lib.Present) {
+				// A flat playable album has no track items to list; present
+				// the album itself once as its playable child.
+				self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
+				return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1, TotalExact: true}, nil
+			}
 		}
 		return experience.PluginBrowsePage{
 			Items:      c.projectItems(ctx, rec, lib, page.Items),
@@ -1337,10 +1444,27 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	}
 
 	flatAlbum := flatPlayableAlbum(rec.Decl, lib.Present)
+	refs := make([]core.ItemRef, len(items))
+	for i, it := range items {
+		refs[i] = it.Ref
+	}
+	partCounts, _ := c.items.CountPartsMany(ctx, refs)
 	out := make([]core.Title, len(items))
 	for i, it := range items {
 		t := pluginitems.ProjectWithText(it, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		t.LibraryID = lib.ID
+		if nParts := partCounts[it.Ref]; nParts > 1 && t.ChildCount == 0 {
+			t.ChildCount = nParts
+			if t.LeafCount == 0 {
+				t.LeafCount = nParts
+			}
+		} else if len(core.ExtractKindItemPartsFromItem(it)) > 1 && t.ChildCount == 0 {
+			nParts := len(core.ExtractKindItemPartsFromItem(it))
+			t.ChildCount = nParts
+			if t.LeafCount == 0 {
+				t.LeafCount = nParts
+			}
+		}
 		if flatAlbum && it.Playable && it.Unavailable == nil {
 			// The album lists its one synthetic playable child.
 			if t.ChildCount == 0 {

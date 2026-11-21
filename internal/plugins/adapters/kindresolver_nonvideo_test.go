@@ -124,19 +124,13 @@ func TestKindResolverNonVideoReleaseTargetAndVideoInvariance(t *testing.T) {
 
 	// kindDefaultMIME derives fallback MIMEs from MediaBrowser / Plex presentations only for non-video kinds.
 	var musicDecl plugins.MediaKindMeta
-	musicDecl.Present.MediaBrowser = &struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-	}{CollectionType: "music"}
+	musicDecl.Present.MediaBrowser = &core.MediaBrowserPresentation{CollectionType: "music"}
 	if got := kindDefaultMIME(musicDecl); got != "audio/*" {
 		t.Fatalf("kindDefaultMIME(music) = %q, want audio/*", got)
 	}
 
 	var movieDecl plugins.MediaKindMeta
-	movieDecl.Present.MediaBrowser = &struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-	}{CollectionType: "movies"}
+	movieDecl.Present.MediaBrowser = &core.MediaBrowserPresentation{CollectionType: "movies"}
 	if got := kindDefaultMIME(movieDecl); got != "" {
 		t.Fatalf("kindDefaultMIME(movies) = %q, want empty", got)
 	}

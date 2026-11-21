@@ -1974,6 +1974,18 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 }
 
 func kindDefaultMIME(decl plugins.MediaKindMeta) string {
+	// The kind-level media class is the source of truth; per-app
+	// presentations are only consulted when a manifest does not declare one.
+	switch strings.ToLower(strings.TrimSpace(string(decl.Media))) {
+	case "music", "audiobook", "podcast":
+		return "audio/*"
+	case "book":
+		return "application/epub+zip"
+	case "photo":
+		return "image/*"
+	case "video":
+		return ""
+	}
 	if decl.Present.MediaBrowser != nil {
 		switch strings.ToLower(strings.TrimSpace(decl.Present.MediaBrowser.CollectionType)) {
 		case "music", "audiobooks":

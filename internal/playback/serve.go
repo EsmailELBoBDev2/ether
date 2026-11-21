@@ -141,12 +141,6 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 			}
 		}
 	}
-	s.activeReads.Add(1)
-	defer func() {
-		s.activeReads.Add(-1)
-		s.touchMedia(m.now())
-	}()
-	s.touchMedia(m.now())
 	if s.markDirectPlay() {
 		m.recordTimeline(s, TimelineEvent{
 			Kind:    "decision",
@@ -191,6 +185,8 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 	}
 	s.mu.Unlock()
 	rep.body = func(w io.Writer, start, length int64) error {
+		s.activeReads.Add(1)
+		defer s.activeReads.Add(-1)
 		began := time.Now()
 		var meter *remoteDeliveryMeter
 		if m.remoteDelivery.Load() != nil {
@@ -280,7 +276,7 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 			g.retryEpoch++
 			g.retryPending = false
 			g.mu.Unlock()
-			s.touchMedia(now)
+			s.recordMediaBytes(n, now)
 		}
 	}
 	for vpos < vend {

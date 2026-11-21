@@ -9,24 +9,29 @@ func TestKeepAlivePreservesViewerLeaseAndClientStop(t *testing.T) {
 	h := newHarness(t, []*fakeRelease{mkv("A", 100_000, time.Minute)}, []string{"A"},
 		func(_ *harness, o *Options) { o.IdleTimeout = 2 * time.Minute; o.StoppedGrace = time.Minute })
 	ps := h.prepare(owner, movieKey, "events")
-	idle := h.prepare(owner, movieKey, "no-events")
+	abandoned := h.prepare(owner, movieKey, "never-started")
+	// An explicitly paused session survives KeepAlive within pause retention.
+	h.m.PlaybackProgress(owner.ID, "events", movieKey, 10*time.Second, "paused")
 	s := h.m.lookup(ps.ID)
 	s.mu.Lock()
 	lastRead, position, state := s.lastRead, s.viewerPosition, s.viewerState
 	s.mu.Unlock()
-	// An open stream sends heartbeats, but no media reads or observations.
+	// An open stream sends heartbeats, but no media reads or new observations.
 	for range 10 {
 		h.clock.Advance(15 * time.Second)
 		if !h.m.KeepAlive(ps.ID) {
-			t.Fatal("existing session disappeared")
+			t.Fatal("existing paused session disappeared")
 		}
+		h.m.KeepAlive(abandoned.ID)
 		h.m.expire()
 	}
 	if _, ok := h.m.Session(ps.ID); !ok {
-		t.Fatal("heartbeat did not preserve session")
+		t.Fatal("paused session did not survive within retention")
 	}
-	if _, ok := h.m.Session(idle.ID); ok {
-		t.Fatal("session without a stream did not idle")
+	// A session that never received a position and served no media bytes
+	// expires after 2m even when KeepAlive heartbeats arrive.
+	if _, ok := h.m.Session(abandoned.ID); ok {
+		t.Fatal("never-started session survived past 2m despite KeepAlive")
 	}
 	s.mu.Lock()
 	unchanged := s.lastRead.Equal(lastRead) && s.viewerPosition == position && s.viewerState == state

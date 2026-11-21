@@ -244,6 +244,9 @@ type PlaySession struct {
 	BufferedBytes int64
 	BufferedUntil time.Duration
 	LastActive    time.Time
+	// Liveness is the session's evaluated state under the shared liveness rule
+	// (playing, paused, starting, idle, stopped).
+	Liveness SessionLivenessState `json:"liveness,omitempty"`
 	// ViewerState is the last client timeline state: playing, paused, or stopped.
 	ViewerState string `json:"viewerState,omitempty"`
 	// ViewOffset is the client's last reported playhead in milliseconds.

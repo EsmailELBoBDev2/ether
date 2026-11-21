@@ -1272,20 +1272,7 @@ func (a *App) onDatabaseAvailability(reachable bool) {
 // --- System & Flows domain emitters ---
 
 func (a *App) safeActiveSessionCount() int {
-	if a == nil {
-		return 0
-	}
-	n := 0
-	if a.playback != nil {
-		n += len(a.playback.Sessions())
-	}
-	if a.transcoder != nil {
-		n += len(a.transcoder.Sessions())
-	}
-	if a.livetv != nil {
-		n += len(a.livetv.ViewingSessions())
-	}
-	return n
+	return a.activeSessionCount()
 }
 
 func (a *App) emitServerStarted() {

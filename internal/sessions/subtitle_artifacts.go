@@ -64,16 +64,7 @@ func (b *Broker) authorizeSubtitleArtifact(ctx context.Context, a frontend.Sessi
 	if remote, ok := b.deps.Playback.(interface{ Touch(string) }); ok && s.playID != "" {
 		remote.Touch(s.playID)
 	}
-	var endMediaRead func()
-	if !s.live && s.playID != "" {
-		if reader, ok := b.deps.Playback.(interface{ BeginMediaRead(string) func() }); ok {
-			endMediaRead = reader.BeginMediaRead(s.playID)
-		}
-	}
 	release := func() {
-		if endMediaRead != nil {
-			endMediaRead()
-		}
 		<-tracker.Seal()
 		b.mu.Lock()
 		if cur := b.sessions[id]; cur != nil {

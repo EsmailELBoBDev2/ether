@@ -197,7 +197,7 @@ func (s *appStatusService) ServerStatus(ctx context.Context) (builtin.ServerStat
 	}
 	active := 0
 	if s.a.playback != nil {
-		active = len((ownerPlayback{Playback: s.a.playback, app: s.a}).Sessions())
+		active = len((ownerPlayback{Playback: s.a.playback, app: s.a}).activeSessions())
 	}
 	channels := 0
 	if s.a.livetv != nil {

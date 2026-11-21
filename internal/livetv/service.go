@@ -577,6 +577,7 @@ func (s *Service) warmProgrammes() {
 }
 
 func (s *Service) expireSessions() {
+	now := s.o.Now()
 	s.mu.Lock()
 	var stale []*session
 	for id, ss := range s.sessions {
@@ -585,11 +586,7 @@ func (s *Service) expireSessions() {
 		if !ss.mu.TryLock() {
 			continue
 		}
-		ttl := 2 * time.Minute
-		if !ss.mediaStarted {
-			ttl = 30 * time.Second
-		}
-		expired := s.o.Now().Sub(ss.last) > ttl
+		expired := s.sessionLivenessLocked(ss, now).Expired
 		ss.mu.Unlock()
 		if expired {
 			stale = append(stale, ss)

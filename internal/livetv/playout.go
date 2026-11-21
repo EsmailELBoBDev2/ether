@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -67,6 +68,7 @@ type session struct {
 	lastMediaWarning    time.Time
 	consumed            bool
 	mediaStarted        bool
+	activeReads         atomic.Int32
 	startupCancel       context.CancelFunc // immutable after publication; cancels I/O before locking
 	view                core.PlaySession   // immutable monitoring snapshot, including pending tunes
 	reserved            bool
@@ -425,7 +427,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	if s.o.Playback != nil {
 		for _, ps := range playbackSessions {
-			if ps.UserID == u.ID && ps.PlaybackGroup == "" {
+			if core.SessionCountsForLimit(ps) && ps.UserID == u.ID && ps.PlaybackGroup == "" {
 				count++
 			}
 		}
@@ -684,7 +686,7 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 	}
 	if s.o.Playback != nil {
 		for _, ps := range playbackSessions {
-			if ps.UserID == u.ID && ps.PlaybackGroup == "" {
+			if core.SessionCountsForLimit(ps) && ps.UserID == u.ID && ps.PlaybackGroup == "" {
 				count++
 			}
 		}
@@ -1386,15 +1388,52 @@ func (s *Service) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id s
 // their planner and never swap a viewer's encoder input.
 func (s *Service) TranscodeFor(string) (core.HLSSession, bool) { return nil, false }
 
+// sessionLivenessLocked evaluates ss under the shared core liveness rule.
+// Caller holds ss.mu.
+func (s *Service) sessionLivenessLocked(ss *session, now time.Time) core.SessionLiveness {
+	started := ss.info.StartedAt
+	if started.IsZero() {
+		started = ss.last
+	}
+	in := core.SessionLivenessInput{
+		Closed:         ss.closed,
+		StartedAt:      started,
+		OpenedAt:       started,
+		IsLive:         true,
+		ActiveReads:    ss.activeReads.Load(),
+		AbandonedAfter: 30 * time.Second,
+		IdleTimeout:    2 * time.Minute,
+	}
+	if ss.mediaStarted {
+		in.LastMediaAt = ss.last
+		in.MediaBytes = max(int64(1), ss.bytesServed)
+	}
+	return core.EvaluateSessionLiveness(in, now)
+}
+
 // ViewingSessions reports one trusted reservation unit per live viewer. It is
 // used by ordinary playback's limit accounting, including HLS passthrough
 // viewers that do not own an ffmpeg/source session.
 func (s *Service) ViewingSessions() []*core.PlaySession {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*core.PlaySession, 0, len(s.sessions))
+	list := make([]*session, 0, len(s.sessions))
 	for _, ss := range s.sessions {
+		list = append(list, ss)
+	}
+	s.mu.Unlock()
+	now := s.o.Now()
+	out := make([]*core.PlaySession, 0, len(list))
+	for _, ss := range list {
 		p := ss.view
+		if ss.mu.TryLock() {
+			p.Liveness = s.sessionLivenessLocked(ss, now).State
+			p.LastActive = ss.last
+			p.BytesServed = ss.bytesServed
+			ss.mu.Unlock()
+		} else {
+			// Startup I/O holds ss.mu: never block monitoring.
+			p.Liveness = core.SessionLivenessStarting
+		}
 		out = append(out, &p)
 	}
 	return out

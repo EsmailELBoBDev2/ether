@@ -58,20 +58,22 @@ type httpSession struct {
 	life *encoderLifetime
 	log  *slog.Logger
 
-	mu             sync.Mutex
-	proc           Process
-	pipe           *io.PipeReader
-	spool          *audioSpool
-	requestSeq     uint64
-	closed         bool
-	softwareDecode bool
-	forceCPU       bool
-	delivered      atomic.Bool
-	lastAccess     time.Time
+	mu              sync.Mutex
+	proc            Process
+	pipe            *io.PipeReader
+	spool           *audioSpool
+	requestSeq      uint64
+	closed          bool
+	softwareDecode  bool
+	forceCPU        bool
+	delivered       atomic.Bool
+	lastAccess      time.Time
+	lastMediaAccess time.Time
 }
 
 var _ core.HTTPSession = (*httpSession)(nil)
 var _ core.OwnedEncoderSession = (*httpSession)(nil)
+var _ core.MediaAccessTracker = (*httpSession)(nil)
 
 func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *encoderLifetime) (core.HLSSession, error) {
 	id := req.SessionID
@@ -203,9 +205,23 @@ func (s *httpSession) LastAccess() time.Time {
 	return s.lastAccess
 }
 
+func (s *httpSession) LastMediaAccess() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastMediaAccess
+}
+
 func (s *httpSession) Touch() {
 	s.mu.Lock()
 	s.lastAccess = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *httpSession) touchMediaAccess() {
+	now := time.Now()
+	s.mu.Lock()
+	s.lastAccess = now
+	s.lastMediaAccess = now
 	s.mu.Unlock()
 }
 
@@ -465,6 +481,7 @@ func (s *httpSession) serveAudioSpool(w http.ResponseWriter, r *http.Request) bo
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Accept-Ranges", "bytes")
 		s.delivered.Store(true)
+		s.touchMediaAccess()
 		http.ServeContent(w, r, "", time.Time{}, f)
 		return true
 	}
@@ -772,7 +789,9 @@ func (w *httpWriteTracker) Write(p []byte) (int, error) {
 }
 
 func (w flushWriter) Write(p []byte) (int, error) {
-	if w.s != nil {
+	if w.s != nil && len(p) > 0 {
+		w.s.touchMediaAccess()
+	} else if w.s != nil {
 		w.s.Touch()
 	}
 	// Bound each transport operation, not the lifetime of the movie. Clear

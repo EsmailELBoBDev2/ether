@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/updater"
 )
@@ -154,15 +155,23 @@ func (a *App) initUpdates() {
 	}
 }
 
-// activeSessionCount is everything an update restart would interrupt:
-// playback sessions, transcodes and live TV viewers.
+// activeSessionCount is everything an update or maintenance restart would
+// interrupt under the shared liveness rule: actively playing local streams
+// (excluding paused, starting/abandoned, idle, prepared-only, and stopped).
 func (a *App) activeSessionCount() int {
-	n := len(a.playback.Sessions())
-	if a.transcoder != nil {
-		n += len(a.transcoder.Sessions())
+	if a == nil {
+		return 0
 	}
-	if a.livetv != nil {
-		n += len(a.livetv.ViewingSessions())
+	n := len((ownerPlayback{Playback: a.playback, app: a}).activeLocalSessions())
+	// Standalone encoder-only specialist nodes have no local playback manager;
+	// count only transcode sessions with recent media delivery.
+	if a.playback == nil && a.brokerPlayback == nil && a.spikeLibrary == nil && a.transcoder != nil {
+		now := time.Now()
+		for _, hs := range a.transcoder.Sessions() {
+			if la := hs.LastMediaAccess(); !la.IsZero() && now.Sub(la) <= core.PlayingEvidenceWindowHLS {
+				n++
+			}
+		}
 	}
 	return n
 }

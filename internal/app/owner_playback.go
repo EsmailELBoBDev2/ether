@@ -23,7 +23,7 @@ func (p ownerPlayback) Sessions() []*core.PlaySession {
 	if p.app != nil && p.app.playback != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		for _, s := range p.app.playback.RemoteSessions(ctx) {
-			if !s.PreparedOnly && !liveProgrammeSource(s) {
+			if core.SessionVisible(s) && !liveProgrammeSource(s) {
 				out = append(out, s)
 			}
 		}
@@ -32,8 +32,34 @@ func (p ownerPlayback) Sessions() []*core.PlaySession {
 	return out
 }
 
+// activeSessions returns only actively playing sessions under the shared
+// liveness rule (excluding paused, starting/abandoned, idle, and stopped).
+func (p ownerPlayback) activeSessions() []*core.PlaySession {
+	all := p.Sessions()
+	out := make([]*core.PlaySession, 0, len(all))
+	for _, s := range all {
+		if core.SessionActiveStream(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// activeLocalSessions returns this node's actively playing sessions only.
+func (p ownerPlayback) activeLocalSessions() []*core.PlaySession {
+	all := p.localSessions()
+	out := make([]*core.PlaySession, 0, len(all))
+	for _, s := range all {
+		if core.SessionActiveStream(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // localSessions is this node's share of Sessions: in-memory snapshots only,
-// no cluster calls, so the console stream can watch it cheaply.
+// no cluster calls, so the console stream can watch it cheaply. Both Overview
+// and Activity read this same shared liveness filter (playing + explicitly paused).
 func (p ownerPlayback) localSessions() []*core.PlaySession {
 	var live []*core.PlaySession
 	if p.app != nil && p.app.livetv != nil {
@@ -60,12 +86,17 @@ func (p ownerPlayback) localSessions() []*core.PlaySession {
 		local = backend.Sessions()
 	}
 	for _, s := range local {
-		if s.PreparedOnly || (s.PlaybackGroup != "" && groups[s.PlaybackGroup]) || liveProgrammeSource(s) {
+		if !core.SessionVisible(s) || (s.PlaybackGroup != "" && groups[s.PlaybackGroup]) || liveProgrammeSource(s) {
 			continue
 		}
 		out = append(out, s)
 	}
-	return append(out, live...)
+	for _, s := range live {
+		if core.SessionVisible(s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // liveProgrammeSource recognises the source a Live TV channel opens to feed its

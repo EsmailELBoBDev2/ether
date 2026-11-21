@@ -42,7 +42,7 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 		stateChanged := s.viewerAt.IsZero() || s.viewerState != state
 		newPos := max(0, position)
 		s.viewerPosition = newPos
-		s.viewerAt = time.Now()
+		s.viewerAt = now
 		s.lastProgressAt = now
 		s.setViewerStateLocked(state, now)
 		if state == "paused" || state == "stopped" {
@@ -73,9 +73,11 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 		m.noteCause(pausedRelease, core.CacheCausePaused)
 		m.maintainReserve(s, position, state)
 	}
-	if state == "stopped" && len(sessions) > 0 {
+	if (state == "stopped" || state == "paused") && len(sessions) > 0 {
 		m.reg.poke()
-		m.kickPins()
+		if state == "stopped" {
+			m.kickPins()
+		}
 	}
 }
 

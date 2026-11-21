@@ -22,7 +22,12 @@ import { Kpi, KpiRow } from "../../components/Kpi";
 import { apiFetch, errorMessage } from "../../lib/api";
 import { t, tn } from "../../i18n";
 import { formatNumber } from "../../lib/format";
-import { channelLabel, decisionLabel, type NowPlaying as Stream } from "../../lib/health";
+import {
+  channelLabel,
+  decisionLabel,
+  isPausedSession,
+  type NowPlaying as Stream,
+} from "../../lib/health";
 import type { AsyncState } from "../../lib/hooks";
 import { qualityFallback } from "../../lib/quality-fallback";
 import { useTitle } from "../../lib/titles";
@@ -121,6 +126,7 @@ function StreamCard({
           />
           <div className="min-w-0 space-y-2 pb-0.5">
             <div className="flex flex-wrap items-center gap-1.5">
+              {isPausedSession(s) ? <Badge variant="warning">{t("Paused")}</Badge> : null}
               <Badge variant={converting ? "warning" : "success"}>{decisionLabel(s)}</Badge>
               {s.bitrateCapSource === "upload_budget" ? (
                 <Badge variant="info">{t("Upload budget")}</Badge>
@@ -309,6 +315,11 @@ function StreamRow({
                 {displayTitle}
               </button>
             </p>
+            {isPausedSession(s) ? (
+              <Badge variant="warning" className="shrink-0">
+                {t("Paused")}
+              </Badge>
+            ) : null}
             <Badge variant={converting ? "warning" : "success"} className="shrink-0">
               {decisionLabel(s)}
             </Badge>
@@ -517,8 +528,10 @@ export function NowPlaying({
   const [playId, openPlay] = usePlayParam();
   const streams = state.data ?? [];
   const filtered = protocol ? streams.filter((stream) => stream.protocol === protocol) : streams;
-  const converting = filtered.filter(isTranscoding).length;
-  const throughput = filtered.reduce((sum, s) => sum + (s.speedBps || 0), 0);
+  const active = filtered.filter((s) => !isPausedSession(s));
+  const pausedCount = filtered.length - active.length;
+  const converting = active.filter(isTranscoding).length;
+  const throughput = active.reduce((sum, s) => sum + (s.speedBps || 0), 0);
   const activeStream = playId ? (streams.find((s) => streamIdOf(s) === playId) ?? null) : null;
   const drawer = <PlayDrawer id={playId} session={activeStream} onClose={() => openPlay(null)} />;
 
@@ -551,12 +564,13 @@ export function NowPlaying({
       <KpiRow>
         <Kpi
           label={t("Streaming now")}
-          value={ready ? formatNumber(filtered.length, 0) : "—"}
+          value={ready ? formatNumber(active.length, 0) : "—"}
+          detail={pausedCount ? t("{count} paused", { count: pausedCount }) : undefined}
           icon={<Radio size={18} />}
         />
         <Kpi
           label={t("Direct")}
-          value={ready ? formatNumber(filtered.length - converting, 0) : "—"}
+          value={ready ? formatNumber(active.length - converting, 0) : "—"}
           detail={t("Played or streamed as-is")}
           icon={<PlayCircle size={18} />}
           tone="success"

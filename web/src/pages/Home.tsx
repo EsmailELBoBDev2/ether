@@ -45,6 +45,7 @@ import {
   channelLabel,
   countsOverall,
   hasExemptDiagnostic,
+  isPausedSession,
   type HealthItem,
   type NowPlaying,
 } from "../lib/health";
@@ -329,7 +330,9 @@ function NowPlayingPanel({
   onSelect: (id: string) => void;
   className?: string;
 }) {
-  const total = sessions.reduce((n, s) => n + s.speedBps, 0);
+  const activeSessions = sessions.filter((s) => !isPausedSession(s));
+  const pausedCount = sessions.length - activeSessions.length;
+  const total = activeSessions.reduce((n, s) => n + s.speedBps, 0);
   return (
     <DashboardPanel
       title={t("Now playing")}
@@ -337,11 +340,14 @@ function NowPlayingPanel({
       className={className}
       actions={
         <span className="flex items-center gap-2">
-          {sessions.length ? (
+          {activeSessions.length ? (
             <Badge variant="info">
-              {tn(sessions.length, "{count} stream", "{count} streams")}
+              {tn(activeSessions.length, "{count} stream", "{count} streams")}
+              {pausedCount > 0 ? ` · ${t("{count} paused", { count: pausedCount })}` : ""}
               {total > 0 ? ` · ${formatRate(total)}` : ""}
             </Badge>
+          ) : pausedCount > 0 ? (
+            <Badge variant="warning">{t("{count} paused", { count: pausedCount })}</Badge>
           ) : null}
           <Link to="/activity/now" className="text-xs font-medium text-primary hover:underline">
             {t("Activity")}
@@ -410,6 +416,7 @@ function SessionCard({ s, onOpen }: { s: NowPlaying; onOpen: () => void }) {
             {s.product && s.product !== s.device ? ` (${s.product})` : ""}
           </p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {isPausedSession(s) ? <Badge variant="warning">{t("Paused")}</Badge> : null}
             <Badge
               variant={s.decision === "transcode" ? "warning" : "success"}
               title={s.decisionReason || undefined}

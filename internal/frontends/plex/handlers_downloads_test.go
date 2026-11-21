@@ -686,3 +686,76 @@ func TestDownloadMediaResumeValidatorsAndDecisionConsistency(t *testing.T) {
 		t.Fatalf("after restart stale If-Range = %d etag=%q (old=%q)", stale.Code, stale.Header().Get("ETag"), etag)
 	}
 }
+
+func TestDownloadQueueUsesPreferredAndSelectedAudioTrack(t *testing.T) {
+	f := newDownloadFixture(t, true)
+	dualAudio := core.MediaInfo{
+		Container:   "mkv",
+		Duration:    24 * time.Minute,
+		Size:        1000,
+		BitrateKbps: 6000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Language: "jpn", Default: true},
+			{Index: 2, Type: "audio", Codec: "aac", Channels: 2, Language: "eng"},
+			{Index: 3, Type: "subtitle", Codec: "subrip", Language: "eng"},
+		},
+	}
+	f.playback.mu.Lock()
+	f.playback.info = dualAudio
+	f.playback.mu.Unlock()
+	u := ownerUser
+	u.AudioLanguages = []string{"en"}
+	f.auth.users[ownerToken] = u
+
+	qid := f.queue(t)
+	key := "/library/metadata/" + fightClub.Key.String()
+	rec := f.do(t, http.MethodPost, "/downloadQueue/"+itoa(qid)+"/add?keys="+key, ownerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body.String())
+	}
+	f.waitStatus(t, qid, downloadAvailable)
+
+	f.remux.mu.Lock()
+	reqs := append([]core.DownloadRemuxRequest(nil), f.remux.requests...)
+	f.remux.mu.Unlock()
+	if len(reqs) != 1 {
+		t.Fatalf("remux requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].AudioStream != 2 || reqs[0].Options.AudioStream != 2 {
+		t.Fatalf("preferred English audio ignored: req.AudioStream=%d opts.AudioStream=%d, want 2", reqs[0].AudioStream, reqs[0].Options.AudioStream)
+	}
+
+	items := f.items(t, qid)
+	itemID := int64(items[0]["id"].(float64))
+	decRec := f.do(t, http.MethodGet, "/downloadQueue/"+itoa(qid)+"/item/"+itoa(itemID)+"/decision", ownerToken, nil)
+	if decRec.Code != http.StatusOK {
+		t.Fatalf("decision: %d %s", decRec.Code, decRec.Body.String())
+	}
+	decMC := decodeContainer(t, decRec)
+	dm := decMC["Metadata"].([]any)[0].(map[string]any)["Media"].([]any)[0].(map[string]any)
+	if dm["audioCodec"] != "aac" {
+		t.Fatalf("decision audioCodec = %v, want aac (selected track)", dm["audioCodec"])
+	}
+
+	// Explicit viewer pick (Japanese audio + English subtitle) overrides preferred language.
+	f.srv.selections.update(ownerUser.ID, int64(fightClub.Key), func(sel *selection) {
+		sel.audio, sel.audioSet = 1, true
+		sel.subtitle, sel.subtitleSet = 3, true
+	})
+	rec = f.do(t, http.MethodPost, "/downloadQueue/"+itoa(qid)+"/items/"+itoa(itemID)+"/restart", ownerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restart: %d %s", rec.Code, rec.Body.String())
+	}
+	f.waitStatus(t, qid, downloadAvailable)
+	f.remux.mu.Lock()
+	reqs = append([]core.DownloadRemuxRequest(nil), f.remux.requests...)
+	f.remux.mu.Unlock()
+	if len(reqs) != 2 {
+		t.Fatalf("remux requests = %d, want 2", len(reqs))
+	}
+	if reqs[1].AudioStream != 1 || reqs[1].Options.AudioStream != 1 || reqs[1].Options.SubtitleStream != 3 {
+		t.Fatalf("explicit selection ignored: audio=%d opts.audio=%d opts.sub=%d, want 1/1/3",
+			reqs[1].AudioStream, reqs[1].Options.AudioStream, reqs[1].Options.SubtitleStream)
+	}
+}

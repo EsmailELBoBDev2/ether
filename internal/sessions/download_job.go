@@ -46,7 +46,7 @@ func (j DownloadJob) Run(ctx context.Context, q DownloadRequest) (string, int64,
 		viewer = q.Viewer.ID
 	}
 	return j.Remuxer.RemuxDownload(ctx, core.DownloadRemuxRequest{
-		InputURL: j.Playback.InputURL(ps.ID), Info: ps.Info, AudioStream: -1,
+		InputURL: j.Playback.InputURL(ps.ID), Info: ps.Info, AudioStream: opts.AudioStream,
 		ViewerID: viewer, Caps: caps, Options: opts,
 	}, q.Progress)
 }

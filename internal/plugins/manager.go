@@ -145,6 +145,12 @@ type Manager struct {
 	// eventBridgeMu guards the single events.Bus bridge subscription for plugins.
 	eventBridgeMu  sync.Mutex
 	eventBridgeSub *events.Subscription
+	// previewMu caches recent verified package downloads and CheckPackage
+	// verdicts so PreviewInstall -> Install does not re-download remote
+	// packages or re-run the conformance kit twice back-to-back.
+	previewMu      sync.Mutex
+	checkedDigests map[string]time.Time
+	sourceCache    map[string]cachedSourceEntry
 	// healthMu serializes health read-modify-writes so concurrent calls
 	// (resolves on the hot path, scheduled jobs) never lose an update.
 	healthMu sync.Mutex
@@ -509,6 +515,9 @@ func (m *Manager) runtimeForWithEpoch(ctx context.Context, r Record) (Runtime, u
 // it after a start, restart or update. Failures are logged, not fatal: the
 // plugin can still read settings.get per request.
 func (m *Manager) deliverSettings(ctx context.Context, pluginID string, rt Runtime) {
+	if ctx.Err() != nil {
+		return
+	}
 	settings, err := m.mergedSettings(ctx, pluginID)
 	if err != nil || len(settings) == 0 {
 		return
@@ -517,7 +526,7 @@ func (m *Manager) deliverSettings(ctx context.Context, pluginID string, rt Runti
 	if err != nil {
 		return
 	}
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DeadlineFor("/ether/configure"))
+	cctx, cancel := context.WithTimeout(ctx, DeadlineFor("/ether/configure"))
 	defer cancel()
 	if _, err := rt.Call(cctx, Request{PluginID: pluginID, Method: "POST", Path: "/ether/configure", Body: body}); err != nil {
 		m.log.Warn("plugins: deliver settings to new runtime", "plugin", pluginID, "err", err)

@@ -38,6 +38,7 @@ type FacetPerson struct {
 // FacetPeoplePage is one page of people for a library people tab.
 type FacetPeoplePage struct {
 	Items []FacetPerson
+	Total int
 	More  bool
 }
 
@@ -103,7 +104,7 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 	}
 	isPeople := false
 	for _, fd := range rec.Decl.Fields {
-		if fd.Key == fieldKey && fd.Type == "people" {
+		if fd.Key == fieldKey && isPeopleIndexedField(fd) {
 			isPeople = true
 			break
 		}
@@ -186,8 +187,35 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 		out = out[:limit]
 		more = true
 	}
+	total := offset + len(out)
+	if more {
+		if len(terms) == 0 && q.Policy == nil {
+			tallyLevel := strings.TrimSpace(q.Level)
+			if tallyLevel == "" && len(rec.Decl.Levels) > 0 {
+				tallyLevel = rec.Decl.Levels[0].Key
+			}
+			var cnt int
+			if err := s.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ?`,
+				int64(rec.LibraryID), tallyLevel, fieldKey,
+			).Scan(&cnt); err == nil && cnt >= total {
+				total = cnt
+			}
+		} else {
+			countArgs := qArgs[:len(qArgs)-2]
+			var cnt int
+			if err := s.db.QueryRowContext(ctx,
+				`SELECT COUNT(DISTINCT f.v_int)
+				 FROM plugin_item_fields f
+				 JOIN plugin_items i ON i.item_ref = f.item_ref
+				 WHERE `+where.String(), countArgs...,
+			).Scan(&cnt); err == nil && cnt >= total {
+				total = cnt
+			}
+		}
+	}
 	if len(out) == 0 {
-		return FacetPeoplePage{Items: []FacetPerson{}}, nil
+		return FacetPeoplePage{Items: []FacetPerson{}, Total: total}, nil
 	}
 
 	// Fetch up to 4 candidate items per person on the page in ONE query driven
@@ -268,7 +296,25 @@ ORDER BY r.bucket_pid ASC, r.rn ASC`
 		return FacetPeoplePage{}, err
 	}
 	sRows.Close()
-	return FacetPeoplePage{Items: out, More: more}, nil
+
+	// Hydrate sample item artwork in a single batched query for people without
+	// an explicit portrait thumb (e.g. music artists using album cover art).
+	var needArt []core.KindItem
+	var needArtIdx []int
+	for i := range out {
+		if out[i].Thumb == "" && out[i].SampleItem != nil {
+			needArt = append(needArt, *out[i].SampleItem)
+			needArtIdx = append(needArtIdx, i)
+		}
+	}
+	if len(needArt) > 0 {
+		if err := s.hydrateArtSlice(ctx, needArt); err == nil {
+			for j, idx := range needArtIdx {
+				out[idx].SampleItem.Art = needArt[j].Art
+			}
+		}
+	}
+	return FacetPeoplePage{Items: out, Total: total, More: more}, nil
 }
 
 // resolveNewestByTextBuckets resolves the newest visible item (plus artwork)

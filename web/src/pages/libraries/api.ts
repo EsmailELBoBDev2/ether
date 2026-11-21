@@ -243,6 +243,10 @@ export interface LibrarySync {
   lastOk?: string;
   lastError?: string;
   items: number;
+  running?: boolean;
+  phase?: string;
+  syncedItems?: number;
+  pages?: number;
 }
 
 export interface CatalogueSource {

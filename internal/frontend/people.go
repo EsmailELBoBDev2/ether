@@ -98,6 +98,7 @@ type FacetPerson struct {
 // FacetPersonPage is one page of people in a plugin library's people tab.
 type FacetPersonPage struct {
 	Items []FacetPerson
+	Total int
 	More  bool
 }
 

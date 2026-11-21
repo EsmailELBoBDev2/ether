@@ -497,9 +497,13 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	// the running search manager in step with installs, removals and role
 	// switches. Also refresh published library sections when plugin libraries
 	// appear or disappear.
-	mgr.OnSync(func(context.Context, plugins.Record) {
-		a.reapplyAddonIndexers()
-		a.publishLibrarySections()
+	mgr.OnSync(func(_ context.Context, r plugins.Record) {
+		if r.Manifest.IsStremioOnly() || r.Manifest.HasCapability(plugins.CapStreamSource) {
+			a.reapplyAddonIndexers()
+		}
+		if r.Manifest.Ether != nil && len(r.Manifest.Ether.Contributes.MediaKinds) > 0 {
+			a.publishLibrarySections()
+		}
 	})
 	mgr.OnRemove(func(context.Context, string) {
 		a.reapplyAddonIndexers()

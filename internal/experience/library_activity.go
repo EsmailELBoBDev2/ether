@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -53,14 +54,19 @@ func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.D
 	if err != nil {
 		return nil, err
 	}
+	limit = activityLimit(limit)
 	lib, err := s.activityLibrary(v, viewID)
 	if err != nil {
+		if viewID != "" && errors.Is(err, core.ErrNotFound) && s.d.PluginLibraries != nil {
+			if plib, _, perr := s.publishedLibraryByViewID(ctx, v, viewID); perr == nil && plib.Source == core.LibraryPlugin {
+				return s.latestFromPluginLibrary(ctx, v, plib, limit)
+			}
+		}
 		return nil, err
 	}
 	if s.d.Browse == nil || s.d.AddedTimes == nil {
 		return nil, core.ErrNotAvailable
 	}
-	limit = activityLimit(limit)
 	var result []frontend.LatestItem
 	libraries := s.libraries()
 	if lib != nil {
@@ -155,6 +161,38 @@ func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.D
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+// latestFromPluginLibrary returns the newest root items in one published plugin
+// library in O(limit) SQL via the plugin item store's added_at index.
+func (s *Service) latestFromPluginLibrary(ctx context.Context, v *core.User, lib core.Library, limit int) ([]frontend.LatestItem, error) {
+	q := frontend.ItemQuery{
+		Sort:    core.SortAdded,
+		Desc:    true,
+		Limit:   limit,
+		NoTotal: true,
+	}
+	if playedOnly, filterPlayed := frontend.LatestPlayedFilter(ctx); filterPlayed {
+		q.Watched = &playedOnly
+	}
+	page, err := s.pluginLibraryItems(ctx, v, lib, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]frontend.LatestItem, 0, len(page.Items))
+	for i := range page.Items {
+		item := page.Items[i]
+		var addedAt *time.Time
+		if item.PluginAddedAt > 0 {
+			t := time.Unix(item.PluginAddedAt, 0).UTC()
+			addedAt = &t
+		} else if !item.AddedAt.IsZero() {
+			t := item.AddedAt
+			addedAt = &t
+		}
+		out = append(out, frontend.LatestItem{Title: item, AddedAt: addedAt})
+	}
+	return out, nil
 }
 
 // UnplayedEpisodeCounts is the aired-episode badge for a list of shows and

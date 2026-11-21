@@ -1931,12 +1931,7 @@ func (s *Service) appendBrowsePersonFilter(ctx context.Context, lib core.Library
 	if err != nil {
 		return false, err
 	}
-	var pFields []string
-	for _, field := range rec.Decl.Fields {
-		if field.Type == "people" {
-			pFields = append(pFields, field.Key)
-		}
-	}
+	pFields := declaredPeopleFields(rec.Decl)
 	if len(pFields) == 0 {
 		return false, nil
 	}
@@ -1958,12 +1953,7 @@ func (s *Service) appendPersonFilter(ctx context.Context, lib core.LibraryID, wh
 	if err != nil {
 		return false, err
 	}
-	var pFields []string
-	for _, field := range rec.Decl.Fields {
-		if field.Type == "people" {
-			pFields = append(pFields, field.Key)
-		}
-	}
+	pFields := declaredPeopleFields(rec.Decl)
 	if len(pFields) == 0 {
 		return false, nil
 	}

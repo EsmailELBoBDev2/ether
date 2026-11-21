@@ -361,6 +361,10 @@ func (s *Service) pluginPerson(ctx context.Context, viewer *core.Viewer, personI
 	}
 	itemQ := frontend.ItemQuery{Recursive: true}
 	var found visiblePerson
+	musicMatches := 0
+	totalMatches := 0
+	samplePoster := ""
+	var samplePosterKey core.RatingKey
 	for _, lib := range libs {
 		pm, ok, err := ppl.PersonByID(ctx, lib, personID, 25)
 		if err != nil {
@@ -377,6 +381,7 @@ func (s *Service) pluginPerson(ctx context.Context, viewer *core.Viewer, personI
 			return frontend.PersonDetail{}, err
 		}
 		for _, t := range visibleTitles {
+			matched := false
 			for _, group := range [][]core.Person{t.Cast, t.Directors, t.Writers, t.Crew} {
 				for _, p := range group {
 					if p.TMDB == personID && strings.TrimSpace(p.Name) != "" {
@@ -384,7 +389,18 @@ func (s *Service) pluginPerson(ctx context.Context, viewer *core.Viewer, personI
 						if err != nil {
 							return frontend.PersonDetail{}, err
 						}
+						matched = true
 					}
+				}
+			}
+			if matched {
+				totalMatches++
+				if t.MBItemType == "MusicAlbum" || t.MBItemType == "Audio" || t.MBItemType == "MusicArtist" {
+					musicMatches++
+				}
+				if samplePoster == "" && t.PosterPath != "" {
+					samplePoster = t.PosterPath
+					samplePosterKey = t.Key
 				}
 			}
 		}
@@ -392,7 +408,18 @@ func (s *Service) pluginPerson(ctx context.Context, viewer *core.Viewer, personI
 	if found.detail.ID == "" {
 		return frontend.PersonDetail{}, core.ErrNotFound
 	}
-	return s.currentPerson(ctx, viewer, found.detail)
+	detail, err := s.currentPerson(ctx, viewer, found.detail)
+	if err != nil {
+		return frontend.PersonDetail{}, err
+	}
+	if totalMatches > 0 && musicMatches == totalMatches {
+		detail.KnownFor = "MusicArtist"
+		if len(detail.Images) == 0 && samplePoster != "" && samplePosterKey != 0 {
+			detail.ArtworkItem = samplePosterKey
+			detail.Images = []frontend.Image{{Kind: frontend.ImagePoster, Path: samplePoster}}
+		}
+	}
+	return detail, nil
 }
 
 func (s *Service) pluginPersonRoles(ctx context.Context, v *core.User, personID int64) (map[string]int, error) {

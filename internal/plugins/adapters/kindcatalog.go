@@ -192,7 +192,7 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 			Present: initial.Effective,
 		})
 		if errors.Is(err, libraries.ErrDeleted) {
-			c.items.StopKindSync(r.ID, k.Key)
+			c.items.CancelKindSync(r.ID, k.Key)
 			continue
 		}
 		if err != nil {
@@ -219,19 +219,20 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 				c.blobs.Namespace(lib.Key, q)
 			}
 		}
+		// Cancel any in-flight pull sync BEFORE UpsertKind so a running
+		// sync pass releases kindLock after at most one chunk rather than
+		// blocking plugin install/upgrade/disable.
+		c.items.CancelKindSync(r.ID, k.Key)
 		if _, err := c.items.UpsertKind(ctx, r.ID, lib.ID, k, false); err != nil {
 			c.log.Warn("upsert plugin kind failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			if c.mgr != nil {
 				c.mgr.RecordFailure(ctx, r.ID, err.Error())
 			}
-			c.items.StopKindSync(r.ID, k.Key)
 			continue
 		}
 		if active && k.Sync.Mode == plugins.KindSyncPull {
 			interval := parseKindDuration(k.Sync.Refresh, defaultKindRefresh)
 			c.items.StartKindSync(c.syncCtx, r.ID, k.Key, interval)
-		} else {
-			c.items.StopKindSync(r.ID, k.Key)
 		}
 	}
 
@@ -2043,5 +2044,5 @@ func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, 
 			out[personIdx].SampleTitle = &t
 		}
 	}
-	return experience.PluginFacetPeoplePage{Items: out, More: page.More}, nil
+	return experience.PluginFacetPeoplePage{Items: out, Total: page.Total, More: page.More}, nil
 }

@@ -204,7 +204,7 @@ func extractProjectedPeople(fields map[string]json.RawMessage, decl plugins.Medi
 
 	if len(decl.Fields) > 0 {
 		for _, fd := range decl.Fields {
-			if fd.Type != "people" {
+			if !isPeopleIndexedField(fd) {
 				continue
 			}
 			list := extractPeopleFromFields(fields, fd.Key)
@@ -419,9 +419,33 @@ func extractGenresAndFacets(item core.KindItem, decl plugins.MediaKindMeta) []st
 		add(v)
 	}
 
+	// When the kind declares an explicit genre/tag field, keep Title.Genres
+	// focused on those rather than mixing in people (artists/authors) or
+	// structural enums (e.g. record_type) that happen to be browse facets.
+	fieldType := make(map[string]string, len(decl.Fields))
+	hasDeclaredGenre := false
+	for _, fd := range decl.Fields {
+		fieldType[fd.Key] = fd.Type
+		switch fd.Key {
+		case "genre", "genres", "tags", "tag":
+			hasDeclaredGenre = true
+		}
+	}
+	if hasDeclaredGenre {
+		return out
+	}
+
 	facetKeys := append([]string(nil), decl.Browse.Facets...)
 	sort.Strings(facetKeys)
 	for _, key := range facetKeys {
+		switch fieldType[key] {
+		case "people", "int", "float", "date", "duration", "bool":
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "studio", "studios", "publisher", "publishers", "network", "artist", "artists", "album_artist", "album_artists", "author", "authors", "performer", "performers":
+			continue
+		}
 		for _, v := range extractStringsFromFields(item.Fields, key) {
 			add(v)
 		}

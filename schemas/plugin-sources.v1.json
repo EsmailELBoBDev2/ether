@@ -41,9 +41,13 @@
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+        },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
-          "description": "A candidate from indexer_search handed back for release_files, so an NZB is fetched through its originating indexer."
+          "description": "A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its originating indexer."
         }
       }
     },
@@ -64,7 +68,12 @@
           "type": "string"
         },
         "size": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Decoded file size in bytes (exact when known from torrent/debrid, PAR2, or yEnc headers; segment-derived estimate when sizeApproximate is true)."
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is a segment-derived decoded estimate rather than an exact byte count."
         }
       }
     },
@@ -77,8 +86,13 @@
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers; torrent candidates never populate nzbUrl."
+        },
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "description": "Usenet NZB download link; populated only for Usenet candidates."
         },
         "title": {
           "type": "string"
@@ -138,6 +152,9 @@
           "type": "string"
         },
         "infoHash": {
+          "type": "string"
+        },
+        "torrentUrl": {
           "type": "string"
         },
         "passwordSecret": {

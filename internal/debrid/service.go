@@ -903,10 +903,13 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	return nil, joined
 }
 
-// ListReleaseFiles lists the files of a torrent already cached on a debrid
-// provider, in the provider's file-list order (the order ReleaseTarget
-// FileIndex counts). It never adds an uncached torrent: a hash no provider
-// is known to hold wraps core.ErrNotCached.
+// ListReleaseFiles lists the files of a torrent cached on a debrid provider,
+// in the provider's file-list order (the order ReleaseTarget FileIndex counts).
+// Providers that support bulk cache checks are queried first so uncached
+// torrents are skipped without adding; providers without bulk checks check
+// cache via acquireOn (removing uncached torrents when RemoveUncached is on
+// and never adding private torrents unless already known cached). Returns
+// core.ErrNotCached when no provider holds the torrent cached.
 func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]core.ReleaseFile, error) {
 	if s == nil {
 		return nil, ErrNoProvider
@@ -928,20 +931,28 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 	if rel.Private || magnet == "" {
 		magnet = bareMagnet(hash)
 	}
+	// Populate knownFor via bulk cache checks on providers that support them
+	// (no-op for hashes already known and for providers without bulk checks).
+	s.CheckCached(ctx, []string{hash})
+
 	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Release: rel.Name}
 	var errs []error
 	for _, e := range entries {
 		if e.blocked(s.now()) != nil {
 			continue
 		}
-		cached, known, _ := s.knownFor(ctx, e.cfg.ID, hash)
-		if !(known && cached) && !slices.Contains(rel.DebridCached, e.cfg.Kind) {
+		if cached, known, _ := s.knownFor(ctx, e.cfg.ID, hash); known && !cached {
 			continue
 		}
 		var captured []File
 		choose := func(files []File) (File, error) {
 			s.recordTorrentFiles(ctx, rel, files)
 			captured = slices.Clone(files)
+			for _, f := range files {
+				if f.selected {
+					return f, nil
+				}
+			}
 			if f, err := ChooseFile(files, nil); err == nil {
 				return f, nil
 			}
@@ -951,7 +962,7 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 			return File{}, core.ErrWrongContent
 		}
 		_, err := s.acquireOn(ctx, e, base, choose, false)
-		if len(captured) > 0 {
+		if err == nil && len(captured) > 0 {
 			out := make([]core.ReleaseFile, len(captured))
 			for i, f := range captured {
 				out[i] = core.ReleaseFile{Index: i, Path: f.Path, Size: f.Size}
@@ -961,7 +972,7 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, core.ErrNotCached) {
 			errs = append(errs, err)
 		}
 	}

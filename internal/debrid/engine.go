@@ -364,6 +364,17 @@ func (e *Engine) Prefetch(ctx context.Context, releaseID string, payload []byte,
 	return f.prefetch(ctx, ranges)
 }
 
+// ListFiles forwards NZB release file listing (exact decoded sizes via PAR2/yEnc
+// when available) to the wrapped streaming engine.
+func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte) ([]core.ReleaseFile, error) {
+	if lister, ok := e.inner.(interface {
+		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
+	}); ok {
+		return lister.ListFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
 // Check implements core.HealthChecker. For a debrid payload it confirms a
 // direct link is obtainable and that a range request answers 206 with the
 // expected size, caching the head block it read; others go to the inner

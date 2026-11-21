@@ -11,6 +11,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,30 +33,111 @@ var (
 	ErrPluginAnswer = errors.New("kindstream: source contradicts the plugin's answer")
 )
 
+const (
+	// approxSizeMinTolerance covers per-article yEnc framing overhead on small
+	// files where percentage-only tolerance would be too tight.
+	approxSizeMinTolerance int64 = 4096
+	// approxSizeToleranceDiv sets the relative tolerance band (1/10 = 10%) for
+	// sources whose declared size is marked approximate.
+	approxSizeToleranceDiv int64 = 10
+)
+
 // expectedDigests is the set of checks a PlayableSource declares.
 type expectedDigests struct {
-	sha256 string
-	sha1   string
-	crc32  string
-	size   int64
+	sha256          string
+	sha1            string
+	crc32           string
+	size            int64
+	sizeApproximate bool
 }
 
 func digestsOf(src core.PlayableSource) expectedDigests {
+	approx := src.SizeApproximate
+	if !approx && src.Size > 0 && src.Release != nil && src.Release.Candidate != nil {
+		if f, ok := selectedCandidateFile(src.Release); ok && f.SizeApproximate && f.Size == src.Size {
+			approx = true
+		}
+	}
 	return expectedDigests{
-		sha256: strings.ToLower(strings.TrimSpace(src.SHA256)),
-		sha1:   strings.ToLower(strings.TrimSpace(src.SHA1)),
-		crc32:  strings.ToLower(strings.TrimSpace(src.CRC32)),
-		size:   src.Size,
+		sha256:          strings.ToLower(strings.TrimSpace(src.SHA256)),
+		sha1:            strings.ToLower(strings.TrimSpace(src.SHA1)),
+		crc32:           strings.ToLower(strings.TrimSpace(src.CRC32)),
+		size:            src.Size,
+		sizeApproximate: approx,
 	}
 }
 
-func (d expectedDigests) hasHash() bool { return d.sha256 != "" || d.sha1 != "" || d.crc32 != "" }
+func selectedCandidateFile(rel *core.ReleaseHint) (core.ReleaseFile, bool) {
+	if rel == nil || rel.Candidate == nil || len(rel.Candidate.Files) == 0 {
+		return core.ReleaseFile{}, false
+	}
+	idx := rel.FileIndex
+	if idx == nil {
+		idx = rel.Candidate.FileIndex
+	}
+	if idx != nil {
+		for _, f := range rel.Candidate.Files {
+			if f.Index == *idx {
+				return f, true
+			}
+		}
+	}
+	want := strings.TrimSpace(strings.ReplaceAll(rel.File, "\\", "/"))
+	want = strings.TrimPrefix(want, "/")
+	if want == "" {
+		return core.ReleaseFile{}, false
+	}
+	var baseMatch core.ReleaseFile
+	baseCount := 0
+	for _, f := range rel.Candidate.Files {
+		fp := strings.TrimPrefix(strings.ReplaceAll(f.Path, "\\", "/"), "/")
+		if strings.EqualFold(fp, want) {
+			return f, true
+		}
+		if strings.EqualFold(path.Base(fp), want) {
+			baseMatch = f
+			baseCount++
+		}
+	}
+	if baseCount == 1 {
+		return baseMatch, true
+	}
+	return core.ReleaseFile{}, false
+}
+
+func (d expectedDigests) hasHash() bool  { return d.sha256 != "" || d.sha1 != "" || d.crc32 != "" }
+func (d expectedDigests) hasCheck() bool { return d.hasHash() || d.size > 0 }
+
+func approxSizeTolerance(declared int64) int64 {
+	tol := declared / approxSizeToleranceDiv
+	if tol < approxSizeMinTolerance {
+		return approxSizeMinTolerance
+	}
+	return tol
+}
 
 // checkSize rejects a served size that contradicts the declared one before
-// any bytes are read.
+// any bytes are read. Exact sizes (sizeApproximate == false) require exact
+// equality; approximate sizes accept a tolerance band around the hint.
 func (d expectedDigests) checkSize(got int64) error {
-	if d.size > 0 && got != d.size {
-		return fmt.Errorf("%w: size %d, want %d: %w", ErrDigestMismatch, got, d.size, ErrPluginAnswer)
+	if d.size <= 0 {
+		return nil
+	}
+	if !d.sizeApproximate {
+		if got != d.size {
+			return fmt.Errorf("%w: size %d, want %d: %w", ErrDigestMismatch, got, d.size, ErrPluginAnswer)
+		}
+		return nil
+	}
+	if got <= 0 {
+		return fmt.Errorf("%w: size %d, want ~%d: %w", ErrDigestMismatch, got, d.size, ErrPluginAnswer)
+	}
+	diff := got - d.size
+	if diff < 0 {
+		diff = -diff
+	}
+	if tol := approxSizeTolerance(d.size); diff > tol {
+		return fmt.Errorf("%w: size %d outside approximate hint %d (±%d): %w", ErrDigestMismatch, got, d.size, tol, ErrPluginAnswer)
 	}
 	return nil
 }
@@ -130,22 +212,30 @@ func (d expectedDigests) verifyBytes(b []byte) error {
 }
 
 // digestVerifyReader fails instead of returning io.EOF when the stream it
-// saw does not match the declared digests, so a cache Put consuming it
+// saw does not match the declared digests or size, so a cache Put consuming it
 // discards the bytes.
 type digestVerifyReader struct {
 	r      io.Reader
 	w      io.Writer
+	d      expectedDigests
 	finish func() error
+	nread  int64
 	done   bool
 	err    error
 }
 
 func newDigestVerifyReader(r io.Reader, d expectedDigests) io.Reader {
-	if !d.hasHash() {
+	if !d.hasCheck() {
 		return r
 	}
-	writers, finish := d.hashers()
-	return &digestVerifyReader{r: r, w: io.MultiWriter(writers...), finish: finish}
+	var w io.Writer
+	var finish func() error
+	if d.hasHash() {
+		writers, fn := d.hashers()
+		w = io.MultiWriter(writers...)
+		finish = fn
+	}
+	return &digestVerifyReader{r: r, w: w, d: d, finish: finish}
 }
 
 func (v *digestVerifyReader) Read(p []byte) (int, error) {
@@ -154,13 +244,22 @@ func (v *digestVerifyReader) Read(p []byte) (int, error) {
 	}
 	n, err := v.r.Read(p)
 	if n > 0 {
-		_, _ = v.w.Write(p[:n])
+		v.nread += int64(n)
+		if v.w != nil {
+			_, _ = v.w.Write(p[:n])
+		}
 	}
 	if errors.Is(err, io.EOF) {
 		v.done = true
-		if ferr := v.finish(); ferr != nil {
-			v.err = ferr
-			return n, ferr
+		if serr := v.d.checkSize(v.nread); serr != nil {
+			v.err = serr
+			return n, serr
+		}
+		if v.finish != nil {
+			if ferr := v.finish(); ferr != nil {
+				v.err = ferr
+				return n, ferr
+			}
 		}
 		v.err = io.EOF
 		return n, io.EOF

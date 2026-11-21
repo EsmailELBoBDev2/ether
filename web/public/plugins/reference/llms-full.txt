@@ -920,10 +920,14 @@ order. Patterns:
   member hint.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
-polynomial as 8 hex digits) and `size`. Ether checks them against the bytes
-actually served — for a release, the selected file; for a container, the
-member (whose size the archive directory reveals before any data is read).
-Bytes that fit `maxBytes` are read into the library cache and verified
+polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
+when `size` is a decoded estimate rather than an exact byte length). Ether
+checks them against the bytes actually served — for a release, the selected
+file; for a container, the member (whose size the archive directory reveals
+before any data is read). Exact sizes (`sizeApproximate` false or omitted)
+require exact byte equality; approximate sizes (`sizeApproximate: true`) are
+treated as a hint with a tolerance band. Bytes that fit `maxBytes` are read
+into the library cache and verified
 before serving; larger sources are hashed as they stream and the read
 fails at the end on a mismatch. A mismatch is an ordinary open failure:
 the next candidate source is tried. When several sources are returned and
@@ -964,18 +968,25 @@ owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
 
-`ResolveSources({kind: "release_files", infoHash})` (or `magnet`, or
-`candidate` carrying an `indexer_search` result back) returns one
-candidate whose `files` lists what is inside the release:
-`[{index, path, size}]` in the order Ether's own file selection counts
-(provider file-list order for torrents, NZB document order for Usenet).
-Torrents are listed only when a debrid provider already holds them
-cached — an uncached hash answers with `cached: false` and no files,
-and is never added. NZBs are fetched through their originating indexer
-(the same fetch playback makes, so the NZB is vaulted for playback).
-Match a file to your item by name, then return the release with
-`release.file` or `release.fileIndex` set; the choice is honoured on
-Usenet as on debrid.
+`ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
+`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+one candidate whose `files` lists what is inside the release:
+`[{index, path, size, sizeApproximate?}]` in the order Ether's own file
+selection counts (provider file-list order for torrents, NZB document order
+for Usenet). Torrent candidates carry their download or details page link in
+`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
+`torrentUrl` through the originating indexer first, populates `infoHash` and
+`magnet` on the returned candidate, lists files from a debrid provider when
+cached, and falls back to `.torrent` metainfo files (with `cached: false`)
+when uncached or when no debrid provider is configured. NZBs are fetched
+through their originating indexer (the same fetch playback makes, so the NZB
+is vaulted for playback), reporting exact decoded sizes from PAR2 or yEnc
+`=ybegin size=` headers when readable and falling back to a segment-derived
+decoded estimate with `sizeApproximate: true` when only the encoded segment
+sum is known. Match a file to your item by name, then return the release with
+`release.file` or `release.fileIndex` set (and propagate `sizeApproximate`
+when copying `file.size` to `source.size`); the choice is honoured on Usenet
+as on debrid.
 
 ### Multi-file items (`hints.parts`)
 
@@ -2137,7 +2148,8 @@ type KindMatchResponse struct {
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files, so an NZB is fetched through its indexer. |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download link (.torrent or indexer details download page) for torrent indexers that do not emit an info hash or magnet in search results. |
+| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files, so an NZB or torrent link is resolved through its originating indexer. |
 
 
 ## Source: internal/core/kinditem.go#SourceQuery
@@ -2157,8 +2169,13 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// TorrentURL carries a torrent download link (.torrent or indexer details
+	// download page) for torrent indexers that do not emit an info hash or
+	// magnet in search results.
+	TorrentURL string `json:"torrentUrl,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
-	// back for release_files, so an NZB is fetched through its indexer.
+	// back for release_files, so an NZB or torrent link is resolved through
+	// its originating indexer.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
 ``````
@@ -2170,6 +2187,7 @@ type SourceQuery struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `path` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate is true when Size is a segment-derived decoded estimate rather than an exact byte count (e.g. a Usenet NZB whose PAR2/yEnc headers could not be read). Exact sizes leave it false/omitted. |
 
 
 ## Source: internal/core/kinditem.go#ReleaseFile
@@ -2184,6 +2202,10 @@ type ReleaseFile struct {
 	Index int    `json:"index"`
 	Path  string `json:"path"`
 	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte count (e.g. a Usenet NZB whose PAR2/yEnc
+	// headers could not be read). Exact sizes leave it false/omitted.
+	SizeApproximate bool `json:"sizeApproximate,omitempty"`
 }
 ``````
 
@@ -2193,6 +2215,7 @@ type ReleaseFile struct {
 |---|---|---|---|
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
 | `title` | `string` | may be omitted (see validation for conditions) |  |
@@ -2213,10 +2236,13 @@ type ReleaseFile struct {
 ``````
 // SourceCandidate is one Ether-found release for a resolver to rank,
 // carrying the release-hint fields plus the facts matching needs.
+// Torrent candidates carry their infoHash, magnet, and/or torrentUrl and never
+// populate nzbUrl; Usenet candidates populate nzbUrl.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -2287,6 +2313,7 @@ func libraryKeySlug(s string) string {
 | `pattern` | `string` | emitted (validation may require a value) | "range" \| "download" \| "direct" \| "container" \| "release" \| "file" |
 | `mime` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count: kindstream applies a tolerance band instead of failing on exact byte inequality, while exact sizes (false/omitted) remain strict. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
@@ -2306,17 +2333,22 @@ func libraryKeySlug(s string) string {
 // PlayableSource is one candidate way to acquire bytes for a KindItem or one of
 // its parts (spec §4.1). Multiple sources are tried in order.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // "range" | "download" | "direct" | "container" | "release" | "file"
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // "range" | "download" | "direct" | "container" | "release" | "file"
+	MIME    string `json:"mime"`
+	Size    int64  `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count:
+	// kindstream applies a tolerance band instead of failing on exact byte
+	// inequality, while exact sizes (false/omitted) remain strict.
+	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
+	DurationSec     float64           `json:"durationSec,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	BlobRef         string            `json:"blobRef,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are the digests content catalogues actually publish
 	// (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared
 	// digest — and Size, when set — is checked against the bytes actually
@@ -2385,6 +2417,7 @@ type VolumeRef struct {
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
@@ -2394,15 +2427,17 @@ type VolumeRef struct {
 ## Source: internal/core/kinditem.go#ReleaseHint
 
 ``````
-// ReleaseHint hands an NZB, magnet, infohash, or pre-built Candidate to Ether's
-// existing Usenet / debrid / torrent acquisition pipeline (spec §4.1, §4.3).
+// ReleaseHint hands an NZB, magnet, infohash, torrent link, or pre-built
+// Candidate to Ether's existing Usenet / debrid / torrent acquisition pipeline
+// (spec §4.1, §4.3).
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string `json:"file,omitempty"`
 	FileHint       string `json:"fileHint,omitempty"`
@@ -12070,18 +12105,18 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet or candidate",
+				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "debrid_acquire needs an info hash or magnet",
+				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	default:
@@ -30254,9 +30289,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+        },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
-          "description": "A candidate from indexer_search handed back for release_files, so an NZB is fetched through its originating indexer."
+          "description": "A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its originating indexer."
         }
       }
     },
@@ -30277,7 +30316,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           "type": "string"
         },
         "size": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Decoded file size in bytes (exact when known from torrent/debrid, PAR2, or yEnc headers; segment-derived estimate when sizeApproximate is true)."
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is a segment-derived decoded estimate rather than an exact byte count."
         }
       }
     },
@@ -30290,8 +30334,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers; torrent candidates never populate nzbUrl."
+        },
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "description": "Usenet NZB download link; populated only for Usenet candidates."
         },
         "title": {
           "type": "string"
@@ -30351,6 +30400,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           "type": "string"
         },
         "infoHash": {
+          "type": "string"
+        },
+        "torrentUrl": {
           "type": "string"
         },
         "passwordSecret": {
@@ -41802,6 +41854,7 @@ type KindChangesRequest struct {
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link when an indexer did not supply an infoHash or magnet. |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files. |
 
 
@@ -41821,6 +41874,9 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// TorrentURL carries a torrent download or details page link when an
+	// indexer did not supply an infoHash or magnet.
+	TorrentURL string `json:"torrentUrl,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
@@ -41833,6 +41889,7 @@ type SourceQuery struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `path` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate is true when Size is a segment-derived decoded estimate rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc headers). Exact sizes leave it false/omitted. |
 
 
 ## Source: sdk/go/kinds.go#ReleaseFile
@@ -41843,6 +41900,10 @@ type ReleaseFile struct {
 	Index int    `json:"index"`
 	Path  string `json:"path"`
 	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc
+	// headers). Exact sizes leave it false/omitted.
+	SizeApproximate bool `json:"sizeApproximate,omitempty"`
 }
 ``````
 
@@ -41852,6 +41913,7 @@ type ReleaseFile struct {
 |---|---|---|---|
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
 | `title` | `string` | may be omitted (see validation for conditions) |  |
@@ -41871,10 +41933,13 @@ type ReleaseFile struct {
 
 ``````
 // SourceCandidate is one Ether-found release for a resolver to rank.
+// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
+// nzbUrl; Usenet candidates carry nzbUrl.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -41911,6 +41976,8 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
 	default:
@@ -41992,6 +42059,7 @@ type KindMatchResponse struct {
 | `pattern` | `string` | emitted (validation may require a value) | range\|download\|direct\|container\|release\|file |
 | `mime` | `string` | emitted (validation may require a value) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
+| `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
@@ -42012,17 +42080,20 @@ type KindMatchResponse struct {
 // carry {itemIndex}, {pageNumber}, {byteStart}, {byteEnd} and {byteRange}
 // placeholders that Ether substitutes.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // range|download|direct|container|release|file
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // range|download|direct|container|release|file
+	MIME    string `json:"mime"`
+	Size    int64  `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count.
+	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
+	DurationSec     float64           `json:"durationSec,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	BlobRef         string            `json:"blobRef,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are hex digests checked against the served bytes,
 	// including a release's selected file or container member; Size too.
 	SHA1      string        `json:"sha1,omitempty"`
@@ -42088,6 +42159,7 @@ type VolumeRef struct {
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
@@ -42100,11 +42172,12 @@ type VolumeRef struct {
 // ReleaseHint hands a release to Ether's Usenet/debrid/torrent pipeline.
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string `json:"file,omitempty"`
 	FileHint       string `json:"fileHint,omitempty"`
@@ -52913,6 +52986,8 @@ def candidate_ref(candidate: Dict[str, Any]) -> str:
         return "infohash:" + str(candidate["infoHash"]).lower()
     if candidate.get("magnet"):
         return "magnet:" + str(candidate["magnet"])
+    if candidate.get("torrentUrl"):
+        return "torrent:" + str(candidate["torrentUrl"])
     if candidate.get("nzbUrl"):
         return "nzb:" + str(candidate["nzbUrl"])
     return str(candidate.get("title") or "")
@@ -55255,6 +55330,7 @@ export interface SetupTester<S = Record<string, unknown>> {
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";
 }
@@ -58507,7 +58583,9 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** A candidate from indexer_search handed back for release_files, so an NZB is fetched through its indexer. */
+  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  torrentUrl?: string;
+  /** A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
 }
 
@@ -58516,11 +58594,15 @@ export interface ReleaseFile {
   index: number;
   path: string;
   size: number;
+  /** True when size is a segment-derived decoded estimate rather than an exact byte length. */
+  sizeApproximate?: boolean;
 }
 
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
+  /** Torrent download or details page link for torrent indexers (never placed in nzbUrl). */
+  torrentUrl?: string;
   nzbUrl?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
@@ -58559,6 +58641,8 @@ export interface PlayableSource {
   pattern: "range" | "download" | "direct" | "container" | "release" | "file";
   mime: string;
   size?: number;
+  /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
+  sizeApproximate?: boolean;
   durationSec?: number;
   url?: string;
   headers?: Record<string, string>;
@@ -58580,6 +58664,7 @@ export interface PlayableSource {
     nzbUrl?: string;
     magnet?: string;
     infoHash?: string;
+    torrentUrl?: string;
     candidate?: SourceCandidate;
     /** Zero-based torrent file index; overrides candidate.fileIndex. Invalid selections fail. */
     fileIndex?: number;

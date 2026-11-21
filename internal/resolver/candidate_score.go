@@ -10,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 )
@@ -125,16 +126,37 @@ func ScoreSourceCandidates(ctx context.Context, s *Service, profileName string, 
 	var videos []videoSlot
 
 	for i, rel := range rels {
+		infoHash := strings.ToLower(strings.TrimSpace(rel.InfoHash))
+		magnet := strings.TrimSpace(rel.MagnetURL)
+		dlURL := strings.TrimSpace(rel.NZBURL)
+		isTorrent := rel.Protocol == core.ProtocolTorrent ||
+			(rel.Protocol == "" && (infoHash != "" || magnet != ""))
 		cand := core.SourceCandidate{
-			InfoHash:  strings.ToLower(strings.TrimSpace(rel.InfoHash)),
-			Magnet:    rel.MagnetURL,
-			NZBURL:    rel.NZBURL,
+			InfoHash:  infoHash,
+			Magnet:    magnet,
 			Title:     rel.Name,
 			Size:      rel.Size,
 			Seeders:   rel.Seeders,
 			Cached:    len(rel.DebridCached) > 0,
 			Indexer:   rel.Indexer,
 			IndexerID: rel.IndexerID,
+		}
+		if isTorrent {
+			if strings.HasPrefix(strings.ToLower(dlURL), "magnet:") {
+				if cand.Magnet == "" {
+					cand.Magnet = dlURL
+				}
+				if cand.InfoHash == "" {
+					cand.InfoHash = newznab.InfoHashFromMagnet(dlURL)
+				}
+			} else if dlURL != "" {
+				cand.TorrentURL = dlURL
+			}
+			if cand.InfoHash == "" && cand.Magnet != "" {
+				cand.InfoHash = newznab.InfoHashFromMagnet(cand.Magnet)
+			}
+		} else if rel.Protocol == core.ProtocolUsenet || rel.Protocol == "" {
+			cand.NZBURL = dlURL
 		}
 		if !releaseparse.IsVideoRelease(rel.Name) {
 			out[i] = cand

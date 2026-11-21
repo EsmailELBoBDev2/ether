@@ -146,6 +146,9 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// TorrentURL carries a torrent download or details page link when an
+	// indexer did not supply an infoHash or magnet.
+	TorrentURL string `json:"torrentUrl,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
@@ -155,13 +158,20 @@ type ReleaseFile struct {
 	Index int    `json:"index"`
 	Path  string `json:"path"`
 	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc
+	// headers). Exact sizes leave it false/omitted.
+	SizeApproximate bool `json:"sizeApproximate,omitempty"`
 }
 
 // SourceCandidate is one Ether-found release for a resolver to rank.
+// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
+// nzbUrl; Usenet candidates carry nzbUrl.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -194,6 +204,8 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
 	default:
@@ -228,17 +240,20 @@ type KindMatchResponse struct {
 // carry {itemIndex}, {pageNumber}, {byteStart}, {byteEnd} and {byteRange}
 // placeholders that Ether substitutes.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // range|download|direct|container|release|file
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // range|download|direct|container|release|file
+	MIME    string `json:"mime"`
+	Size    int64  `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count.
+	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
+	DurationSec     float64           `json:"durationSec,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	BlobRef         string            `json:"blobRef,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are hex digests checked against the served bytes,
 	// including a release's selected file or container member; Size too.
 	SHA1      string        `json:"sha1,omitempty"`
@@ -269,11 +284,12 @@ type VolumeRef struct {
 // ReleaseHint hands a release to Ether's Usenet/debrid/torrent pipeline.
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string `json:"file,omitempty"`
 	FileHint       string `json:"fileHint,omitempty"`

@@ -263,10 +263,14 @@ order. Patterns:
   member hint.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
-polynomial as 8 hex digits) and `size`. Ether checks them against the bytes
-actually served — for a release, the selected file; for a container, the
-member (whose size the archive directory reveals before any data is read).
-Bytes that fit `maxBytes` are read into the library cache and verified
+polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
+when `size` is a decoded estimate rather than an exact byte length). Ether
+checks them against the bytes actually served — for a release, the selected
+file; for a container, the member (whose size the archive directory reveals
+before any data is read). Exact sizes (`sizeApproximate` false or omitted)
+require exact byte equality; approximate sizes (`sizeApproximate: true`) are
+treated as a hint with a tolerance band. Bytes that fit `maxBytes` are read
+into the library cache and verified
 before serving; larger sources are hashed as they stream and the read
 fails at the end on a mismatch. A mismatch is an ordinary open failure:
 the next candidate source is tried. When several sources are returned and
@@ -307,18 +311,25 @@ owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
 
-`ResolveSources({kind: "release_files", infoHash})` (or `magnet`, or
-`candidate` carrying an `indexer_search` result back) returns one
-candidate whose `files` lists what is inside the release:
-`[{index, path, size}]` in the order Ether's own file selection counts
-(provider file-list order for torrents, NZB document order for Usenet).
-Torrents are listed only when a debrid provider already holds them
-cached — an uncached hash answers with `cached: false` and no files,
-and is never added. NZBs are fetched through their originating indexer
-(the same fetch playback makes, so the NZB is vaulted for playback).
-Match a file to your item by name, then return the release with
-`release.file` or `release.fileIndex` set; the choice is honoured on
-Usenet as on debrid.
+`ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
+`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+one candidate whose `files` lists what is inside the release:
+`[{index, path, size, sizeApproximate?}]` in the order Ether's own file
+selection counts (provider file-list order for torrents, NZB document order
+for Usenet). Torrent candidates carry their download or details page link in
+`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
+`torrentUrl` through the originating indexer first, populates `infoHash` and
+`magnet` on the returned candidate, lists files from a debrid provider when
+cached, and falls back to `.torrent` metainfo files (with `cached: false`)
+when uncached or when no debrid provider is configured. NZBs are fetched
+through their originating indexer (the same fetch playback makes, so the NZB
+is vaulted for playback), reporting exact decoded sizes from PAR2 or yEnc
+`=ybegin size=` headers when readable and falling back to a segment-derived
+decoded estimate with `sizeApproximate: true` when only the encoded segment
+sum is known. Match a file to your item by name, then return the release with
+`release.file` or `release.fileIndex` set (and propagate `sizeApproximate`
+when copying `file.size` to `source.size`); the choice is honoured on Usenet
+as on debrid.
 
 ### Multi-file items (`hints.parts`)
 

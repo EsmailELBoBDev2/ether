@@ -464,18 +464,18 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet or candidate",
+				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
 			return nil, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "debrid_acquire needs an info hash or magnet",
+				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	default:

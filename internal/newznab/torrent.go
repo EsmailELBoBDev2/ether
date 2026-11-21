@@ -107,10 +107,11 @@ type TorrentMeta struct {
 	Name     string
 	Trackers []string
 	Private  bool
+	Files    []core.ReleaseFile
 }
 
 // ParseTorrent computes the info hash (SHA-1 of the bencoded info
-// dictionary) and reads the name and trackers of a .torrent file.
+// dictionary) and reads the name, trackers and file list of a .torrent file.
 func ParseTorrent(data []byte) (TorrentMeta, error) {
 	d := &bdecoder{b: data}
 	if d.peek() != 'd' {
@@ -131,7 +132,7 @@ func ParseTorrent(data []byte) (TorrentMeta, error) {
 			}
 			sum := sha1.Sum(data[start:d.pos])
 			meta.InfoHash = hex.EncodeToString(sum[:])
-			meta.Name, meta.Private = parseTorrentInfo(data[start:d.pos])
+			meta.Name, meta.Private, meta.Files = parseTorrentInfo(data[start:d.pos])
 		case "announce":
 			v, err := d.str()
 			if err != nil {
@@ -176,35 +177,183 @@ func appendTracker(list []string, tr string) []string {
 	return append(list, tr)
 }
 
-func parseTorrentInfo(info []byte) (name string, private bool) {
+type torrentFileEntry struct {
+	length   int64
+	path     []string
+	pathUTF8 []string
+	pad      bool
+}
+
+func parseTorrentInfo(info []byte) (name string, private bool, files []core.ReleaseFile) {
 	d := &bdecoder{b: info}
 	if d.peek() != 'd' {
-		return "", false
+		return "", false, nil
 	}
 	d.pos++
+	var (
+		nameUTF8        string
+		singleLength    int64
+		hasSingleLength bool
+		multi           []torrentFileEntry
+	)
+parseLoop:
 	for d.peek() == '0' || (d.peek() >= '1' && d.peek() <= '9') {
 		key, err := d.str()
 		if err != nil {
-			return name, private
+			break
 		}
 		switch string(key) {
 		case "name":
 			v, err := d.str()
 			if err != nil {
-				return name, private
+				break parseLoop
 			}
 			name = string(v)
+		case "name.utf-8":
+			v, err := d.str()
+			if err != nil {
+				break parseLoop
+			}
+			nameUTF8 = string(v)
 		case "private":
 			if n, ok := d.integer(); ok && n == 1 {
 				private = true
 			}
+		case "length":
+			if n, ok := d.integer(); ok && n >= 0 {
+				singleLength = n
+				hasSingleLength = true
+			}
+		case "files":
+			if entries, ok := d.torrentFiles(); ok {
+				multi = entries
+			}
 		default:
 			if err := d.skip(0); err != nil {
-				return name, private
+				break parseLoop
 			}
 		}
 	}
-	return name, private
+	if nameUTF8 != "" {
+		name = nameUTF8
+	}
+	if len(multi) > 0 {
+		files = make([]core.ReleaseFile, 0, len(multi))
+		for _, entry := range multi {
+			if entry.pad {
+				continue
+			}
+			parts := entry.pathUTF8
+			if len(parts) == 0 {
+				parts = entry.path
+			}
+			if len(parts) == 0 || isTorrentPadPath(parts) {
+				continue
+			}
+			clean := make([]string, 0, len(parts)+1)
+			if name != "" {
+				clean = append(clean, name)
+			}
+			for _, seg := range parts {
+				if seg != "" {
+					clean = append(clean, seg)
+				}
+			}
+			if len(clean) == 0 {
+				continue
+			}
+			files = append(files, core.ReleaseFile{
+				Index: len(files),
+				Path:  strings.Join(clean, "/"),
+				Size:  entry.length,
+			})
+		}
+	} else if hasSingleLength && singleLength > 0 && name != "" {
+		files = []core.ReleaseFile{{Index: 0, Path: name, Size: singleLength}}
+	}
+	return name, private, files
+}
+
+func isTorrentPadPath(parts []string) bool {
+	for _, seg := range parts {
+		if strings.HasPrefix(seg, ".____padding_file") || strings.HasPrefix(seg, "_____padding_file") {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *bdecoder) torrentFiles() ([]torrentFileEntry, bool) {
+	if d.peek() != 'l' {
+		_ = d.skip(0)
+		return nil, false
+	}
+	d.pos++
+	var out []torrentFileEntry
+	for d.peek() != 'e' {
+		if d.peek() == 0 {
+			return out, false
+		}
+		if d.peek() != 'd' {
+			if err := d.skip(0); err != nil {
+				return out, false
+			}
+			continue
+		}
+		d.pos++
+		var entry torrentFileEntry
+		for d.peek() != 'e' {
+			if d.peek() == 0 {
+				return out, false
+			}
+			k, err := d.str()
+			if err != nil {
+				return out, false
+			}
+			switch string(k) {
+			case "length":
+				if n, ok := d.integer(); ok && n >= 0 {
+					entry.length = n
+				}
+			case "path":
+				list, err := d.list()
+				if err != nil {
+					return out, false
+				}
+				for _, item := range list {
+					if s, ok := item.(string); ok {
+						entry.path = append(entry.path, s)
+					}
+				}
+			case "path.utf-8":
+				list, err := d.list()
+				if err != nil {
+					return out, false
+				}
+				for _, item := range list {
+					if s, ok := item.(string); ok {
+						entry.pathUTF8 = append(entry.pathUTF8, s)
+					}
+				}
+			case "attr":
+				v, err := d.str()
+				if err != nil {
+					return out, false
+				}
+				if strings.Contains(string(v), "p") {
+					entry.pad = true
+				}
+			default:
+				if err := d.skip(0); err != nil {
+					return out, false
+				}
+			}
+		}
+		d.pos++ // closing 'e' of file dict
+		out = append(out, entry)
+	}
+	d.pos++ // closing 'e' of files list
+	return out, true
 }
 
 // bdecoder is a minimal bencode reader: enough to find the info dictionary
@@ -368,8 +517,11 @@ func (c *Client) resolveTorrentCached(ctx context.Context, r core.Release) (core
 		return known, true, nil
 	}
 	key := torrentDescriptorKey(c.Config(), r)
-	if hash, magnet, priv, ok := c.torrents.get(key, c.now()); ok {
+	if hash, magnet, priv, files, ok := c.torrents.get(key, c.now()); ok {
 		r.InfoHash, r.MagnetURL, r.Private = hash, magnet, r.Private || priv
+		if len(files) > 0 {
+			r.TorrentFiles = files
+		}
 		if r.Private {
 			r.MagnetURL = BareMagnet(r.InfoHash)
 		}
@@ -382,7 +534,7 @@ func (c *Client) resolveTorrentCached(ctx context.Context, r core.Release) (core
 	started := time.Now()
 	out, reserved, err := c.resolveTorrent(ctx, r)
 	if err == nil && out.InfoHash != "" {
-		c.torrents.put(key, out.InfoHash, out.MagnetURL, out.Private, c.now())
+		c.torrents.put(key, out.InfoHash, out.MagnetURL, out.Private, out.TorrentFiles, c.now())
 	}
 	c.emitGrab(ctx, r.Name, started, reserved, err, false)
 	return out, false, err
@@ -532,6 +684,7 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	}
 	r.InfoHash = meta.InfoHash
 	r.Private = r.Private || meta.Private
+	r.TorrentFiles = meta.Files
 	if r.Private {
 		r.MagnetURL = BareMagnet(meta.InfoHash)
 		return r, true, nil

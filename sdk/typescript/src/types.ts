@@ -701,7 +701,9 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** A candidate from indexer_search handed back for release_files, so an NZB is fetched through its indexer. */
+  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  torrentUrl?: string;
+  /** A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
 }
 
@@ -710,11 +712,15 @@ export interface ReleaseFile {
   index: number;
   path: string;
   size: number;
+  /** True when size is a segment-derived decoded estimate rather than an exact byte length. */
+  sizeApproximate?: boolean;
 }
 
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
+  /** Torrent download or details page link for torrent indexers (never placed in nzbUrl). */
+  torrentUrl?: string;
   nzbUrl?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
@@ -753,6 +759,8 @@ export interface PlayableSource {
   pattern: "range" | "download" | "direct" | "container" | "release" | "file";
   mime: string;
   size?: number;
+  /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
+  sizeApproximate?: boolean;
   durationSec?: number;
   url?: string;
   headers?: Record<string, string>;
@@ -774,6 +782,7 @@ export interface PlayableSource {
     nzbUrl?: string;
     magnet?: string;
     infoHash?: string;
+    torrentUrl?: string;
     candidate?: SourceCandidate;
     /** Zero-based torrent file index; overrides candidate.fileIndex. Invalid selections fail. */
     fileIndex?: number;

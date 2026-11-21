@@ -150,3 +150,65 @@ func TestOpenSourcesReportsSkippedFailures(t *testing.T) {
 		t.Fatalf("skipped = %+v, want one plugin-answer failure for first", skipped)
 	}
 }
+
+// Approximate sizes (for example from a Usenet release_files segment estimate)
+// act as a tolerance hint rather than an exact byte check, while exact sizes
+// remain strict and grossly wrong approximate sizes are still rejected.
+func TestApproximateSizeHintVsStrictSize(t *testing.T) {
+	payload := make([]byte, 1_000_000)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	// ~3.1% larger yEnc-encoded sum / segment estimate within tolerance.
+	yencHint := int64(len(payload)) * 1031 / 1000
+
+	// Strict (default SizeApproximate=false): rejects 3% difference.
+	strict := releaseSource(func(s *core.PlayableSource) {
+		s.Size = yencHint
+	})
+	if _, err := Open(context.Background(), strict, releaseDeps(payload)); !errors.Is(err, ErrDigestMismatch) || !errors.Is(err, ErrPluginAnswer) {
+		t.Fatalf("strict size mismatch err = %v, want ErrDigestMismatch wrapping ErrPluginAnswer", err)
+	}
+
+	// Explicit SizeApproximate=true: accepts 3% difference.
+	approx := releaseSource(func(s *core.PlayableSource) {
+		s.Size = yencHint
+		s.SizeApproximate = true
+	})
+	bs, err := Open(context.Background(), approx, releaseDeps(payload))
+	if err != nil {
+		t.Fatalf("approximate size within tolerance failed: %v", err)
+	}
+	if bs.Size() != int64(len(payload)) {
+		t.Fatalf("opened size = %d, want actual %d", bs.Size(), len(payload))
+	}
+	_ = bs.Close()
+
+	// Approximate size inherited from Release.Candidate.Files when a plugin
+	// passes back the release_files candidate without setting source.SizeApproximate.
+	idx0 := 0
+	fromCand := releaseSource(func(s *core.PlayableSource) {
+		s.Size = yencHint
+		s.Release = &core.ReleaseHint{
+			FileIndex: &idx0,
+			Candidate: &core.SourceCandidate{
+				NZBURL: "https://idx.test/album.nzb",
+				Files:  []core.ReleaseFile{{Index: 0, Path: "01.flac", Size: yencHint, SizeApproximate: true}},
+			},
+		}
+	})
+	bs, err = Open(context.Background(), fromCand, releaseDeps(payload))
+	if err != nil {
+		t.Fatalf("candidate approximate size failed: %v", err)
+	}
+	_ = bs.Close()
+
+	// Grossly wrong approximate size (50% off) is still rejected as a plugin answer error.
+	wayOff := releaseSource(func(s *core.PlayableSource) {
+		s.Size = int64(len(payload)) / 2
+		s.SizeApproximate = true
+	})
+	if _, err := Open(context.Background(), wayOff, releaseDeps(payload)); !errors.Is(err, ErrDigestMismatch) || !errors.Is(err, ErrPluginAnswer) {
+		t.Fatalf("grossly wrong approximate size err = %v, want ErrDigestMismatch wrapping ErrPluginAnswer", err)
+	}
+}

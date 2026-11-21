@@ -3463,6 +3463,8 @@ def candidate_ref(candidate: Dict[str, Any]) -> str:
         return "infohash:" + str(candidate["infoHash"]).lower()
     if candidate.get("magnet"):
         return "magnet:" + str(candidate["magnet"])
+    if candidate.get("torrentUrl"):
+        return "torrent:" + str(candidate["torrentUrl"])
     if candidate.get("nzbUrl"):
         return "nzb:" + str(candidate["nzbUrl"])
     return str(candidate.get("title") or "")

@@ -26,6 +26,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -1221,7 +1222,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			nonUsenet := make([]core.SourceCandidate, 0, len(scored))
 			usenetOnly := make([]core.SourceCandidate, 0, len(scored))
 			for _, c := range scored {
-				if c.NZBURL != "" && c.InfoHash == "" && c.Magnet == "" {
+				if c.NZBURL != "" && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" {
 					usenetOnly = append(usenetOnly, c)
 				} else {
 					nonUsenet = append(nonUsenet, c)
@@ -1265,17 +1266,24 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 
 	case "release_files":
 		cand := core.SourceCandidate{
-			InfoHash: strings.ToLower(strings.TrimSpace(q.InfoHash)),
-			Magnet:   strings.TrimSpace(q.Magnet),
+			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
+			Magnet:     strings.TrimSpace(q.Magnet),
+			TorrentURL: strings.TrimSpace(q.TorrentURL),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
 			cand.InfoHash = strings.ToLower(strings.TrimSpace(cand.InfoHash))
+			cand.Magnet = strings.TrimSpace(cand.Magnet)
+			cand.TorrentURL = strings.TrimSpace(cand.TorrentURL)
+			cand.NZBURL = strings.TrimSpace(cand.NZBURL)
 			if q.InfoHash != "" {
 				cand.InfoHash = strings.ToLower(strings.TrimSpace(q.InfoHash))
 			}
 			if q.Magnet != "" {
 				cand.Magnet = strings.TrimSpace(q.Magnet)
+			}
+			if q.TorrentURL != "" {
+				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
 			}
 		}
 		// The listing answers for the whole release; any file choice the
@@ -1298,52 +1306,90 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			if err != nil {
 				return nil, err
 			}
-			doc, err := nzb.Parse(data)
+			files, err := r.listNZBFiles(ctx, rel.ID, data)
 			if err != nil {
 				return nil, err
 			}
-			cand.Files = make([]core.ReleaseFile, len(doc.Files))
-			for i, f := range doc.Files {
-				cand.Files[i] = core.ReleaseFile{Index: i, Path: f.Name, Size: f.Bytes()}
+			cand.Files = files
+			return []core.SourceCandidate{cand}, nil
+		}
+		if rel.Protocol != core.ProtocolTorrent {
+			return []core.SourceCandidate{cand}, nil
+		}
+		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
+			resolved, err := r.resolveTorrent(ctx, rel)
+			if err != nil {
+				return nil, err
 			}
-			return []core.SourceCandidate{cand}, nil
+			rel = resolved
+			if rel.InfoHash != "" {
+				cand.InfoHash = rel.InfoHash
+			}
+			if rel.MagnetURL != "" {
+				cand.Magnet = rel.MagnetURL
+			}
 		}
-		if r.debrid == nil {
-			return []core.SourceCandidate{cand}, nil
-		}
-		files, err := r.debrid.ListReleaseFiles(ctx, rel)
-		if err != nil {
-			if errors.Is(err, core.ErrNotCached) {
-				// Only cached torrents are worth listing; an uncached one
-				// answers with no files rather than an error.
-				cand.Cached = false
+		if r.debrid != nil {
+			files, err := r.debrid.ListReleaseFiles(ctx, rel)
+			if err == nil {
+				cand.Cached = true
+				cand.Files = files
 				return []core.SourceCandidate{cand}, nil
 			}
-			return nil, err
+			if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
+				return nil, err
+			}
+			cand.Cached = false
 		}
-		cand.Cached = true
-		cand.Files = files
+		if len(rel.TorrentFiles) > 0 {
+			cand.Files = slices.Clone(rel.TorrentFiles)
+		}
 		return []core.SourceCandidate{cand}, nil
 
 	case "debrid_acquire":
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
 		}
-		hash := strings.ToLower(strings.TrimSpace(q.InfoHash))
-		rel := core.Release{
-			ID:        "kind:" + firstNonEmpty(hash, q.Magnet),
-			Name:      firstNonEmpty(hash, "plugin-kind-acquire"),
-			Protocol:  core.ProtocolTorrent,
-			InfoHash:  hash,
-			MagnetURL: strings.TrimSpace(q.Magnet),
+		cand := core.SourceCandidate{
+			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
+			Magnet:     strings.TrimSpace(q.Magnet),
+			TorrentURL: strings.TrimSpace(q.TorrentURL),
+		}
+		if q.Candidate != nil {
+			cand = *q.Candidate
+			cand.InfoHash = strings.ToLower(strings.TrimSpace(cand.InfoHash))
+			cand.Magnet = strings.TrimSpace(cand.Magnet)
+			cand.TorrentURL = strings.TrimSpace(cand.TorrentURL)
+			if q.InfoHash != "" {
+				cand.InfoHash = strings.ToLower(strings.TrimSpace(q.InfoHash))
+			}
+			if q.Magnet != "" {
+				cand.Magnet = strings.TrimSpace(q.Magnet)
+			}
+			if q.TorrentURL != "" {
+				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
+			}
+		}
+		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &cand}, "plugin-kind-acquire")
+		if err != nil {
+			return nil, err
+		}
+		rel.Protocol = core.ProtocolTorrent
+		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
+			resolved, err := r.resolveTorrent(ctx, rel)
+			if err != nil {
+				return nil, err
+			}
+			rel = resolved
 		}
 		if _, err := r.debrid.Acquire(ctx, rel); err != nil {
 			return nil, err
 		}
 		return []core.SourceCandidate{{
-			InfoHash: hash,
-			Magnet:   q.Magnet,
-			Cached:   true,
+			InfoHash:   rel.InfoHash,
+			Magnet:     rel.MagnetURL,
+			TorrentURL: cand.TorrentURL,
+			Cached:     true,
 		}}, nil
 
 	default:
@@ -2115,9 +2161,11 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 			AllowNonVideo: true,
 		}
 	}
+	var torrentURL string
 	if hint.Candidate != nil {
 		rel.InfoHash = strings.ToLower(strings.TrimSpace(hint.Candidate.InfoHash))
 		rel.MagnetURL = strings.TrimSpace(hint.Candidate.Magnet)
+		torrentURL = strings.TrimSpace(hint.Candidate.TorrentURL)
 		rel.NZBURL = strings.TrimSpace(hint.Candidate.NZBURL)
 		rel.Name = hint.Candidate.Title
 		rel.Size = hint.Candidate.Size
@@ -2130,24 +2178,50 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 	if m := strings.TrimSpace(hint.Magnet); m != "" {
 		rel.MagnetURL = m
 	}
+	if t := strings.TrimSpace(hint.TorrentURL); t != "" {
+		torrentURL = t
+	}
 	if u := strings.TrimSpace(hint.NZBURL); u != "" {
 		rel.NZBURL = u
 	}
-	rel.ID = "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
-	if rel.Target != nil {
-		selection, _ := json.Marshal(rel.Target)
-		rel.ID += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+	if strings.HasPrefix(strings.ToLower(torrentURL), "magnet:") {
+		if rel.MagnetURL == "" {
+			rel.MagnetURL = torrentURL
+		}
+		torrentURL = ""
 	}
-	if rel.Name == "" {
-		rel.Name = firstNonEmpty(hint.FileHint, defaultTitle, rel.InfoHash, "kind-release")
+	if rel.InfoHash == "" && rel.MagnetURL != "" {
+		if h := newznab.InfoHashFromMagnet(rel.MagnetURL); h != "" {
+			rel.InfoHash = h
+		}
 	}
 	switch {
-	case rel.InfoHash != "" || rel.MagnetURL != "":
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
 		rel.Protocol = core.ProtocolTorrent
+		if torrentURL != "" {
+			// Core's torrent resolvers (newznab/cardigann) read the torrent
+			// download/page link from Release.NZBURL while Protocol is Torrent.
+			rel.NZBURL = torrentURL
+		} else {
+			rel.NZBURL = ""
+		}
 	case rel.NZBURL != "":
 		rel.Protocol = core.ProtocolUsenet
 	}
+	rel.ID = releaseIDWithTarget(rel)
+	if rel.Name == "" {
+		rel.Name = firstNonEmpty(hint.FileHint, defaultTitle, rel.InfoHash, "kind-release")
+	}
 	return rel, nil
+}
+
+func releaseIDWithTarget(rel core.Release) string {
+	id := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+	if rel.Target != nil {
+		selection, _ := json.Marshal(rel.Target)
+		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+	}
+	return id
 }
 
 func kindDefaultMIME(decl plugins.MediaKindMeta) string {
@@ -2225,9 +2299,7 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 		}
 	}
 	if rel.Target != nil {
-		baseID := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
-		selection, _ := json.Marshal(rel.Target)
-		rel.ID = baseID + fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+		rel.ID = releaseIDWithTarget(rel)
 	}
 	return rel, nil
 }
@@ -2313,12 +2385,66 @@ func (r *KindResolver) openReleaseForSource(ctx context.Context, src core.Playab
 	return r.openPreparedRelease(ctx, rel)
 }
 
+func (r *KindResolver) listNZBFiles(ctx context.Context, releaseID string, data []byte) ([]core.ReleaseFile, error) {
+	if lister, ok := r.engine.(interface {
+		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
+	}); ok {
+		files, err := lister.ListFiles(ctx, releaseID, data)
+		if err == nil {
+			return files, nil
+		}
+		if !errors.Is(err, core.ErrNotAvailable) {
+			return nil, err
+		}
+	}
+	doc, err := nzb.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]core.ReleaseFile, len(doc.Files))
+	for i, f := range doc.Files {
+		files[i] = core.ReleaseFile{
+			Index:           i,
+			Path:            f.Name,
+			Size:            f.EstimatedDecodedBytes(),
+			SizeApproximate: true,
+		}
+	}
+	return files, nil
+}
+
+func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (core.Release, error) {
+	if r.indexer == nil {
+		return rel, core.ErrSourceUnavailable
+	}
+	tr, ok := r.indexer.(debrid.TorrentResolver)
+	if !ok {
+		return rel, fmt.Errorf("kindresolver: torrent %q has no info hash: %w", rel.Name, core.ErrReleaseRejected)
+	}
+	resolved, err := tr.ResolveTorrent(ctx, rel)
+	if err != nil {
+		return rel, err
+	}
+	resolved.Protocol = core.ProtocolTorrent
+	if resolved.InfoHash != "" {
+		resolved.ID = releaseIDWithTarget(resolved)
+	}
+	return resolved, nil
+}
+
 func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (core.MediaSource, error) {
-	if rel.InfoHash != "" || rel.MagnetURL != "" {
+	if rel.Protocol == core.ProtocolTorrent || rel.InfoHash != "" || rel.MagnetURL != "" {
 		if r.debrid == nil {
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolTorrent
+		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
+			resolved, err := r.resolveTorrent(ctx, rel)
+			if err != nil {
+				return nil, err
+			}
+			rel = resolved
+		}
 		payload, err := r.debrid.Acquire(ctx, rel)
 		if err != nil {
 			return nil, err

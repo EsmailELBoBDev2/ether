@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/image/draw"
 
-	"github.com/braedonsaunders/ether/internal/lru"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/lru"
 )
 
 // PMS's photo transcoder returns the size a client asks for. Ether serves

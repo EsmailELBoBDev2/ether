@@ -27,7 +27,7 @@ func TestProjectLibrary(t *testing.T) {
 		{
 			name: "plex and mediabrowser alone do not publish to vela",
 			present: frontend.Presentations{
-				Plex:         &frontend.PlexPresentation{Base: "movie"},
+				Plex:         &core.PlexPresentation{Base: "movie"},
 				MediaBrowser: &frontend.MediaBrowserPresentation{CollectionType: "tvshows"},
 			},
 		},

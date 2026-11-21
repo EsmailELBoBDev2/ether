@@ -41,7 +41,16 @@ func TestResolveSucceedsWhenTouchWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := db.ExecContext(ctx, `CREATE TRIGGER block_grant_update BEFORE UPDATE ON identity_grants BEGIN SELECT RAISE(ABORT, 'write slot busy'); END`); err != nil {
+	ddl := `CREATE TRIGGER block_grant_update BEFORE UPDATE ON identity_grants BEGIN SELECT RAISE(ABORT, 'write slot busy'); END`
+	drop := `DROP TRIGGER block_grant_update`
+	if store.DialectOf(db) == store.Postgres {
+		if _, err := db.ExecContext(ctx, `CREATE FUNCTION block_grant_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'write slot busy'; END $$`); err != nil {
+			t.Fatal(err)
+		}
+		ddl = `CREATE TRIGGER block_grant_update BEFORE UPDATE ON identity_grants FOR EACH ROW EXECUTE FUNCTION block_grant_update()`
+		drop = `DROP TRIGGER block_grant_update ON identity_grants`
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(59 * time.Minute)
@@ -55,7 +64,7 @@ func TestResolveSucceedsWhenTouchWriteFails(t *testing.T) {
 		t.Fatalf("Resolve past stored expiry on a queued touch: %v", err)
 	}
 
-	if _, err := db.ExecContext(ctx, `DROP TRIGGER block_grant_update`); err != nil {
+	if _, err := db.ExecContext(ctx, drop); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.Resolve(ctx, "plex", token); err != nil {

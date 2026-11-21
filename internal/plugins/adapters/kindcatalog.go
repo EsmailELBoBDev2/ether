@@ -1317,6 +1317,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 		}
 		pt := pluginitems.ProjectWithText(p, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		pt.LibraryID = lib.ID
+		scopeTitleMediaParents(&pt, lib.ID)
 		if pt.ContentRating == "" {
 			pt.ContentRating = extractContentRating(p.Fields)
 		}
@@ -1363,6 +1364,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	for i, it := range items {
 		t := pluginitems.ProjectWithText(it, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		t.LibraryID = lib.ID
+		scopeTitleMediaParents(&t, lib.ID)
 		if flatAlbum && it.Playable && it.Unavailable == nil {
 			// The album lists its one synthetic playable child.
 			if t.ChildCount == 0 {
@@ -1404,6 +1406,29 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 		out[i] = t
 	}
 	return out
+}
+
+func scopeTitleMediaParents(t *core.Title, libID core.LibraryID) {
+	if t == nil || libID <= 0 || len(t.MediaParents) == 0 {
+		return
+	}
+	prefix := "facet:" + strconv.FormatInt(int64(libID), 10) + ":"
+	for i := range t.MediaParents {
+		fid := t.MediaParents[i].FacetID
+		if !strings.HasPrefix(fid, "facet:") {
+			continue
+		}
+		rest := strings.TrimPrefix(fid, "facet:")
+		first, after, ok := strings.Cut(rest, ":")
+		if !ok || first == "" || after == "" {
+			continue
+		}
+		// Already library-scoped if the first segment after "facet:" is a positive integer.
+		if n, err := strconv.ParseInt(first, 10, 64); err == nil && n > 0 && strconv.FormatInt(n, 10) == first {
+			continue
+		}
+		t.MediaParents[i].FacetID = prefix + rest
+	}
 }
 
 func extractContentRating(fields map[string]json.RawMessage) string {

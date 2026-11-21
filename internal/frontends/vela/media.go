@@ -51,6 +51,8 @@ func titleMediaWire(t frontend.Title) object {
 			pid := p.FacetID
 			if p.Key != 0 {
 				pid = ids.RatingKeyGUID(p.Key)
+			} else if pid != "" && t.LibraryID > 0 {
+				pid = scopeSyntheticFacetID(pid, t.LibraryID)
 			}
 			if pid == "" {
 				continue
@@ -121,15 +123,57 @@ func titleMediaWire(t frontend.Title) object {
 	return media
 }
 
-func parseSyntheticFacetID(raw string) (field, value string, ok bool) {
+func isPositiveIntToken(s string) bool {
+	if s == "" || s[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func scopeSyntheticFacetID(raw string, libID frontend.LibraryID) string {
+	if libID <= 0 || !strings.HasPrefix(raw, "facet:") {
+		return raw
+	}
+	rest := strings.TrimPrefix(raw, "facet:")
+	first, after, ok := strings.Cut(rest, ":")
+	if !ok || first == "" || after == "" {
+		return raw
+	}
+	if isPositiveIntToken(first) {
+		return raw
+	}
+	return "facet:" + strconv.FormatInt(int64(libID), 10) + ":" + rest
+}
+
+// parseSyntheticFacetID parses either a library-scoped synthetic facet ID
+// ("facet:<libraryId>:<field>:<value>") or a legacy unscoped ID
+// ("facet:<field>:<value>"). Declared field keys always start with a letter,
+// so a leading positive integer segment unambiguously names the library.
+func parseSyntheticFacetID(raw string) (libraryID, field, value string, ok bool) {
 	if !strings.HasPrefix(raw, "facet:") {
-		return "", "", false
+		return "", "", "", false
 	}
-	field, value, ok = strings.Cut(strings.TrimPrefix(raw, "facet:"), ":")
-	if !ok || field == "" || value == "" || len(field) > 64 || len(value) > 256 {
-		return "", "", false
+	rest := strings.TrimPrefix(raw, "facet:")
+	first, tail, hasColon := strings.Cut(rest, ":")
+	if !hasColon || first == "" || tail == "" {
+		return "", "", "", false
 	}
-	return field, value, true
+	if isPositiveIntToken(first) {
+		f, v, ok2 := strings.Cut(tail, ":")
+		if !ok2 || f == "" || v == "" || len(f) > 64 || len(v) > 256 {
+			return "", "", "", false
+		}
+		return first, f, v, true
+	}
+	if len(first) > 64 || len(tail) > 256 {
+		return "", "", "", false
+	}
+	return "", first, tail, true
 }
 
 func viewOffersFacetField(view frontend.View, field string) bool {
@@ -180,7 +224,7 @@ func sortFacetSeriesItems(items []frontend.Title) {
 	})
 }
 
-func (i *instance) loadFacetSeriesItems(ctx context.Context, v *frontend.Viewer, dev frontend.Device, field, value, libraryHint string) (frontend.View, []frontend.Title, bool, error) {
+func (i *instance) loadFacetSeriesItems(ctx context.Context, v *frontend.Viewer, dev frontend.Device, libraryID, field, value string) (frontend.View, []frontend.Title, bool, error) {
 	views, err := i.host.Experience.Views(ctx, v)
 	if err != nil {
 		return frontend.View{}, nil, false, err
@@ -190,11 +234,14 @@ func (i *instance) loadFacetSeriesItems(ctx context.Context, v *frontend.Viewer,
 		if !viewOffersFacetField(view, field) {
 			continue
 		}
-		if libraryHint != "" && view.ID == libraryHint {
-			candidates = append([]frontend.View{view}, candidates...)
-		} else {
+		if libraryID != "" {
+			if view.ID != libraryID {
+				continue
+			}
 			candidates = append(candidates, view)
+			break
 		}
+		candidates = append(candidates, view)
 	}
 	for _, view := range candidates {
 		q := frontend.ItemQuery{
@@ -220,7 +267,7 @@ func (i *instance) loadFacetSeriesItems(ctx context.Context, v *frontend.Viewer,
 }
 
 func (i *instance) facetSeriesDetail(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, token, rawID string) {
-	field, value, ok := parseSyntheticFacetID(rawID)
+	libID, field, value, ok := parseSyntheticFacetID(rawID)
 	if !ok {
 		problem(w, 404, "not-found", "not_found")
 		return
@@ -229,7 +276,10 @@ func (i *instance) facetSeriesDetail(w http.ResponseWriter, r *http.Request, v *
 		cache(w, r, object{"items": []object{}})
 		return
 	}
-	view, items, found, err := i.loadFacetSeriesItems(r.Context(), v, requestDevice(r), field, value, r.URL.Query().Get("library"))
+	if libID == "" {
+		libID = strings.TrimSpace(r.URL.Query().Get("library"))
+	}
+	view, items, found, err := i.loadFacetSeriesItems(r.Context(), v, requestDevice(r), libID, field, value)
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -276,8 +326,9 @@ func (i *instance) facetSeriesDetail(w http.ResponseWriter, r *http.Request, v *
 			}
 		}
 	}
+	canonicalID := "facet:" + view.ID + ":" + field + ":" + value
 	titleObj := object{
-		"id":      rawID,
+		"id":      canonicalID,
 		"kind":    "show",
 		"name":    value,
 		"summary": "",
@@ -298,10 +349,13 @@ func (i *instance) facetSeriesDetail(w http.ResponseWriter, r *http.Request, v *
 }
 
 func (i *instance) facetSeriesChildren(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, token, rawID string) {
-	field, value, ok := parseSyntheticFacetID(rawID)
+	libID, field, value, ok := parseSyntheticFacetID(rawID)
 	if !ok {
 		problem(w, 404, "not-found", "not_found")
 		return
+	}
+	if libID == "" {
+		libID = strings.TrimSpace(r.URL.Query().Get("library"))
 	}
 	lim := limit(r)
 	var cur liveCursor
@@ -319,7 +373,7 @@ func (i *instance) facetSeriesChildren(w http.ResponseWriter, r *http.Request, v
 	} else if !noCursor(w, r) {
 		return
 	}
-	_, items, found, err := i.loadFacetSeriesItems(r.Context(), v, requestDevice(r), field, value, r.URL.Query().Get("library"))
+	_, items, found, err := i.loadFacetSeriesItems(r.Context(), v, requestDevice(r), libID, field, value)
 	if err != nil {
 		fail(w, err, r)
 		return

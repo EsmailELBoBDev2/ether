@@ -155,8 +155,14 @@ func TestHostKindServices(t *testing.T) {
 	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "indexer_search", Query: "dawn"}); err != nil {
 		t.Fatalf("source search: %v", err)
 	}
+	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "release_files", TorrentURL: "https://tracker.example/album.html"}); err != nil {
+		t.Fatalf("release_files with torrentUrl: %v", err)
+	}
 	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "debrid_acquire", Magnet: "magnet:?xt=x"}); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("acquire beyond the search grant: %v", err)
+	}
+	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "debrid_acquire", TorrentURL: "https://tracker.example/album.torrent"}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("debrid_acquire with torrentUrl beyond search grant: %v", err)
 	}
 	// The cache namespace must be one of this plugin's own libraries.
 	if _, err := h.CachePut(ctx, "pk-community-example-other-book", "cover", strings.NewReader("x")); !errors.Is(err, ErrPermissionDenied) {

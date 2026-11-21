@@ -113,6 +113,9 @@ type Release struct {
 	Protocol  string `json:"protocol,omitempty"`
 	InfoHash  string `json:"infoHash,omitempty"` // lower-case hex BitTorrent v1 info hash
 	MagnetURL string `json:"magnetUrl,omitempty"`
+	// TorrentFiles holds the file list parsed from a .torrent metainfo
+	// document during ResolveTorrent, when available. In-memory only.
+	TorrentFiles []ReleaseFile `json:"-"`
 	// Private marks a private-tracker torrent (info.private == 1 or a
 	// Cardigann definition with type: private). Debrid providers may only
 	// check or play an existing cache by bare info hash.

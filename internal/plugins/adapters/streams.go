@@ -1002,6 +1002,17 @@ func (e *Engine) Prefetch(ctx context.Context, releaseID string, payload []byte,
 	return e.inner.Prefetch(ctx, releaseID, payload, offset, length)
 }
 
+// ListFiles forwards NZB release file listing (exact decoded sizes via PAR2/yEnc
+// when available) to the wrapped streaming engine.
+func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte) ([]core.ReleaseFile, error) {
+	if lister, ok := e.inner.(interface {
+		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
+	}); ok {
+		return lister.ListFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
 type localFileSource struct {
 	file      *os.File
 	size      int64

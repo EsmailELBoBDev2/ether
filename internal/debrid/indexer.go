@@ -86,6 +86,20 @@ func (x *Indexer) MissingSources() error {
 // Inner returns the wrapped indexer.
 func (x *Indexer) Inner() core.Indexer { return x.inner }
 
+// ResolveTorrent implements TorrentResolver by forwarding to the wrapped
+// indexer (for example VODIndexer -> StreamSources -> newznab.Manager ->
+// cardigann.Runner), filling a torrent release's info hash, magnet and
+// optional .torrent metainfo file list.
+func (x *Indexer) ResolveTorrent(ctx context.Context, r core.Release) (core.Release, error) {
+	if tr, ok := x.inner.(TorrentResolver); ok {
+		return tr.ResolveTorrent(ctx, r)
+	}
+	if r.InfoHash != "" {
+		return r, nil
+	}
+	return r, fmt.Errorf("debrid: torrent %q has no info hash: %w", r.Name, core.ErrReleaseRejected)
+}
+
 // Name implements core.Indexer.
 func (x *Indexer) Name() string { return x.inner.Name() }
 

@@ -295,6 +295,7 @@ func (r *Runner) ResolveTorrent(ctx context.Context, rel core.Release, reserve R
 	}
 	rel.InfoHash = meta.InfoHash
 	rel.Private = rel.Private || meta.Private
+	rel.TorrentFiles = meta.Files
 	if rel.Private {
 		rel.MagnetURL = newznab.BareMagnet(meta.InfoHash)
 		return rel, nil

@@ -519,3 +519,28 @@ func TestOldRARThreeDigitVolumes(t *testing.T) {
 		t.Fatalf("tail volumes = %q .. %q", s.Volumes[101].Name, s.Volumes[106].Name)
 	}
 }
+
+func TestEstimatedDecodedBytes(t *testing.T) {
+	empty := &File{}
+	if got := empty.EstimatedDecodedBytes(); got != 0 {
+		t.Fatalf("empty EstimatedDecodedBytes = %d, want 0", got)
+	}
+	tiny := &File{Segments: []Segment{{Number: 1, Bytes: 1}}}
+	if got := tiny.EstimatedDecodedBytes(); got != 1 {
+		t.Fatalf("tiny EstimatedDecodedBytes = %d, want 1", got)
+	}
+	// Typical 30 MiB FLAC posted as ~3.1% larger yEnc segments (~31.4 MiB encoded).
+	const encoded = int64(31_457_280)
+	f := &File{Segments: []Segment{
+		{Number: 1, Bytes: encoded / 2},
+		{Number: 2, Bytes: encoded - encoded/2},
+	}}
+	est := f.EstimatedDecodedBytes()
+	if est <= 0 || est >= f.Bytes() {
+		t.Fatalf("EstimatedDecodedBytes = %d, encoded Bytes = %d", est, f.Bytes())
+	}
+	// ~3.1% overhead removed: est should be roughly 96.5%..97.5% of encoded bytes.
+	if est < encoded*965/1000 || est > encoded*975/1000 {
+		t.Fatalf("EstimatedDecodedBytes = %d out of expected ~97%% band for %d", est, encoded)
+	}
+}

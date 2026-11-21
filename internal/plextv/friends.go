@@ -434,6 +434,16 @@ func (c *Client) resolveFriendByName(ctx context.Context, ownerToken, name strin
 		return 0, "", false
 	}
 
+	if users, err := c.AccountUsers(ctx, ownerToken); err == nil {
+		for _, u := range users {
+			if u.PlexID > 0 {
+				add(u.PlexID, u.Username, u.Title, u.Email)
+			}
+		}
+		if id, handle, ok := match(); ok {
+			return id, handle
+		}
+	}
 	if users, err := c.Users(ctx, ownerToken); err == nil {
 		for _, u := range users {
 			if u.PlexID > 0 {
@@ -488,7 +498,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 	if c.id.ClientIdentifier == "" {
 		return errors.New("plextv: client identifier required")
 	}
-	if userID <= 0 && strings.Contains(usernameOrEmail, " ") {
+	if userID <= 0 && usernameOrEmail != "" {
 		resolvedID, resolvedHandle := c.resolveFriendByName(ctx, ownerToken, usernameOrEmail)
 		if resolvedID > 0 {
 			userID = resolvedID
@@ -684,7 +694,21 @@ func (c *Client) Users(ctx context.Context, ownerToken string) ([]SharedUser, er
 	if err != nil {
 		return nil, err
 	}
-	root, err := parseXMLNode(resp.body)
+	return parseSharedUsers(resp.body)
+}
+
+// AccountUsers lists all friends and Plex Home users on the owner's plex.tv
+// account (GET /api/users), including users not yet shared with this server.
+func (c *Client) AccountUsers(ctx context.Context, ownerToken string) ([]SharedUser, error) {
+	resp, err := c.do(ctx, request{method: http.MethodGet, path: "/api/users", token: ownerToken, accept: "application/xml"})
+	if err != nil {
+		return nil, err
+	}
+	return parseSharedUsers(resp.body)
+}
+
+func parseSharedUsers(body []byte) ([]SharedUser, error) {
+	root, err := parseXMLNode(body)
 	if err != nil {
 		return nil, fmt.Errorf("plextv: decode users: %w", err)
 	}

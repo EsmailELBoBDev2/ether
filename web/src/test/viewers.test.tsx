@@ -680,3 +680,67 @@ it("imports viewers from connected Plex servers via drawer", async () => {
   fireEvent.change(searchInput, { target: { value: "PlexFriend" } });
   expect(within(drawer).getByText("PlexFriend")).toBeInTheDocument();
 });
+
+it("keeps suggested match selectable from Match existing dropdown", async () => {
+  const candidateServers = [
+    {
+      serverId: 1,
+      serverName: "Old Plex Server",
+      accounts: [
+        {
+          serverId: 1,
+          serverName: "Old Plex Server",
+          accountId: 42,
+          accountName: "Sam Rivera",
+          isOwner: false,
+          matchedViewerId: 0,
+          suggestedViewerId: 2,
+          suggestedViewerName: "Sam Rivera",
+        },
+      ],
+    },
+  ];
+
+  const { fake } = renderApp(
+    "/viewers",
+    {},
+    extraRoutes((method, path) => {
+      if (path === "/viewers/plex-candidates" && method === "GET") {
+        return candidateServers;
+      }
+      if (path === "/viewers/match-plex" && method === "POST") {
+        candidateServers[0]!.accounts[0]!.matchedViewerId = 2;
+        return { ok: true, viewerId: 2, serverId: 1, accountId: 42, sharedPlex: true };
+      }
+      return undefined;
+    }),
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Import from Plex/i }, WAIT));
+  const drawer = await screen.findByRole(
+    "dialog",
+    { name: /Import users from connected Plex servers/i },
+    WAIT,
+  );
+  expect(
+    await within(drawer).findByText("Suggested match: Sam Rivera", {}, WAIT),
+  ).toBeInTheDocument();
+
+  const trigger = within(drawer).getByRole("button", {
+    name: "Match account to existing viewer",
+  });
+  expect(trigger).toHaveTextContent("Match existing…");
+  const select = drawer.querySelector("select") as HTMLSelectElement;
+  expect(select.value).toBe("0");
+
+  fireEvent.click(trigger);
+  fireEvent.click(await screen.findByRole("option", { name: /Sam Rivera/ }, WAIT));
+  await waitFor(() => {
+    expect(calls(fake, "POST", "/viewers/match-plex")).toHaveLength(1);
+  }, WAIT);
+  expect(calls(fake, "POST", "/viewers/match-plex")[0]!.body).toEqual({
+    serverId: 1,
+    accountId: 42,
+    viewerId: 2,
+  });
+});

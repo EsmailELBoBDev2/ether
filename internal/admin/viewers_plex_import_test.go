@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/identity"
+	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/plexwatch"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -755,4 +756,279 @@ func (m *mockPlexServers) BackfillOut(context.Context, int64, int64) (plexwatch.
 
 func (m *mockPlexServers) ViewerServers(context.Context, int64) ([]plexwatch.PMSViewerMapping, error) {
 	return nil, nil
+}
+
+func TestViewersPlexImportResolvesSingleViaPlexUsers(t *testing.T) {
+	db := store.OpenTest(t)
+	storeCfg := newStore(t, seededConfig)
+	invites, err := identity.NewInvite(db, time.Hour, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pms := &mockPlexServers{
+		servers: []plexwatch.PMSServer{{ID: 10, Name: "One.Plex"}},
+		accounts: map[int64][]plexwatch.PMSAccount{
+			10: {
+				{ID: 2, Name: "Sakib Talukder", Owner: false, UserID: 0},
+				{ID: 3, Name: "DeLoki", Owner: false, UserID: 0},
+			},
+		},
+	}
+
+	type shareCall struct {
+		target string
+		userID int64
+	}
+	var (
+		shares  []shareCall
+		ensured []plextv.SharedUser
+	)
+
+	deps := admin.Deps{
+		Config:       storeCfg,
+		IsOwnerToken: storedOwner(storeCfg),
+		PlexServers:  pms,
+		Invites:      invites,
+		ListPlexUsers: func(ctx context.Context) ([]plextv.SharedUser, error) {
+			return []plextv.SharedUser{
+				{
+					PlexID:   703916194,
+					UUID:     "uuid-sakib",
+					Username: "sakib99",
+					Title:    "Sakib Talukder",
+					Email:    "sakib@example.com",
+				},
+				{
+					PlexID:   25815033,
+					UUID:     "uuid-deloki",
+					Username: "deloki_user",
+					Title:    "DeLoki",
+					Email:    "deloki@example.com",
+				},
+			}, nil
+		},
+		EnsurePlexFriend: func(ctx context.Context, u plextv.SharedUser) (int64, error) {
+			ensured = append(ensured, u)
+			if u.PlexID == 703916194 {
+				return 501, nil
+			}
+			return 502, nil
+		},
+		SharePlexViewer: func(ctx context.Context, usernameOrEmail string, userID int64) error {
+			shares = append(shares, shareCall{target: usernameOrEmail, userID: userID})
+			return nil
+		},
+		RefreshViewers: func(ctx context.Context) error { return nil },
+	}
+	h := admin.NewHandler(deps)
+
+	// 1. Spaced display name with local PMS account ID (2) resolves to global PlexID 703916194.
+	r1 := req(http.MethodPost, "/ether/api/viewers/import-plex", `{"serverId":10,"accountId":2}`)
+	r1.Header.Set("X-Plex-Token", ownerToken)
+	res1 := serve(h, r1)
+	if res1.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", res1.Code, res1.Body)
+	}
+	var out1 map[string]any
+	if err := json.Unmarshal(res1.Body.Bytes(), &out1); err != nil {
+		t.Fatal(err)
+	}
+	if out1["id"].(float64) != 501 || out1["inviteUrl"] != "" || out1["sharedPlex"] != true {
+		t.Fatalf("expected viewer 501 shared without inviteUrl, got %+v", out1)
+	}
+
+	// 2. Single-word display name with local PMS account ID (3) resolves to global PlexID 25815033.
+	r2 := req(http.MethodPost, "/ether/api/viewers/import-plex", `{"serverId":10,"accountId":3}`)
+	r2.Header.Set("X-Plex-Token", ownerToken)
+	res2 := serve(h, r2)
+	if res2.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", res2.Code, res2.Body)
+	}
+	var out2 map[string]any
+	if err := json.Unmarshal(res2.Body.Bytes(), &out2); err != nil {
+		t.Fatal(err)
+	}
+	if out2["id"].(float64) != 502 || out2["inviteUrl"] != "" || out2["sharedPlex"] != true {
+		t.Fatalf("expected viewer 502 shared without inviteUrl, got %+v", out2)
+	}
+
+	if len(shares) != 2 ||
+		shares[0].userID != 703916194 || shares[0].target != "sakib@example.com" ||
+		shares[1].userID != 25815033 || shares[1].target != "deloki@example.com" {
+		t.Fatalf("unexpected SharePlexViewer calls: %+v", shares)
+	}
+	if len(ensured) != 2 {
+		t.Fatalf("expected 2 EnsurePlexFriend calls, got %+v", ensured)
+	}
+}
+
+func TestViewersPlexImportAllResolvesPlexUsersAndBatchesSync(t *testing.T) {
+	db := store.OpenTest(t)
+	storeCfg := newStore(t, seededConfig)
+	invites, err := identity.NewInvite(db, time.Hour, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pms := &mockPlexServers{
+		servers: []plexwatch.PMSServer{{ID: 10, Name: "One.Plex"}},
+		accounts: map[int64][]plexwatch.PMSAccount{
+			10: {
+				{ID: 703916194, Name: "Sakib Talukder", Owner: false, UserID: 0},
+				{ID: 99, Name: "Kids Room", Owner: false, UserID: 0},
+			},
+		},
+	}
+
+	type shareCall struct {
+		target string
+		userID int64
+	}
+	var (
+		batchShares  []shareCall
+		ensured      []plextv.SharedUser
+		syncCalls    int
+		refreshCalls int
+		legacyShares int
+	)
+
+	deps := admin.Deps{
+		Config:       storeCfg,
+		IsOwnerToken: storedOwner(storeCfg),
+		PlexServers:  pms,
+		Invites:      invites,
+		ListPlexUsers: func(ctx context.Context) ([]plextv.SharedUser, error) {
+			return []plextv.SharedUser{
+				{
+					PlexID:   703916194,
+					UUID:     "uuid-sakib",
+					Username: "sakib99",
+					Title:    "Sakib Talukder",
+					Email:    "sakib@example.com",
+					Thumb:    "https://plex.tv/users/sakib/avatar",
+				},
+			}, nil
+		},
+		EnsurePlexFriend: func(ctx context.Context, u plextv.SharedUser) (int64, error) {
+			ensured = append(ensured, u)
+			return 501, nil
+		},
+		SharePlexViewer: func(ctx context.Context, usernameOrEmail string, userID int64) error {
+			legacyShares++
+			return nil
+		},
+		SharePlexViewerNoSync: func(ctx context.Context, usernameOrEmail string, userID int64) error {
+			batchShares = append(batchShares, shareCall{target: usernameOrEmail, userID: userID})
+			return nil
+		},
+		SyncPlexFriends: func(ctx context.Context) error {
+			syncCalls++
+			return nil
+		},
+		RefreshViewers: func(ctx context.Context) error {
+			refreshCalls++
+			return nil
+		},
+	}
+	h := admin.NewHandler(deps)
+
+	r := req(http.MethodPost, "/ether/api/viewers/import-plex/all", "")
+	r.Header.Set("X-Plex-Token", ownerToken)
+	res := serve(h, r)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", res.Code, res.Body)
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %+v", items)
+	}
+	if items[0]["id"].(float64) != 501 || items[0]["inviteUrl"] != nil {
+		t.Fatalf("expected Sakib Talukder imported as viewer 501 without inviteUrl, got %+v", items[0])
+	}
+	if items[1]["inviteUrl"] == nil || items[1]["inviteUrl"] == "" {
+		t.Fatalf("expected Kids Room to fall back to invite viewer, got %+v", items[1])
+	}
+	if legacyShares != 0 {
+		t.Fatalf("expected SharePlexViewer not called during bulk import when SharePlexViewerNoSync is set, got %d", legacyShares)
+	}
+	if len(batchShares) != 2 || batchShares[0].userID != 703916194 || batchShares[0].target != "sakib@example.com" {
+		t.Fatalf("expected first batch share with PlexID 703916194 and email, got %+v", batchShares)
+	}
+	if len(ensured) != 1 || ensured[0].PlexID != 703916194 || ensured[0].Email != "sakib@example.com" {
+		t.Fatalf("expected EnsurePlexFriend called for Sakib, got %+v", ensured)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("expected SyncPlexFriends called once after bulk import, got %d", syncCalls)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("expected RefreshViewers called once after bulk import, got %d", refreshCalls)
+	}
+}
+
+func TestViewersPlexImportMatchesSyncedFriendByTitle(t *testing.T) {
+	db := store.OpenTest(t)
+	storeCfg := newStore(t, seededConfig)
+	invites, err := identity.NewInvite(db, time.Hour, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pms := &mockPlexServers{
+		servers: []plexwatch.PMSServer{{ID: 10, Name: "Plex"}},
+		accounts: map[int64][]plexwatch.PMSAccount{
+			10: {
+				{ID: 2, Name: "Chrisnord Denaud", Owner: false, UserID: 0},
+			},
+		},
+	}
+
+	var directoryViewers []admin.ViewerRecord
+	deps := admin.Deps{
+		Config:       storeCfg,
+		IsOwnerToken: storedOwner(storeCfg),
+		PlexServers:  pms,
+		Invites:      invites,
+		ViewerDirectory: func(ctx context.Context) ([]admin.ViewerRecord, error) {
+			return append([]admin.ViewerRecord(nil), directoryViewers...), nil
+		},
+		RefreshViewers: func(ctx context.Context) error { return nil },
+		SharePlexViewer: func(ctx context.Context, usernameOrEmail string, userID int64) error {
+			directoryViewers = append(directoryViewers, admin.ViewerRecord{
+				User: core.User{
+					ID:       612,
+					PlexID:   999001,
+					Username: "ChrisnordDenaud",
+					Title:    "Chrisnord Denaud",
+				},
+				Origin:     "friend",
+				Active:     true,
+				HasPlex:    true,
+				PlexShared: true,
+			})
+			return nil
+		},
+	}
+	h := admin.NewHandler(deps)
+
+	r := req(http.MethodPost, "/ether/api/viewers/import-plex", `{"serverId":10,"accountId":2}`)
+	r.Header.Set("X-Plex-Token", ownerToken)
+	res := serve(h, r)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", res.Code, res.Body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["id"].(float64) != 612 || out["inviteUrl"] != "" {
+		t.Fatalf("expected synced friend 612 matched by Title without local invite, got %+v", out)
+	}
+	if pms.mapped[2].UserID != 612 {
+		t.Fatalf("expected PMS account 2 mapped to 612, got %d", pms.mapped[2].UserID)
+	}
 }

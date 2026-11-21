@@ -286,3 +286,67 @@ func TestCommunityClientRetries429AndRecovers(t *testing.T) {
 		t.Fatalf("unexpected result: friends=%+v calls=%d", friends, calls.Load())
 	}
 }
+
+func TestShareServerResolvesNonSpacedNameViaAccountUsers(t *testing.T) {
+	var postV2Calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/users":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer>
+  <User id="703916194" uuid="uuid-sakib" username="sakib99" title="Sakib" email="sakib@example.com" thumb="https://plex.tv/users/sakib/avatar"/>
+</MediaContainer>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/users":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer/>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/access_tokens":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer/>`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers":
+			postV2Calls.Add(1)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["invitedId"] != float64(703916194) {
+				t.Fatalf("expected invitedId=703916194, got %v", payload["invitedId"])
+			}
+			if _, hasEmail := payload["invitedEmail"]; hasEmail {
+				t.Fatalf("expected invitedEmail omitted when invitedId is resolved, got %v", payload["invitedEmail"])
+			}
+			if payload["skipFriendship"] != true {
+				t.Fatalf("expected skipFriendship=true, got %v", payload["skipFriendship"])
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{
+		BaseURL:      srv.URL,
+		Identity:     Identity{ClientIdentifier: "test-mid"},
+		RetryBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := c.AccountUsers(context.Background(), "owner-token")
+	if err != nil {
+		t.Fatalf("AccountUsers failed: %v", err)
+	}
+	if len(users) != 1 || users[0].PlexID != 703916194 || users[0].Email != "sakib@example.com" {
+		t.Fatalf("unexpected AccountUsers result: %+v", users)
+	}
+
+	if err := c.ShareServer(context.Background(), "owner-token", "Sakib", 0, nil); err != nil {
+		t.Fatalf("ShareServer failed for non-spaced title resolved via AccountUsers: %v", err)
+	}
+	if postV2Calls.Load() != 1 {
+		t.Fatalf("expected 1 POST /api/v2/shared_servers call, got %d", postV2Calls.Load())
+	}
+}

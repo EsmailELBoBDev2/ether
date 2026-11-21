@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -134,7 +135,13 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 	)
 	if len(it.Fields) > 0 {
 		cleanedFields = make(map[string]json.RawMessage, len(it.Fields))
-		for k, raw := range it.Fields {
+		fieldKeys := make([]string, 0, len(it.Fields))
+		for k := range it.Fields {
+			fieldKeys = append(fieldKeys, k)
+		}
+		sort.Strings(fieldKeys)
+		for _, k := range fieldKeys {
+			raw := it.Fields[k]
 			fdecl, exists := declaredFields[k]
 			if !exists {
 				dropped++

@@ -376,6 +376,13 @@ type KindBrowseRequest struct {
 	AllFacets     map[string][]string `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
 	Query         string              `json:"query,omitempty"`
+	// Total controls whether kinds.browse computes KindPage.Total (#682):
+	//   - "" or "cheap" (default): populate Total only when O(1) (item or
+	//     field tallies, a cached exact count, or a single-page result) and
+	//     omit Total otherwise instead of running a full COUNT(*).
+	//   - "none": never compute or return Total.
+	//   - "exact": compute an exact Total (cached per library generation).
+	Total string `json:"total,omitempty"`
 }
 
 // KindExpandRequest is the request body sent to POST /ether/v1/kinds/{kind}/expand

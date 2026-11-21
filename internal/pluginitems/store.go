@@ -217,14 +217,14 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		schemaVer = 1
-		var preExisting int64
+		var hasPreExisting int
 		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ? AND kind_key = ?`,
-			pluginID, decl.Key).Scan(&preExisting); err != nil {
+			`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE plugin_id = ? AND kind_key = ?)`,
+			pluginID, decl.Key).Scan(&hasPreExisting); err != nil {
 			return KindRecord{}, err
 		}
 		ftsVer := currentFTSVersion
-		if preExisting > 0 {
+		if hasPreExisting > 0 {
 			// Defer reindexing existing rows to a chunked background worker
 			// rather than holding the SQLite write lock across the install request.
 			ftsVer = 0
@@ -292,6 +292,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		return KindRecord{}, err
 	}
 	if purged {
+		s.noteWrite()
 		s.forgetLibraryStats(libraryID)
 	}
 	if scheduleReindex {
@@ -529,6 +530,11 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 	for start := 0; start < len(prepared); start += upsertChunkSize {
 		if err := ctx.Err(); err != nil {
 			return stats, err
+		}
+		if start > 0 {
+			if err := store.WaitWALBudget(ctx, s.db); err != nil {
+				return stats, err
+			}
 		}
 		end := min(start+upsertChunkSize, len(prepared))
 		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK)
@@ -1016,9 +1022,14 @@ func (s *Service) startKindReindex(pluginID, kindKey string, libraryID core.Libr
 	}()
 }
 
+// reindexChunkYield spaces multi-chunk reindex write batches so interactive
+// writers queued on the SQLite write gate run between chunks.
+const reindexChunkYield = 5 * time.Millisecond
+
 // reindexKindChunked rebuilds plugin_item_fields, FTS, and field tallies for one
 // kind in bounded upsertChunkSize transactions so the database write gate is
-// released between chunks.
+// released between chunks and field tallies stay consistent incrementally
+// without a monolithic post-loop rebuild transaction (#685).
 func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
 	totalItems, _ := s.countKindItems(ctx, pluginID, kindKey)
 	s.setSyncProgress(pluginID, kindKey, syncProgress{
@@ -1028,6 +1039,12 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 	})
 	defer s.clearSyncProgressIfPhase(pluginID, kindKey, "reindexing")
 
+	dialect := store.SQLite
+	if isPG {
+		dialect = store.Postgres
+	}
+	hasFieldTally := s.hasTable(ctx, dialect, "plugin_item_field_tally")
+
 	cursor := ""
 	processed := 0
 	for {
@@ -1036,7 +1053,7 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 		}
 		mu := s.kindLock(pluginID, kindKey)
 		mu.Lock()
-		n, nextCursor, done, err := s.reindexKindOneChunkLocked(ctx, isPG, pluginID, kindKey, fallbackLibID, decl, cursor)
+		n, nextCursor, done, wrote, err := s.reindexKindOneChunkLocked(ctx, isPG, hasFieldTally, pluginID, kindKey, fallbackLibID, decl, cursor)
 		mu.Unlock()
 		if err != nil {
 			return err
@@ -1052,6 +1069,18 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 		if done {
 			break
 		}
+		if wrote {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(reindexChunkYield):
+			}
+			// Bound WAL growth across long reindexes by passively checkpointing
+			// and waiting out any pinning long read between chunks (#685).
+			if err := store.WaitWALBudget(ctx, s.db); err != nil {
+				return err
+			}
+		}
 	}
 
 	mu := s.kindLock(pluginID, kindKey)
@@ -1062,15 +1091,6 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 		return err
 	}
 	defer tx.Rollback()
-	dialect := store.SQLite
-	if isPG {
-		dialect = store.Postgres
-	}
-	if hasTableTx(ctx, tx, dialect, "plugin_item_field_tally") {
-		if err := rebuildKindFieldTallyTx(ctx, tx, pluginID, kindKey, fallbackLibID); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
 		currentFTSVersion, pluginID, kindKey); err != nil {
@@ -1083,29 +1103,65 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 	return nil
 }
 
-func (s *Service) reindexKindOneChunkLocked(ctx context.Context, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta, cursor string) (int, string, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, cursor, false, err
-	}
-	defer tx.Rollback()
+type indexedFieldPK struct {
+	field string
+	text  string
+	intV  int64
+}
 
-	rows, err := tx.QueryContext(ctx, `
-SELECT item_ref, seq, library_id, title, fields
+type indexedFieldExtra struct {
+	realV float64
+	fold  string
+}
+
+type reindexFieldDelete struct {
+	itemRef string
+	pk      indexedFieldPK
+}
+
+type reindexFieldUpsert struct {
+	itemRef string
+	pk      indexedFieldPK
+	extra   indexedFieldExtra
+}
+
+type existingFTSRow struct {
+	itemRef   string
+	libraryID int64
+	title     string
+	fields    string
+	people    string
+}
+
+type reindexFTSWrite struct {
+	seq       int64
+	itemRef   string
+	libraryID core.LibraryID
+	title     string
+	fields    string
+	people    string
+}
+
+func (s *Service) reindexKindOneChunkLocked(ctx context.Context, isPG, hasFieldTally bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta, cursor string) (int, string, bool, bool, error) {
+	// Read items, existing indexed fields, and existing FTS rows outside a write
+	// transaction so the SQLite write gate is never held during reads, JSON
+	// unmarshaling, or diff computation — and unchanged chunks open no write tx.
+	rows, err := s.db.QueryContext(ctx, `
+SELECT item_ref, seq, library_id, level, title, fields
 FROM plugin_items
 WHERE plugin_id = ? AND kind_key = ? AND item_ref > ?
 ORDER BY item_ref ASC
 LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	if err != nil {
-		return 0, cursor, false, err
+		return 0, cursor, false, false, err
 	}
 	var batch []reindexItemRow
 	for rows.Next() {
 		var r reindexItemRow
 		var libID int64
-		if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.title, &r.fieldsJSON); err != nil {
+		if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.level, &r.title, &r.fieldsJSON); err != nil {
 			rows.Close()
-			return 0, cursor, false, err
+			return 0, cursor, false, false, err
 		}
 		if libID > 0 {
 			r.libraryID = core.LibraryID(libID)
@@ -1116,50 +1172,278 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, cursor, false, err
+		return 0, cursor, false, false, err
 	}
 	rows.Close()
 	if len(batch) == 0 {
-		return 0, cursor, true, nil
+		return 0, cursor, true, false, nil
 	}
+
+	oldFieldsByRef, err := s.lookupExistingIndexedFields(ctx, batch)
+	if err != nil {
+		return 0, cursor, false, false, err
+	}
+	var oldFTSBySeq map[int64]existingFTSRow
+	if !isPG {
+		oldFTSBySeq, err = s.lookupExistingSQLiteFTS(ctx, batch)
+		if err != nil {
+			return 0, cursor, false, false, err
+		}
+	}
+
+	var (
+		fieldDeletes   []reindexFieldDelete
+		fieldInserts   []reindexFieldUpsert
+		fieldUpdates   []reindexFieldUpsert
+		ftsWrites      []reindexFTSWrite
+		fieldTallyLibs map[core.LibraryID]map[fieldTallyKey]int64
+	)
+	deltaFor := func(libID core.LibraryID) map[fieldTallyKey]int64 {
+		if fieldTallyLibs == nil {
+			fieldTallyLibs = map[core.LibraryID]map[fieldTallyKey]int64{}
+		}
+		d := fieldTallyLibs[libID]
+		if d == nil {
+			d = map[fieldTallyKey]int64{}
+			fieldTallyLibs[libID] = d
+		}
+		return d
+	}
+
 	for _, r := range batch {
 		indexed, searchFields, searchPeople := extractIndexData(decl, r.fieldsJSON)
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, r.itemRef); err != nil {
-			return 0, cursor, false, err
-		}
+		newMap := make(map[indexedFieldPK]indexedFieldExtra, len(indexed))
 		for _, fv := range indexed {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
-				r.itemRef, fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
-				return 0, cursor, false, err
+			newMap[indexedFieldPK{field: fv.Field, text: fv.Text, intV: fv.Int}] = indexedFieldExtra{realV: fv.Real, fold: fv.Fold}
+		}
+		oldMap := oldFieldsByRef[r.itemRef]
+		for pk := range oldMap {
+			if _, keep := newMap[pk]; !keep {
+				fieldDeletes = append(fieldDeletes, reindexFieldDelete{itemRef: r.itemRef, pk: pk})
+				if hasFieldTally && pk.text != "" && r.level != "" {
+					addFieldTallyDelta(deltaFor(r.libraryID), r.level, pk.field, pk.text, -1)
+				}
 			}
 		}
+		for pk, nv := range newMap {
+			ov, existed := oldMap[pk]
+			if !existed {
+				fieldInserts = append(fieldInserts, reindexFieldUpsert{itemRef: r.itemRef, pk: pk, extra: nv})
+				if hasFieldTally && pk.text != "" && r.level != "" {
+					addFieldTallyDelta(deltaFor(r.libraryID), r.level, pk.field, pk.text, 1)
+				}
+			} else if ov != nv {
+				fieldUpdates = append(fieldUpdates, reindexFieldUpsert{itemRef: r.itemRef, pk: pk, extra: nv})
+			}
+		}
+
+		if isPG {
+			ftsWrites = append(ftsWrites, reindexFTSWrite{
+				seq:       r.seq,
+				itemRef:   r.itemRef,
+				libraryID: r.libraryID,
+				title:     r.title,
+				fields:    searchFields,
+				people:    searchPeople,
+			})
+		} else {
+			wt := strings.TrimSpace(r.title)
+			wf := strings.TrimSpace(searchFields)
+			wp := strings.TrimSpace(searchPeople)
+			wantEmpty := wt == "" && wf == "" && wp == ""
+			cur, hasCur := oldFTSBySeq[r.seq]
+			matches := (wantEmpty && !hasCur) || (!wantEmpty && hasCur &&
+				cur.itemRef == r.itemRef &&
+				cur.libraryID == int64(r.libraryID) &&
+				cur.title == wt &&
+				cur.fields == wf &&
+				cur.people == wp)
+			if !matches {
+				ftsWrites = append(ftsWrites, reindexFTSWrite{
+					seq:       r.seq,
+					itemRef:   r.itemRef,
+					libraryID: r.libraryID,
+					title:     r.title,
+					fields:    searchFields,
+					people:    searchPeople,
+				})
+			}
+		}
+	}
+
+	nextCursor := batch[len(batch)-1].itemRef
+	done := len(batch) < upsertChunkSize
+	if len(fieldDeletes) == 0 && len(fieldInserts) == 0 && len(fieldUpdates) == 0 && len(ftsWrites) == 0 {
+		return len(batch), nextCursor, done, false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, cursor, false, false, err
+	}
+	defer tx.Rollback()
+
+	for _, del := range fieldDeletes {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
+			del.itemRef, del.pk.field, del.pk.text, del.pk.intV); err != nil {
+			return 0, cursor, false, false, err
+		}
+	}
+	for _, ins := range fieldInserts {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+			ins.itemRef, ins.pk.field, ins.pk.text, ins.pk.intV, ins.extra.realV, ins.extra.fold); err != nil {
+			return 0, cursor, false, false, err
+		}
+	}
+	for _, upd := range fieldUpdates {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE plugin_item_fields SET v_real = ?, v_fold = ? WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
+			upd.extra.realV, upd.extra.fold, upd.itemRef, upd.pk.field, upd.pk.text, upd.pk.intV); err != nil {
+			return 0, cursor, false, false, err
+		}
+	}
+	for _, fw := range ftsWrites {
 		if isPG {
 			if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_items
 SET search_tsv = setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
-WHERE item_ref = ?`,
-				r.title, searchFields, searchPeople, r.itemRef); err != nil {
-				return 0, cursor, false, err
+WHERE item_ref = ?
+  AND search_tsv IS DISTINCT FROM (setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C'))`,
+				fw.title, fw.fields, fw.people, fw.itemRef, fw.title, fw.fields, fw.people); err != nil {
+				return 0, cursor, false, false, err
 			}
 		} else {
-			if err := sqliteIndexFTS(ctx, tx, r.seq, core.ItemRef(r.itemRef), r.libraryID, r.title, searchFields, searchPeople); err != nil {
-				return 0, cursor, false, err
+			if err := sqliteIndexFTS(ctx, tx, fw.seq, core.ItemRef(fw.itemRef), fw.libraryID, fw.title, fw.fields, fw.people); err != nil {
+				return 0, cursor, false, false, err
+			}
+		}
+	}
+	if hasFieldTally && len(fieldTallyLibs) > 0 {
+		libs := make([]core.LibraryID, 0, len(fieldTallyLibs))
+		for libID := range fieldTallyLibs {
+			libs = append(libs, libID)
+		}
+		slices.Sort(libs)
+		for _, libID := range libs {
+			if err := applyFieldTallyDeltaTx(ctx, tx, libID, fieldTallyLibs[libID]); err != nil {
+				return 0, cursor, false, false, err
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, cursor, false, err
+		return 0, cursor, false, false, err
 	}
-	nextCursor := batch[len(batch)-1].itemRef
-	return len(batch), nextCursor, len(batch) < upsertChunkSize, nil
+	s.noteWrite()
+	s.syncGen.Add(1)
+	return len(batch), nextCursor, done, true, nil
+}
+
+func (s *Service) lookupExistingIndexedFields(ctx context.Context, batch []reindexItemRow) (map[string]map[indexedFieldPK]indexedFieldExtra, error) {
+	out := make(map[string]map[indexedFieldPK]indexedFieldExtra, len(batch))
+	if len(batch) == 0 {
+		return out, nil
+	}
+	const chunkSize = 250
+	for start := 0; start < len(batch); start += chunkSize {
+		end := min(start+chunkSize, len(batch))
+		chunk := batch[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, r := range chunk {
+			placeholders[i] = "?"
+			args[i] = r.itemRef
+		}
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT item_ref, field, v_text, v_int, v_real, v_fold FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
+			args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var ref, field, text, fold string
+			var iv int64
+			var rv float64
+			if err := rows.Scan(&ref, &field, &text, &iv, &rv, &fold); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			m := out[ref]
+			if m == nil {
+				m = map[indexedFieldPK]indexedFieldExtra{}
+				out[ref] = m
+			}
+			m[indexedFieldPK{field: field, text: text, intV: iv}] = indexedFieldExtra{realV: rv, fold: fold}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+func (s *Service) lookupExistingSQLiteFTS(ctx context.Context, batch []reindexItemRow) (map[int64]existingFTSRow, error) {
+	out := make(map[int64]existingFTSRow, len(batch))
+	if len(batch) == 0 {
+		return out, nil
+	}
+	const chunkSize = 250
+	for start := 0; start < len(batch); start += chunkSize {
+		end := min(start+chunkSize, len(batch))
+		chunk := batch[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, r := range chunk {
+			placeholders[i] = "?"
+			args[i] = r.seq
+		}
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT rowid, item_ref, library_id, title, fields, people FROM plugin_item_fts WHERE rowid IN (`+strings.Join(placeholders, ",")+`)`,
+			args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var seq int64
+			var r existingFTSRow
+			if err := rows.Scan(&seq, &r.itemRef, &r.libraryID, &r.title, &r.fields, &r.people); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[seq] = r
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+func (s *Service) hasTable(ctx context.Context, d store.Dialect, table string) bool {
+	var n int
+	if d == store.Postgres {
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?`,
+			table).Scan(&n)
+		return n > 0
+	}
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`,
+		table).Scan(&n)
+	return n > 0
 }
 
 type reindexItemRow struct {
 	itemRef    string
 	seq        int64
 	libraryID  core.LibraryID
+	level      string
 	title      string
 	fieldsJSON string
 }
@@ -1329,7 +1613,13 @@ func extractIndexData(decl plugins.MediaKindMeta, fieldsJSON string) ([]IndexedF
 		searchParts []string
 		peopleParts []string
 	)
-	for k, raw := range fields {
+	fieldKeys := make([]string, 0, len(fields))
+	for k := range fields {
+		fieldKeys = append(fieldKeys, k)
+	}
+	slices.Sort(fieldKeys)
+	for _, k := range fieldKeys {
+		raw := fields[k]
 		fdecl, exists := declaredFields[k]
 		if !exists {
 			continue
@@ -1671,7 +1961,11 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.noteWrite()
+	return nil
 }
 
 func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, rootRefs []core.ItemRef, levelCount int, leafLevel string) error {
@@ -1868,10 +2162,8 @@ LIMIT ?`,
 		items = items[:limit]
 		nextCursor = items[len(items)-1].ID
 	}
-	var total int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ? AND kind_key = ?`,
-		pluginID, kindKey).Scan(&total); err != nil {
+	total, err := s.countKindItems(ctx, pluginID, kindKey)
+	if err != nil {
 		return core.KindPage{}, err
 	}
 	return core.KindPage{
@@ -2085,6 +2377,7 @@ func (s *Service) PurgeKind(ctx context.Context, pluginID, kindKey string) error
 	if libID > 0 {
 		s.forgetLibraryStats(core.LibraryID(libID))
 	}
+	s.noteWrite()
 	s.syncGen.Add(1)
 	return nil
 }
@@ -2130,6 +2423,7 @@ func (s *Service) PurgePlugin(ctx context.Context, pluginID string) error {
 			s.forgetLibraryStats(k.LibraryID)
 		}
 	}
+	s.noteWrite()
 	s.syncGen.Add(1)
 	return nil
 }

@@ -416,6 +416,14 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 			Message: "parentId must be a valid external id",
 		}}}
 	}
+	switch q.Total {
+	case "", "cheap", "none", "exact":
+	default:
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "total",
+			Message: `total must be "cheap", "none", or "exact"`,
+		}}}
+	}
 	if q.Limit <= 0 {
 		q.Limit = 200
 	}

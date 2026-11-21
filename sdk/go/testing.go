@@ -607,6 +607,11 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 	if _, ok := ViewerTokenFromContext(ctx); !ok {
 		return KindPage{}, fmt.Errorf("kinds.browse: no authenticated frontend adapter viewer token on context")
 	}
+	switch query.Total {
+	case "", "cheap", "none", "exact":
+	default:
+		return KindPage{}, fmt.Errorf("kinds.browse: invalid total mode %q", query.Total)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	limit := query.Limit
@@ -644,6 +649,11 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 			matched[i], matched[j] = matched[j], matched[i]
 		}
 	}
+	var totalPtr *int
+	if query.Total != "none" {
+		n := len(matched)
+		totalPtr = &n
+	}
 	var out []KindItem
 	after := query.Cursor == ""
 	for i, it := range matched {
@@ -657,13 +667,13 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 			if i+1 < len(matched) {
 				next = it.ID
 			}
-			return KindPage{Items: out, NextCursor: next}, nil
+			return KindPage{Items: out, NextCursor: next, Total: totalPtr}, nil
 		}
 	}
 	if out == nil {
 		out = []KindItem{}
 	}
-	return KindPage{Items: out}, nil
+	return KindPage{Items: out, Total: totalPtr}, nil
 }
 
 func mockItemMatchesFacets(item KindItem, facets map[string][]string) bool {

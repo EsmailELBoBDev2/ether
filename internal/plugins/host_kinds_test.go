@@ -578,6 +578,17 @@ func TestKindVisibleAndBrowseGuardsAndHostedBridge(t *testing.T) {
 	if _, err := h.KindVisible(WithViewer(ctx, 42), "undeclared", []string{"a"}); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("KindVisible undeclared kind: %v", err)
 	}
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{Total: "bogus"}); !errors.As(err, &valErr) {
+		t.Fatalf("KindBrowse invalid total: %v", err)
+	}
+	for _, mode := range []string{"", "cheap", "none", "exact"} {
+		if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{Total: mode}); err != nil {
+			t.Fatalf("KindBrowse total=%q: %v", mode, err)
+		}
+		if gotQuery.Total != mode {
+			t.Fatalf("KindBrowse total=%q forwarded as %q", mode, gotQuery.Total)
+		}
+	}
 
 	// Non-adapter route carrying a forged X-Ether-Viewer header must NOT get viewer context or token.
 	nonAdapterReq := Request{

@@ -22,14 +22,10 @@ func (s *Service) browseLastViewed(
 	hasFacets bool,
 	parentRef string,
 	level string,
+	tally browseTallyInfo,
 	desc bool,
 	limit int,
 ) (BrowsePage, error) {
-	total, totalExact, err := s.browseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, level)
-	if err != nil {
-		return BrowsePage{}, err
-	}
-
 	var cur browseCursor
 	hasCursor := strings.TrimSpace(q.Cursor) != ""
 	if hasCursor {
@@ -149,10 +145,11 @@ LIMIT ?`
 					return BrowsePage{}, err
 				}
 			}
-			if q.NoTotal {
-				total = len(items)
+			total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, tally, false, len(items))
+			if err != nil {
+				return BrowsePage{}, err
 			}
-			return BrowsePage{Items: items, Total: total, NextCursor: nextCursor}, nil
+			return BrowsePage{Items: items, Total: total, TotalExact: totalExact, NextCursor: nextCursor}, nil
 		}
 		phase0Count = len(items)
 	}
@@ -231,11 +228,12 @@ LIMIT ?`
 			return BrowsePage{}, err
 		}
 	}
-	if q.NoTotal && !totalExact {
-		total = len(items)
-	}
 	if items == nil {
 		items = []core.KindItem{}
+	}
+	total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
+	if err != nil {
+		return BrowsePage{}, err
 	}
 	return BrowsePage{
 		Items:      items,

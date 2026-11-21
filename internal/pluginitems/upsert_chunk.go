@@ -279,5 +279,8 @@ INSERT INTO plugin_items(
 	if err := tx.Commit(); err != nil {
 		return upsertChunkResult{}, err
 	}
+	if res.added > 0 || res.updated > 0 {
+		s.noteWrite()
+	}
 	return res, nil
 }

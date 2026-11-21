@@ -410,6 +410,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         if (!viewerToken || !viewerToken.trim()) {
           throw new Error("kinds.browse: no authenticated frontend adapter viewer token on this request");
         }
+        if (query.total !== undefined && query.total !== "cheap" && query.total !== "none" && query.total !== "exact") {
+          throw new Error(`kinds.browse: invalid total mode ${String(query.total)}`);
+        }
         const hidden = state.kindHiddenIds.get(kind);
         const needle = (query.query ?? "").trim().toLowerCase();
         const limit = query.limit && query.limit > 0 ? query.limit : 200;
@@ -456,6 +459,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         const page: import("./types.ts").KindPage = { items: pageItems };
         if (pageItems.length && start + limit < matched.length) {
           page.nextCursor = pageItems[pageItems.length - 1]?.id;
+        }
+        if (query.total !== "none") {
+          page.total = matched.length;
         }
         return page;
       },

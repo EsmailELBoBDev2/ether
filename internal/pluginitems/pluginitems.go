@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -435,7 +436,11 @@ type Service struct {
 	maxPluginItems    int
 	maxPluginItemsFor func(pluginID string) int
 
-	syncGen atomic.Uint64
+	syncGen  atomic.Uint64
+	writeGen atomic.Uint64
+
+	countCacheMu sync.RWMutex
+	countCache   map[string]cachedBrowseCount
 
 	locksMu   sync.Mutex
 	kindLocks map[string]*sync.Mutex
@@ -478,6 +483,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		onSyncEvent:       o.OnSyncEvent,
 		maxPluginItems:    o.MaxPluginItems,
 		maxPluginItemsFor: o.MaxPluginItemsFor,
+		countCache:        map[string]cachedBrowseCount{},
 		kindLocks:         map[string]*sync.Mutex{},
 		bgCtx:             bgCtx,
 		bgCancel:          bgCancel,
@@ -608,6 +614,62 @@ func (s *Service) kindLock(pluginID, kindKey string) *sync.Mutex {
 		s.kindLocks[key] = mu
 	}
 	return mu
+}
+
+const maxCountCacheEntries = 1024
+
+type cachedBrowseCount struct {
+	total  int
+	gen    uint64
+	minute int64
+}
+
+func (s *Service) noteWrite() {
+	if s != nil {
+		s.writeGen.Add(1)
+	}
+}
+
+func (s *Service) countMinuteBucket() int64 {
+	return s.Now().Unix() / 60
+}
+
+func (s *Service) countCacheGet(key string, gen uint64, minute int64) (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.countCacheMu.RLock()
+	ent, ok := s.countCache[key]
+	s.countCacheMu.RUnlock()
+	if !ok || ent.gen != gen || ent.minute != minute {
+		return 0, false
+	}
+	return ent.total, true
+}
+
+func (s *Service) countCachePut(key string, total int, gen uint64, minute int64) {
+	if s == nil || s.writeGen.Load() != gen {
+		return
+	}
+	s.countCacheMu.Lock()
+	if s.countCache == nil || len(s.countCache) >= maxCountCacheEntries {
+		s.countCache = map[string]cachedBrowseCount{}
+	}
+	s.countCache[key] = cachedBrowseCount{total: total, gen: gen, minute: minute}
+	s.countCacheMu.Unlock()
+}
+
+func browseCountCacheKey(prefix, where string, args []any) string {
+	var b strings.Builder
+	b.Grow(len(prefix) + len(where) + len(args)*16)
+	b.WriteString(prefix)
+	b.WriteByte(0)
+	b.WriteString(where)
+	for _, a := range args {
+		b.WriteByte(0)
+		fmt.Fprintf(&b, "%T:%v", a, a)
+	}
+	return b.String()
 }
 
 func (s *Service) noteAttention(ctx context.Context, pluginID, reason string) {

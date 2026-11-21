@@ -93,6 +93,10 @@ type KindBrowseRequest struct {
 	AllFacets     map[string][]string `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
 	Query         string              `json:"query,omitempty"`
+	// Total controls whether kinds.browse computes KindPage.Total:
+	// "" or "cheap" (default) returns Total only when O(1), "none" omits it,
+	// and "exact" computes an exact Total (cached per library generation).
+	Total string `json:"total,omitempty"`
 }
 
 // KindBrowseQuery is the query passed to kinds.browse from a frontend adapter (#615).

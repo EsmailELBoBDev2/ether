@@ -43,6 +43,43 @@ type Person struct {
 	ThumbPath string `json:"thumbPath,omitempty"`
 }
 
+// TitleParent names one ancestor in a plugin item's declared hierarchy,
+// ordered nearest first (for example a track's [album, artist] or a book's
+// [series]). Real hierarchy parents carry Key; synthetic facet-backed parents
+// (such as a 1-level book's series facet) carry FacetID (e.g. "facet:series:Dune").
+type TitleParent struct {
+	Key          RatingKey `json:"-"`
+	FacetID      string    `json:"facetId,omitempty"`
+	Title        string    `json:"title"`
+	Role         MediaRole `json:"role"`
+	Index        int       `json:"index,omitempty"`
+	IndexDisplay string    `json:"indexDisplay,omitempty"`
+}
+
+// MediaCredit preserves a plugin item's declared credit role alongside the
+// resolved person identity (for example artist, albumArtist, author,
+// narrator, composer, illustrator, translator, host).
+type MediaCredit struct {
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	PersonID  string `json:"personId,omitempty"`
+	TMDB      int64  `json:"tmdb,omitempty"`
+	ThumbPath string `json:"thumbPath,omitempty"`
+}
+
+// TitleReading describes readable document metadata for book-role items.
+type TitleReading struct {
+	Format string `json:"format"`          // "epub" | "pdf" | "cbz"
+	Pages  int    `json:"pages,omitempty"` // page count when known
+}
+
+// TitleFact is one plain label/value metadata pair surfaced on a title's
+// detail page (for example label, publisher, ISBN, release type).
+type TitleFact struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
 // Title is a catalogue item: movie, show, season or episode. Image paths are
 // TMDB paths ("/abc.jpg"); the front end turns them into URLs.
 type Title struct {
@@ -75,6 +112,17 @@ type Title struct {
 	// once as its own child (an Audio track / Plex track, same Key) so
 	// clients that only play leaf items can play it.
 	SelfChild bool `json:"-"`
+
+	// Media class, role, and structured non-video presentation metadata
+	// (docs/plugin-kinds.md, additive). Never serialized to catalogue caches.
+	MediaClass   MediaClass    `json:"-"`
+	MediaRole    MediaRole     `json:"-"`
+	IndexDisplay string        `json:"-"` // optional display string for fractional/non-integer series index (e.g. "1.5")
+	Disc         int           `json:"-"` // disc / volume number for multi-disc albums
+	MediaParents []TitleParent `json:"-"` // ancestors nearest first
+	MediaCredits []MediaCredit `json:"-"` // declared credits preserving role
+	MediaReading *TitleReading `json:"-"` // readable document metadata (format, pages)
+	MediaFacts   []TitleFact   `json:"-"` // plain label/value detail facts
 
 	// Seasons and episodes.
 	ShowKey           RatingKey `json:"showKey,omitempty"`

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -335,6 +336,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 		if lib.Source == core.LibraryPlugin {
 			if pres, hasPres := s.d.PluginLibraries.(PluginPresentationLibraries); hasPres {
 				if p, ok := pres.Presentation(ctx, lib); ok {
+					view.Media = p.Media
 					view.Card = lib.EffectiveCardShape(p.Card)
 					view.DateDisplay = p.DateDisplay
 					view.Tabs = p.Tabs
@@ -1615,6 +1617,13 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 			if sh.TabFilter != nil && !sh.TabFilter.IsEmpty() {
 				q.Filter.TabRules, q.Filter.TabFallback = sh.TabFilter.ToPolicy("")
 			}
+			// Declared shelves sorted by lastViewed are viewer-history shelves
+			// (e.g. "Jump back in", "Recently played"): restrict to items with
+			// viewer watch history (rolled up to sh.Level) so unplayed items
+			// never fill the shelf and it hides cleanly when empty.
+			if sortOrder.IsLastViewed() {
+				q.Filter.TabRules, q.Filter.TabFallback = requireViewerHistoryPolicy(q.Filter.TabRules, q.Filter.TabFallback)
+			}
 			page, pErr := s.pluginLibraryItems(ctx, v, lib, q)
 			if pErr != nil || len(page.Items) == 0 {
 				continue
@@ -1901,4 +1910,56 @@ func isOriginFacetKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func rulesHaveViewerCondition(rules []core.LibraryExclusion) bool {
+	for _, g := range rules {
+		for _, r := range g.Rules {
+			if r.Field == "viewer" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// requireViewerHistoryPolicy ensures a declared sort:lastViewed shelf only
+// returns items with viewer watch history (rolled up across container levels),
+// unless the shelf's tab filter already specifies a viewer condition.
+func requireViewerHistoryPolicy(rules []core.LibraryExclusion, fallback string) ([]core.LibraryExclusion, string) {
+	if rulesHaveViewerCondition(rules) {
+		return rules, fallback
+	}
+	historyCond := core.CollectionRule{
+		Field: "viewer",
+		Op:    "is",
+		Value: json.RawMessage(`{"history":true}`),
+	}
+	if len(rules) == 0 && fallback == "" {
+		return []core.LibraryExclusion{{
+			Action:    "show",
+			MediaType: "mixed",
+			Match:     "all",
+			Rules:     []core.CollectionRule{historyCond},
+		}}, "hide"
+	}
+	if len(rules) == 1 && rules[0].Action == "show" && rules[0].Match != "any" && fallback == "hide" {
+		g := rules[0]
+		g.Rules = append(append([]core.CollectionRule(nil), g.Rules...), historyCond)
+		return []core.LibraryExclusion{g}, "hide"
+	}
+	notHistory := core.LibraryExclusion{
+		Action:    "hide",
+		MediaType: "mixed",
+		Match:     "all",
+		Rules: []core.CollectionRule{{
+			Field: "viewer",
+			Op:    "isNot",
+			Value: json.RawMessage(`{"history":true}`),
+		}},
+	}
+	out := make([]core.LibraryExclusion, 0, len(rules)+1)
+	out = append(out, notHistory)
+	out = append(out, rules...)
+	return out, fallback
 }

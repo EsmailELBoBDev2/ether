@@ -437,8 +437,8 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 		c.hydrateMu.Unlock()
 		return
 	}
-	hasChildren, sampleAt, childErr := c.items.ChildrenFreshness(ctx, lib.ID, parentItem.Ref)
-	if childErr == nil && hasChildren && !sampleAt.IsZero() && now.Sub(sampleAt) < ttl {
+	childCount, sampleAt, childErr := c.items.ChildrenCountAndFreshness(ctx, lib.ID, parentItem.Ref)
+	if childErr == nil && childCount > 0 && (parentItem.ChildCount <= 0 || childCount >= parentItem.ChildCount) && !sampleAt.IsZero() && now.Sub(sampleAt) < ttl {
 		c.hydrateMu.Unlock()
 		return
 	}

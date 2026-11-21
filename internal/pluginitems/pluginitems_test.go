@@ -725,8 +725,14 @@ func testProjectorMatchesAndResolutions(t *testing.T) {
 	if title.SortTitle != "winds of winter" || title.Runtime != time.Hour {
 		t.Fatalf("Project sortTitle/runtime = %q / %v", title.SortTitle, title.Runtime)
 	}
-	if !strings.Contains(title.Summary, "Sixth novel.") || !strings.Contains(title.Summary, "Author: George R. R. Martin") {
-		t.Fatalf("Project summary = %q", title.Summary)
+	if title.Summary != "Sixth novel." {
+		t.Fatalf("Project summary = %q, want clean summary", title.Summary)
+	}
+	if len(title.MediaCredits) != 1 || title.MediaCredits[0].Name != "George R. R. Martin" || title.MediaCredits[0].Role != "author" {
+		t.Fatalf("Project MediaCredits = %+v", title.MediaCredits)
+	}
+	if title.MediaReading == nil || title.MediaReading.Format != "epub" {
+		t.Fatalf("Project MediaReading = %+v", title.MediaReading)
 	}
 	if title.PosterPath != "https://example.com/p.jpg" || title.StillPath != "https://example.com/t.jpg" {
 		t.Fatalf("Project art = poster:%q still:%q", title.PosterPath, title.StillPath)

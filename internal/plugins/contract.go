@@ -922,6 +922,10 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"` // gets a typed column in the item store
 	Enum    []string `json:"enum,omitempty"`
+	// Fact controls whether this field is surfaced in TitleMedia.facts.
+	// Nil follows the default rule (non-structural fields appear as facts);
+	// explicit true/false overrides it.
+	Fact *bool `json:"fact,omitempty"`
 }
 
 // KindArt declares one extra artwork role.

@@ -62,11 +62,12 @@ type View struct {
 	// (for example, MediaBrowser CollectionType or Plex base type).
 	Native string
 	// Plugin library presentation metadata (optional; populated for plugin libraries).
-	Card        string      `json:"card,omitempty"`
-	DateDisplay string      `json:"dateDisplay,omitempty"`
-	Tabs        []ViewTab   `json:"tabs,omitempty"`
-	Sorts       []string    `json:"sorts,omitempty"`
-	Facets      []ViewFacet `json:"facets,omitempty"`
+	Media       core.MediaClass `json:"media,omitempty"`
+	Card        string          `json:"card,omitempty"`
+	DateDisplay string          `json:"dateDisplay,omitempty"`
+	Tabs        []ViewTab       `json:"tabs,omitempty"`
+	Sorts       []string        `json:"sorts,omitempty"`
+	Facets      []ViewFacet     `json:"facets,omitempty"`
 }
 
 // ViewTab describes one sub-tab of a library view.

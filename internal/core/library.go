@@ -706,6 +706,7 @@ type ResolvedAppPresentation struct {
 // each app currently publishes it (Effective / Apps).
 type ResolvedPresentations struct {
 	MediaClass  MediaClass                `json:"mediaClass"`
+	LevelRoles  map[string]MediaRole      `json:"levelRoles,omitempty"`
 	AdapterOnly bool                      `json:"adapterOnly,omitempty"`
 	Effective   Presentations             `json:"effective"`
 	Available   Presentations             `json:"available"`

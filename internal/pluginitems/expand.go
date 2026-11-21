@@ -238,3 +238,27 @@ LIMIT 1`, int64(libraryID), string(parentRef)).Scan(&seenAt, &updatedAt)
 	}
 	return true, time.Unix(ts, 0).UTC(), nil
 }
+
+// ChildrenCountAndFreshness returns the stored direct child count and newest
+// seen/updated timestamp for parentRef using the (library_id, parent_ref)
+// index. Used to detect partially populated containers whose ChildCount
+// exceeds the currently stored children.
+func (s *Service) ChildrenCountAndFreshness(ctx context.Context, libraryID core.LibraryID, parentRef core.ItemRef) (int, time.Time, error) {
+	if s == nil || s.db == nil || libraryID <= 0 || strings.TrimSpace(string(parentRef)) == "" {
+		return 0, time.Time{}, nil
+	}
+	var count int
+	var maxSeen, maxUpdated int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*), COALESCE(MAX(seen_at), 0), COALESCE(MAX(updated_at), 0)
+FROM plugin_items
+WHERE library_id = ? AND parent_ref = ?`, int64(libraryID), string(parentRef)).Scan(&count, &maxSeen, &maxUpdated)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	ts := max(maxSeen, maxUpdated)
+	if ts <= 0 {
+		return count, time.Time{}, nil
+	}
+	return count, time.Unix(ts, 0).UTC(), nil
+}

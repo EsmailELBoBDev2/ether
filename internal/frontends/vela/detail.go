@@ -153,6 +153,12 @@ func (i *instance) creditIDs(r *http.Request, v *frontend.Viewer, d frontend.Ite
 			}
 		}
 	}
+	for _, credit := range d.Title.MediaCredits {
+		if credit.TMDB > 0 && !seen[credit.TMDB] {
+			seen[credit.TMDB] = true
+			ids = append(ids, credit.TMDB)
+		}
+	}
 	if len(ids) == 0 {
 		return nil
 	}

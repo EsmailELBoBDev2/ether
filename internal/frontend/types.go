@@ -17,6 +17,35 @@ type RatingKey = core.RatingKey
 type ItemRef = core.ItemRef
 type Playlist = core.Playlist
 type MediaType = core.MediaType
+type MediaClass = core.MediaClass
+type MediaRole = core.MediaRole
+type TitleParent = core.TitleParent
+type MediaCredit = core.MediaCredit
+type TitleReading = core.TitleReading
+type TitleFact = core.TitleFact
+
+const (
+	MediaClassVideo     = core.MediaClassVideo
+	MediaClassMusic     = core.MediaClassMusic
+	MediaClassAudiobook = core.MediaClassAudiobook
+	MediaClassBook      = core.MediaClassBook
+	MediaClassPodcast   = core.MediaClassPodcast
+	MediaClassPhoto     = core.MediaClassPhoto
+)
+
+const (
+	MediaRoleItem       = core.MediaRoleItem
+	MediaRoleArtist     = core.MediaRoleArtist
+	MediaRoleAlbum      = core.MediaRoleAlbum
+	MediaRoleTrack      = core.MediaRoleTrack
+	MediaRoleSeries     = core.MediaRoleSeries
+	MediaRoleBook       = core.MediaRoleBook
+	MediaRoleAudiobook  = core.MediaRoleAudiobook
+	MediaRolePart       = core.MediaRolePart
+	MediaRoleShow       = core.MediaRoleShow
+	MediaRoleEpisode    = core.MediaRoleEpisode
+	MediaRoleCollection = core.MediaRoleCollection
+)
 type Page = core.Page
 type WatchStatus = core.WatchStatus
 type StreamInfo = core.StreamInfo

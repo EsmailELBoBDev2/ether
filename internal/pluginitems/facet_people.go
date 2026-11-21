@@ -268,8 +268,8 @@ ORDER BY r.bucket_pid ASC, r.rn ASC`
 		if out[idx].Thumb != "" {
 			continue
 		}
-		cast, dirs, wris := extractProjectedPeople(it.Fields, rec.Decl)
-		for _, group := range [][]core.Person{cast, dirs, wris} {
+		cast, dirs, wris, crew, _ := extractProjectedPeople(it.Fields, rec.Decl)
+		for _, group := range [][]core.Person{cast, dirs, wris, crew} {
 			for _, cr := range group {
 				if cr.TMDB == pid {
 					if cr.Name != "" && out[idx].SampleItem != nil && out[idx].SampleItem.Ref == it.Ref {

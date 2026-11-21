@@ -89,6 +89,13 @@ type FacetPager interface {
 	FacetPage(ctx context.Context, viewer *Viewer, device Device, viewID, kind string, offset, limit int) ([]FacetValue, int, error)
 }
 
+// LevelFacetPager pages a facet list scoped to a plugin hierarchy level or
+// protocol item type. Only plugin libraries scope by level; every other
+// library answers its indexed FacetPage.
+type LevelFacetPager interface {
+	FacetPageAtLevel(ctx context.Context, viewer *Viewer, device Device, viewID, level, kind string, offset, limit int) ([]FacetValue, int, error)
+}
+
 // FacetPerson is one person entry in a plugin library's people tab.
 type FacetPerson struct {
 	Person    PersonDetail

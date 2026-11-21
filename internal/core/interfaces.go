@@ -432,6 +432,13 @@ type Collection struct {
 	MembershipRevision string `json:"-"`
 }
 
+// OwnedCollectionLister lists the collections the owner made or enabled,
+// without the movie franchises the catalogue derives. Listing franchises
+// groups the whole movie library, so a search never does it.
+type OwnedCollectionLister interface {
+	ListOwned(ctx context.Context, user *User, t MediaType) ([]Collection, error)
+}
+
 type Collections interface {
 	List(ctx context.Context, user *User, t MediaType) ([]Collection, error)
 	Get(ctx context.Context, user *User, key RatingKey) (*Collection, error)

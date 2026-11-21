@@ -63,7 +63,9 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 			}
 		}
 		if levelHint != "" {
-			if lr, ok := i.host.Experience.(frontend.LevelFacetReader); ok {
+			if lp, ok := i.host.Experience.(frontend.LevelFacetPager); ok {
+				page, total, err = lp.FacetPageAtLevel(r.Context(), v, device(r), viewID, levelHint, queryKind, offset, limit)
+			} else if lr, ok := i.host.Experience.(frontend.LevelFacetReader); ok {
 				var facets []frontend.FacetValue
 				facets, err = lr.FacetsAtLevel(r.Context(), v, device(r), viewID, levelHint, queryKind)
 				page, total = paging.Slice(facets, offset, limit), len(facets)

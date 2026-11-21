@@ -895,6 +895,15 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 // List returns the collections a user sees in a section's Collections tab:
 // owner collections targeted at them, built-ins, and TMDB franchises.
 func (s *Service) List(ctx context.Context, user *core.User, t core.MediaType) ([]core.Collection, error) {
+	return s.list(ctx, user, t, true)
+}
+
+// ListOwned is List without the derived movie franchises.
+func (s *Service) ListOwned(ctx context.Context, user *core.User, t core.MediaType) ([]core.Collection, error) {
+	return s.list(ctx, user, t, false)
+}
+
+func (s *Service) list(ctx context.Context, user *core.User, t core.MediaType, withFranchises bool) ([]core.Collection, error) {
 	rows, err := s.loadRows(ctx)
 	if err != nil {
 		return nil, err
@@ -927,7 +936,7 @@ func (s *Service) List(ctx context.Context, user *core.User, t core.MediaType) (
 	}
 	out = append(out, s.listEphemeral(user, t)...)
 	hideFranchises := s.catCfg != nil && s.catCfg().HideFranchiseCollections
-	if !hideFranchises && (t == "" || t == core.TypeMovie) {
+	if withFranchises && !hideFranchises && (t == "" || t == core.TypeMovie) {
 		fr, err := s.listFranchises(ctx, user)
 		if err == nil {
 			out = append(out, fr...)

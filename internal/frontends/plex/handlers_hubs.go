@@ -1911,15 +1911,26 @@ func (s *Server) searchCollections(ctx context.Context, pr *Request, query strin
 		if sectionID > 0 && sec.ID != sectionID {
 			continue
 		}
-		cs, err := s.collections().List(ctx, pr.User, sec.Type)
+		var cs []frontend.Collection
+		var err error
+		if owned, ok := s.collections().(frontend.OwnedCollectionLister); ok {
+			cs, err = owned.ListOwned(ctx, pr.User, sec.Type)
+		} else {
+			cs, err = s.collections().List(ctx, pr.User, sec.Type)
+		}
 		if err != nil {
 			continue
 		}
-		cs = s.scopedCollectionCounts(ctx, pr.User, cs)
+		named := cs[:0]
+		scores := map[frontend.RatingKey]float64{}
 		for _, c := range cs {
 			if sc := playlistSearchScore(c.Title, query); sc > 0 {
-				matches = append(matches, scored{col: c, score: sc})
+				named = append(named, c)
+				scores[c.Key] = sc
 			}
+		}
+		for _, c := range s.scopedCollectionCounts(ctx, pr.User, named) {
+			matches = append(matches, scored{col: c, score: scores[c.Key]})
 		}
 	}
 	if len(matches) == 0 {

@@ -396,7 +396,7 @@ jobs:
               ;;
             livetv)
               # Its broadcast tests run real ffmpeg; under -race the package alone takes ~17 minutes.
-              go test -race -timeout 20m ./internal/livetv/...
+              go test -race -timeout 35m ./internal/livetv/...
               ;;
             rest)
               # shellcheck disable=SC2016 # $ is a regex anchor

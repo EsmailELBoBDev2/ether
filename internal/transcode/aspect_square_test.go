@@ -65,7 +65,7 @@ func TestIntegrationTranscodeSquarePixels(t *testing.T) {
 			fields := map[string]string{}
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				if k, v, ok := strings.Cut(line, "="); ok {
-					fields[k] = v
+					fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
 				}
 			}
 			if fields["sample_aspect_ratio"] != "1:1" {

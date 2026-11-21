@@ -14,6 +14,7 @@ import (
 type Auth = core.Auth
 type Catalog = core.Catalog
 type Collections = core.Collections
+type OwnedCollectionLister = core.OwnedCollectionLister
 type DownloadRemuxer = core.DownloadRemuxer
 type HomeLayoutSource = core.HomeLayoutSource
 type HubItemSource = core.HubItemSource

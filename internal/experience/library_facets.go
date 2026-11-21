@@ -151,6 +151,24 @@ func (s *Service) FacetPage(ctx context.Context, viewer *core.Viewer, device cor
 	return paging.Slice(facets, offset, limit), len(facets), nil
 }
 
+// FacetPageAtLevel is FacetPage scoped to level for plugin libraries. Other
+// libraries ignore the level and keep the indexed page, so a client that
+// names one item type never lists every value of the library.
+func (s *Service) FacetPageAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, name string, offset, limit int) ([]core.FacetValue, int, error) {
+	if level != "" && s.d.PluginLibraries != nil && viewID != "" {
+		if id, err := strconv.Atoi(viewID); err == nil {
+			if lib, err := s.d.PluginLibraries.Library(core.WithCatalogViewer(ctx, viewer), core.LibraryID(id)); err == nil && lib.Source == core.LibraryPlugin {
+				facets, err := s.FacetsAtLevel(ctx, viewer, device, viewID, level, name)
+				if err != nil {
+					return nil, 0, err
+				}
+				return paging.Slice(facets, offset, limit), len(facets), nil
+			}
+		}
+	}
+	return s.FacetPage(ctx, viewer, device, viewID, name, offset, limit)
+}
+
 // pagedFacets answers FacetPage from the catalogue when the facet list is
 // one library's and its exclusions fold into the SQL page, as
 // indexedFacets' do. ok is false otherwise.

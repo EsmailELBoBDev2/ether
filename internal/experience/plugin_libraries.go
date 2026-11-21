@@ -135,6 +135,7 @@ var (
 	_ frontend.LibraryFacetBuckets        = (*Service)(nil)
 	_ frontend.LibraryFacetBucketsAtLevel = (*Service)(nil)
 	_ frontend.LevelFacetReader           = (*Service)(nil)
+	_ frontend.LevelFacetPager            = (*Service)(nil)
 	_ frontend.LibraryFacetCollections    = (*Service)(nil)
 	_ frontend.LibraryFacetPeople         = (*Service)(nil)
 	_ frontend.PluginLibraryRowsReader    = (*Service)(nil)

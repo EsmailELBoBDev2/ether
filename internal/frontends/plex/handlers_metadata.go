@@ -258,6 +258,18 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 						user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,
 					})
 				}
+				// Plezy reuses this row at Play and trusts only its
+				// selected subtitle: arm (or answer) its play-time
+				// re-ask so first play sees probed tracks (#618). Run
+				// before RefillSearchCache and scheduleDetailWarm so a
+				// play re-ask starts or promotes the foreground flight
+				// directly instead of spawning a competing speculative
+				// search or warm-up; browsing fetches return
+				// immediately and still run both below.
+				s.plezyFirstPlay(ctx, reqCtx, pr, t, q)
+				if reqCtx.Err() != nil {
+					return
+				}
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
@@ -274,10 +286,6 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				s.scheduleDetailWarm(ctx, pr, t)
-				// Plezy reuses this row at Play and trusts only its
-				// selected subtitle: arm (or answer) its play-time
-				// re-ask so first play sees probed tracks (#618).
-				s.plezyFirstPlay(ctx, pr, t, q)
 			}
 			// Live session intent (#32): a single-item detail open.
 			s.recordDetailIntent(ctx, pr, t)

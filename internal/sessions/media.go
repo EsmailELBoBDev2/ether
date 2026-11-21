@@ -195,7 +195,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 					}
 					return path + "stream." + ext, nil
 				}
-			} else if _, isHTTP := hs.(core.HTTPSession); !isHTTP {
+			} else {
 				b.ensureTrickplay(ctx, s, req.Position)
 				return path + "master.m3u8", nil
 			}

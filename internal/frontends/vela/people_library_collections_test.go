@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ type peopleTestExperience struct {
 	personImage   frontend.Image
 	personDetail  frontend.PersonDetail
 	visiblePerson bool
+	itemCallsMu   sync.Mutex
 	itemCalls     []string
 }
 
@@ -156,7 +158,9 @@ func TestVelaPeopleAndFilmographyVisibility(t *testing.T) {
 		return out, nil
 	}
 	exp.LibraryItemsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, viewID string, q frontend.ItemQuery) (frontend.Page, error) {
+		exp.itemCallsMu.Lock()
 		exp.itemCalls = append(exp.itemCalls, viewID)
+		exp.itemCallsMu.Unlock()
 		if q.Filter.Person != 77 || q.Sort != frontend.SortReleased || !q.Desc || !q.NoTotal {
 			t.Fatalf("unexpected filmography query on %s: %+v", viewID, q)
 		}

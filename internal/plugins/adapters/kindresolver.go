@@ -1837,6 +1837,12 @@ func (r *KindResolver) cachedCandidatesFor(ctx context.Context, item core.KindIt
 			if s.ExpiresAt > 0 && nowUnix >= s.ExpiresAt {
 				continue
 			}
+			// A Usenet release that already failed in playback is not
+			// offered again from the cached candidate list (#665): the
+			// check and real playback must agree.
+			if r.usenetPlaybackFailed(s) {
+				continue
+			}
 			live = append(live, s)
 		}
 		return live

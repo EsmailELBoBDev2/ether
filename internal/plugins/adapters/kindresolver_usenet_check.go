@@ -499,3 +499,27 @@ func (s *usenetObservedArchiveSource) ArchiveVolumes() ([]core.MediaSource, stri
 	}
 	return out, format, member
 }
+
+// usenetPlaybackFailed reports whether src names a Usenet NZB whose cached
+// verdict records a permanent playback failure.
+func (r *KindResolver) usenetPlaybackFailed(src core.PlayableSource) bool {
+	if r == nil || src.Release == nil {
+		return false
+	}
+	nzbURL := src.Release.NZBURL
+	if nzbURL == "" && src.Release.Candidate != nil {
+		nzbURL = src.Release.Candidate.NZBURL
+	}
+	key := normalizeNZBKey(nzbURL)
+	if key == "" {
+		return false
+	}
+	r.usenetCheckMu.Lock()
+	defer r.usenetCheckMu.Unlock()
+	r.initUsenetCheckCacheLocked()
+	e := r.usenetByRelease[key]
+	if e == nil || r.now().After(e.expiresAt) {
+		return false
+	}
+	return e.result.PlaybackFailed
+}

@@ -940,4 +940,84 @@ describe("Apps connection hub", () => {
       ),
     );
   });
+
+  it("configures Vela dedicated port and main-port toggle via the Port drawer", async () => {
+    let savedSettings: Record<string, unknown> = { appName: "Vela" };
+    let velaPort: number | undefined;
+    let serveOnMain = true;
+
+    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
+      if (path === "/frontends") {
+        const urls: string[] = [];
+        if (velaPort) urls.push(`http://192.168.1.20:${velaPort}`);
+        if (!velaPort || serveOnMain) urls.push("http://192.168.1.20:32400/vela");
+        return [
+          row("vela", "Vela", true, {
+            descriptor: { defaultPort: 8098 },
+            status: {
+              webPlayerReady: true,
+              addresses: velaPort ? [`127.0.0.1:${velaPort}`] : [],
+              connectUrls: urls,
+            },
+          }),
+        ];
+      }
+      if (path === "/frontends/vela/settings" && !options?.method) {
+        return {
+          ...savedSettings,
+          ...(velaPort ? { port: velaPort, serveOnMainPort: serveOnMain } : {}),
+        };
+      }
+      if (path === "/frontends/vela/settings" && options?.method === "PUT") {
+        const payload = JSON.parse(String(options.body)) as Record<string, unknown>;
+        savedSettings = payload;
+        velaPort = typeof payload.port === "number" ? payload.port : undefined;
+        serveOnMain = payload.serveOnMainPort !== false;
+        return { ok: true };
+      }
+      if (path === "/vela/status") return { installed: true, version: "1.0.0" };
+      if (path === "/vela/skins") return { skins: [] };
+      if (path === "/web-player") return { available: true, players: [] };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderApps("/apps/vela");
+    fireEvent.click(await screen.findByRole("button", { name: "Set port" }));
+    const dialog = await screen.findByRole("dialog", { name: "Vela port" });
+    expect(
+      within(dialog).getByText(
+        "Use this if your reverse proxy gives Vela its own address. Saving switches the listener right away.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Dedicated port" }));
+    const portInput = within(dialog).getByLabelText("Port");
+    expect(portInput).toHaveValue(8098);
+
+    // Reject colliding with Ether's main port.
+    fireEvent.change(portInput, { target: { value: "32400" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(/32400/);
+
+    // Set 8098 and disable /vela on Ether's main port.
+    fireEvent.change(portInput, { target: { value: "8098" } });
+    fireEvent.click(
+      within(dialog).getByRole("switch", { name: "Serve /vela on Ether's main port" }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(savedSettings).toMatchObject({
+        appName: "Vela",
+        port: 8098,
+        serveOnMainPort: false,
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "Listening on dedicated port 8098. /vela is turned off on Ether's main port.",
+      ),
+    ).toBeInTheDocument();
+  });
 });

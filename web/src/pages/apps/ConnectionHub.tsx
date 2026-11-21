@@ -1088,10 +1088,9 @@ export function AppAddressCard({
           title={t("Port")}
           description={
             velaPort.port && !velaPort.serveOnMainPort
-              ? t(
-                  "Listening on dedicated port {port}. /vela is turned off on Ether's main port.",
-                  { port: String(velaPort.port) },
-                )
+              ? t("Listening on dedicated port {port}. /vela is turned off on Ether's main port.", {
+                  port: String(velaPort.port),
+                })
               : velaPort.port
                 ? t("Listening on dedicated port {port} and Ether's main port ({mainPort}).", {
                     port: String(velaPort.port),

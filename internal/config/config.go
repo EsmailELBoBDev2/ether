@@ -190,7 +190,7 @@ type Server struct {
 	// is never locked out.
 	DisableConsoleOnMainPort bool   `json:"disableConsoleOnMainPort,omitempty"`
 	BindAddress              string `json:"bindAddress"`
-	FriendlyName string `json:"friendlyName"`
+	FriendlyName             string `json:"friendlyName"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.

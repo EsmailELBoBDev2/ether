@@ -423,6 +423,11 @@ func patchVelaHTML(raw []byte, appName string, hasCustomIcon, iconIsSVG bool, ba
 	if hasCustomIcon && !iconIsSVG {
 		out = patchVelaHTMLFavicon(out, basePath)
 	}
+	if basePath != "" && basePath != "/vela" {
+		escaped := html.EscapeString(basePath)
+		out = bytes.ReplaceAll(out, []byte(`href="/vela/`), []byte(`href="`+escaped+`/`))
+		out = bytes.ReplaceAll(out, []byte(`src="/vela/`), []byte(`src="`+escaped+`/`))
+	}
 	return out
 }
 

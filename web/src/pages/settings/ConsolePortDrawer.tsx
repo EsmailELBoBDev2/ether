@@ -234,8 +234,7 @@ export function ConsolePortSection() {
       method: "PUT",
       body: JSON.stringify(next),
     });
-    const currentPort =
-      typeof window !== "undefined" ? Number(window.location.port || 0) : 0;
+    const currentPort = typeof window !== "undefined" ? Number(window.location.port || 0) : 0;
     if (
       next.consolePort > 0 &&
       next.disableConsoleOnMainPort &&

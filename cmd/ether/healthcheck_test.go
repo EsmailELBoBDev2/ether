@@ -98,3 +98,60 @@ func TestHealthcheckSubcommand(t *testing.T) {
 		t.Fatalf("healthcheck created missing data dir %s", missingDir)
 	}
 }
+
+func TestHealthcheckConsolePortAndFallback(t *testing.T) {
+	mainSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // /ether disabled on main port
+	}))
+	defer mainSrv.Close()
+	consoleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ether/api/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer consoleSrv.Close()
+
+	_, mainPortStr, _ := net.SplitHostPort(mainSrv.Listener.Addr().String())
+	_, consolePortStr, _ := net.SplitHostPort(consoleSrv.Listener.Addr().String())
+	mainPort, _ := strconv.Atoi(mainPortStr)
+	consolePort, _ := strconv.Atoi(consolePortStr)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf(`{"server":{"port":%d,"consolePort":%d,"disableConsoleOnMainPort":true}}`, mainPort, consolePort)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ETHER_DATA_DIR", dir)
+	t.Setenv("ETHER_PORT", "")
+	t.Setenv("ETHER_CONSOLE_PORT", "")
+
+	var stdout, stderr bytes.Buffer
+	if code := runHealthcheck(nil, config.DefaultDataDir(), &stdout, &stderr); code != 0 {
+		t.Fatalf("dedicated consolePort healthcheck = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+
+	// Fallback: when consolePort fails to bind (closed), healthcheck falls back to main port.
+	fallbackMain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ether/api/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fallbackMain.Close()
+	_, fbPortStr, _ := net.SplitHostPort(fallbackMain.Listener.Addr().String())
+	fbPort, _ := strconv.Atoi(fbPortStr)
+	consoleSrv.Close() // dedicated port now closed -> simulates fallback to main port
+	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf(`{"server":{"port":%d,"consolePort":%d}}`, fbPort, consolePort)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runHealthcheck(nil, config.DefaultDataDir(), &stdout, &stderr); code != 0 {
+		t.Fatalf("fallback healthcheck = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+}

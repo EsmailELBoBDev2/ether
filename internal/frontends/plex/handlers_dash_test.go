@@ -314,16 +314,19 @@ func TestStartDASHResumeHint(t *testing.T) {
 		"X-Plex-Client-Profile-Extra", "add-transcode-target(type=videoProfile&context=streaming&protocol=dash&container=mp4&videoCodec=h264&audioCodec=aac)",
 	}
 	cases := []struct {
-		name       string
-		queryExtra string
-		videoCopy  bool
-		wantHint   time.Duration
-		wantOffset time.Duration
+		name          string
+		decisionExtra string
+		startExtra    string
+		videoCopy     bool
+		wantHint      time.Duration
+		wantOffset    time.Duration
 	}{
 		{name: "omitted-copy", videoCopy: true, wantHint: 125 * time.Second},
 		{name: "omitted-transcode", videoCopy: false, wantHint: 125 * time.Second},
-		{name: "explicit-zero", queryExtra: "&offset=0", videoCopy: true, wantHint: 0},
-		{name: "explicit-offset", queryExtra: "&offset=62.5", videoCopy: true, wantHint: 0, wantOffset: 62500 * time.Millisecond},
+		{name: "explicit-zero", decisionExtra: "&offset=0", startExtra: "&offset=0", videoCopy: true, wantHint: 0},
+		{name: "explicit-offset", decisionExtra: "&offset=62.5", startExtra: "&offset=62.5", videoCopy: true, wantHint: 0, wantOffset: 62500 * time.Millisecond},
+		{name: "decision-zero-start-omitted", decisionExtra: "&offset=0", videoCopy: true, wantHint: 0},
+		{name: "decision-offset-start-omitted", decisionExtra: "&offset=300", videoCopy: true, wantHint: 300 * time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -333,9 +336,8 @@ func TestStartDASHResumeHint(t *testing.T) {
 				f.trans.decision = core.Decision{Kind: core.DecisionTranscode, VideoCopy: false, VideoCodec: "h264", AudioCopy: false, AudioCodec: "aac", Container: "fmp4"}
 			}
 			f.state.set(ownerUser.ID, core.WatchStatus{Key: fightClub.Key, ViewOffset: 125 * time.Second})
-			startPath := "/video/:/transcode/universal/start.mpd?" + dashQuery + tc.queryExtra
-			f.get(t, decisionPath(startPath), headers...)
-			rec := f.get(t, startPath, headers...)
+			f.get(t, "/video/:/transcode/universal/decision?"+dashQuery+tc.decisionExtra, headers...)
+			rec := f.get(t, "/video/:/transcode/universal/start.mpd?"+dashQuery+tc.startExtra, headers...)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("start.mpd: %d %s", rec.Code, rec.Body.String())
 			}

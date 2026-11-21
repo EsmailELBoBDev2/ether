@@ -894,6 +894,10 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	var fp string
 	if s.vault != nil {
 		fp = ProfileFingerprint(profile, wantedAudio(profile, req.User, s.catalogLanguage()))
+		choiceFP := fp
+		if req.Prefer != "" && !autoVersion(req.Prefer) {
+			choiceFP = ""
+		}
 		defer func() {
 			if resolved != nil {
 				r := resolved.Release
@@ -901,7 +905,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 				if r.Protocol == core.ProtocolTorrent {
 					payload = resolved.NZB
 				}
-				s.persistChoice(ctx, func(ctx context.Context) { s.recordChoice(ctx, r, fp, payload) })
+				s.persistChoice(ctx, func(ctx context.Context) { s.recordChoice(ctx, r, choiceFP, payload) })
 			}
 		}()
 	}
@@ -1026,7 +1030,11 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 		s.mu.Unlock()
 	}
-	library, hit, retry := s.libraryCandidates(ctx, req, sreq, profile, fp, &trace, forgotten)
+	library, hit, retry, libErr := s.libraryCandidates(ctx, req, sreq, profile, fp, &trace, forgotten)
+	if libErr != nil {
+		trace.Err = libErr.Error()
+		return nil, libErr
+	}
 	if hit != nil && (showVC == nil || s.profileMatchesRelease(showVC.Profile, hit.Release)) {
 		return hit, nil
 	}

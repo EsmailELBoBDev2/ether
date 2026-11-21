@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -33,13 +35,13 @@ func reachesVaultCutoff(c candidate, p core.QualityProfile) bool {
 	return p.MaxHeight > 0 && c.keys.height >= p.MaxHeight
 }
 
-func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest, search core.SearchRequest, p core.QualityProfile, fp string, tr *Trace, bypass bool) ([]core.Release, *core.Resolution, bool) {
+func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest, search core.SearchRequest, p core.QualityProfile, fp string, tr *Trace, bypass bool) ([]core.Release, *core.Resolution, bool, error) {
 	if s.vault == nil || channelAvailabilityCheck(ctx) || core.SpeculativeIndexerWork(ctx) || core.IsSpeculative(ctx) || len(req.Exclude) > 0 || len(req.ExcludeReleases) > 0 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	entries, err := s.vault.Search(ctx, search)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	var releases []core.Release
 	fingerprints := map[vault.Key]string{}
@@ -55,15 +57,15 @@ func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest
 	}
 	releases = s.normalizeSearchResults(search, releases)
 	if bypass || core.IndexerPurpose(ctx) == core.IndexerPurposeConsole || len(releases) == 0 {
-		return releases, nil, false
+		return releases, nil, false, nil
 	}
 	if _, slot := parseVersionSlot(req.Prefer); slot {
-		return releases, nil, false
+		return releases, nil, false, nil
 	}
 	local := Trace{}
 	ranked, _, err := s.rankCandidatesLocal(ctx, req, search, p, releases, &local, "", false)
 	if err != nil || len(ranked) == 0 {
-		return releases, nil, false
+		return releases, nil, false, nil
 	}
 	pickIdx := 0
 	if req.Prefer != "" {
@@ -75,21 +77,42 @@ func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest
 			}
 		}
 		if pickIdx < 0 {
-			return releases, nil, false
+			return releases, nil, false, nil
 		}
 	} else if req.PreferredOnly {
-		return releases, nil, false
+		return releases, nil, false, nil
 	} else {
 		best := ranked[0]
 		if !reachesVaultCutoff(best, p) || fingerprints[vault.KeyOf(best.rel)] != fp {
-			return releases, nil, false
+			return releases, nil, false, nil
 		}
 	}
 	play, cancel := context.WithTimeout(ctx, playStartDeadline)
 	defer cancel()
 	i, payload, err := s.validateCandidates(play, ranked[pickIdx:pickIdx+1], &local, 1)
 	if i < 0 || err != nil {
-		return slices.DeleteFunc(releases, func(r core.Release) bool { return r.ID == ranked[pickIdx].rel.ID }), nil, true
+		if ctx.Err() != nil {
+			return nil, nil, false, ctx.Err()
+		}
+		// An exact version pick that matched a vault entry does not need a
+		// forced live search when it is dead or transiently unreachable,
+		// unless its payload is missing on disk and the ID can still be
+		// re-grabbed from an indexer.
+		missing := errors.Is(err, vault.ErrPayloadMissing) || errors.Is(err, vault.ErrNotFound)
+		if req.PreferredOnly && req.Prefer != "" && !(missing && !strings.HasPrefix(req.Prefer, "vault-")) {
+			tr.Candidates = local.Candidates
+			tr.Discovery = append(tr.Discovery, DiscoveryTrace{Path: "vault", Count: len(releases)})
+			if err != nil && !missing {
+				return nil, nil, false, err
+			}
+			return nil, nil, false, core.ErrNotAvailable
+		}
+		pick := ranked[pickIdx].rel
+		pickKey := vault.KeyOf(pick)
+		remaining := slices.DeleteFunc(releases, func(r core.Release) bool {
+			return (pickKey != "" && vault.KeyOf(r) == pickKey) || r.ID == pick.ID
+		})
+		return remaining, nil, true, nil
 	}
 	tr.Candidates = local.Candidates
 	tr.Winner = ranked[pickIdx].rel.ID
@@ -98,7 +121,21 @@ func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest
 		s.persistBookkeeping(ctx, func(ctx context.Context) { _ = counter.SearchAvoided(ctx, key) })
 	}
 	tr.Discovery = append(tr.Discovery, DiscoveryTrace{Path: "vault", Count: len(releases)})
-	return nil, s.resolution(req.Title.Key, ranked, pickIdx, payload, tr), false
+	// Keep only current-profile, cutoff-reaching vault entries as failover
+	// alternates so failover never settles for a stale or sub-cutoff vault
+	// entry ahead of live search. Exact picks return no alternates.
+	qualifying := []candidate{ranked[pickIdx]}
+	if !req.PreferredOnly {
+		for j, c := range ranked {
+			if j == pickIdx {
+				continue
+			}
+			if reachesVaultCutoff(c, p) && fingerprints[vault.KeyOf(c.rel)] == fp {
+				qualifying = append(qualifying, c)
+			}
+		}
+	}
+	return nil, s.resolution(req.Title.Key, qualifying, 0, payload, tr), false, nil
 }
 
 func (s *Service) verifyVault(ctx context.Context, key vault.Key) error {
@@ -173,8 +210,10 @@ func (s *Service) recordChoice(ctx context.Context, r core.Release, fp string, p
 			return
 		}
 	}
-	if writer, ok := s.vault.(vault.Chooser); ok {
-		writer.MarkChosen(ctx, key, fp)
+	if fp != "" {
+		if writer, ok := s.vault.(vault.Chooser); ok {
+			writer.MarkChosen(ctx, key, fp)
+		}
 	}
 }
 

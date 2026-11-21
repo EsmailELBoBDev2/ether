@@ -245,6 +245,7 @@ type playRequest struct {
 	opts           frontend.DecideOptions
 	sessionID      string // client transcode session id
 	offset         time.Duration
+	offsetSet      bool
 	protocol       string
 	copyTimestamps bool
 	audioSel       int                  // stream position, -1 = default
@@ -390,6 +391,7 @@ func (p playRequest) sameSettings(other playRequest) bool {
 	p.client, other.client = requestClient{}, requestClient{}
 	p.profileResult, other.profileResult = nil, nil
 	p.offset, other.offset = 0, 0
+	p.offsetSet, other.offsetSet = false, false
 	p.caps, other.caps = frontend.ClientCaps{}, frontend.ClientCaps{}
 	p.sourceLimits, other.sourceLimits = nil, nil
 	p.listAllTracks, other.listAllTracks = false, false
@@ -733,7 +735,29 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		p.manualSubtitle = p.subSet && !echo
 	}
 	p.offset = durationParam(q.Get("offset"), time.Second)
+	p.offsetSet = q.Has("offset")
 	return p, nil
+}
+
+// resumeStartHint chooses a speculative start position when a start request
+// omitted offset. An explicit offset on the preceding /decision (including 0
+// for "Play from Beginning") takes precedence over saved watch state so
+// clients that send offset on decision only are never overridden.
+func (s *Server) resumeStartHint(ctx context.Context, pr *Request, p playRequest, entry, priorEntry *transcodeEntry) time.Duration {
+	if p.offsetSet || p.offset != 0 {
+		return 0
+	}
+	switch {
+	case entry != nil && entry.requested.offsetSet:
+		return entry.offset
+	case priorEntry != nil && !priorEntry.started && priorEntry.requested.offsetSet:
+		return priorEntry.offset
+	case s.state() != nil:
+		if st, err := s.state().Get(ctx, pr.User.ID, p.key); err == nil {
+			return st.ViewOffset
+		}
+	}
+	return 0
 }
 
 // sourceSelectionCaps keeps request quality limits at delivery selection. Device
@@ -1875,10 +1899,8 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		s.stopPlexHLS(p.sessionID)
 	}
 	var resumeHint time.Duration
-	if !r.URL.Query().Has("offset") && p.offset == 0 && dec.VideoCopy {
-		if st, err := s.state().Get(ctx, pr.User.ID, p.key); err == nil {
-			resumeHint = st.ViewOffset
-		}
+	if dec.VideoCopy {
+		resumeHint = s.resumeStartHint(ctx, pr, p, entry, priorEntry)
 	}
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),

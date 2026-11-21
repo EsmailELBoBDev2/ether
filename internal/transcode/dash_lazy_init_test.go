@@ -1,12 +1,16 @@
 package transcode
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // DASH clients fetch the chosen representation's init before requesting
@@ -75,5 +79,85 @@ func TestDASHResumeHintStartsAtResumeSegment(t *testing.T) {
 	wantSeg := int(req.FirstSegmentAt / s.segDur)
 	if wantSeg <= 0 || s.lastReq != wantSeg {
 		t.Fatalf("lastReq = %d, want %d", s.lastReq, wantSeg)
+	}
+}
+
+// When ServeManifest defers run=1, native DASH clients issue ranged GETs for
+// video (0/header) and audio (1/header) concurrently while the first start is
+// still pending (s.cur == nil, s.pendingStart == true). Matching tracks must
+// wait for publication instead of failing with 503, while probes of an inactive
+// video rung still fail with 503.
+func TestDASHRangedInitWaitsForPendingStart(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		track    int
+		wantWait bool
+	}{
+		{"pending-video", 0, true},
+		{"audio", 1, true},
+		{"inactive-rung", 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{
+				m:         &Manager{opts: options{segmentTimeout: time.Second}},
+				dir:       t.TempDir(),
+				proto:     core.ProtocolDASH,
+				container: ContainerFMP4,
+				sessionEncoding: sessionEncoding{
+					runSeq:       1,
+					pendingStart: true,
+					pendingTrack: 0,
+				},
+				sessionDelivery: sessionDelivery{
+					done:    []map[int]bool{{}, {}, {}},
+					changed: make(chan struct{}),
+					dash: &dashState{
+						inits: make([]string, 3),
+						reps:  []dashRep{{Kind: "video"}, {Kind: "audio"}, {Kind: "video"}},
+					},
+				},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			waitCtx := &initWaitContext{Context: ctx, entered: make(chan struct{})}
+			req := httptest.NewRequest(http.MethodGet, "/header", nil).WithContext(waitCtx)
+			req.Header.Set("Range", "bytes=0-")
+			rec := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() { defer close(done); s.serveInit(rec, req, tc.track) }()
+			defer func() { cancel(); <-done }()
+
+			if !tc.wantWait {
+				<-done
+				if rec.Code != http.StatusServiceUnavailable {
+					t.Fatalf("inactive rung ranged probe: status=%d, want 503", rec.Code)
+				}
+				return
+			}
+			select {
+			case <-done:
+				t.Fatalf("ranged init returned before pending start published: HTTP %d %q", rec.Code, rec.Body.String())
+			case <-waitCtx.entered:
+			case <-time.After(time.Second):
+				t.Fatal("ranged init did not wait")
+			}
+			body := []byte("pending init bytes")
+			if err := os.WriteFile(filepath.Join(s.dir, "ready.init"), body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s.mu.Lock()
+			s.dash.inits[tc.track] = "ready.init"
+			s.pendingStart = false
+			s.broadcastLocked()
+			s.mu.Unlock()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("ranged init waiter did not complete")
+			}
+			if rec.Code != http.StatusPartialContent || rec.Body.String() != string(body) {
+				t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

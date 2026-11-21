@@ -232,39 +232,88 @@ func artistParentKey(r *http.Request) (frontend.RatingKey, bool) {
 	return 0, false
 }
 
-// attachMusicArtistCredits populates Jellyfin's standard AlbumArtist, Artists,
-// AlbumArtists, and ArtistItems fields on MusicAlbum and Audio items from the
-// title's projected Cast (where plugin people fields like "artists" live).
-func attachMusicArtistCredits(m map[string]any, t frontend.Title) {
-	names := make([]string, 0, len(t.Cast))
-	items := make([]map[string]any, 0, len(t.Cast))
-	seen := make(map[string]bool, len(t.Cast))
-	for _, p := range t.Cast {
-		name := strings.TrimSpace(p.Name)
-		if name == "" {
+func hasEmptyArtistFilter(r *http.Request) bool {
+	for _, param := range []string{"AlbumArtistIds", "ArtistIds", "ContributingArtistIds"} {
+		values := route.Query(r.URL.Query(), param)
+		if len(values) == 0 {
 			continue
+		}
+		anyNonEmpty := false
+		for _, value := range values {
+			for _, id := range strings.Split(value, ",") {
+				if strings.TrimSpace(id) != "" {
+					anyNonEmpty = true
+					break
+				}
+			}
+		}
+		if !anyNonEmpty {
+			return true
+		}
+	}
+	return false
+}
+
+// attachMusicArtistCredits populates Jellyfin's standard AlbumArtist, Artists,
+// AlbumArtists, and ArtistItems fields on MusicAlbum and Audio items. Jellyfin
+// Web calls .map() on ArtistItems and AlbumArtists unconditionally on album
+// track lists and track details, so both slices are always emitted (non-nil).
+func attachMusicArtistCredits(m map[string]any, t frontend.Title) {
+	parentIDs := map[string]string{}
+	for _, p := range t.MediaParents {
+		if p.Role == frontend.MediaRoleArtist && p.Key != 0 {
+			if name := strings.TrimSpace(p.Title); name != "" {
+				parentIDs[strings.ToLower(name)] = ids.RatingKeyGUID(p.Key)
+			}
+		}
+	}
+	names := []string{}
+	items := []map[string]any{}
+	seen := map[string]bool{}
+	addArtist := func(rawName, id string, tmdb int64) {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			return
 		}
 		low := strings.ToLower(name)
 		if seen[low] {
-			continue
+			return
 		}
 		seen[low] = true
-		id := p.ID
-		if id == "" && p.TMDB > 0 {
-			id = frontend.FacetID("person", strconv.FormatInt(p.TMDB, 10))
+		if id == "" {
+			if pid := parentIDs[low]; pid != "" {
+				id = pid
+			} else if tmdb > 0 {
+				id = frontend.FacetID("person", strconv.FormatInt(tmdb, 10))
+			} else {
+				id = frontend.FacetID("person", low)
+			}
 		}
 		names = append(names, name)
-		if id != "" {
-			items = append(items, map[string]any{"Name": name, "Id": id})
+		items = append(items, map[string]any{"Name": name, "Id": id})
+	}
+	for _, p := range t.Cast {
+		addArtist(p.Name, p.ID, p.TMDB)
+	}
+	for _, c := range t.MediaCredits {
+		switch strings.ToLower(strings.TrimSpace(c.Role)) {
+		case "", "artist", "albumartist", "album_artist", "performer":
+			addArtist(c.Name, c.PersonID, c.TMDB)
 		}
 	}
-	if len(names) == 0 {
-		return
+	for _, p := range t.MediaParents {
+		if p.Role == frontend.MediaRoleArtist {
+			id := ""
+			if p.Key != 0 {
+				id = ids.RatingKeyGUID(p.Key)
+			}
+			addArtist(p.Title, id, 0)
+		}
 	}
-	m["AlbumArtist"] = names[0]
+	if len(names) > 0 {
+		m["AlbumArtist"] = names[0]
+	}
 	m["Artists"] = names
-	if len(items) > 0 {
-		m["AlbumArtists"] = items
-		m["ArtistItems"] = items
-	}
+	m["AlbumArtists"] = items
+	m["ArtistItems"] = items
 }

@@ -102,7 +102,7 @@ func (s *Session) aheadLimit() int {
 	// the CPU until only two remain. Renicing a running child back from 5
 	// to 0 requires privileges on Unix; never strand playback at nice 5.
 	// Copies retain the owner's larger read-ahead and background priority.
-	if !s.liveInput && !s.decision.VideoCopy {
+	if !s.liveInput && s.decision.EncodesVideo(s.info) {
 		return 4
 	}
 	limit := int(s.m.opts.maxAhead / s.segDur)
@@ -172,7 +172,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		return errInputExhausted
 	}
 
-	s.encoder.decisionEncoding(!s.decision.VideoCopy)
+	s.encoder.decisionEncoding(s.decision.EncodesVideo(s.info))
 	// Keep a delivered rendition alive while a replacement starts at the exact
 	// requested segment. A second switch retires the preceding overlap first.
 	s.stopHandoffLocked()
@@ -344,7 +344,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	if s.container == ContainerMatroska {
 		spec.InitName = fmt.Sprintf("header-%d.mkv", s.runSeq)
 	}
-	if s.contract != nil && !rp.decision.VideoCopy {
+	if s.contract != nil && rp.decision.EncodesVideo(s.info) {
 		spec.Target = s.contract
 		spec.PictureCrop = s.inputCrop
 	}
@@ -375,7 +375,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	if s.chunkedLocked(spec.Decision) {
 		spec.ChunkDir = filepath.Join(spec.Dir, fmt.Sprintf("c-%d", s.runSeq))
 		spec.ChunkCut = chunkCutFor(s.segDur)
-		if !spec.Decision.VideoCopy {
+		if spec.Decision.EncodesVideo(s.info) {
 			// Force keyframes at the plan's boundaries (through the one
 			// the run stops at), in the run's output clock.
 			end := rp.planEnd
@@ -425,7 +425,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	if err := graphFailure(spec); err != nil {
 		return s.reportGraphLocked(err)
 	}
-	if !spec.Decision.VideoCopy && !s.hevcFallbackWarned {
+	if spec.Decision.EncodesVideo(s.info) && !s.hevcFallbackWarned {
 		// Caller holds s.mu (startRunLocked), guarding hevcFallbackWarned.
 		s.hevcFallbackWarned = warnVideoEncoderFallback(s.log, spec.Decision.VideoCodec, spec.Accel, spec.Features)
 	}
@@ -463,7 +463,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		r.stderr.add(l)
 		runLog.Debug("ffmpeg", "line", l)
 	}}
-	work, err := s.encoder.runWork(!s.decision.VideoCopy || rp.mode != ModeCopy || s.wantTrack != 0)
+	work, err := s.encoder.runWork(s.decision.EncodesVideo(s.info) || rp.mode != ModeCopy || s.wantTrack != 0)
 	if err != nil {
 		return err
 	}
@@ -534,7 +534,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		}
 	}
 	if err == nil && proc == nil {
-		proc, err = s.m.runner.Start(Command{Path: s.m.ffmpeg, Args: args, Dir: runDir, Stdout: stdout, Stderr: stderr, Background: !s.liveInput && spec.Decision.VideoCopy})
+		proc, err = s.m.runner.Start(Command{Path: s.m.ffmpeg, Args: args, Dir: runDir, Stdout: stdout, Stderr: stderr, Background: !s.liveInput && !spec.Decision.EncodesVideo(s.info)})
 	}
 	s.encoder.fenceProcess(proc, work[2])
 	err = redactScopedCommandError(err, spec)
@@ -586,8 +586,13 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	// new run publishes its own end.
 	s.endSeg = -1
 	s.deliveredCount = 0
-	runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "kind", s.decision.Kind,
-		"videoCopy", s.decision.VideoCopy, "audioCopy", s.decision.AudioCopy, "hw", r.hw)
+	if s.info.Video() != nil {
+		runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "kind", s.decision.Kind,
+			"videoCopy", s.decision.VideoCopy, "audioCopy", s.decision.AudioCopy, "hw", r.hw)
+	} else {
+		runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "kind", s.decision.Kind,
+			"audioCopy", s.decision.AudioCopy)
+	}
 	if s.traceOn() {
 		if cause == "" {
 			cause = "unspecified"

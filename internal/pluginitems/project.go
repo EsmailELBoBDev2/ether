@@ -599,7 +599,7 @@ func extractIndexAndDisplay(item core.KindItem) (int, string) {
 		rawDisplay = s
 		return true
 	}
-	for _, key := range []string{"indexDisplay", "seriesNumber", "series_number", "bookNumber", "book_number", "number"} {
+	for _, key := range []string{"indexDisplay", "seriesNumber", "series_number", "bookNumber", "book_number", "trackNumber", "track_number", "track", "number"} {
 		raw, ok := item.Fields[key]
 		if !ok || len(raw) == 0 {
 			continue

@@ -258,6 +258,27 @@ func rangeStartsAfterZero(rng string) bool {
 	return err == nil && n > 0
 }
 
+// rangeNeedsFullSpool reports whether a Range request requires the complete
+// spooled file before responding: a nonzero start offset (seek or suffix
+// range) or an explicit end byte (such as Safari/AVPlayer's bytes=0-1 probe).
+// Open-ended bytes=0- requests from browsers stream progressively as soon as
+// initial bytes are available instead of blocking on full track transcode.
+func rangeNeedsFullSpool(rng string) bool {
+	if rng == "" {
+		return false
+	}
+	if rangeStartsAfterZero(rng) {
+		return true
+	}
+	spec, ok := strings.CutPrefix(strings.TrimSpace(rng), "bytes=")
+	if !ok {
+		return false
+	}
+	first, _, _ := strings.Cut(spec, ",")
+	_, end, ok := strings.Cut(strings.TrimSpace(first), "-")
+	return ok && strings.TrimSpace(end) != ""
+}
+
 func (s *httpSession) httpContentType() string {
 	audioOnly := s.req.Info.Video() == nil
 	if !audioOnly {
@@ -446,9 +467,9 @@ func (s *httpSession) serveAudioSpool(w http.ResponseWriter, r *http.Request) bo
 	})
 	defer stopWake()
 
-	hasRange := r.Header.Get("Range") != ""
+	needFull := rangeNeedsFullSpool(r.Header.Get("Range")) || r.Method == http.MethodHead
 	sp.mu.Lock()
-	if hasRange || r.Method == http.MethodHead {
+	if needFull {
 		for !sp.done && r.Context().Err() == nil {
 			sp.cond.Wait()
 		}
@@ -612,7 +633,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Progressive encodes run at normal priority; the output pipe
 		// naturally backpressures them when the client has enough media.
-		cmd.Background = !s.req.LiveInput && s.req.Decision.VideoCopy
+		cmd.Background = !s.req.LiveInput && !s.req.Decision.EncodesVideo(s.req.Info)
 		proc, err := s.m.runner.Start(cmd)
 		if err != nil {
 			s.mu.Unlock()
@@ -735,6 +756,22 @@ func (s *httpSession) ProgressiveFailed() bool {
 }
 
 func (s *httpSession) Close() error {
+	if s.life != nil {
+		if err := s.RetireEncoder(); err != nil {
+			return err
+		}
+		// Match Session.Close: wait for the encoder lifetime to drain work and
+		// release its input lease before returning, even if detachOwnedHTTP
+		// already marked s.closed after RetireEncoder sealed s.life.
+		timer := time.NewTimer(s.m.encoderWait())
+		defer timer.Stop()
+		select {
+		case <-s.life.done:
+			return s.life.legacyResult()
+		case <-timer.C:
+			return core.ErrEncoderPending
+		}
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -758,13 +795,12 @@ func (s *httpSession) Close() error {
 		proc.Stop()
 		<-proc.Done()
 	}
-	s.m.mu.Lock()
-	if s.m.httpSessions[s.id] == s {
-		delete(s.m.httpSessions, s.id)
-	}
-	s.m.mu.Unlock()
-	if s.life != nil {
-		s.life.seal()
+	if s.m != nil {
+		s.m.mu.Lock()
+		if s.m.httpSessions[s.id] == s {
+			delete(s.m.httpSessions, s.id)
+		}
+		s.m.mu.Unlock()
 	}
 	return nil
 }

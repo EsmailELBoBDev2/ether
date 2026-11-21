@@ -337,7 +337,7 @@ func BaseSessionContext(ps *core.PlaySession, title *core.Title, user *core.User
 			continue
 		}
 		ctx.Server.ActiveStreams++
-		isTranscode := other.Decision == core.DecisionTranscode && !other.DecisionVideoCopy
+		isTranscode := other.Decision == core.DecisionTranscode && other.Info.Video() != nil && !other.DecisionVideoCopy
 		if isTranscode {
 			ctx.Server.ActiveTranscodes++
 		} else if other.Decision == core.DecisionDirectPlay {

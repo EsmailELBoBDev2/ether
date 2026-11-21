@@ -2613,10 +2613,39 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 				cmp = 1
 			}
 		case core.SortIndex:
-			if a.ItemIndex < b.ItemIndex {
-				cmp = -1
-			} else if a.ItemIndex > b.ItemIndex {
-				cmp = 1
+			if a.ParentKey != b.ParentKey && (a.ParentTitle != "" || b.ParentTitle != "") {
+				cmp = strings.Compare(strings.ToLower(a.ParentTitle), strings.ToLower(b.ParentTitle))
+			}
+			if cmp == 0 && a.ParentKey != b.ParentKey {
+				if a.ParentKey < b.ParentKey {
+					cmp = -1
+				} else {
+					cmp = 1
+				}
+			}
+			if cmp == 0 {
+				da, db := a.Disc, b.Disc
+				if da <= 0 {
+					da = 1
+				}
+				if db <= 0 {
+					db = 1
+				}
+				if da < db {
+					cmp = -1
+				} else if da > db {
+					cmp = 1
+				}
+			}
+			if cmp == 0 {
+				if a.ItemIndex < b.ItemIndex {
+					cmp = -1
+				} else if a.ItemIndex > b.ItemIndex {
+					cmp = 1
+				}
+			}
+			if cmp == 0 {
+				cmp = strings.Compare(core.EffectiveSortTitle(a.Title, a.SortTitle), core.EffectiveSortTitle(b.Title, b.SortTitle))
 			}
 		}
 		if cmp == 0 {

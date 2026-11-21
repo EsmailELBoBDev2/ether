@@ -482,8 +482,9 @@ func (s *session) markDirectPlay() bool {
 	s.mu.Lock()
 	first := false
 	if !s.explicit {
+		hasVideo := s.cur == nil || len(s.cur.info.Streams) == 0 || s.cur.info.Video() != nil
 		s.decision = core.DecisionDirectPlay
-		s.decisionVideoCopy, s.decisionAudioCopy = true, true
+		s.decisionVideoCopy, s.decisionAudioCopy = hasVideo, true
 		if !s.timelineDecided {
 			s.timelineDecided = true
 			s.timelineDecision = core.DecisionDirectPlay

@@ -266,7 +266,11 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		if audioOnly && plan.HTTP {
 			format = frontend.StreamHTTP
 			transport = "file"
-			mime = audioSourceMIME(plan.Decision.Container, plan.Decision.AudioCodec)
+			container := plan.HTTPContainer
+			if container == "" {
+				container = plan.Decision.Container
+			}
+			mime = audioSourceMIME(container, plan.Decision.AudioCodec)
 		} else if (b.Client.HLS || b.Client.MSE) && plan.HLS {
 			format = frontend.StreamHLS
 			transport = "hls"
@@ -309,9 +313,13 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			path["byteLength"] = plan.Media.Size
 		}
 	} else if audioOnly && transport == "file" {
-		path["range"] = true
-		if format == frontend.StreamDirect && plan.Media.Size > 0 {
-			path["byteLength"] = plan.Media.Size
+		if format == frontend.StreamDirect {
+			path["range"] = true
+			if plan.Media.Size > 0 {
+				path["byteLength"] = plan.Media.Size
+			}
+		} else if pos == 0 && plan.Media.Duration > 0 && plan.Media.Duration <= 30*time.Minute {
+			path["range"] = true
 		}
 	}
 	path["decisionReason"] = plan.Decision.Reason

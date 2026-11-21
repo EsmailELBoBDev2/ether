@@ -16,7 +16,9 @@ func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[str
 	}
 	// Recorded Jellyfin detail responses include these keys for video items
 	// even when the library has no chapter list or trickplay tiles.
-	dto["Trickplay"] = map[string]any{}
+	if !mbDeclaredNonVideo(detail.Title) {
+		dto["Trickplay"] = map[string]any{}
+	}
 	if _, ok := dto["Chapters"]; !ok {
 		if sources, ok := dto["MediaSources"].([]any); ok {
 			for _, entry := range sources {

@@ -1930,21 +1930,26 @@ func (m *Manager) SetDecision(id string, d core.Decision) {
 	if s := m.lookup(id); s != nil {
 		s.mu.Lock()
 		changed := s.decision != d.Kind || s.decisionReason != d.Reason
+		hasVideo := s.cur == nil || len(s.cur.info.Streams) == 0 || s.cur.info.Video() != nil
 		s.decision, s.explicit = d.Kind, true
 		s.deliveryDecision = &d
 		s.decisionReason = d.Reason
-		s.decisionVideoCopy, s.decisionAudioCopy = d.VideoCopy, d.AudioCopy
+		s.decisionVideoCopy, s.decisionAudioCopy = hasVideo && d.VideoCopy, d.AudioCopy
 		if d.Kind == core.DecisionDirectPlay {
-			// Direct play copies both streams by definition; callers may
+			// Direct play copies existing streams by definition; callers may
 			// pass a zero-value Decision beyond the kind.
-			s.decisionVideoCopy, s.decisionAudioCopy = true, true
+			s.decisionVideoCopy, s.decisionAudioCopy = hasVideo, true
 		}
 		if d.Kind == core.DecisionRemux || d.Kind == core.DecisionTranscode {
 			s.requiresRemux = false
 		}
 		s.mu.Unlock()
 		if changed {
-			m.log.Info("playback delivery decision", "session", s.id, "decision", d.Kind, "videoCopy", d.VideoCopy, "audioCopy", d.AudioCopy, "reason", d.Reason)
+			if hasVideo {
+				m.log.Info("playback delivery decision", "session", s.id, "decision", d.Kind, "videoCopy", d.VideoCopy, "audioCopy", d.AudioCopy, "reason", d.Reason)
+			} else {
+				m.log.Info("playback delivery decision", "session", s.id, "decision", d.Kind, "audioCopy", d.AudioCopy, "reason", d.Reason)
+			}
 		}
 		m.noteDecisionTimeline(s, d)
 		m.emitEvent("update", s, nil)

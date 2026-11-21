@@ -773,6 +773,15 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		if t.ItemIndex > 0 {
 			m["IndexNumber"] = t.ItemIndex
 		}
+		if t.MBItemType == "Audio" {
+			disc := t.Disc
+			if disc <= 0 && t.ItemIndex > 0 {
+				disc = 1
+			}
+			if disc > 0 {
+				m["ParentIndexNumber"] = disc
+			}
+		}
 		return
 	}
 	show := t.ShowKey

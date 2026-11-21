@@ -107,9 +107,12 @@ func (p appFlowPlayback) ListSessions(ctx context.Context) ([]actions.ActiveSess
 		if bitrateKbps == 0 {
 			bitrateKbps = s.Client.MaxBitrateKbps
 		}
-		isTranscode := delivery == "transcode" || (!s.DecisionVideoCopy && delivery != "" && delivery != "direct" && delivery != "direct_play" && delivery != "directplay" && delivery != "remux" && delivery != "copy")
+		hasVideo := s.Info.Video() != nil
+		isTranscode := delivery == "transcode" || (hasVideo && !s.DecisionVideoCopy && delivery != "" && delivery != "direct" && delivery != "direct_play" && delivery != "directplay" && delivery != "remux" && delivery != "copy")
 		videoDecision := "direct_play"
-		if isTranscode {
+		if !hasVideo {
+			videoDecision = "none"
+		} else if isTranscode {
 			videoDecision = "transcode"
 		} else if s.DecisionVideoCopy {
 			videoDecision = "copy"

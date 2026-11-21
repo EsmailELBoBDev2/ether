@@ -25,6 +25,26 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	if !in.Title.Released.IsZero() && in.Title.Released.After(b.deps.Now()) {
 		return frontend.PlayPlan{}, core.ErrUnreleased
 	}
+	if req.Intent.Estimate && (req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil) {
+		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
+	}
+	if req.Intent.Estimate {
+		// Detail/browse estimate for a plugin item must never invoke plugin
+		// /resolve or ffprobe on the read path.
+		info := b.deps.Playback.Estimate(ctx, in.Title, req.Caps)
+		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: info.Video() != nil, AudioCopy: true, Container: info.Container}
+		if b.deps.Transcoder != nil {
+			dec = b.deps.Transcoder.Decide(info, req.Caps, req.Intent.Options)
+		}
+		return frontend.PlayPlan{
+			Estimated:    true,
+			Media:        publicMedia(info),
+			Decision:     dec,
+			DirectPlay:   req.Intent.Options.DirectPlay && dec.Kind == core.DecisionDirectPlay,
+			DirectStream: req.Intent.Options.DirectStream && (dec.Kind == core.DecisionDirectPlay || dec.Kind == core.DecisionRemux),
+			Transcoding:  b.deps.Transcoder != nil,
+		}, nil
+	}
 
 	versionHandle := ""
 	var chosen *core.ReleaseVariant

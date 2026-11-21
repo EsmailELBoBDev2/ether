@@ -382,7 +382,7 @@ func (s *Session) EncoderStatus() *core.EncoderStatus {
 	}
 	processor, filters := "none", "none"
 	var hwDecoder, hwEncoder string
-	if !r.spec.Decision.VideoCopy {
+	if r.spec.Decision.EncodesVideo(r.spec.Info) {
 		processor, filters = "cpu", "cpu"
 		if r.hw {
 			processor = "gpu"

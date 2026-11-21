@@ -35,7 +35,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
-	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
+	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: ps.Info.Video() != nil, AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
 	if transcoder != nil {
 		dec = transcoder.Decide(ps.Info, r.Caps, r.Options)
 	} else {
@@ -82,7 +82,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	original := dec
 	if (preferRemux || requiresRemux) && r.Options.DirectStream && onDemand && dec.Kind == core.DecisionDirectPlay && transcoder != nil {
 		dec.Kind = core.DecisionRemux
-		dec.VideoCopy, dec.AudioCopy = true, true
+		dec.VideoCopy, dec.AudioCopy = ps.Info.Video() != nil, true
 		videoCodec, audioCodec := "", ""
 		if v := ps.Info.Video(); v != nil {
 			videoCodec = v.Codec
@@ -118,8 +118,8 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	// video transcoding is off, an optional PreferRemux must never push a
 	// direct-playable file into a video encode.
 	if original.Kind == core.DecisionDirectPlay && !requiresRemux &&
-		((healthSafety && !r.PreferRemux && (!dec.VideoCopy || !dec.AudioCopy)) ||
-			(r.NoVideoTranscode && !dec.VideoCopy)) {
+		((healthSafety && !r.PreferRemux && (dec.EncodesVideo(ps.Info) || !dec.AudioCopy)) ||
+			(r.NoVideoTranscode && dec.EncodesVideo(ps.Info))) {
 		dec = original
 	}
 	// The optional health-safety remux above is assembled from per-codec
@@ -131,7 +131,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		opts := r.Options
 		opts.DirectPlay = false
 		segmented := transcoder.Decide(ps.Info, r.Caps, opts)
-		if !segmented.VideoCopy || !segmented.AudioCopy || (segmented.StripDolbyVision && !original.StripDolbyVision) {
+		if segmented.EncodesVideo(ps.Info) || !segmented.AudioCopy || (segmented.StripDolbyVision && !original.StripDolbyVision) {
 			dec = original
 		}
 	}

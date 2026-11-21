@@ -96,7 +96,7 @@ func dashDecision(info core.MediaInfo, d core.Decision) core.Decision {
 			d.AudioCodec = "aac"
 		}
 	}
-	if !d.VideoCopy {
+	if d.EncodesVideo(info) {
 		d.Kind = core.DecisionTranscode
 	}
 	return d

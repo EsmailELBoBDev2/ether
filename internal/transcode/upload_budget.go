@@ -135,7 +135,7 @@ func (s *Session) supportsBudgetSteppingLocked() bool {
 	case ContainerMPEGTS:
 		// MPEG-TS carries SPS/PPS inline so stepping between rungs or clamping
 		// bitrate mid-stream is decoder-safe.
-		return len(s.rungs) > 1 || !s.rungs[0].decision.VideoCopy
+		return len(s.rungs) > 1 || s.rungs[0].decision.EncodesVideo(s.info)
 	case ContainerFMP4:
 		// For fMP4, init.mp4 fixes the codec/resolution; only already-encoded
 		// tracks can smoothly vary their bitrate without invalidating init.mp4.
@@ -143,7 +143,7 @@ func (s *Session) supportsBudgetSteppingLocked() bool {
 		if activeTrack < 0 || activeTrack >= len(s.rungs) {
 			activeTrack = 0
 		}
-		return !s.rungs[activeTrack].decision.VideoCopy
+		return s.rungs[activeTrack].decision.EncodesVideo(s.info)
 	default:
 		return false
 	}
@@ -228,7 +228,7 @@ func (s *Session) applyBudgetDecisionLocked(t int, d core.Decision) core.Decisio
 	if s.container == ContainerMPEGTS && s.budgetRung > t && s.budgetRung < len(s.rungs) {
 		d = s.rungs[s.budgetRung].decision
 	}
-	if !d.VideoCopy && (d.BitrateKbps == 0 || s.budgetCapKbps < d.BitrateKbps) {
+	if d.EncodesVideo(s.info) && (d.BitrateKbps == 0 || s.budgetCapKbps < d.BitrateKbps) {
 		capVal := s.budgetCapKbps
 		if capVal < 300 {
 			capVal = 300

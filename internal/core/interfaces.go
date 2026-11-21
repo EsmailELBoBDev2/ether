@@ -1067,6 +1067,13 @@ type Decision struct {
 	StripDolbyVision bool `json:"stripDolbyVision,omitempty"`
 }
 
+// EncodesVideo reports whether this decision re-encodes a video stream.
+// Audio-only items (info.Video() == nil) carry VideoCopy=false because there
+// is no video stream to copy, and they never count as video transcodes.
+func (d Decision) EncodesVideo(info MediaInfo) bool {
+	return info.Video() != nil && !d.VideoCopy
+}
+
 type HWAccel struct {
 	Name     string   `json:"name"` // "videotoolbox", "nvenc", "qsv", "vaapi", "none"
 	Encoders []string `json:"encoders"`

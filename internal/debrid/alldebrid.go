@@ -110,6 +110,8 @@ func adError(status int, code, msg string) error {
 		return fmt.Errorf("alldebrid: %s: %w", msg, ErrDownloadLimit)
 	case strings.Contains(code, "TOO_MANY") || strings.Contains(code, "RATE"):
 		return fmt.Errorf("alldebrid: %s: %w", msg, ErrRateLimited)
+	case code == "MAGNET_TOO_LARGE" || code == "MAGNET_MAGNET_TOO_BIG":
+		return fmt.Errorf("alldebrid: %s: %w", msg, ErrTooLarge)
 	case code == "MAGNET_INVALID_URI" || code == "MAGNET_NO_URI" || code == "MAGNET_PROCESSING_FAILED":
 		return fmt.Errorf("alldebrid: %s: %w", msg, core.ErrNotCached)
 	}
@@ -268,6 +270,9 @@ func (p *allDebrid) Acquire(ctx context.Context, req AcquireRequest) (*Acquired,
 		if st.StatusCode > adStatusReady { // 5+ are errors
 			logProviderResponse(ctx, p.key, http.StatusOK, strconv.Itoa(st.StatusCode), "magnet failed")
 			cleanup()
+			if st.StatusCode == 8 { // AllDebrid status 8: file too big
+				return nil, fmt.Errorf("alldebrid: magnet too big (status %d): %w", st.StatusCode, ErrTooLarge)
+			}
 			return nil, fmt.Errorf("alldebrid: magnet failed (status %d): %w", st.StatusCode, core.ErrNotCached)
 		}
 		if err := sleep(ctx, p.opts.PollInterval); err != nil {

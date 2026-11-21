@@ -42,7 +42,7 @@ func (p *torBox) findFresh(ctx context.Context, hash string) (string, error) {
 	if id, err := p.list.reuse(ctx, p.opts.Now(), hash); id != "" || err != nil {
 		return id, err
 	}
-	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}}})
+	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}, "files": {"false"}}})
 	if err != nil {
 		return "", err
 	}

@@ -237,6 +237,10 @@ describe("calendar page", () => {
     expect(within(row).queryByText("ro/12")).toBeNull();
 
     fireEvent.click(screen.getByRole("radio", { name: "Week" }));
+    // On the last day of a week, tomorrow is already in next week.
+    if (startOfWeek(tomorrow) !== startOfWeek(today)) {
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    }
     const weekSection = await screen.findByRole(
       "region",
       { name: `${formatDay.long(tomorrow)}, 1 release` },

@@ -104,7 +104,7 @@ func TestHubSearchPeopleHubsAndReasonedTitles(t *testing.T) {
 	}
 	actorDirs := actorHub["Directory"].([]any)
 	actorDir := actorDirs[0].(map[string]any)
-	if actorDir["tag"] != "Theo Varga" || int(actorDir["id"].(float64)) != 287 || int(actorDir["tagType"].(float64)) != 6 || actorDir["tagKey"] != "tmdb-person-287" {
+	if actorDir["tag"] != "Theo Varga" || int(actorDir["id"].(float64)) != 287 || int(actorDir["tagType"].(float64)) != 6 || actorDir["tagKey"] != nil {
 		t.Fatalf("unexpected actor Directory: %#v", actorDir)
 	}
 	if actorDir["key"] != "/library/sections/1/all?actor=287" || actorDir["filter"] != "actor=287" || actorDir["reason"] != "section" || actorDir["reasonTitle"] != "Movies" || int(actorDir["count"].(float64)) != 1 {

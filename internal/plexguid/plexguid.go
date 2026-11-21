@@ -57,11 +57,13 @@ const (
 	recheckInterval   = 24 * time.Hour
 	bgWorkers         = 2
 	bgQueueSize       = 256
-	bgLookupTimeout   = 3 * time.Second
+	bgLookupTimeout   = 10 * time.Second
 	childrenPageSize  = 50
 	maxChildrenItems  = 2500
 	priorityQueueSize = 256
 )
+
+var repairTickInterval = time.Second
 
 type Options struct {
 	HTTP *http.Client
@@ -232,14 +234,39 @@ func (s *Service) worker() {
 	}
 }
 
-// repairMappings re-verifies only identities encountered by consumers.
+// repairMappings re-verifies identities encountered by consumers first, and
+// runs a bounded, paced keyset pass over pre-rule-2 mappings (and children
+// lacking parentage) left behind by upgrades. Once a full pass finds no rows
+// needing repair it stops scanning and sleeps on priority requests alone.
 func (s *Service) repairMappings() {
 	defer s.wg.Done()
-	// Sleep while unused, and pace repairs to avoid competing with playback.
-	for {
+	interval := repairTickInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	queries := [3]string{
+		`SELECT m.rating_key FROM plexguid_mappings m WHERE m.rating_key>? AND m.guid<>'' AND NOT EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=m.rating_key AND i.guid=m.guid) ORDER BY m.rating_key LIMIT 1`,
+		`SELECT m.rating_key FROM plexguid_mappings m WHERE m.rating_key>? AND m.rating_key>=3000000000000000 AND m.rating_key<5000000000000000 AND m.guid<>'' AND NOT EXISTS (SELECT 1 FROM plexguid_parentage p WHERE p.rating_key=m.rating_key) ORDER BY m.rating_key LIMIT 1`,
+		`SELECT m.rating_key FROM plexguid_mappings m JOIN plexguid_identity i ON i.rating_key=m.rating_key AND i.guid=m.guid WHERE m.rating_key>? AND i.credits_rule<>2 AND m.guid<>'' ORDER BY m.rating_key LIMIT 1`,
+	}
+	var after [3]int64
+	var foundInPass [3]bool
+	var done [3]bool
+	var turn int
+	sleep := func(d time.Duration) bool {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
 		select {
 		case <-s.ctx.Done():
-			return
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+	drainPriority := func() (handled, ok bool) {
+		select {
+		case <-s.ctx.Done():
+			return false, false
 		case k := <-s.priority:
 			s.mu.Lock()
 			delete(s.prioQueued, k)
@@ -247,13 +274,109 @@ func (s *Service) repairMappings() {
 			if s.o.Token != nil && s.o.Token() != "" {
 				s.queueRepair(k)
 			}
+			return true, true
+		default:
+			return false, true
 		}
-		timer := time.NewTimer(time.Second)
-		select {
-		case <-s.ctx.Done():
-			timer.Stop()
+	}
+	allDone := func() bool { return done[0] && done[1] && done[2] }
+	nextQueue := func(from int) (int, int64, bool) {
+		for i := 0; i < len(queries); i++ {
+			q := (from + i) % len(queries)
+			if done[q] {
+				continue
+			}
+			var key int64
+			err := s.db.QueryRowContext(s.ctx, queries[q], after[q]).Scan(&key)
+			if err == nil {
+				foundInPass[q] = true
+				return q, key, true
+			}
+			if err == sql.ErrNoRows {
+				if !foundInPass[q] {
+					done[q] = true
+				} else {
+					after[q] = 0
+					foundInPass[q] = false
+				}
+				continue
+			}
+			// A query error is not a reason to advance or finish the cursor.
+			return -1, 0, false
+		}
+		return -1, 0, false
+	}
+	for {
+		if allDone() {
+			// Every stored row is at the current rule; sleep until a consumer
+			// enqueues a priority key or the service closes.
+			select {
+			case <-s.ctx.Done():
+				return
+			case k := <-s.priority:
+				s.mu.Lock()
+				delete(s.prioQueued, k)
+				s.mu.Unlock()
+				if s.o.Token != nil && s.o.Token() != "" {
+					s.queueRepair(k)
+				}
+			}
+			if !sleep(interval) {
+				return
+			}
+			continue
+		}
+		if handled, ok := drainPriority(); !ok {
 			return
-		case <-timer.C:
+		} else if handled {
+			if !sleep(interval) {
+				return
+			}
+			continue
+		}
+		if s.o.Token == nil || s.o.Token() == "" {
+			timer := time.NewTimer(min(10*time.Second, interval*10))
+			select {
+			case <-s.ctx.Done():
+				timer.Stop()
+				return
+			case k := <-s.priority:
+				timer.Stop()
+				s.mu.Lock()
+				delete(s.prioQueued, k)
+				s.mu.Unlock()
+			case <-timer.C:
+			}
+			continue
+		}
+		queue, key, ok := nextQueue(turn)
+		if !ok {
+			if allDone() {
+				continue
+			}
+			if !sleep(min(time.Minute, interval*60)) {
+				return
+			}
+			continue
+		}
+		turn = (queue + 1) % len(queries)
+		k := core.RatingKey(key)
+		if !resolvableKey(k) {
+			after[queue] = key
+			continue
+		}
+		if s.queueRepair(k) {
+			after[queue] = key
+		} else {
+			s.mu.Lock()
+			alreadyPending := s.pending[k]
+			s.mu.Unlock()
+			if alreadyPending {
+				after[queue] = key
+			}
+		}
+		if !sleep(interval) {
+			return
 		}
 	}
 }
@@ -298,6 +421,9 @@ const identityExists = `EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating
 
 // staleCreditsRule marks proofs predating mandatory year verification (rule 2).
 const staleCreditsRule = `EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=m.rating_key AND i.guid=m.guid AND i.credits_rule<>2)`
+
+// identityCurrent is true when the mapping row carries a current rule-2 proof.
+const identityCurrent = `EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=m.rating_key AND i.guid=m.guid AND i.credits_rule=2)`
 
 // unprovenMapping reports whether k currently has a stored guid not proved
 // under the current rule: a legacy row (no identity record) or one whose

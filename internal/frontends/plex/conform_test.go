@@ -56,9 +56,11 @@ var burbsInfo = core.MediaInfo{
 
 // pmsOnlyRE are paths of data PMS has and Ether doesn't: Common Sense
 // Media, critic ratings, extras, locked fields, labels, producers and
-// similar-title tags, deep analysis, preview thumbnails and probe details
-// that the virtual media can't know before a release is opened.
-var pmsOnlyRE = regexp.MustCompile(`(@|/)(chapterSource|contentRatingAge|primaryExtraKey|rating|ratingImage|CommonSenseMedia|Field|Label|Producer|Similar|deepAnalysisVersion|indexes|requiredBandwidths|bitrateMode|chromaLocation|codedHeight|codedWidth|colorPrimaries|colorRange|colorSpace|level|refFrames|titleSort)$`)
+// similar-title tags, Plex Discover person tagKeys (Ether never fabricates
+// tmdb-person- tagKeys because Discover Credits rejects them — #653), deep
+// analysis, preview thumbnails and probe details that the virtual media can't
+// know before a release is opened.
+var pmsOnlyRE = regexp.MustCompile(`(@|/)(chapterSource|contentRatingAge|primaryExtraKey|rating|ratingImage|CommonSenseMedia|Field|Label|Producer|Similar|tagKey|deepAnalysisVersion|indexes|requiredBandwidths|bitrateMode|chromaLocation|codedHeight|codedWidth|colorPrimaries|colorRange|colorSpace|level|refFrames|titleSort)$`)
 
 // etherOnlyRE are paths Ether legitimately adds: TMDB has writer photos,
 // and Ether lists the TMDB audience rating on episodes too (PMS does when

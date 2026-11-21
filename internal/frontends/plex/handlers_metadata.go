@@ -559,8 +559,64 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 
 	// Per-viewer decision header (#31); detail pages only, never lists.
 	s.decorateDetail(ctx, pr, t, &md)
+	start := time.Now()
 	s.projectDetailBlocks(ctx, pr, t, &md, memo, children, onDeck, related, extras, extraTypes)
+	if extras {
+		s.refreshDetailGUID(ctx, t, &md, start)
+	}
 	return md
+}
+
+const detailFirstOpenWait = 900 * time.Millisecond
+
+type boundedGUIDResolver interface {
+	ResolveBounded(context.Context, frontend.RatingKey, time.Duration) string
+}
+
+// refreshDetailGUID updates a detail response's primary guid (and hierarchy
+// guids) when a verified plex:// identity became available during the request
+// (for example via Plex Discover extras) or within the remaining first-open
+// budget. Only called for detail page opens (includeExtras=1), never for bare
+// metadata/Play requests or batches.
+func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *model.Metadata, start time.Time) {
+	guidSrc := s.libraryGUIDs()
+	if guidSrc == nil || t == nil || md == nil {
+		return
+	}
+	if !strings.HasPrefix(md.GUID, "plex://") && !(t.Type == frontend.TypeSeason && t.Season >= 9000) {
+		if g := guidSrc.Cached(ctx, t.Key); g != "" {
+			md.GUID = g
+		} else if frontend.ColdDetail(ctx, t.Key) && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
+			if resolver, ok := guidSrc.(boundedGUIDResolver); ok {
+				if rem := detailFirstOpenWait - time.Since(start); rem > 0 {
+					if g := resolver.ResolveBounded(ctx, t.Key, rem); g != "" {
+						md.GUID = g
+					}
+				}
+			}
+		}
+	}
+	switch t.Type {
+	case frontend.TypeSeason:
+		if t.Season < 9000 && !strings.HasPrefix(md.ParentGUID, "plex://") && t.Key.TMDB() > 0 {
+			if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+				md.ParentGUID = sg
+			}
+		}
+	case frontend.TypeEpisode:
+		if t.Key.TMDB() > 0 {
+			if !strings.HasPrefix(md.GrandparentGUID, "plex://") {
+				if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+					md.GrandparentGUID = sg
+				}
+			}
+			if !strings.HasPrefix(md.ParentGUID, "plex://") && !strings.HasPrefix(md.ParentGUID, "local://episode-order/") {
+				if seag := guidSrc.Cached(ctx, frontend.SeasonKey(t.Key.TMDB(), t.Season)); seag != "" {
+					md.ParentGUID = seag
+				}
+			}
+		}
+	}
 }
 
 func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *frontend.Title, md *model.Metadata, memo showEpisodes, children, onDeck, related, extras bool, extraTypes string) {

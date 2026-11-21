@@ -154,6 +154,17 @@ func TestLocalTrailersAndFeaturesFollowAuthorizedExtras(t *testing.T) {
 	if len(remote) != 1 || remote[0].(map[string]string)["Url"] != "https://www.youtube.com/watch?v=clip" {
 		t.Fatalf("remote trailers %#v", dto["RemoteTrailers"])
 	}
+	jfDTO := map[string]any{}
+	(&instance{protocol: "jellyfin"}).jellyfinItemDetailDTO(frontend.ItemDetail{
+		Title: frontend.Title{Key: movie, Type: core.TypeMovie},
+		Extras: []frontend.Extra{
+			{Key: core.ExtraKey(4), ParentKey: movie, Kind: "trailer", Title: "Discover Trailer"},
+			{Key: core.ExtraKey(5), ParentKey: movie, Kind: "featurette", Title: "Featurette"},
+		},
+	}, jfDTO)
+	if jfDTO["LocalTrailerCount"] != 1 || jfDTO["SpecialFeatureCount"] != 1 {
+		t.Fatalf("jellyfin extra counts = trailer:%v feature:%v", jfDTO["LocalTrailerCount"], jfDTO["SpecialFeatureCount"])
+	}
 }
 
 func TestExtraStreamRefusesPrivateTargetsAndHiddenParents(t *testing.T) {

@@ -182,7 +182,7 @@ func (i *instance) authorizedItem(w http.ResponseWriter, r *http.Request) (front
 		}
 		key = target.Item
 	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithColdDetail(i.identityContext(r), key), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
 	if err != nil {
 		http.NotFound(w, r)
 		return frontend.ItemDetail{}, false

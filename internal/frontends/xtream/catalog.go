@@ -338,7 +338,8 @@ func (i *instance) info(w http.ResponseWriter, r *http.Request, l login, kind st
 		http.NotFound(w, r)
 		return
 	}
-	detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: l.viewer, Device: l.device, Key: frontend.RatingKey(id)})
+	key := frontend.RatingKey(id)
+	detail, err := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), key), frontend.ItemRequest{Viewer: l.viewer, Device: l.device, Key: key})
 	if err != nil || string(detail.Title.Type) != kind {
 		http.NotFound(w, r)
 		return

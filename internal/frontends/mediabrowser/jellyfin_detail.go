@@ -11,6 +11,19 @@ func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[str
 			dto["PlayAccess"] = "None"
 		}
 	}
+	trailers, features := 0, 0
+	for _, extra := range detail.Extras {
+		if extra.Key == 0 {
+			continue
+		}
+		if isTrailerExtra(extra) {
+			trailers++
+		} else {
+			features++
+		}
+	}
+	dto["LocalTrailerCount"] = trailers
+	dto["SpecialFeatureCount"] = features
 	if detail.Title.Type != "movie" && detail.Title.Type != "episode" {
 		return
 	}

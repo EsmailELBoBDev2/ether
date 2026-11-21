@@ -188,6 +188,11 @@ func WithColdDetail(ctx context.Context, key RatingKey) context.Context {
 	return core.WithColdDetail(ctx, key)
 }
 
+// ColdDetail reports whether key is the exact page allowed a cold fill.
+func ColdDetail(ctx context.Context, key RatingKey) bool {
+	return core.ColdDetail(ctx, key)
+}
+
 // DetailPending is the exact-page enrichment snapshot.
 type DetailPending = core.DetailPending
 

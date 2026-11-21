@@ -9,6 +9,7 @@ package extras
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -85,19 +86,22 @@ type CommandRunner func(ctx context.Context, name string, args []string) ([]byte
 
 // Options are the extras service dependencies.
 type Options struct {
-	ThemeFFmpeg func() string
-	CacheDir    string
-	CacheHTTP   *http.Client // optional injected transport for trailer downloads
-	Videos      VideoProvider
-	Discover    DiscoverProvider
-	Config      func() config.Extras
-	Logger      *slog.Logger
-	Now         func() time.Time
-	CacheTTL    time.Duration // list cache; default 1h
-	Runner      CommandRunner
-	LookPath    func(string) (string, error)
-	ToolsDir    string
-	Downloader  *Downloader
+	DB            *sql.DB // optional durable list/item metadata cache
+	ThemeFFmpeg   func() string
+	CacheDir      string
+	CacheHTTP     *http.Client // optional injected transport for trailer downloads
+	Videos        VideoProvider
+	Discover      DiscoverProvider
+	Config        func() config.Extras
+	Logger        *slog.Logger
+	Now           func() time.Time
+	CacheTTL      time.Duration // list cache; default 7d
+	EmptyCacheTTL time.Duration // verified-empty list cache; default 24h (capped at CacheTTL)
+	ColdWait      time.Duration // bounded wait on single-item ColdDetail miss; default 900ms (<0 disables)
+	Runner        CommandRunner
+	LookPath      func(string) (string, error)
+	ToolsDir      string
+	Downloader    *Downloader
 }
 
 type listEntry struct {
@@ -105,8 +109,14 @@ type listEntry struct {
 	expires time.Time
 }
 
+type listFlight struct {
+	done   chan struct{}
+	extras []Extra
+}
+
 // Service lists, registers and resolves extras. Safe for concurrent use.
 type Service struct {
+	db               *sql.DB
 	themeCtx         context.Context
 	themeCancel      context.CancelFunc
 	themeFFmpeg      func() string
@@ -126,13 +136,15 @@ type Service struct {
 	log              *slog.Logger
 	now              func() time.Time
 	ttl              time.Duration
+	emptyTTL         time.Duration
+	coldWait         time.Duration
 	runner           CommandRunner
 	look             func(string) (string, error)
 	downloader       *Downloader
 
 	listWG      sync.WaitGroup
 	listClosed  bool
-	listPending map[string]bool
+	listFlights map[string]*listFlight
 	mu          sync.Mutex
 	registry    map[core.RatingKey]Extra
 	lists       map[string]listEntry
@@ -140,6 +152,13 @@ type Service struct {
 }
 
 const (
+	defaultListTTL      = 7 * 24 * time.Hour
+	defaultEmptyListTTL = 24 * time.Hour
+	defaultColdWait     = 900 * time.Millisecond
+	listFetchTimeout    = 5 * time.Second
+	maxBgListFlights    = 2
+	maxColdListFlights  = 8
+
 	maxListEntries     = 2048
 	maxRegistryEntries = 8192
 	maxResolvedEntries = 2048
@@ -157,7 +176,17 @@ func New(o Options) *Service {
 		o.Now = time.Now
 	}
 	if o.CacheTTL <= 0 {
-		o.CacheTTL = time.Hour
+		o.CacheTTL = defaultListTTL
+	}
+	emptyTTL := o.EmptyCacheTTL
+	if emptyTTL <= 0 {
+		emptyTTL = min(defaultEmptyListTTL, o.CacheTTL)
+	}
+	coldWait := o.ColdWait
+	if coldWait == 0 {
+		coldWait = defaultColdWait
+	} else if coldWait < 0 {
+		coldWait = 0
 	}
 	downloadTrailers := o.Runner == nil
 	if o.Runner == nil {
@@ -177,11 +206,12 @@ func New(o Options) *Service {
 	}
 	themeCtx, themeCancel := context.WithCancel(context.Background())
 	return &Service{
-		themeCtx: themeCtx, themeCancel: themeCancel, downloadTrailers: downloadTrailers,
+		db: o.DB, themeCtx: themeCtx, themeCancel: themeCancel, downloadTrailers: downloadTrailers,
 		themeFFmpeg: o.ThemeFFmpeg, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
 		videos: o.Videos, discover: o.Discover, cfgFn: o.Config,
 		log: o.Logger.With("component", "extras"), now: o.Now,
-		ttl: o.CacheTTL, runner: o.Runner, look: o.LookPath,
+		ttl: o.CacheTTL, emptyTTL: emptyTTL, coldWait: coldWait,
+		runner: o.Runner, look: o.LookPath,
 		downloader: dl,
 		registry:   map[core.RatingKey]Extra{}, lists: map[string]listEntry{},
 		resolved: map[string]Resolved{},
@@ -271,42 +301,86 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 	discoverOn := s.DiscoverAvailable()
 	cmdOn := s.CommandAvailable() && s.videos != nil
 	cacheKey := fmt.Sprintf("%s|%s|%t|%t", parent.Key.String(), iso, discoverOn, cmdOn)
+
 	s.mu.Lock()
 	if e, ok := s.lists[cacheKey]; ok && s.now().Before(e.expires) {
-		out := append([]Extra(nil), e.extras...)
-		for i := range out {
-			out[i] = s.registerLocked(out[i])
-		}
+		out := s.cloneAndRegisterLocked(e.extras)
 		s.mu.Unlock()
 		return out, nil
 	}
+	s.mu.Unlock()
+
+	if items, expires, ok := s.loadListDB(ctx, cacheKey); ok {
+		s.mu.Lock()
+		s.pruneLocked()
+		out := s.cloneAndRegisterLocked(items)
+		s.putListLocked(cacheKey, out, expires)
+		s.mu.Unlock()
+		return out, nil
+	}
+
 	if core.LocalResponse(ctx) {
-		if !s.listClosed && !s.listPending[cacheKey] && len(s.listPending) < 2 {
-			if s.listPending == nil {
-				s.listPending = map[string]bool{}
+		cold := core.ColdDetail(ctx, parent.Key)
+		limit := maxBgListFlights
+		if cold {
+			limit = maxColdListFlights
+		}
+		s.mu.Lock()
+		if e, ok := s.lists[cacheKey]; ok && s.now().Before(e.expires) {
+			out := s.cloneAndRegisterLocked(e.extras)
+			s.mu.Unlock()
+			return out, nil
+		}
+		flight := s.listFlights[cacheKey]
+		if flight == nil && !s.listClosed && len(s.listFlights) < limit {
+			if s.listFlights == nil {
+				s.listFlights = map[string]*listFlight{}
 			}
-			s.listPending[cacheKey] = true
+			flight = &listFlight{done: make(chan struct{})}
+			s.listFlights[cacheKey] = flight
 			s.listWG.Add(1)
 			// Video lookup reads only this immutable identity snapshot.
 			owned := *parent
 			go func() {
 				defer s.listWG.Done()
-				bg, cancel := context.WithTimeout(s.themeCtx, 5*time.Second)
+				bg, cancel := context.WithTimeout(s.themeCtx, listFetchTimeout)
 				defer cancel()
-				_, _ = s.List(bg, &owned, lang)
+				out := s.fetchAndStoreList(bg, &owned, lang, iso, discoverOn, cmdOn, cacheKey)
+				flight.extras = out
 				s.mu.Lock()
-				delete(s.listPending, cacheKey)
+				delete(s.listFlights, cacheKey)
 				s.mu.Unlock()
+				close(flight.done)
 			}()
 		}
-		if s.listPending[cacheKey] {
-			core.ReportDetailPending(ctx, parent.Key, "extras")
-		}
 		s.mu.Unlock()
-		return nil, nil
+		if flight == nil {
+			return nil, nil
+		}
+		if !cold || s.coldWait <= 0 {
+			core.ReportDetailPending(ctx, parent.Key, "extras")
+			return nil, nil
+		}
+		timer := time.NewTimer(s.coldWait)
+		defer timer.Stop()
+		select {
+		case <-flight.done:
+			s.mu.Lock()
+			out := s.cloneAndRegisterLocked(flight.extras)
+			s.mu.Unlock()
+			return out, nil
+		case <-timer.C:
+			core.ReportDetailPending(ctx, parent.Key, "extras")
+			return nil, nil
+		case <-ctx.Done():
+			return nil, nil
+		}
 	}
-	s.mu.Unlock()
 
+	return s.fetchAndStoreList(ctx, parent, lang, iso, discoverOn, cmdOn, cacheKey), nil
+}
+
+func (s *Service) fetchAndStoreList(ctx context.Context, parent *core.Title, lang, iso string, discoverOn, cmdOn bool, cacheKey string) []Extra {
 	var out []Extra
 	sourcesTried := 0
 	sourcesFailed := 0
@@ -333,6 +407,12 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 	if len(out) > MaxExtras {
 		out = out[:MaxExtras]
 	}
+	var (
+		save      bool
+		saveNow   time.Time
+		saveUntil time.Time
+		toSave    []Extra
+	)
 	s.mu.Lock()
 	s.pruneLocked()
 	for i := range out {
@@ -341,16 +421,39 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 	// Do not cache an empty result when an active source failed, or a
 	// transient error would hide trailers for the whole TTL.
 	if sourcesFailed == 0 || (len(out) > 0 && sourcesFailed < sourcesTried) {
-		if len(s.lists) >= maxListEntries {
-			for k := range s.lists {
-				delete(s.lists, k)
-				break
-			}
+		saveNow = s.now()
+		ttl := s.ttl
+		if len(out) == 0 && s.emptyTTL > 0 && s.emptyTTL < ttl {
+			ttl = s.emptyTTL
 		}
-		s.lists[cacheKey] = listEntry{extras: append([]Extra(nil), out...), expires: s.now().Add(s.ttl)}
+		saveUntil = saveNow.Add(ttl)
+		s.putListLocked(cacheKey, out, saveUntil)
+		toSave = append([]Extra(nil), out...)
+		save = true
 	}
 	s.mu.Unlock()
-	return out, nil
+	if save {
+		s.saveListDB(ctx, cacheKey, parent.Key, toSave, saveNow, saveUntil)
+	}
+	return out
+}
+
+func (s *Service) cloneAndRegisterLocked(in []Extra) []Extra {
+	out := append([]Extra(nil), in...)
+	for i := range out {
+		out[i] = s.registerLocked(out[i])
+	}
+	return out
+}
+
+func (s *Service) putListLocked(cacheKey string, items []Extra, expires time.Time) {
+	if len(s.lists) >= maxListEntries {
+		for k := range s.lists {
+			delete(s.lists, k)
+			break
+		}
+	}
+	s.lists[cacheKey] = listEntry{extras: append([]Extra(nil), items...), expires: expires}
 }
 
 func (s *Service) fetchVideos(ctx context.Context, parent *core.Title, lang string) ([]tmdb.Video, error) {
@@ -381,12 +484,32 @@ func (s *Service) fetchVideos(ctx context.Context, parent *core.Title, lang stri
 	return nil, nil
 }
 
-// Lookup returns a registered extra by rating key.
+// Lookup returns a registered extra by rating key, falling back to the
+// durable extras item store so keys remain playable across restarts.
 func (s *Service) Lookup(key core.RatingKey) (Extra, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.registry[key]
-	return e, ok
+	if e, ok := s.registry[key]; ok {
+		s.mu.Unlock()
+		return e, true
+	}
+	s.mu.Unlock()
+	if e, ok := s.lookupItemDB(key); ok {
+		s.mu.Lock()
+		if existing, found := s.registry[key]; found {
+			s.mu.Unlock()
+			return existing, true
+		}
+		if len(s.registry) >= maxRegistryEntries {
+			for k := range s.registry {
+				delete(s.registry, k)
+				break
+			}
+		}
+		s.registry[key] = e
+		s.mu.Unlock()
+		return e, true
+	}
+	return Extra{}, false
 }
 
 // registerLocked assigns the deterministic KindExtra key for an extra.

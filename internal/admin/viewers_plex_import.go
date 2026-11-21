@@ -160,6 +160,37 @@ func findViewerByPlexID(viewers []ViewerRecord, plexID int64) *ViewerRecord {
 	return nil
 }
 
+// minGlobalPlexAccountID guards against treating PMS local/synthetic sequential
+// account IDs (e.g. owner ID 1 or small test IDs) as global plex.tv user IDs.
+// Real non-owner plex.tv accounts stored in PMS /accounts carry their global plex.tv ID.
+const minGlobalPlexAccountID int64 = 10000
+
+func fallbackPMSAccountPlexID(acct plexwatch.PMSAccount) int64 {
+	if acct.Owner || acct.ID < minGlobalPlexAccountID {
+		return 0
+	}
+	return acct.ID
+}
+
+func (h *Handler) ensurePlexViewer(ctx context.Context, viewers []ViewerRecord, friend plextv.SharedUser) (viewerID int64, fromExisting bool) {
+	if friend.PlexID <= 0 {
+		return 0, false
+	}
+	for i := range viewers {
+		if viewers[i].PlexID == friend.PlexID {
+			return viewers[i].ID, true
+		}
+	}
+	if h.deps.EnsurePlexFriend == nil {
+		return 0, false
+	}
+	id, err := h.deps.EnsurePlexFriend(ctx, friend)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, false
+}
+
 func findSyncedFriendViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount, resolved *plextv.SharedUser) *ViewerRecord {
 	if m := findExactViewer(viewers, acct); m != nil {
 		return m
@@ -496,7 +527,7 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 		}
 		if newViewerID == 0 {
 			shareTarget := acct.Name
-			var shareUserID int64
+			shareUserID := fallbackPMSAccountPlexID(*acct)
 			if resolved != nil {
 				shareUserID = resolved.PlexID
 				shareTarget = firstNonEmpty(resolved.Email, resolved.Username, acct.Name)
@@ -518,10 +549,20 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 					}
 				}
 			}
-			// If resolved on Plex.tv but not yet in auth_users (e.g. pending share),
-			// create/update the friend viewer with full Plex profile instead of a blank invite.
+			// If resolved on Plex.tv (or verified by a successful share via global PMS ID)
+			// but not yet in auth_users, create/update the friend viewer with full Plex profile
+			// instead of a blank local invite.
 			if newViewerID == 0 && resolved != nil {
 				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, displayName); id > 0 {
+					newViewerID = id
+					status = st
+				}
+			}
+			if newViewerID == 0 && sharedPlex && shareUserID > 0 {
+				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, &plextv.SharedUser{
+					PlexID: shareUserID,
+					Title:  displayName,
+				}, displayName); id > 0 {
 					newViewerID = id
 					status = st
 				}
@@ -826,7 +867,7 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 				}
 				if vID == 0 {
 					shareTarget := acct.Name
-					var shareUserID int64
+					shareUserID := fallbackPMSAccountPlexID(acct)
 					if resolved != nil {
 						shareUserID = resolved.PlexID
 						shareTarget = firstNonEmpty(resolved.Email, resolved.Username, acct.Name)
@@ -857,7 +898,7 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 					}
 					// Defer post-share resolution so ListPlexUsers runs at most once
 					// for the entire batch instead of once per unresolved account.
-					if vID == 0 && resolved == nil && sharedPlex {
+					if vID == 0 && resolved == nil && sharedPlex && shareUserID == 0 {
 						idx := len(results)
 						results = append(results, bulkImportResultItem{})
 						deferred = append(deferred, deferredImport{
@@ -872,6 +913,15 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 					}
 					if vID == 0 && resolved != nil {
 						if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, name); id > 0 {
+							vID = id
+							status = st
+						}
+					}
+					if vID == 0 && sharedPlex && shareUserID > 0 {
+						if id, st := h.ensureResolvedViewer(r.Context(), &viewers, &plextv.SharedUser{
+							PlexID: shareUserID,
+							Title:  name,
+						}, name); id > 0 {
 							vID = id
 							status = st
 						}

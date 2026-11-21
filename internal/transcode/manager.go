@@ -805,6 +805,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	} else if d.Container != ContainerFMP4 && d.Container != ContainerMPEGTS && d.Container != ContainerMatroska {
 		d.Container = segmentContainer(d.VideoCodec, d.AudioCodec)
 	}
+	d = segmentableAudio(req.Info, d)
 	m.mu.Lock()
 	videoOff := !req.LiveInput && m.cfg.VideoTranscodingOff()
 	rtxConfig, _ := normalizedRTX(m.cfg.RTXVideo)
@@ -1603,4 +1604,24 @@ func (t *tailWriter) String() string {
 // segment muxers discovered at startup. Unknown inventory fails closed.
 func (m *Manager) AudioFallbackAvailable() bool {
 	return m.ffmpeg != "" && m.feat.encoders["aac"] && m.feat.muxers["hls"] && m.feat.muxers["mp4"]
+}
+
+// segmentableAudio converts audio a decision would copy into segments that
+// cannot carry it. A decision made before the source was probed has no audio
+// stream (copy is vacuously true); the default track picked here can then be
+// TrueHD or DTS, which ffmpeg refuses to put in fMP4 ("truehd in MP4 support
+// is experimental") and the session never starts (seen on Silo).
+func segmentableAudio(info core.MediaInfo, d core.Decision) core.Decision {
+	a := findStream(info, d.AudioStream, "audio")
+	if a == nil || !d.AudioCopy || hlsAudioOK(a.Codec) || (d.Container == ContainerMatroska && matroskaAudioOK(a.Codec, true)) {
+		return d
+	}
+	d.AudioCopy = false
+	d.AudioCodec = "aac"
+	if a.Channels > 2 {
+		d.AudioCodec = "eac3"
+	}
+	d.AudioChannels = outputChannels(d.AudioCodec, a)
+	d.Reason += "; audio " + a.Codec + " cannot be segmented, re-encoded to " + d.AudioCodec
+	return d
 }

@@ -55,10 +55,10 @@ func TestServeRangeAudioContentTypeNeverOctetStream(t *testing.T) {
 			wantCT:    "audio/flac",
 		},
 		{
-			name:      "extensionless flac via MIMESource",
-			fileName:  "stream",
-			srcMIME:   "audio/flac",
-			wantCT:    "audio/flac",
+			name:     "extensionless flac via MIMESource",
+			fileName: "stream",
+			srcMIME:  "audio/flac",
+			wantCT:   "audio/flac",
 		},
 		{
 			name:      "extensionless audio-only mp4 via probed info",

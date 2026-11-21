@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	archiveListCacheMax     = 128
-	archiveListCacheTTL     = 15 * time.Minute
-	archiveListTimeout      = 15 * time.Second
-	archiveListMaxBytes     = 16 << 20 // 16 MiB total header reads per NZB
-	archiveListMaxSets      = 8
-	archiveListMaxRARVols   = 32
-	archiveListMaxMembers   = 4096
+	archiveListCacheMax   = 128
+	archiveListCacheTTL   = 15 * time.Minute
+	archiveListTimeout    = 15 * time.Second
+	archiveListMaxBytes   = 16 << 20 // 16 MiB total header reads per NZB
+	archiveListMaxSets    = 8
+	archiveListMaxRARVols = 32
+	archiveListMaxMembers = 4096
 )
 
 var errArchiveListBudget = errors.New("stream: archive member listing byte budget exceeded")

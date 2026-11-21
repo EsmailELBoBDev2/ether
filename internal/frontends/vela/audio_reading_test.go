@@ -68,10 +68,12 @@ func sampleEPUB(t *testing.T) []byte {
 func TestVelaCapabilitiesAudioAndReading(t *testing.T) {
 	db := store.OpenTest(t)
 	inst, err := (Frontend{DB: db, ReplayKey: bytes.Repeat([]byte{0x42}, 32)}).Mount(context.Background(), frontend.Host{
-		Identity:    identityFake{},
-		Experience:  &readingExpFake{},
-		Sessions:    frontendtest.Sessions{},
-		KindStreams: fakeKindStreams{openFn: func(context.Context, *core.Viewer, core.RatingKey, []string) (*frontend.KindMedia, error) { return nil, core.ErrNotFound }},
+		Identity:   identityFake{},
+		Experience: &readingExpFake{},
+		Sessions:   frontendtest.Sessions{},
+		KindStreams: fakeKindStreams{openFn: func(context.Context, *core.Viewer, core.RatingKey, []string) (*frontend.KindMedia, error) {
+			return nil, core.ErrNotFound
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -35,6 +35,7 @@ type PluginItemView struct {
 	Library      core.Library
 	Title        core.Title
 	Images       []frontend.Image
+	Chapters     []core.Chapter
 	Playable     bool
 	SkipContinue bool
 	Unavailable  *core.ItemUnavailable

@@ -701,8 +701,11 @@ type ItemDetail struct {
 	// authorized artwork. Background discovery may add alternatives later.
 	ImagesAuthoritative bool
 	Versions            []Version
-	Markers             []Marker
-	Extras              []Extra
+	// Chapters carries probed or declared chapter markers for the item (for
+	// example embedded audiobook chapters or part-derived chapters).
+	Chapters []core.Chapter
+	Markers  []Marker
+	Extras   []Extra
 }
 
 // ResolvedEventSubject is viewer-authorized current data for an event entity.

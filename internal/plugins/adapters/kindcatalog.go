@@ -550,6 +550,9 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	if c == nil || c.items == nil || c.libs == nil || !key.IsPluginKey() {
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
+	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
+		return c.syntheticPartItemView(ctx, parentKey, partIdx)
+	}
 	item, libID, err := c.items.GetByKey(ctx, key)
 	if err != nil {
 		return experience.PluginItemView{}, core.ErrNotFound
@@ -567,13 +570,51 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
 	titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
+	parts := syntheticAudiobookParts(item, titles[0])
 	return experience.PluginItemView{
 		Library:      lib,
 		Title:        titles[0],
 		Images:       projectImages(item.Art, lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape),
+		Chapters:     extractItemDetailChapters(item, parts),
 		Unavailable:  item.Unavailable,
 		Playable:     item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
 		SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, item.Level),
+	}, nil
+}
+
+func (c *KindCatalog) syntheticPartItemView(ctx context.Context, parentKey core.RatingKey, partIdx int) (experience.PluginItemView, error) {
+	item, libID, err := c.items.GetByKey(ctx, parentKey)
+	if err != nil {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	lib, err := c.libs.Get(ctx, libID)
+	if err != nil {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, libID)
+	if err != nil {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	hidden, e := c.items.ItemHidden(core.WithExplicitSearch(ctx), lib, item.Ref)
+	if e != nil || hidden {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
+	parts := syntheticAudiobookParts(item, titles[0])
+	if partIdx < 0 || partIdx >= len(parts) {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	partTitle, ok := buildSyntheticPartTitle(titles[0], parts[partIdx])
+	if !ok {
+		return experience.PluginItemView{}, core.ErrNotFound
+	}
+	return experience.PluginItemView{
+		Library:      lib,
+		Title:        partTitle,
+		Images:       projectImages(item.Art, lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape),
+		Playable:     item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
+		SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, item.Level),
+		Unavailable:  item.Unavailable,
 	}, nil
 }
 
@@ -584,15 +625,45 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 	if c == nil || c.items == nil || c.libs == nil || len(keys) == 0 {
 		return out, nil
 	}
-	keyed, err := c.items.GetByKeys(ctx, keys)
+	type partReq struct {
+		key       core.RatingKey
+		parentKey core.RatingKey
+		partIdx   int
+	}
+	fetchKeys := make([]core.RatingKey, 0, len(keys))
+	seenFetch := make(map[core.RatingKey]bool, len(keys))
+	wantDirect := make(map[core.RatingKey]bool, len(keys))
+	var partReqs []partReq
+	for _, k := range keys {
+		if !k.IsPluginKey() {
+			continue
+		}
+		if parentKey, partIdx, isPart := k.PluginPart(); isPart {
+			partReqs = append(partReqs, partReq{key: k, parentKey: parentKey, partIdx: partIdx})
+			if !seenFetch[parentKey] {
+				seenFetch[parentKey] = true
+				fetchKeys = append(fetchKeys, parentKey)
+			}
+			continue
+		}
+		wantDirect[k] = true
+		if !seenFetch[k] {
+			seenFetch[k] = true
+			fetchKeys = append(fetchKeys, k)
+		}
+	}
+	if len(fetchKeys) == 0 {
+		return out, nil
+	}
+	keyed, err := c.items.GetByKeys(ctx, fetchKeys)
 	if err != nil || len(keyed) == 0 {
 		return out, err
 	}
 	byLib := make(map[core.LibraryID][]core.KindItem)
 	var libOrder []core.LibraryID
 	seenKey := make(map[core.RatingKey]bool, len(keyed))
-	for _, key := range keys {
-		if !key.IsPluginKey() || seenKey[key] {
+	for _, key := range fetchKeys {
+		if seenKey[key] {
 			continue
 		}
 		ki, ok := keyed[key]
@@ -604,6 +675,16 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 			libOrder = append(libOrder, ki.LibraryID)
 		}
 		byLib[ki.LibraryID] = append(byLib[ki.LibraryID], ki.Item)
+	}
+
+	type projectedParent struct {
+		item  core.KindItem
+		view  experience.PluginItemView
+		parts []core.KindItemPart
+	}
+	var parents map[core.RatingKey]projectedParent
+	if len(partReqs) > 0 {
+		parents = make(map[core.RatingKey]projectedParent, len(partReqs))
 	}
 
 	visCtx := core.WithExplicitSearch(ctx)
@@ -637,14 +718,40 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		titles := c.projectItems(ctx, rec, lib, visibleItems)
 		landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
 		for i, it := range visibleItems {
-			out[it.Key] = experience.PluginItemView{
+			parts := syntheticAudiobookParts(it, titles[i])
+			view := experience.PluginItemView{
 				Library:      lib,
 				Title:        titles[i],
 				Images:       projectImages(it.Art, landscape),
+				Chapters:     extractItemDetailChapters(it, parts),
 				Unavailable:  it.Unavailable,
 				Playable:     it.Unavailable == nil && it.Playable && levelIsPlayable(rec.Decl, it.Level),
 				SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, it.Level),
 			}
+			if wantDirect[it.Key] {
+				out[it.Key] = view
+			}
+			if parents != nil {
+				parents[it.Key] = projectedParent{item: it, view: view, parts: parts}
+			}
+		}
+	}
+	for _, pr := range partReqs {
+		pp, ok := parents[pr.parentKey]
+		if !ok || pr.partIdx < 0 || pr.partIdx >= len(pp.parts) {
+			continue
+		}
+		partTitle, ok := buildSyntheticPartTitle(pp.view.Title, pp.parts[pr.partIdx])
+		if !ok {
+			continue
+		}
+		out[pr.key] = experience.PluginItemView{
+			Library:      pp.view.Library,
+			Title:        partTitle,
+			Images:       pp.view.Images,
+			Playable:     pp.view.Playable,
+			SkipContinue: pp.view.SkipContinue,
+			Unavailable:  pp.view.Unavailable,
 		}
 	}
 	return out, nil
@@ -725,6 +832,9 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 	if c == nil || c.items == nil || c.libs == nil || !parent.IsPluginKey() {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
+	if parent.IsPluginPartKey() {
+		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+	}
 	parentItem, libID, err := c.items.GetByKey(ctx, parent)
 	if err != nil {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
@@ -788,6 +898,13 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		}, nil
 	}
 	if !recursive || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels)-2 {
+		if strings.HasPrefix(cursor, "part:") {
+			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
+			if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
+				return paginateSyntheticParts(self[0], parts, cursor, limit), nil
+			}
+			return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+		}
 		policy, e := c.items.LibraryPolicy(ctx, lib)
 		if e != nil {
 			return experience.PluginBrowsePage{}, e
@@ -796,12 +913,16 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		if err != nil {
 			return experience.PluginBrowsePage{}, err
 		}
-		if len(page.Items) == 0 && page.Total == 0 && cursor == "" && limit != 0 &&
-			parentItem.Playable && parentItem.Unavailable == nil && flatPlayableAlbum(rec.Decl, lib.Present) {
-			// A flat playable album has no track items to list; present
-			// the album itself once as its playable child.
+		if len(page.Items) == 0 && page.Total == 0 {
 			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
-			return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1, TotalExact: true}, nil
+			if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
+				return paginateSyntheticParts(self[0], parts, cursor, limit), nil
+			}
+			if cursor == "" && limit != 0 && parentItem.Playable && parentItem.Unavailable == nil && flatPlayableAlbum(rec.Decl, lib.Present) {
+				// A flat playable album has no track items to list; present
+				// the album itself once as its playable child.
+				return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1, TotalExact: true}, nil
+			}
 		}
 		return experience.PluginBrowsePage{
 			Items:      c.projectItems(ctx, rec, lib, page.Items),
@@ -846,6 +967,12 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 			childCursor = page.NextCursor
 		}
 	}
+	if len(leaves) == 0 {
+		self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
+		if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
+			return paginateSyntheticParts(self[0], parts, cursor, limit), nil
+		}
+	}
 	offset := 0
 	if cursor != "" {
 		if n, err := strconv.Atoi(cursor); err == nil && n >= 0 {
@@ -873,6 +1000,17 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 func (c *KindCatalog) Ancestors(ctx context.Context, key core.RatingKey) ([]core.Title, core.Library, error) {
 	if c == nil || c.items == nil || c.libs == nil || !key.IsPluginKey() {
 		return nil, core.Library{}, core.ErrNotFound
+	}
+	if parentKey, _, isPart := key.PluginPart(); isPart {
+		anc, lib, err := c.Ancestors(ctx, parentKey)
+		if err != nil {
+			return nil, core.Library{}, err
+		}
+		piv, err := c.Item(ctx, parentKey)
+		if err != nil {
+			return nil, core.Library{}, err
+		}
+		return append(anc, piv.Title), lib, nil
 	}
 	cur, libID, err := c.items.GetByKey(ctx, key)
 	if err != nil {
@@ -1427,6 +1565,25 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 				t.LeafCount = 1
 			}
 		}
+		if parts := syntheticAudiobookParts(it, t); len(parts) > 1 {
+			if t.ChildCount == 0 {
+				t.ChildCount = len(parts)
+			}
+			if t.LeafCount == 0 {
+				t.LeafCount = len(parts)
+			}
+			if t.Runtime == 0 {
+				var sum time.Duration
+				for _, p := range parts {
+					if p.DurationSec > 0 {
+						sum += time.Duration(p.DurationSec * float64(time.Second))
+					}
+				}
+				if sum > 0 {
+					t.Runtime = sum
+				}
+			}
+		}
 		if t.ContentRating == "" {
 			t.ContentRating = extractContentRating(it.Fields)
 		}
@@ -1515,6 +1672,159 @@ func dedupeMediaFacts(t *core.Title) {
 		t.MediaFacts = nil
 	} else {
 		t.MediaFacts = kept
+	}
+}
+
+func syntheticAudiobookParts(item core.KindItem, title core.Title) []core.KindItemPart {
+	if !item.Playable || item.Unavailable != nil {
+		return nil
+	}
+	if title.MediaClass != core.MediaClassAudiobook && title.MediaClass != core.MediaClassPodcast && title.MediaRole != core.MediaRoleAudiobook {
+		return nil
+	}
+	parts := core.ExtractKindItemPartsFromItem(item)
+	if len(parts) <= 1 {
+		return nil
+	}
+	return parts
+}
+
+func cleanPartTitle(raw string, oneBasedIndex int) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return fmt.Sprintf("Part %d", oneBasedIndex)
+	}
+	hasPath := strings.ContainsAny(s, `/\`)
+	if hasPath {
+		s = filepath.Base(strings.ReplaceAll(s, `\`, "/"))
+	}
+	ext := strings.ToLower(filepath.Ext(s))
+	switch ext {
+	case ".mp3", ".m4b", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav", ".wma":
+		base := strings.TrimSuffix(s, filepath.Ext(s))
+		if base = strings.TrimSpace(strings.ReplaceAll(base, "_", " ")); base != "" {
+			return base
+		}
+	}
+	return s
+}
+
+func extractItemDetailChapters(item core.KindItem, parts []core.KindItemPart) []core.Chapter {
+	if declared := core.ExtractKindItemChaptersFromItem(item); len(declared) > 0 {
+		return declared
+	}
+	if len(parts) <= 1 {
+		return nil
+	}
+	hasDuration := false
+	for _, p := range parts {
+		if p.DurationSec > 0 {
+			hasDuration = true
+			break
+		}
+	}
+	if !hasDuration {
+		return nil
+	}
+	out := make([]core.Chapter, 0, len(parts))
+	var cursor time.Duration
+	for i, p := range parts {
+		dur := time.Duration(p.DurationSec * float64(time.Second))
+		if dur < 0 {
+			dur = 0
+		}
+		out = append(out, core.Chapter{
+			ID:    int64(i),
+			Title: cleanPartTitle(p.Name, i+1),
+			Start: cursor,
+			End:   cursor + dur,
+		})
+		cursor += dur
+	}
+	return out
+}
+
+func buildSyntheticPartTitle(parent core.Title, part core.KindItemPart) (core.Title, bool) {
+	partKey, ok := core.PluginPartKey(parent.Key, part.Index)
+	if !ok {
+		return core.Title{}, false
+	}
+	parentRole := parent.MediaRole
+	if parentRole == "" {
+		parentRole = core.MediaRoleAudiobook
+	}
+	parents := make([]core.TitleParent, 0, 1+len(parent.MediaParents))
+	parents = append(parents, core.TitleParent{
+		Key:   parent.Key,
+		Title: parent.Title,
+		Role:  parentRole,
+	})
+	parents = append(parents, parent.MediaParents...)
+
+	title := cleanPartTitle(part.Name, part.Index+1)
+	var dur time.Duration
+	if part.DurationSec > 0 {
+		dur = time.Duration(part.DurationSec * float64(time.Second))
+	}
+	return core.Title{
+		Key:           partKey,
+		Type:          core.TypeEpisode,
+		LibraryID:     parent.LibraryID,
+		ItemIndex:     part.Index + 1,
+		PluginAddedAt: parent.PluginAddedAt,
+		LandscapeCard: parent.LandscapeCard,
+		DateDisplay:   parent.DateDisplay,
+		MBItemType:    "Audio",
+		ParentKey:     parent.Key,
+		ParentTitle:   parent.Title,
+		ShowKey:       parent.Key,
+		ShowTitle:     parent.Title,
+		ShowYear:      parent.Year,
+		Season:        1,
+		Episode:       part.Index + 1,
+		Title:         title,
+		SortTitle:     fmt.Sprintf("%05d %s", part.Index+1, strings.ToLower(title)),
+		Year:          parent.Year,
+		Released:      parent.Released,
+		Runtime:       dur,
+		Genres:        append([]string(nil), parent.Genres...),
+		PosterPath:    parent.PosterPath,
+		BackdropPath:  parent.BackdropPath,
+		MediaClass:    parent.MediaClass,
+		MediaRole:     core.MediaRolePart,
+		MediaParents:  parents,
+		MediaCredits:  append([]core.MediaCredit(nil), parent.MediaCredits...),
+	}, true
+}
+
+func paginateSyntheticParts(parent core.Title, parts []core.KindItemPart, cursor string, limit int) experience.PluginBrowsePage {
+	offset := 0
+	if cursor != "" {
+		raw := strings.TrimPrefix(cursor, "part:")
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	start := min(offset, len(parts))
+	end := min(start+limit, len(parts))
+	items := make([]core.Title, 0, end-start)
+	for _, p := range parts[start:end] {
+		if pt, ok := buildSyntheticPartTitle(parent, p); ok {
+			items = append(items, pt)
+		}
+	}
+	next := ""
+	if end < len(parts) {
+		next = "part:" + strconv.Itoa(end)
+	}
+	return experience.PluginBrowsePage{
+		Items:      items,
+		Total:      len(parts),
+		TotalExact: true,
+		NextCursor: next,
 	}
 }
 

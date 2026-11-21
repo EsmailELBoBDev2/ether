@@ -248,6 +248,12 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
+	var forcedPart *int
+	if parentKey, pIdx, isPart := key.PluginPart(); isPart {
+		key = parentKey
+		idx := pIdx
+		forcedPart = &idx
+	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
 		return nil, err
@@ -259,10 +265,19 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	if !ok || !lv.Playable || !item.Playable {
 		return nil, core.ErrNotAvailable
 	}
-	partIdx, ok := singlePartIndex(item)
-	if !ok {
-		// Multi-part items expose a single composite sequence, not per-release versions.
-		return nil, core.ErrNotAvailable
+	var partIdx *int
+	if forcedPart != nil {
+		parts := core.ExtractKindItemPartsFromItem(item)
+		if len(parts) > 0 && *forcedPart >= len(parts) {
+			return nil, core.ErrNotFound
+		}
+		partIdx = forcedPart
+	} else {
+		partIdx, ok = singlePartIndex(item)
+		if !ok {
+			// Multi-part items expose a single composite sequence, not per-release versions.
+			return nil, core.ErrNotAvailable
+		}
 	}
 	sources, err := r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
 	if err != nil {
@@ -290,6 +305,12 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 	if r == nil || r.items == nil || r.libs == nil || viewer == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
+	var forcedPart *int
+	if parentKey, pIdx, isPart := key.PluginPart(); isPart {
+		key = parentKey
+		idx := pIdx
+		forcedPart = &idx
+	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
 		return nil, err
@@ -301,9 +322,18 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 	if !ok || !lv.Playable || !item.Playable {
 		return nil, nil
 	}
-	partIdx, ok := singlePartIndex(item)
-	if !ok {
-		return nil, nil
+	var partIdx *int
+	if forcedPart != nil {
+		parts := core.ExtractKindItemPartsFromItem(item)
+		if len(parts) > 0 && *forcedPart >= len(parts) {
+			return nil, core.ErrNotFound
+		}
+		partIdx = forcedPart
+	} else {
+		partIdx, ok = singlePartIndex(item)
+		if !ok {
+			return nil, nil
+		}
 	}
 	var sources []core.PlayableSource
 	if allowResolve && !core.LocalResponse(ctx) {
@@ -553,6 +583,9 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
+	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
+		return r.OpenKindPartExcluding(ctx, viewer, parentKey, partIdx, accept, exclude)
+	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
 		return nil, err
@@ -650,8 +683,17 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 // part of a multi-part plugin kind item, passing KindResolveRequest.PartIndex
 // to the plugin's /resolve route.
 func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept []string) (*frontend.KindMedia, error) {
+	return r.OpenKindPartExcluding(ctx, viewer, key, partIndex, accept, nil)
+}
+
+// OpenKindPartExcluding opens one zero-based part of a multi-part plugin kind
+// item while skipping candidate release IDs listed in exclude.
+func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept, exclude []string) (*frontend.KindMedia, error) {
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
 		return nil, core.ErrNotFound
+	}
+	if parentKey, _, isPart := key.PluginPart(); isPart {
+		key = parentKey
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
@@ -670,7 +712,7 @@ func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, ke
 			return nil, core.ErrNotFound
 		}
 		idx := partIndex
-		bs, err := r.openItemByteSource(ctx, rec, lib, item, &idx, accept)
+		bs, winning, err := r.openItemByteSourceExcluding(ctx, rec, lib, item, &idx, accept, exclude)
 		if err != nil {
 			return nil, err
 		}
@@ -684,13 +726,22 @@ func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, ke
 		if dur == 0 && len(parts) <= 1 {
 			dur = extractItemDuration(item, rec.Decl)
 		}
+		rel := playableSourceRelease(winning, firstNonEmpty(bs.Name(), item.Title))
+		if rel.Size <= 0 {
+			rel.Size = bs.Size()
+		}
+		if rel.Name == "" {
+			rel.Name = firstNonEmpty(bs.Name(), item.Title)
+		}
 		return &frontend.KindMedia{
-			ReaderAt: bs,
-			Closer:   bs,
-			Size:     bs.Size(),
-			MIME:     bs.MIME(),
-			Duration: dur,
-			Name:     bs.Name(),
+			ReaderAt:    bs,
+			Closer:      bs,
+			Size:        bs.Size(),
+			MIME:        bs.MIME(),
+			Duration:    dur,
+			Name:        bs.Name(),
+			Release:     rel,
+			MediaSource: unwrapKindMediaSource(bs),
 		}, nil
 	}
 
@@ -701,7 +752,7 @@ func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, ke
 	if partIndex >= len(leaves) {
 		return nil, core.ErrNotFound
 	}
-	return r.openPlayableItemMedia(ctx, rec, lib, leaves[partIndex], accept)
+	return r.openPlayableItemMediaExcluding(ctx, rec, lib, leaves[partIndex], accept, exclude)
 }
 
 // KindParts implements frontend.KindPartStreams (#576). It returns the declared

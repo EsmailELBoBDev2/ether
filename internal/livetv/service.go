@@ -2462,6 +2462,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 				c.GuideSourceID = previous.GuideSourceID
 				c.Transcode = previous.Transcode
 				c.Stability = previous.Stability
+				c.Screens = previous.Screens
+				c.Look = previous.Look
+				c.DVRMinutes = previous.DVRMinutes
 				c.InputMerge = previous.InputMerge
 				c.SuppressedAutoBackups = slices.Clone(previous.SuppressedAutoBackups)
 				c.OwnerStreamSources = previous.OwnerStreamSources

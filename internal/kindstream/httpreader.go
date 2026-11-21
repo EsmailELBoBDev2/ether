@@ -22,7 +22,7 @@ const (
 	maxRangeRetries    = 2
 
 	seqBufMinWindow = 32 << 10 // 32 KiB initial read-ahead window
-	seqBufMaxWindow = 1 << 20  // 1 MiB max sequential read-ahead window
+	seqBufMaxWindow = 4 << 20  // 4 MiB max sequential read-ahead window
 )
 
 // defaultStreamingHTTPClient bounds connection setup and response headers to
@@ -466,6 +466,17 @@ type seqBufferedReaderAt struct {
 	buf    []byte
 	bufOff int64
 	window int
+}
+
+// ReadAhead wraps r for one sequential consumer (one HTTP response): small
+// sequential reads such as http.ServeContent's 32 KiB copies are coalesced
+// into ranged reads that grow to 4 MiB, while a seek drops back to a small
+// window. Create one per request; it is not meant to be shared.
+func ReadAhead(ctx context.Context, r io.ReaderAt, size int64) io.ReaderAt {
+	if _, ok := r.(*seqBufferedReaderAt); ok || size <= 0 {
+		return r
+	}
+	return newSeqBufferedReaderAt(ctx, r, size)
 }
 
 func newSeqBufferedReaderAt(ctx context.Context, r io.ReaderAt, size int64) io.ReaderAt {

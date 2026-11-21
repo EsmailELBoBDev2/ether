@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/braedonsaunders/ether/internal/kindstream"
 	"io"
 	"log/slog"
 	"net/http"
@@ -190,7 +191,11 @@ func (h *MediaHandler) serve(w http.ResponseWriter, r *http.Request, media *fron
 		name = "media"
 	}
 	w.Header().Set("Content-Type", mimeType)
-	http.ServeContent(w, r, name, time.Time{}, io.NewSectionReader(media.ReaderAt, 0, media.Size))
+	// One read-ahead buffer per response: ServeContent copies 32 KiB at a
+	// time, and a range source would otherwise make one upstream request
+	// per copy (#666).
+	ra := kindstream.ReadAhead(r.Context(), media.ReaderAt, media.Size)
+	http.ServeContent(w, r, name, time.Time{}, io.NewSectionReader(ra, 0, media.Size))
 }
 
 // parseAccept splits an Accept header into media types, lowercased and

@@ -1196,7 +1196,7 @@ func Handler(src ByteSource) http.Handler {
 			m = "application/octet-stream"
 		}
 		w.Header().Set("Content-Type", m)
-		sr := io.NewSectionReader(src, 0, src.Size())
+		sr := io.NewSectionReader(ReadAhead(r.Context(), src, src.Size()), 0, src.Size())
 		http.ServeContent(w, r, src.Name(), time.Time{}, sr)
 	})
 }

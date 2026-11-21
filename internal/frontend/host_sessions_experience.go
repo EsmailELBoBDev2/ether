@@ -939,6 +939,7 @@ type PlayQueues interface {
 	Len() int
 	FollowingPlayable(userID int64, key core.RatingKey, playable func(core.RatingKey) bool) core.RatingKey
 	TimelineQueue(user int64, client string, key core.RatingKey, raw string, present bool) core.RatingKey
+	ActiveQueueRole(userID int64, clientID string, key core.RatingKey, maxAge time.Duration) int
 }
 
 // VersionFlows stores version-picker flow snapshots.

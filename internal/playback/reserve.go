@@ -278,7 +278,7 @@ func (m *Manager) prepareSpeedAlternate(g *generation) {
 				limit = m.opts.MaxAttempts
 			}
 			for attempt := 0; attempt < limit && ctx.Err() == nil; attempt++ {
-				res, err := m.nextResolutionTracking(ctx, s, &tried, alts)
+				res, err := m.nextResolutionTracking(ctx, s, &tried, nil, alts)
 				if err != nil {
 					break
 				}

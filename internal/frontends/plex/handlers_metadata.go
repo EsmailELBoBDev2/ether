@@ -270,12 +270,16 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				if reqCtx.Err() != nil {
 					return
 				}
+				bedrockProbed := s.bedrockFirstPlay(ctx, reqCtx, pr, t, q)
+				if reqCtx.Err() != nil {
+					return
+				}
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
 				// Plugin items resolve through their plugin rather than the
 				// built-in catalogue search cache or detail prewarmer.
-				if !t.Key.IsPluginKey() {
+				if !bedrockProbed && !t.Key.IsPluginKey() {
 					if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && !s.detailBurst(pr, t.Key) && variants != nil {
 						// Repeated metadata fetches while the same page is being
 						// watched must not retry a failed search on every fetch.

@@ -148,6 +148,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	}
 	var (
 		tried              []string
+		audioRejected      []core.Release
 		alternates         []core.Release
 		lastErr            error
 		fallbackGen        *generation
@@ -244,8 +245,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			if m.opts.MaxAttempts > 0 {
 				maxBudget = m.opts.MaxAttempts - attempt
 			}
-			out := m.raceInitialAlternates(openCtx, s, profile, tried, alternates, fallback, failoverRaceWidth, maxBudget)
+			out := m.raceInitialAlternates(openCtx, s, profile, tried, audioRejected, alternates, fallback, failoverRaceWidth, maxBudget)
 			tried = append(tried, out.failed...)
+			audioRejected = append(audioRejected, out.audioRejected...)
 			alternates = out.remaining
 			if out.g != nil {
 				return adoptInitial(out.g)
@@ -269,7 +271,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if res == nil {
 			fromResume = false
 			var err error
-			res, err = m.nextResolutionTracking(ctx, s, &tried, alternates)
+			res, err = m.nextResolutionTracking(ctx, s, &tried, audioRejected, alternates)
 			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && !res.MatchesVersion(s.prefer) {
 				// The picked version fell back to normal ranking. Play the
 				// automatic choice the warm-up (or resume) already holds, so
@@ -336,7 +338,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if len(res.NZB) > 0 {
 			res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 		}
-		if m.titleReleaseRejected(ctx, s.ident.key, res.Release) {
+		if m.titleReleaseRejected(ctx, s.ident.key, res.Release) || (!s.exact && s.prefer == "" && audioExcluded(audioRejected, res.Release)) {
 			tried = append(tried, res.Release.ID)
 			alternates = res.Alternates
 			res, cached, fromResume = nil, nil, false
@@ -412,7 +414,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			continue
 		}
 		if err == nil && !s.exact && s.prefer == "" {
-			if reqReason := probedRequiredAudioRejection(profile, s.title, res.Release, g.infoSnapshot(), fromResume); reqReason != "" {
+			info := g.infoSnapshot()
+			if reqReason := probedRequiredAudioRejection(profile, s.title, res.Release, info, fromResume); reqReason != "" {
+				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
 				m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reqReason)
 				m.dropGeneration(g)
 				lastErr = errors.New(reqReason)
@@ -421,37 +425,47 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 					attempt--
 				}
 				tried = append(tried, res.Release.ID)
+				audioRejected = append(audioRejected, res.Release)
 				alternates = res.Alternates
 				res, cached, fromResume = nil, nil, false
 				continue
 			}
 		}
-		if err == nil && !s.exact && s.prefer == "" && (burned || !m.probedAudioAcceptable(s, profile, g.infoSnapshot())) {
-			reason := "probed release lacks viewer audio language"
-			if burned {
-				reason = "burned-in subtitles detected"
-			}
-			m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", reason)
-			m.recordTimeline(s, TimelineEvent{
-				Kind:    "candidate",
-				Level:   "info",
-				Message: "Skipped candidate " + releaseLabel(res.Release),
-				Detail:  reason,
-			})
-			if fallbackGen == nil || fallbackBurned && !burned {
-				if fallbackGen != nil {
-					m.dropGeneration(fallbackGen)
+		if err == nil && !s.exact && s.prefer == "" {
+			info := g.infoSnapshot()
+			audioOK := m.probedAudioAcceptable(s, profile, info)
+			if burned || !audioOK {
+				reason := "probed release lacks viewer audio language"
+				if burned {
+					reason = "burned-in subtitles detected"
+				} else {
+					m.noteReleaseProbeMemory(res.Release, res.NZB, info)
 				}
-				fallbackGen = g
-				fallbackBurned = burned
-			} else {
-				m.dropGeneration(g)
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", reason)
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "info",
+					Message: "Skipped candidate " + releaseLabel(res.Release),
+					Detail:  reason,
+				})
+				if fallbackGen == nil || fallbackBurned && !burned {
+					if fallbackGen != nil {
+						m.dropGeneration(fallbackGen)
+					}
+					fallbackGen = g
+					fallbackBurned = burned
+				} else {
+					m.dropGeneration(g)
+				}
+				allUncached = false
+				tried = append(tried, res.Release.ID)
+				if !audioOK {
+					audioRejected = append(audioRejected, res.Release)
+				}
+				alternates = res.Alternates
+				res, cached, fromResume = nil, nil, false
+				continue
 			}
-			allUncached = false
-			tried = append(tried, res.Release.ID)
-			alternates = res.Alternates
-			res, cached, fromResume = nil, nil, false
-			continue
 		}
 		if err == nil {
 			return adoptInitial(g)
@@ -549,13 +563,13 @@ func releasesFailed(n int, lastErr error, allUncached bool) error {
 // nextResolution returns the next release to try: an untried alternate when
 // NZBs can be fetched directly, else a fresh Resolve excluding tried ones.
 func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string, alternates []core.Release) (*core.Resolution, error) {
-	return m.nextResolutionTracking(ctx, s, &tried, alternates)
+	return m.nextResolutionTracking(ctx, s, &tried, nil, alternates)
 }
 
 // nextResolutionTracking returns the next release to try and appends any
 // alternates whose FetchNZB fails into *tried so subsequent Resolve calls
 // exclude them instead of retrying dead links.
-func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried *[]string, alternates []core.Release) (*core.Resolution, error) {
+func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried *[]string, audioRejected []core.Release, alternates []core.Release) (*core.Resolution, error) {
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	exclude := append(slices.Clone(*tried), s.caps.BroadcastExclude...)
 	m.mu.Lock()
@@ -571,7 +585,7 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 		var fetchErr error
 		fetched := 0
 		for i, alt := range alternates {
-			if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || !releaseMatchesTitle(alt, s.title) {
+			if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || audioExcluded(audioRejected, alt) || !releaseMatchesTitle(alt, s.title) {
 				continue
 			}
 			if m.opts.MaxAttempts > 0 && fetched >= m.opts.MaxAttempts {
@@ -620,7 +634,7 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 			return nil, fetchErr
 		}
 	}
-	u := s.user
+	u := m.effectiveResolveUser(ctx, s.user)
 	if s.caps.BroadcastReadyRelease != "" {
 		ready, ok := m.deps.Resolver.(interface {
 			ResolveReadyChannel(context.Context, core.ResolveRequest) (*core.Resolution, error)
@@ -628,7 +642,7 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 		if !ok {
 			return nil, core.ErrNotAvailable
 		}
-		req := core.ResolveRequest{Title: s.title, Client: s.caps, User: &u, Exclude: exclude, Prefer: s.caps.BroadcastReadyRelease}
+		req := core.ResolveRequest{Title: s.title, Client: s.caps, User: &u, Exclude: exclude, ExcludeReleases: slices.Clone(audioRejected), Prefer: s.caps.BroadcastReadyRelease}
 		// A freshly verified source may already have its exact payload on
 		// disk. Revalidate evidence, then avoid another indexer/provider grab.
 		if evidence, ok := m.deps.Resolver.(interface {
@@ -649,6 +663,7 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 		Client:             s.caps,
 		User:               &u,
 		Exclude:            slices.Clone(exclude),
+		ExcludeReleases:    slices.Clone(audioRejected),
 		Prefer:             s.prefer,
 		ExactHEVCTranscode: s.exact && s.ident.surface != "" && allowsH264Transcode(s.caps),
 	})
@@ -1542,7 +1557,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			res = prepared
 			prepared = nil
 			if res == nil {
-				res, err = m.nextResolutionTracking(attemptCtx, s, &tried, alternates)
+				res, err = m.nextResolutionTracking(attemptCtx, s, &tried, nil, alternates)
 			}
 			if err != nil {
 				if errors.Is(err, core.ErrMoreCandidates) && attemptCtx.Err() == nil && morePasses < maxFailoverMorePasses {
@@ -2396,6 +2411,38 @@ func recoverableSourceFailure(err error) bool {
 	return errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded)
 }
 
+func audioExcluded(excluded []core.Release, rel core.Release) bool {
+	for _, ex := range excluded {
+		if core.SameReleaseContent(ex, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) viewerAudioPreferences(ctx context.Context, u core.User) (audioLanguages []string, preferOriginal bool) {
+	audioLanguages = u.AudioLanguages
+	preferOriginal = u.PreferOriginal
+	if m.deps.ViewerAudioPreferences == nil || u.ID <= 0 {
+		return audioLanguages, preferOriginal
+	}
+	langs, prefOrig := m.deps.ViewerAudioPreferences(ctx, u.ID)
+	if len(langs) > 0 {
+		audioLanguages = langs
+	}
+	if prefOrig {
+		preferOriginal = true
+	}
+	return audioLanguages, preferOriginal
+}
+
+func (m *Manager) effectiveResolveUser(ctx context.Context, u core.User) core.User {
+	langs, prefOrig := m.viewerAudioPreferences(ctx, u)
+	u.AudioLanguages = langs
+	u.PreferOriginal = prefOrig
+	return u
+}
+
 // probedAudioAcceptable reports whether a probed release carries
 // at least one audio stream in the viewer's wanted language (or an untagged
 // audio stream). When every audio stream is explicitly tagged in a non-wanted
@@ -2407,27 +2454,40 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 		return true
 	}
 	orig := strings.TrimSpace(s.title.Language)
+	if orig == "" && s.title.ShowKey != 0 && m.deps.Catalog != nil {
+		if cached, ok := m.deps.Catalog.(interface {
+			CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+		}); ok {
+			if show, err := cached.CachedGet(m.ctx, s.title.ShowKey); err == nil && show != nil {
+				orig = strings.TrimSpace(show.Language)
+			}
+		}
+	}
 	// The profile's Language (Radarr-style) decides first: Any accepts
 	// every probed track, a specific language is the wanted one.
 	profileLang := strings.ToLower(strings.TrimSpace(profile.Language))
 	if profileLang == core.ProfileLanguageAny {
 		return true
 	}
+	userAudio, preferOriginal := m.viewerAudioPreferences(m.ctx, s.user)
+	specificProfileLang := profileLang != "" && profileLang != core.ProfileLanguageOriginal && releaseparse.KnownLanguage(profileLang)
 	var wanted []string
 	switch {
-	case profileLang != "" && profileLang != core.ProfileLanguageOriginal && releaseparse.KnownLanguage(profileLang):
+	case specificProfileLang:
 		wanted = append(wanted, profileLang)
 	case len(profile.PreferredLanguages) > 0:
 		wanted = append(wanted, profile.PreferredLanguages...)
-	case len(s.user.AudioLanguages) > 0:
-		wanted = append(wanted, s.user.AudioLanguages...)
+	case len(userAudio) > 0:
+		wanted = append(wanted, userAudio...)
+	case profileLang == core.ProfileLanguageOriginal || preferOriginal:
+		// Preferring original language must not fall back to Catalog.Language.
 	default:
 		if serverLang := strings.TrimSpace(m.config().Catalog.Language); serverLang != "" {
 			base, _, _ := strings.Cut(serverLang, "-")
 			wanted = append(wanted, base)
 		}
 	}
-	if profileLang == core.ProfileLanguageOriginal && orig != "" {
+	if !specificProfileLang && (profileLang == core.ProfileLanguageOriginal || preferOriginal) && orig != "" {
 		wanted = append(wanted, orig)
 	}
 	if len(wanted) == 0 {

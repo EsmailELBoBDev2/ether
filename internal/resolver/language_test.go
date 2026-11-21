@@ -1,9 +1,11 @@
 package resolver
 
 import (
-	"github.com/braedonsaunders/ether/internal/core"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 func TestLanguageRankingRequiresExplicitPreference(t *testing.T) {
@@ -89,5 +91,50 @@ func TestProfileLanguageGate(t *testing.T) {
 	}
 	if got := wantedAudio(english, nil, "fr"); len(got) != 1 || got[0] != "english" {
 		t.Fatalf("specific wanted=%v", got)
+	}
+
+	// #674: a viewer with PreferOriginal and no AudioLanguages must accept the
+	// title's original language without falling back to the server language.
+	prefOrig := &core.User{ID: 1, PreferOriginal: true}
+	if got := wantedAudio(core.QualityProfile{}, prefOrig, "en-US"); len(got) != 0 {
+		t.Fatalf("preferOriginal wanted=%v, want empty (no serverLang fallback)", got)
+	}
+	if got := acceptedAudio(core.QualityProfile{}, prefOrig, "en-US", anime); len(got) != 1 || got[0] != "ja" {
+		t.Fatalf("preferOriginal accepted=%v, want [ja]", got)
+	}
+}
+
+// #674: ExcludeReleases drops content-equivalent reposts (same release name
+// across indexers), while ID-only Exclude still lets another indexer's repost
+// serve transport/article failover.
+func TestResolveExcludeReleasesSkipsReposts(t *testing.T) {
+	repost1 := rel("idx1-repost", "The.Signal.1999.1080p.WEB-DL.H264-DUP", 4000)
+	repost1.Indexer = "idx1"
+	repost2 := rel("idx2-repost", "The.Signal.1999.1080p.WEB-DL.H264-DUP", 4000)
+	repost2.Indexer = "idx2"
+	other := rel("idx1-other", "The.Signal.1999.1080p.WEB-DL.H264-ALT", 3500)
+	other.Indexer = "idx1"
+
+	idx := &fakeIndexer{releases: []core.Release{repost1, repost2, other}}
+	s := New(idx, nil, nil, testCfg(), Options{Now: func() time.Time { return time.Unix(1800000000, 0) }})
+	defer s.Close()
+
+	// ID-only Exclude still picks idx2-repost for broken-upload failover.
+	res, err := s.Resolve(context.Background(), core.ResolveRequest{
+		Title:   matrixTitle(),
+		Exclude: []string{repost1.ID},
+	})
+	if err != nil || res.Release.ID != repost2.ID {
+		t.Fatalf("ID-only Exclude got (%+v, %v), want %s", res, err, repost2.ID)
+	}
+
+	// ExcludeReleases excludes both repost1 and idx2-repost so failover advances to other.
+	res, err = s.Resolve(context.Background(), core.ResolveRequest{
+		Title:           matrixTitle(),
+		Exclude:         []string{repost1.ID},
+		ExcludeReleases: []core.Release{repost1},
+	})
+	if err != nil || res.Release.ID != other.ID {
+		t.Fatalf("ExcludeReleases got (%+v, %v), want %s", res, err, other.ID)
 	}
 }

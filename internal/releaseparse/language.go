@@ -137,7 +137,7 @@ func LanguageName(v string) string {
 	}
 	name, ok := isoLanguages[tag.Primary]
 	if !ok {
-		return s
+		return tag.Primary
 	}
 	switch {
 	case name == "spanish" && latinAmerica[tag.Region]:

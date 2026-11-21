@@ -210,7 +210,7 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	s.writePlayQueue(w, r, snap)
+	s.writePlayQueue(w, r, snap, true)
 }
 
 func (s *Server) queueStartPlayable(ctx context.Context, pr *Request, key frontend.RatingKey) bool {
@@ -335,7 +335,8 @@ func (s *Server) handlePlayQueue(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	s.writePlayQueue(w, r, snap)
+	q := r.URL.Query()
+	s.writePlayQueue(w, r, snap, q.Has("center") || q.Get("own") == "1")
 }
 
 // handlePlayQueueMutate covers PUT /playQueues/{id} (add) and the
@@ -476,14 +477,14 @@ func (s *Server) handlePlayQueueMutate(op string) http.HandlerFunc {
 				before.SuppressMetadata = true
 				before.ForceOffsetZero = true
 			}
-			s.writePlayQueue(w, r, before)
+			s.writePlayQueue(w, r, before, false)
 			return
 		}
-		s.writePlayQueue(w, r, snap)
+		s.writePlayQueue(w, r, snap, false)
 	}
 }
 
-func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQueue) {
+func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQueue, playIntent bool) {
 	if pq.LiveSession != "" {
 		s.writeLivePlayQueue(w, r, pq)
 		return
@@ -564,11 +565,20 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 			}
 		}
 	}
-	if selTitle, ok := byKey[selItem.Key]; ok {
-		if pr != nil && pr.detailWaitUntil.IsZero() {
-			startDetailPageWait(pr)
+	targetItem := selItem
+	if center >= 0 && center < len(pq.Items) {
+		targetItem = pq.Items[center]
+	}
+	if targetTitle, ok := byKey[targetItem.Key]; ok {
+		if !(playIntent && bedrockPlayProbeClient(pr) && s.probeBedrockPlay(ctx, pr, targetTitle)) {
+			if pr != nil && pr.detailWaitUntil.IsZero() {
+				startDetailPageWait(pr)
+			}
+			s.warmDetail(ctx, pr, targetTitle)
 		}
-		s.warmDetail(ctx, pr, selTitle)
+		if ctx.Err() != nil {
+			return
+		}
 	}
 	mc := libraryContainer()
 	mc.AllowSync = nil

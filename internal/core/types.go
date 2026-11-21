@@ -419,6 +419,7 @@ type User struct {
 	MaxContentRating  string      `json:"maxContentRating"`  // "" = unrestricted, e.g. "PG-13", "TV-14"
 	SubtitleLanguages []string    `json:"subtitleLanguages"` // ISO 639-1, preference order
 	AudioLanguages    []string    `json:"audioLanguages"`
+	PreferOriginal    bool        `json:"preferOriginal,omitempty"`
 	AllowedLibraries  []LibraryID `json:"allowedLibraries"` // empty = all libraries (§1.4)
 }
 

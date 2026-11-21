@@ -207,19 +207,30 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 			return
 		}
 		if width <= 0 {
-			if element == "art" || element == "background" {
-				width = 0
-			} else {
-				width = 500
-			}
+			width = unsizedImageWidth(element, 500)
 		}
 		s.serveRemoteImage(w, r, s.svc().imageURL(path, tmdbSize(width)))
 		return
 	}
-	if width <= 0 && element != "art" && element != "background" {
-		width = defWidth
+	if width <= 0 {
+		width = unsizedImageWidth(element, defWidth)
 	}
 	s.serveRemoteImage(w, r, s.svc().imageURL(path, tmdbSize(width)))
+}
+
+// unsizedImageWidth is the source width for an image request that names no
+// size. Clients such as Plezy load /thumb and /art without transcode
+// parameters; the TMDB original is a 2-8 MB 4K file that took up to 8 s per
+// image. Serve what a 1080p TV can show instead: w1280 art, w780 for posters
+// and stills, or the artwork source's own smaller default.
+func unsizedImageWidth(element string, def int) int {
+	if element == "art" || element == "background" {
+		return 1280
+	}
+	if def > 0 && def <= 780 {
+		return def
+	}
+	return 780
 }
 
 // servePlexOverlayImage is the last-resort artwork path: only when the owner

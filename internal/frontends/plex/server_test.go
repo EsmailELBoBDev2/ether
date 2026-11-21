@@ -558,11 +558,11 @@ func TestPhotoTranscode(t *testing.T) {
 	}
 	// Direct thumb and episode still fallback.
 	rec = f.get(t, "/library/metadata/"+bbE1.Key.String()+"/thumb/1")
-	if rec.Body.String() != "IMG:/t/p/original/pilot.jpg" {
+	if rec.Body.String() != "IMG:/t/p/w780/pilot.jpg" { // no width: TV-sized still
 		t.Fatalf("still: %q", rec.Body.String())
 	}
 	rec = f.get(t, "/library/metadata/"+bbE2.Key.String()+"/art/1")
-	if rec.Body.String() != "IMG:/t/p/original/bbart.jpg" { // no width: full-resolution art (4K TVs)
+	if rec.Body.String() != "IMG:/t/p/w1280/bbart.jpg" { // no width: TV-sized art, not the multi-MB original
 		t.Fatalf("episode art falls back to show: %q", rec.Body.String())
 	}
 	rec = f.get(t, "/library/collections/5000000000008091/thumb/1")

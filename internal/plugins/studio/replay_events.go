@@ -623,6 +623,36 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 		}
 		return marshalResult(v)
 
+	case "secret.set":
+		secName := str(0)
+		if !h.secretDeclared(secName) {
+			return nil, wasm.Forbidden("secret not declared in manifest: " + secName)
+		}
+		secVal := str(1)
+		h.mu.Lock()
+		if h.secrets == nil {
+			h.secrets = map[string]string{}
+		}
+		if secVal == "" {
+			delete(h.secrets, secName)
+		} else {
+			h.secrets[secName] = secVal
+		}
+		h.writes = append(h.writes, RecordedWrite{Op: "secret.set", Target: secName, Value: json.RawMessage(`"[redacted]"`)})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
+
+	case "secret.delete":
+		secName := str(0)
+		if !h.secretDeclared(secName) {
+			return nil, wasm.Forbidden("secret not declared in manifest: " + secName)
+		}
+		h.mu.Lock()
+		delete(h.secrets, secName)
+		h.writes = append(h.writes, RecordedWrite{Op: "secret.delete", Target: secName})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
+
 	case "http.fetch":
 		var req struct {
 			Method  string            `json:"method"`

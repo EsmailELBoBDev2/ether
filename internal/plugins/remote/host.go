@@ -20,16 +20,20 @@ import (
 // Host is the set of Ether services a remote plugin may call back
 // into (SPEC §5.1.5). It mirrors plugins.Host method for method for
 // the services remote plugins may use; secret.get is hosted-only and
-// deliberately absent (remote plugins receive secrets in
-// /ether/configure). Every method is expected to re-check the
-// plugin's live grants and return ErrPermissionDenied when a grant
-// is missing or revoked.
+// deliberately absent (remote plugins receive owner secrets in
+// /ether/configure, and may write derived secrets via SecretSet /
+// SecretDelete for {secret:<name>} expansion without reading them back).
+// Every method is expected to re-check the plugin's live grants and return
+// ErrPermissionDenied when a grant is missing or revoked.
 type Host interface {
 	KVGet(ctx context.Context, pluginID, key string) ([]byte, bool, error)
 	KVPut(ctx context.Context, pluginID, key string, value []byte) error
 	KVDelete(ctx context.Context, pluginID, key string) error
 	KVList(ctx context.Context, pluginID, prefix string) ([]string, error)
 	KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error)
+
+	SecretSet(ctx context.Context, pluginID, name, value string, ttlSec int64) error
+	SecretDelete(ctx context.Context, pluginID, name string) error
 
 	BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error
 	BadgesClear(ctx context.Context, pluginID, setKey string) error
@@ -113,6 +117,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/kv/{key...}", h.kvGet)
 	mux.HandleFunc("PUT /ether/plugin-host/kv/{key...}", h.kvPut)
 	mux.HandleFunc("DELETE /ether/plugin-host/kv/{key...}", h.kvDelete)
+	mux.HandleFunc("PUT /ether/plugin-host/secrets/{name}", h.secretSet)
+	mux.HandleFunc("DELETE /ether/plugin-host/secrets/{name}", h.secretDelete)
 	mux.HandleFunc("GET /ether/plugin-host/badges/usage", h.badgesUsage)
 	mux.HandleFunc("GET /ether/plugin-host/badges-usage", h.badgesUsage)
 	mux.HandleFunc("PUT /ether/plugin-host/badges/{setKey}", h.badgesSet)
@@ -237,6 +243,39 @@ func (h *HostHandler) kvUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, usage)
+}
+
+// --- Derived secrets (#660) ---
+
+func (h *HostHandler) secretSet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "Secret name is required")
+		return
+	}
+	var body struct {
+		Value  string `json:"value"`
+		TTLSec int64  `json:"ttlSec"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	if !h.finishErr(w, h.host.SecretSet(r.Context(), pluginIDOf(r), name, body.Value, body.TTLSec)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HostHandler) secretDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "Secret name is required")
+		return
+	}
+	if !h.finishErr(w, h.host.SecretDelete(r.Context(), pluginIDOf(r), name)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Poster badges (#594) ---

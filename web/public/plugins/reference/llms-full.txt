@@ -333,17 +333,18 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Sealed secrets
 
-Hosted only. Requires the exact name in permissions.secrets and a saved secret. Missing secrets produce unavailable; undeclared or revoked grants produce permission denied. Remote plugins receive configuration instead.
+Requires the exact name in permissions.secrets. `secret.get` is hosted only (remote plugins receive owner secrets via `/ether/configure`); missing or expired secrets produce unavailable, and undeclared or revoked grants produce permission denied. Both hosted and remote plugins may store plugin-derived credentials (such as session cookies or short-lived tokens) with `secret.set(name, value, ttlSec?)` and remove them with `secret.delete(name)` under declared names that are not owner-configured settings fields, then reference them as `{secret:<name>}` in playable source headers and `http.hash`.
 
 ```ts
 const token = ether.secret.get("apiKey");
+ether.secret.set("sessionCookie", "sid=abc", 3600);
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
 ## HTTP requests
 
-Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too. Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
+Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too, and credentials or origin-confined headers are stripped on cross-origin redirects. `http.hash` accepts optional `headers` with `{secret:<name>}` expansion (same rules: origin-confined, no hop-by-hop/framing headers, never logged or cached). Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
 
 ```ts
 const r = ether.http.fetch({url: "https://api.example.org/status", method: "GET"});
@@ -1449,9 +1450,16 @@ resolving a multi-part item), uses promoted deadlines and continuation replies,
 and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
 the next resolve.
 
-For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.
 A miss returns pending while a bounded host worker streams digests without
-storing bytes; the next resolve reads the cached result. See the worked example
+storing bytes; the next resolve reads the cached result. Optional `headers` are
+origin-confined (stripped on cross-origin redirects), reject hop-by-hop and
+framing headers, expand `{secret:<name>}` placeholders via `permissions.secrets`
+just like playable sources, and are never logged or persisted in the hash cache.
+Plugins that derive temporary session credentials can store them sealed with
+`ether.secret.set(name, value, ttlSec?)` (and clear them with `ether.secret.delete(name)`)
+under a declared non-owner name in `permissions.secrets`, then reference them as
+`{secret:<name>}` in source headers and `http.hash`. See the worked example
 and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).
 
 
@@ -5053,8 +5061,17 @@ type Host interface {
 	BadgesUsage(ctx context.Context) (BadgeUsage, error)
 
 	// SecretGet returns a sealed setting the manifest declared in
-	// permissions.secrets. Hosted plugins only.
+	// permissions.secrets (owner-configured first, then plugin-written derived
+	// secrets). Hosted plugins only.
 	SecretGet(ctx context.Context, name string) (string, error)
+	// SecretSet stores a sealed derived secret under a name declared in
+	// permissions.secrets that is not an owner-configured settings secret.
+	// Passing an empty value deletes the derived secret. ttlSec <= 0 means no
+	// expiry; positive values expire after ttlSec seconds.
+	SecretSet(ctx context.Context, name, value string, ttlSec int64) error
+	// SecretDelete removes a plugin-written derived secret declared in
+	// permissions.secrets. Owner-configured settings secrets cannot be deleted.
+	SecretDelete(ctx context.Context, name string) error
 
 	// HTTPFetch fetches through egress and safefetch; only manifest
 	// network hosts are allowed. Observed hosts feed the privacy label.
@@ -7201,32 +7218,135 @@ func (h *host) Settings(ctx context.Context) (map[string]any, error) {
 }
 ``````
 
-## Source: internal/plugins/host.go#*host.SecretGet
+## Source: internal/plugins/host.go#MaxDerivedSecretBytes
 
 ``````
-func (h *host) SecretGet(ctx context.Context, name string) (string, error) {
+const (
+	// MaxDerivedSecretBytes caps a single plugin-written derived secret value.
+	MaxDerivedSecretBytes = 16 << 10
+	// MaxDerivedSecrets caps the number of derived secrets a plugin may store.
+	MaxDerivedSecrets = 32
+	// MaxDerivedSecretTTLSec caps an explicit derived-secret TTL (1 year).
+	MaxDerivedSecretTTLSec int64 = 365 * 24 * 3600
+)
+``````
+
+## Source: internal/plugins/host.go#*host.checkSecretAccess
+
+``````
+func (h *host) checkSecretAccess(ctx context.Context, name string) (Record, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
-		return "", err
+		return Record{}, err
 	}
 	declared := false
 	for _, s := range r.Manifest.Ether.Permissions.Secrets {
 		if s == name {
 			declared = true
+			break
 		}
 	}
 	if err := h.deny(r, g, "secrets", "", func(string) bool { return declared }); err != nil {
+		return Record{}, err
+	}
+	return r, nil
+}
+``````
+
+## Source: internal/plugins/host.go#*host.SecretGet
+
+``````
+func (h *host) SecretGet(ctx context.Context, name string) (string, error) {
+	if _, err := h.checkSecretAccess(ctx, name); err != nil {
 		return "", err
 	}
 	row, err := h.m.store.settings(ctx, h.plugin)
 	if err != nil {
 		return "", err
 	}
-	stored, ok := row.Secrets[name]
-	if !ok {
-		return "", fmt.Errorf("%w: secret %s is not saved", ErrUnavailable, name)
+	if stored, ok := row.Secrets[name]; ok && stored != "" {
+		return h.m.store.openSecret(h.plugin, name, stored)
 	}
-	return h.m.store.openSecret(h.plugin, name, stored)
+	if plain, ok, err := h.m.store.derivedSecret(ctx, h.plugin, name); err != nil {
+		return "", err
+	} else if ok {
+		return plain, nil
+	}
+	return "", fmt.Errorf("%w: secret %s is not saved", ErrUnavailable, name)
+}
+``````
+
+## Source: internal/plugins/host.go#*host.SecretSet
+
+``````
+func (h *host) SecretSet(ctx context.Context, name, value string, ttlSec int64) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	if _, err := h.checkSecretAccess(ctx, name); err != nil {
+		return err
+	}
+	if ttlSec < 0 || ttlSec > MaxDerivedSecretTTLSec {
+		return &ValidationError{Fields: []FieldError{{
+			Field:   "ttlSec",
+			Message: fmt.Sprintf("must be between 0 and %d seconds", MaxDerivedSecretTTLSec),
+		}}}
+	}
+	row, err := h.m.store.settings(ctx, h.plugin)
+	if err != nil {
+		return err
+	}
+	if secretFieldNames(row.Schema)[name] || row.Secrets[name] != "" {
+		return fmt.Errorf("%w: secret %s is owner-configured and cannot be modified by the plugin", ErrPermissionDenied, name)
+	}
+	if value == "" {
+		return h.m.store.deleteDerivedSecret(ctx, h.plugin, name)
+	}
+	if len(value) > MaxDerivedSecretBytes {
+		return fmt.Errorf("%w: secret %s exceeds %d bytes", ErrQuotaExceeded, name, MaxDerivedSecretBytes)
+	}
+	if strings.ContainsRune(value, 0) {
+		return &ValidationError{Fields: []FieldError{{Field: "value", Message: "must not contain NUL bytes"}}}
+	}
+	exists, err := h.m.store.hasDerivedSecret(ctx, h.plugin, name)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		count, err := h.m.store.derivedSecretCount(ctx, h.plugin)
+		if err != nil {
+			return err
+		}
+		if count >= MaxDerivedSecrets {
+			return fmt.Errorf("%w: derived secret limit (%d) reached", ErrQuotaExceeded, MaxDerivedSecrets)
+		}
+	}
+	var expiresAt int64
+	if ttlSec > 0 {
+		expiresAt = h.m.now().Unix() + ttlSec
+	}
+	return h.m.store.putDerivedSecret(ctx, h.plugin, name, value, expiresAt)
+}
+``````
+
+## Source: internal/plugins/host.go#*host.SecretDelete
+
+``````
+func (h *host) SecretDelete(ctx context.Context, name string) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	if _, err := h.checkSecretAccess(ctx, name); err != nil {
+		return err
+	}
+	row, err := h.m.store.settings(ctx, h.plugin)
+	if err != nil {
+		return err
+	}
+	if secretFieldNames(row.Schema)[name] || row.Secrets[name] != "" {
+		return fmt.Errorf("%w: secret %s is owner-configured and cannot be modified by the plugin", ErrPermissionDenied, name)
+	}
+	return h.m.store.deleteDerivedSecret(ctx, h.plugin, name)
 }
 ``````
 
@@ -7333,10 +7453,43 @@ func fetchError(host string, err error) error {
 }
 ``````
 
+## Source: internal/plugins/host.go#fetchOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host.go#fetchOptions
+
+``````
+type fetchOptions struct {
+	stripCrossOriginHeaders []string
+}
+``````
+
+## Source: internal/plugins/host.go#sameOriginURL
+
+``````
+func sameOriginURL(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && safefetch.SameOrigin(a.String(), b.String())
+}
+``````
+
 ## Source: internal/plugins/host.go#*host.openFetch
 
 ``````
 func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response, error) {
+	return h.openFetchWithOptions(ctx, req, fetchOptions{})
+}
+``````
+
+## Source: internal/plugins/host.go#*host.openFetchWithOptions
+
+``````
+func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts fetchOptions) (*http.Response, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
 		return nil, err
@@ -7381,6 +7534,8 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	}
 	// Recheck the current grant before every redirect, as well as the SSRF
 	// guard's own redirect policy. A redirect is another network request.
+	// Credentials and caller-supplied origin-confined headers never follow a
+	// redirect off the initial origin (even if a later hop returns to it).
 	// When ctx already has a deadline, let Request.Context govern both headers
 	// and body reads so timeouts always surface context.DeadlineExceeded rather
 	// than net/http's non-unwrapping Client.Timeout error.
@@ -7389,9 +7544,21 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		client.Timeout = 0
 	}
 	lastURL := u
+	leftOrigin := false
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
+		if !sameOriginURL(u, next.URL) {
+			leftOrigin = true
+		}
+		if leftOrigin {
+			for _, k := range []string{"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Referer"} {
+				next.Header.Del(k)
+			}
+			for _, k := range opts.stripCrossOriginHeaders {
+				next.Header.Del(k)
+			}
+		}
 		current, grants, err := h.record(next.Context())
 		if err != nil {
 			return err
@@ -12623,6 +12790,31 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "secret.get":
 		v, err := b.h.SecretGet(ctx, str(0))
 		return result(v, err)
+	case "secret.set":
+		if len(args) < 2 {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set takes (name, value, ttlSec?)"}
+		}
+		var secName, secVal string
+		if err := json.Unmarshal(args[0], &secName); err != nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set name must be a string"}
+		}
+		if err := json.Unmarshal(args[1], &secVal); err != nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set value must be a string"}
+		}
+		var ttlSec int64
+		if len(args) > 2 && len(args[2]) > 0 && string(args[2]) != "null" {
+			var ttl float64
+			if err := json.Unmarshal(args[2], &ttl); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set ttlSec must be a number"}
+			}
+			if math.IsNaN(ttl) || math.IsInf(ttl, 0) || math.Trunc(ttl) != ttl || ttl < 0 || ttl > float64(MaxDerivedSecretTTLSec) {
+				return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: fmt.Sprintf("secret.set ttlSec must be an integer between 0 and %d", MaxDerivedSecretTTLSec)}
+			}
+			ttlSec = int64(ttl)
+		}
+		return result(nil, b.h.SecretSet(ctx, secName, secVal, ttlSec))
+	case "secret.delete":
+		return result(nil, b.h.SecretDelete(ctx, str(0)))
 	case "http.fetch":
 		var req struct {
 			Method  string            `json:"method"`
@@ -13648,6 +13840,14 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		for _, allowed := range h.man.Ether.Permissions.Secrets {
 			if allowed == sec {
 				return json.RawMessage(`"fixture-secret"`), nil
+			}
+		}
+		return nil, wasm.Forbidden("undeclared secret " + sec)
+	case "secret.set", "secret.delete":
+		sec := str(0)
+		for _, allowed := range h.man.Ether.Permissions.Secrets {
+			if allowed == sec {
+				return json.RawMessage("null"), nil
 			}
 		}
 		return nil, wasm.Forbidden("undeclared secret " + sec)
@@ -19828,16 +20028,20 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 // Host is the set of Ether services a remote plugin may call back
 // into (SPEC §5.1.5). It mirrors plugins.Host method for method for
 // the services remote plugins may use; secret.get is hosted-only and
-// deliberately absent (remote plugins receive secrets in
-// /ether/configure). Every method is expected to re-check the
-// plugin's live grants and return ErrPermissionDenied when a grant
-// is missing or revoked.
+// deliberately absent (remote plugins receive owner secrets in
+// /ether/configure, and may write derived secrets via SecretSet /
+// SecretDelete for {secret:<name>} expansion without reading them back).
+// Every method is expected to re-check the plugin's live grants and return
+// ErrPermissionDenied when a grant is missing or revoked.
 type Host interface {
 	KVGet(ctx context.Context, pluginID, key string) ([]byte, bool, error)
 	KVPut(ctx context.Context, pluginID, key string, value []byte) error
 	KVDelete(ctx context.Context, pluginID, key string) error
 	KVList(ctx context.Context, pluginID, prefix string) ([]string, error)
 	KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error)
+
+	SecretSet(ctx context.Context, pluginID, name, value string, ttlSec int64) error
+	SecretDelete(ctx context.Context, pluginID, name string) error
 
 	BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error
 	BadgesClear(ctx context.Context, pluginID, setKey string) error
@@ -19949,6 +20153,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/kv/{key...}", h.kvGet)
 	mux.HandleFunc("PUT /ether/plugin-host/kv/{key...}", h.kvPut)
 	mux.HandleFunc("DELETE /ether/plugin-host/kv/{key...}", h.kvDelete)
+	mux.HandleFunc("PUT /ether/plugin-host/secrets/{name}", h.secretSet)
+	mux.HandleFunc("DELETE /ether/plugin-host/secrets/{name}", h.secretDelete)
 	mux.HandleFunc("GET /ether/plugin-host/badges/usage", h.badgesUsage)
 	mux.HandleFunc("GET /ether/plugin-host/badges-usage", h.badgesUsage)
 	mux.HandleFunc("PUT /ether/plugin-host/badges/{setKey}", h.badgesSet)
@@ -20113,6 +20319,45 @@ func (h *HostHandler) kvUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, usage)
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.secretSet
+
+``````
+func (h *HostHandler) secretSet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "Secret name is required")
+		return
+	}
+	var body struct {
+		Value  string `json:"value"`
+		TTLSec int64  `json:"ttlSec"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	if !h.finishErr(w, h.host.SecretSet(r.Context(), pluginIDOf(r), name, body.Value, body.TTLSec)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.secretDelete
+
+``````
+func (h *HostHandler) secretDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "Secret name is required")
+		return
+	}
+	if !h.finishErr(w, h.host.SecretDelete(r.Context(), pluginIDOf(r), name)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 ``````
 
@@ -20877,6 +21122,35 @@ const RemoteHashDailyBytes int64 = 50 << 30
 const remoteHashFresh = 5 * time.Minute
 ``````
 
+## Source: internal/plugins/remote_hash.go#maxHashHeaders
+
+``````
+const (
+	maxHashHeaders     = 32
+	maxHashHeaderBytes = 16 << 10
+)
+``````
+
+## Source: internal/plugins/remote_hash.go#forbiddenHashHeaders
+
+``````
+var forbiddenHashHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Host":                true,
+	"Content-Length":      true,
+	"Range":               true,
+	"If-Range":            true,
+}
+``````
+
 ## Source: internal/plugins/remote_hash.go#init
 
 ``````
@@ -20896,6 +21170,7 @@ CREATE TABLE plugins_remote_hash_budget(plugin TEXT PRIMARY KEY,day TEXT NOT NUL
 | `url` | `string` | emitted (validation may require a value) |  |
 | `algo` | `string` | emitted (validation may require a value) |  |
 | `expectSize` | `*int64` | may be omitted (see validation for conditions) |  |
+| `headers` | `map[string]string` | may be omitted (see validation for conditions) | Headers sends optional origin-confined request headers with the hash fetch. Values may use {secret:<name>} placeholders expanded via permissions.secrets; hop-by-hop and framing headers are rejected, headers are stripped on cross-origin redirects, and values are never logged or persisted in the hash cache. |
 
 
 ## Source: internal/plugins/remote_hash.go#HashRequest
@@ -20905,6 +21180,12 @@ type HashRequest struct {
 	URL        string `json:"url"`
 	Algo       string `json:"algo"`
 	ExpectSize *int64 `json:"expectSize,omitempty"`
+	// Headers sends optional origin-confined request headers with the hash
+	// fetch. Values may use {secret:<name>} placeholders expanded via
+	// permissions.secrets; hop-by-hop and framing headers are rejected, headers
+	// are stripped on cross-origin redirects, and values are never logged or
+	// persisted in the hash cache.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 ``````
 
@@ -20968,6 +21249,85 @@ type remoteHashEntry struct {
 }
 ``````
 
+## Source: internal/plugins/remote_hash.go#validateHashHeaders
+
+``````
+func validateHashHeaders(headers map[string]string, expanded bool) error {
+	if len(headers) == 0 {
+		return nil
+	}
+	if len(headers) > maxHashHeaders {
+		return &ValidationError{Fields: []FieldError{{
+			Field:   "headers",
+			Message: fmt.Sprintf("at most %d headers are allowed", maxHashHeaders),
+		}}}
+	}
+	seen := make(map[string]struct{}, len(headers))
+	totalBytes := 0
+	for name, val := range headers {
+		if name == "" || !httpguts.ValidHeaderFieldName(name) {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("invalid header name %q", name),
+			}}}
+		}
+		canonical := http.CanonicalHeaderKey(name)
+		if forbiddenHashHeaders[canonical] {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("header %q is not allowed", canonical),
+			}}}
+		}
+		if _, dup := seen[canonical]; dup {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("duplicate header %q", canonical),
+			}}}
+		}
+		seen[canonical] = struct{}{}
+		totalBytes += len(name) + len(val)
+		if totalBytes > maxHashHeaderBytes {
+			return &ValidationError{Fields: []FieldError{{
+				Field:   "headers",
+				Message: fmt.Sprintf("headers exceed %d bytes", maxHashHeaderBytes),
+			}}}
+		}
+		if strings.ContainsAny(val, "\r\n\x00") || !httpguts.ValidHeaderFieldValue(val) {
+			msg := fmt.Sprintf("header %q has an invalid HTTP header value", canonical)
+			if expanded {
+				msg = fmt.Sprintf("header %q expanded to an invalid HTTP header value", canonical)
+			}
+			return &ValidationError{Fields: []FieldError{{Field: "headers", Message: msg}}}
+		}
+	}
+	return nil
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#*host.expandHashHeaders
+
+``````
+func (h *host) expandHashHeaders(ctx context.Context, headers map[string]string) (map[string]string, error) {
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	if err := validateHashHeaders(headers, false); err != nil {
+		return nil, err
+	}
+	expanded, err := kindstream.ExpandHeaders(ctx, headers, h.SecretGet)
+	if err != nil {
+		if errors.Is(err, kindstream.ErrInvalidTemplate) {
+			return nil, &ValidationError{Fields: []FieldError{{Field: "headers", Message: err.Error()}}}
+		}
+		return nil, err
+	}
+	if err := validateHashHeaders(expanded, true); err != nil {
+		return nil, err
+	}
+	return expanded, nil
+}
+``````
+
 ## Source: internal/plugins/remote_hash.go#*host.hashPermission
 
 ``````
@@ -20983,6 +21343,9 @@ func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 		return ErrPermissionDenied
 	}
 	if err := h.allowNetworkURL(ctx, u); err != nil {
+		return err
+	}
+	if _, err := h.expandHashHeaders(ctx, req.Headers); err != nil {
 		return err
 	}
 	return nil
@@ -21051,6 +21414,10 @@ func (h *host) HTTPHash(ctx context.Context, req HashRequest) (HashResult, error
 	if _, _, err := h.record(ctx); err != nil {
 		return HashResult{}, err
 	}
+	workerReq := req
+	if len(req.Headers) > 0 {
+		workerReq.Headers = maps.Clone(req.Headers)
+	}
 	workCtx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
 	w := &remoteHashWork{key: key, cancel: cancel, done: make(chan struct{})}
 	m.remoteHashes[h.plugin] = w
@@ -21067,7 +21434,7 @@ func (h *host) HTTPHash(ctx context.Context, req HashRequest) (HashResult, error
 		// Waiting plugins consume a goroutine, never a dedicated OS thread.
 		runtime.LockOSThread()
 		lowerJobPriority()
-		w.err = h.computeRemoteHash(workCtx, req, key, e)
+		w.err = h.computeRemoteHash(workCtx, workerReq, key, e)
 		w.ended = m.now()
 		close(w.done)
 	}()
@@ -21096,13 +21463,27 @@ func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key strin
 	if err := wasm.WaitBackground(ctx, h.m.deps.Busy); err != nil {
 		return err
 	}
-	headers := map[string]string{"Accept-Encoding": "identity"}
+	expanded, err := h.expandHashHeaders(ctx, req.Headers)
+	if err != nil {
+		return err
+	}
+	headers := make(map[string]string, len(expanded)+3)
+	stripCrossOrigin := make([]string, 0, len(expanded))
+	for k, v := range expanded {
+		ck := http.CanonicalHeaderKey(k)
+		if ck == "Accept-Encoding" || ck == "If-None-Match" || ck == "If-Modified-Since" {
+			continue
+		}
+		headers[ck] = v
+		stripCrossOrigin = append(stripCrossOrigin, ck)
+	}
+	headers["Accept-Encoding"] = "identity"
 	if old.etag != "" {
 		headers["If-None-Match"] = old.etag
 	} else if old.modified != "" {
 		headers["If-Modified-Since"] = old.modified
 	}
-	resp, err := h.openFetch(ctx, FetchRequest{URL: req.URL, Headers: headers})
+	resp, err := h.openFetchWithOptions(ctx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
 	if err != nil {
 		return err
 	}
@@ -25003,7 +25384,9 @@ globalThis.ether = (() => {
               clear: (setKey) => call("badges.clear", [setKey]),
               usage: () => call("badges.usage", []) },
     settings: { get: () => call("settings.get", []) },
-    secret: { get: (n) => call("secret.get", [n]) },
+    secret: { get: (n) => call("secret.get", [n]),
+              set: (n, v, ttlSec) => call("secret.set", ttlSec === undefined ? [n, v] : [n, v, ttlSec]),
+              delete: (n) => call("secret.delete", [n]) },
     http: { hash: (req) => call("http.hash", [req]), fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
     catalog: { search: (q) => call("catalog.search", [q]), get: (id) => call("catalog.get", [id]) },
     addon: { get: (route) => call("addon.get", [route]) },
@@ -26188,7 +26571,7 @@ type Response struct {
 
 ``````
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
-// service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get,
+// service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get, secret.set, secret.delete,
 // http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, cache.delete, frontend.streamURL,
@@ -26216,7 +26599,7 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
 	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10, "kv.usage": 5, "badges.set": 20, "badges.clear": 10, "badges.usage": 5,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "secret.set": 10, "secret.delete": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
@@ -29543,7 +29926,15 @@ signing the updated index.
 
 Copy rules apply to contribution labels too: sentence case, no exclamation marks,
 no em/en dashes, no “simply”, “just”, or “easily”. Setting secrets are sealed by
-Ether; read with SecretGet only where needed, never echo them into views/logs.
+Ether; read with `SecretGet` only where needed, never echo them into views/logs.
+To store a plugin-derived credential (for example a session cookie or short-lived
+token) without writing plaintext into resolution or candidate caches, declare its
+name in `permissions.secrets` (not as a `settings.schema.json` secret field),
+store it with `ether.secret.set(name, value, ttlSec?)` (or `SecretWriteHost` /
+`PUT /ether/plugin-host/secrets/{name}` from remote plugins; empty value or
+`ether.secret.delete(name)` removes it), and reference it as `{secret:<name>}` in
+playable source headers and `http.hash`. Owner-configured settings secrets can never
+be overwritten or deleted by a plugin.
 
 ## Capability → routes → host services
 
@@ -29858,11 +30249,16 @@ remote request (including streaming into cache) by the remaining call deadline.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 
-`ether.http.hash({url,algo:"sha256",expectSize:12345})` returns either
-`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` is
-optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams on the host,
-without a blob or guest bytes, through the same network permissions and safe
-fetch rules as fetch. It starts only when called. One worker per plugin and
+`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"}})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` and
+`headers` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
+on the host, without a blob or guest bytes, through the same network permissions
+and safe fetch rules as fetch. Optional `headers` expand `{secret:<name>}`
+placeholders using the plugin's `permissions.secrets` grant (including derived
+secrets stored via `secret.set`), reject hop-by-hop/framing headers (`Connection`,
+`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), stay
+origin-confined (stripped on cross-origin redirects), are never logged, and are
+not part of the hash cache key. It starts only when called. One worker per plugin and
 two globally run below playback priority and yield during playback contention.
 Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per
 UTC day (including unsuccessful reads), 12 hours per task. The daily cap logs
@@ -39148,16 +39544,19 @@ func (c *RemoteHostClient) ArchiveExtract(ctx context.Context, blob string, memb
 | `url` | `string` | emitted (validation may require a value) |  |
 | `algo` | `string` | emitted (validation may require a value) |  |
 | `expectSize` | `*int64` | may be omitted (see validation for conditions) |  |
+| `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/data_host.go#HashRequest
 
 ``````
 // HashRequest requests an on-demand host-side remote digest without storing bytes.
+// Optional Headers are origin-confined and expand {secret:<name>} placeholders.
 type HashRequest struct {
-	URL        string `json:"url"`
-	Algo       string `json:"algo"`
-	ExpectSize *int64 `json:"expectSize,omitempty"`
+	URL        string            `json:"url"`
+	Algo       string            `json:"algo"`
+	ExpectSize *int64            `json:"expectSize,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 ``````
 
@@ -39432,6 +39831,18 @@ type KVUsage struct {
 // RemoteHostClient and MockHost implement it.
 type KVUsageHost interface {
 	KVUsage(ctx context.Context) (KVUsage, error)
+}
+``````
+
+## Source: sdk/go/host.go#SecretWriteHost
+
+``````
+// SecretWriteHost stores and removes sealed derived secrets declared in
+// permissions.secrets (#660). Owner-configured settings secrets cannot be
+// overwritten. RemoteHostClient and MockHost implement it.
+type SecretWriteHost interface {
+	SecretSet(ctx context.Context, name, value string, ttlSec int64) error
+	SecretDelete(ctx context.Context, name string) error
 }
 ``````
 
@@ -39828,6 +40239,32 @@ func (c *RemoteHostClient) BadgesUsage(ctx context.Context) (BadgeUsage, error) 
 // SecretGet is only available in hosted mode; remote plugins receive secrets via /ether/configure.
 func (c *RemoteHostClient) SecretGet(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("secret.get is only available in hosted plugins; remote plugins receive secrets via /ether/configure")
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.SecretSet
+
+``````
+// SecretSet stores a sealed derived secret under a name declared in
+// permissions.secrets (#660). Passing an empty value deletes it.
+func (c *RemoteHostClient) SecretSet(ctx context.Context, name, value string, ttlSec int64) error {
+	payload := map[string]any{"value": value}
+	if ttlSec != 0 {
+		payload["ttlSec"] = ttlSec
+	}
+	_, err := c.callJSON(ctx, http.MethodPut, "/ether/plugin-host/secrets/"+url.PathEscape(name), payload, nil, false)
+	return err
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.SecretDelete
+
+``````
+// SecretDelete removes a plugin-written derived secret declared in
+// permissions.secrets (#660).
+func (c *RemoteHostClient) SecretDelete(ctx context.Context, name string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/secrets/"+url.PathEscape(name), nil, nil, false)
+	return err
 }
 ``````
 
@@ -48992,11 +49429,26 @@ class _ArchiveClient:
         return res if isinstance(res, dict) else {}  # type: ignore[return-value]
 
 
+class _SecretClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def set(self, name: str, value: str, ttl_sec: Optional[int] = None) -> None:
+        body: Dict[str, Any] = {"value": str(value)}
+        if ttl_sec is not None:
+            body["ttlSec"] = int(ttl_sec)
+        self._call("PUT", f"/ether/plugin-host/secrets/{urllib.parse.quote(name, safe='')}", body)
+
+    def delete(self, name: str) -> None:
+        self._call("DELETE", f"/ether/plugin-host/secrets/{urllib.parse.quote(name, safe='')}")
+
+
 class _HttpClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
 
     def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Request a host-side digest (`{url, algo, expectSize?, headers?}`)."""
         return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
 
     def fetch_to_cache(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -49219,6 +49671,7 @@ class RemoteHostClient:
         self.viewer_token = (viewer_token or "").strip()
         self.kv = _KVClient(self._call_json)
         self.badges = _BadgesClient(self._call_json)
+        self.secret = _SecretClient(self._call_json)
         self.http = _HttpClient(self._call_json)
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
@@ -51254,6 +51707,15 @@ class MockHostClient:
         def get(self, name: str) -> str:
             return self._p.secrets_store.get(name, "")
 
+        def set(self, name: str, value: str, ttl_sec: Optional[int] = None) -> None:
+            if value == "":
+                self._p.secrets_store.pop(name, None)
+            else:
+                self._p.secrets_store[name] = str(value)
+
+        def delete(self, name: str) -> None:
+            self._p.secrets_store.pop(name, None)
+
     class _Http:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
@@ -52544,7 +53006,13 @@ export interface HostFetchResponse {
   bodyBase64?: string;
 }
 
-export interface HashRequest { url: string; algo: "sha256" | "sha1" | "md5"; expectSize?: number }
+export interface HashRequest {
+  url: string;
+  algo: "sha256" | "sha1" | "md5";
+  expectSize?: number;
+  /** Optional origin-confined request headers; values may include `{secret:<name>}` placeholders. */
+  headers?: Record<string, string>;
+}
 export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
 export const MinDataReadBytes = 8 * 1024 * 1024;
@@ -52883,6 +53351,10 @@ export interface EtherHost {
   };
   secret: {
     get(name: string): MaybePromise<string>;
+    /** Store a sealed derived secret under a name declared in permissions.secrets (non-owner setting). Empty value deletes it. */
+    set(name: string, value: string, ttlSec?: number): MaybePromise<void>;
+    /** Delete a plugin-written derived secret declared in permissions.secrets. */
+    delete(name: string): MaybePromise<void>;
   };
   http: {
     fetch(req: HostFetchRequest): MaybePromise<HostFetchResponse>;
@@ -52995,6 +53467,8 @@ interface GlobalEtherBindings {
     };
     secret: {
       get: (name: string) => string;
+      set?: (name: string, value: string, ttlSec?: number) => void;
+      delete?: (name: string) => void;
     };
     http: {
       fetch: (req: HostFetchRequest) => HostFetchResponse;
@@ -53169,6 +53643,20 @@ export function createHostedClient(): EtherHost {
           if (err instanceof Error && /is not saved/i.test(err.message)) return "";
           throw err;
         }
+      },
+      set(name: string, value: string, ttlSec?: number): void {
+        if (g.ether?.secret?.set) {
+          g.ether.secret.set(name, value, ttlSec);
+          return;
+        }
+        callHost("secret.set", ttlSec === undefined ? [name, value] : [name, value, ttlSec]);
+      },
+      delete(name: string): void {
+        if (g.ether?.secret?.delete) {
+          g.ether.secret.delete(name);
+          return;
+        }
+        callHost("secret.delete", [name]);
       },
     },
     http: {
@@ -53493,6 +53981,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
             "secret.get is only available in hosted plugins; remote plugins receive secrets via /ether/configure",
           ),
         );
+      },
+      async set(name: string, value: string, ttlSec?: number): Promise<void> {
+        const body: Record<string, unknown> = { value: String(value) };
+        if (ttlSec !== undefined) body.ttlSec = ttlSec;
+        await callJson("PUT", `/ether/plugin-host/secrets/${encodeURIComponent(name)}`, body);
+      },
+      async delete(name: string): Promise<void> {
+        await callJson("DELETE", `/ether/plugin-host/secrets/${encodeURIComponent(name)}`);
       },
     },
     http: {

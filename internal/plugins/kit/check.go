@@ -658,6 +658,14 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			}
 		}
 		return nil, wasm.Forbidden("undeclared secret " + sec)
+	case "secret.set", "secret.delete":
+		sec := str(0)
+		for _, allowed := range h.man.Ether.Permissions.Secrets {
+			if allowed == sec {
+				return json.RawMessage("null"), nil
+			}
+		}
+		return nil, wasm.Forbidden("undeclared secret " + sec)
 	case "settings.get":
 		return json.RawMessage(`{}`), nil
 	case "runtime.limits":

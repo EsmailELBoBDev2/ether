@@ -298,6 +298,13 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     },
     secret: {
       get: (name: string) => state.secrets.get(name) ?? "",
+      set: (name: string, value: string, _ttlSec?: number) => {
+        if (value === "") state.secrets.delete(name);
+        else state.secrets.set(name, value);
+      },
+      delete: (name: string) => {
+        state.secrets.delete(name);
+      },
     },
     http: {
       fetch: (req: HostFetchRequest) => state.httpHandler(req),

@@ -848,6 +848,32 @@ func (f *fakeHost) KVUsage(_ context.Context, pluginID string) (plugins.KVUsage,
 	}, nil
 }
 
+func (f *fakeHost) SecretSet(_ context.Context, pluginID, name, value string, ttlSec int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kv == nil {
+		f.kv = map[string]map[string][]byte{}
+	}
+	if f.kv["__secret__"+pluginID] == nil {
+		f.kv["__secret__"+pluginID] = map[string][]byte{}
+	}
+	if value == "" {
+		delete(f.kv["__secret__"+pluginID], name)
+		return nil
+	}
+	f.kv["__secret__"+pluginID][name] = []byte(value)
+	return nil
+}
+
+func (f *fakeHost) SecretDelete(_ context.Context, pluginID, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kv != nil && f.kv["__secret__"+pluginID] != nil {
+		delete(f.kv["__secret__"+pluginID], name)
+	}
+	return nil
+}
+
 func (f *fakeHost) CatalogSearch(_ context.Context, _, query string, limit, offset int) (json.RawMessage, error) {
 	if f.denyCatalog {
 		return nil, ErrPermissionDenied
@@ -1823,4 +1849,63 @@ func (a *adapterTestHost) KindVisible(ctx context.Context, kindKey string, ids [
 
 func (a *adapterTestHost) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
 	return a.onBrowse(ctx, kindKey, q)
+}
+
+func TestHostHandlerDerivedSecrets(t *testing.T) {
+	fh := &fakeHost{}
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: fh,
+		Auth: remotetest.Credentials{
+			"cred-sec": "plug.sec",
+		},
+	}))
+	defer srv.Close()
+
+	doReq := func(method, path string, body []byte) *http.Response {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			rd = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, srv.URL+path, rd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-sec")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// PUT stores derived secret.
+	resp := doReq(http.MethodPut, "/ether/plugin-host/secrets/session_cookie", []byte(`{"value":"sid=abc","ttlSec":300}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT derived secret status = %d, want 204", resp.StatusCode)
+	}
+	if got := string(fh.kv["__secret__plug.sec"]["session_cookie"]); got != "sid=abc" {
+		t.Fatalf("stored derived secret = %q, want sid=abc", got)
+	}
+
+	// GET remains absent (secret.get is hosted-only).
+	resp = doReq(http.MethodGet, "/ether/plugin-host/secrets/session_cookie", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET derived secret status = %d, want 404 or 405", resp.StatusCode)
+	}
+
+	// DELETE clears derived secret.
+	resp = doReq(http.MethodDelete, "/ether/plugin-host/secrets/session_cookie", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE derived secret status = %d, want 204", resp.StatusCode)
+	}
+	if _, exists := fh.kv["__secret__plug.sec"]["session_cookie"]; exists {
+		t.Fatal("derived secret still present after DELETE")
+	}
 }

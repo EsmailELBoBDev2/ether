@@ -32,7 +32,7 @@ type viewerChoiceReader interface {
 }
 
 func isAutoVersionSelector(prefer string) bool {
-	if prefer == "" {
+	if prefer == "" || prefer == core.KindAutoVersionID {
 		return true
 	}
 	if !strings.HasPrefix(prefer, core.VersionSelectorPrefix) || len(prefer) > 256 {
@@ -77,7 +77,7 @@ func (m *Manager) observeViewerVersionChoice(s *session, position time.Duration,
 	if !ok || s == nil || s.ident.userID <= 0 || s.title == nil || s.caps.Download {
 		return
 	}
-	if kind := s.ident.key.Kind(); kind != core.KindMovie && kind != core.KindEpisode {
+	if kind := s.ident.key.Kind(); kind != core.KindMovie && kind != core.KindEpisode && !s.ident.key.IsPluginKey() {
 		return
 	}
 	if s.prefer == "" || isAutoVersionSelector(s.prefer) {

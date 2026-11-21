@@ -93,6 +93,9 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 		if err != nil || len(variants) == 0 {
 			return nil, err
 		}
+		if s.app.playback != nil {
+			variants = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, variants)
+		}
 		if max > 0 && len(variants) > max {
 			variants = variants[:max]
 		}
@@ -127,12 +130,20 @@ func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveReque
 	if s.app == nil {
 		return nil, nil
 	}
-	// A plugin kind item's version menu is its /resolve sources (Auto + one
-	// per release), listed through the KindResolver cache.
+	// A plugin kind item's version menu is its /resolve sources (Auto +
+	// remaining releases), listed through the KindResolver cache. Never call
+	// plugin /resolve on list renders (labels == false); only on detail or
+	// play intent (labels == true).
 	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
+		if !labels {
+			return nil, nil
+		}
 		variants, err := s.app.pluginKindVersions(ctx, req.User, req.Title.Key)
 		if err != nil || len(variants) == 0 {
 			return nil, err
+		}
+		if s.app.playback != nil {
+			variants = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, variants)
 		}
 		if max > 0 && len(variants) > max {
 			variants = variants[:max]

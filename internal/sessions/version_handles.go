@@ -120,11 +120,35 @@ func (v *versionHandles) allowedOffers(ctx context.Context, scope frontend.Versi
 		if err != nil {
 			return nil, nil, err
 		}
-		allowed := make(map[string]bool, len(offered))
+		allowed := make(map[string]bool, len(offered)*2)
 		for _, candidate := range offered {
 			if candidate.ID != "" {
 				allowed[candidate.ID] = true
 			}
+			if candidate.Release.ID != "" {
+				allowed[candidate.Release.ID] = true
+			}
+		}
+		if len(allowed) > 0 {
+			v.broker.mu.Lock()
+			for _, p := range v.broker.plans {
+				if p.request.Viewer != nil && p.request.Viewer.ID == viewer.ID && p.request.Protocol == v.protocol && p.request.Device.ID == scope.Device.ID && p.request.Item == item {
+					if p.exactRelease != "" {
+						allowed[p.exactRelease] = true
+					}
+					if p.source != nil && p.source.Resolution != nil && p.source.Resolution.Release.ID != "" {
+						allowed[p.source.Resolution.Release.ID] = true
+					}
+				}
+			}
+			for _, s := range v.broker.sessions {
+				if s != nil && s.public.ViewerID == viewer.ID && s.public.Protocol == v.protocol && s.public.Device.ID == scope.Device.ID && s.public.Item == item {
+					if s.exactRelease != "" {
+						allowed[s.exactRelease] = true
+					}
+				}
+			}
+			v.broker.mu.Unlock()
 		}
 		return viewer, allowed, nil
 	}

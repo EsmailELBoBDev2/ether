@@ -37,24 +37,54 @@ func (m *Manager) PrepareKind(ctx context.Context, user *core.User, in core.Kind
 	if in.Title == nil || (in.Open == nil && in.OpenCandidate == nil) {
 		return nil, core.ErrNotAvailable
 	}
+	prefer := in.PreferSourceID
+	if isAutoVersionSelector(prefer) {
+		prefer = ""
+	}
+	exact := in.Exact && prefer != ""
+	deferSupersession := in.DeferSupersession
 	id := identity{userID: user.ID, clientID: caps.ClientID, key: in.Title.Key, surface: m.playbackSurface(string(caps.Protocol))}
+	if deferSupersession {
+		id.variant, id.exact = prefer, exact
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return nil, errors.New("playback: shutting down")
 	}
-	// Reuse a live session for the same viewer, client and item.
-	if s := m.byIdent[id]; s != nil {
+	// Reuse a live session for the same viewer, client, item and selection.
+	// If the existing session does not fit the requested version or a newer
+	// remembered choice, stop it (for non-deferred callers) and open fresh.
+	if s := m.byIdent[id]; s != nil && !s.closed {
+		fits := sessionFitsSelection(s, caps, prefer, exact)
+		if fits && prefer == "" {
+			if g := s.current(); g != nil && !m.rememberedChoiceAllows(s, g.releaseID()) {
+				fits = false
+			}
+		}
+		if fits {
+			m.mu.Unlock()
+			s.touch(m.now())
+			return s.snapshot(m.now()), nil
+		}
+		evictID := s.id
 		m.mu.Unlock()
-		s.touch(m.now())
-		return s.snapshot(m.now()), nil
+		m.Stop(evictID)
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return nil, errors.New("playback: shutting down")
+		}
 	}
-	fk := flightKey{id: id}
+	fk := flightKey{id: id, prefer: prefer, exact: exact, deferSupersession: deferSupersession}
 	f := m.flights[fk]
 	if f == nil {
 		parent := context.WithoutCancel(ctx)
 		wctx, cancel := context.WithTimeout(parent, m.opts.PrepareTimeout)
 		kindCopy := in
+		kindCopy.PreferSourceID = prefer
+		kindCopy.Exact = exact
+		kindCopy.DeferSupersession = deferSupersession
 		f = &flight{sources: newSourceLifetime(user.ID, string(caps.Protocol), caps.ClientID), done: make(chan struct{}), cancel: cancel, kind: &kindCopy}
 		m.flights[fk] = f
 		u := *user

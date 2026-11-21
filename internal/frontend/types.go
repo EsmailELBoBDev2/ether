@@ -82,6 +82,8 @@ const MaxVariants = core.MaxVariants
 
 const VersionSelectorPrefix = core.VersionSelectorPrefix
 
+const KindAutoVersionID = core.KindAutoVersionID
+
 func ResolutionTier(w, h int) int { return core.ResolutionTier(w, h) }
 
 func SourceLabel(s Source) string { return core.SourceLabel(s) }
@@ -125,6 +127,8 @@ const (
 )
 
 func ShowKey(tmdb int64) RatingKey { return core.ShowKey(tmdb) }
+
+func PluginKey(seq int64) RatingKey { return core.PluginKey(seq) }
 
 func SeasonKey(show int64, season int) RatingKey {
 	return core.SeasonKey(show, season)

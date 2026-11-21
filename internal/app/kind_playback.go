@@ -2,20 +2,21 @@ package app
 
 import (
 	"context"
+	"slices"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // pluginKindVersions lists the playable version menu of a plugin kind item
-// (Auto slot + one entry per /resolve source). It is the broker's KindVersions
+// (Auto slot + remaining /resolve sources). It is the broker's KindVersions
 // dep and the plugin branch of the Vela/Plex version surfaces; it reuses the
 // KindResolver candidate cache so a warm list never re-runs the plugin.
 func (a *App) pluginKindVersions(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]core.ReleaseVariant, error) {
 	if a.pluginsRT == nil || a.pluginsRT.kindResolver == nil || viewer == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
-	return a.pluginsRT.kindResolver.KindVersions(ctx, viewer, key)
+	return a.pluginsRT.kindResolver.KindVersions(ctx, viewer, key, kindAccept, true)
 }
 
 // kindAccept lists the retrieval patterns the transcode bridge can turn into
@@ -50,8 +51,15 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 		in.OpenCandidate = func(octx context.Context, exclude []string) (core.MediaSource, core.Release, error) {
 			var media *frontend.KindMedia
 			var err error
-			if in.PreferSourceID != "" {
-				media, err = resolver.OpenKindSource(octx, viewer, key, in.PreferSourceID, kindAccept)
+			if in.PreferSourceID != "" && in.PreferSourceID != core.KindAutoVersionID {
+				if slices.Contains(exclude, in.PreferSourceID) {
+					if in.Exact {
+						return nil, core.Release{}, core.ErrNotAvailable
+					}
+					media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
+				} else {
+					media, err = resolver.OpenKindSource(octx, viewer, key, in.PreferSourceID, kindAccept)
+				}
 			} else {
 				media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
 			}

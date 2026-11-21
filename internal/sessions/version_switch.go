@@ -123,7 +123,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	if chosen != nil && chosen.Availability == core.VersionUnavailable {
 		return frontend.PlayPlan{}, core.ErrVersionUnavailable
 	}
-	isAuto := (chosen != nil && chosen.Auto) || targetSelector == core.KindAutoVersionID
+	isAuto := targetSelector == core.KindAutoVersionID || (chosen != nil && chosen.Auto && chosen.ID == targetSelector)
 	exact := !isAuto
 	if isAuto {
 		targetSelector = ""
@@ -137,7 +137,11 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		if !ok {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
-		previous, existed = kp.SessionForKind(viewer.ID, caps.ClientID, s.public.Item)
+		if scoped, ok := b.deps.Playback.(core.SurfaceScopedPlayback); ok {
+			previous, existed = scoped.SessionForSurface(string(s.public.Protocol), viewer.ID, caps.ClientID, s.public.Item, targetSelector, exact)
+		} else {
+			previous, existed = kp.SessionForKind(viewer.ID, caps.ClientID, s.public.Item)
+		}
 		in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item)
 		if ierr != nil || in == nil {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
@@ -145,6 +149,8 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		if targetSelector != "" && targetSelector != core.KindAutoVersionID {
 			in.PreferSourceID = targetSelector
 		}
+		in.Exact = exact
+		in.DeferSupersession = true
 		ps, err = kp.PrepareKind(ctx, viewer, *in, caps)
 	} else {
 		playback, ok := b.deps.Playback.(core.SurfaceScopedPlayback)

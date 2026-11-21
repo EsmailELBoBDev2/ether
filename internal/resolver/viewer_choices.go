@@ -71,11 +71,15 @@ type ViewerChoice struct {
 	ChosenAt time.Time           `json:"chosenAt"`
 }
 
+func viewerChoiceKeyAllowed(k core.RatingKey) bool {
+	return pinnableKey(k) || k.IsPluginKey()
+}
+
 func showKeyForTitle(t *core.Title) core.RatingKey {
 	if t == nil {
 		return 0
 	}
-	if t.Key.Kind() == core.KindShow {
+	if t.Key.Kind() == core.KindShow || (t.Key.IsPluginKey() && t.Type == core.TypeShow) {
 		return t.Key
 	}
 	if t.ShowKey.Valid() {
@@ -211,7 +215,7 @@ func (s *Service) profileMatchesRelease(p core.VersionProfile, rel core.Release)
 // should invoke this only after an explicitly chosen non-Auto version crosses
 // the real-play threshold.
 func (s *Service) RecordViewerChoice(ctx context.Context, userID int64, title *core.Title, selector string, rel core.Release, probed *core.MediaInfo) error {
-	if s == nil || userID <= 0 || title == nil || !pinnableKey(title.Key) || rel.ID == "" {
+	if s == nil || userID <= 0 || title == nil || !viewerChoiceKeyAllowed(title.Key) || rel.ID == "" {
 		return nil
 	}
 	if autoVersion(selector) {
@@ -241,8 +245,8 @@ func (s *Service) RecordViewerChoice(ctx context.Context, userID int64, title *c
 		ChosenAt: now,
 	}
 	choices := []ViewerChoice{titleChoice}
-	if title.Key.Kind() == core.KindEpisode {
-		if showKey := showKeyForTitle(title); showKey.Valid() && (profile.Height > 0 || profile.DynamicRange != "" || profile.SourceClass != "" || storedSelector != "") {
+	if title.Key.Kind() == core.KindEpisode || (title.Key.IsPluginKey() && title.Type == core.TypeEpisode) {
+		if showKey := showKeyForTitle(title); showKey.Valid() && showKey != title.Key && (profile.Height > 0 || profile.DynamicRange != "" || profile.SourceClass != "" || storedSelector != "") {
 			choices = append(choices, ViewerChoice{
 				UserID:   userID,
 				Key:      showKey,
@@ -312,14 +316,14 @@ func (s *Service) ClearViewerChoice(ctx context.Context, userID int64, title *co
 	var keys []core.RatingKey
 	switch scope {
 	case "all":
-		if pinnableKey(title.Key) {
+		if viewerChoiceKeyAllowed(title.Key) {
 			keys = append(keys, title.Key)
 		}
-		if sk := showKeyForTitle(title); sk.Valid() {
+		if sk := showKeyForTitle(title); sk.Valid() && sk != title.Key {
 			keys = append(keys, sk)
 		}
 	case "title":
-		if pinnableKey(title.Key) {
+		if viewerChoiceKeyAllowed(title.Key) {
 			keys = append(keys, title.Key)
 		}
 	case "show":
@@ -378,6 +382,9 @@ func (s *Service) ViewerChoiceSummary(_ context.Context, viewer *core.Viewer, ti
 		if label == "" {
 			label = qualityPhrase(vc.Release.Info)
 		}
+		if label == "" {
+			label = strings.TrimSpace(vc.Release.Name)
+		}
 		return &core.ViewerChoiceSummary{
 			Scope:     "title",
 			Active:    active,
@@ -387,7 +394,7 @@ func (s *Service) ViewerChoiceSummary(_ context.Context, viewer *core.Viewer, ti
 			ReleaseID: vc.Release.ID,
 		}, nil
 	}
-	if title.Key.Kind() == core.KindEpisode || title.Key.Kind() == core.KindShow {
+	if title.Key.Kind() == core.KindEpisode || title.Key.Kind() == core.KindShow || (title.Key.IsPluginKey() && (title.Type == core.TypeEpisode || title.Type == core.TypeShow)) {
 		if sk := showKeyForTitle(title); sk.Valid() {
 			if vc, ok := s.ViewerChoiceFor(viewer.ID, sk); ok && vc.Scope == "show" {
 				return &core.ViewerChoiceSummary{
@@ -401,6 +408,39 @@ func (s *Service) ViewerChoiceSummary(_ context.Context, viewer *core.Viewer, ti
 		}
 	}
 	return nil, nil
+}
+
+// MatchViewerChoice finds the first release in releases matching the viewer's
+// remembered title choice, or (for episodes) remembered show profile. Returns
+// (-1, "") when no remembered choice applies or matches.
+func (s *Service) MatchViewerChoice(userID int64, title *core.Title, releases []core.Release) (int, string) {
+	if s == nil || userID <= 0 || title == nil || len(releases) == 0 {
+		return -1, ""
+	}
+	if vc, ok := s.ViewerChoiceFor(userID, title.Key); ok && vc.Scope == "title" && vc.Release.ID != "" {
+		if !s.isBadRelease(vc.Release) && !s.recentlyFailedRelease(vc.Release) && !s.rejectedFor(title.Key, vc.Release) {
+			for i, rel := range releases {
+				if rel.ID == vc.Release.ID && !s.isBadRelease(rel) && !s.recentlyFailedRelease(rel) && !s.rejectedFor(title.Key, rel) {
+					return i, "title"
+				}
+			}
+		}
+	}
+	if title.Key.Kind() == core.KindEpisode || (title.Key.IsPluginKey() && title.Type == core.TypeEpisode) {
+		if sk := showKeyForTitle(title); sk.Valid() {
+			if vc, ok := s.ViewerChoiceFor(userID, sk); ok && vc.Scope == "show" {
+				for i, rel := range releases {
+					if s.isBadRelease(rel) || s.recentlyFailedRelease(rel) || s.rejectedFor(title.Key, rel) {
+						continue
+					}
+					if s.profileMatchesRelease(vc.Profile, rel) {
+						return i, "show"
+					}
+				}
+			}
+		}
+	}
+	return -1, ""
 }
 
 func (s *Service) viewerTitleChoiceForResolve(req core.ResolveRequest, exclude map[string]bool) *ViewerChoice {
@@ -421,7 +461,10 @@ func (s *Service) viewerTitleChoiceForResolve(req core.ResolveRequest, exclude m
 }
 
 func (s *Service) viewerShowChoiceForResolve(req core.ResolveRequest) *ViewerChoice {
-	if s == nil || req.Title == nil || req.Title.Key.Kind() != core.KindEpisode || req.User == nil || req.User.ID <= 0 || req.Client.Download {
+	if s == nil || req.Title == nil || req.User == nil || req.User.ID <= 0 || req.Client.Download {
+		return nil
+	}
+	if req.Title.Key.Kind() != core.KindEpisode && !(req.Title.Key.IsPluginKey() && req.Title.Type == core.TypeEpisode) {
 		return nil
 	}
 	if req.Prefer != "" && !autoVersion(req.Prefer) {

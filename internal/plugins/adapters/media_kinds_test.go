@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -286,8 +287,9 @@ func TestKindCatalogParentsSyntheticSeriesAndPartialContainerHydration(t *testin
 	if bk.ItemIndex != 3 || bk.IndexDisplay != "3.5" {
 		t.Fatalf("book index/indexDisplay = %d/%q, want 3/3.5", bk.ItemIndex, bk.IndexDisplay)
 	}
-	if len(bk.MediaParents) != 1 || bk.MediaParents[0].FacetID != "facet:series:The Expanse" || bk.MediaParents[0].Role != core.MediaRoleSeries || bk.MediaParents[0].Index != 3 || bk.MediaParents[0].IndexDisplay != "3.5" {
-		t.Fatalf("book MediaParents = %+v", bk.MediaParents)
+	wantSeriesFacetID := "facet:" + strconv.FormatInt(int64(bookLib.ID), 10) + ":series:The Expanse"
+	if len(bk.MediaParents) != 1 || bk.MediaParents[0].FacetID != wantSeriesFacetID || bk.MediaParents[0].Role != core.MediaRoleSeries || bk.MediaParents[0].Index != 3 || bk.MediaParents[0].IndexDisplay != "3.5" {
+		t.Fatalf("book MediaParents = %+v, want FacetID %q", bk.MediaParents, wantSeriesFacetID)
 	}
 	if bk.MediaReading == nil || bk.MediaReading.Format != "epub" || bk.MediaReading.Pages != 96 {
 		t.Fatalf("book MediaReading = %+v", bk.MediaReading)

@@ -97,6 +97,7 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 	books := []core.Title{
 		{
 			Key:        book2Key,
+			LibraryID:  71,
 			Type:       core.TypeMovie,
 			ItemIndex:  2,
 			Title:      "Dune Messiah",
@@ -105,7 +106,7 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 			MediaClass: core.MediaClassBook,
 			MediaRole:  core.MediaRoleBook,
 			MediaParents: []core.TitleParent{
-				{FacetID: "facet:series:Dune", Title: "Dune", Role: core.MediaRoleSeries, Index: 2},
+				{FacetID: "facet:71:series:Dune", Title: "Dune", Role: core.MediaRoleSeries, Index: 2},
 			},
 			MediaCredits: []core.MediaCredit{
 				{Name: "Frank Herbert", Role: "author", TMDB: authorPersonID},
@@ -115,6 +116,7 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 		},
 		{
 			Key:          book15Key,
+			LibraryID:    71,
 			Type:         core.TypeMovie,
 			ItemIndex:    1,
 			IndexDisplay: "1.5",
@@ -124,7 +126,7 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 			MediaClass:   core.MediaClassBook,
 			MediaRole:    core.MediaRoleBook,
 			MediaParents: []core.TitleParent{
-				{FacetID: "facet:series:Dune", Title: "Dune", Role: core.MediaRoleSeries, Index: 1, IndexDisplay: "1.5"},
+				{FacetID: "facet:71:series:Dune", Title: "Dune", Role: core.MediaRoleSeries, Index: 1, IndexDisplay: "1.5"},
 			},
 			MediaCredits: []core.MediaCredit{
 				{Name: "Frank Herbert", Role: "author", TMDB: authorPersonID},
@@ -133,6 +135,7 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 		},
 		{
 			Key:        book1Key,
+			LibraryID:  71,
 			Type:       core.TypeMovie,
 			ItemIndex:  1,
 			Title:      "Dune",
@@ -141,7 +144,7 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 			MediaClass: core.MediaClassBook,
 			MediaRole:  core.MediaRoleBook,
 			MediaParents: []core.TitleParent{
-				{FacetID: "facet:series:Dune", Title: "Dune", Role: core.MediaRoleSeries, Index: 1},
+				{FacetID: "facet:71:series:Dune", Title: "Dune", Role: core.MediaRoleSeries, Index: 1},
 			},
 			MediaCredits: []core.MediaCredit{
 				{Name: "Frank Herbert", Role: "author", TMDB: authorPersonID},
@@ -368,23 +371,23 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 		t.Fatalf("unexpected book reading: %v", reading)
 	}
 	bParents := bookMedia["parents"].([]any)
-	if len(bParents) != 1 || bParents[0].(map[string]any)["id"] != "facet:series:Dune" || bParents[0].(map[string]any)["role"] != "series" || bParents[0].(map[string]any)["indexDisplay"] != "1.5" {
+	if len(bParents) != 1 || bParents[0].(map[string]any)["id"] != "facet:71:series:Dune" || bParents[0].(map[string]any)["role"] != "series" || bParents[0].(map[string]any)["indexDisplay"] != "1.5" {
 		t.Fatalf("unexpected book series parent: %v", bParents)
 	}
 
-	// Opening the synthetic series ID directly returns SeriesPage metadata.
-	code, seriesDetail := doGet("/vela/v0/titles/" + url.PathEscape("facet:series:Dune"))
+	// Opening the library-scoped synthetic series ID directly returns SeriesPage metadata.
+	code, seriesDetail := doGet("/vela/v0/titles/" + url.PathEscape("facet:71:series:Dune"))
 	if code != 200 {
 		t.Fatalf("synthetic series detail status=%d body=%v", code, seriesDetail)
 	}
 	seriesTitle := seriesDetail["title"].(map[string]any)
 	seriesMedia := seriesTitle["media"].(map[string]any)
-	if seriesTitle["id"] != "facet:series:Dune" || seriesTitle["name"] != "Dune" || seriesMedia["class"] != "book" || seriesMedia["role"] != "series" || seriesMedia["childCount"] != float64(3) {
+	if seriesTitle["id"] != "facet:71:series:Dune" || seriesTitle["name"] != "Dune" || seriesMedia["class"] != "book" || seriesMedia["role"] != "series" || seriesMedia["childCount"] != float64(3) {
 		t.Fatalf("unexpected synthetic series detail: %v", seriesDetail)
 	}
 
 	// Fetching synthetic series children returns books ordered 1, 1.5, 2 with paging.
-	code, sc1 := doGet("/vela/v0/titles/" + url.PathEscape("facet:series:Dune") + "/children?limit=2")
+	code, sc1 := doGet("/vela/v0/titles/" + url.PathEscape("facet:71:series:Dune") + "/children?limit=2")
 	if code != 200 || sc1["continuation"] != "more" {
 		t.Fatalf("series children page 1 = %d %v", code, sc1)
 	}
@@ -392,12 +395,234 @@ func TestVelaMediaClassesTitleMediaChildrenPagingAndSyntheticSeries(t *testing.T
 	if scItems1[0].(map[string]any)["name"] != "Dune" || scItems1[1].(map[string]any)["name"] != "Dune Interlude" {
 		t.Fatalf("series children page 1 order = %v", scItems1)
 	}
-	code, sc2 := doGet("/vela/v0/titles/" + url.PathEscape("facet:series:Dune") + "/children?limit=2&cursor=" + url.QueryEscape(sc1["nextCursor"].(string)))
+	code, sc2 := doGet("/vela/v0/titles/" + url.PathEscape("facet:71:series:Dune") + "/children?limit=2&cursor=" + url.QueryEscape(sc1["nextCursor"].(string)))
 	if code != 200 || sc2["continuation"] != "exhausted" {
 		t.Fatalf("series children page 2 = %d %v", code, sc2)
 	}
 	scItems2 := sc2["items"].([]any)
 	if len(scItems2) != 1 || scItems2[0].(map[string]any)["name"] != "Dune Messiah" {
 		t.Fatalf("series children page 2 = %v", scItems2)
+	}
+}
+
+func TestVelaSyntheticSeriesScopedToLibrary(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(db, castMembers{}, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer, err := grants.Issue(ctx, 1, nil, "vela", core.Device{ID: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bookExpanseKey := core.PluginKey(3501)
+	bookOnlyKey := core.PluginKey(3502)
+	audioExpanseKey := core.PluginKey(3601)
+	audioColonKey := core.PluginKey(3602)
+
+	// Deliberately pass unscoped FacetIDs on Titles with LibraryID set to verify
+	// titleMediaWire also scopes them to the item's library.
+	bookExpanse := core.Title{
+		Key:        bookExpanseKey,
+		LibraryID:  35,
+		Type:       core.TypeMovie,
+		ItemIndex:  1,
+		Title:      "Leviathan Wakes (Book)",
+		SortTitle:  "leviathan wakes book",
+		MediaClass: core.MediaClassBook,
+		MediaRole:  core.MediaRoleBook,
+		MediaParents: []core.TitleParent{
+			{FacetID: "facet:series:The Expanse", Title: "The Expanse", Role: core.MediaRoleSeries, Index: 1},
+		},
+	}
+	bookOnly := core.Title{
+		Key:        bookOnlyKey,
+		LibraryID:  35,
+		Type:       core.TypeMovie,
+		ItemIndex:  1,
+		Title:      "Books Only Vol 1",
+		SortTitle:  "books only vol 1",
+		MediaClass: core.MediaClassBook,
+		MediaRole:  core.MediaRoleBook,
+		MediaParents: []core.TitleParent{
+			{FacetID: "facet:35:series:BooksOnly", Title: "BooksOnly", Role: core.MediaRoleSeries, Index: 1},
+		},
+	}
+	audioExpanse := core.Title{
+		Key:        audioExpanseKey,
+		LibraryID:  36,
+		Type:       core.TypeMovie,
+		ItemIndex:  1,
+		Title:      "Leviathan Wakes (Audiobook)",
+		SortTitle:  "leviathan wakes audiobook",
+		MediaClass: core.MediaClassAudiobook,
+		MediaRole:  core.MediaRoleAudiobook,
+		MediaParents: []core.TitleParent{
+			{FacetID: "facet:series:The Expanse", Title: "The Expanse", Role: core.MediaRoleSeries, Index: 1},
+		},
+	}
+	audioColon := core.Title{
+		Key:        audioColonKey,
+		LibraryID:  36,
+		Type:       core.TypeMovie,
+		ItemIndex:  1,
+		Title:      "Thrawn (Audiobook)",
+		SortTitle:  "thrawn audiobook",
+		MediaClass: core.MediaClassAudiobook,
+		MediaRole:  core.MediaRoleAudiobook,
+		MediaParents: []core.TitleParent{
+			{FacetID: "facet:36:series:Star Wars: Thrawn", Title: "Star Wars: Thrawn", Role: core.MediaRoleSeries, Index: 1},
+		},
+	}
+
+	// Books (lib 35) appears BEFORE Audiobooks (lib 36) in Views(), matching the lab repro.
+	views := []frontend.View{
+		{
+			ID: "35", LibraryID: 35, Name: "Books", Type: core.TypeMovie, PluginID: "community.books", KindKey: "book", Media: core.MediaClassBook,
+			Facets: []frontend.ViewFacet{{ID: "series", Label: "Series", Type: "string"}},
+		},
+		{
+			ID: "36", LibraryID: 36, Name: "Audiobooks", Type: core.TypeMovie, PluginID: "community.books", KindKey: "audiobook", Media: core.MediaClassAudiobook,
+			Facets: []frontend.ViewFacet{{ID: "series", Label: "Series", Type: "string"}},
+		},
+	}
+
+	exp := frontendtest.Experience{
+		ViewsFunc: func(context.Context, *core.Viewer) ([]frontend.View, error) { return views, nil },
+		ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+			switch req.Key {
+			case bookExpanseKey:
+				return frontend.ItemDetail{Title: bookExpanse}, nil
+			case audioExpanseKey:
+				return frontend.ItemDetail{Title: audioExpanse}, nil
+			default:
+				return frontend.ItemDetail{}, core.ErrNotFound
+			}
+		},
+		LibraryItemsFunc: func(_ context.Context, _ *core.Viewer, _ core.Device, viewID string, q frontend.ItemQuery) (core.Page, error) {
+			vals := q.Filter.Facets["series"]
+			if len(vals) != 1 {
+				return core.Page{}, nil
+			}
+			switch viewID {
+			case "35":
+				if vals[0] == "The Expanse" {
+					return core.Page{Items: []core.Title{bookExpanse}, Total: 1}, nil
+				}
+				if vals[0] == "BooksOnly" {
+					return core.Page{Items: []core.Title{bookOnly}, Total: 1}, nil
+				}
+			case "36":
+				if vals[0] == "The Expanse" {
+					return core.Page{Items: []core.Title{audioExpanse}, Total: 1}, nil
+				}
+				if vals[0] == "Star Wars: Thrawn" {
+					return core.Page{Items: []core.Title{audioColon}, Total: 1}, nil
+				}
+			}
+			return core.Page{}, nil
+		},
+	}
+
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &instance{
+		ctx:     ctx,
+		db:      db,
+		seal:    seal,
+		replays: make(map[string]*replay),
+		mux:     http.NewServeMux(),
+		host: frontend.Host{
+			Identity:       identityFake{},
+			Experience:     exp,
+			ServerIdentity: frontend.ServerIdentity{MachineID: "srv-1", FriendlyName: "Ether", Version: "0.3.17"},
+		},
+	}
+	inst.routes()
+
+	doGet := func(path string) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("X-Vela-Device-Id", "web")
+		rec := httptest.NewRecorder()
+		inst.serve(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	// 1. Audiobook in lib 36 emits library-scoped parent id facet:36:series:The Expanse.
+	code, audioDetail := doGet("/vela/v0/titles/" + ids.RatingKeyGUID(audioExpanseKey))
+	if code != 200 {
+		t.Fatalf("audiobook detail status=%d body=%v", code, audioDetail)
+	}
+	audioParents := audioDetail["title"].(map[string]any)["media"].(map[string]any)["parents"].([]any)
+	if len(audioParents) != 1 || audioParents[0].(map[string]any)["id"] != "facet:36:series:The Expanse" {
+		t.Fatalf("audiobook series parent = %v, want facet:36:series:The Expanse", audioParents)
+	}
+
+	// Book in lib 35 emits facet:35:series:The Expanse.
+	code, bookDetail := doGet("/vela/v0/titles/" + ids.RatingKeyGUID(bookExpanseKey))
+	if code != 200 {
+		t.Fatalf("book detail status=%d body=%v", code, bookDetail)
+	}
+	bookParents := bookDetail["title"].(map[string]any)["media"].(map[string]any)["parents"].([]any)
+	if len(bookParents) != 1 || bookParents[0].(map[string]any)["id"] != "facet:35:series:The Expanse" {
+		t.Fatalf("book series parent = %v, want facet:35:series:The Expanse", bookParents)
+	}
+
+	// 2. Opening facet:36:series:The Expanse resolves ONLY against Audiobooks (lib 36).
+	code, audioSeries := doGet("/vela/v0/titles/" + url.PathEscape("facet:36:series:The Expanse"))
+	if code != 200 {
+		t.Fatalf("audiobook series detail status=%d body=%v", code, audioSeries)
+	}
+	aTitle := audioSeries["title"].(map[string]any)
+	aMedia := aTitle["media"].(map[string]any)
+	if aTitle["id"] != "facet:36:series:The Expanse" || aTitle["name"] != "The Expanse" || aMedia["class"] != "audiobook" || aMedia["childCount"] != float64(1) {
+		t.Fatalf("unexpected audiobook series detail: %v", audioSeries)
+	}
+	code, audioChildren := doGet("/vela/v0/titles/" + url.PathEscape("facet:36:series:The Expanse") + "/children")
+	if code != 200 {
+		t.Fatalf("audiobook series children status=%d body=%v", code, audioChildren)
+	}
+	aItems := audioChildren["items"].([]any)
+	if len(aItems) != 1 || aItems[0].(map[string]any)["name"] != "Leviathan Wakes (Audiobook)" || aItems[0].(map[string]any)["media"].(map[string]any)["class"] != "audiobook" {
+		t.Fatalf("expected only audiobook children from lib 36, got %v", aItems)
+	}
+
+	// 3. Opening facet:35:series:The Expanse resolves ONLY against Books (lib 35).
+	code, bookChildren := doGet("/vela/v0/titles/" + url.PathEscape("facet:35:series:The Expanse") + "/children")
+	if code != 200 {
+		t.Fatalf("book series children status=%d body=%v", code, bookChildren)
+	}
+	bItems := bookChildren["items"].([]any)
+	if len(bItems) != 1 || bItems[0].(map[string]any)["name"] != "Leviathan Wakes (Book)" || bItems[0].(map[string]any)["media"].(map[string]any)["class"] != "book" {
+		t.Fatalf("expected only book children from lib 35, got %v", bItems)
+	}
+
+	// 4. A series that exists ONLY in Books (lib 35) MUST return 404 when requested under lib 36 (no cross-library fallback).
+	if code404, body404 := doGet("/vela/v0/titles/" + url.PathEscape("facet:36:series:BooksOnly")); code404 != 404 {
+		t.Fatalf("cross-library series detail status=%d body=%v, want 404", code404, body404)
+	}
+	if code404, body404 := doGet("/vela/v0/titles/" + url.PathEscape("facet:36:series:BooksOnly") + "/children"); code404 != 404 {
+		t.Fatalf("cross-library series children status=%d body=%v, want 404", code404, body404)
+	}
+
+	// 5. Series names containing colons parse cleanly when library-scoped.
+	code, colonSeries := doGet("/vela/v0/titles/" + url.PathEscape("facet:36:series:Star Wars: Thrawn"))
+	if code != 200 {
+		t.Fatalf("colon series detail status=%d body=%v", code, colonSeries)
+	}
+	cTitle := colonSeries["title"].(map[string]any)
+	if cTitle["id"] != "facet:36:series:Star Wars: Thrawn" || cTitle["name"] != "Star Wars: Thrawn" {
+		t.Fatalf("unexpected colon series title: %v", cTitle)
 	}
 }

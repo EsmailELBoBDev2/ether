@@ -29,18 +29,18 @@ type BrowseQuery struct {
 	// whole library.
 	CheapTotal bool
 	Policy     *libraryfilter.Filter
-	TabPolicy *libraryfilter.Filter
-	ViewerID  int64
-	Hidden    bool
-	LibraryID core.LibraryID
-	ParentRef core.ItemRef
-	Level     string
-	Levels    []string
-	AnyLevel  bool
-	PersonID  int64
-	Sort      string              // title (default), added, released, year, rating, index, lastViewed
-	Desc      bool                // false = default direction for Sort; true = reverse
-	Facets    map[string][]string // field key -> values, any of (OR within key, AND across keys)
+	TabPolicy  *libraryfilter.Filter
+	ViewerID   int64
+	Hidden     bool
+	LibraryID  core.LibraryID
+	ParentRef  core.ItemRef
+	Level      string
+	Levels     []string
+	AnyLevel   bool
+	PersonID   int64
+	Sort       string              // title (default), added, released, year, rating, index, lastViewed
+	Desc       bool                // false = default direction for Sort; true = reverse
+	Facets     map[string][]string // field key -> values, any of (OR within key, AND across keys)
 	// AllFacets requires every listed value per field; ExcludeFacets
 	// drops items having any listed value. Both combine with Facets
 	// using AND and the same per-type value handling.

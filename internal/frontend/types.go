@@ -67,10 +67,12 @@ const (
 	DecisionTranscode  = core.DecisionTranscode
 )
 
-func IsLastViewedSort(raw string) bool                { return core.IsLastViewedSort(raw) }
-func TitleSortKey(s string) string                    { return core.TitleSortKey(s) }
-func FoldSortTitle(s string) string                   { return core.FoldSortTitle(s) }
-func EffectiveSortTitle(title, explicit string) string { return core.EffectiveSortTitle(title, explicit) }
+func IsLastViewedSort(raw string) bool { return core.IsLastViewedSort(raw) }
+func TitleSortKey(s string) string     { return core.TitleSortKey(s) }
+func FoldSortTitle(s string) string    { return core.FoldSortTitle(s) }
+func EffectiveSortTitle(title, explicit string) string {
+	return core.EffectiveSortTitle(title, explicit)
+}
 
 func IsSurroundAudioCodec(c string) bool { return core.IsSurroundAudioCodec(c) }
 

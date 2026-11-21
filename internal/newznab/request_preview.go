@@ -318,10 +318,17 @@ func sampleSearchParams(media config.IdentityMediaType) url.Values {
 			"t": {"search"}, "q": {"Example Book"},
 			"cat": {"7000"}, "extended": {"1"}, "limit": {"100"},
 		}
-	default:
+	case config.IdentityMediaTV:
 		return url.Values{
 			"t": {"tvsearch"}, "q": {"Example Show"}, "season": {"1"}, "ep": {"1"},
 			"cat": {"5000"}, "extended": {"1"}, "limit": {"100"},
+		}
+	default:
+		// Any media type (the default identity and Any rules): an
+		// uncategorised search, which no media-type rule matches, so the
+		// default card never shows a TV search a TV rule would claim.
+		return url.Values{
+			"t": {"search"}, "q": {"Example"}, "extended": {"1"}, "limit": {"100"},
 		}
 	}
 }

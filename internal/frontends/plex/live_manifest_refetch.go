@@ -77,6 +77,18 @@ func (t *liveManifestRefetches) lookup(key string) (string, liveManifestServed, 
 
 type liveManifestRefetchKey struct{}
 
+// touch slides the refetch window for a live session whose playlist an
+// admitted refetch just read: the native player keeps refetching a live
+// playlist for as long as the viewer watches.
+func (t *liveManifestRefetches) touch(id string, at time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e, ok := t.served[id]; ok {
+		e.at = at
+		t.served[id] = e
+	}
+}
+
 func liveManifestRefetchFrom(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(liveManifestRefetchKey{}).(string)
 	return id, ok
@@ -158,6 +170,7 @@ func (s *Server) authenticateLiveManifestRefetch(r *http.Request, pr *Request) (
 	if pr.ClientID == "" {
 		pr.ClientID = e.clientID
 	}
+	s.liveManifests.touch(id, s.now())
 	return r.WithContext(context.WithValue(r.Context(), liveManifestRefetchKey{}, id)), true
 }
 

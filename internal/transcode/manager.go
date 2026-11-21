@@ -1227,7 +1227,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			initFiles:   make([]string, tracks),
 			seekRampSeg: -1,
 			segSizes:    map[int]int64{},
-			governorOn:  adapt.Governor && proto == core.ProtocolHLS && d.VideoCopy && v != nil,
+			governorOn:  adapt.Governor && proto == core.ProtocolHLS && d.VideoCopy && d.Container == ContainerMPEGTS && v != nil,
 		},
 	}
 	s.textSubtitleStreams = append([]int(nil), req.TextSubtitleStreams...)

@@ -59,8 +59,10 @@ func (s *Session) span() time.Duration {
 
 // renderPlaylistLocked renders track t's media playlist from the plan.
 // The primary track's VOD playlist is cached until the plan changes ahead
-// of the player (spike governor) or SwapInput; governed sessions render
-// an EVENT playlist fresh each time so reloads see re-planned segments.
+// of the player (spike governor) or SwapInput. Known-duration sessions
+// always serve VOD with EXT-X-ENDLIST from the first request: an EVENT
+// playlist without EXT-X-ENDLIST causes RFC 8216 §6.3.3 players (notably
+// AVPlayer on Apple TV) to start three segments from the end as a live edge.
 func (s *Session) renderPlaylistLocked(t int) []byte {
 	body := s.renderMediaPlaylistLocked(t)
 	if hasInitSegment(s.container) {
@@ -91,9 +93,6 @@ func (s *Session) renderMediaPlaylistLocked(t int) []byte {
 	}
 	discont := func(n int) bool { return s.discontBeforeLocked(t, n) }
 	if s.total > 0 {
-		if s.governorOn && t == 0 {
-			return planPlaylist(s.plan, s.container, s.segName, discont, true, s.endSeg >= 0, 0, independent)
-		}
 		if t == 0 {
 			if s.playlist == nil {
 				s.playlist = planPlaylist(s.plan, s.container, s.segName, discont, false, true, 0, independent)
@@ -388,7 +387,8 @@ func (s *Session) maybeGovernLocked() {
 		return
 	}
 	// Only alter not-yet-requested segments in the encoder read-ahead
-	// window. EVENT playlists let clients discover the revised plan.
+	// window. Only MPEG-TS copy sessions enable the governor, so clamped
+	// segments can splice cleanly without changing an EXT-X-MAP init header.
 	limit := s.aheadLimit()
 	if limit <= 0 {
 		limit = int(24 * time.Second / s.segDur)

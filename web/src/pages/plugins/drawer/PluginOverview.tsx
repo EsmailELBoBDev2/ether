@@ -12,15 +12,27 @@ import {
   Subtitles,
   Tv,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Artwork } from "../../../components/Artwork";
 import { t, tn } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
 import { apiFetch, errorMessage } from "../../../lib/api";
 import { invalidateRegistry, textOf, useRegistry } from "../../../lib/extend";
-import { formatNumber, relativeTime } from "../../../lib/format";
-import { librariesApi, type Library as LibraryRecord } from "../../libraries/api";
+import { relativeTime } from "../../../lib/format";
+import {
+  librariesApi,
+  type Library as LibraryRecord,
+  type LibrarySyncRequest,
+} from "../../libraries/api";
+import {
+  DeleteGuardChoice,
+  formatItemStorageSummary,
+  formatSyncStatusLine,
+  notifySyncError,
+  notifySyncResponse,
+  resolveDeleteGuard,
+} from "../../libraries/syncStatus";
 import { GuideStrip, type GuideChannel } from "../Stage";
 import { SidecarPairing } from "../SidecarPairing";
 import { buildPlacements, type PluginDetail } from "../types";
@@ -60,7 +72,7 @@ export function PluginOverview({
         <ProblemCard health={health} onRetry={onRetry} onActivity={onActivity} />
       ) : null}
       {detail.manifest.ether?.contributes?.mediaKinds?.length ? (
-        <LibrarySyncNow detail={detail} onClose={onClose} />
+        <LibrarySyncNow detail={detail} onClose={onClose} onSyncActivity={onFresh} />
       ) : null}
       <LiveNow detail={detail} calls={calls} onClose={onClose} onFresh={onFresh} />
       {detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data" ? (
@@ -126,9 +138,19 @@ function ProblemCard({
 
 /* ---------------------------------------------------------------- live card */
 
-function LibrarySyncNow({ detail, onClose }: { detail: PluginDetail; onClose: () => void }) {
+type OverviewSyncAction = "sync" | "full" | "keep" | "force";
+
+function LibrarySyncNow({
+  detail,
+  onClose,
+  onSyncActivity,
+}: {
+  detail: PluginDetail;
+  onClose: () => void;
+  onSyncActivity?: () => void;
+}) {
   const [libs, setLibs] = useState<LibraryRecord[] | null>(null);
-  const [syncingId, setSyncingId] = useState<number | null>(null);
+  const [busyLib, setBusyLib] = useState<{ id: number; action: OverviewSyncAction } | null>(null);
 
   const anyRunning = Boolean(libs?.some((l) => l.sync?.running));
   const anyPendingFirstSync = Boolean(
@@ -142,6 +164,14 @@ function LibrarySyncNow({ detail, onClose }: { detail: PluginDetail; onClose: ()
     ),
   );
   const shouldPoll = anyRunning || anyPendingFirstSync;
+  const wasRunning = useRef(false);
+
+  useEffect(() => {
+    if (wasRunning.current && !anyRunning) {
+      onSyncActivity?.();
+    }
+    wasRunning.current = anyRunning;
+  }, [anyRunning, onSyncActivity]);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,13 +195,32 @@ function LibrarySyncNow({ detail, onClose }: { detail: PluginDetail; onClose: ()
     }
     const timer = window.setInterval(() => {
       void load();
-    }, 2000);
+    }, 1500);
     return () => {
       cancelled = true;
       ctrl.abort();
       window.clearInterval(timer);
     };
   }, [detail.id, shouldPoll]);
+
+  const runSync = async (id: number, action: OverviewSyncAction, opts: LibrarySyncRequest) => {
+    setBusyLib({ id, action });
+    try {
+      const res = await librariesApi.sync(id, opts);
+      notifySyncResponse(res);
+    } catch (e) {
+      notifySyncError(e);
+    } finally {
+      setBusyLib(null);
+      try {
+        const all = await librariesApi.list();
+        setLibs(all.filter((l) => l.pluginId === detail.id));
+      } catch {
+        // Ignore transient refresh failure.
+      }
+      onSyncActivity?.();
+    }
+  };
 
   if (!libs || libs.length === 0) return null;
 
@@ -186,87 +235,94 @@ function LibrarySyncNow({ detail, onClose }: { detail: PluginDetail; onClose: ()
         {libs.map((lib) => {
           const sync = lib.sync;
           const running = Boolean(sync?.running);
+          const guard = running ? null : resolveDeleteGuard(sync);
           const count = lib.storedItems ?? lib.itemCount ?? sync?.items ?? 0;
-          const syncedSoFar = Math.max(count, sync?.syncedItems ?? 0);
-          let line: string;
-          if (running && sync?.phase === "reindexing") {
-            line =
-              syncedSoFar > 0
-                ? t("Updating search index… {count} items", {
-                    count: formatNumber(syncedSoFar, 0),
-                  })
-                : t("Updating search index…");
-          } else if (running) {
-            line =
-              syncedSoFar > 0
-                ? t("Syncing in background… {count} items synced so far", {
-                    count: formatNumber(syncedSoFar, 0),
-                  })
-                : t("Starting background sync…");
-          } else if (sync?.lastError) {
-            line = sync.lastError;
-          } else if (sync?.lastOk) {
-            line = t("{count} items · Last synced {when}", {
-              count: formatNumber(count, 0),
-              when: relativeTime(sync.lastOk),
-            });
-          } else if (count > 0) {
-            line = t("{count} items", { count: formatNumber(count, 0) });
-          } else {
-            line = t("Waiting for first sync");
-          }
+          const capSummary = formatItemStorageSummary(lib);
+          const statusLine = guard
+            ? ""
+            : formatSyncStatusLine(sync, { count, preferRelative: true });
+          const line =
+            !running && !guard && !sync?.lastError && !sync?.lastOk && count === 0
+              ? t("Waiting for first sync")
+              : capSummary && statusLine
+                ? `${capSummary} · ${statusLine}`
+                : capSummary || statusLine;
+          const libAction = busyLib?.id === lib.id ? busyLib.action : null;
+          const isBusy = running || Boolean(libAction);
           return (
             <div
               key={lib.id}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-muted/40 px-3.5 py-2.5"
+              className="rounded-lg border border-border/60 bg-surface-muted/40 px-3.5 py-2.5"
             >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-fg">
-                    {lib.kind?.label ?? lib.name}
-                  </span>
-                  {running ? (
-                    <Badge variant="secondary" className="gap-1">
-                      <RefreshCw size={11} className="animate-spin" aria-hidden />
-                      {sync?.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
-                    </Badge>
-                  ) : null}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate text-sm font-medium text-fg">
+                      {lib.kind?.label ?? lib.name}
+                    </span>
+                    {running ? (
+                      <Badge variant="secondary" className="gap-1">
+                        <RefreshCw size={11} className="animate-spin" aria-hidden />
+                        {sync?.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+                      </Badge>
+                    ) : guard ? (
+                      <Badge variant="outline" className="gap-1 border-warning/50 text-warning">
+                        <AlertTriangle size={11} aria-hidden />
+                        {t("Needs review")}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 text-xs text-fg-muted">{line}</p>
                 </div>
-                <p className="mt-0.5 text-xs text-fg-muted">{line}</p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {detail.enabled && lib.kind?.sync?.mode !== "push" ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={running || syncingId === lib.id}
-                    onClick={() => {
-                      setSyncingId(lib.id);
-                      void librariesApi
-                        .sync(lib.id, false)
-                        .catch(() => {})
-                        .finally(() => {
-                          setSyncingId(null);
-                          void librariesApi
-                            .list()
-                            .then((all) => setLibs(all.filter((l) => l.pluginId === detail.id)))
-                            .catch(() => {});
-                        });
-                    }}
-                  >
-                    <RefreshCw
-                      size={13}
-                      className={cn((running || syncingId === lib.id) && "animate-spin")}
-                    />{" "}
-                    {t("Sync now")}
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  {detail.enabled && lib.kind?.sync?.mode !== "push" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isBusy}
+                        onClick={() => void runSync(lib.id, "full", { fullWalk: true })}
+                      >
+                        {libAction === "full" ? (
+                          <RefreshCw size={13} className="animate-spin" aria-hidden />
+                        ) : null}
+                        {t("Full re-sync")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isBusy}
+                        onClick={() => void runSync(lib.id, "sync", { fullWalk: false })}
+                      >
+                        <RefreshCw
+                          size={13}
+                          className={cn((running || libAction === "sync") && "animate-spin")}
+                          aria-hidden
+                        />{" "}
+                        {running ? t("Syncing…") : t("Sync now")}
+                      </Button>
+                    </>
+                  ) : null}
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={`/libraries/${lib.id}`} onClick={onClose}>
+                      {t("Open")} <ArrowUpRight size={13} />
+                    </Link>
                   </Button>
-                ) : null}
-                <Button size="sm" variant="outline" asChild>
-                  <Link to={`/libraries/${lib.id}`} onClick={onClose}>
-                    {t("Open")} <ArrowUpRight size={13} />
-                  </Link>
-                </Button>
+                </div>
               </div>
+              {guard ? (
+                <DeleteGuardChoice
+                  guard={guard}
+                  busyAction={libAction}
+                  onKeep={() => void runSync(lib.id, "keep", { keepExisting: true })}
+                  onRemoveMissing={() =>
+                    void runSync(lib.id, "force", {
+                      force: true,
+                      fullWalk: guard.source === "walk",
+                    })
+                  }
+                />
+              ) : null}
             </div>
           );
         })}

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -46,6 +48,84 @@ var (
 	// delete more than 50% of a library's items (spec §3.5).
 	ErrDeleteGuard = errors.New("pluginitems: sync aborted by 50% delete guard")
 )
+
+// SyncDeleteGuard captures structured details when the 50% delete guard pauses
+// a sync so the console can explain what happened in plain words and offer the
+// owner an explicit keep-or-remove choice.
+type SyncDeleteGuard struct {
+	Source    string `json:"source"`              // "walk" or "changes"
+	Missing   int    `json:"missing"`             // items absent from walk or slated for deletion
+	Total     int    `json:"total"`               // eligible existing items compared against
+	Protected int    `json:"protected,omitempty"` // opened/played/favourited/searched items excluded from pruning
+}
+
+// PlainMessage returns a plain-language summary of the paused delete guard.
+func (g SyncDeleteGuard) PlainMessage() string {
+	if g.Source == "changes" {
+		return fmt.Sprintf("Sync paused: the plugin asked to remove %d of %d items. Ether kept your existing items until you choose whether to remove them.", g.Missing, g.Total)
+	}
+	return fmt.Sprintf("Sync paused: %d of %d items were not returned in the walk. Ether kept your existing items in case the source returned a partial or rotating list.", g.Missing, g.Total)
+}
+
+// DeleteGuardError wraps ErrDeleteGuard with exact counts so callers and the
+// console API never have to parse an error string to build the owner choice.
+type DeleteGuardError struct {
+	PluginID  string
+	KindKey   string
+	Source    string
+	Missing   int
+	Total     int
+	Protected int
+}
+
+func (e *DeleteGuardError) Unwrap() error { return ErrDeleteGuard }
+
+func (e *DeleteGuardError) State() SyncDeleteGuard {
+	return SyncDeleteGuard{
+		Source:    e.Source,
+		Missing:   e.Missing,
+		Total:     e.Total,
+		Protected: e.Protected,
+	}
+}
+
+func (e *DeleteGuardError) PlainMessage() string {
+	return e.State().PlainMessage()
+}
+
+func (e *DeleteGuardError) Error() string {
+	if e.Source == "changes" {
+		return fmt.Sprintf("%s: attempting to delete %d of %d items in %s/%s",
+			ErrDeleteGuard.Error(), e.Missing, e.Total, e.PluginID, e.KindKey)
+	}
+	return fmt.Sprintf("%s: %d of %d items missing in walk for %s/%s",
+		ErrDeleteGuard.Error(), e.Missing, e.Total, e.PluginID, e.KindKey)
+}
+
+var (
+	legacyWalkGuardRE    = regexp.MustCompile(`50% delete guard:\s*(\d+)\s+of\s+(\d+)\s+items missing in walk`)
+	legacyChangesGuardRE = regexp.MustCompile(`50% delete guard:\s*attempting to delete\s+(\d+)\s+of\s+(\d+)\s+items`)
+)
+
+// ParseDeleteGuardError extracts SyncDeleteGuard details from a persisted
+// legacy v0.3.17 last_error string when guard_json has not yet been written.
+func ParseDeleteGuardError(raw string) *SyncDeleteGuard {
+	if m := legacyWalkGuardRE.FindStringSubmatch(raw); len(m) == 3 {
+		missing, err1 := strconv.Atoi(m[1])
+		total, err2 := strconv.Atoi(m[2])
+		if err1 == nil && err2 == nil && missing > 0 && total > 0 {
+			return &SyncDeleteGuard{Source: "walk", Missing: missing, Total: total}
+		}
+	}
+	if m := legacyChangesGuardRE.FindStringSubmatch(raw); len(m) == 3 {
+		missing, err1 := strconv.Atoi(m[1])
+		total, err2 := strconv.Atoi(m[2])
+		if err1 == nil && err2 == nil && missing > 0 && total > 0 {
+			return &SyncDeleteGuard{Source: "changes", Missing: missing, Total: total}
+		}
+	}
+	return nil
+}
 
 // IndexedFieldValue is one typed EAV row for plugin_item_fields (spec §2.3).
 type IndexedFieldValue struct {

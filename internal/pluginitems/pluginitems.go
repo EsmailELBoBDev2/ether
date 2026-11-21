@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -52,6 +53,14 @@ ALTER TABLE plugin_resolutions ADD COLUMN candidates TEXT NOT NULL DEFAULT '';
 	// genuine custom source sort titles.
 	store.Register("pluginitems", 12, `SELECT 1;`)
 	store.RegisterApply("pluginitems", 12, applyMigration12)
+	// Migration 14: track items pinned by live search, facet/container
+	// expansion, or viewer opens so missed-walk pruning never drops them, and
+	// persist structured 50%-delete-guard metadata on plugin_sync_state so the
+	// console can present a plain-language keep-or-remove choice.
+	store.Register("pluginitems", 14, `
+ALTER TABLE plugin_items ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plugin_sync_state ADD COLUMN guard_json TEXT NOT NULL DEFAULT '';
+`)
 
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain
@@ -388,12 +397,26 @@ type HealthReporter interface {
 	RecordFailure(ctx context.Context, pluginID, reason string)
 }
 
+// SyncJobHandle receives progress and completion updates for one tracked sync run.
+type SyncJobHandle interface {
+	SetProgress(progress string)
+	Finish(state, code, outcome, errMsg string)
+}
+
+// SyncJobTracker mirrors active and completed library syncs into the plugin's
+// background jobs list so Activity and Overview show live progress and outcome.
+type SyncJobTracker interface {
+	BeginSyncJob(pluginID, kindKey, routePath, label string, cancel context.CancelFunc) SyncJobHandle
+	UpdateSyncJob(pluginID, kindKey, state, code, outcome, errMsg string)
+}
+
 // Options configures the pluginitems Service.
 type Options struct {
 	Logger         *slog.Logger
 	Now            func() time.Time
 	Caller         Caller
 	Health         HealthReporter
+	Jobs           SyncJobTracker
 	IsLeader       func() bool
 	MaxPluginItems int
 	// MaxPluginItemsFor returns the live owner-configured stored-item ceiling
@@ -422,6 +445,8 @@ type SyncEvent struct {
 	Error       string
 }
 
+const maxPinCacheEntries = 16384
+
 // Service manages plugin kinds, items, browse, search, sync, projections,
 // matches and resolutions.
 type Service struct {
@@ -430,6 +455,7 @@ type Service struct {
 	now               func() time.Time
 	caller            Caller
 	health            HealthReporter
+	jobs              SyncJobTracker
 	isLeader          func() bool
 	onAttention       func(ctx context.Context, pluginID, reason string)
 	onSyncEvent       func(SyncEvent)
@@ -445,14 +471,24 @@ type Service struct {
 	locksMu   sync.Mutex
 	kindLocks map[string]*sync.Mutex
 
+	syncLocksMu sync.Mutex
+	syncLocks   map[string]*sync.Mutex
+
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
 
 	workersMu    sync.Mutex
 	workers      map[string]*syncWorker
+	manualSyncs  map[string]*syncWorker
 	draining     map[string]chan struct{}
 	reindexers   map[string]*syncWorker
 	syncProgress map[string]syncProgress
+	lastOutcome  map[string]SyncOutcome
+
+	pinMu   sync.Mutex
+	pinSeen map[core.ItemRef]struct{}
+	pinCh   chan core.ItemRef
+	pinDone chan struct{}
 
 	stats *statsRefresher
 }
@@ -478,6 +514,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		now:               o.Now,
 		caller:            o.Caller,
 		health:            o.Health,
+		jobs:              o.Jobs,
 		isLeader:          o.IsLeader,
 		onAttention:       o.OnAttention,
 		onSyncEvent:       o.OnSyncEvent,
@@ -485,30 +522,40 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		maxPluginItemsFor: o.MaxPluginItemsFor,
 		countCache:        map[string]cachedBrowseCount{},
 		kindLocks:         map[string]*sync.Mutex{},
+		syncLocks:         map[string]*sync.Mutex{},
 		bgCtx:             bgCtx,
 		bgCancel:          bgCancel,
 		workers:           map[string]*syncWorker{},
+		manualSyncs:       map[string]*syncWorker{},
 		draining:          map[string]chan struct{}{},
 		reindexers:        map[string]*syncWorker{},
 		syncProgress:      map[string]syncProgress{},
+		lastOutcome:       map[string]SyncOutcome{},
+		pinSeen:           map[core.ItemRef]struct{}{},
+		pinCh:             make(chan core.ItemRef, 256),
+		pinDone:           make(chan struct{}),
 	}
 	// Seed the sequence row if a test opened the table without data, and
 	// load the highest stored sync generation so PageFreshness never rewinds.
 	if _, err := db.ExecContext(ctx, `INSERT INTO plugin_items_seq(id, next) VALUES(1, 1) ON CONFLICT(id) DO NOTHING`); err != nil {
+		bgCancel()
 		return nil, fmt.Errorf("pluginitems: seed seq: %w", err)
 	}
 	if err := s.reindexPendingKinds(ctx); err != nil {
+		bgCancel()
 		return nil, fmt.Errorf("pluginitems: reindex pending kinds: %w", err)
 	}
 	s.scheduleStaleArtistReindexes(ctx)
 	var maxGen int64
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation), 0) FROM plugin_sync_state`).Scan(&maxGen); err != nil {
+		bgCancel()
 		return nil, fmt.Errorf("pluginitems: load sync generation: %w", err)
 	}
 	if maxGen > 0 {
 		s.syncGen.Store(uint64(maxGen))
 	}
 	s.stats = newStatsRefresher(ctx, db, s.log, s.now, s.leader)
+	go s.runPinWorker()
 	return s, nil
 }
 
@@ -532,6 +579,137 @@ func (s *Service) SetHealth(h HealthReporter) {
 	s.workersMu.Lock()
 	s.health = h
 	s.workersMu.Unlock()
+}
+
+// SetJobTracker installs or replaces the background job tracker used to mirror
+// library sync runs into the plugin's Activity / Background jobs list.
+func (s *Service) SetJobTracker(t SyncJobTracker) {
+	s.workersMu.Lock()
+	s.jobs = t
+	s.workersMu.Unlock()
+}
+
+func (s *Service) jobTracker() SyncJobTracker {
+	if s == nil {
+		return nil
+	}
+	s.workersMu.Lock()
+	t := s.jobs
+	s.workersMu.Unlock()
+	return t
+}
+
+func (s *Service) syncLock(pluginID, kindKey string) *sync.Mutex {
+	key := workerKey(pluginID, kindKey)
+	s.syncLocksMu.Lock()
+	defer s.syncLocksMu.Unlock()
+	if s.syncLocks == nil {
+		s.syncLocks = map[string]*sync.Mutex{}
+	}
+	mu := s.syncLocks[key]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.syncLocks[key] = mu
+	}
+	return mu
+}
+
+// PinItem marks one stored plugin item as pinned so missed-walk pruning never
+// removes it simply because a subsequent /browse walk omitted it.
+func (s *Service) PinItem(ctx context.Context, ref core.ItemRef) error {
+	if s == nil || s.db == nil || ref == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE plugin_items SET pinned = 1 WHERE item_ref = ? AND pinned = 0`,
+		string(ref)); err != nil {
+		return err
+	}
+	s.rememberPinned(ref)
+	return nil
+}
+
+// PinItemAsync records that a viewer opened or resolved ref, persisting
+// pinned=1 on a single background worker with zero read-path latency.
+func (s *Service) PinItemAsync(ref core.ItemRef) {
+	if s == nil || s.db == nil || ref == "" || s.pinCh == nil {
+		return
+	}
+	s.pinMu.Lock()
+	if _, ok := s.pinSeen[ref]; ok {
+		s.pinMu.Unlock()
+		return
+	}
+	if len(s.pinSeen) >= maxPinCacheEntries {
+		s.pinSeen = map[core.ItemRef]struct{}{}
+	}
+	s.pinSeen[ref] = struct{}{}
+	s.pinMu.Unlock()
+
+	select {
+	case s.pinCh <- ref:
+	default:
+		// Queue full; drop cache entry so a later open retries.
+		s.pinMu.Lock()
+		delete(s.pinSeen, ref)
+		s.pinMu.Unlock()
+	}
+}
+
+func (s *Service) rememberPinned(ref core.ItemRef) {
+	if s == nil || ref == "" {
+		return
+	}
+	s.pinMu.Lock()
+	if s.pinSeen == nil || len(s.pinSeen) >= maxPinCacheEntries {
+		s.pinSeen = map[core.ItemRef]struct{}{}
+	}
+	s.pinSeen[ref] = struct{}{}
+	s.pinMu.Unlock()
+}
+
+func (s *Service) forgetPinnedRefs(refs []core.ItemRef) {
+	if s == nil || len(refs) == 0 {
+		return
+	}
+	s.pinMu.Lock()
+	for _, r := range refs {
+		delete(s.pinSeen, r)
+	}
+	s.pinMu.Unlock()
+}
+
+func (s *Service) clearPinnedCache() {
+	if s == nil {
+		return
+	}
+	s.pinMu.Lock()
+	s.pinSeen = map[core.ItemRef]struct{}{}
+	s.pinMu.Unlock()
+}
+
+func (s *Service) runPinWorker() {
+	defer close(s.pinDone)
+	for {
+		select {
+		case <-s.bgCtx.Done():
+			return
+		case ref := <-s.pinCh:
+			if ref == "" || !s.leader() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(s.bgCtx, 5*time.Second)
+			_, err := s.db.ExecContext(ctx,
+				`UPDATE plugin_items SET pinned = 1 WHERE item_ref = ? AND pinned = 0`,
+				string(ref))
+			cancel()
+			if err != nil {
+				s.pinMu.Lock()
+				delete(s.pinSeen, ref)
+				s.pinMu.Unlock()
+			}
+		}
+	}
 }
 
 // SetOnSyncEvent installs an optional observer for plugin library sync lifecycle.

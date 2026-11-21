@@ -1,14 +1,16 @@
 import { sourceLabel } from "./CatalogueSources";
 import {
+  Badge,
   Button,
   Input,
   SearchSelect,
   SettingsSection,
   Switch,
   buttonVariants,
+  cn,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Film, Plug, Tv } from "lucide-react";
+import { Film, Plug, RefreshCw, Tv } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "../../app-context";
@@ -19,7 +21,6 @@ import { ErrorPanel } from "../../components/feedback";
 import { LoadingRows } from "../../components/feedback";
 import { t, tn } from "../../i18n";
 import { errorMessage } from "../../lib/api";
-import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { useQuality } from "../releases/useQuality";
 import {
@@ -28,6 +29,7 @@ import {
   type AppSwitchPatch,
   type Library,
   type LibraryCardShape,
+  type LibrarySyncRequest,
   type PresentationAppKey,
   type Presentations,
   type ResolvedAppPresentation,
@@ -36,6 +38,15 @@ import {
 import { LibraryCacheCard } from "./LibraryCache";
 import { TitlesComeFrom } from "./TitlesComeFrom";
 import { NarrowingEditor } from "./NarrowingEditor";
+import {
+  DeleteGuardChoice,
+  formatItemStorageSummary,
+  formatStoredCapSummary,
+  formatSyncStatusLine,
+  notifySyncError,
+  notifySyncResponse,
+  resolveDeleteGuard,
+} from "./syncStatus";
 
 function presentationHint(value: string): string {
   const hints: Record<string, string> = {
@@ -561,6 +572,9 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
               />
             </SettingsSection>
           )}
+          {library.source === "plugin" && library.kind?.sync?.mode !== "push" ? (
+            <PluginLibrarySyncSection library={library} onChanged={onSaved} />
+          ) : null}
           {cache.data ? (
             <LibraryCacheCard
               library={library}
@@ -630,39 +644,50 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
           typeof library.maxPluginItems === "number" &&
           library.maxPluginItems > 0 ? (
             <p className="mt-1 text-xs text-fg-muted">
-              {t("{used} of {limit} items stored", {
-                used: formatNumber(library.storedItems ?? library.itemCount ?? 0, 0),
-                limit: formatNumber(library.maxPluginItems, 0),
-              })}
+              {formatStoredCapSummary(
+                library.storedItems ?? library.itemCount ?? 0,
+                library.maxPluginItems,
+              )}
             </p>
           ) : null}
           <div className="mt-3">
-            <LevelBadge
-              label={
-                sourceNames.length > 0 &&
-                registry.data
-                  ?.filter((s) => draft.sources.includes(s.id))
-                  .every((s) => s.health === "unknown")
-                  ? t("Not loaded yet")
-                  : undefined
-              }
-              level={
-                library.sync?.lastError
-                  ? "error"
-                  : sourceNames.length > 0 &&
-                      registry.data
-                        ?.filter((s) => draft.sources.includes(s.id))
-                        .every((s) => s.health === "unknown")
-                    ? "unknown"
-                    : registry.data?.some(
-                          (source) =>
-                            draft.sources.includes(source.id) &&
-                            ["error", "attention"].includes(source.health),
-                        )
-                      ? "warn"
-                      : (health.find((item) => item.id === "catalog")?.level ?? "unknown")
-              }
-            />
+            {library.source === "plugin" && library.sync?.running ? (
+              <Badge variant="secondary" className="gap-1">
+                <RefreshCw size={11} className="animate-spin" aria-hidden />
+                {library.sync.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+              </Badge>
+            ) : (
+              <LevelBadge
+                label={
+                  library.source === "plugin" && resolveDeleteGuard(library.sync)
+                    ? t("Needs review")
+                    : sourceNames.length > 0 &&
+                        registry.data
+                          ?.filter((s) => draft.sources.includes(s.id))
+                          .every((s) => s.health === "unknown")
+                      ? t("Not loaded yet")
+                      : undefined
+                }
+                level={
+                  library.source === "plugin" && resolveDeleteGuard(library.sync)
+                    ? "warn"
+                    : library.sync?.lastError
+                      ? "error"
+                      : sourceNames.length > 0 &&
+                          registry.data
+                            ?.filter((s) => draft.sources.includes(s.id))
+                            .every((s) => s.health === "unknown")
+                        ? "unknown"
+                        : registry.data?.some(
+                              (source) =>
+                                draft.sources.includes(source.id) &&
+                                ["error", "attention"].includes(source.health),
+                            )
+                          ? "warn"
+                          : (health.find((item) => item.id === "catalog")?.level ?? "unknown")
+                }
+              />
+            )}
           </div>
           <p className="mt-4 text-sm text-fg-muted">
             {t("Titles from: {sources}", { sources: sourceNames.join(", ") })}
@@ -716,5 +741,91 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
         />
       ) : null}
     </>
+  );
+}
+
+function PluginLibrarySyncSection({
+  library,
+  onChanged,
+}: {
+  library: Library;
+  onChanged: () => void;
+}) {
+  const [busyAction, setBusyAction] = useState<"sync" | "full" | "keep" | "force" | null>(null);
+  const running = Boolean(library.sync?.running);
+  const guard = running ? null : resolveDeleteGuard(library.sync);
+  const capSummary = formatItemStorageSummary(library);
+  const status = guard
+    ? ""
+    : formatSyncStatusLine(library.sync, {
+        count: library.storedItems ?? library.itemCount ?? 0,
+      });
+  const summaryLine = capSummary && status ? `${capSummary} · ${status}` : capSummary || status;
+  const isBusy = running || Boolean(busyAction);
+
+  const runSync = async (action: "sync" | "full" | "keep" | "force", opts: LibrarySyncRequest) => {
+    setBusyAction(action);
+    try {
+      const res = await librariesApi.sync(library.id, opts);
+      notifySyncResponse(res);
+    } catch (e) {
+      notifySyncError(e);
+    } finally {
+      onChanged();
+      setBusyAction(null);
+    }
+  };
+
+  return (
+    <SettingsSection title={t("Library sync")}>
+      <SettingsRow
+        title={library.kind?.label ?? library.name}
+        description={
+          <div className="space-y-1">
+            {summaryLine ? <span>{summaryLine}</span> : null}
+            {guard ? (
+              <DeleteGuardChoice
+                guard={guard}
+                busyAction={busyAction}
+                onKeep={() => void runSync("keep", { keepExisting: true })}
+                onRemoveMissing={() =>
+                  void runSync("force", {
+                    force: true,
+                    fullWalk: guard.source === "walk",
+                  })
+                }
+              />
+            ) : null}
+          </div>
+        }
+        control={
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isBusy}
+              onClick={() => void runSync("full", { fullWalk: true })}
+            >
+              {busyAction === "full" ? (
+                <RefreshCw size={13} className="animate-spin" aria-hidden />
+              ) : null}
+              {t("Full re-sync")}
+            </Button>
+            <Button
+              size="sm"
+              disabled={isBusy}
+              onClick={() => void runSync("sync", { fullWalk: false })}
+            >
+              <RefreshCw
+                size={13}
+                className={cn((busyAction === "sync" || running) && "animate-spin")}
+                aria-hidden
+              />{" "}
+              {running ? t("Syncing…") : t("Sync now")}
+            </Button>
+          </div>
+        }
+      />
+    </SettingsSection>
   );
 }

@@ -35,9 +35,14 @@ import { t, tn, tx } from "../../i18n";
 import { errorMessage } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
-import { librariesApi, publishedTo, type Library } from "./api";
+import { librariesApi, publishedTo, type Library, type LibrarySync } from "./api";
 import { NewLibraryDrawer } from "./LibraryEditor";
 import { LibraryPage } from "./LibraryPage";
+import {
+  formatDeleteGuardSummary,
+  formatItemStorageSummary,
+  resolveDeleteGuard,
+} from "./syncStatus";
 import "./libraries.css";
 
 export default function Libraries() {
@@ -87,7 +92,11 @@ export function isDisabledPluginError(raw?: string): boolean {
   return raw.toLowerCase().includes("plugin is disabled");
 }
 
-export function formatLibrarySyncError(raw: string): ReactNode {
+export function formatLibrarySyncError(raw: string, sync?: LibrarySync | null): ReactNode {
+  const guard = resolveDeleteGuard(sync ?? (raw ? ({ lastError: raw } as LibrarySync) : undefined));
+  if (guard) {
+    return formatDeleteGuardSummary(guard);
+  }
   const lower = raw.trim().toLowerCase();
   if (lower.includes("plugin is disabled")) {
     return tx("Its plugin is turned off. Turn it on in {link}.", {
@@ -232,6 +241,7 @@ function LibrariesList() {
                     .map(sourceLabel)
                     .join(", ");
             const syncBad = lib.sync?.lastError;
+            const syncGuard = lib.sync?.running ? null : resolveDeleteGuard(lib.sync);
             const pluginDisabled = isDisabledPluginError(syncBad);
             const removable =
               lib.source === "catalogue" || lib.source === "collection" || lib.source === "plugin";
@@ -294,22 +304,8 @@ function LibrariesList() {
                         ? ` · ${t("Rules")}`
                         : ""}
                       {lib.source === "plugin" &&
-                      typeof (lib.storedItems ?? lib.itemCount) === "number" &&
-                      typeof lib.maxPluginItems === "number" &&
-                      lib.maxPluginItems > 0
-                        ? typeof lib.itemCount === "number" &&
-                          typeof lib.storedItems === "number" &&
-                          lib.storedItems !== lib.itemCount
-                          ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
-                              count: formatNumber(lib.itemCount, 0),
-                            })} · ${t("{used} of {limit} stored", {
-                              used: formatNumber(lib.storedItems, 0),
-                              limit: formatNumber(lib.maxPluginItems, 0),
-                            })}`
-                          : ` · ${t("{used} of {limit} items", {
-                              used: formatNumber(lib.storedItems ?? lib.itemCount ?? 0, 0),
-                              limit: formatNumber(lib.maxPluginItems, 0),
-                            })}`
+                      typeof (lib.storedItems ?? lib.itemCount) === "number"
+                        ? ` · ${formatItemStorageSummary(lib)}`
                         : typeof lib.itemCount === "number"
                           ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
                               count: formatNumber(lib.itemCount, 0),
@@ -327,6 +323,8 @@ function LibrariesList() {
                       <RefreshCw size={11} className="animate-spin" aria-hidden />
                       {lib.sync.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
                     </Badge>
+                  ) : syncGuard ? (
+                    <LevelBadge level="warn" label={t("Needs review")} />
                   ) : syncBad ? (
                     <LevelBadge
                       level={pluginDisabled ? "warn" : "error"}
@@ -348,9 +346,12 @@ function LibrariesList() {
                   )}
                 </p>
                 {syncBad ||
+                syncGuard ||
                 (lib.source === "builtin" && catalogHealth && catalogHealth.level !== "ok") ? (
                   <p className="library-card-error" role="alert">
-                    {syncBad ? formatLibrarySyncError(syncBad) : catalogHealth?.summary}
+                    {syncBad || syncGuard
+                      ? formatLibrarySyncError(syncBad ?? "", lib.sync)
+                      : catalogHealth?.summary}
                   </p>
                 ) : null}
                 <div className="library-card-actions">

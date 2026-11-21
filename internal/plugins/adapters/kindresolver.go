@@ -1803,6 +1803,7 @@ func (r *KindResolver) loadAuthorized(ctx context.Context, viewer *core.Viewer, 
 			return core.KindItem{}, core.Library{}, pluginitems.KindRecord{}, core.ErrNotFound
 		}
 	}
+	r.items.PinItemAsync(item.Ref)
 	if r.authorize == nil && viewer.MaxContentRating != "" {
 		proj := pluginitems.Project(item, rec.Decl, lib.Present, lib.CardShape)
 		cr := proj.ContentRating

@@ -131,6 +131,13 @@ export function InstalledPluginDrawer({
     if (pluginId && logRevision) void loadDetail(pluginId, true);
   }, [pluginId, logRevision, loadDetail]);
 
+  useEffect(() => {
+    if (pluginId && tab === "activity") {
+      void reloadCalls();
+      void loadDetail(pluginId, true);
+    }
+  }, [pluginId, tab, reloadCalls, loadDetail]);
+
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key);
     setMutationError(null);
@@ -549,7 +556,10 @@ export function InstalledPluginDrawer({
               calls={calls}
               onClose={onClose}
               onRetry={retry}
-              onFresh={() => void loadDetail(detail.id, true)}
+              onFresh={() => {
+                void loadDetail(detail.id, true);
+                void reloadCalls();
+              }}
               onActivity={() => setTab("activity")}
             />
           ) : active === "adds" ? (
@@ -561,7 +571,14 @@ export function InstalledPluginDrawer({
             />
           ) : active === "setup" ? (
             <>
-              <PluginCatalogueSettings pluginId={detail.id} onSetup={() => setSetupWizard(true)} />{" "}
+              <PluginCatalogueSettings
+                pluginId={detail.id}
+                onSetup={() => setSetupWizard(true)}
+                onSyncActivity={() => {
+                  void loadDetail(detail.id, true);
+                  void reloadCalls();
+                }}
+              />{" "}
               <PluginSetup
                 detail={detail}
                 onDetail={() => loadDetail(detail.id, true)}

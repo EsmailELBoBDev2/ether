@@ -198,7 +198,7 @@ export function RuntimeLimitsEditor({
                           allowed > 0 &&
                           (hasMediaKinds || (storedItems ?? 0) > 0) ? (
                             <p className="mt-1 max-w-44 text-fg-muted">
-                              {t("{used} of {limit} stored", {
+                              {t("{used} stored (limit {limit})", {
                                 used: formatLimit("maxItems", storedItems ?? 0),
                                 limit: formatLimit("maxItems", allowed),
                               })}

@@ -416,6 +416,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	itemsSvc, err := pluginitems.New(ctx, a.db, pluginitems.Options{
 		Caller:            mgr,
 		Health:            mgr,
+		Jobs:              pluginSyncJobTracker{mgr: mgr},
 		MaxPluginItemsFor: mgr.MaxPluginItems,
 		Logger:            a.log.With("component", "pluginitems"),
 		IsLeader:          func() bool { return a.cluster == nil || a.cluster.IsLeader() },

@@ -73,8 +73,12 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 					src.Health = "unknown"
 					if c.app.pluginsRT.pluginitems != nil {
 						if state, err := c.app.pluginsRT.pluginitems.SyncStateOf(r.Context(), rec.ID, kind.Key); err == nil {
-							src.LastError = state.LastError
-							if state.LastError != "" {
+							if state.DeleteGuard != nil {
+								src.LastError = state.DeleteGuard.PlainMessage()
+							} else {
+								src.LastError = state.LastError
+							}
+							if state.LastError != "" || state.DeleteGuard != nil {
 								src.Health = "error"
 							} else if !state.LastOK.IsZero() {
 								src.Health = "ok"

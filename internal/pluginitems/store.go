@@ -26,22 +26,36 @@ type KindRecord struct {
 	SchemaVersion int64
 }
 
+// SyncOutcome summarizes the most recent completed sync or keep action in memory.
+type SyncOutcome struct {
+	Mode       string    `json:"mode"` // "sync", "full", "force", "keep"
+	Upserted   int       `json:"upserted,omitempty"`
+	Deleted    int       `json:"deleted,omitempty"`
+	Skipped    int       `json:"skipped,omitempty"`
+	Protected  int       `json:"protected,omitempty"`
+	Total      int       `json:"total"`
+	Summary    string    `json:"summary"`
+	FinishedAt time.Time `json:"finishedAt"`
+}
+
 // SyncState is the persisted sync status for one (plugin, kind) (spec §2.3),
 // enriched with live in-memory progress while a background sync or reindex pass
 // is running.
 type SyncState struct {
-	PluginID    string    `json:"pluginId"`
-	KindKey     string    `json:"kindKey"`
-	Cursor      string    `json:"cursor,omitempty"`
-	Generation  uint64    `json:"generation"`
-	LastStarted time.Time `json:"lastStarted,omitzero"`
-	LastOK      time.Time `json:"lastOk,omitzero"`
-	LastError   string    `json:"lastError,omitempty"`
-	Items       int64     `json:"items"`
-	Running     bool      `json:"running,omitempty"`
-	Phase       string    `json:"phase,omitempty"`
-	SyncedItems int       `json:"syncedItems,omitempty"`
-	Pages       int       `json:"pages,omitempty"`
+	PluginID    string           `json:"pluginId"`
+	KindKey     string           `json:"kindKey"`
+	Cursor      string           `json:"cursor,omitempty"`
+	Generation  uint64           `json:"generation"`
+	LastStarted time.Time        `json:"lastStarted,omitzero"`
+	LastOK      time.Time        `json:"lastOk,omitzero"`
+	LastError   string           `json:"lastError,omitempty"`
+	Items       int64            `json:"items"`
+	Running     bool             `json:"running,omitempty"`
+	Phase       string           `json:"phase,omitempty"`
+	SyncedItems int              `json:"syncedItems,omitempty"`
+	Pages       int              `json:"pages,omitempty"`
+	DeleteGuard *SyncDeleteGuard `json:"deleteGuard,omitempty"`
+	LastOutcome *SyncOutcome     `json:"lastOutcome,omitempty"`
 }
 
 const itemCols = `item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx, title, sort_title, summary, year, released, rating, playable, child_count, leaf_count, hints, fields, etag, unavailable, added_at`
@@ -424,7 +438,26 @@ func (s *Service) UpsertItemsWithStats(ctx context.Context, pluginID, kindKey st
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
-	return s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true, true)
+	return s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true, true, false)
+}
+
+// UpsertPinnedItems writes items discovered on demand (such as live search
+// results) and pins them so missed-walk pruning does not drop them when a
+// subsequent /browse walk omits them.
+func (s *Service) UpsertPinnedItems(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error) {
+	accepted, _, err := s.UpsertPinnedItemsWithAdded(ctx, pluginID, kindKey, items)
+	return accepted, err
+}
+
+// UpsertPinnedItemsWithAdded writes items discovered on demand (live search or
+// facet/container expansion), pinning them against missed-walk pruning while
+// returning accepted and newly inserted counts.
+func (s *Service) UpsertPinnedItemsWithAdded(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, int, error) {
+	mu := s.kindLock(pluginID, kindKey)
+	mu.Lock()
+	defer mu.Unlock()
+	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true, true, true)
+	return stats.Accepted, stats.Added, err
 }
 
 // upsertItemsForSync writes a batch as part of a pull SyncKind pass; SyncKind
@@ -434,16 +467,16 @@ func (s *Service) upsertItemsForSync(ctx context.Context, pluginID, kindKey stri
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
-	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, false, false)
+	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, false, false, false)
 	return stats.Accepted, err
 }
 
 func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, error) {
-	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen, true, true)
+	stats, err := s.upsertItemsWithStatsLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen, true, true, false)
 	return stats.Accepted, err
 }
 
-func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, markOK, notifyStats bool) (UpsertStats, error) {
+func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, markOK, notifyStats, pin bool) (UpsertStats, error) {
 	kind, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
 		return UpsertStats{}, err
@@ -537,7 +570,7 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 			}
 		}
 		end := min(start+upsertChunkSize, len(prepared))
-		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK)
+		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK, pin)
 		if err != nil {
 			// The failed chunk rolled back; only earlier committed
 			// chunks are counted.
@@ -1899,12 +1932,13 @@ ON CONFLICT(plugin_id, kind_key) DO UPDATE SET
 		return totalItems, err
 	}
 	_, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_sync_state(plugin_id, kind_key, generation, last_started, last_ok, last_error, items)
-VALUES(?, ?, ?, 0, ?, '', ?)
+INSERT INTO plugin_sync_state(plugin_id, kind_key, generation, last_started, last_ok, last_error, guard_json, items)
+VALUES(?, ?, ?, 0, ?, '', '', ?)
 ON CONFLICT(plugin_id, kind_key) DO UPDATE SET
 	generation = excluded.generation,
 	last_ok    = excluded.last_ok,
 	last_error = '',
+	guard_json = '',
 	items      = excluded.items`,
 		pluginID, kindKey, gen, nowUnix, totalItems)
 	return totalItems, err
@@ -1964,6 +1998,7 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	s.forgetPinnedRefs(refs)
 	s.noteWrite()
 	return nil
 }
@@ -2318,12 +2353,13 @@ func (s *Service) SyncStateOf(ctx context.Context, pluginID, kindKey string) (Sy
 		gen         int64
 		lastStarted int64
 		lastOK      int64
+		guardRaw    string
 	)
 	err := s.db.QueryRowContext(ctx, `
-SELECT plugin_id, kind_key, cursor, generation, last_started, last_ok, last_error, items
+SELECT plugin_id, kind_key, cursor, generation, last_started, last_ok, last_error, guard_json, items
 FROM plugin_sync_state
 WHERE plugin_id = ? AND kind_key = ?`, pluginID, kindKey).Scan(
-		&st.PluginID, &st.KindKey, &st.Cursor, &gen, &lastStarted, &lastOK, &st.LastError, &st.Items)
+		&st.PluginID, &st.KindKey, &st.Cursor, &gen, &lastStarted, &lastOK, &st.LastError, &guardRaw, &st.Items)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SyncState{}, core.ErrNotFound
@@ -2337,6 +2373,17 @@ WHERE plugin_id = ? AND kind_key = ?`, pluginID, kindKey).Scan(
 	if lastOK > 0 {
 		st.LastOK = time.Unix(lastOK, 0).UTC()
 	}
+	if guardRaw != "" {
+		var g SyncDeleteGuard
+		if json.Unmarshal([]byte(guardRaw), &g) == nil && g.Missing > 0 && g.Total > 0 {
+			st.DeleteGuard = &g
+		}
+	}
+	if st.DeleteGuard == nil && st.LastError != "" {
+		if parsed := ParseDeleteGuardError(st.LastError); parsed != nil {
+			st.DeleteGuard = parsed
+		}
+	}
 	if prog, ok := s.getSyncProgress(pluginID, kindKey); ok && prog.running {
 		st.Running = true
 		st.Phase = prog.phase
@@ -2345,6 +2392,10 @@ WHERE plugin_id = ? AND kind_key = ?`, pluginID, kindKey).Scan(
 		if int64(prog.itemsTotal) > st.Items {
 			st.Items = int64(prog.itemsTotal)
 		}
+	}
+	if out, ok := s.getSyncOutcome(pluginID, kindKey); ok {
+		outCopy := out
+		st.LastOutcome = &outCopy
 	}
 	return st, nil
 }
@@ -2377,6 +2428,7 @@ func (s *Service) PurgeKind(ctx context.Context, pluginID, kindKey string) error
 	if libID > 0 {
 		s.forgetLibraryStats(core.LibraryID(libID))
 	}
+	s.clearPinnedCache()
 	s.noteWrite()
 	s.syncGen.Add(1)
 	return nil
@@ -2423,6 +2475,7 @@ func (s *Service) PurgePlugin(ctx context.Context, pluginID string) error {
 			s.forgetLibraryStats(k.LibraryID)
 		}
 	}
+	s.clearPinnedCache()
 	s.noteWrite()
 	s.syncGen.Add(1)
 	return nil
@@ -2521,7 +2574,7 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		}
 	} else if kindKey != "" {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE plugin_sync_state SET cursor = '', last_started = 0, last_ok = 0, last_error = '', items = 0 WHERE plugin_id = ? AND kind_key = ?`,
+			`UPDATE plugin_sync_state SET cursor = '', last_started = 0, last_ok = 0, last_error = '', guard_json = '', items = 0 WHERE plugin_id = ? AND kind_key = ?`,
 			pluginID, kindKey); err != nil {
 			return err
 		}

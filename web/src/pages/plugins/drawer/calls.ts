@@ -101,6 +101,30 @@ export function describeCall(
         return t("Plugin directory");
     }
   }
+  const kindRoute =
+    /^\/ether\/v1\/kinds\/([^/]+)\/(browse|changes|search|expand|resolve|match)$/.exec(path);
+  if (kindRoute) {
+    const [, rawKind, action] = kindRoute;
+    const decodedKind = decodeURIComponent(rawKind ?? "");
+    const kindMeta = detail.manifest.ether?.contributes?.mediaKinds?.find(
+      (k) => k.key === decodedKind,
+    );
+    const kindLabel = kindMeta?.label || kindMeta?.library?.name || decodedKind;
+    switch (action) {
+      case "browse":
+        return t("Catalogue walk: {kind}", { kind: kindLabel });
+      case "changes":
+        return t("Catalogue changes: {kind}", { kind: kindLabel });
+      case "search":
+        return t("Live search: {kind}", { kind: kindLabel });
+      case "expand":
+        return t("Expand items: {kind}", { kind: kindLabel });
+      case "resolve":
+        return t("Playback sources: {kind}", { kind: kindLabel });
+      case "match":
+        return t("Match items: {kind}", { kind: kindLabel });
+    }
+  }
   if (path === "/ether/channels.json") return t("Channel lineup");
   if (path.startsWith("/ether/guide/")) return t("Guide for a channel");
   if (path.startsWith("/ether/open/")) return t("Opened a source to play");
@@ -118,7 +142,7 @@ export function resultCount(call: PluginCall): number | undefined {
   if (!call.response || call.status !== 200) return undefined;
   try {
     const body = JSON.parse(call.response) as Record<string, unknown>;
-    for (const key of ["streams", "subtitles", "metas", "channels"]) {
+    for (const key of ["streams", "subtitles", "metas", "channels", "items", "upserts"]) {
       if (Array.isArray(body[key])) return (body[key] as unknown[]).length;
     }
   } catch {

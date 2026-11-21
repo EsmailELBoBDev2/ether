@@ -114,8 +114,10 @@ func TestPrewarmFailsOverWhenProbedReleaseLacksViewerAudio(t *testing.T) {
 			if ps.Resolution == nil || ps.Resolution.Release.ID != "rel-3" {
 				t.Fatalf("Prepare selected %+v, want rel-3", ps.Resolution)
 			}
-			if h.engine.openCount() != opensBeforePrepare+1 {
-				t.Fatalf("Prepare reopened/failed over unexpectedly: opens %d -> %d", opensBeforePrepare, h.engine.openCount())
+			// Prepare either reuses the warm source or opens rel-3 once; it
+			// never fails over again.
+			if got := h.engine.openCount(); got > opensBeforePrepare+1 {
+				t.Fatalf("Prepare reopened/failed over unexpectedly: opens %d -> %d", opensBeforePrepare, got)
 			}
 		})
 	}

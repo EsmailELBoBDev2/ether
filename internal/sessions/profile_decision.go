@@ -351,29 +351,45 @@ func stampEncodedVideoRange(s *core.StreamInfo, d core.Decision) {
 // applyProfileRangeCaps lets a device profile's VideoRangeType list drive the
 // direct-play decision. Equals and EqualsAny name ranges the client can play.
 // A list that only says SDR does not advertise HDR or Dolby Vision.
+//
+// A profile that never lists the ranges it plays (Fladder declares no codec
+// conditions; Wholphin only excludes ranges with NotEquals) accepts every
+// range in Jellyfin, which direct-plays HDR10 and Dolby Vision base layers to
+// it and leaves display mapping to the client. Treat it as HDR10-capable, so
+// its declared conditions (evaluated for direct play) decide instead of a
+// forced SDR tone-map encode.
 func applyProfileRangeCaps(caps core.ClientCaps) core.ClientCaps {
 	if caps.Profiles == nil {
 		return caps
 	}
+	listed := false
 	for _, codec := range caps.Profiles.Codecs {
 		for _, cond := range codec.Conditions {
-			noteProfileRange(&caps, cond)
+			listed = noteProfileRange(&caps, cond) || listed
 		}
-		for _, cond := range codec.ApplyConditions {
-			noteProfileRange(&caps, cond)
+		// ApplyConditions say when a codec profile applies (Wholphin lists
+		// the ranges it cannot play there), not which ranges are playable.
+	}
+	if !listed && !caps.HDR10 {
+		for _, dp := range caps.Profiles.DirectPlay {
+			if dp.MediaType == "" || strings.EqualFold(dp.MediaType, "video") {
+				caps.HDR10 = true
+				break
+			}
 		}
 	}
 	return caps
 }
 
-func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) {
+// noteProfileRange reports whether cond positively lists playable ranges.
+func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) bool {
 	if !strings.EqualFold(cond.Property, "VideoRangeType") {
-		return
+		return false
 	}
 	switch strings.ToLower(cond.Operator) {
 	case "equals", "equalsany":
 	default:
-		return
+		return false
 	}
 	for _, part := range strings.Split(cond.Value, "|") {
 		switch strings.ToUpper(strings.TrimSpace(part)) {
@@ -386,6 +402,7 @@ func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) {
 			caps.DolbyVision = true
 		}
 	}
+	return true
 }
 
 func encodedPictureHDR(s *core.StreamInfo) bool {

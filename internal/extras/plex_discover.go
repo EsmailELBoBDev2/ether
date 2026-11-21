@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -149,46 +151,135 @@ func (p *PlexDiscover) List(ctx context.Context, parent *core.Title) ([]Extra, e
 // Resolve fetches a fresh direct media URL for a Plex Discover extra at play
 // time without caching the signed URL across plays.
 func (p *PlexDiscover) Resolve(ctx context.Context, e Extra) (Resolved, error) {
+	variants, err := p.resolveVariants(ctx, e)
+	if err != nil {
+		return Resolved{}, err
+	}
+	var lastErr error
+	for _, v := range variants {
+		r, err := v.resolve(ctx)
+		if err == nil {
+			return r, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return Resolved{}, ctx.Err()
+		}
+	}
+	if lastErr != nil {
+		return Resolved{}, lastErr
+	}
+	return Resolved{}, errors.New("extras: plex discover media unavailable")
+}
+
+type discoverVariant struct {
+	container string
+	height    int
+	bitrate   int
+	resolve   func(ctx context.Context) (Resolved, error)
+}
+
+type discoverVariantResolver interface {
+	resolveVariants(ctx context.Context, e Extra) ([]discoverVariant, error)
+}
+
+// resolveVariants returns ranked, lazily resolved media variants (best first)
+// so callers such as the trailer cache can fall back to a smaller variant when
+// the highest bitrate exceeds the cache entry limit.
+func (p *PlexDiscover) resolveVariants(ctx context.Context, e Extra) ([]discoverVariant, error) {
 	if !p.Available() {
-		return Resolved{}, errors.New("extras: plex discover unavailable")
+		return nil, errors.New("extras: plex discover unavailable")
 	}
 	parentHex, extraID, ok := parseDiscoverKey(e.DiscoverKey)
 	if !ok {
-		return Resolved{}, errors.New("extras: invalid plex discover key")
+		return nil, errors.New("extras: invalid plex discover key")
 	}
 	items, err := p.fetchExtras(ctx, parentHex)
 	if err != nil {
-		return Resolved{}, err
+		return nil, err
 	}
 	for _, item := range items {
 		if discoverExtraID(item) != extraID {
 			continue
 		}
-		media, ok := pickDiscoverMedia(item.Media)
-		if !ok {
-			return Resolved{}, errors.New("extras: plex discover media unavailable")
+		ranked := rankDiscoverMedia(item.Media)
+		if len(ranked) == 0 {
+			return nil, errors.New("extras: plex discover media unavailable")
 		}
-		target := media.directURL
-		if target == "" && media.partKey != "" {
-			target, err = p.resolvePartRedirect(ctx, media.partKey)
-			if err != nil {
+		// Discover often copies the highest-bitrate Media.url onto every Media
+		// variant while differentiating them via Part.key. Detect shared URLs
+		// so each variant resolves its own stream.
+		urlCounts := make(map[string]int, len(ranked))
+		for _, c := range ranked {
+			if c.directURL != "" {
+				urlCounts[c.directURL]++
+			}
+		}
+		variants := make([]discoverVariant, 0, len(ranked))
+		for _, c := range ranked {
+			cand := c
+			sharedURL := cand.directURL != "" && urlCounts[cand.directURL] > 1
+			container := cand.container
+			if container == "" {
+				container = "mp4"
+			}
+			variants = append(variants, discoverVariant{
+				container: container,
+				height:    cand.height,
+				bitrate:   cand.bitrate,
+				resolve: func(rctx context.Context) (Resolved, error) {
+					return p.resolveCandidate(rctx, cand, sharedURL)
+				},
+			})
+		}
+		return variants, nil
+	}
+	return nil, errors.New("extras: plex discover item not found")
+}
+
+func (p *PlexDiscover) resolveCandidate(ctx context.Context, cand discoverCandidate, sharedURL bool) (Resolved, error) {
+	urlBitrate, hasURLBitrate := discoverURLBitrate(cand.directURL)
+	bitrateMismatch := hasURLBitrate && cand.bitrate > 0 && urlBitrate != cand.bitrate
+
+	var target string
+	var err error
+	usePartKey := cand.partKey != "" && (cand.directURL == "" || sharedURL || bitrateMismatch)
+	if usePartKey {
+		target, err = p.resolvePartRedirect(ctx, cand.partKey)
+		if err != nil {
+			// Fall back to directURL only if it actually matches this variant's bitrate.
+			if cand.directURL != "" && !bitrateMismatch && (!sharedURL || (hasURLBitrate && cand.bitrate > 0 && urlBitrate == cand.bitrate)) {
+				target = cand.directURL
+				err = nil
+			} else {
 				return Resolved{}, err
 			}
 		}
-		if !validPublicMediaURL(target) {
-			return Resolved{}, errors.New("extras: invalid plex discover media URL")
+	} else if cand.directURL != "" {
+		if bitrateMismatch {
+			if rewritten, ok := rewriteDiscoverURLBitrate(cand.directURL, cand.bitrate); ok {
+				target = rewritten
+			} else {
+				return Resolved{}, errors.New("extras: plex discover variant bitrate mismatch")
+			}
+		} else {
+			target = cand.directURL
 		}
-		container := media.container
-		if container == "" {
-			container = "mp4"
-		}
-		return Resolved{
-			URL:       target,
-			Container: container,
-			Expires:   p.now().Add(5 * time.Minute),
-		}, nil
+	} else {
+		return Resolved{}, errors.New("extras: plex discover media unavailable")
 	}
-	return Resolved{}, errors.New("extras: plex discover item not found")
+	if !validPublicMediaURL(target) {
+		return Resolved{}, errors.New("extras: invalid plex discover media URL")
+	}
+	container := cand.container
+	if container == "" {
+		container = "mp4"
+	}
+	return Resolved{
+		URL:       target,
+		Container: container,
+		Expires:   p.now().Add(5 * time.Minute),
+	}, nil
 }
 
 func (p *PlexDiscover) fetchExtras(ctx context.Context, parentHex string) ([]discoverExtraItem, error) {
@@ -316,9 +407,8 @@ type discoverCandidate struct {
 	language   string
 }
 
-func pickDiscoverMedia(media []discoverMedia) (discoverCandidate, bool) {
-	var best discoverCandidate
-	found := false
+func rankDiscoverMedia(media []discoverMedia) []discoverCandidate {
+	out := make([]discoverCandidate, 0, len(media))
 	for _, m := range media {
 		cand := discoverCandidate{
 			container:  strings.ToLower(strings.TrimSpace(m.Container)),
@@ -358,23 +448,31 @@ func pickDiscoverMedia(media []discoverMedia) (discoverCandidate, bool) {
 		if cand.directURL == "" && cand.partKey == "" {
 			continue
 		}
+		if cand.bitrate <= 0 && cand.partKey != "" {
+			cand.bitrate = discoverPartKeyBitrate(cand.partKey)
+		}
 		if cand.container == "" {
 			if strings.Contains(strings.ToLower(cand.directURL), ".mp4") || strings.Contains(strings.ToLower(cand.partKey), "mp4") {
 				cand.container = "mp4"
 			}
 		}
-		if !found || betterDiscoverMedia(cand, best) {
-			best = cand
-			found = true
-		}
+		out = append(out, cand)
 	}
-	return best, found
+	sort.SliceStable(out, func(i, j int) bool {
+		return betterDiscoverMedia(out[i], out[j])
+	})
+	return out
+}
+
+func pickDiscoverMedia(media []discoverMedia) (discoverCandidate, bool) {
+	ranked := rankDiscoverMedia(media)
+	if len(ranked) == 0 {
+		return discoverCandidate{}, false
+	}
+	return ranked[0], true
 }
 
 func betterDiscoverMedia(a, b discoverCandidate) bool {
-	if (a.directURL != "") != (b.directURL != "") {
-		return a.directURL != ""
-	}
 	if (a.container == "mp4") != (b.container == "mp4") {
 		return a.container == "mp4"
 	}
@@ -394,7 +492,69 @@ func betterDiscoverMedia(a, b discoverCandidate) bool {
 		}
 		return a.height < b.height
 	}
-	return a.bitrate > b.bitrate
+	if a.bitrate != b.bitrate {
+		return a.bitrate > b.bitrate
+	}
+	return a.directURL != "" && b.directURL == ""
+}
+
+func discoverPartKeyBitrate(partKey string) int {
+	base := strings.ToLower(path.Base(strings.TrimSpace(partKey)))
+	rest, ok := strings.CutPrefix(base, "mp4-")
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func discoverURLBitrate(raw string) (int, bool) {
+	if raw == "" {
+		return 0, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return 0, false
+	}
+	for k, vals := range u.Query() {
+		if !strings.EqualFold(k, "videokbrate") || len(vals) == 0 {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(vals[0])); err == nil && n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func rewriteDiscoverURLBitrate(raw string, bitrate int) (string, bool) {
+	if raw == "" || bitrate <= 0 {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	q := u.Query()
+	found := false
+	for k := range q {
+		if strings.EqualFold(k, "videokbrate") {
+			q.Set(k, strconv.Itoa(bitrate))
+			found = true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	u.RawQuery = q.Encode()
+	rewritten := u.String()
+	if !validPublicMediaURL(rewritten) {
+		return "", false
+	}
+	return rewritten, true
 }
 
 func discoverHeight(height int, res string) int {

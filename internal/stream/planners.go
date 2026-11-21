@@ -26,7 +26,7 @@ func (b *builder) nonVideoArchiveHint() (nzb.NonVideoHint, bool) {
 	if !ok {
 		return nzb.NonVideoHint{}, false
 	}
-	if h.Member != "" || h.MemberIndex != nil || nzb.IsNonVideoMIME(h.MIME) {
+	if h.Member != "" || h.MemberIndex != nil || h.Track.NonEmpty() || nzb.IsNonVideoMIME(h.MIME) {
 		return h, true
 	}
 	return nzb.NonVideoHint{}, false
@@ -70,6 +70,23 @@ func chooseNonVideoMember(members []archive.Member, hint nzb.NonVideoHint) (*arc
 			return nil, fmt.Errorf("%w: archive member %d (%q) is empty", ErrNoPlayableFile, i, nonDirs[i].Name)
 		}
 		return nonDirs[i], nil
+	}
+	if hint.Track.NonEmpty() {
+		names := make([]string, len(nonDirs))
+		for i, m := range nonDirs {
+			names[i] = m.Name
+		}
+		idx, ok, ambig := nzb.MatchTrackIndex(names, *hint.Track, hint.MIME)
+		if ambig {
+			return nil, fmt.Errorf("%w: track hint (disc=%d number=%d title=%q) matched multiple archive members: %w", ErrNoPlayableFile, hint.Track.Disc, hint.Track.Number, hint.Track.Title, core.ErrWrongContent)
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: archive holds no track matching (disc=%d number=%d title=%q): %w", ErrNoPlayableFile, hint.Track.Disc, hint.Track.Number, hint.Track.Title, core.ErrWrongContent)
+		}
+		if nonDirs[idx].Size <= 0 {
+			return nil, fmt.Errorf("%w: archive member %q is empty", ErrNoPlayableFile, nonDirs[idx].Name)
+		}
+		return nonDirs[idx], nil
 	}
 	var best *archive.Member
 	bestRank := 0

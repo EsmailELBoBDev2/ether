@@ -49,6 +49,7 @@ const (
 
 type Page = core.Page
 type WatchStatus = core.WatchStatus
+type ReadingProgress = core.ReadingProgress
 type StreamInfo = core.StreamInfo
 type MediaInfo = core.MediaInfo
 type DecideOptions = core.DecideOptions

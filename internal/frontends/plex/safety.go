@@ -279,6 +279,9 @@ func (s *Server) admittedTitle(t *frontend.Title) bool {
 }
 
 func (s *Server) playableTitle(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
+	if t != nil && (t.MediaClass == frontend.MediaClassBook || t.MBItemType == "Book") {
+		return false
+	}
 	return s.visibility().Playable(ctx, u, t) && s.plexMetaRatingAllowed(u, t)
 }
 
@@ -289,6 +292,9 @@ func (s *Server) playableTitle(ctx context.Context, u *frontend.User, t *fronten
 // the Experience when the metadata lookup succeeds (it checks the viewer
 // against the owning library), so no built-in section check applies.
 func (s *Server) pluginAwarePlayable(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
+	if t != nil && (t.MediaClass == frontend.MediaClassBook || t.MBItemType == "Book") {
+		return false
+	}
 	if t != nil && t.Key.IsPluginKey() {
 		return s.plexMetaRatingAllowed(u, t)
 	}

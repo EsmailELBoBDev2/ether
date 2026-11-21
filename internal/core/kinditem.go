@@ -137,14 +137,15 @@ type KindItem struct {
 	ETag        string                     `json:"etag,omitempty"`
 }
 
-// KindItemPart describes one declared file/part of a multi-file KindItem in
-// hints.parts (spec §3.2, §4.1, #576).
+// KindItemPart describes one declared or resolved file/part of a multi-file
+// KindItem (spec §3.2, §4.1, #576).
 type KindItemPart struct {
 	Index       int     `json:"index"`
 	Name        string  `json:"name,omitempty"`
 	MIME        string  `json:"mime,omitempty"`
 	Size        int64   `json:"size,omitempty"`
 	DurationSec float64 `json:"durationSec,omitempty"`
+	FileIndex   *int    `json:"fileIndex,omitempty"`
 }
 
 // ExtractKindItemPartsFromItem inspects a KindItem for declared parts,
@@ -203,6 +204,7 @@ func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
 			ByteSize    int64   `json:"byteSize"`
 			DurationSec float64 `json:"durationSec"`
 			Duration    float64 `json:"duration"`
+			FileIndex   *int    `json:"fileIndex"`
 		}
 		if err := json.Unmarshal(raw, &obj); err == nil {
 			for _, cand := range []string{obj.Name, obj.File, obj.Filename, obj.Path, obj.ROM, obj.Label, obj.Title, obj.ID} {
@@ -228,6 +230,10 @@ func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
 					part.DurationSec = dur
 					break
 				}
+			}
+			if obj.FileIndex != nil && *obj.FileIndex >= 0 {
+				v := *obj.FileIndex
+				part.FileIndex = &v
 			}
 		}
 		out = append(out, part)
@@ -457,6 +463,16 @@ type SourceQuery struct {
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
 }
 
+// ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
+// returned by a release_files source query. Hand Path back as
+// ReleaseHint.FileHint (or ContainerRef.Member) to open that exact member.
+type ReleaseMember struct {
+	Index  int    `json:"index"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Stored bool   `json:"stored,omitempty"`
+}
+
 // UsenetCheckResult reports the sampled article availability verdict for one
 // Usenet NZB release, as returned by a usenet_check source query.
 type UsenetCheckResult struct {
@@ -484,7 +500,9 @@ type UsenetCheckResult struct {
 // release_files source query. Index is the position Ether's own file
 // selection counts: the debrid provider's file-list order for torrents,
 // NZB document order for Usenet. Hand it back as ReleaseHint.FileIndex,
-// or match Path with ReleaseHint.File.
+// or match Path with ReleaseHint.File. When the file is the first volume
+// of a readable RAR, 7z, or ZIP archive on Usenet, Members lists the
+// non-directory files inside that archive.
 type ReleaseFile struct {
 	Index int    `json:"index"`
 	Path  string `json:"path"`
@@ -492,7 +510,8 @@ type ReleaseFile struct {
 	// SizeApproximate is true when Size is a segment-derived decoded estimate
 	// rather than an exact byte count (e.g. a Usenet NZB whose PAR2/yEnc
 	// headers could not be read). Exact sizes leave it false/omitted.
-	SizeApproximate bool `json:"sizeApproximate,omitempty"`
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	Members         []ReleaseMember `json:"members,omitempty"`
 }
 
 // SourceCandidate is one Ether-found release for a resolver to rank,
@@ -582,12 +601,13 @@ type PlayableSource struct {
 	// (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared
 	// digest — and Size, when set — is checked against the bytes actually
 	// served, including a release's selected file or container member.
-	SHA1      string        `json:"sha1,omitempty"`
-	CRC32     string        `json:"crc32,omitempty"`
-	MaxBytes  int64         `json:"maxBytes,omitempty"`
-	ExpiresAt int64         `json:"expiresAt,omitempty"`
-	Container *ContainerRef `json:"container,omitempty"`
-	Release   *ReleaseHint  `json:"release,omitempty"`
+	SHA1      string         `json:"sha1,omitempty"`
+	CRC32     string         `json:"crc32,omitempty"`
+	MaxBytes  int64          `json:"maxBytes,omitempty"`
+	ExpiresAt int64          `json:"expiresAt,omitempty"`
+	Container *ContainerRef  `json:"container,omitempty"`
+	Release   *ReleaseHint   `json:"release,omitempty"`
+	Parts     []KindItemPart `json:"parts,omitempty"`
 }
 
 // ContainerRef describes an archive member inside one or more volume streams
@@ -608,6 +628,16 @@ type VolumeRef struct {
 	Size    int64             `json:"size"`
 }
 
+// TrackHint identifies one track inside a multi-track audio release or archive
+// when exact filenames cannot be known before opening (for example scene RARs).
+// Ether matches by disc/track number first, then normalised title tokens,
+// failing on ambiguity. Exact fileHint semantics remain unchanged.
+type TrackHint struct {
+	Disc   int    `json:"disc,omitempty"`
+	Number int    `json:"number,omitempty"`
+	Title  string `json:"title,omitempty"`
+}
+
 // ReleaseHint hands an NZB, magnet, infohash, torrent link, or pre-built
 // Candidate to Ether's existing Usenet / debrid / torrent acquisition pipeline
 // (spec §4.1, §4.3).
@@ -620,9 +650,10 @@ type ReleaseHint struct {
 	TorrentURL string           `json:"torrentUrl,omitempty"`
 	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
-	File           string `json:"file,omitempty"`
-	FileHint       string `json:"fileHint,omitempty"`
-	PasswordSecret string `json:"passwordSecret,omitempty"`
+	File           string     `json:"file,omitempty"`
+	FileHint       string     `json:"fileHint,omitempty"`
+	Track          *TrackHint `json:"track,omitempty"`
+	PasswordSecret string     `json:"passwordSecret,omitempty"`
 }
 
 // KindResolveRequest is the payload sent to a plugin's kind_resolve handler
@@ -642,5 +673,6 @@ type KindResolveResponse struct {
 	RetryInMS int64            `json:"retryInMs,omitempty"`
 	Job       string           `json:"job,omitempty"`
 	Sources   []PlayableSource `json:"sources"`
+	Parts     []KindItemPart   `json:"parts,omitempty"`
 	TTLSec    int              `json:"ttlSec,omitempty"`
 }

@@ -372,7 +372,7 @@ func (s *session) adopt(g *generation) {
 	info := g.infoSnapshot()
 	s.container = info.Container
 	s.name = g.src.Name()
-	s.contentType = contentTypeFor(info.Container, s.name)
+	s.contentType = contentTypeForInfo(info, s.name, sourceMIME(g.src))
 	sum := sha1.Sum(fmt.Appendf(nil, "%s:%d", g.releaseID(), s.virtual.Size))
 	s.etag = `"` + hex.EncodeToString(sum[:10]) + `"`
 	s.modTime = g.res.Release.PubDate

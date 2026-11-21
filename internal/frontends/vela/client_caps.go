@@ -10,15 +10,34 @@ import (
 
 // Detail and Play build the same declaration with current network and owner rules.
 func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c client) (frontend.CapabilityResult, error) {
-	profile := caps.DeviceProfile{MaxStreamingBitrate: c.MaxBitrate, DirectPlayProfiles: []caps.DirectPlayProfile{{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}}
+	audioCodecs := strings.Join(c.AudioCodecs, ",")
+	profile := caps.DeviceProfile{
+		MaxStreamingBitrate: c.MaxBitrate,
+		DirectPlayProfiles: []caps.DirectPlayProfile{
+			{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
+		},
+	}
 	if containers := velaAudioContainers(c.Containers, c.AudioCodecs); len(containers) > 0 {
 		// Music and audiobooks: the declared audio codecs imply the
 		// audio-only containers this client plays as files.
-		profile.DirectPlayProfiles = append(profile.DirectPlayProfiles, caps.DirectPlayProfile{Type: "Audio", Container: strings.Join(containers, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")})
+		profile.DirectPlayProfiles = append(profile.DirectPlayProfiles, caps.DirectPlayProfile{Type: "Audio", Container: strings.Join(containers, ","), AudioCodec: audioCodecs})
 	}
+	audioTranscodeCodecs := audioCodecs
+	if audioTranscodeCodecs == "" {
+		audioTranscodeCodecs = "aac,mp3,opus"
+	}
+	profile.TranscodingProfiles = append(profile.TranscodingProfiles, caps.TranscodingProfile{
+		Type:       "Audio",
+		Protocol:   "http",
+		Container:  "mp4,aac,mp3,ogg,webm",
+		AudioCodec: audioTranscodeCodecs,
+	})
 	if c.HLS || c.MSE {
 		container := "mp4"
-		profile.TranscodingProfiles = []caps.TranscodingProfile{{Type: "Video", Protocol: "hls", Container: container, VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}
+		profile.TranscodingProfiles = append(profile.TranscodingProfiles,
+			caps.TranscodingProfile{Type: "Video", Protocol: "hls", Container: container, VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
+			caps.TranscodingProfile{Type: "Audio", Protocol: "hls", Container: "mp4,ts", AudioCodec: audioTranscodeCodecs},
+		)
 	}
 	for _, format := range c.SubtitleFormats {
 		if (c.HLS || c.MSE) && format == "webvtt" {

@@ -104,14 +104,39 @@ func profileName(s string) string {
 	switch s {
 	case "ts", "mpegts":
 		return "mpegts"
-	case "m4v", "mov", "fmp4":
+	case "m4v", "m4a", "m4b", "mov", "fmp4":
 		return "mp4"
+	case "adts":
+		return "aac"
+	case "oga":
+		return "ogg"
+	case "matroska", "mka":
+		return "mkv"
+	case "weba":
+		return "webm"
+	case "mp4a":
+		return "aac"
 	case "avc", "avc1":
 		return "h264"
 	case "h265":
 		return "hevc"
 	}
 	return s
+}
+
+func profileAudioContainerMatch(containers []string, container, audioCodec string) bool {
+	if profileContains(containers, container) {
+		return true
+	}
+	// Ogg/Opus containers are frequently declared interchangeably as "ogg" or "opus".
+	c := profileName(container)
+	if c == "ogg" && strings.EqualFold(audioCodec, "opus") && profileContains(containers, "opus") {
+		return true
+	}
+	if c == "opus" && profileContains(containers, "ogg") {
+		return true
+	}
+	return false
 }
 func profileContains(xs []string, name string) bool {
 	if len(xs) == 0 {
@@ -649,7 +674,14 @@ func secondaryAudioValue(info core.MediaInfo, stream *core.StreamInfo) (string, 
 }
 
 func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, video, audio string, audioIndex int) bool {
+	audioOnly := info.Video() == nil && audio != ""
 	for _, c := range p.Containers {
+		if audioOnly {
+			if (c.MediaType == "" || strings.EqualFold(c.MediaType, "audio")) && profileAudioContainerMatch(c.Containers, info.Container, audio) && !profileConditions(c.Conditions, info, profileStream(info, "audio", audioIndex)) {
+				return false
+			}
+			continue
+		}
 		if (c.MediaType == "" || strings.EqualFold(c.MediaType, "video")) && profileContains(c.Containers, info.Container) && !profileConditions(c.Conditions, info, info.Video()) {
 			return false
 		}
@@ -659,9 +691,15 @@ func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, 
 		var codec string
 		switch strings.ToLower(c.MediaType) {
 		case "video":
+			if audioOnly {
+				continue
+			}
 			stream = info.Video()
 			codec = video
 		case "audio", "videoaudio":
+			if audioOnly && strings.EqualFold(c.MediaType, "videoaudio") {
+				continue
+			}
 			stream = profileStream(info, "audio", audioIndex)
 			codec = audio
 		default:
@@ -672,7 +710,7 @@ func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, 
 			}
 			continue
 		}
-		if !profileContains(c.Codecs, codec) || !profileContains(c.Containers, info.Container) {
+		if !profileContains(c.Codecs, codec) || !profileAudioContainerMatch(c.Containers, info.Container, codec) {
 			continue
 		}
 		applies, unknown := evaluateProfileConditions(c.ApplyConditions, info, stream)
@@ -691,7 +729,17 @@ func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, 
 
 func profileUnknownRequired(p *core.ClientCapabilityProfiles, info core.MediaInfo, d core.Decision) bool {
 	video, audio := info.Video(), profileStream(info, "audio", d.AudioStream)
+	audioOnly := video == nil && audio != nil
 	for _, c := range p.Containers {
+		if audioOnly {
+			if (c.MediaType == "" || strings.EqualFold(c.MediaType, "audio")) && profileAudioContainerMatch(c.Containers, info.Container, audio.Codec) {
+				_, unknown := evaluateProfileConditions(c.Conditions, info, audio)
+				if unknown {
+					return true
+				}
+			}
+			continue
+		}
 		if (c.MediaType == "" || strings.EqualFold(c.MediaType, "video")) && profileContains(c.Containers, info.Container) {
 			_, unknown := evaluateProfileConditions(c.Conditions, info, video)
 			if unknown {
@@ -703,13 +751,19 @@ func profileUnknownRequired(p *core.ClientCapabilityProfiles, info core.MediaInf
 		var stream *core.StreamInfo
 		switch strings.ToLower(c.MediaType) {
 		case "video":
+			if audioOnly {
+				continue
+			}
 			stream = video
 		case "audio", "videoaudio":
+			if audioOnly && strings.EqualFold(c.MediaType, "videoaudio") {
+				continue
+			}
 			stream = audio
 		default:
 			continue
 		}
-		if stream == nil || !profileContains(c.Codecs, stream.Codec) || !profileContains(c.Containers, info.Container) {
+		if stream == nil || !profileContains(c.Codecs, stream.Codec) || !profileAudioContainerMatch(c.Containers, info.Container, stream.Codec) {
 			continue
 		}
 		applies, unknown := evaluateProfileConditions(c.ApplyConditions, info, stream)
@@ -730,9 +784,6 @@ func profileDirectAllowed(p *core.ClientCapabilityProfiles, info core.MediaInfo,
 	if p == nil {
 		return true
 	}
-	if p.MaxStaticBitrate > 0 && info.BitrateKbps > 0 && int64(info.BitrateKbps)*1000 > int64(p.MaxStaticBitrate) {
-		return false
-	}
 	video, audio := "", ""
 	if s := info.Video(); s != nil {
 		video = s.Codec
@@ -740,16 +791,22 @@ func profileDirectAllowed(p *core.ClientCapabilityProfiles, info core.MediaInfo,
 	if s := profileStream(info, "audio", d.AudioStream); s != nil {
 		audio = s.Codec
 	}
+	audioOnly := video == "" && audio != ""
+	if p.MaxStaticBitrate > 0 && info.BitrateKbps > 0 && int64(info.BitrateKbps)*1000 > int64(p.MaxStaticBitrate) {
+		return false
+	}
+	if audioOnly && p.MaxStaticMusicBitrate > 0 && info.BitrateKbps > 0 && int64(info.BitrateKbps)*1000 > int64(p.MaxStaticMusicBitrate) {
+		return false
+	}
 	if !profileRestrictions(p, info, video, audio, d.AudioStream) {
 		return false
 	}
-	audioOnly := video == "" && audio != ""
 	for _, candidate := range p.DirectPlay {
 		if audioOnly {
 			// Music and audiobooks: an audio-only source matches the
 			// client's audio (or untyped) direct-play profiles; video
 			// codec lists say nothing about it.
-			if (candidate.MediaType == "" || strings.EqualFold(candidate.MediaType, "audio")) && profileContains(candidate.Containers, info.Container) && profileContains(candidate.AudioCodecs, audio) {
+			if (candidate.MediaType == "" || strings.EqualFold(candidate.MediaType, "audio")) && profileAudioContainerMatch(candidate.Containers, info.Container, audio) && profileContains(candidate.AudioCodecs, audio) {
 				return true
 			}
 			continue
@@ -830,9 +887,23 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 			}
 		}
 	}
+	audioOnly := info.Video() == nil && profileStream(info, "audio", d.AudioStream) != nil
 	for _, c := range p.Transcoding {
-		if !strings.EqualFold(c.Delivery, delivery) || (c.MediaType != "" && !strings.EqualFold(c.MediaType, "video")) || !profileContains(c.Containers, d.Container) || !profileContains(c.VideoCodecs, d.VideoCodec) || !profileContains(c.AudioCodecs, d.AudioCodec) {
+		candDelivery := strings.ToLower(strings.TrimSpace(c.Delivery))
+		if candDelivery == "" && audioOnly {
+			candDelivery = "http"
+		}
+		if !strings.EqualFold(candDelivery, delivery) {
 			continue
+		}
+		if audioOnly {
+			if (c.MediaType != "" && !strings.EqualFold(c.MediaType, "audio")) || !profileAudioContainerMatch(c.Containers, d.Container, d.AudioCodec) || !profileContains(c.AudioCodecs, d.AudioCodec) {
+				continue
+			}
+		} else {
+			if (c.MediaType != "" && !strings.EqualFold(c.MediaType, "video")) || !profileContains(c.Containers, d.Container) || !profileContains(c.VideoCodecs, d.VideoCodec) || !profileContains(c.AudioCodecs, d.AudioCodec) {
+				continue
+			}
 		}
 		if c.MaxAudioChannels != "" && (d.AudioCodec != "" || profileStream(info, "audio", d.AudioStream) != nil) {
 			limit, err := strconv.Atoi(c.MaxAudioChannels)
@@ -850,7 +921,11 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 				continue
 			}
 		}
-		if profileConditions(c.Conditions, info, info.Video()) && profileRestrictions(p, output, d.VideoCodec, d.AudioCodec, d.AudioStream) {
+		condStream := info.Video()
+		if audioOnly {
+			condStream = profileStream(info, "audio", d.AudioStream)
+		}
+		if profileConditions(c.Conditions, info, condStream) && profileRestrictions(p, output, d.VideoCodec, d.AudioCodec, d.AudioStream) {
 			return true
 		}
 	}
@@ -1047,6 +1122,27 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		}
 		return req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding || !decisionEncodes(d, ps.Info)
 	}
+	if ps != nil && ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+		if d.Kind != core.DecisionDirectPlay && allowed(d) {
+			delivery := "hls"
+			if req.Intent.Options.Protocol == core.ProtocolHTTP {
+				delivery = "http"
+			}
+			if profileDeliveryAllowed(req.Caps.Profiles, d, ps.Info, delivery) {
+				return d, nil
+			}
+		}
+		if decision, ok := b.decideAudioProfile(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, ""); ok {
+			if decision.Kind == core.DecisionTranscode {
+				b.profileDiagnostic(ProfileFallbackTranscode)
+			} else {
+				b.profileDiagnostic(ProfileFallbackRemux)
+			}
+			return decision, nil
+		}
+		b.profileDiagnostic(ProfileNoDelivery)
+		return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: rejected}
+	}
 	if output, ok := constrainedH264(d, ps.Info, req.Caps, b.h264EncoderVerified()); d.Kind != core.DecisionDirectPlay && ok && allowed(output) && (profileDeliveryAllowed(req.Caps.Profiles, output, ps.Info, "hls") || profileDeliveryAllowed(req.Caps.Profiles, output, ps.Info, "dash")) {
 		return output, nil
 	}
@@ -1171,6 +1267,100 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		outErr.Cause = core.ErrVideoTranscodingDisabled
 	}
 	return core.Decision{}, outErr
+}
+
+// decideAudioProfile negotiates an audio-only transcoding/remux decision against
+// declared Type:"Audio" (or untyped) TranscodingProfiles. wantDelivery restricts
+// matching to "http" or "hls" when non-empty; empty evaluates candidates in
+// declaration order across both progressive HTTP and HLS.
+func (b *Broker) decideAudioProfile(ps *core.PlaySession, baseCaps core.ClientCaps, baseOpts core.DecideOptions, allowTranscoding *bool, wantDelivery string) (core.Decision, bool) {
+	if ps == nil || b.deps.Transcoder == nil || ps.Info.Video() != nil || !ps.Info.HasPlayableMedia() {
+		return core.Decision{}, false
+	}
+	allowed := func(d core.Decision) bool {
+		if d.Kind == core.DecisionDirectPlay {
+			return false
+		}
+		if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(d, ps.Info) {
+			return false
+		}
+		if d.Kind == core.DecisionRemux && !baseOpts.DirectStream {
+			return false
+		}
+		return true
+	}
+	if baseCaps.Profiles == nil || baseCaps.Profiles.Transcoding == nil {
+		opts := baseOpts
+		opts.DirectPlay = false
+		if wantDelivery == "http" {
+			opts.Protocol = core.ProtocolHTTP
+		} else if wantDelivery == "hls" {
+			opts.Protocol = core.ProtocolHLS
+		}
+		d, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: baseCaps, Options: opts, PreserveSourceOnFailure: true})
+		if err != nil || !allowed(d) {
+			return core.Decision{}, false
+		}
+		return d, true
+	}
+	for _, candidate := range baseCaps.Profiles.Transcoding {
+		if candidate.MediaType != "" && !strings.EqualFold(candidate.MediaType, "audio") {
+			continue
+		}
+		delivery := strings.ToLower(strings.TrimSpace(candidate.Delivery))
+		if delivery == "" {
+			delivery = "http"
+		}
+		if delivery != "http" && delivery != "hls" {
+			continue
+		}
+		if wantDelivery != "" && !strings.EqualFold(delivery, wantDelivery) {
+			continue
+		}
+		tryCodecs := func(audioCodecs []string) (core.Decision, bool) {
+			caps := baseCaps
+			caps.AudioCodecs = audioCodecs
+			caps.TranscodeAudioCodecs = audioCodecs
+			caps.HLSContainers = candidate.Containers
+			if candidate.MaxAudioChannels != "" {
+				limit, err := strconv.Atoi(candidate.MaxAudioChannels)
+				if err != nil || limit <= 0 {
+					return core.Decision{}, false
+				}
+				caps.AudioLimits = append(slices.Clone(caps.AudioLimits), core.AudioLimit{Codec: "*", Name: "audio.channels", Type: "upperBound", Value: limit})
+			}
+			opts := baseOpts
+			opts.DirectPlay = false
+			if delivery == "http" {
+				opts.Protocol = core.ProtocolHTTP
+			} else {
+				opts.Protocol = core.ProtocolHLS
+			}
+			if baseCaps.Profiles.MusicStreamingTranscodingBitrate > 0 {
+				kbps := baseCaps.Profiles.MusicStreamingTranscodingBitrate / 1000
+				if kbps > 0 && (opts.MaxBitrateKbps == 0 || kbps < opts.MaxBitrateKbps) {
+					opts.MaxBitrateKbps = kbps
+				}
+			}
+			d, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: opts, PreserveSourceOnFailure: true})
+			if err != nil || !allowed(d) {
+				return core.Decision{}, false
+			}
+			if profileDeliveryAllowed(baseCaps.Profiles, d, ps.Info, delivery) {
+				return d, true
+			}
+			return core.Decision{}, false
+		}
+		if d, ok := tryCodecs(candidate.AudioCodecs); ok {
+			return d, true
+		}
+		for _, codec := range candidate.AudioCodecs {
+			if d, ok := tryCodecs([]string{codec}); ok {
+				return d, true
+			}
+		}
+	}
+	return core.Decision{}, false
 }
 
 // Original-file decoders cannot apply a server-side image subtitle selection.

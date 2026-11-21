@@ -292,7 +292,7 @@ func (s *Server) routes() chi.Router {
 		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/start.m3u8", s.handleStartHLS)
 		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/start.mpd", s.handleStartDASH)
 		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/start", s.handleStartHTTP)
-		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/start.mkv", s.handleStartHTTP)
+		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/start.{ext:mkv|mp3|aac|m4a|flac|opus|ogg|wav|mp4}", s.handleStartHTTP)
 		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/session/{session}/{stream:[0-9]+}/header", s.handleDASHInit)
 		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/session/{session}/{stream:[0-9]+}/{segment}", s.handleDASHSegment)
 		get("/{ttype:video|music|audio|subtitles}/:/transcode/universal/session/{session}/*", s.handleTranscodeSession)

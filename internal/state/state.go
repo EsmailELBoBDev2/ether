@@ -365,8 +365,11 @@ func (s *State) emit(ev Event) {
 // IsWatched reports whether a status counts as watched (watched at least once).
 func IsWatched(ws core.WatchStatus) bool { return ws.ViewCount > 0 }
 
-// IsInProgress reports whether a status has a resume point.
-func IsInProgress(ws core.WatchStatus) bool { return ws.ViewOffset > 0 }
+// IsInProgress reports whether a status has a video/audio resume point or
+// in-progress reading position.
+func IsInProgress(ws core.WatchStatus) bool {
+	return ws.ViewOffset > 0 || isReadingInProgress(ws.Reading)
+}
 
 type row struct {
 	ws       core.WatchStatus
@@ -395,18 +398,24 @@ func saveTx(ctx context.Context, tx *sql.Tx, userID int64, r row) error {
 		counted = 1
 	}
 	watchAt, ratingAt := unixNano(r.watchAt), unixNano(r.ratingAt)
+	readLoc, readFrac, readLabel, readObs, readUpd := readingColumns(r.ws.Reading)
 	var res sql.Result
 	var err error
 	if r.exists {
 		res, err = tx.ExecContext(ctx, `UPDATE state_watch SET view_offset_ns=?, duration_ns=?, view_count=?, counted=?,
-		  last_viewed_at=?, user_rating=?, updated_at=?, watch_at=?, rating_at=?, version=version+1
+		  last_viewed_at=?, user_rating=?, updated_at=?, watch_at=?, rating_at=?,
+		  reading_locator=?, reading_fraction=?, reading_label=?, reading_observed_at=?, reading_updated_at=?,
+		  version=version+1
 		  WHERE user_id=? AND rating_key=? AND version=?`,
 			int64(r.ws.ViewOffset), int64(r.ws.Duration), r.ws.ViewCount, counted, last, r.ws.UserRating, r.ws.UpdatedAt.UnixNano(), watchAt, ratingAt,
+			readLoc, readFrac, readLabel, readObs, readUpd,
 			userID, int64(r.ws.Key), r.version)
 	} else {
-		res, err = tx.ExecContext(ctx, `INSERT INTO state_watch(user_id, rating_key, view_offset_ns, duration_ns, view_count, counted, last_viewed_at, user_rating, updated_at, watch_at, rating_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id, rating_key) DO NOTHING`,
-			userID, int64(r.ws.Key), int64(r.ws.ViewOffset), int64(r.ws.Duration), r.ws.ViewCount, counted, last, r.ws.UserRating, r.ws.UpdatedAt.UnixNano(), watchAt, ratingAt)
+		res, err = tx.ExecContext(ctx, `INSERT INTO state_watch(user_id, rating_key, view_offset_ns, duration_ns, view_count, counted, last_viewed_at, user_rating, updated_at, watch_at, rating_at,
+		  reading_locator, reading_fraction, reading_label, reading_observed_at, reading_updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id, rating_key) DO NOTHING`,
+			userID, int64(r.ws.Key), int64(r.ws.ViewOffset), int64(r.ws.Duration), r.ws.ViewCount, counted, last, r.ws.UserRating, r.ws.UpdatedAt.UnixNano(), watchAt, ratingAt,
+			readLoc, readFrac, readLabel, readObs, readUpd)
 	}
 	if err != nil {
 		return err
@@ -462,7 +471,8 @@ func (s *State) GetMany(ctx context.Context, userID int64, keys []core.RatingKey
 	// A single array bind keeps watch reads constant for large episode lists
 	// without exceeding either driver's parameter limit.
 	{
-		q := `SELECT rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at, counted, watch_at, rating_at
+		q := `SELECT rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at, counted, watch_at, rating_at,
+			reading_locator, reading_fraction, reading_label, reading_observed_at, reading_updated_at
 			FROM state_watch WHERE user_id=? AND rating_key IN (`
 		args := []any{userID}
 		if len(keys) > 256 {
@@ -495,7 +505,11 @@ func (s *State) GetMany(ctx context.Context, userID int64, keys []core.RatingKey
 			var ws core.WatchStatus
 			var key, off, dur, last, upd, watch, rated int64
 			var wasCounted int
-			if err := rows.Scan(&key, &off, &dur, &ws.ViewCount, &last, &ws.UserRating, &upd, &wasCounted, &watch, &rated); err != nil {
+			var readLoc, readLabel string
+			var readFrac float64
+			var readObs, readUpd int64
+			if err := rows.Scan(&key, &off, &dur, &ws.ViewCount, &last, &ws.UserRating, &upd, &wasCounted, &watch, &rated,
+				&readLoc, &readFrac, &readLabel, &readObs, &readUpd); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -505,6 +519,7 @@ func (s *State) GetMany(ctx context.Context, userID int64, keys []core.RatingKey
 			ws.LastRatedAt = unixTime(rated)
 			ws.ViewOffset = time.Duration(off)
 			ws.Duration = time.Duration(dur)
+			ws.Reading = scanReading(readLoc, readFrac, readLabel, readObs, readUpd)
 			if last > 0 {
 				ws.LastViewedAt = time.Unix(0, last).UTC()
 			}
@@ -575,13 +590,13 @@ func (s *State) PageUserData(ctx context.Context, userID int64, keys []core.Rati
 			args = append(args, data)
 		}
 
-		writeIn(`SELECT 'w', rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at, counted, watch_at, rating_at FROM state_watch WHERE user_id=? AND rating_key IN (`, false, userID)
+		writeIn(`SELECT 'w', rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at, counted, watch_at, rating_at, reading_locator, reading_fraction, reading_label, reading_observed_at, reading_updated_at FROM state_watch WHERE user_id=? AND rating_key IN (`, false, userID)
 		// Rating keys are kind*10^15 plus a payload, so they do not fit in
 		// PostgreSQL INTEGER (int4). SQLite INTEGER is already 64-bit;
 		// BIGINT keeps both engines on that width.
-		writeIn(` UNION ALL SELECT 'f', CAST(subject_id AS BIGINT), 0, 0, 0, 0, 0, 0, 0, 0, 0 FROM favorites_items WHERE viewer_id=? AND kind=? AND subject_id IN (`, true, userID, "title")
-		writeIn(` UNION ALL SELECT 'n', CAST(title_key AS BIGINT), 0, 0, 0, 0, 0, 0, 0, 0, 0 FROM notinterested_titles WHERE viewer_id=? AND title_key IN (`, true, userID)
-		writeIn(` UNION ALL SELECT 'l', item_key, 0, 0, 0, 0, 0, 0, 0, 0, 0 FROM watchlist_items WHERE user_id=? AND item_key IN (`, false, userID)
+		writeIn(` UNION ALL SELECT 'f', CAST(subject_id AS BIGINT), 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 0.0, '', 0, 0 FROM favorites_items WHERE viewer_id=? AND kind=? AND subject_id IN (`, true, userID, "title")
+		writeIn(` UNION ALL SELECT 'n', CAST(title_key AS BIGINT), 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 0.0, '', 0, 0 FROM notinterested_titles WHERE viewer_id=? AND title_key IN (`, true, userID)
+		writeIn(` UNION ALL SELECT 'l', item_key, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 0.0, '', 0, 0 FROM watchlist_items WHERE user_id=? AND item_key IN (`, false, userID)
 		rows, err := s.db.QueryContext(ctx, b.String(), args...)
 		if err != nil {
 			return nil, err
@@ -592,7 +607,11 @@ func (s *State) PageUserData(ctx context.Context, userID int64, keys []core.Rati
 			var views int
 			var wasCounted int
 			var rating float64
-			if err := rows.Scan(&kind, &key, &off, &dur, &views, &last, &rating, &upd, &wasCounted, &watch, &rated); err != nil {
+			var readLoc, readLabel string
+			var readFrac float64
+			var readObs, readUpd int64
+			if err := rows.Scan(&kind, &key, &off, &dur, &views, &last, &rating, &upd, &wasCounted, &watch, &rated,
+				&readLoc, &readFrac, &readLabel, &readObs, &readUpd); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -607,6 +626,7 @@ func (s *State) PageUserData(ctx context.Context, userID int64, keys []core.Rati
 				status.Duration = time.Duration(dur)
 				status.ViewCount = views
 				status.UserRating = rating
+				status.Reading = scanReading(readLoc, readFrac, readLabel, readObs, readUpd)
 				if last > 0 {
 					status.LastViewedAt = time.Unix(0, last).UTC()
 				}
@@ -728,9 +748,14 @@ func loadTx(ctx context.Context, tx *sql.Tx, userID int64, key core.RatingKey) (
 	r := row{ws: core.WatchStatus{Key: key}}
 	var off, dur, last, upd, watchAt, ratingAt int64
 	var counted int
-	err := tx.QueryRowContext(ctx, `SELECT view_offset_ns, duration_ns, view_count, counted, last_viewed_at, user_rating, updated_at, version, watch_at, rating_at
+	var readLoc, readLabel string
+	var readFrac float64
+	var readObs, readUpd int64
+	err := tx.QueryRowContext(ctx, `SELECT view_offset_ns, duration_ns, view_count, counted, last_viewed_at, user_rating, updated_at, version, watch_at, rating_at,
+		reading_locator, reading_fraction, reading_label, reading_observed_at, reading_updated_at
 		FROM state_watch WHERE user_id=? AND rating_key=?`, userID, int64(key)).
-		Scan(&off, &dur, &r.ws.ViewCount, &counted, &last, &r.ws.UserRating, &upd, &r.version, &watchAt, &ratingAt)
+		Scan(&off, &dur, &r.ws.ViewCount, &counted, &last, &r.ws.UserRating, &upd, &r.version, &watchAt, &ratingAt,
+			&readLoc, &readFrac, &readLabel, &readObs, &readUpd)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, nil
 	}
@@ -741,6 +766,7 @@ func loadTx(ctx context.Context, tx *sql.Tx, userID int64, key core.RatingKey) (
 	r.ws.ViewOffset = time.Duration(off)
 	r.ws.Duration = time.Duration(dur)
 	r.counted = counted != 0
+	r.ws.Reading = scanReading(readLoc, readFrac, readLabel, readObs, readUpd)
 	if last > 0 {
 		r.ws.LastViewedAt = time.Unix(0, last).UTC()
 	}
@@ -944,6 +970,7 @@ func (s *State) unscrobbleManyAt(ctx context.Context, userID int64, keys []core.
 	return s.updateAt(ctx, userID, keys, at, func(cur *row, now time.Time) (bool, bool, []Event) {
 		cur.ws.ViewCount = 0
 		cur.ws.ViewOffset = 0
+		cur.ws.Reading = nil
 		cur.counted = false
 		cur.ws.UpdatedAt = now
 		cur.watchAt = now
@@ -1018,8 +1045,11 @@ func (s *State) InProgress(ctx context.Context, userID int64, limit int) ([]core
 		pendingKeys = s.pending.userKeys(userID)
 		pending = s.pending.snapshot(userID, pendingKeys)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at
-		FROM state_watch WHERE user_id=? AND view_offset_ns>0 ORDER BY last_viewed_at DESC, updated_at DESC LIMIT ?`, userID, limit+len(pending))
+	rows, err := s.db.QueryContext(ctx, `SELECT rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at,
+		reading_locator, reading_fraction, reading_label, reading_observed_at, reading_updated_at
+		FROM state_watch
+		WHERE user_id=? AND (view_offset_ns>0 OR (reading_locator<>'' AND reading_fraction>0 AND reading_fraction<0.98))
+		ORDER BY last_viewed_at DESC, updated_at DESC LIMIT ?`, userID, limit+len(pending))
 	if err != nil {
 		return nil, err
 	}
@@ -1028,12 +1058,17 @@ func (s *State) InProgress(ctx context.Context, userID int64, limit int) ([]core
 	for rows.Next() {
 		var ws core.WatchStatus
 		var key, off, dur, last, upd int64
-		if err := rows.Scan(&key, &off, &dur, &ws.ViewCount, &last, &ws.UserRating, &upd); err != nil {
+		var readLoc, readLabel string
+		var readFrac float64
+		var readObs, readUpd int64
+		if err := rows.Scan(&key, &off, &dur, &ws.ViewCount, &last, &ws.UserRating, &upd,
+			&readLoc, &readFrac, &readLabel, &readObs, &readUpd); err != nil {
 			return nil, err
 		}
 		ws.Key = core.RatingKey(key)
 		ws.ViewOffset = time.Duration(off)
 		ws.Duration = time.Duration(dur)
+		ws.Reading = scanReading(readLoc, readFrac, readLabel, readObs, readUpd)
 		if last > 0 {
 			ws.LastViewedAt = time.Unix(0, last).UTC()
 		}
@@ -1059,7 +1094,7 @@ func (s *State) InProgress(ctx context.Context, userID int64, limit int) ([]core
 	}
 	for k, w := range pending {
 		ws := overlayPending(current[k], w, false, current[k].UpdatedAt)
-		if ws.ViewOffset > 0 {
+		if IsInProgress(ws) {
 			byKey[k] = ws
 		} else {
 			delete(byKey, k)
@@ -1088,7 +1123,7 @@ func (s *State) History(ctx context.Context, userID int64, since time.Time, limi
 
 // InProgressAny lists distinct keys in progress for any user.
 func (s *State) InProgressAny(ctx context.Context) ([]core.RatingKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT rating_key FROM state_watch WHERE view_offset_ns>0 ORDER BY rating_key`)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT rating_key FROM state_watch WHERE view_offset_ns>0 OR (reading_locator<>'' AND reading_fraction>0 AND reading_fraction<0.98) ORDER BY rating_key`)
 	if err != nil {
 		return nil, err
 	}

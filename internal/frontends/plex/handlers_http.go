@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -44,6 +47,22 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.protocol = frontend.ProtocolHTTP
 	p.opts.Protocol = frontend.ProtocolHTTP
+	audioExt := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "ext")))
+	if audioExt != "" && audioExt != "mkv" {
+		p.caps.HLSContainers = []string{audioExt}
+		if len(p.caps.TranscodeAudioCodecs) == 0 {
+			switch audioExt {
+			case "mp3":
+				p.caps.TranscodeAudioCodecs = []string{"mp3"}
+			case "aac", "m4a", "mp4":
+				p.caps.TranscodeAudioCodecs = []string{"aac"}
+			case "opus", "ogg":
+				p.caps.TranscodeAudioCodecs = []string{"opus"}
+			case "flac":
+				p.caps.TranscodeAudioCodecs = []string{"flac"}
+			}
+		}
+	}
 	unlockEncoder, lockErr := s.lockEncoder(ctx, p.sessionID)
 	if lockErr != nil {
 		return
@@ -99,14 +118,35 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		opts := entry.opts
 		opts.DirectPlay = false
 		opts.Protocol = frontend.ProtocolHTTP
-		return s.transcoder().Decide(ps.Info, entry.caps, opts)
+		caps := entry.caps
+		if ps.Info.Video() == nil && audioExt != "" && audioExt != "mkv" {
+			caps.HLSContainers = []string{audioExt}
+			if len(p.caps.TranscodeAudioCodecs) > 0 {
+				caps.TranscodeAudioCodecs = p.caps.TranscodeAudioCodecs
+			}
+		}
+		return s.transcoder().Decide(ps.Info, caps, opts)
 	}, func(dec frontend.Decision) frontend.Decision {
-		if len(entry.caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(entry.caps.TranscodeAudioCodecs, dec.AudioCodec) {
+		caps := entry.caps
+		if ps.Info.Video() == nil && audioExt != "" && audioExt != "mkv" {
+			caps.HLSContainers = []string{audioExt}
+			if len(p.caps.TranscodeAudioCodecs) > 0 {
+				caps.TranscodeAudioCodecs = p.caps.TranscodeAudioCodecs
+			}
+			if !strings.EqualFold(dec.Container, audioExt) && !(audioExt == "m4a" && dec.Container == "mp4") {
+				opts := entry.opts
+				opts.DirectPlay = false
+				opts.DirectStream = true
+				opts.Protocol = frontend.ProtocolHTTP
+				return s.transcoder().Decide(ps.Info, caps, opts)
+			}
+		}
+		if len(caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(caps.TranscodeAudioCodecs, dec.AudioCodec) {
 			opts := entry.opts
 			opts.DirectPlay = false
 			opts.DirectStream = true
 			opts.Protocol = frontend.ProtocolHTTP
-			return s.transcoder().Decide(ps.Info, entry.caps, opts)
+			return s.transcoder().Decide(ps.Info, caps, opts)
 		}
 		return dec
 	})

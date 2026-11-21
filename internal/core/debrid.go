@@ -55,6 +55,9 @@ type ReleaseTarget struct {
 	// MemberIndex selects a zero-based archive member index when AllowNonVideo
 	// is set (e.g. from container.memberIndex).
 	MemberIndex *int `json:"memberIndex,omitempty"`
+	// Track selects an audio track inside a multi-track release or archive by
+	// disc/track number first, then normalised title tokens, failing on ambiguity.
+	Track *TrackHint `json:"track,omitempty"`
 	// MIME is the declared or kind-default media type for non-video release
 	// file selection (e.g. "audio/flac", "application/epub+zip", "audio/*").
 	MIME string `json:"mime,omitempty"`

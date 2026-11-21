@@ -259,8 +259,13 @@ order. Patterns:
   prefer a path when the provider's ordering is unknown. On an NZB release
   the same selectors narrow the NZB to that file (and its archive/PAR2 set):
   `fileIndex` counts NZB document order and `file` matches a full name or
-  unique basename. `fileHint` retains its existing meaning as an archive
-  member hint.
+  unique basename. `fileHint` retains its exact archive member path or
+  unique basename matching semantics unchanged. When inner filenames inside
+  a multi-track audio release or scene RAR cannot be known before opening,
+  set `release.track` (`{disc?, number?, title?}`) instead: Ether matches
+  candidates by disc and track number first (using `title` to break ties),
+  then by normalised title tokens when no number matches, failing on
+  ambiguity.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
@@ -314,8 +319,8 @@ rank the candidates yourself (or in `/match`), and return a
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
 `torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
 one candidate whose `files` lists what is inside the release:
-`[{index, path, size, sizeApproximate?}]` in the order Ether's own file
-selection counts (provider file-list order for torrents, NZB document order
+`[{index, path, size, sizeApproximate?, members?}]` in the order Ether's own
+file selection counts (provider file-list order for torrents, NZB document order
 for Usenet). Torrent candidates carry their download or details page link in
 `torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
 `torrentUrl` through the originating indexer first, populates `infoHash` and
@@ -326,10 +331,15 @@ through their originating indexer (the same fetch playback makes, so the NZB
 is vaulted for playback), reporting exact decoded sizes from PAR2 or yEnc
 `=ybegin size=` headers when readable and falling back to a segment-derived
 decoded estimate with `sizeApproximate: true` when only the encoded segment
-sum is known. Match a file to your item by name, then return the release with
-`release.file` or `release.fileIndex` set (and propagate `sizeApproximate`
-when copying `file.size` to `source.size`); the choice is honoured on Usenet
-as on debrid.
+sum is known. When an NZB contains RAR, 7z, or ZIP archives, Ether also reads
+the archive directory (bounded and cached per NZB digest, reusing Ether's
+archive readers) and populates `members: [{index, path, size, stored?}]` on the
+first volume's entry so a plugin can see inner filenames before opening. Match a
+file to your item by name, then return the release with `release.file` or
+`release.fileIndex` set (propagating `sizeApproximate` when copying `file.size`
+to `source.size`, and setting `release.fileHint` to an exact member path from
+`members` or `release.track` when matching by disc/track/title); the choice is
+honoured on Usenet as on debrid.
 
 `ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
 NZB's article availability on demand before your resolver offers it, using the
@@ -356,13 +366,19 @@ cached?, playbackFailed?, reason?, checkedAt?}`:
   background/scheduled plugin tasks (`schedule`, catalog sync, container
   expand) so it never runs as an eager background library sweep.
 
-### Multi-file items (`hints.parts`)
+### Multi-file items (`hints.parts` and resolve-time `parts`)
 
 When one playable item consists of several ordered files (multi-disc sets,
 CUE + BIN tracks, multi-part audiobooks, split archives), list its parts on the
-item in `hints.parts` (an array of `{name, mime?, size?, durationSec?}` objects
+item in `hints.parts` (an array of `{name, mime?, size?, durationSec?, fileIndex?}` objects
 or filenames; Ether also reads a declared `fields.parts` array when
-`hints.parts` is absent):
+`hints.parts` is absent), or return `parts` at resolve time on
+`KindResolveResponse.parts` (or `PlayableSource.parts`) — useful on both push
+and pull kinds when the part list is only learned from the resolved archive or
+release. Ether persists ordered parts with stable child `RatingKey`s (`role:
+"part"`), exposes them as children of the parent item, and lets per-part plays
+target `part.fileIndex` against a cached parent release or resolve with
+zero-based `partIndex`:
 
 ```json
 {

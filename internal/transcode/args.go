@@ -164,12 +164,43 @@ func warnVideoEncoderFallback(log *slog.Logger, codec string, accel core.HWAccel
 	return false
 }
 
+// httpMuxArgs returns the output muxer flags for ProtocolHTTP. Video streams
+// default to streamable Matroska; audio-only streams honor the target audio
+// container (fMP4/M4A, MP3, ADTS AAC, Ogg/Opus, WebM, FLAC, WAV, TS).
+func httpMuxArgs(s runSpec) []string {
+	if s.Info.Video() != nil {
+		return []string{"-flush_packets", "1", "-f", "matroska", "pipe:1"}
+	}
+	switch normalizeHTTPAudioContainer(s.Decision.Container) {
+	case "mp3":
+		return []string{"-flush_packets", "1", "-f", "mp3", "pipe:1"}
+	case "aac":
+		return []string{"-flush_packets", "1", "-f", "adts", "pipe:1"}
+	case "mp4":
+		return []string{"-flush_packets", "1", "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "pipe:1"}
+	case "ogg":
+		return []string{"-flush_packets", "1", "-f", "ogg", "pipe:1"}
+	case "opus":
+		return []string{"-flush_packets", "1", "-f", "opus", "pipe:1"}
+	case "webm":
+		return []string{"-flush_packets", "1", "-f", "webm", "pipe:1"}
+	case "flac":
+		return []string{"-flush_packets", "1", "-f", "flac", "pipe:1"}
+	case "wav":
+		return []string{"-flush_packets", "1", "-f", "wav", "pipe:1"}
+	case ContainerMPEGTS:
+		return []string{"-flush_packets", "1", "-f", "mpegts", "pipe:1"}
+	default:
+		return []string{"-flush_packets", "1", "-f", "matroska", "pipe:1"}
+	}
+}
+
 // buildArgs assembles the ffmpeg command line for a run: HLS, or DASH
 // when the spec says so.
 func buildArgs(s runSpec) []string {
 	args := buildCodecArgs(s)
 	if s.Protocol == core.ProtocolHTTP {
-		return append(args, "-flush_packets", "1", "-f", "matroska", "pipe:1")
+		return append(args, httpMuxArgs(s)...)
 	}
 	if s.Protocol == core.ProtocolDASH {
 		return appendSoftSubtitleOutput(append(args, dashMuxArgs(s)...), s)
@@ -655,8 +686,10 @@ func buildCodecArgs(s runSpec) []string {
 			if d.AudioBitrateKbps > 0 && d.AudioBitrateKbps < kbps {
 				kbps = d.AudioBitrateKbps
 			}
-			args = append(args, "-c:a", enc, "-ac", strconv.Itoa(ch), "-ar", strconv.Itoa(decisionAudioRate(d)),
-				"-b:a", fmt.Sprintf("%dk", kbps))
+			args = append(args, "-c:a", enc, "-ac", strconv.Itoa(ch), "-ar", strconv.Itoa(decisionAudioRate(d)))
+			if codec != "flac" && !strings.HasPrefix(codec, "pcm") {
+				args = append(args, "-b:a", fmt.Sprintf("%dk", kbps))
+			}
 			filters := append([]string(nil), d.AudioFilters...)
 			if s.CopyOrigin && d.VideoCopy {
 				filters = append(filters, "atrim=start="+strconv.FormatFloat(s.Start.Seconds(), 'f', 9, 64))

@@ -461,18 +461,34 @@ type Recommender interface {
 // ---------------------------------------------------------------------------
 // Watch state (internal/state)
 
+// ReadingProgress records a viewer's reading position inside a book item.
+type ReadingProgress struct {
+	Locator    string    `json:"locator"`
+	Fraction   float64   `json:"fraction"`
+	Label      string    `json:"label,omitempty"`
+	ObservedAt time.Time `json:"observedAt,omitempty"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// ReadingState is an optional interface implemented by State stores that
+// persist book reading progress alongside video/audio watch state.
+type ReadingState interface {
+	SetReadingProgress(ctx context.Context, userID int64, key RatingKey, progress ReadingProgress) error
+}
+
 type WatchStatus struct {
-	Key             RatingKey     `json:"key"`
-	ViewOffset      time.Duration `json:"viewOffset"`
-	ViewCount       int           `json:"viewCount"`
-	LastViewedAt    time.Time     `json:"lastViewedAt,omitempty"`
-	LastRatedAt     time.Time     `json:"lastRatedAt,omitempty"`
-	UserRating      float64       `json:"userRating,omitempty"` // 0-10
-	InWatchlist     bool          `json:"inWatchlist,omitempty"`
-	IsFavorite      bool          `json:"isFavorite,omitempty"`      // Derived from the viewer’s favorites set.
-	IsNotInterested bool          `json:"isNotInterested,omitempty"` // Derived from the viewer’s recommendation exclusions.
-	Duration        time.Duration `json:"duration,omitempty"`
-	UpdatedAt       time.Time     `json:"updatedAt"`
+	Key             RatingKey        `json:"key"`
+	ViewOffset      time.Duration    `json:"viewOffset"`
+	ViewCount       int              `json:"viewCount"`
+	LastViewedAt    time.Time        `json:"lastViewedAt,omitempty"`
+	LastRatedAt     time.Time        `json:"lastRatedAt,omitempty"`
+	UserRating      float64          `json:"userRating,omitempty"` // 0-10
+	InWatchlist     bool             `json:"inWatchlist,omitempty"`
+	IsFavorite      bool             `json:"isFavorite,omitempty"`      // Derived from the viewer’s favorites set.
+	IsNotInterested bool             `json:"isNotInterested,omitempty"` // Derived from the viewer’s recommendation exclusions.
+	Duration        time.Duration    `json:"duration,omitempty"`
+	Reading         *ReadingProgress `json:"reading,omitempty"`
+	UpdatedAt       time.Time        `json:"updatedAt"`
 }
 
 type HistoryEntry struct {
@@ -769,6 +785,13 @@ type MediaSource interface {
 // Usenet.
 type OriginSource interface {
 	Origin() string
+}
+
+// MIMESource is implemented by a MediaSource that knows its declared media
+// MIME type (for example a plugin kind stream declaring audio/flac or
+// application/epub+zip).
+type MIMESource interface {
+	MIME() string
 }
 
 // DirectSourceLink is one provider-issued URL for a source's file: the same

@@ -25,7 +25,7 @@ func HLSContainer(caps core.ClientCaps, videoCodec, audioCodec string) string {
 		switch c {
 		case ContainerMatroska:
 			return ContainerMatroska
-		case "mp4", ContainerFMP4:
+		case "mp4", "m4a", "m4s", ContainerFMP4:
 			return ContainerFMP4
 		case "ts", ContainerMPEGTS:
 			ts = true

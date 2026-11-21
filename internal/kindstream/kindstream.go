@@ -212,6 +212,7 @@ func classifyNonVideoRelease(cand core.PlayableSource, defaultMIME string) (nonV
 	}
 	explicitFile := hasExplicitReleaseSelector(*cand.Release)
 	archiveMember := strings.TrimSpace(cand.Release.FileHint) != "" ||
+		(cand.Release.Track != nil && (cand.Release.Track.Number > 0 || strings.TrimSpace(cand.Release.Track.Title) != "")) ||
 		(cand.Container != nil && (strings.TrimSpace(cand.Container.Member) != "" || cand.Container.MemberIndex != nil))
 	if !nzb.IsNonVideoMIME(effMIME) && !explicitFile && !archiveMember {
 		return false, releaseCandidateShape{}, false
@@ -708,7 +709,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 			member = src.Release.FileHint
 		}
 		cacheSeed := ms.ReleaseID() + "|" + ms.Name()
-		return openContainerOverVolumes(ctx, vols, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
+		return openContainerOverVolumes(ctx, vols, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, src.Release.Track, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
 	}
 
 	wrapped := &mediaSourceByteSource{
@@ -769,7 +770,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 			member = src.Release.FileHint
 		}
 		cacheSeed := ms.ReleaseID() + "|" + wrapped.name
-		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
+		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, src.Release.Track, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
 	}
 
 	declaredMIME := effMIME
@@ -804,7 +805,7 @@ func shouldAutoComposeReleaseArchive(src core.PlayableSource, effectiveMIME, fil
 	if nzb.MIMEFamily(decl) == "comic" {
 		return false
 	}
-	if src.Release != nil && strings.TrimSpace(src.Release.FileHint) != "" {
+	if src.Release != nil && (strings.TrimSpace(src.Release.FileHint) != "" || (src.Release.Track != nil && (src.Release.Track.Number > 0 || strings.TrimSpace(src.Release.Track.Title) != ""))) {
 		return true
 	}
 	if decl == "application/octet-stream" {
@@ -843,6 +844,7 @@ func openContainerOverVolumes(
 	formatHint string,
 	memberName string,
 	memberIdx *int,
+	track *core.TrackHint,
 	passwordSecret string,
 	declaredMIME string,
 	maxBytes int64,
@@ -884,7 +886,7 @@ func openContainerOverVolumes(
 		closeAll()
 		return nil, wrapArchiveUnstreamable(err)
 	}
-	selected, nonDirIdx, err := selectArchiveMemberForMIME(members, memberName, memberIdx, declaredMIME)
+	selected, nonDirIdx, err := selectArchiveMemberForMIME(members, memberName, memberIdx, track, declaredMIME)
 	if err != nil {
 		closeAll()
 		return nil, err

@@ -231,7 +231,8 @@ func pickSubtitle(info core.MediaInfo, idx int) *core.StreamInfo {
 }
 
 // audioTarget picks the codec audio is transcoded to: keep surround with
-// E-AC-3/AC-3 when the client has it, else stereo AAC.
+// E-AC-3/AC-3 when the client has it, else stereo AAC, else the first
+// encodable codec the client accepts (mp3/opus/flac).
 func audioTarget(caps core.ClientCaps, src *core.StreamInfo) string {
 	ch := 2
 	if src != nil && src.Channels > 0 {
@@ -257,8 +258,40 @@ func audioTarget(caps core.ClientCaps, src *core.StreamInfo) string {
 		return "mp3"
 	case caps.SupportsAudio("opus"):
 		return "opus"
+	case caps.SupportsAudio("flac"):
+		return "flac"
 	}
 	return "aac"
+}
+
+// audioOnlyTarget picks the target codec for an audio-only transcode. When the
+// client explicitly requested a codec-specific progressive container (such as
+// mp3, ogg, opus, or flac) and accepts its codec, honor that container's codec
+// before falling back to audioTarget.
+func audioOnlyTarget(caps core.ClientCaps, opts core.DecideOptions, src *core.StreamInfo) string {
+	if opts.Protocol == core.ProtocolHTTP {
+		for _, raw := range caps.HLSContainers {
+			switch normalizeHTTPAudioContainer(raw) {
+			case "mp3":
+				if len(caps.AudioCodecs) == 0 || caps.SupportsAudio("mp3") {
+					return "mp3"
+				}
+			case "opus", "ogg":
+				if len(caps.AudioCodecs) == 0 || caps.SupportsAudio("opus") {
+					return "opus"
+				}
+			case "flac":
+				if len(caps.AudioCodecs) == 0 || caps.SupportsAudio("flac") {
+					return "flac"
+				}
+			case "aac":
+				if len(caps.AudioCodecs) == 0 || caps.SupportsAudio("aac") {
+					return "aac"
+				}
+			}
+		}
+	}
+	return audioTarget(caps, src)
 }
 
 // outputChannels is the channel count an audio encoder produces.
@@ -552,10 +585,104 @@ func BurnsSubtitle(sub core.StreamInfo, caps core.ClientCaps, opts core.DecideOp
 	return opts.BurnSubtitles && opts.BurnTextSubtitles && IsTextSubtitle(sub.Codec)
 }
 
+// httpAudioContainer chooses an audio-only progressive HTTP container that
+// carries audioCodec and respects explicit candidate containers when given.
+func httpAudioContainer(caps core.ClientCaps, audioCodec string) string {
+	codec := strings.ToLower(strings.TrimSpace(audioCodec))
+	for _, list := range [][]string{caps.HLSContainers, caps.Containers} {
+		for _, raw := range list {
+			c := normalizeHTTPAudioContainer(raw)
+			if c != "" && audioCodecFitsHTTPContainer(c, codec) {
+				return c
+			}
+		}
+	}
+	return defaultHTTPAudioContainer(codec)
+}
+
+func normalizeHTTPAudioContainer(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "mp3":
+		return "mp3"
+	case "aac", "adts":
+		return "aac"
+	case "mp4", "m4a", "m4b", "fmp4":
+		return "mp4"
+	case "ogg", "oga":
+		return "ogg"
+	case "opus":
+		return "opus"
+	case "webm", "weba":
+		return "webm"
+	case "flac":
+		return "flac"
+	case "wav":
+		return "wav"
+	case "ts", "mpegts":
+		return ContainerMPEGTS
+	case "mkv", "matroska", "mka":
+		return ContainerMatroska
+	}
+	return ""
+}
+
+func defaultHTTPAudioContainer(codec string) string {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "mp3":
+		return "mp3"
+	case "opus":
+		return "ogg"
+	case "vorbis":
+		return "ogg"
+	case "flac":
+		return "flac"
+	case "pcm_s16le", "pcm_s24le", "pcm_f32le", "wav":
+		return "wav"
+	case "aac", "alac", "ac3", "eac3":
+		return "mp4"
+	default:
+		return "mp4"
+	}
+}
+
+func audioCodecFitsHTTPContainer(container, codec string) bool {
+	c := normalizeHTTPAudioContainer(container)
+	k := strings.ToLower(strings.TrimSpace(codec))
+	if c == "" || k == "" {
+		return false
+	}
+	switch c {
+	case "mp3":
+		return k == "mp3"
+	case "aac":
+		return k == "aac"
+	case "mp4":
+		return k == "aac" || k == "mp3" || k == "ac3" || k == "eac3" || k == "alac" || k == "flac" || k == "opus"
+	case "ogg":
+		return k == "opus" || k == "vorbis" || k == "flac"
+	case "opus":
+		return k == "opus"
+	case "webm":
+		return k == "opus" || k == "vorbis"
+	case "flac":
+		return k == "flac"
+	case "wav":
+		return strings.HasPrefix(k, "pcm") || k == "wav"
+	case ContainerMPEGTS:
+		return hlsAudioOK(k)
+	case ContainerMatroska:
+		return matroskaAudioOK(k, false)
+	}
+	return false
+}
+
 // Decide chooses direct play, remux into HLS, or full transcode, in that
 // order of preference, and explains why in Decision.Reason.
 func outputContainer(caps core.ClientCaps, opts core.DecideOptions, videoCodec, audioCodec string) string {
 	if opts.Protocol == core.ProtocolHTTP {
+		if videoCodec == "" {
+			return httpAudioContainer(caps, audioCodec)
+		}
 		return ContainerMatroska
 	}
 	return HLSContainer(caps, videoCodec, audioCodec)
@@ -643,6 +770,86 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 		_, audioIssues, _ = collectIssues(info, v, a, sub, issueContext{
 			caps: caps, heightCap: heightCap, bitrateCap: bitrateCap, burn: burn, audioFilters: d.AudioFilters,
 		})
+	}
+
+	// Audio-only items (music tracks, audiobooks, podcasts): never invent a
+	// video codec, resolution, or video bitrate. Respect bitrate caps, audio
+	// limits, and both progressive HTTP and HLS audio containers.
+	if v == nil && a != nil {
+		var why []string
+		if !opts.DirectPlay {
+			why = append(why, "direct play not allowed by client")
+		}
+		if !containerOK {
+			why = append(why, fmt.Sprintf("container %s not supported", info.Container))
+		}
+		why = append(why, audioIssues...)
+		why = append(why, otherIssues...)
+
+		srcKbps := info.BitrateKbps
+		if srcKbps <= 0 {
+			srcKbps = a.BitrateKbps
+		}
+		canCopy := opts.DirectStream && len(audioIssues) == 0 && (bitrateCap == 0 || srcKbps <= bitrateCap)
+		if canCopy {
+			candContainer := outputContainer(caps, opts, "", a.Codec)
+			if opts.Protocol == core.ProtocolHTTP {
+				canCopy = audioCodecFitsHTTPContainer(candContainer, a.Codec) &&
+					!(candContainer == ContainerMatroska && a.Codec == "aac" && (info.Container == "mpegts" || info.Container == "hls" || info.Container == "aac"))
+			} else {
+				canCopy = hlsAudioOK(a.Codec) || (candContainer == ContainerMatroska && matroskaAudioOK(a.Codec, !caps.Download))
+			}
+			if canCopy {
+				d.Kind = core.DecisionRemux
+				d.VideoCopy = true
+				d.AudioCopy = true
+				d.AudioCodec = a.Codec
+				d.Container = candContainer
+				d.BitrateKbps = srcKbps
+				if d.BitrateKbps <= 0 {
+					d.BitrateKbps = copiedAudioKbps(a)
+				}
+				parts := []string{fmt.Sprintf("audio remux (%s)", d.Container)}
+				if len(why) > 0 {
+					parts = append(parts, strings.Join(why, ", "))
+				}
+				parts = append(parts, fmt.Sprintf("audio %s copied", a.Codec))
+				d.Reason = strings.Join(parts, "; ")
+				return d
+			}
+		}
+
+		audioCodec := audioOnlyTarget(caps, opts, a)
+		ch := outputChannels(audioCodec, a)
+		audioKbps := audioBitrateKbps(audioCodec, ch)
+		d.Kind = core.DecisionTranscode
+		d.VideoCopy = true
+		d.AudioCopy = false
+		d.AudioCodec = audioCodec
+		applyAudioLimits(&d, a, caps, false, audioCodec)
+		if d.AudioChannels > 0 && d.AudioChannels < ch {
+			ch = d.AudioChannels
+			audioKbps = audioBitrateKbps(audioCodec, ch)
+		}
+		if bitrateCap > 0 && (d.AudioBitrateKbps == 0 || bitrateCap < d.AudioBitrateKbps) {
+			capKbps := bitrateCap
+			if capKbps < 32 {
+				capKbps = 32
+			}
+			d.AudioBitrateKbps = capKbps
+		}
+		if d.AudioBitrateKbps > 0 && d.AudioBitrateKbps < audioKbps {
+			audioKbps = d.AudioBitrateKbps
+		}
+		d.Container = outputContainer(caps, opts, "", d.AudioCodec)
+		d.BitrateKbps = audioKbps
+		parts := []string{fmt.Sprintf("audio transcode (%s)", d.Container)}
+		if len(why) > 0 {
+			parts = append(parts, strings.Join(why, ", "))
+		}
+		parts = append(parts, fmt.Sprintf("audio %s %s -> %s %dch %d kbps", a.Codec, channelLabel(a), d.AudioCodec, ch, audioKbps))
+		d.Reason = strings.Join(parts, "; ")
+		return d
 	}
 	// Segmented Matroska cannot copy TrueHD/MLP. Some players also stall
 	// on other audio their streaming target lists:

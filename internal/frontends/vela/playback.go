@@ -205,6 +205,10 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			problem(w, 400, "request", "not_playable")
 			return
 		}
+		if item.IsPluginKey() && i.isBookTitle(r, v, item) {
+			problem(w, 400, "request", "not_playable")
+			return
+		}
 		// Omission delegates resume to current server-owned watch state. An
 		// explicit zero is an independent start-over choice and skips this read.
 		if b.PositionSeconds == nil {
@@ -248,18 +252,27 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	if b.ChannelID != "" && s.Media != nil && !s.Media.Estimated {
 		plan.Media = *s.Media
 	}
+	audioOnly := b.ChannelID == "" && plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
 	format := frontend.StreamDirect
 	transport := "file"
 	mime := sourceMIME(plan.Media.Container)
+	if audioOnly {
+		mime = audioSourceMIME(plan.Media.Container, plan.Decision.AudioCodec)
+	}
 	if plan.Decision.Kind != frontend.DecisionDirectPlay {
-		if (!b.Client.HLS && !b.Client.MSE) || !plan.HLS {
+		if audioOnly && plan.HTTP {
+			format = frontend.StreamHTTP
+			transport = "file"
+			mime = audioSourceMIME(plan.Decision.Container, plan.Decision.AudioCodec)
+		} else if (b.Client.HLS || b.Client.MSE) && plan.HLS {
+			format = frontend.StreamHLS
+			transport = "hls"
+			mime = "application/vnd.apple.mpegurl"
+		} else {
 			_ = i.host.Sessions.Stop(r.Context(), i.access(r, v), s.ID)
 			problem(w, 422, "decoder", "unsupported_transport")
 			return
 		}
-		format = frontend.StreamHLS
-		transport = "hls"
-		mime = "application/vnd.apple.mpegurl"
 	}
 	url, e := i.host.Sessions.StartStream(r.Context(), i.access(r, v), s.ID, frontend.StreamRequest{Format: format, Position: pos, LazyStart: true, Continuous: true})
 	if e != nil {
@@ -283,11 +296,18 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		path["timelineId"] = plan.ETag
 	}
 	if original {
-		if facts := originalVideo(plan.Media); facts != nil {
-			path["originalVideo"] = facts
+		if !audioOnly {
+			if facts := originalVideo(plan.Media); facts != nil {
+				path["originalVideo"] = facts
+			}
 		}
 		path["original"], path["range"] = true, true
 		if plan.Media.Size > 0 {
+			path["byteLength"] = plan.Media.Size
+		}
+	} else if audioOnly && transport == "file" {
+		path["range"] = true
+		if format == frontend.StreamDirect && plan.Media.Size > 0 {
 			path["byteLength"] = plan.Media.Size
 		}
 	}
@@ -296,13 +316,16 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		path["sourceId"] = plan.ETag
 	}
 	_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
-	canBurn := trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (b.Client.HLS || b.Client.MSE)
+	canBurn := !audioOnly && trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (b.Client.HLS || b.Client.MSE)
 	selectedSubIndex := plan.Decision.SubtitleStream
 	if subtitleSet {
 		selectedSubIndex = options.SubtitleStream
 	}
 	audio, subs, selectedAudio, selectedSub := i.playbackTracks(r.Context(), i.access(r, v), s.ID, plan.Media, plan.Decision, selectedSubIndex, original, b.Client.SubtitleFormats, canBurn)
 	p := object{"sessionId": s.ID, "revision": uint64(1), "sourceGeneration": uint64(1), "seekGeneration": uint64(1), "state": "ready", "positionSeconds": pos.Seconds(), "durationSeconds": plan.Media.Duration.Seconds(), "paths": []object{path}, "selectedPathId": "primary", "audioTracks": audio, "subtitleTracks": subs, "selectedSubtitleTrackId": selectedSub, "chapters": chapters(plan.Media), "fallback": object{"state": "unsupported"}}
+	if audioOnly {
+		p["media"] = "audio"
+	}
 	if plan.Media.Duration <= 0 {
 		delete(p, "durationSeconds")
 	}
@@ -320,7 +343,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		p["live"] = object{"mode": mode}
 		delete(p, "durationSeconds")
 	}
-	if original && (b.Client.HLS || b.Client.MSE) && plan.HLS {
+	if (original || (audioOnly && transport == "file")) && (b.Client.HLS || b.Client.MSE) && plan.HLS {
 		fallbackKind := "transcode"
 		if plan.DirectStream {
 			fallbackKind = "remux"
@@ -545,6 +568,8 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		format := frontend.StreamDirect
 		if path["transport"] == "hls" {
 			format = frontend.StreamHLS
+		} else if path["transport"] == "file" && (path["kind"] == "transcode" || path["kind"] == "remux") {
+			format = frontend.StreamHTTP
 		}
 		origin := pos
 		if fallback, ok := s.plan["fallback"].(object); ok && fallback["state"] == "ready" && fallback["pathId"] == b.PathID {
@@ -1336,14 +1361,54 @@ func selectedPlaybackPath(plan object, paths []object) object {
 	return object{}
 }
 
+func (i *instance) isBookTitle(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) bool {
+	if i == nil || i.host.Experience == nil || v == nil || key == 0 {
+		return false
+	}
+	d, err := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), key), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: key})
+	if err != nil {
+		return false
+	}
+	return d.Title.MediaClass == frontend.MediaClassBook || d.Title.MBItemType == "Book"
+}
+
+func audioSourceMIME(container, codec string) string {
+	switch strings.ToLower(strings.TrimSpace(container)) {
+	case "mp4", "m4a", "m4b", "fmp4", "mov":
+		return "audio/mp4"
+	case "webm", "weba":
+		return "audio/webm"
+	case "mkv", "matroska", "mka":
+		return "audio/x-matroska"
+	}
+	if ct := sourceMIME(container); ct != "application/octet-stream" {
+		return ct
+	}
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "aac", "alac":
+		return "audio/mp4"
+	case "mp3":
+		return "audio/mpeg"
+	case "flac":
+		return "audio/flac"
+	case "opus", "vorbis":
+		return "audio/ogg"
+	}
+	return "application/octet-stream"
+}
+
 func sourceMIME(container string) string {
 	switch strings.ToLower(container) {
 	case "mkv", "matroska":
 		return "video/x-matroska"
+	case "mka":
+		return "audio/x-matroska"
 	case "mp4", "mov", "m4v":
 		return "video/mp4"
 	case "webm":
 		return "video/webm"
+	case "weba":
+		return "audio/webm"
 	case "mpegts":
 		return "video/mp2t"
 	case "avi":
@@ -1356,14 +1421,20 @@ func sourceMIME(container string) string {
 		return "audio/aac"
 	case "m4a", "m4b":
 		return "audio/mp4"
-	case "ogg", "opus":
+	case "ogg", "oga", "opus":
 		return "audio/ogg"
 	case "wav":
 		return "audio/wav"
+	case "aif", "aiff":
+		return "audio/aiff"
+	case "wma":
+		return "audio/x-ms-wma"
 	case "epub":
 		return "application/epub+zip"
 	case "pdf":
 		return "application/pdf"
+	case "cbz":
+		return "application/vnd.comicbook+zip"
 	}
 	return "application/octet-stream"
 }

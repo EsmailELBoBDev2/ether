@@ -269,6 +269,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if channel == "" && key.IsPluginKey() && i.isBookKey(r, v, key) {
+		i.writeNoCompatibleStream(w)
+		return
+	}
 	// Native clients commonly omit IsPlayback on POST when starting a stream.
 	// GET is informational by default and must not open a release.
 	playback := boolValue(body.IsPlayback, r.Method != http.MethodGet)
@@ -535,8 +539,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		} else {
 			i.rememberAnonymousSession(r, v, session.ID, key, channel, dev, version, detailSource, sourceID)
 			format := frontend.StreamDirect
+			audioOnly := channel == "" && plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
 			if channel != "" || (plan.Decision.Kind != "directplay" && ((i.protocol == "jellyfin" && intent.DeclaredCaps) || plan.Decision.Kind != "copy" || !plan.Decision.AudioCopy)) {
-				format = frontend.StreamHLS
+				if audioOnly && plan.HTTP && (!plan.HLS || !mbIsHLSContainer(plan.Decision.Container)) {
+					format = frontend.StreamHTTP
+				} else {
+					format = frontend.StreamHLS
+				}
 			}
 			// The progressive client requires an active playback demuxer. A
 			// direct-file plan becomes HLS (copy remux where codecs allow it),
@@ -650,11 +659,18 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 						delete(source, "Path")
 					}
 					source["TranscodingUrl"] = url
-					source["TranscodingSubProtocol"] = "hls"
-					if channel != "" {
-						source["TranscodingContainer"] = "ts"
-					} else if container := hlsContainerDTO(plan); container != "" {
-						source["TranscodingContainer"] = container
+					if format == frontend.StreamHTTP {
+						source["TranscodingSubProtocol"] = "http"
+						if c := plan.Decision.Container; c != "" {
+							source["TranscodingContainer"] = c
+						}
+					} else {
+						source["TranscodingSubProtocol"] = "hls"
+						if channel != "" {
+							source["TranscodingContainer"] = "ts"
+						} else if container := hlsContainerDTO(plan); container != "" {
+							source["TranscodingContainer"] = container
+						}
 					}
 				}
 			}
@@ -1474,6 +1490,10 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 		}
 		request := frontend.PlanRequest{Viewer: viewer, Device: dev, Protocol: i.protocol, Item: key, Version: version, DetailSource: detailSource, ExpectedSourceETag: expectedETag, Caps: capability.Client, Intent: frontend.PlayIntent{ExactVersion: version != "", Options: frontend.DecideOptions{DirectPlay: true, DirectStream: true}}}
 		lazy.ServeAuthenticated(w, r, credential, request)
+		return
+	}
+	if sessionID == "" && channel == "" && name == "universal" {
+		i.serveUniversalAudio(w, r, viewer, access, key, version, detailSource, expectedETag)
 		return
 	}
 	if sessionID == "" {

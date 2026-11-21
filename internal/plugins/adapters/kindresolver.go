@@ -289,7 +289,7 @@ func (r *KindResolver) openSingleSource(ctx context.Context, rec pluginitems.Kin
 	if err != nil {
 		return nil, err
 	}
-	parts := core.ExtractKindItemPartsFromItem(item)
+	parts := r.itemParts(ctx, item)
 	var dur time.Duration
 	if partIdx != nil && *partIdx < len(parts) {
 		bs = withPartDefaults(bs, parts[*partIdx], item.Title)
@@ -374,7 +374,7 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	}
 	var partIdx *int
 	if forcedPart != nil {
-		parts := core.ExtractKindItemPartsFromItem(item)
+		parts := r.itemParts(ctx, item)
 		if len(parts) > 0 && *forcedPart >= len(parts) {
 			return nil, core.ErrNotFound
 		}
@@ -427,7 +427,7 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 	targetItem := item
 	var effectivePart *int
 	if lv.Playable && item.Playable {
-		parts := core.ExtractKindItemPartsFromItem(item)
+		parts := r.itemParts(ctx, item)
 		if partIndex != nil {
 			if len(parts) == 0 || *partIndex >= len(parts) {
 				return nil, core.ErrNotFound
@@ -520,7 +520,7 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 	}
 	var partIdx *int
 	if forcedPart != nil {
-		parts := core.ExtractKindItemPartsFromItem(item)
+		parts := r.itemParts(ctx, item)
 		if len(parts) > 0 && *forcedPart >= len(parts) {
 			return nil, core.ErrNotFound
 		}
@@ -784,6 +784,11 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			if part, parentItem, _, perr := r.items.GetPartByKey(ctx, key); perr == nil {
+				return r.openStoredPartForViewer(ctx, viewer, parentItem.Key, part, accept, exclude)
+			}
+		}
 		return nil, err
 	}
 	if item.Unavailable != nil {
@@ -903,9 +908,14 @@ func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.V
 		return nil, core.ErrNotFound
 	}
 	if lv.Playable && item.Playable {
-		parts := core.ExtractKindItemPartsFromItem(item)
+		parts := r.itemParts(ctx, item)
 		if len(parts) == 0 || partIndex >= len(parts) {
 			return nil, core.ErrNotFound
+		}
+		if partIndex < len(parts) && parts[partIndex].FileIndex != nil {
+			if media, ok, ferr := r.tryOpenPartFromParentRelease(ctx, rec, lib, item, partIndex, parts[partIndex], accept, exclude); ok {
+				return media, ferr
+			}
 		}
 		idx := partIndex
 		bs, winning, err := r.openItemByteSourceExcluding(ctx, rec, lib, item, &idx, accept, exclude)
@@ -951,8 +961,105 @@ func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.V
 	return r.openPlayableItemMediaExcluding(ctx, rec, lib, leaves[partIndex], accept, exclude)
 }
 
+func (r *KindResolver) itemParts(ctx context.Context, item core.KindItem) []core.KindItemPart {
+	if r != nil && r.items != nil && item.Ref != "" {
+		if stored, err := r.items.ListParts(ctx, item.Ref); err == nil && len(stored) > 0 {
+			out := make([]core.KindItemPart, len(stored))
+			for i, sp := range stored {
+				out[i] = sp.KindItemPart()
+			}
+			return out
+		}
+	}
+	return core.ExtractKindItemPartsFromItem(item)
+}
+
+func (r *KindResolver) openStoredPartForViewer(ctx context.Context, viewer *core.Viewer, parentKey core.RatingKey, part pluginitems.StoredPart, accept, exclude []string) (*frontend.KindMedia, error) {
+	parentItem, lib, rec, err := r.loadAuthorized(ctx, viewer, parentKey)
+	if err != nil {
+		return nil, err
+	}
+	if parentItem.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	kp := part.KindItemPart()
+	if kp.FileIndex != nil {
+		if media, ok, ferr := r.tryOpenPartFromParentRelease(ctx, rec, lib, parentItem, part.PartIndex, kp, accept, exclude); ok {
+			return media, ferr
+		}
+	}
+	return r.OpenKindPartExcluding(ctx, viewer, parentKey, part.PartIndex, accept, exclude)
+}
+
+func (r *KindResolver) tryOpenPartFromParentRelease(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, parent core.KindItem, partIndex int, part core.KindItemPart, accept, exclude []string) (*frontend.KindMedia, bool, error) {
+	if part.FileIndex == nil || *part.FileIndex < 0 {
+		return nil, false, nil
+	}
+	nowUnix := r.now().Unix()
+	var baseSrc *core.PlayableSource
+	if cached, ok, err := r.items.GetPartResolution(ctx, parent.Ref, nil); err == nil && ok {
+		if strings.EqualFold(strings.TrimSpace(cached.Pattern), kindstream.PatternRelease) && cached.Release != nil && (cached.ExpiresAt == 0 || nowUnix < cached.ExpiresAt) {
+			cp := cached
+			baseSrc = &cp
+		}
+	}
+	if baseSrc == nil {
+		if cands, ok := r.cachedCandidates(resolveFlightKey{ref: parent.Ref, part: -1}); ok {
+			for _, cand := range cands {
+				if strings.EqualFold(strings.TrimSpace(cand.Pattern), kindstream.PatternRelease) && cand.Release != nil && (cand.ExpiresAt == 0 || nowUnix < cand.ExpiresAt) {
+					cp := cand
+					baseSrc = &cp
+					break
+				}
+			}
+		}
+	}
+	if baseSrc == nil {
+		return nil, false, nil
+	}
+	relHint := *baseSrc.Release
+	fi := *part.FileIndex
+	relHint.FileIndex = &fi
+	relHint.File = ""
+	if relHint.Candidate != nil {
+		cc := *relHint.Candidate
+		cc.FileIndex = &fi
+		relHint.Candidate = &cc
+	}
+	partSrc := *baseSrc
+	partSrc.Release = &relHint
+	if part.MIME != "" {
+		partSrc.MIME = part.MIME
+	}
+	if part.Size > 0 {
+		partSrc.Size = part.Size
+	}
+	if part.DurationSec > 0 {
+		partSrc.DurationSec = part.DurationSec
+	}
+	if part.Name != "" {
+		partSrc.Label = part.Name
+	}
+	rel := playableSourceRelease(partSrc, firstNonEmpty(part.Name, parent.Title))
+	if slices.Contains(exclude, rel.ID) {
+		return nil, true, core.ErrNotAvailable
+	}
+	idx := partIndex
+	media, err := r.openSingleSource(ctx, rec, lib, parent, &idx, partSrc)
+	if err != nil {
+		return nil, true, err
+	}
+	if part.Name != "" {
+		media.Name = part.Name
+	}
+	if media.Duration == 0 && part.DurationSec > 0 {
+		media.Duration = time.Duration(part.DurationSec * float64(time.Second))
+	}
+	return media, true, nil
+}
+
 // KindParts implements frontend.KindPartStreams (#576). It returns the declared
-// parts of item without opening bytes.
+// or resolve-time parts of item without opening bytes.
 func (r *KindResolver) KindParts(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]frontend.KindPart, error) {
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
@@ -964,7 +1071,7 @@ func (r *KindResolver) KindParts(ctx context.Context, viewer *core.Viewer, key c
 	if item.Unavailable != nil {
 		return nil, core.ErrNotAvailable
 	}
-	parts := core.ExtractKindItemPartsFromItem(item)
+	parts := r.itemParts(ctx, item)
 	if len(parts) == 0 {
 		return nil, nil
 	}
@@ -1463,6 +1570,17 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 				return nil, err
 			}
 			cand.Files = files
+			if lister, ok := r.engine.(interface {
+				ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+			}); ok && lister != nil {
+				if byVol, lerr := lister.ListArchiveMembers(ctx, data); lerr == nil && len(byVol) > 0 {
+					for idx, members := range byVol {
+						if idx >= 0 && idx < len(cand.Files) {
+							cand.Files[idx].Members = members
+						}
+					}
+				}
+			}
 			return []core.SourceCandidate{cand}, nil
 		}
 		if rel.Protocol != core.ProtocolTorrent {
@@ -2315,6 +2433,18 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 	if resolved.Pending {
 		return nil, core.PreparingFromPending(resolved.RetryInMS)
 	}
+	resolvedParts := resolved.Parts
+	if len(resolvedParts) == 0 && len(resolved.Sources) > 0 {
+		for _, src := range resolved.Sources {
+			if len(src.Parts) > 0 {
+				resolvedParts = src.Parts
+				break
+			}
+		}
+	}
+	if len(resolvedParts) > 0 && partIdx == nil && r.items != nil {
+		_, _ = r.items.SaveParts(ctx, item.Ref, resolvedParts, "resolve")
+	}
 	for _, src := range resolved.Sources {
 		if strings.EqualFold(strings.TrimSpace(src.Pattern), "file") {
 			s := &StreamSources{mgr: r.mgr}
@@ -2508,11 +2638,17 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 	}
 	var member string
 	var memberIdx *int
+	var track *core.TrackHint
 	if src.Container != nil {
 		member = strings.TrimSpace(src.Container.Member)
 		memberIdx = src.Container.MemberIndex
 	} else {
 		member = strings.TrimSpace(src.Release.FileHint)
+	}
+	if src.Release.Track != nil && (src.Release.Track.Number > 0 || strings.TrimSpace(src.Release.Track.Title) != "") {
+		t := *src.Release.Track
+		t.Title = strings.TrimSpace(t.Title)
+		track = &t
 	}
 	if !strings.HasPrefix(effMIME, "video/") {
 		if rel.Target != nil {
@@ -2525,11 +2661,15 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 			if memberIdx != nil {
 				rel.Target.MemberIndex = memberIdx
 			}
-		} else if nzb.IsNonVideoMIME(effMIME) || member != "" || memberIdx != nil {
+			if track != nil {
+				rel.Target.Track = track
+			}
+		} else if nzb.IsNonVideoMIME(effMIME) || member != "" || memberIdx != nil || track != nil {
 			rel.Target = &core.ReleaseTarget{
 				AllowNonVideo: true,
 				Member:        member,
 				MemberIndex:   memberIdx,
+				Track:         track,
 				MIME:          effMIME,
 			}
 		}

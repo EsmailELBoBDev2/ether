@@ -807,6 +807,17 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// not the refcount wrapper. Close stays on the wrapper.
 	share := src
 	src = inner
+	if isNonAVDocumentSource(src) {
+		if finish != nil {
+			finish(core.ErrNoUsableFile)
+		}
+		if closeShared != nil {
+			_ = closeShared()
+		} else {
+			_ = share.Close()
+		}
+		return nil, core.ErrNoUsableFile
+	}
 	openedRevision := core.SourceRevision(&core.PlaySession{Key: s.ident.key, Source: src})
 	g := &generation{warmReads: new(core.WarmReadWindow), sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
 	if len(cached) > 0 && cached[0] != nil && cached[0].warmReads != nil &&
@@ -2032,16 +2043,30 @@ func withoutTried(rs []core.Release, tried []string) []core.Release {
 
 func containerFromName(name string) string {
 	switch ct := contentTypeFor("", name); ct {
-	case "video/x-matroska":
+	case "video/x-matroska", "audio/x-matroska":
 		return "mkv"
-	case "video/mp4":
+	case "video/mp4", "audio/mp4":
 		return "mp4"
 	case "video/mp2t":
 		return "mpegts"
 	case "video/x-msvideo":
 		return "avi"
-	case "video/webm":
+	case "video/webm", "audio/webm":
 		return "webm"
+	case "audio/flac":
+		return "flac"
+	case "audio/mpeg":
+		return "mp3"
+	case "audio/aac":
+		return "aac"
+	case "audio/ogg":
+		return "ogg"
+	case "audio/wav":
+		return "wav"
+	case "audio/aiff":
+		return "aiff"
+	case "audio/x-ms-wma":
+		return "wma"
 	}
 	return ""
 }

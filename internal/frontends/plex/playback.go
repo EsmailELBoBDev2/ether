@@ -1034,7 +1034,7 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unlockOwner()
 
-	if chi.URLParam(r, "ttype") != "" && chi.URLParam(r, "ttype") != "video" {
+	if tt := chi.URLParam(r, "ttype"); tt != "" && tt != "video" && tt != "music" && tt != "audio" {
 		s.writeEmpty(w, r)
 		return
 	}
@@ -1123,7 +1123,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	if !ok || pr == nil || pr.User == nil || s.catalog() == nil {
 		return nil, nil
 	}
-	if tt := chi.URLParam(r, "ttype"); tt != "" && tt != "video" {
+	if tt := chi.URLParam(r, "ttype"); tt != "" && tt != "video" && tt != "music" && tt != "audio" {
 		return nil, nil
 	}
 	p, err := s.parsePlayRequest(r)
@@ -1516,12 +1516,21 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string,
 	part.Container = m.Container
 	part.Protocol = protocol
 	if protocol == frontend.ProtocolHTTP {
-		// Plex Desktop's Matroska stream: Media/Part carry container=mkv
-		// and no protocol attribute.
+		// Plex Desktop's Matroska stream carries container=mkv and no protocol
+		// attribute; audio-only HTTP transcodes carry their target audio
+		// container (mp3, mp4/m4a, aac, ogg, flac, wav) instead.
 		m.Protocol = ""
 		part.Protocol = ""
-		m.Container = "mkv"
-		part.Container = "mkv"
+		if srcVideo != nil {
+			m.Container = "mkv"
+			part.Container = "mkv"
+		} else if c := plexContainer(dec.Container); c != "" {
+			m.Container = c
+			part.Container = c
+		} else {
+			m.Container = "mp4"
+			part.Container = "mp4"
+		}
 	}
 	part.Decision = "transcode"
 	part.Key = ""
@@ -1553,6 +1562,9 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string,
 		}
 		if ch := transcodeAudioChannels(dec, srcCh); ch > 0 {
 			m.AudioChannels = ch
+		}
+		if srcVideo == nil && dec.BitrateKbps > 0 {
+			m.Bitrate = dec.BitrateKbps
 		}
 	}
 	part.Bitrate, part.Width, part.Height = m.Bitrate, m.Width, m.Height

@@ -13,10 +13,160 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/archive"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/par2"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
+
+// nonVideoArchiveHint returns the NZB's non-video hint when archive member
+// selection or non-video archive extraction is requested.
+func (b *builder) nonVideoArchiveHint() (nzb.NonVideoHint, bool) {
+	h, ok := b.rel.doc.NonVideoHint()
+	if !ok {
+		return nzb.NonVideoHint{}, false
+	}
+	if h.Member != "" || h.MemberIndex != nil || nzb.IsNonVideoMIME(h.MIME) {
+		return h, true
+	}
+	return nzb.NonVideoHint{}, false
+}
+
+// chooseNonVideoMember selects a non-directory archive member for a non-video
+// release target (by Member name, MemberIndex, or MIME match rank + size).
+func chooseNonVideoMember(members []archive.Member, hint nzb.NonVideoHint) (*archive.Member, error) {
+	var nonDirs []*archive.Member
+	for i := range members {
+		if !members[i].Dir {
+			nonDirs = append(nonDirs, &members[i])
+		}
+	}
+	if len(nonDirs) == 0 {
+		return nil, fmt.Errorf("%w: archive holds no files", ErrNoPlayableFile)
+	}
+	if want := strings.TrimSpace(hint.Member); want != "" {
+		names := make([]string, len(nonDirs))
+		for i, m := range nonDirs {
+			names[i] = m.Name
+		}
+		idx, ok, ambig := nzb.MatchPathIndex(names, want)
+		if ambig {
+			return nil, fmt.Errorf("stream: archive member %q matched multiple files: %w", want, core.ErrWrongContent)
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: archive holds no member %q: %w", ErrNoPlayableFile, want, core.ErrWrongContent)
+		}
+		if nonDirs[idx].Size <= 0 {
+			return nil, fmt.Errorf("%w: archive member %q is empty", ErrNoPlayableFile, nonDirs[idx].Name)
+		}
+		return nonDirs[idx], nil
+	}
+	if hint.MemberIndex != nil {
+		i := *hint.MemberIndex
+		if i < 0 || i >= len(nonDirs) {
+			return nil, fmt.Errorf("%w: memberIndex %d outside %d members: %w", ErrNoPlayableFile, i, len(nonDirs), core.ErrWrongContent)
+		}
+		if nonDirs[i].Size <= 0 {
+			return nil, fmt.Errorf("%w: archive member %d (%q) is empty", ErrNoPlayableFile, i, nonDirs[i].Name)
+		}
+		return nonDirs[i], nil
+	}
+	var best *archive.Member
+	bestRank := 0
+	for _, m := range nonDirs {
+		if m.Size <= 0 {
+			continue
+		}
+		rank := nzb.NonVideoMatchRank(m.Name, hint.MIME)
+		if rank == 0 {
+			continue
+		}
+		if rank > bestRank || (rank == bestRank && (best == nil || m.Size > best.Size)) {
+			best = m
+			bestRank = rank
+		}
+	}
+	if best == nil {
+		return nil, fmt.Errorf("%w: archive holds no usable %s file (%d members)", ErrNoPlayableFile, hint.MIME, len(nonDirs))
+	}
+	return best, nil
+}
+
+func canHandOffRawArchive(m *archive.Member, streamErr error) bool {
+	if m == nil || m.Encrypted {
+		return false
+	}
+	return errors.Is(streamErr, archive.ErrCompressed) || errors.Is(streamErr, archive.ErrSolid)
+}
+
+// planPlainRaw maps a non-video posted file directly as raw bytes without
+// video-only extension inference.
+func (b *builder) planPlainRaw(ctx context.Context, pf *postedFile) (*plan, error) {
+	seg, err := b.e.segment(ctx, b.rel, pf, 0, b.prio, b.fo)
+	if err != nil {
+		return nil, err
+	}
+	if seg.begin != 0 {
+		return nil, fmt.Errorf("stream: first article of %s begins at %d, not zero: %w", pf.Name(), seg.begin, ErrCorrupt)
+	}
+	if !pf.SizeKnown() {
+		last := pf.numSlots() - 1
+		ls, err := b.e.segment(ctx, b.rel, pf, last, b.prio, b.fo)
+		if err != nil {
+			return nil, err
+		}
+		pf.learn(last, ls.begin, ls.end(), ls.end(), 0)
+	}
+	name := pf.Name()
+	if (pf.file.Obfuscated || name == "" || nzb.IsObfuscated(name)) && seg.name != "" && !nzb.IsObfuscated(seg.name) {
+		name = path.Base(seg.name)
+	}
+	size := pf.Size()
+	if size <= 0 {
+		return nil, fmt.Errorf("%w: %s is empty", ErrNoPlayableFile, name)
+	}
+	p := newPlan(b.rel, kindPlain, name, size, []*postedFile{pf}, []volInfo{{size: size, dataSize: size}}, []bool{true})
+	p.rawNonVideo = true
+	return p, p.init()
+}
+
+// planRawArchiveVolumes builds a kindArchiveRaw plan exposing all archive
+// volumes with verified sizes so kindstream.openContainerOverVolumes can
+// extract a compressed or solid non-video member using the shared archive stack.
+func (b *builder) planRawArchiveVolumes(ctx context.Context, vols []*postedFile, format, memberName string, concat bool) (*plan, error) {
+	if err := b.heads(ctx, vols); err != nil {
+		return nil, err
+	}
+	info := make([]volInfo, len(vols))
+	verified := make([]bool, len(vols))
+	var total int64
+	for k, pf := range vols {
+		if !pf.SizeKnown() {
+			last := pf.numSlots() - 1
+			ls, err := b.e.segment(ctx, b.rel, pf, last, b.prio, b.fo)
+			if err != nil {
+				return nil, err
+			}
+			pf.learn(last, ls.begin, ls.end(), ls.end(), 0)
+		}
+		s := pf.Size()
+		if s <= 0 {
+			return nil, fmt.Errorf("stream: %s archive volume %s is empty: %w", format, pf.Name(), ErrCorrupt)
+		}
+		if s > math.MaxInt64-total {
+			return nil, fmt.Errorf("stream: %s archive volume sizes overflow: %w", format, ErrCorrupt)
+		}
+		info[k] = volInfo{size: s, dataSize: s}
+		verified[k] = true
+		total += s
+	}
+	p := newPlan(b.rel, kindArchiveRaw, path.Base(memberName), total, vols, info, verified)
+	p.member = memberName
+	p.rawNonVideo = true
+	p.archiveFormat = format
+	p.archiveConcat = concat
+	return p, p.init()
+}
 
 // planPlain maps a posted video file directly.
 func (b *builder) planPlain(ctx context.Context, pf *postedFile) (*plan, error) {
@@ -95,13 +245,24 @@ func (b *builder) planSplit(ctx context.Context, vols []*postedFile) (*plan, err
 	default:
 		return nil, fmt.Errorf("stream: %s archive split into plain volumes: %w", f, ErrUnsupported)
 	}
-	ext := vols[0].file.Info.Ext
-	if !nzb.IsVideoExt(ext) && !strings.EqualFold(ext, "iso") && !looksLikeVideo(head) {
-		return nil, fmt.Errorf("%w: split set %s is not a video", ErrNoPlayableFile, vols[0].Name())
-	}
 	name := vols[0].Name()
 	if i := strings.LastIndex(name, "."); i > 0 {
 		name = name[:i]
+	}
+	nvHint, nonVideo := b.rel.doc.NonVideoHint()
+	if nonVideo {
+		matched := nvHint.ExplicitFile || nzb.NonVideoMatchRank(name, nvHint.MIME) > 0
+		if !matched && nvHint.Member != "" {
+			_, matched, _ = nzb.MatchPathIndex([]string{name}, nvHint.Member)
+		}
+		if !matched {
+			return nil, fmt.Errorf("%w: split set %s does not match non-video target", ErrNoPlayableFile, vols[0].Name())
+		}
+	} else {
+		ext := vols[0].file.Info.Ext
+		if !nzb.IsVideoExt(ext) && !strings.EqualFold(ext, "iso") && !looksLikeVideo(head) {
+			return nil, fmt.Errorf("%w: split set %s is not a video", ErrNoPlayableFile, vols[0].Name())
+		}
 	}
 	info := make([]volInfo, len(vols))
 	verified := make([]bool, len(vols))
@@ -113,6 +274,7 @@ func (b *builder) planSplit(ctx context.Context, vols []*postedFile) (*plan, err
 		size += s
 	}
 	p := newPlan(b.rel, kindSplit, name, size, vols, info, verified)
+	p.rawNonVideo = nonVideo
 	return p, p.init()
 }
 
@@ -148,20 +310,33 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 	if err != nil {
 		return nil, fmt.Errorf("stream: split rar %s: %w", vols[0].Name(), err)
 	}
-	m := b.chooseMember(members)
-	if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
-		return nil, err
-	} else if p != nil {
-		return p, nil
-	}
-	if m == nil {
-		return nil, fmt.Errorf("%w: rar %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+	nvHint, nv := b.nonVideoArchiveHint()
+	var m *archive.Member
+	if nv {
+		var merr error
+		m, merr = chooseNonVideoMember(members, nvHint)
+		if merr != nil {
+			return nil, merr
+		}
+	} else {
+		m = b.chooseMember(members)
+		if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
+			return nil, err
+		} else if p != nil {
+			return p, nil
+		}
+		if m == nil {
+			return nil, fmt.Errorf("%w: rar %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+		}
 	}
 	makePlan := func(m *archive.Member) (*plan, error) {
 		if m.Encrypted && b.rel.doc.Password() == "" {
 			return nil, archive.ErrPasswordRequired
 		}
 		if err := m.Streamable(); err != nil {
+			if nv && canHandOffRawArchive(m, err) {
+				return b.planRawArchiveVolumes(ctx, vols, "rar", m.Name, true)
+			}
 			return nil, fmt.Errorf("stream: split rar %s: %s: %w", vols[0].Name(), m.Name, err)
 		}
 		resolved, err := resolveConcat([]archive.Member{*m}, vols)
@@ -171,7 +346,12 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 		rm := resolved[0]
 		volInfos := append([]volInfo(nil), info...)
 		if rm.Encryption != nil {
-			return b.encryptedPlan(ctx, kindRAR, &rm, vols, volInfos)
+			p, err := b.encryptedPlan(ctx, kindRAR, &rm, vols, volInfos)
+			if err == nil && nv {
+				p.rawNonVideo = true
+				p.resolvedMember = true
+			}
+			return p, err
 		}
 		lay := &layout{version: 1}
 		singlePerVol := true
@@ -189,6 +369,8 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 		}
 		p := newPlan(b.rel, kindRAR, path.Base(m.Name), m.Size, vols, volInfos, append([]bool(nil), verified...))
 		p.member = m.Name
+		p.rawNonVideo = nv
+		p.resolvedMember = nv
 		if singlePerVol {
 			return p, p.init()
 		}
@@ -196,10 +378,10 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 		return p, nil
 	}
 	p, err := makePlan(m)
-	if err == nil {
+	if err == nil && !nv {
 		b.keepSiblings(p, members, m, makePlan)
 	}
-	if err == nil && isISOName(p.name) {
+	if err == nil && !nv && isISOName(p.name) {
 		b.stashDiscs(members, m, makePlan)
 	}
 	return p, err
@@ -417,8 +599,21 @@ func trailingRARNumber(name string) int {
 	return n
 }
 
-// planRAR maps the main video inside a store-mode RAR set.
+// planRAR maps the main video (or non-video member) inside a RAR set.
 func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error) {
+	if _, nv := b.nonVideoArchiveHint(); nv {
+		if len(vols) == 1 {
+			if err := b.heads(ctx, vols[:1]); err != nil {
+				return nil, err
+			}
+			v0, err := archive.ReadRARVolume(b.reader(ctx, vols[0]), vols[0].Size(), b.rarOptionsFor(ctx, vols[0], 0))
+			if err != nil {
+				return nil, fmt.Errorf("stream: rar %s: %w", vols[0].Name(), err)
+			}
+			return b.rarFromVolumes(ctx, vols, []*archive.RARVolume{v0})
+		}
+		return b.rarFullScan(ctx, vols)
+	}
 	if err := b.checkCachedRAR(ctx, candidate{kind: nzb.KindRAR, files: vols}); err != nil {
 		return nil, err
 	}
@@ -659,20 +854,33 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 	if err != nil {
 		return nil, fmt.Errorf("stream: rar %s: %w", vols[0].Name(), err)
 	}
-	m := b.chooseMember(members)
-	if p, err := b.tryNested(ctx, vols, members, m, false); err != nil {
-		return nil, err
-	} else if p != nil {
-		return p, nil
-	}
-	if m == nil {
-		return nil, fmt.Errorf("%w: rar %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+	nvHint, nv := b.nonVideoArchiveHint()
+	var m *archive.Member
+	if nv {
+		var merr error
+		m, merr = chooseNonVideoMember(members, nvHint)
+		if merr != nil {
+			return nil, merr
+		}
+	} else {
+		m = b.chooseMember(members)
+		if p, err := b.tryNested(ctx, vols, members, m, false); err != nil {
+			return nil, err
+		} else if p != nil {
+			return p, nil
+		}
+		if m == nil {
+			return nil, fmt.Errorf("%w: rar %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+		}
 	}
 	plan := func(m *archive.Member) (*plan, error) {
 		if m.Encrypted && b.rel.doc.Password() == "" {
 			return nil, archive.ErrPasswordRequired
 		}
 		if err := m.Streamable(); err != nil {
+			if nv && canHandOffRawArchive(m, err) {
+				return b.planRawArchiveVolumes(ctx, vols, "rar", m.Name, false)
+			}
 			return nil, fmt.Errorf("stream: rar %s: %s: %w", vols[0].Name(), m.Name, err)
 		}
 		info := make([]volInfo, len(vols))
@@ -687,7 +895,12 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 					info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
 				}
 			}
-			return b.encryptedPlan(ctx, kindRAR, m, vols, info)
+			p, err := b.encryptedPlan(ctx, kindRAR, m, vols, info)
+			if err == nil && nv {
+				p.rawNonVideo = true
+				p.resolvedMember = true
+			}
+			return p, err
 		}
 		for _, x := range m.Extents {
 			if x.Volume < 0 || x.Volume >= len(vols) {
@@ -701,13 +914,15 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 		}
 		p := newPlan(b.rel, kindRAR, path.Base(m.Name), m.Size, vols, info, verified)
 		p.member = m.Name
+		p.rawNonVideo = nv
+		p.resolvedMember = nv
 		return p, p.init()
 	}
 	p, err := plan(m)
-	if err == nil {
+	if err == nil && !nv {
 		b.keepSiblings(p, members, m, plan)
 	}
-	if err == nil && isISOName(p.name) {
+	if err == nil && !nv && isISOName(p.name) {
 		b.stashDiscs(members, m, plan)
 	}
 	return p, err
@@ -815,31 +1030,51 @@ func (b *builder) plan7z(ctx context.Context, vols []*postedFile) (*plan, error)
 	if err != nil {
 		return nil, fmt.Errorf("stream: 7z %s: %w", vols[0].Name(), err)
 	}
-	m := b.chooseMember(members)
-	if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
-		return nil, err
-	} else if p != nil {
-		return p, nil
-	}
-	if m == nil {
-		return nil, fmt.Errorf("%w: 7z %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+	nvHint, nv := b.nonVideoArchiveHint()
+	var m *archive.Member
+	if nv {
+		var merr error
+		m, merr = chooseNonVideoMember(members, nvHint)
+		if merr != nil {
+			return nil, merr
+		}
+	} else {
+		m = b.chooseMember(members)
+		if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
+			return nil, err
+		} else if p != nil {
+			return p, nil
+		}
+		if m == nil {
+			return nil, fmt.Errorf("%w: 7z %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+		}
 	}
 	plan := func(m *archive.Member) (*plan, error) {
 		if err := m.Streamable(); err != nil {
+			if nv && canHandOffRawArchive(m, err) {
+				return b.planRawArchiveVolumes(ctx, vols, "7z", m.Name, false)
+			}
 			return nil, fmt.Errorf("stream: 7z %s: %s: %w", vols[0].Name(), m.Name, err)
 		}
 		if m.Encryption != nil {
-			return b.encryptedPlan(ctx, kind7z, m, vols, info)
+			p, err := b.encryptedPlan(ctx, kind7z, m, vols, info)
+			if err == nil && nv {
+				p.rawNonVideo = true
+				p.resolvedMember = true
+			}
+			return p, err
 		}
 		p := newPlan(b.rel, kind7z, path.Base(m.Name), m.Size, vols, info, verified)
 		p.concatExt = m.Extents
+		p.rawNonVideo = nv
+		p.resolvedMember = nv
 		return p, p.init()
 	}
 	p, err := plan(m)
-	if err == nil {
+	if err == nil && !nv {
 		b.keepSiblings(p, members, m, plan)
 	}
-	if err == nil && isISOName(p.name) {
+	if err == nil && !nv && isISOName(p.name) {
 		b.stashDiscs(members, m, plan)
 	}
 	return p, err
@@ -881,25 +1116,40 @@ func (b *builder) planZIP(ctx context.Context, vols []*postedFile) (*plan, error
 	if err != nil {
 		return nil, fmt.Errorf("stream: zip %s: %w", vols[0].Name(), err)
 	}
-	m := b.chooseMember(members)
-	if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
-		return nil, err
-	} else if p != nil {
-		return p, nil
-	}
-	if m == nil {
-		return nil, fmt.Errorf("%w: zip %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+	nvHint, nv := b.nonVideoArchiveHint()
+	var m *archive.Member
+	if nv {
+		var merr error
+		m, merr = chooseNonVideoMember(members, nvHint)
+		if merr != nil {
+			return nil, merr
+		}
+	} else {
+		m = b.chooseMember(members)
+		if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
+			return nil, err
+		} else if p != nil {
+			return p, nil
+		}
+		if m == nil {
+			return nil, fmt.Errorf("%w: zip %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
+		}
 	}
 	makePlan := func(m *archive.Member) (*plan, error) {
 		if err := m.Streamable(); err != nil {
+			if nv && canHandOffRawArchive(m, err) {
+				return b.planRawArchiveVolumes(ctx, vols, "zip", m.Name, false)
+			}
 			return nil, fmt.Errorf("stream: zip %s: %s: %w", vols[0].Name(), m.Name, err)
 		}
 		p := newPlan(b.rel, kindZIP, path.Base(m.Name), m.Size, vols, info, verified)
 		p.concatExt = m.Extents
+		p.rawNonVideo = nv
+		p.resolvedMember = nv
 		return p, p.init()
 	}
 	p, err := makePlan(m)
-	if err == nil {
+	if err == nil && !nv {
 		b.keepSiblings(p, members, m, makePlan)
 	}
 	return p, err
@@ -1072,6 +1322,12 @@ func rarMember(format archive.Format, f *archive.RARFile) archive.Member {
 // compressed, solid, or encrypted without a usable password.
 func (b *builder) checkRARVolume(v *archive.RARVolume) error {
 	if v == nil {
+		return nil
+	}
+	if _, nv := b.nonVideoArchiveHint(); nv {
+		// Non-video releases may extract compressed or solid RAR members via
+		// kindstream.openContainerOverVolumes; member selection and encryption
+		// checks happen once all volumes are composed in rarFromVolumes.
 		return nil
 	}
 	files := v.Files

@@ -92,9 +92,67 @@ func newSource(e *Engine, rel *release, p *plan, releaseID string) *source {
 	return s
 }
 
-func (s *source) Size() int64       { return s.plan.size }
-func (s *source) Name() string      { return s.plan.name }
-func (s *source) ReleaseID() string { return s.releaseID }
+func (s *source) Size() int64                 { return s.plan.size }
+func (s *source) Name() string                { return s.plan.name }
+func (s *source) ReleaseID() string           { return s.releaseID }
+func (s *source) ResolvedArchiveMember() bool { return s.plan.resolvedMember }
+
+// archiveVolumesSource wraps one or more raw archive volume *source streams
+// (e.g. a compressed or solid RAR/7z/ZIP set for a non-video release) so
+// callers implementing ArchiveVolumeSource can extract the target member
+// through the shared archive reader stack without a second archive stack.
+type archiveVolumesSource struct {
+	vols      []*source
+	format    string
+	member    string
+	name      string
+	releaseID string
+	closeOnce sync.Once
+}
+
+func (a *archiveVolumesSource) Size() int64 {
+	if len(a.vols) == 0 {
+		return 0
+	}
+	return a.vols[0].Size()
+}
+
+func (a *archiveVolumesSource) Name() string      { return a.name }
+func (a *archiveVolumesSource) ReleaseID() string { return a.releaseID }
+
+func (a *archiveVolumesSource) ReadAt(p []byte, off int64) (int, error) {
+	if len(a.vols) == 0 {
+		return 0, io.EOF
+	}
+	return a.vols[0].ReadAt(p, off)
+}
+
+func (a *archiveVolumesSource) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if len(a.vols) == 0 {
+		return 0, io.EOF
+	}
+	return a.vols[0].ReadAtContext(ctx, p, off)
+}
+
+func (a *archiveVolumesSource) ArchiveVolumes() ([]core.MediaSource, string, string) {
+	out := make([]core.MediaSource, len(a.vols))
+	for i, v := range a.vols {
+		out[i] = v
+	}
+	return out, a.format, a.member
+}
+
+func (a *archiveVolumesSource) Close() error {
+	var first error
+	a.closeOnce.Do(func() {
+		for _, v := range a.vols {
+			if err := v.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+	})
+	return first
+}
 
 // Close stops read-ahead and releases the index. Safe to call twice.
 func (s *source) Close() error {

@@ -22,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
 // Retrieval pattern constants (spec §4.1, §4.3).
@@ -76,18 +77,33 @@ type SourceFailure struct {
 // answer (see ErrPluginAnswer) rather than at an unavailable host.
 func (f SourceFailure) PluginAnswer() bool { return errors.Is(f.Err, ErrPluginAnswer) }
 
+// DefaultMaxNonVideoReleaseGrabs bounds how many non-video Usenet release
+// candidates OpenSources will fetch in a single play attempt before stopping,
+// so a failing play never burns an entire page of indexer grabs (#659).
+const DefaultMaxNonVideoReleaseGrabs = 3
+
 // Deps supplies the runtime dependencies needed by Open and OpenSources
 // (spec §5.1).
 type Deps struct {
-	OpenFile         func(context.Context, core.PlayableSource) (ByteSource, error)
-	HTTP             *http.Client
-	Cache            *blobcache.Namespace
-	OpenRelease      func(ctx context.Context, r core.ReleaseHint) (core.MediaSource, error)
-	Secret           func(ctx context.Context, name string) (string, error)
-	AllowHost        func(host string) bool
-	MaxDownloadBytes int64
-	ItemIndex        int
-	Backoff          *HostBackoff
+	OpenFile    func(context.Context, core.PlayableSource) (ByteSource, error)
+	HTTP        *http.Client
+	Cache       *blobcache.Namespace
+	OpenRelease func(ctx context.Context, r core.ReleaseHint) (core.MediaSource, error)
+	// OpenReleaseSource, when set, is preferred over OpenRelease so release
+	// opening receives the full PlayableSource (MIME, Container, Release).
+	OpenReleaseSource func(ctx context.Context, src core.PlayableSource) (core.MediaSource, error)
+	// DefaultReleaseMIME is the kind-level fallback MIME (e.g. "audio/*",
+	// "application/epub+zip") when a release source omits src.MIME.
+	DefaultReleaseMIME string
+	// MaxNonVideoReleaseGrabs caps how many non-video Usenet release grabs
+	// OpenSources attempts per play (0 uses DefaultMaxNonVideoReleaseGrabs;
+	// negative disables the cap).
+	MaxNonVideoReleaseGrabs int
+	Secret                  func(ctx context.Context, name string) (string, error)
+	AllowHost               func(host string) bool
+	MaxDownloadBytes        int64
+	ItemIndex               int
+	Backoff                 *HostBackoff
 	// OnSourceSkipped, when set, is called for each candidate that failed
 	// before a later one opened, so the caller can log it and decide
 	// whether the winner may be saved as the item's resolution.
@@ -164,15 +180,77 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 	}
 }
 
+type releaseCandidateShape struct {
+	protocol string // "usenet" or "torrent"
+	selector string // "explicit_file", "archive_member", or "auto"
+	family   string // nzb.MIMEFamily(effMIME)
+}
+
+func classifyNonVideoRelease(cand core.PlayableSource, defaultMIME string) (nonVideo bool, shape releaseCandidateShape, isUsenet bool) {
+	pattern := strings.ToLower(strings.TrimSpace(cand.Pattern))
+	if pattern == "" && cand.Release != nil && cand.Container == nil {
+		pattern = PatternRelease
+	}
+	if pattern != PatternRelease || cand.Release == nil {
+		return false, releaseCandidateShape{}, false
+	}
+	effMIME := nzb.NormalizeMIME(cand.MIME)
+	if effMIME == "" {
+		effMIME = nzb.NormalizeMIME(defaultMIME)
+	}
+	if strings.HasPrefix(effMIME, "video/") {
+		return false, releaseCandidateShape{}, false
+	}
+	explicitFile := hasExplicitReleaseSelector(*cand.Release)
+	archiveMember := strings.TrimSpace(cand.Release.FileHint) != "" ||
+		(cand.Container != nil && (strings.TrimSpace(cand.Container.Member) != "" || cand.Container.MemberIndex != nil))
+	if !nzb.IsNonVideoMIME(effMIME) && !explicitFile && !archiveMember {
+		return false, releaseCandidateShape{}, false
+	}
+
+	r := cand.Release
+	hasNZB := strings.TrimSpace(r.NZBURL) != "" || (r.Candidate != nil && strings.TrimSpace(r.Candidate.NZBURL) != "")
+	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" ||
+		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != ""))
+	isUsenet = hasNZB && !hasTorrent
+	proto := "torrent"
+	if isUsenet {
+		proto = "usenet"
+	}
+	sel := "auto"
+	if explicitFile {
+		sel = "explicit_file"
+	} else if archiveMember {
+		sel = "archive_member"
+	}
+	return true, releaseCandidateShape{
+		protocol: proto,
+		selector: sel,
+		family:   nzb.MIMEFamily(effMIME),
+	}, isUsenet
+}
+
 // OpenSources tries each candidate core.PlayableSource in order, returning the first
 // ByteSource that opens and validates cleanly. When every candidate fails with
 // core.ErrArchiveUnstreamable, that error is preserved rather than masked as
 // core.ErrSourceUnavailable; otherwise all-failed candidates wrap
 // core.ErrSourceUnavailable (spec §4.5).
+//
+// For non-video release candidates (#659), OpenSources caps Usenet release
+// grabs per play (DefaultMaxNonVideoReleaseGrabs) and stops trying further
+// candidates of the same shape after the first structural core.ErrNoUsableFile
+// verdict so one failed play never burns a full page of indexer grabs.
 func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) (ByteSource, core.PlayableSource, error) {
 	if len(sources) == 0 {
 		return nil, core.PlayableSource{}, core.ErrSourceUnavailable
 	}
+	maxUsenetGrabs := deps.MaxNonVideoReleaseGrabs
+	if maxUsenetGrabs == 0 {
+		maxUsenetGrabs = DefaultMaxNonVideoReleaseGrabs
+	}
+	usenetNonVideoGrabs := 0
+	structuralFailed := make(map[releaseCandidateShape]error)
+
 	var errs []error
 	var failures []SourceFailure
 	allUnstreamable := true
@@ -180,12 +258,31 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if err := ctx.Err(); err != nil {
 			return nil, core.PlayableSource{}, err
 		}
+		nonVideo, shape, isUsenet := classifyNonVideoRelease(cand, deps.DefaultReleaseMIME)
+		if nonVideo {
+			if prev, failed := structuralFailed[shape]; failed {
+				errs = append(errs, fmt.Errorf("source %q (%s): skipped after same-shape structural failure: %w", cand.ID, cand.Pattern, prev))
+				allUnstreamable = false
+				continue
+			}
+			if isUsenet && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
+				errs = append(errs, fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", cand.ID, cand.Pattern, maxUsenetGrabs))
+				continue
+			}
+			if isUsenet {
+				usenetNonVideoGrabs++
+			}
+		}
+
 		bs, err := Open(ctx, cand, deps)
 		if err == nil {
 			if len(failures) > 0 && deps.OnSourceSkipped != nil {
 				deps.OnSourceSkipped(failures, cand)
 			}
 			return bs, cand, nil
+		}
+		if nonVideo && errors.Is(err, core.ErrNoUsableFile) {
+			structuralFailed[shape] = err
 		}
 		if !errors.Is(err, core.ErrArchiveUnstreamable) {
 			allUnstreamable = false
@@ -513,10 +610,17 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	if src.Release == nil {
 		return nil, errors.New("kindstream: release pattern requires core.ReleaseHint")
 	}
-	if deps.OpenRelease == nil {
+	var (
+		ms  core.MediaSource
+		err error
+	)
+	if deps.OpenReleaseSource != nil {
+		ms, err = deps.OpenReleaseSource(ctx, src)
+	} else if deps.OpenRelease != nil {
+		ms, err = deps.OpenRelease(ctx, *src.Release)
+	} else {
 		return nil, errors.New("kindstream: OpenRelease dependency is not configured")
 	}
-	ms, err := deps.OpenRelease(ctx, *src.Release)
 	if err != nil {
 		if hasExplicitReleaseSelector(*src.Release) && errors.Is(err, core.ErrWrongContent) {
 			// The plugin named a file the release does not contain as
@@ -526,13 +630,56 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 		return nil, err
 	}
 
+	effMIME := strings.TrimSpace(src.MIME)
+	if effMIME == "" {
+		effMIME = strings.TrimSpace(deps.DefaultReleaseMIME)
+	}
+
+	// Compressed or solid multi-volume non-video archives planned by
+	// stream.Engine hand over their raw volumes so openContainerOverVolumes
+	// decodes them through the shared internal/archive stack into deps.Cache.
+	if avs, ok := ms.(core.ArchiveVolumeSource); ok {
+		rawVols, fmtHint, member := avs.ArchiveVolumes()
+		if len(rawVols) == 0 {
+			_ = ms.Close()
+			return nil, fmt.Errorf("kindstream: archive volume source has no volumes: %w", core.ErrNoUsableFile)
+		}
+		vols := make([]archive.Volume, len(rawVols))
+		for i, rv := range rawVols {
+			vols[i] = archive.Volume{R: rv, Size: rv.Size()}
+		}
+		pwSecret := src.Release.PasswordSecret
+		var memberIdx *int
+		if src.Container != nil {
+			if src.Container.PasswordSecret != "" {
+				pwSecret = src.Container.PasswordSecret
+			}
+			if member == "" {
+				member = src.Container.Member
+				memberIdx = src.Container.MemberIndex
+			}
+			if fmtHint == "" {
+				fmtHint = src.Container.Format
+			}
+		} else if member == "" && src.Release.FileHint != "" {
+			member = src.Release.FileHint
+		}
+		cacheSeed := ms.ReleaseID() + "|" + ms.Name()
+		return openContainerOverVolumes(ctx, vols, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
+	}
+
 	wrapped := &mediaSourceByteSource{
 		ms:   ms,
 		name: path.Base(ms.Name()),
-		mime: src.MIME,
+		mime: effMIME,
 	}
 	if wrapped.name == "" || wrapped.name == "." || wrapped.name == "/" {
 		wrapped.name = ms.ReleaseID()
+	}
+
+	resolvedMember := false
+	if rms, ok := ms.(core.ResolvedMemberSource); ok && rms.ResolvedArchiveMember() {
+		resolvedMember = true
 	}
 
 	// Check if the release should compose with Container extraction (spec §4.3:
@@ -563,7 +710,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	}
 
 	archFmt := archive.Detect(headSlice)
-	if src.Container != nil || (archFmt != archive.FormatUnknown && shouldAutoComposeReleaseArchive(src, wrapped.name, headSlice)) {
+	if !resolvedMember && (src.Container != nil || (archFmt != archive.FormatUnknown && shouldAutoComposeReleaseArchive(src, effMIME, wrapped.name, headSlice))) {
 		pwSecret := src.Release.PasswordSecret
 		var member string
 		var memberIdx *int
@@ -579,10 +726,10 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 			member = src.Release.FileHint
 		}
 		cacheSeed := ms.ReleaseID() + "|" + wrapped.name
-		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, src.MIME, src.MaxBytes, digestsOf(src), deps)
+		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
 	}
 
-	declaredMIME := strings.TrimSpace(src.MIME)
+	declaredMIME := effMIME
 	if declaredMIME == "" && !hasVideoFileExtension(wrapped.name) {
 		// Non-video release files without an explicit plugin MIME must never
 		// receive a guessed video/* MIME (#574).
@@ -599,15 +746,19 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	return applyDigests(ctx, wrapped, digestsOf(src), src.MaxBytes, cacheKey, deps)
 }
 
-func shouldAutoComposeReleaseArchive(src core.PlayableSource, fileName string, head []byte) bool {
-	decl := normalizeMIME(src.MIME)
-	if isDeclaredArchiveMIME(decl) {
+func shouldAutoComposeReleaseArchive(src core.PlayableSource, effectiveMIME, fileName string, head []byte) bool {
+	decl := normalizeMIME(effectiveMIME)
+	if nzb.IsArchiveMIME(decl) {
 		return false
 	}
-	if strings.EqualFold(path.Ext(fileName), ".epub") {
+	switch strings.ToLower(path.Ext(fileName)) {
+	case ".epub", ".cbz", ".cbr", ".cb7":
 		return false
 	}
 	if magic, ok := sniffMagicBytes(head); ok && magic == "application/epub+zip" {
+		return false
+	}
+	if nzb.MIMEFamily(decl) == "comic" {
 		return false
 	}
 	if src.Release != nil && strings.TrimSpace(src.Release.FileHint) != "" {
@@ -690,7 +841,7 @@ func openContainerOverVolumes(
 		closeAll()
 		return nil, wrapArchiveUnstreamable(err)
 	}
-	selected, nonDirIdx, err := selectArchiveMember(members, memberName, memberIdx)
+	selected, nonDirIdx, err := selectArchiveMemberForMIME(members, memberName, memberIdx, declaredMIME)
 	if err != nil {
 		closeAll()
 		return nil, err
@@ -796,7 +947,9 @@ func verifyAndResolveMIME(head []byte, declared string, filename string) (string
 		if declaredBase != "" {
 			declFam := mimeFamily(declaredBase)
 			sniffFam := mimeFamily(magicMIME)
-			if declFam != "" && sniffFam != "" && declFam != sniffFam && !compatibleArchiveMIME(declaredBase, magicMIME) {
+			if declFam != "" && sniffFam != "" && declFam != sniffFam &&
+				!compatibleArchiveMIME(declaredBase, magicMIME) &&
+				!compatibleBookMIME(declaredBase, magicMIME) {
 				return "", fmt.Errorf("%w: declared %q (%s), sniffed %q (%s)", ErrMIMEMismatch, declaredBase, declFam, magicMIME, sniffFam)
 			}
 			if declFam == "" {
@@ -948,6 +1101,10 @@ func compatibleArchiveMIME(declared, sniffed string) bool {
 		return true
 	}
 	return false
+}
+
+func compatibleBookMIME(declared, sniffed string) bool {
+	return nzb.MIMEFamily(declared) == "book" && nzb.MIMEFamily(sniffed) == "book"
 }
 
 // ---------------------------------------------------------------------------

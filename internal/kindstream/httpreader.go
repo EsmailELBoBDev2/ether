@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 const (
@@ -561,6 +563,9 @@ func (b *seqBufferedReaderAt) ReadAt(p []byte, off int64) (int, error) {
 func (b *seqBufferedReaderAt) rawReadAt(p []byte, off int64) (int, error) {
 	if b.hr != nil {
 		return b.hr.readAtCtx(b.ctx, p, off)
+	}
+	if cr, ok := b.r.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(b.ctx, p, off)
 	}
 	return b.r.ReadAt(p, off)
 }

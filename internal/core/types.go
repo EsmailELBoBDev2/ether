@@ -203,6 +203,10 @@ var (
 	ErrArticleMissing      = errors.New("article missing on all providers")
 	ErrArticleCorrupt      = errors.New("corrupt article or media data")
 	ErrReleaseRejected     = errors.New("release cannot be streamed")
+	// ErrNoUsableFile reports a structural verdict that a release contains no
+	// file usable for the request (for example, no matching audio/book file or
+	// no playable video), distinct from transient transport/article failures.
+	ErrNoUsableFile        = errors.New("release has no usable file for this request")
 	ErrArchiveUnstreamable = errors.New("this archive format or compression method cannot be streamed")
 	ErrSourceUnavailable   = errors.New("media source temporarily unavailable")
 	ErrBudgetExhausted     = errors.New("indexer daily budget exhausted")

@@ -785,6 +785,22 @@ type DirectURLSource interface {
 	DirectURL() (link DirectSourceLink, ok bool)
 }
 
+// ArchiveVolumeSource is implemented by a MediaSource backed by one or more
+// raw archive volume streams (such as a compressed or solid RAR/7z/ZIP set on
+// Usenet) that a caller can extract through an archive reader. Calling
+// ArchiveVolumes hands volume inspection to the caller; closing the parent
+// MediaSource closes all returned volume MediaSources.
+type ArchiveVolumeSource interface {
+	ArchiveVolumes() (volumes []MediaSource, format string, member string)
+}
+
+// ResolvedMemberSource is implemented by a MediaSource that has already
+// extracted or planned the target archive member, so callers should not unwrap
+// an outer archive a second time using release.fileHint.
+type ResolvedMemberSource interface {
+	ResolvedArchiveMember() bool
+}
+
 type Engine interface {
 	// Open builds the byte-offset index for the main video file of an NZB.
 	Open(ctx context.Context, releaseID string, nzb []byte) (MediaSource, error)

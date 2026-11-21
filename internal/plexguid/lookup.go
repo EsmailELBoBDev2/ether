@@ -84,7 +84,7 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 	} else if !validKindGUID(guid, kind) {
 		return 0, core.ErrNotFound
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT m.rating_key FROM plexguid_mappings m WHERE m.guid=? AND m.checked_at>? AND `+identityVerified+` LIMIT 2`, guid, time.Now().Add(-cacheTTL).Unix())
+	rows, err := s.db.QueryContext(ctx, `SELECT m.rating_key FROM plexguid_mappings m WHERE m.guid=? AND m.checked_at>? AND `+identityVerified+` AND `+identityCurrent+` LIMIT 2`, guid, time.Now().Add(-cacheTTL).Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -108,9 +108,6 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 		return 0, err
 	}
 	if cached != 0 {
-		if s.withheldLegacy(ctx, cached) {
-			return 0, core.ErrNotFound
-		}
 		return cached, nil
 	}
 	if s.o.Token == nil || s.o.Token() == "" {
@@ -145,6 +142,7 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 		}
 	}
 	if found == 0 {
+		s.dropUnprovenByGUID(ctx, guid, 0)
 		return 0, core.ErrNotFound
 	}
 	// The reverse direction must not be looser than forward resolution: the
@@ -162,9 +160,25 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 	}
 	id := s.verifyItems(ctx, found, kind, guid, items, li)
 	if id.GUID == "" {
+		s.dropUnprovenByGUID(ctx, guid, 0)
 		return 0, core.ErrNotFound
 	}
-	return found, s.storeMappingIdentity(ctx, found, id, time.Now().Unix(), 0, "")
+	if err := s.storeMappingIdentity(ctx, found, id, time.Now().Unix(), 0, ""); err != nil {
+		return 0, err
+	}
+	s.dropUnprovenByGUID(ctx, guid, found)
+	return found, nil
+}
+
+// dropUnprovenByGUID removes pre-rule-2 rows claiming guid (excluding keep
+// when non-zero) once live verification has proven another owner or rejected
+// the record, so stale legacy mappings never linger or create false ambiguity.
+func (s *Service) dropUnprovenByGUID(ctx context.Context, guid string, keep core.RatingKey) {
+	if keep != 0 {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM plexguid_mappings WHERE guid=? AND rating_key<>? AND NOT EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=plexguid_mappings.rating_key AND i.guid=plexguid_mappings.guid AND i.credits_rule=2)`, guid, int64(keep))
+		return
+	}
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM plexguid_mappings WHERE guid=? AND NOT EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=plexguid_mappings.rating_key AND i.guid=plexguid_mappings.guid AND i.credits_rule=2)`, guid)
 }
 
 // Verified is one stored title whose plex:// GUID passed verification.

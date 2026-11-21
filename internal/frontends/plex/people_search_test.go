@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -129,6 +130,130 @@ func TestRealCatalogPeopleSearchAcrossPlexEndpoints(t *testing.T) {
 	}
 	if !hasDir || !hasMovie {
 		t.Fatalf("/library/search expected both person Directory (with thumb) and movie Metadata: %#v", results)
+	}
+}
+
+// Issue #653: Cast & Crew tags and people search directories must not emit a
+// fabricated tmdb-person- tagKey (Discover Credits rejects it), and section
+// pills advertised by people search must only name sections whose Browse
+// endpoint (/library/sections/{id}/all?actor=<id>) actually returns titles.
+func TestPeopleSearchSectionPillsMatchBrowseAndOmitFakeTagKey(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	cat, err := catalog.New(db, nil, config.Catalog{}, nil,
+		catalog.WithNow(func() time.Time { return fixedNow }),
+		catalog.WithLibraryPolicies(catalog.LibraryPolicies{
+			MovieRules: []core.LibraryExclusion{{
+				Name:      "no-discovery-docs",
+				Action:    "hide",
+				MediaType: "movie",
+				Match:     "all",
+				Scope:     core.VisibilityDiscovery,
+				Rules:     []core.CollectionRule{{Field: "genre", Op: "is", Value: json.RawMessage(`"Documentary"`)}},
+			}},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Actor with a non-browsable (search-only tier) movie, a discovery-hidden
+	// documentary movie, and a browsable TV show: only TV Shows may appear as
+	// an actor section pill, never an empty Movies pill.
+	milly := core.Person{TMDB: 2210188, Name: "Milly Alcock", Role: "Lead", ThumbPath: "/milly.jpg"}
+	if err := cat.UpsertTitle(ctx, core.Title{
+		Key: core.MovieKey(301), IDs: core.IDs{TMDB: 301}, Type: core.TypeMovie,
+		Title: "Search Only Indie", Year: 2022, Released: fixedNow.AddDate(-2, 0, 0),
+		Cast: []core.Person{milly},
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertTitle(ctx, core.Title{
+		Key: core.MovieKey(302), IDs: core.IDs{TMDB: 302}, Type: core.TypeMovie,
+		Title: "Browse Hidden Doc", Year: 2023, Released: fixedNow.AddDate(-1, 0, 0),
+		Genres: []string{"Documentary"},
+		Cast:   []core.Person{milly},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertTitle(ctx, core.Title{
+		Key: core.ShowKey(303), IDs: core.IDs{TMDB: 303}, Type: core.TypeShow,
+		Title: "Dragon House", Year: 2022, Released: fixedNow.AddDate(-2, 0, 0),
+		Cast: []core.Person{milly},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	// Episode-only guest star: must not advertise an empty TV Shows pill.
+	guest := core.Person{TMDB: 990123, Name: "Guest Cameo", Role: "Cameo"}
+	if err := cat.UpsertTitle(ctx, core.Title{
+		Key: core.EpisodeKey(303, 1, 1), IDs: core.IDs{TMDB: 303}, Type: core.TypeEpisode,
+		ShowKey: core.ShowKey(303), ShowTitle: "Dragon House", Season: 1, Episode: 1,
+		Title: "Pilot", Year: 2022, Released: fixedNow.AddDate(-2, 0, 0),
+		Cast: []core.Person{guest},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFixture(func(d *testServerDeps) { d.Catalog = cat })
+	defer f.srv.Close()
+
+	// 1. Detail page Role tags omit fabricated tagKey while keeping id and filter.
+	det := f.get(t, "/library/metadata/"+core.ShowKey(303).String(), jsonAccept...)
+	if det.Code != http.StatusOK {
+		t.Fatalf("detail status = %d: %s", det.Code, det.Body.String())
+	}
+	detMD := decodeJSON(t, det)["Metadata"].([]any)[0].(map[string]any)
+	role := detMD["Role"].([]any)[0].(map[string]any)
+	if int64(role["id"].(float64)) != milly.TMDB || role["filter"] != "actor=2210188" {
+		t.Fatalf("detail Role lost id/filter: %#v", role)
+	}
+	if _, hasTagKey := role["tagKey"]; hasTagKey {
+		t.Fatalf("detail Role emitted fabricated tagKey: %#v", role)
+	}
+
+	// 2. /hubs/search and /library/search advertise ONLY TV Shows for Milly Alcock
+	//    (not Movies, which Browse excludes) and omit fabricated tagKey.
+	rec := f.get(t, "/hubs/search?query=Milly+Alcock&limit=10", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/hubs/search status = %d", rec.Code)
+	}
+	var actorHub map[string]any
+	for _, raw := range decodeJSON(t, rec)["Hub"].([]any) {
+		if h := raw.(map[string]any); h["hubIdentifier"] == "actor" {
+			actorHub = h
+		}
+	}
+	dirs, _ := actorHub["Directory"].([]any)
+	if len(dirs) != 1 {
+		t.Fatalf("expected only TV Shows pill (no empty Movies pill), got %#v", dirs)
+	}
+	dir := dirs[0].(map[string]any)
+	if dir["key"] != "/library/sections/2/all?actor=2210188" || dir["librarySectionTitle"] != "TV Shows" {
+		t.Fatalf("unexpected actor Directory: %#v", dir)
+	}
+	if _, hasTagKey := dir["tagKey"]; hasTagKey {
+		t.Fatalf("actor Directory emitted fabricated tagKey: %#v", dir)
+	}
+	// Following every advertised section pill must return >= 1 title.
+	secRec := f.get(t, dir["key"].(string), jsonAccept...)
+	if secRec.Code != http.StatusOK {
+		t.Fatalf("section browse %s status = %d", dir["key"], secRec.Code)
+	}
+	if items, _ := decodeJSON(t, secRec)["Metadata"].([]any); len(items) != 1 {
+		t.Fatalf("section browse %s returned %d items, want 1", dir["key"], len(items))
+	}
+	// Confirm Movies browse for Milly Alcock is indeed empty.
+	moviesRec := f.get(t, "/library/sections/1/all?actor=2210188", jsonAccept...)
+	if items, _ := decodeJSON(t, moviesRec)["Metadata"].([]any); len(items) != 0 {
+		t.Fatalf("expected empty Movies browse for non-browsable/hidden credits, got %#v", items)
+	}
+
+	// 3. Episode-only guest actor must not emit an empty TV Shows pill.
+	guestRec := f.get(t, "/hubs/search?query=Guest+Cameo&limit=10", jsonAccept...)
+	for _, raw := range decodeJSON(t, guestRec)["Hub"].([]any) {
+		if h := raw.(map[string]any); h["hubIdentifier"] == "actor" && int(h["size"].(float64)) != 0 {
+			t.Fatalf("episode-only guest advertised empty section pill: %#v", h)
+		}
 	}
 }
 

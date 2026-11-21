@@ -3835,6 +3835,7 @@
   "m_0b55ba7601fc22": "OMDb połączony",
   "m_0b55c237cebf50": "Backend magazynu",
   "m_0b55c5e1d23824": "Przywróć i uruchom",
+  "m_0b56fb040956c5": "Używa skonfigurowanego modelu językowego",
   "m_0b571527985d9c": "Pozycja punktu gradientu",
   "m_0b590594d9dacc": {
     "few": "{count} dostawców sprawnych · zajęte połączenia: {active}/{configured}",

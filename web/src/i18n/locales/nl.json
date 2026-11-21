@@ -3661,6 +3661,7 @@
   "m_0b55ba7601fc22": "OMDb verbonden",
   "m_0b55c237cebf50": "Opslagbackend",
   "m_0b55c5e1d23824": "Herstellen en starten",
+  "m_0b56fb040956c5": "Gebruikt je geconfigureerde taalmodel",
   "m_0b571527985d9c": "Positie kleurstop",
   "m_0b590594d9dacc": {
     "one": "{count} provider in orde · {active}/{configured} verbindingen bezet",

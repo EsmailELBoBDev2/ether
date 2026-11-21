@@ -3747,6 +3747,7 @@
   "m_0b55ba7601fc22": "OMDb connecté",
   "m_0b55c237cebf50": "Backend de stockage",
   "m_0b55c5e1d23824": "Restaurer et démarrer",
+  "m_0b56fb040956c5": "Utilise votre modèle de langage configuré",
   "m_0b571527985d9c": "Position du point",
   "m_0b590594d9dacc": {
     "many": "{count} de fournisseurs en bonne santé · {active}/{configured} connexions occupées",

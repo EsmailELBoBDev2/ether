@@ -467,9 +467,13 @@ type Host struct {
 	HomeInvalidation HomeInvalidationSubscriber
 	Tickets          Tickets
 	// WatchParty is the shared Silo and Jellyfin room. Nil leaves both off.
-	WatchParty  WatchParty
-	Images      Images
-	ImageGrants ImageGrants
+	WatchParty WatchParty
+	Images     Images
+	// RemoteUploadCap computes the dynamic remote upload budget bitrate cap
+	// (kbps) for a newly starting stream. LAN streams (remote == false) pass
+	// through untouched; nil disables the shared upload budget.
+	RemoteUploadCap func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
+	ImageGrants     ImageGrants
 	// Artwork serves the same composited poster bytes the other frontends
 	// grant. DLNA has no credential, so it reads this after LANViewer.
 	Artwork Artwork

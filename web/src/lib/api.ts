@@ -43,6 +43,7 @@ import type {
   DebridProvider,
   DebridStatus,
   DiskInfo,
+  UploadBudgetStatus,
   EtherConfig,
   EtherUser,
   FieldError,
@@ -432,6 +433,9 @@ export const api = {
   systemLoad: (signal?: AbortSignal) => apiFetch<SystemLoad>("/system/load", { signal }),
   debridStatus: async () =>
     (await apiFetch<{ value: DebridStatus | null }>("/status/debrid")).value,
+  uploadBudgetStatus: async (signal?: AbortSignal) =>
+    (await apiFetch<{ value: UploadBudgetStatus | null }>("/status/upload-budget", { signal }))
+      .value,
   sourceStartup: async () =>
     (await apiFetch<{ value: { startup: SourceStartup[] } | null }>("/status/sources")).value
       ?.startup ?? [],

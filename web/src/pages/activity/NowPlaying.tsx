@@ -122,6 +122,9 @@ function StreamCard({
           <div className="min-w-0 space-y-2 pb-0.5">
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant={converting ? "warning" : "success"}>{decisionLabel(s)}</Badge>
+              {s.bitrateCapSource === "upload_budget" ? (
+                <Badge variant="info">{t("Upload budget")}</Badge>
+              ) : null}
               {s.failovers ? (
                 <Badge variant="warning">
                   {tn(s.failovers, "{count} failover", "{count} failovers")}
@@ -218,6 +221,13 @@ function StreamCard({
         </Fact>
         <Fact label={t("Bitrate")}>
           <span className="tabular-nums">{rate}</span>
+          {s.bitrateCapSource === "upload_budget" && s.bitrateCapKbps ? (
+            <span className="block text-xs text-info">
+              {t("Shared upload budget ({cap} cap)", {
+                cap: mbpsOf(s.bitrateCapKbps * 1000),
+              })}
+            </span>
+          ) : null}
         </Fact>
         <Fact label={t("Subtitles")}>{s.subtitle || null}</Fact>
         <Fact label={t("Source")}>{s.origin || null}</Fact>
@@ -302,6 +312,11 @@ function StreamRow({
             <Badge variant={converting ? "warning" : "success"} className="shrink-0">
               {decisionLabel(s)}
             </Badge>
+            {s.bitrateCapSource === "upload_budget" ? (
+              <Badge variant="info" className="shrink-0">
+                {t("Upload budget")}
+              </Badge>
+            ) : null}
           </div>
           {channelLabel(s) && channelLabel(s) !== displayTitle ? (
             <p className="truncate text-sm text-fg-muted">{channelLabel(s)}</p>
@@ -363,6 +378,11 @@ function StreamRow({
             </span>
             {s.origin ? ` · ${s.origin}` : ""}
           </p>
+          {s.bitrateCapSource === "upload_budget" && s.bitrateCapKbps ? (
+            <p className="truncate text-info">
+              {t("Upload budget ({cap} cap)", { cap: mbpsOf(s.bitrateCapKbps * 1000) })}
+            </p>
+          ) : null}
         </div>
         <div className="col-span-full min-w-0 lg:col-span-1">
           {s.isLive ? (

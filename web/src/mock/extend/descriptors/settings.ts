@@ -955,6 +955,22 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                   source: "kbps",
                 },
               },
+              {
+                key: "remoteUploadBudgetKbps",
+                label: {
+                  source: "Internet upload speed",
+                },
+                help: {
+                  source:
+                    "Total upload speed shared across all remote streams. 0 lets Ether measure it automatically from real remote streams.",
+                },
+                kind: "number",
+                min: 0,
+                step: 1000,
+                unit: {
+                  source: "kbps",
+                },
+              },
             ],
           },
           {

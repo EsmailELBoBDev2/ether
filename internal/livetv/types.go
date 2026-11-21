@@ -417,6 +417,7 @@ type Options struct {
 	ConfirmAdmission   func(context.Context, *core.User, bool, time.Time) (*core.User, error)
 	CanPlay            func(*core.User, bool, time.Time) bool
 	StreamLimit        func(*core.User) int
+	RemoteUploadCap    func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
 	DB                 *sql.DB
 	Catalog            core.Catalog
 	Collections        core.Collections

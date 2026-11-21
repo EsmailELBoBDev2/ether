@@ -497,6 +497,9 @@ export function PlayDrawer({
                     {decision}
                   </Badge>
                 ) : null}
+                {live?.bitrateCapSource === "upload_budget" ? (
+                  <Badge variant="info">{t("Upload budget")}</Badge>
+                ) : null}
                 {uhd ? <Badge variant="secondary">4K</Badge> : null}
                 {hdr ? <Badge variant="secondary">HDR</Badge> : null}
                 {live && switches ? (
@@ -551,9 +554,13 @@ export function PlayDrawer({
                       : DASH
                 }
                 detail={
-                  sourceKbps
-                    ? t("Source {rate} Mbps", { rate: fixed(sourceKbps / 1000, 1) })
-                    : undefined
+                  live.bitrateCapSource === "upload_budget" && live.bitrateCapKbps
+                    ? t("Shared upload budget ({rate} cap)", {
+                        rate: formatBitrate(live.bitrateCapKbps * 1000),
+                      })
+                    : sourceKbps
+                      ? t("Source {rate} Mbps", { rate: fixed(sourceKbps / 1000, 1) })
+                      : undefined
                 }
               />
               <Kpi
@@ -672,6 +679,16 @@ export function PlayDrawer({
                   <span className="block text-xs text-fg-muted">{live.decisionReason}</span>
                 ) : null}
               </Detail>
+              {live?.bitrateCapSource === "upload_budget" && live.bitrateCapKbps ? (
+                <Detail label={t("Bitrate cap")}>
+                  <span>{t("Shared upload budget")}</span>
+                  <span className="block text-xs text-fg-muted">
+                    {t("Capped to {rate} to share remote upload capacity", {
+                      rate: formatBitrate(live.bitrateCapKbps * 1000),
+                    })}
+                  </span>
+                </Detail>
+              ) : null}
               {live && (live.sourceVideo || live.outputVideo) ? (
                 <Detail label={t("Video")}>
                   <Flow from={live.sourceVideo} to={live.outputVideo} />

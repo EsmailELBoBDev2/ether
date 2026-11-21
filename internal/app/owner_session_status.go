@@ -10,15 +10,34 @@ import (
 // ownerSessionStatus adds console-only fields without changing protocol wire responses.
 type ownerSessionStatus struct {
 	*core.PlaySession
-	IP          string         `json:"ip"`
-	BitrateKbps int64          `json:"bitrateKbps"`
-	SourceVideo string         `json:"sourceVideo"`
-	OutputVideo string         `json:"outputVideo"`
-	SourceAudio string         `json:"sourceAudio"`
-	OutputAudio string         `json:"outputAudio"`
-	Container   string         `json:"container"`
-	RatingKey   core.RatingKey `json:"ratingKey"`
-	Subtitle    string         `json:"subtitle"`
+	IP               string         `json:"ip"`
+	BitrateKbps      int64          `json:"bitrateKbps"`
+	BitrateCapKbps   int            `json:"bitrateCapKbps,omitempty"`
+	BitrateCapSource string         `json:"bitrateCapSource,omitempty"`
+	SourceVideo      string         `json:"sourceVideo"`
+	OutputVideo      string         `json:"outputVideo"`
+	SourceAudio      string         `json:"sourceAudio"`
+	OutputAudio      string         `json:"outputAudio"`
+	Container        string         `json:"container"`
+	RatingKey        core.RatingKey `json:"ratingKey"`
+	Subtitle         string         `json:"subtitle"`
+}
+
+func (a *App) ownerSessionStatusesWithBudget(sessions []*core.PlaySession) []ownerSessionStatus {
+	out := ownerSessionStatuses(sessions)
+	if a == nil {
+		return out
+	}
+	for i := range out {
+		if capKbps, src := a.sessionBudgetCapInfo(out[i].PlaySession); src != "" && capKbps > 0 {
+			out[i].BitrateCapKbps = capKbps
+			out[i].BitrateCapSource = src
+			if out[i].PlaySession != nil && out[i].PlaySession.Decision == core.DecisionTranscode && (out[i].BitrateKbps == 0 || out[i].BitrateKbps > int64(capKbps)) {
+				out[i].BitrateKbps = int64(capKbps)
+			}
+		}
+	}
+	return out
 }
 
 func ownerSessionStatuses(sessions []*core.PlaySession) []ownerSessionStatus {

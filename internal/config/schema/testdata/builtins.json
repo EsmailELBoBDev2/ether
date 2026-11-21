@@ -906,6 +906,21 @@
               "unit": {
                 "source": "kbps"
               }
+            },
+            {
+              "help": {
+                "source": "Total upload speed shared across all remote streams. 0 lets Ether measure it automatically from real remote streams."
+              },
+              "key": "remoteUploadBudgetKbps",
+              "kind": "number",
+              "label": {
+                "source": "Internet upload speed"
+              },
+              "min": 0,
+              "step": 1000,
+              "unit": {
+                "source": "kbps"
+              }
             }
           ],
           "title": {

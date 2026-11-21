@@ -141,25 +141,26 @@ var mixedSections = map[string]map[string]Scope{
 		"inProgressPinPercent":     Shared,
 	},
 	"transcode": {
-		"rtxVideo":             Local, // executable, GPU and enhancement resource limits are node-specific
-		"videoTranscoding":     Local, // node-local transcode policy like maxTranscodes
-		"ffmpegPath":           Local,
-		"ffprobePath":          Local,
-		"hwAccel":              Local,
-		"vaapiDevice":          Local,
-		"tempDir":              Local,
-		"maxTranscodes":        Local, // sized to this node's hardware
-		"remoteMaxBitrateKbps": Shared,
-		"fastStart":            Shared,
-		"fastStartSegments":    Shared,
-		"fastStartSegment":     Shared,
-		"fastStartMaxHeight":   Shared,
-		"abrLadder":            Shared,
-		"abrLadderUnderCopy":   Shared,
-		"vbvReservoir":         Shared,
-		"vbvBufferSeconds":     Shared,
-		"spikeGovernor":        Shared,
-		"spikeMarginPercent":   Shared,
+		"rtxVideo":               Local, // executable, GPU and enhancement resource limits are node-specific
+		"videoTranscoding":       Local, // node-local transcode policy like maxTranscodes
+		"ffmpegPath":             Local,
+		"ffprobePath":            Local,
+		"hwAccel":                Local,
+		"vaapiDevice":            Local,
+		"tempDir":                Local,
+		"maxTranscodes":          Local, // sized to this node's hardware
+		"remoteMaxBitrateKbps":   Shared,
+		"remoteUploadBudgetKbps": Shared,
+		"fastStart":              Shared,
+		"fastStartSegments":      Shared,
+		"fastStartSegment":       Shared,
+		"fastStartMaxHeight":     Shared,
+		"abrLadder":              Shared,
+		"abrLadderUnderCopy":     Shared,
+		"vbvReservoir":           Shared,
+		"vbvBufferSeconds":       Shared,
+		"spikeGovernor":          Shared,
+		"spikeMarginPercent":     Shared,
 	},
 	"downloads": {
 		"enabled":              Shared,

@@ -51,6 +51,7 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	a.buildInsights()
 	a.buildDiscovery()
 	a.episodeorder = episodeorder.New(a.db, a.tmdb, a.catalog)
+	a.buildUploadBudget()
 	if err := a.buildLiveTV(); err != nil {
 		return fmt.Errorf("live TV: %w", err)
 	}

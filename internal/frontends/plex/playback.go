@@ -577,6 +577,15 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		}
 		caps.MaxBitrateKbps = limit
 	}
+	if caps.Remote && s.host.RemoteUploadCap != nil {
+		allowTC := !s.cfg().Transcode.VideoTranscodingOff()
+		if limit, fromBudget := s.host.RemoteUploadCap(r.Context(), sessionID, caps.Remote, allowTC, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+			if caps.MaxBitrateKbps == 0 {
+				caps.DefaultRemoteBitrate = true
+			}
+			caps.MaxBitrateKbps = limit
+		}
+	}
 	p := playRequest{client: requestClientFrom(capsPR), copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, sourceLimits: &sourceLimits, sessionID: sessionID, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
 	for _, raw := range []string{q.Get("path"), q.Get("key")} {
 		if partID, ok := partIDFromPath(raw); ok {

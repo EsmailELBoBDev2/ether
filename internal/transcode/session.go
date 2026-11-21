@@ -221,6 +221,8 @@ type sessionAdaptation struct {
 	segSizes          map[int]int64 // primary-track segment sizes (spike governor)
 	governorOn        bool          // plan may change ahead of the player
 	seekRampSeg       int           // segment a seek restarted at (preset ramp); -1 none
+	budgetCapKbps     int           // active shared upload budget cap (0 = uncapped)
+	budgetRung        int           // target rung index for MPEG-TS budget step-down (0 = base)
 }
 
 // mkvDelivery keeps a retried segment on the same representation: a seek
@@ -389,6 +391,8 @@ func (s *Session) EncoderStatus() *core.EncoderStatus {
 	}
 	if i > 0 && i < len(s.rungs) {
 		rung = s.rungs[i].id
+	} else if s.budgetCapKbps > 0 && s.budgetRung > 0 && s.budgetRung < len(s.rungs) {
+		rung = s.rungs[s.budgetRung].id
 	}
 	return &core.EncoderStatus{
 		Decision:           r.spec.Decision,

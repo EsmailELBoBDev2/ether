@@ -285,6 +285,7 @@ type Manager struct {
 	analysisBufs         sync.Pool
 	swapLatency          swapLatencyWindow
 	reserveConfigVersion atomic.Uint64
+	remoteDelivery       atomic.Pointer[func(RemoteDeliveryEvent)]
 
 	cfgMu sync.RWMutex
 	cfg   config.Config

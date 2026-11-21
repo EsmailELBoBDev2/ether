@@ -9,7 +9,103 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/sockerr"
 )
+
+// RemoteDeliveryEvent captures one sustained outbound write window on a remote
+// direct-play HTTP stream so the upload budget estimator can observe real
+// sustained throughput, buffer-starved clients, and TCP send backlog.
+type RemoteDeliveryEvent struct {
+	SessionID        string
+	Bytes            int64
+	Duration         time.Duration
+	MediaBitrateKbps int
+	TCPBacklogBytes  int
+	Starved          bool
+}
+
+// SetRemoteDeliveryObserver installs an optional passive observer for remote
+// direct-play delivery windows. LAN streams are never reported.
+func (m *Manager) SetRemoteDeliveryObserver(fn func(RemoteDeliveryEvent)) {
+	if m == nil {
+		return
+	}
+	if fn == nil {
+		m.remoteDelivery.Store(nil)
+		return
+	}
+	m.remoteDelivery.Store(&fn)
+}
+
+func (m *Manager) notifyRemoteDelivery(ev RemoteDeliveryEvent) {
+	if m == nil {
+		return
+	}
+	if ptr := m.remoteDelivery.Load(); ptr != nil && *ptr != nil {
+		(*ptr)(ev)
+	}
+}
+
+type remoteDeliveryMeter struct {
+	m          *Manager
+	ctx        context.Context
+	s          *session
+	w          io.Writer
+	mediaKbps  int
+	windowB    int64
+	windowDur  time.Duration
+	maxBacklog int
+	lastFlush  time.Time
+	lastBufEv  int
+}
+
+func (rm *remoteDeliveryMeter) Write(p []byte) (int, error) {
+	start := time.Now()
+	n, err := rm.w.Write(p)
+	dur := time.Since(start)
+	if n > 0 {
+		rm.windowB += int64(n)
+		rm.windowDur += dur
+		if q, ok := sockerr.TCPSendBacklog(rm.ctx); ok && q > rm.maxBacklog {
+			rm.maxBacklog = q
+		}
+		now := rm.m.now()
+		if rm.lastFlush.IsZero() {
+			rm.lastFlush = now
+		}
+		if now.Sub(rm.lastFlush) >= 2*time.Second {
+			rm.flush(now)
+		}
+	}
+	return n, err
+}
+
+func (rm *remoteDeliveryMeter) flush(now time.Time) {
+	if rm.windowB >= 64<<10 && rm.windowDur >= 100*time.Millisecond {
+		starved := false
+		rm.s.mu.Lock()
+		if !rm.s.caps.NoPlaybackTelemetry {
+			ev := rm.s.exp.snapshot(now).BufferEvents
+			if ev > rm.lastBufEv {
+				starved = true
+				rm.lastBufEv = ev
+			}
+		}
+		rm.s.mu.Unlock()
+		rm.m.notifyRemoteDelivery(RemoteDeliveryEvent{
+			SessionID:        rm.s.id,
+			Bytes:            rm.windowB,
+			Duration:         rm.windowDur,
+			MediaBitrateKbps: rm.mediaKbps,
+			TCPBacklogBytes:  rm.maxBacklog,
+			Starved:          starved,
+		})
+	}
+	rm.windowB = 0
+	rm.windowDur = 0
+	rm.maxBacklog = 0
+	rm.lastFlush = now
+}
 
 var (
 	// errDirectReadDeadline marks an active range that delivered no bytes
@@ -88,7 +184,38 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 	s.mu.Unlock()
 	rep.body = func(w io.Writer, start, length int64) error {
 		began := time.Now()
+		var meter *remoteDeliveryMeter
+		if m.remoteDelivery.Load() != nil {
+			s.mu.Lock()
+			isRemote := s.caps.Remote
+			mediaKbps := 0
+			lastBufEv := 0
+			if isRemote {
+				if g := s.cur; g != nil {
+					mediaKbps = g.infoSnapshot().BitrateKbps
+				}
+				if !s.caps.NoPlaybackTelemetry {
+					lastBufEv = s.exp.snapshot(m.now()).BufferEvents
+				}
+			}
+			s.mu.Unlock()
+			if isRemote {
+				meter = &remoteDeliveryMeter{
+					m:         m,
+					ctx:       r.Context(),
+					s:         s,
+					w:         w,
+					mediaKbps: mediaKbps,
+					lastFlush: m.now(),
+					lastBufEv: lastBufEv,
+				}
+				w = meter
+			}
+		}
 		err := m.streamClient(r.Context(), w, s, start, length)
+		if meter != nil {
+			meter.flush(m.now())
+		}
 		if m.opts.TracePlayback {
 			m.log.Info("direct range", "session", s.id, "offset", start, "length", length,
 				"took", time.Since(began), "err", err)

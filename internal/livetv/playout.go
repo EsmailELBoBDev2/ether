@@ -344,6 +344,11 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		}
 		u = confirmed
 	}
+	if caps.Remote && s.o.RemoteUploadCap != nil {
+		if limit, fromBudget := s.o.RemoteUploadCap(ctx, attemptID, true, true, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+			caps.MaxBitrateKbps = limit
+		}
+	}
 	ctx, policy, err := s.withPolicy(ctx, u)
 	if err != nil {
 		return SessionInfo{}, err
@@ -622,6 +627,11 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 	if ds.AllowCheck != nil {
 		if err := ds.AllowCheck(ctx, u); err != nil {
 			return SessionInfo{}, err
+		}
+	}
+	if caps.Remote && s.o.RemoteUploadCap != nil {
+		if limit, fromBudget := s.o.RemoteUploadCap(ctx, attemptID, true, true, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+			caps.MaxBitrateKbps = limit
 		}
 	}
 

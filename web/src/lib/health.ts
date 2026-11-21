@@ -1066,6 +1066,10 @@ export interface NowPlaying {
   ip: string;
   /** Delivered bitrate now (or the encode's target), kbps; 0 when unknown. */
   bitrateKbps: number;
+  /** Dynamic bitrate cap applied to this stream in kbps, when constrained by a shared budget. */
+  bitrateCapKbps?: number;
+  /** Source of the bitrate cap, e.g. "upload_budget". */
+  bitrateCapSource?: string;
   /** Overall bitrate of the source media in kbps, when probed or derivable. */
   sourceKbps?: number;
   /** Short human descriptions, e.g. "HEVC 2160p HDR10" → "H.264 1080p SDR". */
@@ -1177,6 +1181,12 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
         str(pick(s, "ip", "IP", "Ip")) ||
         str(pick(client, "clientIp", "ClientIP", "ip", "address")),
       bitrateKbps: num(pick(s, "bitrateKbps", "BitrateKbps")),
+      ...(num(pick(s, "bitrateCapKbps", "BitrateCapKbps")) > 0
+        ? { bitrateCapKbps: num(pick(s, "bitrateCapKbps", "BitrateCapKbps")) }
+        : {}),
+      ...(str(pick(s, "bitrateCapSource", "BitrateCapSource"))
+        ? { bitrateCapSource: str(pick(s, "bitrateCapSource", "BitrateCapSource")) }
+        : {}),
       ...(sourceKbps ? { sourceKbps } : {}),
       sourceVideo: str(pick(s, "sourceVideo", "SourceVideo")),
       outputVideo: str(pick(s, "outputVideo", "OutputVideo")),

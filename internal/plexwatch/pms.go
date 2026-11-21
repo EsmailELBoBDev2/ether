@@ -494,6 +494,48 @@ func (s *Servers) List(ctx context.Context) ([]PMSServer, error) {
 	return out, nil
 }
 
+// LinkedServer carries the read-only connection details for an already-linked
+// Plex Media Server (used by internal services such as the upload budget
+// coordinator to query /status/sessions without adding another URL/token
+// configuration surface).
+type LinkedServer struct {
+	MachineID string
+	Name      string
+	BaseURL   string
+	Token     string
+}
+
+// LinkedServers returns configured Plex Media Servers with their decrypted
+// owner tokens when server sync is enabled.
+func (s *Servers) LinkedServers(ctx context.Context) ([]LinkedServer, error) {
+	if s == nil || s.db == nil || !s.syncEnabled() {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name,base_url,token,machine_id FROM plexwatch_pms ORDER BY id LIMIT ?`, pmsMaxServers*2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LinkedServer
+	for rows.Next() {
+		var name, baseURL, sealed, machineID string
+		if err := rows.Scan(&name, &baseURL, &sealed, &machineID); err != nil {
+			return nil, err
+		}
+		tok, err := s.open(sealed, machineID)
+		if err != nil || tok == "" || baseURL == "" {
+			continue
+		}
+		out = append(out, LinkedServer{
+			MachineID: machineID,
+			Name:      name,
+			BaseURL:   strings.TrimRight(baseURL, "/"),
+			Token:     tok,
+		})
+	}
+	return out, rows.Err()
+}
+
 // Server returns one server and its mappings.
 func (s *Servers) Server(ctx context.Context, id int64) (PMSServer, error) {
 	var srv PMSServer

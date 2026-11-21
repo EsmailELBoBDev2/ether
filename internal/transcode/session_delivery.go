@@ -790,15 +790,44 @@ func (s *Session) serveCounted(w http.ResponseWriter, r *http.Request, name stri
 	if _, err = content.Seek(0, io.SeekStart); err != nil {
 		return
 	}
-	cw := &countingWriter{ResponseWriter: w}
+	cw := &countingWriter{ResponseWriter: w, ctx: r.Context()}
 	start := s.goodput.now()
 	http.ServeContent(cw, r, name, mod, content)
 	dur := s.goodput.now().Sub(start)
+	cw.sampleBacklog()
 	if cw.status != http.StatusOK || cw.err != nil || cw.bytes != size || size == 0 || r.Context().Err() != nil {
 		return
 	}
 	if remoteDelivery(r) {
 		s.goodput.add(cw.bytes, dur)
+		if s.m != nil {
+			s.mu.Lock()
+			segDur := s.segDur
+			if s.plan != nil {
+				if d := s.plan.Dur(n); d > 0 {
+					segDur = d
+				}
+			}
+			mediaKbps := 0
+			if idx := t; s.isDASH() {
+				idx = rungForDashTrack(t)
+			} else if idx >= 0 && idx < len(s.rungs) {
+				mediaKbps = s.rungs[idx].avgKbps
+			}
+			if mediaKbps <= 0 && segDur > 0 {
+				mediaKbps = int(float64(cw.bytes*8) / segDur.Seconds() / 1000)
+			}
+			s.mu.Unlock()
+			s.m.notifyRemoteDelivery(RemoteDeliveryEvent{
+				SessionID:        s.id,
+				RemoteAddr:       r.RemoteAddr,
+				Bytes:            cw.bytes,
+				Duration:         dur,
+				SegDuration:      segDur,
+				MediaBitrateKbps: mediaKbps,
+				TCPBacklogBytes:  cw.maxBacklog,
+			})
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

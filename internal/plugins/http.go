@@ -332,7 +332,7 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 	h, _ := m.store.health(r.Context(), id)
 	h = m.liveHealth(rec, h)
 	g, _ := m.store.grants(r.Context(), id)
-	d := Detail{Summary: m.summary(rec, h), Manifest: rec.Manifest, RuntimeLimits: m.grantedRuntimeLimits(rec.Manifest), HealthDetail: h}
+	d := Detail{Summary: m.summary(rec, h), Manifest: m.localizedKindLibraries(r.Context(), id, rec.Manifest), RuntimeLimits: m.grantedRuntimeLimits(rec.Manifest), HealthDetail: h}
 	d.Permissions.Lines, d.Permissions.NeedsViewers, d.Permissions.NeedsFolders = PermissionSheet(rec.Manifest)
 	if rec.Manifest.Ether != nil {
 		d.Permissions.Declared = rec.Manifest.Ether.Permissions
@@ -1011,6 +1011,33 @@ func (m *Manager) ResolveTextFunc(ctx context.Context, id, locale string) func(s
 		}
 		return "", false
 	}
+}
+
+// localizedKindLibraries returns man with its media kinds' library names
+// resolved from the plugin's strings, so the console never shows "$t:" keys.
+// The stored manifest is left untouched.
+func (m *Manager) localizedKindLibraries(ctx context.Context, id string, man Manifest) Manifest {
+	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 {
+		return man
+	}
+	resolve := m.ResolveTextFunc(ctx, id, "")
+	if resolve == nil {
+		return man
+	}
+	ether := *man.Ether
+	kinds := append([]MediaKindMeta(nil), ether.Contributes.MediaKinds...)
+	for i := range kinds {
+		for _, field := range []*string{&kinds[i].Library.Name, &kinds[i].Label} {
+			if key, ok := strings.CutPrefix(*field, "$t:"); ok {
+				if text, found := resolve(key); found {
+					*field = text
+				}
+			}
+		}
+	}
+	ether.Contributes.MediaKinds = kinds
+	man.Ether = &ether
+	return man
 }
 
 // textResolver returns a walker that replaces "$t:key" strings with the

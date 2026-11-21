@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1273,6 +1274,9 @@ func (c *librariesConsole) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// pluginTextToken is a plugin "$t:key" text reference inside a label.
+var pluginTextToken = regexp.MustCompile(`\$t:[A-Za-z0-9_.\-]+`)
+
 type pluginSyncJobTracker struct {
 	mgr *plugins.Manager
 }
@@ -1280,6 +1284,16 @@ type pluginSyncJobTracker struct {
 func (t pluginSyncJobTracker) BeginSyncJob(pluginID, kindKey, routePath, label string, cancel context.CancelFunc) pluginitems.SyncJobHandle {
 	if t.mgr == nil {
 		return nil
+	}
+	if strings.Contains(label, "$t:") {
+		if resolve := t.mgr.ResolveTextFunc(context.Background(), pluginID, ""); resolve != nil {
+			label = pluginTextToken.ReplaceAllStringFunc(label, func(tok string) string {
+				if text, ok := resolve(strings.TrimPrefix(tok, "$t:")); ok {
+					return text
+				}
+				return tok
+			})
+		}
 	}
 	h := t.mgr.BeginHostJob(pluginID, "sync:"+kindKey, routePath, label, kindKey, cancel)
 	if h == nil {

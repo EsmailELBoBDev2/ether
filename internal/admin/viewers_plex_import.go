@@ -150,6 +150,9 @@ func resolvePlexUser(acct plexwatch.PMSAccount, plexUsers []plextv.SharedUser) *
 	if acct.Owner || len(plexUsers) == 0 {
 		return nil
 	}
+	if acct.ID >= minGlobalPlexAccountID {
+		return plextv.ResolveSharedUser(plexUsers, acct.ID, "")
+	}
 	return plextv.ResolveSharedUser(plexUsers, acct.ID, acct.Name)
 }
 
@@ -828,6 +831,7 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 	)
 	viewers, _ := h.storedViewers(r.Context())
 	plexUsers := h.listPlexUsers(r.Context())
+<<<<<<< HEAD
 
 	finalize := func(serverID int64, acct plexwatch.PMSAccount, name string, direction int, vID int64, status string, matched *ViewerRecord, sharedPlex bool, shareErr string) bulkImportResultItem {
 		var inviteURL string
@@ -1028,6 +1032,20 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 	if sharedAny && h.deps.SyncPlexFriends != nil {
 		if err := h.deps.SyncPlexFriends(r.Context()); err != nil {
 			h.log.Warn("sync plex friends error after bulk import", "err", err)
+		}
+	}
+
+	if len(needsEnrich) > 0 && h.deps.EnsurePlexFriend != nil {
+		if enrichedUsers := h.listPlexUsers(r.Context()); len(enrichedUsers) > 0 {
+			for _, acct := range needsEnrich {
+				if u := resolvePlexUser(acct, enrichedUsers); u != nil {
+					friend := *u
+					if strings.TrimSpace(friend.Title) == "" {
+						friend.Title = strings.TrimSpace(friend.FriendlyName)
+					}
+					_, _ = h.deps.EnsurePlexFriend(r.Context(), friend)
+				}
+			}
 		}
 	}
 

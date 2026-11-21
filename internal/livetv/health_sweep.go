@@ -64,10 +64,29 @@ func (s *Service) hasSweepableIPTV(ctx context.Context) bool {
 		if c.Kind != "iptv" || !c.Enabled || !s.channelSourceEnabled(ctx, c.SourceID) {
 			continue
 		}
+		if !channelHasStaticHTTPInput(c) {
+			continue
+		}
 		if c.SourceID != "" && s.sourceConnectionLimit(c.SourceID) > 0 {
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+// channelHasStaticHTTPInput reports whether c has at least one enabled HTTP(S)
+// input that can be probed directly. Lazy plugin:// inputs (including event
+// channels) are resolved only on tune so background health sweeps neither poll
+// add-ons while idle nor mark them unavailable.
+func channelHasStaticHTTPInput(c Channel) bool {
+	if normalizeStreamSources(&c) != nil {
+		return false
+	}
+	for _, in := range c.StreamSources {
+		if in.Enabled && !isPluginStreamURL(in.URL) {
+			return true
+		}
 	}
 	return false
 }
@@ -132,7 +151,7 @@ func (s *Service) sweepChannels(ctx context.Context) {
 				playable := false
 				if normalizeStreamSources(&c) == nil {
 					for _, input := range c.StreamSources {
-						if !input.Enabled {
+						if !input.Enabled || isPluginStreamURL(input.URL) {
 							continue
 						}
 						probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -169,6 +188,9 @@ func (s *Service) sweepChannels(ctx context.Context) {
 feed:
 	for _, c := range cs {
 		if c.Kind != "iptv" || !c.Enabled || !s.channelSourceEnabled(ctx, c.SourceID) {
+			continue
+		}
+		if !channelHasStaticHTTPInput(c) {
 			continue
 		}
 		// A provider that sells connections sees a sweep as a channel scan

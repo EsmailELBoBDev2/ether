@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -307,5 +308,42 @@ func TestCatalogValidateExtras(t *testing.T) {
 		if err := c.ValidateExtras(extra); err == nil {
 			t.Errorf("%v accepted", extra)
 		}
+	}
+}
+
+func TestLiveEventCatalogsDetection(t *testing.T) {
+	raw := `{
+		"id": "community.sports.example",
+		"version": "1.0.0",
+		"name": "Sports Streams",
+		"types": ["sport"],
+		"resources": [
+			{"name": "catalog", "types": ["sport", "other"]},
+			{"name": "meta", "types": ["sport"], "idPrefixes": ["streamed", "sf"]},
+			{"name": "stream", "types": ["sport"], "idPrefixes": ["streamed", "sf"]}
+		],
+		"catalogs": [
+			{"type": "sport", "id": "sports_live", "name": "Live Now", "extra": [{"name": "search", "isRequired": false}, {"name": "skip", "isRequired": false}]},
+			{"type": "sport", "id": "sports_football", "name": "Football"},
+			{"type": "sport", "id": "sports_football", "name": "Football Duplicate"},
+			{"type": "sport", "id": "sports_search", "name": "Search Only", "extra": [{"name": "search", "isRequired": true}]},
+			{"type": "other", "id": "unstreamable", "name": "No Stream Type"},
+			{"type": "movie", "id": "top", "name": "Movies"},
+			{"type": "tv", "id": "channels", "name": "Classic TV"}
+		]
+	}`
+	var m Manifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	cats := m.LiveEventCatalogs()
+	if len(cats) != 2 || cats[0].ID != "sports_live" || cats[1].ID != "sports_football" {
+		t.Fatalf("LiveEventCatalogs = %+v", cats)
+	}
+	if IsCustomLiveType("movie") || IsCustomLiveType("Series") || IsCustomLiveType("TV") || IsCustomLiveType("") {
+		t.Fatal("standard or empty type treated as custom live type")
+	}
+	if !IsCustomLiveType("sport") || !IsCustomLiveType("events") || !IsCustomLiveType("channel") {
+		t.Fatal("custom live type rejected")
 	}
 }

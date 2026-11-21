@@ -59,12 +59,21 @@ type SourceDescribe struct {
 	YieldsGuide    bool
 }
 
+// OnDemandRefreshKind is optionally implemented by a SourceKind whose
+// listings are short-lived (such as event-based Stremio add-ons) and should
+// refresh on a short schedule only while the source is in use, doing no eager
+// background work when nobody is watching or browsing Live TV.
+type OnDemandRefreshKind interface {
+	OnDemandRefreshInterval() time.Duration
+}
+
 // KindRegistry holds the Live TV source kinds. Safe for concurrent use.
 type KindRegistry struct {
-	mu           sync.RWMutex
-	kinds        map[string]SourceKind
-	order        []string
-	streamOpener func(ctx context.Context, c Channel, src StreamSource) (string, http.Header, error)
+	mu             sync.RWMutex
+	kinds          map[string]SourceKind
+	order          []string
+	streamOpener   func(ctx context.Context, c Channel, src StreamSource) (string, http.Header, error)
+	streamExpander func(ctx context.Context, s *Service, c Channel, src StreamSource) ([]StreamSource, map[string]Programme, *Programme, bool, error)
 }
 
 // NewKindRegistry returns a registry holding the built-in kinds.
@@ -190,6 +199,17 @@ func (s *Service) SetStreamOpener(fn func(ctx context.Context, c Channel, src St
 	r := s.kindRegistry()
 	r.mu.Lock()
 	r.streamOpener = fn
+	r.mu.Unlock()
+}
+
+// SetStreamExpander installs a tune-time expander for lazy multi-candidate
+// plugin:// inputs (such as event-based add-on channels whose live events
+// each provide ordered streams to try before failing over to the next live
+// event). Returning handled=false falls back to normal stream opening.
+func (s *Service) SetStreamExpander(fn func(ctx context.Context, s *Service, c Channel, src StreamSource) ([]StreamSource, map[string]Programme, *Programme, bool, error)) {
+	r := s.kindRegistry()
+	r.mu.Lock()
+	r.streamExpander = fn
 	r.mu.Unlock()
 }
 

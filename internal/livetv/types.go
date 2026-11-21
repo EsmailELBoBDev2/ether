@@ -331,6 +331,14 @@ type SourceGroup struct {
 	// Excluded reports whether the owner's rules leave this group out.
 	Excluded bool `json:"excluded,omitempty"`
 }
+
+// EventStreamRef identifies a Stremio stream lookup target for an event-based
+// guide programme (for example, type="sport", id="streamed:match-1").
+type EventStreamRef struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
 type Programme struct {
 	BlockID          string `json:"blockId,omitempty"`
 	SourceID         string `json:"sourceId,omitempty"`
@@ -343,13 +351,14 @@ type Programme struct {
 	graphicsRequest  *core.ClipRequest
 	graphicsID       string
 	graphicsFallback bool
-	Reason           string    `json:"reason,omitempty"`
-	Lens             string    `json:"lens,omitempty"`
-	ID               string    `json:"id"`
-	ChannelID        string    `json:"channelId"`
-	Start            time.Time `json:"start"`
-	End              time.Time `json:"end"`
-	Item             Item      `json:"item"`
+	Reason           string           `json:"reason,omitempty"`
+	Lens             string           `json:"lens,omitempty"`
+	EventStreams     []EventStreamRef `json:"eventStreams,omitempty"`
+	ID               string           `json:"id"`
+	ChannelID        string           `json:"channelId"`
+	Start            time.Time        `json:"start"`
+	End              time.Time        `json:"end"`
+	Item             Item             `json:"item"`
 }
 
 func (p Programme) Offset(at time.Time) time.Duration {

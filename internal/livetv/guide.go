@@ -1150,12 +1150,20 @@ func (s *Service) planRefresh(ctx context.Context, srcs []Source) error {
 			return err
 		}
 	}
+	now := s.o.Now()
 	for i := range srcs {
+		srcs[i].NextRefresh = nil
+		if od := s.onDemandInterval(srcs[i]); od > 0 {
+			if s.sourceInUse(srcs[i].ID, now) {
+				next := onDemandNextRefresh(srcs[i], od)
+				srcs[i].NextRefresh = &next
+			}
+			continue
+		}
 		var horizon *time.Time
 		if h, ok := horizons[srcs[i].ID]; ok {
 			horizon = msTime(h)
 		}
-		srcs[i].NextRefresh = nil
 		if next, ok := nextRefresh(srcs[i], horizon); ok {
 			if s.sourceGuideFeatures(srcs[i]).Remote && (srcs[i].LastErrorAt == nil || !srcs[i].LastErrorAt.After(srcs[i].UpdatedAt)) {
 				for key := range used {
@@ -1207,7 +1215,7 @@ func (s *Service) refreshSource(ctx context.Context, id, reason string) (Source,
 		src = current[0]
 		due := src.NextRefresh != nil && !s.o.Now().Before(*src.NextRefresh)
 		if reason == "activity" {
-			due = activityRefreshDue(src, s.o.Now())
+			due = s.activityRefreshDue(src, s.o.Now())
 		}
 		if !due {
 			return src, nil
@@ -1287,7 +1295,7 @@ func (s *Service) refreshSources(ctx context.Context, activity bool) []string {
 	now := s.o.Now()
 	var due []string
 	for _, src := range srcs {
-		if (!activity && src.NextRefresh != nil && !now.Before(*src.NextRefresh)) || (activity && activityRefreshDue(src, now)) {
+		if (!activity && src.NextRefresh != nil && !now.Before(*src.NextRefresh)) || (activity && s.activityRefreshDue(src, now)) {
 			due = append(due, src.ID)
 		}
 	}
@@ -1311,13 +1319,23 @@ func (s *Service) nextSourceRefreshWait(ctx context.Context) (time.Duration, boo
 	if err != nil {
 		return refreshCheckInterval, true
 	}
+	anyOnDemand := false
+	for _, src := range srcs {
+		if s.onDemandInterval(src) > 0 {
+			anyOnDemand = true
+			break
+		}
+	}
+	s.hasOnDemand.Store(anyOnDemand)
 	standalone := store.DialectOf(s.o.DB) == store.SQLite
 	if standalone {
-		anyActivity := false
-		for _, src := range srcs {
-			if _, enabled := refreshInterval(src); enabled && src.ActivityRefreshMinutes > 0 {
-				anyActivity = true
-				break
+		anyActivity := anyOnDemand
+		if !anyActivity {
+			for _, src := range srcs {
+				if _, enabled := refreshInterval(src); enabled && src.ActivityRefreshMinutes > 0 {
+					anyActivity = true
+					break
+				}
 			}
 		}
 		s.noActivitySources.Store(!anyActivity)

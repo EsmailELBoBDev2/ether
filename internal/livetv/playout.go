@@ -388,6 +388,17 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	if c.Kind == "virtual" && p == nil {
 		return SessionInfo{}, core.ErrNotAvailable
 	}
+	var eventProgs map[string]Programme
+	if c.Kind == "iptv" {
+		var ep *Programme
+		c, ep, eventProgs, err = s.expandChannelForTune(ctx, c)
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		if ep != nil {
+			p = ep
+		}
+	}
 	// A single client device watches one live channel at a time. When it
 	// retunes without explicitly stopping the previous channel (common on
 	// Fire TV / Android TV), supersede its prior live session immediately
@@ -483,7 +494,11 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	s.sessions[ss.info.ID] = ss
 	s.noteWatchedLocked(c.ID)
+	s.noteSourceUsedLocked(c.SourceID)
 	s.mu.Unlock()
+	if c.SourceID != "" && s.hasOnDemand.Load() {
+		s.wakeSourceRefresh()
+	}
 	s.notifySessionsChanged()
 	s.beginPersonal(c, u)
 	if limiter, ok := s.o.Playback.(channelLimiter); ok {
@@ -568,6 +583,13 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		return SessionInfo{}, core.ErrNotFound
 	}
 	ss.ready = true
+	if matched, ok := eventProgs[ss.inputSource.ID]; ok {
+		ss.info.Programme = &matched
+		ss.view.TitleName = matched.Item.Title
+		if d := matched.End.Sub(matched.Start); d > 0 {
+			ss.view.Info.Duration = d
+		}
+	}
 	info := ss.info
 	tunedSrc := ss.inputSource
 	tunedUser := ss.user

@@ -348,6 +348,106 @@ func (s *Service) recordSourceHealth(channelID string, src StreamSource, err err
 	}
 }
 
+func isPluginStreamURL(raw string) bool {
+	return strings.HasPrefix(strings.TrimSpace(raw), "plugin://")
+}
+
+// expandChannelForTune expands any lazy multi-candidate plugin:// inputs
+// (such as event-based add-on channels) into ordered HTTP(S) StreamSources
+// on this tune's local Channel copy, leaving the stored channel untouched.
+func (s *Service) expandChannelForTune(ctx context.Context, c Channel) (Channel, *Programme, map[string]Programme, error) {
+	r := s.kindRegistry()
+	r.mu.RLock()
+	expander := r.streamExpander
+	r.mu.RUnlock()
+	if expander == nil {
+		return c, nil, nil, nil
+	}
+	if err := normalizeStreamSources(&c); err != nil {
+		return c, nil, nil, nil
+	}
+	hasPlugin := false
+	for _, src := range c.StreamSources {
+		if src.Enabled && isPluginStreamURL(src.URL) {
+			hasPlugin = true
+			break
+		}
+	}
+	if !hasPlugin {
+		return c, nil, nil, nil
+	}
+	expanded := make([]StreamSource, 0, len(c.StreamSources))
+	seenURL := map[string]bool{}
+	var progByInput map[string]Programme
+	var activeProg *Programme
+	var lastErr error
+	anyExpanded := false
+	for _, src := range c.StreamSources {
+		if !src.Enabled {
+			expanded = append(expanded, src)
+			continue
+		}
+		if !isPluginStreamURL(src.URL) {
+			if !seenURL[src.URL] {
+				seenURL[src.URL] = true
+				expanded = append(expanded, src)
+			}
+			continue
+		}
+		subs, byID, prog, handled, err := expander(ctx, s, c, src)
+		if !handled {
+			expanded = append(expanded, src)
+			continue
+		}
+		anyExpanded = true
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if activeProg == nil && prog != nil {
+			activeProg = prog
+		}
+		for _, sub := range subs {
+			if len(expanded) >= MaxChannelInputs {
+				break
+			}
+			if !sub.Enabled || sub.URL == "" || seenURL[sub.URL] {
+				continue
+			}
+			seenURL[sub.URL] = true
+			sub.Priority = len(expanded)
+			expanded = append(expanded, sub)
+			if byID != nil {
+				if p, ok := byID[sub.ID]; ok {
+					if progByInput == nil {
+						progByInput = map[string]Programme{}
+					}
+					progByInput[sub.ID] = p
+				}
+			}
+		}
+	}
+	if !anyExpanded {
+		return c, nil, nil, nil
+	}
+	firstURL := ""
+	for _, src := range expanded {
+		if src.Enabled {
+			firstURL = src.URL
+			break
+		}
+	}
+	if firstURL == "" {
+		if lastErr != nil {
+			return c, nil, nil, lastErr
+		}
+		return c, nil, nil, core.ErrNotAvailable
+	}
+	c.StreamSources = expanded
+	c.StreamURL = firstURL
+	return c, activeProg, progByInput, nil
+}
+
 // ResolveStreamSource resolves a channel's stream input at tune time. HTTP(S)
 // URLs return directly; plugin:// inputs delegate to the installed stream
 // opener under its Open deadline.

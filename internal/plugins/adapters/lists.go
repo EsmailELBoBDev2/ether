@@ -56,6 +56,7 @@ func Attach(mgr *plugins.Manager, cols *collections.Service, pers *personalize.E
 	}
 	if tv != nil && mgr != nil {
 		tv.SetStreamOpener(b.openPluginStream)
+		tv.SetStreamExpander(b.expandPluginStream)
 	}
 	if mgr != nil {
 		mgr.OnSync(b.Sync)
@@ -121,6 +122,9 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 		}
 		if r.Manifest.SpeaksStremio() {
 			chKind.mode = modeAddon
+			if r.Manifest.ServesLiveEvents() {
+				chKind.onDemandInterval = eventAddonRefreshInterval
+			}
 		}
 		if b.tv != nil {
 			_ = b.tv.RegisterSourceKind(chKind)

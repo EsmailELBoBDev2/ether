@@ -64,6 +64,7 @@ type Service struct {
 	programmeSubs         map[string]Programme
 	activityWake          chan struct{}
 	noActivitySources     atomic.Bool
+	hasOnDemand           atomic.Bool
 	sourceWake            chan struct{}
 	vodWake               chan struct{}
 	maintainWake          chan struct{}
@@ -71,7 +72,8 @@ type Service struct {
 	personalWake          chan struct{}
 	sweepWake             chan struct{}
 	showcasePendingTotals map[string][2]int
-	lastClientActivity    time.Time // guarded by mu
+	lastClientActivity    time.Time            // guarded by mu
+	sourceUsed            map[string]time.Time // guarded by mu
 	vodRefreshMu          sync.Mutex
 	maintenance           maintenanceHealth
 	virtualGuide          virtualGuideCache
@@ -259,6 +261,7 @@ func (s *Service) ReconcileEnabled() {
 		s.sessions = map[string]*session{}
 		s.watched = nil
 		s.activeWatched = nil
+		s.sourceUsed = nil
 		s.mu.Unlock()
 		for _, ss := range all {
 			ss.close(s)
@@ -1684,6 +1687,43 @@ func (s *Service) programmeAt(ctx context.Context, c Channel, at time.Time) (Pro
 	p.ChannelID = c.ID
 	p.ID = fmt.Sprintf("%s-%d", c.ID, p.Start.UnixMilli())
 	return p, true, nil
+}
+
+// LiveProgrammes returns every guide programme currently airing on channel c
+// at time at, ordered by start_ms ascending. Uses the (source_id, channel_id,
+// end_ms, start_ms) index so cost depends only on concurrent programmes on c.
+func (s *Service) LiveProgrammes(ctx context.Context, c Channel, at time.Time) ([]Programme, error) {
+	if c.GuideID == "" {
+		return nil, nil
+	}
+	srcID := guideSource(c)
+	if srcID == "" {
+		return nil, nil
+	}
+	// Allow up to 999ms past at so simultaneous events staggered by +1ms
+	// within the same second are all seen as live right at kickoff.
+	rows, err := s.o.DB.QueryContext(ctx,
+		`SELECT data FROM livetv_programmes WHERE source_id=? AND channel_id=? AND end_ms>? AND start_ms<=? ORDER BY start_ms ASC`,
+		srcID, c.GuideID, at.UnixMilli(), at.UnixMilli()+999)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Programme
+	for rows.Next() {
+		var b []byte
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		var p Programme
+		if err := json.Unmarshal(b, &p); err != nil {
+			continue
+		}
+		p.ChannelID = c.ID
+		p.ID = fmt.Sprintf("%s-%d", c.ID, p.Start.UnixMilli())
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // programmesAtBatch bounds the channels one programmesAt statement covers

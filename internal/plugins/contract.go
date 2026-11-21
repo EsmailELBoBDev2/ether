@@ -886,6 +886,10 @@ type Request struct {
 	ContentType string `json:"contentType,omitempty"`
 	// Locale is the console locale for calls that return copy.
 	Locale string `json:"locale,omitempty"`
+	// Foreground marks an /ether/job/ call that a viewer is waiting on
+	// (playback resolution). It never yields to background throttling.
+	// Host-side only; never sent to the plugin.
+	Foreground bool `json:"-"`
 }
 
 // FrontendBlob asks the host to serve cached bytes without passing them through

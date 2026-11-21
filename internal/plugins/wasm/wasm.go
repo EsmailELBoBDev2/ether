@@ -87,6 +87,9 @@ type Request struct {
 	// body arrives only in BodyBase64.
 	BodyBase64  string `json:"bodyBase64,omitempty"`
 	ContentType string `json:"contentType,omitempty"`
+	// Foreground keeps an /ether/job/ call off the background throttle
+	// because a viewer is waiting on it. Host-side only.
+	Foreground bool `json:"-"`
 }
 
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
@@ -864,7 +867,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 		}
 	}
 	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
-		background: strings.HasPrefix(req.Path, "/ether/job/"),
+		background: strings.HasPrefix(req.Path, "/ether/job/") && !req.Foreground,
 		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}
 	in, err := p.svc.get(callCtx)
 	if err != nil {

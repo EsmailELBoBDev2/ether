@@ -1220,8 +1220,23 @@ func (m *Manager) expireAbandonedFlight(fk flightKey, f *flight, gen int) {
 }
 
 func (m *Manager) runFlight(ctx context.Context, f *flight, fk flightKey, user *core.User, caps core.ClientCaps) {
-	defer close(f.done)
-	defer f.cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			m.mu.Lock()
+			if m.flights[fk] == f {
+				delete(m.flights, fk)
+			}
+			if m.byIdent[fk.id] == nil {
+				delete(m.channelGroups, fk.id)
+			}
+			m.mu.Unlock()
+			f.sess = nil
+			f.err = fmt.Errorf("playback: prepare panic: %v", r)
+			f.sources.seal()
+		}
+		f.cancel()
+		close(f.done)
+	}()
 	s, err := m.prepare(ctx, fk.id, user, caps, fk.prefer, fk.exact, fk.deferSupersession, f.kind, f)
 	m.mu.Lock()
 	if m.flights[fk] == f {

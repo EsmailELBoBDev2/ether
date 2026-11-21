@@ -67,7 +67,17 @@ type KindResolverDeps struct {
 	HTTP          *http.Client
 	Authorize     func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error
 	Logger        *slog.Logger
+	// Optional release-open budget overrides (0 uses sensible production defaults).
+	NZBFetchTimeout      time.Duration
+	EngineOpenTimeout    time.Duration
+	CandidateOpenTimeout time.Duration
 }
+
+const (
+	defaultKindNZBFetchTimeout      = 20 * time.Second
+	defaultKindEngineOpenTimeout    = 25 * time.Second
+	defaultKindCandidateOpenTimeout = 30 * time.Second
+)
 
 type resolveFlightKey struct {
 	ref    core.ItemRef
@@ -77,6 +87,7 @@ type resolveFlightKey struct {
 
 type resolveFlight struct {
 	done    chan struct{}
+	cancel  context.CancelFunc
 	sources []core.PlayableSource
 	err     error
 }
@@ -91,21 +102,24 @@ type cachedKindCandidates struct {
 // plugin content kinds and supplies the host-side ResolveSources callback for
 // plugins.KindBackends.
 type KindResolver struct {
-	mgr           *plugins.Manager
-	libs          *libraries.Service
-	items         *pluginitems.Service
-	blobs         *blobcache.Cache
-	catalog       *KindCatalog
-	indexer       core.Indexer
-	resolver      *resolver.Service
-	debrid        DebridSourceBackend
-	engine        core.Engine
-	usenetServing func() bool
-	now           func() time.Time
-	http          *http.Client
-	authorize     func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error
-	backoff       *kindstream.HostBackoff
-	log           *slog.Logger
+	mgr                  *plugins.Manager
+	libs                 *libraries.Service
+	items                *pluginitems.Service
+	blobs                *blobcache.Cache
+	catalog              *KindCatalog
+	indexer              core.Indexer
+	resolver             *resolver.Service
+	debrid               DebridSourceBackend
+	engine               core.Engine
+	usenetServing        func() bool
+	now                  func() time.Time
+	http                 *http.Client
+	authorize            func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error
+	backoff              *kindstream.HostBackoff
+	log                  *slog.Logger
+	nzbFetchTimeout      time.Duration
+	engineOpenTimeout    time.Duration
+	candidateOpenTimeout time.Duration
 
 	flightMu sync.Mutex
 	flights  map[resolveFlightKey]*resolveFlight
@@ -147,28 +161,84 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &KindResolver{
-		mgr:             deps.Manager,
-		libs:            deps.Libraries,
-		items:           deps.Items,
-		blobs:           deps.Blobs,
-		catalog:         deps.Catalog,
-		indexer:         deps.Indexer,
-		resolver:        deps.Resolver,
-		debrid:          deps.Debrid,
-		engine:          deps.Engine,
-		usenetServing:   deps.UsenetServing,
-		now:             nowFn,
-		http:            hc,
-		authorize:       deps.Authorize,
-		backoff:         kindstream.NewHostBackoff(),
-		log:             log.With("component", "kindresolver"),
-		flights:         make(map[resolveFlightKey]*resolveFlight),
-		candCache:       make(map[resolveFlightKey]cachedKindCandidates),
-		usenetByRelease: make(map[string]*usenetCheckEntry),
-		usenetByHash:    make(map[string]*usenetCheckEntry),
-		usenetEntries:   make(map[*usenetCheckEntry]struct{}),
+	nzbFetchTimeout := deps.NZBFetchTimeout
+	if nzbFetchTimeout <= 0 {
+		nzbFetchTimeout = defaultKindNZBFetchTimeout
 	}
+	engineOpenTimeout := deps.EngineOpenTimeout
+	if engineOpenTimeout <= 0 {
+		engineOpenTimeout = defaultKindEngineOpenTimeout
+	}
+	candidateOpenTimeout := deps.CandidateOpenTimeout
+	if candidateOpenTimeout <= 0 {
+		candidateOpenTimeout = defaultKindCandidateOpenTimeout
+	}
+	r := &KindResolver{
+		mgr:                  deps.Manager,
+		libs:                 deps.Libraries,
+		items:                deps.Items,
+		blobs:                deps.Blobs,
+		catalog:              deps.Catalog,
+		indexer:              deps.Indexer,
+		resolver:             deps.Resolver,
+		debrid:               deps.Debrid,
+		engine:               deps.Engine,
+		usenetServing:        deps.UsenetServing,
+		now:                  nowFn,
+		http:                 hc,
+		authorize:            deps.Authorize,
+		backoff:              kindstream.NewHostBackoff(),
+		log:                  log.With("component", "kindresolver"),
+		nzbFetchTimeout:      nzbFetchTimeout,
+		engineOpenTimeout:    engineOpenTimeout,
+		candidateOpenTimeout: candidateOpenTimeout,
+		flights:              make(map[resolveFlightKey]*resolveFlight),
+		candCache:            make(map[resolveFlightKey]cachedKindCandidates),
+		usenetByRelease:      make(map[string]*usenetCheckEntry),
+		usenetByHash:         make(map[string]*usenetCheckEntry),
+		usenetEntries:        make(map[*usenetCheckEntry]struct{}),
+	}
+	if deps.Manager != nil {
+		deps.Manager.OnSync(func(_ context.Context, rec plugins.Record) {
+			r.InvalidatePlugin(rec.ID)
+		})
+		deps.Manager.OnRemove(func(_ context.Context, id string) {
+			r.InvalidatePlugin(id)
+		})
+	}
+	return r
+}
+
+// InvalidatePlugin cancels any in-flight resolves tied to pluginID's previous
+// runtime and evicts its in-memory candidate cache so disabling/re-enabling or
+// reloading a plugin starts from a clean slate.
+func (r *KindResolver) InvalidatePlugin(pluginID string) {
+	if r == nil || pluginID == "" {
+		return
+	}
+	prefix := "pk:" + pluginID + ":"
+	var cancels []context.CancelFunc
+	r.flightMu.Lock()
+	for fk, fl := range r.flights {
+		if strings.HasPrefix(string(fk.ref), prefix) {
+			delete(r.flights, fk)
+			if fl.cancel != nil {
+				cancels = append(cancels, fl.cancel)
+			}
+		}
+	}
+	r.flightMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	r.candMu.Lock()
+	for fk := range r.candCache {
+		if strings.HasPrefix(string(fk.ref), prefix) {
+			delete(r.candCache, fk)
+		}
+	}
+	r.candMu.Unlock()
 }
 
 // OpenKind implements frontend.KindStreams.
@@ -1210,6 +1280,23 @@ func (r *KindResolver) RefsForKeys(ctx context.Context, viewer *core.Viewer, key
 	return out, nil
 }
 
+const (
+	sourceIndexerSearchTimeout = 30 * time.Second
+	sourceReleaseFilesTimeout  = 30 * time.Second
+	sourceDebridCheckTimeout   = 15 * time.Second
+	sourceDebridAcquireTimeout = 30 * time.Second
+)
+
+func withHardTimeout(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	if limit <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= limit {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
 // ResolveSources implements plugins.KindBackends.ResolveSources for plugins
 // granted permissions.sources ("search" or "acquire"). Capability and
 // permission checks are enforced upstream in plugins/host_kinds.go.
@@ -1219,6 +1306,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 	}
 	switch q.Kind {
 	case "indexer_search":
+		ctx, cancel := withHardTimeout(ctx, sourceIndexerSearchTimeout)
+		defer cancel()
 		query := strings.TrimSpace(q.Query)
 		category := strings.TrimSpace(q.Category)
 		if query == "" && category == "" {
@@ -1294,6 +1383,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		return scored, nil
 
 	case "debrid_check":
+		ctx, cancel := withHardTimeout(ctx, sourceDebridCheckTimeout)
+		defer cancel()
 		if r.debrid == nil {
 			return []core.SourceCandidate{}, nil
 		}
@@ -1324,6 +1415,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		return out, nil
 
 	case "release_files":
+		ctx, cancel := withHardTimeout(ctx, sourceReleaseFilesTimeout)
+		defer cancel()
 		cand := core.SourceCandidate{
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
@@ -1424,6 +1517,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		return []core.SourceCandidate{cand}, nil
 
 	case "debrid_acquire":
+		ctx, cancel := withHardTimeout(ctx, sourceDebridAcquireTimeout)
+		defer cancel()
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
 		}
@@ -1637,12 +1732,29 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		OpenReleaseSource: func(octx context.Context, src core.PlayableSource) (core.MediaSource, error) {
 			return r.openReleaseForSource(octx, src, defaultMIME, secretFn)
 		},
-		DefaultReleaseMIME: defaultMIME,
-		Secret:             secretFn,
-		AllowHost:          allowHost,
-		MaxDownloadBytes:   quota.EffectiveMaxBytes(),
-		ItemIndex:          effectiveItemIndex(item.Index, partIdx),
-		Backoff:            r.backoff,
+		DefaultReleaseMIME:   defaultMIME,
+		CandidateOpenTimeout: r.candidateOpenTimeout,
+		Secret:               secretFn,
+		AllowHost:            allowHost,
+		MaxDownloadBytes:     quota.EffectiveMaxBytes(),
+		ItemIndex:            effectiveItemIndex(item.Index, partIdx),
+		Backoff:              r.backoff,
+		OnSourceFailed: func(attempt, total int, src core.PlayableSource, took time.Duration, err error) {
+			if r.log == nil {
+				return
+			}
+			r.log.Warn("kind source open attempt failed",
+				"plugin", rec.PluginID,
+				"library", lib.Key,
+				"item", item.ID,
+				"attempt", attempt,
+				"candidates", total,
+				"source", src.ID,
+				"pattern", src.Pattern,
+				"took", took.Round(time.Millisecond),
+				"err", err,
+			)
+		},
 		OnSourceSkipped: func(failures []kindstream.SourceFailure, winning core.PlayableSource) {
 			if skipped != nil {
 				skipped.failures = append(skipped.failures, failures...)
@@ -1731,7 +1843,10 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 			c := cachedSrc
 			backingOffCached = &c
 		} else {
-			bs, oerr := kindstream.Open(ctx, cachedSrc, ksDeps)
+			openCtx, openCancel := withHardTimeout(ctx, r.candidateOpenTimeout)
+			cachedStart := time.Now()
+			bs, oerr := kindstream.Open(openCtx, cachedSrc, ksDeps)
+			openCancel()
 			if oerr == nil {
 				if cachedSrc.Size <= 0 && bs.Size() > 0 {
 					cachedSrc.Size = bs.Size()
@@ -1741,6 +1856,20 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 					_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, cachedSrc)
 				}
 				return bs, cachedSrc, nil
+			}
+			if ctx.Err() != nil {
+				return nil, core.PlayableSource{}, ctx.Err()
+			}
+			if r.log != nil {
+				r.log.Warn("cached kind resolution failed to open; falling back to re-resolve",
+					"plugin", rec.PluginID,
+					"library", lib.Key,
+					"item", item.ID,
+					"source", cachedSrc.ID,
+					"pattern", cachedSrc.Pattern,
+					"took", time.Since(cachedStart).Round(time.Millisecond),
+					"err", oerr,
+				)
 			}
 			// Cached source went stale upstream: invalidate and fall through.
 			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
@@ -1790,15 +1919,29 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 		}
 		return nil, core.PlayableSource{}, core.ErrNotAvailable
 	}
+	openStart := time.Now()
 	bs, winning, err := kindstream.OpenSources(ctx, cands, ksDeps)
 	if err != nil {
-		if errors.Is(err, core.ErrArchiveUnstreamable) && r.log != nil {
-			r.log.Warn("this archive format or compression method cannot be streamed",
-				"plugin", rec.PluginID,
-				"library", lib.Key,
-				"item", item.ID,
-				"err", err,
-			)
+		if r.log != nil {
+			if errors.Is(err, core.ErrArchiveUnstreamable) {
+				r.log.Warn("this archive format or compression method cannot be streamed",
+					"plugin", rec.PluginID,
+					"library", lib.Key,
+					"item", item.ID,
+					"candidates", len(cands),
+					"took", time.Since(openStart).Round(time.Millisecond),
+					"err", err,
+				)
+			} else {
+				r.log.Warn("kindresolver: open kind sources failed",
+					"plugin", rec.PluginID,
+					"library", lib.Key,
+					"item", item.ID,
+					"candidates", len(cands),
+					"took", time.Since(openStart).Round(time.Millisecond),
+					"err", err,
+				)
+			}
 		}
 		return nil, core.PlayableSource{}, err
 	}
@@ -2016,17 +2159,22 @@ func (r *KindResolver) resolveItemSourcesForSource(ctx context.Context, rec plug
 	r.flightMu.Lock()
 	fl, ok := r.flights[fk]
 	if !ok {
-		fl = &resolveFlight{done: make(chan struct{})}
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
+		fl = &resolveFlight{done: make(chan struct{}), cancel: cancel}
 		r.flights[fk] = fl
 		go func() {
 			defer func() {
+				if p := recover(); p != nil {
+					fl.err = fmt.Errorf("kindresolver: resolve panic: %v", p)
+				}
 				r.flightMu.Lock()
-				delete(r.flights, fk)
+				if r.flights[fk] == fl {
+					delete(r.flights, fk)
+				}
 				r.flightMu.Unlock()
 				close(fl.done)
+				cancel()
 			}()
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
-			defer cancel()
 			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, sourceID, accept, nil)
 		}()
 	}
@@ -2057,25 +2205,30 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 	r.flightMu.Lock()
 	fl, ok := r.flights[fk]
 	if !ok {
-		fl = &resolveFlight{done: make(chan struct{})}
+		// Give the detached flight slightly more headroom than Manager.Call's
+		// ResolverTotal so pending expiry returns HTTP 202 (ErrPreparing)
+		// rather than racing parent context cancellation (#580).
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
+		fl = &resolveFlight{done: make(chan struct{}), cancel: cancel}
 		r.flights[fk] = fl
 		go func() {
 			defer func() {
+				if p := recover(); p != nil {
+					fl.err = fmt.Errorf("kindresolver: resolve panic: %v", p)
+				}
 				// Leave the map before waking waiters: a request arriving
 				// after a waiter returns must start a new resolve, never
 				// join this finished flight and reuse its result.
 				r.flightMu.Lock()
-				delete(r.flights, fk)
+				if r.flights[fk] == fl {
+					delete(r.flights, fk)
+				}
 				r.flightMu.Unlock()
 				close(fl.done)
+				cancel()
 			}()
-			// Give the detached flight slightly more headroom than Manager.Call's
-			// ResolverTotal so pending expiry returns HTTP 202 (ErrPreparing)
-			// rather than racing parent context cancellation (#580).
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
-			defer cancel()
 			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, "", accept, nil)
-			if fl.err == nil && len(fl.sources) > 0 {
+			if fl.err == nil && len(fl.sources) > 0 && rctx.Err() == nil {
 				r.storeCandidates(fk, fl.sources)
 				if r.items != nil {
 					_ = r.items.SavePartCandidates(rctx, item.Ref, partCopy, fl.sources)
@@ -2516,23 +2669,48 @@ func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (co
 }
 
 func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (core.MediaSource, error) {
+	start := time.Now()
 	if rel.Protocol == core.ProtocolTorrent || rel.InfoHash != "" || rel.MagnetURL != "" {
 		if r.debrid == nil {
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolTorrent
+		if r.log != nil {
+			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol)
+		}
+		acqCtx, acqCancel := withHardTimeout(ctx, r.engineOpenTimeout)
+		defer acqCancel()
 		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
-			resolved, err := r.resolveTorrent(ctx, rel)
+			resolved, err := r.resolveTorrent(acqCtx, rel)
 			if err != nil {
+				if r.log != nil {
+					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "resolve_torrent", "took", time.Since(start).Round(time.Millisecond), "err", err)
+				}
 				return nil, err
 			}
 			rel = resolved
 		}
-		payload, err := r.debrid.Acquire(ctx, rel)
+		payload, err := r.debrid.Acquire(acqCtx, rel)
 		if err != nil {
+			if r.log != nil {
+				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", err)
+			}
 			return nil, err
 		}
-		return r.engine.Open(ctx, rel.ID, payload)
+		openStart := time.Now()
+		openCtx, openCancel := withHardTimeout(ctx, r.engineOpenTimeout)
+		defer openCancel()
+		ms, err := r.engine.Open(openCtx, rel.ID, payload)
+		if err != nil {
+			if r.log != nil {
+				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "engine_open", "took", time.Since(start).Round(time.Millisecond), "err", err)
+			}
+			return nil, err
+		}
+		if r.log != nil {
+			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "open_took", time.Since(openStart).Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
+		}
+		return ms, nil
 	}
 	if rel.NZBURL != "" {
 		if r.indexer == nil {
@@ -2540,8 +2718,18 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		}
 		rel.Protocol = core.ProtocolUsenet
 		releaseKey := normalizeNZBKey(rel.NZBURL)
-		nzbData, err := r.indexer.FetchNZB(ctx, rel)
+		if r.log != nil {
+			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer)
+		}
+		fetchStart := time.Now()
+		fetchCtx, fetchCancel := withHardTimeout(ctx, r.nzbFetchTimeout)
+		nzbData, err := r.indexer.FetchNZB(fetchCtx, rel)
+		fetchCancel()
+		fetchTook := time.Since(fetchStart)
 		if err != nil {
+			if r.log != nil {
+				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "fetch_nzb", "took", fetchTook.Round(time.Millisecond), "err", err)
+			}
 			return nil, err
 		}
 		var nzbHash string
@@ -2551,13 +2739,26 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		if rel.Target != nil && rel.Target.AllowNonVideo {
 			nzbData, err = ensureNonVideoNZB(nzbData, rel.Target)
 			if err != nil {
+				if r.log != nil {
+					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", err)
+				}
 				return nil, err
 			}
 		}
-		ms, err := r.engine.Open(ctx, rel.ID, nzbData)
+		openStart := time.Now()
+		openCtx, openCancel := withHardTimeout(ctx, r.engineOpenTimeout)
+		ms, err := r.engine.Open(openCtx, rel.ID, nzbData)
+		openCancel()
+		openTook := time.Since(openStart)
 		if err != nil {
 			r.recordUsenetPlaybackFailure(releaseKey, nzbHash, err)
+			if r.log != nil {
+				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "engine_open", "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "err", err)
+			}
 			return nil, err
+		}
+		if r.log != nil {
+			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
 		}
 		return r.wrapUsenetPlaybackSource(ms, releaseKey, nzbHash), nil
 	}

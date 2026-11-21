@@ -294,7 +294,9 @@ func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key strin
 	} else if old.modified != "" {
 		headers["If-Modified-Since"] = old.modified
 	}
-	resp, err := h.openFetchWithOptions(ctx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	resp, err := h.openFetchWithOptions(fetchCtx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
 	if err != nil {
 		return err
 	}

@@ -544,9 +544,10 @@ type indexDoc struct {
 }
 
 type putFlight struct {
-	done chan struct{}
-	ref  Ref
-	err  error
+	done      chan struct{}
+	ref       Ref
+	err       error
+	abandoned bool
 }
 
 // Namespace is one library's isolated blob cache directory and index.
@@ -928,36 +929,54 @@ func (n *Namespace) PutWithExpectedSHA256(ctx context.Context, key string, r io.
 }
 
 // SingleFlightPut returns an existing cached blob for key if present, or runs
-// fn once across concurrent callers for the same key.
+// fn once across concurrent callers for the same key. If the leader cancels or
+// panics, waiting callers with live contexts retry cleanly instead of hanging
+// or inheriting a dead flight.
 func (n *Namespace) SingleFlightPut(ctx context.Context, key string, fn func(ctx context.Context) (Ref, error)) (Ref, error) {
-	if ref, ok := n.LookupKey(key); ok {
-		return ref, nil
-	}
-	n.mu.Lock()
-	if fl, ok := n.flights[key]; ok {
-		n.mu.Unlock()
-		select {
-		case <-fl.done:
-			return fl.ref, fl.err
-		case <-ctx.Done():
-			return "", ctx.Err()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
+		if ref, ok := n.LookupKey(key); ok {
+			return ref, nil
+		}
+		n.mu.Lock()
+		if fl, ok := n.flights[key]; ok {
+			n.mu.Unlock()
+			select {
+			case <-fl.done:
+				if fl.abandoned {
+					continue
+				}
+				return fl.ref, fl.err
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		fl := &putFlight{done: make(chan struct{})}
+		n.flights[key] = fl
+		n.mu.Unlock()
+
+		ref, err := func() (ref Ref, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					ref = ""
+					err = fmt.Errorf("blobcache: singleflight panic: %v", r)
+				}
+				fl.ref = ref
+				fl.err = err
+				fl.abandoned = err != nil && ctx.Err() != nil
+				n.mu.Lock()
+				if n.flights[key] == fl {
+					delete(n.flights, key)
+				}
+				n.mu.Unlock()
+				close(fl.done)
+			}()
+			return fn(ctx)
+		}()
+		return ref, err
 	}
-	fl := &putFlight{done: make(chan struct{})}
-	n.flights[key] = fl
-	n.mu.Unlock()
-
-	// Detach from a single caller's cancellation only if needed? No, pass ctx
-	// so cancelling the sole caller cancels the download, and finish wakes any waiters.
-	ref, err := fn(ctx)
-	fl.ref = ref
-	fl.err = err
-	close(fl.done)
-
-	n.mu.Lock()
-	delete(n.flights, key)
-	n.mu.Unlock()
-	return ref, err
 }
 
 // Open opens a cached blob by its reference ("blob:<sha256>"), updating its

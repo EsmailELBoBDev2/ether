@@ -55,13 +55,13 @@ func GrantedLimitsPath(path string) bool {
 		p == "/ether/event"
 }
 
-// BackgroundPoolPath reports whether path is a background job or sync call
-// bounded to at most PoolSize-1 service instances so interactive viewer
-// resolves, frontend adapter requests and health checks always retain at least
-// one free instance.
+// BackgroundPoolPath reports whether path is a background job, sync, or event
+// delivery call bounded to at most PoolSize-1 service instances so interactive
+// viewer resolves, frontend adapter requests and health checks always retain at
+// least one free instance.
 func BackgroundPoolPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
-	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p)
+	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p) || p == "/ether/event"
 }
 
 // UnitsForDeadline converts a call deadline into its matching governance unit

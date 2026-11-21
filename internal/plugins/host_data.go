@@ -216,12 +216,13 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
-	fetchCtx := ctx
+	const maxHostDataFetchTimeout = 10 * time.Minute
+	timeout := maxHostDataFetchTimeout
 	if req.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		fetchCtx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
-		defer cancel()
+		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostDataFetchTimeout)
 	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	resp, err := h.openFetch(fetchCtx, req.FetchRequest)
 	if err != nil {
 		return FetchCacheResult{}, err

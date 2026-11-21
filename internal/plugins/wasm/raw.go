@@ -247,6 +247,9 @@ func (in *rawInstance) rawCall(ctx context.Context, fn api.Function, args ...uin
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &Error{Status: StatusTimeout, Message: callStateOf(ctx).timeoutMessage(), Trap: true}
 		}
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			return nil, &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+		}
 		return nil, &Error{Status: StatusError, Message: err.Error(), Trap: true}
 	}
 	return res, nil

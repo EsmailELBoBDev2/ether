@@ -185,6 +185,25 @@ type Health struct {
 	// (a remote plugin with no URL endpoint) has no sidecar connected.
 	// It is computed live for the console, never stored.
 	Sidecar string `json:"sidecar,omitempty"`
+	// Pool is a live snapshot of the hosted plugin's instance pool (never stored).
+	Pool *PoolHealth `json:"pool,omitempty"`
+}
+
+// PoolHolderHealth identifies one active route holding a hosted plugin instance.
+type PoolHolderHealth struct {
+	Route  string `json:"route"`
+	HeldMS int64  `json:"heldMs"`
+}
+
+// PoolHealth reports live instance-pool health for a hosted plugin.
+type PoolHealth struct {
+	Size        int                `json:"size"`
+	InUse       int                `json:"inUse"`
+	Idle        int                `json:"idle"`
+	Building    int                `json:"building"`
+	Waiting     int                `json:"waiting"`
+	Exhaustions int64              `json:"exhaustions"`
+	Holders     []PoolHolderHealth `json:"holders,omitempty"`
 }
 
 // JournalEntry is one recorded write and its inverse.

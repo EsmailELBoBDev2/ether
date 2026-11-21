@@ -1,10 +1,12 @@
 package vela
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -340,6 +342,7 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 			lookahead := q
 			lookahead.Offset = c.Offset + len(page.Items)
 			lookahead.Limit = 1
+			lookahead.SuppressExpand = true
 			more, err := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), targetViews[0].ID, lookahead)
 			if err != nil {
 				fail(w, err, r)
@@ -352,24 +355,45 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 		nextOffset = c.Offset + len(pageItems)
 	} else {
 		window := c.Offset + pageLimit + 1
+		dev := requestDevice(r)
+		type viewResult struct {
+			page frontend.Page
+			err  error
+		}
+		results := make([]viewResult, len(targetViews))
+		viewCtx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		var wg sync.WaitGroup
+		for idx, view := range targetViews {
+			wg.Add(1)
+			go func(idx int, viewID string) {
+				defer wg.Done()
+				q := frontend.ItemQuery{
+					Filter:  frontend.Filter{Person: person.TMDB},
+					Sort:    frontend.SortReleased,
+					Desc:    true,
+					Offset:  0,
+					Limit:   window,
+					NoTotal: true,
+				}
+				page, err := i.host.Experience.LibraryItems(viewCtx, v, dev, viewID, q)
+				if err != nil {
+					cancel()
+				}
+				results[idx] = viewResult{page: page, err: err}
+			}(idx, view.ID)
+		}
+		wg.Wait()
+
 		merged := make([]frontend.Title, 0, pageLimit)
 		seen := map[frontend.RatingKey]bool{}
-		for _, view := range targetViews {
-			q := frontend.ItemQuery{
-				Filter:  frontend.Filter{Person: person.TMDB},
-				Sort:    frontend.SortReleased,
-				Desc:    true,
-				Offset:  0,
-				Limit:   window,
-				NoTotal: true,
-			}
-			page, err := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), view.ID, q)
-			if err != nil {
-				fail(w, err, r)
+		for _, res := range results {
+			if res.err != nil {
+				fail(w, res.err, r)
 				return
 			}
-			expanding = expanding || page.Expanding
-			for _, item := range page.Items {
+			expanding = expanding || res.page.Expanding
+			for _, item := range res.page.Items {
 				if !seen[item.Key] {
 					seen[item.Key] = true
 					merged = append(merged, item)

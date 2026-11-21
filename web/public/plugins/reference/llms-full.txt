@@ -29033,6 +29033,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].cache.ttl` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].fields` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].enum` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].fields[].fact` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].indexed` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].label` | `string` | false | {} |
@@ -29868,6 +29869,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                             "type": "string"
                           },
                           "type": "array"
+                        },
+                        "fact": {
+                          "type": "boolean"
                         },
                         "indexed": {
                           "type": "boolean"

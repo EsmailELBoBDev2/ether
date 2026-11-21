@@ -741,10 +741,13 @@ func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool
 	return p
 }
 
-func (p *pool) acquireLease(route string) uint64 {
+func (p *pool) acquireLease(route string, track bool) uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.inUse++
+	if !track {
+		return 0
+	}
 	p.nextLease++
 	id := p.nextLease
 	p.holders[id] = poolLeaseInfo{route: route, since: time.Now()}
@@ -827,17 +830,21 @@ func (p *pool) buildInstance(ctx context.Context) (in instance, err error) {
 }
 
 func (p *pool) get(ctx context.Context) (instance, error) {
-	in, _, err := p.getForRoute(ctx, "")
+	in, _, err := p.getInternal(ctx, "", false)
 	return in, err
 }
 
 func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64, error) {
+	return p.getInternal(ctx, route, true)
+}
+
+func (p *pool) getInternal(ctx context.Context, route string, track bool) (instance, uint64, error) {
 	if p.done.Load() {
 		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
 	select {
 	case in := <-p.idle:
-		return in, p.acquireLease(route), nil
+		return in, p.acquireLease(route, track), nil
 	default:
 	}
 	p.mu.Lock()
@@ -853,7 +860,7 @@ func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64,
 		p.refill()
 		select {
 		case in := <-p.idle:
-			return in, p.acquireLease(route), nil
+			return in, p.acquireLease(route, track), nil
 		case <-p.doneCh:
 			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-ctx.Done():
@@ -862,7 +869,7 @@ func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64,
 	}
 	select {
 	case in := <-p.idle:
-		return in, p.acquireLease(route), nil
+		return in, p.acquireLease(route, track), nil
 	case p.slots <- struct{}{}:
 		if p.done.Load() {
 			<-p.slots
@@ -878,7 +885,7 @@ func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64,
 			<-p.slots
 			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		}
-		return in, p.acquireLease(route), nil
+		return in, p.acquireLease(route, track), nil
 	case <-p.doneCh:
 		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	case <-ctx.Done():

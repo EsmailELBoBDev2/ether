@@ -17,6 +17,8 @@ type blockingTestIndexer struct {
 	fetchFn func(ctx context.Context, rel core.Release) ([]byte, error)
 }
 
+func (b *blockingTestIndexer) Name() string { return "blocking-test-indexer" }
+
 func (b *blockingTestIndexer) Search(context.Context, core.SearchRequest) ([]core.Release, error) {
 	return nil, nil
 }
@@ -31,6 +33,10 @@ type blockingTestEngine struct {
 
 func (b *blockingTestEngine) Open(ctx context.Context, releaseID string, nzbData []byte) (core.MediaSource, error) {
 	return b.openFn(ctx, releaseID, nzbData)
+}
+
+func (b *blockingTestEngine) Prefetch(context.Context, string, []byte, int64, int64) error {
+	return nil
 }
 
 type syncLogBuffer struct {

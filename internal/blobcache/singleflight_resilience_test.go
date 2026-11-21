@@ -8,7 +8,7 @@ import (
 
 func TestSingleFlightPutRecoversAfterPanicAndAbandonedLeader(t *testing.T) {
 	t.Parallel()
-	c, err := Open(t.TempDir(), Config{})
+	c, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -22,8 +22,9 @@ func TestSingleFlightPutRecoversAfterPanicAndAbandonedLeader(t *testing.T) {
 		t.Fatal("expected error after singleflight panic")
 	}
 
-	ref, err := ns.SingleFlightPut(context.Background(), "panic-key", func(context.Context) (Ref, error) {
-		return ns.PutKey("panic-key", "ok.bin", bytes.NewReader([]byte("hello")))
+	ref, err := ns.SingleFlightPut(context.Background(), "panic-key", func(ctx context.Context) (Ref, error) {
+		data := []byte("hello")
+		return ns.Put(ctx, "panic-key", bytes.NewReader(data), int64(len(data)))
 	})
 	if err != nil || ref == "" {
 		t.Fatalf("post-panic SingleFlightPut failed: ref=%q err=%v", ref, err)
@@ -49,8 +50,9 @@ func TestSingleFlightPutRecoversAfterPanicAndAbandonedLeader(t *testing.T) {
 		err error
 	}, 1)
 	go func() {
-		r, err := ns.SingleFlightPut(context.Background(), "cancel-key", func(context.Context) (Ref, error) {
-			return ns.PutKey("cancel-key", "retry.bin", bytes.NewReader([]byte("recovered")))
+		r, err := ns.SingleFlightPut(context.Background(), "cancel-key", func(ctx context.Context) (Ref, error) {
+			data := []byte("recovered")
+			return ns.Put(ctx, "cancel-key", bytes.NewReader(data), int64(len(data)))
 		})
 		waiterDone <- struct {
 			ref Ref

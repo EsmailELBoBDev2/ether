@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/identity"
 )
 
@@ -253,11 +254,17 @@ func (h *Handler) handlePortalPIN(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "unavailable", "sign in unavailable")
 		return
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	forward := ""
+	if origin, ok := clientnet.Origin(r, h.proxyPrefixes()...); ok {
+		forward = origin.BaseURL("/ether/me")
+	} else {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		forward = scheme + "://" + r.Host + "/ether/me"
 	}
-	id, code, url, err := h.deps.SignIn.StartPIN(r.Context(), scheme+"://"+r.Host+"/ether/me")
+	id, code, url, err := h.deps.SignIn.StartPIN(r.Context(), forward)
 	if err != nil {
 		writeError(w, 502, "plextv", "sign in unavailable")
 		return
@@ -419,7 +426,7 @@ func (h *Handler) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "unavailable", "unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"url": "/ether/me#invite=" + secret})
+	writeJSON(w, 200, map[string]string{"url": h.inviteURL(secret)})
 }
 func (h *Handler) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 	if !csrfOK(r) {
@@ -512,7 +519,7 @@ func (h *Handler) ownerIdentityManagement(w http.ResponseWriter, r *http.Request
 			writeError(w, 400, "invalid", "could not create invite")
 			return
 		}
-		writeJSON(w, 200, map[string]string{"url": "/ether/me#invite=" + secret})
+		writeJSON(w, 200, map[string]string{"url": h.inviteURL(secret)})
 	default:
 		writeError(w, 404, "not_found", "not found")
 	}
@@ -544,11 +551,17 @@ func (h *Handler) handlePlexLinkStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "unauthorized", "sign in required")
 		return
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	forward := ""
+	if origin, ok := clientnet.Origin(r, h.proxyPrefixes()...); ok {
+		forward = origin.BaseURL("/ether/me")
+	} else {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		forward = scheme + "://" + r.Host + "/ether/me"
 	}
-	id, code, url, err := h.deps.SignIn.StartPIN(r.Context(), scheme+"://"+r.Host+"/ether/me")
+	id, code, url, err := h.deps.SignIn.StartPIN(r.Context(), forward)
 	if err != nil {
 		writeError(w, 502, "plextv", "sign in unavailable")
 		return
@@ -627,7 +640,7 @@ func (h *Handler) handleCreateInviteViewer(w http.ResponseWriter, r *http.Reques
 		writeError(w, 500, "unavailable", "could not refresh viewers")
 		return
 	}
-	writeJSON(w, 201, map[string]any{"id": id, "url": "/ether/me#invite=" + secret})
+	writeJSON(w, 201, map[string]any{"id": id, "url": h.inviteURL(secret)})
 }
 
 // limitIdentityPoll is distinct from sign-in limits: normal two-second PIN

@@ -21,6 +21,7 @@ import (
 	experiencepkg "github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/compactids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontends/dlna"
 	"github.com/braedonsaunders/ether/internal/frontends/m3u"
@@ -379,7 +380,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 			if a.registrar != nil {
 				a.registrar.ObserveRemoteClient(address)
 			}
-		}, ClientIP: a.frontendClientIP, ViewerPortalURL: r.viewerPortalURL, SecurePortalURL: r.viewerPortalSecureURL, SecureOrigins: r.secureOrigins, SurfaceURL: func(ctx context.Context, req *http.Request) (string, error) {
+		}, ClientIP: a.frontendClientIP, RequestOrigin: func(req *http.Request) (clientnet.RequestOrigin, bool) {
+			return clientnet.Origin(req, a.trustedProxyPrefixes()...)
+		}, ViewerPortalURL: r.viewerPortalURL, SecurePortalURL: r.viewerPortalSecureURL, SecureOrigins: r.secureOrigins, SurfaceURL: func(ctx context.Context, req *http.Request) (string, error) {
 			return scorecardSurfaceURL(ctx, r, id, req)
 		}, PublicOrigin: publicOrigin, RepoFileURL: repoFile, TracePlayback: a.tracePlayback, ServerIdentity: serverIdentity, OwnerSubscription: ownerSub, LANViewer: lanViewer, PageFreshness: func() frontend.PageFreshness {
 			f := a.browseFreshness()
@@ -404,6 +407,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 	}
 	r.control.listeners.log = a.log
 	r.control.listeners.perf = a.perf
+	r.control.listeners.trustedProxies = a.trustedProxyPrefixes
 	r.control.listeners.discovery = newSharedDiscovery(r.ctx)
 	r.control.listeners.discoveryEndpoint = r.discoveryEndpoint
 	r.control.clientCount = a.frontendClients.count
@@ -507,7 +511,7 @@ func (r *frontendRuntime) plexHandler() http.Handler {
 		if xtreamRootPath(req.URL.Path) {
 			// Many IPTV apps drop the "/xtream" path from the server URL and
 			// call the standard Xtream paths at the root. Plex has none of them.
-			if handler := r.control.listeners.sharedHandler("/xtream"); handler != nil {
+			if handler := r.control.listeners.sharedHandlerWithPrefix("/xtream", ""); handler != nil {
 				handler.ServeHTTP(w, req)
 				return
 			}
@@ -520,7 +524,7 @@ func (r *frontendRuntime) plexHandler() http.Handler {
 			http.NotFound(w, req)
 			return
 		}
-		r.control.listeners.observe("plex", inst.Handler()).ServeHTTP(w, req)
+		r.control.listeners.observe("plex", "", inst.Handler()).ServeHTTP(w, req)
 	})
 }
 
@@ -532,8 +536,10 @@ func (r *frontendRuntime) sharedStatus(id frontend.Protocol, status *frontend.St
 	if frontendHostPolicy(id).MainListener {
 		mounted := status.Mounted
 		errText := status.Error
+		observed := status.ObservedAddresses
 		*status = r.plexStatus(context.Background())
 		status.Mounted = mounted
+		status.ObservedAddresses = observed
 		if errText != "" {
 			status.Error = errText
 		}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
@@ -291,9 +292,7 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
-		url = prefix + url
-	}
+	url = clientnet.RedirectPath(requestRedirectPrefix(r, i.host.Origin), "", url)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 

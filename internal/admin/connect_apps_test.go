@@ -15,6 +15,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/auth"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
@@ -33,9 +34,9 @@ type allConnectFrontends struct{}
 
 func (allConnectFrontends) List(context.Context) ([]admin.FrontendInfo, error) {
 	return []admin.FrontendInfo{
-		{Descriptor: frontend.Descriptor{ID: "plex"}, Enabled: true},
-		{Descriptor: frontend.Descriptor{ID: "jellyfin"}, Enabled: true},
-		{Descriptor: frontend.Descriptor{ID: "emby"}, Enabled: true},
+		{Descriptor: frontend.Descriptor{ID: "plex"}, Enabled: true, Status: frontend.Status{Mounted: true}},
+		{Descriptor: frontend.Descriptor{ID: "jellyfin"}, Enabled: true, Status: frontend.Status{Mounted: true}},
+		{Descriptor: frontend.Descriptor{ID: "emby"}, Enabled: true, Status: frontend.Status{Mounted: true}},
 		{Descriptor: frontend.Descriptor{ID: "silo"}, Enabled: true},
 		{Descriptor: frontend.Descriptor{ID: "stremio"}, Enabled: true},
 		{Descriptor: frontend.Descriptor{ID: "webdav"}, Enabled: true},
@@ -546,5 +547,157 @@ func TestConnectAppsPluginFrontendAdapters(t *testing.T) {
 		if res.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s status = %d, want 404", bad, res.StatusCode)
 		}
+	}
+}
+
+func TestConnectAppsUsesPublishedAddresses(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	users, err := auth.New(ctx, db, auth.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, _ := identity.NewLocal(db)
+	_, _ = local.CreateOwner(ctx, "owner", "password-1234")
+	viewerID, _ := local.CreateViewer(ctx, "alice", "password-1234")
+	if err := users.RefreshViewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cfgStore := newStore(t, func(c *config.Config) {
+		c.Frontends = map[string]config.Frontend{
+			"jellyfin": {Enabled: true, PublishedAddresses: []string{"https://jellyfin.example.com/"}},
+			"emby":     {Enabled: true, PublishedAddresses: []string{"https://media.example.com/emby/"}},
+			"stremio":  {Enabled: true, PublishedAddresses: []string{"https://stremio.example.com"}},
+			"webdav":   {Enabled: true, PublishedAddresses: []string{"https://files.example.com/dav"}},
+			"xtream":   {Enabled: true, PublishedAddresses: []string{"https://tv.example.com"}},
+		}
+	})
+	grants, err := identity.NewGrants(db, users, time.Hour, nil, cfgStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portal, _ := grants.Issue(ctx, viewerID, nil, "viewer-portal", core.Device{})
+
+	h := admin.NewHandler(admin.Deps{
+		Config:           cfgStore,
+		Frontends:        allConnectFrontends{},
+		IdentityGrants:   grants,
+		ViewerPortalURL:  func(context.Context, *http.Request) (string, error) { return "http://192.168.1.5:32400/ether/me", nil },
+		StremioPortalURL: nil, // Stremio has its own HTTPS published address so StremioPortalURL is not required.
+	})
+
+	post := func(surface string) map[string]string {
+		r := req(http.MethodPost, "/ether/api/me/apps/"+surface, "")
+		r.Header.Set("Authorization", "Bearer "+portal)
+		rec := serve(h, r)
+		if rec.Code != 200 {
+			t.Fatalf("%s status = %d body = %s", surface, rec.Code, rec.Body.String())
+		}
+		var out map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	if got := post("jellyfin"); got["url"] != "https://jellyfin.example.com" {
+		t.Fatalf("jellyfin url = %q", got["url"])
+	}
+	if got := post("emby"); got["url"] != "https://media.example.com/emby" {
+		t.Fatalf("emby url = %q", got["url"])
+	}
+	if got := post("stremio"); !strings.HasPrefix(got["url"], "https://stremio.example.com/") || !strings.HasSuffix(got["url"], "/manifest.json") {
+		t.Fatalf("stremio url = %q", got["url"])
+	}
+	if got := post("webdav"); got["url"] != "https://files.example.com/dav/" {
+		t.Fatalf("webdav url = %q", got["url"])
+	}
+	if got := post("xtream"); got["url"] != "https://tv.example.com" {
+		t.Fatalf("xtream url = %q", got["url"])
+	}
+	// M3U has no published address so it falls back to ViewerPortalURL.
+	if got := post("m3u"); !strings.HasPrefix(got["url"], "http://192.168.1.5:32400/m3u/") || !strings.HasSuffix(got["url"], "/playlist.m3u") {
+		t.Fatalf("m3u fallback url = %q", got["url"])
+	}
+}
+
+func TestConnectAppsAndWebPlayerHonorLegacyPublicURLOverPlexCustomURL(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	users, err := auth.New(ctx, db, auth.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, _ := identity.NewLocal(db)
+	_, _ = local.CreateOwner(ctx, "owner", "password-1234")
+	viewerID, _ := local.CreateViewer(ctx, "alice", "password-1234")
+	if err := users.RefreshViewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Esmail's exact setup: plex.customUrls points at dashboard.<domain>,
+	// while jellyfin and emby have their own per-app publicUrl entries.
+	cfgStore := newStore(t, func(c *config.Config) {
+		c.Plex.CustomURLs = []string{"https://dashboard.example.com/"}
+		c.Frontends = map[string]config.Frontend{
+			"jellyfin": {Enabled: true, PublicURL: "https://jellyfin.example.com/"},
+			"emby":     {Enabled: true, PublicURL: "https://emby.example.com/"},
+			"silo":     {Enabled: true},
+		}
+	})
+	grants, err := identity.NewGrants(db, users, time.Hour, nil, cfgStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portal, _ := grants.Issue(ctx, viewerID, nil, "viewer-portal", core.Device{})
+
+	h := admin.NewHandler(admin.Deps{
+		Config:         cfgStore,
+		Frontends:      allConnectFrontends{},
+		IdentityGrants: grants,
+		ViewerPortalURL: func(context.Context, *http.Request) (string, error) {
+			return "https://dashboard.example.com/ether/me", nil
+		},
+	})
+
+	post := func(surface string) map[string]string {
+		r := req(http.MethodPost, "/ether/api/me/apps/"+surface, "")
+		r.Host = "dashboard.example.com"
+		r.Header.Set("Authorization", "Bearer "+portal)
+		rec := serve(h, r)
+		if rec.Code != 200 {
+			t.Fatalf("%s status = %d body = %s", surface, rec.Code, rec.Body.String())
+		}
+		var out map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	jf := post("jellyfin")
+	if jf["url"] != "https://jellyfin.example.com" {
+		t.Fatalf("jellyfin portal url = %q, want https://jellyfin.example.com", jf["url"])
+	}
+	if !strings.HasPrefix(jf["qr"], "data:image/png;base64,") {
+		t.Fatalf("jellyfin qr missing: %q", jf["qr"])
+	}
+	if emby := post("emby"); emby["url"] != "https://emby.example.com" {
+		t.Fatalf("emby portal url = %q, want https://emby.example.com", emby["url"])
+	}
+	// Silo has no published address -> falls back to dashboard.example.com/silo.
+	if silo := post("silo"); silo["url"] != "https://dashboard.example.com/silo" {
+		t.Fatalf("silo portal url = %q, want https://dashboard.example.com/silo", silo["url"])
+	}
+
+	// Web player launch also honours jellyfin's published address instead of dashboard/jellyfin.
+	wpReq := req(http.MethodGet, "/ether/api/web-player", "")
+	wpReq.Host = "dashboard.example.com"
+	wpReq.Header.Set("Authorization", "Bearer "+portal)
+	wpRec := serve(h, wpReq)
+	if wpRec.Code != 200 {
+		t.Fatalf("web-player status = %d body = %s", wpRec.Code, wpRec.Body.String())
+	}
+	if !strings.Contains(wpRec.Body.String(), `"https://jellyfin.example.com/web/ether-signin"`) {
+		t.Fatalf("web-player body = %s, want jellyfin.example.com/web/ether-signin", wpRec.Body.String())
 	}
 }

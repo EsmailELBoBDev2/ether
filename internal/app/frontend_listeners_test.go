@@ -420,7 +420,7 @@ func TestFrontendUnauthorizedLogThrottle(t *testing.T) {
 	for _, id := range []frontend.Protocol{"silo", "jellyfin"} {
 		// Recreating wrappers must not reset the protocol's failure budget.
 		for n := 0; n < 100; n++ {
-			h := m.observe(id, next)
+			h := m.observe(id, "", next)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest("GET", "/secret?token=secret", nil))
 			if w.Code != 401 || w.Body.String() != "Unauthorized\n" {
@@ -440,7 +440,7 @@ func TestFrontendNon2xxLogsRouteStatusReason(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Playback unavailable", http.StatusServiceUnavailable)
 	})
-	h := m.observe("jellyfin", next)
+	h := m.observe("jellyfin", "", next)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("POST", "/Items/abc/PlaybackInfo?api_key=secret", nil))
 	if w.Code != http.StatusServiceUnavailable {
@@ -455,7 +455,7 @@ func TestFrontendNon2xxLogsRouteStatusReason(t *testing.T) {
 	}
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	before := logs.Len()
-	m.observe("jellyfin", ok).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/Items/abc", nil))
+	m.observe("jellyfin", "", ok).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/Items/abc", nil))
 	if logs.Len() != before {
 		t.Fatal(logs.String()[before:])
 	}

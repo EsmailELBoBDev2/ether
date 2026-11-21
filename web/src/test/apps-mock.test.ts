@@ -149,4 +149,38 @@ describe("Apps mock API", () => {
     expect(served.status).toBe(200);
     expect(served.headers.get("Content-Type")).toBe("image/svg+xml");
   });
+
+  it("exposes observed addresses without inventing domains and persists published addresses", async () => {
+    const fake = createFakeServer();
+    await fake.fetch("/ether/api/frontends/jellyfin/enabled", {
+      method: "PUT",
+      body: JSON.stringify({ enabled: true }),
+    });
+    const list = await (await fake.fetch("/ether/api/frontends")).json();
+    const jellyfin = list.find(
+      (app: { descriptor: { id: string } }) => app.descriptor.id === "jellyfin",
+    );
+    expect(jellyfin.status.connectUrls).not.toContain("https://jellyfin.example.com");
+    expect(jellyfin.status.observedAddresses).toEqual([
+      "https://jellyfin.example.com",
+      "https://media.example.com/jellyfin",
+    ]);
+
+    await fake.fetch("/ether/api/frontends/jellyfin/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        port: 8096,
+        publishedAddresses: ["https://media.example.com/jellyfin/"],
+      }),
+    });
+    const saved = await (await fake.fetch("/ether/api/frontends/jellyfin/settings")).json();
+    expect(saved).toEqual({
+      port: 8096,
+      publishedAddresses: ["https://media.example.com/jellyfin"],
+    });
+    const connect = await (
+      await fake.fetch("/ether/api/me/apps/jellyfin", { method: "POST" })
+    ).json();
+    expect(connect.url).toBe("https://media.example.com/jellyfin");
+  });
 });

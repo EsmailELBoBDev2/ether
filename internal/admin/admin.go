@@ -37,6 +37,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/veladist"
 )
@@ -124,6 +125,7 @@ type Deps struct {
 	NotInterested      NotInterestedPortal
 	ViewerAlerts       ViewerAlertPreferences
 	ActiveViewer       func(context.Context, int64) (*core.User, error)
+	AppAddress         func(context.Context, frontend.Protocol, *http.Request, bool) (string, error)
 	ViewerPortalURL    func(context.Context, *http.Request) (string, error)
 	StremioPortalURL   func(context.Context, *http.Request) (string, error)
 	CreateDLNAGuest    func(context.Context) (*core.Viewer, error)

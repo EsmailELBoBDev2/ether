@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/remote"
 )
 
@@ -73,11 +74,27 @@ func TestPortalAndSurfaceReverseProxyHonoursTrustedHeaders(t *testing.T) {
 		t.Fatalf("trusted proxy surface: got %q ok %v", gotSurface, ok)
 	}
 
+	// Trusted proxy with path prefix must carry the prefix automatically.
+	reqPrefix := httptest.NewRequest(http.MethodPost, "http://172.20.0.2:32400/ether/api/me/apps/jellyfin", nil)
+	reqPrefix.RemoteAddr = "172.20.0.5:41001"
+	reqPrefix.Header.Set("X-Forwarded-Host", "media.example.com")
+	reqPrefix.Header.Set("X-Forwarded-Proto", "https")
+	reqPrefix.Header.Set("X-Forwarded-Prefix", "/ether-app")
+	got, err = portalAddress(context.Background(), reqPrefix, peer, "0.0.0.0", "32400", config.Config{}, trusted, containerInterfaces, nil)
+	if err != nil || got != "https://media.example.com/ether-app/ether/me" {
+		t.Fatalf("trusted proxy prefix portal: got %q err %v", got, err)
+	}
+	gotSurface, ok = surfaceAddress(reqPrefix, peer, local, []string{"0.0.0.0:8096"}, []string{""}, trusted, containerInterfaces)
+	if !ok || gotSurface != "https://media.example.com/ether-app" {
+		t.Fatalf("trusted proxy prefix surface: got %q ok %v", gotSurface, ok)
+	}
+
 	// Untrusted proxy headers must be ignored.
 	untrustedReq := httptest.NewRequest(http.MethodPost, "http://192.168.68.66:32400/ether/api/me/apps/jellyfin", nil)
 	untrustedReq.RemoteAddr = "192.168.68.10:41000"
 	untrustedReq.Header.Set("X-Forwarded-Host", "evil.example.com")
 	untrustedReq.Header.Set("X-Forwarded-Proto", "https")
+	untrustedReq.Header.Set("X-Forwarded-Prefix", "/spoof")
 
 	got, err = portalAddress(context.Background(), untrustedReq, netip.MustParseAddr("192.168.68.10"), "0.0.0.0", "32400", config.Config{}, trusted, containerInterfaces, nil)
 	if err != nil || got != "http://192.168.68.66:32400/ether/me" {
@@ -85,24 +102,33 @@ func TestPortalAndSurfaceReverseProxyHonoursTrustedHeaders(t *testing.T) {
 	}
 }
 
-func TestPortalAndSurfacePrefersConfiguredURL(t *testing.T) {
+func TestPortalPrefersRequestAndFallsBackToConfiguredURL(t *testing.T) {
 	_, bridgeNet, _ := net.ParseCIDR("172.20.0.0/16")
 	containerInterfaces := []remote.InterfaceAddr{{IP: net.ParseIP("172.20.0.2"), Net: bridgeNet}}
 	peer := netip.MustParseAddr("192.168.68.10")
 
+	// Request-derived wins when the request carries a usable host.
 	req := httptest.NewRequest(http.MethodPost, "http://192.168.68.66:32400/ether/api/me/apps/jellyfin", nil)
 	req.RemoteAddr = "172.20.0.1:54321"
-
 	cfg := config.Config{Plex: config.Plex{CustomURLs: []string{"https://watch.example.com:8443"}}}
 	got, err := portalAddress(context.Background(), req, peer, "0.0.0.0", "32400", cfg, nil, containerInterfaces, nil)
+	if err != nil || got != "http://192.168.68.66:32400/ether/me" {
+		t.Fatalf("request-derived portal: got %q err %v", got, err)
+	}
+
+	// Without a usable request host or matching LAN interface, configured URLs are used.
+	remotePeer := netip.MustParseAddr("198.51.100.25")
+	containerReq := httptest.NewRequest(http.MethodPost, "http://172.20.0.2:32400/ether/api/me/apps/jellyfin", nil)
+	containerReq.RemoteAddr = "198.51.100.25:54321"
+	got, err = portalAddress(context.Background(), containerReq, remotePeer, "0.0.0.0", "32400", cfg, nil, containerInterfaces, nil)
 	if err != nil || got != "https://watch.example.com:8443/ether/me" {
-		t.Fatalf("custom URL portal: got %q err %v", got, err)
+		t.Fatalf("custom URL fallback portal: got %q err %v", got, err)
 	}
 
 	cfgPublic := config.Config{Plex: config.Plex{PublicHost: "media.example.com", PublicPort: 443}}
-	got, err = portalAddress(context.Background(), req, peer, "0.0.0.0", "32400", cfgPublic, nil, containerInterfaces, nil)
+	got, err = portalAddress(context.Background(), containerReq, remotePeer, "0.0.0.0", "32400", cfgPublic, nil, containerInterfaces, nil)
 	if err != nil || got != "https://media.example.com/ether/me" {
-		t.Fatalf("public host portal: got %q err %v", got, err)
+		t.Fatalf("public host fallback portal: got %q err %v", got, err)
 	}
 }
 
@@ -208,5 +234,83 @@ func TestPortalLoopbackUsesVerifiedListener(t *testing.T) {
 		if got != tc.want || (err == nil) != (tc.want != "") {
 			t.Fatalf("peer=%s bound=%s got=%q err=%v", tc.peer, tc.host, got, err)
 		}
+	}
+}
+
+func TestAppAddressUnifiedPrecedenceAndEsmailSetup(t *testing.T) {
+	dir := t.TempDir()
+	store, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *config.Config) error {
+		c.Server.TrustedProxyCIDRs = []string{"172.20.0.0/16"}
+		c.Plex.CustomURLs = []string{"https://dashboard.example.com/"}
+		c.Frontends = map[string]config.Frontend{
+			"jellyfin": {Enabled: true, PublicURL: "https://jellyfin.example.com/"},
+			"emby":     {Enabled: true, PublishedAddresses: []string{"https://emby.example.com/"}},
+			"silo":     {Enabled: true},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listeners := newFrontendListeners(nil)
+	listeners.running["jellyfin"] = &runningFrontend{sharedPrefixes: []string{"/jellyfin"}}
+	listeners.running["emby"] = &runningFrontend{sharedPrefixes: []string{"/emby"}}
+	listeners.running["silo"] = &runningFrontend{sharedPrefixes: []string{"/silo"}}
+
+	rt := &frontendRuntime{
+		app:      &App{cfg: store},
+		control:  &frontendControl{listeners: listeners},
+		mainAddr: &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 32400},
+	}
+
+	// Portal / console request arriving at dashboard.example.com (NOT on jellyfin's surface):
+	// Tier 2 wins for jellyfin & emby (their published/publicUrl addresses), while
+	// silo has no published address and falls back to Tier 3 (server address + /silo).
+	portalReq := httptest.NewRequest(http.MethodPost, "http://172.20.0.2:32400/ether/api/me/apps/jellyfin", nil)
+	portalReq.RemoteAddr = "172.20.0.5:41000"
+	portalReq.Header.Set("X-Forwarded-Host", "dashboard.example.com")
+	portalReq.Header.Set("X-Forwarded-Proto", "https")
+
+	if got, err := rt.appAddress(context.Background(), "jellyfin", portalReq, false); err != nil || got != "https://jellyfin.example.com" {
+		t.Fatalf("portal jellyfin = %q err=%v, want https://jellyfin.example.com", got, err)
+	}
+	if got, err := rt.appAddress(context.Background(), "emby", portalReq, false); err != nil || got != "https://emby.example.com" {
+		t.Fatalf("portal emby = %q err=%v, want https://emby.example.com", got, err)
+	}
+	if got, err := rt.appAddress(context.Background(), "silo", portalReq, false); err != nil || got != "https://dashboard.example.com/silo" {
+		t.Fatalf("portal silo fallback = %q err=%v, want https://dashboard.example.com/silo", got, err)
+	}
+
+	// Tier 1: live request ON jellyfin's own surface derives from that request even
+	// when a different published address is configured.
+	jfReq := httptest.NewRequest(http.MethodGet, "http://172.20.0.2:8096/System/Info/Public", nil)
+	jfReq.RemoteAddr = "172.20.0.5:41001"
+	jfReq.Header.Set("X-Forwarded-Host", "alt.example.com")
+	jfReq.Header.Set("X-Forwarded-Proto", "https")
+	jfReq.Header.Set("X-Forwarded-Prefix", "/jf")
+	jfReq = jfReq.WithContext(frontend.WithMountPrefix(jfReq.Context(), "jellyfin", ""))
+
+	if got, err := rt.appAddress(context.Background(), "jellyfin", jfReq, false); err != nil || got != "https://alt.example.com/jf" {
+		t.Fatalf("in-app jellyfin request-derived = %q err=%v, want https://alt.example.com/jf", got, err)
+	}
+
+	// Direct loopback request on jellyfin's own surface also derives cleanly.
+	loopReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8096/System/Info/Public", nil)
+	loopReq.RemoteAddr = "127.0.0.1:51000"
+	loopReq = loopReq.WithContext(frontend.WithMountPrefix(loopReq.Context(), "jellyfin", ""))
+	if got, err := rt.appAddress(context.Background(), "jellyfin", loopReq, false); err != nil || got != "http://127.0.0.1:8096" {
+		t.Fatalf("loopback in-app jellyfin = %q err=%v, want http://127.0.0.1:8096", got, err)
+	}
+
+	// Out-of-band (req == nil): Tier 2 published address first, then Tier 3 server + path.
+	if got, err := rt.appAddress(context.Background(), "jellyfin", nil, false); err != nil || got != "https://jellyfin.example.com" {
+		t.Fatalf("out-of-band jellyfin = %q err=%v", got, err)
+	}
+	if got, err := rt.appAddress(context.Background(), "silo", nil, false); err != nil || got != "https://dashboard.example.com/silo" {
+		t.Fatalf("out-of-band silo = %q err=%v", got, err)
 	}
 }

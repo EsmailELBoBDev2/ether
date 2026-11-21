@@ -293,7 +293,12 @@ export interface PosterProviderConfig {
 export interface EtherConfig {
   frontends?: Record<
     string,
-    { enabled: boolean; publicUrl?: string; settings?: Record<string, unknown> }
+    {
+      enabled: boolean;
+      publishedAddresses?: string[];
+      publicUrl?: string;
+      settings?: Record<string, unknown>;
+    }
   >;
   frontendPorts?: Record<string, number>;
   posters?: PosterProviderConfig;

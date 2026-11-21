@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/identity"
 )
 
@@ -71,11 +72,16 @@ func (h *Handler) handleSignInStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "csrf", "mutating requests require the X-Ether-Request: 1 header and a JSON content type")
 		return
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	forward := ""
+	if origin, ok := clientnet.Origin(r, h.proxyPrefixes()...); ok {
+		forward = origin.BaseURL("/ether") + "/"
+	} else {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		forward = scheme + "://" + r.Host + "/ether/"
 	}
-	forward := scheme + "://" + r.Host + "/ether/"
 	id, code, authURL, err := h.deps.SignIn.StartPIN(r.Context(), forward)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "plextv", "Could not reach plex.tv: "+err.Error())

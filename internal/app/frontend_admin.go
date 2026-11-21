@@ -118,6 +118,11 @@ func (f *frontendControl) List(ctx context.Context) ([]admin.FrontendInfo, error
 		if known {
 			status.LiveStreams, status.LiveStreamsKnown = counts[d.ID], true
 		}
+		if frontendHostPolicy(d.ID).MainListener {
+			status.PublishedAddresses = validPlexCustomURLs(cfg.Plex.CustomURLs)
+		} else if frontendHostPolicy(d.ID).PublicURL {
+			status.PublishedAddresses = validPublishedAddresses(cfg.Frontends[string(d.ID)].EffectivePublishedAddresses())
+		}
 		out = append(out, admin.FrontendInfo{Descriptor: d, Enabled: enabled, Status: status})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -164,8 +169,10 @@ func (f *frontendControl) Settings(_ context.Context, id frontend.Protocol) (fro
 	if id == "vela" {
 		settings = vela.NormalizeSettings(settings)
 	}
-	if publicURL := strings.TrimSpace(cfg.Frontends[string(id)].PublicURL); publicURL != "" {
-		settings["publicUrl"] = publicURL
+	if frontendHostPolicy(id).PublicURL {
+		if published := validPublishedAddresses(cfg.Frontends[string(id)].EffectivePublishedAddresses()); len(published) > 0 {
+			settings["publishedAddresses"] = published
+		}
 	}
 	if port := cfg.FrontendPorts[string(id)]; port > 0 {
 		settings["port"] = float64(port)
@@ -200,14 +207,15 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 		return frontend.ErrNotRegistered
 	}
 	s = withoutServerName(s)
-	// publicUrl is a host-owned setting stored on config.Frontend, like the
-	// port; keep it out of the protocol's own settings and validation. Plex
-	// does not take one (it keeps Plex.CustomURLs), so leave it in place
-	// there and let the Plex branch below reject it.
-	publicURL, hasPublicURL := "", false
+	// publishedAddresses (and legacy publicUrl) is a host-owned setting stored
+	// on config.Frontend, like the port; keep it out of the protocol's own
+	// settings and validation. Plex does not take one (it keeps Plex.CustomURLs),
+	// so leave it in place there and let the Plex branch below reject it.
+	var publishedAddresses []string
+	hasPublishedAddresses := false
 	if frontendHostPolicy(id).PublicURL {
 		var err error
-		s, publicURL, hasPublicURL, err = extractPublicURL(s)
+		s, publishedAddresses, hasPublishedAddresses, err = extractPublishedAddresses(s)
 		if err != nil {
 			return err
 		}
@@ -284,11 +292,12 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 			}
 			v.CapabilitiesRevision++
 		}
-		// Only a present publicUrl changes the stored address; a settings
-		// save that never heard of it must not clear the owner's address.
-		// A present empty value clears it.
-		if hasPublicURL {
-			v.PublicURL = publicURL
+		// Only a present publishedAddresses/publicUrl changes the stored list;
+		// a settings save that never sent it must not clear the owner's list.
+		// A present empty list clears it.
+		if hasPublishedAddresses {
+			v.PublishedAddresses = publishedAddresses
+			v.PublicURL = ""
 		}
 		v.Settings = make(map[string]any, len(s))
 		for k, val := range s {
@@ -356,33 +365,120 @@ func (f *frontendControl) Reconcile(ctx context.Context, c config.Config) {
 	}
 }
 
-// extractPublicURL removes publicUrl from the settings and returns its
-// normalized value (empty clears the stored address). Present reports
-// whether the key was there at all.
-func extractPublicURL(s frontend.Settings) (out frontend.Settings, value string, present bool, err error) {
-	raw, present := s["publicUrl"]
-	if !present {
-		return s, "", false, nil
+const maxPublishedAddresses = 16
+
+// extractPublishedAddresses removes publishedAddresses (or legacy publicUrl)
+// from settings and returns the normalized, deduplicated list. Present reports
+// whether either key was supplied.
+func extractPublishedAddresses(s frontend.Settings) (out frontend.Settings, values []string, present bool, err error) {
+	rawList, hasList := s["publishedAddresses"]
+	rawLegacy, hasLegacy := s["publicUrl"]
+	if !hasList && !hasLegacy {
+		return s, nil, false, nil
 	}
-	text, ok := raw.(string)
-	if !ok {
-		return s, "", true, errors.New("invalid public address")
-	}
-	text = strings.TrimSpace(text)
-	if text != "" {
-		c, parseErr := remote.ParseCustomURL(text)
-		if parseErr != nil {
-			return s, "", true, errors.New("invalid public address")
+	if hasList {
+		var rawItems []string
+		switch v := rawList.(type) {
+		case nil:
+			// Clearing the list.
+		case []string:
+			rawItems = v
+		case []any:
+			rawItems = make([]string, 0, len(v))
+			for _, item := range v {
+				text, ok := item.(string)
+				if !ok {
+					return s, nil, true, errors.New("invalid published address")
+				}
+				rawItems = append(rawItems, text)
+			}
+		default:
+			return s, nil, true, errors.New("invalid published addresses")
 		}
-		text = strings.TrimRight(c.URI, "/")
+		seen := make(map[string]struct{}, len(rawItems))
+		for _, item := range rawItems {
+			normalized, parseErr := remote.ParsePublishedURL(item)
+			if parseErr != nil {
+				return s, nil, true, errors.New("invalid published address")
+			}
+			if _, dup := seen[normalized]; dup {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			values = append(values, normalized)
+			if len(values) > maxPublishedAddresses {
+				return s, nil, true, errors.New("too many published addresses")
+			}
+		}
+	} else {
+		text, ok := rawLegacy.(string)
+		if !ok {
+			return s, nil, true, errors.New("invalid published address")
+		}
+		text = strings.TrimSpace(text)
+		if text != "" {
+			normalized, parseErr := remote.ParsePublishedURL(text)
+			if parseErr != nil {
+				return s, nil, true, errors.New("invalid published address")
+			}
+			values = []string{normalized}
+		}
 	}
 	out = make(frontend.Settings, len(s))
 	for k, v := range s {
-		if k != "publicUrl" {
+		if k != "publishedAddresses" && k != "publicUrl" {
 			out[k] = v
 		}
 	}
-	return out, text, true, nil
+	return out, values, true, nil
+}
+
+func validPublishedAddresses(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		normalized, err := remote.ParsePublishedURL(entry)
+		if err != nil {
+			continue
+		}
+		if _, dup := seen[normalized]; dup {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func validPlexCustomURLs(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		c, err := remote.ParseCustomURL(strings.TrimSpace(entry))
+		if err != nil {
+			continue
+		}
+		uri := strings.TrimRight(c.URI, "/")
+		key := strings.ToLower(uri)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, uri)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func withoutServerName(s frontend.Settings) frontend.Settings {

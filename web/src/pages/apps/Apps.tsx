@@ -39,7 +39,7 @@ import {
   type HubFrontendInfo,
 } from "./ConnectionHub";
 import { usableAddresses } from "./reachability";
-import { validateCustomUrls } from "./plex-account";
+import { PublishedAddressesDrawer } from "./PublishedAddressesDrawer";
 
 type FrontendInfo = HubFrontendInfo;
 
@@ -57,7 +57,7 @@ export type VelaAppIcon = {
 };
 type Settings = {
   port?: number;
-  publicUrl?: string;
+  publishedAddresses?: string[];
   serverName?: string;
   discovery?: boolean;
   quickConnect?: boolean;
@@ -725,15 +725,32 @@ function ProtocolSettings({
   const { draft, setDraft, dirty, reset } = useDraft(state.data);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>();
+  const [publishedDrawerOpen, setPublishedDrawerOpen] = useState(false);
   const editablePort = DEDICATED_PORT_APPS.has(id);
+  const canPublishAddresses =
+    id !== "plex" &&
+    id !== "dlna" &&
+    info?.descriptor.auth !== "none_lan" &&
+    (id !== "vela" || Boolean(info?.status.webPlayerReady));
+  const publishedAddresses = draft?.publishedAddresses ?? info?.status.publishedAddresses ?? [];
+
+  async function savePublishedAddresses(next: string[]) {
+    const base = state.data ?? draft ?? {};
+    const { serverName: _serverName, port: rawPort, ...body } = base;
+    const payload: Settings = { ...body, publishedAddresses: next };
+    if (editablePort) {
+      const nextPort = rawPort ?? info?.descriptor.defaultPort;
+      if (nextPort != null) payload.port = nextPort;
+    }
+    await apiFetch(`/frontends/${id}/settings`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    await Promise.all([state.reload(), onReloadFrontends()]);
+  }
 
   async function save() {
     if (!draft) return;
-    const publicUrlError = validateCustomUrls(draft.publicUrl ? [draft.publicUrl] : []);
-    if (publicUrlError) {
-      setError(new Error(publicUrlError));
-      return;
-    }
     const { serverName: _serverName, port: rawPort, ...body } = draft;
     if (editablePort) {
       const nextPort = rawPort ?? info?.descriptor.defaultPort;
@@ -771,7 +788,10 @@ function ProtocolSettings({
       <>
         <AppAddressCard
           info={info}
-          configuredRemote={draft?.publicUrl}
+          publishedAddresses={publishedAddresses}
+          onEditPublishedAddresses={
+            canPublishAddresses ? () => setPublishedDrawerOpen(true) : undefined
+          }
           port={draft ? draft.port : info.descriptor.defaultPort}
           onPortChange={draft && editablePort ? (port) => setDraft({ ...draft, port }) : undefined}
           serverPort={serverPort}
@@ -780,10 +800,21 @@ function ProtocolSettings({
         />
         <ConnectDeviceCard
           info={info}
-          configuredRemote={draft?.publicUrl}
+          publishedAddresses={publishedAddresses}
           preferredPort={String(draft?.port ?? info.descriptor.defaultPort ?? serverPort)}
           serverName={serverName}
         />
+        {canPublishAddresses ? (
+          <PublishedAddressesDrawer
+            open={publishedDrawerOpen}
+            onClose={() => setPublishedDrawerOpen(false)}
+            appId={id}
+            appName={nameFor(info)}
+            addresses={publishedAddresses}
+            observedAddresses={info.status.observedAddresses}
+            onSave={savePublishedAddresses}
+          />
+        ) : null}
       </>
     ) : null;
 
@@ -840,40 +871,10 @@ function ProtocolSettings({
     });
   }
 
-  const awayFromHome =
-    id !== "plex" &&
-    id !== "dlna" &&
-    !lanViewer &&
-    (id !== "vela" || info?.status.webPlayerReady) ? (
-      <SettingsSection title={t("Away from home")}>
-        <SettingsRow
-          title={<label htmlFor={`${id}-public-url`}>{t("Public address")}</label>}
-          description={t(
-            "The address viewers use to reach this app from outside your network, e.g. https://jelly.example.com",
-          )}
-          control={
-            <Input
-              id={`${id}-public-url`}
-              aria-label={t("Public address")}
-              type="url"
-              inputMode="url"
-              autoComplete="off"
-              spellCheck={false}
-              className="w-72"
-              placeholder={`https://${id === "jellyfin" ? "jelly" : id}.example.com`}
-              value={draft.publicUrl ?? ""}
-              onChange={(e) => setDraft({ ...draft, publicUrl: e.currentTarget.value })}
-            />
-          }
-        />
-      </SettingsSection>
-    ) : null;
-
   return (
     <>
       <div hidden={hidden} className="space-y-6">
         {connectionCards}
-        {id === "vela" ? awayFromHome : null}
         {id === "vela" && !hidden ? (
           <>
             <VelaDistribution />
@@ -956,7 +957,6 @@ function ProtocolSettings({
           />
         ) : null}
         {id === "xtream" && info?.enabled ? <XtreamLogins /> : null}
-        {id !== "vela" ? awayFromHome : null}
         {id === "jellyfin" || id === "emby" ? (
           <SettingsSection
             title={t("Home")}

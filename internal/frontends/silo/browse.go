@@ -114,10 +114,7 @@ func (i *instance) paintLiveCardArtwork(r *http.Request, v *frontend.Viewer, cre
 	if i.host.ImageGrants == nil || i.host.LiveTV == nil {
 		return
 	}
-	prefix := ""
-	if r.Context().Value(sharedPrefix{}) != nil {
-		prefix = "/silo"
-	}
+	prefix := i.pathPrefix(r)
 	for _, raw := range items {
 		card, ok := raw.(map[string]any)
 		if !ok {
@@ -685,10 +682,7 @@ func (i *instance) liveChannelDetail(w http.ResponseWriter, r *http.Request, v *
 		out["content_rating"] = contentrating.Prefixed(contentRating)
 	}
 	if i.host.ImageGrants != nil {
-		prefix := ""
-		if r.Context().Value(sharedPrefix{}) != nil {
-			prefix = "/silo"
-		}
+		prefix := i.pathPrefix(r)
 		for _, img := range ch.Images {
 			if img.Path == "" {
 				continue

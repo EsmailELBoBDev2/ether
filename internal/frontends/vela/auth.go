@@ -180,10 +180,15 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		var a string
 		var e error
+		reqOrigin, hasOrigin := i.host.Origin(r)
+		secureOrigin := ""
+		if hasOrigin && reqOrigin.Scheme == "https" && reqOrigin.Host != "" {
+			secureOrigin = "https://" + reqOrigin.Host
+		}
 		if bound, ok := i.host.Identity.(interface {
 			RedeemOriginWebCode(context.Context, string, frontend.Device, string) (string, error)
-		}); ok && r.TLS != nil && i.trustedSecureOrigin(r, "https://"+r.Host) {
-			a, e = bound.RedeemOriginWebCode(ctx, b.Code, d, "https://"+r.Host)
+		}); ok && secureOrigin != "" && i.trustedSecureOrigin(r, secureOrigin) {
+			a, e = bound.RedeemOriginWebCode(ctx, b.Code, d, secureOrigin)
 		} else {
 			a, e = service.RedeemDeviceWebCode(ctx, b.Code, d)
 		}

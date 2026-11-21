@@ -40,6 +40,8 @@ type AppRow = {
     actualPort?: number;
     busyPortHolder?: string;
     warnings?: string[];
+    observedAddresses?: string[];
+    publishedAddresses?: string[];
     lan: string;
     wan: string;
     clients24h: number;
@@ -83,7 +85,15 @@ const defaultConfig = () => ({
   },
 });
 
-function row(id: string, name: string, enabled: boolean, extra?: Partial<AppRow>): AppRow {
+function row(
+  id: string,
+  name: string,
+  enabled: boolean,
+  extra?: {
+    descriptor?: Partial<AppRow["descriptor"]>;
+    status?: Partial<AppRow["status"]>;
+  },
+): AppRow {
   const defaultPort =
     id === "jellyfin"
       ? 8096
@@ -530,23 +540,24 @@ describe("Apps connection hub", () => {
 
     renderApps("/apps/vela");
     const nameInput = await screen.findByLabelText("App name");
+    const publishedTitle = screen.getByText("Published addresses");
     const connectHeading = screen.getByRole("heading", { name: "Connect a device" });
-    const awayHeading = screen.getByRole("heading", { name: "Away from home" });
     const brandingHeading = screen.getByRole("heading", { name: "Branding" });
     const skinsHeading = screen.getByRole("heading", { name: "Skins" });
-    expect(screen.getByLabelText("Public address")).toBeInTheDocument();
     expect(
       Boolean(
-        connectHeading.compareDocumentPosition(awayHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+        publishedTitle.compareDocumentPosition(connectHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
       ),
     ).toBe(true);
     expect(
       Boolean(
-        awayHeading.compareDocumentPosition(brandingHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+        connectHeading.compareDocumentPosition(brandingHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
       ),
     ).toBe(true);
     expect(
-      Boolean(awayHeading.compareDocumentPosition(skinsHeading) & Node.DOCUMENT_POSITION_FOLLOWING),
+      Boolean(
+        connectHeading.compareDocumentPosition(skinsHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
     ).toBe(true);
     fireEvent.change(nameInput, { target: { value: "  Rialto House  " } });
 
@@ -811,5 +822,122 @@ describe("Apps connection hub", () => {
     fireEvent.click(screen.getByLabelText("Remove app icon"));
     expect(screen.queryByRole("img", { name: "App icon preview" })).not.toBeInTheDocument();
     vi.restoreAllMocks();
+  });
+
+  it("classifies observed and published addresses and detects remote access presence", () => {
+    const localOnly = classifyAppAddresses(
+      {
+        connectUrls: ["http://192.168.1.20:8097", "http://192.168.1.20:32400/emby"],
+      },
+      { preferredPort: "8097" },
+    );
+    expect(localOnly.primary).toBe("http://192.168.1.20:8097");
+    expect(localOnly.hasRemoteAddress).toBe(false);
+
+    const withObservedAndPublished = classifyAppAddresses(
+      {
+        connectUrls: ["http://192.168.1.20:8096"],
+        observedAddresses: ["https://jellyfin.example.com", "https://media.example.com/jellyfin"],
+        publishedAddresses: ["https://jellyfin.example.com"],
+      },
+      { preferredPort: "8096" },
+    );
+    expect(withObservedAndPublished.primary).toBe("http://192.168.1.20:8096");
+    expect(withObservedAndPublished.hasRemoteAddress).toBe(true);
+    expect(withObservedAndPublished.others).toEqual([
+      { address: "https://jellyfin.example.com", label: "Published" },
+      { address: "https://media.example.com/jellyfin", label: "Seen recently" },
+    ]);
+  });
+
+  it("shows a remote-access hint when only local addresses exist and supports observed suggestions in the Published addresses drawer", async () => {
+    let savedSettings: Record<string, unknown> = { port: 8096 };
+    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
+      if (path === "/frontends") {
+        return [
+          row("jellyfin", "Jellyfin", true, {
+            descriptor: { defaultPort: 8096 },
+            status: {
+              addresses: ["127.0.0.1:8096"],
+              connectUrls: ["http://192.168.1.20:8096", "http://192.168.1.20:32400/jellyfin"],
+              observedAddresses: [
+                "https://jellyfin.example.com",
+                "https://media.example.com/jellyfin",
+              ],
+              publishedAddresses: (savedSettings.publishedAddresses as string[] | undefined) ?? [],
+            },
+          }),
+          row("emby", "Emby", true, {
+            descriptor: { defaultPort: 8097 },
+            status: {
+              addresses: ["127.0.0.1:8097"],
+              connectUrls: ["http://192.168.1.20:8097"],
+            },
+          }),
+        ];
+      }
+      if (path === "/frontends/jellyfin/settings" && !options?.method) return savedSettings;
+      if (path === "/frontends/jellyfin/settings" && options?.method === "PUT") {
+        savedSettings = JSON.parse(String(options.body));
+        return { ok: true };
+      }
+      if (path === "/frontends/emby/settings" && !options?.method) return { port: 8097 };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    // Emby has no observed or published remote addresses -> shows LAN address + remote access hint.
+    const embyView = renderApps("/apps/emby");
+    expect(
+      await screen.findByRole("link", { name: "http://192.168.1.20:8097" }),
+    ).toBeInTheDocument();
+    const remoteHintLink = screen.getByRole("link", { name: "Set up remote access" });
+    expect(remoteHintLink).toHaveAttribute("href", "/apps/overview");
+    embyView.unmount();
+
+    // Jellyfin has observed addresses -> shows them as "Seen recently" and offers one-click suggestions.
+    renderApps("/apps/jellyfin");
+    expect(await screen.findByText("https://jellyfin.example.com")).toBeInTheDocument();
+    expect(screen.getAllByText("Seen recently")).toHaveLength(2);
+    expect(screen.queryByRole("link", { name: "Set up remote access" })).not.toBeInTheDocument();
+
+    // Open the Published addresses drawer.
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const dialog = await screen.findByRole("dialog", { name: "Published addresses" });
+
+    // Observed addresses are suggested, never applied silently.
+    expect(
+      within(dialog).getByText(
+        "No published addresses yet. Ether will use your local address or the current request.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "https://jellyfin.example.com" }));
+    expect(
+      within(dialog).getByRole("button", { name: "Remove https://jellyfin.example.com" }),
+    ).toBeInTheDocument();
+
+    // Reject loopback addresses with a plain-word validation message.
+    const input = within(dialog).getByLabelText("Add an address");
+    fireEvent.change(input, { target: { value: "http://localhost:8096" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(/http:\/\/ or https:\/\//);
+
+    // Add a path-style address and save.
+    fireEvent.change(input, { target: { value: "https://example.com/jellyfin/" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(savedSettings).toEqual({
+        port: 8096,
+        publishedAddresses: ["https://jellyfin.example.com", "https://example.com/jellyfin"],
+      }),
+    );
+    await waitFor(() =>
+      expect(apiBlob).toHaveBeenCalledWith(
+        "/ether/api/frontends/qr?url=https%3A%2F%2Fjellyfin.example.com",
+        expect.any(AbortSignal),
+      ),
+    );
   });
 });

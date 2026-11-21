@@ -223,4 +223,35 @@ func TestEnsurePlexFriend(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT title FROM auth_users WHERE id=?`, uid).Scan(&title); err != nil || title != "Sakib T." {
 		t.Fatalf("expected title Sakib T. preserved on empty title, got %q (err=%v)", title, err)
 	}
+
+	// EnsurePlexFriend reloads the in-memory cache immediately so User/AllUsers see it.
+	if u, err := s.User(ctx, uid); err != nil || u.PlexID != 703916194 || u.Title != "Sakib T." {
+		t.Fatalf("expected in-memory cache to immediately contain ensured friend, got u=%+v err=%v", u, err)
+	}
+
+	// FriendlyName fallback and preserving is_home/restricted when re-upserted from partial source.
+	homeUID, err := s.EnsurePlexFriend(ctx, plextv.SharedUser{
+		PlexID:       880011,
+		Username:     "kid_home",
+		FriendlyName: "Kids Profile",
+		Home:         true,
+		Restricted:   true,
+	})
+	if err != nil || homeUID <= 0 {
+		t.Fatalf("EnsurePlexFriend home user failed: %v", err)
+	}
+	if _, err := s.EnsurePlexFriend(ctx, plextv.SharedUser{
+		PlexID:   880011,
+		Username: "kid_home",
+		Email:    "kid@example.com",
+	}); err != nil {
+		t.Fatalf("re-upsert home user from partial source failed: %v", err)
+	}
+	var isHome, restricted int
+	if err := db.QueryRowContext(ctx, `SELECT title, is_home, restricted FROM auth_users WHERE id=?`, homeUID).Scan(&title, &isHome, &restricted); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Kids Profile" || isHome != 1 || restricted != 1 {
+		t.Fatalf("expected FriendlyName title and preserved home/restricted flags, got title=%q is_home=%d restricted=%d", title, isHome, restricted)
+	}
 }

@@ -632,13 +632,47 @@ func (s *Servers) ViewerServers(ctx context.Context, userID int64) ([]PMSViewerM
 	return out, rows.Err()
 }
 
-// ServerToken returns the decrypted Plex token for the configured PMS server.
-func (s *Servers) ServerToken(ctx context.Context, id int64) (string, error) {
-	row, err := s.loadServer(ctx, id)
-	if err != nil {
-		return "", err
+// ForEachServerCredential visits each configured PMS server with its decrypted
+// owner token in a single query. Internal server-side use only (e.g. querying
+// plex.tv from internal/app); tokens must never reach admin/console layers or logs.
+func (s *Servers) ForEachServerCredential(ctx context.Context, fn func(id int64, machineID, owner, token string)) error {
+	if s == nil || s.db == nil || fn == nil {
+		return nil
 	}
-	return s.open(row.token, row.machineID)
+	type cred struct {
+		id        int64
+		machineID string
+		owner     string
+		token     string
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,machine_id,owner_name,token FROM plexwatch_pms ORDER BY id LIMIT ?`, pmsMaxServers*2)
+	if err != nil {
+		return err
+	}
+	var creds []cred
+	for rows.Next() {
+		var c cred
+		var sealed string
+		if err := rows.Scan(&c.id, &c.machineID, &c.owner, &sealed); err != nil {
+			rows.Close()
+			return err
+		}
+		tok, err := s.open(sealed, c.machineID)
+		if err != nil || tok == "" {
+			continue
+		}
+		c.token = tok
+		creds = append(creds, c)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, c := range creds {
+		fn(c.id, c.machineID, c.owner, c.token)
+	}
+	return nil
 }
 
 // Accounts lists the server's accounts live, with their current viewer.

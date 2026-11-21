@@ -1399,13 +1399,20 @@ func (s *Service) EnsurePlexFriend(ctx context.Context, u plextv.SharedUser) (in
 	if u.PlexID <= 0 {
 		return 0, errors.New("auth: plex user ID required")
 	}
+	uuid := strings.TrimSpace(u.UUID)
+	username := strings.TrimSpace(u.Username)
+	email := strings.TrimSpace(u.Email)
+	thumb := strings.TrimSpace(u.Thumb)
 	title := strings.TrimSpace(u.Title)
+	if title == "" {
+		title = strings.TrimSpace(u.FriendlyName)
+	}
 	display := title
 	if display == "" {
-		display = strings.TrimSpace(u.Username)
+		display = username
 	}
 	if display == "" {
-		display = strings.TrimSpace(u.Email)
+		display = email
 	}
 	if display == "" {
 		display = strconv.FormatInt(u.PlexID, 10)
@@ -1428,13 +1435,13 @@ ON CONFLICT(plex_id) DO UPDATE SET
 	title=CASE WHEN CAST(? AS TEXT)<>'' THEN CAST(? AS TEXT) ELSE auth_users.title END,
 	email=CASE WHEN excluded.email<>'' THEN excluded.email ELSE auth_users.email END,
 	thumb=CASE WHEN excluded.thumb<>'' THEN excluded.thumb ELSE auth_users.thumb END,
-	is_home=excluded.is_home,
-	restricted=excluded.restricted,
+	is_home=CASE WHEN excluded.is_home=1 THEN 1 ELSE auth_users.is_home END,
+	restricted=CASE WHEN excluded.restricted=1 THEN 1 ELSE auth_users.restricted END,
 	origin=CASE WHEN auth_users.origin='owner' THEN auth_users.origin ELSE 'friend' END,
 	updated_at=excluded.updated_at
 WHERE auth_users.origin<>'dlna_guest'
 RETURNING id`,
-		u.PlexID, u.UUID, u.Username, display, u.Email, u.Thumb, store.BoolInt(u.Home), store.BoolInt(u.Restricted), now, now, title, title).Scan(&uid); err != nil {
+		u.PlexID, uuid, username, display, email, thumb, store.BoolInt(u.Home), store.BoolInt(u.Restricted), now, now, title, title).Scan(&uid); err != nil {
 		return 0, fmt.Errorf("auth: ensure plex friend %d: %w", u.PlexID, err)
 	}
 	if err := upsertPlexLink(ctx, tx, u.PlexID, display, now); err != nil {
@@ -1443,6 +1450,10 @@ RETURNING id`,
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	if err := s.reload(ctx); err != nil {
+		return 0, err
+	}
+	s.notify("")
 	return uid, nil
 }
 

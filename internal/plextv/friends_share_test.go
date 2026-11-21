@@ -460,3 +460,67 @@ func TestShareServerV2ZeroLibrariesUpgradeToAll(t *testing.T) {
 		t.Fatal("expected POST /api/v2/shared_servers/44310104 to be called")
 	}
 }
+
+func TestShareServerResolutionInvariants(t *testing.T) {
+	var (
+		postV2Calls      atomic.Int32
+		wrongShareUpdate atomic.Bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/users":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer>
+  <User id="101" username="alex_one" title="Alex Smith" email="alex1@example.com"/>
+  <User id="102" username="alex_two" title="Alex Smith" email="alex2@example.com"/>
+</MediaContainer>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/home/users":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer>
+  <User id="1" username="owner_acct" title="Server Owner" admin="1"/>
+</MediaContainer>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/shared_servers/owned/accepted":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":77777,"machineIdentifier":"test-mid","allLibraries":false,"librarySectionIds":[101],"invited":{"id":888,"username":"other_alex","title":"Alex"}}]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/shared_servers/invites/owned/pending":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers":
+			postV2Calls.Add(1)
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":[{"code":1123,"message":"already sharing"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers/77777":
+			wrongShareUpdate.Store(true)
+			w.WriteHeader(http.StatusCreated)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{
+		BaseURL:      srv.URL,
+		Identity:     Identity{ClientIdentifier: "test-mid"},
+		RetryBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Ambiguous display name shared by two friends must be refused, not pick the first arbitrarily.
+	if err := c.ShareServer(context.Background(), "owner-token", "Alex Smith", 0, nil); err == nil {
+		t.Fatal("expected error for ambiguous spaced display name")
+	}
+	// 2. HomeAdmin (owner) must never be resolved as a share target.
+	if err := c.ShareServer(context.Background(), "owner-token", "Server Owner", 0, nil); err == nil {
+		t.Fatal("expected error when only match is HomeAdmin")
+	}
+	if postV2Calls.Load() != 0 {
+		t.Fatalf("expected 0 POST /api/v2/shared_servers calls for ambiguous/owner lookups, got %d", postV2Calls.Load())
+	}
+	// 3. Updating share for userID=999 must never match/overwrite userID=888's share via colliding title.
+	_ = c.ShareServer(context.Background(), "owner-token", "Alex", 999, nil)
+	if wrongShareUpdate.Load() {
+		t.Fatal("findV2Share matched and updated a different user's share when userID was specified")
+	}
+}

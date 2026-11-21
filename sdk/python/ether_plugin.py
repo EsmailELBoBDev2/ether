@@ -2705,6 +2705,9 @@ class MockHostClient:
             if not (viewer_token or "").strip():
                 raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer token on this request")
             q = dict(query or {})
+            total_mode = q.get("total")
+            if total_mode not in (None, "", "cheap", "none", "exact"):
+                raise ValueError(f"kinds.browse: invalid total mode {total_mode!r}")
             limit = int(q.get("limit") or 200)
             if limit <= 0:
                 limit = 200
@@ -2765,6 +2768,8 @@ class MockHostClient:
             out: Dict[str, Any] = {"items": page}
             if page and start + limit < len(matched):
                 out["nextCursor"] = page[-1].get("id")
+            if total_mode != "none":
+                out["total"] = len(matched)
             return out
 
         def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:

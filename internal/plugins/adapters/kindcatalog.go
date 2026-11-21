@@ -962,7 +962,7 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		const maxArtistReleases = 1000
 		childCursor := ""
 		for len(all) < maxArtistReleases {
-			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Cursor: childCursor, Limit: 200, Policy: policy, Sort: "index"})
+			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{NoTotal: true, LibraryID: lib.ID, ParentRef: parentItem.Ref, Cursor: childCursor, Limit: 200, Policy: policy, Sort: "index"})
 			if err != nil {
 				return experience.PluginBrowsePage{}, err
 			}
@@ -1063,7 +1063,7 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 			if e != nil {
 				return experience.PluginBrowsePage{}, e
 			}
-			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: cur, Cursor: childCursor, Limit: 200, Policy: policy, Sort: "index"})
+			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{NoTotal: true, LibraryID: lib.ID, ParentRef: cur, Cursor: childCursor, Limit: 200, Policy: policy, Sort: "index"})
 			if err != nil {
 				return experience.PluginBrowsePage{}, err
 			}
@@ -1328,6 +1328,7 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	}
 	facets := mapFilterToFacets(rec.Decl, q.Filter)
 	sq := pluginitems.SearchQuery{
+		NoTotal:   true,
 		Policy:    policy,
 		LibraryID: lib.ID,
 		ViewerID:  core.CatalogViewerID(ctx),

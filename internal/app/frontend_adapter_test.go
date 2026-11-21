@@ -608,4 +608,48 @@ func TestAdapterKindVisibleAndBrowseRules(t *testing.T) {
 	}); err == nil {
 		t.Fatal("non-adapter route calling kinds.visible succeeded")
 	}
+
+	// 8) kinds.browse total modes: default ("cheap") returns O(1) tallies and
+	// omits Total for un-tallied multi-page filters; "none" omits Total even on
+	// unfiltered queries; "exact" computes Total on demand (#682).
+	if err := a.libraries.SetRules(ctx, lib.ID, nil, "show"); err != nil {
+		t.Fatal(err)
+	}
+	pUnfiltered, err := browseFn(ctx, pluginID, ownerID, "comic", core.KindBrowseRequest{Level: "series", Limit: 1})
+	if err != nil || pUnfiltered.Total == nil || *pUnfiltered.Total != 3 {
+		t.Fatalf("default cheap unfiltered Total = %v, err=%v; want 3", pUnfiltered.Total, err)
+	}
+	pSingleFacet, err := browseFn(ctx, pluginID, ownerID, "comic", core.KindBrowseRequest{
+		Level:  "series",
+		Facets: map[string][]string{"tags": {"Adventure"}},
+		Limit:  1,
+	})
+	if err != nil || pSingleFacet.Total == nil || *pSingleFacet.Total != 2 {
+		t.Fatalf("default cheap single-facet Total = %v, err=%v; want 2", pSingleFacet.Total, err)
+	}
+	pMultiFacetCheap, err := browseFn(ctx, pluginID, ownerID, "comic", core.KindBrowseRequest{
+		Level:  "series",
+		Facets: map[string][]string{"tags": {"Adventure", "Horror"}},
+		Limit:  1,
+	})
+	if err != nil || pMultiFacetCheap.Total != nil {
+		t.Fatalf("default cheap multi-value strings multi-page Total = %v, err=%v; want nil", pMultiFacetCheap.Total, err)
+	}
+	pNone, err := browseFn(ctx, pluginID, ownerID, "comic", core.KindBrowseRequest{
+		Level: "series",
+		Limit: 1,
+		Total: "none",
+	})
+	if err != nil || pNone.Total != nil {
+		t.Fatalf("total=none Total = %v, err=%v; want nil", pNone.Total, err)
+	}
+	pExact, err := browseFn(ctx, pluginID, ownerID, "comic", core.KindBrowseRequest{
+		Level:  "series",
+		Facets: map[string][]string{"tags": {"Adventure", "Horror"}},
+		Limit:  1,
+		Total:  "exact",
+	})
+	if err != nil || pExact.Total == nil || *pExact.Total != 3 {
+		t.Fatalf("total=exact multi-value strings Total = %v, err=%v; want 3", pExact.Total, err)
+	}
 }

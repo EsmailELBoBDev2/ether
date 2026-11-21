@@ -1241,7 +1241,13 @@ listed value per field, for "tagged both X and Y"), and `excludeFacets`
 per-type values as `facets`, including `lo..hi` ranges for numbers and
 dates and people names, and are evaluated inside the browse query so
 paging and `total` stay correct. The total number of facet values
-across the three maps is bounded (256 per query).
+across the three maps is bounded (256 per query). Pass `total` to
+control whether `KindPage.total` is computed: `"cheap"` (the default)
+returns `total` only when it is O(1) (item or single-facet field
+tallies, an already-cached exact count, or a single-page result) and
+omits `total` otherwise rather than scanning the library; `"none"` never
+computes or returns `total`; `"exact"` computes and caches an exact
+count for the current library generation.
 
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already
@@ -2161,6 +2167,7 @@ type KindPage struct {
 | `allFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `excludeFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
+| `total` | `string` | may be omitted (see validation for conditions) | Total controls whether kinds.browse computes KindPage.Total (#682):   - "" or "cheap" (default): populate Total only when O(1) (item or     field tallies, a cached exact count, or a single-page result) and     omit Total otherwise instead of running a full COUNT(*).   - "none": never compute or return Total.   - "exact": compute an exact Total (cached per library generation). |
 
 
 ## Source: internal/core/kinditem.go#KindBrowseRequest
@@ -2185,6 +2192,13 @@ type KindBrowseRequest struct {
 	AllFacets     map[string][]string `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
 	Query         string              `json:"query,omitempty"`
+	// Total controls whether kinds.browse computes KindPage.Total (#682):
+	//   - "" or "cheap" (default): populate Total only when O(1) (item or
+	//     field tallies, a cached exact count, or a single-page result) and
+	//     omit Total otherwise instead of running a full COUNT(*).
+	//   - "none": never compute or return Total.
+	//   - "exact": compute an exact Total (cached per library generation).
+	Total string `json:"total,omitempty"`
 }
 ``````
 
@@ -12977,6 +12991,14 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
 			Field:   "parentId",
 			Message: "parentId must be a valid external id",
+		}}}
+	}
+	switch q.Total {
+	case "", "cheap", "none", "exact":
+	default:
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "total",
+			Message: `total must be "cheap", "none", or "exact"`,
 		}}}
 	}
 	if q.Limit <= 0 {
@@ -32668,7 +32690,8 @@ Ether exposes two viewer-scoped host calls that run the exact same
 built-in protocol projectors:
 
 - `kinds.browse(kind, query)` — browse or search a kind page with policy already
-  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, query?}`).
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, query?, total?}`).
+  `total` defaults to `"cheap"` (returns `total` only when O(1) from tallies/cache/single page, omitting it otherwise); pass `"none"` to skip totals or `"exact"` when a caller needs an exact filtered count.
   Prefer this when your adapter lists or searches pages directly from Ether's library.
 - `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and
   return only the IDs visible to the requesting viewer, preserving caller order
@@ -43560,6 +43583,7 @@ type KindPage struct {
 | `allFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `excludeFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
+| `total` | `string` | may be omitted (see validation for conditions) | Total controls whether kinds.browse computes KindPage.Total: "" or "cheap" (default) returns Total only when O(1), "none" omits it, and "exact" computes an exact Total (cached per library generation). |
 
 
 ## Source: sdk/go/kinds.go#KindBrowseRequest
@@ -43581,6 +43605,10 @@ type KindBrowseRequest struct {
 	AllFacets     map[string][]string `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
 	Query         string              `json:"query,omitempty"`
+	// Total controls whether kinds.browse computes KindPage.Total:
+	// "" or "cheap" (default) returns Total only when O(1), "none" omits it,
+	// and "exact" computes an exact Total (cached per library generation).
+	Total string `json:"total,omitempty"`
 }
 ``````
 
@@ -54184,6 +54212,9 @@ class MockHostClient:
             if not (viewer_token or "").strip():
                 raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer token on this request")
             q = dict(query or {})
+            total_mode = q.get("total")
+            if total_mode not in (None, "", "cheap", "none", "exact"):
+                raise ValueError(f"kinds.browse: invalid total mode {total_mode!r}")
             limit = int(q.get("limit") or 200)
             if limit <= 0:
                 limit = 200
@@ -54244,6 +54275,8 @@ class MockHostClient:
             out: Dict[str, Any] = {"items": page}
             if page and start + limit < len(matched):
                 out["nextCursor"] = page[-1].get("id")
+            if total_mode != "none":
+                out["total"] = len(matched)
             return out
 
         def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
@@ -60699,6 +60732,8 @@ export interface KindPage {
   total?: number;
 }
 
+export type KindBrowseTotalMode = "cheap" | "none" | "exact";
+
 export interface KindBrowseRequest {
   kind: string;
   parentId?: string;
@@ -60714,6 +60749,13 @@ export interface KindBrowseRequest {
   /** Items having any listed value per field are dropped. */
   excludeFacets?: Record<string, string[]>;
   query?: string;
+  /**
+   * Controls whether kinds.browse computes KindPage.total:
+   * - "cheap" (default): return total only when O(1) (tallies, cached count, or single-page result)
+   * - "none": never compute or return total
+   * - "exact": compute an exact total (cached per library generation)
+   */
+  total?: KindBrowseTotalMode;
 }
 
 /** Query passed to kinds.browse from a frontend adapter (#615). */

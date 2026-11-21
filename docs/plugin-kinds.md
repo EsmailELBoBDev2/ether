@@ -543,7 +543,13 @@ listed value per field, for "tagged both X and Y"), and `excludeFacets`
 per-type values as `facets`, including `lo..hi` ranges for numbers and
 dates and people names, and are evaluated inside the browse query so
 paging and `total` stay correct. The total number of facet values
-across the three maps is bounded (256 per query).
+across the three maps is bounded (256 per query). Pass `total` to
+control whether `KindPage.total` is computed: `"cheap"` (the default)
+returns `total` only when it is O(1) (item or single-facet field
+tallies, an already-cached exact count, or a single-page result) and
+omits `total` otherwise rather than scanning the library; `"none"` never
+computes or returns `total`; `"exact"` computes and caches an exact
+count for the current library generation.
 
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already

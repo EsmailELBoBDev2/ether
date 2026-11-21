@@ -34,7 +34,7 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 			return BrowsePage{}, err
 		}
 		if !ok {
-			return BrowsePage{Total: 0}, nil
+			return BrowsePage{Total: 0, TotalExact: !(q.NoTotal && !q.CheapTotal)}, nil
 		}
 	}
 	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
@@ -49,15 +49,6 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 	}
 	if err := s.appendVisibilityForViewer(ctx, &where, &args, q.LibraryID, q.TabPolicy, false, viewerID); err != nil {
 		return BrowsePage{}, err
-	}
-
-	var total int
-	countSQL := `SELECT COUNT(*) FROM plugin_items i WHERE ` + where.String()
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
-		return BrowsePage{}, err
-	}
-	if total == 0 {
-		return BrowsePage{Total: 0}, nil
 	}
 
 	exactTitle, exactSort, prefixTitle, prefixSort := searchTitleTierArgs(q.Query)
@@ -79,10 +70,21 @@ ORDER BY
 	i.sort_title ASC,
 	i.item_ref ASC
 LIMIT ?`
-	qArgs := append(append([]any(nil), args...), exactTitle, exactSort, prefixTitle, prefixSort, exactTitle, exactSort, prefixTitle, prefixSort, tsQuery, limit)
+	qArgs := append(append([]any(nil), args...), exactTitle, exactSort, prefixTitle, prefixSort, exactTitle, exactSort, prefixTitle, prefixSort, tsQuery, limit+1)
 	items, err := s.queryItems(ctx, querySQL, qArgs, true)
 	if err != nil {
 		return BrowsePage{}, err
 	}
-	return BrowsePage{Items: items, Total: total}, nil
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	total, totalExact, err := s.resolveSearchTotal(ctx, q,
+		`SELECT COUNT(*) FROM plugin_items i WHERE `+where.String(),
+		where.String(), args, hasMore, len(items))
+	if err != nil {
+		return BrowsePage{}, err
+	}
+	return BrowsePage{Items: items, Total: total, TotalExact: totalExact}, nil
 }

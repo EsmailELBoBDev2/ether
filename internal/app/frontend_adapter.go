@@ -312,8 +312,18 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 			return core.KindPage{}, err
 		}
 		if !ok {
+			if q.Total == "none" {
+				return core.KindPage{Items: []core.KindItem{}}, nil
+			}
 			zero := 0
 			return core.KindPage{Items: []core.KindItem{}, Total: &zero}, nil
+		}
+		noTotal, cheapTotal := true, true
+		switch q.Total {
+		case "none":
+			noTotal, cheapTotal = true, false
+		case "exact":
+			noTotal, cheapTotal = false, false
 		}
 		items := a.pluginsRT.pluginitems
 		policy, err := items.LibraryPolicy(ctx, lib)
@@ -338,6 +348,8 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		if queryStr := strings.TrimSpace(q.Query); queryStr != "" {
 			searchPolicy := policy.ForSearch()
 			page, err := items.Search(ctx, pluginitems.SearchQuery{
+				NoTotal:       noTotal,
+				CheapTotal:    cheapTotal,
 				Policy:        searchPolicy,
 				LibraryID:     lib.ID,
 				Query:         queryStr,
@@ -351,7 +363,7 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				return core.KindPage{}, err
 			}
 			outItems := page.Items
-			total := page.Total
+			var totalPtr *int
 			if filterSafety {
 				filtered := make([]core.KindItem, 0, len(outItems))
 				for _, it := range outItems {
@@ -361,12 +373,18 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 					}
 				}
 				outItems = filtered
-				total = len(filtered)
+				if q.Total != "none" && page.TotalExact {
+					total := len(filtered)
+					totalPtr = &total
+				}
+			} else if q.Total != "none" && page.TotalExact {
+				total := page.Total
+				totalPtr = &total
 			}
 			if outItems == nil {
 				outItems = []core.KindItem{}
 			}
-			return core.KindPage{Items: outItems, NextCursor: page.NextCursor, Total: &total}, nil
+			return core.KindPage{Items: outItems, NextCursor: page.NextCursor, Total: totalPtr}, nil
 		}
 		var parentRef core.ItemRef
 		if q.ParentID != "" {
@@ -380,6 +398,8 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		}
 		if !filterSafety {
 			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
+				NoTotal:       noTotal,
+				CheapTotal:    cheapTotal,
 				Policy:        policy,
 				LibraryID:     lib.ID,
 				ParentRef:     parentRef,
@@ -399,8 +419,12 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 			if outItems == nil {
 				outItems = []core.KindItem{}
 			}
-			total := page.Total
-			return core.KindPage{Items: outItems, NextCursor: page.NextCursor, Total: &total}, nil
+			var totalPtr *int
+			if q.Total != "none" && page.TotalExact {
+				total := page.Total
+				totalPtr = &total
+			}
+			return core.KindPage{Items: outItems, NextCursor: page.NextCursor, Total: totalPtr}, nil
 		}
 		const maxSafetyWalkPages = 20
 		kept := make([]core.KindItem, 0, limit)

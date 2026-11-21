@@ -63,21 +63,40 @@ func TestPluginSortTitleBackfillAndCheapTotal(t *testing.T) {
 		t.Fatalf("plugin title order = %q, want %q", gotTitles, wantTitles)
 	}
 
-	// Facet-filtered browse with NoTotal+CheapTotal omits exact total rather than scanning.
-	filtered, err := s.Browse(ctx, BrowseQuery{
+	// Single tallied text facet with NoTotal+CheapTotal answers TotalExact from
+	// plugin_item_field_tally in O(1), even when results span multiple pages (#682).
+	talliedFacet, err := s.Browse(ctx, BrowseQuery{
 		LibraryID:  libID,
 		Level:      "series",
 		Sort:       "title",
 		Facets:     map[string][]string{"format": {"epub"}},
 		NoTotal:    true,
 		CheapTotal: true,
-		Limit:      20,
+		Limit:      2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !talliedFacet.TotalExact || talliedFacet.Total != 6 {
+		t.Fatalf("single tallied facet CheapTotal = %d / exact=%v, want 6 / true", talliedFacet.Total, talliedFacet.TotalExact)
+	}
+
+	// Un-tallied multi-page filter with NoTotal+CheapTotal omits exact total rather than scanning.
+	filtered, err := s.Browse(ctx, BrowseQuery{
+		LibraryID:     libID,
+		Level:         "series",
+		Sort:          "title",
+		Facets:        map[string][]string{"format": {"epub"}},
+		ExcludeFacets: map[string][]string{"format": {"pdf"}},
+		NoTotal:       true,
+		CheapTotal:    true,
+		Limit:         2,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filtered.TotalExact {
-		t.Fatalf("expected filtered plugin CheapTotal to have TotalExact=false, got total=%d", filtered.Total)
+		t.Fatalf("expected un-tallied multi-page plugin CheapTotal to have TotalExact=false, got total=%d", filtered.Total)
 	}
 
 	// Verify applyMigration12 fixes pre-existing v1 sort_title values while keeping custom sort_title.

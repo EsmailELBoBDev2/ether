@@ -651,6 +651,8 @@ export interface KindPage {
   total?: number;
 }
 
+export type KindBrowseTotalMode = "cheap" | "none" | "exact";
+
 export interface KindBrowseRequest {
   kind: string;
   parentId?: string;
@@ -666,6 +668,13 @@ export interface KindBrowseRequest {
   /** Items having any listed value per field are dropped. */
   excludeFacets?: Record<string, string[]>;
   query?: string;
+  /**
+   * Controls whether kinds.browse computes KindPage.total:
+   * - "cheap" (default): return total only when O(1) (tallies, cached count, or single-page result)
+   * - "none": never compute or return total
+   * - "exact": compute an exact total (cached per library generation)
+   */
+  total?: KindBrowseTotalMode;
 }
 
 /** Query passed to kinds.browse from a frontend adapter (#615). */

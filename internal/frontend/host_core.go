@@ -166,6 +166,12 @@ func WithSearchClient(ctx context.Context, clientID string) context.Context {
 	return core.WithSearchClient(ctx, clientID)
 }
 
+// WithExplicitSearch marks a request as a viewer or owner typing a search,
+// so browsing-only catalogue rules do not filter out explicit search hits.
+func WithExplicitSearch(ctx context.Context) context.Context {
+	return core.WithExplicitSearch(ctx)
+}
+
 // ErrBedtime carries the next playback admission time.
 type ErrBedtime = core.ErrBedtime
 

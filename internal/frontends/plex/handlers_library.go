@@ -1411,7 +1411,7 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 }
 
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {
-	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
+	r = r.WithContext(s.searchRequestContext(r.Context()))
 	pr := FromContext(r.Context())
 	ctx := frontend.WithSearchClient(r.Context(), s.searchClientID(pr))
 	var items []frontend.Title

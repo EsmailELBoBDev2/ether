@@ -19,9 +19,21 @@ import (
 )
 
 const (
-	MaxKindExpandPages = 20
-	MaxKindExpandItems = 2000
+	MaxKindExpandPages           = 20
+	MaxKindExpandItems           = 2000
+	containerExpandFacet         = "__container__"
+	maxContainerHydratePerPlugin = 4
+	containerHydrateBGTimeout    = 2 * time.Minute
 )
+
+// containerHydrateWait bounds how long opening an unhydrated (or stale)
+// container waits for its first page of children before returning stored rows
+// while pagination continues in the background.
+var containerHydrateWait = 1800 * time.Millisecond
+
+type containerHydrateCall struct {
+	firstPage chan struct{}
+}
 
 // firstOpenWait bounds how long the first page of a studio or performer
 // waits for its fill's first page: the plugin returns the newest titles first,
@@ -382,4 +394,308 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 
 	finish(pluginitems.ExpansionStateDone, totalAdded, "")
 	return nil
+}
+
+// maybeHydrateContainer checks in O(1) whether an opened container (with
+// ChildCount > 0) has missing or stale children past the kind's expand TTL.
+// When hydration is needed, it launches a per-container deduplicated fetch
+// via POST /ether/v1/kinds/{kind}/expand with {parentId, level} (falling back
+// to POST /ether/v1/kinds/{kind}/browse with parentId), waits up to
+// containerHydrateWait (~1.8s, clamped by ctx) for the first page to commit,
+// and lets remaining pages finish in the background.
+func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, parentItem core.KindItem, levelIdx int) {
+	if c == nil || c.items == nil || c.mgr == nil {
+		return
+	}
+	if parentItem.ChildCount <= 0 || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels) {
+		return
+	}
+	isContainer := levelIdx < len(rec.Decl.Levels)-1 || rec.Decl.Levels[levelIdx].Container
+	if !isContainer || !c.IsPluginLibraryActive(ctx, lib) {
+		return
+	}
+
+	ttlHours := plugins.DefaultKindExpandTTLHours
+	if rec.Decl.Browse.Expand != nil {
+		ttlHours = rec.Decl.Browse.Expand.EffectiveTTLHours()
+	}
+	ttl := time.Duration(ttlHours) * time.Hour
+	now := c.items.Now()
+
+	sfKey := rec.PluginID + "\x00" + rec.KindKey + "\x00" + parentItem.ID
+
+	c.hydrateMu.Lock()
+	if call, inflight := c.hydrateInflight[sfKey]; inflight {
+		c.hydrateMu.Unlock()
+		waitContainerHydrate(ctx, call.firstPage)
+		return
+	}
+	// Check durability + stored child freshness under the lock only after
+	// verifying no inflight hydration is running, avoiding duplicate launches.
+	exp, hasExp, expErr := c.items.GetFacetExpansion(ctx, rec.PluginID, rec.KindKey, containerExpandFacet, parentItem.ID)
+	if expErr == nil && hasExp && exp.IsFresh(now, ttl) {
+		c.hydrateMu.Unlock()
+		return
+	}
+	hasChildren, sampleAt, childErr := c.items.ChildrenFreshness(ctx, lib.ID, parentItem.Ref)
+	if childErr == nil && hasChildren && !sampleAt.IsZero() && now.Sub(sampleAt) < ttl {
+		c.hydrateMu.Unlock()
+		return
+	}
+
+	call := &containerHydrateCall{firstPage: make(chan struct{})}
+	if c.hydrateInflight == nil {
+		c.hydrateInflight = make(map[string]*containerHydrateCall)
+	}
+	if c.hydrateSems == nil {
+		c.hydrateSems = make(map[string]chan struct{})
+	}
+	c.hydrateInflight[sfKey] = call
+	sem := c.hydrateSems[rec.PluginID]
+	if sem == nil {
+		sem = make(chan struct{}, maxContainerHydratePerPlugin)
+		c.hydrateSems[rec.PluginID] = sem
+	}
+	c.hydrateMu.Unlock()
+
+	go c.runContainerHydration(sfKey, sem, rec, lib.ID, parentItem, levelIdx, call)
+	waitContainerHydrate(ctx, call.firstPage)
+}
+
+func waitContainerHydrate(ctx context.Context, firstPage <-chan struct{}) {
+	wait := containerHydrateWait
+	if wait <= 0 {
+		return
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		if rem := time.Until(dl); rem <= 0 {
+			return
+		} else if rem < wait {
+			wait = rem
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-firstPage:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+func (c *KindCatalog) runContainerHydration(
+	sfKey string,
+	sem chan struct{},
+	rec pluginitems.KindRecord,
+	libID core.LibraryID,
+	parentItem core.KindItem,
+	levelIdx int,
+	call *containerHydrateCall,
+) {
+	var firstOnce sync.Once
+	signalFirst := func() { firstOnce.Do(func() { close(call.firstPage) }) }
+	defer func() {
+		signalFirst()
+		c.hydrateMu.Lock()
+		delete(c.hydrateInflight, sfKey)
+		c.hydrateMu.Unlock()
+	}()
+
+	parentCtx := c.syncCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	bgCtx, cancel := context.WithTimeout(parentCtx, containerHydrateBGTimeout)
+	defer cancel()
+
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-bgCtx.Done():
+		return
+	}
+
+	markCtx, markCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = c.items.MarkFacetExpansionRunning(markCtx, rec.PluginID, rec.KindKey, libID, containerExpandFacet, parentItem.ID)
+	markCancel()
+
+	finish := func(state string, added int, errMsg string) {
+		finCtx, finCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer finCancel()
+		_ = c.items.FinishFacetExpansion(finCtx, rec.PluginID, rec.KindKey, libID, containerExpandFacet, parentItem.ID, state, added, errMsg)
+		c.items.BumpGeneration()
+	}
+
+	childLevel := ""
+	if levelIdx+1 < len(rec.Decl.Levels) {
+		childLevel = rec.Decl.Levels[levelIdx+1].Key
+	}
+	expandPath := "/ether/v1/kinds/" + rec.KindKey + "/expand"
+	browsePath := "/ether/v1/kinds/" + rec.KindKey + "/browse"
+
+	upsertSlice := func(items []core.KindItem) (accepted int, added int, err error) {
+		normalized := make([]core.KindItem, len(items))
+		copy(normalized, items)
+		for i := range normalized {
+			if normalized[i].ParentID == "" {
+				normalized[i].ParentID = parentItem.ID
+			}
+			if normalized[i].Level == "" && childLevel != "" {
+				normalized[i].Level = childLevel
+			}
+		}
+		for start := 0; start < len(normalized); start += pluginitems.MaxUpsertBatch {
+			end := min(start+pluginitems.MaxUpsertBatch, len(normalized))
+			acc, add, uErr := c.items.UpsertItemsWithAdded(bgCtx, rec.PluginID, rec.KindKey, normalized[start:end])
+			if uErr != nil {
+				return accepted, added, uErr
+			}
+			accepted += acc
+			added += add
+		}
+		return accepted, added, nil
+	}
+
+	var (
+		cursor        string
+		useBrowse     bool
+		totalAccepted int
+		totalAdded    int
+		seenCursor    = make(map[string]bool)
+	)
+
+	callExpand := func(cur string) (items []core.KindItem, next string, fallback bool, unsupported bool, err error) {
+		body, mErr := json.Marshal(core.KindExpandRequest{
+			ParentID: parentItem.ID,
+			Level:    childLevel,
+			Cursor:   cur,
+		})
+		if mErr != nil {
+			return nil, "", false, false, mErr
+		}
+		resp, cErr := c.mgr.Call(bgCtx, rec.PluginID, plugins.Request{
+			PluginID: rec.PluginID,
+			Method:   http.MethodPost,
+			Path:     expandPath,
+			Headers:  map[string]string{"content-type": "application/json"},
+			Body:     body,
+		})
+		if cErr != nil {
+			return nil, "", false, false, cErr
+		}
+		if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented || resp.Status == http.StatusBadRequest {
+			return nil, "", true, false, nil
+		}
+		if resp.Status < 200 || resp.Status >= 300 {
+			return nil, "", false, false, fmt.Errorf("container expand %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
+		}
+		var page core.KindExpandResponse
+		if len(resp.Body) > 0 {
+			if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
+				return nil, "", false, false, uErr
+			}
+		}
+		return page.Items, page.EffectiveCursor(), false, false, nil
+	}
+
+	callBrowse := func(cur string) (items []core.KindItem, next string, unsupported bool, err error) {
+		body, mErr := json.Marshal(core.KindBrowseRequest{
+			ParentID: parentItem.ID,
+			Level:    childLevel,
+			Cursor:   cur,
+			Limit:    pluginitems.DefaultWalkPageLimit,
+		})
+		if mErr != nil {
+			return nil, "", false, mErr
+		}
+		resp, cErr := c.mgr.Call(bgCtx, rec.PluginID, plugins.Request{
+			PluginID: rec.PluginID,
+			Method:   http.MethodPost,
+			Path:     browsePath,
+			Headers:  map[string]string{"content-type": "application/json"},
+			Body:     body,
+		})
+		if cErr != nil {
+			return nil, "", false, cErr
+		}
+		if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented {
+			return nil, "", true, nil
+		}
+		if resp.Status < 200 || resp.Status >= 300 {
+			return nil, "", false, fmt.Errorf("container browse %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
+		}
+		var page core.KindPage
+		if len(resp.Body) > 0 {
+			if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
+				return nil, "", false, uErr
+			}
+		}
+		return page.Items, strings.TrimSpace(page.NextCursor), false, nil
+	}
+
+	for pageIdx := 0; pageIdx < MaxKindExpandPages && totalAccepted < MaxKindExpandItems; pageIdx++ {
+		var (
+			pageItems   []core.KindItem
+			next        string
+			fallback    bool
+			unsupported bool
+			err         error
+		)
+		if !useBrowse {
+			pageItems, next, fallback, unsupported, err = callExpand(cursor)
+			if err != nil {
+				finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+				return
+			}
+			// Fall back to /browse if /expand doesn't support container hydration
+			// (404/501/400) or returned an empty first page for a non-empty container.
+			if fallback || (pageIdx == 0 && len(pageItems) == 0 && next == "") {
+				useBrowse = true
+				pageItems, next, unsupported, err = callBrowse(cursor)
+				if err != nil {
+					finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+					return
+				}
+				if unsupported {
+					finish(pluginitems.ExpansionStateDone, totalAdded, "")
+					return
+				}
+			}
+		} else {
+			pageItems, next, unsupported, err = callBrowse(cursor)
+			if err != nil {
+				finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+				return
+			}
+			if unsupported {
+				finish(pluginitems.ExpansionStateDone, totalAdded, "")
+				return
+			}
+		}
+
+		if len(pageItems) > 0 {
+			remaining := MaxKindExpandItems - totalAccepted
+			batch := pageItems
+			if len(batch) > remaining {
+				batch = batch[:remaining]
+			}
+			acc, add, uErr := upsertSlice(batch)
+			if uErr != nil {
+				finish(pluginitems.ExpansionStateError, totalAdded, uErr.Error())
+				return
+			}
+			totalAccepted += acc
+			totalAdded += add
+			c.items.BumpGeneration()
+			signalFirst()
+		}
+
+		if next == "" || len(pageItems) == 0 || seenCursor[next] || totalAccepted >= MaxKindExpandItems {
+			break
+		}
+		seenCursor[next] = true
+		cursor = next
+	}
+
+	finish(pluginitems.ExpansionStateDone, totalAdded, "")
 }

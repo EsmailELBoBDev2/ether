@@ -13,6 +13,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -515,6 +516,7 @@ type KindLibraryTab struct {
 	Key               string          `json:"key"`
 	Label             string          `json:"label"`
 	Kind              string          `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string          `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
 	Facet             string          `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
 	Sort              string          `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
 	Direction         string          `json:"direction,omitempty"`         // asc|desc (facet collections or view)
@@ -660,18 +662,181 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 // MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.
 const MaxKindLibraryShelves = 40
 
+// KindLibraryShelfFilters configures optional filtering for a declared
+// Recommended shelf. In JSON it accepts four equivalent forms:
+//
+//  1. A legacy facet map: {"topic":["science","nature"]}
+//  2. A TabFilter object: {"match":"all","rules":[...],"exclude":[...]}
+//  3. A single rule object: {"field":"viewer","value":{"history":true}}
+//  4. An array of rules: [{"field":"viewer","value":{"history":true}}]
+//
+// Omitted "op" on a "viewer" rule defaults to "is".
+type KindLibraryShelfFilters struct {
+	Facets map[string][]string
+	Tab    *core.TabFilter
+}
+
+// IsEmpty reports whether neither facet filters nor rule filters are set.
+func (f *KindLibraryShelfFilters) IsEmpty() bool {
+	if f == nil {
+		return true
+	}
+	return len(f.Facets) == 0 && f.Tab.IsEmpty()
+}
+
+// Clone returns a deep copy of f, or nil when f is nil.
+func (f *KindLibraryShelfFilters) Clone() *KindLibraryShelfFilters {
+	if f == nil {
+		return nil
+	}
+	out := &KindLibraryShelfFilters{Tab: f.Tab.Clone()}
+	if len(f.Facets) > 0 {
+		out.Facets = make(map[string][]string, len(f.Facets))
+		for k, vals := range f.Facets {
+			out.Facets[k] = append([]string(nil), vals...)
+		}
+	}
+	return out
+}
+
+// MarshalJSON encodes f in its canonical form (TabFilter when rule-based,
+// otherwise the facet map).
+func (f KindLibraryShelfFilters) MarshalJSON() ([]byte, error) {
+	if f.Tab != nil {
+		return json.Marshal(f.Tab)
+	}
+	if len(f.Facets) > 0 {
+		return json.Marshal(f.Facets)
+	}
+	return []byte("{}"), nil
+}
+
+// UnmarshalJSON decodes a facet map, TabFilter, single rule, or rule array.
+func (f *KindLibraryShelfFilters) UnmarshalJSON(data []byte) error {
+	f.Facets = nil
+	f.Tab = nil
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var rules []core.CollectionRule
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&rules); err != nil {
+			return err
+		}
+		normalizeShelfRuleOps(rules)
+		f.Tab = &core.TabFilter{Match: "all", Rules: rules}
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return fmt.Errorf("shelf filters must be a JSON object or array")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if isSingleRuleObject(raw) {
+		var rule core.CollectionRule
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&rule); err != nil {
+			return err
+		}
+		rules := []core.CollectionRule{rule}
+		normalizeShelfRuleOps(rules)
+		f.Tab = &core.TabFilter{Match: "all", Rules: rules}
+		return nil
+	}
+	if isTabFilterObject(raw) {
+		var tf core.TabFilter
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&tf); err != nil {
+			return err
+		}
+		normalizeShelfTabFilter(&tf)
+		f.Tab = &tf
+		return nil
+	}
+	var facets map[string][]string
+	if err := json.Unmarshal(trimmed, &facets); err != nil {
+		return err
+	}
+	f.Facets = facets
+	return nil
+}
+
+func isSingleRuleObject(raw map[string]json.RawMessage) bool {
+	v, ok := raw["field"]
+	if !ok {
+		return false
+	}
+	trimmed := bytes.TrimSpace(v)
+	return len(trimmed) > 0 && trimmed[0] == '"'
+}
+
+func isTabFilterObject(raw map[string]json.RawMessage) bool {
+	for _, key := range []string{"match", "visibilityDefault"} {
+		if v, ok := raw[key]; ok {
+			t := bytes.TrimSpace(v)
+			if len(t) > 0 && t[0] == '"' {
+				return true
+			}
+		}
+	}
+	for _, key := range []string{"rules", "exclude", "groups"} {
+		if v, ok := raw[key]; ok {
+			t := bytes.TrimSpace(v)
+			if len(t) == 0 || t[0] != '[' {
+				continue
+			}
+			// Check whether the array holds objects (rules/groups) rather than strings (a facet literally named "rules").
+			rest := bytes.TrimSpace(t[1:])
+			if len(rest) > 0 && (rest[0] == '{' || rest[0] == ']') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeShelfTabFilter(tf *core.TabFilter) {
+	if tf == nil {
+		return
+	}
+	normalizeShelfRuleOps(tf.Rules)
+	normalizeShelfRuleOps(tf.Exclude)
+	for i := range tf.Groups {
+		normalizeShelfRuleOps(tf.Groups[i].Rules)
+	}
+}
+
+func normalizeShelfRuleOps(rules []core.CollectionRule) {
+	for i := range rules {
+		if rules[i].Field == "viewer" && rules[i].Op == "" {
+			rules[i].Op = "is"
+		}
+	}
+}
+
 // KindLibraryShelf declares one default Recommended shelf for a plugin library.
 // Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>" so the
 // library's Recommended row editor can reorder, hide, pin, or cap it.
 type KindLibraryShelf struct {
-	Key       string              `json:"key"`
-	Label     string              `json:"label"`
-	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
-	Direction string              `json:"direction,omitempty"` // desc (default)|asc
-	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
-	Value     string              `json:"value,omitempty"`     // single value for facet
-	Values    []string            `json:"values,omitempty"`    // OR values for facet
-	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
+	Key       string                   `json:"key"`
+	Label     string                   `json:"label"`
+	Level     string                   `json:"level,omitempty"`     // optional declared hierarchy level key
+	Sort      string                   `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index|lastViewed
+	Direction string                   `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string                   `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string                   `json:"value,omitempty"`     // single value for facet
+	Values    []string                 `json:"values,omitempty"`    // OR values for facet
+	Filters   *KindLibraryShelfFilters `json:"filters,omitempty"`   // facet map, TabFilter, or rule/rules list
 }
 
 // EffectiveSort returns the shelf's sort field ("released" by default).
@@ -690,8 +855,17 @@ func (s KindLibraryShelf) EffectiveDirection() string {
 	return "desc"
 }
 
+// EffectiveTabFilter returns the shelf's rule-based TabFilter when Filters
+// was authored as rules or a TabFilter, or nil otherwise.
+func (s KindLibraryShelf) EffectiveTabFilter() *core.TabFilter {
+	if s.Filters == nil || s.Filters.Tab.IsEmpty() {
+		return nil
+	}
+	return s.Filters.Tab.Clone()
+}
+
 // EffectiveFilters returns the shelf's facet filter map (AND across facets,
-// OR within each facet), or nil when the shelf is unfiltered.
+// OR within each facet), or nil when the shelf has no facet map filter.
 func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 	if s.Facet != "" {
 		if len(s.Values) > 0 {
@@ -711,11 +885,11 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 		}
 		return nil
 	}
-	if len(s.Filters) == 0 {
+	if s.Filters == nil || len(s.Filters.Facets) == 0 {
 		return nil
 	}
-	out := make(map[string][]string, len(s.Filters))
-	for k, raw := range s.Filters {
+	out := make(map[string][]string, len(s.Filters.Facets))
+	for k, raw := range s.Filters.Facets {
 		var vals []string
 		for _, v := range raw {
 			if v = strings.TrimSpace(v); v != "" {

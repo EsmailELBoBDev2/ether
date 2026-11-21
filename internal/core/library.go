@@ -235,6 +235,7 @@ type LibraryTab struct {
 	Key               string     `json:"key"`
 	Label             string     `json:"label"`
 	Kind              string     `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string     `json:"level,omitempty"`             // optional plugin hierarchy level key (library, view, collections or people)
 	Facet             string     `json:"facet,omitempty"`             // collections or people facet
 	Order             string     `json:"order,omitempty"`             // count|name (collections or people)
 	Sort              string     `json:"sort,omitempty"`              // default sort (library, view, facet collections)

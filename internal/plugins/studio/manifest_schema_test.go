@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -23,6 +24,20 @@ func schemaType(typ reflect.Type) map[string]any {
 	}
 	if typ == reflect.TypeFor[json.RawMessage]() {
 		return map[string]any{}
+	}
+	if typ == reflect.TypeFor[plugins.KindLibraryShelfFilters]() {
+		ruleSchema := schemaType(reflect.TypeFor[core.CollectionRule]())
+		return map[string]any{
+			"anyOf": []any{
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+				schemaType(reflect.TypeFor[core.TabFilter]()),
+				ruleSchema,
+				map[string]any{"type": "array", "items": ruleSchema},
+			},
+		}
 	}
 	switch typ.Kind() {
 	case reflect.Struct:
@@ -53,7 +68,7 @@ func schemaType(typ reflect.Type) map[string]any {
 			props["card"] = map[string]any{"enum": []string{"poster", "landscape", "square"}}
 			props["layout"] = map[string]any{"enum": []string{"grid", "list", "timeline"}}
 		case reflect.TypeFor[plugins.KindLibraryShelf]():
-			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index"}}
+			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index", "lastViewed"}}
 			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}
 		}
 		return map[string]any{"type": "object", "properties": props}

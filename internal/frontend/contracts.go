@@ -74,6 +74,7 @@ type ViewTab struct {
 	ID                string          `json:"id"`
 	Label             string          `json:"label"`
 	Kind              string          `json:"kind"`
+	Level             string          `json:"level,omitempty"`
 	Facet             string          `json:"facet,omitempty"`
 	Order             string          `json:"order,omitempty"`
 	Sort              string          `json:"sort,omitempty"`
@@ -181,6 +182,18 @@ type FacetCollectionPage struct {
 // filter buckets for a plugin library's declared facet field.
 type LibraryFacetBuckets interface {
 	LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field string) ([]FacetBucket, error)
+}
+
+// LibraryFacetBucketsAtLevel is an optional Experience capability returning
+// discrete filter buckets scoped to a specific plugin hierarchy level.
+type LibraryFacetBucketsAtLevel interface {
+	LibraryFacetBucketsAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, field string) ([]FacetBucket, error)
+}
+
+// LevelFacetReader is an optional Experience capability returning facet values
+// scoped to a specific plugin hierarchy level or protocol item type.
+type LevelFacetReader interface {
+	FacetsAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, name string) ([]core.FacetValue, error)
 }
 
 // LibraryFacetCollections is an optional Experience capability returning a
@@ -371,6 +384,8 @@ type ItemQuery struct {
 	UnservedTypes []string
 	// ExcludedTypes contains core media type names excluded by the client.
 	ExcludedTypes []core.MediaType
+	// Level selects a specific declared hierarchy level key on a plugin library.
+	Level         string
 	Recursive     bool
 	Season        *int // Optional presented season number.
 	CollectionKey core.RatingKey
@@ -726,6 +741,7 @@ type CollectionPage struct {
 type PageQuery struct {
 	Offset, Limit int
 	Query         string
+	Level         string
 }
 
 // PlaylistPage is one viewer's own playlists. Item keys are titles that

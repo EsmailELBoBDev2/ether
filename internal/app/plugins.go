@@ -428,6 +428,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		BlobDir:   blobDir,
 		Logger:    a.log,
 	})
+	if a.state != nil {
+		a.state.SetSkipResume(kindCatalog.SkipResume)
+	}
 
 	var idx core.Indexer
 	var eng core.Engine

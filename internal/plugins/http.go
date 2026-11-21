@@ -987,21 +987,39 @@ func (m *Manager) handleView(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.Body)
 }
 
-// textResolver returns a walker that replaces "$t:key" strings with the
-// plugin's shipped text for locale (then its language, then English), or
-// nil when the plugin ships no strings.
-func (m *Manager) textResolver(ctx context.Context, id, locale string) func(any) any {
+// ResolveTextFunc returns a "$t:key" -> localized string lookup backed by the
+// plugin's shipped strings for locale (then its base language, then "en").
+// Loading the strings once lets callers resolve many labels (such as a batch
+// of kind projections or a view document) without repeated store reads.
+// Returns nil when the plugin ships no strings.
+func (m *Manager) ResolveTextFunc(ctx context.Context, id, locale string) func(string) (string, bool) {
+	if m == nil {
+		return nil
+	}
 	row, err := m.store.settings(ctx, id)
 	if err != nil || len(row.Strings) == 0 {
 		return nil
 	}
-	resolve := func(key string) (string, bool) {
+	return func(key string) (string, bool) {
 		for _, loc := range []string{locale, strings.SplitN(locale, "-", 2)[0], "en"} {
-			if s, ok := row.Strings[loc][key]; ok && loc != "" {
+			if loc == "" {
+				continue
+			}
+			if s, ok := row.Strings[loc][key]; ok {
 				return s, true
 			}
 		}
 		return "", false
+	}
+}
+
+// textResolver returns a walker that replaces "$t:key" strings with the
+// plugin's shipped text for locale (then its language, then English), or
+// nil when the plugin ships no strings.
+func (m *Manager) textResolver(ctx context.Context, id, locale string) func(any) any {
+	resolve := m.ResolveTextFunc(ctx, id, locale)
+	if resolve == nil {
+		return nil
 	}
 	var walk func(any) any
 	walk = func(v any) any {

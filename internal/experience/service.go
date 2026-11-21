@@ -2703,6 +2703,12 @@ func (s *Service) Ancestors(ctx context.Context, viewer *core.Viewer, device cor
 
 // Facets are computed only from titles the viewer may see.
 func (s *Service) Facets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string) ([]core.FacetValue, error) {
+	return s.FacetsAtLevel(ctx, viewer, device, viewID, "", name)
+}
+
+// FacetsAtLevel computes facet values for viewID, scoped to level (or protocol
+// item type) when viewID names a plugin library.
+func (s *Service) FacetsAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, name string) ([]core.FacetValue, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	skipIndexed := false
 	if s.d.PluginLibraries != nil && viewID != "" {
@@ -2717,7 +2723,7 @@ func (s *Service) Facets(ctx context.Context, viewer *core.Viewer, device core.D
 		switch lib.Source {
 		case core.LibraryPlugin, core.LibraryCollection:
 			if lib.Source == core.LibraryPlugin {
-				return s.pluginLibraryFacets(ctx, viewer, lib, name)
+				return s.pluginLibraryFacetsAtLevel(ctx, viewer, lib, level, name)
 			}
 			// A collection library's facet values are counted over the same
 			// SQL semi-join as its page, then the walk stays the last word.

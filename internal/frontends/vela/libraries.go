@@ -132,6 +132,9 @@ func libraryWire(view frontend.View) object {
 		appliedLibrarySort := false
 		for _, t := range srcTabs {
 			tab := object{"id": t.ID, "label": t.Label, "kind": t.Kind}
+			if t.Level != "" {
+				tab["level"] = t.Level
+			}
 			if t.Kind == "collections" || t.Kind == "people" || t.Kind == "view" || t.Kind == "live" {
 				tab["search"] = t.Search
 				if t.Search && t.SearchPlaceholder != "" {
@@ -282,7 +285,7 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 			continue
 		}
 		switch name {
-		case "cursor", "limit", "sort", "direction", "kind", "genre", "year", "played", "favorite", "collectionId", "query", "tab":
+		case "cursor", "limit", "sort", "direction", "kind", "genre", "year", "played", "favorite", "collectionId", "query", "tab", "level":
 		default:
 			return q, "", "", 400
 		}
@@ -314,6 +317,18 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 				break
 			}
 		}
+	}
+
+	if reqLevel := strings.TrimSpace(values.Get("level")); reqLevel != "" {
+		if !isPlugin || len(reqLevel) > 64 {
+			return q, "", "", 400
+		}
+		if activeTab != nil && activeTab.Level != "" && activeTab.Level != reqLevel {
+			return q, "", "", 400
+		}
+		q.Level = reqLevel
+	} else if activeTab != nil && activeTab.Level != "" {
+		q.Level = activeTab.Level
 	}
 
 	defSort := options["defaultSort"].(string)
@@ -608,7 +623,7 @@ func (i *instance) libraryFacets(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
 	for name, entries := range values {
 		switch name {
-		case "cursor", "limit", "query":
+		case "cursor", "limit", "query", "level", "tab":
 		default:
 			problem(w, 400, "request", "unsupported_library_query")
 			return
@@ -623,6 +638,12 @@ func (i *instance) libraryFacets(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "unsupported_library_query")
 		return
 	}
+	level := strings.TrimSpace(values.Get("level"))
+	if len(level) > 64 {
+		problem(w, 400, "request", "unsupported_library_query")
+		return
+	}
+	tabKey := strings.TrimSpace(values.Get("tab"))
 	views, err := i.host.Experience.Views(r.Context(), v)
 	if err != nil {
 		fail(w, err, r)
@@ -643,6 +664,26 @@ func (i *instance) libraryFacets(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	if tabKey != "" {
+		matchedTab := false
+		for _, t := range view.Tabs {
+			if t.ID == tabKey {
+				matchedTab = true
+				if level != "" && t.Level != "" && level != t.Level {
+					problem(w, 400, "request", "unsupported_library_query")
+					return
+				}
+				if level == "" {
+					level = t.Level
+				}
+				break
+			}
+		}
+		if !matchedTab {
+			problem(w, 404, "not-found", "not_found")
+			return
+		}
+	}
 	declared := false
 	for _, f := range view.Facets {
 		if f.ID == field {
@@ -661,7 +702,7 @@ func (i *instance) libraryFacets(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
-	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-facets", id, field, query, pageLimit}))
+	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-facets", id, field, level, query, pageLimit}))
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -671,7 +712,16 @@ func (i *instance) libraryFacets(w http.ResponseWriter, r *http.Request) {
 		fail(w, frontend.ErrLiveGuideStale)
 		return
 	}
-	buckets, err := bucketReader.LibraryFacetBuckets(r.Context(), v, requestDevice(r), id, field)
+	var buckets []frontend.FacetBucket
+	if level != "" {
+		if levelReader, ok := i.host.Experience.(frontend.LibraryFacetBucketsAtLevel); ok {
+			buckets, err = levelReader.LibraryFacetBucketsAtLevel(r.Context(), v, requestDevice(r), id, level, field)
+		} else {
+			buckets, err = bucketReader.LibraryFacetBuckets(r.Context(), v, requestDevice(r), id, field)
+		}
+	} else {
+		buckets, err = bucketReader.LibraryFacetBuckets(r.Context(), v, requestDevice(r), id, field)
+	}
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -1079,6 +1129,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			Offset: c.Offset,
 			Limit:  pageLimit,
 			Query:  query,
+			Level:  selectedTab.Level,
 		})
 		if err != nil {
 			fail(w, err, r)
@@ -1118,6 +1169,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			Offset: c.Offset,
 			Limit:  pageLimit,
 			Query:  query,
+			Level:  selectedTab.Level,
 		})
 		if err != nil {
 			fail(w, err, r)

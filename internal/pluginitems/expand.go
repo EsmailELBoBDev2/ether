@@ -212,3 +212,29 @@ ORDER BY f.field ASC`, args...)
 	}
 	return out, rows.Err()
 }
+
+// ChildrenFreshness checks in O(1) via the (library_id, parent_ref) index
+// whether parentRef currently has at least one stored child row and returns
+// a sample freshness timestamp (the newer of seen_at and updated_at).
+func (s *Service) ChildrenFreshness(ctx context.Context, libraryID core.LibraryID, parentRef core.ItemRef) (bool, time.Time, error) {
+	if s == nil || s.db == nil || libraryID <= 0 || strings.TrimSpace(string(parentRef)) == "" {
+		return false, time.Time{}, nil
+	}
+	var seenAt, updatedAt int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT seen_at, updated_at
+FROM plugin_items
+WHERE library_id = ? AND parent_ref = ?
+LIMIT 1`, int64(libraryID), string(parentRef)).Scan(&seenAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, time.Time{}, nil
+	}
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	ts := max(seenAt, updatedAt)
+	if ts <= 0 {
+		return true, time.Time{}, nil
+	}
+	return true, time.Unix(ts, 0).UTC(), nil
+}

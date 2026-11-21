@@ -94,6 +94,7 @@ export interface LibraryTab {
   key: string;
   label: string;
   kind: LibraryTabKind;
+  level?: string;
   facet?: string;
   order?: "count" | "name";
   sort?: string;

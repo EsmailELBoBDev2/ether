@@ -346,6 +346,7 @@ type KindLibraryTab struct {
 	Key               string                `json:"key"`
 	Label             string                `json:"label"`
 	Kind              string                `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string                `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
 	Facet             string                `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
 	Order             string                `json:"order,omitempty"`             // count|name (default count on collections, name on people)
 	Card              string                `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
@@ -362,15 +363,18 @@ const MaxKindLibraryShelves = 40
 
 // KindLibraryShelf declares one default Recommended shelf for a plugin library.
 // Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>".
+// Filters accepts a map[string][]string (facet map), *KindLibraryTabFilter,
+// KindLibraryTabRule, or []KindLibraryTabRule.
 type KindLibraryShelf struct {
-	Key       string              `json:"key"`
-	Label     string              `json:"label"`
-	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
-	Direction string              `json:"direction,omitempty"` // desc (default)|asc
-	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
-	Value     string              `json:"value,omitempty"`     // single value for facet
-	Values    []string            `json:"values,omitempty"`    // OR values for facet
-	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
+	Key       string   `json:"key"`
+	Label     string   `json:"label"`
+	Level     string   `json:"level,omitempty"`     // optional declared hierarchy level key
+	Sort      string   `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index|lastViewed
+	Direction string   `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string   `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string   `json:"value,omitempty"`     // single value for facet
+	Values    []string `json:"values,omitempty"`    // OR values for facet
+	Filters   any      `json:"filters,omitempty"`   // map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule
 }
 
 // KindLevel is one hierarchy level of a kind.

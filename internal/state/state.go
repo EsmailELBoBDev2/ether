@@ -154,6 +154,10 @@ type Options struct {
 	Availability *store.Availability
 	// PendingSQLite keeps watch changes in memory while the SQLite writer is busy.
 	PendingSQLite bool
+	// SkipResume, when set, reports whether timeline progress for key must not
+	// persist a resume offset (for example music tracks). LastViewedAt and
+	// completion are still recorded.
+	SkipResume func(context.Context, core.RatingKey) bool
 }
 
 // State implements core.State and core.Playlists.
@@ -170,9 +174,10 @@ type State struct {
 	// a bounded progress write beyond its timeout).
 	wmu chan struct{}
 
-	mu   sync.RWMutex
-	subs map[int]func(Event)
-	next int
+	mu         sync.RWMutex
+	subs       map[int]func(Event)
+	next       int
+	skipResume func(context.Context, core.RatingKey) bool
 
 	// progress holds timeline writes through a database outage (nil when
 	// Options.Availability is nil).
@@ -208,7 +213,7 @@ func New(db *sql.DB, opts Options) *State {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1)}
+	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1), skipResume: opts.SkipResume}
 	if opts.PendingSQLite {
 		s.pending = newPendingWrites(s)
 	}
@@ -247,6 +252,31 @@ func (s *State) OutboxStatus() (st store.OutboxStatus, ok bool) {
 	return s.progress.Status(), true
 }
 
+// SetSkipResume configures the predicate deciding whether timeline progress for
+// a rating key skips persisting a resume offset (while still recording
+// last_viewed_at and completions). Safe to call during startup wiring.
+func (s *State) SetSkipResume(fn func(context.Context, core.RatingKey) bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.skipResume = fn
+	s.mu.Unlock()
+}
+
+func (s *State) shouldSkipResume(ctx context.Context, key core.RatingKey) bool {
+	if s == nil || !key.IsPluginKey() {
+		return false
+	}
+	s.mu.RLock()
+	fn := s.skipResume
+	s.mu.RUnlock()
+	if fn == nil {
+		return false
+	}
+	return fn(ctx, key)
+}
+
 type progressKey struct {
 	user int64
 	key  core.RatingKey
@@ -263,6 +293,7 @@ type progressWrite struct {
 	at               time.Time
 	before           *progressWrite
 	origin           Origin
+	skipResume       bool
 }
 
 func (w progressWrite) completes() bool {
@@ -752,7 +783,7 @@ func (s *State) Progress(ctx context.Context, userID int64, key core.RatingKey, 
 	if offset < 0 {
 		offset = 0
 	}
-	w := progressWrite{offset: offset, duration: duration, state: state, origin: originFrom(ctx)}
+	w := progressWrite{offset: offset, duration: duration, state: state, origin: originFrom(ctx), skipResume: s.shouldSkipResume(ctx, key)}
 	w.timelineState = frontend.TimelineStatus(ctx)
 	if s.pending != nil {
 		w.at = s.now().UTC()
@@ -776,7 +807,9 @@ func (s *State) LegacyProgress(ctx context.Context, userID int64, key core.Ratin
 // progressAt applies one timeline update (at zero: now).
 func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey, w progressWrite) error {
 	ctx = WithOrigin(ctx, w.origin)
+	skipResume := w.skipResume || s.shouldSkipResume(ctx, key)
 	if strings.HasPrefix(w.state, "explicit-") {
+		w.skipResume = skipResume
 		return s.explicitProgressAt(ctx, userID, key, w)
 	}
 	reported, duration, state := w.offset, w.duration, w.state
@@ -787,13 +820,17 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 			if offset <= time.Minute {
 				return false, false, nil
 			}
-			cur.ws.ViewOffset = offset
+			if skipResume {
+				cur.ws.ViewOffset = 0
+			} else {
+				cur.ws.ViewOffset = offset
+			}
 			cur.ws.LastViewedAt = now
 			cur.ws.UpdatedAt = now
 			cur.watchAt = now
 			return false, false, []Event{{Kind: EventProgress, UserID: userID, Key: cur.ws.Key,
 				Offset: offset, Duration: cur.ws.Duration, State: state, At: now,
-				ResumeSet: offset != before, Resume: offset}}
+				ResumeSet: !skipResume && cur.ws.ViewOffset != before, Resume: cur.ws.ViewOffset}}
 		}
 		if duration > 0 {
 			cur.ws.Duration = duration
@@ -820,9 +857,16 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 			// over the end of one viewing cannot inflate the view count.
 			cur.ws.ViewOffset = 0
 		default:
-			started = cur.ws.ViewOffset == 0 && !cur.counted && state != "stopped"
-			cur.counted = false // a (re)viewing in progress
-			cur.ws.ViewOffset = offset
+			if skipResume {
+				// Record playback recency (and allow completion at >=90%) but
+				// never save a resume offset for non-resumable media (e.g. music tracks).
+				cur.counted = false
+				cur.ws.ViewOffset = 0
+			} else {
+				started = cur.ws.ViewOffset == 0 && !cur.counted && state != "stopped"
+				cur.counted = false // a (re)viewing in progress
+				cur.ws.ViewOffset = offset
+			}
 		}
 		cur.ws.LastViewedAt = now
 		cur.ws.UpdatedAt = now

@@ -271,12 +271,14 @@ type KindBrowseRequest struct {
 }
 
 // KindExpandRequest is the request body sent to POST /ether/v1/kinds/{kind}/expand
-// to expand a declared browse facet bucket or people credit on demand.
+// to expand a declared browse facet bucket, people credit, or container on demand.
 type KindExpandRequest struct {
-	Facet   string `json:"facet"`
-	Value   string `json:"value"`
-	ValueID int64  `json:"valueId,omitempty"`
-	Cursor  string `json:"cursor,omitempty"`
+	Facet    string `json:"facet,omitempty"`
+	Value    string `json:"value,omitempty"`
+	ValueID  int64  `json:"valueId,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
 
 // KindExpandResponse is the response from POST /ether/v1/kinds/{kind}/expand.

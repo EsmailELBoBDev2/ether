@@ -83,7 +83,45 @@ func (s *Server) sectionKindList(w http.ResponseWriter, r *http.Request, sec Sec
 
 	isPlugin := sec.PluginID != ""
 	t := sec.Type
-	if !isPlugin {
+	var pluginRequestedType frontend.MediaType
+	if isPlugin {
+		if tp := typeFromParam(q.Get("type")); tp != "" {
+			if tp == "collection" {
+				s.sectionCollections(w, r, sec, "collections")
+				return
+			}
+			t = tp
+			pluginRequestedType = tp
+			mc.ViewGroup = string(tp)
+			switch string(tp) {
+			case plexBaseArtist:
+				mc.Title2 = "All Artists"
+			case plexBaseAlbum:
+				mc.Title2 = "All Albums"
+			case plexBaseTrack:
+				mc.Title2 = "All Tracks"
+			case plexBasePhoto:
+				mc.Title2 = "All Photos"
+			case string(frontend.TypeSeason):
+				mc.Title2 = "All Seasons"
+			case string(frontend.TypeEpisode):
+				mc.Title2 = "All Episodes"
+			}
+		} else if sub == "allLeaves" {
+			switch string(sec.Type) {
+			case plexBaseArtist:
+				t = frontend.MediaType(plexBaseTrack)
+				pluginRequestedType = t
+				mc.ViewGroup = plexBaseTrack
+				mc.Title2 = "All Tracks"
+			case string(frontend.TypeShow):
+				t = frontend.TypeEpisode
+				pluginRequestedType = t
+				mc.ViewGroup = string(frontend.TypeEpisode)
+				mc.Title2 = "All Episodes"
+			}
+		}
+	} else {
 		if sub == "unwatched" && q.Has("type") {
 			if _, err := strconv.ParseInt(q.Get("type"), 10, 32); err != nil {
 				writeHTTPError(w, http.StatusInternalServerError)
@@ -190,6 +228,10 @@ func (s *Server) sectionKindList(w http.ResponseWriter, r *http.Request, sec Sec
 		if sub == "allLeaves" {
 			query.Recursive = true
 		}
+		if pluginRequestedType != "" {
+			query.Recursive = true
+			query.Types = []frontend.MediaType{pluginRequestedType}
+		}
 		query = sanitizePluginSectionQuery(sec, q, query)
 	} else if sec.Type == frontend.TypeShow && (t == frontend.TypeSeason || t == frontend.TypeEpisode) {
 		query.Recursive = true
@@ -279,6 +321,8 @@ func sanitizePluginSectionQuery(sec Section, q url.Values, iq frontend.ItemQuery
 	out := frontend.ItemQuery{
 		Offset:    iq.Offset,
 		Limit:     iq.Limit,
+		Level:     iq.Level,
+		Types:     append([]frontend.MediaType(nil), iq.Types...),
 		Recursive: iq.Recursive,
 	}
 	if rawSort := strings.TrimSpace(q.Get("sort")); rawSort != "" {

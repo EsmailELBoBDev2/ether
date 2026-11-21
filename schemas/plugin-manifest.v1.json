@@ -743,18 +743,176 @@
                               "type": "string"
                             },
                             "filters": {
-                              "additionalProperties": {
-                                "items": {
-                                  "type": "string"
+                              "anyOf": [
+                                {
+                                  "additionalProperties": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "type": "object"
                                 },
-                                "type": "array"
-                              },
-                              "type": "object"
+                                {
+                                  "properties": {
+                                    "exclude": {
+                                      "items": {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "groups": {
+                                      "items": {
+                                        "properties": {
+                                          "action": {
+                                            "type": "string"
+                                          },
+                                          "match": {
+                                            "type": "string"
+                                          },
+                                          "mediaType": {
+                                            "type": "string"
+                                          },
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "rules": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "scope": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "match": {
+                                      "type": "string"
+                                    },
+                                    "rules": {
+                                      "items": {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "visibilityDefault": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "field": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "labels": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "op": {
+                                      "type": "string"
+                                    },
+                                    "value": {}
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              ]
                             },
                             "key": {
                               "type": "string"
                             },
                             "label": {
+                              "type": "string"
+                            },
+                            "level": {
                               "type": "string"
                             },
                             "sort": {
@@ -764,7 +922,8 @@
                                 "released",
                                 "year",
                                 "rating",
-                                "index"
+                                "index",
+                                "lastViewed"
                               ]
                             },
                             "value": {
@@ -928,6 +1087,9 @@
                                 "list",
                                 "timeline"
                               ]
+                            },
+                            "level": {
+                              "type": "string"
                             },
                             "order": {
                               "enum": [

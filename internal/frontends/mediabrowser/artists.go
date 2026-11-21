@@ -67,6 +67,7 @@ func (i *instance) artists(albumArtists bool) http.HandlerFunc {
 		// Shape A: hierarchical library declaring a MusicArtist level.
 		artistQuery := frontend.ItemQuery{
 			UnservedTypes: []string{"musicartist"},
+			Recursive:     true,
 			Offset:        offset,
 			Limit:         limit,
 			Sort:          frontend.SortTitle,
@@ -160,6 +161,7 @@ func (i *instance) artistByName(w http.ResponseWriter, r *http.Request) {
 			}
 			page, err := i.host.Experience.LibraryItems(r.Context(), v, device(r), vw.ID, frontend.ItemQuery{
 				UnservedTypes: []string{"musicartist"},
+				Recursive:     true,
 				Limit:         10,
 				Filter:        frontend.Filter{Query: name},
 			})

@@ -180,7 +180,11 @@ func singlePartIndex(item core.KindItem) (*int, bool) {
 }
 
 func (r *KindResolver) projectedTitle(ctx context.Context, item core.KindItem, rec pluginitems.KindRecord, lib core.Library) *core.Title {
-	t := pluginitems.Project(item, rec.Decl, lib.Present, lib.CardShape)
+	var resolve pluginitems.TextResolver
+	if r != nil && r.mgr != nil {
+		resolve = r.mgr.ResolveTextFunc(ctx, rec.PluginID, "")
+	}
+	t := pluginitems.ProjectWithText(item, rec.Decl, lib.Present, resolve, lib.CardShape)
 	if (t.Type == core.TypeEpisode || t.Type == core.TypeSeason) && item.ParentID != "" {
 		cur := item.ParentID
 		for range 8 {

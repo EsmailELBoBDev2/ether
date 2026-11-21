@@ -3329,12 +3329,13 @@ class KindLibraryShelf(TypedDict, total=False):
 
     key: str
     label: str
-    sort: Literal["title", "added", "released", "year", "rating", "index"]
+    level: str
+    sort: Literal["title", "added", "released", "year", "rating", "index", "lastViewed"]
     direction: Literal["asc", "desc"]
     facet: str
     value: str
     values: List[str]
-    filters: Dict[str, List[str]]
+    filters: Any
 
 
 class KindLibraryTab(TypedDict, total=False):
@@ -3343,6 +3344,7 @@ class KindLibraryTab(TypedDict, total=False):
     key: str
     label: str
     kind: Literal["recommended", "library", "collections", "people", "view", "live"]
+    level: str
     facet: str
     order: Literal["count", "name"]
     card: Literal["poster", "landscape", "square"]

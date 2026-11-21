@@ -1810,35 +1810,48 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 // PickAudio selects an audio stream position, or -1 when none exists.
 func PickAudio(info core.MediaInfo, langs []string) int {
 	for _, lang := range langs {
-		// Within one wanted language the best tier wins (exact before
+		// Within one wanted language, non-commentary/non-AD always beats
+		// commentary/AD; then the best language tier wins (exact before
 		// generic-want×regional before regional-want×generic); preference
 		// order across languages still dominates.
-		best, bestTier := -1, 0
+		best, bestTier, bestPenalized := -1, 0, false
 		for i, st := range info.Streams {
 			if st.Type != "audio" {
 				continue
 			}
-			if tier := langtag.MatchTier(lang, st.Language); tier > bestTier {
-				best, bestTier = i, tier
+			tier := langtag.MatchTier(lang, st.Language)
+			if tier == 0 {
+				continue
+			}
+			penalized := langtag.TrackRole(st.Title, st.Commentary, st.VisualImpaired) != langtag.RoleMain
+			if best < 0 || (!penalized && bestPenalized) || (penalized == bestPenalized && tier > bestTier) {
+				best, bestTier, bestPenalized = i, tier, penalized
 			}
 		}
 		if best >= 0 {
 			return best
 		}
 	}
-	first := -1
+	first, firstPenalized := -1, -1
 	for i, st := range info.Streams {
 		if st.Type != "audio" {
 			continue
 		}
-		if st.Default {
+		penalized := langtag.TrackRole(st.Title, st.Commentary, st.VisualImpaired) != langtag.RoleMain
+		if st.Default && !penalized {
 			return i
 		}
-		if first < 0 {
+		if !penalized && first < 0 {
 			first = i
 		}
+		if firstPenalized < 0 {
+			firstPenalized = i
+		}
 	}
-	return first
+	if first >= 0 {
+		return first
+	}
+	return firstPenalized
 }
 
 // ResolveSubtitle maps a stored choice onto a stream position, or -1.

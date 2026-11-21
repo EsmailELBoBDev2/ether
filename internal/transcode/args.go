@@ -114,7 +114,7 @@ func secs(d time.Duration) string {
 
 // usesHW reports whether the run encodes video on hardware.
 func (s runSpec) usesHW() bool {
-	if s.Decision.VideoCopy || s.Accel.Name == "" || s.Accel.Name == AccelNone {
+	if !s.Decision.EncodesVideo(s.Info) || s.Accel.Name == "" || s.Accel.Name == AccelNone {
 		return false
 	}
 	enc, hw := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features)
@@ -207,7 +207,7 @@ func buildArgs(s runSpec) []string {
 	}
 	if s.Decision.Container == ContainerMPEGTS {
 		var segmentOptions []string
-		if !s.Decision.VideoCopy && s.Decision.AudioCopy && !s.LiveInput && !s.LoopInput && !s.RTXTimeline && s.ChunkDir == "" && len(s.KeyTimes) == 0 && (!s.AuthoredTimeline || s.RampClock) {
+		if s.Decision.EncodesVideo(s.Info) && s.Decision.AudioCopy && !s.LiveInput && !s.LoopInput && !s.RTXTimeline && s.ChunkDir == "" && len(s.KeyTimes) == 0 && (!s.AuthoredTimeline || s.RampClock) {
 			if encoder, _ := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features); encoder == "h264_nvenc" {
 				_, _, reorder := nvencFramePlan(s)
 				if reorder == 0 {
@@ -252,7 +252,7 @@ func buildArgs(s runSpec) []string {
 	// the historic x264 mux clock) so an HLS cut closes with audio reaching
 	// the video boundary. Otherwise restarting at that boundary drops the
 	// ~80ms of audio left in the next old fragment (at 24fps).
-	if s.Decision.Container == ContainerFMP4 && !s.Decision.VideoCopy && s.Decision.AudioCopy {
+	if s.Decision.Container == ContainerFMP4 && s.Decision.EncodesVideo(s.Info) && s.Decision.AudioCopy {
 		if v := s.Info.Video(); v != nil && v.FrameRate >= 1 && !v.VariableFrameRate {
 			encoder, _ := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features)
 			preloadFrames := 2
@@ -444,7 +444,7 @@ func buildCodecArgs(s runSpec) []string {
 			noAccurateSeek = true
 		} else if fmp4CopyDelayedMoovAudio(s, d, v, a) {
 			noAccurateSeek = true
-		} else if s.Protocol == core.ProtocolHTTP && d.VideoCopy && !s.LiveInput {
+		} else if s.Protocol == core.ProtocolHTTP && s.Info.Video() != nil && d.VideoCopy && !s.LiveInput {
 			// A progressive player starts at the first picture it gets:
 			// the keyframe at or before Start. Accurate seek would still
 			// cut the (transcoded) audio at Start, so the stream would
@@ -757,7 +757,7 @@ func buildCodecArgs(s runSpec) []string {
 // the same encoder plan for every run and rendition keeps priming and video
 // reorder from causing a title-zero-only shift in the nested MP4 muxer.
 func hlsEncodedClockLead(s runSpec) time.Duration {
-	if !s.encodesAudio() || s.Decision.VideoCopy || s.LoopInput || s.LiveInput || s.RTXTimeline || s.Decision.Container != ContainerFMP4 || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
+	if !s.encodesAudio() || !s.Decision.EncodesVideo(s.Info) || s.LoopInput || s.LiveInput || s.RTXTimeline || s.Decision.Container != ContainerFMP4 || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
 		return 0
 	}
 	codec := s.Decision.AudioCodec
@@ -791,7 +791,7 @@ func hlsEncodedClockLead(s runSpec) time.Duration {
 // One second of encoder preroll covers AAC overlap/lookahead. Input decode
 // starts one further integer second earlier to warm decoder/resampler state.
 func hlsAudioPreroll(s runSpec) (float64, bool) {
-	if s.Start <= 0 || s.Decision.AudioCopy || s.SilenceAudio || s.LiveInput || s.LoopInput || s.RTXTimeline || s.Decision.VideoCopy || s.ChunkDir != "" || len(s.KeyTimes) > 0 || (s.Protocol != core.ProtocolHLS && s.Protocol != core.ProtocolDASH) || (s.Decision.Container != ContainerMPEGTS && s.Decision.Container != ContainerFMP4) || (s.Decision.AudioCodec != "" && s.Decision.AudioCodec != "aac") {
+	if s.Start <= 0 || s.Decision.AudioCopy || s.SilenceAudio || s.LiveInput || s.LoopInput || s.RTXTimeline || !s.Decision.EncodesVideo(s.Info) || s.ChunkDir != "" || len(s.KeyTimes) > 0 || (s.Protocol != core.ProtocolHLS && s.Protocol != core.ProtocolDASH) || (s.Decision.Container != ContainerMPEGTS && s.Decision.Container != ContainerFMP4) || (s.Decision.AudioCodec != "" && s.Decision.AudioCodec != "aac") {
 		return 0, false
 	}
 	if a := findStream(s.Info, s.Decision.AudioStream, "audio"); a == nil || a.SampleRate <= 0 {
@@ -815,7 +815,7 @@ func hlsCopiedAudioPreroll(s runSpec) (float64, bool) {
 	if enc, _ := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features); enc != "libx264" {
 		return 0, false
 	}
-	if s.Start <= 0 || !s.Decision.AudioCopy || s.SilenceAudio || s.LiveInput || s.LoopInput || s.RTXTimeline || s.Decision.VideoCopy || s.ChunkDir != "" || len(s.KeyTimes) > 0 || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
+	if s.Start <= 0 || !s.Decision.AudioCopy || s.SilenceAudio || s.LiveInput || s.LoopInput || s.RTXTimeline || !s.Decision.EncodesVideo(s.Info) || s.ChunkDir != "" || len(s.KeyTimes) > 0 || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
 		return 0, false
 	}
 	if a := findStream(s.Info, s.Decision.AudioStream, "audio"); a == nil || a.Codec != "aac" {
@@ -876,7 +876,7 @@ func hlsAudioRestartCut(s runSpec) float64 {
 // NVENC delay comes from its explicit B-frame plan, never the driver preset.
 func hlsRestartLead(s runSpec) time.Duration {
 	_, encodedAudio := hlsAudioPreroll(s)
-	if (s.AuthoredTimeline && !s.RampClock && !encodedAudio) || s.ChunkDir != "" || len(s.KeyTimes) > 0 || s.Start <= 0 || s.LiveInput || s.LoopInput || s.RTXTimeline || s.Protocol == core.ProtocolDASH || s.Protocol == core.ProtocolHTTP || (s.Decision.Container != ContainerMPEGTS && !(s.RampClock && s.Decision.Container == ContainerFMP4)) || s.Decision.VideoCopy || (!s.Decision.AudioCopy && !encodedAudio) {
+	if (s.AuthoredTimeline && !s.RampClock && !encodedAudio) || s.ChunkDir != "" || len(s.KeyTimes) > 0 || s.Start <= 0 || s.LiveInput || s.LoopInput || s.RTXTimeline || s.Protocol == core.ProtocolDASH || s.Protocol == core.ProtocolHTTP || (s.Decision.Container != ContainerMPEGTS && !(s.RampClock && s.Decision.Container == ContainerFMP4)) || !s.Decision.EncodesVideo(s.Info) || (!s.Decision.AudioCopy && !encodedAudio) {
 		return 0
 	}
 	v := s.Info.Video()
@@ -921,7 +921,7 @@ func hlsNVENCPreroll(s runSpec) time.Duration {
 // ceil-to-microsecond preload can put an AU exactly on the nominal boundary
 // in the preceding fragment; dropping only pts < Start would duplicate it.
 func hlsFMP4AudioCut(s runSpec) (float64, bool) {
-	if (s.AuthoredTimeline && !s.RampClock) || s.ChunkDir != "" || len(s.KeyTimes) > 0 || s.Start <= 0 || s.LiveInput || s.Decision.Container != ContainerFMP4 || s.Decision.VideoCopy || s.Protocol == core.ProtocolDASH || s.Protocol == core.ProtocolHTTP {
+	if (s.AuthoredTimeline && !s.RampClock) || s.ChunkDir != "" || len(s.KeyTimes) > 0 || s.Start <= 0 || s.LiveInput || s.Decision.Container != ContainerFMP4 || !s.Decision.EncodesVideo(s.Info) || s.Protocol == core.ProtocolDASH || s.Protocol == core.ProtocolHTTP {
 		return 0, false
 	}
 	v := s.Info.Video()
@@ -957,7 +957,7 @@ func hlsFMP4AudioCut(s runSpec) (float64, bool) {
 // hlsFastStartClock gives the zero-reorder ramp the steady clock without
 // adding B-frames or changing its low-latency encoder preset.
 func hlsFastStartClock(s runSpec) time.Duration {
-	if !s.RampClock || !s.FastStart || s.LiveInput || s.LoopInput || s.RTXTimeline || s.ChunkDir != "" || len(s.KeyTimes) > 0 || s.Decision.VideoCopy || (s.Decision.Container != ContainerMPEGTS && s.Decision.Container != ContainerFMP4) || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
+	if !s.RampClock || !s.FastStart || s.LiveInput || s.LoopInput || s.RTXTimeline || s.ChunkDir != "" || len(s.KeyTimes) > 0 || !s.Decision.EncodesVideo(s.Info) || (s.Decision.Container != ContainerMPEGTS && s.Decision.Container != ContainerFMP4) || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
 		return 0
 	}
 	enc, _ := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features)
@@ -1359,7 +1359,7 @@ func matroskaSubtitleTrackArgs(sub *core.StreamInfo) []string {
 // httpCopyTimestamps: Plex Desktop's HTTP Matroska stream keeps the
 // source's timestamps from a seek or when asked.
 func (s runSpec) httpCopyTimestamps() bool {
-	return s.Protocol == core.ProtocolHTTP && !s.LiveInput && (s.Start > 0 || s.CopyTimestamps)
+	return s.Protocol == core.ProtocolHTTP && s.Info.Video() != nil && !s.LiveInput && (s.Start > 0 || s.CopyTimestamps)
 }
 
 // titleClock reports whether this run's decoded frames carry the title's

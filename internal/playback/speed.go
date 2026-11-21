@@ -240,7 +240,12 @@ func (s *session) resetSpeed(now time.Time, grace time.Duration) {
 	s.speedMu.Unlock()
 }
 
-func encoderBound(hls core.HLSSession) bool {
+func encoderBound(s *session, hls core.HLSSession) bool {
+	if s != nil {
+		if g := s.current(); g != nil && len(g.info.Streams) > 0 && g.info.Video() == nil {
+			return false
+		}
+	}
 	src, ok := hls.(encoderStatusSource)
 	if !ok {
 		return false
@@ -274,7 +279,7 @@ func (m *Manager) observeTimelineStall(s *session, now time.Time) {
 	if !yes {
 		return
 	}
-	if hls, hasHLS := m.deps.HLSLookup(s.id); hasHLS && hls != nil && encoderBound(hls) {
+	if hls, hasHLS := m.deps.HLSLookup(s.id); hasHLS && hls != nil && encoderBound(s, hls) {
 		return
 	}
 	if _, buffer, bufferKnown := m.repairHorizon(g, core.RepairEvent{Offset: -1}); bufferKnown && buffer >= 12*time.Second {

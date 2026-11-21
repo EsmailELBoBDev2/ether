@@ -58,7 +58,7 @@ func (m *Manager) SupportsDistributedRequest(req core.HLSRequest) bool {
 	}
 	d := req.Decision
 	if v := req.Info.Video(); v == nil {
-		d.VideoCopy = true
+		d.VideoCopy = false
 	} else if d.VideoCopy && d.VideoCodec == "" {
 		d.VideoCodec = v.Codec
 	}
@@ -82,7 +82,7 @@ func (m *Manager) SupportsDistributedRequest(req core.HLSRequest) bool {
 	} else if proto != core.ProtocolDASH && d.Container != ContainerFMP4 && d.Container != ContainerMPEGTS && d.Container != ContainerMatroska {
 		d.Container = segmentContainer(d.VideoCodec, d.AudioCodec)
 	}
-	if !d.VideoCopy && d.VideoCodec == "" {
+	if d.EncodesVideo(req.Info) && d.VideoCodec == "" {
 		d.VideoCodec = "h264"
 	}
 	if !d.AudioCopy && d.AudioCodec == "" {
@@ -117,7 +117,7 @@ func (m *Manager) SupportsDistributedRequest(req core.HLSRequest) bool {
 		if !distributedMuxCodecs(req.Info, decision) {
 			return false
 		}
-		if !decision.VideoCopy {
+		if decision.EncodesVideo(req.Info) {
 			v := req.Info.Video()
 			if v == nil || !distributedDecoder(f, v.Codec) || !f.hasFilter("scale") {
 				return false

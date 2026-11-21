@@ -581,7 +581,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	if req.Intent.Estimate && req.Intent.ExactVersion {
 		info := b.deps.Playback.Estimate(ctx, title, req.Caps)
-		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: info.Container}
+		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: info.Video() != nil, AudioCopy: true, Container: info.Container}
 		if b.deps.Transcoder != nil {
 			dec = b.deps.Transcoder.Decide(info, req.Caps, req.Intent.Options)
 		}
@@ -661,7 +661,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		} else {
 			info = b.deps.Playback.Estimate(ctx, title, req.Caps)
 		}
-		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: info.Container}
+		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: info.Video() != nil, AudioCopy: true, Container: info.Container}
 		if b.deps.Transcoder != nil {
 			dec = b.deps.Transcoder.Decide(info, req.Caps, req.Intent.Options)
 		}

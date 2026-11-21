@@ -22,6 +22,8 @@ func Order(value string) (core.SortOrder, bool) {
 		return core.SortPlayed, true
 	case "popularity":
 		return core.SortPopularity, true
+	case "parentindexnumber", "indexnumber", "tracknumber":
+		return core.SortIndex, true
 	default:
 		return "", false
 	}

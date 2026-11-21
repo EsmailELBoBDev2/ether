@@ -29,7 +29,7 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 	profile.TranscodingProfiles = append(profile.TranscodingProfiles, caps.TranscodingProfile{
 		Type:       "Audio",
 		Protocol:   "http",
-		Container:  "mp4,aac,mp3,ogg,webm",
+		Container:  strings.Join(velaAudioTranscodeContainers(c.Containers, c.AudioCodecs), ","),
 		AudioCodec: audioTranscodeCodecs,
 	})
 	if c.HLS || c.MSE {
@@ -78,26 +78,60 @@ func velaAudioContainers(containers, audioCodecs []string) []string {
 		}
 	}
 	for _, c := range containers {
-		switch strings.ToLower(c) {
-		case "flac", "mp3", "aac", "m4a", "m4b", "ogg", "wav":
-			add(strings.ToLower(c))
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "flac", "mp3", "aac", "m4a", "m4b", "wav":
+			add(strings.ToLower(strings.TrimSpace(c)))
+		case "adts":
+			add("aac", "adts")
 		case "mp4":
 			add("m4a", "m4b", "mp4")
+		case "ogg", "oga":
+			add("ogg", "oga")
+		case "opus":
+			add("opus", "ogg")
+		case "webm", "weba":
+			add("webm", "weba")
 		}
 	}
 	for _, a := range audioCodecs {
-		switch strings.ToLower(a) {
-		case "flac":
+		low := strings.ToLower(strings.TrimSpace(a))
+		switch {
+		case low == "flac":
 			add("flac")
-		case "mp3":
+		case low == "mp3":
 			add("mp3")
-		case "aac":
+		case low == "aac":
 			add("aac", "m4a", "m4b", "mp4")
-		case "opus", "vorbis":
-			add("ogg")
-		case "pcm", "pcm_s16le", "pcm_s24le":
+		case low == "alac":
+			add("m4a", "m4b", "mp4")
+		case low == "opus":
+			add("ogg", "opus", "webm")
+		case low == "vorbis":
+			add("ogg", "webm")
+		case low == "pcm" || strings.HasPrefix(low, "pcm_"):
 			add("wav")
 		}
+	}
+	return out
+}
+
+func velaAudioTranscodeContainers(containers, audioCodecs []string) []string {
+	supported := velaAudioContainers(containers, audioCodecs)
+	if len(supported) == 0 {
+		return []string{"mp4", "aac", "mp3", "ogg", "webm"}
+	}
+	has := make(map[string]bool, len(supported))
+	for _, s := range supported {
+		has[s] = true
+	}
+	var out []string
+	for _, c := range []string{"mp4", "aac", "mp3", "ogg", "webm"} {
+		if has[c] {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"mp4", "aac", "mp3", "ogg", "webm"}
 	}
 	return out
 }

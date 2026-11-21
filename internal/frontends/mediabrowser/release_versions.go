@@ -36,7 +36,7 @@ const detailVariantBudget = 3 * time.Second
 // The resolver returns nil (nothing to wait for) when results are cached,
 // a search is cooling off, or both refill slots are busy.
 func (i *instance) refillDetailSearch(r *http.Request, title frontend.Title) {
-	if i.host.Editions == nil || r == nil || (title.Type != "movie" && title.Type != "episode") {
+	if i.host.Editions == nil || r == nil || title.Key.IsPluginKey() || (title.Type != "movie" && title.Type != "episode") {
 		return
 	}
 	if !title.Released.IsZero() && title.Released.After(time.Now()) {
@@ -162,7 +162,11 @@ func (i *instance) releaseVariants(r *http.Request, scope frontend.VersionScope,
 		return nil
 	}
 	t := title
-	variants, err := i.host.Editions.Variants(i.identityContext(r), frontend.ResolveRequest{Title: &t, Client: scope.Caps, User: scope.Viewer}, frontend.MaxVariants)
+	ctx := i.identityContext(r)
+	if t.Key.IsPluginKey() {
+		ctx = frontend.WithLocalResponse(ctx)
+	}
+	variants, err := i.host.Editions.Variants(ctx, frontend.ResolveRequest{Title: &t, Client: scope.Caps, User: scope.Viewer}, frontend.MaxVariants)
 	if err != nil || len(variants) < 2 {
 		return nil
 	}

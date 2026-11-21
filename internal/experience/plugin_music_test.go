@@ -13,7 +13,13 @@ type spyMusicPluginLibraries struct {
 	fakePluginLibraries
 	browseCalls []frontend.ItemQuery
 	browsePage  PluginBrowsePage
+	children    map[core.RatingKey][]core.Title
 	personMatch PluginPersonMatch
+}
+
+func (s *spyMusicPluginLibraries) Children(_ context.Context, parent core.RatingKey, _ bool, _ string, _ int) (PluginBrowsePage, error) {
+	items := s.children[parent]
+	return PluginBrowsePage{Items: items, Total: len(items)}, nil
 }
 
 func (s *spyMusicPluginLibraries) Browse(_ context.Context, _ core.Library, q frontend.ItemQuery, _ string, _ int) (PluginBrowsePage, error) {
@@ -180,5 +186,79 @@ func TestLatestAddedAndResolveFacetForPluginMusicLibrary(t *testing.T) {
 	}
 	if detail.KnownFor != "MusicArtist" {
 		t.Fatalf("expected KnownFor=MusicArtist, got %+v", detail)
+	}
+}
+
+func TestPluginAlbumChildrenOrderByDiscAndTrack(t *testing.T) {
+	ctx := context.Background()
+	viewer := &core.User{ID: 1, AllowedLibraries: []core.LibraryID{9}}
+	musicLib := core.Library{
+		ID:       9,
+		Key:      "plugin:music:albums",
+		Name:     "Music",
+		Source:   core.LibraryPlugin,
+		PluginID: "music.plugin",
+		KindKey:  "albums",
+		Present:  mediaBrowserPresentation("music", map[string]string{"album": "MusicAlbum", "track": "Audio"}),
+	}
+	albumKey := core.PluginKey(100)
+	album := core.Title{
+		Key:        albumKey,
+		Type:       core.TypeMovie,
+		MediaClass: core.MediaClassMusic,
+		MediaRole:  core.MediaRoleAlbum,
+		MBItemType: "MusicAlbum",
+		Title:      "Homogenic",
+	}
+	tracks := []core.Title{
+		{Key: core.PluginKey(106), Type: core.TypeMovie, MBItemType: "Audio", Title: "5 Years", ParentKey: albumKey, Disc: 1, ItemIndex: 6},
+		{Key: core.PluginKey(101), Type: core.TypeMovie, MBItemType: "Audio", Title: "Hunter", ParentKey: albumKey, Disc: 1, ItemIndex: 1},
+		{Key: core.PluginKey(201), Type: core.TypeMovie, MBItemType: "Audio", Title: "Bonus", ParentKey: albumKey, Disc: 2, ItemIndex: 1},
+		{Key: core.PluginKey(102), Type: core.TypeMovie, MBItemType: "Audio", Title: "Jóga", ParentKey: albumKey, Disc: 1, ItemIndex: 2},
+	}
+	pl := &spyMusicPluginLibraries{
+		fakePluginLibraries: fakePluginLibraries{libs: []core.Library{musicLib}},
+		browsePage:          PluginBrowsePage{Items: []core.Title{album}, Total: 1},
+		children:            map[core.RatingKey][]core.Title{albumKey: tracks},
+	}
+	svc := &Service{d: ServiceDeps{
+		Active:          func(context.Context, int64) (*core.User, error) { return viewer, nil },
+		PluginLibraries: pl,
+		Protocol:        "jellyfin",
+		LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+			if p.MediaBrowser != nil {
+				return mt, p.MediaBrowser.CollectionType, true
+			}
+			return mt, "", false
+		},
+	}}
+
+	wantOrder := []string{"Hunter", "Jóga", "5 Years", "Bonus"}
+	for _, q := range []frontend.ItemQuery{
+		{Limit: 50},
+		{Sort: core.SortIndex, Limit: 50},
+		{Sort: core.SortTitle, Limit: 50}, // Jellyfin Web Album Play sends SortBy=SortName ascending
+	} {
+		page, err := svc.Children(ctx, viewer, core.Device{}, albumKey, q)
+		if err != nil {
+			t.Fatalf("Children(%+v): %v", q, err)
+		}
+		if len(page.Items) != len(wantOrder) {
+			t.Fatalf("Children(%+v) len=%d, want %d", q, len(page.Items), len(wantOrder))
+		}
+		for idx, want := range wantOrder {
+			if page.Items[idx].Title != want {
+				t.Fatalf("Children(%+v)[%d] = %q, want %q", q, idx, page.Items[idx].Title, want)
+			}
+		}
+	}
+
+	// Explicit descending title sort still sorts Z -> A.
+	descPage, err := svc.Children(ctx, viewer, core.Device{}, albumKey, frontend.ItemQuery{Sort: core.SortTitle, Desc: true, Limit: 50})
+	if err != nil {
+		t.Fatalf("Children(SortTitle desc): %v", err)
+	}
+	if descPage.Items[0].Title != "Jóga" || descPage.Items[len(descPage.Items)-1].Title != "5 Years" {
+		t.Fatalf("unexpected desc title order: %+v", descPage.Items)
 	}
 }

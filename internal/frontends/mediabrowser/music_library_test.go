@@ -278,3 +278,148 @@ func TestMusicLibraryEndpointsAndArtistNavigation(t *testing.T) {
 		t.Fatalf("expected LatestMedia HomeSection for music library %s, got %+v", musicGUID, sections["Items"])
 	}
 }
+
+func TestJellyfinMusicArtistItemsParentIndexSortAndNoTrickplay(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 1}
+	artistKey := frontend.RatingKey(1<<62 | 10)
+	albumKey := frontend.RatingKey(1<<62 | 11)
+	trackWithParent := frontend.RatingKey(1<<62 | 12)
+	trackNoArtist := frontend.RatingKey(1<<62 | 13)
+	artistGUID := ids.RatingKeyGUID(artistKey)
+	albumGUID := ids.RatingKeyGUID(albumKey)
+	trackGUID := ids.RatingKeyGUID(trackWithParent)
+
+	var libraryCalls atomic.Int32
+	var seenSort frontend.SortOrder
+	exp := musicTestExperience{
+		Experience: frontendtest.Experience{
+			LibraryItemsFunc: func(context.Context, *frontend.Viewer, frontend.Device, string, frontend.ItemQuery) (frontend.Page, error) {
+				libraryCalls.Add(1)
+				return frontend.Page{}, nil
+			},
+			ChildrenFunc: func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, parent frontend.RatingKey, q frontend.ItemQuery) (frontend.Page, error) {
+				seenSort = q.Sort
+				if parent != albumKey {
+					return frontend.Page{}, nil
+				}
+				return frontend.Page{
+					Items: []frontend.Title{
+						{
+							Key:          trackWithParent,
+							Type:         frontend.TypeMovie,
+							MediaClass:   frontend.MediaClassMusic,
+							MBItemType:   "Audio",
+							Title:        "Hunter",
+							ParentKey:    albumKey,
+							ParentTitle:  "Homogenic",
+							ItemIndex:    1,
+							MediaParents: []frontend.TitleParent{{Key: albumKey, Title: "Homogenic", Role: frontend.MediaRoleAlbum}, {Key: artistKey, Title: "Björk", Role: frontend.MediaRoleArtist}},
+						},
+						{
+							Key:         trackNoArtist,
+							Type:        frontend.TypeMovie,
+							MediaClass:  frontend.MediaClassMusic,
+							MBItemType:  "Audio",
+							Title:       "Untitled",
+							ParentKey:   albumKey,
+							ParentTitle: "Homogenic",
+							Disc:        2,
+							ItemIndex:   3,
+						},
+					},
+					Total: 2,
+				}, nil
+			},
+			ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+				if req.Key == trackWithParent {
+					return frontend.ItemDetail{
+						Title: frontend.Title{
+							Key:          trackWithParent,
+							Type:         frontend.TypeMovie,
+							MediaClass:   frontend.MediaClassMusic,
+							MBItemType:   "Audio",
+							Title:        "Hunter",
+							ParentKey:    albumKey,
+							ParentTitle:  "Homogenic",
+							ItemIndex:    1,
+							MediaParents: []frontend.TitleParent{{Key: albumKey, Title: "Homogenic", Role: frontend.MediaRoleAlbum}, {Key: artistKey, Title: "Björk", Role: frontend.MediaRoleArtist}},
+						},
+					}, nil
+				}
+				return frontend.ItemDetail{}, frontend.ErrNotFound
+			},
+		},
+	}
+
+	inst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{
+		Identity:   frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }},
+		Experience: exp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Close(context.Background())
+
+	uid, _ := ids.GUID(ids.User, 1)
+	call := func(path string) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/jellyfin"+path, nil)
+		r.Header.Set("X-Emby-Token", "ok")
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+		return out
+	}
+
+	// 1. Album children query with SortBy=ParentIndexNumber,IndexNumber,SortName maps to SortIndex,
+	//    always emits non-nil ArtistItems/AlbumArtists (inheriting MediaParents artist), and sets ParentIndexNumber.
+	tracks := call("/Users/" + uid + "/Items?ParentId=" + albumGUID + "&SortBy=ParentIndexNumber,IndexNumber,SortName")
+	if seenSort != frontend.SortIndex {
+		t.Fatalf("SortBy=ParentIndexNumber,IndexNumber,SortName parsed as %q, want %q", seenSort, frontend.SortIndex)
+	}
+	list := tracks["Items"].([]any)
+	t1 := list[0].(map[string]any)
+	if t1["AlbumArtist"] != "Björk" || t1["ParentIndexNumber"].(float64) != 1 || t1["IndexNumber"].(float64) != 1 {
+		t.Fatalf("track1 missing inherited artist or disc/track index: %+v", t1)
+	}
+	if ai, ok := t1["ArtistItems"].([]any); !ok || len(ai) != 1 || ai[0].(map[string]any)["Id"] != artistGUID {
+		t.Fatalf("track1 ArtistItems = %#v, want [%s]", t1["ArtistItems"], artistGUID)
+	}
+	t2 := list[1].(map[string]any)
+	if _, ok := t2["ArtistItems"].([]any); !ok {
+		t.Fatalf("artistless track must emit empty ArtistItems array, got %#v", t2["ArtistItems"])
+	}
+	if _, ok := t2["AlbumArtists"].([]any); !ok {
+		t.Fatalf("artistless track must emit empty AlbumArtists array, got %#v", t2["AlbumArtists"])
+	}
+	if t2["ParentIndexNumber"].(float64) != 2 {
+		t.Fatalf("track2 ParentIndexNumber = %v, want 2", t2["ParentIndexNumber"])
+	}
+
+	// 2. Multi-token SortBy starting with Album still recognizes ParentIndexNumber.
+	_ = call("/Users/" + uid + "/Items?ParentId=" + albumGUID + "&SortBy=Album,ParentIndexNumber,IndexNumber,SortName")
+	if seenSort != frontend.SortIndex {
+		t.Fatalf("SortBy=Album,ParentIndexNumber,... parsed as %q, want %q", seenSort, frontend.SortIndex)
+	}
+
+	// 3. Explicit empty AlbumArtistIds= returns empty page without scanning LibraryItems.
+	empty := call("/Users/" + uid + "/Items?AlbumArtistIds=")
+	if empty["TotalRecordCount"].(float64) != 0 || libraryCalls.Load() != 0 {
+		t.Fatalf("empty AlbumArtistIds should return empty without scanning LibraryItems: resp=%+v calls=%d", empty, libraryCalls.Load())
+	}
+
+	// 4. Audio detail omits Trickplay and emits ArtistItems/AlbumArtists.
+	detail := call("/Users/" + uid + "/Items/" + trackGUID)
+	if _, hasTrickplay := detail["Trickplay"]; hasTrickplay {
+		t.Fatalf("Audio detail should not emit Trickplay: %+v", detail["Trickplay"])
+	}
+	if _, ok := detail["AlbumArtists"].([]any); !ok {
+		t.Fatalf("Audio detail missing AlbumArtists array: %+v", detail)
+	}
+}

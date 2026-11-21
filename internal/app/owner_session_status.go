@@ -105,22 +105,24 @@ func ownerSessionDetails(p *core.PlaySession) ownerSessionStatus {
 	if audio != nil {
 		out.SourceAudio = audioLabel(audio.Codec, audio.ChannelLayout, audio.Channels)
 	}
-	if p.Decision == core.DecisionDirectPlay || (d != nil && d.VideoCopy) {
-		out.OutputVideo = out.SourceVideo
-	} else if d != nil {
-		h := 0
-		if video != nil && video.Height > 0 {
-			h = video.Height
-			if d.MaxHeight > 0 && d.MaxHeight < h {
-				h = d.MaxHeight
+	if video != nil {
+		if p.Decision == core.DecisionDirectPlay || (d != nil && d.VideoCopy) {
+			out.OutputVideo = out.SourceVideo
+		} else if d != nil {
+			h := 0
+			if video.Height > 0 {
+				h = video.Height
+				if d.MaxHeight > 0 && d.MaxHeight < h {
+					h = d.MaxHeight
+				}
+				h -= h % 2
 			}
-			h -= h % 2
+			rng := ""
+			if d.ToneMap {
+				rng = "SDR"
+			}
+			out.OutputVideo = videoLabel(d.VideoCodec, h, rng)
 		}
-		rng := ""
-		if d.ToneMap {
-			rng = "SDR"
-		}
-		out.OutputVideo = videoLabel(d.VideoCodec, h, rng)
 	}
 	if p.Decision == core.DecisionDirectPlay || (d != nil && d.AudioCopy) {
 		out.OutputAudio = out.SourceAudio

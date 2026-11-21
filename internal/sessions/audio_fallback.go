@@ -75,7 +75,7 @@ func (b *Broker) StartAudioFallback(ctx context.Context, a frontend.SessionAcces
 	audioID := id + ".audio." + rand.Text()
 	info := source.Info
 	info.Streams = []core.StreamInfo{audio}
-	decision := core.Decision{Kind: core.DecisionTranscode, Container: "fmp4", VideoCopy: true, AudioCopy: false, AudioCodec: "aac", AudioStream: track, SubtitleStream: -1, AudioChannels: min(2, max(1, audio.Channels)), AudioSampleRate: 48000, AudioBitrateKbps: 192, AudioFilters: s.opts.AudioFilters}
+	decision := core.Decision{Kind: core.DecisionTranscode, Container: "fmp4", VideoCopy: false, AudioCopy: false, AudioCodec: "aac", AudioStream: track, SubtitleStream: -1, AudioChannels: min(2, max(1, audio.Channels)), AudioSampleRate: 48000, AudioBitrateKbps: 192, AudioFilters: s.opts.AudioFilters}
 	lease, err := b.mintEncoderInput(ctx, s.playID)
 	if err != nil {
 		return frontend.AudioFallbackResult{}, err

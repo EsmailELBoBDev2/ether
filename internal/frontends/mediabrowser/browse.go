@@ -184,7 +184,7 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 		m["MediaType"] = mediaType
 	}
 	attachParentIdentity(m, t)
-	if (kind == "MusicAlbum" || kind == "Audio") && len(t.Cast) > 0 {
+	if kind == "MusicAlbum" || kind == "Audio" {
 		attachMusicArtistCredits(m, t)
 	}
 	if i.protocol == "emby" {
@@ -707,7 +707,9 @@ func (i *instance) browseRoutes() error {
 				i.attachUnplayedCount(r, v, dto, d.Title)
 				i.attachCumulativeRuntime(r, v, dto, d.Title)
 			}
-			i.attachTrickplay(r, v, key, dto)
+			if !mbDeclaredNonVideo(d.Title) {
+				i.attachTrickplay(r, v, key, dto)
+			}
 
 		}
 		if i.protocol == "emby" {
@@ -763,7 +765,12 @@ func (i *instance) browseRoutes() error {
 func itemQuery(r *http.Request) frontend.ItemQuery {
 	q := frontend.ItemQuery{Offset: queryInt(r, "StartIndex", 0), Limit: queryInt(r, "Limit", 50)}
 	if values := route.Query(r.URL.Query(), "SortBy"); len(values) == 1 {
-		q.Sort, _ = kitsort.Order(strings.Split(values[0], ",")[0])
+		for _, part := range strings.Split(values[0], ",") {
+			if order, ok := kitsort.Order(part); ok {
+				q.Sort = order
+				break
+			}
+		}
 	}
 	if values := route.Query(r.URL.Query(), "SortOrder"); len(values) == 1 {
 		q.Desc = strings.EqualFold(values[0], "Descending")
@@ -1322,6 +1329,10 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Page.Total += len(live) - len(extra)
 		i.pageWithExtra(w, r, v, result.Page, q.Offset, 0, "", nil, extra)
+		return
+	}
+	if hasEmptyArtistFilter(r) {
+		i.page(w, r, v, frontend.Page{Items: []frontend.Title{}}, q.Offset)
 		return
 	}
 	if artistKey, ok := artistParentKey(r); ok && (len(parent) == 0 || parent[0] == "" || func() bool { _, e := ids.ParseGUID(ids.View, parent[0]); return e == nil }()) {

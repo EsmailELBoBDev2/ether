@@ -757,7 +757,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	case core.DecisionDirectPlay:
 		// Asked to stream something directly playable: remux it.
 		d.Kind = core.DecisionRemux
-		d.VideoCopy, d.AudioCopy = true, true
+		d.VideoCopy, d.AudioCopy = req.Info.Video() != nil, true
 		d.Container = ""
 	case "":
 		return nil, errors.New("transcode: StartHLS: decision required")
@@ -774,9 +774,9 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		return nil, errors.New("transcode: DoVi (Profile 5) color space is not supported")
 	}
 	if v == nil {
-		d.VideoCopy = true // audio-only: nothing to encode
+		d.VideoCopy = false
 	}
-	if !req.LiveInput && !d.VideoCopy && m.VideoTranscodingOff() {
+	if !req.LiveInput && d.EncodesVideo(req.Info) && m.VideoTranscodingOff() {
 		return nil, ErrVideoTranscodingDisabled
 	}
 	if d.VideoCopy && v != nil && d.VideoCodec == "" {
@@ -942,7 +942,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			// A copy primary may advertise encoded lower rungs. They share
 			// the primary's clock, so give the whole ladder the short grid.
 			// Copy GOPs spanning slots keep using the existing aliases.
-			if !d.VideoCopy || len(rungs) > 1 {
+			if d.EncodesVideo(req.Info) || len(rungs) > 1 {
 				segDur = encodedDASHSegmentDuration
 			}
 		}
@@ -952,7 +952,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	}
 	if req.Resume != nil {
 		n := req.Resume.FirstSegment
-		if n < 0 || n > 10000000 || req.Resume.Generation == 0 || req.LiveInput || req.StartOffset != 0 || proto != core.ProtocolHLS || (d.VideoCopy && !ValidCopyTimeline(req)) || (d.Container != ContainerMPEGTS && d.Container != ContainerFMP4) || time.Duration(n) > time.Duration(1<<63-1)/segDur {
+		if n < 0 || n > 10000000 || req.Resume.Generation == 0 || req.LiveInput || req.StartOffset != 0 || proto != core.ProtocolHLS || (!d.EncodesVideo(req.Info) && !ValidCopyTimeline(req)) || (d.Container != ContainerMPEGTS && d.Container != ContainerFMP4) || time.Duration(n) > time.Duration(1<<63-1)/segDur {
 			return nil, errors.New("transcode: unsupported authored-timeline resume request")
 		}
 	}
@@ -1026,7 +1026,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			span = req.Info.Duration - base
 		}
 		steadyMode := ModeTranscode
-		if d.VideoCopy {
+		if !d.EncodesVideo(req.Info) {
 			steadyMode = ModeCopy
 		}
 		// Pure copy output cannot force the short opening GOPs. Chaining a
@@ -1129,11 +1129,11 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		m.mu.Unlock()
 		return nil, errors.New("transcode: manager closed")
 	}
-	if !req.LiveInput && !d.VideoCopy && m.cfg.VideoTranscodingOff() {
+	if !req.LiveInput && d.EncodesVideo(req.Info) && m.cfg.VideoTranscodingOff() {
 		m.mu.Unlock()
 		return nil, ErrVideoTranscodingDisabled
 	}
-	if !d.VideoCopy && m.cfg.MaxTranscodes > 0 {
+	if d.EncodesVideo(req.Info) && m.cfg.MaxTranscodes > 0 {
 		if m.encodingLocked("") >= m.cfg.MaxTranscodes {
 			m.preemptBackgroundLocked()
 		}
@@ -1142,7 +1142,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			return nil, fmt.Errorf("%w (%d running)", ErrTooManyTranscodes, n)
 		}
 	}
-	life.encoding.Store(!d.VideoCopy)
+	life.encoding.Store(d.EncodesVideo(req.Info))
 	m.mu.Unlock()
 
 	safe := unsafeID.ReplaceAllString(id, "_")
@@ -1289,11 +1289,11 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		life.mu.Unlock()
 		return nil, errors.New("transcode: manager closed or start canceled")
 	}
-	if prev := m.sessions[id]; prev != nil && !prev.decision.VideoCopy {
+	if prev := m.sessions[id]; prev != nil && prev.decision.EncodesVideo(prev.info) {
 		m.activeTranscodes.Add(-1)
 	}
 	m.sessions[id] = s
-	if !s.decision.VideoCopy {
+	if s.decision.EncodesVideo(s.info) {
 		m.activeTranscodes.Add(1)
 	}
 	m.mu.Unlock()
@@ -1332,12 +1332,27 @@ func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	h := m.httpSessions[id]
 	s := m.sessions[id]
+	l := m.encoderIDs[id]
 	m.mu.Unlock()
 	if h != nil {
 		_ = h.Close()
+		return
 	}
 	if s != nil {
 		_ = s.Close()
+		return
+	}
+	if l != nil {
+		// RetireEncoder may have detached the HTTP/HLS registry entry before
+		// Stop runs; still wait for the encoder lifetime to finish draining
+		// and release its input lease before Stop returns.
+		l.seal()
+		timer := time.NewTimer(m.encoderWait())
+		defer timer.Stop()
+		select {
+		case <-l.done:
+		case <-timer.C:
+		}
 	}
 }
 
@@ -1346,7 +1361,7 @@ func (m *Manager) forget(s *Session) {
 	m.mu.Lock()
 	if m.sessions[s.id] == s {
 		delete(m.sessions, s.id)
-		if !s.decision.VideoCopy {
+		if s.decision.EncodesVideo(s.info) {
 			m.activeTranscodes.Add(-1)
 		}
 	}

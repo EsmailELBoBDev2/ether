@@ -734,7 +734,7 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 	// 1. Direct play.
 	if opts.DirectPlay && !hdr10Base && containerOK && len(videoIssues) == 0 && len(audioIssues) == 0 && len(otherIssues) == 0 {
 		d.Kind = core.DecisionDirectPlay
-		d.VideoCopy, d.AudioCopy = true, true
+		d.VideoCopy, d.AudioCopy = v != nil, true
 		d.Container = info.Container
 		d.BitrateKbps = info.BitrateKbps
 		if v != nil {
@@ -801,7 +801,7 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 			}
 			if canCopy {
 				d.Kind = core.DecisionRemux
-				d.VideoCopy = true
+				d.VideoCopy = false
 				d.AudioCopy = true
 				d.AudioCodec = a.Codec
 				d.Container = candContainer
@@ -823,7 +823,7 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 		ch := outputChannels(audioCodec, a)
 		audioKbps := audioBitrateKbps(audioCodec, ch)
 		d.Kind = core.DecisionTranscode
-		d.VideoCopy = true
+		d.VideoCopy = false
 		d.AudioCopy = false
 		d.AudioCodec = audioCodec
 		applyAudioLimits(&d, a, caps, false, audioCodec)

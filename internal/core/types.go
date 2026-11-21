@@ -570,9 +570,58 @@ func (c ClientCaps) SupportsAudio(codec string) bool {
 	if c.ConvertSurroundAudio && IsSurroundAudioCodec(codec) {
 		return false
 	}
-	return contains(c.AudioCodecs, codec)
+	want := canonicalAudioCodec(codec)
+	for _, v := range c.AudioCodecs {
+		if v == codec || canonicalAudioCodec(v) == want {
+			return true
+		}
+	}
+	return false
 }
-func (c ClientCaps) SupportsContainer(ct string) bool { return contains(c.Containers, ct) }
+func (c ClientCaps) SupportsContainer(ct string) bool {
+	want := canonicalContainer(ct)
+	for _, v := range c.Containers {
+		if v == ct || canonicalContainer(v) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalContainer(ct string) string {
+	s := strings.ToLower(strings.TrimSpace(ct))
+	switch s {
+	case "m4a", "m4b", "m4v", "fmp4":
+		return "mp4"
+	case "adts":
+		return "aac"
+	case "oga", "opus":
+		return "ogg"
+	case "weba":
+		return "webm"
+	case "matroska", "mka":
+		return "mkv"
+	case "ts", "mpegts":
+		return "mpegts"
+	}
+	return s
+}
+
+func canonicalAudioCodec(codec string) string {
+	s := strings.ToLower(strings.TrimSpace(codec))
+	if strings.HasPrefix(s, "pcm_") {
+		return "pcm"
+	}
+	switch s {
+	case "mp4a":
+		return "aac"
+	case "ec3", "e-ac3":
+		return "eac3"
+	case "ac-3":
+		return "ac3"
+	}
+	return s
+}
 
 func contains(xs []string, x string) bool {
 	for _, v := range xs {

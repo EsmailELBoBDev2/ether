@@ -23,7 +23,8 @@ func (m *Manager) checkEncoderSpeed(s *session, g *generation, hls core.HLSSessi
 		return false
 	}
 	status := source.EncoderStatus()
-	if status == nil || status.Decision.VideoCopy || status.Phase != "running" || status.Speed <= 0 || status.UpdatedAt.IsZero() || now.Sub(status.UpdatedAt) > 8*time.Second || now.Before(status.UpdatedAt) || now.Sub(status.StartedAt) < 6*time.Second {
+	audioOnly := g != nil && len(g.info.Streams) > 0 && g.info.Video() == nil
+	if status == nil || audioOnly || status.Decision.VideoCopy || status.Phase != "running" || status.Speed <= 0 || status.UpdatedAt.IsZero() || now.Sub(status.UpdatedAt) > 8*time.Second || now.Before(status.UpdatedAt) || now.Sub(status.StartedAt) < 6*time.Second {
 		s.mu.Lock()
 		s.encoderRecoveryReason, s.encoderRunway = "", nil
 		s.mu.Unlock()
@@ -148,7 +149,8 @@ func (m *Manager) backgroundEncoderFailover(s *session, g *generation, at time.D
 				return false
 			}
 			status := source.EncoderStatus()
-			return status != nil && !status.Decision.VideoCopy && status.Phase == "running" && status.Speed > 0 && status.Speed < 0.95 && !status.UpdatedAt.IsZero() && time.Since(status.UpdatedAt) <= 8*time.Second
+			audioOnly := g != nil && len(g.info.Streams) > 0 && g.info.Video() == nil
+			return status != nil && !audioOnly && !status.Decision.VideoCopy && status.Phase == "running" && status.Speed > 0 && status.Speed < 0.95 && !status.UpdatedAt.IsZero() && time.Since(status.UpdatedAt) <= 8*time.Second
 		}
 		next, err := m.failoverWith(ctx, s, g, at, failoverOpts{encoder: true, reason: "encoder output slower than playback", followPlayer: true, preserveBuffer: true, quietFailure: true, stillNeeded: stillSlow})
 		if err == nil && next != nil && next != g {

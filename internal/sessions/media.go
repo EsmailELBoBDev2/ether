@@ -149,9 +149,9 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		b.mu.Unlock()
 		// The original file is what the client now plays, whatever the
 		// plan said; say so even if an encoder ran for this session before.
-		b.recordPlaybackDecision(s.playID, core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true})
-		b.ensureTrickplay(ctx, s, req.Position)
 		ps, _ := b.deps.Playback.Session(s.playID)
+		b.recordPlaybackDecision(s.playID, core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: ps != nil && ps.Info.Video() != nil, AudioCopy: true})
+		b.ensureTrickplay(ctx, s, req.Position)
 		// The file URL is an in-memory grant. ServeMedia rechecks the viewer
 		// and the current policy on every byte. The durable delivery row is
 		// published beside that, not in front of the first byte.
@@ -247,7 +247,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if req.Format == frontend.StreamDASH {
 		proto = core.ProtocolDASH
 		if dec.Kind == core.DecisionDirectPlay {
-			dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, true, true
+			dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, ps.Info.Video() != nil, true
 		}
 	} else if req.Format == frontend.StreamHTTP {
 		proto = core.ProtocolHTTP

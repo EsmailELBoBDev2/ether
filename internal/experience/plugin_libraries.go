@@ -885,8 +885,16 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 }
 
 func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
-	if _, err := s.pluginItem(ctx, v, parent); err != nil {
+	piv, err := s.pluginItem(ctx, v, parent)
+	if err != nil {
 		return core.Page{}, err
+	}
+	// Album and audiobook track/part lists naturally follow disc/track order,
+	// including Jellyfin Web's Album Play query (SortBy=SortName ascending).
+	if (piv.Title.MediaRole == core.MediaRoleAlbum || piv.Title.MBItemType == "MusicAlbum" ||
+		piv.Title.MediaRole == core.MediaRoleAudiobook || piv.Title.MBItemType == "AudioBook") &&
+		(q.Sort == "" || (q.Sort == core.SortTitle && !q.Desc)) {
+		q.Sort = core.SortIndex
 	}
 	offset := max(q.Offset, 0)
 	limit := q.Limit

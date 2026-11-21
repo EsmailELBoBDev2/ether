@@ -411,12 +411,12 @@ func (d *DownloadRemuxer) convertDownload(ctx context.Context, req core.Download
 		opts.SubtitleStream = -1
 	}
 	dec := d.m.Decide(req.Info, downloadProfile(req.Caps), opts)
-	if d.m.VideoTranscodingOff() && !dec.VideoCopy {
+	if d.m.VideoTranscodingOff() && dec.EncodesVideo(req.Info) {
 		return "", 0, ErrVideoTranscodingDisabled
 	}
 	if dec.Kind == core.DecisionDirectPlay {
 		dec.Kind = core.DecisionRemux
-		dec.VideoCopy, dec.AudioCopy = true, true
+		dec.VideoCopy, dec.AudioCopy = req.Info.Video() != nil, true
 	}
 	dec.Container = ContainerFMP4
 	return d.runDownload(ctx, req, progress, estimateConvertBytes(req.Info, dec), "convert",

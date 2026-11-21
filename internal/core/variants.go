@@ -127,3 +127,9 @@ type DecisionTraceSource interface {
 // VersionSelectorPrefix identifies a configured menu choice rather than a
 // concrete release. Only the resolver interprets or authorizes its payload.
 const VersionSelectorPrefix = "ether-slot:v1:"
+
+// KindAutoVersionID is the synthetic Auto slot identity of a plugin kind
+// item's version menu (index 0). Its payload matches the canonical Auto
+// selector ({"k":"auto"}), so Auto-slot checks recognize it uniformly across
+// resolver, playback and frontends. Picked, Vela omits versionId.
+const KindAutoVersionID = VersionSelectorPrefix + "eyJrIjoiYXV0byJ9"

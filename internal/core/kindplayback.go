@@ -21,6 +21,18 @@ type KindInput struct {
 	// SourceID is a stable identity for the underlying source, used as the
 	// synthetic release id when OpenCandidate is not provided.
 	SourceID string
+	// PreferSourceID, when non-empty, requests opening the version whose
+	// candidate source id matches, instead of the default winner. The id is
+	// the stable release id of one of the item's /resolve sources.
+	PreferSourceID string
+	// Exact, when true alongside a non-empty PreferSourceID, forbids falling
+	// back to another candidate if PreferSourceID is unavailable or fails
+	// mid-stream.
+	Exact bool
+	// DeferSupersession keeps the prepared session off Activity and leaves
+	// other live sessions untouched until MarkSurfaceOpened is called on
+	// admission (used by broker Plan and SwitchVersion).
+	DeferSupersession bool
 }
 
 // KindPlayback opens a non-catalogue (plugin kind) item through the session

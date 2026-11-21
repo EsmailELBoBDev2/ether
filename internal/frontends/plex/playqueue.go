@@ -650,7 +650,7 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 		if row.extra != nil {
 			md = *row.extra
 		} else {
-			md = s.metadata(ctx, pr, row.t, renderOpts{detail: true, media: true, state: state})
+			md = s.metadata(ctx, pr, row.t, renderOpts{detail: true, media: true, listRender: len(rows) > 1 && row.it.ID != selItem.ID, state: state})
 		}
 		md.PlayQueueItemID = row.it.ID
 		mc.Metadata = append(mc.Metadata, md)

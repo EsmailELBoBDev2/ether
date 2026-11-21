@@ -62,6 +62,13 @@ func (b *Broker) hlsPlanOutput(source *core.PlaySession, req frontend.PlanReques
 		}
 	}
 	output, eligible := b.hlsOutputDecision(source, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, decision)
+	if !eligible && decision.Kind == core.DecisionDirectPlay {
+		req.Intent.OriginalPlayback = nil
+		req.Intent.Options.DirectPlay = false
+		if d, err := b.decideProfile(source, req); err == nil {
+			output, eligible = b.hlsOutputDecision(source, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, d)
+		}
+	}
 	if !eligible || source == nil || !knownHLSVideo(source.Info) {
 		return false, ""
 	}

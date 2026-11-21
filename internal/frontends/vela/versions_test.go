@@ -550,3 +550,112 @@ func TestVelaPlaybackWithVersionAndInSessionVersionSwitch(t *testing.T) {
 		t.Fatalf("stale switch = %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestPluginVersionsEndpointW152ShapeAndClearChoice(t *testing.T) {
+	pluginKey := frontend.PluginKey(77)
+	hAuto := "00000000-0000-4000-8000-000000000101"
+	h1080 := "00000000-0000-4000-8000-000000000102"
+	hFeed := "00000000-0000-4000-8000-000000000103"
+
+	editions := &versionsEditionsFake{
+		slots: []frontend.ReleaseVariant{
+			{
+				ID:           frontend.KindAutoVersionID,
+				Label:        "Auto · 4K Remux",
+				Auto:         true,
+				Remembered:   true,
+				Availability: frontend.VersionCached,
+				Release: frontend.Release{
+					ID:   "kind:4k",
+					Name: "Concert.2025.2160p.REMUX.HEVC-GRP",
+					Size: 30 << 30,
+					Info: frontend.ReleaseInfo{Height: 2160, VideoCodec: "hevc", Source: frontend.Source("remux")},
+				},
+				Info: frontend.MediaInfo{Estimated: true, Size: 30 << 30},
+			},
+			{
+				ID:           "kind:1080p",
+				Label:        "1080p WEB-DL",
+				Availability: frontend.VersionFetch,
+				Release: frontend.Release{
+					ID:   "kind:1080p",
+					Name: "Concert.2025.1080p.WEB-DL.H.264-GRP",
+					Size: 8 << 30,
+					Info: frontend.ReleaseInfo{Height: 1080, VideoCodec: "h264", Source: frontend.Source("webdl")},
+				},
+				Info: frontend.MediaInfo{Estimated: true, Size: 8 << 30},
+			},
+			{
+				ID:           "kind:src:mirror",
+				Label:        "Backup Mirror",
+				Availability: frontend.VersionCached,
+				Release: frontend.Release{
+					ID:   "kind:src:mirror",
+					Name: "Backup Mirror",
+				},
+				Info: frontend.MediaInfo{Estimated: true},
+			},
+		},
+		choice: &frontend.ViewerChoiceSummary{
+			Scope: "title", Active: true, Label: "4K Remux", ReleaseID: "kind:4k",
+		},
+	}
+	handles := &versionsHandlesFake{
+		item: pluginKey,
+		toUUID: map[string]string{
+			frontend.KindAutoVersionID: hAuto,
+			"kind:1080p":               h1080,
+			"kind:src:mirror":          hFeed,
+		},
+	}
+	handler := mountVersionsVela(t, pluginKey, editions, handles, &versionsSessionsFake{})
+
+	titleID := ids.RatingKeyGUID(pluginKey)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, velaReq("GET", "/vela/v0/titles/"+titleID+"/versions", ""))
+	if w.Code != 200 {
+		t.Fatalf("GET plugin versions %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		TitleID           string `json:"titleId"`
+		SelectedVersionID string `json:"selectedVersionId"`
+		RememberedChoice  *struct {
+			Scope  string `json:"scope"`
+			Active bool   `json:"active"`
+			Label  string `json:"label"`
+		} `json:"rememberedChoice"`
+		Versions []struct {
+			ID          string `json:"id"`
+			Label       string `json:"label"`
+			Recommended bool   `json:"recommended"`
+			Remembered  bool   `json:"remembered"`
+			Resolution  string `json:"resolution"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TitleID != titleID || resp.SelectedVersionID != hAuto || len(resp.Versions) != 3 {
+		t.Fatalf("unexpected plugin versions payload: %+v", resp)
+	}
+	if resp.Versions[0].ID != hAuto || !resp.Versions[0].Remembered || resp.Versions[0].Resolution != "4K" {
+		t.Fatalf("index 0 must be synthetic Auto slot with remembered 4K metadata: %+v", resp.Versions[0])
+	}
+	if resp.Versions[1].ID != h1080 || resp.Versions[1].Resolution != "1080p" {
+		t.Fatalf("index 1 = %+v, want 1080p", resp.Versions[1])
+	}
+	// A non-release plugin source with a human label keeps its label instead of "Standard".
+	if resp.Versions[2].ID != hFeed || resp.Versions[2].Label != "Backup Mirror" {
+		t.Fatalf("index 2 = %+v, want Backup Mirror label", resp.Versions[2])
+	}
+	if resp.RememberedChoice == nil || !resp.RememberedChoice.Active || resp.RememberedChoice.Scope != "title" {
+		t.Fatalf("rememberedChoice = %+v, want active title choice", resp.RememberedChoice)
+	}
+
+	// Clearing the remembered choice succeeds for a plugin key and refreshes versions.
+	wClear := httptest.NewRecorder()
+	handler.ServeHTTP(wClear, velaReq("DELETE", "/vela/v0/titles/"+titleID+"/versions/choice", `{"idempotencyKey":"clear-plugin-1"}`))
+	if wClear.Code != 200 || editions.clearCalls != 1 {
+		t.Fatalf("DELETE choice = %d clearCalls=%d body=%s", wClear.Code, editions.clearCalls, wClear.Body.String())
+	}
+}

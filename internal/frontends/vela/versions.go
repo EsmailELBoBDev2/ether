@@ -701,6 +701,11 @@ func versionHumanLabel(v frontend.ReleaseVariant, placeholder bool, res, dr, sou
 	if audioPhrase := versionAudioLabel(audio); audioPhrase != "" {
 		segments = append(segments, audioPhrase)
 	}
+	if len(segments) == 0 {
+		if clean := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v.Label), "Auto · ")); clean != "" && !strings.EqualFold(clean, "Auto") {
+			segments = append(segments, clean)
+		}
+	}
 	if sizeBytes > 0 {
 		if sizePhrase := formatVersionSize(sizeBytes); sizePhrase != "" {
 			segments = append(segments, sizePhrase)

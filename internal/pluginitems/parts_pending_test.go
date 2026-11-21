@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -83,6 +84,70 @@ func TestPartResolutionsCacheInvalidateAndDelete(t *testing.T) {
 	}
 	if _, ok, err := s.GetPartResolution(ctx, ref2, &p0); err != nil || ok {
 		t.Fatalf("expected deleted item's part resolution purged, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPartCandidatesCachePreservesWinnerAndExpires(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	s, _ := openTestService(t, Options{Now: func() time.Time { return now }})
+
+	decl := sampleBookDecl()
+	if _, err := s.UpsertKind(ctx, "community.books", 10, decl, false); err != nil {
+		t.Fatalf("UpsertKind: %v", err)
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", []core.KindItem{
+		{ID: "series-1", Level: "series", Title: "Series"},
+		{ID: "book-1", Level: "book", ParentID: "series-1", Title: "Cached Versions", Playable: true},
+	}); err != nil {
+		t.Fatalf("UpsertItems: %v", err)
+	}
+	ref := core.NewItemRef("community.books", "book", "book-1")
+	cands := []core.PlayableSource{
+		{ID: "4k", Label: "4K", Pattern: "range", URL: "https://ex/4k.mkv", ExpiresAt: now.Add(5 * time.Minute).Unix()},
+		{ID: "1080p", Label: "1080p", Pattern: "range", URL: "https://ex/1080.mkv", ExpiresAt: now.Add(10 * time.Minute).Unix()},
+	}
+
+	// Saving candidates alone must NOT look like a winning source in GetPartResolution.
+	if err := s.SavePartCandidates(ctx, ref, nil, cands); err != nil {
+		t.Fatalf("SavePartCandidates: %v", err)
+	}
+	if _, ok, err := s.GetPartResolution(ctx, ref, nil); err != nil || ok {
+		t.Fatalf("candidates-only row leaked into GetPartResolution: ok=%v err=%v", ok, err)
+	}
+	got, ok, err := s.GetPartCandidates(ctx, ref, nil)
+	if err != nil || !ok || len(got) != 2 || got[0].ID != "4k" || got[1].ID != "1080p" {
+		t.Fatalf("GetPartCandidates = (%+v, %v, %v), want 2 candidates", got, ok, err)
+	}
+
+	// Saving the winning source preserves the cached candidates list.
+	if err := s.SavePartResolution(ctx, ref, nil, cands[0]); err != nil {
+		t.Fatalf("SavePartResolution: %v", err)
+	}
+	win, ok, err := s.GetPartResolution(ctx, ref, nil)
+	if err != nil || !ok || win.ID != "4k" {
+		t.Fatalf("GetPartResolution = (%+v, %v, %v), want 4k", win, ok, err)
+	}
+	got, ok, err = s.GetPartCandidates(ctx, ref, nil)
+	if err != nil || !ok || len(got) != 2 {
+		t.Fatalf("SavePartResolution wiped candidates: (%+v, %v, %v)", got, ok, err)
+	}
+
+	// Negative resolution clears candidates and surfaces ErrNotAvailable.
+	if err := s.SaveNegativePartResolution(ctx, ref, nil); err != nil {
+		t.Fatalf("SaveNegativePartResolution: %v", err)
+	}
+	if _, ok, err := s.GetPartCandidates(ctx, ref, nil); !ok || !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("negative GetPartCandidates = (ok=%v, err=%v), want (true, ErrNotAvailable)", ok, err)
+	}
+
+	// Re-saving candidates clears negative state and respects min(ExpiresAt) expiry.
+	if err := s.SavePartCandidates(ctx, ref, nil, cands); err != nil {
+		t.Fatalf("re-SavePartCandidates: %v", err)
+	}
+	now = now.Add(6 * time.Minute)
+	if _, ok, err := s.GetPartCandidates(ctx, ref, nil); err != nil || ok {
+		t.Fatalf("expired GetPartCandidates = (ok=%v, err=%v), want miss", ok, err)
 	}
 }
 

@@ -198,7 +198,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 
 	dec := s.decision
-	if tracksChanged || dec.Reason == "original_runtime" {
+	if tracksChanged || dec.Reason == "original_runtime" || (req.Format == frontend.StreamHLS && dec.Kind == core.DecisionDirectPlay) {
 		options := s.opts
 		if req.AudioStream != nil {
 			if !validObservedTrack(ps.Info, "audio", *req.AudioStream) {
@@ -537,6 +537,13 @@ func (b *Broker) currentMediaPolicy(ctx context.Context, viewer *core.Viewer, s 
 	}
 	if lookup == nil {
 		lookup = b.deps.Lookup
+	}
+	if lookup == nil {
+		if s.public.Item.IsPluginKey() && b.deps.KindSource != nil {
+			in, err := b.deps.KindSource(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item)
+			return err == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item && (in.Title.Released.IsZero() || !in.Title.Released.After(b.deps.Now()))
+		}
+		return false
 	}
 	title, err := lookup(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
 	return err == nil && title != nil && title.Key == s.public.Item && (title.Released.IsZero() || !title.Released.After(b.deps.Now()))

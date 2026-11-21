@@ -270,7 +270,7 @@ func (s *Server) writeRemoteImage(w http.ResponseWriter, r *http.Request, u stri
 	if err != nil {
 		return err
 	}
-	data, ct, err := s.androidPhotoFormat(r, img.Data, img.ContentType)
+	data, ct, err := s.androidPhotoFormat(r, fitPhoto(r.Context(), u, img.Data, img.ContentType), img.ContentType)
 	if err != nil {
 		return err
 	}
@@ -430,6 +430,7 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 	} else if strings.HasSuffix(photoQueryValue(q, "minSize"), "1") && height > 0 && height*2/3 > width {
 		width = height * 2 / 3
 	}
+	r = r.WithContext(withPhotoFitWidth(r.Context(), width))
 	u, err := url.Parse(raw)
 	if err != nil {
 		writeHTTPError(w, http.StatusBadRequest)

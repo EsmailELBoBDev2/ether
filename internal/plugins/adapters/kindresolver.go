@@ -1159,6 +1159,23 @@ func (r *KindResolver) RefsForKeys(ctx context.Context, viewer *core.Viewer, key
 	return out, nil
 }
 
+const (
+	sourceIndexerSearchTimeout = 30 * time.Second
+	sourceReleaseFilesTimeout  = 30 * time.Second
+	sourceDebridCheckTimeout   = 15 * time.Second
+	sourceDebridAcquireTimeout = 30 * time.Second
+)
+
+func withHardTimeout(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	if limit <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= limit {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
 // ResolveSources implements plugins.KindBackends.ResolveSources for plugins
 // granted permissions.sources ("search" or "acquire"). Capability and
 // permission checks are enforced upstream in plugins/host_kinds.go.
@@ -1168,6 +1185,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 	}
 	switch q.Kind {
 	case "indexer_search":
+		ctx, cancel := withHardTimeout(ctx, sourceIndexerSearchTimeout)
+		defer cancel()
 		query := strings.TrimSpace(q.Query)
 		category := strings.TrimSpace(q.Category)
 		if query == "" && category == "" {
@@ -1243,6 +1262,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		return scored, nil
 
 	case "debrid_check":
+		ctx, cancel := withHardTimeout(ctx, sourceDebridCheckTimeout)
+		defer cancel()
 		if r.debrid == nil {
 			return []core.SourceCandidate{}, nil
 		}
@@ -1273,6 +1294,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		return out, nil
 
 	case "release_files":
+		ctx, cancel := withHardTimeout(ctx, sourceReleaseFilesTimeout)
+		defer cancel()
 		cand := core.SourceCandidate{
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
@@ -1373,6 +1396,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		return []core.SourceCandidate{cand}, nil
 
 	case "debrid_acquire":
+		ctx, cancel := withHardTimeout(ctx, sourceDebridAcquireTimeout)
+		defer cancel()
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
 		}

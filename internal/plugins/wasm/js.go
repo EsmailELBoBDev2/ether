@@ -882,6 +882,10 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 				return
 			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				callErr = &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+				return
+			}
 			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
 		}
 	}()
@@ -902,6 +906,9 @@ func classifyJSError(ctx context.Context, cs *callState, err error) *Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+	}
 	msg := err.Error()
 	if f := decodeFault(msg); f != nil {
 		st := statusForFaultCode(f.Code)
@@ -917,17 +924,40 @@ func (in *jsInstance) globalFn(name string) *qjs.Value {
 	return in.qc.Global().GetPropertyStr(name)
 }
 
-func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte) ([]byte, *Error) {
-	v, err := in.jsCall(ctx, cs, func() (*qjs.Value, error) {
-		g := in.qc.Global()
-		return in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
-	})
+func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte) (out []byte, callErr *Error) {
+	in.cs = cs
+	in.swap.set(ctx)
+	defer func() {
+		in.cs = nil
+		in.swap.reset()
+		if r := recover(); r != nil {
+			out = nil
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
+				return
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				callErr = &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+				return
+			}
+			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
+		}
+	}()
+	g := in.qc.Global()
+	v, err := in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
 	if err != nil {
-		// Fall back to calling handle directly with a parsed object; the
-		// dispatch wrapper is installed by installDispatch at load. If it is
-		// missing this error is the real one.
-		return nil, err
+		return nil, classifyJSError(ctx, cs, err)
 	}
+	if v != nil && v.IsPromise() {
+		v, err = v.Await()
+		if err != nil {
+			return nil, classifyJSError(ctx, cs, err)
+		}
+	}
+	if v == nil {
+		return []byte("{}"), nil
+	}
+	defer v.Free()
 	return []byte(v.String()), nil
 }
 
@@ -1096,7 +1126,7 @@ globalThis.__ether_dispatch_handle = (reqJson) => {
   return JSON.stringify(res == null ? {} : res);
 };`))
 	if err2 != nil {
-		return &Error{Status: StatusError, Message: "install dispatch: " + err.Error(), Trap: true}
+		return &Error{Status: StatusError, Message: "install dispatch: " + err2.Error(), Trap: true}
 	}
 	return nil
 }

@@ -1087,9 +1087,43 @@ func (m *Manager) sidecarWaiting(r Record) bool {
 	return needs && !connected
 }
 
+// PoolStats returns a live instance-pool snapshot for a running hosted plugin.
+func (m *Manager) PoolStats(pluginID string) (wasm.PoolStats, bool) {
+	m.mu.Lock()
+	rt := m.runtimes[pluginID]
+	m.mu.Unlock()
+	type poolStatsProvider interface {
+		PoolStats() wasm.PoolStats
+	}
+	if p, ok := rt.(poolStatsProvider); ok {
+		return p.PoolStats(), true
+	}
+	return wasm.PoolStats{}, false
+}
+
 func (m *Manager) liveHealth(r Record, h Health) Health {
 	if m.sidecarWaiting(r) {
 		h.Status, h.Reason, h.Sidecar = "attention", sidecarWaitingReason, "waiting"
+	}
+	if snap, ok := m.PoolStats(r.ID); ok && snap.Size > 0 {
+		ph := &PoolHealth{
+			Size:        snap.Size,
+			InUse:       snap.InUse,
+			Idle:        snap.Idle,
+			Building:    snap.Building,
+			Waiting:     snap.Waiting,
+			Exhaustions: snap.Exhaustions,
+		}
+		if len(snap.Holders) > 0 {
+			ph.Holders = make([]PoolHolderHealth, len(snap.Holders))
+			for i, holder := range snap.Holders {
+				ph.Holders[i] = PoolHolderHealth{
+					Route:  holder.Route,
+					HeldMS: holder.Held.Milliseconds(),
+				}
+			}
+		}
+		h.Pool = ph
 	}
 	return h
 }

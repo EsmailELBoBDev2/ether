@@ -222,9 +222,10 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
 }
 
-func (r *hostedRuntime) Close() error       { return r.p.Close() }
-func (r *hostedRuntime) HasRankKey() bool   { return r.p.HasRankKey() }
-func (r *hostedRuntime) HasCondMatch() bool { return r.p.HasCondMatch() }
+func (r *hostedRuntime) Close() error              { return r.p.Close() }
+func (r *hostedRuntime) HasRankKey() bool          { return r.p.HasRankKey() }
+func (r *hostedRuntime) HasCondMatch() bool        { return r.p.HasCondMatch() }
+func (r *hostedRuntime) PoolStats() wasm.PoolStats { return r.p.PoolStats() }
 
 func (r *hostedRuntime) RankBatch(ctx context.Context, cands []CandidateFacts, config json.RawMessage) ([]int64, HotOutcome, error) {
 	in := make([]wasm.Candidate, len(cands))

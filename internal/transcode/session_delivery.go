@@ -809,9 +809,11 @@ func (s *Session) serveCounted(w http.ResponseWriter, r *http.Request, name stri
 				}
 			}
 			mediaKbps := 0
-			if idx := t; s.isDASH() {
+			idx := t
+			if s.isDASH() {
 				idx = rungForDashTrack(t)
-			} else if idx >= 0 && idx < len(s.rungs) {
+			}
+			if idx >= 0 && idx < len(s.rungs) {
 				mediaKbps = s.rungs[idx].avgKbps
 			}
 			if mediaKbps <= 0 && segDur > 0 {

@@ -230,6 +230,65 @@ describe("Libraries workspace", () => {
                 silo: { type: "Book" },
               },
             },
+            presentations: {
+              ...lib.presentations,
+              effective: {},
+              available: {
+                ...lib.presentations.available,
+                mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+                silo: { type: "Book" },
+              },
+              apps: [
+                {
+                  app: "vela",
+                  available: true,
+                  enabled: false,
+                  defaultOn: true,
+                  source: "inferred",
+                  hintValue: "movies",
+                },
+                {
+                  app: "plex",
+                  available: false,
+                  enabled: false,
+                  defaultOn: false,
+                  source: "unavailable",
+                  reason: "Plex does not have a book library type.",
+                },
+                {
+                  app: "mediaBrowser",
+                  available: true,
+                  enabled: false,
+                  defaultOn: true,
+                  source: "plugin",
+                  hintValue: "books",
+                },
+                {
+                  app: "stremio",
+                  available: false,
+                  enabled: false,
+                  defaultOn: false,
+                  source: "unavailable",
+                  reason: "Stremio only supports movies, shows, and channels.",
+                },
+                {
+                  app: "xtream",
+                  available: false,
+                  enabled: false,
+                  defaultOn: false,
+                  source: "unavailable",
+                  reason: "Xtream only supports movies, series, and live TV.",
+                },
+                {
+                  app: "silo",
+                  available: true,
+                  enabled: false,
+                  defaultOn: true,
+                  source: "plugin",
+                  hintValue: "Book",
+                },
+              ],
+            },
           }),
           {
             status: 200,
@@ -248,8 +307,10 @@ describe("Libraries workspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Kind")).toBeInTheDocument();
     expect(screen.getByText("Books from Demo books")).toBeInTheDocument();
-    expect(screen.getAllByText("Shown as a book library")).toHaveLength(2);
-    expect(screen.getAllByText("Shown as a movie library")).toHaveLength(4);
+    expect(screen.getAllByText("Shown as a book library (from plugin)")).toHaveLength(2);
+    expect(screen.getByText("Shown as a movie library (inferred)")).toBeInTheDocument();
+    expect(screen.getByText("Plex does not have a book library type.")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Show in Plex" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Only in its own app" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "Show in Jellyfin & Emby" }));
@@ -258,9 +319,9 @@ describe("Libraries workspace", () => {
     await settleUi(() => {
       const patch = calls(fake, "PATCH", "/libraries/3").at(-1);
       expect(patch?.body).toMatchObject({
-        present: {
-          vela: { type: "movies" },
-          mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+        presentApps: {
+          vela: true,
+          mediaBrowser: true,
         },
       });
     });
@@ -300,7 +361,7 @@ describe("Libraries workspace", () => {
     await settleUi(() => {
       const patch = calls(fake, "PATCH", "/libraries/7").at(-1);
       expect(patch?.body).toMatchObject({
-        present: { vela: { type: "shows" }, plex: { base: "show" } },
+        presentApps: { vela: true, plex: true },
       });
     });
   });

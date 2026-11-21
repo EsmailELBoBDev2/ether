@@ -1480,7 +1480,7 @@ func TestTypeScriptReferencePairing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe := exec.Command(node, "--input-type=module", "-e", "if(typeof WebSocket==='undefined') process.exit(1); await import(process.argv[1])", "file://"+fixture)
+	probe := exec.Command(node, "--input-type=module", "-e", `const {pathToFileURL}=await import("node:url"); if(typeof WebSocket==='undefined') process.exit(1); await import(pathToFileURL(process.argv[1]).href)`, fixture)
 	if err := probe.Run(); err != nil {
 		t.Skip("node lacks native TypeScript or WebSocket support")
 	}
@@ -1500,10 +1500,10 @@ func TestTypeScriptReferencePairing(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	script := `const {Tunnel,json}=await import(process.argv[1]); const t=new Tunnel({url:process.argv[2],pairCode:"TESTCODE",handler:()=>json({ok:true})}); await t.serveOnce();`
+	script := `const {pathToFileURL}=await import("node:url"); const {Tunnel,json}=await import(pathToFileURL(process.argv[1]).href); const t=new Tunnel({url:process.argv[2],pairCode:"TESTCODE",handler:()=>json({ok:true})}); await t.serveOnce();`
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script, "file://"+fixture, "ws"+strings.TrimPrefix(srv.URL, "http")+TunnelPath)
+	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script, fixture, "ws"+strings.TrimPrefix(srv.URL, "http")+TunnelPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {

@@ -17,7 +17,6 @@ type switchFakePlayback struct {
 	mu       sync.Mutex
 	onSwitch func(release string, exact bool) (*core.PlaySession, error)
 	stopped  []string
-	nextSeq  int
 }
 
 func (f *switchFakePlayback) PrepareWithin(ctx context.Context, _ time.Duration, u *core.User, key core.RatingKey, c core.ClientCaps, release string, exact bool) (*core.PlaySession, error) {

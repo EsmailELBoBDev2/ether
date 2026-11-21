@@ -313,14 +313,6 @@ func requestOriginInfo(r *http.Request, trusted []netip.Prefix) (clientnet.Reque
 	return origin, true
 }
 
-func requestOrigin(r *http.Request, trusted []netip.Prefix) (scheme, host string, ok bool) {
-	origin, ok := requestOriginInfo(r, trusted)
-	if !ok {
-		return "", "", false
-	}
-	return origin.Scheme, origin.Host, true
-}
-
 func hostOnly(hostport string) string {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		return strings.Trim(h, "[]")

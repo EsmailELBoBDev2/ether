@@ -678,8 +678,6 @@ func asString(v any) (string, bool) {
 		return x, true
 	case fmt.Stringer:
 		return x.String(), true
-	case json.Number:
-		return x.String(), true
 	}
 	return "", false
 }

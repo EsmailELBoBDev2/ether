@@ -24,6 +24,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/retryafter"
 )
@@ -61,10 +62,22 @@ var (
 	ErrUnsupported = errors.New("debrid: not supported by this provider")
 	// errNoVideo is a torrent without a playable file (or without the
 	// wanted episode): a property of the release, not of a provider.
-	errNoVideo = fmt.Errorf("debrid: no playable video file: %w", core.ErrReleaseRejected)
+	errNoVideo error = releaseNoUsableError{msg: "debrid: no playable video file: " + core.ErrReleaseRejected.Error()}
+	// errNoUsableNonVideo is a torrent without a usable non-video file for a
+	// plugin release request.
+	errNoUsableNonVideo error = releaseNoUsableError{msg: "debrid: no usable non-video file: " + core.ErrReleaseRejected.Error()}
 	// errFileMissing is a payload's file absent from its torrent.
 	errFileMissing = fmt.Errorf("debrid: file is no longer in the torrent: %w", ErrGone)
 )
+
+type releaseNoUsableError struct {
+	msg string
+}
+
+func (e releaseNoUsableError) Error() string { return e.msg }
+func (e releaseNoUsableError) Unwrap() []error {
+	return []error{core.ErrReleaseRejected, core.ErrNoUsableFile}
+}
 
 // rateLimitError carries the provider's Retry-After hint.
 type rateLimitError struct{ retryAfter time.Duration }
@@ -699,6 +712,99 @@ func isExtra(p string) bool {
 	return false
 }
 
+// chooseNonVideoFile selects a non-video file (or single-volume wrapper
+// archive for downstream extraction) from a torrent file list when a plugin
+// release target carries AllowNonVideo with a member selector or media MIME.
+func chooseNonVideoFile(files []File, target *core.ReleaseTarget) (File, error) {
+	var nonEmpty []File
+	var names []string
+	for _, f := range files {
+		if f.Size <= 0 {
+			continue
+		}
+		nonEmpty = append(nonEmpty, f)
+		names = append(names, f.Path)
+	}
+	if len(nonEmpty) == 0 {
+		return File{}, fmt.Errorf("debrid: no non-empty files (%s): %w", torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	singleArchive := func() (File, bool) {
+		type archiveSetKey struct {
+			kind nzb.Kind
+			name string
+		}
+		setCounts := make(map[archiveSetKey]int)
+		infos := make([]nzb.FileInfo, len(nonEmpty))
+		for i, f := range nonEmpty {
+			info := nzb.Classify(path.Base(strings.ReplaceAll(f.Path, "\\", "/")))
+			infos[i] = info
+			if info.Kind.IsArchive() {
+				setCounts[archiveSetKey{kind: info.Kind, name: info.SetName}]++
+			}
+		}
+		best := -1
+		for i, f := range nonEmpty {
+			info := infos[i]
+			if !info.Kind.IsArchive() || info.Kind == nzb.KindSplit {
+				continue
+			}
+			// Debrid serves one file per Acquire; skip multi-volume archive
+			// sets that cannot be opened from a single HTTP volume.
+			if setCounts[archiveSetKey{kind: info.Kind, name: info.SetName}] != 1 || info.Volume > 0 {
+				continue
+			}
+			if best < 0 || f.Size > nonEmpty[best].Size || (f.Size == nonEmpty[best].Size && f.Path < nonEmpty[best].Path) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return nonEmpty[best], true
+		}
+		return File{}, false
+	}
+
+	if want := strings.TrimSpace(target.Member); want != "" {
+		if idx, ok, ambig := nzb.MatchPathIndex(names, want); ok {
+			return nonEmpty[idx], nil
+		} else if ambig {
+			return File{}, fmt.Errorf("debrid: member %q matched multiple files: %w", want, core.ErrWrongContent)
+		}
+		if arc, ok := singleArchive(); ok {
+			return arc, nil
+		}
+		return File{}, fmt.Errorf("debrid: no file or archive matching %q (%s): %w", want, torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	if target.MemberIndex != nil {
+		if arc, ok := singleArchive(); ok {
+			return arc, nil
+		}
+		return File{}, fmt.Errorf("debrid: no archive for memberIndex %d (%s): %w", *target.MemberIndex, torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	best := -1
+	bestRank := 0
+	for i, f := range nonEmpty {
+		rank := nzb.NonVideoMatchRank(f.Path, target.MIME)
+		if rank == 0 {
+			continue
+		}
+		if rank > bestRank ||
+			(rank == bestRank && (best < 0 || f.Size > nonEmpty[best].Size || (f.Size == nonEmpty[best].Size && f.Path < nonEmpty[best].Path))) {
+			best = i
+			bestRank = rank
+		}
+	}
+	if best >= 0 {
+		return nonEmpty[best], nil
+	}
+	if arc, ok := singleArchive(); ok {
+		return arc, nil
+	}
+	return File{}, fmt.Errorf("debrid: no usable %s file (%s): %w", target.MIME, torrentFileSummary(files), errNoUsableNonVideo)
+}
+
 // ChooseFile selects an explicitly named file (including non-video files when
 // target.AllowNonVideo is set) or picks the main playable video: the target
 // episode or largest video.
@@ -744,6 +850,11 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", chosen.Path, core.ErrReleaseRejected)
 		}
 		return chosen, nil
+	}
+
+	if target != nil && target.AllowNonVideo &&
+		(target.Member != "" || target.MemberIndex != nil || nzb.IsNonVideoMIME(target.MIME)) {
+		return chooseNonVideoFile(files, target)
 	}
 
 	featureCount := 0

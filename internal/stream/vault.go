@@ -51,7 +51,7 @@ func (e *Engine) openRecord(ctx context.Context, releaseID, feedbackID string, r
 		}
 		key = vault.ContentKey(&doc)
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", key, doc.MetaValue(nzb.MetaEpisode), doc.MetaValue(nzb.MetaMovie), doc.Password())))
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", key, doc.MetaValue(nzb.MetaEpisode), doc.MetaValue(nzb.MetaMovie), doc.MetaValue(nzb.MetaNonVideo), doc.Password())))
 	id := fmt.Sprintf("vault-%x/%s/%x", digest, feedbackID, sha256.Sum256(target))
 	if rel := e.cachedRelease(id); rel != nil {
 		return e.openRelease(ctx, releaseID, feedbackID, rel)
@@ -130,7 +130,7 @@ func (r *release) useTargetSlots(view *release) error {
 }
 
 func (p *plan) vaultLayout(ctx context.Context, cacheID string) *vault.Layout {
-	if p.encrypted != nil || len(p.clips)+len(p.spans)+len(p.sub) > 0 {
+	if p.encrypted != nil || p.rawNonVideo || p.kind == kindArchiveRaw || len(p.clips)+len(p.spans)+len(p.sub) > 0 {
 		return nil
 	}
 	l := &vault.Layout{Container: string(p.kind), FirstArticles: map[int][]byte{}}
@@ -199,6 +199,9 @@ func (p *plan) vaultLayout(ctx context.Context, cacheID string) *vault.Layout {
 // restore checks the selected member against real bytes before installing cached
 // heads. A truncated header can confirm a prefix but cannot fill an article slot.
 func (b *builder) restore(ctx context.Context, l *vault.Layout) (*plan, error) {
+	if _, ok := b.rel.doc.NonVideoHint(); ok {
+		return nil, nil
+	}
 	if len(l.Members) == 0 {
 		return nil, nil
 	}

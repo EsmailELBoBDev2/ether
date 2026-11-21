@@ -41,12 +41,26 @@ type ReleaseTarget struct {
 	// byte size (additive).
 	WantedLanguages  []string `json:"wantedLanguages,omitempty"`
 	OriginalLanguage string   `json:"originalLanguage,omitempty"`
-	// FileIndex is a zero-based index in the complete torrent file list; the selected file must be a video unless AllowNonVideo is set.
+	// FileIndex is a zero-based index in the complete torrent/NZB file list; the selected file must be a video unless AllowNonVideo is set.
 	FileIndex *int `json:"fileIndex,omitempty"`
 	// ExactFile selects a plugin-requested path or unambiguous basename.
 	ExactFile string `json:"exactFile,omitempty"`
-	// AllowNonVideo permits an explicit FileIndex or ExactFile selector to choose a non-video file.
+	// AllowNonVideo permits an explicit FileIndex/ExactFile, archive member
+	// selector (Member/MemberIndex), or non-video MIME target to choose a
+	// non-video file instead of requiring video.
 	AllowNonVideo bool `json:"allowNonVideo,omitempty"`
+	// Member selects an archive member path or unambiguous basename (e.g.
+	// from release.fileHint or container.member) when AllowNonVideo is set.
+	Member string `json:"member,omitempty"`
+	// MemberIndex selects a zero-based archive member index when AllowNonVideo
+	// is set (e.g. from container.memberIndex).
+	MemberIndex *int `json:"memberIndex,omitempty"`
+	// MIME is the declared or kind-default media type for non-video release
+	// file selection (e.g. "audio/flac", "application/epub+zip", "audio/*").
+	MIME string `json:"mime,omitempty"`
+	// ArchivePassword is an optional archive password resolved from a plugin
+	// secret for opening encrypted Usenet archives; never serialized.
+	ArchivePassword string `json:"-"`
 	// FileName is the source-matched file hint, never proof of episode identity.
 	FileName string `json:"fileName,omitempty"`
 	// AbsoluteEpisode is the verified anime episode number across seasons.

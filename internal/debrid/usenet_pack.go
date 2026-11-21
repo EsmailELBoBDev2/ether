@@ -64,6 +64,9 @@ func EpisodeNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 	if t != nil && t.AllowNonVideo && (t.FileIndex != nil || t.ExactFile != "") {
 		return exactFileNZB(data, t)
 	}
+	if t != nil && t.AllowNonVideo && (t.Member != "" || t.MemberIndex != nil || nzb.IsNonVideoMIME(t.MIME)) {
+		return nonVideoNZB(data, t)
+	}
 	if t != nil && t.Episode <= 0 && (len(t.MovieTitles) > 0 || len(t.WantedLanguages) > 0) {
 		doc, err := nzb.Parse(data)
 		if err != nil {
@@ -162,7 +165,7 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 	if t.FileIndex != nil {
 		i := *t.FileIndex
 		if i < 0 || i >= len(doc.Files) {
-			return nil, fmt.Errorf("usenet fileIndex %d outside file list of %d: %w", i, len(doc.Files), core.ErrNotAvailable)
+			return nil, fmt.Errorf("usenet fileIndex %d outside file list of %d: %w", i, len(doc.Files), core.ErrWrongContent)
 		}
 		selected = doc.Files[i]
 		if t.ExactFile != "" && !exactNZBNameMatches(selected.Name, t.ExactFile) {
@@ -176,13 +179,21 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 			}
 		}
 		if len(matches) != 1 {
-			return nil, fmt.Errorf("usenet file %q matched %d files: %w", t.ExactFile, len(matches), core.ErrNotAvailable)
+			return nil, fmt.Errorf("usenet file %q matched %d files: %w", t.ExactFile, len(matches), core.ErrWrongContent)
 		}
 		selected = matches[0]
 	}
+
+	// Serve loose posted files as raw bytes. For archive files, keep and
+	// unwrap the archive set unless the caller explicitly asked for a raw
+	// wrapper-archive MIME with no member selector.
+	unwrapArchive := selected.Info.Kind.IsArchive() &&
+		(!nzb.IsArchiveMIME(t.MIME) || t.Member != "" || t.MemberIndex != nil)
+	rawFile := !unwrapArchive
+
 	keep := map[*nzb.File]bool{selected: true}
 	stems := []string{strings.ToLower(strings.TrimSuffix(selected.Name, path.Ext(selected.Name)))}
-	if selected.Info.Kind.IsArchive() {
+	if unwrapArchive {
 		for _, s := range nzb.GroupSets(doc.Files) {
 			for _, v := range s.Volumes {
 				if v == selected {
@@ -208,11 +219,47 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 		}
 	}
 	packIndex := nzb.Par2Index(doc.Files)
+	hint := nzb.NonVideoHint{
+		ExplicitFile: true,
+		ExactFile:    selected.Name,
+		RawFile:      rawFile,
+		Member:       strings.TrimSpace(t.Member),
+		MemberIndex:  t.MemberIndex,
+		MIME:         nzb.NormalizeMIME(t.MIME),
+	}
+	extra := map[string]string{nzb.MetaNonVideo: hint.String()}
+	if pw := strings.TrimSpace(t.ArchivePassword); pw != "" && doc.Password() == "" {
+		extra["password"] = pw
+	}
 	out, ok := doc.SubsetMeta(func(f *nzb.File) bool {
 		return keep[f] || own[f] || (!ownIndex && f == packIndex)
-	}, nil)
+	}, extra)
 	if !ok {
-		return nil, fmt.Errorf("usenet release has no file %q: %w", t.ExactFile, core.ErrNotAvailable)
+		return nil, fmt.Errorf("usenet release has no file %q: %w", t.ExactFile, core.ErrWrongContent)
+	}
+	return out, nil
+}
+
+// nonVideoNZB annotates an NZB with ether-nonvideo metadata so the stream
+// engine selects the requested non-video member or media-MIME file (loose or
+// archived) instead of running video-only heuristics.
+func nonVideoNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
+	doc, err := nzb.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	hint := nzb.NonVideoHint{
+		Member:      strings.TrimSpace(t.Member),
+		MemberIndex: t.MemberIndex,
+		MIME:        nzb.NormalizeMIME(t.MIME),
+	}
+	extra := map[string]string{nzb.MetaNonVideo: hint.String()}
+	if pw := strings.TrimSpace(t.ArchivePassword); pw != "" && doc.Password() == "" {
+		extra["password"] = pw
+	}
+	out, ok := doc.SubsetMeta(func(f *nzb.File) bool { return true }, extra)
+	if !ok {
+		return nil, fmt.Errorf("usenet release has no files: %w", core.ErrNoUsableFile)
 	}
 	return out, nil
 }

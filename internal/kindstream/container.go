@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
 const maxArchiveDictBytes = 128 << 20
@@ -624,6 +625,62 @@ func selectArchiveMember(members []archive.Member, wantName string, wantIndex *i
 	}
 
 	return nonDir[0], 0, nil
+}
+
+// selectArchiveMemberForMIME extends selectArchiveMember for release archives:
+// when no member name or index was given and declaredMIME is a non-video media
+// type, it selects the best matching non-empty member (highest MIME rank, then
+// largest size) instead of blindly returning nonDir[0] (such as cover.jpg).
+func selectArchiveMemberForMIME(members []archive.Member, wantName string, wantIndex *int, declaredMIME string) (archive.Member, int, error) {
+	if strings.TrimSpace(wantName) != "" || wantIndex != nil {
+		m, idx, err := selectArchiveMember(members, wantName, wantIndex)
+		if err == nil || wantIndex != nil {
+			return m, idx, err
+		}
+		var nonDir []archive.Member
+		var names []string
+		for _, mm := range members {
+			if !mm.Dir {
+				nonDir = append(nonDir, mm)
+				names = append(names, mm.Name)
+			}
+		}
+		if idx, ok, _ := nzb.MatchPathIndex(names, wantName); ok {
+			return nonDir[idx], idx, nil
+		}
+		return archive.Member{}, -1, err
+	}
+	if !nzb.IsNonVideoMIME(declaredMIME) {
+		return selectArchiveMember(members, "", nil)
+	}
+	var nonDir []archive.Member
+	for _, m := range members {
+		if !m.Dir {
+			nonDir = append(nonDir, m)
+		}
+	}
+	if len(nonDir) == 0 {
+		return archive.Member{}, -1, fmt.Errorf("kindstream: archive contains no non-directory members: %w", core.ErrNoUsableFile)
+	}
+	bestIdx := -1
+	bestRank := 0
+	for i, m := range nonDir {
+		if m.Size <= 0 {
+			continue
+		}
+		rank := nzb.NonVideoMatchRank(m.Name, declaredMIME)
+		if rank == 0 {
+			continue
+		}
+		if rank > bestRank || (rank == bestRank && (bestIdx < 0 || m.Size > nonDir[bestIdx].Size)) {
+			bestIdx = i
+			bestRank = rank
+		}
+	}
+	if bestIdx < 0 {
+		return archive.Member{}, -1, fmt.Errorf("kindstream: archive contains no usable %s member: %w", declaredMIME, core.ErrNoUsableFile)
+	}
+	return nonDir[bestIdx], bestIdx, nil
 }
 
 func normalizeArchivePath(p string) string {

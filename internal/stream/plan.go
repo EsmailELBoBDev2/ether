@@ -14,11 +14,12 @@ import (
 type planKind string
 
 const (
-	kindPlain planKind = "plain"
-	kindRAR   planKind = "rar"
-	kind7z    planKind = "7z"
-	kindZIP   planKind = "zip"
-	kindSplit planKind = "split"
+	kindPlain      planKind = "plain"
+	kindRAR        planKind = "rar"
+	kind7z         planKind = "7z"
+	kindZIP        planKind = "zip"
+	kindSplit      planKind = "split"
+	kindArchiveRaw planKind = "archive-raw"
 )
 
 // volInfo is what the layout knows (or assumes) about one volume.
@@ -97,6 +98,12 @@ type plan struct {
 	member string
 	// 7z: the member's extents in the concatenated archive.
 	concatExt []archive.Extent
+
+	// Non-video release planning metadata.
+	rawNonVideo    bool   // skip video-only assumptions (ISO expansion, vault layout)
+	resolvedMember bool   // archive member already resolved by stream.Engine
+	archiveFormat  string // kindArchiveRaw: "rar", "7z", or "zip"
+	archiveConcat  bool   // kindArchiveRaw: vols are byte-split pieces of one stream
 
 	// Encrypted plans use verified ciphertext extents, plus a plaintext layout
 	// for scheduling. Keys exist only in this bounded, in-memory release plan.

@@ -1,18 +1,16 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/textproto"
 	"net/url"
-	"sort"
+	"regexp"
 	"strings"
 )
 
-// Per-indexer request identity: how Ether's requests to one indexer look on
-// the wire. A profile supplies an ordered header set and a query shape;
-// owner overrides are applied on top (headers) and last (parameters).
+// Server-wide request identity rules: how Ether identifies itself to indexers
+// and download hosts. Ether identifies honestly as Ether by default; owners
+// may add rules for indexers that only accept specific apps.
 
 // HeaderKV is one header in an ordered set.
 type HeaderKV struct {
@@ -27,35 +25,55 @@ type KVOverride struct {
 	Remove bool   `json:"remove,omitempty"`
 }
 
-// IndexerRequestIdentity is stored with the indexer config. An empty
-// Profile inherits the shared client-identity policy (Ether by default).
-type IndexerRequestIdentity struct {
-	Profile string       `json:"profile,omitempty"`
+// IdentityTargetKind classifies what requests an IdentityRule applies to.
+type IdentityTargetKind string
+
+const (
+	TargetAllSearches      IdentityTargetKind = "all_searches"
+	TargetIndexer          IdentityTargetKind = "indexer"
+	TargetHost             IdentityTargetKind = "host"
+	TargetNZBDownloads     IdentityTargetKind = "nzb_downloads"
+	TargetTorrentDownloads IdentityTargetKind = "torrent_downloads"
+)
+
+// RequestKind identifies the outbound operation being resolved.
+type RequestKind string
+
+const (
+	RequestSearch          RequestKind = "search"
+	RequestNZBDownload     RequestKind = "nzb_download"
+	RequestTorrentDownload RequestKind = "torrent_download"
+)
+
+// IdentityRule sets the outbound HTTP identity for matching requests.
+type IdentityRule struct {
+	ID        string             `json:"id"`
+	Target    IdentityTargetKind `json:"target"`
+	IndexerID string             `json:"indexerId,omitempty"`
+	Host      string             `json:"host,omitempty"`
+	// Scope optionally narrows an indexer or host rule to "search" or
+	// "download" (preserved when migrating split search/grab configs).
+	Scope   string       `json:"scope,omitempty"`
+	Profile string       `json:"profile"`
 	Headers []KVOverride `json:"headers,omitempty"`
 	Params  []KVOverride `json:"params,omitempty"`
-	// GrabProfile is empty for the profile's paired downloader.
-	GrabProfile string       `json:"grabProfile,omitempty"`
-	GrabHeaders []KVOverride `json:"grabHeaders,omitempty"`
-	GrabParams  []KVOverride `json:"grabParams,omitempty"`
 }
 
-// QueryShape describes how a client writes its query string.
-type QueryShape struct {
-	ParamOrder      []string
-	FirstPageOffset bool // send offset=0 when no offset is present
-	PadSeasonZero   bool // season 0 is sent as "00"
-	YearInQuery     bool // no year param; the year goes in q
+// IdentityRequest describes one outbound indexer search or NZB/torrent
+// download to resolve against ClientIdentity.Rules.
+type IdentityRequest struct {
+	Kind      RequestKind
+	IndexerID string
+	URL       string
 }
 
-// ClientProfile is one selectable request identity.
+// ClientProfile is one selectable compatibility header set.
 type ClientProfile struct {
-	ID         string
-	Headers    []HeaderKV
-	Shape      QueryShape
-	GrabPaired string // default grab profile; empty keeps this profile
+	ID      string
+	Headers []HeaderKV
 }
 
-// clientVersions is the one table of imitated client version strings.
+// clientVersions is the one table of client version strings.
 // Bump a client here and every profile using it follows.
 var clientVersions = map[string]string{
 	"prowlarr":  "Prowlarr/2.7.0.5723 (alpine 3.24.4)",
@@ -69,47 +87,35 @@ var clientVersions = map[string]string{
 
 // ProfileUserAgent returns a profile's user agent ("" if unknown).
 func ProfileUserAgent(id string) string {
-	if id == "ether" {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "ether", "custom":
 		return DefaultUserAgent()
+	default:
+		return clientVersions[strings.ToLower(strings.TrimSpace(id))]
 	}
-	return clientVersions[strings.ToLower(strings.TrimSpace(id))]
 }
 
-const (
-	arrAccept   = "application/rss+xml, text/rss+xml, application/xml, text/xml"
-	traceparent = "{traceparent}" // replaced per request
-)
+const arrAccept = "application/rss+xml, text/rss+xml, application/xml, text/xml"
 
-var arrShape = QueryShape{
-	ParamOrder: []string{"t", "q", "cat", "extended", "apikey", "offset", "limit", "imdbid", "tmdbid", "tvdbid", "season", "ep", "rid", "genre", "artist", "album", "author", "title"},
-}
-
-var prowlarrShape = QueryShape{
-	ParamOrder:      []string{"t", "cat", "extended", "apikey", "offset", "limit", "q", "imdbid", "tmdbid", "tvdbid", "season", "ep"},
-	FirstPageOffset: true,
-	PadSeasonZero:   true,
-	YearInQuery:     true,
-}
-
-// ClientProfiles lists every profile the owner can pick, in picker order.
+// ClientProfiles lists every selectable identity profile, in picker order.
+// Compatibility profiles set only that client's header set (User-Agent,
+// Accept, Accept-Encoding, Connection); Ether never reshapes query strings.
 func ClientProfiles() []ClientProfile {
 	arr := func(id string) ClientProfile {
-		return ClientProfile{ID: id, GrabPaired: "sabnzbd", Shape: arrShape, Headers: []HeaderKV{
+		return ClientProfile{ID: id, Headers: []HeaderKV{
 			{"User-Agent", clientVersions[id]},
 			{"Accept", arrAccept},
-			{"Accept-Encoding", "gzip, br"},
-			{"traceparent", traceparent},
+			{"Accept-Encoding", "gzip"},
 		}}
 	}
-	prowlarr := arr("prowlarr")
-	prowlarr.Shape = prowlarrShape
 	return []ClientProfile{
 		{ID: "ether", Headers: []HeaderKV{{"User-Agent", DefaultUserAgent()}}},
-		prowlarr, arr("sonarr"), arr("radarr"),
-		{ID: "nzbhydra2", GrabPaired: "sabnzbd", Headers: []HeaderKV{
-			{"Accept", "application/xml"},
+		arr("sonarr"),
+		arr("radarr"),
+		arr("prowlarr"),
+		{ID: "nzbhydra2", Headers: []HeaderKV{
 			{"User-Agent", clientVersions["nzbhydra2"]},
-			{"Content-Type", "application/xml"},
+			{"Accept", "application/xml"},
 			{"Accept-Encoding", "gzip"},
 		}},
 		{ID: "sabnzbd", Headers: []HeaderKV{
@@ -124,18 +130,9 @@ func ClientProfiles() []ClientProfile {
 			{"Connection", "close"},
 		}},
 		{ID: "browser", Headers: []HeaderKV{
-			{"sec-ch-ua", `"Chromium";v="158", "Not.A/Brand";v="24", "Google Chrome";v="158"`},
-			{"sec-ch-ua-mobile", "?0"},
-			{"sec-ch-ua-platform", `"macOS"`},
-			{"Accept-Language", "en-US,en;q=0.9"},
-			{"Upgrade-Insecure-Requests", "1"},
 			{"User-Agent", clientVersions["browser"]},
-			{"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
-			{"Sec-Fetch-Site", "none"},
-			{"Sec-Fetch-Mode", "navigate"},
-			{"Sec-Fetch-User", "?1"},
-			{"Sec-Fetch-Dest", "document"},
-			{"Accept-Encoding", "gzip, deflate, br, zstd"},
+			{"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			{"Accept-Encoding", "gzip, deflate"},
 		}},
 		{ID: "custom", Headers: []HeaderKV{{"User-Agent", DefaultUserAgent()}}},
 	}
@@ -152,30 +149,15 @@ func LookupProfile(id string) (ClientProfile, bool) {
 	return ClientProfile{}, false
 }
 
-// PairedGrabProfile is the grab profile a search profile defaults to.
-func PairedGrabProfile(id string) string {
-	if p, ok := LookupProfile(id); ok && p.GrabPaired != "" {
-		return p.GrabPaired
-	}
-	return id
-}
-
-// NewTraceparent returns a W3C traceparent value with random ids.
-func NewTraceparent() string {
-	var b [24]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return ""
-	}
-	return "00-" + hex.EncodeToString(b[:16]) + "-" + hex.EncodeToString(b[16:]) + "-01"
-}
-
-func applyHeaderOverrides(base []HeaderKV, ovs []KVOverride) []HeaderKV {
+func applyHeaderOverrides(base []HeaderKV, ovs []KVOverride) ([]HeaderKV, map[string]bool) {
 	out := append([]HeaderKV(nil), base...)
+	custom := map[string]bool{}
 	for _, ov := range ovs {
 		name := strings.TrimSpace(ov.Name)
 		if name == "" {
 			continue
 		}
+		lower := strings.ToLower(name)
 		idx := -1
 		for i, h := range out {
 			if strings.EqualFold(h.Name, name) {
@@ -188,17 +170,38 @@ func applyHeaderOverrides(base []HeaderKV, ovs []KVOverride) []HeaderKV {
 			if idx >= 0 {
 				out = append(out[:idx], out[idx+1:]...)
 			}
+			delete(custom, lower)
 		case idx >= 0:
 			out[idx] = HeaderKV{textproto.CanonicalMIMEHeaderKey(name), ov.Value}
+			custom[lower] = true
 		default:
 			out = append(out, HeaderKV{textproto.CanonicalMIMEHeaderKey(name), ov.Value})
+			custom[lower] = true
 		}
 	}
-	return out
+	return out, custom
 }
 
-func identityFromOrdered(ordered []HeaderKV, params []KVOverride, shape QueryShape, profile string) Identity {
-	id := Identity{Ordered: ordered, Params: params, Shape: shape, Profile: profile, Headers: map[string]string{}}
+// ResolveRule computes the wire Identity produced by rule.
+func ResolveRule(rule IdentityRule, ruleIndex int) Identity {
+	profID := strings.ToLower(strings.TrimSpace(rule.Profile))
+	prof, ok := LookupProfile(profID)
+	if !ok {
+		prof = ClientProfile{ID: "ether", Headers: []HeaderKV{{"User-Agent", DefaultUserAgent()}}}
+	}
+	ordered, custom := applyHeaderOverrides(prof.Headers, rule.Headers)
+	id := Identity{
+		Ordered:       ordered,
+		Params:        append([]KVOverride(nil), rule.Params...),
+		Profile:       prof.ID,
+		Headers:       map[string]string{},
+		RuleID:        rule.ID,
+		RuleIndex:     ruleIndex,
+		RuleTarget:    rule.Target,
+		RuleHost:      rule.Host,
+		RuleScope:     rule.Scope,
+		CustomHeaders: custom,
+	}
 	for _, h := range ordered {
 		if strings.EqualFold(h.Name, "User-Agent") {
 			id.UserAgent = h.Value
@@ -212,72 +215,175 @@ func identityFromOrdered(ordered []HeaderKV, params []KVOverride, shape QuerySha
 	return id
 }
 
-// ResolveIndexer returns the wire identity for one indexer and request
-// kind. Without a per-indexer identity it is exactly the shared policy
-// (honoring the legacy per-indexer user agent).
-func (p ClientIdentity) ResolveIndexer(ix Indexer, grab bool) Identity {
-	ri := ix.RequestIdentity
-	if ri == nil || strings.TrimSpace(ri.Profile) == "" {
-		base := p.Resolve(ix.UserAgent)
-		ordered := []HeaderKV{{"User-Agent", base.UserAgent}}
-		for k, v := range base.Headers {
-			ordered = append(ordered, HeaderKV{k, v})
-		}
-		sort.SliceStable(ordered[1:], func(i, j int) bool { return ordered[1+i].Name < ordered[1+j].Name })
-		var ovs, povs []KVOverride
-		if ri != nil {
-			if grab {
-				ovs, povs = ri.GrabHeaders, ri.GrabParams
-			} else {
-				ovs, povs = ri.Headers, ri.Params
-			}
-			// A grab-only profile still applies to grabs.
-			if grab && strings.TrimSpace(ri.GrabProfile) != "" {
-				if prof, ok := LookupProfile(ri.GrabProfile); ok {
-					return identityFromOrdered(applyHeaderOverrides(prof.Headers, ovs), povs, prof.Shape, prof.ID)
-				}
-			}
-		}
-		return identityFromOrdered(applyHeaderOverrides(ordered, ovs), povs, QueryShape{}, "")
+// DefaultIdentity returns the implicit last rule: Ether's honest default.
+func DefaultIdentity() Identity {
+	ua := DefaultUserAgent()
+	return Identity{
+		UserAgent: ua,
+		Headers:   map[string]string{},
+		Ordered:   []HeaderKV{{"User-Agent", ua}},
+		Profile:   "ether",
+		RuleIndex: -1,
 	}
-	profileID := strings.ToLower(strings.TrimSpace(ri.Profile))
-	ovs, povs := ri.Headers, ri.Params
-	if grab {
-		ovs, povs = ri.GrabHeaders, ri.GrabParams
-		if g := strings.TrimSpace(ri.GrabProfile); g != "" {
-			profileID = strings.ToLower(g)
-		} else {
-			profileID = PairedGrabProfile(profileID)
-		}
-	}
-	prof, ok := LookupProfile(profileID)
-	if !ok {
-		prof = ClientProfile{ID: profileID, Headers: []HeaderKV{{"User-Agent", DefaultUserAgent()}}}
-	}
-	return identityFromOrdered(applyHeaderOverrides(prof.Headers, ovs), povs, prof.Shape, prof.ID)
 }
 
-// ShapeQuery applies the identity's query shape and parameter overrides
-// and encodes in profile order (remaining keys sorted). apikey and t can
-// be changed by an override but never removed.
-func (id Identity) ShapeQuery(params url.Values) string {
+// ResolveRequest resolves the winning rule for req.
+// Precedence (most specific wins; list order breaks ties within the same tier):
+//  1. specific indexer (TargetIndexer)
+//  2. exact host (TargetHost without "*.")
+//  3. wildcard host (TargetHost with "*.host")
+//  4. download type (TargetNZBDownloads / TargetTorrentDownloads) or all searches (TargetAllSearches)
+//  5. implicit last rule: Ether default
+func (p ClientIdentity) ResolveRequest(req IdentityRequest) Identity {
+	reqHost := extractHost(req.URL)
+	bestRank := 0
+	bestIdx := -1
+	for i, rule := range p.Rules {
+		rank := ruleSpecificity(rule, req, reqHost)
+		if rank > bestRank {
+			bestRank = rank
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return DefaultIdentity()
+	}
+	return ResolveRule(p.Rules[bestIdx], bestIdx)
+}
+
+// ResolveIndexer resolves the search or download identity for ix.
+func (p ClientIdentity) ResolveIndexer(ix Indexer, kind RequestKind, rawURL string) Identity {
+	if strings.TrimSpace(rawURL) == "" {
+		rawURL = ix.URL
+	}
+	return p.ResolveRequest(IdentityRequest{
+		Kind:      kind,
+		IndexerID: ix.ID,
+		URL:       rawURL,
+	})
+}
+
+func ruleSpecificity(rule IdentityRule, req IdentityRequest, reqHost string) int {
+	switch rule.Target {
+	case TargetIndexer:
+		if rule.IndexerID == "" || rule.IndexerID != req.IndexerID {
+			return 0
+		}
+		if !scopeMatches(rule.Scope, req.Kind) {
+			return 0
+		}
+		return 4
+	case TargetHost:
+		if reqHost == "" || !scopeMatches(rule.Scope, req.Kind) {
+			return 0
+		}
+		pat := normHostPattern(rule.Host)
+		if pat == "" {
+			return 0
+		}
+		if suffix, wildcard := strings.CutPrefix(pat, "*."); wildcard {
+			if suffix != "" && strings.HasSuffix(reqHost, "."+suffix) {
+				return 2
+			}
+			return 0
+		}
+		if reqHost == pat {
+			return 3
+		}
+		return 0
+	case TargetNZBDownloads:
+		if req.Kind == RequestNZBDownload {
+			return 1
+		}
+		return 0
+	case TargetTorrentDownloads:
+		if req.Kind == RequestTorrentDownload {
+			return 1
+		}
+		return 0
+	case TargetAllSearches:
+		if req.Kind == RequestSearch {
+			return 1
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+func scopeMatches(scope string, kind RequestKind) bool {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "":
+		return true
+	case "search":
+		return kind == RequestSearch
+	case "download":
+		return kind == RequestNZBDownload || kind == RequestTorrentDownload
+	default:
+		return false
+	}
+}
+
+func extractHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	}
+	u, err := url.Parse("https://" + raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+}
+
+func normHostPattern(raw string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+}
+
+var hostLabelRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidHostPattern reports whether raw is a valid exact host ("api.example.com")
+// or wildcard host ("*.example.com") pattern.
+func ValidHostPattern(raw string) bool {
+	pat := normHostPattern(raw)
+	if pat == "" || len(pat) > 253 {
+		return false
+	}
+	if strings.ContainsAny(pat, " /:\\?#\t\r\n") {
+		return false
+	}
+	host := pat
+	if suffix, wildcard := strings.CutPrefix(pat, "*."); wildcard {
+		if suffix == "" || strings.Contains(suffix, "*") {
+			return false
+		}
+		host = suffix
+	} else if strings.Contains(pat, "*") {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if !hostLabelRE.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+// ApplyParams applies the identity's query parameter overrides onto params and
+// encodes them with standard url.Values.Encode() ordering (no query mimicry).
+// apikey and t can be changed by an override but never removed.
+func (id Identity) ApplyParams(params url.Values) string {
 	v := url.Values{}
 	for k, vs := range params {
 		v[k] = append([]string(nil), vs...)
-	}
-	if id.Shape.YearInQuery {
-		if y := v.Get("year"); y != "" {
-			v.Del("year")
-			if q := v.Get("q"); q != "" && !strings.HasSuffix(q, y) {
-				v.Set("q", q+" "+y)
-			}
-		}
-	}
-	if id.Shape.PadSeasonZero && v.Get("season") == "0" {
-		v.Set("season", "00")
-	}
-	if id.Shape.FirstPageOffset && v.Get("offset") == "" {
-		v.Set("offset", "0")
 	}
 	for _, ov := range id.Params {
 		name := strings.TrimSpace(ov.Name)
@@ -285,7 +391,7 @@ func (id Identity) ShapeQuery(params url.Values) string {
 			continue
 		}
 		if ov.Remove {
-			if name == "apikey" || name == "t" {
+			if strings.EqualFold(name, "apikey") || strings.EqualFold(name, "t") {
 				continue
 			}
 			v.Del(name)
@@ -293,126 +399,152 @@ func (id Identity) ShapeQuery(params url.Values) string {
 			v.Set(name, ov.Value)
 		}
 	}
-	seen := map[string]bool{}
-	var keys []string
-	for _, k := range id.Shape.ParamOrder {
-		if _, ok := v[k]; ok && !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
-		}
-	}
-	var rest []string
-	for k := range v {
-		if !seen[k] {
-			rest = append(rest, k)
-		}
-	}
-	sort.Strings(rest)
-	keys = append(keys, rest...)
-	var b strings.Builder
-	for _, k := range keys {
-		for _, val := range v[k] {
-			if b.Len() > 0 {
-				b.WriteByte('&')
-			}
-			b.WriteString(url.QueryEscape(k))
-			b.WriteByte('=')
-			b.WriteString(url.QueryEscape(val))
-		}
-	}
-	return b.String()
+	return v.Encode()
 }
 
-// Validate checks a per-indexer request identity. Field is "requestIdentity".
-func (ri *IndexerRequestIdentity) Validate() []IdentityFieldError {
-	if ri == nil {
-		return nil
-	}
+// Validate checks every rule in ClientIdentity.
+func (p ClientIdentity) Validate() []IdentityFieldError {
 	var errs []IdentityFieldError
-	add := func(format string, args ...any) {
-		errs = append(errs, IdentityFieldError{"requestIdentity", fmt.Sprintf(format, args...)})
+	if len(p.Rules) > 64 {
+		return append(errs, IdentityFieldError{"rules", "at most 64 rules"})
 	}
-	for _, id := range []string{ri.Profile, ri.GrabProfile} {
-		if strings.TrimSpace(id) != "" {
-			if _, ok := LookupProfile(id); !ok {
-				add("unknown client profile %q", id)
+	seenIDs := map[string]bool{}
+	for i, r := range p.Rules {
+		prefix := fmt.Sprintf("rules[%d]", i)
+		add := func(field, format string, args ...any) {
+			errs = append(errs, IdentityFieldError{prefix + "." + field, fmt.Sprintf(format, args...)})
+		}
+		id := strings.TrimSpace(r.ID)
+		if id == "" {
+			add("id", "is required")
+		} else if len(id) > 64 || strings.ContainsAny(id, "\r\n\x00") {
+			add("id", "is not valid")
+		} else if seenIDs[id] {
+			add("id", "duplicate rule id %q", id)
+		} else {
+			seenIDs[id] = true
+		}
+
+		switch r.Target {
+		case TargetAllSearches, TargetNZBDownloads, TargetTorrentDownloads:
+			if strings.TrimSpace(r.Scope) != "" {
+				add("scope", "is only valid on indexer or host rules")
+			}
+		case TargetIndexer:
+			if strings.TrimSpace(r.IndexerID) == "" {
+				add("indexerId", "choose an indexer")
+			}
+		case TargetHost:
+			if !ValidHostPattern(r.Host) {
+				add("host", "must be a hostname or *.domain pattern")
+			}
+		default:
+			add("target", "unknown rule target %q", r.Target)
+		}
+
+		if s := strings.ToLower(strings.TrimSpace(r.Scope)); s != "" && s != "search" && s != "download" {
+			add("scope", "must be empty, search, or download")
+		}
+
+		if _, ok := LookupProfile(r.Profile); !ok {
+			add("profile", "unknown identity profile %q", r.Profile)
+		}
+
+		if len(r.Headers) > 32 {
+			add("headers", "at most 32 header edits")
+		} else {
+			seenH := map[string]bool{}
+			for _, ov := range r.Headers {
+				name := strings.TrimSpace(ov.Name)
+				if !headerNameRE.MatchString(name) || len(name) > 64 {
+					add("headers", "%q is not a valid header name", ov.Name)
+					continue
+				}
+				lower := strings.ToLower(name)
+				if seenH[lower] {
+					add("headers", "%q is listed twice", name)
+					continue
+				}
+				seenH[lower] = true
+				switch lower {
+				case "host", "content-length", "transfer-encoding":
+					add("headers", "%q is controlled by the HTTP transport and cannot be edited", name)
+					continue
+				}
+				if !ov.Remove {
+					maxLen := 1024
+					if lower == "user-agent" {
+						maxLen = 512
+					}
+					if msg := invalidHeaderValue(ov.Value, maxLen); msg != "" {
+						add("headers", "%q %s", name, msg)
+					}
+				}
 			}
 		}
-	}
-	checkHeaders := func(ovs []KVOverride) {
-		if len(ovs) > 32 {
-			add("at most 32 header overrides")
-			return
-		}
-		seen := map[string]bool{}
-		for _, ov := range ovs {
-			name := strings.TrimSpace(ov.Name)
-			if !headerNameRE.MatchString(name) || len(name) > 64 {
-				add("%q is not a valid header name", ov.Name)
-				continue
-			}
-			lower := strings.ToLower(name)
-			if seen[lower] {
-				add("%q is listed twice", name)
-				continue
-			}
-			seen[lower] = true
-			switch lower {
-			case "host", "content-length", "transfer-encoding":
-				add("%q is sent by the transport and cannot be overridden", name)
-				continue
-			}
-			if !ov.Remove {
-				if msg := invalidHeaderValue(ov.Value, 1024); msg != "" {
-					add("%q %s", name, msg)
+
+		if len(r.Params) > 32 {
+			add("params", "at most 32 parameter edits")
+		} else {
+			seenP := map[string]bool{}
+			for _, ov := range r.Params {
+				name := strings.TrimSpace(ov.Name)
+				if name == "" || len(name) > 64 || strings.ContainsAny(name, " \t\r\n\x00&=") {
+					add("params", "%q is not a valid parameter name", ov.Name)
+					continue
+				}
+				lower := strings.ToLower(name)
+				if seenP[lower] {
+					add("params", "%q is listed twice", name)
+					continue
+				}
+				seenP[lower] = true
+				if ov.Remove && (lower == "apikey" || lower == "t") {
+					add("params", "%q cannot be removed", name)
+				}
+				if len(ov.Value) > 1024 || strings.ContainsAny(ov.Value, "\r\n\x00") {
+					add("params", "%q has an invalid value", name)
 				}
 			}
 		}
 	}
-	checkParams := func(ovs []KVOverride) {
-		if len(ovs) > 32 {
-			add("at most 32 parameter overrides")
-			return
-		}
-		seen := map[string]bool{}
-		for _, ov := range ovs {
-			name := strings.TrimSpace(ov.Name)
-			if name == "" || len(name) > 64 || strings.ContainsAny(name, " \t\r\n\x00&=") {
-				add("%q is not a valid parameter name", ov.Name)
-				continue
-			}
-			if seen[name] {
-				add("%q is listed twice", name)
-				continue
-			}
-			seen[name] = true
-			if ov.Remove && (name == "apikey" || name == "t") {
-				add("%q cannot be removed", name)
-			}
-			if len(ov.Value) > 1024 || strings.ContainsAny(ov.Value, "\r\n\x00") {
-				add("%q has an invalid value", name)
-			}
-		}
-	}
-	checkHeaders(ri.Headers)
-	checkHeaders(ri.GrabHeaders)
-	checkParams(ri.Params)
-	checkParams(ri.GrabParams)
 	return errs
 }
 
-// SensitiveHeader reports whether a header's value is a credential that
-// must be redacted in API responses.
+// SensitiveHeader reports whether a header's value may carry a credential
+// that must be encrypted at rest, redacted in API responses, and masked in previews.
 func SensitiveHeader(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "authorization", "cookie", "x-api-key", "proxy-authorization":
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case "authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "apikey":
 		return true
+	}
+	for _, kw := range []string{"token", "secret", "password", "passkey", "apikey", "api-key", "auth"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
 	}
 	return false
 }
 
-// ProfileForUserAgent maps a saved user agent to the profile that sends
-// it, for the one-time migration of the user-agent setting.
+// SensitiveParam reports whether a query parameter's value may carry a secret
+// that must be encrypted at rest, redacted in API responses, and masked in previews.
+func SensitiveParam(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case "apikey", "api_key", "key", "token", "passkey", "password", "pass", "secret", "auth", "rsskey":
+		return true
+	}
+	for _, kw := range []string{"apikey", "api_key", "token", "secret", "password", "passkey"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// ProfileForUserAgent maps a saved user agent to the profile that sends it,
+// used for one-time migration from legacy userAgent configs.
 func ProfileForUserAgent(ua string) (string, bool) {
 	ua = strings.TrimSpace(ua)
 	if ua == "" {

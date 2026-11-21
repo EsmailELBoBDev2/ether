@@ -34,12 +34,17 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { api, errorMessage, newId } from "../../lib/api";
 import { isPlainObject } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
-import type { Indexer, IndexerProtocol, SiteDefinition, SiteTestResult } from "../../lib/types";
+import type {
+  ClientIdentityConfig,
+  Indexer,
+  IndexerProtocol,
+  SiteDefinition,
+  SiteTestResult,
+} from "../../lib/types";
 import { useResolver } from "../releases/resolverDraft";
 import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
 import { REGIONAL_TRACK_TAGS } from "../setup/language";
-import { ClientIdentity } from "./ClientIdentity";
-import { RequestIdentitySection } from "./RequestIdentity";
+import { IdentityRulesCard, IdentityRulesDrawer, IndexerIdentityRow } from "./IdentityRules";
 import { hasUsableDebrid } from "./Debrid";
 import {
   BoolRow,
@@ -253,6 +258,11 @@ export function IndexerList({
 }) {
   const { dashboard, refreshDashboard } = useApp();
   const config = useAsync(() => api.getConfig(), [version]);
+  const identitySection = useAsync(
+    () => api.getSection<ClientIdentityConfig | null>("clientIdentity"),
+    [version],
+  );
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [sitesVersion, setSitesVersion] = useState(0);
   const sites = useAsync(() => api.sites.definitions(), [sitesVersion]);
   const statuses = useAsync(() => api.sites.status().catch(() => []), [version, sitesVersion]);
@@ -271,6 +281,8 @@ export function IndexerList({
 
   const cfg = config.data;
   const indexers = cfg?.indexers ?? [];
+  const identityRules = identitySection.data?.value?.rules ?? cfg?.clientIdentity?.rules ?? [];
+  const defaultUserAgent = identitySection.data?.defaultUserAgent ?? "";
   const definitions = sites.data ?? null;
   // A definition installed a moment ago, until the reloaded list includes it.
   const [installed, setInstalled] = useState<SiteDefinition | null>(null);
@@ -621,7 +633,11 @@ export function IndexerList({
         )}
       </Section>
 
-      <ClientIdentity indexers={indexers} onSaved={() => void config.reload()} />
+      <IdentityRulesCard
+        rules={identityRules}
+        defaultUserAgent={defaultUserAgent}
+        onOpen={() => setRulesOpen(true)}
+      />
       <PluginSourceCards
         classes={["indexer", "direct"]}
         sectionTitle={t("Plugin sources")}
@@ -849,54 +865,49 @@ export function IndexerList({
                 />
               </SettingsSection>
             ) : (
-              <>
-                <SettingsSection title={t("Connection")}>
-                  <SettingsRow
-                    title={t("Protocol")}
-                    description={
-                      isTorrent(draft)
-                        ? t("Torrent releases stream through your debrid account.")
-                        : t("Usenet releases stream from your Usenet providers.")
-                    }
-                    control={
-                      <Segmented
-                        ariaLabel={t("Protocol")}
-                        size="sm"
-                        options={PROTOCOLS}
-                        value={isTorrent(draft) ? "torrent" : "usenet"}
-                        onChange={(v) => set({ protocol: v })}
-                      />
-                    }
-                  />
-                  <TextRow
-                    label={t("Name")}
-                    value={draft.name}
-                    onChange={(v) => set({ name: v })}
-                  />
-                  <TextRow
-                    label={t("URL")}
-                    type="url"
-                    value={draft.url}
-                    placeholder="https://indexer.example.com"
-                    help={t("/api is added automatically.")}
-                    error={errors.url}
-                    onChange={(v) => set({ url: v })}
-                  />
-                  <SettingsRow stacked title={t("API key")}>
-                    <SecretInput
-                      ariaLabel={t("API key")}
-                      value={draft.apiKey}
-                      onChange={(v) => set({ apiKey: v })}
+              <SettingsSection title={t("Connection")}>
+                <SettingsRow
+                  title={t("Protocol")}
+                  description={
+                    isTorrent(draft)
+                      ? t("Torrent releases stream through your debrid account.")
+                      : t("Usenet releases stream from your Usenet providers.")
+                  }
+                  control={
+                    <Segmented
+                      ariaLabel={t("Protocol")}
+                      size="sm"
+                      options={PROTOCOLS}
+                      value={isTorrent(draft) ? "torrent" : "usenet"}
+                      onChange={(v) => set({ protocol: v })}
                     />
-                  </SettingsRow>
-                </SettingsSection>
-                <RequestIdentitySection
-                  draft={draft}
-                  error={errors.requestIdentity ?? errors.userAgent}
-                  onChange={set}
+                  }
                 />
-              </>
+                <TextRow label={t("Name")} value={draft.name} onChange={(v) => set({ name: v })} />
+                <TextRow
+                  label={t("URL")}
+                  type="url"
+                  value={draft.url}
+                  placeholder="https://indexer.example.com"
+                  help={t("/api is added automatically.")}
+                  error={errors.url}
+                  onChange={(v) => set({ url: v })}
+                />
+                <SettingsRow stacked title={t("API key")}>
+                  <SecretInput
+                    ariaLabel={t("API key")}
+                    value={draft.apiKey}
+                    onChange={(v) => set({ apiKey: v })}
+                  />
+                </SettingsRow>
+              </SettingsSection>
             )}
+            <IndexerIdentityRow
+              indexer={draft}
+              rules={identityRules}
+              indexers={indexers}
+              onManage={() => setRulesOpen(true)}
+            />
             {builtin && draftDef ? (
               <SiteSettingsFields def={draftDef} draft={draft} onChange={set} errors={errors} />
             ) : null}
@@ -1000,6 +1011,18 @@ export function IndexerList({
           </>
         ) : null}
       </RecordDrawer>
+
+      <IdentityRulesDrawer
+        open={rulesOpen}
+        stacked={editing !== null}
+        rules={identityRules}
+        indexers={indexers}
+        defaultUserAgent={defaultUserAgent}
+        onClose={() => setRulesOpen(false)}
+        onSaved={async () => {
+          await Promise.all([identitySection.reload(), config.reload()]);
+        }}
+      />
     </>
   );
 }

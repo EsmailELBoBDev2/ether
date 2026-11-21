@@ -2,9 +2,14 @@ package frontend
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -230,4 +235,33 @@ const LibraryLiveThumbPrefix = "library-live/"
 // viewID and returns the verified upstream URL for Ether's image proxy to fetch.
 type LibraryLiveThumbAuthorizer interface {
 	AuthorizeLibraryLiveThumb(ctx context.Context, viewer *Viewer, viewID string, path string) (string, error)
+}
+
+// ViewerAvatarPrefix marks a viewer's Plex account or Plex Home profile avatar.
+// The remainder is an opaque hash of the avatar URL; the raw upstream URL never
+// appears in wire artwork descriptors or signed grants.
+const ViewerAvatarPrefix = "viewer-avatar/"
+
+// ViewerAvatarImage returns the shared artwork descriptor for a Plex-linked
+// viewer's avatar, or false when the viewer has no Plex link or valid avatar URL.
+func ViewerAvatarImage(v *Viewer) (Image, bool) {
+	if v == nil || v.ID <= 0 || v.PlexID <= 0 {
+		return Image{}, false
+	}
+	raw := strings.TrimSpace(v.Thumb)
+	if raw == "" {
+		return Image{}, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return Image{}, false
+	}
+	sum := sha256.Sum256([]byte("viewer-avatar-v1\x00" + raw))
+	digest := hex.EncodeToString(sum[:16])
+	return Image{
+		Kind:    ImagePerson,
+		Path:    ViewerAvatarPrefix + digest,
+		Tag:     digest,
+		Subject: "viewer:" + strconv.FormatInt(v.ID, 10),
+	}, true
 }

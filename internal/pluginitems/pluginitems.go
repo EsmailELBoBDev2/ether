@@ -39,6 +39,12 @@ func init() {
 	store.Register("pluginitems", 10, `
 ALTER TABLE plugin_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';
 `)
+	// Migration 11: persist the full /resolve candidate list alongside the
+	// winning source so version menus and version picks reuse the resolution
+	// cache without re-running plugin /resolve on every detail or play call.
+	store.Register("pluginitems", 11, `
+ALTER TABLE plugin_resolutions ADD COLUMN candidates TEXT NOT NULL DEFAULT '';
+`)
 
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain

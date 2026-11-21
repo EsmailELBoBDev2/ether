@@ -411,7 +411,10 @@ export function createLibraryTabsMock({
         return { ok: false, message: `invalid: tab "${key}" has unknown kind "${kind}"` };
       }
       if (kind === "live" && !isPlugin) {
-        return { ok: false, message: `invalid: tab "${key}" of kind live is only supported on plugin libraries` };
+        return {
+          ok: false,
+          message: `invalid: tab "${key}" of kind live is only supported on plugin libraries`,
+        };
       }
 
       const facet = String(raw.facet ?? "").trim();

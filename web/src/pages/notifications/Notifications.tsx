@@ -40,7 +40,11 @@ export default function Notifications() {
     ) : !data ? (
       <LoadingRows rows={3} />
     ) : tab === "channels" ? (
-      <Channels data={data} onChanged={notices.reload} onFlowCreated={(id) => navigate(`/flows/edit/${id}`)} />
+      <Channels
+        data={data}
+        onChanged={notices.reload}
+        onFlowCreated={(id) => navigate(`/flows/edit/${id}`)}
+      />
     ) : (
       <Deliveries data={data} />
     );

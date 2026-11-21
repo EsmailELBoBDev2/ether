@@ -112,6 +112,16 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		return rankErr
 	}
 	image = base
+	if strings.HasPrefix(image.Path, frontend.ViewerAvatarPrefix) {
+		if item != 0 || channel != "" {
+			return core.ErrUnauthorized
+		}
+		current, ok := frontend.ViewerAvatarImage(viewer)
+		if !ok || !frontend.SameImage(current, image) {
+			return core.ErrUnauthorized
+		}
+		return nil
+	}
 	if strings.HasPrefix(image.Path, frontend.LibraryLiveThumbPrefix) {
 		if s.requestOptions.LibraryLiveThumbs == nil {
 			return core.ErrNotAvailable
@@ -482,9 +492,25 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 		http.Error(w, "image unavailable", 502)
 		return
 	}
-	// A portrait fetch may cross I/O after its first authorization. Check
-	// current credited membership and fresh policy again before publishing bytes.
-	if (s.surface == "silo" || s.surface == "vela") && img.Kind == frontend.ImagePerson {
+	// A portrait or viewer-avatar fetch may cross I/O after its first
+	// authorization. Check current membership and fresh policy again before
+	// publishing bytes.
+	if strings.HasPrefix(img.Path, frontend.ViewerAvatarPrefix) {
+		var stillActive int
+		if err := s.db.QueryRowContext(r.Context(), `SELECT active FROM auth_users WHERE id=?`, viewer.ID).Scan(&stillActive); err != nil || stillActive != 1 {
+			http.NotFound(w, r)
+			return
+		}
+		freshViewer, err := s.grants.viewers.ActiveUser(r.Context(), viewer.ID)
+		if err != nil || freshViewer == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if current, ok := frontend.ViewerAvatarImage(freshViewer); !ok || !frontend.SameImage(current, img) {
+			http.NotFound(w, r)
+			return
+		}
+	} else if (s.surface == "silo" || s.surface == "vela") && img.Kind == frontend.ImagePerson {
 		if err := s.authorizePersonGrant(r.Context(), viewer, device, item, img); err != nil {
 			http.NotFound(w, r)
 			return

@@ -179,110 +179,113 @@ export function PluginBrowse({
       ) : (
         <>
           <div className="plugin-browse-bar">
-        <nav aria-label={t("Inside this library")} className="plugin-crumbs">
-          <button type="button" onClick={() => update({ parent: "", parentTitle: "", item: "" })}>
-            {library.name}
-          </button>
-          {parent ? (
-            <>
-              <ChevronRight size={13} aria-hidden />
-              <span aria-current="page">{parentTitle || t("Inside")}</span>
-            </>
-          ) : null}
-        </nav>
-        <span className="flex-1" />
-        {kind?.browse.search ? (
-          <label className="plugin-search">
-            <Search size={14} aria-hidden />
-            <input
-              value={query}
-              onChange={(e) => update({ q: e.target.value })}
-              placeholder={t("Search {name}", { name: library.name })}
-              aria-label={t("Search {name}", { name: library.name })}
-            />
-          </label>
-        ) : null}
-        {(kind?.browse.facets ?? []).map((field) => (
-          <FacetPicker
-            key={field}
-            library={library}
-            field={field}
-            value={facetValues[field] ?? ""}
-            onChange={(v) => update({ [`facet.${field}`]: v })}
-          />
-        ))}
-        <ToolbarPicker
-          ariaLabel={t("Sort items")}
-          value={sort}
-          options={sorts}
-          onChange={(v) => update({ sort: v })}
-        />
-      </div>
-      <p role="status" className="text-sm text-fg-muted">
-        {page.loading
-          ? t("Loading…")
-          : page.data
-            ? tn(page.data.total, "{count} item", "{count} items", {
-                count: formatNumber(page.data.total, 0),
-              })
-            : ""}
-      </p>
-      {page.error ? <ErrorPanel error={page.error} onRetry={() => void page.reload()} /> : null}
-      {page.loading && !page.data ? <LoadingRows /> : null}
-      {!page.loading && page.data && shown.length === 0 ? (
-        <EmptyState
-          icon={<LibraryIcon size={22} aria-hidden />}
-          title={debouncedQuery ? t("Nothing matches") : t("Nothing here yet")}
-          description={
-            debouncedQuery
-              ? t("Try a different search.")
-              : t(
-                  "Items appear after the plugin syncs. Use Sync now in Settings to fetch them right away.",
-                )
-          }
-        />
-      ) : (
-        <ul className="plugin-grid">
-          {shown.map((item) => (
-            <li key={item.ref}>
-              <button type="button" className="plugin-card" onClick={() => openItem(item)}>
-                {artUrl(item) ? (
-                  <img src={artUrl(item)} alt="" loading="lazy" />
-                ) : (
-                  <span className="plugin-card-fallback" aria-hidden>
-                    {item.title.slice(0, 1)}
-                  </span>
-                )}
-                <span className="plugin-card-title">{item.title}</span>
-                <span className="plugin-card-meta">
-                  {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
-                  {formatItemDate(item, dateDisplay)
-                    ? ` · ${formatItemDate(item, dateDisplay)}`
-                    : ""}
-                  {(item.childCount ?? 0) > 0
-                    ? ` · ${tn(item.childCount ?? 0, "{count} inside", "{count} inside")}`
-                    : ""}
-                </span>
+            <nav aria-label={t("Inside this library")} className="plugin-crumbs">
+              <button
+                type="button"
+                onClick={() => update({ parent: "", parentTitle: "", item: "" })}
+              >
+                {library.name}
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {nextCursor ? (
-        <div className="mt-4">
-          <Button variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
-            {t("Show more")}
-          </Button>
-        </div>
-      ) : null}
-      {selected ? (
-        <PluginItemDrawer
-          library={library}
-          itemRef={selected}
-          onClose={() => update({ item: "" })}
-          onOpenItem={(ref) => update({ item: ref })}
-        />
-      ) : null}
+              {parent ? (
+                <>
+                  <ChevronRight size={13} aria-hidden />
+                  <span aria-current="page">{parentTitle || t("Inside")}</span>
+                </>
+              ) : null}
+            </nav>
+            <span className="flex-1" />
+            {kind?.browse.search ? (
+              <label className="plugin-search">
+                <Search size={14} aria-hidden />
+                <input
+                  value={query}
+                  onChange={(e) => update({ q: e.target.value })}
+                  placeholder={t("Search {name}", { name: library.name })}
+                  aria-label={t("Search {name}", { name: library.name })}
+                />
+              </label>
+            ) : null}
+            {(kind?.browse.facets ?? []).map((field) => (
+              <FacetPicker
+                key={field}
+                library={library}
+                field={field}
+                value={facetValues[field] ?? ""}
+                onChange={(v) => update({ [`facet.${field}`]: v })}
+              />
+            ))}
+            <ToolbarPicker
+              ariaLabel={t("Sort items")}
+              value={sort}
+              options={sorts}
+              onChange={(v) => update({ sort: v })}
+            />
+          </div>
+          <p role="status" className="text-sm text-fg-muted">
+            {page.loading
+              ? t("Loading…")
+              : page.data
+                ? tn(page.data.total, "{count} item", "{count} items", {
+                    count: formatNumber(page.data.total, 0),
+                  })
+                : ""}
+          </p>
+          {page.error ? <ErrorPanel error={page.error} onRetry={() => void page.reload()} /> : null}
+          {page.loading && !page.data ? <LoadingRows /> : null}
+          {!page.loading && page.data && shown.length === 0 ? (
+            <EmptyState
+              icon={<LibraryIcon size={22} aria-hidden />}
+              title={debouncedQuery ? t("Nothing matches") : t("Nothing here yet")}
+              description={
+                debouncedQuery
+                  ? t("Try a different search.")
+                  : t(
+                      "Items appear after the plugin syncs. Use Sync now in Settings to fetch them right away.",
+                    )
+              }
+            />
+          ) : (
+            <ul className="plugin-grid">
+              {shown.map((item) => (
+                <li key={item.ref}>
+                  <button type="button" className="plugin-card" onClick={() => openItem(item)}>
+                    {artUrl(item) ? (
+                      <img src={artUrl(item)} alt="" loading="lazy" />
+                    ) : (
+                      <span className="plugin-card-fallback" aria-hidden>
+                        {item.title.slice(0, 1)}
+                      </span>
+                    )}
+                    <span className="plugin-card-title">{item.title}</span>
+                    <span className="plugin-card-meta">
+                      {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
+                      {formatItemDate(item, dateDisplay)
+                        ? ` · ${formatItemDate(item, dateDisplay)}`
+                        : ""}
+                      {(item.childCount ?? 0) > 0
+                        ? ` · ${tn(item.childCount ?? 0, "{count} inside", "{count} inside")}`
+                        : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {nextCursor ? (
+            <div className="mt-4">
+              <Button variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
+                {t("Show more")}
+              </Button>
+            </div>
+          ) : null}
+          {selected ? (
+            <PluginItemDrawer
+              library={library}
+              itemRef={selected}
+              onClose={() => update({ item: "" })}
+              onOpenItem={(ref) => update({ item: ref })}
+            />
+          ) : null}
         </>
       )}
     </div>

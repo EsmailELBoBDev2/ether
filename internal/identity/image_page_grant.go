@@ -101,6 +101,10 @@ func validateImageClaims(c imageClaims) bool {
 		if c.Item != 0 || c.Channel != "" || c.Subject == "" || c.Kind == frontend.ImagePerson {
 			return false
 		}
+	} else if strings.HasPrefix(c.Path, frontend.ViewerAvatarPrefix) {
+		if c.Item != 0 || c.Channel != "" || c.Kind != frontend.ImagePerson || c.Tag == "" || c.Subject == "" {
+			return false
+		}
 	} else if (c.Item == 0) == (c.Channel == "") {
 		return false
 	}
@@ -448,8 +452,62 @@ func extractItemsSegment(path string) (string, bool) {
 	return rest[:slash], true
 }
 
+func extractUsersImageSegment(path string) (string, bool) {
+	lower := strings.ToLower(path)
+	const marker = "/users/"
+	i := strings.Index(lower, marker)
+	if i < 0 {
+		return "", false
+	}
+	rest := path[i+len(marker):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return "", false
+	}
+	if !strings.HasPrefix(lower[i+len(marker)+slash:], "/images/") {
+		return "", false
+	}
+	return rest[:slash], true
+}
+
+func isUserImagePath(path string) bool {
+	lower := strings.ToLower(path)
+	return lower == "/userimage" || strings.HasSuffix(lower, "/userimage")
+}
+
 func claimMatchesURL(claims imageClaims, r *http.Request) bool {
 	if r == nil || r.URL == nil {
+		return true
+	}
+	isViewerAvatar := strings.HasPrefix(claims.Path, frontend.ViewerAvatarPrefix)
+	if seg, ok := extractUsersImageSegment(r.URL.Path); ok {
+		if !isViewerAvatar {
+			return false
+		}
+		uid, err := ids.ParseGUID(ids.User, seg)
+		return err == nil && uid == claims.Viewer
+	}
+	if isUserImagePath(r.URL.Path) {
+		if !isViewerAvatar {
+			return false
+		}
+		for k, vs := range r.URL.Query() {
+			if strings.EqualFold(k, "userid") {
+				if len(vs) != 1 {
+					return false
+				}
+				uid, err := ids.ParseGUID(ids.User, vs[0])
+				if err != nil || uid != claims.Viewer {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	if isViewerAvatar {
+		if _, ok := extractItemsSegment(r.URL.Path); ok {
+			return false
+		}
 		return true
 	}
 	if seg, ok := extractItemsSegment(r.URL.Path); ok {

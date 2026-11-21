@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createFlowsMock, describeFlow, flowTemplates, validateFlowGraph, _simulateForTests } from "./flows";
+import {
+  createFlowsMock,
+  describeFlow,
+  flowTemplates,
+  validateFlowGraph,
+  _simulateForTests,
+} from "./flows";
 import type { Flow, Graph, TestRunResult } from "../pages/flows/types";
 
 const q = new URLSearchParams();
@@ -15,7 +21,18 @@ describe("flows mock", () => {
   });
 
   it("rejects a graph with no trigger and accepts the 4K recipe", () => {
-    const bad: Graph = { schemaVersion: 1, nodes: [{ id: "a", kind: "action", position: { x: 0, y: 0 }, config: { actionType: "notify.send", params: {} } }], edges: [] };
+    const bad: Graph = {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "a",
+          kind: "action",
+          position: { x: 0, y: 0 },
+          config: { actionType: "notify.send", params: {} },
+        },
+      ],
+      edges: [],
+    };
     const result = validateFlowGraph(bad);
     expect(result.valid).toBe(false);
     expect(result.errors?.some((e) => e.code === "no_trigger")).toBe(true);
@@ -25,7 +42,10 @@ describe("flows mock", () => {
     const mock = createFlowsMock();
     const list = mock.handle("GET", ["flows"], q, null)?.body as { flows: Flow[] };
     const flow = list.flows.find((f) => f.templateId === "stop-remote-4k-transcodes")!;
-    const res = mock.handle("POST", ["flows", flow.id, "test"], q, { dryRun: true, event: { type: "playback.session.started" } });
+    const res = mock.handle("POST", ["flows", flow.id, "test"], q, {
+      dryRun: true,
+      event: { type: "playback.session.started" },
+    });
     const { steps } = res?.body as TestRunResult;
     const kinds = steps.map((s) => s.nodeKind);
     expect(kinds[0]).toBe("trigger.event");
@@ -39,19 +59,32 @@ describe("flows mock", () => {
 
   it("describe turns the owner's example into a stop-transcode draft", () => {
     const draft = describeFlow("stop video transcodes for viewers away from home");
-    expect(draft.graph.nodes.some((n) => n.config?.actionType === "playback.stop_session")).toBe(true);
+    expect(draft.graph.nodes.some((n) => n.config?.actionType === "playback.stop_session")).toBe(
+      true,
+    );
     expect(draft.explanation.length).toBeGreaterThan(20);
   });
 
   it("simulator respects a false branch", () => {
     const t = flowTemplates().find((x) => x.id === "stop-remote-4k-transcodes")!;
-    const steps = _simulateForTests(t.graph, { stream: { videoDecision: "copy" }, source: { videoHeight: 1080 }, network: { location: "lan" }, viewer: { tags: [] } }, "playback.session.started", "run_x");
+    const steps = _simulateForTests(
+      t.graph,
+      {
+        stream: { videoDecision: "copy" },
+        source: { videoHeight: 1080 },
+        network: { location: "lan" },
+        viewer: { tags: [] },
+      },
+      "playback.session.started",
+      "run_x",
+    );
     expect(steps.some((s) => s.nodeKind === "action")).toBe(false);
   });
 
   it("tests an unsaved draft graph via POST /flows/test without polluting runs", () => {
     const mock = createFlowsMock();
-    const beforeRuns = (mock.handle("GET", ["flows", "runs"], q, null)?.body as { runs: unknown[] }).runs.length;
+    const beforeRuns = (mock.handle("GET", ["flows", "runs"], q, null)?.body as { runs: unknown[] })
+      .runs.length;
     const missing = mock.handle("POST", ["flows", "test"], q, { dryRun: true });
     expect(missing?.status).toBe(400);
 
@@ -65,13 +98,16 @@ describe("flows mock", () => {
     expect(body.run.dryRun).toBe(true);
     expect(body.run.flowId).toBe("");
     expect(body.steps.length).toBeGreaterThanOrEqual(3);
-    const afterRuns = (mock.handle("GET", ["flows", "runs"], q, null)?.body as { runs: unknown[] }).runs.length;
+    const afterRuns = (mock.handle("GET", ["flows", "runs"], q, null)?.body as { runs: unknown[] })
+      .runs.length;
     expect(afterRuns).toBe(beforeRuns);
   });
 
   it("returns 409 ai_unavailable from POST /flows/describe when LLM is disabled", () => {
     const mock = createFlowsMock({ llmEnabled: () => false });
-    const res = mock.handle("POST", ["flows", "describe"], q, { prompt: "stop 4K transcodes away from home" });
+    const res = mock.handle("POST", ["flows", "describe"], q, {
+      prompt: "stop 4K transcodes away from home",
+    });
     expect(res?.status).toBe(409);
     expect((res?.body as { error: { code: string } }).error.code).toBe("ai_unavailable");
   });
@@ -95,7 +131,9 @@ describe("flows mock", () => {
     ];
     const mock = createFlowsMock({ channels });
 
-    const conflict = mock.handle("POST", ["flows", "customize-notification"], q, { channelId: "ch-crash-only" });
+    const conflict = mock.handle("POST", ["flows", "customize-notification"], q, {
+      channelId: "ch-crash-only",
+    });
     expect(conflict?.status).toBe(409);
     expect((conflict?.body as { error: { code: string } }).error.code).toBe("cannot_customize");
 

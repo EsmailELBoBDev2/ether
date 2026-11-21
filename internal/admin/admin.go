@@ -190,8 +190,11 @@ type Deps struct {
 	// Provider/integration testers used by the wizard and settings pages.
 	TestUsenet  func(ctx context.Context, p config.UsenetProvider) error
 	TestIndexer func(ctx context.Context, ix config.Indexer) error
-	// IndexerPreview renders the masked sample requests for an indexer draft.
-	IndexerPreview    func(ix config.Indexer) (any, error)
+	// TestIndexerIdentity runs a single caps request through the resolved
+	// identity for ix under policy.
+	TestIndexerIdentity func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error)
+	// IndexerPreview renders the masked sample requests for a rule or indexer draft.
+	IndexerPreview    func(req IndexerPreviewRequest) (any, error)
 	TestDebrid        func(ctx context.Context, p config.DebridProvider) error
 	TestTMDB          func(ctx context.Context, key string) error
 	TestOpenSubtitles func(ctx context.Context, cfg config.OpenSubtitles) error
@@ -477,6 +480,7 @@ func (h *Handler) routes() *http.ServeMux {
 
 	api("POST /api/test/usenet", h.handleTestUsenet)
 	api("POST /api/test/indexer", h.handleTestIndexer)
+	api("POST /api/test/indexer-identity", h.handleTestIndexerIdentity)
 	api("POST /api/indexer/preview", h.handleIndexerPreview)
 	api("POST /api/test/debrid", h.handleTestDebrid)
 	api("POST /api/test/tmdb", h.handleTestTMDB)

@@ -1,8 +1,13 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/httpclient"
@@ -14,96 +19,56 @@ type Identity struct {
 	Headers   map[string]string
 	// Ordered is the full header set in profile order (User-Agent included).
 	Ordered []HeaderKV
-	// Params are query-parameter overrides, applied last by ShapeQuery.
+	// Params are query-parameter overrides, applied by ApplyParams / ApplyToURL.
 	Params  []KVOverride
-	Shape   QueryShape
 	Profile string
+	// Matched rule metadata (RuleID == "" and RuleIndex == -1 when the implicit
+	// Ether default matched).
+	RuleID     string
+	RuleIndex  int
+	RuleTarget IdentityTargetKind
+	RuleHost   string
+	RuleScope  string
+	// CustomHeaders records lowercase header names explicitly set by owner
+	// overrides so origin confinement can separate them from standard headers.
+	CustomHeaders map[string]bool
 }
 
-// ClientIdentity is the owner's policy for the client Ether presents to
-// Newznab/Torznab indexers. An empty UserAgent identifies as Ether.
+// Fingerprint returns a deterministic digest of the wire identity (profile,
+// ordered headers, and parameter overrides) for search cache separation.
+func (id Identity) Fingerprint() string {
+	h := sha256.New()
+	fmt.Fprintf(h, "p:%s|ua:%s|", id.Profile, id.UserAgent)
+	for _, kv := range id.Ordered {
+		fmt.Fprintf(h, "h:%s=%s|", kv.Name, kv.Value)
+	}
+	for _, ov := range id.Params {
+		fmt.Fprintf(h, "q:%s=%s:%t|", ov.Name, ov.Value, ov.Remove)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// ClientIdentity is the server-wide ordered list of request-identity rules.
+// An empty Rules slice uses Ether's honest default identity everywhere.
 type ClientIdentity struct {
-	UserAgent string            `json:"userAgent,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"` // sealed at rest, redacted in API responses
+	Rules []IdentityRule `json:"rules,omitempty"`
 }
 
 // IdentityFieldError is one rejected client-identity setting, keyed like the
-// config field it belongs to ("userAgent", "headers").
+// config field it belongs to (e.g. "rules[0].host").
 type IdentityFieldError struct {
 	Field   string
 	Message string
 }
 
-// DefaultUserAgent returns Ether's honest outbound User-Agent string.
+// DefaultUserAgent returns Ether's honest outbound User-Agent for indexers and
+// NZB/torrent downloads:
+// "Ether/<version> (+https://github.com/braedonsaunders/ether/blob/main/docs/indexer-operators.md)".
 func DefaultUserAgent() string {
-	return httpclient.UserAgent()
-}
-
-// Resolve returns the wire identity for an indexer. override is the indexer's
-// own UserAgent ("": inherit the global policy; an empty policy uses Ether's
-// default User-Agent). Custom headers always come from the global policy.
-func (p ClientIdentity) Resolve(override string) Identity {
-	agent := strings.TrimSpace(override)
-	if agent == "" {
-		agent = strings.TrimSpace(p.UserAgent)
-	}
-	if agent == "" {
-		agent = DefaultUserAgent()
-	}
-	return Identity{UserAgent: agent, Headers: p.Headers}
-}
-
-// ValidateUserAgent checks a free-text User-Agent value (global or per
-// indexer), returning "" when valid or a human-readable reason when rejected.
-func ValidateUserAgent(value string) string {
-	return invalidHeaderValue(value, 512)
-}
-
-// Validate rejects settings the transport or an indexer would choke on.
-func (p ClientIdentity) Validate() []IdentityFieldError {
-	var errs []IdentityFieldError
-	if msg := ValidateUserAgent(p.UserAgent); msg != "" {
-		errs = append(errs, IdentityFieldError{"userAgent", msg})
-	}
-	if len(p.Headers) > 16 {
-		return append(errs, IdentityFieldError{"headers", "at most 16 headers"})
-	}
-	seen := make(map[string]bool, len(p.Headers))
-	for name, value := range p.Headers {
-		if !headerNameRE.MatchString(name) || len(name) > 64 {
-			errs = append(errs, IdentityFieldError{"headers", fmt.Sprintf("%q is not a valid header name", name)})
-			continue
-		}
-		lower := strings.ToLower(name)
-		if seen[lower] {
-			errs = append(errs, IdentityFieldError{"headers", fmt.Sprintf("%q is listed twice", name)})
-			continue
-		}
-		seen[lower] = true
-		if forbiddenHeader(lower) {
-			errs = append(errs, IdentityFieldError{"headers", fmt.Sprintf("%q is sent by the transport and cannot be overridden", name)})
-			continue
-		}
-		if msg := invalidHeaderValue(value, 1024); msg != "" {
-			errs = append(errs, IdentityFieldError{"headers", fmt.Sprintf("%q %s", name, msg)})
-		}
-	}
-	return errs
+	return httpclient.IndexerUserAgent()
 }
 
 var headerNameRE = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
-
-// forbiddenHeader lists names the Go transport owns. accept-encoding is
-// included because the transport only decompresses gzip when it added that
-// header itself; a custom value would hand gzip bytes to the feed parser.
-func forbiddenHeader(lower string) bool {
-	switch lower {
-	case "host", "content-length", "connection", "transfer-encoding", "upgrade",
-		"user-agent", "accept-encoding", "proxy-authorization", "proxy-connection":
-		return true
-	}
-	return false
-}
 
 // invalidHeaderValue returns a message when value cannot go on the wire.
 func invalidHeaderValue(value string, max int) string {
@@ -122,8 +87,7 @@ func invalidHeaderValue(value string, max int) string {
 }
 
 // legacyPresetUserAgents exists only to convert saved preset selections from
-// older configs into explicit free-text userAgent values on load (no legacy
-// compatibility beyond that one-time conversion).
+// older configs into compatibility profiles on load.
 var legacyPresetUserAgents = map[string]string{
 	"sonarr":    "Sonarr/4.0.20.3014 (ubuntu 26.04)",
 	"radarr":    "Radarr/6.4.4.10685 (ubuntu 26.04)",
@@ -133,75 +97,323 @@ var legacyPresetUserAgents = map[string]string{
 	"nzbget":    "nzbget/26.3",
 }
 
-// upgradeClientIdentity converts saved pre-removal preset fields on global
-// clientIdentity and per-indexer entries into free-text userAgent values and
-// drops the retired fields, reporting whether doc changed.
+// upgradeClientIdentity migrates legacy global clientIdentity fields (pre-W175
+// slot presets, userAgent, headers) and per-indexer identities (W175
+// requestIdentity, legacy userAgent, ancient clientIdentity) into
+// clientIdentity.rules without loss, dropping the superseded keys.
 func upgradeClientIdentity(doc map[string]any) bool {
 	changed := false
-	if ci, ok := doc["clientIdentity"].(map[string]any); ok {
-		ua, _ := ci["userAgent"].(string)
-		if strings.TrimSpace(ua) == "" {
-			for _, slot := range []string{"tvSearch", "movieSearch", "tvGrab", "movieGrab"} {
-				raw, _ := ci[slot].(string)
-				key := strings.ToLower(strings.TrimSpace(raw))
-				if key == "" || key == "ether" {
-					continue
-				}
-				if key == "custom" {
-					break
-				}
-				if mapped, ok := legacyPresetUserAgents[key]; ok {
-					ci["userAgent"] = mapped
-					changed = true
-					break
+
+	ci, _ := doc["clientIdentity"].(map[string]any)
+	var existingRules []any
+	existingIDs := map[string]bool{}
+	if ci != nil {
+		if rawRules, ok := ci["rules"].([]any); ok {
+			existingRules = append(existingRules, rawRules...)
+			for _, item := range rawRules {
+				if m, ok := item.(map[string]any); ok {
+					if id, _ := m["id"].(string); id != "" {
+						existingIDs[id] = true
+					}
 				}
 			}
 		}
+	}
+
+	nextID := func(base string) string {
+		id := base
+		for n := 2; existingIDs[id]; n++ {
+			id = fmt.Sprintf("%s-%d", base, n)
+		}
+		existingIDs[id] = true
+		return id
+	}
+
+	var migratedIxRules []any
+	var migratedGlobalRules []any
+
+	// 1. Migrate legacy global clientIdentity (ancient slots + userAgent + headers).
+	if ci != nil {
+		ua, _ := ci["userAgent"].(string)
+		ua = strings.TrimSpace(ua)
 		for _, slot := range []string{"tvSearch", "movieSearch", "tvGrab", "movieGrab"} {
-			if _, exists := ci[slot]; exists {
-				delete(ci, slot)
+			raw, exists := ci[slot]
+			if !exists {
+				continue
+			}
+			if ua == "" {
+				key := strings.ToLower(strings.TrimSpace(asString(raw)))
+				if key != "" && key != "ether" && key != "custom" {
+					if mapped, ok := legacyPresetUserAgents[key]; ok {
+						ua = mapped
+					}
+				}
+			}
+			delete(ci, slot)
+			changed = true
+		}
+
+		var legacyHeaders []any
+		if rawHdrs, exists := ci["headers"]; exists {
+			if hm, ok := rawHdrs.(map[string]any); ok && len(hm) > 0 {
+				keys := make([]string, 0, len(hm))
+				for k := range hm {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					if v, ok := hm[k].(string); ok {
+						legacyHeaders = append(legacyHeaders, map[string]any{"name": k, "value": v})
+					}
+				}
+			}
+			delete(ci, "headers")
+			changed = true
+		}
+		if _, exists := ci["userAgent"]; exists {
+			delete(ci, "userAgent")
+			changed = true
+		}
+
+		if ua != "" || len(legacyHeaders) > 0 {
+			prof, hdrs := profileAndHeadersFromUA(ua, legacyHeaders)
+			if !(prof == "ether" && len(hdrs) == 0) {
+				targets := []struct {
+					target IdentityTargetKind
+					suffix string
+				}{
+					{TargetAllSearches, "searches"},
+					{TargetNZBDownloads, "nzb"},
+					{TargetTorrentDownloads, "torrent"},
+				}
+				for _, t := range targets {
+					rule := map[string]any{
+						"id":      nextID("migrated-global-" + t.suffix),
+						"target":  string(t.target),
+						"profile": prof,
+					}
+					if len(hdrs) > 0 {
+						rule["headers"] = cloneAnySlice(hdrs)
+					}
+					migratedGlobalRules = append(migratedGlobalRules, rule)
+				}
 				changed = true
 			}
 		}
 	}
+
+	// 2. Migrate W175 indexer.requestIdentity and legacy indexer.userAgent / clientIdentity.
 	if ixs, ok := doc["indexers"].([]any); ok {
-		for _, item := range ixs {
+		for idx, item := range ixs {
 			ix, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
-			// One-time migration: a saved per-indexer user agent becomes a
-			// request identity (the matching profile, or custom with that
-			// exact user agent). userAgent stays as a mirror.
-			if _, has := ix["requestIdentity"]; !has {
-				if ua, _ := ix["userAgent"].(string); strings.TrimSpace(ua) != "" {
-					if profile, ok := ProfileForUserAgent(ua); ok {
-						ix["requestIdentity"] = map[string]any{"profile": profile}
-					} else {
-						custom := map[string]any{
-							"profile": "custom",
-							"headers": []any{map[string]any{"name": "User-Agent", "value": strings.TrimSpace(ua)}},
-						}
-						ix["requestIdentity"] = custom
-					}
-					changed = true
-				}
-			}
-			raw, exists := ix["clientIdentity"]
-			if !exists {
+			ixID := strings.TrimSpace(asString(ix["id"]))
+			legacyUA := strings.TrimSpace(asString(ix["userAgent"]))
+			legacyPreset := strings.ToLower(strings.TrimSpace(asString(ix["clientIdentity"])))
+			rawRI, hasRI := ix["requestIdentity"]
+			_, hasUA := ix["userAgent"]
+			_, hasPreset := ix["clientIdentity"]
+
+			if !hasRI && !hasUA && !hasPreset {
 				continue
 			}
-			existingUA, _ := ix["userAgent"].(string)
-			if strings.TrimSpace(existingUA) == "" {
-				preset, _ := raw.(string)
-				key := strings.ToLower(strings.TrimSpace(preset))
-				if mapped, ok := legacyPresetUserAgents[key]; ok {
-					ix["userAgent"] = mapped
+
+			ensureIxID := func() string {
+				if ixID == "" {
+					ixID = "ix-" + strconv.Itoa(idx+1)
+					ix["id"] = ixID
+				}
+				return ixID
+			}
+
+			if ri, ok := rawRI.(map[string]any); ok && len(ri) > 0 {
+				prof := strings.ToLower(strings.TrimSpace(asString(ri["profile"])))
+				hdrs := normalizeRawOverrides(ri["headers"])
+				params := normalizeRawOverrides(ri["params"])
+				grabProf := strings.ToLower(strings.TrimSpace(asString(ri["grabProfile"])))
+				grabHdrs := normalizeRawOverrides(ri["grabHeaders"])
+				grabParams := normalizeRawOverrides(ri["grabParams"])
+
+				hasSearch := prof != "" || len(hdrs) > 0 || len(params) > 0
+				hasGrab := grabProf != "" || len(grabHdrs) > 0 || len(grabParams) > 0
+
+				if hasSearch && hasGrab {
+					id := ensureIxID()
+					sRule := buildMigratedRule(nextID("migrated-ix-"+id+"-search"), TargetIndexer, id, "search", defaultProfile(prof), hdrs, params)
+					gRule := buildMigratedRule(nextID("migrated-ix-"+id+"-grab"), TargetIndexer, id, "download", defaultProfile(grabProf), grabHdrs, grabParams)
+					migratedIxRules = append(migratedIxRules, sRule, gRule)
+				} else if hasSearch {
+					id := ensureIxID()
+					sRule := buildMigratedRule(nextID("migrated-ix-"+id), TargetIndexer, id, "", defaultProfile(prof), hdrs, params)
+					migratedIxRules = append(migratedIxRules, sRule)
+				} else if hasGrab {
+					id := ensureIxID()
+					gRule := buildMigratedRule(nextID("migrated-ix-"+id+"-grab"), TargetIndexer, id, "download", defaultProfile(grabProf), grabHdrs, grabParams)
+					migratedIxRules = append(migratedIxRules, gRule)
+				}
+			} else {
+				ua := legacyUA
+				if ua == "" && legacyPreset != "" && legacyPreset != "ether" && legacyPreset != "inherit" {
+					if mapped, ok := legacyPresetUserAgents[legacyPreset]; ok {
+						ua = mapped
+					}
+				}
+				if ua != "" {
+					id := ensureIxID()
+					prof, hdrs := profileAndHeadersFromUA(ua, nil)
+					migratedIxRules = append(migratedIxRules, buildMigratedRule(nextID("migrated-ix-"+id), TargetIndexer, id, "", prof, hdrs, nil))
 				}
 			}
-			delete(ix, "clientIdentity")
-			changed = true
+
+			if hasRI {
+				delete(ix, "requestIdentity")
+				changed = true
+			}
+			if hasUA {
+				delete(ix, "userAgent")
+				changed = true
+			}
+			if hasPreset {
+				delete(ix, "clientIdentity")
+				changed = true
+			}
 		}
 	}
+
+	if len(migratedIxRules) > 0 || len(migratedGlobalRules) > 0 {
+		if ci == nil {
+			ci = map[string]any{}
+			doc["clientIdentity"] = ci
+		}
+		combined := make([]any, 0, len(existingRules)+len(migratedIxRules)+len(migratedGlobalRules))
+		combined = append(combined, existingRules...)
+		combined = append(combined, migratedIxRules...)
+		combined = append(combined, migratedGlobalRules...)
+		ci["rules"] = combined
+		changed = true
+	}
+
 	return changed
+}
+
+func defaultProfile(p string) string {
+	if _, ok := LookupProfile(p); ok {
+		return strings.ToLower(strings.TrimSpace(p))
+	}
+	return "ether"
+}
+
+func profileAndHeadersFromUA(ua string, extra []any) (string, []any) {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "ether", cloneAnySlice(extra)
+	}
+	if prof, ok := ProfileForUserAgent(ua); ok {
+		return prof, cloneAnySlice(extra)
+	}
+	if ua == DefaultUserAgent() || strings.HasPrefix(ua, "Ether/") {
+		return "ether", cloneAnySlice(extra)
+	}
+	hdrs := make([]any, 0, 1+len(extra))
+	hdrs = append(hdrs, map[string]any{"name": "User-Agent", "value": ua})
+	for _, item := range extra {
+		if m, ok := item.(map[string]any); ok {
+			if strings.EqualFold(asString(m["name"]), "User-Agent") {
+				continue
+			}
+			hdrs = append(hdrs, cloneAnyMap(m))
+		}
+	}
+	return "custom", hdrs
+}
+
+func normalizeRawOverrides(raw any) []any {
+	slice, ok := raw.([]any)
+	if !ok || len(slice) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(slice))
+	for _, item := range slice {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(asString(m["name"]))
+		if name == "" {
+			continue
+		}
+		entry := map[string]any{"name": name}
+		if rm, _ := m["remove"].(bool); rm {
+			entry["remove"] = true
+		} else if v, ok := m["value"].(string); ok {
+			entry["value"] = v
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func buildMigratedRule(id string, target IdentityTargetKind, indexerID, scope, profile string, headers, params []any) map[string]any {
+	rule := map[string]any{
+		"id":      id,
+		"target":  string(target),
+		"profile": profile,
+	}
+	if indexerID != "" {
+		rule["indexerId"] = indexerID
+	}
+	if scope != "" {
+		rule["scope"] = scope
+	}
+	if len(headers) > 0 {
+		rule["headers"] = headers
+	}
+	if len(params) > 0 {
+		rule["params"] = params
+	}
+	return rule
+}
+
+func cloneAnySlice(in []any) []any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(in))
+	for _, item := range in {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, cloneAnyMap(m))
+		} else {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func cloneAnyMap(m map[string]any) map[string]any {
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+// ApplyToURL applies the identity's query parameter overrides to rawURL.
+// apikey and t can be changed by an override but never removed.
+func (id Identity) ApplyToURL(rawURL string) string {
+	if len(id.Params) == 0 {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.RawQuery = id.ApplyParams(u.Query())
+	return u.String()
 }

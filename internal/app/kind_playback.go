@@ -2,10 +2,22 @@ package app
 
 import (
 	"context"
+	"slices"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
+
+// pluginKindVersions lists the playable version menu of a plugin kind item
+// (Auto slot + remaining /resolve sources). It is the broker's KindVersions
+// dep and the plugin branch of the Vela/Plex version surfaces; it reuses the
+// KindResolver candidate cache so a warm list never re-runs the plugin.
+func (a *App) pluginKindVersions(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]core.ReleaseVariant, error) {
+	if a.pluginsRT == nil || a.pluginsRT.kindResolver == nil || viewer == nil || !key.IsPluginKey() {
+		return nil, core.ErrNotFound
+	}
+	return a.pluginsRT.kindResolver.KindVersions(ctx, viewer, key, kindAccept, true)
+}
 
 // kindAccept lists the retrieval patterns the transcode bridge can turn into
 // bytes. "direct" is excluded: a redirect cannot be probed or encoded, so a
@@ -31,8 +43,26 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 			return nil, core.ErrNotFound
 		}
 		title := piv.Title
-		openCandidate := func(octx context.Context, exclude []string) (core.MediaSource, core.Release, error) {
-			media, err := resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
+		in := &core.KindInput{
+			Title:         &title,
+			SourceID:      key.String(),
+			OpenCandidate: nil,
+		}
+		in.OpenCandidate = func(octx context.Context, exclude []string) (core.MediaSource, core.Release, error) {
+			var media *frontend.KindMedia
+			var err error
+			if in.PreferSourceID != "" && in.PreferSourceID != core.KindAutoVersionID {
+				if slices.Contains(exclude, in.PreferSourceID) {
+					if in.Exact {
+						return nil, core.Release{}, core.ErrNotAvailable
+					}
+					media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
+				} else {
+					media, err = resolver.OpenKindSource(octx, viewer, key, in.PreferSourceID, kindAccept)
+				}
+			} else {
+				media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
+			}
 			if err != nil {
 				return nil, core.Release{}, err
 			}
@@ -50,15 +80,11 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 			}
 			return kindMediaSource{media: media, releaseID: rel.ID}, rel, nil
 		}
-		return &core.KindInput{
-			Title:         &title,
-			SourceID:      key.String(),
-			OpenCandidate: openCandidate,
-			Open: func(octx context.Context) (core.MediaSource, error) {
-				ms, _, err := openCandidate(octx, nil)
-				return ms, err
-			},
-		}, nil
+		in.Open = func(octx context.Context) (core.MediaSource, error) {
+			ms, _, err := in.OpenCandidate(octx, nil)
+			return ms, err
+		}
+		return in, nil
 	}
 }
 

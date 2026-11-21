@@ -7,7 +7,14 @@ import { previewTemplate, validateTemplateSyntax } from "./types";
 
 /** The `{{ expr }}` path a picker inserts for one field. */
 function insertPath(path: string): string {
-  if (path.startsWith("steps.") || path.startsWith("vars.") || path.startsWith("event.") || path.startsWith("correlation.") || path.startsWith("trigger.")) return path;
+  if (
+    path.startsWith("steps.") ||
+    path.startsWith("vars.") ||
+    path.startsWith("event.") ||
+    path.startsWith("correlation.") ||
+    path.startsWith("trigger.")
+  )
+    return path;
   return `payload.${path}`;
 }
 
@@ -39,13 +46,21 @@ export function TemplateField({
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const error = validateTemplateSyntax(value);
-  const preview = useMemo(() => (sample && value.includes("{{") && !error ? previewTemplate(value, sample) : null), [value, sample, error]);
+  const preview = useMemo(
+    () => (sample && value.includes("{{") && !error ? previewTemplate(value, sample) : null),
+    [value, sample, error],
+  );
 
   const visibleGroups = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return fieldGroups;
     return fieldGroups
-      .map((g) => ({ ...g, fields: g.fields.filter((f) => f.label.toLowerCase().includes(q) || f.path.toLowerCase().includes(q)) }))
+      .map((g) => ({
+        ...g,
+        fields: g.fields.filter(
+          (f) => f.label.toLowerCase().includes(q) || f.path.toLowerCase().includes(q),
+        ),
+      }))
       .filter((g) => g.fields.length > 0);
   }, [fieldGroups, query]);
 
@@ -70,7 +85,9 @@ export function TemplateField({
         <div className="min-w-0 flex-1">
           {multiline ? (
             <Textarea
-              ref={(el) => { inputRef.current = el; }}
+              ref={(el) => {
+                inputRef.current = el;
+              }}
               id={id}
               aria-label={ariaLabel}
               value={value}
@@ -82,7 +99,9 @@ export function TemplateField({
             />
           ) : (
             <Input
-              ref={(el) => { inputRef.current = el; }}
+              ref={(el) => {
+                inputRef.current = el;
+              }}
               id={id}
               aria-label={ariaLabel}
               value={value}
@@ -98,7 +117,13 @@ export function TemplateField({
           onOpenChange={setOpen}
           align="end"
           trigger={
-            <Button type="button" variant="outline" size="sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+            >
               <Braces size={14} /> {t("Insert field")}
             </Button>
           }
@@ -117,7 +142,9 @@ export function TemplateField({
             <div className="max-h-64 overflow-y-auto">
               {visibleGroups.map((g) => (
                 <div key={g.id} className="py-1">
-                  <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">{g.label}</p>
+                  <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+                    {g.label}
+                  </p>
                   {g.fields.map((f) => (
                     <button
                       key={f.path}
@@ -126,18 +153,24 @@ export function TemplateField({
                       className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-hover"
                     >
                       <span className="min-w-0 truncate text-fg">{f.label}</span>
-                      <span className="shrink-0 font-mono text-[11px] text-fg-subtle">{f.path}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-fg-subtle">
+                        {f.path}
+                      </span>
                     </button>
                   ))}
                 </div>
               ))}
-              {visibleGroups.length === 0 ? <p className="px-2 py-3 text-sm text-fg-muted">{t("No fields match.")}</p> : null}
+              {visibleGroups.length === 0 ? (
+                <p className="px-2 py-3 text-sm text-fg-muted">{t("No fields match.")}</p>
+              ) : null}
             </div>
           </div>
         </Popover>
       </div>
       {error ? (
-        <p className="text-xs text-danger" role="alert">{error}</p>
+        <p className="text-xs text-danger" role="alert">
+          {error}
+        </p>
       ) : preview !== null ? (
         <p className="rounded-md bg-bg-subtle px-2 py-1.5 text-xs text-fg-muted">
           <span className="font-medium text-fg-subtle">{t("Preview:")} </span>

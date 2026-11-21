@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"sort"
 	"strconv"
@@ -199,6 +201,7 @@ func (s surfaceIdentity) HouseholdProfiles(ctx context.Context, plexToken string
 		}
 		return nil, frontend.ErrPlexUnreachable
 	}
+	s.syncHomeThumbs(ctx, members)
 	profiles := eligibleHouseholdProfiles(users, members)
 	if len(profiles) == 0 {
 		// The initiating viewer authenticated, so it is eligible even when
@@ -247,6 +250,7 @@ func (s surfaceIdentity) HouseholdProfilesForViewer(ctx context.Context, viewer 
 	if err != nil {
 		return nil, frontend.ErrPlexUnreachable
 	}
+	s.syncHomeThumbs(ctx, members)
 	profiles := eligibleHouseholdProfiles(users, members)
 	if len(profiles) == 0 {
 		return nil, frontend.ErrHouseholdProfileIneligible
@@ -297,6 +301,8 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 			}
 		} else if !plexHomeContains(members, req.Profile.PlexID) {
 			return "", frontend.ErrHouseholdProfileIneligible
+		} else {
+			s.syncHomeThumbs(ctx, members)
 		}
 	} else {
 		// Signed-in switch: the current viewer must still belong to the
@@ -329,6 +335,7 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 		if !plexHomeContains(members, req.Profile.PlexID) {
 			return "", frontend.ErrHouseholdProfileIneligible
 		}
+		s.syncHomeThumbs(ctx, members)
 	}
 
 	if req.Profile.PlexID != initiatorPlexID {
@@ -389,7 +396,7 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 // otherwise the retained server/owner token for a signed-in switch. The
 // profile must still be the active viewer for its Plex account.
 func (s surfaceIdentity) FetchHouseholdAvatar(ctx context.Context, req frontend.HouseholdAvatarRequest) ([]byte, string, error) {
-	users, tv, ok := s.plexHomeSource()
+	users, _, ok := s.plexHomeSource()
 	if !ok {
 		return nil, "", frontend.ErrIdentityUnavailable
 	}
@@ -407,11 +414,52 @@ func (s surfaceIdentity) FetchHouseholdAvatar(ctx context.Context, req frontend.
 	if token == "" {
 		return nil, "", frontend.ErrIdentityUnavailable
 	}
-	body, contentType, err := tv.HomeUserAvatar(ctx, token, req.Profile.Thumb)
-	if err != nil {
-		return nil, "", frontend.ErrPlexUnreachable
+	return s.app.cachedPlexAvatar(ctx, token, req.Profile.Thumb)
+}
+
+type plexThumbSyncer interface {
+	SyncPlexThumbs(context.Context, map[int64]string) error
+}
+
+func (s surfaceIdentity) syncHomeThumbs(ctx context.Context, members []plextv.HomeUser) {
+	syncer, ok := s.users.(plexThumbSyncer)
+	if !ok || len(members) == 0 {
+		return
 	}
-	return body, contentType, nil
+	thumbs := make(map[int64]string, len(members))
+	for _, m := range members {
+		if m.ID > 0 && strings.TrimSpace(m.Thumb) != "" {
+			thumbs[m.ID] = m.Thumb
+		}
+	}
+	if len(thumbs) == 0 {
+		return
+	}
+	_ = syncer.SyncPlexThumbs(ctx, thumbs)
+}
+
+// cachedPlexAvatar fetches one Plex account or Plex Home profile avatar once
+// through the plex.tv client and retains it in Ether's shared image cache.
+func (a *App) cachedPlexAvatar(ctx context.Context, token, thumb string) ([]byte, string, error) {
+	if a == nil || a.plextv == nil {
+		return nil, "", frontend.ErrIdentityUnavailable
+	}
+	thumb = strings.TrimSpace(thumb)
+	if thumb == "" {
+		return nil, "", core.ErrNotFound
+	}
+	load := func(fctx context.Context) ([]byte, string, error) {
+		body, ct, err := a.plextv.HomeUserAvatar(fctx, token, thumb)
+		if err != nil {
+			return nil, "", frontend.ErrPlexUnreachable
+		}
+		return body, ct, nil
+	}
+	if a.images == nil {
+		return load(ctx)
+	}
+	sum := sha256.Sum256([]byte("plex-avatar-v1\x00" + thumb))
+	return a.images.GetLoaded(ctx, "plex-avatar/"+hex.EncodeToString(sum[:]), load)
 }
 
 func plexHomeContains(members []plextv.HomeUser, plexID int64) bool {

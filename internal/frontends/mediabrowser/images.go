@@ -432,6 +432,70 @@ func (i *instance) addImageMetadata(dto map[string]any, kind, tag string, img fr
 	}
 	byTag[tag] = img.BlurHash
 }
+func (i *instance) userImage(w http.ResponseWriter, r *http.Request) {
+	if i.host.ImageGrants == nil {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	if raw := r.PathValue("index"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n != 0 {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+	}
+	tags := route.Query(r.URL.Query(), "tag")
+	if len(tags) > 1 {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	if len(tags) == 1 && tags[0] != "" {
+		i.host.ImageGrants.Serve(w, r, tags[0])
+		return
+	}
+	v, token, err := i.authenticate(r)
+	if err != nil || v == nil {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token}))
+	if v, token, err = i.viewer(r); err != nil || v == nil {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	target := r.PathValue("userId")
+	if target == "" {
+		if qs := route.Query(r.URL.Query(), "userId"); len(qs) == 1 {
+			target = qs[0]
+		} else if len(qs) > 1 {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+	}
+	if target != "" {
+		uid, err := ids.ParseGUID(ids.User, target)
+		if err != nil || uid != v.ID {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+	}
+	img, ok := frontend.ViewerAvatarImage(v)
+	if !ok {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+		Credential: token,
+		Device:     device(r),
+		Image:      img,
+	})
+	if err != nil || grant == "" {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	i.host.ImageGrants.Serve(w, r, grant)
+}
+
 func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 	if i.host.ImageGrants == nil {
 		mediaBrowserError(w, r, http.StatusNotFound)

@@ -19,10 +19,37 @@ func viewerWire(v *frontend.Viewer) object {
 	return object{"id": id, "name": v.Username, "policyRevision": hashJSON(v)}
 }
 
+func (i *instance) viewerAvatar(r *http.Request, v *frontend.Viewer, token string, d frontend.Device) object {
+	if i.host.ImageGrants == nil || token == "" {
+		return nil
+	}
+	img, ok := frontend.ViewerAvatarImage(v)
+	if !ok {
+		return nil
+	}
+	secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+		Credential: token,
+		Device:     d,
+		Image:      img,
+	})
+	if err != nil || secret == "" {
+		return nil
+	}
+	return object{
+		"id":    hash(img.Path),
+		"kind":  frontend.ImagePerson,
+		"tag":   img.Tag,
+		"sizes": []object{imageSize(img, secret)},
+	}
+}
+
 // viewerPolicyWire reads the current owner policy for a bootstrap or sign-in.
 // Countdown instants come from the same evaluator as playback admission.
-func (i *instance) viewerPolicyWire(r *http.Request, v *frontend.Viewer, d frontend.Device) (object, error) {
+func (i *instance) viewerPolicyWire(r *http.Request, v *frontend.Viewer, d frontend.Device, avatar object) (object, error) {
 	out := viewerWire(v)
+	if avatar != nil {
+		out["avatar"] = avatar
+	}
 	if i.host.ViewerCapabilities == nil {
 		return out, nil
 	}

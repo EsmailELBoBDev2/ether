@@ -197,7 +197,12 @@ export function Channels({
                       <Send size={14} /> {t("Send test")}
                     </Button>
                   ) : null}
-                  <Button variant="outline" size="sm" disabled={busy === c.id || c.events.length === 0} onClick={() => void customizeAsFlow(c)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy === c.id || c.events.length === 0}
+                    onClick={() => void customizeAsFlow(c)}
+                  >
                     <Workflow size={14} /> {t("Customize as Flow")}
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => edit(c)}>

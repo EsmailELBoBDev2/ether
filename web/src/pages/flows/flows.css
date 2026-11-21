@@ -1,7 +1,10 @@
 /* Flows canvas: dotted workspace, smooth node motion, animated live wire. */
 .flow-canvas {
   background-color: var(--color-bg-subtle);
-  background-image: radial-gradient(color-mix(in srgb, var(--color-fg-subtle) 28%, transparent) 1px, transparent 1.1px);
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--color-fg-subtle) 28%, transparent) 1px,
+    transparent 1.1px
+  );
   background-size: 22px 22px;
 }
 

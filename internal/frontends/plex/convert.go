@@ -20,6 +20,7 @@ import (
 type renderOpts struct {
 	detail      bool // full tags, Guid children, streams
 	batchDetail bool // multi-key metadata batch: keep list season counts for ungrouped shows
+	listRender  bool // multi-item render: never trigger plugin /resolve per row
 	media       bool // Media/Part for playable items
 	// inSection: the container already carries the section attributes
 	// (section listings, children), so items omit librarySection*.
@@ -457,7 +458,13 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	}
 	if withMedia && isPlayable(t.Type) {
 		var editionTitle string
-		m.Media, editionTitle = s.mediaFor(ctx, pr, t, detail, o.detail, o.session)
+		withVariants := o.detail
+		if t.Key.IsPluginKey() && (o.listRender || o.batchDetail || o.detailEpisodes || libraryToolClient(pr)) {
+			// Plugin /resolve must only run on single-item detail or play
+			// intent, never per row in a list, hub, On Deck, or batch lookup.
+			withVariants = false
+		}
+		m.Media, editionTitle = s.mediaFor(ctx, pr, t, detail, withVariants, o.session)
 		applyEditionTitle(&m, editionTitle)
 		if s.downloadsAllowed(pr.User) {
 			m.AllowSync = model.Ptr(true)
@@ -1418,6 +1425,9 @@ func languageTag(code string) string {
 
 // renderTitles renders a list, loading the user's watch state in one call.
 func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts) []model.Metadata {
+	if len(ts) > 1 {
+		o.listRender = true
+	}
 	if !reqmemo.Active(ctx) {
 		ctx = reqmemo.With(ctx)
 	}

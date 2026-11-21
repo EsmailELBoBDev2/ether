@@ -142,7 +142,8 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 		CurrentMediaLookup: func(ctx context.Context, v *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
 			return a.librarySessionTitle(ctx, v, key, visibility, true, true)
 		},
-		KindSource: a.kindSourceFunc(),
+		KindSource:   a.kindSourceFunc(),
+		KindVersions: a.pluginKindVersions,
 		MediaLookup: func(ctx context.Context, v *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
 			return a.admissionSessionTitle(ctx, v, key, visibility, true)
 		},

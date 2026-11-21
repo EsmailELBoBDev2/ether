@@ -47,7 +47,10 @@ import type {
   EtherUser,
   FieldError,
   CatalogEntry,
+  IdentityRule,
+  IdentityTestResult,
   Indexer,
+  IndexerPreviewRequest,
   LLMModel,
   LLMProvider,
   LogEntry,
@@ -367,7 +370,12 @@ export const api = {
   // ---- Integration tests ----------------------------------------------------
   testUsenet: (p: UsenetProvider) => post<TestResult>("/test/usenet", p),
   testIndexer: (ix: Indexer) => post<TestResult>("/test/indexer", ix),
-  previewIndexer: (ix: Indexer) => post<RequestPreview>("/indexer/preview", ix),
+  previewIndexer: (req: IndexerPreviewRequest) => post<RequestPreview>("/indexer/preview", req),
+  testIndexerIdentity: (indexerId: string, rules?: IdentityRule[]) =>
+    post<IdentityTestResult>("/test/indexer-identity", {
+      indexerId,
+      ...(rules ? { rules } : {}),
+    }),
   testDebrid: (p: DebridProvider) => post<TestResult>("/test/debrid", p),
   testTMDB: (key: string) => post<TestResult>("/test/tmdb", { key }),
   testIntroDB: (apiKey: string) => post<TestResult>("/test/introdb", { apiKey }),

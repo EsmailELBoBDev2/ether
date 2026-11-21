@@ -59,6 +59,10 @@ type BrokerDeps struct {
 	// prepared through KindPlayback so it shares the decision, HLS and
 	// stream-limit machinery with catalogue titles (spec §15.1).
 	KindSource func(context.Context, *core.Viewer, core.RatingKey) (*core.KindInput, error)
+	// KindVersions, when set with KindSource, lists the version menu of a
+	// plugin kind item (Auto slot + one entry per /resolve source) so plugin
+	// keys get the same version surface as catalogue titles.
+	KindVersions func(context.Context, *core.Viewer, core.RatingKey) ([]core.ReleaseVariant, error)
 	// CurrentMediaLookup checks already admitted playback using local facts.
 	// When nil, MediaLookup retains its historical behavior. MediaLookup checks
 	// admission policy, including lazy issuance. Neither lookup may resolve a
@@ -506,7 +510,10 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		return b.planLive(ctx, req, v)
 	}
 	if req.Item.IsPluginKey() && b.deps.KindSource != nil {
-		if req.Version != "" || req.Intent.ExactVersion || req.ExpectedSourceETag != "" || req.DetailSource != "" {
+		// Detail sources and source ETags are catalogue-only; a rejected
+		// release ETag has no plugin analogue. Version selection (the /resolve
+		// per-source menu) is honoured in planKind.
+		if req.ExpectedSourceETag != "" || req.DetailSource != "" {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
 		return b.planKind(ctx, req, v)
@@ -776,7 +783,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		req.Intent.Options = selected
 	}
 	sourceChosenAt := b.deps.Now()
-	dec, err := b.decideProfile(ps, req)
+	dec, err := b.decideTracks(ps, &req)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err

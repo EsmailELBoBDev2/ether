@@ -632,16 +632,12 @@ func plexAudioPhrase(info frontend.ReleaseInfo) string {
 // preparePlayback prepares a play session, honouring a "Play Version"
 // pick when the playback manager supports it.
 func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playRequest) (*frontend.PlaySession, error) {
-	// A plugin kind item has no catalogue versions: skip the variant flow and
-	// open it through the shared KindPlayback pipeline (spec §15.1).
-	if p.key.IsPluginKey() {
-		caps := s.clientCapsForKey(pr, p.key)
-		return s.prepareForRelease(ctx, pr.User, p.key, caps, "")
-	}
 	configured := false
 	if source, ok := s.svc().variants.(frontend.VersionSlots); ok {
 		if titles := s.getTitles(ctx, []frontend.RatingKey{p.key}); len(titles) == 1 {
-			plan, err := source.VersionSlots(ctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, false)
+			// Plugin items populate their version menu on detail/play intent
+			// (labels=true), never on cold list renders.
+			plan, err := source.VersionSlots(ctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, p.key.IsPluginKey())
 			if err != nil {
 				return nil, err
 			}

@@ -2,7 +2,13 @@ import { Button, Input, Select, Switch, cn } from "@braedonsaunders/appkit-ui";
 import { FolderPlus, Plus, Trash2 } from "lucide-react";
 import { Field, NumberInput, Segmented } from "../../components/fields";
 import { t } from "../../i18n";
-import type { ConditionGroup, ConditionRule, FieldSchema, Operator, PickerFieldGroup } from "./types";
+import type {
+  ConditionGroup,
+  ConditionRule,
+  FieldSchema,
+  Operator,
+  PickerFieldGroup,
+} from "./types";
 import { operatorLabel, operatorRequiresValue, operatorsForFieldType } from "./types";
 
 type FieldWithPath = FieldSchema & { path: string };
@@ -19,17 +25,37 @@ function defaultValue(field: FieldWithPath | undefined, op: Operator): unknown {
     return field?.enum?.[0] ? [field.enum[0].value] : [];
   }
   if (!field) return "";
-  if (field.type === "int" || field.type === "float" || field.type === "duration_ms") return typeof field.example === "number" ? field.example : 0;
+  if (field.type === "int" || field.type === "float" || field.type === "duration_ms")
+    return typeof field.example === "number" ? field.example : 0;
   if (field.type === "bool") return true;
   if (field.type === "enum") return field.enum?.[0]?.value ?? "";
   return "";
 }
 
-function ValueEditor({ rule, field, onChange }: { rule: ConditionRule; field?: FieldWithPath; onChange: (value: unknown) => void }) {
-  if (!operatorRequiresValue(rule.op)) return <span className="text-xs text-fg-subtle">{t("No value needed")}</span>;
-  const multi = rule.op === "in" || rule.op === "not_in" || rule.op === "contains_any" || rule.op === "contains_all";
+function ValueEditor({
+  rule,
+  field,
+  onChange,
+}: {
+  rule: ConditionRule;
+  field?: FieldWithPath;
+  onChange: (value: unknown) => void;
+}) {
+  if (!operatorRequiresValue(rule.op))
+    return <span className="text-xs text-fg-subtle">{t("No value needed")}</span>;
+  const multi =
+    rule.op === "in" ||
+    rule.op === "not_in" ||
+    rule.op === "contains_any" ||
+    rule.op === "contains_all";
   if (field?.type === "bool") {
-    return <Switch aria-label={t("Value")} checked={rule.value === true} onChange={(e) => onChange(e.target.checked)} />;
+    return (
+      <Switch
+        aria-label={t("Value")}
+        checked={rule.value === true}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    );
   }
   if (field?.enum?.length) {
     if (multi) {
@@ -43,12 +69,15 @@ function ValueEditor({ rule, field, onChange }: { rule: ConditionRule; field?: F
               aria-pressed={selected.has(opt.value)}
               onClick={() => {
                 const next = new Set(selected);
-                if (next.has(opt.value)) next.delete(opt.value); else next.add(opt.value);
+                if (next.has(opt.value)) next.delete(opt.value);
+                else next.add(opt.value);
                 onChange([...next]);
               }}
               className={cn(
                 "rounded-full border px-2 py-0.5 text-xs transition-colors",
-                selected.has(opt.value) ? "border-primary bg-primary-subtle text-primary" : "border-border text-fg-muted hover:text-fg",
+                selected.has(opt.value)
+                  ? "border-primary bg-primary-subtle text-primary"
+                  : "border-border text-fg-muted hover:text-fg",
               )}
             >
               {opt.label ?? opt.value}
@@ -58,10 +87,16 @@ function ValueEditor({ rule, field, onChange }: { rule: ConditionRule; field?: F
       );
     }
     return (
-      <Select aria-label={t("Value")} value={String(rule.value ?? "")} onChange={(e) => onChange(e.target.value)}>
+      <Select
+        aria-label={t("Value")}
+        value={String(rule.value ?? "")}
+        onChange={(e) => onChange(e.target.value)}
+      >
         <option value="">{t("Choose…")}</option>
         {field.enum.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label ?? opt.value}</option>
+          <option key={opt.value} value={opt.value}>
+            {opt.label ?? opt.value}
+          </option>
         ))}
       </Select>
     );
@@ -69,7 +104,13 @@ function ValueEditor({ rule, field, onChange }: { rule: ConditionRule; field?: F
   if (field && (field.type === "int" || field.type === "duration_ms")) {
     return (
       <span className="flex items-center gap-1.5">
-        <NumberInput aria-label={t("Value")} value={Number(rule.value ?? 0)} onChange={(n) => onChange(Math.round(n))} step={1} className="w-28" />
+        <NumberInput
+          aria-label={t("Value")}
+          value={Number(rule.value ?? 0)}
+          onChange={(n) => onChange(Math.round(n))}
+          step={1}
+          className="w-28"
+        />
         {field.unit ? <span className="text-xs text-fg-subtle">{field.unit}</span> : null}
       </span>
     );
@@ -77,19 +118,35 @@ function ValueEditor({ rule, field, onChange }: { rule: ConditionRule; field?: F
   if (field?.type === "float") {
     return (
       <span className="flex items-center gap-1.5">
-        <NumberInput aria-label={t("Value")} value={Number(rule.value ?? 0)} onChange={onChange} step="any" className="w-28" />
+        <NumberInput
+          aria-label={t("Value")}
+          value={Number(rule.value ?? 0)}
+          onChange={onChange}
+          step="any"
+          className="w-28"
+        />
         {field.unit ? <span className="text-xs text-fg-subtle">{field.unit}</span> : null}
       </span>
     );
   }
-  if (multi || field?.type === "string_list" && (rule.op === "contains_any" || rule.op === "contains_all")) {
+  if (
+    multi ||
+    (field?.type === "string_list" && (rule.op === "contains_any" || rule.op === "contains_all"))
+  ) {
     const text = Array.isArray(rule.value) ? rule.value.join(", ") : String(rule.value ?? "");
     return (
       <Input
         aria-label={t("Values, separated by commas")}
         value={text}
         placeholder={t("values, separated by commas")}
-        onChange={(e) => onChange(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+        onChange={(e) =>
+          onChange(
+            e.target.value
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean),
+          )
+        }
       />
     );
   }
@@ -126,7 +183,12 @@ export function ConditionBuilder({
   const firstField = fieldGroups[0]?.fields[0];
 
   return (
-    <div className={cn("space-y-2", depth > 0 && "rounded-lg border border-dashed border-border bg-bg-subtle/60 p-2.5")}>
+    <div
+      className={cn(
+        "space-y-2",
+        depth > 0 && "rounded-lg border border-dashed border-border bg-bg-subtle/60 p-2.5",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <Segmented
           ariaLabel={t("Match")}
@@ -138,7 +200,11 @@ export function ConditionBuilder({
           onChange={(op) => set({ op })}
         />
         <label className="ml-auto flex items-center gap-1.5 text-xs text-fg-muted">
-          <Switch checked={Boolean(group.negate)} onChange={(e) => set({ negate: e.target.checked || undefined })} aria-label={t("Invert this group")} />
+          <Switch
+            checked={Boolean(group.negate)}
+            onChange={(e) => set({ negate: e.target.checked || undefined })}
+            aria-label={t("Invert this group")}
+          />
           {t("Invert")}
         </label>
       </div>
@@ -146,9 +212,13 @@ export function ConditionBuilder({
       {rules.map((rule, i) => {
         const field = findField(fieldGroups, rule.field);
         const ops = operatorsForFieldType(field?.type ?? "string");
-        const setRule = (next: ConditionRule) => set({ rules: rules.map((r, j) => (j === i ? next : r)) });
+        const setRule = (next: ConditionRule) =>
+          set({ rules: rules.map((r, j) => (j === i ? next : r)) });
         return (
-          <div key={i} className="flex flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-2.5 py-2">
+          <div
+            key={i}
+            className="flex flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-2.5 py-2"
+          >
             <Field label={t("When")} className="min-w-[10rem] flex-1">
               <Select
                 aria-label={t("Field")}
@@ -157,14 +227,20 @@ export function ConditionBuilder({
                   const nextField = findField(fieldGroups, e.target.value);
                   const nextOps = operatorsForFieldType(nextField?.type ?? "string");
                   const op = nextOps.includes(rule.op) ? rule.op : nextOps[0]!;
-                  setRule({ ...rule, field: e.target.value, op, value: defaultValue(nextField, op) });
+                  setRule({
+                    ...rule,
+                    field: e.target.value,
+                    op,
+                    value: defaultValue(nextField, op),
+                  });
                 }}
               >
                 {fieldGroups.map((g) => (
                   <optgroup key={g.id} label={g.label}>
                     {g.fields.map((fld) => (
                       <option key={fld.path} value={fld.path}>
-                        {fld.label}{fld.unit ? ` (${fld.unit})` : ""}
+                        {fld.label}
+                        {fld.unit ? ` (${fld.unit})` : ""}
                       </option>
                     ))}
                   </optgroup>
@@ -178,18 +254,36 @@ export function ConditionBuilder({
                 value={rule.op}
                 onChange={(e) => {
                   const op = e.target.value as Operator;
-                  setRule({ ...rule, op, value: operatorRequiresValue(op) ? (rule.value ?? defaultValue(field, op)) : undefined });
+                  setRule({
+                    ...rule,
+                    op,
+                    value: operatorRequiresValue(op)
+                      ? (rule.value ?? defaultValue(field, op))
+                      : undefined,
+                  });
                 }}
               >
                 {ops.map((op) => (
-                  <option key={op} value={op}>{operatorLabel(op)}</option>
+                  <option key={op} value={op}>
+                    {operatorLabel(op)}
+                  </option>
                 ))}
               </Select>
             </Field>
             <div className="min-w-[9rem] flex-1">
-              <ValueEditor rule={rule} field={field} onChange={(v) => setRule({ ...rule, value: v })} />
+              <ValueEditor
+                rule={rule}
+                field={field}
+                onChange={(v) => setRule({ ...rule, value: v })}
+              />
             </div>
-            <Button type="button" variant="ghost" size="sm" aria-label={t("Remove rule")} onClick={() => set({ rules: rules.filter((_, j) => j !== i) })}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label={t("Remove rule")}
+              onClick={() => set({ rules: rules.filter((_, j) => j !== i) })}
+            >
               <Trash2 size={14} />
             </Button>
           </div>
@@ -223,7 +317,12 @@ export function ConditionBuilder({
           variant="outline"
           size="sm"
           onClick={() =>
-            set({ rules: [...rules, { field: firstField?.path ?? "", op: "eq", value: defaultValue(firstField, "eq") }] })
+            set({
+              rules: [
+                ...rules,
+                { field: firstField?.path ?? "", op: "eq", value: defaultValue(firstField, "eq") },
+              ],
+            })
           }
         >
           <Plus size={13} /> {t("Add rule")}
@@ -233,7 +332,25 @@ export function ConditionBuilder({
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => set({ groups: [...groups, { op: "and", rules: firstField ? [{ field: firstField.path, op: "eq", value: defaultValue(firstField, "eq") }] : [] }] })}
+            onClick={() =>
+              set({
+                groups: [
+                  ...groups,
+                  {
+                    op: "and",
+                    rules: firstField
+                      ? [
+                          {
+                            field: firstField.path,
+                            op: "eq",
+                            value: defaultValue(firstField, "eq"),
+                          },
+                        ]
+                      : [],
+                  },
+                ],
+              })
+            }
           >
             <FolderPlus size={13} /> {t("Add group")}
           </Button>

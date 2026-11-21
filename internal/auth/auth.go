@@ -693,7 +693,7 @@ func (s *Service) reload(ctx context.Context) error {
 			s.tokenGen[h]++
 		}
 	}
-	changed := !plexDefaultsEqual(s.plexDefaults, defaults)
+	changed := !plexDefaultsEqual(s.plexDefaults, defaults) || userThumbsChanged(s.users, users)
 	s.users, s.byPlex, s.tokens, s.serverTokens, s.ownerPlexID, s.plexDefaults = users, byPlex, tokens, serverTokens, owner, defaults
 	if changed {
 		s.gen.Add(1)
@@ -714,6 +714,71 @@ func (s *Service) reload(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+func userThumbsChanged(prev, next map[int64]*row) bool {
+	if len(prev) == 0 {
+		return false
+	}
+	for id, cur := range next {
+		old := prev[id]
+		if old == nil {
+			if cur.Thumb != "" {
+				return true
+			}
+			continue
+		}
+		if old.Thumb != cur.Thumb {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncPlexThumbs persists changed non-empty Plex avatar URLs for active
+// Plex-linked viewers. It is a read-only fast path when nothing changed.
+func (s *Service) SyncPlexThumbs(ctx context.Context, thumbs map[int64]string) error {
+	if s == nil || len(thumbs) == 0 {
+		return nil
+	}
+	type thumbUpdate struct {
+		id    int64
+		thumb string
+	}
+	var updates []thumbUpdate
+	s.mu.RLock()
+	for plexID, raw := range thumbs {
+		thumb := strings.TrimSpace(raw)
+		if plexID <= 0 || thumb == "" {
+			continue
+		}
+		if id, ok := s.byPlex[plexID]; ok {
+			if cur := s.users[id]; cur != nil && cur.Active && cur.Thumb != thumb {
+				updates = append(updates, thumbUpdate{id: id, thumb: thumb})
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if len(updates) == 0 {
+		return nil
+	}
+	s.membershipMu.Lock()
+	defer s.membershipMu.Unlock()
+	now := s.o.Now().Unix()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, u := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET thumb=?, updated_at=? WHERE id=? AND active=1`, u.thumb, now, u.id); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.reload(ctx)
 }
 
 // effective returns the core.User view of a row.
@@ -994,6 +1059,20 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 		s.mu.RLock()
 		localID = s.byPlex[owner]
 		s.mu.RUnlock()
+	}
+	if localID > 0 && acct.Thumb != "" {
+		s.mu.RLock()
+		cur := s.users[localID]
+		thumbDiffers := cur != nil && cur.Active && cur.Thumb != acct.Thumb
+		s.mu.RUnlock()
+		if thumbDiffers {
+			if _, err := s.db.ExecContext(ctx, `UPDATE auth_users SET thumb=?, updated_at=? WHERE id=? AND plex_id=?`, acct.Thumb, s.o.Now().Unix(), localID, acct.ID); err != nil {
+				return validation{}, err
+			}
+			if err := s.reload(ctx); err != nil {
+				return validation{}, err
+			}
+		}
 	}
 	expires := s.o.Now().Add(s.o.CacheTTL)
 	s.mu.Lock()

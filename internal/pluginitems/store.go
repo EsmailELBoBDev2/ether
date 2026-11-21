@@ -1975,15 +1975,86 @@ func (s *Service) SaveNegativeResolution(ctx context.Context, ref core.ItemRef) 
 func (s *Service) SaveNegativePartResolution(ctx context.Context, ref core.ItemRef, partIdx *int) error {
 	exp := s.now().Add(ResolutionNegativeCacheTTL).Unix()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO plugin_resolutions(item_ref, pattern, source, negative, expires_at)
-VALUES(?, '', '{}', 1, ?)
+INSERT INTO plugin_resolutions(item_ref, pattern, source, candidates, negative, expires_at)
+VALUES(?, '', '{}', '', 1, ?)
 ON CONFLICT(item_ref) DO UPDATE SET
 	pattern    = '',
 	source     = '{}',
+	candidates = '',
 	negative   = 1,
 	expires_at = excluded.expires_at`,
 		resolutionStorageKey(ref, partIdx), exp)
 	return err
+}
+
+// SavePartCandidates caches the full ordered list of PlayableSources returned
+// by a plugin's /resolve for ref and optional partIdx until
+// min(min(src.ExpiresAt), now+15m). An existing winning source in the row is
+// preserved while still positive.
+func (s *Service) SavePartCandidates(ctx context.Context, ref core.ItemRef, partIdx *int, sources []core.PlayableSource) error {
+	if len(sources) == 0 {
+		return nil
+	}
+	now := s.now()
+	exp := now.Add(ResolutionCacheMaxTTL).Unix()
+	for _, src := range sources {
+		if src.ExpiresAt > 0 && src.ExpiresAt < exp {
+			exp = src.ExpiresAt
+		}
+	}
+	raw, err := json.Marshal(sources)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO plugin_resolutions(item_ref, pattern, source, candidates, negative, expires_at)
+VALUES(?, '', '{}', ?, 0, ?)
+ON CONFLICT(item_ref) DO UPDATE SET
+	pattern    = CASE WHEN plugin_resolutions.negative != 0 THEN '' ELSE plugin_resolutions.pattern END,
+	source     = CASE WHEN plugin_resolutions.negative != 0 THEN '{}' ELSE plugin_resolutions.source END,
+	candidates = excluded.candidates,
+	negative   = 0,
+	expires_at = excluded.expires_at`,
+		resolutionStorageKey(ref, partIdx), string(raw), exp)
+	return err
+}
+
+// GetPartCandidates looks up a non-expired cached /resolve candidate list for
+// ref and optional partIdx. If a negative cache entry is active, it returns
+// (nil, true, core.ErrNotAvailable).
+func (s *Service) GetPartCandidates(ctx context.Context, ref core.ItemRef, partIdx *int) ([]core.PlayableSource, bool, error) {
+	nowUnix := s.now().Unix()
+	var (
+		candidatesJSON string
+		negative       int
+		expiresAt      int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT candidates, negative, expires_at FROM plugin_resolutions WHERE item_ref = ?`,
+		resolutionStorageKey(ref, partIdx)).Scan(&candidatesJSON, &negative, &expiresAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if expiresAt <= nowUnix {
+		return nil, false, nil
+	}
+	if negative != 0 {
+		return nil, true, core.ErrNotAvailable
+	}
+	if candidatesJSON == "" {
+		return nil, false, nil
+	}
+	var sources []core.PlayableSource
+	if err := json.Unmarshal([]byte(candidatesJSON), &sources); err != nil {
+		return nil, false, err
+	}
+	if len(sources) == 0 {
+		return nil, false, nil
+	}
+	return sources, true, nil
 }
 
 // GetResolution looks up a non-expired cached resolution for ref (spec §4.4).
@@ -1997,13 +2068,14 @@ func (s *Service) GetResolution(ctx context.Context, ref core.ItemRef) (core.Pla
 func (s *Service) GetPartResolution(ctx context.Context, ref core.ItemRef, partIdx *int) (core.PlayableSource, bool, error) {
 	nowUnix := s.now().Unix()
 	var (
+		pattern    string
 		sourceJSON string
 		negative   int
 		expiresAt  int64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT source, negative, expires_at FROM plugin_resolutions WHERE item_ref = ?`,
-		resolutionStorageKey(ref, partIdx)).Scan(&sourceJSON, &negative, &expiresAt)
+		`SELECT pattern, source, negative, expires_at FROM plugin_resolutions WHERE item_ref = ?`,
+		resolutionStorageKey(ref, partIdx)).Scan(&pattern, &sourceJSON, &negative, &expiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.PlayableSource{}, false, nil
@@ -2015,6 +2087,9 @@ func (s *Service) GetPartResolution(ctx context.Context, ref core.ItemRef, partI
 	}
 	if negative != 0 {
 		return core.PlayableSource{}, true, core.ErrNotAvailable
+	}
+	if pattern == "" || sourceJSON == "" || sourceJSON == "{}" {
+		return core.PlayableSource{}, false, nil
 	}
 	var src core.PlayableSource
 	if err := json.Unmarshal([]byte(sourceJSON), &src); err != nil {

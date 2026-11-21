@@ -72,17 +72,10 @@ export interface ActionSpec {
 }
 
 export type TriggerNodeKind =
-  | "trigger.event"
-  | "trigger.schedule"
-  | "trigger.webhook"
-  | "trigger.manual";
+  "trigger.event" | "trigger.schedule" | "trigger.webhook" | "trigger.manual";
 
 export type LogicNodeKind =
-  | "logic.switch"
-  | "logic.delay"
-  | "logic.wait_event"
-  | "logic.window"
-  | "logic.dedupe";
+  "logic.switch" | "logic.delay" | "logic.wait_event" | "logic.window" | "logic.dedupe";
 
 export type NodeKind = TriggerNodeKind | "condition" | LogicNodeKind | "action";
 
@@ -162,21 +155,9 @@ export interface FlowLimits {
 }
 
 export type RunStatus =
-  | "pending"
-  | "running"
-  | "waiting"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "throttled";
+  "pending" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "throttled";
 
-export type StepStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "skipped"
-  | "uncertain";
+export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "uncertain";
 
 export interface Flow {
   id: string;
@@ -858,7 +839,9 @@ export function buildFieldGroups(
   const varFields: (FieldSchema & { path: string })[] = [];
   for (const n of graph.nodes) {
     if (n.kind === "action" && n.config?.actionType === "flow.set_variable") {
-      const key = String((n.config?.params as Record<string, unknown> | undefined)?.key ?? "").trim();
+      const key = String(
+        (n.config?.params as Record<string, unknown> | undefined)?.key ?? "",
+      ).trim();
       if (key) {
         varFields.push({
           name: `vars.${key}`,
@@ -1000,9 +983,7 @@ export function summarizeNode(
       return cfg.requireAuth ? t("Authenticated POST hook") : t("Incoming HTTP hook");
     case "trigger.manual": {
       const inputs = Array.isArray(cfg.inputs) ? cfg.inputs.length : 0;
-      return inputs > 0
-        ? t("On demand · {count} inputs", { count: inputs })
-        : t("Run on demand");
+      return inputs > 0 ? t("On demand · {count} inputs", { count: inputs }) : t("Run on demand");
     }
     case "condition": {
       const cond = cfg.condition as ConditionGroup | undefined;
@@ -1034,14 +1015,14 @@ export function summarizeNode(
     case "logic.window": {
       const th = Number(cfg.threshold || 0);
       const win = String(cfg.window || "");
-      return th && win ? t("{count}× within {window}", { count: th, window: win }) : t("Set threshold…");
+      return th && win
+        ? t("{count}× within {window}", { count: th, window: win })
+        : t("Set threshold…");
     }
     case "logic.dedupe": {
       const cd = String(cfg.cooldown || "");
       const max = Number(cfg.maxPerWindow || 1);
-      return cd
-        ? t("At most {max} per {cooldown}", { max, cooldown: cd })
-        : t("Set cooldown…");
+      return cd ? t("At most {max} per {cooldown}", { max, cooldown: cd }) : t("Set cooldown…");
     }
     case "action": {
       const actionType = String(cfg.actionType ?? "");
@@ -1154,7 +1135,11 @@ export function defaultConfigForNode(kind: NodeKind, actionType?: string): Recor
             : actionType === "mqtt.publish"
               ? { topic: "home/cinema/state", payload: "playing", qos: 0, retain: false }
               : actionType === "http.webhook"
-                ? { method: "POST", url: "https://example.invalid/hook", contentType: "application/json" }
+                ? {
+                    method: "POST",
+                    url: "https://example.invalid/hook",
+                    contentType: "application/json",
+                  }
                 : actionType === "viewer.restrict"
                   ? { viewerId: "{{ payload.viewer.id }}", remoteDisabled: true }
                   : actionType === "library.refresh"
@@ -1231,7 +1216,10 @@ export function previewTemplate(tmpl: string, sample: Record<string, unknown>): 
       const eq = /^([^\s]+)\s*(==|!=)\s*["']([^"']+)["']$/.exec(cond.trim());
       if (eq) {
         const val = String(resolvePreviewPath(eq[1]!, sample) ?? "");
-        const hit = eq[2] === "==" ? val.toLowerCase() === eq[3]!.toLowerCase() : val.toLowerCase() !== eq[3]!.toLowerCase();
+        const hit =
+          eq[2] === "=="
+            ? val.toLowerCase() === eq[3]!.toLowerCase()
+            : val.toLowerCase() !== eq[3]!.toLowerCase();
         return hit ? thenPart : elsePart;
       }
       const val = resolvePreviewPath(cond.trim(), sample);
@@ -1250,7 +1238,11 @@ export function previewTemplate(tmpl: string, sample: Record<string, unknown>): 
           val = f.slice(8).replace(/^["']|["']$/g, "");
         }
       } else if (f.startsWith("join")) {
-        const sep = f.slice(4).trim().replace(/^["']|["']$/g, "") || ", ";
+        const sep =
+          f
+            .slice(4)
+            .trim()
+            .replace(/^["']|["']$/g, "") || ", ";
         if (Array.isArray(val)) val = val.join(sep);
       } else if (f === "duration" && typeof val === "number") {
         const sec = Math.round(val / 1000);

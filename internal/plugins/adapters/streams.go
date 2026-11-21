@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -126,6 +127,7 @@ type StreamSources struct {
 	anime    stremio.AnimeIDs
 	specials stremio.SpecialEpisodes
 	nzb      *http.Client
+	identity func() config.ClientIdentity
 }
 
 var (

@@ -362,6 +362,7 @@ func (i *instance) fastResult(w http.ResponseWriter, r *http.Request, token stri
 		return
 	}
 	user, session := i.authUserDTO(v), i.authSessionDTO(r, v)
+	i.attachViewerAvatarTag(r, user, v, token)
 	if i.protocol == "jellyfin" {
 		now := wireTime(time.Now())
 		user["LastLoginDate"], user["LastActivityDate"] = now, now
@@ -387,6 +388,24 @@ func (i *instance) finishSignIn(ctx context.Context, v *frontend.Viewer, dev fro
 		NoteSignIn(context.Context, int64) error
 	}); ok {
 		_ = note.NoteSignIn(ctx, v.ID)
+	}
+}
+
+func (i *instance) attachViewerAvatarTag(r *http.Request, user map[string]any, v *frontend.Viewer, credential string) {
+	if i.host.ImageGrants == nil || credential == "" {
+		return
+	}
+	img, ok := frontend.ViewerAvatarImage(v)
+	if !ok {
+		return
+	}
+	secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+		Credential: credential,
+		Device:     device(r),
+		Image:      img,
+	})
+	if err == nil && secret != "" {
+		user["PrimaryImageTag"] = secret
 	}
 }
 

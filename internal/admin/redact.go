@@ -95,7 +95,7 @@ func RedactConfig(cfg config.Config) config.Config {
 	out.LLM = redactLLM(out.LLM)
 	out.Outbound.Password = redact(out.Outbound.Password)
 	out.Prowlarr.APIKey = redact(out.Prowlarr.APIKey)
-	out.ClientIdentity.Headers = redactMap(cfg.ClientIdentity.Headers)
+	out.ClientIdentity.Rules = redactIdentityRules(cfg.ClientIdentity.Rules)
 	out.Database = out.Database.Redacted()
 	if cfg.Usenet.Providers != nil {
 		out.Usenet.Providers = make([]config.UsenetProvider, len(cfg.Usenet.Providers))
@@ -109,7 +109,6 @@ func RedactConfig(cfg config.Config) config.Config {
 		for i, ix := range cfg.Indexers {
 			ix.APIKey = redact(ix.APIKey)
 			ix.SecretSettings = redactMap(ix.SecretSettings)
-			ix.RequestIdentity = redactRequestIdentity(ix.RequestIdentity)
 			if ix.IsStremio() {
 				ix.URL = redactStremioURL(ix.URL)
 			}
@@ -308,7 +307,7 @@ func UnredactConfig(next, prev config.Config) (config.Config, []FieldError) {
 	out.LLM = errs.unredactLLM(next.LLM, prev.LLM)
 	out.Outbound.Password = errs.restore("outbound.password", next.Outbound.Password, prev.Outbound.Password, strings.TrimSpace(next.Outbound.URL) == strings.TrimSpace(prev.Outbound.URL))
 	out.Prowlarr.APIKey = errs.restore("prowlarr.apiKey", next.Prowlarr.APIKey, prev.Prowlarr.APIKey, sameProwlarrURL(next.Prowlarr.URL, prev.Prowlarr.URL))
-	out.ClientIdentity.Headers = errs.restoreMap("clientIdentity.headers", next.ClientIdentity.Headers, prev.ClientIdentity.Headers, true)
+	out.ClientIdentity.Rules = errs.unredactIdentityRules(next.ClientIdentity.Rules, prev.ClientIdentity.Rules)
 	if next.Usenet.Providers != nil {
 		out.Usenet.Providers = make([]config.UsenetProvider, len(next.Usenet.Providers))
 		for i, p := range next.Usenet.Providers {
@@ -393,53 +392,102 @@ func (e *placeholderErrors) unredactIndexer(field string, ix config.Indexer, fla
 	bound := found && indexerIdentity(old, prev.IndexerSites.FlareSolverrURL) == indexerIdentity(ix, flareSolverr)
 	ix.APIKey = e.restore(field+".apiKey", ix.APIKey, old.APIKey, bound)
 	ix.SecretSettings = e.restoreMap(field+".secretSettings", ix.SecretSettings, old.SecretSettings, bound)
-	ix.RequestIdentity = restoreRequestIdentity(ix.RequestIdentity, old.RequestIdentity, bound)
 	return ix
 }
 
-// redactRequestIdentity hides credential header values (Authorization,
-// Cookie, …); other override values stay visible so the owner can edit them.
-func redactRequestIdentity(ri *config.IndexerRequestIdentity) *config.IndexerRequestIdentity {
-	if ri == nil {
-		return nil
-	}
-	out := *ri
-	hide := func(ovs []config.KVOverride) []config.KVOverride {
-		cp := append([]config.KVOverride(nil), ovs...)
-		for i := range cp {
-			if config.SensitiveHeader(cp[i].Name) {
-				cp[i].Value = redact(cp[i].Value)
-			}
-		}
-		return cp
-	}
-	out.Headers = hide(ri.Headers)
-	out.GrabHeaders = hide(ri.GrabHeaders)
-	return &out
+func ruleDestination(r config.IdentityRule) string {
+	return strings.Join([]string{
+		string(r.Target),
+		strings.TrimSpace(r.IndexerID),
+		normHost(r.Host),
+		strings.ToLower(strings.TrimSpace(r.Scope)),
+	}, "\x00")
 }
 
-func restoreRequestIdentity(next, prev *config.IndexerRequestIdentity, bound bool) *config.IndexerRequestIdentity {
-	if next == nil || prev == nil || !bound {
-		return next
+// redactIdentityRules hides sensitive header and parameter override values in
+// API responses; non-secret edits remain visible so the owner can edit them.
+func redactIdentityRules(rules []config.IdentityRule) []config.IdentityRule {
+	if rules == nil {
+		return nil
 	}
-	out := *next
-	restore := func(ovs, olds []config.KVOverride) []config.KVOverride {
-		cp := append([]config.KVOverride(nil), ovs...)
-		for i := range cp {
-			if !config.SensitiveHeader(cp[i].Name) || !isRedacted(cp[i].Value) {
-				continue
-			}
-			for _, o := range olds {
-				if strings.EqualFold(o.Name, cp[i].Name) {
-					cp[i].Value = o.Value
+	out := make([]config.IdentityRule, len(rules))
+	for i, r := range rules {
+		if len(r.Headers) > 0 {
+			hs := make([]config.KVOverride, len(r.Headers))
+			copy(hs, r.Headers)
+			for j := range hs {
+				if !hs[j].Remove && config.SensitiveHeader(hs[j].Name) {
+					hs[j].Value = redact(hs[j].Value)
 				}
 			}
+			r.Headers = hs
 		}
-		return cp
+		if len(r.Params) > 0 {
+			ps := make([]config.KVOverride, len(r.Params))
+			copy(ps, r.Params)
+			for j := range ps {
+				if !ps[j].Remove && config.SensitiveParam(ps[j].Name) {
+					ps[j].Value = redact(ps[j].Value)
+				}
+			}
+			r.Params = ps
+		}
+		out[i] = r
 	}
-	out.Headers = restore(next.Headers, prev.Headers)
-	out.GrabHeaders = restore(next.GrabHeaders, prev.GrabHeaders)
-	return &out
+	return out
+}
+
+func (e *placeholderErrors) unredactIdentityRules(next, prev []config.IdentityRule) []config.IdentityRule {
+	if next == nil {
+		return nil
+	}
+	out := make([]config.IdentityRule, len(next))
+	for i, r := range next {
+		var old config.IdentityRule
+		bound := false
+		for _, o := range prev {
+			if r.ID != "" && o.ID == r.ID {
+				old, bound = o, ruleDestination(o) == ruleDestination(r)
+				break
+			}
+		}
+		prefix := fmt.Sprintf("clientIdentity.rules[%d]", i)
+		if len(r.Headers) > 0 {
+			hs := make([]config.KVOverride, len(r.Headers))
+			copy(hs, r.Headers)
+			for j := range hs {
+				if hs[j].Remove || !config.SensitiveHeader(hs[j].Name) || !isRedacted(hs[j].Value) {
+					continue
+				}
+				oldVal, has := findOverrideValue(old.Headers, hs[j].Name)
+				hs[j].Value = e.restore(prefix+".headers", hs[j].Value, oldVal, bound && has)
+			}
+			r.Headers = hs
+		}
+		if len(r.Params) > 0 {
+			ps := make([]config.KVOverride, len(r.Params))
+			copy(ps, r.Params)
+			for j := range ps {
+				if ps[j].Remove || !config.SensitiveParam(ps[j].Name) || !isRedacted(ps[j].Value) {
+					continue
+				}
+				oldVal, has := findOverrideValue(old.Params, ps[j].Name)
+				ps[j].Value = e.restore(prefix+".params", ps[j].Value, oldVal, bound && has)
+			}
+			r.Params = ps
+		}
+		out[i] = r
+	}
+	return out
+}
+
+func findOverrideValue(ovs []config.KVOverride, name string) (string, bool) {
+	for _, o := range ovs {
+		if !o.Remove && strings.EqualFold(strings.TrimSpace(o.Name), strings.TrimSpace(name)) {
+			return o.Value, true
+		}
+	}
+	return "", false
 }
 
 func (e *placeholderErrors) unredactDebrid(field string, p config.DebridProvider, prev []config.DebridProvider) config.DebridProvider {

@@ -18,7 +18,8 @@ function sampleRows(sample: Record<string, unknown>, prefix = ""): [string, unkn
   for (const [k, v] of Object.entries(sample)) {
     if (k === "__eventType") continue;
     const path = prefix ? `${prefix}.${k}` : k;
-    if (v && typeof v === "object" && !Array.isArray(v)) rows.push(...sampleRows(v as Record<string, unknown>, path));
+    if (v && typeof v === "object" && !Array.isArray(v))
+      rows.push(...sampleRows(v as Record<string, unknown>, path));
     else rows.push([path, v]);
   }
   return rows;
@@ -45,8 +46,11 @@ export function TestRunDrawer({
   const triggerEvents = useMemo(() => {
     const out = new Set<string>();
     for (const n of graph.nodes) {
-      if (n.kind === "trigger.event") for (const e of ((n.config?.events as string[] | undefined) ?? [])) if (!e.endsWith(".*")) out.add(e);
-      if (n.kind === "trigger.manual" && n.config?.sampleEventType) out.add(String(n.config.sampleEventType));
+      if (n.kind === "trigger.event")
+        for (const e of (n.config?.events as string[] | undefined) ?? [])
+          if (!e.endsWith(".*")) out.add(e);
+      if (n.kind === "trigger.manual" && n.config?.sampleEventType)
+        out.add(String(n.config.sampleEventType));
     }
     return [...out];
   }, [graph]);
@@ -86,23 +90,40 @@ export function TestRunDrawer({
     <Drawer open={open} onClose={onClose} title={t("Test run")} size="xl">
       <div className="space-y-5">
         <p className="text-sm text-fg-muted">
-          {t("Runs the flow against a realistic sample event. Messages aren't sent and streams aren't stopped — you just see exactly what would happen.")}
+          {t(
+            "Runs the flow against a realistic sample event. Messages aren't sent and streams aren't stopped — you just see exactly what would happen.",
+          )}
         </p>
         <Field label={t("Pretend this happened")}>
-          <Select aria-label={t("Sample event")} value={eventType} onChange={(e) => { setEventType(e.target.value); setResult(null); }}>
-            {(triggerEvents.length > 0 ? triggerEvents : catalogue.events.map((e) => e.type)).map((type) => (
-              <option key={type} value={type}>{catalogue.eventsByType.get(type)?.label ?? type}</option>
-            ))}
+          <Select
+            aria-label={t("Sample event")}
+            value={eventType}
+            onChange={(e) => {
+              setEventType(e.target.value);
+              setResult(null);
+            }}
+          >
+            {(triggerEvents.length > 0 ? triggerEvents : catalogue.events.map((e) => e.type)).map(
+              (type) => (
+                <option key={type} value={type}>
+                  {catalogue.eventsByType.get(type)?.label ?? type}
+                </option>
+              ),
+            )}
           </Select>
         </Field>
         {rows.length > 0 ? (
           <div className="rounded-xl border border-border bg-bg-subtle/60 px-3.5 py-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">{t("The sample moment")}</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
+              {t("The sample moment")}
+            </p>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
               {rows.map(([k, v]) => (
                 <div key={k} className="contents">
                   <dt className="font-mono text-fg-subtle">{k}</dt>
-                  <dd className="min-w-0 truncate text-fg" title={formatValue(v)}>{formatValue(v)}</dd>
+                  <dd className="min-w-0 truncate text-fg" title={formatValue(v)}>
+                    {formatValue(v)}
+                  </dd>
                 </div>
               ))}
             </dl>
@@ -113,7 +134,9 @@ export function TestRunDrawer({
           {result ? t("Run again") : t("Run the test")}
         </Button>
         <MutationError error={error} />
-        {busy ? <LoadingRows rows={3} /> : result ? (
+        {busy ? (
+          <LoadingRows rows={3} />
+        ) : result ? (
           <StepTrace run={result.run} steps={result.steps} graph={graph} catalogue={catalogue} />
         ) : null}
       </div>

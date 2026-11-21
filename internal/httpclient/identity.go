@@ -9,6 +9,9 @@ import (
 // RepoURL is the project URL included in Ether's honest outbound User-Agent.
 const RepoURL = "https://github.com/braedonsaunders/ether"
 
+// IndexerOperatorsURL documents Ether's indexer traffic for operators.
+const IndexerOperatorsURL = RepoURL + "/blob/main/docs/indexer-operators.md"
+
 var (
 	versionMu sync.RWMutex
 	versionFn = func() string { return "dev" }
@@ -44,4 +47,23 @@ func UserAgent() string {
 	fn := versionFn
 	versionMu.RUnlock()
 	return FormatUserAgent(fn())
+}
+
+// FormatIndexerUserAgent formats Ether's honest outbound User-Agent for
+// indexer searches and NZB/torrent downloads ("dev" when version is blank).
+func FormatIndexerUserAgent(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	}
+	return "Ether/" + v + " (+" + IndexerOperatorsURL + ")"
+}
+
+// IndexerUserAgent returns Ether's honest default User-Agent for indexers:
+// "Ether/<version> (+https://github.com/braedonsaunders/ether/blob/main/docs/indexer-operators.md)".
+func IndexerUserAgent() string {
+	versionMu.RLock()
+	fn := versionFn
+	versionMu.RUnlock()
+	return FormatIndexerUserAgent(fn())
 }

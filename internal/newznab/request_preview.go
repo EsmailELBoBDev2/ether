@@ -8,61 +8,248 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 )
 
-// RequestPreview is what the console shows as "what the indexer sees":
-// the exact request line and ordered headers for a sample call. The API
-// key value is never included.
+const previewMaskSentinel = "__ETHER_MASKED_SECRET__"
+const previewMaskDisplay = "••••"
+
+// PreviewInput specifies what PreviewRequestIdentity renders.
+// When Rule is set, it previews that (possibly unsaved) rule with sample
+// search and download requests appropriate to the rule's target.
+// Otherwise it previews the effective search and download requests for Indexer.
+type PreviewInput struct {
+	Rule          *config.IdentityRule
+	Rules         []config.IdentityRule
+	HasRules      bool
+	Indexer       *config.Indexer
+	SavedIndexers []config.Indexer
+	SavedPolicy   config.ClientIdentity
+}
+
+// RequestPreview is what the console renders as "What the indexer sees":
+// the exact request line and ordered headers for a sample search and a sample
+// download. API keys and sensitive header/parameter values are always masked.
 type RequestPreview struct {
-	Profile     string           `json:"profile"`
-	Search      PreviewCall      `json:"search"`
-	GrabProfile string           `json:"grabProfile"`
-	Grab        PreviewCall      `json:"grab"`
-	Profiles    []PreviewProfile `json:"profiles"`
+	Profile       string           `json:"profile"`
+	MatchedRuleID string           `json:"matchedRuleId,omitempty"`
+	Search        PreviewCall      `json:"search"`
+	Download      PreviewCall      `json:"download"`
+	DownloadKind  string           `json:"downloadKind"` // "nzb" or "torrent"
+	Profiles      []PreviewProfile `json:"profiles"`
 }
 
-// PreviewCall is one sample request.
+// PreviewCall is one rendered sample HTTP request.
 type PreviewCall struct {
-	RequestLine string            `json:"requestLine"`
-	Headers     []config.HeaderKV `json:"headers"`
+	RequestLine   string            `json:"requestLine"`
+	Headers       []config.HeaderKV `json:"headers"`
+	Profile       string            `json:"profile"`
+	MatchedRuleID string            `json:"matchedRuleId,omitempty"`
 }
 
-// PreviewProfile describes one selectable profile for the picker.
+// PreviewProfile describes one selectable identity profile for the picker.
 type PreviewProfile struct {
-	ID         string `json:"id"`
-	UserAgent  string `json:"userAgent"`
-	GrabPaired string `json:"grabPaired,omitempty"`
+	ID        string `json:"id"`
+	UserAgent string `json:"userAgent"`
 }
 
-// PreviewRequestIdentity builds the preview for a (possibly unsaved)
-// indexer draft. It performs no network I/O.
-func PreviewRequestIdentity(cfg config.Indexer, policy config.ClientIdentity) (*RequestPreview, error) {
-	draft := cfg
-	if strings.TrimSpace(draft.URL) == "" {
-		draft.URL = "https://indexer.example.com"
+// PreviewRequestIdentity builds the server-side preview for a rule or indexer.
+// It performs no network I/O and never emits plaintext API keys or secrets.
+func PreviewRequestIdentity(in PreviewInput) (*RequestPreview, error) {
+	policy := in.SavedPolicy
+	if in.HasRules {
+		policy = config.ClientIdentity{Rules: in.Rules}
 	}
-	realKey := draft.APIKey
-	draft.APIKey = "••••"
-	c := New(draft, nil, Options{ClientIdentity: policy, SearchCacheTTL: -1})
-	search := c.clientIdentity()
-	grab := c.grabIdentity()
-	searchURL, err := c.apiURLFor(url.Values{
-		"t": {"tvsearch"}, "q": {"Example Show"}, "season": {"0"}, "ep": {"1"},
-		"cat": {"5000"}, "extended": {"1"}, "limit": {"100"},
-	}, search)
-	if err != nil {
-		return nil, err
-	}
-	grabURL, err := c.apiURLFor(url.Values{"t": {"get"}, "id": {"example-guid"}}, grab)
-	if err != nil {
-		return nil, err
-	}
-	mask := func(u string) string {
-		if realKey != "" {
-			u = strings.ReplaceAll(u, url.QueryEscape(realKey), "••••")
-			u = strings.ReplaceAll(u, realKey, "••••")
+
+	var secrets []string
+	addSecret := func(s string) {
+		if s = strings.TrimSpace(s); s != "" && s != previewMaskDisplay {
+			secrets = append(secrets, s)
 		}
-		return u
 	}
-	call := func(raw string, id config.Identity) (PreviewCall, error) {
+	for _, ix := range in.SavedIndexers {
+		addSecret(ix.APIKey)
+	}
+
+	var draft config.Indexer
+	downloadKind := "nzb"
+	dlReqKind := config.RequestNZBDownload
+
+	pickSaved := func(wantTorrent bool, preferUnmatched bool) (config.Indexer, bool) {
+		isShadowed := func(ix config.Indexer) bool {
+			for _, r := range policy.Rules {
+				if r.Target == config.TargetIndexer && r.IndexerID == ix.ID {
+					return true
+				}
+			}
+			return false
+		}
+		if preferUnmatched {
+			for _, ix := range in.SavedIndexers {
+				if !ix.IsBuiltin() && !ix.IsStremio() && ix.IsTorrent() == wantTorrent && strings.TrimSpace(ix.URL) != "" && !isShadowed(ix) {
+					return ix, true
+				}
+			}
+			return config.Indexer{}, false
+		}
+		for _, ix := range in.SavedIndexers {
+			if !ix.IsBuiltin() && !ix.IsStremio() && ix.IsTorrent() == wantTorrent && strings.TrimSpace(ix.URL) != "" {
+				return ix, true
+			}
+		}
+		for _, ix := range in.SavedIndexers {
+			if strings.TrimSpace(ix.URL) != "" && !ix.IsStremio() {
+				return ix, true
+			}
+		}
+		return config.Indexer{}, false
+	}
+
+	if in.Indexer != nil {
+		draft = *in.Indexer
+		addSecret(draft.APIKey)
+		if draft.IsTorrent() {
+			downloadKind = "torrent"
+			dlReqKind = config.RequestTorrentDownload
+		}
+	} else if in.Rule != nil {
+		switch in.Rule.Target {
+		case config.TargetIndexer:
+			for _, ix := range in.SavedIndexers {
+				if ix.ID == in.Rule.IndexerID {
+					draft = ix
+					break
+				}
+			}
+			if draft.ID == "" {
+				draft.ID = in.Rule.IndexerID
+			}
+			if draft.IsTorrent() {
+				downloadKind = "torrent"
+				dlReqKind = config.RequestTorrentDownload
+			}
+		case config.TargetHost:
+			sampleHost := strings.TrimSpace(in.Rule.Host)
+			if suffix, ok := strings.CutPrefix(strings.ToLower(sampleHost), "*."); ok && suffix != "" {
+				sampleHost = "api." + suffix
+			}
+			if sampleHost != "" {
+				draft.URL = "https://" + sampleHost
+			}
+		case config.TargetTorrentDownloads:
+			downloadKind = "torrent"
+			dlReqKind = config.RequestTorrentDownload
+			if found, ok := pickSaved(true, true); ok {
+				draft = found
+			} else {
+				draft.URL = "https://tracker.example.org"
+				draft.Protocol = "torrent"
+			}
+		case config.TargetNZBDownloads:
+			if found, ok := pickSaved(false, true); ok {
+				draft = found
+			}
+		default:
+			if found, ok := pickSaved(false, true); ok {
+				draft = found
+			}
+		}
+	}
+
+	if strings.TrimSpace(draft.URL) == "" {
+		if downloadKind == "torrent" {
+			draft.URL = "https://tracker.example.org"
+		} else {
+			draft.URL = "https://indexer.example.com"
+		}
+	}
+	draft.APIKey = previewMaskSentinel
+
+	c := New(draft, nil, Options{ClientIdentity: policy, SearchCacheTTL: -1})
+
+	// Build sample download URL before resolving download identity so host rules match accurately.
+	sampleBase := strings.TrimRight(strings.TrimSpace(draft.URL), "/")
+	sampleTorrentURL := sampleBase + "/download/example.torrent"
+
+	searchID := policy.ResolveIndexer(draft, config.RequestSearch, draft.URL)
+	downloadURLForMatch := draft.URL
+	if downloadKind == "torrent" {
+		downloadURLForMatch = sampleTorrentURL
+	}
+	downloadID := policy.ResolveIndexer(draft, dlReqKind, downloadURLForMatch)
+
+	// When previewing a specific (possibly unsaved) rule, apply that rule directly
+	// to whichever operation(s) it targets so edits preview live before saving.
+	if in.Rule != nil {
+		ruleIdx := -1
+		for i, r := range policy.Rules {
+			if r.ID != "" && r.ID == in.Rule.ID {
+				ruleIdx = i
+				break
+			}
+		}
+		resolved := config.ResolveRule(*in.Rule, ruleIdx)
+		switch in.Rule.Target {
+		case config.TargetAllSearches:
+			searchID = resolved
+		case config.TargetNZBDownloads, config.TargetTorrentDownloads:
+			downloadID = resolved
+		case config.TargetIndexer, config.TargetHost:
+			scope := strings.ToLower(strings.TrimSpace(in.Rule.Scope))
+			if scope != "download" {
+				searchID = resolved
+			}
+			if scope != "search" {
+				downloadID = resolved
+			}
+		}
+	}
+
+	sanitizeParams := func(id config.Identity) config.Identity {
+		if len(id.Params) == 0 {
+			return id
+		}
+		cp := id
+		cp.Params = make([]config.KVOverride, len(id.Params))
+		for i, ov := range id.Params {
+			if !ov.Remove && config.SensitiveParam(ov.Name) && strings.TrimSpace(ov.Value) != "" {
+				addSecret(ov.Value)
+				ov.Value = previewMaskSentinel
+			}
+			cp.Params[i] = ov
+		}
+		return cp
+	}
+
+	safeSearchID := sanitizeParams(searchID)
+	safeDownloadID := sanitizeParams(downloadID)
+
+	searchURL, err := c.apiURLFor(url.Values{
+		"t": {"tvsearch"}, "q": {"Example Show"}, "season": {"1"}, "ep": {"1"},
+		"cat": {"5000"}, "extended": {"1"}, "limit": {"100"},
+	}, safeSearchID)
+	if err != nil {
+		return nil, err
+	}
+
+	var downloadURL string
+	if downloadKind == "torrent" {
+		downloadURL = safeDownloadID.ApplyToURL(sampleTorrentURL)
+	} else {
+		downloadURL, err = c.apiURLFor(url.Values{"t": {"get"}, "id": {"example-guid"}}, safeDownloadID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	maskURI := func(s string) string {
+		s = strings.ReplaceAll(s, url.QueryEscape(previewMaskSentinel), previewMaskDisplay)
+		s = strings.ReplaceAll(s, previewMaskSentinel, previewMaskDisplay)
+		for _, sec := range secrets {
+			s = strings.ReplaceAll(s, url.QueryEscape(sec), previewMaskDisplay)
+			s = strings.ReplaceAll(s, sec, previewMaskDisplay)
+		}
+		return s
+	}
+
+	buildCall := func(raw string, id config.Identity) (PreviewCall, error) {
 		u, err := url.Parse(raw)
 		if err != nil {
 			return PreviewCall{}, err
@@ -70,27 +257,42 @@ func PreviewRequestIdentity(cfg config.Indexer, policy config.ClientIdentity) (*
 		headers := make([]config.HeaderKV, 0, len(id.Ordered))
 		for _, h := range id.Ordered {
 			v := h.Value
-			if strings.EqualFold(h.Name, "traceparent") && v == "{traceparent}" {
-				v = "00-…-…-01 (changes each request)"
+			if config.SensitiveHeader(h.Name) && strings.TrimSpace(v) != "" {
+				v = previewMaskDisplay
 			}
 			headers = append(headers, config.HeaderKV{Name: h.Name, Value: v})
 		}
 		return PreviewCall{
-			RequestLine: fmt.Sprintf("GET %s HTTP/1.1\nHost: %s", mask(u.RequestURI()), u.Host),
-			Headers:     headers,
+			RequestLine:   fmt.Sprintf("GET %s HTTP/1.1\nHost: %s", maskURI(u.RequestURI()), u.Host),
+			Headers:       headers,
+			Profile:       id.Profile,
+			MatchedRuleID: id.RuleID,
 		}, nil
 	}
-	sc, err := call(searchURL, search)
+
+	sc, err := buildCall(searchURL, searchID)
 	if err != nil {
 		return nil, err
 	}
-	gc, err := call(grabURL, grab)
+	dc, err := buildCall(downloadURL, downloadID)
 	if err != nil {
 		return nil, err
 	}
-	out := &RequestPreview{Profile: search.Profile, GrabProfile: grab.Profile, Search: sc, Grab: gc}
+
+	primary := searchID
+	if in.Rule != nil && (in.Rule.Target == config.TargetNZBDownloads || in.Rule.Target == config.TargetTorrentDownloads || strings.EqualFold(in.Rule.Scope, "download")) {
+		primary = downloadID
+	}
+
+	out := &RequestPreview{
+		Profile:       primary.Profile,
+		MatchedRuleID: primary.RuleID,
+		Search:        sc,
+		Download:      dc,
+		DownloadKind:  downloadKind,
+	}
 	for _, p := range config.ClientProfiles() {
-		out.Profiles = append(out.Profiles, PreviewProfile{ID: p.ID, UserAgent: config.ProfileUserAgent(p.ID), GrabPaired: p.GrabPaired})
+		out.Profiles = append(out.Profiles, PreviewProfile{ID: p.ID, UserAgent: config.ProfileUserAgent(p.ID)})
 	}
 	return out, nil
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/resolver"
 )
 
@@ -163,6 +164,380 @@ func (r *KindResolver) OpenKind(ctx context.Context, viewer *core.Viewer, key co
 	return r.OpenKindExcluding(ctx, viewer, key, accept, nil)
 }
 
+func singlePartIndex(item core.KindItem) (*int, bool) {
+	parts := core.ExtractKindItemPartsFromItem(item)
+	switch len(parts) {
+	case 0:
+		return nil, true
+	case 1:
+		zero := 0
+		return &zero, true
+	default:
+		return nil, false
+	}
+}
+
+func (r *KindResolver) projectedTitle(ctx context.Context, item core.KindItem, rec pluginitems.KindRecord, lib core.Library) *core.Title {
+	t := pluginitems.Project(item, rec.Decl, lib.Present, lib.CardShape)
+	if (t.Type == core.TypeEpisode || t.Type == core.TypeSeason) && item.ParentID != "" {
+		cur := item.ParentID
+		for range 8 {
+			parent, _, err := r.items.GetByRef(ctx, core.NewItemRef(rec.PluginID, rec.KindKey, cur))
+			if err != nil {
+				break
+			}
+			if parent.ParentID == "" {
+				t.ShowKey = parent.Key
+				t.ShowTitle = parent.Title
+				break
+			}
+			cur = parent.ParentID
+		}
+	}
+	return &t
+}
+
+func (r *KindResolver) openSingleSource(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, targetSrc core.PlayableSource) (*frontend.KindMedia, error) {
+	ksDeps := r.kindstreamDeps(ctx, rec, lib, item, partIdx, nil)
+	bs, err := kindstream.Open(ctx, targetSrc, ksDeps)
+	if err != nil {
+		return nil, err
+	}
+	parts := core.ExtractKindItemPartsFromItem(item)
+	dur := extractItemDuration(item, rec.Decl)
+	if partIdx != nil && *partIdx < len(parts) {
+		bs = withPartDefaults(bs, parts[*partIdx], item.Title)
+		if dur == 0 && parts[*partIdx].DurationSec > 0 {
+			dur = time.Duration(parts[*partIdx].DurationSec * float64(time.Second))
+		}
+	}
+	if dur == 0 && targetSrc.DurationSec > 0 {
+		dur = time.Duration(targetSrc.DurationSec * float64(time.Second))
+	}
+	rel := playableSourceRelease(targetSrc, item.Title)
+	if rel.Size <= 0 {
+		rel.Size = bs.Size()
+	}
+	if rel.Name == "" {
+		rel.Name = firstNonEmpty(bs.Name(), item.Title)
+	}
+	return &frontend.KindMedia{
+		ReaderAt:    bs,
+		Closer:      bs,
+		Size:        bs.Size(),
+		MIME:        bs.MIME(),
+		Duration:    dur,
+		Name:        bs.Name(),
+		Release:     rel,
+		MediaSource: unwrapKindMediaSource(bs),
+	}, nil
+}
+
+// OpenKindSource opens exactly one plugin kind source by its stable candidate
+// release id (a version-slot pick). It reuses the in-memory and persisted
+// resolution candidate caches so a warm list does not re-run the plugin, opens
+// only the matching candidate, and leaves the shared default winner untouched.
+// A source id not among the current non-expired candidates returns ErrNotAvailable.
+func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
+		return nil, core.ErrNotFound
+	}
+	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok || !lv.Playable || !item.Playable {
+		return nil, core.ErrNotAvailable
+	}
+	partIdx, ok := singlePartIndex(item)
+	if !ok {
+		// Multi-part items expose a single composite sequence, not per-release versions.
+		return nil, core.ErrNotAvailable
+	}
+	sources, err := r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
+	if err != nil {
+		return nil, err
+	}
+	nowUnix := r.now().Unix()
+	for _, src := range sources {
+		if src.ExpiresAt > 0 && nowUnix >= src.ExpiresAt {
+			continue
+		}
+		if playableSourceRelease(src, item.Title).ID == sourceID {
+			return r.openSingleSource(ctx, rec, lib, item, partIdx, src)
+		}
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// KindVersions lists the playable version menu of a plugin kind item in the
+// same W152 shape catalogue VersionSlots uses: index 0 is the synthetic Auto
+// slot (backed by the viewer's remembered choice when matched, else the
+// plugin's first source), followed by the remaining distinct /resolve sources.
+// When allowResolve is false or ctx carries LocalResponse, only cached
+// candidates are inspected and the plugin's /resolve endpoint is never called.
+func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string, allowResolve bool) ([]core.ReleaseVariant, error) {
+	if r == nil || r.items == nil || r.libs == nil || viewer == nil || !key.IsPluginKey() {
+		return nil, core.ErrNotFound
+	}
+	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, nil
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok || !lv.Playable || !item.Playable {
+		return nil, nil
+	}
+	partIdx, ok := singlePartIndex(item)
+	if !ok {
+		return nil, nil
+	}
+	var sources []core.PlayableSource
+	if allowResolve && !core.LocalResponse(ctx) {
+		sources, err = r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
+	} else {
+		var hit bool
+		sources, hit, err = r.cachedCandidatesFor(ctx, item, partIdx)
+		if !hit && err == nil {
+			return nil, nil
+		}
+	}
+	if err != nil {
+		if errors.Is(err, core.ErrNotAvailable) || errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrSourceUnavailable) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	itemDur := extractItemDuration(item, rec.Decl)
+	nowUnix := r.now().Unix()
+	type entry struct {
+		rel     core.Release
+		variant core.ReleaseVariant
+	}
+	entries := make([]entry, 0, len(sources))
+	seen := make(map[string]bool, len(sources))
+	for _, src := range sources {
+		if src.ExpiresAt > 0 && nowUnix >= src.ExpiresAt {
+			continue
+		}
+		rel := playableSourceRelease(src, item.Title)
+		if rel.ID == "" || seen[rel.ID] {
+			continue
+		}
+		seen[rel.ID] = true
+		entries = append(entries, entry{
+			rel:     rel,
+			variant: r.kindVariantFor(src, rel, item.Title, itemDur),
+		})
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	autoIdx := 0
+	autoRemembered := false
+	if r.resolver != nil {
+		title := r.projectedTitle(ctx, item, rec, lib)
+		rels := make([]core.Release, len(entries))
+		for i, e := range entries {
+			rels[i] = e.rel
+		}
+		if idx, _ := r.resolver.MatchViewerChoice(viewer.ID, title, rels); idx >= 0 {
+			autoIdx = idx
+			autoRemembered = true
+		}
+	}
+
+	autoEntry := entries[autoIdx].variant
+	autoLabel := "Auto"
+	if lbl := strings.TrimSpace(autoEntry.Label); lbl != "" {
+		autoLabel = "Auto · " + lbl
+	}
+	capLen := min(len(entries), core.MaxVariants)
+	variants := make([]core.ReleaseVariant, 0, capLen)
+	variants = append(variants, core.ReleaseVariant{
+		ID:               core.KindAutoVersionID,
+		Label:            autoLabel,
+		Edition:          autoEntry.Edition,
+		Auto:             true,
+		Remembered:       autoRemembered,
+		Availability:     autoEntry.Availability,
+		AvailabilityNote: autoEntry.AvailabilityNote,
+		Release:          autoEntry.Release,
+		Info:             autoEntry.Info,
+	})
+	for i, e := range entries {
+		if i == autoIdx {
+			continue
+		}
+		if len(variants) >= core.MaxVariants {
+			break
+		}
+		variants = append(variants, e.variant)
+	}
+	return variants, nil
+}
+
+// kindVariantFor projects one plugin /resolve source into a ReleaseVariant
+// whose ID is the source's stable release id, carrying estimated media metadata
+// until the source is probed.
+func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release, title string, itemDur time.Duration) core.ReleaseVariant {
+	size := rel.Size
+	if size <= 0 {
+		size = src.Size
+	}
+	dur := itemDur
+	if src.DurationSec > 0 {
+		dur = time.Duration(src.DurationSec * float64(time.Second))
+	}
+	info := core.MediaInfo{
+		Container: kindContainerFromMIME(src.MIME, firstNonEmpty(rel.Name, src.Path, src.URL)),
+		Duration:  dur,
+		Size:      size,
+		Estimated: true,
+	}
+	if size > 0 && dur > 0 {
+		if sec := int64(dur / time.Second); sec > 0 {
+			info.BitrateKbps = int((size * 8) / sec / 1000)
+		}
+	}
+	if rel.Info.Height > 0 || rel.Info.VideoCodec != "" {
+		w := 0
+		if rel.Info.Height > 0 {
+			w = (rel.Info.Height * 16) / 9
+		}
+		vs := core.StreamInfo{
+			Index:       0,
+			Type:        "video",
+			Codec:       firstNonEmpty(rel.Info.VideoCodec, "h264"),
+			Width:       w,
+			Height:      rel.Info.Height,
+			DolbyVision: rel.Info.DolbyVision,
+		}
+		if rel.Info.HDR10 || rel.Info.DolbyVision {
+			vs.ColorTransfer = "smpte2084"
+		}
+		info.Streams = append(info.Streams, vs)
+	}
+	if rel.Info.AudioCodec != "" {
+		info.Streams = append(info.Streams, core.StreamInfo{
+			Index:    len(info.Streams),
+			Type:     "audio",
+			Codec:    rel.Info.AudioCodec,
+			Channels: kindChannelsFromString(rel.Info.Channels),
+		})
+	}
+	avail := core.VersionFetch
+	availNote := ""
+	switch strings.ToLower(strings.TrimSpace(src.Pattern)) {
+	case "file":
+		avail = core.VersionInstant
+	case "range", "direct", "download", "container":
+		if src.BlobRef != "" {
+			avail = core.VersionInstant
+		} else {
+			avail = core.VersionCached
+		}
+	case kindstream.PatternRelease:
+		if src.Release != nil && src.Release.Candidate != nil && src.Release.Candidate.Cached {
+			avail = core.VersionCached
+		} else if rel.Protocol == core.ProtocolTorrent {
+			avail = core.VersionFetch
+			availNote = "May need to fetch before playback"
+		}
+	}
+	return core.ReleaseVariant{
+		ID:               rel.ID,
+		Label:            firstNonEmpty(src.Label, rel.Name, title),
+		Edition:          rel.Info.Edition,
+		Availability:     avail,
+		AvailabilityNote: availNote,
+		Release:          rel,
+		Info:             info,
+	}
+}
+
+func kindContainerFromMIME(mime, name string) string {
+	m := strings.ToLower(strings.TrimSpace(mime))
+	if semi := strings.IndexByte(m, ';'); semi >= 0 {
+		m = strings.TrimSpace(m[:semi])
+	}
+	switch m {
+	case "video/x-matroska", "audio/x-matroska":
+		return "mkv"
+	case "video/mp4", "audio/mp4":
+		return "mp4"
+	case "video/webm", "audio/webm":
+		return "webm"
+	case "video/mp2t":
+		return "mpegts"
+	case "video/quicktime":
+		return "mov"
+	case "audio/mpeg":
+		return "mp3"
+	case "audio/flac":
+		return "flac"
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(name))) {
+	case ".mkv":
+		return "mkv"
+	case ".mp4", ".m4v", ".m4a":
+		return "mp4"
+	case ".webm":
+		return "webm"
+	case ".ts", ".m2ts":
+		return "mpegts"
+	case ".mov":
+		return "mov"
+	}
+	return ""
+}
+
+func kindChannelsFromString(ch string) int {
+	switch strings.TrimSpace(ch) {
+	case "7.1":
+		return 8
+	case "6.1":
+		return 7
+	case "5.1":
+		return 6
+	case "5.0":
+		return 5
+	case "2.0":
+		return 2
+	case "1.0":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func kindReleaseSource(raw string) core.Source {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "remux":
+		return core.SourceRemux
+	case "bluray", "blu-ray", "bdrip", "disc":
+		return core.SourceBluRay
+	case "web-dl", "webdl", "web":
+		return core.SourceWEBDL
+	case "webrip":
+		return core.SourceWEBRip
+	case "hdtv":
+		return core.SourceHDTV
+	case "dvd", "dvdrip":
+		return core.SourceDVD
+	default:
+		return core.SourceUnknown
+	}
+}
+
 // OpenKindExcluding opens a plugin kind item while excluding already-tried
 // candidate release IDs (for mid-stream playback failover). Replacement
 // candidates come from the stored candidate list of the same kind resolve,
@@ -184,6 +559,37 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 		return nil, core.ErrNotFound
 	}
 	if lv.Playable && item.Playable {
+		// Honor the viewer's remembered version choice on Auto open without
+		// overwriting the shared default winner in plugin_resolutions.
+		if len(exclude) == 0 && viewer != nil && r.resolver != nil {
+			if partIdx, single := singlePartIndex(item); single {
+				title := r.projectedTitle(ctx, item, rec, lib)
+				_, hasTitle := r.resolver.ViewerChoiceFor(viewer.ID, item.Key)
+				hasShow := false
+				if !hasTitle && title.Type == core.TypeEpisode && title.ShowKey.Valid() {
+					_, hasShow = r.resolver.ViewerChoiceFor(viewer.ID, title.ShowKey)
+				}
+				if hasTitle || hasShow {
+					if sources, cerr := r.resolveCandidates(ctx, rec, lib, item, partIdx, accept); cerr == nil && len(sources) > 0 {
+						nowUnix := r.now().Unix()
+						live := make([]core.PlayableSource, 0, len(sources))
+						rels := make([]core.Release, 0, len(sources))
+						for _, src := range sources {
+							if src.ExpiresAt > 0 && nowUnix >= src.ExpiresAt {
+								continue
+							}
+							live = append(live, src)
+							rels = append(rels, playableSourceRelease(src, item.Title))
+						}
+						if idx, _ := r.resolver.MatchViewerChoice(viewer.ID, title, rels); idx >= 0 {
+							if media, oerr := r.openSingleSource(ctx, rec, lib, item, partIdx, live[idx]); oerr == nil {
+								return media, nil
+							}
+						}
+					}
+				}
+			}
+		}
 		return r.openPlayableItemMediaExcluding(ctx, rec, lib, item, accept, exclude)
 	}
 
@@ -1077,6 +1483,7 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 			}
 			// Cached source went stale upstream: invalidate and fall through.
 			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
+			r.deleteCandidates(fk)
 		}
 	}
 
@@ -1084,7 +1491,7 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 	// stored candidate list of the original kind resolve before re-calling
 	// the plugin runtime.
 	if len(exclude) > 0 || backingOffCached != nil {
-		if stored, hasStored := r.cachedCandidates(fk); hasStored {
+		if stored, hasStored, cerr := r.cachedCandidatesFor(ctx, item, partIdx); cerr == nil && hasStored {
 			cands := r.filterAndOrderCandidates(stored, item.Title, exclude)
 			hasReady := slices.ContainsFunc(cands, func(s core.PlayableSource) bool { return !r.isSourceBackingOff(s) })
 			if len(cands) > 0 && (backingOffCached == nil || hasReady) {
@@ -1096,11 +1503,13 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 	}
 
 	// 3. Resolve (or re-resolve excluding failed releases) via the plugin.
+	// On a normal (non-failover) open, reuse warm cached candidates first so
+	// listing versions and then pressing Play only calls /resolve once.
 	var sources []core.PlayableSource
 	if len(exclude) > 0 {
 		sources, err = r.resolveItemSourcesExcluding(ctx, rec, lib, item, partIdx, accept, exclude)
 	} else {
-		sources, err = r.resolveItemSources(ctx, rec, lib, item, partIdx, accept)
+		sources, err = r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
 	}
 	if err != nil {
 		if backingOffCached != nil {
@@ -1195,6 +1604,61 @@ func (r *KindResolver) cachedCandidates(fk resolveFlightKey) ([]core.PlayableSou
 		return nil, false
 	}
 	return slices.Clone(entry.sources), true
+}
+
+func (r *KindResolver) deleteCandidates(fk resolveFlightKey) {
+	if r == nil {
+		return
+	}
+	r.candMu.Lock()
+	delete(r.candCache, fk)
+	r.candMu.Unlock()
+}
+
+// cachedCandidatesFor checks the in-memory candidate cache first and falls
+// back to the persisted plugin_resolutions.candidates column. Expired sources
+// are filtered against r.now() so tests with fake clocks expire cleanly.
+func (r *KindResolver) cachedCandidatesFor(ctx context.Context, item core.KindItem, partIdx *int) ([]core.PlayableSource, bool, error) {
+	fk := flightKeyForItem(item.Ref, partIdx)
+	nowUnix := r.now().Unix()
+	filterLive := func(srcs []core.PlayableSource) []core.PlayableSource {
+		live := make([]core.PlayableSource, 0, len(srcs))
+		for _, s := range srcs {
+			if s.ExpiresAt > 0 && nowUnix >= s.ExpiresAt {
+				continue
+			}
+			live = append(live, s)
+		}
+		return live
+	}
+	if cached, ok := r.cachedCandidates(fk); ok {
+		if live := filterLive(cached); len(live) > 0 {
+			return live, true, nil
+		}
+		r.deleteCandidates(fk)
+	}
+	if r.items != nil {
+		stored, ok, err := r.items.GetPartCandidates(ctx, item.Ref, partIdx)
+		if err != nil {
+			return nil, ok, err
+		}
+		if ok {
+			if live := filterLive(stored); len(live) > 0 {
+				r.storeCandidates(fk, live)
+				return live, true, nil
+			}
+		}
+	}
+	return nil, false, nil
+}
+
+// resolveCandidates returns the cached candidate list when fresh (or an active
+// negative cache error), calling the plugin's /resolve only on a cache miss.
+func (r *KindResolver) resolveCandidates(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, accept []string) ([]core.PlayableSource, error) {
+	if sources, ok, err := r.cachedCandidatesFor(ctx, item, partIdx); ok {
+		return sources, err
+	}
+	return r.resolveItemSources(ctx, rec, lib, item, partIdx, accept)
 }
 
 func (r *KindResolver) isUsenetBackingOff() bool {
@@ -1305,6 +1769,9 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, accept, nil)
 			if fl.err == nil && len(fl.sources) > 0 {
 				r.storeCandidates(fk, fl.sources)
+				if r.items != nil {
+					_ = r.items.SavePartCandidates(rctx, item.Ref, partCopy, fl.sources)
+				}
 			}
 		}()
 	}
@@ -1505,21 +1972,41 @@ func playableSourceRelease(src core.PlayableSource, defaultTitle string) core.Re
 			if rel.Size <= 0 && src.Size > 0 {
 				rel.Size = src.Size
 			}
+			rel.Info = releaseparse.Parse(firstNonEmpty(rel.Name, src.Release.FileHint, src.Label))
+			if cand := src.Release.Candidate; cand != nil {
+				if cand.Resolution > 0 {
+					rel.Info.Height = cand.Resolution
+				}
+				if cand.Codec != "" && rel.Info.VideoCodec == "" {
+					rel.Info.VideoCodec = strings.ToLower(strings.TrimSpace(cand.Codec))
+				}
+				if cand.Source != "" && rel.Info.Source == core.SourceUnknown {
+					rel.Info.Source = kindReleaseSource(cand.Source)
+				}
+			}
 			return rel
 		}
 	}
 	containerSeed, _ := json.Marshal(src.Container)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s",
+	seed := fmt.Sprintf("%s|%s|%s|%s",
 		strings.ToLower(strings.TrimSpace(src.Pattern)),
 		strings.TrimSpace(src.URL),
 		strings.TrimSpace(src.Path),
 		string(containerSeed),
-	)))
+	)
+	if blob := strings.TrimSpace(src.BlobRef); blob != "" {
+		seed += "|blob:" + blob
+	} else if strings.TrimSpace(src.URL) == "" && strings.TrimSpace(src.Path) == "" && src.Container == nil && strings.TrimSpace(src.ID) != "" {
+		seed += "|id:" + strings.TrimSpace(src.ID)
+	}
+	sum := sha256.Sum256([]byte(seed))
+	name := firstNonEmpty(src.Label, defaultTitle, "kind-stream")
 	return core.Release{
 		ID:       "kind:src:" + hex.EncodeToString(sum[:8]),
-		Name:     firstNonEmpty(defaultTitle, "kind-stream"),
+		Name:     name,
 		Protocol: core.ProtocolHTTP,
 		Size:     src.Size,
+		Info:     releaseparse.Parse(firstNonEmpty(src.Label, src.Path, src.URL)),
 	}
 }
 

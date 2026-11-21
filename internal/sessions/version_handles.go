@@ -88,7 +88,7 @@ func PruneVersionIDs(ctx context.Context, db *sql.DB, now time.Time) (int64, err
 }
 
 func (v *versionHandles) allowedOffers(ctx context.Context, scope frontend.VersionScope, item core.RatingKey) (*core.Viewer, map[string]bool, error) {
-	if scope.Protocol != v.protocol || scope.Device.ID == "" || len(scope.Device.ID) > 512 || item == 0 || v.broker.deps.Variants == nil {
+	if scope.Protocol != v.protocol || scope.Device.ID == "" || len(scope.Device.ID) > 512 || item == 0 {
 		return nil, nil, core.ErrNotFound
 	}
 	viewer, err := v.broker.viewer(ctx, scope.Viewer)
@@ -109,6 +109,51 @@ func (v *versionHandles) allowedOffers(ctx context.Context, scope frontend.Versi
 	}
 	if limit := v.broker.deps.BitrateLimit(viewer); limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
 		caps.MaxBitrateKbps = limit
+	}
+	// A plugin kind item's version menu comes from its own /resolve sources,
+	// not the catalogue release pipeline.
+	if item.IsPluginKey() {
+		if v.broker.deps.KindVersions == nil {
+			return nil, nil, core.ErrNotFound
+		}
+		offered, err := v.broker.deps.KindVersions(ctx, viewer, item)
+		if err != nil {
+			return nil, nil, err
+		}
+		allowed := make(map[string]bool, len(offered)*2)
+		for _, candidate := range offered {
+			if candidate.ID != "" {
+				allowed[candidate.ID] = true
+			}
+			if candidate.Release.ID != "" {
+				allowed[candidate.Release.ID] = true
+			}
+		}
+		if len(allowed) > 0 {
+			v.broker.mu.Lock()
+			for _, p := range v.broker.plans {
+				if p.request.Viewer != nil && p.request.Viewer.ID == viewer.ID && p.request.Protocol == v.protocol && p.request.Device.ID == scope.Device.ID && p.request.Item == item {
+					if p.exactRelease != "" {
+						allowed[p.exactRelease] = true
+					}
+					if p.source != nil && p.source.Resolution != nil && p.source.Resolution.Release.ID != "" {
+						allowed[p.source.Resolution.Release.ID] = true
+					}
+				}
+			}
+			for _, s := range v.broker.sessions {
+				if s != nil && s.public.ViewerID == viewer.ID && s.public.Protocol == v.protocol && s.public.Device.ID == scope.Device.ID && s.public.Item == item {
+					if s.exactRelease != "" {
+						allowed[s.exactRelease] = true
+					}
+				}
+			}
+			v.broker.mu.Unlock()
+		}
+		return viewer, allowed, nil
+	}
+	if v.broker.deps.Variants == nil {
+		return nil, nil, core.ErrNotFound
 	}
 	title, err := v.broker.deps.Lookup(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, scope.Device, item)
 	if err != nil || title == nil || title.Key != item || (!title.Released.IsZero() && title.Released.After(v.broker.deps.Now())) {

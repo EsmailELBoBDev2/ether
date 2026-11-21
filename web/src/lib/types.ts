@@ -319,6 +319,15 @@ export interface PosterProviderConfig {
   profile?: string;
 }
 
+export interface ConsoleListenerStatus {
+  configuredPort: number;
+  activePort: number;
+  mainPort: number;
+  onMainPort: boolean;
+  fallback?: boolean;
+  error?: string;
+}
+
 export interface EtherConfig {
   frontends?: Record<
     string,
@@ -335,6 +344,8 @@ export interface EtherConfig {
   server: {
     startupAnimation?: boolean;
     port: number;
+    consolePort?: number;
+    disableConsoleOnMainPort?: boolean;
     bindAddress: string;
     friendlyName: string;
     machineIdentifier: string;

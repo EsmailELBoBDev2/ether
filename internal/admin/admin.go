@@ -109,6 +109,17 @@ type StatusFunc func(ctx context.Context) any
 // StatusFuncE is a StatusFunc that can fail.
 type StatusFuncE func(ctx context.Context) (any, error)
 
+// ConsoleListenerStatus describes the active state of the optional dedicated
+// owner console listener, including bind-failure fallback to the main port.
+type ConsoleListenerStatus struct {
+	ConfiguredPort int    `json:"configuredPort"`
+	ActivePort     int    `json:"activePort"`
+	MainPort       int    `json:"mainPort"`
+	OnMainPort     bool   `json:"onMainPort"`
+	Fallback       bool   `json:"fallback"`
+	Error          string `json:"error,omitempty"`
+}
+
 // Deps are the dependencies of the admin handler. The component
 // dependencies (Plex sign-in, testers, traces, users, personalization,
 // collections, catalogue helper, image proxy) are required. Only the
@@ -126,6 +137,7 @@ type Deps struct {
 	ViewerAlerts       ViewerAlertPreferences
 	ActiveViewer       func(context.Context, int64) (*core.User, error)
 	AppAddress         func(context.Context, frontend.Protocol, *http.Request, bool) (string, error)
+	ConsoleListener    func() ConsoleListenerStatus
 	ViewerPortalURL    func(context.Context, *http.Request) (string, error)
 	StremioPortalURL   func(context.Context, *http.Request) (string, error)
 	CreateDLNAGuest    func(context.Context) (*core.Viewer, error)
@@ -469,6 +481,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/config/{section}", h.handleGetSection)
 	api("PUT /api/config/{section}", h.handlePutSection)
 	api("PATCH /api/config/{section}", h.handlePutSection)
+	api("GET /api/server/console-listener", h.handleConsoleListener)
 
 	api("GET /api/setup/status", h.handleSetupStatus)
 	api("POST /api/setup/complete", h.handleSetupComplete)
@@ -570,4 +583,22 @@ func (h *Handler) routes() *http.ServeMux {
 	}))
 	mux.HandleFunc("/", h.handleSPA)
 	return mux
+}
+
+func (h *Handler) handleConsoleListener(w http.ResponseWriter, r *http.Request) {
+	if h.deps.ConsoleListener != nil {
+		writeJSON(w, http.StatusOK, h.deps.ConsoleListener())
+		return
+	}
+	var cfg config.Config
+	if h.deps.Config != nil {
+		cfg = h.deps.Config.Get()
+	}
+	writeJSON(w, http.StatusOK, ConsoleListenerStatus{
+		ConfiguredPort: cfg.Server.ConsolePort,
+		ActivePort:     0,
+		MainPort:       cfg.Server.Port,
+		OnMainPort:     true,
+		Fallback:       false,
+	})
 }

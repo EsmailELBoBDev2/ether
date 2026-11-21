@@ -40,6 +40,7 @@ import {
 } from "./ConnectionHub";
 import { usableAddresses } from "./reachability";
 import { PublishedAddressesDrawer } from "./PublishedAddressesDrawer";
+import { VelaPortDrawer } from "./VelaPortDrawer";
 
 type FrontendInfo = HubFrontendInfo;
 
@@ -57,6 +58,7 @@ export type VelaAppIcon = {
 };
 type Settings = {
   port?: number;
+  serveOnMainPort?: boolean;
   publishedAddresses?: string[];
   serverName?: string;
   discovery?: boolean;
@@ -726,6 +728,7 @@ function ProtocolSettings({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>();
   const [publishedDrawerOpen, setPublishedDrawerOpen] = useState(false);
+  const [velaPortDrawerOpen, setVelaPortDrawerOpen] = useState(false);
   const editablePort = DEDICATED_PORT_APPS.has(id);
   const canPublishAddresses =
     id !== "plex" &&
@@ -741,6 +744,23 @@ function ProtocolSettings({
     if (editablePort) {
       const nextPort = rawPort ?? info?.descriptor.defaultPort;
       if (nextPort != null) payload.port = nextPort;
+    } else if (id === "vela" && typeof rawPort === "number" && rawPort > 0) {
+      payload.port = rawPort;
+    }
+    await apiFetch(`/frontends/${id}/settings`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    await Promise.all([state.reload(), onReloadFrontends()]);
+  }
+
+  async function saveVelaPort(next: { port?: number; serveOnMainPort: boolean }) {
+    const base = state.data ?? draft ?? {};
+    const { serverName: _serverName, port: _oldPort, serveOnMainPort: _oldMain, ...body } = base;
+    const payload: Settings = { ...body };
+    if (next.port && next.port > 0) {
+      payload.port = next.port;
+      payload.serveOnMainPort = next.serveOnMainPort;
     }
     await apiFetch(`/frontends/${id}/settings`, {
       method: "PUT",
@@ -759,6 +779,8 @@ function ProtocolSettings({
         return;
       }
       (body as Settings).port = nextPort;
+    } else if (id === "vela" && typeof rawPort === "number" && rawPort > 0) {
+      (body as Settings).port = rawPort;
     }
     if (id === "vela") {
       const trimmedName = (body.appName ?? "").trim();
@@ -783,6 +805,10 @@ function ProtocolSettings({
     }
   }
 
+  const velaSavedPort = id === "vela" ? (state.data?.port ?? draft?.port) : undefined;
+  const velaServeOnMain =
+    id === "vela" ? (state.data?.serveOnMainPort ?? draft?.serveOnMainPort) !== false : true;
+
   const connectionCards =
     !hidden && info ? (
       <>
@@ -792,7 +818,16 @@ function ProtocolSettings({
           onEditPublishedAddresses={
             canPublishAddresses ? () => setPublishedDrawerOpen(true) : undefined
           }
-          port={draft ? draft.port : info.descriptor.defaultPort}
+          velaPort={
+            id === "vela"
+              ? {
+                  port: velaSavedPort,
+                  serveOnMainPort: velaServeOnMain,
+                  onEdit: () => setVelaPortDrawerOpen(true),
+                }
+              : undefined
+          }
+          port={id === "vela" ? velaSavedPort : draft ? draft.port : info.descriptor.defaultPort}
           onPortChange={draft && editablePort ? (port) => setDraft({ ...draft, port }) : undefined}
           serverPort={serverPort}
           busy={toggleBusy}
@@ -801,9 +836,24 @@ function ProtocolSettings({
         <ConnectDeviceCard
           info={info}
           publishedAddresses={publishedAddresses}
-          preferredPort={String(draft?.port ?? info.descriptor.defaultPort ?? serverPort)}
+          preferredPort={
+            id === "vela"
+              ? String(velaSavedPort || serverPort)
+              : String(draft?.port ?? info.descriptor.defaultPort ?? serverPort)
+          }
           serverName={serverName}
         />
+        {id === "vela" ? (
+          <VelaPortDrawer
+            open={velaPortDrawerOpen}
+            onClose={() => setVelaPortDrawerOpen(false)}
+            port={velaSavedPort}
+            defaultPort={info.descriptor.defaultPort ?? 8098}
+            serverPort={serverPort}
+            serveOnMainPort={velaServeOnMain}
+            onSave={saveVelaPort}
+          />
+        ) : null}
         {canPublishAddresses ? (
           <PublishedAddressesDrawer
             open={publishedDrawerOpen}

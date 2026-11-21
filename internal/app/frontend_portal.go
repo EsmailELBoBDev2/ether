@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/remote"
 )
@@ -109,30 +110,52 @@ func (r *frontendRuntime) appAddress(ctx context.Context, id frontend.Protocol, 
 		return strings.TrimRight(base, "/"), nil
 	}
 
-	// 3. Server address plus app path.
+	// 3. Dedicated listener (when the app is not served on the main port or on
+	// a direct local request to Vela) and/or server main address plus app path.
+	hasDedicated := len(addresses) > 0
 	appPrefix := r.appPathPrefix(id, shared)
-	if req != nil {
-		var portal string
-		var err error
-		if requireHTTPS {
-			portal, err = r.viewerPortalSecureURL(ctx, req)
-		} else {
-			portal, err = r.viewerPortalURL(ctx, req)
+	servedOnMain := id == "plex" || len(shared) > 0 || (!running && appPrefix != "")
+
+	if hasDedicated && !requireHTTPS {
+		directReq := false
+		if req != nil {
+			if origin, ok := clientnet.Origin(req, trusted...); ok && !origin.Proxied {
+				directReq = true
+			} else if hasIP && ip.IsLoopback() {
+				directReq = true
+			}
 		}
-		if err == nil {
-			if resolved, err := joinPortalPrefix(portal, appPrefix); err == nil {
-				return resolved, nil
+		if !servedOnMain || (id == "vela" && directReq) {
+			if base, ok := dedicatedAppAddress(req, ip, hasIP, addresses, prefixes, trusted, loadLAN); ok {
+				return base, nil
 			}
 		}
 	}
-	if base, ok := configuredOrigin(cfg, r.mainPort()); ok && (!requireHTTPS || strings.HasPrefix(base, "https://")) {
-		if appPrefix != "" {
-			return strings.TrimRight(strings.TrimRight(base, "/")+appPrefix, "/"), nil
+
+	if servedOnMain {
+		if req != nil {
+			var portal string
+			var err error
+			if requireHTTPS {
+				portal, err = r.mainPortalSecureURL(ctx, req)
+			} else {
+				portal, err = r.mainPortalURL(ctx, req)
+			}
+			if err == nil {
+				if resolved, err := joinPortalPrefix(portal, appPrefix); err == nil {
+					return resolved, nil
+				}
+			}
 		}
-		return strings.TrimRight(base, "/"), nil
+		if base, ok := configuredOrigin(cfg, r.mainPort()); ok && (!requireHTTPS || strings.HasPrefix(base, "https://")) {
+			if appPrefix != "" {
+				return strings.TrimRight(strings.TrimRight(base, "/")+appPrefix, "/"), nil
+			}
+			return strings.TrimRight(base, "/"), nil
+		}
 	}
-	if !requireHTTPS && req != nil && hasIP && len(addresses) > 0 {
-		if base, ok := surfaceAddress(req, ip, local, addresses, prefixes, trusted, loadLAN()); ok {
+	if !requireHTTPS && hasDedicated {
+		if base, ok := dedicatedAppAddress(req, ip, hasIP, addresses, prefixes, trusted, loadLAN); ok {
 			return base, nil
 		}
 	}
@@ -326,18 +349,114 @@ func surfaceLANAddress(peer netip.Addr, local net.Addr, addresses, prefixes []st
 	return "", false
 }
 
+// dedicatedAppAddress resolves a frontend's own dedicated listener port across
+// surfaces (for example when the owner console or viewer portal resolves Vela's
+// dedicated port). Dedicated frontend listeners serve plain HTTP directly.
+func dedicatedAppAddress(req *http.Request, peer netip.Addr, hasPeer bool, addresses, prefixes []string, trusted []netip.Prefix, loadLAN func() []remote.InterfaceAddr) (string, bool) {
+	for index, address := range addresses {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || port == "" {
+			continue
+		}
+		prefix := ""
+		if index < len(prefixes) {
+			prefix = prefixes[index]
+		}
+		if req != nil {
+			if origin, ok := clientnet.Origin(req, trusted...); ok && !origin.Proxied {
+				if bound := net.ParseIP(host); bound == nil || !bound.IsLoopback() {
+					reqHost := origin.Hostname()
+					if usableRequestHost(reqHost, false) {
+						u := url.URL{Scheme: "http", Host: net.JoinHostPort(reqHost, port), Path: prefix}
+						candidate := strings.TrimRight(u.String(), "/")
+						if _, err := remote.ParsePublishedURL(candidate); err == nil {
+							return candidate, true
+						}
+					}
+				}
+			}
+		}
+		if hasPeer && identity.LAN(peer) {
+			if peer.IsLoopback() {
+				bound := net.ParseIP(host)
+				if bound != nil && (bound.IsUnspecified() || bound.IsLoopback()) {
+					u := url.URL{Scheme: "http", Host: net.JoinHostPort(peer.String(), port), Path: prefix}
+					return strings.TrimRight(u.String(), "/"), true
+				}
+			}
+			if portal, err := portalLANAddress(peer, host, port, loadLAN()); err == nil {
+				if u, err := url.Parse(portal); err == nil && u != nil {
+					u.Path = prefix
+					return strings.TrimRight(u.String(), "/"), true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func sameAddrPort(a, b net.Addr) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	_, pa, erra := net.SplitHostPort(a.String())
+	_, pb, errb := net.SplitHostPort(b.String())
+	return erra == nil && errb == nil && pa != "" && pa == pb
+}
+
+// consoleListener returns the active listener serving /ether/me for req and
+// whether reverse-proxy headers on req can be treated as targeting /ether/me.
+func (r *frontendRuntime) consoleListener(req *http.Request) (net.Addr, bool) {
+	r.mu.Lock()
+	mainAddr := r.mainAddr
+	consoleAddr := r.consoleAddr
+	onMain := r.consoleOnMain
+	r.mu.Unlock()
+	var local net.Addr
+	if req != nil {
+		local, _ = req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	}
+	if consoleAddr == nil {
+		// No dedicated console listener; console is served on mainAddr.
+		return mainAddr, local == nil || sameAddrPort(local, mainAddr)
+	}
+	if !onMain {
+		return consoleAddr, local == nil || sameAddrPort(local, consoleAddr)
+	}
+	if local != nil && sameAddrPort(local, mainAddr) {
+		return mainAddr, true
+	}
+	return consoleAddr, local == nil || sameAddrPort(local, consoleAddr)
+}
+
 // viewerPortalURL chooses a reachable portal URL in order:
-// 1. the request Host (with the app's port) or X-Forwarded-Host/-Proto/-Prefix from a trusted proxy;
+// 1. the request Host (with the console listener's port) or X-Forwarded-Host/-Proto/-Prefix from a trusted proxy;
 // 2. the matching LAN interface;
 // 3. the owner's configured published/custom URL or published remote connection.
 func (r *frontendRuntime) viewerPortalURL(ctx context.Context, req *http.Request) (string, error) {
+	addr, allowProxy := r.consoleListener(req)
+	return r.portalURLForAddr(ctx, req, addr, allowProxy)
+}
+
+// mainPortalURL resolves the portal URL anchored on Ether's main listener, used
+// by appAddress for protocols mounted on the main port.
+func (r *frontendRuntime) mainPortalURL(ctx context.Context, req *http.Request) (string, error) {
+	r.mu.Lock()
+	addr := r.mainAddr
+	r.mu.Unlock()
+	var local net.Addr
+	if req != nil {
+		local, _ = req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	}
+	allowProxy := local == nil || sameAddrPort(local, addr)
+	return r.portalURLForAddr(ctx, req, addr, allowProxy)
+}
+
+func (r *frontendRuntime) portalURLForAddr(ctx context.Context, req *http.Request, addr net.Addr, allowProxy bool) (string, error) {
 	ip, ok := r.app.frontendClientIP(req)
 	if !ok {
 		return "", errors.New("client address unavailable")
 	}
-	r.mu.Lock()
-	addr := r.mainAddr
-	r.mu.Unlock()
 	if addr == nil {
 		return "", errors.New("main listener unavailable")
 	}
@@ -362,11 +481,15 @@ func (r *frontendRuntime) viewerPortalURL(ctx context.Context, req *http.Request
 	if r.app != nil && r.app.registrar != nil {
 		connections = append(connections, r.app.registrar.Status().Connections...)
 	}
-	return portalAddress(ctx, req, ip, host, port, cfg, trusted, interfaces, connections)
+	return portalAddressWithProxyPolicy(ctx, req, ip, host, port, cfg, trusted, interfaces, connections, allowProxy)
 }
 
 func portalAddress(ctx context.Context, req *http.Request, ip netip.Addr, host, port string, cfg config.Config, trusted []netip.Prefix, interfaces []remote.InterfaceAddr, connections []remote.Connection) (string, error) {
-	if base, ok := requestOriginWithPort(req, host, port, trusted); ok {
+	return portalAddressWithProxyPolicy(ctx, req, ip, host, port, cfg, trusted, interfaces, connections, true)
+}
+
+func portalAddressWithProxyPolicy(ctx context.Context, req *http.Request, ip netip.Addr, host, port string, cfg config.Config, trusted []netip.Prefix, interfaces []remote.InterfaceAddr, connections []remote.Connection, allowProxy bool) (string, error) {
+	if base, ok := requestOriginWithPortPolicy(req, host, port, trusted, allowProxy); ok {
 		return strings.TrimRight(base, "/") + "/ether/me", nil
 	}
 	// A loopback client talking to a loopback or wildcard listener already
@@ -390,13 +513,27 @@ func portalAddress(ctx context.Context, req *http.Request, ip netip.Addr, host, 
 // viewerPortalSecureURL selects a reachable HTTPS address for clients, such as
 // Stremio, that reject non-loopback HTTP addon manifests.
 func (r *frontendRuntime) viewerPortalSecureURL(ctx context.Context, req *http.Request) (string, error) {
+	addr, allowProxy := r.consoleListener(req)
+	return r.portalSecureURLForAddr(ctx, req, addr, allowProxy)
+}
+
+func (r *frontendRuntime) mainPortalSecureURL(ctx context.Context, req *http.Request) (string, error) {
+	r.mu.Lock()
+	addr := r.mainAddr
+	r.mu.Unlock()
+	var local net.Addr
+	if req != nil {
+		local, _ = req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	}
+	allowProxy := local == nil || sameAddrPort(local, addr)
+	return r.portalSecureURLForAddr(ctx, req, addr, allowProxy)
+}
+
+func (r *frontendRuntime) portalSecureURLForAddr(ctx context.Context, req *http.Request, addr net.Addr, allowProxy bool) (string, error) {
 	ip, ok := r.app.frontendClientIP(req)
 	if !ok {
 		return "", errors.New("client address unavailable")
 	}
-	r.mu.Lock()
-	addr := r.mainAddr
-	r.mu.Unlock()
 	if addr == nil {
 		return "", errors.New("main listener unavailable")
 	}
@@ -410,7 +547,7 @@ func (r *frontendRuntime) viewerPortalSecureURL(ctx context.Context, req *http.R
 		cfg = r.app.cfg.Get()
 		trusted = r.app.trustedProxyPrefixes()
 	}
-	if base, ok := requestOriginWithPort(req, host, port, trusted); ok && strings.HasPrefix(base, "https://") {
+	if base, ok := requestOriginWithPortPolicy(req, host, port, trusted, allowProxy); ok && strings.HasPrefix(base, "https://") {
 		return strings.TrimRight(base, "/") + "/ether/me", nil
 	}
 	if base, ok := configuredOrigin(cfg, port); ok && strings.HasPrefix(base, "https://") {
@@ -500,6 +637,10 @@ func parseConfiguredURL(raw string) (string, bool) {
 }
 
 func requestOriginWithPort(req *http.Request, boundHost, appPort string, trusted []netip.Prefix) (string, bool) {
+	return requestOriginWithPortPolicy(req, boundHost, appPort, trusted, true)
+}
+
+func requestOriginWithPortPolicy(req *http.Request, boundHost, appPort string, trusted []netip.Prefix, allowProxy bool) (string, bool) {
 	if req == nil || appPort == "" {
 		return "", false
 	}
@@ -508,7 +649,7 @@ func requestOriginWithPort(req *http.Request, boundHost, appPort string, trusted
 		return "", false
 	}
 	if origin.Proxied {
-		if !usableRequestHost(origin.Hostname(), true) {
+		if !allowProxy || !usableRequestHost(origin.Hostname(), true) {
 			return "", false
 		}
 		base := origin.BaseURL("")
@@ -708,15 +849,46 @@ func portalPublicAddress(ctx context.Context, connections []remote.Connection) (
 // secureOrigins reads the same published snapshot as Plex resources. It does
 // no reachability probes and never upgrades an untrusted request hostname.
 func (r *frontendRuntime) secureOrigins(ctx context.Context, req *http.Request) []string {
+	return r.secureOriginsFor(ctx, "", req)
+}
+
+func (r *frontendRuntime) secureOriginsFor(ctx context.Context, id frontend.Protocol, req *http.Request) []string {
 	if r.app == nil {
 		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	addOrigin := func(origin string) {
+		if origin != "" && !seen[origin] {
+			out = append(out, origin)
+			seen[origin] = true
+		}
+	}
+	includeMain := true
+	if r.app.cfg != nil && id != "" {
+		cfg := r.app.cfg.Get()
+		for _, raw := range cfg.Frontends[string(id)].EffectivePublishedAddresses() {
+			u, err := url.Parse(strings.TrimSpace(raw))
+			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				continue
+			}
+			p := strings.TrimRight(u.Path, "/")
+			if p != "" && p != "/"+string(id) {
+				continue
+			}
+			addOrigin("https://" + u.Host)
+		}
+		if id == "vela" && cfg.FrontendPorts["vela"] > 0 && !vela.ServeOnMainPort(cfg.Frontends["vela"].Settings) {
+			includeMain = false
+		}
+	}
+	if !includeMain {
+		return out
 	}
 	var connections []remote.Connection
 	if r.app.registrar != nil {
 		connections = r.app.registrar.Status().Connections
 	}
-	var out []string
-	seen := map[string]bool{}
 	peer, _ := r.app.frontendClientIP(req)
 	for _, local := range []bool{identity.LAN(peer), !identity.LAN(peer)} {
 		for _, c := range connections {
@@ -727,11 +899,7 @@ func (r *frontendRuntime) secureOrigins(ctx context.Context, req *http.Request) 
 			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 				continue
 			}
-			origin := "https://" + u.Host
-			if !seen[origin] {
-				out = append(out, origin)
-				seen[origin] = true
-			}
+			addOrigin("https://" + u.Host)
 		}
 	}
 	return out

@@ -46,25 +46,39 @@ func runHealthcheck(args []string, defaultDataDir string, stdout, stderr io.Writ
 		fmt.Fprintln(stderr, "ether healthcheck: timeout must be positive")
 		return 1
 	}
-	baseURL, err := healthcheckBaseURL(*dataDir, os.Getenv)
+	baseURLs, err := healthcheckBaseURLs(*dataDir, os.Getenv)
 	if err != nil {
 		fmt.Fprintln(stderr, "ether healthcheck:", err)
 		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := probeLocalHealth(ctx, baseURL+"/ether/api/health", *timeout); err != nil {
-		fmt.Fprintln(stderr, "ether healthcheck:", err)
-		return 1
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		if err := probeLocalHealth(ctx, baseURL+"/ether/api/health", *timeout); err == nil {
+			return 0
+		} else {
+			lastErr = err
+		}
 	}
-	return 0
+	fmt.Fprintln(stderr, "ether healthcheck:", lastErr)
+	return 1
 }
 
 func healthcheckBaseURL(dataDir string, getenv func(string) string) (string, error) {
+	urls, err := healthcheckBaseURLs(dataDir, getenv)
+	if err != nil {
+		return "", err
+	}
+	return urls[0], nil
+}
+
+func healthcheckBaseURLs(dataDir string, getenv func(string) string) ([]string, error) {
 	if dataDir == "" {
 		dataDir = config.DefaultDataDir()
 	}
 	port := config.DefaultPort
+	consolePort := 0
 	bindAddress := ""
 
 	raw, err := os.ReadFile(filepath.Join(dataDir, "config.json"))
@@ -73,22 +87,26 @@ func healthcheckBaseURL(dataDir string, getenv func(string) string) (string, err
 		var doc struct {
 			Server struct {
 				Port        int    `json:"port"`
+				ConsolePort int    `json:"consolePort"`
 				BindAddress string `json:"bindAddress"`
 			} `json:"server"`
 		}
 		if jerr := json.Unmarshal(raw, &doc); jerr != nil {
-			return "", fmt.Errorf("read config.json: %w", jerr)
+			return nil, fmt.Errorf("read config.json: %w", jerr)
 		}
 		if doc.Server.Port >= 1 && doc.Server.Port <= 65535 {
 			port = doc.Server.Port
+		}
+		if doc.Server.ConsolePort >= 1 && doc.Server.ConsolePort <= 65535 {
+			consolePort = doc.Server.ConsolePort
 		}
 		bindAddress = doc.Server.BindAddress
 	case errors.Is(err, fs.ErrNotExist):
 		// Fresh install before config.json is written: default port applies.
 	default:
-		if getenv == nil || strings.TrimSpace(getenv("ETHER_PORT")) == "" {
+		if getenv == nil || (strings.TrimSpace(getenv("ETHER_PORT")) == "" && strings.TrimSpace(getenv("ETHER_CONSOLE_PORT")) == "") {
 			if localURL, lerr := service.ReadLocalURL(dataDir); lerr == nil && localURL != "" {
-				return strings.TrimRight(localURL, "/"), nil
+				return []string{strings.TrimRight(localURL, "/")}, nil
 			}
 		}
 	}
@@ -97,9 +115,16 @@ func healthcheckBaseURL(dataDir string, getenv func(string) string) (string, err
 		if v := strings.TrimSpace(getenv("ETHER_PORT")); v != "" {
 			p, perr := strconv.Atoi(v)
 			if perr != nil || p < 1 || p > 65535 {
-				return "", fmt.Errorf("ETHER_PORT=%q: want a port between 1 and 65535", v)
+				return nil, fmt.Errorf("ETHER_PORT=%q: want a port between 1 and 65535", v)
 			}
 			port = p
+		}
+		if v := strings.TrimSpace(getenv("ETHER_CONSOLE_PORT")); v != "" {
+			p, perr := strconv.Atoi(v)
+			if perr != nil || p < 1 || p > 65535 {
+				return nil, fmt.Errorf("ETHER_CONSOLE_PORT=%q: want a port between 1 and 65535", v)
+			}
+			consolePort = p
 		}
 	}
 
@@ -107,7 +132,12 @@ func healthcheckBaseURL(dataDir string, getenv func(string) string) (string, err
 	if ip := net.ParseIP(host); host == "" || strings.EqualFold(host, "localhost") || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
+	mainURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	if consolePort > 0 && consolePort != port {
+		consoleURL := "http://" + net.JoinHostPort(host, strconv.Itoa(consolePort))
+		return []string{consoleURL, mainURL}, nil
+	}
+	return []string{mainURL}, nil
 }
 
 func probeLocalHealth(ctx context.Context, endpoint string, timeout time.Duration) error {

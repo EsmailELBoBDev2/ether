@@ -10,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/remote"
 )
 
@@ -19,6 +20,27 @@ var dockerBridge = netip.MustParsePrefix("172.16.0.0/12")
 // sharedPrefix is the path a protocol also serves on Ether's own port.
 func sharedPrefix(id string) string {
 	return consoleFrontendPolicy(id).SharedPrefix
+}
+
+// sharedPrefixActive reports whether frontend id currently serves its shared
+// path prefix on Ether's main port.
+func sharedPrefixActive(cfg config.Config, id, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	if id == "vela" && cfg.FrontendPorts["vela"] > 0 && !vela.ServeOnMainPort(cfg.Frontends["vela"].Settings) {
+		return false
+	}
+	return true
+}
+
+// mainPortHost maps a request host on a dedicated console port back to Ether's
+// main port when synthesizing LAN main-listener or shared-path URLs.
+func mainPortHost(host string, cfg config.Config) string {
+	if cfg.Server.ConsolePort > 0 && cfg.Server.Port > 0 && originPort(host) == strconv.Itoa(cfg.Server.ConsolePort) {
+		return net.JoinHostPort(hostOnly(host), strconv.Itoa(cfg.Server.Port))
+	}
+	return host
 }
 
 // consoleConnectURLs returns the addresses the owner console presents for an
@@ -45,12 +67,13 @@ func consoleConnectURLs(r *http.Request, id string, urls []string, cfg config.Co
 	for _, pub := range published {
 		add(pub)
 	}
+	mainHost := mainPortHost(host, cfg)
 	// Plex is the process the owner already opened. A bridge container's
 	// own address is not "this computer only". Plex apps at home connect
 	// straight to the server, so a reverse proxy or the public host name is
 	// never the at-home address, nor is the http:// guess for it (#381).
-	if consoleFrontendPolicy(id).MainListener && ok && !viaProxy(r) && !publicRouteHost(cfg, hostOnly(host)) {
-		add(originURL(scheme, host, ""))
+	if consoleFrontendPolicy(id).MainListener && ok && !viaProxy(r) && !publicRouteHost(cfg, hostOnly(mainHost)) {
+		add(originURL(scheme, mainHost, ""))
 	}
 	for _, raw := range urls {
 		u, err := url.Parse(raw)
@@ -60,16 +83,16 @@ func consoleConnectURLs(r *http.Request, id string, urls []string, cfg config.Co
 		if containerHost(u.Hostname()) && !sameHost(u.Host, host) {
 			path := u.EscapedPath()
 			if localConsole && path != "" && path != "/" {
-				add(originURL(scheme, host, path))
+				add(originURL(scheme, mainHost, path))
 			}
 			continue
 		}
 		add(raw)
 	}
-	if localConsole && prefix != "" {
-		add(originURL(scheme, host, prefix))
+	if localConsole && sharedPrefixActive(cfg, id, prefix) {
+		add(originURL(scheme, mainHost, prefix))
 	}
-	ranked := rankConnectURLs(out, host, prefix)
+	ranked := rankConnectURLs(out, mainHost, prefix)
 	if len(published) > 0 {
 		// Keep owner-configured published addresses first, in configured order.
 		pubSet := make(map[string]bool, len(published))
@@ -149,7 +172,11 @@ func publishedMainOrigin(cfg config.Config) (string, bool) {
 func (h *Handler) inviteURL(secret string) string {
 	path := "/ether/me#invite=" + secret
 	if h.deps.Config != nil {
-		if base, ok := publishedMainOrigin(h.deps.Config.Get()); ok {
+		cfg := h.deps.Config.Get()
+		if cfg.Server.ConsolePort > 0 && cfg.Server.DisableConsoleOnMainPort {
+			return path
+		}
+		if base, ok := publishedMainOrigin(cfg); ok {
 			return strings.TrimRight(base, "/") + path
 		}
 	}

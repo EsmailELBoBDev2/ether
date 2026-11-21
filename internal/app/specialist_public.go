@@ -46,6 +46,7 @@ func (a *App) runPublicRole(ctx context.Context) error {
 		front = newFrontDoor(a.tracker, a.log)
 		defer front.close()
 	}
+	a.front.Store(front)
 	if !front.bound() {
 		ln, err := a.listen(cfg)
 		if err != nil {
@@ -58,11 +59,13 @@ func (a *App) runPublicRole(ctx context.Context) error {
 	}
 	front.setProxies(a.cfg.TrustedProxyCIDRs)
 	front.setRemote(a.cfg.AllowRemoteConsole)
+	front.reconcileConsole(cfg.Server)
 	if a.frontends != nil {
 		a.frontends.start(ctx, front.ln.Addr())
 		defer a.frontends.stop()
+		a.frontends.setConsoleAddr(front.consoleAddr(), front.consoleOnMain.Load())
 	}
-	front.gate.Open(a.publicRoleHandler())
+	front.open(a.publicRoleHandler(), a.consoleHandler)
 	a.markPublicReady()
 	if a.cfg.Get().Server.NodeRoles.Has(config.RoleServer) {
 		a.startServerWorkers(ctx, &background)
@@ -87,7 +90,7 @@ func (a *App) runPublicRole(ctx context.Context) error {
 	a.drainPrivate()
 	shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
-	front.gate.Close(shutdown)
+	front.closeGates(shutdown)
 	a.deployment.publicReady.Store(false)
 	a.deployment.ready.Store(false)
 	a.recordPrivateReadiness(privateReadinessSnapshot{reason: readinessPublic, errorClass: privateReadinessError(result)})

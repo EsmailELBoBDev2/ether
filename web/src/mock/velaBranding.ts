@@ -30,7 +30,11 @@ export const VELA_SETTINGS_SCHEMA = {
     },
     {
       key: "find",
-      fields: [{ key: "serverName", kind: "serverName" }],
+      fields: [
+        { key: "serverName", kind: "serverName" },
+        { key: "port", kind: "port", min: 1, max: 65535 },
+        { key: "serveOnMainPort", kind: "bool" },
+      ],
     },
   ],
 };

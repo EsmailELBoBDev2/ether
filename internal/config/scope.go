@@ -65,10 +65,12 @@ var sectionScopes = map[string]Scope{
 // and node-local settings.
 var mixedSections = map[string]map[string]Scope{
 	"server": {
-		"trustedProxyCIDRs":  Local,
-		"port":               Local,
-		"portExplicit":       Local,
-		"bindAddress":        Local,
+		"trustedProxyCIDRs":        Local,
+		"port":                     Local,
+		"consolePort":              Local,
+		"disableConsoleOnMainPort": Local,
+		"portExplicit":             Local,
+		"bindAddress":              Local,
 		"logLevel":           Local,
 		"friendlyName":       Shared,
 		"webFrameOrigins":    Shared,

@@ -65,8 +65,29 @@ func (a *App) buildServerRole(ctx context.Context, cfg config.Config) error {
 	}
 	a.closers = append(a.closers, a.frontends.close)
 	a.buildFlows()
+	consoleMux := http.NewServeMux()
+	consoleMux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
+	consoleRedirect := lanOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ether/", http.StatusFound)
+	}), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)
+	consoleMux.Handle("/ether", consoleRedirect)
+	consoleMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			consoleRedirect.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	a.consoleHandler = consoleMux
+
 	mux := http.NewServeMux()
-	mux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
+	mux.Handle("/ether/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.consoleOnMain() {
+			http.NotFound(w, r)
+			return
+		}
+		consoleMux.ServeHTTP(w, r)
+	}))
 	mux.Handle("/", a.frontends.plexHandler())
 	a.handler = mux
 	// This is a genuine protocol handler; role-specific public media mounting and

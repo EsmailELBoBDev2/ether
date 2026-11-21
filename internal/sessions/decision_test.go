@@ -129,7 +129,7 @@ func TestDecisionForcedRemuxHonorsAudioTarget(t *testing.T) {
 		{"unverified health preserves forced AAC target", []string{"aac"}, true, false, 2, core.DecisionTranscode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ps := &core.PlaySession{Resolution: &core.Resolution{HealthVerified: tc.verified, Release: core.Release{ID: "usenet:fixture"}}, Info: core.MediaInfo{Streams: []core.StreamInfo{{Type: "audio", Index: 7, Codec: "eac3"}}}}
+			ps := &core.PlaySession{Resolution: &core.Resolution{HealthVerified: tc.verified, Release: core.Release{ID: "usenet:fixture"}}, Info: core.MediaInfo{Streams: []core.StreamInfo{{Type: "video", Codec: "h264"}, {Type: "audio", Index: 7, Codec: "eac3"}}}}
 			transcoder := &targetDecisionTranscoder{}
 			got, err := Decide(nil, transcoder, DecisionRequest{Session: ps, Caps: core.ClientCaps{TranscodeAudioCodecs: tc.target}, Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 7}, PreferRemux: tc.prefer, Protocol: core.ProtocolDASH})
 			if err != nil || got.Kind != tc.wantKind || len(transcoder.options) != tc.wantCalls {

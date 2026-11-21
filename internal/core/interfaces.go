@@ -998,6 +998,20 @@ type MediaInfo struct {
 // HasPlayableMedia reports whether probed facts describe something a client
 // can play: a video stream, or (for music, audiobooks and other audio-only
 // items) at least one audio stream.
+// AudioOnly reports a probed source that has audio streams and no video
+// stream. A source with no stream facts yet is not audio-only.
+func (m MediaInfo) AudioOnly() bool {
+	if m.Video() != nil {
+		return false
+	}
+	for _, st := range m.Streams {
+		if st.Type == "audio" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m MediaInfo) HasPlayableMedia() bool {
 	if m.Video() != nil {
 		return true

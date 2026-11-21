@@ -757,7 +757,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	case core.DecisionDirectPlay:
 		// Asked to stream something directly playable: remux it.
 		d.Kind = core.DecisionRemux
-		d.VideoCopy, d.AudioCopy = req.Info.Video() != nil, true
+		d.VideoCopy, d.AudioCopy = !req.Info.AudioOnly(), true
 		d.Container = ""
 	case "":
 		return nil, errors.New("transcode: StartHLS: decision required")

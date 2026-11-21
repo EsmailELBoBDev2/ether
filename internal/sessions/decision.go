@@ -35,7 +35,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
-	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: ps.Info.Video() != nil, AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
+	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: !ps.Info.AudioOnly(), AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
 	if transcoder != nil {
 		dec = transcoder.Decide(ps.Info, r.Caps, r.Options)
 	} else {
@@ -82,7 +82,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	original := dec
 	if (preferRemux || requiresRemux) && r.Options.DirectStream && onDemand && dec.Kind == core.DecisionDirectPlay && transcoder != nil {
 		dec.Kind = core.DecisionRemux
-		dec.VideoCopy, dec.AudioCopy = ps.Info.Video() != nil, true
+		dec.VideoCopy, dec.AudioCopy = !ps.Info.AudioOnly(), true
 		videoCodec, audioCodec := "", ""
 		if v := ps.Info.Video(); v != nil {
 			videoCodec = v.Codec

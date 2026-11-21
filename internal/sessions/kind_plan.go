@@ -32,7 +32,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		// Detail/browse estimate for a plugin item must never invoke plugin
 		// /resolve or ffprobe on the read path.
 		info := b.deps.Playback.Estimate(ctx, in.Title, req.Caps)
-		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: info.Video() != nil, AudioCopy: true, Container: info.Container}
+		dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: !info.AudioOnly(), AudioCopy: true, Container: info.Container}
 		if b.deps.Transcoder != nil {
 			dec = b.deps.Transcoder.Decide(info, req.Caps, req.Intent.Options)
 		}

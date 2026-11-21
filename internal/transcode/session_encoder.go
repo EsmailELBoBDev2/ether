@@ -165,11 +165,26 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	if s.closed {
 		return errors.New("transcode: session closed")
 	}
-	if s.headerRecovering {
+	if s.stoppedAt.Load() != 0 {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		s.retireSessionAsync()
+		return errSessionStopped
+	}
+	if s.headerRecovering || s.retryRecovering {
 		return nil
+	}
+	if s.sessionExhausted || (!s.liveInput && s.totalFailures >= maxSessionFailures) {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		return errSessionExhausted
 	}
 	if s.inputFailed {
 		return errInputExhausted
+	}
+	if !s.liveInput && s.segFailures[seg] >= maxSegmentFailures {
+		s.inputFailed = true
+		return errSegmentExhausted
 	}
 
 	s.encoder.decisionEncoding(s.decision.EncodesVideo(s.info))

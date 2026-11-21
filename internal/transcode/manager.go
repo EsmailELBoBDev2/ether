@@ -83,6 +83,8 @@ type options struct {
 	// copySamplePackets is the packet budget of the pre-publication copy
 	// sample (seek_ramp_index.go): a title it covers whole is indexed.
 	copySamplePackets int
+	retryBackoffBase  time.Duration
+	retryBackoffMax   time.Duration
 }
 
 func defaultOptions() options {
@@ -105,6 +107,15 @@ func defaultOptions() options {
 		rungDwell:         8 * time.Second,
 
 		audioMatchBudget: defaultAudioMatchBudget,
+		retryBackoffBase: retryBackoffBase,
+		retryBackoffMax:  retryBackoffMax,
+	}
+}
+
+func withRetryBackoff(base, max time.Duration) Option {
+	return func(o *options) {
+		o.retryBackoffBase = base
+		o.retryBackoffMax = max
 	}
 }
 

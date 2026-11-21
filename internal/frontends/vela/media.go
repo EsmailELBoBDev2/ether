@@ -344,6 +344,9 @@ func (i *instance) facetSeriesDetail(w http.ResponseWriter, r *http.Request, v *
 		"cast":     []object{},
 		"crew":     []object{},
 	}
+	if mediaClass == frontend.MediaClassBook {
+		out["canRead"] = false
+	}
 	varyLanguage(w)
 	cache(w, r, out)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/language"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/quality"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
 func (i *instance) versionsAvailable() bool {
@@ -59,6 +60,10 @@ func (i *instance) versions(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.Title.Type == frontend.TypeShow || d.Title.Type == frontend.TypeSeason {
 		problem(w, 400, "request", "not_playable")
+		return
+	}
+	if reading.IsBookTitle(d.Title) {
+		problemMessage(w, 400, "request", "not_playable", "This title is a book and opens via reading rather than playback.")
 		return
 	}
 	declared, err := i.clientCapabilities(r, v, i.negotiatedClientFor(r, dev))

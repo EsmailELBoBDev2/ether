@@ -161,11 +161,13 @@ func TestVelaBookDetailCanPlayFalseRefusesPlaybackAndReadsViaGrant(t *testing.T)
 	}
 
 	inst, err := (Frontend{DB: db, ReplayKey: bytes.Repeat([]byte{0x42}, 32)}).Mount(context.Background(), frontend.Host{
-		Identity:     identityFake{},
-		Experience:   exp,
-		Sessions:     sessions,
-		Capabilities: frontendtest.Capabilities{},
-		KindStreams:  ks,
+		Identity:       identityFake{},
+		Experience:     exp,
+		Sessions:       sessions,
+		Editions:       &versionsEditionsFake{},
+		VersionHandles: &versionsHandlesFake{},
+		Capabilities:   frontendtest.Capabilities{},
+		KindStreams:    ks,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +197,7 @@ func TestVelaBookDetailCanPlayFalseRefusesPlaybackAndReadsViaGrant(t *testing.T)
 	bookID := ids.RatingKeyGUID(bookKey)
 	movieID := ids.RatingKeyGUID(movieKey)
 
-	// 0. GET /vela/v0/titles/{bookID} MUST advertise canPlay: false (never true!).
+	// 0. GET /vela/v0/titles/{bookID} MUST advertise canPlay: false AND canRead: true!
 	detailRec := doAuth(http.MethodGet, "/vela/v0/titles/"+bookID, "", "")
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("GET book detail = (%d) %s", detailRec.Code, detailRec.Body.String())
@@ -204,17 +206,21 @@ func TestVelaBookDetailCanPlayFalseRefusesPlaybackAndReadsViaGrant(t *testing.T)
 	if err := json.Unmarshal(detailRec.Body.Bytes(), &detailWire); err != nil {
 		t.Fatal(err)
 	}
-	if detailWire["canPlay"] != false {
-		t.Fatalf("book detail canPlay = %v, want false (body=%s)", detailWire["canPlay"], detailRec.Body.String())
+	if detailWire["canPlay"] != false || detailWire["canRead"] != true {
+		t.Fatalf("book detail canPlay=%v canRead=%v, want false/true (body=%s)", detailWire["canPlay"], detailWire["canRead"], detailRec.Body.String())
 	}
 
-	// 1. POST /vela/v0/playback on a book is refused with 400 not_playable BEFORE touching Sessions.Plan.
+	// 1. POST /vela/v0/playback and GET /versions on a book are refused with 400 not_playable and clear reading message.
 	pbRec := doAuth(http.MethodPost, "/vela/v0/playback", `{"idempotencyKey":"idem-pb-book","titleId":"`+bookID+`","client":{"device":{"id":"dev1"}}}`, "")
-	if pbRec.Code != http.StatusBadRequest || !strings.Contains(pbRec.Body.String(), `"not_playable"`) {
-		t.Fatalf("book playback = (%d) %s, want 400 not_playable", pbRec.Code, pbRec.Body.String())
+	if pbRec.Code != http.StatusBadRequest || !strings.Contains(pbRec.Body.String(), `"not_playable"`) || !strings.Contains(pbRec.Body.String(), "reading") {
+		t.Fatalf("book playback = (%d) %s, want 400 not_playable mentioning reading", pbRec.Code, pbRec.Body.String())
 	}
 	if planCalls.Load() != 0 {
 		t.Fatalf("book playback called Sessions.Plan %d times, want 0", planCalls.Load())
+	}
+	verRec := doAuth(http.MethodGet, "/vela/v0/titles/"+bookID+"/versions", "", "")
+	if verRec.Code != http.StatusBadRequest || !strings.Contains(verRec.Body.String(), `"not_playable"`) {
+		t.Fatalf("book versions = (%d) %s, want 400 not_playable", verRec.Code, verRec.Body.String())
 	}
 
 	// 2. Transient ErrPreparing on /read returns 503 + Retry-After and does NOT pin in vela_replays.

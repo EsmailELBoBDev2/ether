@@ -260,6 +260,40 @@ func (r *KindResolver) OpenKind(ctx context.Context, viewer *core.Viewer, key co
 	return r.OpenKindExcluding(ctx, viewer, key, accept, nil)
 }
 
+// ResolveForMatch performs a fresh plugin /resolve call for a playable item
+// (clearing any stale cached candidates first) without opening or downloading
+// bytes. Used by the owner console's Match action so books and other plugin
+// items reach the resolver and indexer search just like playback/reading does.
+func (r *KindResolver) ResolveForMatch(ctx context.Context, lib core.Library, rec pluginitems.KindRecord, item core.KindItem, accept []string) ([]core.PlayableSource, error) {
+	if r == nil || r.mgr == nil {
+		return nil, core.ErrSourceUnavailable
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok || !lv.Playable || !item.Playable {
+		return nil, nil
+	}
+	if core.IndexerPurpose(ctx) == "" {
+		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
+	}
+	var partIdx *int
+	if len(core.ExtractKindItemPartsFromItem(item)) > 0 {
+		zero := 0
+		partIdx = &zero
+	}
+	fk := flightKeyForItem(item.Ref, partIdx)
+	r.deleteCandidates(fk)
+	sources, err := r.resolveItemSources(ctx, rec, lib, item, partIdx, accept)
+	if err == nil && len(sources) > 0 && r.items != nil {
+		if _, _, rerr := r.items.GetPartResolution(ctx, item.Ref, partIdx); errors.Is(rerr, core.ErrNotAvailable) {
+			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
+		}
+	}
+	return sources, err
+}
+
 func singlePartIndex(item core.KindItem) (*int, bool) {
 	parts := core.ExtractKindItemPartsFromItem(item)
 	switch len(parts) {

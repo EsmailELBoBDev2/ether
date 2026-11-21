@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	kitsort "github.com/braedonsaunders/ether/internal/frontend/kit/sort"
 )
@@ -72,7 +73,7 @@ func mbItemType(t frontend.Title) string {
 // mbIsBookItem reports whether title is a book/ebook item that must never be
 // advertised with video/audio MediaSources or opened through A/V PlaybackInfo.
 func mbIsBookItem(t frontend.Title) bool {
-	return t.MBItemType == "Book" || t.MediaClass == frontend.MediaClassBook
+	return reading.IsBookTitle(t)
 }
 
 // mbDeclaredNonVideo reports whether the title's declared MediaBrowser type
@@ -127,6 +128,12 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 	}
 	m["CanDelete"] = false
 	m["CanDownload"] = false
+	if mbIsBookItem(t) && !mbIsFolder(t) && t.Key.IsPluginKey() {
+		bookPath, container, _ := reading.VirtualPath(t)
+		m["Path"] = bookPath
+		m["Container"] = container
+		m["CanDownload"] = i.host.KindStreams != nil
+	}
 	if i.protocol == "emby" {
 		delete(m, "LocationType")
 	}
@@ -222,6 +229,11 @@ func (i *instance) markUnreleased(item map[string]any, title frontend.Title) {
 	}
 	delete(item, "MediaSources")
 	delete(item, "MediaStreams")
+	if mbIsBookItem(title) {
+		item["CanDownload"] = false
+		delete(item, "Path")
+		delete(item, "Container")
+	}
 }
 
 // mediaBrowserCollectionType picks the Jellyfin/Emby CollectionType for a view.
@@ -614,11 +626,18 @@ func (i *instance) browseRoutes() error {
 			return
 		}
 		dto := i.itemDTO(d.Title, d.UserData)
+		if mbIsBookItem(d.Title) && !i.bookReadable(d) {
+			dto["CanDownload"] = false
+			delete(dto, "Path")
+			delete(dto, "Container")
+		}
 		if versionID != "" {
 			dto["Id"] = versionID
 		}
-		if p := i.virtualPaths(r, v, []frontend.RatingKey{d.Title.Key})[d.Title.Key]; p != "" {
-			dto["Path"] = p
+		if !mbIsBookItem(d.Title) {
+			if p := i.virtualPaths(r, v, []frontend.RatingKey{d.Title.Key})[d.Title.Key]; p != "" {
+				dto["Path"] = p
+			}
 		}
 		if people := i.peopleDTO(r, v, token, d); len(people) > 0 {
 			dto["People"] = people

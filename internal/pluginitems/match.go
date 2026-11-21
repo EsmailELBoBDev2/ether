@@ -265,6 +265,9 @@ func (s *Service) MatchItem(ctx context.Context, caller Caller, matcherPluginID,
 	if caller == nil {
 		return nil, fmt.Errorf("pluginitems: nil plugin route caller")
 	}
+	if candidates == nil {
+		candidates = []core.SourceCandidate{}
+	}
 	reqBody, err := json.Marshal(core.KindMatchRequest{
 		Item:       item,
 		Candidates: candidates,

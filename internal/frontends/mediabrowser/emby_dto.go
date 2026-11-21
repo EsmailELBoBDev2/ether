@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
 // embyItemDTO adds facts that apply to both Emby list and detail items.
@@ -98,6 +100,15 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 	if container, ok := m["Container"].(string); ok {
 		if mime, ok := embyVideoMime(container); ok {
 			m["MimeType"] = mime
+		} else if _, mime, ok := reading.CanonicalFormat(container); ok {
+			m["MimeType"] = mime
+		}
+	}
+	if mbIsBookItem(d.Title) {
+		if _, ok := m["FileName"]; !ok {
+			if p, ok := m["Path"].(string); ok && p != "" {
+				m["FileName"] = path.Base(p)
+			}
 		}
 	}
 	v, ok := embyDetailVersion(d.Versions)

@@ -692,6 +692,9 @@ type ItemDetail struct {
 	// verified peer or policy result is unavailable. It does not guarantee a
 	// source, codec, stream slot or transcode capacity will be available.
 	CanPlay *bool
+	// CanRead reflects current reading authorization for book items when known.
+	// Nil on non-book items.
+	CanRead *bool
 	Tracks  []core.StreamInfo
 	// TracksEstimated marks a set containing synthesized playback estimates.
 	// These streams must not be presented as facts about a resolved source.

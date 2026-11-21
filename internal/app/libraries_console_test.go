@@ -260,6 +260,143 @@ func TestLibrariesConsolePluginItemMatchPinClear(t *testing.T) {
 	_ = pluginitems.DefaultMatchThreshold
 }
 
+type fakeBookMatchRuntime struct {
+	resolveCalls    int
+	matchCalls      int
+	matchCandidates int
+}
+
+func (f *fakeBookMatchRuntime) Call(_ context.Context, req plugins.Request) (plugins.Response, error) {
+	switch req.Path {
+	case "/ether/v1/kinds/books/resolve":
+		f.resolveCalls++
+		return plugins.Response{
+			Status: 200,
+			Body: json.RawMessage(`{"sources":[{
+				"id":"nzb-dune-epub",
+				"pattern":"release",
+				"label":"Dune - Frank Herbert.epub",
+				"mime":"application/epub+zip",
+				"size":2400000,
+				"release":{
+					"nzbUrl":"https://indexer.example/nzb/dune-epub",
+					"candidate":{"nzbUrl":"https://indexer.example/nzb/dune-epub","title":"Dune - Frank Herbert.epub","size":2400000}
+				}
+			}]}`),
+		}, nil
+	case "/ether/v1/kinds/books/match":
+		f.matchCalls++
+		var body struct {
+			Candidates []core.SourceCandidate `json:"candidates"`
+		}
+		_ = json.Unmarshal(req.Body, &body)
+		f.matchCandidates = len(body.Candidates)
+		matches := make([]core.KindMatchScore, 0, len(body.Candidates))
+		for _, cand := range body.Candidates {
+			ref := cand.NZBURL
+			if ref == "" {
+				ref = cand.Title
+			}
+			matches = append(matches, core.KindMatchScore{
+				CandidateRef: ref,
+				Score:        0.95,
+				Reasons:      []string{"title and epub format match"},
+			})
+		}
+		raw, _ := json.Marshal(map[string]any{"matches": matches})
+		return plugins.Response{Status: 200, Body: raw}, nil
+	default:
+		return plugins.Response{Status: 200, Body: json.RawMessage(`{"status":"ok"}`)}, nil
+	}
+}
+
+func (f *fakeBookMatchRuntime) Close() error { return nil }
+
+func TestLibrariesConsoleBookMatchRunsResolverAndFeedsMatcher(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+	rt := &fakeBookMatchRuntime{}
+	a.pluginsRT.mgr.RegisterRuntime("hosted", func(plugins.Installed) (plugins.Runtime, error) {
+		return rt, nil
+	})
+	rawMan, err := json.Marshal(map[string]any{
+		"id":      "ether.books.test",
+		"version": "1.0.5",
+		"name":    "Books",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Test book plugin",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver", "matcher"},
+			"contributes": map[string]any{
+				"mediaKinds": []map[string]any{{
+					"key":     "books",
+					"label":   "Books",
+					"media":   "book",
+					"library": map[string]any{"name": "Books"},
+					"levels":  []map[string]any{{"key": "book", "label": "Book", "playable": true}},
+					"sync":    map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := a.pluginsRT.mgr.PreviewInstall(ctx, plugins.Source{
+		Kind:     "studio",
+		Manifest: rawMan,
+		Files:    map[string][]byte{"dist/plugin.js": []byte(`function handle(req) { return { status: 200, body: { status: "ok" } }; }`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pluginsRT.mgr.Install(ctx, prev, plugins.InstallOptions{AcceptAddedPermissions: true}); err != nil {
+		t.Fatal(err)
+	}
+	lib, err := a.libraries.UpsertPluginLibrary(ctx, "ether.books.test", "books", libraries.PluginLibraryDecl{Name: "Books"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &librariesConsole{app: a}
+	items, _, err := c.services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := plugins.MediaKindMeta{
+		Key: "books", Label: "Books", Media: "book",
+		Library: plugins.KindLibraryDecl{Name: "Books"},
+		Levels:  []plugins.KindLevel{{Key: "book", Label: "Book", Playable: true}},
+		Sync:    plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	if _, err := items.UpsertKind(ctx, "ether.books.test", lib.ID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := items.UpsertItems(ctx, "ether.books.test", "books", []core.KindItem{{
+		ID: "ol-OL893414W", Level: "book", Title: "Dune", Playable: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := string(core.NewItemRef("ether.books.test", "books", "ol-OL893414W"))
+	req := httptest.NewRequest(http.MethodPost, "/"+strconv.FormatInt(int64(lib.ID), 10)+"/item/"+ref+"/match", nil)
+	rec := httptest.NewRecorder()
+	c.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /match = (%d) %s", rec.Code, rec.Body.String())
+	}
+	if rt.resolveCalls != 1 {
+		t.Fatalf("resolveCalls = %d, want 1", rt.resolveCalls)
+	}
+	if rt.matchCalls != 1 || rt.matchCandidates != 1 {
+		t.Fatalf("matchCalls=%d matchCandidates=%d, want 1/1", rt.matchCalls, rt.matchCandidates)
+	}
+	if !strings.Contains(rec.Body.String(), `"candidateRef":"https://indexer.example/nzb/dune-epub"`) || !strings.Contains(rec.Body.String(), `"score":0.95`) {
+		t.Fatalf("unexpected match response: %s", rec.Body.String())
+	}
+}
+
 // This exercises the durable declaration, policy cache and already-running
 // protocol experiences together; deleting a section never deletes shared data.
 func TestLibraryDeletionProtocolLifecycle(t *testing.T) {

@@ -992,6 +992,17 @@ func (s *Service) SnapshotRows(ctx context.Context, req frontend.RowRequest) ([]
 	return s.d.Rows.SnapshotRows(ctx, req, s.d.Protocol)
 }
 
+func pluginPlayRead(piv PluginItemView) (canPlay *bool, canRead *bool) {
+	isBook := piv.Title.MediaClass == core.MediaClassBook || piv.Title.MBItemType == "Book"
+	playable := piv.Playable && !isBook
+	canPlay = &playable
+	if isBook {
+		readable := piv.Playable && piv.Unavailable == nil
+		canRead = &readable
+	}
+	return canPlay, canRead
+}
+
 // StoredItem reads a title already in the catalogue. Resume, Next Up, and
 // other lists use it so one stale show cannot refresh from a provider.
 func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
@@ -1004,12 +1015,13 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
-		playable := piv.Playable && piv.Title.MediaClass != core.MediaClassBook && piv.Title.MBItemType != "Book"
+		canPlay, canRead := pluginPlayRead(piv)
 		return frontend.ItemDetail{
 			Title:               piv.Title,
 			Images:              piv.Images,
 			ImagesAuthoritative: len(piv.Images) > 0,
-			CanPlay:             &playable,
+			CanPlay:             canPlay,
+			CanRead:             canRead,
 			Unavailable:         piv.Unavailable,
 		}, nil
 	}
@@ -1055,13 +1067,14 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
-		playable := piv.Playable && piv.Title.MediaClass != core.MediaClassBook && piv.Title.MBItemType != "Book"
+		canPlay, canRead := pluginPlayRead(piv)
 		d := frontend.ItemDetail{
 			Title:               piv.Title,
 			Images:              piv.Images,
 			ImagesAuthoritative: len(piv.Images) > 0,
 			Chapters:            append([]core.Chapter(nil), piv.Chapters...),
-			CanPlay:             &playable,
+			CanPlay:             canPlay,
+			CanRead:             canRead,
 			Unavailable:         piv.Unavailable,
 		}
 		if s.d.PluginProbedMedia != nil {

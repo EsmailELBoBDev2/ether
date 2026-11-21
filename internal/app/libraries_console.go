@@ -956,6 +956,8 @@ func (c *librariesConsole) handleMatchClear(w http.ResponseWriter, r *http.Reque
 	c.handleMatchGet(w, r)
 }
 
+var matchResolveAccept = []string{"range", "download", "container", "release", "file"}
+
 func (c *librariesConsole) handleMatchRun(w http.ResponseWriter, r *http.Request) {
 	lib, ok := c.library(w, r)
 	if !ok {
@@ -975,20 +977,186 @@ func (c *librariesConsole) handleMatchRun(w http.ResponseWriter, r *http.Request
 		libError(w, http.StatusNotFound, "Item not found")
 		return
 	}
-	threshold := pluginitems.DefaultMatchThreshold
-	if rec, err := items.GetKindByLibrary(ctx, lib.ID); err == nil && rec.Decl.Match.ThresholdDefault > 0 {
-		threshold = rec.Decl.Match.ThresholdDefault
+	if item.Unavailable != nil {
+		msg := strings.TrimSpace(item.Unavailable.Detail)
+		if msg == "" {
+			msg = "This item is currently unavailable"
+		}
+		libError(w, http.StatusConflict, msg)
+		return
 	}
-	scores, err := items.MatchItem(ctx, c.app.pluginsRT.mgr, lib.PluginID, lib.KindKey, item, nil, nil, threshold)
-	if err != nil {
+	pr, prErr := c.app.pluginsRT.mgr.Get(ctx, lib.PluginID)
+	if prErr != nil || !pr.Enabled {
+		libError(w, http.StatusServiceUnavailable, "Matching needs the plugin")
+		return
+	}
+	hasResolver := pr.Manifest.HasCapability(plugins.CapKindResolver)
+	hasMatcher := pr.Manifest.HasCapability(plugins.CapMatcher)
+	if !hasResolver && !hasMatcher {
 		libError(w, http.StatusBadGateway, "The plugin could not match this item")
 		return
 	}
-	if err := items.SaveMatches(ctx, ref, "auto", scores, threshold); err != nil {
-		libError(w, http.StatusInternalServerError, "Could not save matches")
-		return
+	rec, recErr := items.GetKindByLibrary(ctx, lib.ID)
+	threshold := pluginitems.DefaultMatchThreshold
+	if recErr == nil && rec.Decl.Match.ThresholdDefault > 0 {
+		threshold = rec.Decl.Match.ThresholdDefault
+	}
+
+	var sources []core.PlayableSource
+	if hasResolver && recErr == nil && c.app.pluginsRT.kindResolver != nil {
+		resolved, rerr := c.app.pluginsRT.kindResolver.ResolveForMatch(ctx, lib, rec, item, matchResolveAccept)
+		if rerr != nil {
+			switch {
+			case errors.Is(rerr, core.ErrPreparing):
+				w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(rerr, 5)))
+				libError(w, http.StatusServiceUnavailable, "Matching is still preparing; try again shortly")
+				return
+			case errors.Is(rerr, core.ErrJobsBusy):
+				w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(rerr, 5)))
+				libError(w, http.StatusServiceUnavailable, "The plugin is busy preparing other items; try again shortly")
+				return
+			case errors.Is(rerr, core.ErrNotAvailable):
+				// Resolver found no releases/sources right now.
+			default:
+				if !hasMatcher {
+					libError(w, http.StatusBadGateway, "The plugin could not match this item")
+					return
+				}
+			}
+		} else {
+			sources = resolved
+		}
+	}
+
+	candidates := sourceCandidatesFromPlayable(sources)
+	if hasMatcher {
+		_, err := items.MatchItem(ctx, c.app.pluginsRT.mgr, lib.PluginID, lib.KindKey, item, candidates, nil, threshold)
+		if err != nil {
+			switch {
+			case errors.Is(err, core.ErrPreparing):
+				w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
+				libError(w, http.StatusServiceUnavailable, "Matching is still preparing; try again shortly")
+				return
+			case errors.Is(err, core.ErrJobsBusy):
+				w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(err, 5)))
+				libError(w, http.StatusServiceUnavailable, "The plugin is busy preparing other items; try again shortly")
+				return
+			}
+			if len(sources) > 0 {
+				scores := scoresFromResolvedSources(sources)
+				if serr := items.SaveMatches(ctx, ref, lib.PluginID, scores, threshold); serr != nil {
+					libError(w, http.StatusInternalServerError, "Could not save matches")
+					return
+				}
+				c.handleMatchGet(w, r)
+				return
+			}
+			libError(w, http.StatusBadGateway, "The plugin could not match this item")
+			return
+		}
+	} else if len(sources) > 0 {
+		scores := scoresFromResolvedSources(sources)
+		if err := items.SaveMatches(ctx, ref, lib.PluginID, scores, threshold); err != nil {
+			libError(w, http.StatusInternalServerError, "Could not save matches")
+			return
+		}
 	}
 	c.handleMatchGet(w, r)
+}
+
+func sourceCandidatesFromPlayable(sources []core.PlayableSource) []core.SourceCandidate {
+	out := make([]core.SourceCandidate, 0, len(sources))
+	for _, src := range sources {
+		out = append(out, sourceCandidateFromPlayable(src))
+	}
+	return out
+}
+
+func sourceCandidateFromPlayable(src core.PlayableSource) core.SourceCandidate {
+	var c core.SourceCandidate
+	if src.Release != nil {
+		if src.Release.Candidate != nil {
+			c = *src.Release.Candidate
+		}
+		if c.InfoHash == "" {
+			c.InfoHash = strings.TrimSpace(src.Release.InfoHash)
+		}
+		if c.Magnet == "" {
+			c.Magnet = strings.TrimSpace(src.Release.Magnet)
+		}
+		if c.TorrentURL == "" {
+			c.TorrentURL = strings.TrimSpace(src.Release.TorrentURL)
+		}
+		if c.NZBURL == "" {
+			c.NZBURL = strings.TrimSpace(src.Release.NZBURL)
+		}
+		if c.FileIndex == nil && src.Release.FileIndex != nil {
+			idx := *src.Release.FileIndex
+			c.FileIndex = &idx
+		}
+		if c.Title == "" {
+			c.Title = firstNonEmptyMatchStr(src.Release.File, src.Release.FileHint, src.Label, src.ID)
+		}
+	} else {
+		c.Title = firstNonEmptyMatchStr(src.Label, src.Path, src.URL, src.ID)
+	}
+	if c.Size <= 0 && src.Size > 0 {
+		c.Size = src.Size
+	}
+	return c
+}
+
+func scoresFromResolvedSources(sources []core.PlayableSource) []core.KindMatchScore {
+	scores := make([]core.KindMatchScore, 0, len(sources))
+	for idx, src := range sources {
+		cand := sourceCandidateFromPlayable(src)
+		ref := candidateRefForPlayable(src, cand)
+		if ref == "" {
+			continue
+		}
+		score := 1.0 - 0.05*float64(idx)
+		if score < 0.5 {
+			score = 0.5
+		}
+		var reasons []string
+		if label := firstNonEmptyMatchStr(src.Label, cand.Title, src.Pattern); label != "" {
+			reasons = []string{label}
+		}
+		scores = append(scores, core.KindMatchScore{
+			CandidateRef: ref,
+			Score:        score,
+			Reasons:      reasons,
+		})
+	}
+	return scores
+}
+
+func candidateRefForPlayable(src core.PlayableSource, c core.SourceCandidate) string {
+	switch {
+	case c.InfoHash != "":
+		return "infohash:" + strings.ToLower(c.InfoHash)
+	case c.Magnet != "":
+		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
+	case c.NZBURL != "":
+		return "nzb:" + c.NZBURL
+	case strings.TrimSpace(src.ID) != "":
+		return strings.TrimSpace(src.ID)
+	case c.Title != "":
+		return c.Title
+	default:
+		return strings.TrimSpace(src.URL)
+	}
+}
+
+func firstNonEmptyMatchStr(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func (c *librariesConsole) handleSync(w http.ResponseWriter, r *http.Request) {

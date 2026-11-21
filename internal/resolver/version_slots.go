@@ -299,16 +299,25 @@ func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []c
 	}
 	used := map[string]bool{}
 	keys := map[string]bool{}
+	// The same release listed by two indexers has two IDs but one exact
+	// byte size; it fills one slot, never two.
+	sizes := map[int64]bool{}
+	take := func(r core.Release) {
+		used[r.ID] = true
+		keys[variantKey(r.Info)] = true
+		if r.Size > 0 {
+			sizes[r.Size] = true
+		}
+	}
 	for i, slot := range slots {
 		if slot.Kind == "auto" && auto.ID != "" {
 			out[i] = auto
-			used[auto.ID] = true
-			keys[variantKey(auto.Info)] = true
+			take(auto)
 			continue
 		}
 		for _, c := range ranked {
 			r := c.rel
-			if used[r.ID] {
+			if used[r.ID] || (r.Size > 0 && sizes[r.Size]) {
 				continue
 			}
 			match := false
@@ -324,8 +333,7 @@ func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []c
 			}
 			if match {
 				out[i] = r
-				used[r.ID] = true
-				keys[variantKey(r.Info)] = true
+				take(r)
 				break
 			}
 		}

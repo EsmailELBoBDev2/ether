@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,13 +12,13 @@ import (
 // Stream tickets (spec §6.5). A plugin's adapter response points media at
 // Ether, not at the plugin: the SDK helper builds
 // /ether/v1/kind-media/{ticket}, where the ticket is a short-lived grant
-// bound to (viewer, item, adapter) and an optional zero-based part index.
-// Ether mints and validates it; bytes then come from KindMedia, off the
-// plugin path even for remote plugins.
+// bound to (viewer, item, adapter) and an optional zero-based part index
+// and/or resolver source id. Ether mints and validates it; bytes then come
+// from KindMedia, off the plugin path even for remote plugins.
 //
-// The grant is scoped: a ticket for one viewer and one item (or one part of
-// that item) is rejected for any other viewer, item, part or adapter, and it
-// expires.
+// The grant is scoped: a ticket for one viewer and one item (or one part
+// and/or source of that item) is rejected for any other viewer, item, part,
+// source or adapter, and it expires.
 
 // DefaultStreamTicketTTL is the lifetime of a minted stream ticket.
 const DefaultStreamTicketTTL = 2 * time.Minute
@@ -31,6 +32,7 @@ type StreamGrant struct {
 	ItemID    string
 	Adapter   string
 	PartIndex *int
+	Source    string
 }
 
 // TicketIssuer mints and validates scoped, short-lived stream tickets for
@@ -87,6 +89,16 @@ func (t *TicketIssuer) Issue(grant StreamGrant) (string, error) {
 	if grant.PartIndex != nil && *grant.PartIndex < 0 {
 		return "", errors.New("frontendadapter: negative stream grant part index")
 	}
+	if grant.Source != "" {
+		if strings.TrimSpace(grant.Source) == "" {
+			return "", errors.New("frontendadapter: blank stream grant source")
+		}
+		for _, r := range grant.Source {
+			if r < 0x20 || r == 0x7f {
+				return "", errors.New("frontendadapter: invalid stream grant source")
+			}
+		}
+	}
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
@@ -103,12 +115,18 @@ func (t *TicketIssuer) Issue(grant StreamGrant) (string, error) {
 // its short lifetime. An expired or out-of-scope ticket returns
 // ErrTicketInvalid and is forgotten.
 func (t *TicketIssuer) Validate(token string, viewerID int64, itemID, adapter string) (StreamGrant, error) {
-	return t.ValidatePart(token, viewerID, itemID, adapter, nil)
+	return t.ValidateScope(token, viewerID, itemID, adapter, nil, "")
 }
 
 // ValidatePart checks that token is live and matches the presented viewer,
 // item, adapter and optional part scope.
 func (t *TicketIssuer) ValidatePart(token string, viewerID int64, itemID, adapter string, partIndex *int) (StreamGrant, error) {
+	return t.ValidateScope(token, viewerID, itemID, adapter, partIndex, "")
+}
+
+// ValidateScope checks that token is live and matches the presented viewer,
+// item, adapter, optional part index, and optional resolver source scope.
+func (t *TicketIssuer) ValidateScope(token string, viewerID int64, itemID, adapter string, partIndex *int, source string) (StreamGrant, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	tk, ok := t.tickets[token]
@@ -119,7 +137,7 @@ func (t *TicketIssuer) ValidatePart(token string, viewerID int64, itemID, adapte
 		delete(t.tickets, token)
 		return StreamGrant{}, ErrTicketInvalid
 	}
-	if tk.grant.ViewerID != viewerID || tk.grant.ItemID != itemID || tk.grant.Adapter != adapter || !samePartIndex(tk.grant.PartIndex, partIndex) {
+	if tk.grant.ViewerID != viewerID || tk.grant.ItemID != itemID || tk.grant.Adapter != adapter || !samePartIndex(tk.grant.PartIndex, partIndex) || tk.grant.Source != source {
 		return StreamGrant{}, ErrTicketInvalid
 	}
 	return cloneGrant(tk.grant), nil

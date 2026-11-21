@@ -238,3 +238,126 @@ func TestMediaHandlerPreparingReturns503RetryAfterWhileNoSourceStays409(t *testi
 		})
 	}
 }
+
+func TestMediaHandlerSourceScopedTickets(t *testing.T) {
+	issuer := NewTicketIssuer()
+	var (
+		wholeOpens  int
+		sourceCalls []struct {
+			part   *int
+			source string
+		}
+	)
+	handler := NewMediaHandler(MediaDeps{
+		Tickets: issuer,
+		Viewer: func(_ context.Context, id int64) (*core.Viewer, error) {
+			return viewerWithLibraries(id, "Reader", core.LibraryMovies), nil
+		},
+		Open: func(_ context.Context, _ *core.Viewer, _ string, _ []string) (*frontend.KindMedia, error) {
+			wholeOpens++
+			data := []byte("default-source")
+			return &frontend.KindMedia{
+				ReaderAt: bytes.NewReader(data),
+				Closer:   io.NopCloser(nil),
+				Size:     int64(len(data)),
+				MIME:     "application/octet-stream",
+				Name:     "default.bin",
+			}, nil
+		},
+		OpenSource: func(_ context.Context, _ *core.Viewer, _ string, partIndex *int, source string, _ []string) (*frontend.KindMedia, error) {
+			var pCopy *int
+			if partIndex != nil {
+				v := *partIndex
+				pCopy = &v
+			}
+			sourceCalls = append(sourceCalls, struct {
+				part   *int
+				source string
+			}{part: pCopy, source: source})
+			if source == "missing" {
+				return nil, core.ErrNotAvailable
+			}
+			body := "src:" + source
+			if partIndex != nil {
+				body += fmt.Sprintf("#part:%d", *partIndex)
+			}
+			data := []byte(body)
+			return &frontend.KindMedia{
+				ReaderAt: bytes.NewReader(data),
+				Closer:   io.NopCloser(nil),
+				Size:     int64(len(data)),
+				MIME:     "application/octet-stream",
+				Name:     source + ".bin",
+			}, nil
+		},
+	})
+
+	// Blank or control-char source grants are refused at Issue time.
+	if _, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:book", Adapter: "feed", Source: "   "}); err == nil {
+		t.Fatal("blank source accepted")
+	}
+	if _, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:book", Adapter: "feed", Source: "bad\nid"}); err == nil {
+		t.Fatal("control char source accepted")
+	}
+
+	// Source-scoped ticket fails Validate / ValidatePart / wrong source, succeeds ValidateScope.
+	srcTok, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:book", Adapter: "feed", Source: "pdf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := issuer.Validate(srcTok, 7, "plug:kind:book", "feed"); err != ErrTicketInvalid {
+		t.Fatalf("Validate on source-scoped ticket = %v, want ErrTicketInvalid", err)
+	}
+	if _, err := issuer.ValidateScope(srcTok, 7, "plug:kind:book", "feed", nil, "epub"); err != ErrTicketInvalid {
+		t.Fatalf("ValidateScope wrong source = %v, want ErrTicketInvalid", err)
+	}
+	if _, err := issuer.ValidateScope(srcTok, 7, "plug:kind:book", "feed", nil, "pdf"); err != nil {
+		t.Fatalf("ValidateScope exact source = %v", err)
+	}
+
+	// Serving a source-scoped ticket dispatches to OpenSource; a ?source= query param cannot override it.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, KindMediaPath+srcTok+"?source=epub", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "src:pdf" {
+		t.Fatalf("source-scoped serve: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+
+	// An unscoped ticket ignores ?source= query parameters and opens the default source.
+	unscopedTok, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:book", Adapter: "feed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, KindMediaPath+unscopedTok+"?source=pdf", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "default-source" || wholeOpens != 1 {
+		t.Fatalf("unscoped with ?source query: code=%d body=%q wholeOpens=%d", rec.Code, rec.Body.String(), wholeOpens)
+	}
+
+	// Ticket carrying both partIndex and source passes both, and rejects conflicting ?part=.
+	part2 := 2
+	bothTok, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:book", Adapter: "feed", PartIndex: &part2, Source: "hd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, KindMediaPath+bothTok, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "src:hd#part:2" {
+		t.Fatalf("part+source serve: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, KindMediaPath+bothTok+"?part=0", nil))
+	if rec.Code != http.StatusNotFound || rec.Header().Get("X-Ether-Media-Error") != "ticket_invalid" {
+		t.Fatalf("conflicting ?part on part+source ticket: code=%d hdr=%q", rec.Code, rec.Header().Get("X-Ether-Media-Error"))
+	}
+
+	// Absent source returns 409 no_source.
+	missTok, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:book", Adapter: "feed", Source: "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, KindMediaPath+missTok, nil))
+	if rec.Code != http.StatusConflict || rec.Header().Get("X-Ether-Media-Error") != "no_source" {
+		t.Fatalf("missing source serve: code=%d hdr=%q", rec.Code, rec.Header().Get("X-Ether-Media-Error"))
+	}
+}

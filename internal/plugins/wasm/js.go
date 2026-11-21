@@ -291,7 +291,7 @@ globalThis.ether = (() => {
              rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]),
              delete: (blobRef) => call("cache.delete", [blobRef]) },
     archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
-    frontend: { streamURL: (itemRef, partIndex) => call("frontend.streamURL", partIndex == null ? [itemRef] : [itemRef, partIndex]) },
+    frontend: { streamURL: (itemRef, opts) => call("frontend.streamURL", opts == null ? [itemRef] : [itemRef, opts]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
                hashPoll: (id) => call("folders.hashPoll", [id]),

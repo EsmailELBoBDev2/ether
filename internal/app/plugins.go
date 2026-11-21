@@ -487,8 +487,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		CachePut:        cachePut,
 		CacheOpen:       cacheOpen,
 		CacheDelete:     cacheDelete,
-		StreamURL:       a.adapterStreamURL(adapterTickets),
-		StreamPartURL:   a.adapterStreamPartURL(adapterTickets),
+		StreamURL:        a.adapterStreamURL(adapterTickets),
+		StreamPartURL:    a.adapterStreamPartURL(adapterTickets),
+		StreamURLOptions: a.adapterStreamURLOptions(adapterTickets),
 	})
 
 	if err := mgr.Start(ctx); err != nil {

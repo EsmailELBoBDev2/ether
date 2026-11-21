@@ -155,18 +155,25 @@ func (a *App) syncAdapters(ctx context.Context) {
 // visibility. The item must belong to the calling plugin and its library
 // must be visible to the viewer; anything else is refused.
 func (a *App) adapterStreamURL(issuer *frontendadapter.TicketIssuer) func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
-	partFn := a.adapterStreamPartURL(issuer)
+	optsFn := a.adapterStreamURLOptions(issuer)
 	return func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
-		return partFn(ctx, pluginID, viewerID, itemRef, nil)
+		return optsFn(ctx, pluginID, viewerID, itemRef, plugins.StreamURLOptions{})
 	}
 }
 
 func (a *App) adapterStreamPartURL(issuer *frontendadapter.TicketIssuer) func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
+	optsFn := a.adapterStreamURLOptions(issuer)
 	return func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
+		return optsFn(ctx, pluginID, viewerID, itemRef, plugins.StreamURLOptions{PartIndex: partIndex})
+	}
+}
+
+func (a *App) adapterStreamURLOptions(issuer *frontendadapter.TicketIssuer) func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
+	return func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
 		if issuer == nil || a.pluginsRT == nil || a.pluginsRT.pluginitems == nil || a.libraries == nil {
 			return "", plugins.ErrUnavailable
 		}
-		if partIndex != nil && *partIndex < 0 {
+		if opts.PartIndex != nil && *opts.PartIndex < 0 {
 			return "", core.ErrNotFound
 		}
 		ref, err := core.ParseItemRef(itemRef)
@@ -187,20 +194,32 @@ func (a *App) adapterStreamPartURL(issuer *frontendadapter.TicketIssuer) func(ct
 		if err != nil {
 			return "", core.ErrNotFound
 		}
-		if partIndex != nil {
-			if parts := core.ExtractKindItemPartsFromItem(item); len(parts) > 0 && *partIndex >= len(parts) {
-				return "", core.ErrNotFound
-			}
-		}
 		lib, err := a.libraries.Get(ctx, libID)
 		if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
 			return "", core.ErrNotFound
+		}
+		if opts.PartIndex != nil {
+			rec, kerr := a.pluginsRT.pluginitems.GetKindByLibrary(ctx, libID)
+			if kerr != nil {
+				return "", core.ErrNotFound
+			}
+			lv, _, ok := rec.Decl.Level(item.Level)
+			if !ok {
+				return "", core.ErrNotFound
+			}
+			if lv.Playable && item.Playable {
+				parts := core.ExtractKindItemPartsFromItem(item)
+				if len(parts) == 0 || *opts.PartIndex >= len(parts) {
+					return "", core.ErrNotFound
+				}
+			}
 		}
 		return issuer.StreamURL(frontendadapter.StreamGrant{
 			ViewerID:  viewerID,
 			ItemID:    ref.String(),
 			Adapter:   pluginID,
-			PartIndex: partIndex,
+			PartIndex: opts.PartIndex,
+			Source:    opts.Source,
 		})
 	}
 }
@@ -476,6 +495,17 @@ func (a *App) adapterMediaHandler() *frontendadapter.MediaHandler {
 				return nil, err
 			}
 			return resolver.OpenKindPart(ctx, viewer, item.Key, partIndex, accept)
+		},
+		OpenSource: func(ctx context.Context, viewer *core.Viewer, itemRef string, partIndex *int, source string, accept []string) (*frontend.KindMedia, error) {
+			ref, err := core.ParseItemRef(itemRef)
+			if err != nil {
+				return nil, err
+			}
+			item, _, err := items.GetByRef(ctx, ref)
+			if err != nil {
+				return nil, err
+			}
+			return resolver.OpenKindPartSource(ctx, viewer, item.Key, partIndex, source, accept)
 		},
 	})
 }

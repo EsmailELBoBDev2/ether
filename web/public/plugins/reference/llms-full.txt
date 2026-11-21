@@ -432,12 +432,13 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Frontend stream tickets & visibility
 
-Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL, and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
+Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL (accepting an optional positional partIndex or { partIndex?, source? } to pin a zero-based part and/or an exact resolver PlayableSource.id with no failover), and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
 
 ```ts
 const page = ether.kinds.browse("comic", { limit: 50 });
 const allowed = ether.kinds.visible("comic", ["c1", "c2"]);
 const url = ether.frontend.streamURL("item-ref");
+const exact = ether.frontend.streamURL("item-ref", { source: "epub" });
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -808,7 +809,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
-| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
+| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
 | `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
@@ -1009,17 +1010,28 @@ part:
   without a part selector) resolve `partIndex: 0` for single-part items and
   deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
   parts (`0 .. N-1`).
-- **Per-part opens** let frontend adapters and multi-file clients fetch each
-  file individually:
-  - Mint a part-scoped ticket URL with `ether.frontend.streamURL(itemRef, partIndex).url`
-    (hosted JS), `streamUrl(ctx, itemRef, partIndex)` (TypeScript SDK),
+- **Per-part and per-source opens** let frontend adapters and multi-file clients
+  fetch a specific file or a specific resolver `PlayableSource.id`:
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+    (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
+    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
     `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
-    `ctx.stream_url(item_ref, part_index)` (Python SDK) — backed by
-    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"}`.
-  - Or pass `?part=N` on an unpinned item ticket (`/ether/v1/kind-media/{ticket}?part=0`).
+    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+  - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
+    to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
+    with no failover to other sources and without clobbering the shared default resolution
+    or candidate cache. A plugin that ignores `source` still works: Ether picks the source
+    with the matching `id` from its response, or answers `409 no_source` if it is absent.
+  - `partIndex` is bounded by the item's declared parts: a playable item that declares no
+    parts rejects any `partIndex` with `404 item_not_found`.
+  - Unpinned item tickets also accept `?part=N` (`/ether/v1/kind-media/{ticket}?part=0`).
     A malformed or negative `part` answers `400 invalid_part`, an out-of-range
-    part answers `404 item_not_found`, and a `?part=N` that disagrees with a
-    part-scoped ticket answers `404 ticket_invalid`.
+    part (or a part index on a playable item with no declared parts) answers
+    `404 item_not_found`, and a `?part=N` that disagrees with a part-scoped
+    ticket answers `404 ticket_invalid`. `source` is bound strictly in the
+    ticket grant and cannot be supplied or overridden by query parameters.
 
 Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
@@ -1452,8 +1464,8 @@ the two-slot owner/scheduled pool); if all four resolver slots are running, Ethe
 returns `503` with `code: "jobs_busy"`, `Retry-After`, and the refusal message,
 and records the refused job on the plugin Jobs view. A real empty `sources: []`
 answer stays `409` `no_source`. A job receives the original request body (including `partIndex` when
-resolving a multi-part item), uses promoted deadlines and continuation replies,
-and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
+resolving a multi-part item and `source` when opening a source-scoped stream ticket), uses promoted deadlines and continuation replies,
+and is deduplicated per plugin/kind/item (and `partIndex` / `source`). Job completion wakes
 the next resolve.
 
 For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.
@@ -2405,6 +2417,7 @@ type ReleaseHint struct {
 | `libraryKey` | `string` | emitted (validation may require a value) |  |
 | `item` | `KindItem` | emitted (validation may require a value) |  |
 | `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
 | `client` | `map[string]any` | may be omitted (see validation for conditions) |  |
 
 
@@ -2417,6 +2430,7 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
 }
 ``````
@@ -5358,6 +5372,7 @@ type Host interface {
 	// refused. Bytes are then served by Ether, never by the plugin.
 	StreamURL(ctx context.Context, itemRef string) (string, error)
 	StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error)
+	StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error)
 
 	// FoldersList and FoldersStat need folders: read and an owner-picked
 	// root. They never return file contents.
@@ -5384,6 +5399,25 @@ type Host interface {
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
 	Log(ctx context.Context, level, msg string, attrs map[string]any) error
+}
+``````
+
+## Source: internal/plugins/contract.go#StreamURLOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#StreamURLOptions
+
+``````
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 ``````
 
@@ -11550,8 +11584,9 @@ type KindBackends struct {
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
-	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
-	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
 }
 ``````
 
@@ -11576,6 +11611,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.CacheDelete = b.CacheDelete
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
+	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
 	m.mu.Unlock()
 }
 ``````
@@ -11587,20 +11623,21 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:      m.deps.Backends.KindUpsert,
-		KindUpsertStats: m.deps.Backends.KindUpsertStats,
-		KindDelete:      m.deps.Backends.KindDelete,
-		KindItems:       m.deps.Backends.KindItems,
-		KindItemsByID:   m.deps.Backends.KindItemsByID,
-		KindItemCount:   m.deps.Backends.KindItemCount,
-		KindVisible:     m.deps.Backends.KindVisible,
-		KindBrowse:      m.deps.Backends.KindBrowse,
-		ResolveSources:  m.deps.Backends.ResolveSources,
-		CachePut:        m.deps.Backends.CachePut,
-		CacheOpen:       m.deps.Backends.CacheOpen,
-		CacheDelete:     m.deps.Backends.CacheDelete,
-		StreamURL:       m.deps.Backends.StreamURL,
-		StreamPartURL:   m.deps.Backends.StreamPartURL,
+		KindUpsert:       m.deps.Backends.KindUpsert,
+		KindUpsertStats:  m.deps.Backends.KindUpsertStats,
+		KindDelete:       m.deps.Backends.KindDelete,
+		KindItems:        m.deps.Backends.KindItems,
+		KindItemsByID:    m.deps.Backends.KindItemsByID,
+		KindItemCount:    m.deps.Backends.KindItemCount,
+		KindVisible:      m.deps.Backends.KindVisible,
+		KindBrowse:       m.deps.Backends.KindBrowse,
+		ResolveSources:   m.deps.Backends.ResolveSources,
+		CachePut:         m.deps.Backends.CachePut,
+		CacheOpen:        m.deps.Backends.CacheOpen,
+		CacheDelete:      m.deps.Backends.CacheDelete,
+		StreamURL:        m.deps.Backends.StreamURL,
+		StreamPartURL:    m.deps.Backends.StreamPartURL,
+		StreamURLOptions: m.deps.Backends.StreamURLOptions,
 	}
 }
 ``````
@@ -12251,6 +12288,34 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#maxStreamSourceIDLen
+
+``````
+const maxStreamSourceIDLen = 1024
+``````
+
+## Source: internal/plugins/host_kinds.go#validateStreamSourceID
+
+``````
+func validateStreamSourceID(source string) error {
+	if source == "" {
+		return nil
+	}
+	if strings.TrimSpace(source) == "" {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not be blank"}}}
+	}
+	if len(source) > maxStreamSourceIDLen {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source exceeds maximum length"}}}
+	}
+	for _, r := range source {
+		if r < 0x20 || r == 0x7f {
+			return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not contain control characters"}}}
+		}
+	}
+	return nil
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.StreamURL
 
 ``````
@@ -12260,7 +12325,7 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 // X-Ether-Viewer. The backend re-checks that the item belongs to this plugin
 // and that the viewer may see its library.
 func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
-	return h.StreamPartURL(ctx, itemRef, nil)
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{})
 }
 ``````
 
@@ -12268,6 +12333,14 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 
 ``````
 func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error) {
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{PartIndex: partIndex})
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*host.StreamURLWithOptions
+
+``````
+func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error) {
 	rec, _, err := h.record(ctx)
 	if err != nil {
 		return "", err
@@ -12285,25 +12358,34 @@ func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int
 	if strings.TrimSpace(itemRef) == "" {
 		return "", fmt.Errorf("plugins: stream url needs an item ref")
 	}
-	if partIndex != nil && *partIndex < 0 {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", fmt.Errorf("plugins: stream url partIndex must be non-negative")
 	}
+	if err := validateStreamSourceID(opts.Source); err != nil {
+		return "", err
+	}
 	backends := h.m.kindBackends()
+	if backends.StreamURLOptions != nil {
+		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
+	}
+	if opts.Source != "" {
+		return "", ErrUnavailable
+	}
 	if backends.StreamPartURL != nil {
-		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, partIndex)
+		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, opts.PartIndex)
 	}
 	if backends.StreamURL == nil {
 		return "", ErrUnavailable
 	}
 	u, err := backends.StreamURL(ctx, h.plugin, viewerID, itemRef)
-	if err != nil || partIndex == nil {
+	if err != nil || opts.PartIndex == nil {
 		return u, err
 	}
 	sep := "?"
 	if strings.Contains(u, "?") {
 		sep = "&"
 	}
-	return u + sep + "part=" + strconv.Itoa(*partIndex), nil
+	return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 }
 ``````
 
@@ -13165,15 +13247,29 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		page, err := b.h.KindBrowse(ctx, str(0), q)
 		return result(page, err)
 	case "frontend.streamURL":
-		var partIdx *int
-		if len(args) > 1 && string(args[1]) != "null" {
-			var n int
-			if err := json.Unmarshal(args[1], &n); err != nil || n < 0 {
-				return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+		var opts StreamURLOptions
+		if len(args) > 1 {
+			rawArg := bytes.TrimSpace(args[1])
+			if len(rawArg) > 0 && string(rawArg) != "null" {
+				if rawArg[0] == '{' {
+					dec := json.NewDecoder(bytes.NewReader(rawArg))
+					dec.DisallowUnknownFields()
+					if err := dec.Decode(&opts); err != nil {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+					}
+					if opts.PartIndex != nil && *opts.PartIndex < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+				} else {
+					var n int
+					if err := json.Unmarshal(rawArg, &n); err != nil || n < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+					opts.PartIndex = &n
+				}
 			}
-			partIdx = &n
 		}
-		u, err := b.h.StreamPartURL(ctx, str(0), partIdx)
+		u, err := b.h.StreamURLWithOptions(ctx, str(0), opts)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
@@ -20213,11 +20309,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, ResolverTotal)
 	defer cancel()
-	// One job per plugin/kind/item (and part index when set), even across
+	// One job per plugin/kind/item (and part index / source when set), even across
 	// simultaneous Plays. Include the request body when older callers do not
 	// supply an item reference.
 	var identity struct {
-		PartIndex *int `json:"partIndex"`
+		PartIndex *int   `json:"partIndex"`
+		Source    string `json:"source"`
 		Item      struct {
 			Ref        string `json:"ref"`
 			ExternalID string `json:"id"`
@@ -20230,8 +20327,13 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	}
 	if item == "" {
 		item = string(req.Body)
-	} else if identity.PartIndex != nil {
-		item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
+	} else {
+		if identity.PartIndex != nil {
+			item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
+		}
+		if identity.Source != "" {
+			item = fmt.Sprintf("%s#source:%s", item, identity.Source)
+		}
 	}
 	suffix := fmt.Sprintf("|%x", sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimSuffix(req.Path, "/resolve"), "/match")+"|"+item)))
 	started := false
@@ -21049,6 +21151,7 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		ViewerID  int64  `json:"viewerId"`
 		ItemRef   string `json:"itemRef"`
 		PartIndex *int   `json:"partIndex,omitempty"`
+		Source    string `json:"source,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
@@ -21057,12 +21160,32 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		writeHostError(w, http.StatusBadRequest, "bad_arguments", "partIndex must be non-negative")
 		return
 	}
+	if body.Source != "" && strings.TrimSpace(body.Source) == "" {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "source must not be blank")
+		return
+	}
 	var (
 		u   string
 		err error
 	)
-	if body.PartIndex != nil {
-		if ph, ok := h.host.(interface {
+	if body.Source != "" {
+		oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		})
+		if !ok {
+			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support source-scoped stream URLs")
+			return
+		}
+		u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
+			PartIndex: body.PartIndex,
+			Source:    body.Source,
+		})
+	} else if body.PartIndex != nil {
+		if oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		}); ok {
+			u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
+		} else if ph, ok := h.host.(interface {
 			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 		}); ok {
 			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
@@ -25674,7 +25797,7 @@ globalThis.ether = (() => {
              rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]),
              delete: (blobRef) => call("cache.delete", [blobRef]) },
     archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
-    frontend: { streamURL: (itemRef, partIndex) => call("frontend.streamURL", partIndex == null ? [itemRef] : [itemRef, partIndex]) },
+    frontend: { streamURL: (itemRef, opts) => call("frontend.streamURL", opts == null ? [itemRef] : [itemRef, opts]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
                hashPoll: (id) => call("folders.hashPoll", [id]),
@@ -30669,7 +30792,7 @@ If a call is still `pending` after the 25-second wait budget, Ether answers
 default) on `kind-media`, Vela, Jellyfin and Plex API routes without caching a
 negative resolution; only a real empty `sources: []` / `404` answer becomes `409`
 `no_source`. For slow searches, also return `job:"/ether/job/prepare"`. Ether
-deduplicates running jobs per plugin, kind, item and `partIndex`, passes the
+deduplicates running jobs per plugin, kind, item, `partIndex`, and `source`, passes the
 original request body, and uses the existing promoted job deadline and
 continuation protocol. A completed
 job wakes the resolver before the retry timer. Persist results in KV; never do
@@ -30719,22 +30842,32 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
-Hosted adapters can return a redirect to a host-minted item stream URL (or a
-specific zero-based part when an item declares `hints.parts`):
+Hosted adapters can return a redirect to a host-minted item stream URL, a
+specific zero-based part when an item declares `hints.parts`, and/or a specific
+resolver `PlayableSource.id`:
 
 ```js
 // Whole item (concatenated sequence for multi-part items):
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
 // Single part (resolves with KindResolveRequest.partIndex = partIndex):
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
+// Specific resolver source (and optional partIndex) with no failover:
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, {partIndex, source: "epub"}).url}};
 ```
 
-In the SDKs, call `streamUrl(ctx, itemRef, partIndex?)` (TypeScript),
-`ctx.StreamPartURL(itemRef, partIndex)` (Go), or `ctx.stream_url(item_ref, part_index)`
-(Python); an unpinned item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`.
-Multi-file items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]`
-(or a declared `parts` field) so Ether resolves and caches each part with its
-zero-based `KindResolveRequest.partIndex`.
+In the SDKs, call `streamUrl(ctx, itemRef, partIndexOrOpts?)` (TypeScript),
+`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` or
+`ctx.StreamPartURL(itemRef, partIndex)` (Go), or
+`ctx.stream_url(item_ref, part_index=..., source=...)` (Python); an unpinned
+item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Multi-file
+items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]` (or a
+declared `parts` field) so Ether resolves and caches each part with its
+zero-based `KindResolveRequest.partIndex`; playable items with no declared parts
+reject any `partIndex` with `404 item_not_found`. When `source` is set on the
+ticket grant, Ether passes `KindResolveRequest.source` to `/resolve` and opens
+only the matching `PlayableSource.id` without failing over to other sources (a
+plugin that ignores `source` still works because Ether selects the matching id
+or returns `409 no_source` if absent).
 
 Only root-relative local redirect URLs are forwarded. External URLs, authority
 changes, control characters, backslashes and known account credential query
@@ -40313,6 +40446,18 @@ type PartStreamHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#StreamURLOptionsHost
+
+``````
+// StreamURLOptionsHost mints a short-lived, scoped ticket for a specific
+// zero-based part and/or resolver PlayableSource.ID of a kind item (#576, #661).
+// RemoteHostClient and MockHost implement it; Context.StreamURLWithOptions
+// uses it automatically.
+type StreamURLOptionsHost interface {
+	StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+}
+``````
+
 ## Source: sdk/go/host.go#CacheDeleteHost
 
 ``````
@@ -41152,11 +41297,34 @@ func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, it
 	if partIndex < 0 {
 		return "", fmt.Errorf("stream url: partIndex must be non-negative")
 	}
+	return c.StreamURLWithOptions(ctx, viewerID, itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.StreamURLWithOptions
+
+``````
+// StreamURLWithOptions mints a scoped stream ticket for one of this plugin's
+// own kind items, optionally pinned to a zero-based part and/or resolver
+// PlayableSource.ID (#576, #661).
+func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", fmt.Errorf("stream url: source must not be blank")
+	}
+	payload := map[string]any{"viewerId": viewerID, "itemRef": itemRef}
+	if opts.PartIndex != nil {
+		payload["partIndex"] = *opts.PartIndex
+	}
+	if opts.Source != "" {
+		payload["source"] = opts.Source
+	}
 	var out struct {
 		URL string `json:"url"`
 	}
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
-		map[string]any{"viewerId": viewerID, "itemRef": itemRef, "partIndex": partIndex}, &out, false)
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", payload, &out, false)
 	if err != nil {
 		return "", err
 	}
@@ -41951,6 +42119,7 @@ type ReleaseHint struct {
 | `libraryKey` | `string` | emitted (validation may require a value) |  |
 | `item` | `KindItem` | emitted (validation may require a value) |  |
 | `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
 | `client` | `map[string]any` | may be omitted (see validation for conditions) |  |
 
 
@@ -41963,7 +42132,27 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#StreamURLOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#StreamURLOptions
+
+``````
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 ``````
 
@@ -42366,28 +42555,54 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 // a multi-file kind item (#576) and returns the Ether stream URL to embed in a
 // frontend adapter response.
 func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	return c.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+``````
+
+## Source: sdk/go/kinds.go#*Context.StreamURLWithOptions
+
+``````
+// StreamURLWithOptions mints a short-lived, scoped ticket for one of this
+// plugin's own kind items, optionally pinned to a zero-based part and/or a
+// specific resolver PlayableSource.ID (#576, #661).
+func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
 	if c.Ether == nil {
 		return "", errors.New("stream url: no host service available")
 	}
-	if partIndex < 0 {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", errors.New("stream url: source must not be blank")
 	}
 	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
 	if err != nil || viewerID <= 0 {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
-	if ph, ok := c.Ether.(PartStreamHost); ok {
-		return ph.StreamPartURL(c.Context, viewerID, itemRef, partIndex)
+	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
+		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
 	}
-	u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
-	if err != nil {
-		return "", err
+	if opts.Source != "" {
+		return "", errors.New("stream url: host does not support source-scoped stream tickets")
 	}
-	sep := "?"
-	if strings.Contains(u, "?") {
-		sep = "&"
+	if opts.PartIndex != nil {
+		if ph, ok := c.Ether.(PartStreamHost); ok {
+			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+		}
+		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		if err != nil {
+			return "", err
+		}
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
-	return u + sep + "part=" + strconv.Itoa(partIndex), nil
+	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
 }
 ``````
 
@@ -50076,6 +50291,16 @@ def _check_part_index(part_index: Optional[int]) -> Optional[int]:
     return part_index
 
 
+def _check_stream_source(source: Optional[str]) -> Optional[str]:
+    if source is None or source == "":
+        return None
+    if not isinstance(source, str):
+        raise ValueError("stream url: source must be a string")
+    if source.strip() == "":
+        raise ValueError("stream url: source must not be blank")
+    return source
+
+
 class _FrontendClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -50085,11 +50310,15 @@ class _FrontendClient:
         viewer_id: int,
         item_ref: str,
         part_index: Optional[int] = None,
+        source: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
+        if checked_source is not None:
+            payload["source"] = checked_source
         result = self._call(
             "POST",
             "/ether/plugin-host/frontend/stream-url",
@@ -50269,14 +50498,21 @@ class PluginContext:
     def t(self, key: str, params: Optional[Dict[str, Any]] = None) -> str:
         return self.i18n.t(key, params=params, locale=self.locale)
 
-    def stream_url(self, item_ref: str, part_index: Optional[int] = None) -> str:
+    def stream_url(
+        self,
+        item_ref: str,
+        part_index: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), or for one zero-based part when part_index is set
-        (#576). The viewer is the one Ether authenticated on this request
-        (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
+        a resolver PlayableSource.id (#661). The viewer is the one Ether
+        authenticated on this request (X-Ether-Viewer); bytes are served by
+        Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
+        checked_source = _check_stream_source(source)
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -50284,6 +50520,10 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        if checked_source is not None:
+            return self.ether.frontend.stream_url(
+                viewer_id, str(item_ref), checked, source=checked_source
+            )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
         return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
@@ -51737,6 +51977,7 @@ class MockHostClient:
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
+        self.last_stream_url_source: Optional[str] = None
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -51790,10 +52031,13 @@ class MockHostClient:
             viewer_id: int,
             item_ref: str,
             part_index: Optional[int] = None,
+            source: Optional[str] = None,
         ) -> str:
             checked = _check_part_index(part_index)
+            checked_source = _check_stream_source(source)
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
+            self._p.last_stream_url_source = checked_source
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
             return base if checked is None else f"{base}?part={checked}"
 
@@ -52678,11 +52922,13 @@ def stream_url(
     ctx: PluginContext,
     item_ref: str,
     part_index: Optional[int] = None,
+    source: Optional[str] = None,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5) or one zero-based part (#576). Kept as a thin wrapper over
+    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
+    resolver PlayableSource.id (#661). Kept as a thin wrapper over
     PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index)
+    return ctx.stream_url(item_ref, part_index=part_index, source=source)
 
 
 def kinds_visible(
@@ -53549,6 +53795,32 @@ function checkPartIndex(partIndex: number | undefined): void {
   }
 }
 
+export function normalizeStreamUrlOptions(
+  partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions,
+): import("./types.ts").StreamUrlOptions {
+  if (partIndexOrOpts === undefined) return {};
+  if (typeof partIndexOrOpts === "number") {
+    checkPartIndex(partIndexOrOpts);
+    return { partIndex: partIndexOrOpts };
+  }
+  if (partIndexOrOpts === null || typeof partIndexOrOpts !== "object" || Array.isArray(partIndexOrOpts)) {
+    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source? }");
+  }
+  checkPartIndex(partIndexOrOpts.partIndex);
+  if (partIndexOrOpts.source !== undefined) {
+    if (typeof partIndexOrOpts.source !== "string") {
+      throw new Error("stream url: source must be a string");
+    }
+    if (partIndexOrOpts.source !== "" && partIndexOrOpts.source.trim() === "") {
+      throw new Error("stream url: source must not be blank");
+    }
+  }
+  const out: import("./types.ts").StreamUrlOptions = {};
+  if (partIndexOrOpts.partIndex !== undefined) out.partIndex = partIndexOrOpts.partIndex;
+  if (partIndexOrOpts.source) out.source = partIndexOrOpts.source;
+  return out;
+}
+
 function encodeData(data: Uint8Array): string {
   const parts: string[] = [];
   for (let i = 0; i < data.length; i += 3) {
@@ -53880,11 +54152,11 @@ export interface EtherHost {
   /**
    * Frontend-adapter host services (spec §6.5). streamUrl mints a scoped,
    * short-lived Ether stream URL for one of this plugin's own kind items
-   * (or one zero-based part of a multi-file item when partIndex is given);
+   * (optionally scoped to a zero-based partIndex and/or resolver source id);
    * bytes are then served by Ether, never by the plugin.
    */
   frontend?: {
-    streamUrl(viewerId: number, itemRef: string, partIndex?: number): MaybePromise<string>;
+    streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): MaybePromise<string>;
   };
   log(level: string, message: string, attrs?: Record<string, unknown>): MaybePromise<void>;
   abort(message?: string): never;
@@ -53961,7 +54233,7 @@ interface GlobalEtherBindings {
       browse: (kind: string, query?: import("./types.ts").KindBrowseQuery) => import("./types.ts").KindPage;
     };
     frontend: {
-      streamURL: (itemRef: string, partIndex?: number) => { url: string };
+      streamURL: (itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions) => { url: string };
     };
   };
 }
@@ -54257,15 +54529,20 @@ export function createHostedClient(): EtherHost {
       },
     },
     frontend: {
-      streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
+      streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
         // argument is accepted for parity with the remote client.
         void viewerId;
-        checkPartIndex(partIndex);
-        const r = callHost<{ url: string }>(
-          "frontend.streamURL",
-          partIndex === undefined ? [itemRef] : [itemRef, partIndex],
-        );
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
+        let args: unknown[];
+        if (opts.source !== undefined) {
+          args = [itemRef, opts];
+        } else if (opts.partIndex !== undefined) {
+          args = [itemRef, opts.partIndex];
+        } else {
+          args = [itemRef];
+        }
+        const r = callHost<{ url: string }>("frontend.streamURL", args);
         return r?.url ?? "";
       },
     },
@@ -54622,12 +54899,13 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     frontend: {
-      async streamUrl(viewerId: number, itemRef: string, partIndex?: number): Promise<string> {
-        checkPartIndex(partIndex);
+      async streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): Promise<string> {
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
           viewerId,
           itemRef,
-          ...(partIndex === undefined ? {} : { partIndex }),
+          ...(opts.partIndex === undefined ? {} : { partIndex: opts.partIndex }),
+          ...(opts.source === undefined ? {} : { source: opts.source }),
         });
         return r?.url ?? "";
       },
@@ -54903,7 +55181,7 @@ export {
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
-import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText } from "./host.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText, normalizeStreamUrlOptions } from "./host.ts";
 import type {
   KindBrowseQuery,
   KindBrowseRequest,
@@ -54927,6 +55205,7 @@ import type {
   SetupTestRequest,
   SetupTestResult,
   SourceCandidate,
+  StreamUrlOptions,
 } from "./types.ts";
 
 export { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS };
@@ -54982,29 +55261,30 @@ export function candidateRef(c: SourceCandidate): string {
 
 /**
  * Mint a scoped, short-lived Ether stream URL for one of this plugin's own
- * kind items (spec §6.5), or for a single zero-based part of a multi-file item
- * when `partIndex` is provided (#576). The viewer is the one Ether
- * authenticated on this request (X-Ether-Viewer); bytes are served by Ether,
- * never by the plugin.
+ * kind items (spec §6.5), optionally scoped to a zero-based part (`partIndex`)
+ * and/or a specific resolver `PlayableSource.id` (`source`) (#576, #661). The
+ * viewer is the one Ether authenticated on this request (X-Ether-Viewer);
+ * bytes are served by Ether, never by the plugin.
  */
 export async function streamUrl<S = Record<string, unknown>>(
   ctx: PluginContext<S>,
   itemRef: string,
-  partIndex?: number,
+  partIndexOrOpts?: number | StreamUrlOptions,
 ): Promise<string> {
   if (!ctx.ether?.frontend) throw new Error("stream url: no host service available");
-  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
-    throw new Error("stream url: partIndex must be a non-negative integer");
-  }
+  const opts = normalizeStreamUrlOptions(partIndexOrOpts);
   const raw = ctx.headers["X-Ether-Viewer"] ?? ctx.headers["x-ether-viewer"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   const viewerId = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  return partIndex === undefined
+  if (opts.source !== undefined) {
+    return ctx.ether.frontend.streamUrl(viewerId, itemRef, opts);
+  }
+  return opts.partIndex === undefined
     ? ctx.ether.frontend.streamUrl(viewerId, itemRef)
-    : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
+    : ctx.ether.frontend.streamUrl(viewerId, itemRef, opts.partIndex);
 }
 
 function readViewerToken<S>(ctx: PluginContext<S>): string {
@@ -58316,7 +58596,15 @@ export interface KindResolveRequest {
   libraryKey: string;
   item: KindItem;
   partIndex?: number;
+  /** Optional PlayableSource.id chosen by a frontend adapter stream ticket (#661). */
+  source?: string;
   client?: Record<string, unknown>;
+}
+
+/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+export interface StreamUrlOptions {
+  partIndex?: number;
+  source?: string;
 }
 
 export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }

@@ -126,6 +126,32 @@ function checkPartIndex(partIndex: number | undefined): void {
   }
 }
 
+export function normalizeStreamUrlOptions(
+  partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions,
+): import("./types.ts").StreamUrlOptions {
+  if (partIndexOrOpts === undefined) return {};
+  if (typeof partIndexOrOpts === "number") {
+    checkPartIndex(partIndexOrOpts);
+    return { partIndex: partIndexOrOpts };
+  }
+  if (partIndexOrOpts === null || typeof partIndexOrOpts !== "object" || Array.isArray(partIndexOrOpts)) {
+    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source? }");
+  }
+  checkPartIndex(partIndexOrOpts.partIndex);
+  if (partIndexOrOpts.source !== undefined) {
+    if (typeof partIndexOrOpts.source !== "string") {
+      throw new Error("stream url: source must be a string");
+    }
+    if (partIndexOrOpts.source !== "" && partIndexOrOpts.source.trim() === "") {
+      throw new Error("stream url: source must not be blank");
+    }
+  }
+  const out: import("./types.ts").StreamUrlOptions = {};
+  if (partIndexOrOpts.partIndex !== undefined) out.partIndex = partIndexOrOpts.partIndex;
+  if (partIndexOrOpts.source) out.source = partIndexOrOpts.source;
+  return out;
+}
+
 function encodeData(data: Uint8Array): string {
   const parts: string[] = [];
   for (let i = 0; i < data.length; i += 3) {
@@ -457,11 +483,11 @@ export interface EtherHost {
   /**
    * Frontend-adapter host services (spec §6.5). streamUrl mints a scoped,
    * short-lived Ether stream URL for one of this plugin's own kind items
-   * (or one zero-based part of a multi-file item when partIndex is given);
+   * (optionally scoped to a zero-based partIndex and/or resolver source id);
    * bytes are then served by Ether, never by the plugin.
    */
   frontend?: {
-    streamUrl(viewerId: number, itemRef: string, partIndex?: number): MaybePromise<string>;
+    streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): MaybePromise<string>;
   };
   log(level: string, message: string, attrs?: Record<string, unknown>): MaybePromise<void>;
   abort(message?: string): never;
@@ -538,7 +564,7 @@ interface GlobalEtherBindings {
       browse: (kind: string, query?: import("./types.ts").KindBrowseQuery) => import("./types.ts").KindPage;
     };
     frontend: {
-      streamURL: (itemRef: string, partIndex?: number) => { url: string };
+      streamURL: (itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions) => { url: string };
     };
   };
 }
@@ -834,15 +860,20 @@ export function createHostedClient(): EtherHost {
       },
     },
     frontend: {
-      streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
+      streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
         // argument is accepted for parity with the remote client.
         void viewerId;
-        checkPartIndex(partIndex);
-        const r = callHost<{ url: string }>(
-          "frontend.streamURL",
-          partIndex === undefined ? [itemRef] : [itemRef, partIndex],
-        );
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
+        let args: unknown[];
+        if (opts.source !== undefined) {
+          args = [itemRef, opts];
+        } else if (opts.partIndex !== undefined) {
+          args = [itemRef, opts.partIndex];
+        } else {
+          args = [itemRef];
+        }
+        const r = callHost<{ url: string }>("frontend.streamURL", args);
         return r?.url ?? "";
       },
     },
@@ -1199,12 +1230,13 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     frontend: {
-      async streamUrl(viewerId: number, itemRef: string, partIndex?: number): Promise<string> {
-        checkPartIndex(partIndex);
+      async streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): Promise<string> {
+        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
           viewerId,
           itemRef,
-          ...(partIndex === undefined ? {} : { partIndex }),
+          ...(opts.partIndex === undefined ? {} : { partIndex: opts.partIndex }),
+          ...(opts.source === undefined ? {} : { source: opts.source }),
         });
         return r?.url ?? "";
       },

@@ -64,8 +64,9 @@ type Backends struct {
 	CacheDelete     func(ctx context.Context, pluginID, blobRef string) error
 	// StreamURL mints a scoped stream ticket for one of a plugin's own kind
 	// items for one viewer and returns the Ether stream URL (spec §6.5).
-	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
-	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
 	// ResolveBadgeTitles maps (type, tmdb, imdb) refs to local canonical rating keys (#594).
 	ResolveBadgeTitles func(ctx context.Context, refs []BadgeTitleRef) ([]string, error)
 }

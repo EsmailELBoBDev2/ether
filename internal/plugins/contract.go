@@ -1235,6 +1235,7 @@ type Host interface {
 	// refused. Bytes are then served by Ether, never by the plugin.
 	StreamURL(ctx context.Context, itemRef string) (string, error)
 	StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error)
+	StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error)
 
 	// FoldersList and FoldersStat need folders: read and an owner-picked
 	// root. They never return file contents.
@@ -1261,6 +1262,13 @@ type Host interface {
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
 	Log(ctx context.Context, level, msg string, attrs map[string]any) error
+}
+
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // FetchRequest is one plugin outbound HTTP call.

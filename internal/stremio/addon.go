@@ -151,9 +151,12 @@ type MetaPreview struct {
 	Name          string   `json:"name"`
 	Poster        string   `json:"poster,omitempty"`
 	Logo          string   `json:"logo,omitempty"`
+	Background    string   `json:"background,omitempty"`
 	Description   string   `json:"description,omitempty"`
 	Genres        []string `json:"genres,omitempty"`
 	ReleaseInfo   string   `json:"releaseInfo,omitempty"`
+	Released      string   `json:"released,omitempty"`
+	Runtime       string   `json:"runtime,omitempty"`
 	IMDBRating    string   `json:"imdbRating,omitempty"`
 	IMDbID        string   `json:"imdb_id,omitempty"`
 	TMDBID        any      `json:"tmdb_id,omitempty"`
@@ -243,17 +246,14 @@ type Video struct {
 // Meta is a meta document.
 type Meta struct {
 	MetaPreview
-	Background string   `json:"background,omitempty"`
-	Runtime    string   `json:"runtime,omitempty"`
-	Released   string   `json:"released,omitempty"`
-	Year       any      `json:"year,omitempty"`
-	Cast       []string `json:"cast,omitempty"`
-	Director   []string `json:"director,omitempty"`
-	Writer     []string `json:"writer,omitempty"`
-	Country    string   `json:"country,omitempty"`
-	Language   string   `json:"language,omitempty"`
-	Website    string   `json:"website,omitempty"`
-	Videos     []Video  `json:"videos,omitempty"`
+	Year     any      `json:"year,omitempty"`
+	Cast     []string `json:"cast,omitempty"`
+	Director []string `json:"director,omitempty"`
+	Writer   []string `json:"writer,omitempty"`
+	Country  string   `json:"country,omitempty"`
+	Language string   `json:"language,omitempty"`
+	Website  string   `json:"website,omitempty"`
+	Videos   []Video  `json:"videos,omitempty"`
 }
 
 // Meta reads meta/{type}/{id}.json.

@@ -14,7 +14,77 @@ func init() {
 	store.Register("livetv", 15, `CREATE TABLE livetv_refresh_leases(id TEXT PRIMARY KEY, holder TEXT NOT NULL, until_ms BIGINT NOT NULL);`)
 }
 
-const clientIdleWindow = 5 * time.Minute
+const (
+	clientIdleWindow    = 5 * time.Minute
+	onDemandInUseWindow = 15 * time.Minute
+)
+
+func (s *Service) noteSourceUsedLocked(sourceID string) {
+	if sourceID == "" {
+		return
+	}
+	if s.sourceUsed == nil {
+		s.sourceUsed = map[string]time.Time{}
+	}
+	s.sourceUsed[sourceID] = s.o.Now()
+}
+
+func (s *Service) sourceInUse(sourceID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ss := range s.sessions {
+		if ss.info.Channel.SourceID == sourceID {
+			return true
+		}
+	}
+	if !s.lastClientActivity.IsZero() && now.Sub(s.lastClientActivity) < onDemandInUseWindow {
+		return true
+	}
+	if at, ok := s.sourceUsed[sourceID]; ok && now.Sub(at) < onDemandInUseWindow {
+		return true
+	}
+	return false
+}
+
+func (s *Service) onDemandInterval(src Source) time.Duration {
+	if src.Disabled || src.RefreshHours < 0 {
+		return 0
+	}
+	k, ok := s.kindRegistry().Lookup(src.Kind)
+	if !ok {
+		return 0
+	}
+	od, ok := k.(OnDemandRefreshKind)
+	if !ok {
+		return 0
+	}
+	d := od.OnDemandRefreshInterval()
+	if d <= 0 {
+		return 0
+	}
+	return d
+}
+
+func onDemandNextRefresh(src Source, interval time.Duration) time.Time {
+	next := src.UpdatedAt.Add(interval)
+	if src.LastErrorAt != nil && src.LastErrorAt.After(src.UpdatedAt) {
+		backoff := maxRefreshBackoff
+		if n := max(src.RefreshFailures, 1); n <= 7 {
+			backoff = min(interval<<(n-1), maxRefreshBackoff)
+		}
+		if retry := src.LastErrorAt.Add(backoff); retry.After(next) {
+			next = retry
+		}
+	}
+	return next.UTC()
+}
+
+func (s *Service) activityRefreshDue(src Source, now time.Time) bool {
+	if od := s.onDemandInterval(src); od > 0 {
+		return !now.Before(onDemandNextRefresh(src, od))
+	}
+	return activityRefreshDue(src, now)
+}
 
 // NoteClientActivity is called only after client authentication. It does no
 // database or provider work. The joined refresh loop coalesces wakeups and serves

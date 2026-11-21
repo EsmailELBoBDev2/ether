@@ -636,8 +636,13 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 	if source, ok := s.svc().variants.(frontend.VersionSlots); ok {
 		if titles := s.getTitles(ctx, []frontend.RatingKey{p.key}); len(titles) == 1 {
 			// Plugin items populate their version menu on detail/play intent
-			// (labels=true), never on cold list renders.
-			plan, err := source.VersionSlots(ctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, p.key.IsPluginKey())
+			// (labels=true), never on cold list renders. Tag explicit Play so
+			// playback resolves are never gated by discovery shares.
+			vctx := ctx
+			if p.key.IsPluginKey() {
+				vctx = frontend.WithIndexerPurpose(vctx, frontend.IndexerPurposePlayback)
+			}
+			plan, err := source.VersionSlots(vctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, p.key.IsPluginKey())
 			if err != nil {
 				return nil, err
 			}
@@ -721,7 +726,7 @@ type variantWatches struct {
 // a library timeline entry tells the open page to reload, as PMS does on a
 // metadata change, so Play Version is there without leaving the page.
 func (s *Server) watchVariants(pr *Request, t *frontend.Title) {
-	if s.svc().variants == nil || pr == nil || pr.User == nil || t == nil {
+	if s.svc().variants == nil || pr == nil || pr.User == nil || t == nil || t.Key.IsPluginKey() {
 		return
 	}
 	key := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)

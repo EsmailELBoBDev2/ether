@@ -32,6 +32,8 @@ type Manager struct {
 	clients        []*Client
 	searchTimingMu sync.RWMutex
 	searchTimings  []SearchTiming
+	shareLogMu     sync.Mutex
+	shareLogDay    map[string]string
 }
 
 // SearchTiming records the most recent aggregate search's per-indexer cost.
@@ -46,6 +48,25 @@ func (m *Manager) SearchTimings() []SearchTiming {
 	m.searchTimingMu.RLock()
 	defer m.searchTimingMu.RUnlock()
 	return append([]SearchTiming(nil), m.searchTimings...)
+}
+
+func (m *Manager) shouldLogSpeculativeShare(key, day string) bool {
+	m.shareLogMu.Lock()
+	defer m.shareLogMu.Unlock()
+	if m.shareLogDay == nil {
+		m.shareLogDay = map[string]string{}
+	}
+	if m.shareLogDay[key] == day {
+		return false
+	}
+	m.shareLogDay[key] = day
+	return true
+}
+
+func (m *Manager) clearSpeculativeShareLog(key string) {
+	m.shareLogMu.Lock()
+	delete(m.shareLogDay, key)
+	m.shareLogMu.Unlock()
 }
 
 var _ core.Indexer = (*Manager)(nil)
@@ -315,10 +336,21 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	var merged []core.Release
 	var errs []error
 	anySearched := false
+	purpose := usagePurpose(ctx)
+	day := time.Now().UTC().Format("2006-01-02")
 	for i, s := range slots {
+		shareKey := clients[i].Name() + "|" + purpose
 		if s.err != nil {
 			errs = append(errs, s.err)
-			m.log.Debug("indexer search failed", "indexer", clients[i].Name(), "err", s.err)
+			if errors.Is(s.err, errSpeculativeShare) {
+				if m.shouldLogSpeculativeShare(shareKey, day) {
+					m.log.Debug("indexer search failed", "indexer", clients[i].Name(), "err", s.err)
+				}
+			} else {
+				m.log.Debug("indexer search failed", "indexer", clients[i].Name(), "err", s.err)
+			}
+		} else if !s.skipped {
+			m.clearSpeculativeShareLog(shareKey)
 		}
 		if !s.skipped {
 			anySearched = true

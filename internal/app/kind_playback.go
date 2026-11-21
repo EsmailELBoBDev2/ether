@@ -52,6 +52,9 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 			OpenCandidate: nil,
 		}
 		in.OpenCandidate = func(octx context.Context, exclude []string) (core.MediaSource, core.Release, error) {
+			if core.IndexerPurpose(octx) == "" {
+				octx = core.WithIndexerPurpose(octx, core.IndexerPurposePlayback)
+			}
 			var media *frontend.KindMedia
 			var err error
 			if in.PreferSourceID != "" && in.PreferSourceID != core.KindAutoVersionID {

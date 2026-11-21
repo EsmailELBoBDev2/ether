@@ -30,6 +30,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/resolver"
 )
@@ -77,6 +78,8 @@ const (
 	defaultKindNZBFetchTimeout      = 20 * time.Second
 	defaultKindEngineOpenTimeout    = 25 * time.Second
 	defaultKindCandidateOpenTimeout = 30 * time.Second
+	speculativeSourceBudgetCooloff  = 5 * time.Minute
+	kindDetailMissCooloff           = 5 * time.Minute
 )
 
 type resolveFlightKey struct {
@@ -124,8 +127,12 @@ type KindResolver struct {
 	flightMu sync.Mutex
 	flights  map[resolveFlightKey]*resolveFlight
 
-	candMu    sync.Mutex
-	candCache map[resolveFlightKey]cachedKindCandidates
+	candMu          sync.Mutex
+	candCache       map[resolveFlightKey]cachedKindCandidates
+	detailMissUntil map[resolveFlightKey]time.Time
+
+	specBudgetMu    sync.Mutex
+	specBudgetUntil map[string]time.Time
 
 	usenetCheckMu   sync.Mutex
 	usenetByRelease map[string]*usenetCheckEntry
@@ -194,6 +201,8 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		candidateOpenTimeout: candidateOpenTimeout,
 		flights:              make(map[resolveFlightKey]*resolveFlight),
 		candCache:            make(map[resolveFlightKey]cachedKindCandidates),
+		detailMissUntil:      make(map[resolveFlightKey]time.Time),
+		specBudgetUntil:      make(map[string]time.Time),
 		usenetByRelease:      make(map[string]*usenetCheckEntry),
 		usenetByHash:         make(map[string]*usenetCheckEntry),
 		usenetEntries:        make(map[*usenetCheckEntry]struct{}),
@@ -236,6 +245,11 @@ func (r *KindResolver) InvalidatePlugin(pluginID string) {
 	for fk := range r.candCache {
 		if strings.HasPrefix(string(fk.ref), prefix) {
 			delete(r.candCache, fk)
+		}
+	}
+	for fk := range r.detailMissUntil {
+		if strings.HasPrefix(string(fk.ref), prefix) {
+			delete(r.detailMissUntil, fk)
 		}
 	}
 	r.candMu.Unlock()
@@ -412,6 +426,9 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 	if partIndex != nil && *partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
+	if core.IndexerPurpose(ctx) == "" {
+		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
+	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
 		return nil, err
@@ -531,9 +548,24 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 			return nil, nil
 		}
 	}
+	fk := flightKeyForItem(item.Ref, partIdx)
+	speculative := core.SpeculativeIndexerWork(ctx)
 	var sources []core.PlayableSource
 	if allowResolve && !core.LocalResponse(ctx) {
-		sources, err = r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
+		if speculative {
+			if cached, hit, cerr := r.cachedCandidatesFor(ctx, item, partIdx); hit || cerr != nil {
+				sources, err = cached, cerr
+			} else if r.detailMissActive(fk) {
+				return nil, nil
+			} else {
+				sources, err = r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
+				if ctx.Err() == nil && (err != nil || len(sources) == 0) {
+					r.noteDetailMiss(fk)
+				}
+			}
+		} else {
+			sources, err = r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
+		}
 	} else {
 		var hit bool
 		sources, hit, err = r.cachedCandidatesFor(ctx, item, partIdx)
@@ -779,8 +811,13 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
+<<<<<<< HEAD
 	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
 		return r.OpenKindPartExcluding(ctx, viewer, parentKey, partIdx, accept, exclude)
+=======
+	if core.IndexerPurpose(ctx) == "" {
+		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
+>>>>>>> 678b754bd2487463fef33b614c8f66df581f2886
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
@@ -893,8 +930,13 @@ func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.V
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
+<<<<<<< HEAD
 	if parentKey, _, isPart := key.PluginPart(); isPart {
 		key = parentKey
+=======
+	if core.IndexerPurpose(ctx) == "" {
+		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
+>>>>>>> 678b754bd2487463fef33b614c8f66df581f2886
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
 	if err != nil {
@@ -1415,6 +1457,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 	case "indexer_search":
 		ctx, cancel := withHardTimeout(ctx, sourceIndexerSearchTimeout)
 		defer cancel()
+		if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
+			ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
+		}
 		query := strings.TrimSpace(q.Query)
 		category := strings.TrimSpace(q.Category)
 		if query == "" && category == "" {
@@ -1441,6 +1486,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		if r.indexer == nil {
 			return []core.SourceCandidate{}, nil
 		}
+		if r.speculativeSourceBudgetPaused(ctx) {
+			return []core.SourceCandidate{}, nil
+		}
 		rels, err := r.indexer.Search(ctx, core.SearchRequest{
 			Title:    query,
 			Category: category,
@@ -1448,6 +1496,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
+			}
+			if errors.Is(err, core.ErrBudgetExhausted) {
+				r.noteSpeculativeSourceBudgetExhausted(ctx)
 			}
 			// One broken indexer (a missing site definition, an outage)
 			// fails the whole fan-out when nobody else had a match. For a
@@ -2134,7 +2185,78 @@ func (r *KindResolver) deleteCandidates(fk resolveFlightKey) {
 	}
 	r.candMu.Lock()
 	delete(r.candCache, fk)
+	delete(r.detailMissUntil, fk)
 	r.candMu.Unlock()
+}
+
+func (r *KindResolver) detailMissActive(fk resolveFlightKey) bool {
+	if r == nil {
+		return false
+	}
+	now := r.now()
+	r.candMu.Lock()
+	defer r.candMu.Unlock()
+	until, ok := r.detailMissUntil[fk]
+	if !ok {
+		return false
+	}
+	if !now.Before(until) {
+		delete(r.detailMissUntil, fk)
+		return false
+	}
+	return true
+}
+
+func (r *KindResolver) noteDetailMiss(fk resolveFlightKey) {
+	if r == nil {
+		return
+	}
+	now := r.now()
+	r.candMu.Lock()
+	defer r.candMu.Unlock()
+	if r.detailMissUntil == nil {
+		r.detailMissUntil = make(map[resolveFlightKey]time.Time)
+	}
+	for k, u := range r.detailMissUntil {
+		if !now.Before(u) {
+			delete(r.detailMissUntil, k)
+		}
+	}
+	if len(r.detailMissUntil) >= maxKindCandidateCacheEntries {
+		clear(r.detailMissUntil)
+	}
+	r.detailMissUntil[fk] = now.Add(kindDetailMissCooloff)
+}
+
+func (r *KindResolver) speculativeSourceBudgetPaused(ctx context.Context) bool {
+	if r == nil || !core.SpeculativeIndexerWork(ctx) {
+		return false
+	}
+	purpose := core.IndexerPurpose(ctx)
+	if purpose == "" {
+		return false
+	}
+	now := r.now()
+	r.specBudgetMu.Lock()
+	until := r.specBudgetUntil[purpose]
+	r.specBudgetMu.Unlock()
+	return now.Before(until)
+}
+
+func (r *KindResolver) noteSpeculativeSourceBudgetExhausted(ctx context.Context) {
+	if r == nil || !core.SpeculativeIndexerWork(ctx) {
+		return
+	}
+	purpose := core.IndexerPurpose(ctx)
+	if purpose == "" {
+		return
+	}
+	r.specBudgetMu.Lock()
+	if r.specBudgetUntil == nil {
+		r.specBudgetUntil = make(map[string]time.Time)
+	}
+	r.specBudgetUntil[purpose] = r.now().Add(speculativeSourceBudgetCooloff)
+	r.specBudgetMu.Unlock()
 }
 
 // cachedCandidatesFor checks the in-memory candidate cache first and falls

@@ -418,6 +418,9 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 }
 
 func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata, playProbe bool) bool {
+	if key.IsPluginKey() {
+		return false
+	}
 	cachedMetadata := metadata && !playProbe && core.LocalResponse(requestCtx)
 	if user == nil || caps.ClientID == "" || (!playProbe && caps.Product == "") {
 		return false

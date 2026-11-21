@@ -76,7 +76,8 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		if req.Version == core.KindAutoVersionID {
 			chosen = &core.ReleaseVariant{ID: core.KindAutoVersionID, Auto: true}
 		} else if b.deps.KindVersions != nil {
-			variants, verr := b.deps.KindVersions(ctx, v, req.Item)
+			vctx := core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
+			variants, verr := b.deps.KindVersions(vctx, v, req.Item)
 			if verr != nil {
 				return frontend.PlayPlan{}, verr
 			}

@@ -1216,7 +1216,9 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
 export function isPausedSession(
   s: Pick<NowPlaying, "paused" | "liveness" | "viewerState">,
 ): boolean {
-  return s.paused === true || s.liveness === "paused" || (!s.liveness && s.viewerState === "paused");
+  return (
+    s.paused === true || s.liveness === "paused" || (!s.liveness && s.viewerState === "paused")
+  );
 }
 
 /** Selected channel, independent of the programme title. */

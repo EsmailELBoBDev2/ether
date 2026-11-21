@@ -692,7 +692,7 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files";
+  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files" | "usenet_check";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
@@ -703,8 +703,25 @@ export interface SourceQuery {
   magnet?: string;
   /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
   torrentUrl?: string;
-  /** A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its indexer. */
+  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  nzbUrl?: string;
+  /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
+}
+
+/** Sampled Usenet article availability verdict for one NZB release (usenet_check). */
+export interface UsenetCheckResult {
+  available: boolean;
+  checked: number;
+  missing: number;
+  /** True when served from Ether's bounded per-NZB cache (including a recorded playback failure). */
+  cached?: boolean;
+  /** True when a real playback attempt against this NZB failed with an article or release error. */
+  playbackFailed?: boolean;
+  /** Short diagnostic code when available is false (e.g. articles_missing, playback_article_missing). */
+  reason?: string;
+  /** Unix timestamp (seconds) when this verdict or playback failure was recorded. */
+  checkedAt?: number;
 }
 
 /** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
@@ -737,6 +754,8 @@ export interface SourceCandidate {
   codec?: string;
   /** Files inside this release; populated only by a release_files query. */
   files?: ReleaseFile[];
+  /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
+  usenetCheck?: UsenetCheckResult;
 }
 
 export interface KindMatchRequest {

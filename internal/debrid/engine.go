@@ -375,6 +375,17 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 	return nil, core.ErrNotAvailable
 }
 
+// CheckArticles forwards bounded Usenet article availability checks to the
+// wrapped streaming engine.
+func (e *Engine) CheckArticles(ctx context.Context, releaseID string, nzbData []byte) (core.UsenetCheckResult, error) {
+	if checker, ok := e.inner.(interface {
+		CheckArticles(context.Context, string, []byte) (core.UsenetCheckResult, error)
+	}); ok {
+		return checker.CheckArticles(ctx, releaseID, nzbData)
+	}
+	return core.UsenetCheckResult{}, core.ErrNotAvailable
+}
+
 // Check implements core.HealthChecker. For a debrid payload it confirms a
 // direct link is obtainable and that a range request answers 206 with the
 // expected size, caching the head block it read; others go to the inner

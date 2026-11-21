@@ -296,7 +296,7 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 		}
 
 		callStart := time.Now()
-		resp, err := run.Call(jobCtx, plugins.Request{
+		resp, err := run.Call(plugins.WithBackgroundCall(jobCtx), plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
 			Path:     routePath,
@@ -573,7 +573,7 @@ func (c *KindCatalog) runContainerHydration(
 		if mErr != nil {
 			return nil, "", false, false, mErr
 		}
-		resp, cErr := c.mgr.Call(bgCtx, rec.PluginID, plugins.Request{
+		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
 			Path:     expandPath,
@@ -608,7 +608,7 @@ func (c *KindCatalog) runContainerHydration(
 		if mErr != nil {
 			return nil, "", false, mErr
 		}
-		resp, cErr := c.mgr.Call(bgCtx, rec.PluginID, plugins.Request{
+		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
 			Path:     browsePath,

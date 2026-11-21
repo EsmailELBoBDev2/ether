@@ -716,7 +716,7 @@ func (s *Service) callKindBrowse(ctx context.Context, caller Caller, pluginID, k
 	if err != nil {
 		return core.KindPage{}, 0, err
 	}
-	resp, err := caller.Call(ctx, pluginID, plugins.Request{
+	resp, err := caller.Call(plugins.WithBackgroundCall(ctx), pluginID, plugins.Request{
 		PluginID: pluginID,
 		Method:   http.MethodPost,
 		Path:     fmt.Sprintf("/ether/v1/kinds/%s/browse", kindKey),
@@ -756,7 +756,7 @@ func (s *Service) callKindChanges(ctx context.Context, caller Caller, pluginID, 
 	if err != nil {
 		return core.KindChangePage{}, false, 0, err
 	}
-	resp, err := caller.Call(ctx, pluginID, plugins.Request{
+	resp, err := caller.Call(plugins.WithBackgroundCall(ctx), pluginID, plugins.Request{
 		PluginID: pluginID,
 		Method:   http.MethodPost,
 		Path:     fmt.Sprintf("/ether/v1/kinds/%s/changes", kindKey),

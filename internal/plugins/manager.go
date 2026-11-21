@@ -138,11 +138,13 @@ type Manager struct {
 	scheduleInFlight map[string]*scheduleFlight
 	scheduleJobs     map[string]*actionJob
 	scheduleWG       sync.WaitGroup
-	// rate-limit bookkeeping for host log, notify, and custom event publish
+	// rate-limit bookkeeping for host log, notify, custom event publish, and usenet_check
 	notifyTimes       map[string][]time.Time
 	logTimes          map[string][]time.Time
 	eventPublishTimes map[string][]time.Time
 	eventPublishLimit int
+	usenetCheckTimes  map[string][]time.Time
+	usenetCheckLimit  int
 	// eventBridgeMu guards the single events.Bus bridge subscription for plugins.
 	eventBridgeMu  sync.Mutex
 	eventBridgeSub *events.Subscription
@@ -229,6 +231,7 @@ func New(deps Deps) (*Manager, error) {
 		notifyTimes:       map[string][]time.Time{},
 		logTimes:          map[string][]time.Time{},
 		eventPublishTimes: map[string][]time.Time{},
+		usenetCheckTimes:  map[string][]time.Time{},
 	}
 	return m, nil
 }
@@ -1376,6 +1379,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	m.clearBlockedOperatorHosts(id)
 	m.mu.Lock()
 	delete(m.eventPublishTimes, id)
+	delete(m.usenetCheckTimes, id)
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {
 			delete(m.nextRun, key)

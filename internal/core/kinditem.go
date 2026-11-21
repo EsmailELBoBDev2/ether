@@ -332,7 +332,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -343,14 +343,39 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// TorrentURL carries a torrent download link (.torrent or indexer details
-	// download page) for torrent indexers that do not emit an info hash or
-	// magnet in search results.
+	// TorrentURL carries a torrent download or details page link for torrent
+	// indexers that do not emit an info hash or magnet in search results.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	// NZBURL carries a Usenet NZB link for usenet_check when the plugin does
+	// not pass a full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
-	// back for release_files, so an NZB or torrent link is resolved through
-	// its originating indexer.
+	// back for release_files or usenet_check, so an NZB or torrent link is
+	// resolved through its originating indexer.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+}
+
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release, as returned by a usenet_check source query.
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a previous real playback attempt against
+	// this NZB failed with an article or release error (such as missing or
+	// corrupt articles), overriding or pre-empting any sampled check.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false
+	// (e.g. "articles_missing", "playback_article_missing",
+	// "playback_article_corrupt", "playback_release_rejected").
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
 }
 
 // ReleaseFile is one file inside a candidate release, as returned by a
@@ -399,6 +424,10 @@ type SourceCandidate struct {
 	// Files is populated only by a release_files query: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query: the sampled
+	// article availability verdict and any recorded playback failure for
+	// this NZB release.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns

@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -105,6 +106,9 @@ func (f *targetDecisionTranscoder) Decide(info core.MediaInfo, caps core.ClientC
 	if !opts.DirectStream {
 		return core.Decision{Kind: core.DecisionTranscode, VideoCopy: false, VideoCodec: "h264", AudioCopy: false, AudioCodec: "aac", AudioStream: 7}
 	}
+	if slices.Contains(caps.TranscodeAudioCodecs, "eac3") {
+		return core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, AudioCodec: "eac3", AudioStream: 7}
+	}
 	return core.Decision{Kind: core.DecisionTranscode, VideoCopy: true, AudioCodec: "aac", AudioStream: 7}
 }
 
@@ -121,7 +125,7 @@ func TestDecisionForcedRemuxHonorsAudioTarget(t *testing.T) {
 		{"surround target on forced stream", []string{"aac", "eac3"}, true, true, 1, core.DecisionRemux},
 		{"no target", nil, true, true, 1, core.DecisionRemux},
 		{"direct play exemption", []string{"aac"}, false, true, 1, core.DecisionDirectPlay},
-		{"unverified health without preference remuxes", []string{"aac", "eac3"}, false, false, 1, core.DecisionRemux},
+		{"unverified health without preference remuxes", []string{"aac", "eac3"}, false, false, 2, core.DecisionRemux},
 		{"unverified health preserves forced AAC target", []string{"aac"}, true, false, 2, core.DecisionTranscode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,7 +138,7 @@ func TestDecisionForcedRemuxHonorsAudioTarget(t *testing.T) {
 			if tc.wantKind == core.DecisionRemux && (!got.VideoCopy || !got.AudioCopy) {
 				t.Fatalf("remux must copy both streams: %+v", got)
 			}
-			if tc.wantCalls == 2 && (transcoder.options[1].DirectPlay || !transcoder.options[1].DirectStream || transcoder.options[1].AudioStream != 7 || got.AudioCodec != "aac" || got.AudioCopy || !got.VideoCopy) {
+			if tc.wantKind == core.DecisionTranscode && (transcoder.options[1].DirectPlay || !transcoder.options[1].DirectStream || transcoder.options[1].AudioStream != 7 || got.AudioCodec != "aac" || got.AudioCopy || !got.VideoCopy) {
 				t.Fatalf("target reconsider lost selected source facts: %+v %+v", got, transcoder.options)
 			}
 		})
@@ -238,5 +242,44 @@ func TestDecisionHealthFailoverSafety(t *testing.T) {
 				t.Fatalf("unsafe remux: %+v", got)
 			}
 		})
+	}
+}
+
+type segmentedDecisionTranscoder struct{ segmented core.Decision }
+
+func (f segmentedDecisionTranscoder) Decide(_ core.MediaInfo, _ core.ClientCaps, opts core.DecideOptions) core.Decision {
+	if opts.DirectPlay {
+		return core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true}
+	}
+	return f.segmented
+}
+func (segmentedDecisionTranscoder) StartHLS(context.Context, core.HLSRequest) (core.HLSSession, error) {
+	return nil, core.ErrNotAvailable
+}
+func (segmentedDecisionTranscoder) Session(string) (core.HLSSession, bool) { return nil, false }
+func (segmentedDecisionTranscoder) Stop(string)                            {}
+func (segmentedDecisionTranscoder) HWAccel() core.HWAccel                  { return core.HWAccel{} }
+func (segmentedDecisionTranscoder) Probe(context.Context, string) (*core.MediaInfo, error) {
+	return nil, core.ErrNotAvailable
+}
+
+// The optional remux for an unverified source only ever trades the file for
+// a lossless copy. A cold 4K Dolby Vision TrueHD remux (Totoro) kept direct
+// play: its segmented copy would strip Dolby Vision and could not carry
+// TrueHD, and the Apple TV refused it.
+func TestUnverifiedSourceNeverTakesLossyOptionalRemux(t *testing.T) {
+	ps := &core.PlaySession{Resolution: &core.Resolution{Release: core.Release{ID: "usenet:dv"}}, Info: core.MediaInfo{Container: "mkv", Streams: []core.StreamInfo{{Type: "video", Codec: "hevc", DolbyVision: true, DolbyVisionProfile: 8}, {Type: "audio", Codec: "truehd"}}}}
+	for name, tc := range map[string]struct {
+		segmented core.Decision
+		want      core.DecisionKind
+	}{
+		"audio not carried":     {core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCodec: "eac3"}, core.DecisionDirectPlay},
+		"dolby vision stripped": {core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, StripDolbyVision: true}, core.DecisionDirectPlay},
+		"lossless copy":         {core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true}, core.DecisionRemux},
+	} {
+		got, err := Decide(nil, segmentedDecisionTranscoder{tc.segmented}, DecisionRequest{Session: ps, Options: core.DecideOptions{DirectPlay: true, DirectStream: true}})
+		if err != nil || got.Kind != tc.want {
+			t.Fatalf("%s: decision %+v err %v", name, got, err)
+		}
 	}
 }

@@ -1478,17 +1478,58 @@ func (m *Manager) ExtractSubtitle(ctx context.Context, inputURL string, streamIn
 	if codec != "" && IsImageSubtitle(codec) {
 		return ErrImageSubtitle
 	}
+	run := func(ctx context.Context, buf *bytes.Buffer) error {
+		if data, ok := m.indexedSubtitle(ctx, streamIndex, codec); ok {
+			buf.Write(data)
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return m.extractSubtitle(ctx, inputURL, streamIndex, buf)
+	}
 	if source, _ := ctx.Value(subtitleSourceKey{}).(string); source != "" {
-		data, err := m.subtitles.extract(ctx, subtitleCacheKey(source, codec, streamIndex), func(ctx context.Context, buf *bytes.Buffer) error {
-			return m.extractSubtitle(ctx, inputURL, streamIndex, buf)
-		})
+		data, err := m.subtitles.extract(ctx, subtitleCacheKey(source, codec, streamIndex), run)
 		if err != nil {
 			return err
 		}
 		_, err = w.Write(data)
 		return err
 	}
-	return m.extractSubtitle(ctx, inputURL, streamIndex, w)
+	var buf bytes.Buffer
+	if err := run(ctx, &buf); err != nil {
+		return err
+	}
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
+// indexedSubtitle reads a text track through the source's Matroska index when
+// the caller attached the source (WithSubtitleReader): a few small reads per
+// subtitle line instead of FFmpeg reading the whole input. ok is false when
+// the source is not indexed that way; FFmpeg then reads it.
+func (m *Manager) indexedSubtitle(ctx context.Context, streamIndex int, codec string) ([]byte, bool) {
+	open, _ := ctx.Value(subtitleReaderKey{}).(SubtitleReaderOpener)
+	if open == nil || !IsTextSubtitle(codec) {
+		return nil, false
+	}
+	src, size, release, ok := open()
+	if !ok {
+		return nil, false
+	}
+	defer release()
+	started := time.Now()
+	data, err := indexedSubtitleVTT(ctx, src, size, streamIndex, codec)
+	if err != nil {
+		if m.log != nil && ctx.Err() == nil {
+			m.log.Debug("indexed subtitle read unavailable; extracting with ffmpeg", "stream", streamIndex, "err", err)
+		}
+		return nil, false
+	}
+	if m.log != nil {
+		m.log.Debug("indexed subtitle read", "stream", streamIndex, "bytes", len(data), "took", time.Since(started).Round(time.Millisecond))
+	}
+	return data, true
 }
 
 // CachedSubtitle is the WebVTT of a track ExtractSubtitle already read

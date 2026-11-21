@@ -973,8 +973,10 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		// the HLS stream. Only HLS can carry it, so the original file is not
 		// direct-played, and the video decision stays subtitle-free like the
 		// progressive client's below.
+		// A client that also renders embedded tracks from the original file
+		// (HLSTextRenditions) keeps direct play and its selection.
 		for _, index := range hlsTextTracks(string(req.Protocol), req.Caps, ps.Info) {
-			if req.Intent.Options.SubtitleStream == index {
+			if hlsOnlyTextClient(string(req.Protocol), req.Caps) && req.Intent.Options.SubtitleStream == index {
 				req.Intent.Options.DirectPlay = false
 				req.Intent.Options.SubtitleStream = -1
 				req.Intent.Options.BurnSubtitles = false

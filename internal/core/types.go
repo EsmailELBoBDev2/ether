@@ -404,6 +404,13 @@ type ClientCaps struct {
 
 	ClientIP string `json:"clientIp,omitempty"` // trusted-proxy-resolved address, when known
 
+	// HLSTextRenditions: the client takes an embedded text subtitle as a
+	// WebVTT rendition of the session's HLS stream (Silo's
+	// hls_subtitle_renditions_v1), so the cues ride the picture's input read
+	// instead of a whole-file sidecar extraction. It does not make the
+	// session prefer HLS: original-file playback stays the client's choice.
+	HLSTextRenditions bool `json:"hlsTextRenditions,omitempty"`
+
 	Profiles        *ClientCapabilityProfiles `json:"profiles,omitempty"`
 	Protocol        Protocol                  `json:"protocol,omitempty"`
 	Product         string                    `json:"product"`  // X-Plex-Product: "Plex Web", "Plex for iOS", "Plex for Apple TV"

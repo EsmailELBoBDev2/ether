@@ -122,6 +122,19 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 			(r.NoVideoTranscode && !dec.VideoCopy)) {
 		dec = original
 	}
+	// The optional health-safety remux above is assembled from per-codec
+	// checks. Take it only when the real segmented decision is a lossless
+	// copy: a stream that drops Dolby Vision to its base layer or cannot
+	// carry the source audio (TrueHD in fMP4) is worse than the file the
+	// client already plays, and AVPlayer refuses some of them outright.
+	if healthSafety && !requiresRemux && !r.PreferRemux && original.Kind == core.DecisionDirectPlay && dec.Kind == core.DecisionRemux && transcoder != nil {
+		opts := r.Options
+		opts.DirectPlay = false
+		segmented := transcoder.Decide(ps.Info, r.Caps, opts)
+		if !segmented.VideoCopy || !segmented.AudioCopy || (segmented.StripDolbyVision && !original.StripDolbyVision) {
+			dec = original
+		}
+	}
 	return dec, nil
 }
 

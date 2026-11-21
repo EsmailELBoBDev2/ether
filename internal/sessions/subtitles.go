@@ -56,6 +56,9 @@ func (b *Broker) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id s
 		return "", core.ErrNotAvailable
 	}
 	url := fmt.Sprintf("/sessions/media/%s/%s/subtitles/%d.%s", s.public.ID, s.grant, index, format)
+	if !st.External && index == s.opts.SubtitleStream && !b.progressiveSubtitle(s, ps.Info, st) {
+		b.warmSubtitle(s, st)
+	}
 	if b.progressiveSubtitle(s, ps.Info, st) {
 		window := false
 		for _, p := range s.caps.Profiles.Subtitles {
@@ -72,6 +75,44 @@ func (b *Broker) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id s
 	return url, nil
 }
 
+// warmSubtitle starts reading the session's selected embedded text track as
+// soon as its sidecar is handed out: the player asks for it a moment later
+// and joins the read already under way (the extraction cache is shared per
+// source and track). Only the selected track of a playing session is read,
+// and the read ends with the session.
+func (b *Broker) warmSubtitle(s *brokerSession, st core.StreamInfo) {
+	if b.deps.ExtractSubtitle == nil || !transcode.IsTextSubtitle(st.Codec) {
+		return
+	}
+	// Without a cache key the warmed track could not be shared.
+	if keyer, ok := b.deps.Playback.(interface{ SourceKey(string) string }); !ok || keyer.SourceKey(s.playID) == "" {
+		return
+	}
+	key := s.public.ID + "\x00" + strconv.Itoa(st.Index)
+	if _, started := b.subtitleWarm.LoadOrStore(key, struct{}{}); started {
+		return
+	}
+	ctx := context.Background()
+	if sc, ok := b.deps.Playback.(interface {
+		SessionContext(string) context.Context
+	}); ok {
+		if c := sc.SessionContext(s.playID); c != nil {
+			ctx = c
+		}
+	}
+	input := b.deps.Playback.InputURL(s.playID)
+	if input == "" {
+		b.subtitleWarm.Delete(key)
+		return
+	}
+	ctx, cancel := context.WithTimeout(b.subtitleContext(ctx, s.playID), 10*time.Minute)
+	go func() {
+		defer cancel()
+		defer b.subtitleWarm.Delete(key)
+		_ = b.deps.ExtractSubtitle(ctx, input, st.Index, st.Codec, io.Discard)
+	}()
+}
+
 // subtitleFormat includes Jellyfin web's JSON renderer and ASS renderer.
 func subtitleFormat(format string) bool {
 	switch format {
@@ -81,10 +122,17 @@ func subtitleFormat(format string) bool {
 	return false
 }
 
-// subtitleContext names the session's source for the extraction cache.
+// subtitleContext names the session's source for the extraction cache and
+// hands the extractor the source itself, so an indexed track is read line by
+// line instead of FFmpeg reading the whole release.
 func (b *Broker) subtitleContext(ctx context.Context, playID string) context.Context {
 	if keyer, ok := b.deps.Playback.(interface{ SourceKey(string) string }); ok {
-		return transcode.WithSubtitleSource(ctx, keyer.SourceKey(playID))
+		ctx = transcode.WithSubtitleSource(ctx, keyer.SourceKey(playID))
+	}
+	if reader, ok := b.deps.Playback.(interface {
+		SourceReader(string) (io.ReaderAt, int64, func(), bool)
+	}); ok {
+		ctx = transcode.WithSubtitleReader(ctx, func() (io.ReaderAt, int64, func(), bool) { return reader.SourceReader(playID) })
 	}
 	return ctx
 }

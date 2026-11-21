@@ -669,7 +669,9 @@ func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
 		// guard; non-GET requests stay probes on both protocols.
 		probe := r.Method != http.MethodGet || (s.isDASH() && r.Header.Get("Range") != "" && (s.cur != nil || s.runSeq > 0))
 		selectTrack := !s.isDASH() || t != s.audioTrackLocked()
-		if probe && (s.cur == nil || s.cur.finished || s.cur.stopped || (selectTrack && s.cur.track != t)) {
+		activeTrack := (s.cur != nil && !s.cur.finished && !s.cur.stopped && (!selectTrack || s.cur.track == t)) ||
+			(s.pendingStart && (!selectTrack || s.pendingTrack == t))
+		if probe && !activeTrack {
 			s.mu.Unlock()
 			http.Error(w, "initialization not ready", http.StatusServiceUnavailable)
 			return

@@ -587,11 +587,11 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	s.endSeg = -1
 	s.deliveredCount = 0
 	if s.info.Video() != nil {
-		runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "kind", s.decision.Kind,
-			"videoCopy", s.decision.VideoCopy, "audioCopy", s.decision.AudioCopy, "hw", r.hw)
+		runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "track", r.track, "kind", spec.Decision.Kind,
+			"videoCopy", spec.Decision.VideoCopy, "audioCopy", spec.Decision.AudioCopy, "hw", r.hw)
 	} else {
-		runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "kind", s.decision.Kind,
-			"audioCopy", s.decision.AudioCopy)
+		runLog.Info("ffmpeg started", "segment", seg, "at", spec.Start, "track", r.track, "kind", spec.Decision.Kind,
+			"audioCopy", spec.Decision.AudioCopy)
 	}
 	if s.traceOn() {
 		if cause == "" {

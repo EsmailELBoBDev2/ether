@@ -1014,6 +1014,15 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		if total > 0 && startSeg >= total {
 			startSeg = total - 1
 		}
+		if !req.LiveInput && req.FirstSegmentAt > 0 && req.StartOffset == 0 && segDur > 0 && req.FirstSegmentAt < req.Info.Duration {
+			at := int(req.FirstSegmentAt / segDur)
+			if total > 1 && at >= total-1 {
+				at = total - 2
+			}
+			if at > startSeg && at < total {
+				startSeg = at
+			}
+		}
 		reps = dashRepsLadder(req.Info, d, rungs)
 		if len(reps) == 0 {
 			return nil, errors.New("transcode: StartHLS: no video or audio stream for DASH")

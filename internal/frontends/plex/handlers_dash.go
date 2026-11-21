@@ -155,6 +155,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		}
 		s.stopPlexHLS(p.sessionID)
 	}
+	firstSegmentAt := s.resumeStartHint(ctx, pr, p, entry, priorEntry)
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
 		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
@@ -164,6 +165,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		Info:                ps.Info,
 		Decision:            dec,
 		StartOffset:         p.offset,
+		FirstSegmentAt:      firstSegmentAt,
 		Protocol:            frontend.ProtocolDASH,
 		PMSDASH:             !strings.EqualFold(strings.TrimSpace(startPR.Product), "Plex Web"),
 	})

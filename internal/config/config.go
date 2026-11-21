@@ -580,14 +580,15 @@ type ClientCompatibility struct {
 type Transcode struct {
 	RTXVideo RTXVideo `json:"rtxVideo"`
 
-	VideoTranscoding     string `json:"videoTranscoding"` // "on" (default) or "off" (movies and shows only; Live TV is unaffected)
-	FFmpegPath           string `json:"ffmpegPath"`       // empty = bundled, then PATH
-	FFprobePath          string `json:"ffprobePath"`
-	HWAccel              string `json:"hwAccel"` // "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi"
-	VAAPIDevice          string `json:"vaapiDevice"`
-	TempDir              string `json:"tempDir"`
-	MaxTranscodes        int    `json:"maxTranscodes"`
-	RemoteMaxBitrateKbps int    `json:"remoteMaxBitrateKbps"`
+	VideoTranscoding       string `json:"videoTranscoding"` // "on" (default) or "off" (movies and shows only; Live TV is unaffected)
+	FFmpegPath             string `json:"ffmpegPath"`       // empty = bundled, then PATH
+	FFprobePath            string `json:"ffprobePath"`
+	HWAccel                string `json:"hwAccel"` // "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi"
+	VAAPIDevice            string `json:"vaapiDevice"`
+	TempDir                string `json:"tempDir"`
+	MaxTranscodes          int    `json:"maxTranscodes"`
+	RemoteMaxBitrateKbps   int    `json:"remoteMaxBitrateKbps"`
+	RemoteUploadBudgetKbps int    `json:"remoteUploadBudgetKbps"`
 
 	// Adaptive HLS engine (additive). Numeric zero values select the
 	// transcode package defaults; see Defaults for the shipped values.

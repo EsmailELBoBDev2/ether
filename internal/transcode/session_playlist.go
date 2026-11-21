@@ -281,6 +281,9 @@ func (s *Session) runPlanLocked(seg int) runPlan {
 	}
 	rp.mode = s.plan.ModeAt(seg)
 	rp.planEnd = s.plan.NextChange(seg)
+	if rp.mode == ModeCopy && s.budgetCapKbps > 0 && s.container == ContainerMPEGTS && s.budgetRung > 0 {
+		rp.mode = ModeTranscode
+	}
 	switch rp.mode {
 	case ModeFastStart:
 		rp.fastStart = true
@@ -320,9 +323,9 @@ func (s *Session) trackDecisionLocked(t int) core.Decision {
 		return s.decision
 	}
 	if t >= 0 && t < len(s.rungs) {
-		return s.rungs[t].decision
+		return s.applyBudgetDecisionLocked(t, s.rungs[t].decision)
 	}
-	return s.decision
+	return s.applyBudgetDecisionLocked(t, s.decision)
 }
 
 // vbvRateLocked is track t's VBV rate plan for a new run. A DASH track is
@@ -335,10 +338,22 @@ func (s *Session) vbvRateLocked(t int) rateControl {
 		return rateControl{}
 	}
 	r := s.rungs[t]
+	if !s.isDASH() && s.budgetCapKbps > 0 && s.container == ContainerMPEGTS && s.budgetRung > t && s.budgetRung < len(s.rungs) {
+		r = s.rungs[s.budgetRung]
+	}
 	if r.decision.VideoCopy || r.peakKbps <= 0 {
 		return rateControl{}
 	}
 	maxrate := r.peakKbps
+	target := r.avgKbps
+	if !s.isDASH() && s.budgetCapKbps > 0 {
+		if target == 0 || s.budgetCapKbps < target {
+			target = s.budgetCapKbps
+		}
+		if budgetPeak := peakKbps(s.budgetCapKbps); budgetPeak > 0 && budgetPeak < maxrate {
+			maxrate = budgetPeak
+		}
+	}
 	if gp := s.goodput.Kbps(); gp > 0 {
 		// Leave a modest delivery margin while allowing the reservoir to
 		// spend bits on complex scenes.
@@ -355,7 +370,7 @@ func (s *Session) vbvRateLocked(t int) rateControl {
 		seconds = 8
 	}
 	return rateControl{Quality: true, MaxrateKbps: maxrate,
-		BufsizeKbps: maxrate * seconds, TargetKbps: r.avgKbps}
+		BufsizeKbps: maxrate * seconds, TargetKbps: target}
 }
 
 // maybeGovernLocked re-plans upcoming copy segments as clamped transcodes

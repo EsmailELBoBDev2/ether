@@ -71,3 +71,32 @@ func EnableFastDeadPeerConn(c net.Conn, timeout time.Duration) {
 		})
 	}
 }
+
+// TCPSendBacklog returns the number of unsent bytes currently queued in the
+// kernel TCP send buffer for the request's connection, when supported by the
+// host OS. A non-zero backlog while writing indicates real network
+// backpressure rather than an idle socket.
+func TCPSendBacklog(ctx context.Context) (int, bool) {
+	return TCPSendBacklogConn(ConnFromContext(ctx))
+}
+
+// TCPSendBacklogConn returns the unsent bytes queued in c's kernel TCP send
+// buffer when c unwraps to a *net.TCPConn and the platform exposes it.
+func TCPSendBacklogConn(c net.Conn) (int, bool) {
+	tcp, ok := unwrapConn(c).(*net.TCPConn)
+	if !ok || tcp == nil {
+		return 0, false
+	}
+	raw, err := tcp.SyscallConn()
+	if err != nil {
+		return 0, false
+	}
+	var queued int
+	var supported bool
+	if err := raw.Control(func(fd uintptr) {
+		queued, supported = tcpSendBacklog(fd)
+	}); err != nil {
+		return 0, false
+	}
+	return queued, supported
+}

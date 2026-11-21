@@ -247,6 +247,7 @@ type Manager struct {
 	// client retry, including a retry that creates a new session.
 	httpHWFailedUntil atomic.Int64
 	activeTranscodes  atomic.Int32
+	remoteDelivery    atomic.Pointer[func(RemoteDeliveryEvent)]
 	feat              features
 	tempDir           string
 	// graphErr is the latest owner-visible reason a graph could not be built.

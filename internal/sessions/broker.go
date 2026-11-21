@@ -87,6 +87,8 @@ type BrokerDeps struct {
 	BitrateLimit        func(*core.Viewer) int
 	StreamLimit         func(*core.Viewer) int
 	RemoteBitrateLimit  func() int
+	RemoteUploadCap     func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
+	RecordUploadCap     func(sessionID string, capKbps int, fromBudget bool)
 	VideoTranscodingOff func() bool
 	OnTimeline          func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
 	Events              *EventBus
@@ -121,7 +123,8 @@ type brokerPlan struct {
 	opening       bool
 	pinned        bool
 	// external is a Plex admission: the adapter already prepared the source.
-	external bool
+	external      bool
+	budgetCapKbps int
 }
 type brokerSession struct {
 	observedSourceRevision string
@@ -506,6 +509,24 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			req.Intent.Options.MaxBitrateKbps = limit
 		}
 	}
+	budgetCapKbps := 0
+	if req.Caps.Remote && !req.Intent.Estimate && b.deps.RemoteUploadCap != nil {
+		allowTC := (req.Channel != "" || req.DirectLive != nil || !b.videoTranscodingOff()) &&
+			(req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding)
+		existing := req.Caps.MaxBitrateKbps
+		if req.Intent.Options.MaxBitrateKbps > 0 && (existing == 0 || req.Intent.Options.MaxBitrateKbps < existing) {
+			existing = req.Intent.Options.MaxBitrateKbps
+		}
+		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, req.Intent.ClientSessionID, req.Caps.Remote, allowTC, existing, 0); fromBudget && capKbps > 0 {
+			budgetCapKbps = capKbps
+			if req.Caps.MaxBitrateKbps == 0 || capKbps < req.Caps.MaxBitrateKbps {
+				req.Caps.MaxBitrateKbps = capKbps
+			}
+			if req.Intent.Options.MaxBitrateKbps == 0 || capKbps < req.Intent.Options.MaxBitrateKbps {
+				req.Intent.Options.MaxBitrateKbps = capKbps
+			}
+		}
+	}
 	if req.Channel != "" || req.DirectLive != nil {
 		if req.Version != "" || req.Intent.ExactVersion || req.ExpectedSourceETag != "" || req.DetailSource != "" {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
@@ -840,7 +861,11 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if detail != nil {
 		exactRelease = detail.release
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned}
+	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps}
+	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps != nil && ps.ID != "" {
+		constrained := ps.Info.BitrateKbps <= 0 || ps.Info.BitrateKbps > budgetCapKbps || dec.Kind == core.DecisionTranscode
+		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
+	}
 	stored = true
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)

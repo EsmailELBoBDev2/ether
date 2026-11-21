@@ -137,6 +137,8 @@ export interface FakeOptions {
   restore?: string;
   /** Household audio and subtitle choices, for the Playback screen in the browser mock. */
   householdAudio?: boolean;
+  /** Include a remote stream capped by the shared upload budget (browser mock preview). */
+  remoteBudgetDemo?: boolean;
   /** Seed pre-rolls, their recent plays and a video still converting. */
   prerolls?: boolean;
   /** Simulate a port conflict on Jellyfin (true / "named" / "unknown"). */
@@ -451,6 +453,7 @@ function defaultConfig(): EtherConfig {
       tempDir: "/tmp/ether-transcode",
       maxTranscodes: 2,
       remoteMaxBitrateKbps: 8000,
+      remoteUploadBudgetKbps: 0,
       rtxVideo: {
         mode: "off",
         executablePath: "",
@@ -2402,6 +2405,84 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   function dashboard() {
     const session = catalog[3]!;
+    const remoteTitle = catalog[1] ?? session;
+    const overrideKbps = Math.max(0, Number(state.config.transcode.remoteUploadBudgetKbps) || 0);
+    const measuredKbps = 42_000;
+    const effectiveKbps = overrideKbps > 0 ? overrideKbps : measuredKbps;
+    const usableKbps = Math.round(effectiveKbps * 0.85);
+    const uploadBudget = {
+      enabled: true,
+      source: overrideKbps > 0 ? "override" : "measured",
+      overrideKbps,
+      measuredKbps,
+      measuredSamples: 18,
+      effectiveKbps,
+      usableKbps,
+      etherRemoteKbps: 16_000,
+      etherRemoteStreams: 2,
+      budgetCappedStreams: 1,
+      otherPmsKbps: 6_500,
+      otherPmsStreams: 1,
+      totalUsedKbps: 22_500,
+      otherServers: [
+        {
+          machineId: "pms-home",
+          name: "Home Plex Server",
+          source: "linked_pms",
+          remoteStreams: 1,
+          bandwidthKbps: 6_500,
+          reachable: true,
+          lastChecked: NOW().toISOString(),
+        },
+      ],
+    };
+    const remoteSession = {
+      ID: "s2",
+      UserID: 3,
+      Key: remoteTitle.key,
+      ratingKey: Number(remoteTitle.key) || 0,
+      TitleName: `${remoteTitle.title} (${remoteTitle.year})`,
+      Username: "Jordan Lee",
+      Client: {
+        product: "Plex for iOS",
+        deviceName: "iPad Pro",
+        platform: "iOS",
+        remote: true,
+      },
+      ip: "198.51.100.24",
+      Decision: "transcode",
+      decisionReason: "Shared upload budget (8.0 Mbps cap)",
+      decisionVideoCopy: false,
+      decisionAudioCopy: false,
+      bitrateKbps: 8000,
+      bitrateCapKbps: 8000,
+      bitrateCapSource: "upload_budget",
+      sourceVideo: "HEVC 2160p HDR10",
+      outputVideo: "H.264 1080p SDR",
+      sourceAudio: "TrueHD 7.1",
+      outputAudio: "AAC 2.0",
+      container: "mpegts",
+      BytesServed: 1.4 * 1024 ** 3,
+      BufferedBytes: 92 * 1024 ** 2,
+      BufferedUntil: 2250e9,
+      SpeedBps: 1.05e6,
+      StartedAt: new Date(Date.now() - 24 * 60000).toISOString(),
+      Info: { size: 22.8 * 1024 ** 3, duration: 132 * 60 * 1e9, bitrateKbps: 23_400 },
+      viewOffset: 34 * 60 * 1000,
+      origin: "Usenet",
+      experience: {
+        requested: true,
+        pictured: true,
+        startTime: 2.3e9,
+        bufferEvents: 0,
+        buffering: 0,
+      },
+      Resolution: {
+        release: {
+          name: `${remoteTitle.title.replace(/ /g, ".")}.${remoteTitle.year}.2160p.REMUX.HEVC.TrueHD`,
+        },
+      },
+    };
     return {
       names: [
         "cache",
@@ -2413,10 +2494,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
         "providers",
         "remote",
         "sessions",
+        "upload-budget",
       ],
       setupComplete: state.config.setupComplete,
       version: state.boot.version,
       sections: {
+        "upload-budget": uploadBudget,
         cache: { used: 87 * 1024 ** 3, budget: state.config.cache.budgetBytes },
         database: state.clustered
           ? { clustered: true, state: "ok", reachable: true, held: 0 }
@@ -2566,6 +2649,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
               },
             },
           },
+          ...(opts.remoteBudgetDemo ? [remoteSession] : []),
         ],
       },
     };

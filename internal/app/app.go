@@ -82,6 +82,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/transcode"
 	"github.com/braedonsaunders/ether/internal/trickplay"
 	"github.com/braedonsaunders/ether/internal/updater"
+	"github.com/braedonsaunders/ether/internal/uploadbudget"
 	"github.com/braedonsaunders/ether/internal/usenet"
 	"github.com/braedonsaunders/ether/internal/vault"
 	"github.com/braedonsaunders/ether/internal/veladist"
@@ -238,6 +239,7 @@ type App struct {
 	trickplay           *trickplay.Owner
 	load                *sysload.Sampler // machine load for the Overview
 	playback            *playback.Manager
+	uploadBudget        *uploadbudget.Manager
 	tracePlayback       bool // ETHER_TRACE_PLAYBACK, set in buildPlayback
 	prefetch            *prefetch.Prefetcher
 	cachefill           *cachefill.Manager
@@ -702,6 +704,9 @@ func (a *App) applyConfig(c config.Config) {
 	if a.transcoder != nil {
 		a.transcoder.UpdateConfig(c.Transcode)
 	}
+	if a.uploadBudget != nil {
+		a.uploadBudget.OnSessionsChanged()
+	}
 	if a.deployment != nil && a.deployment.encoder != nil {
 		a.deployment.encoder.UpdateConfig(privateEncoderConfig(c, a.deployment.settings.Capacity))
 	}
@@ -835,6 +840,9 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.runNodeControl(ctx) })
 	background.start(func() { a.ensureVelaInstalled(ctx) })
 	background.start(func() { a.watchConsoleSessions(ctx) })
+	if a.uploadBudget != nil {
+		background.start(func() { a.uploadBudget.Run(ctx) })
+	}
 
 	// Singleton work runs only on the cluster leader (always, standalone).
 	// trakt.Start stays on every node: it delivers this node's own

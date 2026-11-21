@@ -121,6 +121,7 @@ func Builtins() []Builtin {
 				{Key: "vaapiDevice", Label: extend.T("VA-API device"), Kind: KindText, Help: extend.T("Linux graphics device, for example /dev/dri/renderD128. Leave empty unless converted video fails to start.")},
 				{Key: "maxTranscodes", Label: extend.T("Simultaneous transcodes"), Kind: KindNumber, Help: extend.T("How many videos can be converted at once. Leave the default unless several people watch together and the computer struggles."), Min: F(0), Step: F(1)},
 				{Key: "remoteMaxBitrateKbps", Label: extend.T("Remote bitrate cap"), Kind: KindNumber, Help: extend.T("Limits picture quality for people watching away from home, so the stream fits their connection. 0 means no limit."), Min: F(0), Step: F(500), Unit: extend.Text{Source: "kbps"}},
+				{Key: "remoteUploadBudgetKbps", Label: extend.T("Internet upload speed"), Kind: KindNumber, Help: extend.T("Total upload speed shared across all remote streams. 0 lets Ether measure it automatically from real remote streams."), Min: F(0), Step: F(1000), Unit: extend.Text{Source: "kbps"}},
 			}},
 			{ID: "enhance", Title: extend.T("Sharper picture"), Description: extend.T("On a supported NVIDIA graphics card, Ether can clean up a soft video before sending it. This uses extra graphics power, and Ether installs what it needs on a supported Windows computer."), Fields: []Field{
 				{Key: "rtxVideo", Label: extend.Text{Source: "RTX Video Super Resolution"}, Kind: KindGroup, Fields: []Field{

@@ -1,11 +1,14 @@
 package transcode
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/sockerr"
 )
 
 // goodputEstimator tracks conservative completed delivery evidence, not a
@@ -88,12 +91,24 @@ func remoteDelivery(r *http.Request) bool {
 func (s *Session) GoodputKbps() int { return s.goodput.Kbps() }
 
 // countingWriter wraps a ResponseWriter counting body bytes, so serveFile
-// can time the write phase of a segment delivery.
+// can time the write phase of a segment delivery and sample TCP send backlog.
 type countingWriter struct {
 	http.ResponseWriter
-	bytes  int64
-	status int
-	err    error
+	ctx            context.Context
+	bytes          int64
+	status         int
+	err            error
+	maxBacklog     int
+	backlogSampled bool
+}
+
+func (w *countingWriter) sampleBacklog() {
+	if w.ctx == nil {
+		return
+	}
+	if q, ok := sockerr.TCPSendBacklog(w.ctx); ok && q > w.maxBacklog {
+		w.maxBacklog = q
+	}
 }
 
 func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -111,6 +126,10 @@ func (w *countingWriter) Write(b []byte) (int, error) {
 	}
 	n, err := w.ResponseWriter.Write(b)
 	w.bytes += int64(n)
+	if !w.backlogSampled && w.bytes >= 64<<10 {
+		w.backlogSampled = true
+		w.sampleBacklog()
+	}
 	if err != nil {
 		w.err = err
 	}
@@ -131,6 +150,7 @@ func (w *countingWriter) ReadFrom(r io.Reader) (int64, error) {
 		n, err = io.Copy(struct{ io.Writer }{w.ResponseWriter}, r)
 	}
 	w.bytes += n // bytes accepted by Write, not bytes read before a failed write
+	w.sampleBacklog()
 	if err != nil {
 		w.err = err
 	}

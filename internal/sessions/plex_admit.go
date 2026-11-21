@@ -89,6 +89,23 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 			limit = remote
 		}
 	}
+	budgetCapKbps := 0
+	if caps.Remote && b.deps.RemoteUploadCap != nil {
+		existing := limit
+		if caps.MaxBitrateKbps > 0 && (existing == 0 || caps.MaxBitrateKbps < existing) {
+			existing = caps.MaxBitrateKbps
+		}
+		if opts.MaxBitrateKbps > 0 && (existing == 0 || opts.MaxBitrateKbps < existing) {
+			existing = opts.MaxBitrateKbps
+		}
+		allowTC := req.Channel != "" || !b.videoTranscodingOff()
+		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, ps.ID, caps.Remote, allowTC, existing, media.BitrateKbps); fromBudget && capKbps > 0 {
+			budgetCapKbps = capKbps
+			if limit == 0 || capKbps < limit {
+				limit = capKbps
+			}
+		}
+	}
 	if limit > 0 {
 		if caps.MaxBitrateKbps == 0 || caps.MaxBitrateKbps > limit {
 			caps.MaxBitrateKbps = limit
@@ -96,6 +113,10 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 		if opts.MaxBitrateKbps == 0 || opts.MaxBitrateKbps > limit {
 			opts.MaxBitrateKbps = limit
 		}
+	}
+	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps.ID != "" {
+		constrained := media.BitrateKbps <= 0 || media.BitrateKbps > budgetCapKbps
+		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
 	}
 	protocol := admitted.Protocol
 	if protocol == "" {

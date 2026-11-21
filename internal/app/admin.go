@@ -167,7 +167,7 @@ func (a *App) buildAdmin() http.Handler {
 			return out, err
 		},
 		SessionsStatus: func(context.Context) any {
-			return ownerSessionStatuses((ownerPlayback{Playback: a.playback, app: a}).Sessions())
+			return a.ownerSessionStatusesWithBudget((ownerPlayback{Playback: a.playback, app: a}).Sessions())
 		},
 		CacheStatus:          a.cacheStatus,
 		CacheRestartRequired: a.cacheRestartRequired,
@@ -221,14 +221,15 @@ func (a *App) buildAdmin() http.Handler {
 		DatabaseCompactStatus: a.compactionStatus,
 		DatabaseCompact:       a.startCompaction,
 		ExtraStatus: map[string]admin.StatusFunc{
-			"stream":   func(context.Context) any { return a.engine.Stats() },
-			"widget":   a.widgetStatus,
-			"prefetch": func(context.Context) any { return a.prefetch.Stats() },
-			"debrid":   a.debridStatus,
-			"sources":  func(context.Context) any { return map[string]any{"startup": a.resolver.SourceStartups()} },
-			"database": a.databaseStatus,
-			"updates":  a.updateStatus,
-			"storage":  a.storageStatus,
+			"stream":        func(context.Context) any { return a.engine.Stats() },
+			"widget":        a.widgetStatus,
+			"prefetch":      func(context.Context) any { return a.prefetch.Stats() },
+			"debrid":        a.debridStatus,
+			"sources":       func(context.Context) any { return map[string]any{"startup": a.resolver.SourceStartups()} },
+			"database":      a.databaseStatus,
+			"upload-budget": a.uploadBudgetStatus,
+			"updates":       a.updateStatus,
+			"storage":       a.storageStatus,
 		},
 		ResolverTraces:  func(context.Context) (any, error) { return a.resolver.Traces(), nil },
 		Users:           a.users,

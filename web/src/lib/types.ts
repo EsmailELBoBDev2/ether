@@ -228,6 +228,35 @@ export interface DebridStatus {
   engine?: DebridEngineStatus;
 }
 
+/** One sibling Plex server sharing the owner's internet upload link. */
+export interface UploadBudgetExternalServer {
+  machineId?: string;
+  name: string;
+  source: string;
+  remoteStreams: number;
+  bandwidthKbps: number;
+  reachable: boolean;
+  lastChecked?: string;
+}
+
+/** GET /status/upload-budget. */
+export interface UploadBudgetStatus {
+  enabled: boolean;
+  source: "override" | "measured" | "learning";
+  overrideKbps: number;
+  measuredKbps: number;
+  measuredSamples: number;
+  effectiveKbps: number;
+  usableKbps: number;
+  etherRemoteKbps: number;
+  etherRemoteStreams: number;
+  budgetCappedStreams: number;
+  otherPmsKbps: number;
+  otherPmsStreams: number;
+  totalUsedKbps: number;
+  otherServers?: UploadBudgetExternalServer[];
+}
+
 /** Moving averages (EWMA) of one provider's timings; all 0 until `samples` > 0. */
 export interface DebridLatency {
   resolveMs?: number;
@@ -451,6 +480,7 @@ export interface EtherConfig {
     tempDir: string;
     maxTranscodes: number;
     remoteMaxBitrateKbps: number;
+    remoteUploadBudgetKbps?: number;
     rtxVideo?: {
       mode: "off" | "auto" | "on";
       executablePath: string;

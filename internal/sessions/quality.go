@@ -76,6 +76,11 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 			kbps = limit
 		}
 	}
+	if s.caps.Remote && b.deps.RemoteUploadCap != nil {
+		if limit, fromBudget := b.deps.RemoteUploadCap(ctx, s.playID, true, true, kbps, ps.Info.BitrateKbps); fromBudget && limit > 0 && (kbps == 0 || limit < kbps) {
+			kbps = limit
+		}
+	}
 	support := transcode.QualitySupport{}
 	if provider, ok := b.deps.Transcoder.(interface {
 		QualitySupport() transcode.QualitySupport

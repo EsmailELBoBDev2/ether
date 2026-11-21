@@ -158,6 +158,8 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 		CanPlay: a.safety.CanPlay, FreshPlay: a.safety.ConfirmAdmission, CurrentPlay: a.safety.ConfirmPlayback, ReceiptCurrent: a.users.ReceiptCurrent, BitrateLimit: a.safety.BitrateLimit,
 		StreamLimit:         func(v *core.Viewer) int { return playlimits.UserStreamLimit(a.cfg.Read(), v) },
 		RemoteBitrateLimit:  func() int { return a.cfg.Read().Transcode.RemoteMaxBitrateKbps },
+		RemoteUploadCap:     a.remoteUploadCap,
+		RecordUploadCap:     a.recordUploadCap,
 		VideoTranscodingOff: func() bool { return a.cfg.Read().Transcode.VideoTranscodingOff() },
 		OnTimeline: func(v *core.Viewer, key core.RatingKey, pos, dur time.Duration, playState string) {
 			if playState == "playing" && a.personalize != nil {

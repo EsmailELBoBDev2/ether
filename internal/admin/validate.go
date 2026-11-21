@@ -564,6 +564,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Transcode.RemoteMaxBitrateKbps < 0 {
 		v.add("transcode.remoteMaxBitrateKbps", "must be >= 0")
 	}
+	if cfg.Transcode.RemoteUploadBudgetKbps < 0 {
+		v.add("transcode.remoteUploadBudgetKbps", "must be >= 0")
+	}
 	rtx := cfg.Transcode.RTXVideo
 	if rtx.Mode != "" {
 		v.oneOf("transcode.rtxVideo.mode", rtx.Mode, "off", "auto", "on")

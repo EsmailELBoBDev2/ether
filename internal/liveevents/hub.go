@@ -691,6 +691,15 @@ func (h *Hub) FetchEvents(ctx context.Context, pluginID, feedID string, q EventQ
 	callCtx, cancel := context.WithTimeout(h.runCtx, defaultCallTimeout)
 	defer cancel()
 	resp, err := h.sfEvents.Do(ctx, callCtx, cacheKey, func(runCtx context.Context) (core.LiveEventsResponse, error) {
+		// A caller that missed the cache just before an earlier flight
+		// stored its answer must not start a second plugin call.
+		h.mu.Lock()
+		if cq, ok := h.queryCache[cacheKey]; ok && h.clock.Now().Before(cq.expiresAt) {
+			res := cloneEventsResponse(cq.resp)
+			h.mu.Unlock()
+			return res, nil
+		}
+		h.mu.Unlock()
 		res, _, err := h.callFeedEvents(runCtx, info, q)
 		if err != nil {
 			return core.LiveEventsResponse{}, err

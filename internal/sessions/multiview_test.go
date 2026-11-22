@@ -368,24 +368,22 @@ func TestMultiviewTileMaxHeightRoundingAndFocusedReplan(t *testing.T) {
 	// Verify binding pixel rounding rule: 480 / 720 / 1080 / 2160.
 	for _, tc := range []struct {
 		device, tiles, declared int
-		focused                 bool
 		want                    int
 	}{
-		{2160, 2, 0, false, 1080},
-		{2160, 3, 0, false, 720},
-		{2160, 4, 0, false, 720},
-		{2160, 4, 360, false, 480},
-		{2160, 4, 480, false, 480},
-		{2160, 4, 540, false, 720},
-		{2160, 4, 900, false, 1080},
-		{2160, 4, 1440, false, 2160},
-		{1080, 4, 1440, false, 1080}, // never exceeds device cap
-		{2160, 4, 0, true, 2160},     // focused restores device height
-		{720, 2, 0, false, 720},      // 720p device stays 720p
+		{2160, 2, 0, 1080},
+		{2160, 3, 0, 720},
+		{2160, 4, 0, 720},
+		{2160, 4, 360, 480},
+		{2160, 4, 480, 480},
+		{2160, 4, 540, 720},
+		{2160, 4, 900, 1080},
+		{2160, 4, 1440, 2160},
+		{1080, 4, 1440, 1080}, // never exceeds device cap
+		{720, 2, 0, 720},      // 720p device stays 720p
 	} {
-		got := multiviewTileMaxHeight(tc.device, tc.tiles, tc.declared, tc.focused)
+		got := multiviewTileMaxHeight(tc.device, tc.tiles, tc.declared)
 		if got != tc.want {
-			t.Fatalf("multiviewTileMaxHeight(dev=%d, tiles=%d, decl=%d, focused=%v) = %d, want %d", tc.device, tc.tiles, tc.declared, tc.focused, got, tc.want)
+			t.Fatalf("multiviewTileMaxHeight(dev=%d, tiles=%d, decl=%d) = %d, want %d", tc.device, tc.tiles, tc.declared, got, tc.want)
 		}
 	}
 
@@ -722,5 +720,90 @@ func TestMultiviewHandoverAndInPlaceReplanContracts(t *testing.T) {
 	}
 	if live.activeCount() != 1 {
 		t.Fatalf("redundant tune leaked after unchanged SD replan: active=%d, want 1", live.activeCount())
+	}
+}
+
+// CleanupStoppedLive retires an idle-reaped multiview tile from the broker
+// independently of the group TTL without disturbing sibling tiles, and active
+// live media fetches refresh the shortened group TTL.
+func TestMultiviewCleanupStoppedLiveRetiresIdleTileAndMediaRefreshesGroupTTL(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	live := newMultiviewFakeLive()
+	v := &core.Viewer{ID: 7, Username: "alice"}
+	dev := core.Device{ID: "atv-idle", Product: "Vela"}
+	access := frontend.SessionAccess{Viewer: v, Device: dev, Protocol: "vela"}
+	b, _, _ := newMultiviewBroker(t, live, &now)
+
+	if multiviewGroupTTL >= 4*time.Hour {
+		t.Fatalf("multiviewGroupTTL = %v, want shorter TTL refreshed by activity", multiviewGroupTTL)
+	}
+	group, err := b.CreateMultiviewGroup(ctx, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openTile := func(tile int, ch string) frontend.Session {
+		t.Helper()
+		p, err := b.Plan(ctx, frontend.PlanRequest{
+			Viewer: v, Device: dev, Protocol: "vela", Channel: ch,
+			Multiview: &frontend.MultiviewTarget{GroupID: group.GroupID, Tile: tile},
+			Caps:      core.ClientCaps{MaxHeight: 1080, HLSContainers: []string{"fmp4"}},
+		})
+		if err != nil {
+			t.Fatalf("plan tile %d: %v", tile, err)
+		}
+		s, err := b.Open(ctx, frontend.OpenRequest{Viewer: v, Device: dev, Protocol: "vela", PlanID: p.ID})
+		if err != nil {
+			t.Fatalf("open tile %d: %v", tile, err)
+		}
+		return s
+	}
+	s0 := openTile(0, "ch-0")
+	s1 := openTile(1, "ch-1")
+
+	b.mu.Lock()
+	playID0 := b.sessions[s0.ID].playID
+	b.mu.Unlock()
+
+	// Subscribe to events to confirm SessionStopped is published for reaped tile 0.
+	evCh, err := b.Events(ctx, frontend.EventScope{Viewer: v, Protocol: "vela", SessionID: s0.ID, Device: dev})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate livetv.Service.expireSessions() reaping idle tile 0 well before group TTL.
+	now = now.Add(35 * time.Second)
+	if !b.CleanupStoppedLive(ctx, playID0) {
+		t.Fatal("CleanupStoppedLive returned false for active tile 0")
+	}
+	select {
+	case ev := <-evCh:
+		if ev.Type != "SessionStopped" || ev.SessionID != s0.ID {
+			t.Fatalf("unexpected event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for SessionStopped on reaped tile 0")
+	}
+
+	b.mu.Lock()
+	_, has0 := b.sessions[s0.ID]
+	_, has1 := b.sessions[s1.ID]
+	b.mu.Unlock()
+	if has0 || !has1 {
+		t.Fatalf("after CleanupStoppedLive(tile0): has0=%v has1=%v, want false/true", has0, has1)
+	}
+
+	// Active media fetches on tile 1 refresh the group TTL past its initial expiry.
+	now = now.Add(multiviewGroupTTL - 5*time.Minute)
+	rec := httptest.NewRecorder()
+	b.ServeMedia(rec, httptest.NewRequest(http.MethodGet, s1.MediaPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("serve tile 1 media = %d, want 200", rec.Code)
+	}
+	// Advance past original expiresAt (now + 10m > original 30m), group must still be alive!
+	now = now.Add(10 * time.Minute)
+	s2 := openTile(2, "ch-2")
+	if s2.Multiview == nil || s2.Multiview.GroupID != group.GroupID {
+		t.Fatalf("group expired despite active tile media fetches: %+v", s2.Multiview)
 	}
 }

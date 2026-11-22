@@ -108,7 +108,7 @@ func (b *Broker) planLive(ctx context.Context, req frontend.PlanRequest, viewer 
 		if err != nil {
 			return frontend.PlayPlan{}, err
 		}
-		tileHeight := multiviewTileMaxHeight(baseMaxHeight, tileCount, req.Multiview.MaxHeight, req.Multiview.Focused)
+		tileHeight := multiviewTileMaxHeight(baseMaxHeight, tileCount, req.Multiview.MaxHeight)
 		req.Caps.MultiviewGroup = req.Multiview.GroupID
 		req.Caps.MultiviewTile = req.Multiview.Tile
 		req.Caps.MaxHeight = tileHeight
@@ -147,7 +147,7 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 		if err != nil {
 			return frontend.Session{}, err
 		}
-		tileHeight := multiviewTileMaxHeight(p.baseMaxHeight, tileCount, p.request.Multiview.MaxHeight, p.request.Multiview.Focused)
+		tileHeight := multiviewTileMaxHeight(p.baseMaxHeight, tileCount, p.request.Multiview.MaxHeight)
 		p.request.Caps.MultiviewGroup = p.request.Multiview.GroupID
 		p.request.Caps.MultiviewTile = p.request.Multiview.Tile
 		p.request.Caps.MaxHeight = tileHeight
@@ -158,7 +158,6 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 			Tile:      p.request.Multiview.Tile,
 			TileCount: tileCount,
 			MaxHeight: tileHeight,
-			Focused:   p.request.Multiview.Focused,
 		}
 	}
 	ctx = core.WithLiveApp(ctx, string(req.Protocol))
@@ -254,7 +253,7 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 				_ = b.cluster.store.remove(ctx, id)
 			}
 			_ = b.deps.Live.Stop(ctx, viewer, liveID)
-			return frontend.Session{}, core.ErrNotFound
+			return frontend.Session{}, &frontend.MultiviewError{Cause: core.ErrNotFound}
 		}
 	} else {
 		b.bumpNonGroupEpochLocked(viewer.ID, s.clientID)

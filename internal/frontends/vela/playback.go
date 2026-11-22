@@ -89,7 +89,6 @@ type playSession struct {
 	previewExpires                   time.Time
 	multiviewGroup                   string
 	multiviewTile                    int
-	multiviewTileHeight              int
 }
 
 func seconds(n float64) (time.Duration, bool) {
@@ -279,7 +278,8 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 				fail(w, e, r)
 				return
 			}
-			if mvTarget != nil && (errors.Is(e, frontend.ErrNotFound) || errors.Is(e, frontend.ErrUnauthorized) || errors.Is(e, frontend.ErrInvalidMultiview)) {
+			var mvErr *frontend.MultiviewError
+			if mvTarget != nil && (errors.As(e, &mvErr) || errors.Is(e, frontend.ErrInvalidMultiview)) {
 				fail(w, e, r)
 				return
 			}
@@ -398,9 +398,6 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			if s.Multiview.MaxHeight > 0 {
 				mvDoc["maxHeight"] = s.Multiview.MaxHeight
 			}
-			if s.Multiview.Focused {
-				mvDoc["focused"] = true
-			}
 			p["multiview"] = mvDoc
 		}
 		delete(p, "durationSeconds")
@@ -415,15 +412,11 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	dev := requestDevice(r)
 	mvGroup := ""
 	mvTile := 0
-	mvTileHeight := 0
 	if s.Multiview != nil {
 		mvGroup = s.Multiview.GroupID
 		mvTile = s.Multiview.Tile
-		if mvTarget != nil {
-			mvTileHeight = mvTarget.MaxHeight
-		}
 	}
-	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, channelID: b.ChannelID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos, multiviewGroup: mvGroup, multiviewTile: mvTile, multiviewTileHeight: mvTileHeight}
+	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, channelID: b.ChannelID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos, multiviewGroup: mvGroup, multiviewTile: mvTile}
 	if b.ChannelID != "" && i.host.LiveEventLink != nil {
 		if progKey, ref, err := i.host.LiveEventLink.LiveEventForChannel(r.Context(), v, b.ChannelID); err == nil {
 			ps.liveProgrammeKey = progKey
@@ -593,7 +586,6 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		VersionID                        string
 		MaxBitrate                       int
 		MaxHeight                        *int
-		Focused                          *bool
 		AtSeconds                        *float64
 		SubtitleTrackID                  json.RawMessage
 		PositionSeconds                  *float64
@@ -1112,7 +1104,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			s.versionsCold = cold
 		}
 	case "replan":
-		ok, changed := i.replanLiveSession(w, r, v, s, id, b.MaxHeight, b.Focused)
+		ok, changed := i.replanLiveSession(w, r, v, s, id, b.MaxHeight)
 		if !ok {
 			return
 		}

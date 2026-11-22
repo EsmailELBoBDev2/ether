@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	multiviewGroupTTL  = 4 * time.Hour
+	multiviewGroupTTL  = 30 * time.Minute
 	maxMultiviewGroups = 4096
 )
 
@@ -174,14 +174,14 @@ func (b *Broker) validateMultiviewLocked(viewerID int64, protocol frontend.Proto
 	}
 	g := b.multiviewGroups[mv.GroupID]
 	if g == nil {
-		return nil, 0, core.ErrNotFound
+		return nil, 0, &frontend.MultiviewError{Cause: core.ErrNotFound}
 	}
 	if !g.expiresAt.After(now) {
 		delete(b.multiviewGroups, mv.GroupID)
-		return nil, 0, core.ErrNotFound
+		return nil, 0, &frontend.MultiviewError{Cause: core.ErrNotFound}
 	}
 	if g.viewerID != viewerID || g.protocol != protocol || device.ID == "" || g.deviceID != device.ID {
-		return nil, 0, core.ErrUnauthorized
+		return nil, 0, &frontend.MultiviewError{Cause: core.ErrUnauthorized}
 	}
 	g.expiresAt = now.Add(multiviewGroupTTL)
 	tiles := 1
@@ -218,15 +218,13 @@ func roundMultiviewHeight(h int) int {
 
 // multiviewTileMaxHeight returns the height hint for a multiview tile:
 // when declaredTileHeight > 0, it rounds up to 480/720/1080/2160; when absent,
-// 2 tiles (or fewer) get 1080p and 3-4 tiles get 720p (or full device height
-// when focused). Never exceeds the device's own declared MaxHeight.
-func multiviewTileMaxHeight(deviceMaxHeight, tileCount, declaredTileHeight int, focused bool) int {
+// 2 tiles (or fewer) get 1080p and 3-4 tiles get 720p. Never exceeds the
+// device's own declared MaxHeight.
+func multiviewTileMaxHeight(deviceMaxHeight, tileCount, declaredTileHeight int) int {
 	var hint int
 	switch {
 	case declaredTileHeight > 0:
 		hint = roundMultiviewHeight(declaredTileHeight)
-	case focused:
-		hint = deviceMaxHeight
 	case tileCount >= 3:
 		hint = 720
 	default:
@@ -327,7 +325,6 @@ func (b *Broker) replanLive(ctx context.Context, viewer *core.Viewer, snap *brok
 	if live.public.Multiview != nil {
 		mv := *live.public.Multiview
 		mv.MaxHeight = nextHeight
-		mv.Focused = requestedMaxHeight == 0 || (nextHeight > snap.caps.MaxHeight)
 		live.public.Multiview = &mv
 	}
 	b.touchMultiviewLocked(live.multiviewGroup, now)

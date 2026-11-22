@@ -84,6 +84,10 @@ type session struct {
 	// httpStart is closed when an in-flight ensureHTTP StartHLS finishes.
 	// Waiters re-check liveHTTP instead of starting a second encoder.
 	httpStart chan struct{}
+	// rejoinDone deduplicates background broadcast rejoin for a retained
+	// session; rejoin runs under ss.ctx rather than a playlist request ctx.
+	rejoinDone chan struct{}
+	rejoinErr  error
 	// mu guards the fields above and below it. It is never held across
 	// Playback.Prepare/Failover, HLS SwapInput, programme lookups, probing
 	// or upstream I/O: preparers work on a staged

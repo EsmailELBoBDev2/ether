@@ -13,6 +13,27 @@ const MaxMultiviewTiles = 4
 // ErrInvalidMultiview reports a malformed or out-of-range multiview request.
 var ErrInvalidMultiview = errors.New("invalid multiview request")
 
+// MultiviewError wraps a multiview group validation or ownership error (such
+// as a missing, expired, superseded, or unauthorized group) so frontends can
+// distinguish group errors from live channel tune errors that share a sentinel.
+type MultiviewError struct {
+	Cause error
+}
+
+func (e *MultiviewError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "multiview error"
+	}
+	return e.Cause.Error()
+}
+
+func (e *MultiviewError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 // MultiviewTarget binds a live playback request to a tile within an active
 // multiview group owned by the same viewer, protocol and device.
 type MultiviewTarget struct {
@@ -20,7 +41,6 @@ type MultiviewTarget struct {
 	Tile      int
 	TileCount int // optional declared layout tile count (1..MaxMultiviewTiles)
 	MaxHeight int // optional client-declared tile height ceiling in pixels
-	Focused   bool
 }
 
 // MultiviewGroup describes a created multiview group.

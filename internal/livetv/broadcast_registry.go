@@ -123,6 +123,9 @@ func (r *broadcastRegistry) acquire(ctx context.Context, key broadcastKey, id st
 		r.outputs[key] = b
 		b.start()
 	}
+	b.mu.Lock()
+	b.attaching++
+	b.mu.Unlock()
 	r.mu.Unlock()
 	if onAcquire != nil {
 		onAcquire()
@@ -131,6 +134,11 @@ func (r *broadcastRegistry) acquire(ctx context.Context, key broadcastKey, id st
 	if err != nil && errors.Is(err, transcode.ErrTooManyTranscodes) && r.yieldIdleForCapacity(ctx, b) {
 		_, err = b.addRendition(ctx, id, decision, caps...)
 	}
+	b.mu.Lock()
+	if b.attaching > 0 {
+		b.attaching--
+	}
+	b.mu.Unlock()
 	if err != nil {
 		if !running {
 			r.discardCold(b)
@@ -261,7 +269,7 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 	for key, b := range r.outputs {
 		b.mu.Lock()
 		// Claim the idle output under the same lock used to attach viewers.
-		if b != except && b.viewers == 0 && !b.closed && now.Sub(b.created) >= 2*time.Second {
+		if b != except && b.viewers == 0 && b.attaching == 0 && b.hadViewer && !b.closed && now.Sub(b.created) >= 2*time.Second {
 			b.closed = true
 			b.cancel()
 			delete(r.outputs, key)
@@ -302,21 +310,25 @@ func (r *broadcastRegistry) yieldIdleForCapacity(ctx context.Context, except *br
 			continue
 		}
 		b.mu.Lock()
-		if b.viewers == 0 && !b.closed {
+		if b.viewers == 0 && b.attaching == 0 && b.hadViewer && !b.closed {
 			b.closed = true
 			b.cancel()
 			delete(r.outputs, key)
 			idle = append(idle, b)
-		} else if !b.closed {
+		} else if !b.closed && b.hasIdleRenditionLocked() {
 			active = append(active, b)
 		}
 		b.mu.Unlock()
+	}
+	if len(idle) > 0 {
+		r.yielding.Add(int32(len(idle)))
 	}
 	r.mu.Unlock()
 	reclaimed := len(idle) > 0
 	for _, b := range idle {
 		b.logger.Debug("broadcast synchronously yielded its encoder slot for capacity")
 		b.wg.Wait()
+		r.yielding.Add(-1)
 	}
 	for _, b := range active {
 		if b.dropIdleRenditions() {
@@ -350,7 +362,7 @@ func (r *broadcastRegistry) discardCold(b *broadcast) {
 	r.mu.Lock()
 	b.startMu.Lock()
 	b.mu.Lock()
-	unused := b.viewers == 0
+	unused := b.viewers == 0 && b.attaching == 0
 	if unused {
 		b.closed = true
 		b.cancel()

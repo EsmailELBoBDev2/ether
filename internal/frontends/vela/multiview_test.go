@@ -763,3 +763,139 @@ func TestVelaMultiviewUpgradeInPlaceHandoverAndCapacityErrors(t *testing.T) {
 		t.Fatalf("expected 1 active live backend after handover commit, got %d", live.count())
 	}
 }
+
+func TestVelaMultiviewDeadIPTVChannelMatchesSingleChannelErrorAndOmitsFocused(t *testing.T) {
+	live := newMVBrokerLiveFake()
+	h, _ := newVelaMultiviewHarness(t, live)
+
+	webClient := map[string]any{
+		"device":           map[string]any{"id": "web-1", "name": "Vela browser", "platform": "web", "appVersion": "0.2.45"},
+		"protocolVersions": []int{0},
+		"containers":       []string{"mp4"},
+		"videoCodecs":      []string{"h264"},
+		"audioCodecs":      []string{"aac"},
+		"hls":              true,
+		"maxHeight":        1080,
+	}
+	do := func(method, path string, body map[string]any) (*httptest.ResponseRecorder, map[string]any) {
+		var rbody *bytes.Reader
+		if body != nil {
+			raw, _ := json.Marshal(body)
+			rbody = bytes.NewReader(raw)
+		} else {
+			rbody = bytes.NewReader(nil)
+		}
+		req := httptest.NewRequest(method, path, rbody)
+		req.Header.Set("Authorization", "Bearer tok-1")
+		req.Header.Set("X-Vela-Device-Id", "web-1")
+		req.Header.Set("X-Vela-Version", "0.2.45")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		var doc map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &doc)
+		return w, doc
+	}
+
+	w, gDoc := do(http.MethodPost, "/vela/v0/multiview", map[string]any{"device": map[string]any{"id": "web-1"}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create multiview = %d %s", w.Code, w.Body.String())
+	}
+	groupID := gDoc["groupId"].(string)
+
+	// Open tile 0 on a healthy channel and verify plan.multiview omits "focused".
+	w, tile0 := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+		"idempotencyKey": "tile0-ok",
+		"channelId":      "showcase-chroma-80",
+		"client":         webClient,
+		"multiview":      map[string]any{"groupId": groupID, "tile": 0, "maxHeight": 480},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("tile 0 = %d %s", w.Code, w.Body.String())
+	}
+	sess0ID := tile0["sessionId"].(string)
+	if _, hasFocused := tile0["multiview"].(map[string]any)["focused"]; hasFocused {
+		t.Fatalf("initial plan.multiview unexpectedly included focused: %#v", tile0["multiview"])
+	}
+
+	// Replan tile 0 to 1080p and verify plan.multiview still omits "focused".
+	w, replanDoc := do(http.MethodPost, "/vela/v0/sessions/"+sess0ID+"/commands", map[string]any{
+		"kind":      "replan",
+		"maxHeight": 1080,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replan tile 0 = %d %s", w.Code, w.Body.String())
+	}
+	if _, hasFocused := replanDoc["multiview"].(map[string]any)["focused"]; hasFocused {
+		t.Fatalf("replanned plan.multiview unexpectedly included focused: %#v", replanDoc["multiview"])
+	}
+
+	// Switch tile 0 to dead IPTV channels whose Tune errors wrap ErrNotFound,
+	// ErrUnauthorized, or a network error: multiview MUST return the exact same
+	// typed 503 source error as single-channel playback (never 404 not_found).
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "wrapped_not_found", err: fmt.Errorf("provider returned 404: %w", core.ErrNotFound)},
+		{name: "wrapped_unauthorized", err: fmt.Errorf("provider rejected auth: %w", core.ErrUnauthorized)},
+		{name: "network_unavailable", err: core.ErrNotAvailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			live.mu.Lock()
+			live.capErr = func(ch string, _ core.ClientCaps) error {
+				if ch == "iptv-dead" {
+					return tc.err
+				}
+				return nil
+			}
+			live.mu.Unlock()
+
+			wSingle, singleDoc := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+				"idempotencyKey": "single-" + tc.name,
+				"channelId":      "iptv-dead",
+				"client":         webClient,
+			})
+			wTile, tileDoc := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+				"idempotencyKey": "tile-" + tc.name,
+				"channelId":      "iptv-dead",
+				"client":         webClient,
+				"multiview":      map[string]any{"groupId": groupID, "tile": 0, "maxHeight": 480},
+			})
+			if wSingle.Code != http.StatusServiceUnavailable {
+				t.Fatalf("single-channel status = %d, want 503; body=%s", wSingle.Code, wSingle.Body.String())
+			}
+			if wTile.Code != wSingle.Code {
+				t.Fatalf("multiview dead-channel status = %d, want %d (matching single-channel); body=%s", wTile.Code, wSingle.Code, wTile.Body.String())
+			}
+			singleErr := singleDoc["error"].(map[string]any)
+			tileErr := tileDoc["error"].(map[string]any)
+			if tileErr["class"] != "source" || tileErr["code"] != singleErr["code"] || tileErr["message"] != singleErr["message"] {
+				t.Fatalf("multiview error %#v != single-channel error %#v", tileErr, singleErr)
+			}
+		})
+	}
+	live.mu.Lock()
+	live.capErr = nil
+	live.mu.Unlock()
+
+	// Healthy tile 0 must still be alive after the failed dead-channel switches.
+	wGet, getDoc := do(http.MethodGet, "/vela/v0/sessions/"+sess0ID, nil)
+	if wGet.Code != http.StatusOK || getDoc["plan"].(map[string]any)["state"] != "ready" {
+		t.Fatalf("tile 0 did not survive failed dead-channel switch: status=%d body=%s", wGet.Code, wGet.Body.String())
+	}
+
+	// An actually unknown/expired multiview group STILL returns 404 not_found.
+	wMissing, missingDoc := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+		"idempotencyKey": "missing-group",
+		"channelId":      "showcase-chroma-80",
+		"client":         webClient,
+		"multiview":      map[string]any{"groupId": "mv_does_not_exist", "tile": 0, "maxHeight": 480},
+	})
+	if wMissing.Code != http.StatusNotFound || missingDoc["error"].(map[string]any)["code"] != "not_found" {
+		t.Fatalf("missing multiview group = %d %#v, want 404 not_found", wMissing.Code, missingDoc)
+	}
+}

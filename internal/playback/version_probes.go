@@ -851,9 +851,9 @@ func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key 
 				}
 				if !acquired || ctx.Err() != nil {
 					mu.Lock()
-					delete(inFlight, r.ID)
-					delete(inFlightCached, r.ID)
-					delete(retryCached, r.ID)
+					delete(inFlight, id)
+					delete(inFlightCached, id)
+					delete(retryCached, id)
 					mu.Unlock()
 					return
 				}
@@ -862,7 +862,7 @@ func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key 
 					mu.Lock()
 					if !probed && ctx.Err() == nil {
 						if r2, ok := retryCached[id]; ok {
-							delete(retryCached, r.ID)
+							delete(retryCached, id)
 							inFlightCached[id] = true
 							r = r2
 							cached = true
@@ -870,9 +870,9 @@ func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key 
 							continue
 						}
 					}
-					delete(inFlight, r.ID)
-					delete(inFlightCached, r.ID)
-					delete(retryCached, r.ID)
+					delete(inFlight, id)
+					delete(inFlightCached, id)
+					delete(retryCached, id)
 					if probed || cached || r.Protocol != core.ProtocolTorrent {
 						done[id] = true
 					} else {

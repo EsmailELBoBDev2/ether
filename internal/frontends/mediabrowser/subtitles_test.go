@@ -132,3 +132,51 @@ func TestPlaybackInfoDeliversHLSTextRendition(t *testing.T) {
 		t.Fatalf("sidecar track: %v", s)
 	}
 }
+
+// A direct-played file's embedded tracks are "Embed" when the declared
+// profile embeds that format, as Jellyfin answers; other formats stay
+// External sidecars. Extracting an embedded track from a remote file first
+// paused Jellyfin for Android TV and spun Wholphin.
+func TestPlaybackInfoDirectPlayEmbedsDeclaredSubtitleFormats(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 1}
+	broker := hlsSubtitleFake{baseSessions: frontendtest.Sessions{
+		PlanFunc: func(context.Context, frontend.PlanRequest) (frontend.PlayPlan, error) {
+			return frontend.PlayPlan{ID: "plan", Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true, Media: frontend.MediaInfo{Container: "mkv", Size: 1 << 30, Streams: []frontend.StreamInfo{{Type: "subtitle", Index: 2, Codec: "subrip"}, {Type: "subtitle", Index: 4, Codec: "ass"}}}}, nil
+		},
+		OpenFunc: func(context.Context, frontend.OpenRequest) (frontend.Session, error) {
+			return frontend.Session{ID: "session"}, nil
+		},
+		StartStreamFunc: func(context.Context, frontend.SessionAccess, string, frontend.StreamRequest) (string, error) {
+			return "/sessions/media/session/scoped/file", nil
+		},
+	}}
+	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
+	inst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: ident, Sessions: broker, Capabilities: frontendtest.Capabilities{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/Items/"+ids.RatingKeyGUID(5)+"/PlaybackInfo", strings.NewReader(`{"IsPlayback":true,"DeviceProfile":{"SubtitleProfiles":[{"Format":"srt","Method":"Embed"},{"Format":"vtt","Method":"External"}]}}`))
+	r.Header.Set("X-Emby-Token", "grant")
+	inst.Handler().ServeHTTP(w, r)
+	var body struct {
+		MediaSources []struct {
+			MediaStreams []map[string]any
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != 200 || len(body.MediaSources) != 1 {
+		t.Fatal(w.Code, err, w.Body.String())
+	}
+	streams := map[float64]map[string]any{}
+	for _, s := range body.MediaSources[0].MediaStreams {
+		if s["Type"] == "Subtitle" {
+			streams[s["Index"].(float64)] = s
+		}
+	}
+	if s := streams[2]; s == nil || s["DeliveryMethod"] != "Embed" || s["DeliveryUrl"] != nil {
+		t.Fatalf("embedded SubRip: %v", s)
+	}
+	if s := streams[4]; s == nil || s["DeliveryMethod"] != "External" || s["DeliveryUrl"] != "/sessions/media/session/scoped/subtitles/4.vtt" {
+		t.Fatalf("undeclared ASS: %v", s)
+	}
+}

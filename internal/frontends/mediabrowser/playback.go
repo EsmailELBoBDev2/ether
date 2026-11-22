@@ -6,6 +6,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -629,6 +630,20 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 								dto["SupportsExternalStream"] = true
 								continue
 							}
+						}
+						// A direct-played file carries its embedded tracks: a
+						// player that declares it embeds this format renders it
+						// from the file, as Jellyfin answers. Delivering it as an
+						// external file instead extracts the whole track from a
+						// remote source first: Jellyfin for Android TV paused and
+						// Wholphin spun until it arrived, and the added side
+						// tracks broke Jellyfin for Android's track mapping.
+						if format == frontend.StreamDirect && !stream.External && stream.ExternalURL == "" && embedsSubtitle(body.DeviceProfile.SubtitleProfiles, stream.Codec) {
+							dto := streams[n].(map[string]any)
+							dto["DeliveryMethod"] = "Embed"
+							delete(dto, "DeliveryUrl")
+							dto["IsTextSubtitleStream"] = frontend.IsTextSubtitle(stream.Codec)
+							continue
 						}
 						subtitleURL, e := subtitleService.SubtitleURL(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, stream.Index, "vtt")
 						if e != nil || !strings.HasPrefix(subtitleURL, "/sessions/media/") || strings.ContainsAny(subtitleURL, "\r\n") {
@@ -1538,4 +1553,41 @@ func (i *instance) liveTuneError(w http.ResponseWriter, err error) {
 	}
 	w.Header().Set("X-Ether-LiveTV-Error", detail.Code)
 	jsonReply(w, map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code, "Message": detail.Message, "LiveTVErrorCode": detail.Code})
+}
+
+// subtitleCodecAliases groups the names a declared subtitle profile and a
+// probed stream use for the same format.
+var subtitleCodecAliases = [][]string{
+	{"subrip", "srt"},
+	{"webvtt", "vtt"},
+	{"hdmv_pgs_subtitle", "pgssub", "pgs"},
+	{"dvd_subtitle", "dvdsub"},
+	{"dvb_subtitle", "dvbsub"},
+}
+
+// embedsSubtitle reports whether a declared device profile renders this
+// subtitle codec from the media file itself (Method "Embed").
+func embedsSubtitle(profiles []caps.SubtitleProfile, codec string) bool {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	if codec == "" {
+		return false
+	}
+	names := []string{codec}
+	for _, group := range subtitleCodecAliases {
+		if slices.Contains(group, codec) {
+			names = group
+			break
+		}
+	}
+	for _, p := range profiles {
+		if !strings.EqualFold(p.Method, "embed") {
+			continue
+		}
+		for _, format := range strings.Split(strings.ToLower(p.Format), ",") {
+			if slices.Contains(names, strings.TrimSpace(format)) {
+				return true
+			}
+		}
+	}
+	return false
 }

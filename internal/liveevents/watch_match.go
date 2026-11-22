@@ -34,6 +34,7 @@ type GuideCandidate struct {
 	GuideID       string
 	IsEventAddon  bool
 	ChannelOnly   bool
+	Unhealthy     bool
 	Title         string
 	EpisodeTitle  string
 	Summary       string
@@ -668,14 +669,20 @@ func isPlayableStreamURL(rawURL string) bool {
 	}
 }
 
+func boolPtr(v bool) *bool { return &v }
+
 // matchEventToCandidates scores guide candidates + playable plugin broadcast
 // streams for ev, returning deduplicated, deterministically sorted WatchTargets.
+// Unhealthy channels are excluded whenever any healthy target exists; when only
+// unhealthy channels match, they are returned with available=false so clients
+// can render "Unavailable right now" instead of a Watch button.
 // Informational reference links (detail.Links) are excluded per spec A5.
 func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate) []core.WatchTarget {
 	prof := buildEventMatchProfile(ev)
 	eventLive := ev.Status.State == core.LiveEventStateIn
 
-	// Deduplicate by channelId, retaining the best-scoring programme per channel.
+	// Deduplicate by channelId, retaining the best-scoring programme per channel
+	// (preferring healthy over unhealthy if both appear for the same channel).
 	bestByChannel := make(map[string]core.WatchTarget)
 	for _, cand := range candidates {
 		conf, ok := scoreGuideCandidate(prof, cand)
@@ -699,15 +706,25 @@ func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate) []co
 			Live:       live,
 			Confidence: conf,
 		}
+		if cand.Unhealthy {
+			t.Available = boolPtr(false)
+		}
 		prev, exists := bestByChannel[cand.ChannelID]
-		if !exists || t.Confidence > prev.Confidence || (t.Confidence == prev.Confidence && t.Live && !prev.Live) {
+		if !exists ||
+			(t.IsAvailable() && !prev.IsAvailable()) ||
+			(t.IsAvailable() == prev.IsAvailable() && (t.Confidence > prev.Confidence || (t.Confidence == prev.Confidence && t.Live && !prev.Live))) {
 			bestByChannel[cand.ChannelID] = t
 		}
 	}
 
-	out := make([]core.WatchTarget, 0, len(bestByChannel)+len(ev.Broadcasts))
+	healthy := make([]core.WatchTarget, 0, len(bestByChannel)+len(ev.Broadcasts))
+	var unhealthy []core.WatchTarget
 	for _, t := range bestByChannel {
-		out = append(out, t)
+		if t.IsAvailable() {
+			healthy = append(healthy, t)
+		} else {
+			unhealthy = append(unhealthy, t)
+		}
 	}
 
 	// Source #3: Plugin-provided directly playable stream URLs (never web pages).
@@ -725,7 +742,7 @@ func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate) []co
 		if name == "" {
 			name = "Stream"
 		}
-		out = append(out, core.WatchTarget{
+		healthy = append(healthy, core.WatchTarget{
 			Kind:       core.WatchTargetKindPlugin,
 			Name:       name,
 			URL:        u,
@@ -734,6 +751,10 @@ func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate) []co
 		})
 	}
 
+	out := healthy
+	if len(out) == 0 {
+		out = unhealthy
+	}
 	sortWatchTargets(out)
 	if len(out) > maxWatchTargetsPerEvent {
 		out = out[:maxWatchTargetsPerEvent]
@@ -757,6 +778,9 @@ func watchKindRank(kind string) int {
 func sortWatchTargets(targets []core.WatchTarget) {
 	sort.Slice(targets, func(i, j int) bool {
 		a, b := targets[i], targets[j]
+		if avA, avB := a.IsAvailable(), b.IsAvailable(); avA != avB {
+			return avA
+		}
 		if a.Confidence != b.Confidence {
 			return a.Confidence > b.Confidence
 		}

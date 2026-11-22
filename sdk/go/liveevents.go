@@ -75,6 +75,13 @@ type LiveEventBroadcast struct {
 	Region string `json:"region,omitempty"`
 }
 
+// LiveEvent watch target kind values (A5).
+const (
+	LiveEventWatchChannel = "channel"
+	LiveEventWatchAddon   = "addon"
+	LiveEventWatchPlugin  = "plugin"
+)
+
 // LiveEventMatchHints supplies terms and broadcast callsigns for matching
 // events against Live TV guide programmes and channels.
 type LiveEventMatchHints struct {
@@ -82,24 +89,41 @@ type LiveEventMatchHints struct {
 	Callsigns []string `json:"callsigns,omitempty"`
 }
 
+// LiveEventWatchTarget links a live event to a playable channel, add-on, or
+// plugin-provided stream target. Ether attaches this; plugins do not emit it.
+// Available is omitted when playable and set to false when the only matching
+// channels are currently unhealthy.
+type LiveEventWatchTarget struct {
+	Kind       string  `json:"kind"` // channel|addon|plugin
+	ChannelID  string  `json:"channelId,omitempty"`
+	Name       string  `json:"name"`
+	Number     string  `json:"number,omitempty"`
+	Logo       string  `json:"logo,omitempty"`
+	Live       bool    `json:"live"`
+	Confidence float64 `json:"confidence,omitempty"`
+	URL        string  `json:"url,omitempty"`
+	Available  *bool   `json:"available,omitempty"`
+}
+
 // LiveEvent is the generic live event payload returned by a plugin live feed.
 type LiveEvent struct {
-	ID          string                `json:"id"`
-	Feed        string                `json:"feed"`
-	Category    string                `json:"category,omitempty"`
-	League      LiveEventLeague       `json:"league"`
-	Title       string                `json:"title,omitempty"`
-	Start       string                `json:"start"`
-	Status      LiveEventStatus       `json:"status"`
-	Competitors []LiveEventCompetitor `json:"competitors"`
-	Ranking     []LiveEventRankRow    `json:"ranking,omitempty"`
-	Situation   map[string]string     `json:"situation,omitempty"`
-	Probability *LiveEventProbability `json:"probability,omitempty"`
-	Venue       string                `json:"venue,omitempty"`
-	Broadcasts  []LiveEventBroadcast  `json:"broadcasts,omitempty"`
-	MatchHints  *LiveEventMatchHints  `json:"matchHints,omitempty"`
-	Spoiler     bool                  `json:"spoiler,omitempty"`
-	UpdatedAt   string                `json:"updatedAt,omitempty"`
+	ID          string                 `json:"id"`
+	Feed        string                 `json:"feed"`
+	Category    string                 `json:"category,omitempty"`
+	League      LiveEventLeague        `json:"league"`
+	Title       string                 `json:"title,omitempty"`
+	Start       string                 `json:"start"`
+	Status      LiveEventStatus        `json:"status"`
+	Competitors []LiveEventCompetitor  `json:"competitors"`
+	Ranking     []LiveEventRankRow     `json:"ranking,omitempty"`
+	Situation   map[string]string      `json:"situation,omitempty"`
+	Probability *LiveEventProbability  `json:"probability,omitempty"`
+	Venue       string                 `json:"venue,omitempty"`
+	Broadcasts  []LiveEventBroadcast   `json:"broadcasts,omitempty"`
+	MatchHints  *LiveEventMatchHints   `json:"matchHints,omitempty"`
+	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
+	Spoiler     bool                   `json:"spoiler,omitempty"`
+	UpdatedAt   string                 `json:"updatedAt,omitempty"`
 }
 
 // LiveEventTable is a generic table for box scores, line scores, or standings.

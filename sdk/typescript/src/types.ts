@@ -545,6 +545,22 @@ export interface LiveEventMatchHints {
   callsigns?: string[];
 }
 
+export type LiveEventWatchTargetKind = "channel" | "addon" | "plugin";
+
+/** Playable watch target attached by Ether; plugins do not emit it. */
+export interface LiveEventWatchTarget {
+  kind: LiveEventWatchTargetKind;
+  channelId?: string;
+  name: string;
+  number?: string;
+  logo?: string;
+  live: boolean;
+  confidence?: number;
+  url?: string;
+  /** Omitted when playable; false when the only matching channels are currently unhealthy. */
+  available?: boolean;
+}
+
 export interface LiveEvent {
   id: string;
   feed: string;
@@ -561,6 +577,8 @@ export interface LiveEvent {
   venue?: string;
   broadcasts?: LiveEventBroadcast[];
   matchHints?: LiveEventMatchHints;
+  /** Set by Ether; plugins leave omitted. */
+  watch?: LiveEventWatchTarget[];
   /** Set by Ether; plugins leave omitted. */
   spoiler?: boolean;
   /** RFC3339 timestamp. */

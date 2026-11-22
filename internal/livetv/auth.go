@@ -674,6 +674,7 @@ type authEntry struct {
 	unratedRating string
 	adultGroups   map[string]bool
 	pool          *Source
+	account       *ProviderAccount
 	auth          *SourceAuth
 	limit         int           // connection limit; 0 is none
 	gap           time.Duration // least time between new provider streams
@@ -692,6 +693,7 @@ func (s *Service) forgetSourceAuth(id string) {
 	c.gen++
 	delete(c.m, id)
 	c.mu.Unlock()
+	s.bumpHealthRevision()
 }
 
 func (s *Service) setSourceEntry(id string, e authEntry) {
@@ -703,6 +705,7 @@ func (s *Service) setSourceEntry(id string, e authEntry) {
 	}
 	c.m[id] = e
 	c.mu.Unlock()
+	s.bumpHealthRevision()
 }
 
 func (s *Service) sourceAuth(ctx context.Context, id string) (*SourceAuth, error) {
@@ -774,8 +777,12 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 			c.m[id] = authEntry{at: s.o.Now(), disabled: true}
 		}
 		c.mu.Unlock()
+		if ok && !e.disabled {
+			s.bumpHealthRevision()
+		}
 		return authEntry{}, core.ErrNotAvailable
 	}
+	prevEntry, hadPrev := e, ok
 	e = authEntry{name: src.Name, auth: src.Auth, at: s.o.Now(), perHour: max(src.TunesPerHour, 0), unratedRating: src.UnratedRating, adultGroups: map[string]bool{}}
 	for _, g := range src.Groups {
 		if g.Adult {
@@ -786,6 +793,12 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 		e.pool = &Source{ID: src.ID, LoginPool: src.LoginPool, Auth: src.Auth, PlaylistURL: src.PlaylistURL, Account: src.Account, Logins: src.Logins}
 	}
 	if src.Account != nil {
+		acct := *src.Account
+		if src.Account.ExpiresAt != nil {
+			exp := *src.Account.ExpiresAt
+			acct.ExpiresAt = &exp
+		}
+		e.account = &acct
 		e.limit = src.Account.MaxConnections
 	}
 	if src.MaxConnections > 0 && (e.limit == 0 || src.MaxConnections < e.limit) {
@@ -815,6 +828,9 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 		e = cur
 	}
 	c.mu.Unlock()
+	if hadPrev && (prevEntry.disabled != e.disabled || !sameAccountHealth(prevEntry.account, e.account)) {
+		s.bumpHealthRevision()
+	}
 	return e, nil
 }
 

@@ -3345,6 +3345,7 @@ type LiveEventMatchHints struct {
 | `live` | `bool` | emitted (validation may require a value) |  |
 | `confidence` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
+| `available` | `*bool` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/liveevent.go#LiveEventWatchTarget
@@ -3352,6 +3353,8 @@ type LiveEventMatchHints struct {
 ``````
 // LiveEventWatchTarget links a live event to a playable channel, add-on, or
 // plugin-provided stream target. Ether attaches this; plugins do not emit it.
+// Available is omitted when playable and set to false when the only matching
+// channels are currently unhealthy so clients can show "Unavailable right now".
 type LiveEventWatchTarget struct {
 	Kind       string  `json:"kind"` // channel|addon|plugin
 	ChannelID  string  `json:"channelId,omitempty"`
@@ -3361,6 +3364,17 @@ type LiveEventWatchTarget struct {
 	Live       bool    `json:"live"`
 	Confidence float64 `json:"confidence,omitempty"`
 	URL        string  `json:"url,omitempty"`
+	Available  *bool   `json:"available,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventWatchTarget.IsAvailable
+
+``````
+// IsAvailable reports whether the watch target is currently playable
+// (Available omitted or true).
+func (t LiveEventWatchTarget) IsAvailable() bool {
+	return t.Available == nil || *t.Available
 }
 ``````
 
@@ -3467,7 +3481,14 @@ func (e LiveEvent) Clone() LiveEvent {
 		out.MatchHints = h
 	}
 	if e.Watch != nil {
-		out.Watch = append([]LiveEventWatchTarget(nil), e.Watch...)
+		out.Watch = make([]LiveEventWatchTarget, len(e.Watch))
+		for i, w := range e.Watch {
+			if w.Available != nil {
+				av := *w.Available
+				w.Available = &av
+			}
+			out.Watch[i] = w
+		}
 	}
 	return out
 }
@@ -45940,7 +45961,8 @@ export function extractBroadcasts(
   const seen = new Set<string>();
 
   const push = (name: string, kind: "tv" | "stream" | "radio", region?: string) => {
-    const clean = name.trim();
+    // Show the network's full name ("Golf Channel", not ESPN's "Golf Chnl").
+    const clean = (CALLSIGN_EXPANSIONS[name.trim().toLowerCase()]?.[0] || name).trim();
     if (!clean) return;
     const normRegion = region ? region.trim().toLowerCase() : undefined;
     const key = `${clean.toLowerCase()}|${kind}|${normRegion || ""}`;
@@ -55321,6 +55343,17 @@ type LiveEventBroadcast struct {
 }
 ``````
 
+## Source: sdk/go/liveevents.go#LiveEventWatchChannel
+
+``````
+// LiveEvent watch target kind values (A5).
+const (
+	LiveEventWatchChannel = "channel"
+	LiveEventWatchAddon   = "addon"
+	LiveEventWatchPlugin  = "plugin"
+)
+``````
+
 ## Source: sdk/go/liveevents.go#LiveEventMatchHints.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -55337,6 +55370,41 @@ type LiveEventBroadcast struct {
 type LiveEventMatchHints struct {
 	Terms     []string `json:"terms,omitempty"`
 	Callsigns []string `json:"callsigns,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventWatchTarget.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `kind` | `string` | emitted (validation may require a value) | channel\|addon\|plugin |
+| `channelId` | `string` | may be omitted (see validation for conditions) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `number` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `live` | `bool` | emitted (validation may require a value) |  |
+| `confidence` | `float64` | may be omitted (see validation for conditions) |  |
+| `url` | `string` | may be omitted (see validation for conditions) |  |
+| `available` | `*bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventWatchTarget
+
+``````
+// LiveEventWatchTarget links a live event to a playable channel, add-on, or
+// plugin-provided stream target. Ether attaches this; plugins do not emit it.
+// Available is omitted when playable and set to false when the only matching
+// channels are currently unhealthy.
+type LiveEventWatchTarget struct {
+	Kind       string  `json:"kind"` // channel|addon|plugin
+	ChannelID  string  `json:"channelId,omitempty"`
+	Name       string  `json:"name"`
+	Number     string  `json:"number,omitempty"`
+	Logo       string  `json:"logo,omitempty"`
+	Live       bool    `json:"live"`
+	Confidence float64 `json:"confidence,omitempty"`
+	URL        string  `json:"url,omitempty"`
+	Available  *bool   `json:"available,omitempty"`
 }
 ``````
 
@@ -55358,6 +55426,7 @@ type LiveEventMatchHints struct {
 | `venue` | `string` | may be omitted (see validation for conditions) |  |
 | `broadcasts` | `[]LiveEventBroadcast` | may be omitted (see validation for conditions) |  |
 | `matchHints` | `*LiveEventMatchHints` | may be omitted (see validation for conditions) |  |
+| `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
 | `spoiler` | `bool` | may be omitted (see validation for conditions) |  |
 | `updatedAt` | `string` | may be omitted (see validation for conditions) |  |
 
@@ -55367,22 +55436,23 @@ type LiveEventMatchHints struct {
 ``````
 // LiveEvent is the generic live event payload returned by a plugin live feed.
 type LiveEvent struct {
-	ID          string                `json:"id"`
-	Feed        string                `json:"feed"`
-	Category    string                `json:"category,omitempty"`
-	League      LiveEventLeague       `json:"league"`
-	Title       string                `json:"title,omitempty"`
-	Start       string                `json:"start"`
-	Status      LiveEventStatus       `json:"status"`
-	Competitors []LiveEventCompetitor `json:"competitors"`
-	Ranking     []LiveEventRankRow    `json:"ranking,omitempty"`
-	Situation   map[string]string     `json:"situation,omitempty"`
-	Probability *LiveEventProbability `json:"probability,omitempty"`
-	Venue       string                `json:"venue,omitempty"`
-	Broadcasts  []LiveEventBroadcast  `json:"broadcasts,omitempty"`
-	MatchHints  *LiveEventMatchHints  `json:"matchHints,omitempty"`
-	Spoiler     bool                  `json:"spoiler,omitempty"`
-	UpdatedAt   string                `json:"updatedAt,omitempty"`
+	ID          string                 `json:"id"`
+	Feed        string                 `json:"feed"`
+	Category    string                 `json:"category,omitempty"`
+	League      LiveEventLeague        `json:"league"`
+	Title       string                 `json:"title,omitempty"`
+	Start       string                 `json:"start"`
+	Status      LiveEventStatus        `json:"status"`
+	Competitors []LiveEventCompetitor  `json:"competitors"`
+	Ranking     []LiveEventRankRow     `json:"ranking,omitempty"`
+	Situation   map[string]string      `json:"situation,omitempty"`
+	Probability *LiveEventProbability  `json:"probability,omitempty"`
+	Venue       string                 `json:"venue,omitempty"`
+	Broadcasts  []LiveEventBroadcast   `json:"broadcasts,omitempty"`
+	MatchHints  *LiveEventMatchHints   `json:"matchHints,omitempty"`
+	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
+	Spoiler     bool                   `json:"spoiler,omitempty"`
+	UpdatedAt   string                 `json:"updatedAt,omitempty"`
 }
 ``````
 
@@ -71204,6 +71274,22 @@ export interface LiveEventMatchHints {
   callsigns?: string[];
 }
 
+export type LiveEventWatchTargetKind = "channel" | "addon" | "plugin";
+
+/** Playable watch target attached by Ether; plugins do not emit it. */
+export interface LiveEventWatchTarget {
+  kind: LiveEventWatchTargetKind;
+  channelId?: string;
+  name: string;
+  number?: string;
+  logo?: string;
+  live: boolean;
+  confidence?: number;
+  url?: string;
+  /** Omitted when playable; false when the only matching channels are currently unhealthy. */
+  available?: boolean;
+}
+
 export interface LiveEvent {
   id: string;
   feed: string;
@@ -71220,6 +71306,8 @@ export interface LiveEvent {
   venue?: string;
   broadcasts?: LiveEventBroadcast[];
   matchHints?: LiveEventMatchHints;
+  /** Set by Ether; plugins leave omitted. */
+  watch?: LiveEventWatchTarget[];
   /** Set by Ether; plugins leave omitted. */
   spoiler?: boolean;
   /** RFC3339 timestamp. */

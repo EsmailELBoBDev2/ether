@@ -341,9 +341,17 @@ func (s *Service) recordSourceHealth(channelID string, src StreamSource, err err
 	}
 	s.sourceHealth[key] = h
 	s.noteSourceOpen(channelID, src, err, played, h.RetryAfter)
-	failures, retryAfter := h.Failures, h.RetryAfter
+	failures, retryAfter, checkedAt := h.Failures, h.RetryAfter, h.LastChecked
 	s.sourceMu.Unlock()
+	s.bumpHealthRevision()
 	if err != nil {
+		expiry := retryAfter
+		if failures >= watchConsecutiveOpenFailures {
+			if winEnd := checkedAt.Add(watchRecentFailureWindow); winEnd.After(expiry) {
+				expiry = winEnd
+			}
+		}
+		s.noteHealthExpiry(expiry)
 		s.emitSourceCooldown(channelID, src.ID, failures, historyErrorClass(err), retryAfter)
 	}
 }

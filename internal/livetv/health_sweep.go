@@ -214,6 +214,7 @@ feed:
 	s.channelHealth = next
 	s.healthMu.Unlock()
 	if changed {
+		s.bumpHealthRevision()
 		s.bumpLineup()
 	}
 }

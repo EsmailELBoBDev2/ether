@@ -13,7 +13,7 @@ import (
 func TestPlaybackInfoErrorVideoTranscodingOff(t *testing.T) {
 	i := &instance{protocol: "jellyfin"}
 	rec := httptest.NewRecorder()
-	i.playbackInfoError(rec, "plan", frontend.ErrVideoTranscodingDisabled)
+	i.playbackInfoError(rec, nil, "plan", frontend.ErrVideoTranscodingDisabled)
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("json: %v", err)

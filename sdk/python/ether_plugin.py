@@ -2954,6 +2954,12 @@ class MockHostClient:
                 out: Dict[str, Any] = {"candidates": list((res or {}).get("candidates") or [])}
                 if res and "indexers" in res and res["indexers"] is not None:
                     out["indexers"] = list(res["indexers"])
+                if res and "pending" in res and res["pending"] is not None:
+                    out["pending"] = list(res["pending"])
+                if res and "searchId" in res and res["searchId"] is not None:
+                    out["searchId"] = str(res["searchId"])
+                if res and "done" in res and res["done"] is not None:
+                    out["done"] = bool(res["done"])
                 return out  # type: ignore[return-value]
             out = {"candidates": list(self._p.sources)}
             if self._p.source_indexers is not None:
@@ -3762,15 +3768,26 @@ class SourceCandidate(TypedDict, total=False):
     usenetCheck: UsenetCheckResult
 
 
-class IndexerSearchStatus(TypedDict, total=False):
-    """Per-indexer outcome entry returned alongside candidates on indexer_search."""
+class IndexerRef(TypedDict, total=False):
+    """Enabled indexer identity in the top-level pending list."""
 
     indexerId: str
     indexer: str
-    status: Literal["answered", "timed_out", "skipped", "error"]
+
+
+class IndexerSearchStatus(TypedDict, total=False):
+    """Per-indexer outcome entry (indexer_search / streaming) or enabled indexer summary (kind='indexers')."""
+
+    indexerId: str
+    indexer: str
+    status: Literal["answered", "pending", "timed_out", "skipped", "error"]
     results: int
     ms: int
     error: str
+    kind: Literal["newznab", "torznab", "builtin", "stremio", "zilean", "addon"]
+    medianMs: int
+    lastMs: int
+    lastError: str
 
 
 class SourceResolveResult(TypedDict, total=False):
@@ -3778,15 +3795,30 @@ class SourceResolveResult(TypedDict, total=False):
 
     candidates: List[SourceCandidate]
     indexers: List[IndexerSearchStatus]
+    pending: List[IndexerRef]
+    searchId: str
+    done: bool
 
 
 class SourceQuery(TypedDict, total=False):
     """Host sources.resolve query payload."""
 
-    kind: Literal["indexer_search", "debrid_check", "debrid_acquire", "release_files", "usenet_check"]
+    kind: Literal[
+        "indexer_search",
+        "indexer_search_results",
+        "indexer_search_cancel",
+        "indexers",
+        "debrid_check",
+        "debrid_acquire",
+        "release_files",
+        "usenet_check",
+    ]
     query: str
     category: str
     profile: str
+    stream: bool
+    searchId: str
+    waitMs: int
     firstResults: bool
     settleMs: int
     minResults: int
@@ -3997,11 +4029,17 @@ class _KindsClient:
         return list((result or {}).get("candidates") or [])
 
     def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
-        """Run ``sources.resolve`` and return both ``candidates`` and per-indexer ``indexers`` status entries (#733)."""
+        """Run ``sources.resolve`` and return the full envelope (``candidates``, ``indexers``, ``pending``, ``searchId``, ``done``) (#733)."""
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query)) or {}
         out: Dict[str, Any] = {"candidates": list(result.get("candidates") or [])}
         if "indexers" in result and result["indexers"] is not None:
             out["indexers"] = list(result["indexers"])
+        if "pending" in result and result["pending"] is not None:
+            out["pending"] = list(result["pending"])
+        if "searchId" in result and result["searchId"] is not None:
+            out["searchId"] = str(result["searchId"])
+        if "done" in result and result["done"] is not None:
+            out["done"] = bool(result["done"])
         return out  # type: ignore[return-value]
 
 

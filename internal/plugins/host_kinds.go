@@ -537,6 +537,28 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
 			}}}
 		}
+	case "indexer_search_results":
+		if strings.TrimSpace(q.SearchID) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchId",
+				Message: "indexer_search_results needs a searchId",
+			}}}
+		}
+		if q.WaitMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "waitMs",
+				Message: "waitMs must be non-negative",
+			}}}
+		}
+	case "indexer_search_cancel":
+		if strings.TrimSpace(q.SearchID) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchId",
+				Message: "indexer_search_cancel needs a searchId",
+			}}}
+		}
+	case "indexers":
+		// Lists the owner's enabled indexers (gated by the same search permission).
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{

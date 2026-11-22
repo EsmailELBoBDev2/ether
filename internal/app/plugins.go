@@ -649,6 +649,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	go cat.Run(runCtx, catalogue.DefaultRefreshInterval)
 	a.closers = append(a.closers, func() {
 		cancelRun()
+		kindResolver.Close()
 		stopPlayback()
 		stopState()
 		stopNotify()

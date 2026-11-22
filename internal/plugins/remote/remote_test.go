@@ -2297,3 +2297,86 @@ func TestHostResolveSourcesWithResultEnvelope(t *testing.T) {
 		t.Fatalf("debrid_check unexpectedly included indexers: %#v", body)
 	}
 }
+
+func TestHostResolveSourcesStreamingAndIndexersEnvelope(t *testing.T) {
+	doneFalse := false
+	med, last := int64(200), int64(150)
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeSourcesResultHost{
+			fakeHost: newFakeHost(),
+			fn: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+				switch q.Kind {
+				case "indexer_search":
+					if q.Stream {
+						return core.SourceResolveResult{
+							Candidates: []core.SourceCandidate{},
+							SearchID:   "srch_1",
+							Done:       &doneFalse,
+							Pending:    []core.IndexerRef{{IndexerID: "slow", Indexer: "Slow"}},
+							Indexers:   []core.IndexerSearchStatus{{IndexerID: "slow", Indexer: "Slow", Status: core.IndexerStatusPending, MS: 0}},
+						}, nil
+					}
+				case "indexer_search_results":
+					if q.SearchID == "foreign" {
+						return core.SourceResolveResult{}, ErrNotFound
+					}
+				case "indexers":
+					return core.SourceResolveResult{
+						Candidates: []core.SourceCandidate{},
+						Indexers:   []core.IndexerSearchStatus{{IndexerID: "a", Indexer: "Alpha", Kind: "builtin", MedianMS: &med, LastMS: &last}},
+					}, nil
+				}
+				return core.SourceResolveResult{Candidates: []core.SourceCandidate{}}, nil
+			},
+		},
+		Auth: remotetest.Credentials{"cred-src": "plug.src"},
+	}))
+	defer srv.Close()
+
+	post := func(body string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/sources/resolve", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-src")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	status, body := post(`{"kind":"indexer_search","query":"Dune","stream":true}`)
+	if status != http.StatusOK || body["searchId"] != "srch_1" || body["done"] != false {
+		t.Fatalf("stream start = (%d, %+v)", status, body)
+	}
+	if pend, ok := body["pending"].([]any); !ok || len(pend) != 1 {
+		t.Fatalf("stream pending = %#v", body["pending"])
+	}
+
+	status, _ = post(`{"kind":"indexer_search_results","searchId":"foreign","waitMs":1000}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("foreign searchId status = %d, want 404", status)
+	}
+
+	status, body = post(`{"kind":"indexers"}`)
+	if status != http.StatusOK {
+		t.Fatalf("indexers status=%d body=%+v", status, body)
+	}
+	list, ok := body["indexers"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("indexers = %#v", body["indexers"])
+	}
+	entry := list[0].(map[string]any)
+	if entry["kind"] != "builtin" || entry["medianMs"] != float64(200) || entry["lastMs"] != float64(150) {
+		t.Fatalf("indexers[0] = %#v", entry)
+	}
+	if _, hasStatus := entry["status"]; hasStatus {
+		t.Fatalf("indexers[0] should omit status: %#v", entry)
+	}
+}

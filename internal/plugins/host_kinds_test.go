@@ -182,6 +182,15 @@ func TestHostKindServices(t *testing.T) {
 	if _, err := h.ResolveSources(ctx, core.SourceQuery{Kind: "indexer_search", Query: "dawn"}); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("role off should deny: %v", err)
 	}
+	for _, q := range []core.SourceQuery{
+		{Kind: "indexer_search_results", SearchID: "srch_1"},
+		{Kind: "indexer_search_cancel", SearchID: "srch_1"},
+		{Kind: "indexers"},
+	} {
+		if _, err := h.ResolveSources(ctx, q); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("role off should deny %s: %v", q.Kind, err)
+		}
+	}
 }
 
 func TestKindJournalAndUndo(t *testing.T) {
@@ -1036,5 +1045,52 @@ func TestHostResolveSourcesWithResultAndValidation(t *testing.T) {
 	}
 	if _, hasIndexers := dcObj["indexers"]; hasIndexers {
 		t.Fatalf("debrid_check reply unexpectedly included indexers: %#v", dcObj)
+	}
+
+	// Streaming & listing validation + hosted not_found mapping.
+	for _, q := range []core.SourceQuery{
+		{Kind: "indexer_search_results"},
+		{Kind: "indexer_search_results", SearchID: "s1", WaitMS: -1},
+		{Kind: "indexer_search_cancel"},
+	} {
+		var ve *ValidationError
+		if _, err := h.ResolveSources(ctx, q); !errors.As(err, &ve) {
+			t.Fatalf("query %+v err = %v, want *ValidationError", q, err)
+		}
+	}
+
+	// kind:"indexers" and streaming kinds use the same search permission.
+	env.m.SetKindBackends(KindBackends{
+		ResolveSourcesResult: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+			if q.Kind == "indexer_search_results" && q.SearchID == "missing" {
+				return core.SourceResolveResult{}, ErrNotFound
+			}
+			med, last := int64(120), int64(90)
+			return core.SourceResolveResult{
+				Candidates: []core.SourceCandidate{},
+				Indexers: []core.IndexerSearchStatus{
+					{IndexerID: "idx1", Indexer: "One", Kind: "newznab", MedianMS: &med, LastMS: &last},
+				},
+			}, nil
+		},
+	})
+	rawIdx, err := bridge.CallHost(ctx, "sources.resolve", json.RawMessage(`[{"kind":"indexers"}]`))
+	if err != nil {
+		t.Fatalf("hosted indexers: %v", err)
+	}
+	var idxObj map[string]any
+	if err := json.Unmarshal(rawIdx, &idxObj); err != nil {
+		t.Fatalf("unmarshal indexers: %v", err)
+	}
+	if list, ok := idxObj["indexers"].([]any); !ok || len(list) != 1 {
+		t.Fatalf("hosted indexers = %#v, want 1 entry", idxObj["indexers"])
+	}
+	if _, err := bridge.CallHost(ctx, "sources.resolve", json.RawMessage(`[{"kind":"indexer_search_results","searchId":"missing"}]`)); err == nil {
+		t.Fatalf("expected fault for missing searchId")
+	} else {
+		var fault *wasm.Fault
+		if !errors.As(err, &fault) || fault.Code != "not_found" {
+			t.Fatalf("missing searchId fault = %v, want code not_found", err)
+		}
 	}
 }

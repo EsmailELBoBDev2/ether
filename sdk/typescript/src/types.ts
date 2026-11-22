@@ -950,12 +950,26 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files" | "usenet_check";
+  kind:
+    | "indexer_search"
+    | "indexer_search_results"
+    | "indexer_search_cancel"
+    | "indexers"
+    | "debrid_check"
+    | "debrid_acquire"
+    | "release_files"
+    | "usenet_check";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
   /** Quality profile name to score video release names against on indexer_search; empty uses default. */
   profile?: string;
+  /** indexer_search only: when true, start the fan-out and return immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. */
+  stream?: boolean;
+  /** Streaming search handle returned by indexer_search with stream:true; required on indexer_search_results and indexer_search_cancel. */
+  searchId?: string;
+  /** indexer_search_results only: wait up to waitMs (capped at 10000 ms; 0 returns immediately) for at least one new arrival or completion. */
+  waitMs?: number;
   /** indexer_search only: return once the fastest indexers produce results plus settleMs (default 250 ms), while slower indexers keep filling Ether's search cache. */
   firstResults?: boolean;
   /** indexer_search only: grace window in ms after the first matching result arrives (default 250 with firstResults; 0 returns immediately; capped at 30000). */
@@ -981,25 +995,48 @@ export interface SourceQuery {
   fileCount?: number;
 }
 
-export type IndexerSearchState = "answered" | "timed_out" | "skipped" | "error";
+export type IndexerSearchState = "answered" | "pending" | "timed_out" | "skipped" | "error";
 
-/** Per-indexer search outcome entry returned alongside candidates on indexer_search responses. */
+export type IndexerKind = "newznab" | "torznab" | "builtin" | "stremio" | "zilean" | "addon";
+
+/** Enabled indexer identity returned in the top-level pending list on early-returning and streaming search responses. */
+export interface IndexerRef {
+  indexerId: string;
+  indexer: string;
+}
+
+/** Per-indexer search outcome entry (indexer_search / indexer_search_results / indexer_search_cancel) or enabled indexer summary (kind:"indexers"). */
 export interface IndexerSearchStatus {
   indexerId: string;
   indexer: string;
-  status: IndexerSearchState;
+  /** Outcome for this indexer on search/streaming queries ("pending" while still running in the background; "timed_out" when hitting the ceiling). */
+  status?: IndexerSearchState;
   /** Raw release count returned by this indexer when status is "answered". */
   results?: number;
-  /** Elapsed milliseconds until this indexer answered, failed, or the caller stopped waiting (0 for skipped). */
-  ms: number;
+  /** Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped). */
+  ms?: number;
   /** Sanitized short error code when status is "error". */
   error?: string;
+  /** Indexer kind on kind:"indexers" responses. */
+  kind?: IndexerKind | string;
+  /** Median recent search duration in milliseconds on kind:"indexers" responses (omitted until searched). */
+  medianMs?: number;
+  /** Most recent search duration in milliseconds on kind:"indexers" responses (omitted until searched). */
+  lastMs?: number;
+  /** Sanitized short error code from the indexer's most recent failed search on kind:"indexers" responses. */
+  lastError?: string;
 }
 
-/** Full response envelope from sources.resolve; indexers is populated on indexer_search queries. */
+/** Full response envelope from sources.resolve. */
 export interface SourceResolveResult {
   candidates: SourceCandidate[];
   indexers?: IndexerSearchStatus[];
+  /** Indexers still running in the background (early-returning indexer_search and streaming responses). */
+  pending?: IndexerRef[];
+  /** Streaming search handle returned on stream:true and echoed on indexer_search_results / indexer_search_cancel. */
+  searchId?: string;
+  /** True once every indexer in a streaming search has answered, failed, timed out, been skipped, or been cancelled. */
+  done?: boolean;
 }
 
 /** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */

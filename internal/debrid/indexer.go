@@ -120,6 +120,103 @@ func (x *Indexer) Search(ctx context.Context, req core.SearchRequest) ([]core.Re
 	return x.SearchWith(ctx, req, nil)
 }
 
+// EnabledIndexerStatuses forwards enabled indexer status listing to the
+// wrapped indexer.
+func (x *Indexer) EnabledIndexerStatuses(status string) []core.IndexerSearchStatus {
+	if dir, ok := x.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexerStatuses(status)
+	}
+	return nil
+}
+
+// EnabledIndexers forwards enabled indexer listing to the wrapped indexer.
+func (x *Indexer) EnabledIndexers() []core.IndexerSearchStatus {
+	if dir, ok := x.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexers()
+	}
+	return []core.IndexerSearchStatus{}
+}
+
+// SearchWithOptions forwards controlled fan-out options to the wrapped indexer
+// and filters results through playable + debrid cache availability. Early
+// return and bounded-wait calls avoid adding a blocking post-search CheckCached
+// round-trip on top of the caller's wait budget.
+func (x *Indexer) SearchWithOptions(ctx context.Context, req core.SearchRequest, opts core.IndexerSearchOptions) (core.IndexerSearchResult, error) {
+	csi, ok := x.inner.(core.ControlledSearchIndexer)
+	if !ok {
+		started := time.Now()
+		rels, err := x.Search(ctx, req)
+		if err != nil {
+			return core.IndexerSearchResult{}, err
+		}
+		name := x.Name()
+		return core.IndexerSearchResult{
+			Releases: rels,
+			Indexers: []core.IndexerSearchStatus{{
+				IndexerID: name,
+				Indexer:   name,
+				Status:    core.IndexerStatusAnswered,
+				Results:   len(rels),
+				MS:        max(int64(0), time.Since(started).Milliseconds()),
+			}},
+		}, nil
+	}
+	res, err := csi.SearchWithOptions(ctx, req, opts)
+	if err != nil {
+		return res, err
+	}
+	enabled := x.svc != nil && x.svc.Enabled()
+	if enabled {
+		x.svc.ApplyHints(ctx, res.Releases)
+	}
+	var torrents []string
+	out := res.Releases[:0:0]
+	for _, r := range res.Releases {
+		r, ok := x.playable(r)
+		if !ok {
+			continue
+		}
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" {
+			torrents = append(torrents, r.InfoHash)
+		}
+		out = append(out, r)
+	}
+	bounded := opts.FirstResults || opts.MinResults > 0 || opts.WaitTimeout > 0 || len(res.Pending) > 0
+	if len(torrents) == 0 || !enabled || bounded {
+		if enabled && len(torrents) > 0 {
+			sort.SliceStable(out, func(i, j int) bool {
+				ci := out[i].Protocol == core.ProtocolTorrent && x.svc.KnownCached(out[i].InfoHash)
+				cj := out[j].Protocol == core.ProtocolTorrent && x.svc.KnownCached(out[j].InfoHash)
+				return ci && !cj
+			})
+		}
+		res.Releases = out
+		return res, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	cached, definitive := x.svc.CheckCached(cctx, torrents)
+	cancel()
+	kept := out[:0]
+	dropUncached := definitive && x.svc.Config().CachedOnly
+	explain := x.explainUncached(out, cached)
+	for _, r := range out {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
+			if explain == 0 {
+				continue
+			}
+			explain--
+		}
+		kept = append(kept, r)
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		ci := kept[i].Protocol == core.ProtocolTorrent && (cached[kept[i].InfoHash] || x.svc.KnownCached(kept[i].InfoHash))
+		cj := kept[j].Protocol == core.ProtocolTorrent && (cached[kept[j].InfoHash] || x.svc.KnownCached(kept[j].InfoHash))
+		return ci && !cj
+	})
+	res.Releases = kept
+	return res, nil
+}
+
 // SearchWith exposes arrivals from both sources while cache discovery continues.
 // The resolver targets and validates speculative torrents before selecting one.
 func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
@@ -181,7 +278,7 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 		}
 		out = append(out, r)
 	}
-	if len(torrents) == 0 {
+	if len(torrents) == 0 || core.HasIndexerStatusObserver(ctx) {
 		return out, nil
 	}
 	// One bulk availability call per provider that offers it: torrents

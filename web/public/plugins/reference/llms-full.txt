@@ -1080,7 +1080,7 @@ Release probes run strictly cached-only without queuing uncached debrid
 downloads; pattern-specific network, folder, secret, and blob grants
 still apply.
 
-`ResolveSources({kind: "indexer_search", query?, category?, profile?, firstResults?, settleMs?, minResults?, skipIndexers?, onlyIndexers?, timeoutMs?})` accepts a
+`ResolveSources({kind: "indexer_search", query?, category?, profile?, stream?, firstResults?, settleMs?, minResults?, skipIndexers?, onlyIndexers?, timeoutMs?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
@@ -1092,6 +1092,21 @@ By default `indexer_search` waits for every enabled indexer up to Ether's 30 s
 ceiling. Optional fan-out controls let a resolver stay responsive when one
 indexer is slow or rate-paced:
 
+- `stream: true`: starts the fan-out (reusing Ether's `SearchWith` arrival
+  callback and `WithIndexerSkip` filters) and answers immediately with
+  `{candidates: [], searchId, pending, done, indexers}`. Poll incremental
+  batches with `sources.resolve({kind: "indexer_search_results", searchId, waitMs?})`,
+  which waits up to `waitMs` (capped at `10000` ms; `0` returns immediately) for
+  at least one new arrival or completion and returns only candidates that
+  arrived since the previous poll alongside `pending: [{indexerId, indexer}]`,
+  `done` (`true` once every indexer has answered, failed, timed out, or been
+  skipped), and per-indexer `indexers` statuses. Stop unfinished indexers at any
+  time with `sources.resolve({kind: "indexer_search_cancel", searchId})`.
+  Streaming searches are scoped strictly to the calling plugin (another plugin's
+  `searchId` returns `"not_found"`), capped per plugin (`4` live searches),
+  bounded by the 30 s indexer ceiling (or a shorter `timeoutMs`), dropped if
+  never polled (`15 s`), and expired after idle polls (`3 min` after the last
+  poll) or cleaned up once `done: true` is consumed or cancelled.
 - `firstResults: true`: return as soon as the fastest indexers produce results
   plus `settleMs` (default `250` ms when omitted; `0` returns immediately;
   capped at `30000` ms). Slow indexers still in flight continue in the
@@ -1106,21 +1121,37 @@ indexer is slow or rate-paced:
   each) of indexer IDs (`indexerId`) or display names (`indexer`) to exclude or
   include for this search. `skipIndexers` takes precedence over `onlyIndexers`.
 - `timeoutMs`: per-call wait budget in milliseconds, capped by Ether's 30 s
-  ceiling (and any shorter parent request deadline). Slow indexers still
-  running when `timeoutMs` expires are reported as `"timed_out"` while
-  continuing to fill the search cache in the background.
+  ceiling (and any shorter parent request deadline). When `timeoutMs` is shorter
+  than the ceiling and expires while slow indexers keep filling the search cache
+  in the background, those indexers are reported as `"pending"` (and listed in
+  top-level `pending`). Indexers that hit the 30 s ceiling (or are cancelled
+  because the detached background cap is full) are reported as `"timed_out"`.
 
-For `indexer_search`, the `sources.resolve` response envelope includes
+For `indexer_search`, `indexer_search_results`, and `indexer_search_cancel`,
+the `sources.resolve` response envelope includes
 `indexers: [{indexerId, indexer, status, results?, ms, error?}]` alongside
-`candidates`, where `status` is `"answered"`, `"timed_out"`, `"skipped"`, or
-`"error"` (with a sanitized short `error` code on failure), so a resolver can
-inspect which indexers answered and decide whether to run a follow-up search.
-Non-`indexer_search` queries omit `indexers`. In Go, TypeScript, and Python
-SDKs, `ResolveSources` / `kinds.resolveSources` / `resolve_sources` continue
-returning candidates only, while `ResolveSourcesWithResult` /
-`kinds.resolveSourcesWithResult` / `resolve_sources_with_result` return the
-full `{candidates, indexers}` envelope (raw hosted `ether.sources.resolve`
-returns `{candidates, indexers?}` directly).
+`candidates`, where `status` is `"answered"`, `"pending"`, `"timed_out"`,
+`"skipped"`, or `"error"` (with a sanitized short `error` code on failure), plus
+top-level `pending: [{indexerId, indexer}]` whenever indexers remain running in
+the background (and `searchId`/`done` for streaming calls).
+
+`ResolveSources({kind: "indexers"})` (gated by the same `permissions.sources: "search"`
+permission) lists the owner's currently enabled indexers in priority order under
+`indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`, where
+`kind` is `"newznab"`, `"torznab"`, `"builtin"`, `"stremio"`, `"zilean"`, or
+`"addon"`, `medianMs` and `lastMs` summarize recent search timings (omitted
+until the indexer has been searched), and `lastError` carries a sanitized error
+code when the indexer's most recent search failed. The listing never includes
+API keys, URLs with secrets, or cookies.
+
+Non-indexer source queries (`debrid_check`, `debrid_acquire`, `release_files`,
+`usenet_check`) omit `indexers`, `pending`, `searchId`, and `done`. In Go,
+TypeScript, and Python SDKs, `ResolveSources` / `kinds.resolveSources` /
+`resolve_sources` continue returning candidates only, while
+`ResolveSourcesWithResult` / `kinds.resolveSourcesWithResult` /
+`resolve_sources_with_result` return the full
+`{candidates, indexers?, pending?, searchId?, done?}` envelope (raw hosted
+`ether.sources.resolve` returns that envelope directly).
 
 Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
@@ -2523,7 +2554,7 @@ type KindMatchResponse struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
@@ -2534,12 +2565,15 @@ type KindMatchResponse struct {
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when the plugin does not pass a full Candidate from indexer_search. |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when Ether has not seen its file list yet (e.g. a magnet for a large collection), so zip-only debrid caches are checked via cached-only add. |
+| `stream` | `bool` | may be omitted (see validation for conditions) | Stream, when true on indexer_search, starts the indexer fan-out and returns immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. |
+| `searchId` | `string` | may be omitted (see validation for conditions) | SearchID identifies a streaming search started by indexer_search with stream:true; required on indexer_search_results and indexer_search_cancel. |
+| `waitMs` | `int` | may be omitted (see validation for conditions) | WaitMS sets how long indexer_search_results waits (in milliseconds, capped at 10000 ms) for at least one new arrival or search completion before returning. Zero returns immediately with arrivals buffered so far. |
 | `firstResults` | `bool` | may be omitted (see validation for conditions) | FirstResults, when true on indexer_search, returns early as soon as the fastest indexer(s) return results plus the SettleMS window (default 250 ms; 0 returns immediately), while slower indexers keep running in the background to populate Ether's search cache for later calls. Default false waits for every searched indexer. |
 | `settleMs` | `*int` | may be omitted (see validation for conditions) | SettleMS sets the settle window in milliseconds after the first results arrive under FirstResults (default 250 ms when nil; 0 returns immediately), or after MinResults is met when FirstResults is false. Clamped to the effective call timeout. |
 | `minResults` | `int` | may be omitted (see validation for conditions) | MinResults sets a minimum deduplicated candidate count for early return on indexer_search. Once at least MinResults unique results have arrived, Ether returns early while remaining indexers keep filling Ether's search cache. Combined with FirstResults, returns as soon as either MinResults is reached or the settle window elapses. |
 | `skipIndexers` | `[]string` | may be omitted (see validation for conditions) | SkipIndexers excludes matching enabled indexers from an indexer_search fan-out by indexerId or indexer name (case-insensitive, trimmed). |
 | `onlyIndexers` | `[]string` | may be omitted (see validation for conditions) | OnlyIndexers, when non-empty, restricts an indexer_search fan-out to matching enabled indexers by indexerId or indexer name (case-insensitive, trimmed). Entries also matching SkipIndexers are excluded. |
-| `timeoutMs` | `int` | may be omitted (see validation for conditions) | TimeoutMS sets a per-call wait limit in milliseconds for indexer_search, capped by Ether's 30 s indexer-search ceiling and any shorter route deadline. When TimeoutMS expires before the parent deadline, Ether returns candidates arrived so far with timed_out statuses while slower indexers continue filling the search cache. Omit or 0 keeps the 30 s default. |
+| `timeoutMs` | `int` | may be omitted (see validation for conditions) | TimeoutMS sets a per-call wait limit in milliseconds for indexer_search, capped by Ether's 30 s indexer-search ceiling and any shorter route deadline. When TimeoutMS is shorter than the ceiling and expires while slow indexers keep filling the search cache, those indexers are reported as pending (and listed in top-level pending); indexers that hit the 30 s ceiling are reported as timed_out. Omit or 0 keeps the 30 s default. |
 
 
 ## Source: internal/core/kinditem.go#SourceQuery
@@ -2548,7 +2582,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -2573,6 +2607,17 @@ type SourceQuery struct {
 	// has not seen its file list yet (e.g. a magnet for a large collection),
 	// so zip-only debrid caches are checked via cached-only add.
 	FileCount int `json:"fileCount,omitempty"`
+	// Stream, when true on indexer_search, starts the indexer fan-out and
+	// returns immediately with a searchId handle to poll via
+	// indexer_search_results or stop via indexer_search_cancel.
+	Stream bool `json:"stream,omitempty"`
+	// SearchID identifies a streaming search started by indexer_search with
+	// stream:true; required on indexer_search_results and indexer_search_cancel.
+	SearchID string `json:"searchId,omitempty"`
+	// WaitMS sets how long indexer_search_results waits (in milliseconds,
+	// capped at 10000 ms) for at least one new arrival or search completion
+	// before returning. Zero returns immediately with arrivals buffered so far.
+	WaitMS int `json:"waitMs,omitempty"`
 	// FirstResults, when true on indexer_search, returns early as soon as the
 	// fastest indexer(s) return results plus the SettleMS window (default
 	// 250 ms; 0 returns immediately), while slower indexers keep running in the
@@ -2599,10 +2644,10 @@ type SourceQuery struct {
 	OnlyIndexers []string `json:"onlyIndexers,omitempty"`
 	// TimeoutMS sets a per-call wait limit in milliseconds for indexer_search,
 	// capped by Ether's 30 s indexer-search ceiling and any shorter route
-	// deadline. When TimeoutMS expires before the parent deadline, Ether
-	// returns candidates arrived so far with timed_out statuses while slower
-	// indexers continue filling the search cache. Omit or 0 keeps the 30 s
-	// default.
+	// deadline. When TimeoutMS is shorter than the ceiling and expires while
+	// slow indexers keep filling the search cache, those indexers are reported
+	// as pending (and listed in top-level pending); indexers that hit the 30 s
+	// ceiling are reported as timed_out. Omit or 0 keeps the 30 s default.
 	TimeoutMS int `json:"timeoutMs,omitempty"`
 }
 ``````
@@ -2613,10 +2658,31 @@ type SourceQuery struct {
 // Status values for IndexerSearchStatus.Status.
 const (
 	IndexerStatusAnswered = "answered"
+	IndexerStatusPending  = "pending"
 	IndexerStatusTimedOut = "timed_out"
 	IndexerStatusSkipped  = "skipped"
 	IndexerStatusError    = "error"
 )
+``````
+
+## Source: internal/core/kinditem.go#IndexerRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `indexerId` | `string` | emitted (validation may require a value) |  |
+| `indexer` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/kinditem.go#IndexerRef
+
+``````
+// IndexerRef identifies one configured indexer by ID and display name,
+// returned in the top-level pending list on indexer_search and
+// indexer_search_results responses.
+type IndexerRef struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+}
 ``````
 
 ## Source: internal/core/kinditem.go#IndexerSearchStatus.fields.md
@@ -2625,24 +2691,88 @@ const (
 |---|---|---|---|
 | `indexerId` | `string` | emitted (validation may require a value) |  |
 | `indexer` | `string` | emitted (validation may require a value) |  |
-| `status` | `string` | emitted (validation may require a value) | answered\|timed_out\|skipped\|error |
+| `status` | `string` | may be omitted (see validation for conditions) | answered\|pending\|timed_out\|skipped\|error |
 | `results` | `int` | may be omitted (see validation for conditions) |  |
 | `ms` | `int64` | emitted (validation may require a value) |  |
 | `error` | `string` | may be omitted (see validation for conditions) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) | Kind, MedianMS, LastMS and LastError are populated on kind:"indexers" responses (never carrying API keys, URLs with secrets, or cookies). newznab\|torznab\|builtin\|stremio\|zilean\|addon |
+| `medianMs` | `*int64` | may be omitted (see validation for conditions) |  |
+| `lastMs` | `*int64` | may be omitted (see validation for conditions) |  |
+| `lastError` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#IndexerSearchStatus
 
 ``````
-// IndexerSearchStatus reports one enabled indexer's outcome on an
-// indexer_search query so a resolver can decide whether to wait or retry.
+// IndexerSearchStatus reports either one enabled indexer's outcome on an
+// indexer_search / indexer_search_results / indexer_search_cancel query
+// (Status, Results, MS, Error) or one enabled indexer's summary on an
+// indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
 	IndexerID string `json:"indexerId"`
 	Indexer   string `json:"indexer"`
-	Status    string `json:"status"` // answered|timed_out|skipped|error
+	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
 	Results   int    `json:"results,omitempty"`
 	MS        int64  `json:"ms"`
 	Error     string `json:"error,omitempty"`
+	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
+	// responses (never carrying API keys, URLs with secrets, or cookies).
+	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
+	MedianMS  *int64 `json:"medianMs,omitempty"`
+	LastMS    *int64 `json:"lastMs,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#IndexerSearchStatus.MarshalJSON
+
+``````
+// MarshalJSON preserves ms:0 on search status entries (Status != "") while
+// omitting status/ms/results/error on kind:"indexers" listing entries
+// (Status == "").
+func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
+	if s.Status == "" {
+		type listing struct {
+			IndexerID string `json:"indexerId"`
+			Indexer   string `json:"indexer"`
+			Kind      string `json:"kind,omitempty"`
+			MedianMS  *int64 `json:"medianMs,omitempty"`
+			LastMS    *int64 `json:"lastMs,omitempty"`
+			LastError string `json:"lastError,omitempty"`
+		}
+		return json.Marshal(listing{
+			IndexerID: s.IndexerID,
+			Indexer:   s.Indexer,
+			Kind:      s.Kind,
+			MedianMS:  s.MedianMS,
+			LastMS:    s.LastMS,
+			LastError: s.LastError,
+		})
+	}
+	type searchStatus struct {
+		IndexerID string `json:"indexerId"`
+		Indexer   string `json:"indexer"`
+		Status    string `json:"status"`
+		Results   int    `json:"results,omitempty"`
+		MS        int64  `json:"ms"`
+		Error     string `json:"error,omitempty"`
+		Kind      string `json:"kind,omitempty"`
+		MedianMS  *int64 `json:"medianMs,omitempty"`
+		LastMS    *int64 `json:"lastMs,omitempty"`
+		LastError string `json:"lastError,omitempty"`
+	}
+	return json.Marshal(searchStatus{
+		IndexerID: s.IndexerID,
+		Indexer:   s.Indexer,
+		Status:    s.Status,
+		Results:   s.Results,
+		MS:        s.MS,
+		Error:     s.Error,
+		Kind:      s.Kind,
+		MedianMS:  s.MedianMS,
+		LastMS:    s.LastMS,
+		LastError: s.LastError,
+	})
 }
 ``````
 
@@ -2652,6 +2782,9 @@ type IndexerSearchStatus struct {
 |---|---|---|---|
 | `candidates` | `[]SourceCandidate` | emitted (validation may require a value) |  |
 | `indexers` | `[]IndexerSearchStatus` | may be omitted (see validation for conditions) |  |
+| `pending` | `[]IndexerRef` | may be omitted (see validation for conditions) |  |
+| `searchId` | `string` | may be omitted (see validation for conditions) |  |
+| `done` | `*bool` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#SourceResolveResult
@@ -2659,10 +2792,49 @@ type IndexerSearchStatus struct {
 ``````
 // SourceResolveResult is the full wire response envelope returned by
 // sources.resolve: Candidates for every query kind, plus per-indexer outcomes
-// in Indexers on indexer_search.
+// or listings in Indexers, pending indexers in Pending, and streaming state
+// (SearchID, Done) when streaming.
 type SourceResolveResult struct {
 	Candidates []SourceCandidate     `json:"candidates"`
 	Indexers   []IndexerSearchStatus `json:"indexers,omitempty"`
+	Pending    []IndexerRef          `json:"pending,omitempty"`
+	SearchID   string                `json:"searchId,omitempty"`
+	Done       *bool                 `json:"done,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#SourceResolveResult.MarshalJSON
+
+``````
+// MarshalJSON always emits candidates (as [] when nil), omits nil Indexers and
+// Pending slices (for non-search kinds), and preserves non-nil empty Indexers
+// and Pending slices as [] (for kind:"indexers" with zero indexers and
+// finished streaming searches).
+func (r SourceResolveResult) MarshalJSON() ([]byte, error) {
+	cands := r.Candidates
+	if cands == nil {
+		cands = []SourceCandidate{}
+	}
+	wire := struct {
+		Candidates []SourceCandidate      `json:"candidates"`
+		Indexers   *[]IndexerSearchStatus `json:"indexers,omitempty"`
+		Pending    *[]IndexerRef          `json:"pending,omitempty"`
+		SearchID   string                 `json:"searchId,omitempty"`
+		Done       *bool                  `json:"done,omitempty"`
+	}{
+		Candidates: cands,
+		SearchID:   r.SearchID,
+		Done:       r.Done,
+	}
+	if r.Indexers != nil {
+		s := r.Indexers
+		wire.Indexers = &s
+	}
+	if r.Pending != nil {
+		s := r.Pending
+		wire.Pending = &s
+	}
+	return json.Marshal(wire)
 }
 ``````
 
@@ -3497,6 +3669,7 @@ type LiveEventMatchHints struct {
 | `confidence` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `available` | `*bool` | may be omitted (see validation for conditions) |  |
+| `alternates` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/liveevent.go#LiveEventWatchTarget
@@ -3507,15 +3680,16 @@ type LiveEventMatchHints struct {
 // Available is omitted when playable and set to false when the only matching
 // channels are currently unhealthy so clients can show "Unavailable right now".
 type LiveEventWatchTarget struct {
-	Kind       string  `json:"kind"` // channel|addon|plugin
-	ChannelID  string  `json:"channelId,omitempty"`
-	Name       string  `json:"name"`
-	Number     string  `json:"number,omitempty"`
-	Logo       string  `json:"logo,omitempty"`
-	Live       bool    `json:"live"`
-	Confidence float64 `json:"confidence,omitempty"`
-	URL        string  `json:"url,omitempty"`
-	Available  *bool   `json:"available,omitempty"`
+	Kind       string                 `json:"kind"` // channel|addon|plugin
+	ChannelID  string                 `json:"channelId,omitempty"`
+	Name       string                 `json:"name"`
+	Number     string                 `json:"number,omitempty"`
+	Logo       string                 `json:"logo,omitempty"`
+	Live       bool                   `json:"live"`
+	Confidence float64                `json:"confidence,omitempty"`
+	URL        string                 `json:"url,omitempty"`
+	Available  *bool                  `json:"available,omitempty"`
+	Alternates []LiveEventWatchTarget `json:"alternates,omitempty"`
 }
 ``````
 
@@ -3526,6 +3700,27 @@ type LiveEventWatchTarget struct {
 // (Available omitted or true).
 func (t LiveEventWatchTarget) IsAvailable() bool {
 	return t.Available == nil || *t.Available
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventWatchTarget.Clone
+
+``````
+// Clone returns a deep copy of t including its availability flag and any
+// collapsed alternate feeds.
+func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
+	out := t
+	if t.Available != nil {
+		av := *t.Available
+		out.Available = &av
+	}
+	if len(t.Alternates) > 0 {
+		out.Alternates = make([]LiveEventWatchTarget, len(t.Alternates))
+		for i, alt := range t.Alternates {
+			out.Alternates[i] = alt.Clone()
+		}
+	}
+	return out
 }
 ``````
 
@@ -3634,11 +3829,7 @@ func (e LiveEvent) Clone() LiveEvent {
 	if e.Watch != nil {
 		out.Watch = make([]LiveEventWatchTarget, len(e.Watch))
 		for i, w := range e.Watch {
-			if w.Available != nil {
-				av := *w.Available
-				w.Available = &av
-			}
-			out.Watch[i] = w
+			out.Watch[i] = w.Clone()
 		}
 	}
 	return out
@@ -16847,6 +17038,28 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
 			}}}
 		}
+	case "indexer_search_results":
+		if strings.TrimSpace(q.SearchID) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchId",
+				Message: "indexer_search_results needs a searchId",
+			}}}
+		}
+		if q.WaitMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "waitMs",
+				Message: "waitMs must be non-negative",
+			}}}
+		}
+	case "indexer_search_cancel":
+		if strings.TrimSpace(q.SearchID) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchId",
+				Message: "indexer_search_cancel needs a searchId",
+			}}}
+		}
+	case "indexers":
+		// Lists the owner's enabled indexers (gated by the same search permission).
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
@@ -18541,6 +18754,8 @@ func mapHostError(err error) error {
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
 	case errors.Is(err, ErrPermissionDenied):
 		return wasm.Forbidden(err.Error())
+	case errors.Is(err, ErrNotFound):
+		return &wasm.Fault{Code: "not_found", Message: err.Error()}
 	case errors.Is(err, ErrNotConfigured):
 		return &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
 	case errors.Is(err, ErrInvalidOutput):
@@ -36749,6 +36964,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "kind": {
           "enum": [
             "indexer_search",
+            "indexer_search_results",
+            "indexer_search_cancel",
+            "indexers",
             "debrid_check",
             "debrid_acquire",
             "release_files",
@@ -36766,6 +36984,20 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "profile": {
           "type": "string",
           "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "indexer_search only. When true, starts the indexer fan-out and answers immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel."
+        },
+        "searchId": {
+          "type": "string",
+          "description": "Streaming search handle returned by indexer_search with stream: true. Required on indexer_search_results and indexer_search_cancel; scoped to the calling plugin."
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "indexer_search_results only. How long in milliseconds to wait for at least one new arrival or search completion before returning (capped at 10000 ms; 0 returns immediately with buffered arrivals)."
         },
         "firstResults": {
           "type": "boolean",
@@ -36802,7 +37034,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "type": "integer",
           "minimum": 0,
           "maximum": 30000,
-          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). Slow indexers still running when timeoutMs expires are reported as \"timed_out\" and continue populating Ether's search cache in the background."
+          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). When shorter than the ceiling, slow indexers still running in the background are reported as \"pending\" (and listed in top-level pending) while continuing to populate Ether's search cache; indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
         },
         "infoHashes": {
           "type": "array",
@@ -36835,14 +37067,30 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         }
       }
     },
-    "indexerSearchStatus": {
+    "indexerRef": {
       "type": "object",
-      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search responses.",
+      "description": "Enabled indexer identity returned in the top-level pending list on early-returning and streaming indexer_search / indexer_search_results responses.",
       "required": [
         "indexerId",
-        "indexer",
-        "status",
-        "ms"
+        "indexer"
+      ],
+      "properties": {
+        "indexerId": {
+          "type": "string",
+          "description": "Configured indexer ID in Ether."
+        },
+        "indexer": {
+          "type": "string",
+          "description": "Display name of the indexer."
+        }
+      }
+    },
+    "indexerSearchStatus": {
+      "type": "object",
+      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
+      "required": [
+        "indexerId",
+        "indexer"
       ],
       "properties": {
         "indexerId": {
@@ -36856,11 +37104,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "status": {
           "enum": [
             "answered",
+            "pending",
             "timed_out",
             "skipped",
             "error"
           ],
-          "description": "Outcome for this indexer within the caller's wait window."
+          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling."
         },
         "results": {
           "type": "integer",
@@ -36870,17 +37119,42 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "ms": {
           "type": "integer",
           "minimum": 0,
-          "description": "Elapsed milliseconds until this indexer answered, failed, or the caller stopped waiting (0 for skipped indexers)."
+          "description": "Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped indexers). Present on search status entries; omitted on kind:\"indexers\" listings."
         },
         "error": {
           "type": "string",
-          "description": "Sanitized short error code when status is \"error\" (for example budget_exhausted, rate_limited, auth_failed, upstream_error, search_failed)."
+          "description": "Sanitized short error code when status is \"error\" (for example budget_exhausted, rate_limited, auth_failed, upstream_error, canceled, search_failed)."
+        },
+        "kind": {
+          "enum": [
+            "newznab",
+            "torznab",
+            "builtin",
+            "stremio",
+            "zilean",
+            "addon"
+          ],
+          "description": "Indexer kind on kind:\"indexers\" responses."
+        },
+        "medianMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Median recent search duration in milliseconds on kind:\"indexers\" responses; omitted when no searches have been recorded yet."
+        },
+        "lastMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Most recent search duration in milliseconds on kind:\"indexers\" responses; omitted when no searches have been recorded yet."
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Sanitized short error code from the indexer's most recent failed search on kind:\"indexers\" responses; omitted when the last search succeeded or none failed."
         }
       }
     },
     "sourceResolveResult": {
       "type": "object",
-      "description": "Response envelope returned by sources.resolve (both POST /host/v1/sources/resolve and ether.sources.resolve).",
+      "description": "Response envelope returned by sources.resolve (both POST /ether/plugin-host/sources/resolve and ether.sources.resolve).",
       "required": [
         "candidates"
       ],
@@ -36896,7 +37170,22 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "items": {
             "$ref": "#/$defs/indexerSearchStatus"
           },
-          "description": "Per-indexer search outcome for indexer_search queries; omitted for other source query kinds."
+          "description": "Per-indexer search outcomes for indexer_search, indexer_search_results, and indexer_search_cancel, or the owner's enabled indexer listing for kind:\"indexers\"; omitted for other source query kinds."
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/indexerRef"
+          },
+          "description": "Indexers still running in the background (present on early-returning indexer_search responses and on streaming indexer_search / indexer_search_results / indexer_search_cancel responses)."
+        },
+        "searchId": {
+          "type": "string",
+          "description": "Streaming search handle returned on indexer_search with stream: true and echoed on indexer_search_results and indexer_search_cancel."
+        },
+        "done": {
+          "type": "boolean",
+          "description": "True once every indexer in a streaming search has answered, failed, timed out, been skipped, or been cancelled; omitted on non-streaming queries."
         }
       }
     },
@@ -37581,6 +37870,31 @@ credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
   limit, runs release sources cached-only, and is **blocked on all viewer and
   client request paths** (including `/resolve`, `/search`, `/catalog/*`,
   `/stream/*`, `/meta/*`, and remote requests carrying `X-Ether-Viewer-Token`).
+
+## Indexer search controls, streaming, and listing (`sources.resolve`)
+
+With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`),
+`sources.resolve` (use `resolveSourcesWithResult` / `ResolveSourcesWithResult`
+/ `resolve_sources_with_result` to read the full response envelope) supports:
+
+- **Controlled fan-out (`kind: "indexer_search"`):** optional `firstResults`,
+  `settleMs` (default 250 ms, `0` = immediate), `minResults`, `timeoutMs`
+  (up to the 30 s ceiling), and case-insensitive `skipIndexers` / `onlyIndexers`
+  filters. Early returns keep slower indexers filling Ether's search cache in
+  the background (bounded at 30 s and coalesced), reporting them as
+  `status: "pending"` and in top-level `pending: [{indexerId, indexer}]`;
+  `status: "timed_out"` is reserved for indexers that hit the ceiling.
+- **Streaming arrivals:** pass `stream: true` on `indexer_search` to get an
+  immediate `{searchId, pending, done, indexers}` handle, poll new arrivals
+  with `kind: "indexer_search_results"` (`{searchId, waitMs?}`, `waitMs` capped
+  at 10 s), and cancel unfinished indexers with `kind: "indexer_search_cancel"`
+  (`{searchId}`). Handles are scoped to the calling plugin (foreign or expired
+  handles return `not_found`), capped at 4 live searches per plugin, dropped
+  after 15 s with no polls, and expire 3 min after the last poll.
+- **Enabled indexer listing (`kind: "indexers"`):** returns the owner's enabled
+  indexers in `indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`
+  (`kind`: `newznab`, `torznab`, `builtin`, `stremio`, `zilean`, `addon`), with
+  sanitized error codes and no API keys, URLs, or cookies.
 
 ## Poster badges
 
@@ -53832,16 +54146,19 @@ type KindChangesRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
+| `stream` | `bool` | may be omitted (see validation for conditions) | Stream (indexer_search only), when true, starts the fan-out and returns immediately with a SearchID handle to poll via indexer_search_results or stop via indexer_search_cancel (#733). |
+| `searchId` | `string` | may be omitted (see validation for conditions) | SearchID identifies a streaming search started by indexer_search with Stream: true; required on indexer_search_results and indexer_search_cancel. |
+| `waitMs` | `int` | may be omitted (see validation for conditions) | WaitMS (indexer_search_results only) sets how long in milliseconds to wait for at least one new arrival or search completion (capped at 10000 ms; 0 returns immediately). |
 | `firstResults` | `bool` | may be omitted (see validation for conditions) | FirstResults (indexer_search only), when true, returns as soon as the fastest indexers produce results plus SettleMS (default 250 ms), while slower indexers keep populating Ether's search cache in the background (#733). |
 | `settleMs` | `*int` | may be omitted (see validation for conditions) | SettleMS (indexer_search only) sets the post-first-result grace window in milliseconds (nil uses 250 ms when FirstResults is true; 0 returns immediately). Also applies when MinResults is met if explicitly set. Capped at 30000 ms. |
 | `minResults` | `int` | may be omitted (see validation for conditions) | MinResults (indexer_search only) is the minimum deduplicated candidate count required before returning early. |
 | `skipIndexers` | `[]string` | may be omitted (see validation for conditions) | SkipIndexers (indexer_search only) excludes matching indexer IDs or display names (case-insensitive). Precedence over OnlyIndexers. |
 | `onlyIndexers` | `[]string` | may be omitted (see validation for conditions) | OnlyIndexers (indexer_search only) restricts the search to matching indexer IDs or display names (case-insensitive). |
-| `timeoutMs` | `int` | may be omitted (see validation for conditions) | TimeoutMS (indexer_search only) caps how long the call waits in milliseconds, bounded by Ether's 30000 ms ceiling (and any shorter parent request deadline). Slow indexers still running when TimeoutMS expires are reported as timed_out and continue populating Ether's search cache. |
+| `timeoutMs` | `int` | may be omitted (see validation for conditions) | TimeoutMS (indexer_search only) caps how long the call waits in milliseconds, bounded by Ether's 30000 ms ceiling (and any shorter parent request deadline). When shorter than the ceiling, slow indexers still running in the background are reported as pending (and listed in Pending); indexers that hit the ceiling are reported as timed_out. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
@@ -53856,7 +54173,7 @@ type KindChangesRequest struct {
 ``````
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -53864,6 +54181,17 @@ type SourceQuery struct {
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile string `json:"profile,omitempty"`
+	// Stream (indexer_search only), when true, starts the fan-out and returns
+	// immediately with a SearchID handle to poll via indexer_search_results or
+	// stop via indexer_search_cancel (#733).
+	Stream bool `json:"stream,omitempty"`
+	// SearchID identifies a streaming search started by indexer_search with
+	// Stream: true; required on indexer_search_results and indexer_search_cancel.
+	SearchID string `json:"searchId,omitempty"`
+	// WaitMS (indexer_search_results only) sets how long in milliseconds to
+	// wait for at least one new arrival or search completion (capped at
+	// 10000 ms; 0 returns immediately).
+	WaitMS int `json:"waitMs,omitempty"`
 	// FirstResults (indexer_search only), when true, returns as soon as the
 	// fastest indexers produce results plus SettleMS (default 250 ms), while
 	// slower indexers keep populating Ether's search cache in the background (#733).
@@ -53884,8 +54212,9 @@ type SourceQuery struct {
 	OnlyIndexers []string `json:"onlyIndexers,omitempty"`
 	// TimeoutMS (indexer_search only) caps how long the call waits in
 	// milliseconds, bounded by Ether's 30000 ms ceiling (and any shorter parent
-	// request deadline). Slow indexers still running when TimeoutMS expires are
-	// reported as timed_out and continue populating Ether's search cache.
+	// request deadline). When shorter than the ceiling, slow indexers still
+	// running in the background are reported as pending (and listed in Pending);
+	// indexers that hit the ceiling are reported as timed_out.
 	TimeoutMS  int      `json:"timeoutMs,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
@@ -53912,10 +54241,30 @@ type SourceQuery struct {
 // Per-indexer search outcome status values reported in IndexerSearchStatus.Status.
 const (
 	IndexerStatusAnswered = "answered"
+	IndexerStatusPending  = "pending"
 	IndexerStatusTimedOut = "timed_out"
 	IndexerStatusSkipped  = "skipped"
 	IndexerStatusError    = "error"
 )
+``````
+
+## Source: sdk/go/kinds.go#IndexerRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `indexerId` | `string` | emitted (validation may require a value) |  |
+| `indexer` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#IndexerRef
+
+``````
+// IndexerRef identifies one enabled indexer by ID and display name in the
+// top-level Pending list on early-returning and streaming search responses.
+type IndexerRef struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+}
 ``````
 
 ## Source: sdk/go/kinds.go#IndexerSearchStatus.fields.md
@@ -53924,24 +54273,85 @@ const (
 |---|---|---|---|
 | `indexerId` | `string` | emitted (validation may require a value) |  |
 | `indexer` | `string` | emitted (validation may require a value) |  |
-| `status` | `string` | emitted (validation may require a value) | answered\|timed_out\|skipped\|error |
+| `status` | `string` | may be omitted (see validation for conditions) | answered\|pending\|timed_out\|skipped\|error |
 | `results` | `int` | may be omitted (see validation for conditions) |  |
 | `ms` | `int64` | emitted (validation may require a value) |  |
 | `error` | `string` | may be omitted (see validation for conditions) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) | newznab\|torznab\|builtin\|stremio\|zilean\|addon |
+| `medianMs` | `*int64` | may be omitted (see validation for conditions) |  |
+| `lastMs` | `*int64` | may be omitted (see validation for conditions) |  |
+| `lastError` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#IndexerSearchStatus
 
 ``````
-// IndexerSearchStatus reports the outcome of one enabled indexer during an
-// indexer_search sources.resolve call (#733).
+// IndexerSearchStatus reports either one enabled indexer's outcome during an
+// indexer_search / indexer_search_results / indexer_search_cancel call (Status,
+// Results, MS, Error) or an enabled indexer summary on kind:"indexers" (Kind,
+// MedianMS, LastMS, LastError) (#733).
 type IndexerSearchStatus struct {
 	IndexerID string `json:"indexerId"`
 	Indexer   string `json:"indexer"`
-	Status    string `json:"status"` // answered|timed_out|skipped|error
+	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
 	Results   int    `json:"results,omitempty"`
 	MS        int64  `json:"ms"`
 	Error     string `json:"error,omitempty"`
+	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
+	MedianMS  *int64 `json:"medianMs,omitempty"`
+	LastMS    *int64 `json:"lastMs,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#IndexerSearchStatus.MarshalJSON
+
+``````
+// MarshalJSON preserves ms:0 on search status entries (Status != "") while
+// omitting status/results/ms/error on kind:"indexers" entries (Status == "").
+func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
+	if s.Status == "" {
+		type listing struct {
+			IndexerID string `json:"indexerId"`
+			Indexer   string `json:"indexer"`
+			Kind      string `json:"kind,omitempty"`
+			MedianMS  *int64 `json:"medianMs,omitempty"`
+			LastMS    *int64 `json:"lastMs,omitempty"`
+			LastError string `json:"lastError,omitempty"`
+		}
+		return json.Marshal(listing{
+			IndexerID: s.IndexerID,
+			Indexer:   s.Indexer,
+			Kind:      s.Kind,
+			MedianMS:  s.MedianMS,
+			LastMS:    s.LastMS,
+			LastError: s.LastError,
+		})
+	}
+	type searchStatus struct {
+		IndexerID string `json:"indexerId"`
+		Indexer   string `json:"indexer"`
+		Status    string `json:"status"`
+		Results   int    `json:"results,omitempty"`
+		MS        int64  `json:"ms"`
+		Error     string `json:"error,omitempty"`
+		Kind      string `json:"kind,omitempty"`
+		MedianMS  *int64 `json:"medianMs,omitempty"`
+		LastMS    *int64 `json:"lastMs,omitempty"`
+		LastError string `json:"lastError,omitempty"`
+	}
+	return json.Marshal(searchStatus{
+		IndexerID: s.IndexerID,
+		Indexer:   s.Indexer,
+		Status:    s.Status,
+		Results:   s.Results,
+		MS:        s.MS,
+		Error:     s.Error,
+		Kind:      s.Kind,
+		MedianMS:  s.MedianMS,
+		LastMS:    s.LastMS,
+		LastError: s.LastError,
+	})
 }
 ``````
 
@@ -53951,16 +54361,54 @@ type IndexerSearchStatus struct {
 |---|---|---|---|
 | `candidates` | `[]SourceCandidate` | emitted (validation may require a value) |  |
 | `indexers` | `[]IndexerSearchStatus` | may be omitted (see validation for conditions) |  |
+| `pending` | `[]IndexerRef` | may be omitted (see validation for conditions) |  |
+| `searchId` | `string` | may be omitted (see validation for conditions) |  |
+| `done` | `*bool` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#SourceResolveResult
 
 ``````
 // SourceResolveResult is the full response envelope from sources.resolve (#733).
-// Indexers is populated for indexer_search queries and omitted for other kinds.
 type SourceResolveResult struct {
 	Candidates []SourceCandidate     `json:"candidates"`
 	Indexers   []IndexerSearchStatus `json:"indexers,omitempty"`
+	Pending    []IndexerRef          `json:"pending,omitempty"`
+	SearchID   string                `json:"searchId,omitempty"`
+	Done       *bool                 `json:"done,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#SourceResolveResult.MarshalJSON
+
+``````
+// MarshalJSON preserves non-nil empty Indexers and Pending slices as [] while
+// omitting nil slices.
+func (r SourceResolveResult) MarshalJSON() ([]byte, error) {
+	cands := r.Candidates
+	if cands == nil {
+		cands = []SourceCandidate{}
+	}
+	wire := struct {
+		Candidates []SourceCandidate      `json:"candidates"`
+		Indexers   *[]IndexerSearchStatus `json:"indexers,omitempty"`
+		Pending    *[]IndexerRef          `json:"pending,omitempty"`
+		SearchID   string                 `json:"searchId,omitempty"`
+		Done       *bool                  `json:"done,omitempty"`
+	}{
+		Candidates: cands,
+		SearchID:   r.SearchID,
+		Done:       r.Done,
+	}
+	if r.Indexers != nil {
+		s := r.Indexers
+		wire.Indexers = &s
+	}
+	if r.Pending != nil {
+		s := r.Pending
+		wire.Pending = &s
+	}
+	return json.Marshal(wire)
 }
 ``````
 
@@ -65632,6 +66080,12 @@ class MockHostClient:
                 out: Dict[str, Any] = {"candidates": list((res or {}).get("candidates") or [])}
                 if res and "indexers" in res and res["indexers"] is not None:
                     out["indexers"] = list(res["indexers"])
+                if res and "pending" in res and res["pending"] is not None:
+                    out["pending"] = list(res["pending"])
+                if res and "searchId" in res and res["searchId"] is not None:
+                    out["searchId"] = str(res["searchId"])
+                if res and "done" in res and res["done"] is not None:
+                    out["done"] = bool(res["done"])
                 return out  # type: ignore[return-value]
             out = {"candidates": list(self._p.sources)}
             if self._p.source_indexers is not None:
@@ -66440,15 +66894,26 @@ class SourceCandidate(TypedDict, total=False):
     usenetCheck: UsenetCheckResult
 
 
-class IndexerSearchStatus(TypedDict, total=False):
-    """Per-indexer outcome entry returned alongside candidates on indexer_search."""
+class IndexerRef(TypedDict, total=False):
+    """Enabled indexer identity in the top-level pending list."""
 
     indexerId: str
     indexer: str
-    status: Literal["answered", "timed_out", "skipped", "error"]
+
+
+class IndexerSearchStatus(TypedDict, total=False):
+    """Per-indexer outcome entry (indexer_search / streaming) or enabled indexer summary (kind='indexers')."""
+
+    indexerId: str
+    indexer: str
+    status: Literal["answered", "pending", "timed_out", "skipped", "error"]
     results: int
     ms: int
     error: str
+    kind: Literal["newznab", "torznab", "builtin", "stremio", "zilean", "addon"]
+    medianMs: int
+    lastMs: int
+    lastError: str
 
 
 class SourceResolveResult(TypedDict, total=False):
@@ -66456,15 +66921,30 @@ class SourceResolveResult(TypedDict, total=False):
 
     candidates: List[SourceCandidate]
     indexers: List[IndexerSearchStatus]
+    pending: List[IndexerRef]
+    searchId: str
+    done: bool
 
 
 class SourceQuery(TypedDict, total=False):
     """Host sources.resolve query payload."""
 
-    kind: Literal["indexer_search", "debrid_check", "debrid_acquire", "release_files", "usenet_check"]
+    kind: Literal[
+        "indexer_search",
+        "indexer_search_results",
+        "indexer_search_cancel",
+        "indexers",
+        "debrid_check",
+        "debrid_acquire",
+        "release_files",
+        "usenet_check",
+    ]
     query: str
     category: str
     profile: str
+    stream: bool
+    searchId: str
+    waitMs: int
     firstResults: bool
     settleMs: int
     minResults: int
@@ -66675,11 +67155,17 @@ class _KindsClient:
         return list((result or {}).get("candidates") or [])
 
     def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
-        """Run ``sources.resolve`` and return both ``candidates`` and per-indexer ``indexers`` status entries (#733)."""
+        """Run ``sources.resolve`` and return the full envelope (``candidates``, ``indexers``, ``pending``, ``searchId``, ``done``) (#733)."""
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query)) or {}
         out: Dict[str, Any] = {"candidates": list(result.get("candidates") or [])}
         if "indexers" in result and result["indexers"] is not None:
             out["indexers"] = list(result["indexers"])
+        if "pending" in result and result["pending"] is not None:
+            out["pending"] = list(result["pending"])
+        if "searchId" in result and result["searchId"] is not None:
+            out["searchId"] = str(result["searchId"])
+        if "done" in result and result["done"] is not None:
+            out["done"] = bool(result["done"])
         return out  # type: ignore[return-value]
 
 
@@ -68359,6 +68845,9 @@ export function createHostedClient(): EtherHost {
         const r = callHost<import("./types.ts").SourceResolveResult>("sources.resolve", [q]);
         const out: import("./types.ts").SourceResolveResult = { candidates: r?.candidates ?? [] };
         if (r?.indexers !== undefined) out.indexers = r.indexers;
+        if (r?.pending !== undefined) out.pending = r.pending;
+        if (r?.searchId !== undefined) out.searchId = r.searchId;
+        if (r?.done !== undefined) out.done = r.done;
         return out;
       },
     },
@@ -68704,6 +69193,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         const r = await callJson<import("./types.ts").SourceResolveResult>("POST", "/ether/plugin-host/sources/resolve", q);
         const out: import("./types.ts").SourceResolveResult = { candidates: r?.candidates ?? [] };
         if (r?.indexers !== undefined) out.indexers = r.indexers;
+        if (r?.pending !== undefined) out.pending = r.pending;
+        if (r?.searchId !== undefined) out.searchId = r.searchId;
+        if (r?.done !== undefined) out.done = r.done;
         return out;
       },
     },
@@ -72878,12 +73370,26 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files" | "usenet_check";
+  kind:
+    | "indexer_search"
+    | "indexer_search_results"
+    | "indexer_search_cancel"
+    | "indexers"
+    | "debrid_check"
+    | "debrid_acquire"
+    | "release_files"
+    | "usenet_check";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
   /** Quality profile name to score video release names against on indexer_search; empty uses default. */
   profile?: string;
+  /** indexer_search only: when true, start the fan-out and return immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. */
+  stream?: boolean;
+  /** Streaming search handle returned by indexer_search with stream:true; required on indexer_search_results and indexer_search_cancel. */
+  searchId?: string;
+  /** indexer_search_results only: wait up to waitMs (capped at 10000 ms; 0 returns immediately) for at least one new arrival or completion. */
+  waitMs?: number;
   /** indexer_search only: return once the fastest indexers produce results plus settleMs (default 250 ms), while slower indexers keep filling Ether's search cache. */
   firstResults?: boolean;
   /** indexer_search only: grace window in ms after the first matching result arrives (default 250 with firstResults; 0 returns immediately; capped at 30000). */
@@ -72909,25 +73415,48 @@ export interface SourceQuery {
   fileCount?: number;
 }
 
-export type IndexerSearchState = "answered" | "timed_out" | "skipped" | "error";
+export type IndexerSearchState = "answered" | "pending" | "timed_out" | "skipped" | "error";
 
-/** Per-indexer search outcome entry returned alongside candidates on indexer_search responses. */
+export type IndexerKind = "newznab" | "torznab" | "builtin" | "stremio" | "zilean" | "addon";
+
+/** Enabled indexer identity returned in the top-level pending list on early-returning and streaming search responses. */
+export interface IndexerRef {
+  indexerId: string;
+  indexer: string;
+}
+
+/** Per-indexer search outcome entry (indexer_search / indexer_search_results / indexer_search_cancel) or enabled indexer summary (kind:"indexers"). */
 export interface IndexerSearchStatus {
   indexerId: string;
   indexer: string;
-  status: IndexerSearchState;
+  /** Outcome for this indexer on search/streaming queries ("pending" while still running in the background; "timed_out" when hitting the ceiling). */
+  status?: IndexerSearchState;
   /** Raw release count returned by this indexer when status is "answered". */
   results?: number;
-  /** Elapsed milliseconds until this indexer answered, failed, or the caller stopped waiting (0 for skipped). */
-  ms: number;
+  /** Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped). */
+  ms?: number;
   /** Sanitized short error code when status is "error". */
   error?: string;
+  /** Indexer kind on kind:"indexers" responses. */
+  kind?: IndexerKind | string;
+  /** Median recent search duration in milliseconds on kind:"indexers" responses (omitted until searched). */
+  medianMs?: number;
+  /** Most recent search duration in milliseconds on kind:"indexers" responses (omitted until searched). */
+  lastMs?: number;
+  /** Sanitized short error code from the indexer's most recent failed search on kind:"indexers" responses. */
+  lastError?: string;
 }
 
-/** Full response envelope from sources.resolve; indexers is populated on indexer_search queries. */
+/** Full response envelope from sources.resolve. */
 export interface SourceResolveResult {
   candidates: SourceCandidate[];
   indexers?: IndexerSearchStatus[];
+  /** Indexers still running in the background (early-returning indexer_search and streaming responses). */
+  pending?: IndexerRef[];
+  /** Streaming search handle returned on stream:true and echoed on indexer_search_results / indexer_search_cancel. */
+  searchId?: string;
+  /** True once every indexer in a streaming search has answered, failed, timed out, been skipped, or been cancelled. */
+  done?: boolean;
 }
 
 /** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */

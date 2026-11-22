@@ -12,6 +12,9 @@
         "kind": {
           "enum": [
             "indexer_search",
+            "indexer_search_results",
+            "indexer_search_cancel",
+            "indexers",
             "debrid_check",
             "debrid_acquire",
             "release_files",
@@ -29,6 +32,20 @@
         "profile": {
           "type": "string",
           "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "indexer_search only. When true, starts the indexer fan-out and answers immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel."
+        },
+        "searchId": {
+          "type": "string",
+          "description": "Streaming search handle returned by indexer_search with stream: true. Required on indexer_search_results and indexer_search_cancel; scoped to the calling plugin."
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "indexer_search_results only. How long in milliseconds to wait for at least one new arrival or search completion before returning (capped at 10000 ms; 0 returns immediately with buffered arrivals)."
         },
         "firstResults": {
           "type": "boolean",
@@ -65,7 +82,7 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 30000,
-          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). Slow indexers still running when timeoutMs expires are reported as \"timed_out\" and continue populating Ether's search cache in the background."
+          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). When shorter than the ceiling, slow indexers still running in the background are reported as \"pending\" (and listed in top-level pending) while continuing to populate Ether's search cache; indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
         },
         "infoHashes": {
           "type": "array",
@@ -98,14 +115,30 @@
         }
       }
     },
-    "indexerSearchStatus": {
+    "indexerRef": {
       "type": "object",
-      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search responses.",
+      "description": "Enabled indexer identity returned in the top-level pending list on early-returning and streaming indexer_search / indexer_search_results responses.",
       "required": [
         "indexerId",
-        "indexer",
-        "status",
-        "ms"
+        "indexer"
+      ],
+      "properties": {
+        "indexerId": {
+          "type": "string",
+          "description": "Configured indexer ID in Ether."
+        },
+        "indexer": {
+          "type": "string",
+          "description": "Display name of the indexer."
+        }
+      }
+    },
+    "indexerSearchStatus": {
+      "type": "object",
+      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
+      "required": [
+        "indexerId",
+        "indexer"
       ],
       "properties": {
         "indexerId": {
@@ -119,11 +152,12 @@
         "status": {
           "enum": [
             "answered",
+            "pending",
             "timed_out",
             "skipped",
             "error"
           ],
-          "description": "Outcome for this indexer within the caller's wait window."
+          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling."
         },
         "results": {
           "type": "integer",
@@ -133,17 +167,42 @@
         "ms": {
           "type": "integer",
           "minimum": 0,
-          "description": "Elapsed milliseconds until this indexer answered, failed, or the caller stopped waiting (0 for skipped indexers)."
+          "description": "Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped indexers). Present on search status entries; omitted on kind:\"indexers\" listings."
         },
         "error": {
           "type": "string",
-          "description": "Sanitized short error code when status is \"error\" (for example budget_exhausted, rate_limited, auth_failed, upstream_error, search_failed)."
+          "description": "Sanitized short error code when status is \"error\" (for example budget_exhausted, rate_limited, auth_failed, upstream_error, canceled, search_failed)."
+        },
+        "kind": {
+          "enum": [
+            "newznab",
+            "torznab",
+            "builtin",
+            "stremio",
+            "zilean",
+            "addon"
+          ],
+          "description": "Indexer kind on kind:\"indexers\" responses."
+        },
+        "medianMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Median recent search duration in milliseconds on kind:\"indexers\" responses; omitted when no searches have been recorded yet."
+        },
+        "lastMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Most recent search duration in milliseconds on kind:\"indexers\" responses; omitted when no searches have been recorded yet."
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Sanitized short error code from the indexer's most recent failed search on kind:\"indexers\" responses; omitted when the last search succeeded or none failed."
         }
       }
     },
     "sourceResolveResult": {
       "type": "object",
-      "description": "Response envelope returned by sources.resolve (both POST /host/v1/sources/resolve and ether.sources.resolve).",
+      "description": "Response envelope returned by sources.resolve (both POST /ether/plugin-host/sources/resolve and ether.sources.resolve).",
       "required": [
         "candidates"
       ],
@@ -159,7 +218,22 @@
           "items": {
             "$ref": "#/$defs/indexerSearchStatus"
           },
-          "description": "Per-indexer search outcome for indexer_search queries; omitted for other source query kinds."
+          "description": "Per-indexer search outcomes for indexer_search, indexer_search_results, and indexer_search_cancel, or the owner's enabled indexer listing for kind:\"indexers\"; omitted for other source query kinds."
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/indexerRef"
+          },
+          "description": "Indexers still running in the background (present on early-returning indexer_search responses and on streaming indexer_search / indexer_search_results / indexer_search_cancel responses)."
+        },
+        "searchId": {
+          "type": "string",
+          "description": "Streaming search handle returned on indexer_search with stream: true and echoed on indexer_search_results and indexer_search_cancel."
+        },
+        "done": {
+          "type": "boolean",
+          "description": "True once every indexer in a streaming search has answered, failed, timed out, been skipped, or been cancelled; omitted on non-streaming queries."
         }
       }
     },

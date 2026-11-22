@@ -215,6 +215,19 @@ func decodeRaw(raw []byte) (*Record, error) {
 			if f == nil || len(f.Segments) != 0 || len(f.Groups) != 0 {
 				return nil, invalid
 			}
+			if f.Subject != "" && f.SubjectName == "" {
+				subjName := nzb.NameFromSubject(f.Subject)
+				f.SubjectName = subjName
+				if f.Name != subjName {
+					// Records written before a NameFromSubject change still carry
+					// the raw Subject alongside the older derived Name; refresh
+					// derived fields so re-encoding keeps the original Subject
+					// instead of downgrading it to the stale Name.
+					f.Name = subjName
+					f.Info = nzb.Classify(subjName)
+					f.Obfuscated = nzb.IsObfuscated(subjName)
+				}
+			}
 			for range d.count() {
 				if d.err != nil {
 					return nil, invalid

@@ -71,6 +71,11 @@ func (n *NZB) MovieHint() (MovieHint, bool) {
 // stream engine.
 const MetaNonVideo = "ether-nonvideo"
 
+// MetaSubjectNames preserves original subject-derived file names (keyed by
+// 0-based file index in the emitted NZB) when re-encoding rewrites a file's
+// subject to carry a PAR2/yEnc-learned name.
+const MetaSubjectNames = "ether-subject-names"
+
 // TrackHint identifies a track inside a multi-track audio release or archive.
 type TrackHint struct {
 	Disc   int    `json:"disc,omitempty"`

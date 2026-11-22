@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -497,8 +498,12 @@ func (x *Indexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) 
 			// narrow to an explicit file when named and carry non-video metadata
 			// into the stream engine.
 			out, err := EpisodeNZB(data, r.Target)
-			if err != nil && r.Target.ExactFile != "" && r.Target.FileIndex == nil && x.packNamer != nil && hasUnnamedFiles(data) {
-				return x.episodeNZB(ctx, r, data)
+			if errors.Is(err, core.ErrWrongContent) && r.Target.ExactFile != "" && x.packNamer != nil && NeedsExactFileNaming(data, r.Target) {
+				named, nerr := x.packNamer.NameFiles(ctx, r.ID, data)
+				if nerr != nil {
+					return nil, nerr
+				}
+				return EpisodeNZB(named, r.Target)
 			}
 			return out, err
 		}

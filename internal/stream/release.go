@@ -73,6 +73,23 @@ func (r *release) notePartSize(pf *postedFile) {
 	}
 }
 
+func (r *release) stableFileName(pf *postedFile) string {
+	r.infoMu.RLock()
+	defer r.infoMu.RUnlock()
+	return pf.file.StableName()
+}
+
+// hasRenamedFilesLocked reports whether any file in r.doc has a Name different
+// from its original SubjectName (requires r.infoMu held).
+func (r *release) hasRenamedFilesLocked() bool {
+	for _, f := range r.doc.Files {
+		if orig := f.OriginalName(); orig != "" && f.Name != orig {
+			return true
+		}
+	}
+	return false
+}
+
 // ensurePlan builds the plan once. Rejections (compressed, encrypted, no
 // playable file ...) are cached; transient errors are retried by the next
 // caller.
@@ -307,6 +324,14 @@ func (b *builder) nonVideoCandidates(files []*postedFile, hint nzb.NonVideoHint)
 				names[i] = pf.file.Name
 			}
 			if idx, ok, _ := nzb.MatchPathIndex(names, hint.ExactFile); ok {
+				pf := files[idx]
+				return []candidate{{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3}}
+			}
+			origNames := make([]string, len(files))
+			for i, pf := range files {
+				origNames[i] = pf.file.OriginalName()
+			}
+			if idx, ok, _ := nzb.MatchPathIndex(origNames, hint.ExactFile); ok {
 				pf := files[idx]
 				return []candidate{{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3}}
 			}

@@ -1799,7 +1799,8 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 			})
 			continue
 		}
-		if f := identifyByPar2(set, pf, pr.seg); f != nil && b.nameFromPar2(pf, f) {
+		par2File := identifyByPar2(set, pf, pr.seg)
+		if par2File != nil && b.nameFromPar2(pf, par2File) {
 			named[pf] = true
 			continue
 		}
@@ -1811,6 +1812,17 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 			}
 		}
 		if pr.seg.begin != 0 {
+			continue
+		}
+		// Only sniff magic bytes when the file name itself does not classify
+		// its container; already-classified obfuscated files (e.g. "<hex>.mp4"
+		// or "<hex>.part01.rar") already carry their container/volume structure,
+		// while earlier obfuscated-probe waves keep their unknown name so later
+		// waves can still assemble and tail-probe the full RAR set.
+		b.rel.infoMu.RLock()
+		isUnknown := nzb.Classify(pf.file.Name).Kind == nzb.KindUnknown
+		b.rel.infoMu.RUnlock()
+		if !isUnknown {
 			continue
 		}
 		head := pr.seg.data
@@ -1838,6 +1850,13 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 				b.rel.setFileInfo(func() {
 					pf.file.Info = nzb.FileInfo{Kind: nzb.KindVideo, Ext: ext, Volume: -1, SetName: pf.file.Info.SetName}
 				})
+			} else if par2File != nil {
+				if base := par2File.BaseName(); base != "" && base != "." && !nzb.IsObfuscated(base) {
+					info := nzb.Classify(base)
+					b.rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = base, info, false })
+					pf.setName(base)
+					named[pf] = true
+				}
 			}
 		}
 	}

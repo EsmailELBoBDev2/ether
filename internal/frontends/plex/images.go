@@ -135,6 +135,12 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.handleUnknown(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/library/metadata/") && !r.URL.Query().Has("ranked") {
+		if _, kind, lang, ok := decodeDiscoveryArtworkToken(chi.URLParam(r, "ts")); ok && discoveryElementMatchesKind(element, kind) {
+			s.serveDiscoveryPoster(w, r, key, kind, lang)
+			return
+		}
+	}
 	width, _ := strconv.Atoi(r.URL.Query().Get("width"))
 	s.serveItemImage(w, r, key, element, width)
 }
@@ -379,7 +385,7 @@ func (s *Server) handlePersonImage(w http.ResponseWriter, r *http.Request) {
 
 var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|director|writer)/([A-Za-z0-9_-]+)$`)
 
-var metadataImageRe = regexp.MustCompile(`^/library/(?:metadata|collections)/(\d+)/(thumb|art|poster|banner|clearLogo|composite|squareArt)(?:/\d+)?$`)
+var metadataImageRe = regexp.MustCompile(`^/library/(?:metadata|collections)/(\d+)/(thumb|art|poster|banner|clearLogo|logo|background|composite|squareArt)(?:/([A-Za-z0-9_-]+))?$`)
 var playlistImageRe = regexp.MustCompile(`^/playlists/(\d+)/(composite|thumb|art)(?:/\d+)?$`)
 var discoveryImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/discoveryPoster/[^/]+$`)
 var partIndexFrameRe = regexp.MustCompile(`^/library/parts/(\d+)/indexes/([^/]+)/(\d+)$`)
@@ -469,11 +475,7 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			params := u.Query()
-			r = r.Clone(r.Context())
-			effective := r.URL.Query()
-			effective.Set("width", strconv.Itoa(width))
-			r.URL.RawQuery = effective.Encode()
-			s.serveDiscoveryPoster(w, r, key, params.Get("kind"), params.Get("lang"))
+			s.serveTranscodedDiscoveryPoster(w, r, key, params.Get("kind"), params.Get("lang"), width)
 			return
 		}
 		if m := personImageRe.FindStringSubmatch(path); m != nil {
@@ -491,10 +493,16 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				writeHTTPError(w, http.StatusNotFound)
 				return
 			}
+			inner := u.Query()
+			if strings.HasPrefix(path, "/library/metadata/") && !inner.Has("ranked") {
+				if _, kind, lang, ok := decodeDiscoveryArtworkToken(m[3]); ok && discoveryElementMatchesKind(m[2], kind) {
+					s.serveTranscodedDiscoveryPoster(w, r, key, kind, lang, width)
+					return
+				}
+			}
 			// The inner URL carries the variant (collection scope, Top 10 rank
 			// and shape). Clients such as Plex for Apple TV fetch every poster
 			// through this transcoder, so the variant must survive the hop.
-			inner := u.Query()
 			if inner.Has("collection") || inner.Has("ranked") {
 				r = r.Clone(r.Context())
 				q := r.URL.Query()
@@ -535,6 +543,14 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveRemoteImage(w, r, resizeTMDBURL(u.String(), width))
+}
+
+func (s *Server) serveTranscodedDiscoveryPoster(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, kind, lang string, width int) {
+	r = r.Clone(r.Context())
+	effective := r.URL.Query()
+	effective.Set("width", strconv.Itoa(width))
+	r.URL.RawQuery = effective.Encode()
+	s.serveDiscoveryPoster(w, r, key, kind, lang)
 }
 
 var liveChannelLogoRe = regexp.MustCompile(`^/livetv/channels/([^/]+)/logo\.(?:svg|png)$`)

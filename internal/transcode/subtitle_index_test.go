@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ebmlEl encodes one element. width forces the size field's width (as muxers
@@ -170,5 +172,61 @@ func TestIndexedSubtitleReadsTrackThroughCues(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(srt), "WEBVTT") {
 		t.Fatal("not WebVTT")
+	}
+}
+
+func TestExtractIndexedSubtitleCachesAndSkipsFFmpegWhenUnindexed(t *testing.T) {
+	indexed := testMKV(t, []testLine{
+		{track: 2, at: 1000, dur: 1500, text: []byte("Hello"), indexed: true, clusterW: 8},
+	}, map[uint64]int{2: 1})
+	unindexed := testMKV(t, []testLine{
+		{track: 2, at: 1000, dur: 1500, text: []byte("Hello")},
+	}, nil)
+
+	r := &countingSubtitleRunner{}
+	m := &Manager{runner: r, ffmpeg: "ffmpeg"}
+
+	ctx := WithSubtitleSource(context.Background(), "src-indexed")
+	ctx = WithSubtitleReader(ctx, func() (io.ReaderAt, int64, func(), bool) {
+		return bytes.NewReader(indexed), int64(len(indexed)), func() {}, true
+	})
+	got, ok := m.ExtractIndexedSubtitle(ctx, 1, "subrip")
+	if !ok || !strings.Contains(string(got), "Hello") {
+		t.Fatalf("indexed extract ok=%v body=%q", ok, got)
+	}
+	if _, cached := m.CachedSubtitle(ctx, 1, "subrip"); !cached {
+		t.Fatal("indexed extract did not populate subtitle cache")
+	}
+
+	uctx := WithSubtitleSource(context.Background(), "src-unindexed")
+	uctx = WithSubtitleReader(uctx, func() (io.ReaderAt, int64, func(), bool) {
+		return bytes.NewReader(unindexed), int64(len(unindexed)), func() {}, true
+	})
+	if _, ok := m.ExtractIndexedSubtitle(uctx, 1, "subrip"); ok {
+		t.Fatal("unindexed MKV unexpectedly succeeded")
+	}
+	if got := r.runs.Load(); got != 0 {
+		t.Fatalf("ExtractIndexedSubtitle invoked ffmpeg %d times, want 0", got)
+	}
+}
+
+func TestSubtitleStreamArgsFormats(t *testing.T) {
+	for _, tc := range []struct {
+		format string
+		want   []string
+	}{
+		{"srt", []string{"-c:s", "srt", "-f", "srt", "-flush_packets", "1", "pipe:1"}},
+		{"vtt", []string{"-c:s", "webvtt", "-f", "webvtt", "-flush_packets", "1", "pipe:1"}},
+		{"ass", []string{"-c:s", "ass", "-f", "ass", "-ignore_readorder", "1", "-flush_packets", "1", "pipe:1"}},
+	} {
+		args := subtitleStreamArgs("http://127.0.0.1/file.mkv", 2, tc.format, 90*time.Second, true)
+		joined := strings.Join(args, " ")
+		wantTail := strings.Join(tc.want, " ")
+		if !strings.HasSuffix(joined, wantTail) {
+			t.Errorf("format=%s args=%q want suffix %q", tc.format, joined, wantTail)
+		}
+		if !strings.Contains(joined, "-copyts") || !strings.Contains(joined, "-ss 90.000") {
+			t.Errorf("format=%s args missing seek/copyts: %q", tc.format, joined)
+		}
 	}
 }

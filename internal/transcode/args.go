@@ -2057,10 +2057,10 @@ func subtitleArgs(input string, streamIndex int) []string {
 }
 
 // subtitleStreamArgs streams one embedded text subtitle stream from from
-// as an ASS script on stdout: input seek with -copyts keeps the cue times
-// on the title clock, and every event is written as soon as it is read.
-// throttle reads the first minute at full speed and then 1.5x real time.
-func subtitleStreamArgs(input string, streamIndex int, from time.Duration, throttle bool) []string {
+// in format ("ass", "srt", or "vtt") on stdout: input seek with -copyts keeps
+// the cue times on the title clock, and every event is written as soon as it
+// is read. throttle reads the first minute at full speed and then 1.5x real time.
+func subtitleStreamArgs(input string, streamIndex int, format string, from time.Duration, throttle bool) []string {
 	args := []string{"-hide_banner", "-nostdin", "-loglevel", "error"}
 	input = backgroundReadURL(input)
 	args = append(args, inputSafetyArgs(input, false)...)
@@ -2071,8 +2071,15 @@ func subtitleStreamArgs(input string, streamIndex int, from time.Duration, throt
 	if from > 0 {
 		args = append(args, "-ss", secs(from))
 	}
-	return append(args, "-copyts", "-i", input, "-map", fmt.Sprintf("0:%d", streamIndex),
-		"-c:s", "ass", "-f", "ass", "-ignore_readorder", "1", "-flush_packets", "1", "pipe:1")
+	args = append(args, "-copyts", "-i", input, "-map", fmt.Sprintf("0:%d", streamIndex))
+	switch strings.ToLower(strings.TrimPrefix(format, ".")) {
+	case "srt", "subrip":
+		return append(args, "-c:s", "srt", "-f", "srt", "-flush_packets", "1", "pipe:1")
+	case "vtt", "webvtt":
+		return append(args, "-c:s", "webvtt", "-f", "webvtt", "-flush_packets", "1", "pipe:1")
+	default:
+		return append(args, "-c:s", "ass", "-f", "ass", "-ignore_readorder", "1", "-flush_packets", "1", "pipe:1")
+	}
 }
 
 // vaapiCQPForBitrate derives a constant-quantizer value (18..36) when a VAAPI

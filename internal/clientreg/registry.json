@@ -959,6 +959,26 @@
               {"field": "platform", "op": "equals", "value": "android"},
               {"field": "product", "op": "notContains", "value": "web"}
             ]
+          },
+          {"field": "product", "op": "contains", "value": "plex for lg"},
+          {"field": "product", "op": "contains", "value": "plex for samsung"},
+          {"field": "product", "op": "contains", "value": "plex for vizio"},
+          {"field": "product", "op": "contains", "value": "plex for xbox"},
+          {"field": "product", "op": "contains", "value": "plex for playstation"},
+          {"field": "product", "op": "contains", "value": "plex for fire tv"},
+          {
+            "all": [
+              {
+                "any": [
+                  {"field": "platform", "op": "equals", "value": "webos"},
+                  {"field": "platform", "op": "equals", "value": "tizen"},
+                  {"field": "platform", "op": "equals", "value": "vidaa"},
+                  {"field": "platform", "op": "equals", "value": "xbox"},
+                  {"field": "platform", "op": "equals", "value": "playstation"}
+                ]
+              },
+              {"field": "product", "op": "notContains", "value": "web"}
+            ]
           }
         ]
       }

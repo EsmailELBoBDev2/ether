@@ -688,6 +688,49 @@ func streamingAudioTarget(extra, protocol string) []string {
 	return codecs
 }
 
+// subtitleProfileTargetFormat returns the HTTP subtitle transcode format
+// ("ass", "srt", or "vtt") declared in X-Plex-Client-Profile-Extra via
+// type=subtitleProfile directives (e.g. Plex for LG's container=srt&subtitleCodec=srt),
+// or "" when none is declared.
+func subtitleProfileTargetFormat(extra string) string {
+	target := ""
+	for _, d := range ParseProfileExtra(extra) {
+		switch d.Verb {
+		case "add-transcode-target", "add-transcode-target-codec", "append-transcode-target-codec":
+		default:
+			continue
+		}
+		a := d.Args
+		if a["type"] != "subtitleProfile" {
+			continue
+		}
+		if ctx := a["context"]; ctx != "" && ctx != "all" && ctx != "streaming" {
+			continue
+		}
+		if proto := a["protocol"]; proto != "" && !strings.EqualFold(proto, frontend.ProtocolHTTP) {
+			continue
+		}
+		if strings.EqualFold(a["replace"], "true") {
+			target = ""
+		}
+		if target != "" {
+			continue
+		}
+		for _, field := range []string{a["subtitleCodec"], a["container"]} {
+			for _, codec := range splitList(field) {
+				if f := normalizeSoftSubtitleFormat(codec); f != "" {
+					target = f
+					break
+				}
+			}
+			if target != "" {
+				break
+			}
+		}
+	}
+	return target
+}
+
 // h264LevelMaxHeight maps an H.264 level*10 upper bound (e.g. 40, 41, 42) to
 // the tallest standard frame height that level's macroblock ceiling supports.
 // Levels >= 5.0 support 4K and return 0 (unbounded).

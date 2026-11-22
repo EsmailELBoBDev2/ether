@@ -1799,6 +1799,16 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 					t.ShowTitle = root.Title
 					t.ShowYear = root.Year
 				}
+				// An episode under a season container takes that season's
+				// number and name, so apps do not label it "Season 0".
+				if t.Type == core.TypeEpisode && parent.Type == core.TypeSeason && parent.Key != root.Key {
+					if t.Season == 0 {
+						t.Season = parent.Season
+					}
+					if t.SeasonTitle == "" {
+						t.SeasonTitle = parent.Title
+					}
+				}
 			}
 		}
 		dedupeMediaFacts(&t)

@@ -764,16 +764,21 @@ func (i *instance) browseRoutes() error {
 
 func itemQuery(r *http.Request) frontend.ItemQuery {
 	q := frontend.ItemQuery{Offset: queryInt(r, "StartIndex", 0), Limit: queryInt(r, "Limit", 50)}
-	if values := route.Query(r.URL.Query(), "SortBy"); len(values) == 1 {
-		for _, part := range strings.Split(values[0], ",") {
-			if order, ok := kitsort.Order(part); ok {
+	// SortBy and SortOrder are lists. Clients send them comma-joined
+	// (SortBy=CommunityRating,SortName) or repeated
+	// (sortBy=CommunityRating&sortBy=SortName, what Jellyfin Web sends). The
+	// first key Ether can order by wins, in either spelling.
+sortKeys:
+	for _, value := range route.Query(r.URL.Query(), "SortBy") {
+		for _, part := range strings.Split(value, ",") {
+			if order, ok := kitsort.Order(strings.TrimSpace(part)); ok {
 				q.Sort = order
-				break
+				break sortKeys
 			}
 		}
 	}
-	if values := route.Query(r.URL.Query(), "SortOrder"); len(values) == 1 {
-		q.Desc = strings.EqualFold(values[0], "Descending")
+	if order := firstListValue(route.Query(r.URL.Query(), "SortOrder")); order != "" {
+		q.Desc = strings.EqualFold(order, "Descending")
 	} else if q.Sort == frontend.SortPlayed {
 		// DatePlayed reads as most-recently-played first unless asked
 		// otherwise: the play history a client's "Played" row wants.
@@ -1542,6 +1547,35 @@ func applySeasonID(show frontend.RatingKey, r *http.Request, q *frontend.ItemQue
 	return nil
 }
 
+// pluginSeason resolves the season container a client asked for under a plugin
+// show. asked is false when the request names no season. A zero key with
+// asked true means the season does not exist under this show.
+func (i *instance) pluginSeason(r *http.Request, v *frontend.Viewer, show frontend.RatingKey, number *int) (season frontend.RatingKey, asked bool) {
+	if values := route.Query(r.URL.Query(), "SeasonId"); len(values) > 0 && !(len(values) == 1 && values[0] == "") {
+		if len(values) != 1 {
+			return 0, true
+		}
+		key, err := ids.ParseRatingKeyGUID(values[0])
+		if err != nil || !key.IsPluginKey() || key == show {
+			return 0, true
+		}
+		return key, true
+	}
+	if number == nil {
+		return 0, false
+	}
+	seasons, err := i.host.Experience.Children(r.Context(), v, device(r), show, frontend.ItemQuery{Limit: showChildPageMax})
+	if err != nil {
+		return 0, true
+	}
+	for _, s := range seasons.Items {
+		if s.Type == "season" && s.Season == *number {
+			return s.Key, true
+		}
+	}
+	return 0, true
+}
+
 func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
@@ -1594,6 +1628,30 @@ func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		q.Season = &season
+	}
+	// A plugin library published as TV shows keeps its own item tree: a season
+	// is a container item, not a TMDB season number. Answer SeasonId (and
+	// Season=<index>) with that container's children.
+	if key.IsPluginKey() {
+		if seasonKey, asked := i.pluginSeason(r, v, key, q.Season); asked {
+			if seasonKey == 0 {
+				i.page(w, r, v, frontend.Page{}, q.Offset)
+				return
+			}
+			sq := q
+			sq.Types, sq.Recursive, sq.Season = nil, false, nil
+			page, cerr := i.host.Experience.Children(frontend.WithColdDetail(r.Context(), seasonKey), v, device(r), seasonKey, sq)
+			if cerr != nil {
+				if errors.Is(cerr, frontend.ErrNotFound) {
+					i.page(w, r, v, frontend.Page{}, q.Offset)
+					return
+				}
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			i.pageWithVersion(w, r, v, page, q.Offset, q.StartAt, version)
+			return
+		}
 	}
 	// SeasonId is the season item Swiftfin asks for. It wins over Season so a
 	// season folder cannot be filled with the rest of the series.

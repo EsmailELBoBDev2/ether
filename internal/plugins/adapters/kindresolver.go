@@ -363,10 +363,24 @@ func (r *KindResolver) projectedTitle(ctx context.Context, item core.KindItem, r
 	t := pluginitems.ProjectWithText(item, rec.Decl, lib.Present, resolve, lib.CardShape)
 	if (t.Type == core.TypeEpisode || t.Type == core.TypeSeason) && item.ParentID != "" {
 		cur := item.ParentID
-		for range 8 {
+		for depth := range 8 {
 			parent, _, err := r.items.GetByRef(ctx, core.NewItemRef(rec.PluginID, rec.KindKey, cur))
 			if err != nil {
 				break
+			}
+			// The immediate parent of an episode in a three-level kind is its
+			// season container: carry its number and name.
+			if depth == 0 && t.Type == core.TypeEpisode && parent.ParentID != "" {
+				if t.Season == 0 {
+					t.Season = parent.Index
+				}
+				if t.SeasonTitle == "" {
+					t.SeasonTitle = parent.Title
+				}
+				if t.ParentKey == 0 {
+					t.ParentKey = parent.Key
+					t.ParentTitle = parent.Title
+				}
 			}
 			if parent.ParentID == "" {
 				t.ShowKey = parent.Key

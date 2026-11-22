@@ -402,11 +402,20 @@ func applyProfileRangeCaps(caps core.ClientCaps) core.ClientCaps {
 		// ApplyConditions say when a codec profile applies (Wholphin lists
 		// the ranges it cannot play there), not which ranges are playable.
 	}
-	if !listed && !caps.HDR10 {
-		for _, dp := range caps.Profiles.DirectPlay {
-			if dp.MediaType == "" || strings.EqualFold(dp.MediaType, "video") {
-				caps.HDR10 = true
-				break
+	if !listed && !caps.HDR10 && !caps.ExplicitNoHDR {
+		if caps.Profiles.DirectPlay == nil {
+			for _, tp := range caps.Profiles.Transcoding {
+				if tp.MediaType == "" || strings.EqualFold(tp.MediaType, "video") {
+					caps.HDR10 = true
+					break
+				}
+			}
+		} else {
+			for _, dp := range caps.Profiles.DirectPlay {
+				if dp.MediaType == "" || strings.EqualFold(dp.MediaType, "video") {
+					caps.HDR10 = true
+					break
+				}
 			}
 		}
 	}
@@ -807,6 +816,14 @@ func profileDirectAllowed(p *core.ClientCapabilityProfiles, info core.MediaInfo,
 	}
 	if !profileRestrictions(p, info, video, audio, d.AudioStream) {
 		return false
+	}
+	// A profile that omits DirectPlayProfiles (e.g. Infuse, which posts only
+	// TranscodingProfiles and SubtitleProfiles with EnableDirectPlay=true) does
+	// not restrict direct play by container/codec pair; static bitrate and
+	// codec/container conditions above still apply, while an explicit empty
+	// DirectPlayProfiles slice still rejects direct play.
+	if p.DirectPlay == nil {
+		return true
 	}
 	for _, candidate := range p.DirectPlay {
 		if audioOnly {

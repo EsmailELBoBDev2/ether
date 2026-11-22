@@ -465,14 +465,14 @@ func (i *instance) serveAnonymousStream(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		return false
 	}
-	i.serveAliasSession(w, r, access, sessions, entry.sessionID, versionScope, entry.version, entry.detailSrc, format)
+	i.serveAliasSession(w, r, access, sessions, entry.sessionID, versionScope, entry.version, entry.detailSrc, format, false)
 	return true
 }
 
 // serveAliasSession serves one already-verified broker session: a direct file
 // from its scoped media path, or an HLS start. The version/detail handles are
 // re-checked against the session so a forged handle can never select it.
-func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, access frontend.SessionAccess, sessions []frontend.Session, sessionID string, versionScope frontend.VersionScope, version, detailSource string, format frontend.StreamFormat) {
+func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, access frontend.SessionAccess, sessions []frontend.Session, sessionID string, versionScope frontend.VersionScope, version, detailSource string, format frontend.StreamFormat, explicitSession bool) {
 	if version != "" && i.host.VersionHandles != nil && i.host.VersionHandles.MatchSession(i.identityContext(r), versionScope, version, sessionID) != nil {
 		http.NotFound(w, r)
 		return
@@ -484,6 +484,17 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 			return
 		}
 	}
+	serveDirect := func(mediaPath string) {
+		req := r.Clone(r.Context())
+		u := *req.URL
+		u.Path = mediaPath
+		u.RawPath = ""
+		req.URL = &u
+		if i.protocol == "emby" {
+			i.embyMediaHeaders(w, req)
+		}
+		i.host.Sessions.ServeMedia(w, req)
+	}
 	// PlaybackInfo already started this direct file. Serve that URL here so
 	// the client does not pay a second round trip, or a second stream start.
 	if format == frontend.StreamDirect {
@@ -491,15 +502,7 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 			if session.ID != sessionID || !directFilePath(session.MediaPath) {
 				continue
 			}
-			req := r.Clone(r.Context())
-			u := *req.URL
-			u.Path = session.MediaPath
-			u.RawPath = ""
-			req.URL = &u
-			if i.protocol == "emby" {
-				i.embyMediaHeaders(w, req)
-			}
-			i.host.Sessions.ServeMedia(w, req)
+			serveDirect(session.MediaPath)
 			return
 		}
 	}
@@ -510,6 +513,10 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 	}
 	if !strings.HasPrefix(url, "/sessions/media/") || strings.ContainsAny(url, "\r\n") {
 		http.Error(w, "Unavailable", 503)
+		return
+	}
+	if !explicitSession && format == frontend.StreamDirect && directFilePath(url) {
+		serveDirect(url)
 		return
 	}
 	url = clientnet.RedirectPath(requestRedirectPrefix(r, i.host.Origin), "", url)

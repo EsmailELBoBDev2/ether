@@ -158,6 +158,8 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		b.mu.Lock()
 		if live := b.sessions[id]; live != nil {
 			live.format = req.Format
+			live.public.MediaPath = path + "file"
+			live.public.PlayMethod = "DirectPlay"
 		}
 		b.mu.Unlock()
 		// The original file is what the client now plays, whatever the
@@ -186,20 +188,10 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	reencode := req.ReencodeVideo && s.opts.DirectStream
 	if !tracksChanged && !reencode && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect && req.Format == frontend.StreamHLS)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
 		if hs, ok := b.transcodeSession(id); ok && hs != nil {
-			if !req.PrepareOnly && s.format != req.Format {
-				b.mu.Lock()
-				if live := b.sessions[id]; live != nil {
-					live.format = req.Format
-				}
-				b.mu.Unlock()
-			}
-			if entry, ok := b.bindings.Get(id); ok && entry.Started {
-				b.recordPlaybackDecision(s.playID, entry.Decision)
-			}
+			var mediaPath string
 			if req.Format == frontend.StreamDASH {
 				if _, ok := hs.(core.DASHSession); ok {
-					b.ensureTrickplay(ctx, s, req.Position)
-					return path + "manifest.mpd", nil
+					mediaPath = path + "manifest.mpd"
 				}
 			} else if req.Format == frontend.StreamHTTP {
 				if _, ok := hs.(core.HTTPSession); ok {
@@ -207,11 +199,27 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 					if ext == "" {
 						ext = httpStreamExt(s.decision.Container, s.decision.AudioCodec)
 					}
-					return path + "stream." + ext, nil
+					mediaPath = path + "stream." + ext
 				}
 			} else {
-				b.ensureTrickplay(ctx, s, req.Position)
-				return path + "master.m3u8", nil
+				mediaPath = path + "master.m3u8"
+			}
+			if mediaPath != "" {
+				if !req.PrepareOnly && s.format != req.Format {
+					b.mu.Lock()
+					if live := b.sessions[id]; live != nil {
+						live.format = req.Format
+						live.public.MediaPath = mediaPath
+					}
+					b.mu.Unlock()
+				}
+				if entry, ok := b.bindings.Get(id); ok && entry.Started {
+					b.recordPlaybackDecision(s.playID, entry.Decision)
+				}
+				if req.Format != frontend.StreamHTTP {
+					b.ensureTrickplay(ctx, s, req.Position)
+				}
+				return mediaPath, nil
 			}
 		}
 	}
@@ -446,10 +454,17 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		entry.UpdatedAt = b.deps.Now()
 		b.bindings.Put(entry)
 	}
+	mediaPath := path + "master.m3u8"
+	if req.Format == frontend.StreamDASH {
+		mediaPath = path + "manifest.mpd"
+	} else if req.Format == frontend.StreamHTTP {
+		mediaPath = path + "stream." + httpExt
+	}
 	b.mu.Lock()
 	if live := b.sessions[id]; live != nil {
 		if !req.PrepareOnly || live.format != frontend.StreamDirect {
 			live.format = req.Format
+			live.public.MediaPath = mediaPath
 		}
 		live.httpExt = httpExt
 		live.streamPosition = req.Position
@@ -471,13 +486,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		b.transcodeStop(id)
 		return "", err
 	}
-	if req.Format == frontend.StreamDASH {
-		return path + "manifest.mpd", nil
-	}
-	if req.Format == frontend.StreamHTTP {
-		return path + "stream." + httpExt, nil
-	}
-	return path + "master.m3u8", nil
+	return mediaPath, nil
 }
 
 func httpStreamExt(container, audioCodec string) string {

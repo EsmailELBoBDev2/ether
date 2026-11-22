@@ -1272,6 +1272,9 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 		return nil, err
 	}
 	b.mu.Lock()
+	livenessState, checkState := b.deps.Playback.(interface {
+		SessionLiveness(string) core.SessionLivenessState
+	})
 	visChecker, checkVisible := b.deps.Playback.(interface{ SessionVisible(string) bool })
 	liveness, checkLiveness := b.deps.Playback.(interface{ SessionActive(string) bool })
 	var out []frontend.Session
@@ -1285,7 +1288,23 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 	}
 	for _, s := range b.sessions {
 		if !s.live && s.playID != "" {
-			if checkVisible {
+			if a.VisibleOnly {
+				if checkVisible {
+					if !visChecker.SessionVisible(s.playID) {
+						continue
+					}
+				} else if checkLiveness && !liveness.SessionActive(s.playID) {
+					continue
+				}
+			} else if checkState {
+				// Keep freshly opened Starting sessions reachable for follow-up
+				// stream/subtitle/control lookups right after PlaybackInfo, while
+				// excluding Idle and Stopped sessions.
+				st := livenessState.SessionLiveness(s.playID)
+				if st != core.SessionLivenessStarting && st != core.SessionLivenessPlaying && st != core.SessionLivenessPaused {
+					continue
+				}
+			} else if checkVisible {
 				if !visChecker.SessionVisible(s.playID) {
 					continue
 				}
@@ -1294,7 +1313,13 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 			}
 		}
 		if owner || s.public.ViewerID == v.ID {
-			out = append(out, s.public)
+			pub := s.public
+			if !s.live && s.format == "" {
+				// A session whose stream has not been started yet is not
+				// serving /file; keep alias callers on StartStream.
+				pub.MediaPath = ""
+			}
+			out = append(out, pub)
 		}
 	}
 	b.mu.Unlock()

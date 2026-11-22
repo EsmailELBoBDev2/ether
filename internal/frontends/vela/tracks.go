@@ -15,6 +15,46 @@ func (i *instance) playbackTracks(ctx context.Context, access frontend.SessionAc
 	audio, subs := []object{}, []object{}
 	selectedAudio := ""
 	var selectedSub any
+	var subReqs []frontend.SubtitleURLRequest
+	for _, track := range media.Streams {
+		if track.Type != "subtitle" || !frontend.IsTextSubtitle(track.Codec) {
+			continue
+		}
+		embedded := false
+		if original {
+			for _, format := range formats {
+				if strings.EqualFold(format, track.Codec) {
+					embedded = true
+					break
+				}
+			}
+		}
+		if !embedded {
+			subReqs = append(subReqs, frontend.SubtitleURLRequest{Index: track.Index, Format: "vtt"})
+		}
+	}
+	vttURLs := map[int]string{}
+	if len(subReqs) > 0 {
+		var urls []string
+		if batch, ok := i.host.Sessions.(frontend.SubtitleURLBatch); ok {
+			if got, err := batch.SubtitleURLs(ctx, access, id, subReqs); err == nil && len(got) == len(subReqs) {
+				urls = got
+			}
+		}
+		if urls == nil {
+			urls = make([]string, len(subReqs))
+			for idx, req := range subReqs {
+				if u, err := i.host.Sessions.SubtitleURL(ctx, access, id, req.Index, req.Format); err == nil {
+					urls[idx] = u
+				}
+			}
+		}
+		for idx, req := range subReqs {
+			if urls[idx] != "" {
+				vttURLs[req.Index] = urls[idx]
+			}
+		}
+	}
 	for _, track := range media.Streams {
 		if track.Type != "audio" && track.Type != "subtitle" {
 			continue
@@ -50,8 +90,8 @@ func (i *instance) playbackTracks(ctx context.Context, access frontend.SessionAc
 			}
 			t["delivery"] = object{"kind": "burn-in"}
 		case frontend.IsTextSubtitle(track.Codec):
-			url, err := i.host.Sessions.SubtitleURL(ctx, access, id, track.Index, "vtt")
-			if err != nil {
+			url := vttURLs[track.Index]
+			if url == "" {
 				continue
 			}
 			if original && strings.Contains(url, "ether_window=1") {

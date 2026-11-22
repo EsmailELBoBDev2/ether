@@ -1511,6 +1511,11 @@ func (m *Manager) SessionVisible(id string) bool {
 	return m.sessionLiveness(m.lookup(id), m.now()).Visible()
 }
 
+// SessionLiveness reports the current liveness state of a playback session.
+func (m *Manager) SessionLiveness(id string) core.SessionLivenessState {
+	return m.sessionLiveness(m.lookup(id), m.now()).State
+}
+
 // BeginMediaRead records an active client media or segment read and returns
 // a function to call when the response ends.
 func (m *Manager) BeginMediaRead(id string) func() {

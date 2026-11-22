@@ -1544,13 +1544,49 @@ func (i *instance) siloTracks(in siloTrackInputs) (selected, subtitle map[string
 		}
 		return in.start.nativeEmbedded(in.media.Container, track.Codec)
 	}
+	vttURLs := map[int]string{}
+	hlsOK := map[int]bool{}
+	var subReqs []frontend.SubtitleURLRequest
+	wantHLS := in.format == frontend.StreamHLS && !in.live && in.hlsRenditions && (in.delivery != "server_remux_hls" || slices.Contains(in.start.Features, "hls_remux_subtitle_renditions_v1"))
+	for _, track := range in.media.Streams {
+		if track.Type != "subtitle" {
+			continue
+		}
+		subReqs = append(subReqs, frontend.SubtitleURLRequest{Index: track.Index, Format: "vtt"})
+		if wantHLS && !track.External && track.Index == in.subtitleStream {
+			subReqs = append(subReqs, frontend.SubtitleURLRequest{Index: track.Index, Format: "hls"})
+		}
+	}
+	if len(subReqs) > 0 {
+		var urls []string
+		if batch, ok := i.host.Sessions.(frontend.SubtitleURLBatch); ok {
+			if got, err := batch.SubtitleURLs(in.r.Context(), in.access, in.sessionID, subReqs); err == nil && len(got) == len(subReqs) {
+				urls = got
+			}
+		}
+		if urls == nil {
+			urls = make([]string, len(subReqs))
+			for idx, req := range subReqs {
+				if u, err := i.host.Sessions.SubtitleURL(in.r.Context(), in.access, in.sessionID, req.Index, req.Format); err == nil {
+					urls[idx] = u
+				}
+			}
+		}
+		for idx, req := range subReqs {
+			if urls[idx] == "" {
+				continue
+			}
+			if req.Format == "hls" {
+				hlsOK[req.Index] = true
+			} else {
+				vttURLs[req.Index] = urls[idx]
+			}
+		}
+	}
 	// hls_subtitle_renditions_v1 covers a transcode; a copy remux needs
 	// hls_remux_subtitle_renditions_v1 as well.
 	hlsRendition := func(track frontend.StreamInfo) map[string]any {
-		if in.format != frontend.StreamHLS || in.live || track.External || !in.hlsRenditions || (in.delivery == "server_remux_hls" && !slices.Contains(in.start.Features, "hls_remux_subtitle_renditions_v1")) {
-			return nil
-		}
-		if _, err := i.host.Sessions.SubtitleURL(in.r.Context(), in.access, in.sessionID, track.Index, "hls"); err != nil {
+		if !wantHLS || track.External || !hlsOK[track.Index] {
 			return nil
 		}
 		return map[string]any{"group_id": frontend.HLSTextRenditionGroup, "name": frontend.HLSTextRenditionName(track.Title, track.Language, track.Index), "format": "vtt", "mime_type": "text/vtt"}
@@ -1575,8 +1611,8 @@ func (i *instance) siloTracks(in siloTrackInputs) (selected, subtitle map[string
 		// not scan every subtitle track or extract media during startup.
 		authoredASS := isEmbeddedASS && hasSubtitleArtifacts
 		preserveTrackASS := authoredASS && clientASSStyling
-		url, e := i.host.Sessions.SubtitleURL(in.r.Context(), in.access, in.sessionID, track.Index, "vtt")
-		if e == nil && strings.HasPrefix(url, "/sessions/media/") {
+		url := vttURLs[track.Index]
+		if strings.HasPrefix(url, "/sessions/media/") {
 			entry["delivery"] = "sidecar"
 			ext := ".vtt"
 			if preserveTrackASS {

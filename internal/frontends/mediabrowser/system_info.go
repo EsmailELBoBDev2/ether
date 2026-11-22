@@ -122,10 +122,11 @@ func (i *instance) activityLogEntries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessions, err := i.host.Sessions.Sessions(r.Context(), frontend.SessionAccess{
-		Viewer:   viewer,
-		Device:   device(r),
-		Protocol: i.protocol,
-		Owner:    true,
+		Viewer:      viewer,
+		Device:      device(r),
+		Protocol:    i.protocol,
+		Owner:       true,
+		VisibleOnly: true,
 	})
 	if err != nil {
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)

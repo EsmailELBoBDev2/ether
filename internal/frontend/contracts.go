@@ -346,6 +346,7 @@ const (
 	FavoritePerson     FavoriteKind = "person"
 	FavoriteCollection FavoriteKind = "collection"
 	FavoriteChannel    FavoriteKind = "channel"
+	FavoriteEntity     FavoriteKind = "entity"
 )
 
 // FavoriteRef identifies an entity in its own namespace.

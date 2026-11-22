@@ -28,7 +28,7 @@ func NextScheduleTime(cfg ScheduleTriggerConfig, after time.Time) (time.Time, er
 	}
 
 	if hasEvery {
-		d, err := time.ParseDuration(strings.TrimSpace(cfg.Every))
+		d, err := ParseDuration(strings.TrimSpace(cfg.Every))
 		if err != nil || d <= 0 {
 			return time.Time{}, fmt.Errorf("flows: invalid schedule interval %q", cfg.Every)
 		}

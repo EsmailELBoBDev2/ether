@@ -29,7 +29,21 @@ const APP_NAMES: Record<string, string> = {
   m3u: "M3U",
 };
 
-function portalUrl(): string {
+/**
+ * The viewer portal address to put in a message for someone else. The invite
+ * link comes from the server on the published address, so its origin wins over
+ * the address the owner happens to be browsing the console from (a LAN IP, a
+ * tunnel on 127.0.0.1, the public IP).
+ */
+function portalUrl(inviteLink = ""): string {
+  if (inviteLink) {
+    try {
+      const u = new URL(inviteLink);
+      if (u.protocol === "http:" || u.protocol === "https:") return `${u.origin}/ether/me`;
+    } catch {
+      // fall through to the console's own origin
+    }
+  }
   return typeof window !== "undefined" && window.location?.origin
     ? `${window.location.origin}/ether/me`
     : "/ether/me";
@@ -176,7 +190,7 @@ export function AddViewerDrawer({
       }
       lines.push(
         t("Or use Quick Connect: they approve the code from the app at {url}.", {
-          url: portalUrl(),
+          url: portalUrl(link),
         }),
       );
       lines.push(
@@ -189,7 +203,7 @@ export function AddViewerDrawer({
       connectCards.push({
         id,
         title,
-        lines: [t("They get their link at {url}.", { url: portalUrl() })],
+        lines: [t("They get their link at {url}.", { url: portalUrl(link) })],
       });
     }
   }
@@ -197,7 +211,7 @@ export function AddViewerDrawer({
     connectCards.push({
       id: "portal",
       title: t("On the web"),
-      lines: [t("They get their link at {url}.", { url: portalUrl() })],
+      lines: [t("They get their link at {url}.", { url: portalUrl(link) })],
     });
   }
 

@@ -653,7 +653,7 @@ func healthPriority(ctx context.Context) core.Priority {
 // serves a valid yEnc header and matching =ypart range.
 func (e *Engine) probeSampleBody(ctx context.Context, ref slotRef, id string) error {
 	checker, ok := e.fetcher.(bodyPartChecker)
-	if ok && ref.pf.numSlots() > 1 && ref.pf.untrustedMeta() {
+	if ok && (ref.pf.numSlots() > 1 || ref.pf.hasFixedSlots()) && ref.pf.untrustedMeta() {
 		want := ref.pf.expectedPart(ref.slot)
 		err := checker.CheckBodyPart(ctx, id, ref.pf.groups, healthPriority(ctx), core.ArticlePart{Begin: want.Begin, End: want.End})
 		e.noteBodyOutcome(id, err, ctx)

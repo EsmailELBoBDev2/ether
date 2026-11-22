@@ -130,7 +130,7 @@ func (r *release) useTargetSlots(view *release) error {
 }
 
 func (p *plan) vaultLayout(ctx context.Context, cacheID string) *vault.Layout {
-	if p.encrypted != nil || p.rawNonVideo || p.kind == kindArchiveRaw || len(p.clips)+len(p.spans)+len(p.sub) > 0 {
+	if p.shiftedOffsets || p.encrypted != nil || p.rawNonVideo || p.kind == kindArchiveRaw || len(p.clips)+len(p.spans)+len(p.sub) > 0 {
 		return nil
 	}
 	l := &vault.Layout{Container: string(p.kind), FirstArticles: map[int][]byte{}}

@@ -414,6 +414,7 @@ func pickPackUnit(units []packUnit, t *core.ReleaseTarget) *packUnit {
 		info := releaseparse.Parse(u.name)
 		ok := releaseparse.EpisodeMatches(info, t.Season, t.Episode) ||
 			(t.AbsoluteEpisode > 0 && releaseparse.EpisodeMatchesAbsolute(info, t.AbsoluteEpisode)) ||
+			(t.Season > 0 && len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 && releaseparse.EpisodeMatchesAirDateString(info, t.AirDate)) ||
 			(len(info.Episodes) == 0 && classicPackEpisodeMatches(u.name+".mkv", t.Season, t.Episode))
 		if !ok && info.Cour == 0 {
 			for _, n := range t.Aliases {

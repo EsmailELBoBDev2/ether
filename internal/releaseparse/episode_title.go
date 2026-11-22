@@ -81,7 +81,12 @@ func episodeTitleMatches(name, want string, requireEvidence bool) bool {
 	if absolute, start, end := seasonAbsoluteAnnotation(name); absolute > 0 {
 		name = name[:start] + " " + name[end:]
 	}
-	spaced := spacify(normalizeSpanishCapRange(name))
+	normName := normalizeSpanishCapRange(name)
+	spacedRaw := spacify(normName)
+	if ad, ok := parseAirDate(normName, spacedRaw); ok {
+		normName = normName[:ad.stemStart] + " " + normName[ad.stemEnd:]
+	}
+	spaced := spacify(normName)
 	usedMiniseriesPart := false
 	loc := reSE.FindStringIndex(spaced)
 	if loc == nil {
@@ -92,6 +97,9 @@ func episodeTitleMatches(name, want string, requireEvidence bool) bool {
 	}
 	if loc == nil {
 		loc = reBareEpisode.FindStringIndex(spaced)
+	}
+	if loc == nil {
+		loc = reKoreanEpisode.FindStringIndex(spaced)
 	}
 	if loc == nil {
 		loc = spanishEpisodeIndexWithRaw(name, spaced)
@@ -241,15 +249,19 @@ func normalizeEpisodeTitle(title string) string {
 }
 
 // EpisodeSeriesYear reads only the series portion of a TV name. A year in
-// an episode title or after a season/episode boundary must not be mistaken
-// for the show's premiere year.
+// an episode title or after a season/episode/air-date boundary must not be
+// mistaken for the show's premiere year.
 func EpisodeSeriesYear(name string, parsedYear int) int {
-	spaced := spacify(normalizeSpanishCapRange(name))
+	normName := normalizeSpanishCapRange(name)
+	spaced := spacify(normName)
 	cut := -1
 	consider := func(loc []int) {
 		if loc != nil && loc[0] >= 0 && (cut < 0 || loc[0] < cut) {
 			cut = loc[0]
 		}
+	}
+	if ad, ok := parseAirDate(normName, spaced); ok {
+		consider([]int{ad.spacedStart, ad.spacedEnd})
 	}
 	consider(reSE.FindStringIndex(spaced))
 	consider(reSeasonAndEp.FindStringIndex(spaced))
@@ -258,6 +270,9 @@ func EpisodeSeriesYear(name string, parsedYear int) int {
 	consider(reSeasonShortDashEp.FindStringIndex(spaced))
 	consider(reOrdinalSeasonEp.FindStringIndex(spaced))
 	consider(reXEpisode.FindStringIndex(spaced))
+	consider(reBareEpisode.FindStringIndex(spaced))
+	consider(reKoreanSeason.FindStringIndex(spaced))
+	consider(reKoreanEpisode.FindStringIndex(spaced))
 	consider(spanishEpisodeIndexWithRaw(name, spaced))
 	consider(reSeasonOnly.FindStringIndex(spaced))
 	consider(reSeasonWord.FindStringIndex(spaced))

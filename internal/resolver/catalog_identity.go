@@ -147,6 +147,15 @@ func (f localIdentity) animeIdentifiesNamesake(t *core.Title, req core.SearchReq
 	return false
 }
 
+func (f localIdentity) titleShared(rel core.Release) bool {
+	for name, others := range f.OtherShows {
+		if len(others) > 0 && releaseparse.TitleMatches(rel.Info, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // evidence returns a non-empty reason when rel positively identifies the
 // requested episode's series without contradicting its IDs, year, or episode.
 func (f localIdentity) evidence(rel core.Release, t *core.Title, req core.SearchRequest) string {
@@ -164,8 +173,14 @@ func (f localIdentity) evidence(rel core.Release, t *core.Title, req core.Search
 	if year > 0 && req.Year > 0 && !releaseparse.SeriesYearMatches(year, req.Year) {
 		return ""
 	}
-	if matched || (year > 0 && req.Year > 0 && releaseparse.SeriesYearMatches(year, req.Year)) || releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle) {
+	if matched || (year > 0 && req.Year > 0 && releaseparse.SeriesYearMatches(year, req.Year)) || releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle) || releaseparse.EpisodeMatchesAirDate(rel.Info, req.Released) {
 		return "corroborated series identity"
+	}
+	// When the show's primary/English title collides with a catalogue namesake
+	// (e.g. "Home Alone" 2013 vs 2017), a release named by a non-colliding
+	// native or alternative title ("나 혼자 산다", "I Live Alone") disambiguates it.
+	if f.shared(req) && !f.titleShared(rel) && matchesDistinctNonPrimaryTitle(rel.Info, t, req) {
+		return "distinctive series title"
 	}
 	if f.animeIdentifiesTarget(t, req) && releaseparse.AnimeReleaseStyle(rel.Name, rel.Info) {
 		return AnimeReleaseStyleIdentityReason
@@ -238,7 +253,7 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 		if !releaseparse.TitleMatches(rel.Info, name) {
 			continue
 		}
-		if !primary && year == 0 && !idMatch && len(others) > 0 {
+		if !primary && year == 0 && !idMatch && !releaseparse.EpisodeMatchesAirDate(rel.Info, req.Released) && len(others) > 0 {
 			return identityAmbiguousReason("alternative title names another show", req, false, false)
 		}
 		for _, other := range others {
@@ -341,9 +356,7 @@ func (f localIdentity) otherSeason(rel core.Release, t *core.Title, req core.Sea
 }
 
 func (f localIdentity) ambiguous(rel core.Release, t *core.Title, req core.SearchRequest) bool {
-	if !f.shared(req) || !(releaseparse.TitleMatches(rel.Info, req.Title) ||
-		(req.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, req.OriginalTitle)) ||
-		(req.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, req.EnglishTitle))) {
+	if !f.titleShared(rel) {
 		return false
 	}
 	return f.evidence(rel, t, req) == ""

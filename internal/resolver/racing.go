@@ -266,7 +266,7 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 		var wg sync.WaitGroup
 		for j := 0; j < count; j++ {
 			i := base + j
-			s.launchValidation(&wg, workCtx, cands[i], i, results)
+			s.launchValidation(&wg, workCtx, cands[i], i, base+count >= limit, results)
 		}
 		winner := -1
 		var nzb []byte

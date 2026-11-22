@@ -1039,7 +1039,8 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 				baseInfo.Seasons = fullInfo.Seasons
 			}
 			if releaseparse.EpisodeMatches(baseInfo, cand.Season, cand.Episode) ||
-				(len(baseInfo.Episodes) == 0 && (len(videos) == 1 || len(fullInfo.Episodes) == 1) && releaseparse.EpisodeMatches(fullInfo, cand.Season, cand.Episode)) {
+				(len(baseInfo.Episodes) == 0 && (len(videos) == 1 || len(fullInfo.Episodes) == 1) && releaseparse.EpisodeMatches(fullInfo, cand.Season, cand.Episode)) ||
+				(cand.Season > 0 && len(baseInfo.Episodes) == 0 && len(baseInfo.AbsoluteEpisodes) == 0 && releaseparse.EpisodeMatchesAirDateString(baseInfo, target.AirDate)) {
 				return f, nil
 			}
 		}

@@ -13,10 +13,13 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
@@ -100,6 +103,9 @@ type Options struct {
 	SeriesYearConflict func(ctx context.Context, show core.RatingKey, title string, year int) (bool, error)
 	// ReleaseTitleIDs independently resolves unmatched names; ambiguity returns no IDs.
 	ReleaseTitleIDs func(context.Context, core.MediaType, string) (core.IDs, error)
+	// VerifyTitleIDs verifies conflicting indexer title IDs against TMDB/TVDB
+	// external ID mappings when title/alias and episode/air-date already match.
+	VerifyTitleIDs func(context.Context, core.MediaType, core.IDs, core.IDs) (TitleIDVerdict, error)
 	// AnimeCour maps multi-cour TMDB anime season episodes to their cour
 	// and cour-relative episode number; nil disables cour mapping.
 	AnimeCour AnimeCour
@@ -252,6 +258,8 @@ type Service struct {
 	verifier                  vault.Verifier
 	releaseTitles             releaseTitleCache
 	releaseTitleIDs           func(context.Context, core.MediaType, string) (core.IDs, error)
+	titleIDs                  titleIDVerifications
+	verifyTitleIDs            func(context.Context, core.MediaType, core.IDs, core.IDs) (TitleIDVerdict, error)
 	episodeNumbering          func(context.Context, core.SearchRequest, bool) (core.ReleaseNumbering, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
@@ -381,7 +389,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{vault: opts.Vault, verifier: opts.Verifier, releaseTitleIDs: opts.ReleaseTitleIDs, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing, probedMedia: opts.ProbedMedia,
+	s := &Service{vault: opts.Vault, verifier: opts.Verifier, releaseTitleIDs: opts.ReleaseTitleIDs, verifyTitleIDs: opts.VerifyTitleIDs, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing, probedMedia: opts.ProbedMedia,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, badContent: map[string]badMark{},
 		contentByRelease: map[string]contentLink{}, failedGrabs: map[string]failedGrabMark{},
@@ -2005,6 +2013,7 @@ func (s *Service) rankWith(ctx context.Context, env rankEnv, req core.ResolveReq
 		s.loadRejectionsFor(ctx, req.Title.Key)
 	}
 	s.prepareSeriesYears(ctx, req.Title, sreq, results)
+	s.prepareTitleIDVerifications(ctx, req.Title, sreq, env.lang, results)
 	traceBase, traceRouting := 0, ""
 	if trace != nil {
 		traceBase = len(trace.Candidates)
@@ -2098,6 +2107,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	namesake := sreq.Type == core.TypeEpisode && (identity.shared(sreq) || s.hasSeriesNamesake(ctx, t, sreq))
 	if namesake {
 		for _, rel := range results {
+			rel = s.applyVerifiedTitleIDs(rel, t, sreq)
 			if identity.reject(rel, t, sreq) == "" && identity.evidence(rel, t, sreq) != "" && rejectIdentityYears(rel, t, sreq, env.lang, func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }) == "" {
 				corroborated = true
 				break
@@ -2123,6 +2133,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		movieLangs, movieOrig = movieTargetLanguages(profile, wanted, t)
 	}
 	for ri, rel := range results {
+		rel = s.applyVerifiedTitleIDs(rel, t, sreq)
 		rel = withTarget(rel, sreq)
 		if sreq.Type == core.TypeMovie && rel.Target != nil {
 			rel.Target.WantedLanguages = movieLangs
@@ -2689,6 +2700,19 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 			}
 		}
 	}
+	// Korean and Asian multi-season variety releases often append the season
+	// number directly to the show title before a bare episode or air date
+	// ("World.Dice.Tour.4.E01.261017", "지구마불 세계여행4.E01").
+	if !titleOK && isEpisode && sreq.Season >= 2 && len(rel.Info.Seasons) == 0 && (len(rel.Info.Episodes) > 0 || rel.Info.AirDate != "") {
+		if stripped, ok := stripTrailingSeasonNumber(rel.Info.Title, sreq.Season); ok {
+			for _, expected := range expectedTitlesFor(t, sreq) {
+				if releaseparse.TitlesMatch(stripped, expected) {
+					titleOK = true
+					break
+				}
+			}
+		}
+	}
 	if isEpisode && sreq.Season == 0 {
 		prefix := core.ReleaseInfo{Title: releaseparse.SpecialSeriesTitle(rel.Name)}
 		titleOK = titleOK || releaseparse.TitleMatches(prefix, wantTitle) ||
@@ -3246,6 +3270,9 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 			}
 		}
 		target.ShowYear, target.EpisodeTitle = sreq.Year, sreq.EpisodeTitle
+		if !sreq.Released.IsZero() {
+			target.AirDate = sreq.Released.UTC().Format("2006-01-02")
+		}
 		target.FileName = rel.FileName
 		if sreq.Season == 0 {
 			target.ShowTitles, target.SpecialTitles = specialShowTitles(sreq), sreq.SpecialTitles
@@ -3259,7 +3286,11 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		rel.Target = &target
 		return rel // enrich cached identities without deriving their ID again
 	}
-	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	var airDate string
+	if !sreq.Released.IsZero() {
+		airDate = sreq.Released.UTC().Format("2006-01-02")
+	}
+	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, AirDate: airDate, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
 	if alternate || len(aliases) > 0 {
 		target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
 	}
@@ -3354,7 +3385,32 @@ func episodeIdentityEvidence(rel core.Release, req core.SearchRequest) bool {
 	}
 	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
 	return matched || (year > 0 && req.Year > 0 && releaseparse.SeriesYearMatches(year, req.Year)) ||
-		releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle)
+		releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle) ||
+		releaseparse.EpisodeMatchesAirDate(rel.Info, req.Released)
+}
+
+func stripTrailingSeasonNumber(title string, season int) (string, bool) {
+	if season < 2 {
+		return "", false
+	}
+	suffix := strconv.Itoa(season)
+	trimmed := strings.TrimSpace(title)
+	if !strings.HasSuffix(trimmed, suffix) {
+		return "", false
+	}
+	base := trimmed[:len(trimmed)-len(suffix)]
+	if base == "" {
+		return "", false
+	}
+	lastRune, _ := utf8.DecodeLastRuneInString(base)
+	if lastRune == ' ' || lastRune == '-' {
+		base = strings.TrimSpace(strings.TrimRight(base, "-"))
+		return base, base != ""
+	}
+	if lastRune >= 128 && unicode.IsLetter(lastRune) {
+		return strings.TrimSpace(base), true
+	}
+	return "", false
 }
 
 // languageConflict reports that a release names its audio languages and

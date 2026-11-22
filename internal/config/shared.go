@@ -229,6 +229,9 @@ func (s *Store) attachShared(ctx context.Context, b SharedBackend, o SharedOptio
 		if upgradeFrontendPublishedAddresses(stored) {
 			dropped = true
 		}
+		if migrateExtrasDefaultOn(stored) {
+			dropped = true
+		}
 		reset := resetPreStandardQuality(stored)
 		settled = normalizeSharedDocument(stored)
 		if !dropped && !reset && len(settled) == 0 {

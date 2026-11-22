@@ -3,6 +3,7 @@ package ratings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 	"net/http"
@@ -166,5 +167,40 @@ func TestCertificationHandOffAndBackfill(t *testing.T) {
 	first := <-s.queue
 	if first.Key != core.MovieKey(2) {
 		t.Fatalf("title 1 is cached and must be skipped, got %v first", first.Key)
+	}
+}
+
+func TestOMDbRefusalPausesBackfillWithoutAdvancingCursor(t *testing.T) {
+	if _, _, err := parseOMDb([]byte(`{"Response":"False","Error":"Request limit reached!"}`)); !errors.Is(err, errProviderRefused) {
+		t.Fatalf("expected errProviderRefused for OMDb 200 quota error, got %v", err)
+	}
+	if _, _, err := parseOMDb([]byte(`{"Response":"False","Error":"Invalid API key!"}`)); !errors.Is(err, errProviderRefused) {
+		t.Fatalf("expected errProviderRefused for OMDb 200 key error, got %v", err)
+	}
+
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	scanned := 0
+	s := New(db, Options{
+		Now: func() time.Time { return now },
+		Unrated: func(context.Context, core.RatingKey, int) ([]core.Title, error) {
+			scanned++
+			return []core.Title{{Key: core.MovieKey(1), Type: core.TypeMovie, IDs: core.IDs{IMDB: "tt0000001"}}}, nil
+		},
+	})
+	if err := s.SaveSettings(ctx, Settings{Enabled: true, Provider: "omdb", APIKey: "k", CacheHours: 24}); err != nil {
+		t.Fatal(err)
+	}
+	s.qmu.Lock()
+	s.pausedUntil = now.Add(time.Hour)
+	s.qmu.Unlock()
+	s.Backfill(ctx)
+	if scanned != 0 || s.backfillAfter != 0 {
+		t.Fatalf("paused Backfill scanned=%d cursor=%d, want 0/0", scanned, s.backfillAfter)
 	}
 }

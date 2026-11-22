@@ -1405,7 +1405,7 @@ func personInList(people []frontend.Person, tmdb int64) (frontend.Person, bool) 
 	return frontend.Person{}, false
 }
 
-func personSearchDirectory(sec Section, person frontend.Person, kind string, count int, thumbKey frontend.RatingKey, inHub bool) model.Directory {
+func personSearchDirectory(sec Section, person frontend.Person, kind string, count int, thumbKey frontend.RatingKey, inHub bool, tagKey string) model.Directory {
 	idStr := strconv.FormatInt(person.TMDB, 10)
 	secIDStr := strconv.Itoa(sec.ID)
 	tagType := 6
@@ -1437,6 +1437,9 @@ func personSearchDirectory(sec Section, person frontend.Person, kind string, cou
 		model.A("tag", person.Name),
 		model.A("tagType", tagType),
 	)
+	if frontend.IsLibraryPersonTagKey(tagKey) {
+		attrs = append(attrs, model.A("tagKey", tagKey))
+	}
 	if person.ThumbPath != "" && thumbKey != 0 {
 		attrs = append(attrs, model.A("thumb", "/library/metadata/"+thumbKey.String()+"/person/"+kind+"/"+base64.RawURLEncoding.EncodeToString([]byte(person.ThumbPath))))
 	}
@@ -1628,6 +1631,13 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 			}
 		}
 	}
+	walkedIDs := make([]int64, 0, len(walked))
+	for _, cand := range walked {
+		if cand.TMDB > 0 {
+			walkedIDs = append(walkedIDs, cand.TMDB)
+		}
+	}
+	personTagKeys := s.plexPeopleByTMDB(ctx, walkedIDs)
 	var actorTitles, directorTitles []reasonedTitle
 	for ci, cand := range walked {
 		titles, browsable, role := byPerson[ci].titles, byPerson[ci].browsable, byPerson[ci].role
@@ -1700,10 +1710,11 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 			}
 		}
 		for _, sec := range secs {
+			plexTagKey := personTagKeys[cand.TMDB].TagKey
 			if h := actorSecs[sec.ID]; h != nil && h.count > 0 {
 				if len(out.actors) < limit {
 					person := frontend.Person{TMDB: cand.TMDB, Name: cand.Name, ThumbPath: h.thumbPath}
-					out.actors = append(out.actors, personSearchDirectory(sec, person, "actor", h.count, h.thumbKey, inHub))
+					out.actors = append(out.actors, personSearchDirectory(sec, person, "actor", h.count, h.thumbKey, inHub, plexTagKey))
 					out.actorScores = append(out.actorScores, personSearchScore(query, cand.Name))
 				} else {
 					out.actorsMore = true
@@ -1712,7 +1723,7 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 			if h := directorSecs[sec.ID]; h != nil && h.count > 0 {
 				if len(out.directors) < limit {
 					person := frontend.Person{TMDB: cand.TMDB, Name: cand.Name, ThumbPath: h.thumbPath}
-					out.directors = append(out.directors, personSearchDirectory(sec, person, "director", h.count, h.thumbKey, inHub))
+					out.directors = append(out.directors, personSearchDirectory(sec, person, "director", h.count, h.thumbKey, inHub, plexTagKey))
 					out.directorScores = append(out.directorScores, personSearchScore(query, cand.Name))
 				} else {
 					out.directorsMore = true

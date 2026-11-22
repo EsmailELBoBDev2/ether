@@ -182,9 +182,10 @@ var mixedSections = map[string]map[string]Scope{
 		"flareSolverrUrl": Local,
 	},
 	"extras": {
-		"themeMusic":   Shared,
-		"enabled":      Shared,
-		"prewarmBytes": Shared,
+		"themeMusic":        Shared,
+		"enabled":           Shared,
+		"defaultOnMigrated": Shared,
+		"prewarmBytes":      Shared,
 		// Trailer bytes live under this node's cache directory.
 		"trailerCacheMaxBytes": Local,
 		// The resolver tool is a binary on this node's disk.
@@ -346,6 +347,7 @@ func mergeShared(local Config, sharedJSON []byte) (Config, []string, error) {
 	upgradeClientIdentity(shared)
 	upgradeFrontendPublishedAddresses(shared)
 	keepStoredAutoUpdate(shared)
+	migrateExtrasDefaultOn(shared)
 	resetPreStandardQuality(shared)
 	settled := normalizeSharedDocument(shared)
 	base, _ := splitDoc(toDoc(Defaults("")))

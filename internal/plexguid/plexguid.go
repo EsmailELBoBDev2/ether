@@ -50,6 +50,15 @@ func init() {
 	// The credit check now also compares a movie's cast when its directors
 	// agree; records proved under the director-only check are re-verified.
 	store.Register("plexguid", 8, `UPDATE plexguid_identity SET credits_rule=0 WHERE credits_rule=1;`)
+	// Per-title Plex provider credits (real 24-hex person tagKeys, fallback
+	// portraits, slug and age rating), invalidated when the title's verified
+	// plex:// guid or catalogue refresh stamp changes.
+	store.Register("plexguid", 9, `CREATE TABLE plexguid_title_credits(rating_key INTEGER PRIMARY KEY, guid TEXT NOT NULL, catalog_stamp INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL, payload TEXT NOT NULL);`)
+	// Reverse index from real 24-hex Plex person tagKeys to TMDB person IDs
+	// so /library/people/{tagKey} and /library/people/{tagKey}/media resolve
+	// directly in O(1) without scanning titles.
+	store.Register("plexguid", 10, `CREATE TABLE plexguid_person_map(tag_key TEXT PRIMARY KEY, person_tmdb INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '', thumb TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX plexguid_person_map_tmdb ON plexguid_person_map(person_tmdb);`)
 }
 
 const (
@@ -105,9 +114,12 @@ type Service struct {
 	// as a legacy namesake. repairMappings drains it before advancing its scan
 	// cursor so those rows are re-verified within seconds; a full queue drops
 	// the request and the background scan eventually reaches the row.
-	priority   chan core.RatingKey
-	prioQueued map[core.RatingKey]bool
-	flights    map[core.RatingKey]*resolveFlight
+	priority        chan core.RatingKey
+	prioQueued      map[core.RatingKey]bool
+	flights         map[core.RatingKey]*resolveFlight
+	creditFlights   map[core.RatingKey]*creditFlight
+	creditFails     map[core.RatingKey]time.Time
+	recordedPersons map[string]recordedPerson
 }
 
 type resolveFlight struct {
@@ -667,10 +679,13 @@ func (s *Service) storeMappingIdentity(ctx context.Context, k core.RatingKey, id
 		return err
 	}
 	if old != guid {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plexguid_title_credits WHERE rating_key=? AND guid<>?`, int64(k), guid); err != nil {
+			return err
+		}
 		// Delete only children whose recorded parentage proves they belong
 		// to the old tree. Unknown legacy children stay available.
 		remove := func(query string, args ...any) error {
-			for _, table := range []string{"plexguid_verified", "plexguid_identity", "plexguid_mappings", "plexguid_parentage"} {
+			for _, table := range []string{"plexguid_verified", "plexguid_identity", "plexguid_mappings", "plexguid_parentage", "plexguid_title_credits"} {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rating_key IN (`+query+`)`, args...); err != nil {
 					return err
 				}
@@ -878,16 +893,18 @@ func (s *Service) resolve(ctx context.Context, k core.RatingKey, useCache bool) 
 }
 
 type providerItem struct {
-	GUID            string `json:"guid"`
-	RatingKey       string `json:"ratingKey"`
-	Type            string `json:"type"`
-	Year            int    `json:"year"`
-	Index           *int   `json:"index"`
-	ParentIndex     *int   `json:"parentIndex"`
-	ParentGUID      string `json:"parentGuid"`
-	GrandparentGUID string `json:"grandparentGuid"`
-	Title           string `json:"title"`
-	IDs             []struct {
+	GUID             string `json:"guid"`
+	RatingKey        string `json:"ratingKey"`
+	Slug             string `json:"slug"`
+	Type             string `json:"type"`
+	Year             int    `json:"year"`
+	Index            *int   `json:"index"`
+	ParentIndex      *int   `json:"parentIndex"`
+	ParentGUID       string `json:"parentGuid"`
+	GrandparentGUID  string `json:"grandparentGuid"`
+	Title            string `json:"title"`
+	ContentRatingAge int    `json:"contentRatingAge"`
+	IDs              []struct {
 		ID string `json:"id"`
 	} `json:"Guid"`
 	// The canonical Plex record's credits, as the metadata provider returns
@@ -897,12 +914,29 @@ type providerItem struct {
 	// id, title and year while its credits belong to another work (Plex
 	// merged two "Runner"s); these are compared against the catalogue's own
 	// credits so such an identity is refused.
-	Director []providerPerson `json:"Director"`
-	Role     []providerPerson `json:"Role"`
+	Director         []providerPerson `json:"Director"`
+	Writer           []providerPerson `json:"Writer"`
+	Role             []providerPerson `json:"Role"`
+	Producer         []providerPerson `json:"Producer"`
+	CommonSenseMedia []struct {
+		AgeRating []struct {
+			Age  int    `json:"age"`
+			Type string `json:"type"`
+		} `json:"AgeRating"`
+	} `json:"CommonSenseMedia"`
 }
 
 type providerPerson struct {
-	Tag string `json:"tag"`
+	ID     string `json:"id"`
+	Tag    string `json:"tag"`
+	TagKey string `json:"tagKey"`
+	Role   string `json:"role"`
+	Thumb  string `json:"thumb"`
+	Key    string `json:"key"`
+	GUID   string `json:"guid"`
+	IDs    []struct {
+		ID string `json:"id"`
+	} `json:"Guid"`
 }
 
 func (s *Service) getPage(ctx context.Context, path string, q url.Values) ([]providerItem, int, error) {
@@ -938,7 +972,7 @@ func (s *Service) getPage(ctx context.Context, path string, q url.Values) ([]pro
 			Metadata  []providerItem `json:"Metadata"`
 		} `json:"MediaContainer"`
 	}
-	if e = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&body); e != nil {
+	if e = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); e != nil {
 		return nil, 0, fmt.Errorf("Plex metadata response invalid")
 	}
 	return body.Container.Metadata, body.Container.TotalSize, nil
@@ -1137,6 +1171,7 @@ func (s *Service) verifyItemsWithProof(ctx context.Context, k core.RatingKey, ki
 				"rating_key", int64(k), "guid", guid, "kind", kind)
 			continue
 		}
+		s.storeCreditsFromItem(ctx, k, guid, item)
 		return identityRecord{GUID: guid, TMDB: k.TMDB(), Title: item.Title, Year: item.Year}
 	}
 	return identityRecord{}

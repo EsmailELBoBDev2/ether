@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,22 +14,27 @@ import (
 )
 
 type PlexCandidateAccount struct {
-	ServerID              int64  `json:"serverId"`
-	ServerName            string `json:"serverName"`
-	AccountID             int64  `json:"accountId"`
-	AccountName           string `json:"accountName"`
-	IsOwner               bool   `json:"isOwner"`
-	MatchedViewerID       int64  `json:"matchedViewerId"`
-	MatchedViewerName     string `json:"matchedViewerName,omitempty"`
-	MatchedViewerUsername string `json:"matchedViewerUsername,omitempty"`
-	SuggestedViewerID     int64  `json:"suggestedViewerId,omitempty"`
-	SuggestedViewerName   string `json:"suggestedViewerName,omitempty"`
+	ServerID              int64    `json:"serverId"`
+	ServerName            string   `json:"serverName"`
+	AccountID             int64    `json:"accountId"`
+	AccountName           string   `json:"accountName"`
+	IsOwner               bool     `json:"isOwner"`
+	MatchedViewerID       int64    `json:"matchedViewerId"`
+	MatchedViewerName     string   `json:"matchedViewerName,omitempty"`
+	MatchedViewerUsername string   `json:"matchedViewerUsername,omitempty"`
+	SuggestedViewerID     int64    `json:"suggestedViewerId,omitempty"`
+	SuggestedViewerName   string   `json:"suggestedViewerName,omitempty"`
+	PlexUsername          string   `json:"plexUsername,omitempty"`
+	PlexRelation          string   `json:"plexRelation,omitempty"`
+	PlexSources           []string `json:"plexSources,omitempty"`
 }
 
 type PlexCandidateServer struct {
-	ServerID   int64                  `json:"serverId"`
-	ServerName string                 `json:"serverName"`
-	Accounts   []PlexCandidateAccount `json:"accounts"`
+	ServerID           int64                  `json:"serverId"`
+	ServerName         string                 `json:"serverName"`
+	PlexDirectoryTotal int                    `json:"plexDirectoryTotal,omitempty"`
+	FilteredOutCount   int                    `json:"filteredOutCount,omitempty"`
+	Accounts           []PlexCandidateAccount `json:"accounts"`
 }
 
 type ImportPlexViewerRequest struct {
@@ -111,8 +117,15 @@ func suggestMatchingViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount) *V
 	if targetName == "" {
 		return nil
 	}
+	globalID := fallbackPMSAccountPlexID(acct)
 	for i := range viewers {
 		v := &viewers[i]
+		if v.IsOwner && !acct.Owner {
+			continue
+		}
+		if globalID > 0 && v.PlexID > 0 && v.PlexID != globalID {
+			continue
+		}
 		if v.Title != "" && strings.EqualFold(strings.TrimSpace(v.Title), targetName) {
 			return v
 		}
@@ -145,6 +158,9 @@ func resolvePlexUser(acct plexwatch.PMSAccount, plexUsers []plextv.SharedUser) *
 	if acct.Owner || len(plexUsers) == 0 {
 		return nil
 	}
+	if acct.ID >= minGlobalPlexAccountID {
+		return plextv.ResolveSharedUser(plexUsers, acct.ID, "")
+	}
 	return plextv.ResolveSharedUser(plexUsers, acct.ID, acct.Name)
 }
 
@@ -160,25 +176,40 @@ func findViewerByPlexID(viewers []ViewerRecord, plexID int64) *ViewerRecord {
 	return nil
 }
 
+// minGlobalPlexAccountID guards against treating PMS local/synthetic sequential
+// account IDs (e.g. owner ID 1 or small local Ether viewer IDs emitted by
+// internal/frontends/plex/accounts.go) as global plex.tv user IDs.
+// Real non-owner plex.tv accounts stored in PMS /accounts carry their global plex.tv ID.
+const minGlobalPlexAccountID int64 = 10000
+
+func fallbackPMSAccountPlexID(acct plexwatch.PMSAccount) int64 {
+	if acct.Owner || acct.ID < minGlobalPlexAccountID {
+		return 0
+	}
+	return acct.ID
+}
+
 func findSyncedFriendViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount, resolved *plextv.SharedUser) *ViewerRecord {
 	if m := findExactViewer(viewers, acct); m != nil {
 		return m
 	}
-	var resolvedID int64
+	var expectedPlexID int64
 	if resolved != nil && resolved.PlexID > 0 {
-		resolvedID = resolved.PlexID
-		if m := findViewerByPlexID(viewers, resolvedID); m != nil {
+		expectedPlexID = resolved.PlexID
+		if m := findViewerByPlexID(viewers, expectedPlexID); m != nil {
 			return m
 		}
 	}
+	if expectedPlexID == 0 {
+		expectedPlexID = fallbackPMSAccountPlexID(acct)
+	}
+	if expectedPlexID > 0 {
+		// findExactViewer and findViewerByPlexID already checked exact PlexID;
+		// never fall through to name matching across different PlexIDs.
+		return nil
+	}
 	compatible := func(v ViewerRecord) bool {
-		if v.Origin != "friend" || v.PlexID <= 0 {
-			return false
-		}
-		if resolvedID > 0 && v.PlexID != resolvedID {
-			return false
-		}
-		return true
+		return v.Origin == "friend" && v.PlexID > 0
 	}
 	target := strings.TrimSpace(acct.Name)
 	unique := func(pred func(v ViewerRecord) bool) (*ViewerRecord, bool) {
@@ -339,6 +370,80 @@ func (h *Handler) shareViewerPlexTarget(ctx context.Context, usernameOrEmail str
 	return err
 }
 
+func classifyPlexCandidate(acct plexwatch.PMSAccount, u *plextv.SharedUser, pmsMachineID, etherMachineID string, hasPlexDirectory bool) (plexUsername, relation string, sources []string) {
+	if acct.Owner {
+		return "", "owner", []string{"owner"}
+	}
+	if u == nil {
+		if hasPlexDirectory {
+			return "", "historical", []string{"pms_history"}
+		}
+		return "", "", nil
+	}
+	plexUsername = strings.TrimSpace(u.Username)
+	sharedOnEther := etherMachineID != "" && slices.Contains(u.Servers, etherMachineID)
+	sharedOnPMS := pmsMachineID != "" && slices.Contains(u.Servers, pmsMachineID)
+	pendingOnEther := etherMachineID != "" && slices.Contains(u.PendingServers, etherMachineID)
+	pendingOnPMS := pmsMachineID != "" && slices.Contains(u.PendingServers, pmsMachineID)
+
+	if u.Home {
+		sources = append(sources, "home")
+	}
+	if sharedOnEther {
+		sources = append(sources, "ether_share")
+	}
+	if sharedOnPMS {
+		sources = append(sources, "pms_share")
+	}
+	if u.AcceptedShare && !sharedOnEther && !sharedOnPMS {
+		sources = append(sources, "accepted_share")
+	}
+	if u.PendingShare || pendingOnEther || pendingOnPMS {
+		sources = append(sources, "pending_invite")
+	}
+	if u.CommunityFriend {
+		sources = append(sources, "community_friend")
+	}
+	if u.Friend {
+		sources = append(sources, "friend")
+	}
+
+	switch {
+	case u.Home:
+		relation = "home"
+	case u.AcceptedShare || sharedOnPMS || sharedOnEther:
+		relation = "shared"
+	case u.PendingShare || pendingOnEther || pendingOnPMS:
+		relation = "pending"
+	case u.CommunityFriend || u.Friend:
+		relation = "friend"
+	default:
+		relation = "shared"
+	}
+	return plexUsername, relation, sources
+}
+
+// isActivePlexUserWithEmail reports whether a resolved plex.tv account is an
+// active (accepted, non-pending-only) Plex user with an email address.
+func isActivePlexUserWithEmail(u *plextv.SharedUser, pmsMachineID, etherMachineID string) bool {
+	if u == nil {
+		return false
+	}
+	if !plextv.IsEmailAddress(u.Email) {
+		return false
+	}
+	hasAccepted := u.AcceptedShare ||
+		(pmsMachineID != "" && slices.Contains(u.Servers, pmsMachineID)) ||
+		(etherMachineID != "" && slices.Contains(u.Servers, etherMachineID))
+	if hasAccepted {
+		return true
+	}
+	if u.PendingShare || len(u.PendingServers) > 0 || u.Home || u.Friend || u.CommunityFriend {
+		return false
+	}
+	return true
+}
+
 func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 	access, _ := RequestAccess(r.Context())
 	if !access.Owner {
@@ -361,6 +466,13 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 		viewerByID[v.ID] = v
 	}
 
+	plexUsers := h.listPlexUsers(r.Context())
+	hasPlexDirectory := len(plexUsers) > 0
+	var etherMachineID string
+	if h.deps.Config != nil {
+		etherMachineID = h.deps.Config.Get().Server.MachineIdentifier
+	}
+
 	var result []PlexCandidateServer
 	for _, srv := range servers {
 		accounts, err := h.deps.PlexServers.Accounts(r.Context(), srv.ID)
@@ -368,8 +480,18 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("plex candidates accounts error", "server", srv.ID, "err", err)
 			continue
 		}
-		var list []PlexCandidateAccount
+		list := make([]PlexCandidateAccount, 0)
+		filteredOut := 0
 		for _, acct := range accounts {
+			var resolvedPlex *plextv.SharedUser
+			if !acct.Owner && hasPlexDirectory {
+				resolvedPlex = resolvePlexUser(acct, plexUsers)
+				if acct.UserID == 0 && !isActivePlexUserWithEmail(resolvedPlex, srv.MachineID, etherMachineID) {
+					filteredOut++
+					continue
+				}
+			}
+
 			matchedID := acct.UserID
 			var (
 				suggestedID     int64
@@ -397,6 +519,8 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			plexUsername, plexRelation, plexSources := classifyPlexCandidate(acct, resolvedPlex, srv.MachineID, etherMachineID, hasPlexDirectory)
+
 			list = append(list, PlexCandidateAccount{
 				ServerID:              srv.ID,
 				ServerName:            srv.Name,
@@ -408,12 +532,17 @@ func (h *Handler) handlePlexCandidates(w http.ResponseWriter, r *http.Request) {
 				MatchedViewerUsername: matchedUsername,
 				SuggestedViewerID:     suggestedID,
 				SuggestedViewerName:   suggestedName,
+				PlexUsername:          plexUsername,
+				PlexRelation:          plexRelation,
+				PlexSources:           plexSources,
 			})
 		}
 		result = append(result, PlexCandidateServer{
-			ServerID:   srv.ID,
-			ServerName: srv.Name,
-			Accounts:   list,
+			ServerID:           srv.ID,
+			ServerName:         srv.Name,
+			PlexDirectoryTotal: len(plexUsers),
+			FilteredOutCount:   filteredOut,
+			Accounts:           list,
 		})
 	}
 	if result == nil {
@@ -486,6 +615,10 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 	// creating/updating the Plex user record with their global Plex ID before we fall back
 	// to creating a local tokenless viewer.
 	if newViewerID == 0 && !acct.Owner {
+		var ownerPlexID int64
+		if h.deps.Config != nil {
+			ownerPlexID = h.deps.Config.Get().Plex.OwnerPlexID
+		}
 		resolved = resolvePlexUser(*acct, h.listPlexUsers(r.Context()))
 		if resolved != nil && resolved.PlexID > 0 {
 			if existing := findViewerByPlexID(viewers, resolved.PlexID); existing != nil && existing.IsOwner {
@@ -496,12 +629,13 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 		}
 		if newViewerID == 0 {
 			shareTarget := acct.Name
-			var shareUserID int64
+			shareUserID := fallbackPMSAccountPlexID(*acct)
 			if resolved != nil {
 				shareUserID = resolved.PlexID
 				shareTarget = firstNonEmpty(resolved.Email, resolved.Username, acct.Name)
 			}
-			if shareUserID > 0 || strings.TrimSpace(shareTarget) != "" {
+			isSelfOwner := ownerPlexID > 0 && shareUserID == ownerPlexID
+			if !isSelfOwner && (shareUserID > 0 || strings.TrimSpace(shareTarget) != "") {
 				if err := h.shareViewerPlex(r.Context(), shareTarget, shareUserID, false); err != nil {
 					shareErr = err.Error()
 				} else {
@@ -518,10 +652,20 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 					}
 				}
 			}
-			// If resolved on Plex.tv but not yet in auth_users (e.g. pending share),
-			// create/update the friend viewer with full Plex profile instead of a blank invite.
-			if newViewerID == 0 && resolved != nil {
+			// If resolved on Plex.tv (or verified by a successful share via global PMS ID)
+			// but not yet in auth_users, create/update the friend viewer with full Plex profile
+			// instead of a blank local invite.
+			if newViewerID == 0 && resolved != nil && !isSelfOwner {
 				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, displayName); id > 0 {
+					newViewerID = id
+					status = st
+				}
+			}
+			if newViewerID == 0 && sharedPlex && shareUserID > 0 && !isSelfOwner {
+				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, &plextv.SharedUser{
+					PlexID: shareUserID,
+					Title:  displayName,
+				}, displayName); id > 0 {
 					newViewerID = id
 					status = st
 				}
@@ -696,22 +840,34 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 	}
 
 	type deferredImport struct {
-		resultIdx int
-		serverID  int64
-		acct      plexwatch.PMSAccount
-		name      string
-		direction int
-		shareErr  string
+		resultIdx   int
+		serverID    int64
+		acct        plexwatch.PMSAccount
+		name        string
+		direction   int
+		shareUserID int64
+		shareErr    string
 	}
 
 	var (
-		results       []bulkImportResultItem
-		deferred      []deferredImport
-		sharedPlexIDs = make(map[int64]bool)
-		sharedAny     bool
+		results        []bulkImportResultItem
+		deferred       []deferredImport
+		sharedPlexIDs  = make(map[int64]bool)
+		sharedAny      bool
+		rateLimitedErr error
 	)
 	viewers, _ := h.storedViewers(r.Context())
 	plexUsers := h.listPlexUsers(r.Context())
+	hasPlexDirectory := len(plexUsers) > 0
+	var (
+		etherMachineID string
+		ownerPlexID    int64
+	)
+	if h.deps.Config != nil {
+		cfg := h.deps.Config.Get()
+		etherMachineID = cfg.Server.MachineIdentifier
+		ownerPlexID = cfg.Plex.OwnerPlexID
+	}
 
 	finalize := func(serverID int64, acct plexwatch.PMSAccount, name string, direction int, vID int64, status string, matched *ViewerRecord, sharedPlex bool, shareErr string) bulkImportResultItem {
 		var inviteURL string
@@ -753,8 +909,13 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 		if !acct.Owner && matched != nil && !matched.IsOwner && matched.PlexID > 0 && !sharedPlex && shareErr == "" {
 			if sharedPlexIDs[matched.PlexID] {
 				sharedPlex = true
+			} else if rateLimitedErr != nil {
+				shareErr = rateLimitedErr.Error()
 			} else if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name, true); err != nil {
 				shareErr = err.Error()
+				if errors.Is(err, plextv.ErrRateLimited) {
+					rateLimitedErr = err
+				}
 			} else {
 				sharedPlex = true
 				sharedAny = true
@@ -793,6 +954,20 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 				})
 				continue
 			}
+			var preResolved *plextv.SharedUser
+			if !acct.Owner && hasPlexDirectory {
+				preResolved = resolvePlexUser(acct, plexUsers)
+				if !isActivePlexUserWithEmail(preResolved, srv.MachineID, etherMachineID) {
+					results = append(results, bulkImportResultItem{
+						Name:      name,
+						ServerID:  srv.ID,
+						AccountID: acct.ID,
+						Status:    "skipped",
+						Reason:    "ineligible_plex_account",
+					})
+					continue
+				}
+			}
 
 			var (
 				vID        int64
@@ -801,7 +976,7 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 				sharedPlex bool
 				shareErr   string
 				matched    *ViewerRecord
-				resolved   *plextv.SharedUser
+				resolved   = preResolved
 			)
 			if acct.Owner {
 				direction = 3
@@ -816,7 +991,9 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 
 			// 2. If not matched and not owner, resolve against Plex.tv users and grant library access on Plex.tv.
 			if vID == 0 && !acct.Owner {
-				resolved = resolvePlexUser(acct, plexUsers)
+				if resolved == nil {
+					resolved = resolvePlexUser(acct, plexUsers)
+				}
 				if resolved != nil && resolved.PlexID > 0 {
 					if existing := findViewerByPlexID(viewers, resolved.PlexID); existing != nil && existing.IsOwner {
 						matched = existing
@@ -826,16 +1003,24 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 				}
 				if vID == 0 {
 					shareTarget := acct.Name
-					var shareUserID int64
+					shareUserID := fallbackPMSAccountPlexID(acct)
 					if resolved != nil {
 						shareUserID = resolved.PlexID
 						shareTarget = firstNonEmpty(resolved.Email, resolved.Username, acct.Name)
 					}
-					if shareUserID > 0 && sharedPlexIDs[shareUserID] {
+					isSelfOwner := ownerPlexID > 0 && shareUserID == ownerPlexID
+					if isSelfOwner {
+						// Never share the server with its own owner account.
+					} else if shareUserID > 0 && sharedPlexIDs[shareUserID] {
 						sharedPlex = true
+					} else if rateLimitedErr != nil {
+						shareErr = rateLimitedErr.Error()
 					} else if shareUserID > 0 || strings.TrimSpace(shareTarget) != "" {
 						if err := h.shareViewerPlex(r.Context(), shareTarget, shareUserID, true); err != nil {
 							shareErr = err.Error()
+							if errors.Is(err, plextv.ErrRateLimited) {
+								rateLimitedErr = err
+							}
 						} else {
 							sharedPlex = true
 							sharedAny = true
@@ -857,20 +1042,21 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 					}
 					// Defer post-share resolution so ListPlexUsers runs at most once
 					// for the entire batch instead of once per unresolved account.
-					if vID == 0 && resolved == nil && sharedPlex {
+					if vID == 0 && resolved == nil && sharedPlex && !isSelfOwner {
 						idx := len(results)
 						results = append(results, bulkImportResultItem{})
 						deferred = append(deferred, deferredImport{
-							resultIdx: idx,
-							serverID:  srv.ID,
-							acct:      acct,
-							name:      name,
-							direction: direction,
-							shareErr:  shareErr,
+							resultIdx:   idx,
+							serverID:    srv.ID,
+							acct:        acct,
+							name:        name,
+							direction:   direction,
+							shareUserID: shareUserID,
+							shareErr:    shareErr,
 						})
 						continue
 					}
-					if vID == 0 && resolved != nil {
+					if vID == 0 && resolved != nil && !isSelfOwner {
 						if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, name); id > 0 {
 							vID = id
 							status = st
@@ -892,6 +1078,14 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 			)
 			if resolved := resolvePlexUser(d.acct, plexUsers); resolved != nil {
 				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, d.name); id > 0 {
+					vID = id
+					status = st
+				}
+			} else if d.shareUserID > 0 {
+				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, &plextv.SharedUser{
+					PlexID: d.shareUserID,
+					Title:  d.name,
+				}, d.name); id > 0 {
 					vID = id
 					status = st
 				}

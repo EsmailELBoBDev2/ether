@@ -111,7 +111,7 @@ func (s *Server) onDeckWindowed(items []frontend.Title, state map[frontend.Ratin
 // default/value as strings in this endpoint's JSON, unlike /:/prefs.
 // Prefs writes are not supported (Ether's libraries are generated). Library
 // titles themselves are configured in Ether's admin UI, not via this endpoint.
-func sectionPrefs(sec Section) []model.Setting {
+func (s *Server) sectionPrefs(sec Section) []model.Setting {
 	set := func(id, label, summary, typ, def, val, enum string) model.Setting {
 		return model.Setting{ID: id, Label: label, Summary: summary, Type: typ, Default: def, Value: val, EnumValues: enum}
 	}
@@ -134,9 +134,13 @@ func sectionPrefs(sec Section) []model.Setting {
 			set("enableCreditsMarkerGeneration", "Enable credits detection", "Detect credits and allow credits skipping for items in this library when enabled in server settings.", "bool", "true", "false", ""),
 		}
 	}
+	cinemaTrailers := "false"
+	if s.extrasEnabled() {
+		cinemaTrailers = "true"
+	}
 	return []model.Setting{
 		visibility,
-		set("enableCinemaTrailers", "Enable Cinema Trailers", "Allow Cinema Trailers to play before items in this library.", "bool", "true", "false", ""),
+		set("enableCinemaTrailers", "Enable Cinema Trailers", "Allow Cinema Trailers to play before items in this library.", "bool", "true", cinemaTrailers, ""),
 		original,
 		set("enableBIFGeneration", "Enable video preview thumbnails", "Generate video preview thumbnails for items in this library when enabled in server settings.", "bool", "true", "false", ""),
 		collections,
@@ -1246,7 +1250,7 @@ func (s *Server) handleSectionSub(w http.ResponseWriter, r *http.Request) {
 		}
 		s.write(w, r, &model.MediaContainer{Size: len(dirs), Directory: dirs})
 	case "prefs":
-		settings := sectionPrefs(sec)
+		settings := s.sectionPrefs(sec)
 		s.write(w, r, &model.MediaContainer{Size: len(settings), Setting: settings})
 	case "refresh", "analyze", "emptyTrash":
 		s.ownerOnly(s.handleOK)(w, r)

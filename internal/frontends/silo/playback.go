@@ -353,7 +353,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	selected, subtitle, fidelityPolicy, requireAuthoredFidelity, assStylingPreserved := i.siloTracks(siloTrackInputs{r: r, viewer: v, access: access, sessionID: session.ID, start: b, media: plan.Media, format: format, delivery: delivery, live: liveFile, hlsRenditions: cap.Client.HLSTextRenditions, audioStream: plan.Decision.AudioStream, subtitleStream: plan.Decision.SubtitleStream, burn: plan.Decision.BurnSubtitles})
+	selected, subtitle, fidelityPolicy, requireAuthoredFidelity, assStylingPreserved := i.siloTracks(siloTrackInputs{r: r, viewer: v, access: access, sessionID: session.ID, start: b, media: plan.Media, format: format, delivery: delivery, live: liveFile, hlsRenditions: cap.Client.HLSTextRenditions, audioStream: plan.Decision.AudioStream, subtitleStream: plan.SubtitleStream(), burn: plan.Decision.BurnSubtitles})
 	stream := map[string]any{"url": media, "protocol": proto, "container": plan.Media.Container, "mime_type": mime, "headers": map[string]string{"X-Silo-Device-Id": d.ID}, "header_refresh": "none"}
 	if format == frontend.StreamHLS {
 		stream["container"] = "hls"

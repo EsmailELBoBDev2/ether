@@ -1,8 +1,8 @@
 package mediabrowser
 
 import (
-	"context"
 	"errors"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -763,6 +763,74 @@ func (i *instance) browseRoutes() error {
 	return i.playlistRoutes()
 }
 
+// singleAlbumID reads AlbumIds when it names exactly one album.
+func singleAlbumID(r *http.Request) (frontend.RatingKey, bool) {
+	var found []string
+	for _, value := range route.Query(r.URL.Query(), "AlbumIds") {
+		found = append(found, splitCSV(value)...)
+	}
+	if len(found) != 1 {
+		return 0, false
+	}
+	key, err := ids.ParseRatingKeyGUID(found[0])
+	if err != nil || key == 0 {
+		return 0, false
+	}
+	return key, true
+}
+
+// viewForRequestedTypes names the one library that presents the item types a
+// parentless request asked for, when every requested type belongs to a single
+// plugin collection type (music, audiobooks, books) and the viewer has exactly
+// one such library.
+func (i *instance) viewForRequestedTypes(r *http.Request, viewer *frontend.Viewer, q frontend.ItemQuery) (string, bool) {
+	if len(q.Types) != 0 || len(q.UnservedTypes) == 0 || q.Filter.Query != "" {
+		return "", false
+	}
+	want := ""
+	for _, typ := range q.UnservedTypes {
+		collection := ""
+		switch typ {
+		case "musicalbum", "musicartist", "audio":
+			collection = "music"
+		case "audiobook":
+			collection = "audiobooks"
+		case "book":
+			collection = "books"
+		default:
+			return "", false
+		}
+		if want != "" && want != collection {
+			return "", false
+		}
+		want = collection
+	}
+	views, err := i.host.Experience.Views(r.Context(), viewer)
+	if err != nil {
+		return "", false
+	}
+	match := ""
+	for _, view := range views {
+		if view.PluginID == "" && view.KindKey == "" {
+			continue
+		}
+		if mediaBrowserCollectionType(view) != want {
+			continue
+		}
+		if match != "" {
+			return "", false
+		}
+		match = view.ID
+	}
+	return match, match != ""
+}
+
+// sortByRandom reports whether the app asked for Jellyfin's Random order as
+// its first sort key.
+func sortByRandom(r *http.Request) bool {
+	return strings.EqualFold(firstListValue(route.Query(r.URL.Query(), "SortBy")), "Random")
+}
+
 func itemQuery(r *http.Request) frontend.ItemQuery {
 	q := frontend.ItemQuery{Offset: queryInt(r, "StartIndex", 0), Limit: queryInt(r, "Limit", 50)}
 	// SortBy and SortOrder are lists. Clients send them comma-joined
@@ -1132,20 +1200,16 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	var live []any
 	var extra []any
 	if len(parent) == 1 && parent[0] != "" {
-		if id, pe := ids.ParseGUID(ids.View, parent[0]); pe == nil && !ids.PersonalView(id) {
-			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
-				if _, scoped, se := sr.LibraryBrowseFilter(r.Context(), v, ids.Decimal(id), frontend.Filter{}); se == nil && scoped {
-					libQ := q
-					libQ.Filter.Query = terms[0]
-					page, le := i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), libQ)
-					if le != nil {
-						http.Error(w, "Unavailable", 503)
-						return
-					}
-					result.Page = page
-					goto hintsBuilt
-				}
+		if id, pe := ids.ParseGUID(ids.View, parent[0]); pe == nil && !ids.PersonalView(id) && i.scopedSearchView(r, v, parent[0], id) {
+			libQ := q
+			libQ.Filter.Query = terms[0]
+			page, le := i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), libQ)
+			if le != nil {
+				http.Error(w, "Unavailable", 503)
+				return
 			}
+			result.Page = page
+			goto hintsBuilt
 		}
 	}
 	{
@@ -1322,7 +1386,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var page frontend.Page
-	if search := q.Filter.Query; search != "" && !q.FilterByProviderIDs && i.searchableParent(r.Context(), v, parent) {
+	if search := q.Filter.Query; search != "" && !q.FilterByProviderIDs && i.searchableParent(r, v, parent) {
 		if q.Favorite == nil {
 			if only, excluded := personTypesOnly(q); only {
 				if excluded {
@@ -1370,13 +1434,42 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		artistQuery := q
 		artistQuery.Recursive = true
 		page, err = i.host.Experience.Children(r.Context(), v, device(r), artistKey, artistQuery)
+	} else if albumKey, ok := singleAlbumID(r); ok && (len(parent) == 0 || parent[0] == "" || func() bool { _, e := ids.ParseGUID(ids.View, parent[0]); return e == nil }()) {
+		// AlbumIds=<album> lists that album's tracks whether or not a view
+		// ParentId was included.
+		page, err = i.host.Experience.Children(r.Context(), v, device(r), albumKey, q)
+	} else if viewID, ok := i.viewForRequestedTypes(r, v, q); ok && (len(parent) == 0 || parent[0] == "") {
+		// IncludeItemTypes names only kinds one plugin library presents
+		// (MusicAlbum, AudioBook, Book…): list that library, not the server.
+		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), viewID, q)
 	} else if len(parent) == 0 || parent[0] == "" {
 		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil && ids.PersonalView(id) {
 		i.writePersonalItems(w, r, v, id)
 		return
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil {
-		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), q)
+		// SortBy=Random: a bounded random window of the library, shuffled so
+		// the request stays O(1) independent of library size. The reply still
+		// reports the offset the app asked for.
+		pq := q
+		random := sortByRandom(r) && q.Limit > 0 && q.Offset == 0
+		if random {
+			probe := q
+			probe.Sort, probe.Desc, probe.Limit = "", false, 1
+			if first, e := i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), probe); e == nil {
+				pool := min(first.Total, maxRandomBrowseWindow)
+				if pool > q.Limit {
+					pq.Sort, pq.Desc = "", false
+					pq.Offset = rand.IntN(pool - q.Limit + 1)
+				}
+			}
+		}
+		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), pq)
+		if random && err == nil && len(page.Items) > 1 {
+			shuffled := append([]frontend.Title(nil), page.Items...)
+			rand.Shuffle(len(shuffled), func(a, b int) { shuffled[a], shuffled[b] = shuffled[b], shuffled[a] })
+			page.Items = shuffled
+		}
 	} else if key, e := ids.ParseRatingKeyGUID(parent[0]); e == nil {
 		page, err = i.host.Experience.Children(r.Context(), v, device(r), key, q)
 		if key.Kind() == frontend.KindCollection && err == nil {
@@ -1464,11 +1557,30 @@ func (i *instance) writeItemsByID(w http.ResponseWriter, r *http.Request, v *fro
 	return true
 }
 
+// maxRandomBrowseWindow bounds SortBy=Random offsets so library browse stays
+// O(1) independent of total catalog size.
+const maxRandomBrowseWindow = 500
+
+// scopedSearchView reports whether a view GUID must search within itself
+// (plugin libraries and scoped built-in/custom libraries) instead of the global
+// title index.
+func (i *instance) scopedSearchView(r *http.Request, v *frontend.Viewer, parentGUID string, id int64) bool {
+	if i.pluginView(r, v, parentGUID) {
+		return true
+	}
+	if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+		if _, scoped, err := sr.LibraryBrowseFilter(r.Context(), v, ids.Decimal(id), frontend.Filter{}); err == nil && scoped {
+			return true
+		}
+	}
+	return false
+}
+
 // searchableParent reports whether a search may use the global title index:
 // no parent, or an unscoped library view. Searches inside a show, season,
-// personal library, custom library or library-scoped built-in library filter
-// that view directly.
-func (i *instance) searchableParent(ctx context.Context, v *frontend.Viewer, parent []string) bool {
+// personal library, plugin library, custom library or library-scoped built-in
+// library filter that view directly.
+func (i *instance) searchableParent(r *http.Request, v *frontend.Viewer, parent []string) bool {
 	if len(parent) == 0 || parent[0] == "" {
 		return true
 	}
@@ -1476,12 +1588,7 @@ func (i *instance) searchableParent(ctx context.Context, v *frontend.Viewer, par
 	if err != nil || ids.PersonalView(id) {
 		return false
 	}
-	if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
-		if _, scoped, err := sr.LibraryBrowseFilter(ctx, v, ids.Decimal(id), frontend.Filter{}); err == nil && scoped {
-			return false
-		}
-	}
-	return true
+	return !i.scopedSearchView(r, v, parent[0], id)
 }
 
 func (i *instance) similar(w http.ResponseWriter, r *http.Request) {

@@ -1,11 +1,13 @@
 package mediabrowser
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 )
 
 func TestReleaseVersionSourcesCarryProbedAudioTracksOnAutoAndVariants(t *testing.T) {
@@ -49,7 +51,7 @@ func TestReleaseVersionSourcesCarryProbedAudioTracksOnAutoAndVariants(t *testing
 			key := frontend.MovieKey(1)
 			auto := i.defaultMediaSource(req, viewer, "tok", key)
 
-			got := i.releaseVersionSourcesFor(req, scope, key, variants, auto)
+			got := i.releaseVersionSourcesFor(req, scope, key, "", variants, auto)
 			if len(got) != 2 {
 				t.Fatalf("sources = %d, want 2", len(got))
 			}
@@ -69,5 +71,55 @@ func TestReleaseVersionSourcesCarryProbedAudioTracksOnAutoAndVariants(t *testing
 				}
 			}
 		})
+	}
+}
+
+type fixedSelectPrefs struct {
+	frontendtest.TrackPreferences
+	audio, sub int
+}
+
+func (f fixedSelectPrefs) Select(context.Context, int64, frontend.RatingKey, frontend.MediaInfo, string) (frontend.PlaybackPreferenceSelection, error) {
+	return frontend.PlaybackPreferenceSelection{Audio: f.audio, Subtitle: f.sub}, nil
+}
+
+func TestReleaseVersionSourcesApplyViewerTrackDefaults(t *testing.T) {
+	probed := frontend.MediaInfo{
+		Container: "mkv",
+		Size:      6 << 30,
+		Duration:  2 * time.Hour,
+		Streams: []frontend.StreamInfo{
+			{Index: 0, Type: "video", Codec: "hevc", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "eac3", Language: "jpn", Default: true},
+			{Index: 2, Type: "audio", Codec: "eac3", Language: "eng"},
+			{Index: 3, Type: "subtitle", Codec: "subrip", Language: "ara"},
+		},
+	}
+	variants := []frontend.ReleaseVariant{
+		{ID: "r-auto", Label: "1080p", Auto: true, Release: frontend.Release{ID: "r-auto"}, Info: probed},
+		{ID: "r-alt", Label: "1080p alt", Release: frontend.Release{ID: "r-alt"}, Info: probed},
+	}
+	i := &instance{
+		protocol: "jellyfin",
+		host: frontend.Host{
+			VersionHandles:   &issuedHandles{},
+			TrackPreferences: fixedSelectPrefs{audio: 2, sub: 3},
+		},
+	}
+	req := httptest.NewRequest("GET", "/Users/1/Items/1", nil)
+	viewer := &frontend.Viewer{ID: 1, IsOwner: true}
+	scope := frontend.VersionScope{Viewer: viewer, Protocol: "jellyfin"}
+	key := frontend.MovieKey(1)
+	auto := i.defaultMediaSource(req, viewer, "tok", key)
+
+	got := i.releaseVersionSourcesFor(req, scope, key, "ja", variants, auto)
+	if len(got) != 2 {
+		t.Fatalf("sources = %d, want 2", len(got))
+	}
+	for idx, raw := range got {
+		src := raw.(map[string]any)
+		if src["DefaultAudioStreamIndex"] != 2 || src["DefaultSubtitleStreamIndex"] != 3 {
+			t.Fatalf("source[%d] defaults = audio:%v sub:%v, want audio:2 sub:3", idx, src["DefaultAudioStreamIndex"], src["DefaultSubtitleStreamIndex"])
+		}
 	}
 }

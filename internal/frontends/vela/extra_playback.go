@@ -11,6 +11,13 @@ import (
 	"strings"
 )
 
+func (i *instance) extrasAvailable() bool {
+	if i.host.ExtraStreams != nil {
+		return i.host.ExtraStreams.Enabled()
+	}
+	return i.extraPlaybackAvailable() || i.previewAvailable()
+}
+
 func (i *instance) extraPlaybackAvailable() bool {
 	p, ok := i.host.Sessions.(frontend.ExtraPlaybacks)
 	return ok && i.host.Capabilities != nil && p.ExtraPlaybackAvailable()

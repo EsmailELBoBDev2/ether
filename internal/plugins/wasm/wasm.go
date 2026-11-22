@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -219,8 +220,15 @@ type callLimitsKey struct{}
 type backgroundCallKey struct{}
 type callPathKey struct{}
 
+// WithBackgroundCall marks ctx as belonging to a background plugin call
+// (such as a scheduled route, background job, or catalog sync).
+func WithBackgroundCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundCallKey{}, true)
+}
+
 // IsBackgroundCall reports whether ctx belongs to a background hosted plugin
-// call (non-foreground /ether/job/*, kind sync, Live TV sync, or /ether/event).
+// call (non-foreground /ether/job/*, kind sync, Live TV sync, /ether/event, or
+// a call marked with WithBackgroundCall).
 func IsBackgroundCall(ctx context.Context) bool {
 	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
 	return bg
@@ -233,10 +241,12 @@ func CallPath(ctx context.Context) string {
 	return p
 }
 
-// hostCallTimeout returns the hard per-host-call deadline ceiling for a guest
-// host service call. Even when a background route has a multi-hour granted
-// deadline, an individual host call is bounded so one hung upstream cannot hold
-// a plugin pool instance forever.
+// hostCallTimeout returns the default per-host-call deadline ceiling for a
+// guest host service call. Even when a background route has a multi-hour
+// granted deadline, an individual host call is bounded so one hung upstream
+// cannot hold a plugin pool instance forever; http.fetchToCache in a job,
+// schedule, or background context may raise its timeout via timeoutMs up to the
+// calling job's remaining deadline.
 var hostCallTimeoutOverride func(name string) time.Duration
 
 func hostCallTimeout(name string) time.Duration {
@@ -263,6 +273,48 @@ func hostCallTimeout(name string) time.Duration {
 	default:
 		return 30 * time.Second
 	}
+}
+
+func (cs *callState) allowsLongFetchToCache() bool {
+	if cs.path != "" && (ViewerRequestPath(cs.path) || FrontendAdapterPath(cs.path)) {
+		return false
+	}
+	return BackgroundPoolPath(cs.path) || IsBackgroundCall(cs.ctx)
+}
+
+func fetchToCacheRequestedTimeout(args json.RawMessage) (time.Duration, bool) {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(args, &elems); err != nil || len(elems) != 1 {
+		return 0, false
+	}
+	var req struct {
+		TimeoutMS int64 `json:"timeoutMs"`
+	}
+	if err := json.Unmarshal(elems[0], &req); err != nil || req.TimeoutMS <= 0 {
+		return 0, false
+	}
+	const maxMS = int64(math.MaxInt64 / int64(time.Millisecond))
+	if req.TimeoutMS > maxMS {
+		return time.Duration(math.MaxInt64), true
+	}
+	return time.Duration(req.TimeoutMS) * time.Millisecond, true
+}
+
+func (cs *callState) hostCallTimeout(name string, args json.RawMessage) time.Duration {
+	base := hostCallTimeout(name)
+	if name != "http.fetchToCache" || !cs.allowsLongFetchToCache() {
+		return base
+	}
+	requested, ok := fetchToCacheRequestedTimeout(args)
+	if !ok || requested <= base {
+		return base
+	}
+	if dl, ok := cs.ctx.Deadline(); ok {
+		if rem := time.Until(dl); rem > 0 && requested > rem {
+			return rem
+		}
+	}
+	return requested
 }
 
 // CallLimits returns the effective per-call limits (after route deadline and
@@ -566,7 +618,7 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 		return nil, Forbidden("no host services are configured for this plugin")
 	}
 
-	hostTimeout := hostCallTimeout(name)
+	hostTimeout := cs.hostCallTimeout(name, args)
 	hostCtx, hostCancel := context.WithTimeout(cs.ctx, hostTimeout)
 	defer hostCancel()
 

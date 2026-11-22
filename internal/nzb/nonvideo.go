@@ -192,6 +192,14 @@ func nonVideoExtInfo(ext string) (string, []string) {
 	}
 }
 
+// IsNonVideoFile reports whether name carries a known non-video media
+// extension (audio, book, comic, image, or text).
+func IsNonVideoFile(name string) bool {
+	ext := strings.ToLower(path.Ext(strings.TrimSpace(name)))
+	family, _ := nonVideoExtInfo(ext)
+	return family != ""
+}
+
 // CleanArchivePath normalises a release or archive member path for matching.
 func CleanArchivePath(raw string) string {
 	s := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))

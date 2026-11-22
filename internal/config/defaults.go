@@ -30,7 +30,7 @@ func Defaults(dataDir string) Config {
 		Personalize: Personalize{
 			PostPlay: true, PostPlayPrebuffer: true, MicroReasons: true, SessionIntent: true,
 		},
-		Extras:   Extras{ThemeMusic: new(true), PrewarmBytes: 48 << 20, ResolverTimeout: Duration(20 * time.Second)},
+		Extras:   Extras{ThemeMusic: new(true), Enabled: true, DefaultOnMigrated: true, PrewarmBytes: 48 << 20, ResolverTimeout: Duration(20 * time.Second)},
 		Outbound: Outbound{Indexers: true, Stremio: true, LiveTV: true, Debrid: true, Usenet: true},
 		Server: Server{
 			StartupAnimation:   true,

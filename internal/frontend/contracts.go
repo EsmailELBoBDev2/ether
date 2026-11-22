@@ -1082,6 +1082,11 @@ type PlayPlan struct {
 	Estimated                  bool
 	Media                      core.MediaInfo
 	Decision                   core.Decision
+	// SelectedSubtitle holds the text subtitle stream selected for the client
+	// to render beside the video when Decision.SubtitleStream was cleared to
+	// -1 so the video encoder never burns it in. Nil means
+	// Decision.SubtitleStream is already the authoritative selection.
+	SelectedSubtitle *int
 	// Alternatives are evaluated against this same source and client policy.
 	// DirectPlay, DirectStream, Transcoding are evaluated against this same source.
 	DirectPlay, DirectStream, Transcoding bool
@@ -1113,6 +1118,16 @@ type PlayPlan struct {
 	// to correlate the admitted source with offered VersionSlots (never
 	// exposed directly on external APIs).
 	ReleaseID string
+}
+
+// SubtitleStream reports the subtitle stream selected for this play plan,
+// preserving a side-rendered text track when Decision.SubtitleStream was
+// cleared to keep the video decision burn-free.
+func (p PlayPlan) SubtitleStream() int {
+	if p.SelectedSubtitle != nil {
+		return *p.SelectedSubtitle
+	}
+	return p.Decision.SubtitleStream
 }
 
 // DetailPlanner resolves a playable single item within a bounded admission

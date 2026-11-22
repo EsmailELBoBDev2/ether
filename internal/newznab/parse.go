@@ -50,6 +50,7 @@ type rawItem struct {
 	enclosure  string
 	size       int64
 	grabs      int
+	subs       []string
 	password   bool
 	private    bool
 	category   int
@@ -79,7 +80,8 @@ func (r rawItem) toRelease(indexer string) core.Release {
 		GUID: r.guid, Indexer: indexer, Name: name, NZBURL: nzbURL,
 		Size: r.size, PubDate: pub, UsenetDate: usenetDate, Poster: strings.TrimSpace(r.poster),
 		Grabs: r.grabs, Password: r.password, Category: r.category,
-		TitleIDs: r.ids,
+		IndexerSubtitles: r.subs,
+		TitleIDs:         r.ids,
 	}
 	// The id keeps its original link-first input so stored releases, pins and
 	// cached NZBs keep their ids.
@@ -250,8 +252,46 @@ func parseXMLStream(reader io.Reader, indexer string, arrived func([]core.Releas
 	return out, nil
 }
 
+// subtitleLanguages reads a Newznab "subs" value. Indexers separate the
+// languages with commas, semicolons, slashes or " - " and write names or ISO
+// codes ("English, French", "eng - spa"); anything that is not a language
+// ("None", "Yes") is dropped. ISO 639-2 codes are folded by releaseparse via
+// langtag.ParseBCP47.
+func subtitleLanguages(val string) []string {
+	fields := strings.FieldsFunc(strings.ReplaceAll(val, " - ", ","), func(r rune) bool {
+		return r == ',' || r == ';' || r == '/' || r == '|'
+	})
+	var out []string
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" || !releaseparse.KnownLanguage(f) {
+			continue
+		}
+		name := releaseparse.LanguageName(f)
+		dup := false
+		for _, have := range out {
+			dup = dup || have == name
+		}
+		if !dup {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func applyAttr(r *rawItem, name, val string) {
-	switch name {
+	// Some indexers pad attribute names ("subs ").
+	switch name = strings.TrimSpace(name); name {
+	case "subs", "subtitles":
+		for _, l := range subtitleLanguages(val) {
+			dup := false
+			for _, have := range r.subs {
+				dup = dup || have == l
+			}
+			if !dup {
+				r.subs = append(r.subs, l)
+			}
+		}
 	case "imdb", "imdbid":
 		v := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(val)), "tt")
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 && len(v) <= 10 {

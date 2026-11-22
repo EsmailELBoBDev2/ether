@@ -178,7 +178,7 @@ func (i *instance) releaseVariants(r *http.Request, scope frontend.VersionScope,
 // handle machinery (and dialect shaping) the edition versions use. It returns
 // false when this viewer may not be issued the release, so the source is
 // omitted rather than offered with an unusable Id.
-func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, v frontend.ReleaseVariant) (map[string]any, bool) {
+func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, v frontend.ReleaseVariant) (map[string]any, bool) {
 	if i.host.VersionHandles == nil || v.Release.ID == "" {
 		return nil, false
 	}
@@ -194,6 +194,7 @@ func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionS
 	}
 	if i.protocol == "jellyfin" {
 		i.jellyfinMediaSourceDTO(source, v.Info, false)
+		i.jellyfinViewerStreamDefaults(r, scope.Viewer, key, original, source, v.Info)
 	}
 	return source, true
 }
@@ -203,7 +204,7 @@ func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionS
 // nil when there is no usable version list, so the caller keeps today's
 // single-source shape.
 func (i *instance) releaseVersionSources(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, title frontend.Title, auto map[string]any) []any {
-	return i.releaseVersionSourcesFor(r, scope, key, i.releaseVariants(r, scope, title), auto)
+	return i.releaseVersionSourcesFor(r, scope, key, title.Language, i.releaseVariants(r, scope, title), auto)
 }
 
 // applyProbedMediaFacts enriches an already-built Auto MediaSource with real
@@ -213,10 +214,7 @@ func (i *instance) applyProbedMediaFacts(source map[string]any, itemID string, i
 	if source == nil || info.Estimated || len(info.Streams) == 0 {
 		return
 	}
-	if existing, ok := source["MediaStreams"].([]any); ok && len(existing) > 0 {
-		return
-	}
-	if existing, ok := source["MediaStreams"].([]map[string]any); ok && len(existing) > 0 {
+	if hasMediaStreams(source) {
 		return
 	}
 	id, _ := source["Id"].(string)
@@ -234,18 +232,33 @@ func (i *instance) applyProbedMediaFacts(source map[string]any, itemID string, i
 	}
 }
 
+// hasMediaStreams reports whether a MediaSource already lists its streams.
+func hasMediaStreams(source map[string]any) bool {
+	if existing, ok := source["MediaStreams"].([]any); ok && len(existing) > 0 {
+		return true
+	}
+	if existing, ok := source["MediaStreams"].([]map[string]any); ok && len(existing) > 0 {
+		return true
+	}
+	return false
+}
+
 // releaseVersionSourcesFor is releaseVersionSources with an already-resolved
 // variant list, so PlaybackInfo does not resolve it twice.
-func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, variants []frontend.ReleaseVariant, auto map[string]any) []any {
+func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, variants []frontend.ReleaseVariant, auto map[string]any) []any {
 	if len(variants) < 2 {
 		return nil
 	}
 	out := make([]any, 0, len(variants))
 	if auto != nil {
 		auto["Name"] = autoVersionName
+		hadStreams := hasMediaStreams(auto)
 		for _, v := range variants {
 			if v.Auto {
 				i.applyProbedMediaFacts(auto, ids.RatingKeyGUID(key), v.Info)
+				if !hadStreams {
+					i.jellyfinViewerStreamDefaults(r, scope.Viewer, key, original, auto, v.Info)
+				}
 				break
 			}
 		}
@@ -256,7 +269,7 @@ func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.Vers
 		if v.Auto {
 			continue
 		}
-		source, ok := i.releaseVersionSource(r, scope, key, v)
+		source, ok := i.releaseVersionSource(r, scope, key, original, v)
 		if !ok {
 			continue
 		}
@@ -336,7 +349,13 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		// item identity for it; explicit alternatives still use scoped handles.
 		if n == 0 && releaseID == "" && scopeErr == nil && strings.HasPrefix(version.ID, frontend.VersionSelectorPrefix) {
 			auto := i.defaultMediaSource(r, v, token, key)
+			hadStreams := hasMediaStreams(auto)
 			i.applyProbedMediaFacts(auto, ids.RatingKeyGUID(d.Title.Key), version.Media)
+			if !hadStreams {
+				// The Auto slot is what the web client plays by default, so it
+				// needs the viewer's track choice as much as a named version.
+				i.jellyfinViewerStreamDefaults(r, v, key, d.Title.Language, auto, version.Media)
+			}
 			sources = append(sources, auto)
 			continue
 		}
@@ -364,6 +383,7 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		}
 		if i.protocol == "jellyfin" {
 			i.jellyfinMediaSourceDTO(source, version.Media, false)
+			i.jellyfinViewerStreamDefaults(r, v, key, d.Title.Language, source, version.Media)
 			if name, _ := source["Name"].(string); name == "" {
 				if itemName, ok := dto["Name"].(string); ok && itemName != "" {
 					source["Name"] = itemName

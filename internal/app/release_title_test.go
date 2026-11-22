@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
@@ -65,6 +66,106 @@ func TestReleaseTitleIDs(t *testing.T) {
 			}
 			if searches != 1 || (tc.detail == "" && details != 0) {
 				t.Fatalf("searches=%d details=%d", searches, details)
+			}
+		})
+	}
+}
+
+func TestVerifyTitleIDs(t *testing.T) {
+	expected := core.IDs{TMDB: 65282, IMDB: "tt7997010", TVDB: 298704}
+	cases := []struct {
+		name     string
+		kind     core.MediaType
+		reported core.IDs
+		expected core.IDs
+		routes   map[string]string
+		want     resolver.TitleIDVerdict
+	}{
+		{
+			name:     "live external IDs updated on TMDB",
+			kind:     core.TypeShow,
+			reported: core.IDs{TVDB: 298704},
+			expected: core.IDs{TMDB: 65282, TVDB: 111111}, // stale local TVDB
+			routes: map[string]string{
+				"/tv/65282": `{"id":65282,"external_ids":{"imdb_id":"tt7997010","tvdb_id":298704}}`,
+			},
+			want: resolver.TitleIDVerified,
+		},
+		{
+			name:     "alternate TVDB ID resolves to expected TV show via /find",
+			kind:     core.TypeShow,
+			reported: core.IDs{TVDB: 998877},
+			expected: expected,
+			routes: map[string]string{
+				"/tv/65282":    `{"id":65282,"external_ids":{"imdb_id":"tt7997010","tvdb_id":298704}}`,
+				"/find/998877": `{"tv_results":[{"id":65282,"name":"Home Alone"}]}`,
+			},
+			want: resolver.TitleIDVerified,
+		},
+		{
+			name:     "episode IMDb ID resolves to expected show_id via /find",
+			kind:     core.TypeShow,
+			reported: core.IDs{IMDB: "tt12345678"},
+			expected: expected,
+			routes: map[string]string{
+				"/tv/65282":        `{"id":65282,"external_ids":{"imdb_id":"tt7997010","tvdb_id":298704}}`,
+				"/find/tt12345678": `{"tv_episode_results":[{"id":555,"show_id":65282}]}`,
+			},
+			want: resolver.TitleIDVerified,
+		},
+		{
+			name:     "conflicting TVDB ID resolves to different TV show",
+			kind:     core.TypeShow,
+			reported: core.IDs{TVDB: 77961},
+			expected: expected,
+			routes: map[string]string{
+				"/tv/65282":   `{"id":65282,"external_ids":{"imdb_id":"tt7997010","tvdb_id":298704}}`,
+				"/find/77961": `{"tv_results":[{"id":99999,"name":"Number 96"}]}`,
+			},
+			want: resolver.TitleIDConflict,
+		},
+		{
+			name:     "movie IMDb ID mis-tagged on TV episode returns WrongMedia",
+			kind:     core.TypeShow,
+			reported: core.IDs{IMDB: "tt0099785"},
+			expected: expected,
+			routes: map[string]string{
+				"/tv/65282":       `{"id":65282,"external_ids":{"imdb_id":"tt7997010","tvdb_id":298704}}`,
+				"/find/tt0099785": `{"movie_results":[{"id":771,"title":"Home Alone"}]}`,
+			},
+			want: resolver.TitleIDWrongMedia,
+		},
+		{
+			name:     "unmapped external ID remains Conflict",
+			kind:     core.TypeShow,
+			reported: core.IDs{TVDB: 555555},
+			expected: expected,
+			routes: map[string]string{
+				"/tv/65282":    `{"id":65282,"external_ids":{"imdb_id":"tt7997010","tvdb_id":298704}}`,
+				"/find/555555": `{"movie_results":[],"tv_results":[],"tv_episode_results":[]}`,
+			},
+			want: resolver.TitleIDConflict,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, ok := tc.routes[r.URL.Path]
+				if !ok {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				fmt.Fprint(w, body)
+			}))
+			defer srv.Close()
+			a := &App{tmdb: tmdb.New("test-key", quietLog(), tmdb.WithBaseURL(srv.URL), tmdb.WithMaxRetries(0))}
+			got, err := a.verifyTitleIDs(t.Context(), tc.kind, tc.reported, tc.expected)
+			if err != nil {
+				t.Fatalf("verifyTitleIDs err = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("verifyTitleIDs = %v, want %v", got, tc.want)
 			}
 		})
 	}

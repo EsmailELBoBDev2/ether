@@ -619,7 +619,10 @@ func (rc *resolveContext) resolveEvent(ev core.LiveEvent, feed, entityKind strin
 			rc.watchCache[ev.ID] = targets
 		}
 	} else if len(ev.Watch) > 0 {
-		targets = append([]core.LiveEventWatchTarget(nil), ev.Watch...)
+		targets = make([]core.LiveEventWatchTarget, len(ev.Watch))
+		for i, w := range ev.Watch {
+			targets[i] = w.Clone()
+		}
 	}
 	if targets == nil {
 		targets = []core.LiveEventWatchTarget{}

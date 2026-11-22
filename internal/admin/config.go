@@ -72,9 +72,11 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		// (requireAuth) and changes only through /api/setup/complete: a
 		// config document loaded before setup finished must not clear it.
 		keepSetup := c.SetupComplete
+		keepExtrasMigrated := c.Extras.DefaultOnMigrated
 		*c = next
 		c.Database = keepDatabase
 		c.SetupComplete = keepSetup
+		c.Extras.DefaultOnMigrated = keepExtrasMigrated || c.Extras.DefaultOnMigrated
 		if keepMachine != "" {
 			c.Server.MachineIdentifier = keepMachine
 		}

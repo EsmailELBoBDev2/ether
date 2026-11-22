@@ -773,6 +773,8 @@ func (c *Catalog) hydratePersonCredits(ctx context.Context, client TMDB, pc pers
 			addWork(w, "crew", "Composer", i)
 		case "creator", "series composition", "showrunner":
 			addWork(w, "crew", "Creator", i)
+		case "producer":
+			addWork(w, "crew", "Producer", i)
 		}
 	}
 	if len(summaries) > 0 {

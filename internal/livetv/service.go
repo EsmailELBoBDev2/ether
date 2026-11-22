@@ -102,6 +102,8 @@ type Service struct {
 	probeWait             map[string]*liveProbeFlight
 	healthMu              sync.RWMutex
 	channelHealth         map[string]sweepResult
+	healthRev             atomic.Uint64
+	nextHealthExpiry      atomic.Int64 // earliest future UnixNano cooldown/failure expiry, 0 if none
 	sourceMu              sync.Mutex
 	sourceHealth          map[string]streamSourceHealth
 	history               sourceHistoryStore // learned per-source evidence (source_history.go)
@@ -1292,6 +1294,14 @@ func (s *Service) SavePolicy(ctx context.Context, p Policy) error {
 	return err
 }
 func (s *Service) allowed(ctx context.Context, u *core.User, c Channel, p *Programme) bool {
+	return s.allowedOpts(ctx, u, c, p, false)
+}
+
+func (s *Service) allowedForWatch(ctx context.Context, u *core.User, c Channel, p *Programme) bool {
+	return s.allowedOpts(ctx, u, c, p, true)
+}
+
+func (s *Service) allowedOpts(ctx context.Context, u *core.User, c Channel, p *Programme, skipSweep bool) bool {
 	if !s.Enabled() {
 		return false
 	}
@@ -1306,7 +1316,7 @@ func (s *Service) allowed(ctx context.Context, u *core.User, c Channel, p *Progr
 			}
 		}
 	}
-	return s.allowedWithLookup(ctx, u, c, p, lookup, false)
+	return s.allowedWithLookupOpts(ctx, u, c, p, lookup, false, skipSweep)
 }
 
 type loadedPolicyKey struct{}
@@ -1369,13 +1379,17 @@ func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context
 }
 
 func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
+	return s.allowedWithLookupOpts(ctx, u, c, p, lookup, strict, false)
+}
+
+func (s *Service) allowedWithLookupOpts(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict, skipSweep bool) bool {
 	if u == nil || !c.Enabled || c.MergedInto != "" {
 		return false
 	}
 	if app := core.LiveApp(ctx); app != "" && slices.Contains(c.HiddenApps, app) {
 		return false
 	}
-	if !u.IsOwner && s.sweepState(c) == "unavailable" {
+	if !skipSweep && !u.IsOwner && s.sweepState(c) == "unavailable" {
 		return false
 	}
 	var pol Policy

@@ -213,6 +213,11 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	}
 	added := t.DateAdded(s.now())
 	ov, hasPlex := s.plexMetaOverlay(ctx, t.Key)
+	credits, hasCredits := s.plexCreditsCached(ctx, t.Key)
+	var creditsPtr *frontend.LibraryTitleCredits
+	if hasCredits {
+		creditsPtr = &credits
+	}
 	tmdbRating := t.Rating
 	if hasPlex {
 		t = applyPlexMetaTitle(t, ov.Overlay)
@@ -280,8 +285,14 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	switch t.Type {
 	case frontend.TypeMovie:
 		m.Slug = ov.Slug
+		if m.Slug == "" {
+			m.Slug = credits.Slug
+		}
 	case frontend.TypeShow:
 		m.Slug = ov.Slug
+		if m.Slug == "" {
+			m.Slug = credits.Slug
+		}
 		m.Index = model.Ptr(1)
 		if t.ChildCount > 0 {
 			m.ChildCount = model.Ptr(t.ChildCount)
@@ -423,9 +434,23 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		}
 		m.Country = append(m.Country, tag)
 	}
-	m.Director = s.personTags(t.Key, t.Directors, "director", maxPeople, detail, false)
-	m.Writer = s.personTags(t.Key, t.Writers, "writer", maxTags, detail, false)
-	m.Role = s.personTags(t.Key, t.Cast, "actor", maxPeople, detail, true)
+	var mappedPeople []frontend.LibraryPersonMapping
+	m.Director = s.personTags(t.Key, t.Directors, "director", maxPeople, detail, false, creditsPtr, &mappedPeople)
+	m.Writer = s.personTags(t.Key, t.Writers, "writer", maxTags, detail, false, creditsPtr, &mappedPeople)
+	m.Role = s.personTags(t.Key, t.Cast, "actor", maxPeople, detail, true, creditsPtr, &mappedPeople)
+	if detail && t.Type != frontend.TypeSeason {
+		m.Producer = s.personTags(t.Key, detailProducers(t, creditsPtr), "producer", maxTags, detail, false, creditsPtr, &mappedPeople)
+	}
+	if t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow {
+		if hasCredits && credits.ContentRatingAge > 0 {
+			m.ContentRatingAge = credits.ContentRatingAge
+		} else if age := contentRatingAge(m.ContentRating); age > 0 {
+			m.ContentRatingAge = age
+		}
+	}
+	if len(mappedPeople) > 0 {
+		s.recordLibraryPersonMappings(ctx, mappedPeople)
+	}
 	if t.CollectionID > 0 && t.CollectionName != "" {
 		tag := model.Tag{Tag: t.CollectionName}
 		if detail {
@@ -552,7 +577,7 @@ func (s *Server) imageTags(t *frontend.Title, show *frontend.Title, thumbStamp, 
 	return out
 }
 
-func (s *Server) personTags(key frontend.RatingKey, ps []frontend.Person, kind string, max int, detail, withRole bool) []model.Tag {
+func (s *Server) personTags(key frontend.RatingKey, ps []frontend.Person, kind string, max int, detail, withRole bool, credits *frontend.LibraryTitleCredits, mapped *[]frontend.LibraryPersonMapping) []model.Tag {
 	var out []model.Tag
 	for i, p := range ps {
 		if i >= max {
@@ -563,19 +588,41 @@ func (s *Server) personTags(key frontend.RatingKey, ps []frontend.Person, kind s
 			if p.TMDB > 0 {
 				tag.ID = p.TMDB
 				tag.Filter = kind + "=" + strconv.FormatInt(p.TMDB, 10)
-				// Omit tagKey unless we hold a real 24-hex plex://person id:
-				// Plex Web with Discover Credits routes any non-empty tagKey to
-				// discover.provider.plex.tv/library/people/<tagKey>, so a
-				// fabricated tmdb-person-<id> errors instead of filtering the
-				// local library by filter="actor=<id>" (#653).
 			} else {
 				tag.ID = tagID(kind, p.Name)
+			}
+			var (
+				matched  frontend.LibraryCredit
+				hasMatch bool
+			)
+			if credits != nil {
+				matched, hasMatch = credits.Match(kind, p)
+			}
+			// Emit tagKey ONLY when it is a real 24-hex plex://person id:
+			// Plex Web with Discover Credits routes any non-empty tagKey to
+			// discover.provider.plex.tv/library/people/<tagKey>, so a
+			// fabricated tmdb-person-<id> errors (#653), while native Plex
+			// apps require a real tagKey to render Cast & Crew.
+			if hasMatch && frontend.IsLibraryPersonTagKey(matched.TagKey) {
+				tag.TagKey = matched.TagKey
+				if mapped != nil && p.TMDB > 0 {
+					*mapped = append(*mapped, frontend.LibraryPersonMapping{
+						TagKey:     matched.TagKey,
+						PersonTMDB: p.TMDB,
+						Name:       p.Name,
+						Thumb:      matched.Thumb,
+					})
+				}
 			}
 			if withRole {
 				tag.Role = p.Role
 			}
-			if p.ThumbPath != "" {
-				tag.Thumb = "/library/metadata/" + key.String() + "/person/" + kind + "/" + base64.RawURLEncoding.EncodeToString([]byte(p.ThumbPath))
+			thumbPath := p.ThumbPath
+			if thumbPath == "" && hasMatch && plexImageURL(matched.Thumb) {
+				thumbPath = matched.Thumb
+			}
+			if thumbPath != "" {
+				tag.Thumb = "/library/metadata/" + key.String() + "/person/" + kind + "/" + base64.RawURLEncoding.EncodeToString([]byte(thumbPath))
 			}
 		}
 		out = append(out, tag)
@@ -1563,6 +1610,7 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 		guids = guidSrc.CachedMany(ctx, lookup)
 	}
 	ctx = s.withPlexMeta(ctx, lookup, guids, !o.storedOnly)
+	ctx = s.withPlexCredits(ctx, lookup, guids, o.detail && !o.storedOnly)
 	var order episodeOrderView
 	if !o.storedOnly {
 		order = s.episodeOrderList(ctx, pr, ts, o.detail && !o.batchDetail)

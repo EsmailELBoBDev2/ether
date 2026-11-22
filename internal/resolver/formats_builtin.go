@@ -25,6 +25,7 @@ var builtinFormatNames = map[string]string{
 	core.FormatOtherLanguage:           "Not a preferred language",
 	core.FormatPreferredSubtitles:      "Preferred subtitles",
 	core.FormatViewerLanguage:          "Viewer's language",
+	core.FormatViewerSubtitles:         "Viewer's subtitles",
 	core.FormatSeriesYearDiffers:       "Series year differs",
 	core.FormatVideoTranscode:          "Video transcode",
 	core.FormatAudioDirect:             "Audio plays directly",
@@ -59,6 +60,7 @@ type formatFacts struct {
 	starved        bool // below its bitrate floor or a presumed upscale: no HDR credit
 	lowBitrate     bool // below its bitrate floor
 	viewerLanguage bool // declares the viewer's language on a foreign title
+	viewerSubs     bool // the indexer lists subtitles in the viewer's language
 	yearDiffers    bool // accepted although its series year differs
 	pastRetention  bool // a Usenet post older than provider retention
 }
@@ -107,6 +109,9 @@ func builtinFormatMatches(rel core.Release, profile core.QualityProfile, caps co
 	out = append(out, languageFormats(info, rel.SourceLanguage, profile.PreferredLanguages)...)
 	if f.viewerLanguage {
 		add(core.FormatViewerLanguage)
+	}
+	if f.viewerSubs {
+		add(core.FormatViewerSubtitles)
 	}
 	if f.yearDiffers {
 		add(core.FormatSeriesYearDiffers)

@@ -366,7 +366,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
 	canBurn := !audioOnly && trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (b.Client.HLS || b.Client.MSE)
-	selectedSubIndex := plan.Decision.SubtitleStream
+	selectedSubIndex := plan.SubtitleStream()
 	if subtitleSet {
 		selectedSubIndex = options.SubtitleStream
 	}

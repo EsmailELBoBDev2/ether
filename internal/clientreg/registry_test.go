@@ -208,6 +208,29 @@ func TestVersionMatchAndQuirks(t *testing.T) {
 	if !HasQuirk(phone, "plex-list-all-tracks") || !HasQuirk(tv, "plex-list-all-tracks") || HasQuirk(web, "plex-list-all-tracks") {
 		t.Fatal("track list quirk")
 	}
+	for _, id := range []Identity{
+		{Product: "Plex for LG", Platform: "webOS"},
+		{Product: "Plex for Samsung", Platform: "Tizen"},
+		{Product: "Plex for VIDAA", Platform: "VIDAA"},
+		{Product: "Plex for Vizio", Platform: "Generic"},
+		{Product: "Plex for Xbox", Platform: "Xbox"},
+		{Product: "Plex for PlayStation", Platform: "PlayStation"},
+		{Product: "Plex for Fire TV", Platform: "Generic"},
+	} {
+		if !HasQuirk(id, "plex-list-all-tracks") {
+			t.Fatalf("%+v missing plex-list-all-tracks quirk", id)
+		}
+	}
+	for _, id := range []Identity{
+		{Product: "Plex Web", Platform: "webOS"},
+		{Product: "Plex Web", Platform: "Chrome"},
+		{Product: "Plex for iOS", Platform: "iOS"},
+		{Product: "Plex for Apple TV", Platform: "tvOS"},
+	} {
+		if HasQuirk(id, "plex-list-all-tracks") {
+			t.Fatalf("%+v must remain selected-only", id)
+		}
+	}
 	if !HasQuirk(Identity{Platform: "iOS", Product: "Plex"}, "plex-native-live-tune") || HasQuirk(Identity{Product: "Plex Web", Platform: "Chrome"}, "plex-native-live-tune") {
 		t.Fatal("live tune quirk")
 	}

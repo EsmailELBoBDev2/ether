@@ -306,14 +306,38 @@ type playRequest struct {
 }
 
 // androidFamilyClient reports whether the decision lists every probed track.
-// Plex's Android family does; web, iOS and Apple TV stay selected-only.
-// That is the PMS response shape, selected by the registry quirk
+// Plex's Android family and smart-TV HTML apps do; web, iOS and Apple TV stay
+// selected-only. That is the PMS response shape, selected by the registry quirk
 // plex-list-all-tracks rather than a playback capability.
 func androidFamilyClient(pr *Request) bool {
 	if pr == nil {
 		return false
 	}
 	return frontend.HasQuirk(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, "plex-list-all-tracks")
+}
+
+// plexSmartTVClient identifies official Plex HTML TV apps (LG webOS, Samsung
+// Tizen, VIDAA, Vizio, Smart TVs, Xbox, PlayStation, Fetch TV, X1) whose
+// players build their direct-play audio/subtitle menus from the pre-play
+// metadata item rather than re-fetching metadata after playback starts.
+func plexSmartTVClient(pr *Request) bool {
+	if pr == nil || browserClient(pr) || libraryToolClient(pr) {
+		return false
+	}
+	product := strings.ToLower(strings.TrimSpace(pr.Product))
+	platform := strings.ToLower(strings.TrimSpace(pr.Platform))
+	switch product {
+	case "plex for lg", "plex for samsung", "plex for vidaa", "plex for vizio",
+		"plex for smart tvs", "plex for xbox", "plex for playstation",
+		"plex for playstation 4", "plex for playstation 5",
+		"plex for fetch tv", "plex for x1":
+		return true
+	}
+	switch platform {
+	case "webos", "tizen", "vidaa", "xbox", "playstation":
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(pr.ProfileName), "HTML TV App")
 }
 
 // plexAndroidClient identifies the official Android phone and TV players.

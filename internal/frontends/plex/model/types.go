@@ -224,6 +224,7 @@ type Metadata struct {
 	OriginalTitle         string  `plex:"originalTitle,omitempty"`
 	TitleSort             string  `plex:"titleSort,omitempty"`
 	ContentRating         string  `plex:"contentRating,omitempty"`
+	ContentRatingAge      int     `plex:"contentRatingAge,omitempty"`
 	Summary               string  `plex:"summary"`
 	Smart                 *bool   `plex:"smart"`
 	PlaylistType          string  `plex:"playlistType,omitempty"`

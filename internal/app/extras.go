@@ -11,8 +11,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/plexguid"
 )
 
-// buildExtras wires the trailers/extras service. It stays off (and says
-// why, once) until the owner enables it and configures a playable source.
+// buildExtras wires the trailers/extras service. On by default whenever a
+// playable source (Plex Discover or yt-dlp/resolverCommand) is available.
 func (a *App) buildExtras() {
 	var dl *extras.Downloader
 	if a.onair != nil {

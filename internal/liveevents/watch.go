@@ -112,6 +112,7 @@ func guideCandidateFromLiveTV(e livetv.WatchGuideEntry) GuideCandidate {
 		ChannelOnly:   e.ChannelOnly,
 		Favorite:      e.Favorite,
 		WatchedAt:     e.WatchedAt,
+		Unhealthy:     e.Unhealthy,
 		Title:         e.Programme.Item.Title,
 		EpisodeTitle:  e.Programme.Item.EpisodeTitle,
 		Summary:       e.Programme.Item.Summary,
@@ -531,7 +532,7 @@ func (m *WatchMatcher) LiveEventForChannel(ctx context.Context, viewer *core.Use
 	}
 	now := m.now()
 	cand, progKey, err := m.guide.CurrentProgramme(ctx, viewer, channelID, now)
-	if err != nil || cand == nil || progKey == "" {
+	if err != nil || cand == nil || progKey == "" || cand.Unhealthy {
 		return progKey, nil, err
 	}
 

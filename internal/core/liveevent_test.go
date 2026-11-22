@@ -241,3 +241,65 @@ func TestLiveEventSpecArraysAndRankingSecondary(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveEventWatchTargetAvailabilityWireAndClone(t *testing.T) {
+	healthy := LiveEventWatchTarget{
+		Kind:       LiveEventWatchChannel,
+		ChannelID:  "ch-1",
+		Name:       "ESPN",
+		Live:       true,
+		Confidence: 0.9,
+	}
+	if !healthy.IsAvailable() {
+		t.Fatal("healthy target IsAvailable() = false, want true")
+	}
+	rawHealthy, err := json.Marshal(healthy)
+	if err != nil {
+		t.Fatalf("marshal healthy target: %v", err)
+	}
+	var mHealthy map[string]any
+	if err := json.Unmarshal(rawHealthy, &mHealthy); err != nil {
+		t.Fatalf("unmarshal healthy target: %v", err)
+	}
+	if _, present := mHealthy["available"]; present {
+		t.Fatalf("healthy watch target must omit available on wire, got %s", rawHealthy)
+	}
+
+	availFalse := false
+	unavail := LiveEventWatchTarget{
+		Kind:       LiveEventWatchChannel,
+		ChannelID:  "ch-2",
+		Name:       "ESPN 2",
+		Live:       true,
+		Confidence: 0.85,
+		Available:  &availFalse,
+	}
+	if unavail.IsAvailable() {
+		t.Fatal("unavailable target IsAvailable() = true, want false")
+	}
+	rawUnavail, err := json.Marshal(unavail)
+	if err != nil {
+		t.Fatalf("marshal unavailable target: %v", err)
+	}
+	var mUnavail map[string]any
+	if err := json.Unmarshal(rawUnavail, &mUnavail); err != nil {
+		t.Fatalf("unmarshal unavailable target: %v", err)
+	}
+	if av, ok := mUnavail["available"].(bool); !ok || av {
+		t.Fatalf("unavailable watch target available = %#v, want false (%s)", mUnavail["available"], rawUnavail)
+	}
+
+	orig := LiveEvent{
+		ID:    "p:f:e1",
+		Feed:  "f",
+		Watch: []LiveEventWatchTarget{unavail},
+	}
+	cloned := orig.Clone()
+	if cloned.Watch[0].Available == nil || *cloned.Watch[0].Available {
+		t.Fatalf("cloned watch target lost Available=false: %+v", cloned.Watch[0])
+	}
+	*cloned.Watch[0].Available = true
+	if *orig.Watch[0].Available {
+		t.Fatal("mutating cloned WatchTarget.Available mutated original")
+	}
+}

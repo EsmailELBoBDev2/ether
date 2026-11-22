@@ -3,7 +3,10 @@ package livetv
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -247,6 +250,234 @@ func TestWatchCandidatesWindowVisibilityAndStremioEventChannel(t *testing.T) {
 	}
 }
 
+func TestWatchCandidatesHealthSignalsAndRevisionInvalidation(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	baseNow := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	var clockNano atomic.Int64
+	clockNano.Store(baseNow.UnixNano())
+	nowFn := func() time.Time { return time.Unix(0, clockNano.Load()).UTC() }
+	advance := func(d time.Duration) { clockNano.Add(int64(d)) }
+
+	svc, err := New(Options{DB: db, Now: nowFn})
+	if err != nil {
+		t.Fatalf("livetv.New: %v", err)
+	}
+	defer svc.Close()
+
+	saveSrc := func(src Source) {
+		t.Helper()
+		b, err := svc.encodeSource(src)
+		if err != nil {
+			t.Fatalf("encodeSource %s: %v", src.ID, err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO livetv_sources(id, data) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, src.ID, b); err != nil {
+			t.Fatalf("save source %s: %v", src.ID, err)
+		}
+		svc.forgetSourceAuth(src.ID)
+	}
+	saveCh := func(c Channel) {
+		t.Helper()
+		b, err := json.Marshal(c)
+		if err != nil {
+			t.Fatalf("marshal channel %s: %v", c.ID, err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`, c.ID, string(b)); err != nil {
+			t.Fatalf("insert channel %s: %v", c.ID, err)
+		}
+	}
+	saveProg := func(srcID, guideID string, p Programme) {
+		t.Helper()
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal programme: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO livetv_programmes(source_id, channel_id, start_ms, end_ms, data) VALUES(?,?,?,?,?)`, srcID, guideID, p.Start.UnixMilli(), p.End.UnixMilli(), string(b)); err != nil {
+			t.Fatalf("insert programme: %v", err)
+		}
+	}
+
+	expiredAt := baseNow.Add(-time.Hour)
+	saveSrc(Source{ID: "src-live", Name: "Live Provider"})
+	saveSrc(Source{ID: "src-paused", Name: "Paused Provider", Disabled: true})
+	saveSrc(Source{ID: "src-expired", Name: "Expired Provider", Account: &ProviderAccount{Status: "Expired", ExpiresAt: &expiredAt}})
+
+	chHealthy := Channel{ID: "ch-healthy", Number: "10", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "src-live", GuideID: "g.espn", StreamURL: "https://example.invalid/espn.m3u8"}
+	chSwept := Channel{ID: "ch-swept", Number: "11", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "src-live", GuideID: "g.espn", StreamURL: "https://example.invalid/espn-dead.m3u8"}
+	chSweptPriv := Channel{ID: "ch-swept-priv", Number: "12", Name: "ESPN VIP", Kind: "iptv", Enabled: true, Private: true, SourceID: "src-live", GuideID: "g.espn", StreamURL: "https://example.invalid/espn-priv.m3u8"}
+	chPaused := Channel{ID: "ch-paused", Number: "13", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "src-paused", GuideID: "g.espn", StreamURL: "https://example.invalid/espn-paused.m3u8"}
+	chExpired := Channel{ID: "ch-expired", Number: "14", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "src-expired", GuideID: "g.espn", StreamURL: "https://example.invalid/espn-exp.m3u8"}
+	chFailover := Channel{
+		ID: "ch-failover", Number: "15", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "src-live", GuideID: "g.espn",
+		StreamSources: []StreamSource{
+			{ID: "in-primary", Name: "Primary", URL: "https://example.invalid/fail-primary.m3u8", Enabled: true, Priority: 0},
+			{ID: "in-backup", Name: "Backup", URL: "https://example.invalid/ok-backup.m3u8", Enabled: true, Priority: 1},
+		},
+	}
+
+	for _, c := range []Channel{chHealthy, chSwept, chSweptPriv, chPaused, chExpired, chFailover} {
+		saveCh(c)
+	}
+	prog := Programme{
+		ID:        "p-espn",
+		ChannelID: "g.espn",
+		Start:     baseNow.Add(-15 * time.Minute),
+		End:       baseNow.Add(2 * time.Hour),
+		Item:      Item{Title: "Lions vs Tigers", Genres: []string{"Sports"}},
+	}
+	for _, srcID := range []string{"src-live", "src-paused", "src-expired"} {
+		saveProg(srcID, "g.espn", prog)
+	}
+
+	// Mark ch-swept and ch-swept-priv unavailable in sweep state.
+	svc.healthMu.Lock()
+	svc.channelHealth = map[string]sweepResult{
+		chSwept.ID:     {signature: sweepSignature(chSwept), available: false},
+		chSweptPriv.ID: {signature: sweepSignature(chSweptPriv), available: false},
+	}
+	svc.healthMu.Unlock()
+	svc.bumpHealthRevision()
+
+	// Fail ch-failover's primary input twice: backup input is still healthy so channel stays healthy.
+	svc.recordSourceHealth(chFailover.ID, chFailover.StreamSources[0], errors.New("dial failed"), false)
+	svc.recordSourceHealth(chFailover.ID, chFailover.StreamSources[0], errors.New("dial failed"), false)
+
+	viewer := &core.User{ID: 7}
+	owner := &core.User{ID: 1, IsOwner: true}
+	winFrom, winUntil := baseNow.Add(-30*time.Minute), baseNow.Add(4*time.Hour)
+
+	candsByID := func(u *core.User) (map[string]WatchGuideEntry, string) {
+		t.Helper()
+		list, rev, err := svc.WatchCandidates(ctx, u, winFrom, winUntil, []string{"ESPN"})
+		if err != nil {
+			t.Fatalf("WatchCandidates: %v", err)
+		}
+		m := make(map[string]WatchGuideEntry, len(list))
+		for _, e := range list {
+			m[e.ChannelID] = e
+		}
+		return m, rev
+	}
+
+	// 1. Viewer sees ch-healthy and ch-failover as healthy, ch-swept and ch-expired as Unhealthy,
+	//    and NEVER sees ch-paused or ch-swept-priv.
+	viewerMap, rev1 := candsByID(viewer)
+	if e, ok := viewerMap[chHealthy.ID]; !ok || e.Unhealthy {
+		t.Fatalf("ch-healthy = (%+v, %v), want healthy", e, ok)
+	}
+	if e, ok := viewerMap[chFailover.ID]; !ok || e.Unhealthy {
+		t.Fatalf("ch-failover = (%+v, %v), want healthy (backup input is healthy)", e, ok)
+	}
+	if e, ok := viewerMap[chSwept.ID]; !ok || !e.Unhealthy {
+		t.Fatalf("ch-swept viewer = (%+v, %v), want present+Unhealthy", e, ok)
+	}
+	if e, ok := viewerMap[chExpired.ID]; !ok || !e.Unhealthy {
+		t.Fatalf("ch-expired = (%+v, %v), want present+Unhealthy", e, ok)
+	}
+	if _, ok := viewerMap[chPaused.ID]; ok {
+		t.Fatal("paused source channel must be excluded completely")
+	}
+	if _, ok := viewerMap[chSweptPriv.ID]; ok {
+		t.Fatal("private swept-unavailable channel leaked to non-owner")
+	}
+
+	// Owner also sees ch-swept as Unhealthy (never offered as playable) and excludes ch-paused.
+	ownerMap, _ := candsByID(owner)
+	if e, ok := ownerMap[chSwept.ID]; !ok || !e.Unhealthy {
+		t.Fatalf("ch-swept owner = (%+v, %v), want Unhealthy", e, ok)
+	}
+	if _, ok := ownerMap[chPaused.ID]; ok {
+		t.Fatal("paused source channel leaked to owner")
+	}
+
+	// A6 CurrentProgrammeForWatch excludes paused, swept-unavailable, and expired channels (even for owner).
+	for _, cid := range []string{chPaused.ID, chSwept.ID, chExpired.ID} {
+		if entry, _, err := svc.CurrentProgrammeForWatch(ctx, owner, cid, nowFn()); err != nil || entry != nil {
+			t.Fatalf("CurrentProgrammeForWatch(%s) = (%+v, %v), want nil", cid, entry, err)
+		}
+	}
+	if entry, _, err := svc.CurrentProgrammeForWatch(ctx, viewer, chHealthy.ID, nowFn()); err != nil || entry == nil {
+		t.Fatalf("CurrentProgrammeForWatch(ch-healthy) = (%+v, %v), want programme", entry, err)
+	}
+
+	// 2. Single open failure puts ch-healthy into active cooldown -> rev advances, marked Unhealthy,
+	//    and A6 CurrentProgrammeForWatch returns nil; once cooldown expires (+20s), rev advances and recovers!
+	primarySrc := StreamSource{ID: stableID(chHealthy.ID, "playlist"), URL: chHealthy.StreamURL, Enabled: true}
+	svc.recordSourceHealth(chHealthy.ID, primarySrc, errors.New("connection refused"), false)
+	viewerMap, rev2 := candsByID(viewer)
+	if rev2 == rev1 {
+		t.Fatalf("GuideRevision did not advance on open failure: %q", rev2)
+	}
+	if !viewerMap[chHealthy.ID].Unhealthy {
+		t.Fatal("ch-healthy should be Unhealthy during active cooldown")
+	}
+	if entry, _, err := svc.CurrentProgrammeForWatch(ctx, viewer, chHealthy.ID, nowFn()); err != nil || entry != nil {
+		t.Fatalf("CurrentProgrammeForWatch during cooldown = (%+v, %v), want nil", entry, err)
+	}
+
+	advance(20 * time.Second)
+	viewerMap, rev3 := candsByID(viewer)
+	if rev3 == rev2 {
+		t.Fatalf("GuideRevision did not advance after cooldown expiry: %q", rev3)
+	}
+	if viewerMap[chHealthy.ID].Unhealthy {
+		t.Fatal("ch-healthy should recover after single-failure cooldown expires")
+	}
+
+	// 3. Consecutive open failures (2) keep ch-healthy Unhealthy even after the short 30s cooldown passes,
+	//    until either a real open succeeds or watchRecentFailureWindow elapses.
+	svc.recordSourceHealth(chHealthy.ID, primarySrc, errors.New("502 bad gateway"), false)
+	advance(2 * time.Minute) // past 30s cooldown, well inside 30m recent failure window
+	viewerMap, rev4 := candsByID(viewer)
+	if rev4 == rev3 {
+		t.Fatalf("GuideRevision did not advance on consecutive failure: %q", rev4)
+	}
+	if !viewerMap[chHealthy.ID].Unhealthy {
+		t.Fatal("ch-healthy with 2 consecutive recent open failures must stay Unhealthy past short cooldown")
+	}
+
+	// Successful open resets consecutive failures and advances GuideRevision immediately.
+	svc.recordSourceHealth(chHealthy.ID, primarySrc, nil, true)
+	viewerMap, rev5 := candsByID(viewer)
+	if rev5 == rev4 {
+		t.Fatalf("GuideRevision did not advance on open recovery: %q", rev5)
+	}
+	if viewerMap[chHealthy.ID].Unhealthy {
+		t.Fatal("ch-healthy did not recover after successful open")
+	}
+
+	// 4. Two consecutive failures also age out automatically after watchRecentFailureWindow.
+	svc.recordSourceHealth(chHealthy.ID, primarySrc, errors.New("err 1"), false)
+	svc.recordSourceHealth(chHealthy.ID, primarySrc, errors.New("err 2"), false)
+	viewerMap, rev6 := candsByID(viewer)
+	if !viewerMap[chHealthy.ID].Unhealthy {
+		t.Fatal("expected Unhealthy after 2 consecutive failures")
+	}
+	advance(watchRecentFailureWindow + time.Minute)
+	viewerMap, rev7 := candsByID(viewer)
+	if rev7 == rev6 {
+		t.Fatalf("GuideRevision did not advance after recent failure window expired: %q", rev7)
+	}
+	if viewerMap[chHealthy.ID].Unhealthy {
+		t.Fatal("ch-healthy should age out of Unhealthy after watchRecentFailureWindow")
+	}
+
+	// 5. Unpausing src-paused advances GuideRevision and brings ch-paused back into candidates.
+	saveSrc(Source{ID: "src-paused", Name: "Paused Provider", Disabled: false})
+	viewerMap, rev8 := candsByID(viewer)
+	if rev8 == rev7 {
+		t.Fatalf("GuideRevision did not advance on source unpause: %q", rev8)
+	}
+	if e, ok := viewerMap[chPaused.ID]; !ok || e.Unhealthy {
+		t.Fatalf("ch-paused after unpause = (%+v, %v), want healthy", e, ok)
+	}
+}
+
 func TestWatchCandidatesIndexedOnLargeLineup(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, t.TempDir())
@@ -379,4 +610,71 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+func TestWatchCandidatesPrioritizesHealthyUnderTargetCap(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	svc, err := New(Options{DB: db, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("livetv.New: %v", err)
+	}
+	defer svc.Close()
+
+	health := make(map[string]sweepResult, watchTargetedChannelCap+4)
+	for i := 0; i < watchTargetedChannelCap+4; i++ {
+		c := Channel{
+			ID:        fmt.Sprintf("ch-bad-%03d", i),
+			Name:      "ESPN",
+			Kind:      "iptv",
+			Enabled:   true,
+			SourceID:  "s1",
+			StreamURL: fmt.Sprintf("https://example.invalid/bad/%d.m3u8", i),
+		}
+		b, _ := json.Marshal(c)
+		if _, err := db.ExecContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`, c.ID, string(b)); err != nil {
+			t.Fatalf("insert bad channel %d: %v", i, err)
+		}
+		health[c.ID] = sweepResult{signature: sweepSignature(c), available: false}
+	}
+	good := Channel{
+		ID:        "ch-zzz-good",
+		Name:      "ESPN",
+		Kind:      "iptv",
+		Enabled:   true,
+		SourceID:  "s1",
+		StreamURL: "https://example.invalid/good.m3u8",
+	}
+	gb, _ := json.Marshal(good)
+	if _, err := db.ExecContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`, good.ID, string(gb)); err != nil {
+		t.Fatalf("insert good channel: %v", err)
+	}
+	svc.healthMu.Lock()
+	svc.channelHealth = health
+	svc.healthMu.Unlock()
+	svc.bumpHealthRevision()
+
+	cands, _, err := svc.WatchCandidates(ctx, &core.User{ID: 1, IsOwner: true}, now.Add(-30*time.Minute), now.Add(4*time.Hour), []string{"ESPN"})
+	if err != nil {
+		t.Fatalf("WatchCandidates: %v", err)
+	}
+	if len(cands) > watchTargetedChannelCap {
+		t.Fatalf("got %d callsign candidates, exceeds cap %d", len(cands), watchTargetedChannelCap)
+	}
+	foundGood := false
+	for _, c := range cands {
+		if c.ChannelID == good.ID && !c.Unhealthy {
+			foundGood = true
+			break
+		}
+	}
+	if !foundGood {
+		t.Fatal("healthy channel was crowded out by >watchTargetedChannelCap unhealthy channels")
+	}
 }

@@ -63,15 +63,18 @@ type ReleaseInfo struct {
 	SubtitleLanguages []string `json:"subtitleLanguages,omitempty"`
 	// AbsoluteEpisodes are episode numbers counted from the series start,
 	// as anime releases number them ("Show - 1071") (additive).
-	AbsoluteEpisodes []int  `json:"absoluteEpisodes,omitempty"`
-	Revision         int    `json:"revision,omitempty"`
-	Cour             int    `json:"cour,omitempty"`
-	Subbed           bool   `json:"subbed,omitempty"`
-	Dubbed           bool   `json:"dubbed,omitempty"`
-	Uncensored       bool   `json:"uncensored,omitempty"`
-	Proper           bool   `json:"proper,omitempty"`
-	Repack           bool   `json:"repack,omitempty"`
-	Container        string `json:"container,omitempty"`
+	AbsoluteEpisodes []int `json:"absoluteEpisodes,omitempty"`
+	// AirDate is the episode broadcast date parsed from YYMMDD, YYYYMMDD, or
+	// YYYY.MM.DD / YYYY-MM-DD tokens, normalized to "YYYY-MM-DD" (additive).
+	AirDate    string `json:"airDate,omitempty"`
+	Revision   int    `json:"revision,omitempty"`
+	Cour       int    `json:"cour,omitempty"`
+	Subbed     bool   `json:"subbed,omitempty"`
+	Dubbed     bool   `json:"dubbed,omitempty"`
+	Uncensored bool   `json:"uncensored,omitempty"`
+	Proper     bool   `json:"proper,omitempty"`
+	Repack     bool   `json:"repack,omitempty"`
+	Container  string `json:"container,omitempty"`
 }
 
 // Release is an indexer search result for a title.
@@ -157,6 +160,10 @@ type Release struct {
 	// importing it on request), so every open costs the source real work
 	// (additive). See OpensOnDemand.
 	StreamOnDemand bool `json:"streamOnDemand,omitempty"`
+	// IndexerSubtitles are the subtitle languages the indexer lists for the
+	// release (the Newznab "subs" attribute), as release language names.
+	// Empty means the indexer said nothing, not that there are none (additive).
+	IndexerSubtitles []string `json:"indexerSubtitles,omitempty"`
 }
 
 // KnownFileCount returns the torrent's known file count from FileCount or

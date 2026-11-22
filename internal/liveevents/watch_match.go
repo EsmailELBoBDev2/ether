@@ -45,6 +45,7 @@ type GuideCandidate struct {
 	ChannelOnly   bool
 	Favorite      bool
 	WatchedAt     time.Time
+	Unhealthy     bool
 	Title         string
 	EpisodeTitle  string
 	Summary       string
@@ -1526,6 +1527,8 @@ type scoredWatchTarget struct {
 	dedupeKey   string
 }
 
+func boolPtr(v bool) *bool { return &v }
+
 func canonicalNetworkKey(cand GuideCandidate, tier watchMatchTier) string {
 	if cand.IsEventAddon {
 		return "addon:" + cand.ChannelID
@@ -1586,6 +1589,9 @@ func canonicalizeCallsignKey(toks []string) string {
 }
 
 func betterScoredTarget(a, b scoredWatchTarget) bool {
+	if avA, avB := a.target.IsAvailable(), b.target.IsAvailable(); avA != avB {
+		return avA
+	}
 	if a.tier != b.tier {
 		return a.tier < b.tier
 	}
@@ -1621,20 +1627,28 @@ func betterScoredTarget(a, b scoredWatchTarget) bool {
 // matchEventToCandidates scores guide candidates + playable plugin broadcast
 // streams for ev using ev.Start as the reference clock (convenience wrapper for
 // unit tests).
+// Unhealthy channels are excluded whenever any healthy target exists; when only
+// unhealthy channels match, they are returned with available=false so clients
+// can render "Unavailable right now" instead of a Watch button.
+// Informational reference links (detail.Links) are excluded per spec A5.
 func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate) []core.WatchTarget {
 	return matchEventToCandidatesAt(ev, candidates, parseEventTime(ev.Start))
 }
 
 // matchEventToCandidatesAt scores guide candidates + playable plugin broadcast
-// streams for ev at time now, ranking guide matches -> event channels ->
-// broadcaster channels -> plugin streams, preferring viewer-favourited and
-// recently watched channels, and collapsing duplicate feeds of the same network
-// into the best target while preserving alternates.
+// streams for ev at time now. Healthy targets always come before unhealthy
+// ones; when any healthy target exists, unhealthy targets are excluded, and
+// when only unhealthy channels match, they are returned with available=false
+// (including on collapsed alternates). Within the selected set, targets are
+// ordered guide -> event channel -> broadcaster -> plugin, preferring
+// viewer-favourited and recently watched channels, and collapsing duplicate
+// feeds of the same canonical network to the best one with alternates retained.
 func matchEventToCandidatesAt(ev core.LiveEvent, candidates []GuideCandidate, now time.Time) []core.WatchTarget {
 	prof := buildEventMatchProfile(ev, now)
 	eventLive := ev.Status.State == core.LiveEventStateIn
 
-	// Deduplicate by channelId, retaining the highest-ranked match per channel.
+	// Deduplicate by channelId, retaining the highest-ranked match per channel
+	// (preferring healthy over unhealthy if both appear for the same channel).
 	bestByChannel := make(map[string]scoredWatchTarget)
 	for _, cand := range candidates {
 		conf, tier, ok := scoreGuideCandidate(prof, cand)
@@ -1665,15 +1679,23 @@ func matchEventToCandidatesAt(ev core.LiveEvent, candidates []GuideCandidate, no
 			feedQuality: channelFeedQuality(cand.ChannelName, cand.TvgName),
 			dedupeKey:   canonicalNetworkKey(cand, tier),
 		}
+		if cand.Unhealthy {
+			st.target.Available = boolPtr(false)
+		}
 		prev, exists := bestByChannel[cand.ChannelID]
 		if !exists || betterScoredTarget(st, prev) {
 			bestByChannel[cand.ChannelID] = st
 		}
 	}
 
-	scored := make([]scoredWatchTarget, 0, len(bestByChannel)+len(ev.Broadcasts))
+	healthy := make([]scoredWatchTarget, 0, len(bestByChannel)+len(ev.Broadcasts))
+	var unhealthy []scoredWatchTarget
 	for _, st := range bestByChannel {
-		scored = append(scored, st)
+		if st.target.IsAvailable() {
+			healthy = append(healthy, st)
+		} else {
+			unhealthy = append(unhealthy, st)
+		}
 	}
 
 	// Source #3: Plugin-provided directly playable stream URLs (never web pages).
@@ -1691,7 +1713,7 @@ func matchEventToCandidatesAt(ev core.LiveEvent, candidates []GuideCandidate, no
 		if name == "" {
 			name = "Stream"
 		}
-		scored = append(scored, scoredWatchTarget{
+		healthy = append(healthy, scoredWatchTarget{
 			target: core.WatchTarget{
 				Kind:       core.WatchTargetKindPlugin,
 				Name:       name,
@@ -1704,15 +1726,20 @@ func matchEventToCandidatesAt(ev core.LiveEvent, candidates []GuideCandidate, no
 		})
 	}
 
-	sort.Slice(scored, func(i, j int) bool {
-		return betterScoredTarget(scored[i], scored[j])
+	active := healthy
+	if len(active) == 0 {
+		active = unhealthy
+	}
+	sort.Slice(active, func(i, j int) bool {
+		return betterScoredTarget(active[i], active[j])
 	})
 
 	// Collapse duplicate feeds of the same canonical network (HD/FHD/4K/backup/alt)
-	// to the best feed, attaching the rest as Alternates in ranked order.
-	out := make([]core.WatchTarget, 0, len(scored))
-	indexByKey := make(map[string]int, len(scored))
-	for _, st := range scored {
+	// to the best feed, attaching the rest as Alternates in ranked order while
+	// preserving each alternate's Available flag.
+	out := make([]core.WatchTarget, 0, len(active))
+	indexByKey := make(map[string]int, len(active))
+	for _, st := range active {
 		if idx, exists := indexByKey[st.dedupeKey]; exists {
 			if len(out[idx].Alternates) < maxAlternatesPerTarget {
 				out[idx].Alternates = append(out[idx].Alternates, st.target)
@@ -1740,6 +1767,28 @@ func watchKindRank(kind string) int {
 	default:
 		return 3
 	}
+}
+
+func sortWatchTargets(targets []core.WatchTarget) {
+	sort.Slice(targets, func(i, j int) bool {
+		a, b := targets[i], targets[j]
+		if avA, avB := a.IsAvailable(), b.IsAvailable(); avA != avB {
+			return avA
+		}
+		if a.Confidence != b.Confidence {
+			return a.Confidence > b.Confidence
+		}
+		if a.Live != b.Live {
+			return a.Live
+		}
+		if ra, rb := watchKindRank(a.Kind), watchKindRank(b.Kind); ra != rb {
+			return ra < rb
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.ChannelID < b.ChannelID
+	})
 }
 
 // expandCallsignAliases returns normalized token variants for common broadcast

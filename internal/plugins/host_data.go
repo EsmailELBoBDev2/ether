@@ -15,13 +15,17 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -77,6 +81,9 @@ type FetchCacheRequest struct {
 	FetchRequest
 	LibraryKey string `json:"libraryKey"`
 	Name       string `json:"name"`
+	// Resume continues a partial cached download with Range: bytes=<cached>-
+	// when the server supports ranges and ETag / Last-Modified validators match.
+	Resume bool `json:"resume,omitempty"`
 }
 
 type FetchCacheResult struct {
@@ -142,7 +149,7 @@ func (r *boundedDataReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	if r.left < 0 {
-		return 0, fmt.Errorf("plugins: data exceeds size limit")
+		return 0, errDataExceedsSizeLimit
 	}
 	if int64(len(p)) > r.left+1 {
 		p = p[:r.left+1]
@@ -151,7 +158,7 @@ func (r *boundedDataReader) Read(p []byte) (int, error) {
 	r.left -= int64(n)
 	r.size += int64(n)
 	if r.left < 0 {
-		return n, fmt.Errorf("plugins: data exceeds size limit")
+		return n, errDataExceedsSizeLimit
 	}
 	return n, err
 }
@@ -205,6 +212,96 @@ func (r *archiveExtractReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+const defaultHostDataFetchTimeout = 10 * time.Minute
+
+var errDataExceedsSizeLimit = errors.New("plugins: data exceeds size limit")
+
+// FetchToCacheLongTimeoutAllowedPath reports whether a call on path (or marked
+// background) may raise http.fetchToCache's timeoutMs past the 10-minute
+// default up to the calling job's remaining deadline. Viewer and interactive
+// request paths stay capped at 10 minutes.
+func FetchToCacheLongTimeoutAllowedPath(man Manifest, path string, background bool) bool {
+	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if p != "" && isClientRequestPath(p) {
+		return false
+	}
+	if background {
+		return true
+	}
+	if p == "" {
+		return false
+	}
+	if strings.HasPrefix(p, "/ether/job/") || wasm.BackgroundPoolPath(p) {
+		return true
+	}
+	man.Ether = man.EffectiveEther()
+	if man.Ether != nil {
+		for _, s := range man.Ether.Schedule {
+			callPath, _, _ := strings.Cut(strings.TrimSpace(s.Call), "?")
+			if callPath == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (h *host) allowsLongFetchToCache(ctx context.Context) bool {
+	path := callPathFromContext(ctx)
+	bg := isBackgroundCall(ctx) || wasm.IsBackgroundCall(ctx)
+	var man Manifest
+	if r, err := h.callRecord(ctx); err == nil {
+		man = r.Manifest
+	}
+	return FetchToCacheLongTimeoutAllowedPath(man, path, bg)
+}
+
+func (h *host) fetchToCacheTimeout(ctx context.Context, timeoutMS int64) time.Duration {
+	if timeoutMS <= 0 {
+		return defaultHostDataFetchTimeout
+	}
+	const maxMS = int64(math.MaxInt64 / int64(time.Millisecond))
+	var requested time.Duration
+	if timeoutMS > maxMS {
+		requested = time.Duration(math.MaxInt64)
+	} else {
+		requested = time.Duration(timeoutMS) * time.Millisecond
+	}
+	if requested <= defaultHostDataFetchTimeout {
+		return requested
+	}
+	if !h.allowsLongFetchToCache(ctx) {
+		return defaultHostDataFetchTimeout
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		if rem := time.Until(dl); rem > 0 {
+			return min(requested, rem)
+		}
+		return time.Nanosecond
+	}
+	if maxDL, err := time.ParseDuration(h.DataLimits(ctx).Deadline); err == nil && maxDL > 0 {
+		return min(requested, maxDL)
+	}
+	return min(requested, 12*time.Hour)
+}
+
+func wrapFetchCacheError(fetchCtx context.Context, rawURL string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, blobcache.ErrTooLarge) {
+		return fmt.Errorf("%w: %v", ErrQuotaExceeded, err)
+	}
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) ||
+		(errors.As(err, &netErr) && netErr.Timeout()) ||
+		(errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && !errors.Is(err, ErrPermissionDenied) && !errors.Is(err, ErrQuotaExceeded)) {
+		u, _ := url.Parse(rawURL)
+		return fetchError(u.Hostname(), context.DeadlineExceeded)
+	}
+	return err
+}
+
 func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (FetchCacheResult, error) {
 	if req.Method != "" && req.Method != "GET" {
 		return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache supports GET only")
@@ -216,13 +313,20 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
-	const maxHostDataFetchTimeout = 10 * time.Minute
-	timeout := maxHostDataFetchTimeout
-	if req.TimeoutMS > 0 {
-		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostDataFetchTimeout)
-	}
+	timeout := h.fetchToCacheTimeout(ctx, req.TimeoutMS)
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	fetchLimit := h.DataLimits(ctx).FetchBytes
+	cacheQuota := decl.Cache.EffectiveMaxBytes()
+	maxBytes := min(fetchLimit, cacheQuota)
+
+	if req.Resume {
+		if openPartial := h.m.kindBackends().CachePartial; openPartial != nil {
+			return h.httpFetchToCacheResumable(ctx, fetchCtx, req, fetchLimit, cacheQuota, openPartial)
+		}
+	}
+
 	resp, err := h.openFetch(fetchCtx, req.FetchRequest)
 	if err != nil {
 		return FetchCacheResult{}, err
@@ -232,20 +336,410 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 		return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache HTTP %d", resp.StatusCode)
 	}
 	crc, m, s := crc32.NewIEEE(), md5.New(), sha1.New()
-	reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: min(h.DataLimits(ctx).FetchBytes, decl.Cache.EffectiveMaxBytes())}
+	reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: maxBytes}
 	ref, err := h.CachePut(fetchCtx, req.LibraryKey, req.Name, io.TeeReader(reader, io.MultiWriter(crc, m, s)))
 	h.noteFetchTraffic(ctx, req.FetchRequest, reader.size)
 	if err != nil {
-		var netErr net.Error
-		if errors.Is(err, context.DeadlineExceeded) ||
-			(errors.As(err, &netErr) && netErr.Timeout()) ||
-			(errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && !errors.Is(err, ErrPermissionDenied) && !errors.Is(err, ErrQuotaExceeded)) {
-			u, _ := url.Parse(req.URL)
-			return FetchCacheResult{}, fetchError(u.Hostname(), context.DeadlineExceeded)
-		}
-		return FetchCacheResult{}, err
+		return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, err)
 	}
 	return FetchCacheResult{Blob: ref, Size: reader.size, CRC32: fmt.Sprintf("%08x", crc.Sum32()), MD5: fmt.Sprintf("%x", m.Sum(nil)), SHA1: fmt.Sprintf("%x", s.Sum(nil)), Status: resp.StatusCode}, nil
+}
+
+type parsedContentRange struct {
+	start int64
+	end   int64
+	total int64 // -1 when "*"
+}
+
+func parseContentRange(raw string) (parsedContentRange, bool) {
+	s := strings.TrimSpace(raw)
+	if len(s) < 6 || !strings.EqualFold(s[:6], "bytes ") {
+		return parsedContentRange{}, false
+	}
+	s = strings.TrimSpace(s[6:])
+	rangePart, totalPart, ok := strings.Cut(s, "/")
+	if !ok || strings.TrimSpace(rangePart) == "*" {
+		return parsedContentRange{}, false
+	}
+	startStr, endStr, ok := strings.Cut(rangePart, "-")
+	if !ok {
+		return parsedContentRange{}, false
+	}
+	start, err1 := strconv.ParseInt(strings.TrimSpace(startStr), 10, 64)
+	end, err2 := strconv.ParseInt(strings.TrimSpace(endStr), 10, 64)
+	if err1 != nil || err2 != nil || start < 0 || end < start {
+		return parsedContentRange{}, false
+	}
+	totalPart = strings.TrimSpace(totalPart)
+	total := int64(-1)
+	if totalPart != "*" {
+		t, err := strconv.ParseInt(totalPart, 10, 64)
+		if err != nil || t <= end {
+			return parsedContentRange{}, false
+		}
+		total = t
+	}
+	return parsedContentRange{start: start, end: end, total: total}, true
+}
+
+func isWeakETag(etag string) bool {
+	etag = strings.TrimSpace(etag)
+	return strings.HasPrefix(etag, "W/") || strings.HasPrefix(etag, "w/")
+}
+
+func isStrongETag(etag string) bool {
+	etag = strings.TrimSpace(etag)
+	return etag != "" && !isWeakETag(etag)
+}
+
+func hasResumeValidator(meta blobcache.PartialMeta) bool {
+	return isStrongETag(meta.ETag) || strings.TrimSpace(meta.LastModified) != ""
+}
+
+func httpTimesEqual(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	ta, errA := http.ParseTime(a)
+	tb, errB := http.ParseTime(b)
+	return errA == nil && errB == nil && ta.Equal(tb)
+}
+
+func validatorsMatch(saved blobcache.PartialMeta, hdr http.Header) bool {
+	savedETag := strings.TrimSpace(saved.ETag)
+	savedLM := strings.TrimSpace(saved.LastModified)
+	respETag := strings.TrimSpace(hdr.Get("ETag"))
+	respLM := strings.TrimSpace(hdr.Get("Last-Modified"))
+
+	if isStrongETag(savedETag) {
+		if !isStrongETag(respETag) || respETag != savedETag {
+			return false
+		}
+		if savedLM != "" && respLM != "" && !httpTimesEqual(savedLM, respLM) {
+			return false
+		}
+		return true
+	}
+	if savedLM != "" {
+		if !httpTimesEqual(savedLM, respLM) {
+			return false
+		}
+		if savedETag != "" && respETag != "" && respETag != savedETag {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func ifRangeHeaderValue(saved blobcache.PartialMeta) string {
+	etag := strings.TrimSpace(saved.ETag)
+	if isStrongETag(etag) && strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`) && len(etag) >= 2 {
+		return etag
+	}
+	lm := strings.TrimSpace(saved.LastModified)
+	if lm != "" {
+		if _, err := http.ParseTime(lm); err == nil {
+			return lm
+		}
+	}
+	return ""
+}
+
+func isCompressedResponse(resp *http.Response) bool {
+	if resp.Uncompressed {
+		return true
+	}
+	ce := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	return ce != "" && !strings.EqualFold(ce, "identity")
+}
+
+func partialMetaFromResponse(hdr http.Header, expectedTotal int64, compressed bool) blobcache.PartialMeta {
+	if compressed {
+		return blobcache.PartialMeta{ContentLength: expectedTotal}
+	}
+	return blobcache.PartialMeta{
+		ETag:          strings.TrimSpace(hdr.Get("ETag")),
+		LastModified:  strings.TrimSpace(hdr.Get("Last-Modified")),
+		ContentLength: expectedTotal,
+	}
+}
+
+func mergePartialMeta(saved blobcache.PartialMeta, hdr http.Header, expectedTotal int64) blobcache.PartialMeta {
+	out := saved
+	if out.ETag == "" {
+		out.ETag = strings.TrimSpace(hdr.Get("ETag"))
+	}
+	if out.LastModified == "" {
+		out.LastModified = strings.TrimSpace(hdr.Get("Last-Modified"))
+	}
+	if expectedTotal >= 0 {
+		out.ContentLength = expectedTotal
+	}
+	return out
+}
+
+func fetchSizeLimitError(total, fetchLimit, cacheQuota int64) error {
+	if total > cacheQuota {
+		return fmt.Errorf("%w: fetch size %d exceeds library cache quota %d", ErrQuotaExceeded, total, cacheQuota)
+	}
+	return errDataExceedsSizeLimit
+}
+
+func (h *host) httpFetchToCacheResumable(
+	ctx context.Context,
+	fetchCtx context.Context,
+	req FetchCacheRequest,
+	fetchLimit, cacheQuota int64,
+	openPartial func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error),
+) (FetchCacheResult, error) {
+	for k := range req.Headers {
+		if strings.EqualFold(k, "Range") {
+			return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache resume cannot be combined with an explicit Range header")
+		}
+	}
+
+	maxBytes := min(fetchLimit, cacheQuota)
+	partialKey := req.URL + "\x00" + req.Name
+	partial, err := openPartial(fetchCtx, h.plugin, req.LibraryKey, partialKey)
+	if err != nil {
+		return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, err)
+	}
+	defer partial.Close()
+
+	baseHeaders := cloneHeaders(req.Headers)
+	if baseHeaders == nil {
+		baseHeaders = make(map[string]string, 2)
+	}
+	hasAcceptEncoding := false
+	for k := range baseHeaders {
+		if strings.EqualFold(k, "Accept-Encoding") {
+			hasAcceptEncoding = true
+			break
+		}
+	}
+	if !hasAcceptEncoding {
+		// Prevent net/http transparent gzip decoding so byte offsets stay
+		// aligned between initial GET and resumed Range requests.
+		baseHeaders["Accept-Encoding"] = "identity"
+	}
+
+	if cached := partial.Size(); cached > 0 {
+		meta := partial.Meta()
+		if !hasResumeValidator(meta) || cached > maxBytes || (meta.ContentLength >= 0 && meta.ContentLength > maxBytes) {
+			_ = partial.Discard()
+		}
+	}
+
+	var totalTransferred int64
+	defer func() {
+		if totalTransferred > 0 {
+			h.noteFetchTraffic(ctx, req.FetchRequest, totalTransferred)
+		}
+	}()
+
+	buf := make([]byte, 64<<10)
+	restarted := false
+
+	for {
+		if err := fetchCtx.Err(); err != nil {
+			return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, err)
+		}
+
+		attemptReq := req.FetchRequest
+		attemptReq.Headers = cloneHeaders(baseHeaders)
+		cached := partial.Size()
+		meta := partial.Meta()
+		sentRange := false
+		if cached > 0 && hasResumeValidator(meta) {
+			attemptReq.Headers["Range"] = fmt.Sprintf("bytes=%d-", cached)
+			if ifRange := ifRangeHeaderValue(meta); ifRange != "" {
+				attemptReq.Headers["If-Range"] = ifRange
+			}
+			sentRange = true
+		}
+
+		resp, err := h.openFetch(fetchCtx, attemptReq)
+		if err != nil {
+			return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, err)
+		}
+
+		if sentRange && (resp.StatusCode == http.StatusRequestedRangeNotSatisfiable || resp.StatusCode == http.StatusPreconditionFailed) {
+			_ = resp.Body.Close()
+			_ = partial.Discard()
+			if !restarted {
+				restarted = true
+				continue
+			}
+			return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache HTTP %d", resp.StatusCode)
+		}
+
+		if resp.StatusCode == http.StatusPartialContent {
+			if !sentRange {
+				_ = resp.Body.Close()
+				return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache HTTP %d", resp.StatusCode)
+			}
+			cr, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			chunkExpected := cr.end - cr.start + 1
+			valid := ok &&
+				cr.start == cached &&
+				!isCompressedResponse(resp) &&
+				validatorsMatch(meta, resp.Header) &&
+				(resp.ContentLength < 0 || resp.ContentLength == chunkExpected) &&
+				(meta.ContentLength < 0 || cr.total < 0 || cr.total == meta.ContentLength)
+			if !valid {
+				_ = resp.Body.Close()
+				_ = partial.Discard()
+				if !restarted {
+					restarted = true
+					continue
+				}
+				return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache resume validator or Content-Range mismatch")
+			}
+
+			expectedTotal := cr.total
+			if expectedTotal < 0 && meta.ContentLength >= 0 {
+				expectedTotal = meta.ContentLength
+			}
+			if (expectedTotal >= 0 && expectedTotal > maxBytes) || cached+chunkExpected > maxBytes {
+				_ = resp.Body.Close()
+				_ = partial.Discard()
+				over := max(expectedTotal, cached+chunkExpected)
+				return FetchCacheResult{}, fetchSizeLimitError(over, fetchLimit, cacheQuota)
+			}
+
+			if err := partial.SetMeta(mergePartialMeta(meta, resp.Header, expectedTotal)); err != nil {
+				_ = resp.Body.Close()
+				return FetchCacheResult{}, err
+			}
+
+			reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: maxBytes - cached}
+			_, copyErr := io.CopyBuffer(partial, reader, buf)
+			totalTransferred += reader.size
+			_ = resp.Body.Close()
+			if copyErr != nil {
+				if errors.Is(copyErr, blobcache.ErrTooLarge) || errors.Is(copyErr, errDataExceedsSizeLimit) {
+					_ = partial.Discard()
+					if errors.Is(copyErr, errDataExceedsSizeLimit) && cached+reader.size > cacheQuota {
+						return FetchCacheResult{}, fetchSizeLimitError(cached+reader.size, fetchLimit, cacheQuota)
+					}
+					return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, copyErr)
+				}
+				_ = partial.Sync()
+				return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, copyErr)
+			}
+
+			if reader.size < chunkExpected {
+				_ = partial.Sync()
+				return FetchCacheResult{}, io.ErrUnexpectedEOF
+			}
+			if reader.size > chunkExpected {
+				_ = partial.Discard()
+				return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache range response exceeded Content-Range length")
+			}
+			if expectedTotal >= 0 && partial.Size() < expectedTotal {
+				_ = partial.Sync()
+				if reader.size > 0 {
+					// Server capped this 206 response below EOF; continue with next range.
+					continue
+				}
+				return FetchCacheResult{}, io.ErrUnexpectedEOF
+			}
+			if expectedTotal >= 0 && partial.Size() > expectedTotal {
+				_ = partial.Discard()
+				return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache exceeded expected content length")
+			}
+
+			committed, cerr := partial.Commit(fetchCtx, req.Name)
+			if cerr != nil {
+				if errors.Is(cerr, blobcache.ErrTooLarge) {
+					_ = partial.Discard()
+				}
+				return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, cerr)
+			}
+			return FetchCacheResult{
+				Blob:   committed.Ref.String(),
+				Size:   committed.Size,
+				CRC32:  committed.CRC32,
+				MD5:    committed.MD5,
+				SHA1:   committed.SHA1,
+				Status: resp.StatusCode,
+			}, nil
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+				_ = partial.Discard()
+			}
+			return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache HTTP %d", resp.StatusCode)
+		}
+
+		// Full 2xx response (initial GET, server ignored Range, or If-Range
+		// detected a changed resource and returned the full replacement).
+		expectedTotal := resp.ContentLength
+		if expectedTotal >= 0 && expectedTotal > maxBytes {
+			_ = resp.Body.Close()
+			_ = partial.Discard()
+			return FetchCacheResult{}, fetchSizeLimitError(expectedTotal, fetchLimit, cacheQuota)
+		}
+
+		compressed := isCompressedResponse(resp)
+		newMeta := partialMetaFromResponse(resp.Header, expectedTotal, compressed)
+		if err := partial.Reset(newMeta); err != nil {
+			_ = resp.Body.Close()
+			return FetchCacheResult{}, err
+		}
+
+		reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: maxBytes}
+		_, copyErr := io.CopyBuffer(partial, reader, buf)
+		totalTransferred += reader.size
+		_ = resp.Body.Close()
+		if copyErr != nil {
+			if errors.Is(copyErr, blobcache.ErrTooLarge) || errors.Is(copyErr, errDataExceedsSizeLimit) || compressed || !hasResumeValidator(newMeta) || partial.Size() == 0 {
+				_ = partial.Discard()
+				if errors.Is(copyErr, errDataExceedsSizeLimit) && reader.size > cacheQuota {
+					return FetchCacheResult{}, fetchSizeLimitError(reader.size, fetchLimit, cacheQuota)
+				}
+			} else {
+				_ = partial.Sync()
+			}
+			return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, copyErr)
+		}
+
+		if expectedTotal >= 0 && partial.Size() < expectedTotal {
+			if !compressed && hasResumeValidator(newMeta) && partial.Size() > 0 {
+				_ = partial.Sync()
+			} else {
+				_ = partial.Discard()
+			}
+			return FetchCacheResult{}, io.ErrUnexpectedEOF
+		}
+		if expectedTotal >= 0 && partial.Size() > expectedTotal {
+			_ = partial.Discard()
+			return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache exceeded expected content length")
+		}
+
+		committed, cerr := partial.Commit(fetchCtx, req.Name)
+		if cerr != nil {
+			if errors.Is(cerr, blobcache.ErrTooLarge) {
+				_ = partial.Discard()
+			}
+			return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, cerr)
+		}
+		return FetchCacheResult{
+			Blob:   committed.Ref.String(),
+			Size:   committed.Size,
+			CRC32:  committed.CRC32,
+			MD5:    committed.MD5,
+			SHA1:   committed.SHA1,
+			Status: resp.StatusCode,
+		}, nil
+	}
 }
 
 // CacheRasterize rasterises an SVG already in the plugin's own blob cache
@@ -618,6 +1112,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect"`
 			LibraryKey            string            `json:"libraryKey"`
 			Name                  string            `json:"name"`
+			Resume                bool              `json:"resume"`
 		}
 		if len(args) != 1 {
 			return nil, fmt.Errorf("plugins: fetchToCache takes one request")
@@ -644,6 +1139,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			},
 			LibraryKey: req.LibraryKey,
 			Name:       req.Name,
+			Resume:     req.Resume,
 		})
 	} else if name == "cache.rasterize" {
 		if len(args) < 3 || len(args) > 4 {

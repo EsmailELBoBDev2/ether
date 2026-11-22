@@ -311,7 +311,7 @@ func (s *Server) searchPluginPeople(ctx context.Context, pr *Request, query stri
 			if h := actorSecs[secID]; h != nil && h.count > 0 {
 				if len(out.actors) < limit {
 					person := frontend.Person{TMDB: cand.TMDB, Name: cand.Name, ThumbPath: h.thumbPath}
-					out.actors = append(out.actors, personSearchDirectory(h.sec, person, "actor", h.count, h.thumbKey, inHub))
+					out.actors = append(out.actors, personSearchDirectory(h.sec, person, "actor", h.count, h.thumbKey, inHub, ""))
 					out.actorScores = append(out.actorScores, personSearchScore(query, cand.Name))
 				} else {
 					out.actorsMore = true
@@ -320,7 +320,7 @@ func (s *Server) searchPluginPeople(ctx context.Context, pr *Request, query stri
 			if h := directorSecs[secID]; h != nil && h.count > 0 {
 				if len(out.directors) < limit {
 					person := frontend.Person{TMDB: cand.TMDB, Name: cand.Name, ThumbPath: h.thumbPath}
-					out.directors = append(out.directors, personSearchDirectory(h.sec, person, "director", h.count, h.thumbKey, inHub))
+					out.directors = append(out.directors, personSearchDirectory(h.sec, person, "director", h.count, h.thumbKey, inHub, ""))
 					out.directorScores = append(out.directorScores, personSearchScore(query, cand.Name))
 				} else {
 					out.directorsMore = true

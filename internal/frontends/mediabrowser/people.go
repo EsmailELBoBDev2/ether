@@ -29,6 +29,11 @@ func (i *instance) peopleDTO(r *http.Request, viewer *frontend.Viewer, token str
 	for _, p := range detail.Title.Writers {
 		credits = append(credits, credit{p.TMDB, p.ID, p.Name, p.Role, "Writer"})
 	}
+	for _, p := range detail.Title.Crew {
+		if strings.EqualFold(p.Role, "Producer") {
+			credits = append(credits, credit{p.TMDB, p.ID, p.Name, p.Role, "Producer"})
+		}
+	}
 	ids := make([]int64, 0, min(len(credits), 256))
 	seen := map[int64]bool{}
 	for _, c := range credits {

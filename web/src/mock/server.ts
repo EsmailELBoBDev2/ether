@@ -368,6 +368,7 @@ function defaultConfig(): EtherConfig {
           qualityOrder: resolutionGroups(2160, 1080),
           customFormatScores: {
             "ether:viewer-language": 20000,
+            "ether:viewer-subtitles": 15,
             "ether:remux": 6000,
             "ether:bluray": 4000,
             "ether:webdl": 2000,
@@ -397,6 +398,7 @@ function defaultConfig(): EtherConfig {
           qualityOrder: resolutionGroups(1080, 720),
           customFormatScores: {
             "ether:viewer-language": 10000,
+            "ether:viewer-subtitles": 15,
             "ether:webdl": 2000,
             "ether:bluray": 1000,
             "ether:codec-h264": 12,
@@ -422,6 +424,7 @@ function defaultConfig(): EtherConfig {
           qualityOrder: resolutionGroups(1080, 720),
           customFormatScores: {
             "ether:viewer-language": 10000,
+            "ether:viewer-subtitles": 15,
             "ether:series-year-differs": -5000,
             "ether:webdl": 2000,
             "ether:bluray": 1000,
@@ -500,7 +503,12 @@ function defaultConfig(): EtherConfig {
       sessionIntent: true,
       clockFormat: "",
     },
-    extras: { enabled: false, resolverTimeout: "20s", prewarmBytes: 48 * 1024 ** 2 },
+    extras: {
+      themeMusic: true,
+      enabled: true,
+      resolverTimeout: "20s",
+      prewarmBytes: 48 * 1024 ** 2,
+    },
     markers: { theIntroDb: true, apiKey: "" },
     setupComplete: true,
   };
@@ -2873,6 +2881,136 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   const viewerStreamRules = new Map<string, unknown>();
   const restoredHidden = new Set<string>();
+  let nextMockPlexViewerId = 200;
+  const mockPlexCandidateServers = [
+    {
+      serverId: 1,
+      serverName: "Living room PMS",
+      plexDirectoryTotal: 42,
+      filteredOutCount: 19,
+      accounts: [
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 1,
+          accountName: "Alex Rivera",
+          isOwner: true,
+          matchedViewerId: 1,
+          matchedViewerName: "Alex Rivera",
+          matchedViewerUsername: "owner",
+          plexRelation: "owner",
+          plexSources: ["owner"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 1003,
+          accountName: "The Kids",
+          isOwner: false,
+          matchedViewerId: 3,
+          matchedViewerName: "The Kids",
+          matchedViewerUsername: "kids",
+          plexUsername: "kids",
+          plexRelation: "home",
+          plexSources: ["home", "ether_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 10421011,
+          accountName: "Morgan Rivera",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "morganr",
+          plexRelation: "home",
+          plexSources: ["home", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 1004,
+          accountName: "Jordan Lee",
+          isOwner: false,
+          matchedViewerId: 4,
+          matchedViewerName: "Jordan Lee",
+          matchedViewerUsername: "jordan",
+          plexUsername: "jordan",
+          plexRelation: "shared",
+          plexSources: ["ether_share", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 25815033,
+          accountName: "Sam Rivera",
+          isOwner: false,
+          matchedViewerId: 0,
+          suggestedViewerId: 2,
+          suggestedViewerName: "Sam Rivera",
+          plexUsername: "samr",
+          plexRelation: "shared",
+          plexSources: ["pms_share", "friend"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 703916194,
+          accountName: "Alice Chen",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "alice99",
+          plexRelation: "shared",
+          plexSources: ["ether_share", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 99002211,
+          accountName: "Devon Patel",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "dpatel",
+          plexRelation: "pending",
+          plexSources: ["pending_invite"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 88123456,
+          accountName: "Taylor Brooks",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "tbrooks",
+          plexRelation: "friend",
+          plexSources: ["community_friend", "friend"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 143639010,
+          accountName: "Patricson Poliard",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexRelation: "historical",
+          plexSources: ["pms_history"],
+        },
+      ] as Array<{
+        serverId: number;
+        serverName: string;
+        accountId: number;
+        accountName: string;
+        isOwner: boolean;
+        matchedViewerId: number;
+        matchedViewerName?: string;
+        matchedViewerUsername?: string;
+        suggestedViewerId?: number;
+        suggestedViewerName?: string;
+        plexUsername?: string;
+        plexRelation?: string;
+        plexSources?: string[];
+      }>,
+    },
+  ];
 
   // ---- Router ------------------------------------------------------------------------
 
@@ -6448,6 +6586,82 @@ export function createFakeServer(opts: FakeOptions = {}) {
         keywords: t.keywords.map((id) => KEYWORDS.find((k) => k.id === id)).filter(Boolean),
         collection: null,
       });
+    }
+    if (seg[0] === "viewers" && seg[1] === "plex-candidates" && method === "GET") {
+      return json(mockPlexCandidateServers);
+    }
+    if (seg[0] === "viewers" && seg[1] === "import-plex" && !seg[2] && method === "POST") {
+      const req = (body as { serverId?: number; accountId?: number; name?: string } | null) ?? {};
+      const srv = mockPlexCandidateServers.find((s) => s.serverId === req.serverId);
+      const acct = srv?.accounts.find((a) => a.accountId === req.accountId);
+      if (!acct) return err(404, "not_found", "account not found on server");
+      const newId = ++nextMockPlexViewerId;
+      const name = req.name?.trim() || acct.accountName;
+      acct.matchedViewerId = newId;
+      acct.matchedViewerName = name;
+      acct.matchedViewerUsername = acct.plexUsername;
+      return json(
+        {
+          id: newId,
+          name,
+          inviteUrl: "",
+          serverId: acct.serverId,
+          accountId: acct.accountId,
+          status: "imported",
+          sharedPlex: true,
+        },
+        201,
+      );
+    }
+    if (seg[0] === "viewers" && seg[1] === "match-plex" && method === "POST") {
+      const req =
+        (body as { serverId?: number; accountId?: number; viewerId?: number } | null) ?? {};
+      const srv = mockPlexCandidateServers.find((s) => s.serverId === req.serverId);
+      const acct = srv?.accounts.find((a) => a.accountId === req.accountId);
+      const v = [...VIEWERS, ...state.dlnaGuests, ...state.addedViewers].find(
+        (x) => x.id === req.viewerId,
+      );
+      if (!acct || !v) return err(404, "not_found", "account or viewer not found");
+      acct.matchedViewerId = v.id;
+      acct.matchedViewerName = v.title || v.username;
+      acct.matchedViewerUsername = v.username;
+      return json({
+        ok: true,
+        viewerId: v.id,
+        serverId: acct.serverId,
+        accountId: acct.accountId,
+        sharedPlex: true,
+      });
+    }
+    if (seg[0] === "viewers" && seg[1] === "import-plex" && seg[2] === "all" && method === "POST") {
+      const results = mockPlexCandidateServers.flatMap((srv) =>
+        srv.accounts.map((acct) => {
+          if (acct.matchedViewerId) {
+            return {
+              id: acct.matchedViewerId,
+              name: acct.accountName,
+              serverId: acct.serverId,
+              accountId: acct.accountId,
+              status: "skipped",
+              reason: "already_mapped",
+              sharedPlex: false,
+            };
+          }
+          const newId = ++nextMockPlexViewerId;
+          acct.matchedViewerId = newId;
+          acct.matchedViewerName = acct.accountName;
+          acct.matchedViewerUsername = acct.plexUsername;
+          return {
+            id: newId,
+            name: acct.accountName,
+            serverId: acct.serverId,
+            accountId: acct.accountId,
+            status: "imported",
+            sharedPlex: true,
+          };
+        }),
+      );
+      return json(results);
     }
     if (seg[0] === "viewers" && seg[1]) {
       const id = Number(seg[1]);

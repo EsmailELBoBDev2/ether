@@ -471,3 +471,16 @@ func TestXtreamSharedOriginPreservesFrontendPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestXtreamYouTubeTrailer(t *testing.T) {
+	got := xtreamYouTubeTrailer([]frontend.Extra{
+		{Kind: "featurette", Source: "YouTube", SourceID: "feat1"},
+		{Kind: "trailer", Source: "YouTube", SourceID: "trl1"},
+	})
+	if got != "trl1" {
+		t.Fatalf("got %q, want trl1", got)
+	}
+	if empty := xtreamYouTubeTrailer([]frontend.Extra{{Kind: "trailer"}}); empty != "" {
+		t.Fatalf("got %q, want empty", empty)
+	}
+}

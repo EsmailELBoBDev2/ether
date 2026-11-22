@@ -1671,6 +1671,35 @@ func (m *Manager) CachedSubtitle(ctx context.Context, streamIndex int, codec str
 	return m.subtitles.cached(subtitleCacheKey(source, codec, streamIndex))
 }
 
+// ExtractIndexedSubtitle reads an embedded text subtitle track through the
+// source's Matroska index without falling back to a full-file FFmpeg read.
+// It shares the same per-source cache as ExtractSubtitle and returns ok=false
+// when the source has no subtitle index.
+func (m *Manager) ExtractIndexedSubtitle(ctx context.Context, streamIndex int, codec string) ([]byte, bool) {
+	if codec != "" && IsImageSubtitle(codec) {
+		return nil, false
+	}
+	if data, ok := m.CachedSubtitle(ctx, streamIndex, codec); ok {
+		return data, true
+	}
+	run := func(ctx context.Context, buf *bytes.Buffer) error {
+		data, ok := m.indexedSubtitle(ctx, streamIndex, codec)
+		if !ok {
+			return errNoSubtitleIndex
+		}
+		buf.Write(data)
+		return nil
+	}
+	if source, _ := ctx.Value(subtitleSourceKey{}).(string); source != "" {
+		data, err := m.subtitles.extract(ctx, subtitleCacheKey(source, codec, streamIndex), run)
+		if err != nil {
+			return nil, false
+		}
+		return data, true
+	}
+	return m.indexedSubtitle(ctx, streamIndex, codec)
+}
+
 // maxSubtitleStreams bounds the soft-subtitle readers running at once.
 const maxSubtitleStreams = 4
 
@@ -1684,6 +1713,12 @@ const maxSubtitleStreams = 4
 // with it. At most maxSubtitleStreams run at once; a caller waits for a
 // slot until ctx ends.
 func (m *Manager) StreamSubtitle(ctx context.Context, inputURL string, streamIndex int, codec string, from time.Duration, w io.Writer) error {
+	return m.StreamSubtitleFormat(ctx, inputURL, streamIndex, codec, "ass", from, w)
+}
+
+// StreamSubtitleFormat streams one embedded text subtitle stream from from
+// onward in format ("ass", "srt", or "vtt") on the title clock (-copyts).
+func (m *Manager) StreamSubtitleFormat(ctx context.Context, inputURL string, streamIndex int, codec, format string, from time.Duration, w io.Writer) error {
 	if codec != "" && IsImageSubtitle(codec) {
 		return ErrImageSubtitle
 	}
@@ -1694,11 +1729,11 @@ func (m *Manager) StreamSubtitle(ctx context.Context, inputURL string, streamInd
 		return ctx.Err()
 	}
 	counted := &byteCounter{w: w}
-	err := m.streamSubtitle(ctx, subtitleStreamArgs(inputURL, streamIndex, from, true), counted)
+	err := m.streamSubtitle(ctx, subtitleStreamArgs(inputURL, streamIndex, format, from, true), counted)
 	if err != nil && ctx.Err() == nil && counted.n == 0 {
 		// An FFmpeg without -readrate_initial_burst (before 6.1) refuses
 		// the arguments outright; read unthrottled instead.
-		err = m.streamSubtitle(ctx, subtitleStreamArgs(inputURL, streamIndex, from, false), w)
+		err = m.streamSubtitle(ctx, subtitleStreamArgs(inputURL, streamIndex, format, from, false), w)
 	}
 	return err
 }

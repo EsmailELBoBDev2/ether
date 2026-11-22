@@ -579,7 +579,9 @@ export interface EtherConfig {
     clockFormat: string;
   };
   extras?: {
+    themeMusic?: boolean;
     enabled: boolean;
+    defaultOnMigrated?: boolean;
     resolverCommand?: string;
     resolverArgs?: string[] | null;
     resolverTimeout?: string;

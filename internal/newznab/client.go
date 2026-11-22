@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1484,7 +1485,54 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 		add(p)
 	}
 	titles := queryTitles(req)
+	altTitles := rescueAlternativeTitles(req, titles)
+	nonLatinOriginal := hasNonLatinRune(req.OriginalTitle)
 	if isTV {
+		// Prioritize distinct alternative/English titles (e.g. "I Live Alone"
+		// when TMDB's primary English title is "Home Alone") with explicit
+		// episode/bare-episode/air-date queries before falling back to broad
+		// season-pack queries.
+		if req.Season > 0 && req.Episode > 0 {
+			for _, alt := range altTitles {
+				vSE := base()
+				vSE.Set("t", "search")
+				vSE.Set("q", fmt.Sprintf("%s S%02dE%02d", alt, req.Season, req.Episode))
+				add(vSE)
+				if req.Season == 1 || req.Episode >= 100 || nonLatinOriginal {
+					vEp := base()
+					vEp.Set("t", "search")
+					vEp.Set("q", fmt.Sprintf("%s E%02d", alt, req.Episode))
+					add(vEp)
+				}
+			}
+			// Bare E### and broadcast air-date queries for long-running /
+			// Asian variety shows that omit Sxx (e.g. "I Live Alone E674",
+			// "나 혼자 산다 E674", "I Live Alone 241115").
+			if req.Season == 1 || req.Episode >= 100 || nonLatinOriginal {
+				for _, title := range titles {
+					if req.Episode > 20 || nonLatinOriginal {
+						vEp := base()
+						vEp.Set("t", "search")
+						vEp.Set("q", fmt.Sprintf("%s E%02d", title, req.Episode))
+						add(vEp)
+					}
+				}
+			}
+			if !req.Released.IsZero() && (nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
+				yymmdd := req.Released.UTC().Format("060102")
+				yyyyDot := req.Released.UTC().Format("2006.01.02")
+				for _, title := range append(slices.Clone(altTitles), titles...) {
+					vShort := base()
+					vShort.Set("t", "search")
+					vShort.Set("q", fmt.Sprintf("%s %s", title, yymmdd))
+					add(vShort)
+					vFull := base()
+					vFull.Set("t", "search")
+					vFull.Set("q", fmt.Sprintf("%s %s", title, yyyyDot))
+					add(vFull)
+				}
+			}
+		}
 		for _, title := range titles {
 			if req.Season > 0 && req.Episode > 0 {
 				// Season pack queries (mapped TVDB season first, then S01 / Season 1 / Complete).
@@ -1528,11 +1576,61 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 	}
 	// Movies: also try bare title without year for uploads whose indexed
 	// release name omitted the year or used a festival release year.
-	for _, title := range titles {
+	for _, title := range append(slices.Clone(titles), altTitles...) {
 		v := base()
 		v.Set("t", "search")
 		v.Set("q", title)
 		add(v)
+	}
+	return out
+}
+
+func hasNonLatinRune(s string) bool {
+	for _, r := range s {
+		if r >= 128 && !unicode.In(r, unicode.Latin) {
+			return true
+		}
+	}
+	return false
+}
+
+// rescueAlternativeTitles picks up to 2 distinct, clean alternative/English
+// titles not already covered by queryTitles (preferring Latin/ASCII aliases
+// for foreign-script shows, such as "I Live Alone" for "나 혼자 산다" / "Home Alone").
+func rescueAlternativeTitles(req core.SearchRequest, existing []string) []string {
+	var latin, other []string
+	seen := map[string]bool{}
+	for _, e := range existing {
+		seen[strings.ToLower(cleanSearchTitle(e))] = true
+	}
+	addCand := func(raw string) {
+		c := cleanSearchTitle(raw)
+		if c == "" || len([]rune(c)) < 3 || len([]rune(c)) > 64 {
+			return
+		}
+		k := strings.ToLower(c)
+		if seen[k] {
+			return
+		}
+		for _, e := range existing {
+			if releaseparse.TitlesMatch(c, e) {
+				return
+			}
+		}
+		seen[k] = true
+		if hasNonLatinRune(c) {
+			other = append(other, c)
+		} else {
+			latin = append(latin, c)
+		}
+	}
+	addCand(req.EnglishTitle)
+	for _, alt := range req.AlternativeTitles {
+		addCand(alt)
+	}
+	out := append(latin, other...)
+	if len(out) > 2 {
+		out = out[:2]
 	}
 	return out
 }
@@ -1601,11 +1699,20 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 			appendUnique(rs)
 			return nil
 		}
-		if !cfg.IsStremio() && !cfg.IsAddon() && req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
-			alt := req
-			alt.Title, alt.OriginalTitle = req.OriginalTitle, ""
-			if err := run(alt); err != nil {
-				return nil, err
+		if !cfg.IsStremio() && !cfg.IsAddon() {
+			if req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
+				alt := req
+				alt.Title, alt.OriginalTitle = req.OriginalTitle, ""
+				if err := run(alt); err != nil {
+					return nil, err
+				}
+			}
+			for _, altTitle := range rescueAlternativeTitles(req, queryTitles(req))[:min(1, len(rescueAlternativeTitles(req, queryTitles(req))))] {
+				alt := req
+				alt.Title, alt.OriginalTitle = altTitle, ""
+				if err := run(alt); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if req.Season > 0 && req.Episode > 0 {
@@ -1637,8 +1744,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	if len(attempts) == 0 {
 		return nil, nil
 	}
-	if len(attempts) > 6 {
-		attempts = attempts[:6]
+	if len(attempts) > 8 {
+		attempts = attempts[:8]
 	}
 	var merged []core.Release
 	seen := map[string]bool{}

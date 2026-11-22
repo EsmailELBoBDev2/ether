@@ -165,7 +165,17 @@ func (s *Service) broadcastSegmentAllowed(ctx context.Context, ss *session, seg 
 // Audience admission is independent of the programme's rating. Checking a
 // channel's empty rating first would incorrectly hide a permitted programme.
 func (s *Service) audienceAllowed(ctx context.Context, u *core.User, c Channel) bool {
-	if u == nil || !c.Enabled || c.MergedInto != "" || !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) || (!u.IsOwner && s.sweepState(c) == "unavailable") {
+	if u != nil && !u.IsOwner && s.sweepState(c) == "unavailable" {
+		return false
+	}
+	return s.audiencePolicyAllowed(ctx, u, c)
+}
+
+// audiencePolicyAllowed applies every viewer/channel visibility and pause check
+// except stream-health sweep unavailability, so watch matching can still mark
+// an otherwise-permitted channel as unavailable when no healthy target exists.
+func (s *Service) audiencePolicyAllowed(ctx context.Context, u *core.User, c Channel) bool {
+	if u == nil || !c.Enabled || c.MergedInto != "" || !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
 		return false
 	}
 	_, pol, err := s.withPolicy(ctx, u)

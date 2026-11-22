@@ -51,6 +51,10 @@ func (i *instance) meta(w http.ResponseWriter, r *http.Request) {
 	if poster := i.artwork(r, credential, viewer, device, []frontend.Title{title})[title.Key]; poster != "" {
 		meta["poster"] = poster
 	}
+	if trailers, streams := stremioTrailers(detail.Extras); len(trailers) > 0 {
+		meta["trailers"] = trailers
+		meta["trailerStreams"] = streams
+	}
 	if typ == "series" {
 		videos := make([]map[string]any, 0)
 		for offset := 0; ; {
@@ -112,6 +116,10 @@ func (i *instance) metaPluginItem(w http.ResponseWriter, r *http.Request, creden
 	}
 	if poster := i.artwork(r, credential, viewer, device, []frontend.Title{title})[title.Key]; poster != "" {
 		meta["poster"] = poster
+	}
+	if trailers, streams := stremioTrailers(detail.Extras); len(trailers) > 0 {
+		meta["trailers"] = trailers
+		meta["trailerStreams"] = streams
 	}
 	if typ == "series" {
 		videos := make([]map[string]any, 0)
@@ -177,4 +185,26 @@ func stremioDescription(r *http.Request, exp frontend.Experience, viewer *fronte
 		return line
 	}
 	return description + "\n\n" + line
+}
+
+// stremioTrailers turns YouTube extras into Stremio's meta.trailers and
+// meta.trailerStreams arrays. Non-YouTube extras have no ytId and are skipped.
+func stremioTrailers(extras []frontend.Extra) ([]map[string]string, []map[string]string) {
+	var trailers, streams []map[string]string
+	for _, extra := range extras {
+		if !strings.EqualFold(extra.Source, "youtube") || extra.SourceID == "" {
+			continue
+		}
+		kind := "Clip"
+		if strings.EqualFold(extra.Kind, "trailer") || strings.EqualFold(extra.Kind, "teaser") {
+			kind = "Trailer"
+		}
+		name := extra.Title
+		if name == "" {
+			name = kind
+		}
+		trailers = append(trailers, map[string]string{"source": extra.SourceID, "type": kind})
+		streams = append(streams, map[string]string{"title": name, "ytId": extra.SourceID})
+	}
+	return trailers, streams
 }

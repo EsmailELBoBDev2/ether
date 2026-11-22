@@ -3,11 +3,55 @@ package sessions
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
+
+func ownerGateKey(viewerID int64, clientID string) string {
+	return fmt.Sprintf("broker/owner/%d/%s", viewerID, clientID)
+}
+
+func tileGateKey(viewerID int64, clientID, groupID string, tile int) string {
+	return fmt.Sprintf("broker/owner/%d/%s/mv/%s/tile/%d", viewerID, clientID, groupID, tile)
+}
+
+// Caller holds b.mu.
+func (b *Broker) bumpNonGroupEpochLocked(viewerID int64, clientID string) {
+	if b.nonGroupEpoch == nil {
+		b.nonGroupEpoch = make(map[string]uint64)
+	}
+	b.nonGroupEpoch[ownerGateKey(viewerID, clientID)]++
+}
+
+func livePlanContainer(caps core.ClientCaps) string {
+	wantsFMP4 := false
+	for _, c := range caps.HLSContainers {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "ts", "mpegts":
+			return "mpegts"
+		case "fmp4", "mp4", "m4s", "m4a":
+			wantsFMP4 = true
+		}
+	}
+	if wantsFMP4 {
+		return "fmp4"
+	}
+	return "mpegts"
+}
+
+func liveVideoHeight(info *core.MediaInfo) int {
+	if info == nil {
+		return 0
+	}
+	if v := info.Video(); v != nil && v.Height > 0 {
+		return v.Height
+	}
+	return 0
+}
 
 // LiveBackend adapts the existing channel playout service. Serve receives a
 // grant-validated request and a path relative to the scoped live stream.
@@ -71,10 +115,11 @@ func (b *Broker) planLive(ctx context.Context, req frontend.PlanRequest, viewer 
 		req.Caps.ExplicitMaxHeight = tileHeight > 0
 		req.Intent.Options.MaxHeight = tileHeight
 	}
-	info := core.MediaInfo{Container: "mpegts", Estimated: true}
-	decision := core.Decision{Kind: core.DecisionRemux, Container: "mpegts", VideoCodec: "h264", AudioCodec: "aac", VideoCopy: true, AudioCopy: true, AudioChannels: 2, AudioStream: -1, SubtitleStream: -1, Reason: "live_remux_hls"}
+	container := livePlanContainer(req.Caps)
+	info := core.MediaInfo{Container: container, Estimated: true}
+	decision := core.Decision{Kind: core.DecisionRemux, Container: container, VideoCodec: "h264", AudioCodec: "aac", VideoCopy: true, AudioCopy: true, AudioChannels: 2, AudioStream: -1, SubtitleStream: -1, Reason: "live_remux_hls"}
 	if req.Intent.Estimate {
-		return frontend.PlayPlan{Estimated: true, Media: info, Decision: decision, Transcoding: true, HLS: true, HLSContainer: "mpegts"}, nil
+		return frontend.PlayPlan{Estimated: true, Media: info, Decision: decision, Transcoding: true, HLS: true, HLSContainer: container}, nil
 	}
 	if !b.reservePlan(viewer.ID) {
 		return frontend.PlayPlan{}, core.ErrStreamLimit
@@ -87,10 +132,10 @@ func (b *Broker) planLive(ctx context.Context, req frontend.PlanRequest, viewer 
 		return frontend.PlayPlan{}, core.ErrStreamLimit
 	}
 	b.plans[id] = brokerPlan{request: req, decision: decision, created: b.deps.Now(), live: true, baseMaxHeight: baseMaxHeight}
-	return frontend.PlayPlan{ID: id, Media: info, Decision: decision, Transcoding: true, HLS: true, HLSContainer: "mpegts"}, nil
+	return frontend.PlayPlan{ID: id, Media: info, Decision: decision, Transcoding: true, HLS: true, HLSContainer: container}, nil
 }
 
-func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p brokerPlan, viewer *core.Viewer) (frontend.Session, error) {
+func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p brokerPlan, viewer *core.Viewer, openEpoch uint64) (frontend.Session, error) {
 	if b.deps.Live == nil {
 		return frontend.Session{}, core.ErrNotAvailable
 	}
@@ -117,6 +162,9 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 		}
 	}
 	ctx = core.WithLiveApp(ctx, string(req.Protocol))
+	if mvSession != nil {
+		ctx = core.WithLiveHandover(ctx)
+	}
 	var liveID string
 	var tunedMedia *core.MediaInfo
 	var err error
@@ -158,7 +206,7 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 		_ = b.deps.Live.Stop(ctx, viewer, liveID)
 		return frontend.Session{}, err
 	}
-	liveMedia := normalizeLiveMedia(tunedMedia)
+	liveMedia := normalizeLiveMedia(tunedMedia, livePlanContainer(p.request.Caps))
 	grant := rand.Text()
 	session := frontend.Session{ID: id, MediaPath: "/sessions/media/" + id + "/" + grant + "/live/index.m3u8", Protocol: req.Protocol, ViewerID: viewer.ID, Device: p.request.Device, Channel: p.request.Channel, Multiview: mvSession, Media: &liveMedia, StartedAt: b.deps.Now(), PlayMethod: "Transcode"}
 	if req.Protocol == "silo" {
@@ -173,8 +221,16 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 	if mvSession != nil {
 		mvGroup = mvSession.GroupID
 		mvTile = mvSession.Tile
+		// Acquire the device owner gate only for the fast commit phase so
+		// sibling tiles tune concurrently without blocking each other.
+		ownerUnlock, gerr := b.gates.Acquire(ctx, ownerGateKey(viewer.ID, p.request.Caps.ClientID))
+		if gerr != nil {
+			_ = b.deps.Live.Stop(ctx, viewer, liveID)
+			return frontend.Session{}, gerr
+		}
+		defer ownerUnlock()
 	}
-	s := &brokerSession{public: copySession(session), grant: grant, playID: liveID, clientID: p.request.Caps.ClientID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, live: true, directLive: directRef, multiviewGroup: mvGroup, multiviewTile: mvTile, baseMaxHeight: p.baseMaxHeight}
+	s := &brokerSession{public: copySession(session), grant: grant, playID: liveID, clientID: p.request.Caps.ClientID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, live: true, directLive: directRef, multiviewGroup: mvGroup, multiviewTile: mvTile, baseMaxHeight: p.baseMaxHeight, knownVideoHeight: liveVideoHeight(tunedMedia)}
 	if b.cluster != nil && !b.policy(session.Protocol).ExternalAdmission {
 		if err := b.cluster.store.put(ctx, session, liveID, *viewer, b.deps.Now()); err != nil {
 			_ = b.deps.Live.Stop(ctx, viewer, liveID)
@@ -190,6 +246,19 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 		_ = b.deps.Live.Stop(ctx, viewer, liveID)
 		return frontend.Session{}, core.ErrNotAvailable
 	}
+	if mvGroup != "" {
+		ownerKey := ownerGateKey(viewer.ID, p.request.Caps.ClientID)
+		if b.multiviewGroups[mvGroup] == nil || b.nonGroupEpoch[ownerKey] != openEpoch {
+			b.mu.Unlock()
+			if b.cluster != nil {
+				_ = b.cluster.store.remove(ctx, id)
+			}
+			_ = b.deps.Live.Stop(ctx, viewer, liveID)
+			return frontend.Session{}, core.ErrNotFound
+		}
+	} else {
+		b.bumpNonGroupEpochLocked(viewer.ID, s.clientID)
+	}
 	superseded := b.collectSupersededLocked(s)
 	b.sessions[id] = s
 	b.mu.Unlock()
@@ -201,12 +270,18 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 	return copySession(session), nil
 }
 
-func normalizeLiveMedia(in *core.MediaInfo) core.MediaInfo {
+func normalizeLiveMedia(in *core.MediaInfo, defaultContainer string) core.MediaInfo {
 	var out core.MediaInfo
 	if in != nil {
 		out = publicMedia(*in)
 	}
-	out.Container = "mpegts"
+	if out.Container == "" {
+		if defaultContainer != "" {
+			out.Container = defaultContainer
+		} else {
+			out.Container = "mpegts"
+		}
+	}
 	out.Duration = 0
 	out.Size = 0
 	out.Chapters = nil

@@ -226,16 +226,17 @@ func (i *instance) activeMultiviewTileCount(viewerID int64, deviceID, groupID st
 
 // replanLiveSession replans an active live session (for example upgrading a
 // focused multiview tile to full device quality or stepping it back down to a
-// tile ceiling) through the shared StartStream replan path. Caller holds s.mu
-// and s.commandMu.
-func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, s *playSession, id string, maxHeight *int, focused *bool) bool {
+// tile ceiling) through the shared StartStream replan path. It reports whether
+// the command succeeded and whether the plan changed. Caller holds s.mu and
+// s.commandMu.
+func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, s *playSession, id string, maxHeight *int, focused *bool) (ok bool, changed bool) {
 	if _, live := s.plan["live"]; !live {
 		i.unavailable(w, r)
-		return false
+		return false, false
 	}
 	if maxHeight != nil && (*maxHeight < 0 || *maxHeight > 16384) {
 		problem(w, 400, "request", "invalid_request")
-		return false
+		return false, false
 	}
 	targetHeight := 0
 	isFocused := true
@@ -255,7 +256,7 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 			groupID := s.multiviewGroup
 			viewerID, deviceID := s.viewer, s.device
 			if !s.port(w, func() { tiles = i.activeMultiviewTileCount(viewerID, deviceID, groupID) }) {
-				return false
+				return false, false
 			}
 			if tiles >= 3 {
 				targetHeight = 720
@@ -278,14 +279,18 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 			MaxHeight:  &targetHeight,
 		})
 	}) {
-		return false
+		return false, false
 	}
 	if err != nil {
 		fail(w, err, r)
-		return false
+		return false, false
 	}
 	paths, _ := s.plan["paths"].([]object)
 	path := selectedPlaybackPath(s.plan, paths)
+	prevURL, _ := path["url"].(string)
+	if url == prevURL {
+		return true, false
+	}
 	if len(path) > 0 {
 		path["url"] = url
 		path["readiness"] = "ready"
@@ -311,7 +316,7 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 	s.source++
 	s.seek++
 	if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
-		return false
+		return false, false
 	}
-	return true
+	return true, true
 }

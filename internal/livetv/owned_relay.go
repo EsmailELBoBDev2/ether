@@ -234,7 +234,7 @@ func (p *relayProducer) launch(ctx context.Context, info core.MediaInfo, dec cor
 	// An HLS input on a reserve-trimmed grant starts at the reserve depth:
 	// the relay races through that backlog and the timeline holds it.
 	backlog := info.Container == "hls" && !newFormat && p.s.stabilityReserve(ss.info.Channel) > 0
-	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog, Info: info, Decision: dec, SegmentDuration: cut})
+	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog, Info: info, Decision: dec, SegmentDuration: cut, MultiviewGroup: ss.caps.MultiviewGroup})
 	return id, hls, cancel, err
 }
 

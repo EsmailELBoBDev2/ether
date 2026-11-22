@@ -526,11 +526,15 @@ func (s *Service) launchBroadcast(ctx context.Context, ss *session, l broadcastL
 	decision.AudioCodec = "aac"
 	decision.AudioChannels = 2
 	decision.AudioSampleRate = 48000
+	container := "mpegts"
+	if broadcastUsesFMP4(caps) {
+		container = transcode.ContainerFMP4
+	}
 	decision.MaxHeight = outputHeight
 	decision.BitrateKbps = bitrate
-	decision.Container = "mpegts"
+	decision.Container = container
 
-	info := core.MediaInfo{Container: "mpegts", Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "h264", Profile: "High", Width: outputHeight * 16 / 9, Height: outputHeight, FrameRate: rate}, {Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000}}}
+	info := core.MediaInfo{Container: container, Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "h264", Profile: "High", Width: outputHeight * 16 / 9, Height: outputHeight, FrameRate: rate}, {Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000}}}
 	// Resolve a shared catalogue source as the owner, then enforce every viewer's
 	// channel/title policy again at playlist and segment boundaries.
 	inputUser := user

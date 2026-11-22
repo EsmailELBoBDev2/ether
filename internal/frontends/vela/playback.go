@@ -275,6 +275,10 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if b.ChannelID != "" {
+			if errors.Is(e, frontend.ErrTooManyTranscodes) || errors.Is(e, frontend.ErrTranscodeCapacity) || errors.Is(e, frontend.ErrStreamLimit) || errors.Is(e, frontend.ErrSessionBusy) {
+				fail(w, e, r)
+				return
+			}
 			if mvTarget != nil && (errors.Is(e, frontend.ErrNotFound) || errors.Is(e, frontend.ErrUnauthorized) || errors.Is(e, frontend.ErrInvalidMultiview)) {
 				fail(w, e, r)
 				return
@@ -593,7 +597,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		AtSeconds                        *float64
 		SubtitleTrackID                  json.RawMessage
 		PositionSeconds                  *float64
-		SourceGeneration, SeekGeneration uint64
+		SourceGeneration, SeekGeneration *uint64
 	}
 	if body(r, &b) != nil {
 		problem(w, 400, "request", "invalid_request")
@@ -604,8 +608,17 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.commandActive = true
 	defer func() { s.commandActive = false; s.mu.Unlock() }()
-	if stale(w, s, b.SourceGeneration, b.SeekGeneration) {
-		return
+	var srcGen, seekGen uint64
+	if b.SourceGeneration != nil {
+		srcGen = *b.SourceGeneration
+	}
+	if b.SeekGeneration != nil {
+		seekGen = *b.SeekGeneration
+	}
+	if !(b.Kind == "replan" && b.SourceGeneration == nil && b.SeekGeneration == nil) {
+		if stale(w, s, srcGen, seekGen) {
+			return
+		}
 	}
 	if !s.ended.IsZero() {
 		problem(w, 409, "conflict", "session_ended")
@@ -1099,7 +1112,12 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			s.versionsCold = cold
 		}
 	case "replan":
-		if !i.replanLiveSession(w, r, v, s, id, b.MaxHeight, b.Focused) {
+		ok, changed := i.replanLiveSession(w, r, v, s, id, b.MaxHeight, b.Focused)
+		if !ok {
+			return
+		}
+		if !changed {
+			send(w, 200, s.plan)
 			return
 		}
 	case "pause", "resume":

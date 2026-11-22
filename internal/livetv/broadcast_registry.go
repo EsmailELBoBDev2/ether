@@ -2,6 +2,7 @@ package livetv
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -126,7 +127,14 @@ func (r *broadcastRegistry) acquire(ctx context.Context, key broadcastKey, id st
 	if onAcquire != nil {
 		onAcquire()
 	}
-	if _, err := b.addRendition(ctx, id, decision, caps...); err != nil {
+	_, err := b.addRendition(ctx, id, decision, caps...)
+	if err != nil && errors.Is(err, transcode.ErrTooManyTranscodes) && r.yieldIdleForCapacity(ctx, b) {
+		_, err = b.addRendition(ctx, id, decision, caps...)
+	}
+	if err != nil {
+		if !running {
+			r.discardCold(b)
+		}
 		return nil, err
 	}
 	b.logger.Debug("broadcast viewer attached", "running", running, "rendition", id)
@@ -280,6 +288,61 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 		}()
 	}
 	return len(idle) > 0 || r.yielding.Load() > 0
+}
+
+// yieldIdleForCapacity synchronously reclaims idle broadcasts (ignoring the
+// 2 s warmup floor) and idle renditions on active broadcasts so their
+// transcode slots are freed immediately before retrying a capacity-limited tune.
+func (r *broadcastRegistry) yieldIdleForCapacity(ctx context.Context, except *broadcast) bool {
+	r.mu.Lock()
+	var idle []*broadcast
+	var active []*broadcast
+	for key, b := range r.outputs {
+		if b == except {
+			continue
+		}
+		b.mu.Lock()
+		if b.viewers == 0 && !b.closed {
+			b.closed = true
+			b.cancel()
+			delete(r.outputs, key)
+			idle = append(idle, b)
+		} else if !b.closed {
+			active = append(active, b)
+		}
+		b.mu.Unlock()
+	}
+	r.mu.Unlock()
+	reclaimed := len(idle) > 0
+	for _, b := range idle {
+		b.logger.Debug("broadcast synchronously yielded its encoder slot for capacity")
+		b.wg.Wait()
+	}
+	for _, b := range active {
+		if b.dropIdleRenditions() {
+			reclaimed = true
+		}
+	}
+	if reclaimed {
+		return true
+	}
+	if r.yielding.Load() <= 0 {
+		return false
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	for r.yielding.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return true
+		case <-tick.C:
+		}
+	}
+	return true
 }
 
 // A failed cold tune keeps no grace-period encoder running for an absent viewer.

@@ -529,3 +529,237 @@ func TestVelaMultiviewUnavailableWithoutLiveTV(t *testing.T) {
 		t.Fatalf("features.multiview without liveTV = %#v, want {available: false, maxTiles: 4}", mvCap)
 	}
 }
+
+func TestVelaWebClientCapabilitiesRequestFMP4NotTS(t *testing.T) {
+	web := client{
+		Device:     device{ID: "web-1", Platform: "web"},
+		Containers: []string{"mp4", "webm"},
+		HLS:        false,
+		MSE:        true,
+	}
+	if velaSupportsTS(web) {
+		t.Fatal("Vela web declaring mp4/webm must not claim TS support")
+	}
+	safari := client{
+		Device:     device{ID: "web-2", Platform: "web"},
+		Containers: []string{"mp4", "webm"},
+		HLS:        true,
+		MSE:        true,
+	}
+	if velaSupportsTS(safari) {
+		t.Fatal("Vela web Safari declaring mp4/webm without ts must use fMP4")
+	}
+	appleTV := client{
+		Device:     device{ID: "tv-1", Platform: "tvOS"},
+		Containers: []string{"mp4", "mov"},
+		HLS:        true,
+	}
+	if !velaSupportsTS(appleTV) {
+		t.Fatal("Apple TV tvOS with native HLS must keep TS support")
+	}
+	explicitTS := client{
+		Device:     device{ID: "web-ts", Platform: "web"},
+		Containers: []string{"mp4", "mpegts"},
+		MSE:        true,
+	}
+	if !velaSupportsTS(explicitTS) {
+		t.Fatal("client explicitly declaring mpegts must keep TS support")
+	}
+}
+
+func TestVelaMultiviewUpgradeInPlaceHandoverAndCapacityErrors(t *testing.T) {
+	live := newMVBrokerLiveFake()
+	h, _ := newVelaMultiviewHarness(t, live)
+
+	do := func(method, path string, payload any) (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		var body *bytes.Reader
+		if payload != nil {
+			b, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = bytes.NewReader(b)
+		} else {
+			body = bytes.NewReader(nil)
+		}
+		r := httptest.NewRequest(method, path, body)
+		r.Header.Set("Authorization", "Bearer tok-1")
+		r.Header.Set("X-Vela-Device-Id", "web-1")
+		r.Header.Set("X-Vela-Version", "0.2.0")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var doc map[string]any
+		if w.Body.Len() > 0 {
+			_ = json.Unmarshal(w.Body.Bytes(), &doc)
+		}
+		return w, doc
+	}
+
+	webClient := map[string]any{
+		"device":      map[string]any{"id": "web-1", "name": "Chrome", "platform": "web", "appVersion": "0.2.0"},
+		"containers":  []string{"mp4", "webm"},
+		"videoCodecs": []string{"h264"},
+		"audioCodecs": []string{"aac"},
+		"hls":         false,
+		"mse":         true,
+		"maxHeight":   1080,
+	}
+
+	w, groupDoc := do(http.MethodPost, "/vela/v0/multiview", map[string]any{"device": "web-1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /multiview = %d %s", w.Code, w.Body.String())
+	}
+	groupID := groupDoc["groupId"].(string)
+
+	// 1. Open tile 0 at 480p -> session A ready, and client caps received fmp4 HLS container!
+	w, sessADoc := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+		"idempotencyKey": "tile-0-480",
+		"channelId":      "showcase-chroma-80",
+		"client":         webClient,
+		"multiview":      map[string]any{"groupId": groupID, "tile": 0, "maxHeight": 480},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("open tile 0 = %d %s", w.Code, w.Body.String())
+	}
+	sessAID := sessADoc["sessionId"].(string)
+	sessAURL := sessADoc["paths"].([]any)[0].(map[string]any)["url"].(string)
+
+	live.mu.Lock()
+	var seenCaps core.ClientCaps
+	for _, caps := range live.active {
+		seenCaps = caps
+	}
+	live.mu.Unlock()
+	if len(seenCaps.HLSContainers) != 1 || seenCaps.HLSContainers[0] != "fmp4" {
+		t.Fatalf("web tile HLSContainers = %v, want [fmp4]", seenCaps.HLSContainers)
+	}
+
+	// 2. Upgrade in place using binding spec shorthand {kind: "replan", maxHeight: 1080}
+	// (no idempotencyKey / generations required on replan).
+	w, replanDoc := do(http.MethodPost, "/vela/v0/sessions/"+sessAID+"/commands", map[string]any{
+		"kind":      "replan",
+		"maxHeight": 1080,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replan 480->1080 = %d %s", w.Code, w.Body.String())
+	}
+	if replanDoc["sessionId"] != sessAID {
+		t.Fatalf("replan changed sessionId: got %v, want %q", replanDoc["sessionId"], sessAID)
+	}
+	if replanDoc["sourceGeneration"] != float64(2) {
+		t.Fatalf("replan sourceGeneration = %v, want 2", replanDoc["sourceGeneration"])
+	}
+	upgradedURL := replanDoc["paths"].([]any)[0].(map[string]any)["url"].(string)
+	if upgradedURL == sessAURL {
+		t.Fatalf("replan 480->1080 did not rotate URL")
+	}
+
+	// 3. Replan again when source cannot go higher (already at 1080p -> ask 2160p):
+	// returns 200 with plan COMPLETELY unchanged (same revision, sourceGeneration, URL).
+	revBefore := replanDoc["revision"]
+	w, unchangedDoc := do(http.MethodPost, "/vela/v0/sessions/"+sessAID+"/commands", map[string]any{
+		"kind":      "replan",
+		"maxHeight": 2160,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replan unchanged = %d %s", w.Code, w.Body.String())
+	}
+	if unchangedDoc["revision"] != revBefore ||
+		unchangedDoc["sourceGeneration"] != float64(2) ||
+		unchangedDoc["paths"].([]any)[0].(map[string]any)["url"] != upgradedURL {
+		t.Fatalf("replan when source cannot go higher mutated plan: before rev=%v url=%q, got %#v", revBefore, upgradedURL, unchangedDoc)
+	}
+
+	// Stale generation when explicitly sent is still rejected with 409 stale_generation.
+	wStale, staleDoc := do(http.MethodPost, "/vela/v0/sessions/"+sessAID+"/commands", map[string]any{
+		"idempotencyKey":   "stale-replan",
+		"kind":             "replan",
+		"maxHeight":        480,
+		"sourceGeneration": 1,
+		"seekGeneration":   1,
+	})
+	if wStale.Code != http.StatusConflict || staleDoc["error"].(map[string]any)["code"] != "stale_generation" {
+		t.Fatalf("stale replan = %d %#v, want 409 stale_generation", wStale.Code, staleDoc)
+	}
+
+	// 4. Capacity failure on handover POST /playback returns typed playback_capacity (NEVER "cancelled"),
+	// and keeps session A alive and ready!
+	live.mu.Lock()
+	live.capErr = func(_ string, _ core.ClientCaps) error {
+		return frontend.ErrTooManyTranscodes
+	}
+	live.mu.Unlock()
+	wCap, capDoc := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+		"idempotencyKey": "handover-cap-fail",
+		"channelId":      "showcase-chroma-80",
+		"client":         webClient,
+		"multiview":      map[string]any{"groupId": groupID, "tile": 0, "maxHeight": 1080},
+	})
+	if wCap.Code != http.StatusServiceUnavailable {
+		t.Fatalf("capacity error status = %d, want 503; body=%s", wCap.Code, wCap.Body.String())
+	}
+	errObj := capDoc["error"].(map[string]any)
+	if errObj["class"] != "capacity" || errObj["code"] != "playback_capacity" {
+		t.Fatalf("capacity error = %#v, want class=capacity code=playback_capacity (never cancelled)", errObj)
+	}
+	sessionState := func(doc map[string]any) any {
+		if plan, ok := doc["plan"].(map[string]any); ok {
+			return plan["state"]
+		}
+		return doc["state"]
+	}
+
+	// Session A must STILL be ready (not ended)!
+	wA, getADoc := do(http.MethodGet, "/vela/v0/sessions/"+sessAID, nil)
+	if wA.Code != http.StatusOK || sessionState(getADoc) != "ready" {
+		t.Fatalf("GET /sessions/A after failed handover = %d state=%v, want 200 ready; body=%s", wA.Code, sessionState(getADoc), wA.Body.String())
+	}
+
+	// 5. Successful handover POST /playback keeps session A ready WHILE session B tunes,
+	// and ends session A only AFTER session B is ready!
+	inTune := make(chan struct{})
+	releaseTune := make(chan struct{})
+	live.mu.Lock()
+	live.capErr = func(_ string, _ core.ClientCaps) error {
+		close(inTune)
+		<-releaseTune
+		return nil
+	}
+	live.mu.Unlock()
+
+	type resp struct {
+		w   *httptest.ResponseRecorder
+		doc map[string]any
+	}
+	handoverDone := make(chan resp, 1)
+	go func() {
+		wb, docb := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+			"idempotencyKey": "handover-ok",
+			"channelId":      "showcase-chroma-80",
+			"client":         webClient,
+			"multiview":      map[string]any{"groupId": groupID, "tile": 0, "maxHeight": 1080},
+		})
+		handoverDone <- resp{wb, docb}
+	}()
+
+	<-inTune
+	// While session B is tuning, session A MUST still be ready!
+	wDuring, duringDoc := do(http.MethodGet, "/vela/v0/sessions/"+sessAID, nil)
+	if wDuring.Code != http.StatusOK || sessionState(duringDoc) != "ready" {
+		close(releaseTune)
+		t.Fatalf("GET /sessions/A DURING handover tune = %d state=%v, want 200 ready; body=%s", wDuring.Code, sessionState(duringDoc), wDuring.Body.String())
+	}
+	close(releaseTune)
+
+	resB := <-handoverDone
+	if resB.w.Code != http.StatusOK || resB.doc["state"] != "ready" {
+		t.Fatalf("handover POST /playback = %d %s", resB.w.Code, resB.w.Body.String())
+	}
+	if resB.doc["sessionId"] == sessAID {
+		t.Fatal("handover POST /playback should create a new session B")
+	}
+	if live.count() != 1 {
+		t.Fatalf("expected 1 active live backend after handover commit, got %d", live.count())
+	}
+}

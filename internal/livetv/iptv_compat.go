@@ -18,6 +18,8 @@ func (s *Service) relayPlan(ss *session, info core.MediaInfo) (dec core.Decision
 	steady = ss.steadyRefused == "" && s.screenStyle(ss.info.Channel, false) != "error" && (!dec.VideoCopy || !dec.AudioCopy)
 	if relayTSOnly(ss.caps) {
 		dec.Container = "mpegts"
+	} else if broadcastUsesFMP4(ss.caps) {
+		dec.Container = transcode.ContainerFMP4
 	}
 	// Use the owner segment target. Copy cuts at the first source keyframe
 	// after it, so a long source GOP may raise the playlist target.

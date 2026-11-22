@@ -72,7 +72,11 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	default:
 		return "", &frontend.SessionBusyError{RetryAfter: time.Second}
 	}
-	unlock, err := b.gates.Acquire(ctx, fmt.Sprintf("broker/owner/%d/%s", s.public.ViewerID, s.clientID))
+	gateKey := ownerGateKey(s.public.ViewerID, s.clientID)
+	if s.live && s.multiviewGroup != "" {
+		gateKey = tileGateKey(s.public.ViewerID, s.clientID, s.multiviewGroup, s.multiviewTile)
+	}
+	unlock, err := b.gates.Acquire(ctx, gateKey)
 	if err != nil {
 		return "", err
 	}

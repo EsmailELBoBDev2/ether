@@ -48,6 +48,7 @@ type encoderLifetime struct {
 	encoding        atomic.Bool
 	everEncoded     bool
 	runs            atomic.Int32
+	multiviewGroup  string
 }
 
 type encoderWork struct {

@@ -343,137 +343,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	deliveryClass := "original_http"
-	if format == frontend.StreamHLS {
-		deliveryClass = "hls"
-	}
-	var clientASSStyling bool
-	if b.Context.Deliveries != nil {
-		if delivCap, ok := b.Context.Deliveries[deliveryClass]; ok {
-			clientASSStyling = delivCap.Subtitles.ASSStyling
-		}
-	}
-	requireAuthoredFidelity := strings.EqualFold(b.SubtitleFidelity, "preserve")
-	fidelityPolicy := "allow_simplified_rendering"
-	if requireAuthoredFidelity {
-		fidelityPolicy = "require_authored_fidelity"
-	}
-	_, hasSubtitleArtifacts := i.host.Sessions.(frontend.SessionSubtitleArtifacts)
-	assStylingPreserved := false
-	selected := map[string]any{}
-	inventory := []any{}
-	subtitle := map[string]any{"mode": "off"}
-	ordinal := 0
-	audioOrdinal := 0
-	// Original-file playback demuxes every embedded track in the player
-	// (embedded_subtitles_v1). A track it renders natively needs no server
-	// artifact: the plan names its stream and the subtitle is on screen as
-	// soon as the video is, with no whole-file extraction.
-	native := func(track frontend.StreamInfo) bool {
-		if format != frontend.StreamDirect || track.External || track.ExternalURL != "" || !slices.Contains(b.Features, "embedded_subtitles_v1") {
-			return false
-		}
-		return b.nativeEmbedded(plan.Media.Container, track.Codec)
-	}
-	// hls_subtitle_renditions_v1 covers a transcode; a copy remux needs
-	// hls_remux_subtitle_renditions_v1 as well.
-	hlsRendition := func(track frontend.StreamInfo) map[string]any {
-		if format != frontend.StreamHLS || liveFile || track.External || !cap.Client.HLSTextRenditions || (delivery == "server_remux_hls" && !slices.Contains(b.Features, "hls_remux_subtitle_renditions_v1")) {
-			return nil
-		}
-		if _, err := i.host.Sessions.SubtitleURL(r.Context(), access, session.ID, track.Index, "hls"); err != nil {
-			return nil
-		}
-		return map[string]any{"group_id": frontend.HLSTextRenditionGroup, "name": frontend.HLSTextRenditionName(track.Title, track.Language, track.Index), "format": "vtt", "mime_type": "text/vtt"}
-	}
-	for _, track := range plan.Media.Streams {
-		if track.Type == "audio" {
-			if track.Index == plan.Decision.AudioStream {
-				selected["audio"] = map[string]any{"id": "file:" + b.FileID + ":audio:" + strconv.Itoa(audioOrdinal), "index": audioOrdinal}
-			}
-			audioOrdinal++
-		}
-		if track.Type != "subtitle" {
-			continue
-		}
-		trackID := "file:" + b.FileID + ":subtitle:" + strconv.Itoa(ordinal)
-		entry := map[string]any{"track_id": trackID, "combined_index": ordinal, "source": "embedded", "codec": track.Codec, "language": track.Language, "label": track.Title, "forced": track.Forced, "default": track.Default, "hearing_impaired": false, "delivery": "burn_in_only"}
-		if track.External {
-			entry["source"] = "external"
-		}
-		isEmbeddedASS := !track.External && frontend.IsASSSubtitleCodec(track.Codec)
-		// Availability is resolved when the client requests the artifact. Do
-		// not scan every subtitle track or extract media during startup.
-		authoredASS := isEmbeddedASS && hasSubtitleArtifacts
-		preserveTrackASS := authoredASS && clientASSStyling
-		url, e := i.host.Sessions.SubtitleURL(r.Context(), access, session.ID, track.Index, "vtt")
-		if e == nil && strings.HasPrefix(url, "/sessions/media/") {
-			entry["delivery"] = "sidecar"
-			ext := ".vtt"
-			if preserveTrackASS {
-				ext = ".ass"
-			}
-			entry["url"] = "/api/v2/stream/" + session.ID + "/subtitles/" + strconv.Itoa(track.Index) + ext
-			if sync := i.subtitleSyncMS(r, v); sync != 0 {
-				entry["url"] = entry["url"].(string) + "?sync_ms=" + strconv.Itoa(sync)
-			}
-			if authoredASS {
-				entry["font_bundle_url"] = "/api/v2/stream/" + session.ID + "/subtitles/" + strconv.Itoa(track.Index) + "/fonts"
-			}
-		}
-		nativeTrack := native(track)
-		if url, ok := entry["url"].(string); ok && nativeTrack {
-			// The player switches to this stream in its own demux; the row
-			// names it on the URL, where the inventory schema allows it.
-			sep := "?"
-			if strings.Contains(url, "?") {
-				sep = "&"
-			}
-			entry["url"] = url + sep + "embedded_stream_index=" + strconv.Itoa(track.Index)
-		}
-		inventory = append(inventory, entry)
-		if track.Index == plan.Decision.SubtitleStream {
-			selected["subtitle"] = map[string]any{"id": trackID, "index": ordinal}
-			if plan.Decision.BurnSubtitles {
-				subtitle["mode"] = "burn_in"
-				subtitle["track_id"] = trackID
-			} else if nativeTrack {
-				subtitle["mode"] = "render"
-				subtitle["track_id"] = trackID
-				subtitle["embedded"] = map[string]any{"stream_index": track.Index}
-			} else if rendition := hlsRendition(track); rendition != nil {
-				subtitle["mode"] = "convert"
-				subtitle["track_id"] = trackID
-				subtitle["hls_rendition"] = rendition
-			} else if url, e := entry["url"].(string); e {
-				if preserveTrackASS {
-					subtitle["mode"] = "render"
-					subtitle["track_id"] = trackID
-					subtitle["artifact"] = map[string]any{"url": url, "format": "ass", "mime_type": "text/x-ssa", "timing_origin_seconds": 0}
-					// The artifact endpoint must still validate completeness; startup
-					// cannot claim that authored bytes have already been delivered.
-				} else {
-					// "preserve" is the app's default preference, sent on every
-					// start. Plain text (SubRip, WebVTT, mov_text) converts to
-					// WebVTT without losing anything. Only authored ASS styling
-					// can be simplified, and then the plan says so instead of
-					// refusing to play.
-					if isEmbeddedASS {
-						fidelityPolicy = "allow_simplified_rendering"
-					}
-					subtitle["mode"] = "convert"
-					subtitle["track_id"] = trackID
-					subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
-				}
-			} else {
-				// No deliverable artifact for the chosen track: start without
-				// subtitles rather than fail the start.
-				delete(selected, "subtitle")
-			}
-		}
-		ordinal++
-	}
-	subtitle["inventory"] = inventory
+	selected, subtitle, fidelityPolicy, requireAuthoredFidelity, assStylingPreserved := i.siloTracks(siloTrackInputs{r: r, viewer: v, access: access, sessionID: session.ID, start: b, media: plan.Media, format: format, delivery: delivery, live: liveFile, hlsRenditions: cap.Client.HLSTextRenditions, audioStream: plan.Decision.AudioStream, subtitleStream: plan.Decision.SubtitleStream, burn: plan.Decision.BurnSubtitles})
 	stream := map[string]any{"url": media, "protocol": proto, "container": plan.Media.Container, "mime_type": mime, "headers": map[string]string{"X-Silo-Device-Id": d.ID}, "header_refresh": "none"}
 	if format == frontend.StreamHLS {
 		stream["container"] = "hls"
@@ -1449,4 +1319,160 @@ func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, repla
 		return
 	}
 	reply(w, http.StatusOK, document)
+}
+
+// siloTrackInputs are what a plan's track selection and subtitle delivery
+// depend on: the start request's declared abilities, the session's media and
+// delivery, and the selected stream indices.
+type siloTrackInputs struct {
+	r              *http.Request
+	viewer         *frontend.Viewer
+	access         frontend.SessionAccess
+	sessionID      string
+	start          startRequest
+	media          frontend.MediaInfo
+	format         frontend.StreamFormat
+	delivery       string
+	live           bool
+	hlsRenditions  bool
+	audioStream    int
+	subtitleStream int
+	burn           bool
+}
+
+// siloTracks builds a plan's selected tracks and subtitle decision, with the
+// subtitle inventory, for one selection.
+func (i *instance) siloTracks(in siloTrackInputs) (selected, subtitle map[string]any, fidelityPolicy string, requireAuthoredFidelity, assStylingPreserved bool) {
+	deliveryClass := "original_http"
+	if in.format == frontend.StreamHLS {
+		deliveryClass = "hls"
+	}
+	var clientASSStyling bool
+	if in.start.Context.Deliveries != nil {
+		if delivCap, ok := in.start.Context.Deliveries[deliveryClass]; ok {
+			clientASSStyling = delivCap.Subtitles.ASSStyling
+		}
+	}
+	requireAuthoredFidelity = strings.EqualFold(in.start.SubtitleFidelity, "preserve")
+	fidelityPolicy = "allow_simplified_rendering"
+	if requireAuthoredFidelity {
+		fidelityPolicy = "require_authored_fidelity"
+	}
+	_, hasSubtitleArtifacts := i.host.Sessions.(frontend.SessionSubtitleArtifacts)
+	assStylingPreserved = false
+	selected = map[string]any{}
+	inventory := []any{}
+	subtitle = map[string]any{"mode": "off"}
+	ordinal := 0
+	audioOrdinal := 0
+	// Original-file playback demuxes every embedded track in the player
+	// (embedded_subtitles_v1). A track it renders natively needs no server
+	// artifact: the plan names its stream and the subtitle is on screen as
+	// soon as the video is, with no whole-file extraction.
+	native := func(track frontend.StreamInfo) bool {
+		if in.format != frontend.StreamDirect || track.External || track.ExternalURL != "" || !slices.Contains(in.start.Features, "embedded_subtitles_v1") {
+			return false
+		}
+		return in.start.nativeEmbedded(in.media.Container, track.Codec)
+	}
+	// hls_subtitle_renditions_v1 covers a transcode; a copy remux needs
+	// hls_remux_subtitle_renditions_v1 as well.
+	hlsRendition := func(track frontend.StreamInfo) map[string]any {
+		if in.format != frontend.StreamHLS || in.live || track.External || !in.hlsRenditions || (in.delivery == "server_remux_hls" && !slices.Contains(in.start.Features, "hls_remux_subtitle_renditions_v1")) {
+			return nil
+		}
+		if _, err := i.host.Sessions.SubtitleURL(in.r.Context(), in.access, in.sessionID, track.Index, "hls"); err != nil {
+			return nil
+		}
+		return map[string]any{"group_id": frontend.HLSTextRenditionGroup, "name": frontend.HLSTextRenditionName(track.Title, track.Language, track.Index), "format": "vtt", "mime_type": "text/vtt"}
+	}
+	for _, track := range in.media.Streams {
+		if track.Type == "audio" {
+			if track.Index == in.audioStream {
+				selected["audio"] = map[string]any{"id": "file:" + in.start.FileID + ":audio:" + strconv.Itoa(audioOrdinal), "index": audioOrdinal}
+			}
+			audioOrdinal++
+		}
+		if track.Type != "subtitle" {
+			continue
+		}
+		trackID := "file:" + in.start.FileID + ":subtitle:" + strconv.Itoa(ordinal)
+		entry := map[string]any{"track_id": trackID, "combined_index": ordinal, "source": "embedded", "codec": track.Codec, "language": track.Language, "label": track.Title, "forced": track.Forced, "default": track.Default, "hearing_impaired": false, "delivery": "burn_in_only"}
+		if track.External {
+			entry["source"] = "external"
+		}
+		isEmbeddedASS := !track.External && frontend.IsASSSubtitleCodec(track.Codec)
+		// Availability is resolved when the client requests the artifact. Do
+		// not scan every subtitle track or extract media during startup.
+		authoredASS := isEmbeddedASS && hasSubtitleArtifacts
+		preserveTrackASS := authoredASS && clientASSStyling
+		url, e := i.host.Sessions.SubtitleURL(in.r.Context(), in.access, in.sessionID, track.Index, "vtt")
+		if e == nil && strings.HasPrefix(url, "/sessions/media/") {
+			entry["delivery"] = "sidecar"
+			ext := ".vtt"
+			if preserveTrackASS {
+				ext = ".ass"
+			}
+			entry["url"] = "/api/v2/stream/" + in.sessionID + "/subtitles/" + strconv.Itoa(track.Index) + ext
+			if sync := i.subtitleSyncMS(in.r, in.viewer); sync != 0 {
+				entry["url"] = entry["url"].(string) + "?sync_ms=" + strconv.Itoa(sync)
+			}
+			if authoredASS {
+				entry["font_bundle_url"] = "/api/v2/stream/" + in.sessionID + "/subtitles/" + strconv.Itoa(track.Index) + "/fonts"
+			}
+		}
+		nativeTrack := native(track)
+		if url, ok := entry["url"].(string); ok && nativeTrack {
+			// The player switches to this stream in its own demux; the row
+			// names it on the URL, where the inventory schema allows it.
+			sep := "?"
+			if strings.Contains(url, "?") {
+				sep = "&"
+			}
+			entry["url"] = url + sep + "embedded_stream_index=" + strconv.Itoa(track.Index)
+		}
+		inventory = append(inventory, entry)
+		if track.Index == in.subtitleStream {
+			selected["subtitle"] = map[string]any{"id": trackID, "index": ordinal}
+			if in.burn {
+				subtitle["mode"] = "burn_in"
+				subtitle["track_id"] = trackID
+			} else if nativeTrack {
+				subtitle["mode"] = "render"
+				subtitle["track_id"] = trackID
+				subtitle["embedded"] = map[string]any{"stream_index": track.Index}
+			} else if rendition := hlsRendition(track); rendition != nil {
+				subtitle["mode"] = "convert"
+				subtitle["track_id"] = trackID
+				subtitle["hls_rendition"] = rendition
+			} else if url, e := entry["url"].(string); e {
+				if preserveTrackASS {
+					subtitle["mode"] = "render"
+					subtitle["track_id"] = trackID
+					subtitle["artifact"] = map[string]any{"url": url, "format": "ass", "mime_type": "text/x-ssa", "timing_origin_seconds": 0}
+					// The artifact endpoint must still validate completeness; startup
+					// cannot claim that authored bytes have already been delivered.
+				} else {
+					// "preserve" is the app's default preference, sent on every
+					// start. Plain text (SubRip, WebVTT, mov_text) converts to
+					// WebVTT without losing anything. Only authored ASS styling
+					// can be simplified, and then the plan says so instead of
+					// refusing to play.
+					if isEmbeddedASS {
+						fidelityPolicy = "allow_simplified_rendering"
+					}
+					subtitle["mode"] = "convert"
+					subtitle["track_id"] = trackID
+					subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
+				}
+			} else {
+				// No deliverable artifact for the chosen track: start without
+				// subtitles rather than fail the start.
+				delete(selected, "subtitle")
+			}
+		}
+		ordinal++
+	}
+	subtitle["inventory"] = inventory
+	return selected, subtitle, fidelityPolicy, requireAuthoredFidelity, assStylingPreserved
 }

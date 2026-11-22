@@ -1498,7 +1498,29 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		}
 		return nil
 	}
-	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart {
+	if key.Kind() == core.KindSmart && s.d.Collections != nil {
+		// Artwork needs only a visible collection with one visible member;
+		// loading every member (a genre collection holds thousands) per
+		// poster made a Collections page take most of a minute.
+		u, err := s.viewer(ctx, v)
+		if err != nil {
+			return err
+		}
+		c, err := s.d.Collections.Get(ctx, u, key)
+		if err != nil {
+			return err
+		}
+		if !s.d.Visibility.CollectionAllowed(u, c) || (c.OwnerUserID != 0 && c.OwnerUserID != u.ID) {
+			return core.ErrNotFound
+		}
+		ok, err := s.collectionHasVisibleMember(ctx, u, *c)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return core.ErrNotFound
+		}
+	} else if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart {
 		if _, err := s.Item(ctx, frontend.ItemRequest{Viewer: v, Device: device, Key: key}); err != nil {
 			return err
 		}

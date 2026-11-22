@@ -37,6 +37,9 @@ type Policy struct {
 	BlockedKeywords []string      `json:"blockedKeywords"`
 	RemoteDisabled  bool          `json:"remoteDisabled"`
 	MaxBitrateKbps  int           `json:"maxBitrateKbps"`
+	// VideoTranscodingDisabled plays this viewer's video only as it is
+	// (direct play or remux); the server-wide switch still applies when set.
+	VideoTranscodingDisabled bool `json:"videoTranscodingDisabled,omitempty"`
 	// AllowedHours is empty for any time, otherwise hours 0..23 in Timezone.
 	AllowedHours []int  `json:"allowedHours"`
 	Timezone     string `json:"timezone"`
@@ -505,6 +508,11 @@ func (s *Service) UserPolicy(u *core.User) *core.User {
 	return &out
 }
 func (s *Service) BitrateLimit(u *core.User) int { return s.ForUser(u).MaxBitrateKbps }
+
+// VideoTranscodingDisabled reports the owner's per-viewer switch.
+func (s *Service) VideoTranscodingDisabled(u *core.User) bool {
+	return u != nil && s.ForUser(u).VideoTranscodingDisabled
+}
 
 func (s *Service) Restricted(u *core.User) bool {
 	if u == nil {

@@ -31,6 +31,20 @@ func (b *Broker) profileDiagnostic(event ProfileDiagnostic) {
 
 const reasonVideoTranscodingOff = "needs a video transcode, and transcoding is off"
 
+// videoOff is videoTranscodingOff for one request: the server switch, or the
+// owner's switch for this viewer carried on the caps.
+func (b *Broker) videoOff(caps core.ClientCaps) bool {
+	return caps.NoVideoTranscode || b.videoTranscodingOff()
+}
+
+// stampViewerTranscoding marks caps for a viewer whose video must not be
+// re-encoded, so the resolver, the decision and the ladder all see it.
+func (b *Broker) stampViewerTranscoding(v *core.Viewer, caps *core.ClientCaps) {
+	if b != nil && v != nil && b.deps.ViewerVideoTranscodingOff != nil && b.deps.ViewerVideoTranscodingOff(v) {
+		caps.NoVideoTranscode = true
+	}
+}
+
 func (b *Broker) videoTranscodingOff() bool {
 	if b == nil {
 		return false
@@ -1125,7 +1139,7 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		}
 		rejected = append(rejected, frontend.RejectedPlaybackPath{Path: path, Reasons: []string{reason}})
 	}
-	videoOff := req.Channel == "" && b.videoTranscodingOff()
+	videoOff := req.Channel == "" && b.videoOff(req.Caps)
 	r := DecisionRequest{Session: ps, Caps: req.Caps, Options: req.Intent.Options, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true, NoVideoTranscode: videoOff}
 	d, err := Decide(b.deps.Playback, b.deps.Transcoder, r)
 	if err == nil && d.Reason == "remux for failover safety: health unverified" && b.deps.Logger != nil {

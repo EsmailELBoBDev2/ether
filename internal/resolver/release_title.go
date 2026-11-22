@@ -147,7 +147,7 @@ func (s *Service) titleMismatchIdentityOnly(rel core.Release, t *core.Title, sre
 }
 
 func (s *Service) titleMismatchPolicyOK(rel core.Release, t *core.Title, profile core.QualityProfile, rcfg config.Resolver, req core.ResolveRequest, preferred bool) bool {
-	videoOff, remoteCap := s.transcodeSettings()
+	videoOff, remoteCap := s.transcodeSettingsFor(req.Client)
 	reason := rejectPolicyWithTranscode(rel, t, profile, req.Client, preferred, preferred && rcfg.OfferHigherVersions, videoOff, remoteCap)
 	if !videoOff && reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
 		caps := req.Client

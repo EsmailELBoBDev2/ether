@@ -544,6 +544,9 @@ type ClientCaps struct {
 	Containers           []string            `json:"containers"`                     // mp4, mkv, mpegts
 	HLSContainers        []string            `json:"hlsContainers,omitempty"`        // explicit segmented output targets; distinct from direct-play containers
 	MaxBitrateKbps       int                 `json:"maxBitrateKbps"`                 // 0 = unlimited
+	// NoVideoTranscode is the owner's per-viewer switch: this viewer's video is
+	// played or remuxed as it is, never re-encoded. Audio may still convert.
+	NoVideoTranscode bool `json:"noVideoTranscode,omitempty"`
 	DefaultRemoteBitrate bool                `json:"defaultRemoteBitrate,omitempty"` // true when MaxBitrateKbps came from the server's default remote cap rather than a client limitation
 	SubtitleCodecs       []string            `json:"subtitleCodecs"`                 // native image/text subtitle rendering
 	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses defaults unless DVProfilesExplicit

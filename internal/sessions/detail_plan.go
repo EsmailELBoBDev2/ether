@@ -81,6 +81,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 			req.Caps.MaxBitrateKbps = limit
 		}
 	}
+	b.stampViewerTranscoding(viewer, &req.Caps)
 	if limit := b.deps.BitrateLimit(viewer); limit > 0 {
 		if req.Caps.MaxBitrateKbps == 0 || limit < req.Caps.MaxBitrateKbps {
 			req.Caps.MaxBitrateKbps = limit
@@ -236,7 +237,7 @@ func (b *Broker) detailDecision(ctx context.Context, req frontend.PlanRequest, v
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	p.DirectPlay, p.DirectStream, p.Transcoding = b.planAlternatives(source, req)
-	p.VideoTranscodingOff = req.Channel == "" && b.videoTranscodingOff()
+	p.VideoTranscodingOff = req.Channel == "" && b.videoOff(req.Caps)
 	p.HLS, p.HLSContainer = b.hlsPlanOutput(source, req, p.Decision)
 	p.HTTP, p.HTTPContainer = b.httpPlanOutput(source, req, p.Decision)
 	p.Media = publicMedia(source.Info)

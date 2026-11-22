@@ -363,6 +363,19 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               }
             />
             <SettingsRow
+              title={t("No video transcoding")}
+              description={t(
+                "Play this viewer's video only as it is. Ether picks a version their device can play and never converts the picture for them. Audio can still be converted.",
+              )}
+              control={
+                <Switch
+                  aria-label={t("No video transcoding")}
+                  checked={Boolean(p.videoTranscodingDisabled)}
+                  onChange={(e) => patchPolicy({ videoTranscodingDisabled: e.target.checked })}
+                />
+              }
+            />
+            <SettingsRow
               title={t("Maximum bitrate")}
               description={t("In kbps. 0 uses the server default.")}
               control={

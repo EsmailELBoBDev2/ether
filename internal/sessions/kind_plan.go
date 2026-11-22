@@ -15,6 +15,7 @@ import (
 // resolve version handle, reserve, gate, prepare, validate exact version,
 // decide, store.
 func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core.Viewer) (frontend.PlayPlan, error) {
+	b.stampViewerTranscoding(v, &req.Caps)
 	in, err := b.deps.KindSource(ctx, v, req.Item)
 	if err != nil || in == nil {
 		return frontend.PlayPlan{}, core.ErrNotFound
@@ -248,5 +249,5 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
 }

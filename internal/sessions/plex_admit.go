@@ -83,6 +83,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 	// policy clamping. Apply the same current ceilings before Decide and
 	// storing the plan, so Open does not mistake an omitted limit for a
 	// policy violation. Open still rechecks for policy changes.
+	b.stampViewerTranscoding(req.Viewer, &caps)
 	limit := b.deps.BitrateLimit(req.Viewer)
 	if caps.Remote && b.deps.RemoteBitrateLimit != nil {
 		if remote := b.deps.RemoteBitrateLimit(); remote > 0 && (limit == 0 || remote < limit) {
@@ -98,7 +99,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 		if opts.MaxBitrateKbps > 0 && (existing == 0 || opts.MaxBitrateKbps < existing) {
 			existing = opts.MaxBitrateKbps
 		}
-		allowTC := req.Channel != "" || !b.videoTranscodingOff()
+		allowTC := req.Channel != "" || !b.videoOff(caps)
 		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, ps.ID, caps.Remote, allowTC, existing, media.BitrateKbps); fromBudget && capKbps > 0 {
 			budgetCapKbps = capKbps
 			if limit == 0 || capKbps < limit {
@@ -123,7 +124,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 		protocol = string(req.Protocol)
 	}
 	preferRemux := admitted.PreferRemux || req.Intent.PreferRemux
-	videoOff := req.Channel == "" && b.videoTranscodingOff()
+	videoOff := req.Channel == "" && b.videoOff(caps)
 	dec, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{
 		Session: ps, Caps: caps, Options: opts, PreferRemux: preferRemux,
 		Protocol: protocol, RemoteMaxBitrateKbps: admitted.RemoteMaxBitrateKbps,

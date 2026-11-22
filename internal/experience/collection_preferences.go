@@ -529,8 +529,10 @@ func (s *Service) ownedMemberCounter(ctx context.Context, v *core.User, stored *
 		return nil, nil
 	}
 	return func(c core.Collection) (int, error) {
-		key, section := c.Key.CollectionSection()
-		if c.Upcoming || c.Key.IsEphemeral() || key.Kind() != core.KindSmart || section != "" {
+		// A mixed collection's section key counts the same members; the
+		// filter's Type keeps only this section's titles.
+		key, _ := c.Key.CollectionSection()
+		if c.Upcoming || c.Key.IsEphemeral() || key.Kind() != core.KindSmart {
 			return 0, nil
 		}
 		q := f

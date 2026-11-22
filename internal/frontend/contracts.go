@@ -1064,6 +1064,7 @@ type PlanRequest struct {
 	// Channel, or DirectLive must be supplied.
 	Channel    string
 	DirectLive *DirectLiveTarget
+	Multiview  *MultiviewTarget
 	Caps       core.ClientCaps
 	Intent     PlayIntent
 }
@@ -1135,6 +1136,7 @@ type Session struct {
 	Device          core.Device
 	Item            core.RatingKey
 	Channel         string
+	Multiview       *MultiviewTarget
 	Media           *core.MediaInfo
 	StartedAt       time.Time
 	Capabilities    *SessionCapabilities

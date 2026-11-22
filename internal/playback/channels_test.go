@@ -135,3 +135,56 @@ func TestUsenetDerivedLimitLeavesPassthroughIPTV(t *testing.T) {
 		t.Fatalf("an active IPTV channel took a Usenet slot: %v", err)
 	}
 }
+
+func TestMultiviewGroupCountsAsOneStreamInPlaybackManager(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("A", 10000, time.Minute)}, []string{"A"}, func(h *harness, o *Options) {
+		h.cfg.Server.DefaultStreamLimit = 1
+		h.cfg.Server.MaxStreams = 4
+	})
+	mvCaps := func(tile int) core.ClientCaps {
+		c := defaultCaps("vela/tv")
+		c.MultiviewGroup = "mv_group_alpha"
+		c.MultiviewTile = tile
+		return c
+	}
+	// 4 tiles in one multiview group (mixing passthrough + broadcast) count as 1 stream.
+	if err := h.m.BeginChannel(owner, mvCaps(0), "mv-tile-0000000000000000"); err != nil {
+		t.Fatalf("tile 0: %v", err)
+	}
+	if err := h.m.JoinChannel(owner, mvCaps(1), "mv-tile-1111111111111111", "broadcast-ch1"); err != nil {
+		t.Fatalf("tile 1 (broadcast): %v", err)
+	}
+	if err := h.m.BeginChannel(owner, mvCaps(2), "mv-tile-2222222222222222"); err != nil {
+		t.Fatalf("tile 2: %v", err)
+	}
+	if err := h.m.JoinChannel(owner, mvCaps(3), "mv-tile-3333333333333333", "broadcast-ch3"); err != nil {
+		t.Fatalf("tile 3 (broadcast): %v", err)
+	}
+
+	// Another device for the same user is rejected under DefaultStreamLimit=1.
+	if err := h.m.BeginChannel(owner, defaultCaps("vela/phone"), "other-dev-0000000000000000"); !errors.Is(err, core.ErrStreamLimit) {
+		t.Fatalf("other device live bypassed limit: %v", err)
+	}
+	if _, err := h.m.Prepare(context.Background(), owner, movieKey, defaultCaps("vela/phone")); !errors.Is(err, core.ErrStreamLimit) {
+		t.Fatalf("other device VOD bypassed limit: %v", err)
+	}
+
+	// Ordinary VOD on the SAME device supersedes the multiview group and is admitted.
+	vodSameDev, err := h.m.Prepare(context.Background(), owner, movieKey, defaultCaps("vela/tv"))
+	if err != nil {
+		t.Fatalf("same device VOD should be admitted to supersede multiview: %v", err)
+	}
+	h.m.Stop(vodSameDev.ID)
+
+	// Ending one tile keeps the group reserved until all 4 end.
+	h.m.EndChannel("mv-tile-0000000000000000")
+	if err := h.m.BeginChannel(owner, defaultCaps("vela/phone"), "other-dev-0000000000000000"); !errors.Is(err, core.ErrStreamLimit) {
+		t.Fatalf("group freed prematurely after 1 of 4 tiles ended: %v", err)
+	}
+	h.m.EndChannel("mv-tile-1111111111111111")
+	h.m.EndChannel("mv-tile-2222222222222222")
+	h.m.EndChannel("mv-tile-3333333333333333")
+	if err := h.m.BeginChannel(owner, defaultCaps("vela/phone"), "other-dev-0000000000000000"); err != nil {
+		t.Fatalf("group did not release after all 4 tiles ended: %v", err)
+	}
+}

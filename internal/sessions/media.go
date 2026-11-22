@@ -131,6 +131,9 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		if req.Format != frontend.StreamHLS {
 			return "", core.ErrNotAvailable
 		}
+		if req.MaxHeight != nil {
+			return b.replanLive(ctx, viewer, s, *req.MaxHeight)
+		}
 		return path + "live/index.m3u8", nil
 	}
 	if req.Format == frontend.StreamDirect {

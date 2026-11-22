@@ -36,6 +36,10 @@ var ErrLiveGuideStale = errors.New("frontend: live guide snapshot changed")
 // ErrStreamLimit identifies exhausted playback admission.
 var ErrStreamLimit = core.ErrStreamLimit
 
+// ProviderConnectionCapError reports that a live media provider's concurrent
+// connection limit has been reached.
+type ProviderConnectionCapError = core.ProviderConnectionCapError
+
 // ErrDownloadBudget identifies an exceeded temporary download disk budget.
 // It shares identity with the domain error for errors.Is checks.
 var ErrDownloadBudget = core.ErrDownloadBudget

@@ -309,6 +309,25 @@ func (m *Manager) cachedVariantProbes(ctx context.Context, userID int64, key cor
 	return got
 }
 
+func probeReleaseForTitle(rel core.Release, title *core.Title) core.Release {
+	if title == nil || title.Type != core.TypeEpisode || title.Episode <= 0 {
+		return rel
+	}
+	if rel.Protocol != core.ProtocolTorrent && strings.TrimSpace(rel.InfoHash) == "" {
+		return rel
+	}
+	if rel.HasFileOrEpisodeScope() {
+		return rel
+	}
+	t := core.ReleaseTarget{Season: title.Season, Episode: title.Episode}
+	if rel.Target != nil {
+		t = *rel.Target
+		t.Season, t.Episode = title.Season, title.Episode
+	}
+	rel.Target = &t
+	return rel
+}
+
 // WithCachedVariantInfo enriches only the bounded list of offered versions.
 // It checks what Ether already knows first (durable content-ID probes, NZB
 // vault tracks, per-viewer playback probes, and already-fetched debrid file
@@ -328,9 +347,10 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 		}
 		placeholder := release == "" || strings.HasPrefix(release, core.VersionSelectorPrefix)
 		if !placeholder {
+			probeRel := probeReleaseForTitle(out[i].Release, title)
 			// Content-ID probe cache and vault tracks work across viewers and
 			// indexers in O(1) memory without touching the database.
-			if info, ok := m.CachedReleaseProbe(out[i].Release); ok {
+			if info, ok := m.CachedReleaseProbe(probeRel); ok {
 				out[i].Info = info
 			} else if user != nil && user.ID > 0 {
 				var found bool
@@ -351,12 +371,12 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 					}
 				}
 				if !found && m.deps.DebridFileMeta != nil {
-					if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
+					if filePath, size, ok := m.deps.DebridFileMeta(probeRel); ok {
 						enrichEstimatedFromDebridMeta(&out[i], filePath, size)
 					}
 				}
 			} else if m.deps.DebridFileMeta != nil {
-				if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
+				if filePath, size, ok := m.deps.DebridFileMeta(probeRel); ok {
 					enrichEstimatedFromDebridMeta(&out[i], filePath, size)
 				}
 			}

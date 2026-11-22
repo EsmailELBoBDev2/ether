@@ -22,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -456,7 +457,7 @@ func (s *Service) probedMediaFor(rel core.Release) (core.MediaInfo, bool) {
 		return core.MediaInfo{}, false
 	}
 	if rel.ContentID == "" && rel.ID != "" {
-		if cid := s.ContentIDForRelease(rel.ID); cid != "" {
+		if cid := s.ContentIDForRelease(rel.ID); strings.HasPrefix(cid, nzb.ContentIDPrefix) && !strings.Contains(cid, "|file:") {
 			rel.ContentID = cid
 		}
 	}
@@ -3229,7 +3230,7 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 	// A Usenet season pack is narrowed to the episode's files when its NZB
 	// is fetched; other non-torrent releases need no target unless aliases
 	// apply at open-time file verification.
-	if !alternate && len(aliases) == 0 && rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
+	if !alternate && len(aliases) == 0 && rel.Target == nil && rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
 		return rel
 	}
 	if rel.Target != nil {

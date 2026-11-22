@@ -96,3 +96,52 @@ func TestProbePayloadAndCachedFileMetadata(t *testing.T) {
 		t.Fatalf("ProbePayload added %d torrents for existing account item, want 0", rd.adds)
 	}
 }
+
+func TestCachedFileMetadataPerEpisodeAndFileIsolation(t *testing.T) {
+	h := newHarness(t, 1<<20, config.DebridRealDebrid)
+	const packHash = "285f4b2600c4702b546ef71f9747862ecbcf96a7"
+
+	ep4Target := &core.ReleaseTarget{Season: 1, Episode: 4}
+	ep4Rel := core.Release{
+		ID: "aio-ep4", GUID: "btih:" + packHash + "/s1e4",
+		Protocol: core.ProtocolTorrent, InfoHash: packHash,
+		Info:   core.ReleaseInfo{Episodes: []int{4}},
+		Target: ep4Target,
+	}
+	ep5Rel := core.Release{
+		ID: "aio-ep5", GUID: "btih:" + packHash + "/s1e5",
+		Protocol: core.ProtocolTorrent, InfoHash: packHash,
+		Info:   core.ReleaseInfo{Episodes: []int{5}},
+		Target: &core.ReleaseTarget{Season: 1, Episode: 5},
+	}
+	h.svc.savePayload(t.Context(), Payload{
+		Key: payloadKey(ep4Rel), ReleaseID: ep4Rel.ID, Provider: "realdebrid-0",
+		Kind: config.DebridRealDebrid, InfoHash: packHash,
+		Path: "Show.S01E04.2160p.mkv", Size: 7370527522, URL: "https://cdn.example/e04.mkv",
+		Target: ep4Target,
+	})
+
+	// Lookup for E04 without Target (via GUID /s1e4) hits E04; E05 must miss.
+	ep4NoTarget := ep4Rel
+	ep4NoTarget.Target = nil
+	if meta, ok := h.svc.CachedFileMetadata(ep4NoTarget); !ok || meta.Path != "Show.S01E04.2160p.mkv" {
+		t.Fatalf("ep4 CachedFileMetadata = %+v ok=%v", meta, ok)
+	}
+	if meta, ok := h.svc.CachedFileMetadata(ep5Rel); ok {
+		t.Fatalf("ep5 leaked ep4 CachedFileMetadata: %+v", meta)
+	}
+
+	// Explicit FileIndex entries of a multi-file hash must not cross-hit.
+	idx0, idx1 := 0, 1
+	f0 := core.Release{ID: "col-0", Protocol: core.ProtocolTorrent, InfoHash: packHash, Target: &core.ReleaseTarget{FileIndex: &idx0}}
+	f1 := core.Release{ID: "col-1", Protocol: core.ProtocolTorrent, InfoHash: packHash, Target: &core.ReleaseTarget{FileIndex: &idx1}}
+	h.svc.savePayload(t.Context(), Payload{
+		Key: payloadKey(f0), ReleaseID: f0.ID, Provider: "realdebrid-0",
+		Kind: config.DebridRealDebrid, InfoHash: packHash,
+		Path: "Movie.Part1.mkv", Size: 3 << 30, URL: "https://cdn.example/p1.mkv",
+		Target: f0.Target,
+	})
+	if meta, ok := h.svc.CachedFileMetadata(f1); ok {
+		t.Fatalf("file1 leaked file0 CachedFileMetadata: %+v", meta)
+	}
+}

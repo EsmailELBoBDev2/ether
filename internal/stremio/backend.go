@@ -495,6 +495,10 @@ func convertWith(streams []stream, req core.SearchRequest, packs bool, opts conv
 			rel.GUID = "nzb:" + opts.instance + ":" + linkIdentity(name, size, nzbURL, s, req)
 			rel.Protocol = core.ProtocolUsenet
 			rel.NZBURL = nzbURL
+			if !packs && !rel.Info.FullSeason && rel.Target == nil && req.Type == core.TypeEpisode && req.Episode > 0 &&
+				(isSeasonPack(torrent, cmp.Or(opts.season, req.Season)) || (s.FileIdx != nil && *s.FileIdx >= 0)) {
+				rel.Target = &core.ReleaseTarget{Season: req.Season, Episode: req.Episode}
+			}
 			if streamURL != "" && streamURL != nzbURL && !packs {
 				rel.StreamURL, rel.StreamHeaders, rel.StreamOrigin = streamURL, s.requestHeaders(), opts.origin
 			}

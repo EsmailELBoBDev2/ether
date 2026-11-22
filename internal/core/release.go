@@ -202,21 +202,141 @@ func PreFetchContentIDFor(size int64, poster string, uploadDate time.Time) strin
 	return fmt.Sprintf("%s%d|%s|%s", PreFetchContentIDPrefix, bucket, normPoster, uploadDate.UTC().Format("2006-01-02"))
 }
 
+// parseBTIHGUIDSuffix parses a Stremio-style torrent GUID suffix from
+// "btih:<hash>/s<season>e<episode>" or "btih:<hash>/<fileIndex>".
+func parseBTIHGUIDSuffix(guid string) (season, episode int, hasEpisode bool, fileIndex int, hasFileIndex bool) {
+	guid = strings.TrimSpace(guid)
+	if len(guid) <= len("btih:") || !strings.EqualFold(guid[:len("btih:")], "btih:") {
+		return 0, 0, false, 0, false
+	}
+	rest := guid[len("btih:"):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 || slash+1 >= len(rest) {
+		return 0, 0, false, 0, false
+	}
+	suffix := rest[slash+1:]
+	if len(suffix) >= 4 && (suffix[0] == 's' || suffix[0] == 'S') {
+		ePos := strings.IndexAny(suffix[1:], "eE")
+		if ePos > 0 {
+			s, sOK := parseNonNegDigits(suffix[1 : 1+ePos])
+			e, eOK := parseNonNegDigits(suffix[1+ePos+1:])
+			if sOK && eOK && e > 0 {
+				return s, e, true, 0, false
+			}
+		}
+	}
+	if idx, ok := parseNonNegDigits(suffix); ok {
+		return 0, 0, false, idx, true
+	}
+	return 0, 0, false, 0, false
+}
+
+func parseNonNegDigits(s string) (int, bool) {
+	if s == "" || len(s) > 9 {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, true
+}
+
+func (r Release) explicitFileSelectionKey() string {
+	if r.Target == nil {
+		return ""
+	}
+	return r.Target.fileSelectionKey()
+}
+
+func (r Release) guidFileSelectionKey() string {
+	_, _, _, idx, ok := parseBTIHGUIDSuffix(r.GUID)
+	if !ok {
+		return ""
+	}
+	return (ReleaseTarget{FileIndex: &idx}).fileSelectionKey()
+}
+
+// EpisodeScope returns the single season and episode targeted by r when r
+// addresses one episode (via Target, a Stremio-style btih:<hash>/sNeM GUID,
+// or a single-episode torrent parse). Target takes precedence over parsed
+// fields so retargeted or vaulted packs use the requested episode. Untargeted
+// Usenet releases return ok=false so single-episode NZBs preserve unscoped
+// cross-indexer identities.
+func (r Release) EpisodeScope() (season, episode int, ok bool) {
+	if r.Target != nil && r.Target.Season >= 0 && r.Target.Episode > 0 {
+		return r.Target.Season, r.Target.Episode, true
+	}
+	if s, e, hasEp, _, _ := parseBTIHGUIDSuffix(r.GUID); hasEp {
+		return s, e, true
+	}
+	if (r.Protocol == ProtocolTorrent || strings.TrimSpace(r.InfoHash) != "") && !r.Info.FullSeason {
+		if len(r.Info.Episodes) == 1 && r.Info.Episodes[0] > 0 {
+			season := 0
+			if len(r.Info.Seasons) == 1 && r.Info.Seasons[0] >= 0 {
+				season = r.Info.Seasons[0]
+			}
+			return season, r.Info.Episodes[0], true
+		}
+		if len(r.Info.Episodes) == 0 && len(r.Info.AbsoluteEpisodes) == 1 && r.Info.AbsoluteEpisodes[0] > 0 {
+			return 0, r.Info.AbsoluteEpisodes[0], true
+		}
+	}
+	return 0, 0, false
+}
+
+// HasExplicitFileTarget reports whether r narrows a multi-file release to a
+// specific file, archive member, or track rather than an episode.
+func (r Release) HasExplicitFileTarget() bool {
+	if r.explicitFileSelectionKey() != "" {
+		return true
+	}
+	if _, _, ok := r.EpisodeScope(); ok {
+		return false
+	}
+	return r.guidFileSelectionKey() != ""
+}
+
+// HasFileOrEpisodeScope reports whether r narrows a multi-file release to a
+// single file/member/track or a single episode.
+func (r Release) HasFileOrEpisodeScope() bool {
+	if r.explicitFileSelectionKey() != "" {
+		return true
+	}
+	if _, _, ok := r.EpisodeScope(); ok {
+		return true
+	}
+	return r.guidFileSelectionKey() != ""
+}
+
 // ScopedContentID narrows base to the targeted file or episode when r selects
-// one entry inside a multi-file release (an explicit file/member/track target
-// or a season pack episode), so health, blocklist, and probe cache state do
-// not bleed across other files of the same pack.
+// one entry inside a multi-file release (an explicit file/member/track target,
+// an episode target/GUID/single-episode torrent, or a btih:<hash>/<fileIdx>
+// GUID), so health, blocklist, and probe cache state do not bleed across other
+// files or episodes of the same pack.
 func (r Release) ScopedContentID(base string) string {
 	if base == "" {
 		return ""
 	}
-	if r.Target != nil {
-		if sel := r.Target.fileSelectionKey(); sel != "" {
-			return base + "|file:" + sel
+	if sel := r.explicitFileSelectionKey(); sel != "" {
+		suffix := "|file:" + sel
+		if strings.HasSuffix(base, suffix) {
+			return base
 		}
-		if r.Info.FullSeason && r.Target.Episode > 0 {
-			return TargetReleaseID(base, *r.Target)
+		return base + suffix
+	}
+	if season, episode, ok := r.EpisodeScope(); ok {
+		return TargetReleaseID(base, ReleaseTarget{Season: season, Episode: episode})
+	}
+	if sel := r.guidFileSelectionKey(); sel != "" {
+		suffix := "|file:" + sel
+		if strings.HasSuffix(base, suffix) {
+			return base
 		}
+		return base + suffix
 	}
 	return base
 }
@@ -245,9 +365,13 @@ func (r Release) EffectiveContentID() string {
 
 // ProbeContentKeys returns the durable content-identity keys under which
 // probed container metadata for r may be stored or looked up, ordered from
-// strongest (exact content identity) to weakest (pre-fetch identity). Season
-// packs are episode-scoped via ScopedContentID.
+// strongest (exact content identity) to weakest (pre-fetch identity). Multi-file
+// and per-episode releases are scoped via ScopedContentID; untargeted season
+// packs return nil so they never read or pollute a shared bare key.
 func (r Release) ProbeContentKeys() []string {
+	if r.Info.FullSeason && !r.HasFileOrEpisodeScope() {
+		return nil
+	}
 	var out []string
 	add := func(k string) {
 		if k == "" {

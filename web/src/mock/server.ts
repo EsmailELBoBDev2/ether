@@ -5663,8 +5663,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
                   row.name.toLowerCase().includes(String(o.device).toLowerCase())) &&
                 (!o.platform ||
                   row.platform.toLowerCase().includes(String(o.platform).toLowerCase())) &&
-                (!o.product ||
-                  row.app.toLowerCase().includes(String(o.product).toLowerCase())),
+                (!o.product || row.app.toLowerCase().includes(String(o.product).toLowerCase())),
             );
             return { ...row, ...(index >= 0 ? { overrideIndex: index } : {}) };
           }),

@@ -20,13 +20,18 @@ type ClientPolicy struct {
 }
 
 func identityOf(c core.ClientCaps) clientreg.Identity {
-	return identityWith(c.Product, c.Platform, c.Device, c.DeviceName, "", c.Version)
+	id := identityWith(c.Product, c.Platform, c.Device, c.DeviceName, "", c.Version)
+	if id.Device == "" {
+		// ClientCaps historically fall back to the friendly name here.
+		id.Device = c.DeviceName
+	}
+	return id
 }
 
+// identityWith keeps the device name separate: built-in registry rules match
+// only the verified device, so a friendly name such as "Fire TV Stick 4K Max"
+// never unlocks a preset, while owner overrides may match either field.
 func identityWith(product, platform, device, deviceName, model, version string) clientreg.Identity {
-	if device == "" {
-		device = deviceName
-	}
 	return clientreg.Identity{Product: product, Platform: platform, Device: device, DeviceName: deviceName, Model: model, Version: version}
 }
 

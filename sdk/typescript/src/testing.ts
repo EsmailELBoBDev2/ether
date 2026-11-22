@@ -163,6 +163,12 @@ export interface MockHostState {
   /** Optional custom predicate simulating library Rules + viewer policy (#615). */
   kindPolicyFilter?: (kind: string, item: import("./types.ts").KindItem) => boolean;
   sources: import("./types.ts").SourceCandidate[];
+  /** Canned per-indexer status entries returned by kinds.resolveSourcesWithResult (#733). */
+  sourceIndexers?: import("./types.ts").IndexerSearchStatus[];
+  /** Optional custom handler for mock kinds.resolveSources / resolveSourcesWithResult (#733). */
+  sourceHandler?: (
+    q: import("./types.ts").SourceQuery,
+  ) => import("./types.ts").SourceResolveResult | Promise<import("./types.ts").SourceResolveResult>;
   blobs: Map<string, Uint8Array>;
   limits: import("./types.ts").RuntimeLimits;
   folders: Map<string, FolderEntry[]>;
@@ -202,6 +208,8 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     kindHiddenIds: initial?.kindHiddenIds ?? new Map(),
     kindPolicyFilter: initial?.kindPolicyFilter,
     sources: initial?.sources ?? [],
+    sourceIndexers: initial?.sourceIndexers,
+    sourceHandler: initial?.sourceHandler,
     blobs: initial?.blobs ?? new Map(),
     limits: initial?.limits ?? {
       memoryBytes: 32 * 1024 * 1024,
@@ -517,7 +525,24 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         }
         return page;
       },
-      resolveSources: () => [...state.sources],
+      resolveSources: async (q) => {
+        if (state.sourceHandler) {
+          const r = await state.sourceHandler(q);
+          return [...(r?.candidates ?? [])];
+        }
+        return [...state.sources];
+      },
+      resolveSourcesWithResult: async (q) => {
+        if (state.sourceHandler) {
+          const r = await state.sourceHandler(q);
+          const out: import("./types.ts").SourceResolveResult = { candidates: [...(r?.candidates ?? [])] };
+          if (r?.indexers !== undefined) out.indexers = [...r.indexers];
+          return out;
+        }
+        const out: import("./types.ts").SourceResolveResult = { candidates: [...state.sources] };
+        if (state.sourceIndexers !== undefined) out.indexers = [...state.sourceIndexers];
+        return out;
+      },
     },
     cache: {
       put: async (_libraryKey, _name, data) => {

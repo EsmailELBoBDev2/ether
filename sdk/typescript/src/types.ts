@@ -956,6 +956,18 @@ export interface SourceQuery {
   category?: string;
   /** Quality profile name to score video release names against on indexer_search; empty uses default. */
   profile?: string;
+  /** indexer_search only: return once the fastest indexers produce results plus settleMs (default 250 ms), while slower indexers keep filling Ether's search cache. */
+  firstResults?: boolean;
+  /** indexer_search only: grace window in ms after the first matching result arrives (default 250 with firstResults; 0 returns immediately; capped at 30000). */
+  settleMs?: number;
+  /** indexer_search only: minimum deduplicated candidate count required before returning early. */
+  minResults?: number;
+  /** indexer_search only: indexer IDs or display names (case-insensitive) to exclude. Precedence over onlyIndexers. */
+  skipIndexers?: string[];
+  /** indexer_search only: restrict search to matching indexer IDs or display names (case-insensitive). */
+  onlyIndexers?: string[];
+  /** indexer_search only: per-call wait budget in ms, capped at Ether's 30000 ms ceiling (and any shorter parent deadline). */
+  timeoutMs?: number;
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
@@ -967,6 +979,27 @@ export interface SourceQuery {
   candidate?: SourceCandidate;
   /** Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list. */
   fileCount?: number;
+}
+
+export type IndexerSearchState = "answered" | "timed_out" | "skipped" | "error";
+
+/** Per-indexer search outcome entry returned alongside candidates on indexer_search responses. */
+export interface IndexerSearchStatus {
+  indexerId: string;
+  indexer: string;
+  status: IndexerSearchState;
+  /** Raw release count returned by this indexer when status is "answered". */
+  results?: number;
+  /** Elapsed milliseconds until this indexer answered, failed, or the caller stopped waiting (0 for skipped). */
+  ms: number;
+  /** Sanitized short error code when status is "error". */
+  error?: string;
+}
+
+/** Full response envelope from sources.resolve; indexers is populated on indexer_search queries. */
+export interface SourceResolveResult {
+  candidates: SourceCandidate[];
+  indexers?: IndexerSearchStatus[];
 }
 
 /** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */

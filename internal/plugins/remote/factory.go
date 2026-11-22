@@ -547,6 +547,23 @@ func (a HostAdapter) ResolveSources(ctx context.Context, pluginID string, q core
 	return cands, mapHostErr(err)
 }
 
+// ResolveSourcesWithResult additionally reports per-indexer search statuses
+// when the plugin host provides them (#733).
+func (a HostAdapter) ResolveSourcesWithResult(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.SourceResolveResult{}, err
+	}
+	if rh, ok := h.(interface {
+		ResolveSourcesWithResult(context.Context, core.SourceQuery) (core.SourceResolveResult, error)
+	}); ok {
+		res, err := rh.ResolveSourcesWithResult(ctx, q)
+		return res, mapHostErr(err)
+	}
+	cands, err := h.ResolveSources(ctx, q)
+	return core.SourceResolveResult{Candidates: cands}, mapHostErr(err)
+}
+
 func (a HostAdapter) CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error) {
 	h, err := a.host(pluginID)
 	if err != nil {

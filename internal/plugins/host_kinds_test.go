@@ -967,3 +967,74 @@ func TestHostUsenetCheckValidationRateLimitAndBackgroundGuard(t *testing.T) {
 		t.Fatalf("plugin A after rate window failed: %v", err)
 	}
 }
+
+func TestHostResolveSourcesWithResultAndValidation(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	rec := installContent(t, env)
+	h := env.m.HostFor(rec.ID)
+
+	var seenQuery core.SourceQuery
+	env.m.SetKindBackends(KindBackends{
+		ResolveSourcesResult: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+			seenQuery = q
+			if q.Kind == "indexer_search" {
+				return core.SourceResolveResult{
+					Candidates: []core.SourceCandidate{{Title: q.Query, IndexerID: "fast", Indexer: "Fast"}},
+					Indexers: []core.IndexerSearchStatus{
+						{IndexerID: "fast", Indexer: "Fast", Status: core.IndexerStatusAnswered, Results: 1, MS: 12},
+						{IndexerID: "slow", Indexer: "Slow", Status: core.IndexerStatusTimedOut, MS: 250},
+					},
+				}, nil
+			}
+			return core.SourceResolveResult{
+				Candidates: []core.SourceCandidate{{InfoHash: q.InfoHash, Cached: true}},
+			}, nil
+		},
+	})
+
+	// Validation rejects negative settleMs / minResults / timeoutMs and >256 filter entries.
+	neg := -5
+	for _, q := range []core.SourceQuery{
+		{Kind: "indexer_search", Query: "a", SettleMS: &neg},
+		{Kind: "indexer_search", Query: "a", MinResults: -1},
+		{Kind: "indexer_search", Query: "a", TimeoutMS: -1},
+		{Kind: "indexer_search", Query: "a", SkipIndexers: make([]string, MaxSourceIndexerFilters+1)},
+		{Kind: "indexer_search", Query: "a", OnlyIndexers: make([]string, MaxSourceIndexerFilters+1)},
+	} {
+		var ve *ValidationError
+		if _, err := h.ResolveSources(ctx, q); !errors.As(err, &ve) {
+			t.Fatalf("query %+v err = %v, want *ValidationError", q, err)
+		}
+	}
+
+	// Hosted bridge returns {candidates, indexers} for indexer_search and forwards all options.
+	bridge := hostBridge{h: h}
+	raw, err := bridge.CallHost(ctx, "sources.resolve", json.RawMessage(`[{"kind":"indexer_search","query":"Dune","firstResults":true,"settleMs":150,"minResults":2,"skipIndexers":["slow"],"timeoutMs":4000}]`))
+	if err != nil {
+		t.Fatalf("hosted sources.resolve: %v", err)
+	}
+	if !seenQuery.FirstResults || seenQuery.SettleMS == nil || *seenQuery.SettleMS != 150 || seenQuery.MinResults != 2 || seenQuery.TimeoutMS != 4000 || len(seenQuery.SkipIndexers) != 1 || seenQuery.SkipIndexers[0] != "slow" {
+		t.Fatalf("forwarded query = %+v", seenQuery)
+	}
+	var envObj map[string]any
+	if err := json.Unmarshal(raw, &envObj); err != nil {
+		t.Fatalf("unmarshal hosted reply: %v", err)
+	}
+	if idxList, ok := envObj["indexers"].([]any); !ok || len(idxList) != 2 {
+		t.Fatalf("hosted reply indexers = %#v, want 2 entries", envObj["indexers"])
+	}
+
+	// Non-indexer_search omits indexers from the hosted JSON envelope.
+	rawDC, err := bridge.CallHost(ctx, "sources.resolve", json.RawMessage(`[{"kind":"debrid_check","infoHash":"abcd"}]`))
+	if err != nil {
+		t.Fatalf("hosted debrid_check: %v", err)
+	}
+	var dcObj map[string]any
+	if err := json.Unmarshal(rawDC, &dcObj); err != nil {
+		t.Fatalf("unmarshal hosted debrid_check: %v", err)
+	}
+	if _, hasIndexers := dcObj["indexers"]; hasIndexers {
+		t.Fatalf("debrid_check reply unexpectedly included indexers: %#v", dcObj)
+	}
+}

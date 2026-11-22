@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/resolver"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 type stubSearchIndexer struct {
@@ -138,5 +142,126 @@ func TestKindResolverIndexerSearchRecentCapAndScoring(t *testing.T) {
 		Profile:  "DoesNotExist",
 	}); !errors.As(err, &ve) || len(ve.Fields) == 0 || ve.Fields[0].Field != "profile" {
 		t.Fatalf("unknown profile err = %v (fields=%+v), want ValidationError on profile", err, ve)
+	}
+}
+
+func TestKindResolverIndexerSearchOptionsAndStatus(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const capsXML = `<?xml version="1.0" encoding="UTF-8"?><caps><searching><search available="yes" supportedParams="q"/></searching></caps>`
+	fastSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("t") == "caps" {
+			fmt.Fprint(w, capsXML)
+			return
+		}
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item><title>Fast.Track.FLAC</title><guid>f1</guid><link>http://fast.example/1.nzb</link><enclosure url="http://fast.example/1.nzb" length="1024" type="application/x-nzb"/></item></channel></rss>`)
+	}))
+	defer fastSrv.Close()
+
+	releaseSlow := make(chan struct{})
+	slowDone := make(chan struct{})
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("t") == "caps" {
+			fmt.Fprint(w, capsXML)
+			return
+		}
+		select {
+		case <-releaseSlow:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item><title>Slow.Track.FLAC</title><guid>s1</guid><link>http://slow.example/1.nzb</link><enclosure url="http://slow.example/1.nzb" length="2048" type="application/x-nzb"/></item></channel></rss>`)
+		close(slowDone)
+	}))
+	defer slowSrv.Close()
+
+	mgr := newznab.NewManager(db, []config.Indexer{
+		{ID: "fast-idx", Name: "Fast", URL: fastSrv.URL, APIKey: "k1", Enabled: true},
+		{ID: "slow-idx", Name: "Slow", URL: slowSrv.URL, APIKey: "k2", Enabled: true},
+	}, newznab.Options{})
+	defer mgr.Close()
+
+	kr := NewKindResolver(KindResolverDeps{
+		Indexer:  mgr,
+		Resolver: resolver.New(mgr, nil, nil, config.Defaults(""), resolver.Options{}),
+	})
+
+	// Validation errors for negative numeric options and oversized filter lists.
+	neg := -1
+	for _, tc := range []struct {
+		name  string
+		q     core.SourceQuery
+		field string
+	}{
+		{"negative settleMs", core.SourceQuery{Kind: "indexer_search", Query: "x", SettleMS: &neg}, "settleMs"},
+		{"negative minResults", core.SourceQuery{Kind: "indexer_search", Query: "x", MinResults: -1}, "minResults"},
+		{"negative timeoutMs", core.SourceQuery{Kind: "indexer_search", Query: "x", TimeoutMS: -1}, "timeoutMs"},
+		{"too many skipIndexers", core.SourceQuery{Kind: "indexer_search", Query: "x", SkipIndexers: make([]string, plugins.MaxSourceIndexerFilters+1)}, "skipIndexers"},
+	} {
+		var ve *plugins.ValidationError
+		if _, err := kr.ResolveSourcesWithResult(ctx, "plugin.example", tc.q); !errors.As(err, &ve) || len(ve.Fields) == 0 || ve.Fields[0].Field != tc.field {
+			t.Fatalf("%s: err = %v, want ValidationError on %q", tc.name, err, tc.field)
+		}
+	}
+
+	// FirstResults with settleMs=0 returns fast candidate immediately while slow stays in flight.
+	zero := 0
+	res, err := kr.ResolveSourcesWithResult(ctx, "plugin.example", core.SourceQuery{
+		Kind:         "indexer_search",
+		Query:        "Track",
+		FirstResults: true,
+		SettleMS:     &zero,
+	})
+	if err != nil {
+		t.Fatalf("ResolveSourcesWithResult(firstResults): %v", err)
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].Title != "Fast.Track.FLAC" {
+		t.Fatalf("candidates = %+v, want only Fast.Track.FLAC", res.Candidates)
+	}
+	byID := map[string]core.IndexerSearchStatus{}
+	for _, st := range res.Indexers {
+		byID[st.IndexerID] = st
+	}
+	if byID["fast-idx"].Status != core.IndexerStatusAnswered || byID["slow-idx"].Status != core.IndexerStatusTimedOut {
+		t.Fatalf("statuses = %+v, want fast=answered slow=timed_out", res.Indexers)
+	}
+
+	// Unblock slow and verify OnlyIndexers reads its result and skips fast.
+	close(releaseSlow)
+	<-slowDone
+	res2, err := kr.ResolveSourcesWithResult(ctx, "plugin.example", core.SourceQuery{
+		Kind:         "indexer_search",
+		Query:        "Track",
+		OnlyIndexers: []string{"Slow"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveSourcesWithResult(onlyIndexers): %v", err)
+	}
+	if len(res2.Candidates) != 1 || res2.Candidates[0].Title != "Slow.Track.FLAC" {
+		t.Fatalf("onlyIndexers candidates = %+v, want Slow.Track.FLAC", res2.Candidates)
+	}
+	byID2 := map[string]core.IndexerSearchStatus{}
+	for _, st := range res2.Indexers {
+		byID2[st.IndexerID] = st
+	}
+	if byID2["fast-idx"].Status != core.IndexerStatusSkipped || byID2["slow-idx"].Status != core.IndexerStatusAnswered {
+		t.Fatalf("statuses2 = %+v, want fast=skipped slow=answered", res2.Indexers)
+	}
+
+	// Non-indexer_search omits indexers.
+	dc, err := kr.ResolveSourcesWithResult(ctx, "plugin.example", core.SourceQuery{
+		Kind:     "debrid_check",
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("debrid_check: %v", err)
+	}
+	if len(dc.Indexers) != 0 {
+		t.Fatalf("debrid_check indexers = %+v, want omitted", dc.Indexers)
 	}
 }

@@ -1554,56 +1554,140 @@ func withHardTimeout(ctx context.Context, limit time.Duration) (context.Context,
 	return context.WithTimeout(ctx, limit)
 }
 
-// ResolveSources implements plugins.KindBackends.ResolveSources for plugins
-// granted permissions.sources ("search" or "acquire"). Capability and
-// permission checks are enforced upstream in plugins/host_kinds.go.
-func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.SourceQuery) ([]core.SourceCandidate, error) {
-	if r == nil {
-		return nil, core.ErrNotAvailable
+type controlledSearchIndexer interface {
+	SearchWithOptions(ctx context.Context, req core.SearchRequest, opts newznab.SearchOptions) (newznab.SearchResult, error)
+}
+
+type enabledIndexerStatusProvider interface {
+	EnabledIndexerStatuses(status string) []core.IndexerSearchStatus
+}
+
+func singleIndexerSkipped(name string, skip, only []string) bool {
+	target := strings.ToLower(strings.TrimSpace(name))
+	for _, s := range skip {
+		if k := strings.ToLower(strings.TrimSpace(s)); k != "" && k == target {
+			return true
+		}
 	}
-	switch q.Kind {
-	case "indexer_search":
-		ctx, cancel := withHardTimeout(ctx, sourceIndexerSearchTimeout)
-		defer cancel()
-		if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
-			ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
+	hasOnly := false
+	matchedOnly := false
+	for _, s := range only {
+		if k := strings.ToLower(strings.TrimSpace(s)); k != "" {
+			hasOnly = true
+			if k == target {
+				matchedOnly = true
+			}
 		}
-		query := strings.TrimSpace(q.Query)
-		category := strings.TrimSpace(q.Category)
-		if query == "" && category == "" {
-			return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{
-				Field:   "query",
-				Message: "indexer_search needs a query or category",
-			}}}
-		}
-		if _, err := core.SearchCategories(category); err != nil {
-			return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{
-				Field:   "category",
+	}
+	return hasOnly && !matchedOnly
+}
+
+func (r *KindResolver) resolveIndexerSearch(ctx context.Context, q core.SourceQuery) (core.SourceResolveResult, error) {
+	if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
+		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
+	}
+	query := strings.TrimSpace(q.Query)
+	category := strings.TrimSpace(q.Category)
+	if query == "" && category == "" {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "query",
+			Message: "indexer_search needs a query or category",
+		}}}
+	}
+	if _, err := core.SearchCategories(category); err != nil {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "category",
+			Message: err.Error(),
+		}}}
+	}
+	if q.SettleMS != nil && *q.SettleMS < 0 {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "settleMs",
+			Message: "settleMs must be non-negative",
+		}}}
+	}
+	if q.MinResults < 0 {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "minResults",
+			Message: "minResults must be non-negative",
+		}}}
+	}
+	if q.TimeoutMS < 0 {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "timeoutMs",
+			Message: "timeoutMs must be non-negative",
+		}}}
+	}
+	if len(q.SkipIndexers) > plugins.MaxSourceIndexerFilters {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "skipIndexers",
+			Message: fmt.Sprintf("at most %d skipIndexers entries allowed", plugins.MaxSourceIndexerFilters),
+		}}}
+	}
+	if len(q.OnlyIndexers) > plugins.MaxSourceIndexerFilters {
+		return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+			Field:   "onlyIndexers",
+			Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", plugins.MaxSourceIndexerFilters),
+		}}}
+	}
+	if _, err := resolver.ScoreSourceCandidates(ctx, r.resolver, q.Profile, nil); err != nil {
+		if errors.Is(err, resolver.ErrUnknownProfile) {
+			return core.SourceResolveResult{}, &plugins.ValidationError{Fields: []plugins.FieldError{{
+				Field:   "profile",
 				Message: err.Error(),
 			}}}
 		}
-		if _, err := resolver.ScoreSourceCandidates(ctx, r.resolver, q.Profile, nil); err != nil {
-			if errors.Is(err, resolver.ErrUnknownProfile) {
-				return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{
-					Field:   "profile",
-					Message: err.Error(),
-				}}}
-			}
-			return nil, err
+		return core.SourceResolveResult{}, err
+	}
+	if r.indexer == nil {
+		return core.SourceResolveResult{Candidates: []core.SourceCandidate{}}, nil
+	}
+	if r.speculativeSourceBudgetPaused(ctx) {
+		var statuses []core.IndexerSearchStatus
+		if esp, ok := r.indexer.(enabledIndexerStatusProvider); ok {
+			statuses = esp.EnabledIndexerStatuses(core.IndexerStatusSkipped)
 		}
-		if r.indexer == nil {
-			return []core.SourceCandidate{}, nil
+		return core.SourceResolveResult{Candidates: []core.SourceCandidate{}, Indexers: statuses}, nil
+	}
+
+	searchReq := core.SearchRequest{
+		Title:    query,
+		Category: category,
+	}
+	opts := newznab.SearchOptions{
+		FirstResults:      q.FirstResults,
+		MinResults:        q.MinResults,
+		SkipIndexers:      q.SkipIndexers,
+		OnlyIndexers:      q.OnlyIndexers,
+		BackgroundTimeout: sourceIndexerSearchTimeout,
+	}
+	if q.SettleMS != nil {
+		opts.Settle = min(time.Duration(*q.SettleMS)*time.Millisecond, sourceIndexerSearchTimeout)
+		opts.SettleSet = true
+	}
+	if q.TimeoutMS > 0 {
+		opts.WaitTimeout = min(time.Duration(q.TimeoutMS)*time.Millisecond, sourceIndexerSearchTimeout)
+	}
+
+	var (
+		rels     []core.Release
+		statuses []core.IndexerSearchStatus
+		err      error
+	)
+	if csi, ok := r.indexer.(controlledSearchIndexer); ok {
+		searchCtx := ctx
+		if opts.WaitTimeout == 0 {
+			var cancel context.CancelFunc
+			searchCtx, cancel = withHardTimeout(ctx, sourceIndexerSearchTimeout)
+			defer cancel()
 		}
-		if r.speculativeSourceBudgetPaused(ctx) {
-			return []core.SourceCandidate{}, nil
-		}
-		rels, err := r.indexer.Search(ctx, core.SearchRequest{
-			Title:    query,
-			Category: category,
-		})
+		var sr newznab.SearchResult
+		sr, err = csi.SearchWithOptions(searchCtx, searchReq, opts)
+		rels = sr.Releases
+		statuses = sr.Indexers
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+			if searchCtx.Err() != nil {
+				return core.SourceResolveResult{}, searchCtx.Err()
 			}
 			if errors.Is(err, core.ErrBudgetExhausted) {
 				r.noteSpeculativeSourceBudgetExhausted(ctx)
@@ -1613,53 +1697,157 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			// plugin that is simply "no releases": its search must not
 			// throw because of an indexer it never chose.
 			r.log.Debug("plugin indexer search found nothing; some indexers failed", "query", q.Query, "err", err)
-			return []core.SourceCandidate{}, nil
+			return core.SourceResolveResult{Candidates: []core.SourceCandidate{}, Indexers: statuses}, nil
 		}
-		if query == "" {
-			rels = append([]core.Release(nil), rels...)
-			sort.SliceStable(rels, func(i, j int) bool {
-				pi, pj := rels[i].PubDate, rels[j].PubDate
-				if pi.IsZero() != pj.IsZero() {
-					return !pi.IsZero()
-				}
-				return pi.After(pj)
-			})
-			if len(rels) > maxRecentSourceCandidates {
-				rels = rels[:maxRecentSourceCandidates]
+	} else {
+		name := r.indexer.Name()
+		if singleIndexerSkipped(name, opts.SkipIndexers, opts.OnlyIndexers) {
+			return core.SourceResolveResult{
+				Candidates: []core.SourceCandidate{},
+				Indexers: []core.IndexerSearchStatus{{
+					IndexerID: name,
+					Indexer:   name,
+					Status:    core.IndexerStatusSkipped,
+					MS:        0,
+				}},
+			}, nil
+		}
+		limit := sourceIndexerSearchTimeout
+		if opts.WaitTimeout > 0 {
+			limit = opts.WaitTimeout
+		}
+		searchCtx, cancel := withHardTimeout(ctx, limit)
+		defer cancel()
+		started := time.Now()
+		rels, err = r.indexer.Search(searchCtx, searchReq)
+		ms := max(int64(0), time.Since(started).Milliseconds())
+		if err != nil {
+			if opts.WaitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return core.SourceResolveResult{
+					Candidates: []core.SourceCandidate{},
+					Indexers: []core.IndexerSearchStatus{{
+						IndexerID: name,
+						Indexer:   name,
+						Status:    core.IndexerStatusTimedOut,
+						MS:        ms,
+					}},
+				}, nil
+			}
+			if searchCtx.Err() != nil {
+				return core.SourceResolveResult{}, searchCtx.Err()
+			}
+			if errors.Is(err, core.ErrBudgetExhausted) {
+				r.noteSpeculativeSourceBudgetExhausted(ctx)
+			}
+			r.log.Debug("plugin indexer search found nothing; some indexers failed", "query", q.Query, "err", err)
+			return core.SourceResolveResult{
+				Candidates: []core.SourceCandidate{},
+				Indexers: []core.IndexerSearchStatus{{
+					IndexerID: name,
+					Indexer:   name,
+					Status:    core.IndexerStatusError,
+					MS:        ms,
+					Error:     "search_failed",
+				}},
+			}, nil
+		}
+		statuses = []core.IndexerSearchStatus{{
+			IndexerID: name,
+			Indexer:   name,
+			Status:    core.IndexerStatusAnswered,
+			Results:   len(rels),
+			MS:        ms,
+		}}
+	}
+
+	if query == "" {
+		rels = append([]core.Release(nil), rels...)
+		sort.SliceStable(rels, func(i, j int) bool {
+			pi, pj := rels[i].PubDate, rels[j].PubDate
+			if pi.IsZero() != pj.IsZero() {
+				return !pi.IsZero()
+			}
+			return pi.After(pj)
+		})
+		if len(rels) > maxRecentSourceCandidates {
+			rels = rels[:maxRecentSourceCandidates]
+		}
+	}
+	scored, err := resolver.ScoreSourceCandidates(ctx, r.resolver, q.Profile, rels)
+	if err != nil {
+		return core.SourceResolveResult{}, err
+	}
+	if scored == nil {
+		scored = []core.SourceCandidate{}
+	}
+	knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
+	for i := range scored {
+		scored[i] = r.stripCandidateAuth(scored[i])
+		if fc := rels[i].KnownFileCount(); fc > scored[i].FileCount {
+			scored[i].FileCount = fc
+		}
+		if hasKnownLookup && (scored[i].Cached || scored[i].InfoHash != "") {
+			if refs := knownLookup.KnownCachedBy(scored[i].InfoHash, rels[i].DebridCached); len(refs) > 0 {
+				scored[i].Cached = true
+				scored[i].CachedBy = refs
 			}
 		}
-		scored, err := resolver.ScoreSourceCandidates(ctx, r.resolver, q.Profile, rels)
+	}
+	if query != "" && r.isUsenetBackingOff() && len(scored) > 1 {
+		nonUsenet := make([]core.SourceCandidate, 0, len(scored))
+		usenetOnly := make([]core.SourceCandidate, 0, len(scored))
+		for _, c := range scored {
+			if c.NZBURL != "" && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" {
+				usenetOnly = append(usenetOnly, c)
+			} else {
+				nonUsenet = append(nonUsenet, c)
+			}
+		}
+		if len(nonUsenet) > 0 && len(usenetOnly) > 0 {
+			scored = append(nonUsenet, usenetOnly...)
+		}
+	}
+	return core.SourceResolveResult{
+		Candidates: scored,
+		Indexers:   statuses,
+	}, nil
+}
+
+// ResolveSourcesWithResult implements plugins.KindBackends.ResolveSourcesResult
+// for plugins granted permissions.sources ("search" or "acquire"). For
+// indexer_search queries it additionally returns per-indexer status entries
+// alongside candidates (#733).
+func (r *KindResolver) ResolveSourcesWithResult(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
+	if r == nil {
+		return core.SourceResolveResult{}, core.ErrNotAvailable
+	}
+	if q.Kind == "indexer_search" {
+		return r.resolveIndexerSearch(ctx, q)
+	}
+	cands, err := r.ResolveSources(ctx, pluginID, q)
+	if err != nil {
+		return core.SourceResolveResult{}, err
+	}
+	if cands == nil {
+		cands = []core.SourceCandidate{}
+	}
+	return core.SourceResolveResult{Candidates: cands}, nil
+}
+
+// ResolveSources implements plugins.KindBackends.ResolveSources for plugins
+// granted permissions.sources ("search" or "acquire"). Capability and
+// permission checks are enforced upstream in plugins/host_kinds.go.
+func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.SourceQuery) ([]core.SourceCandidate, error) {
+	if r == nil {
+		return nil, core.ErrNotAvailable
+	}
+	switch q.Kind {
+	case "indexer_search":
+		res, err := r.resolveIndexerSearch(ctx, q)
 		if err != nil {
 			return nil, err
 		}
-		knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
-		for i := range scored {
-			scored[i] = r.stripCandidateAuth(scored[i])
-			if fc := rels[i].KnownFileCount(); fc > scored[i].FileCount {
-				scored[i].FileCount = fc
-			}
-			if hasKnownLookup && (scored[i].Cached || scored[i].InfoHash != "") {
-				if refs := knownLookup.KnownCachedBy(scored[i].InfoHash, rels[i].DebridCached); len(refs) > 0 {
-					scored[i].Cached = true
-					scored[i].CachedBy = refs
-				}
-			}
-		}
-		if query != "" && r.isUsenetBackingOff() && len(scored) > 1 {
-			nonUsenet := make([]core.SourceCandidate, 0, len(scored))
-			usenetOnly := make([]core.SourceCandidate, 0, len(scored))
-			for _, c := range scored {
-				if c.NZBURL != "" && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" {
-					usenetOnly = append(usenetOnly, c)
-				} else {
-					nonUsenet = append(nonUsenet, c)
-				}
-			}
-			if len(nonUsenet) > 0 && len(usenetOnly) > 0 {
-				scored = append(nonUsenet, usenetOnly...)
-			}
-		}
-		return scored, nil
+		return res.Candidates, nil
 
 	case "debrid_check":
 		ctx, cancel := withHardTimeout(ctx, sourceDebridCheckTimeout)

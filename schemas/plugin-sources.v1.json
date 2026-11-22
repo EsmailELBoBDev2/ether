@@ -30,6 +30,43 @@
           "type": "string",
           "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
         },
+        "firstResults": {
+          "type": "boolean",
+          "description": "indexer_search only. When true, return as soon as the fastest indexers produce results plus the settleMs window (250 ms by default), while slower indexers continue populating Ether's search cache in the background."
+        },
+        "settleMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000,
+          "description": "indexer_search only. Grace window in milliseconds after the first matching result arrives before returning early (default 250 when firstResults is true; 0 returns immediately). Also applies when minResults is met if explicitly provided. Capped at 30000 ms."
+        },
+        "minResults": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "indexer_search only. Minimum deduplicated candidate count required before returning early. Combined with firstResults, returns as soon as either minResults is met or firstResults' settleMs window expires."
+        },
+        "skipIndexers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string"
+          },
+          "description": "indexer_search only. Indexer IDs or display names (case-insensitive) to exclude from this search. Skipped indexers are reported with status \"skipped\" and take precedence over onlyIndexers."
+        },
+        "onlyIndexers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string"
+          },
+          "description": "indexer_search only. Restrict this search to matching indexer IDs or display names (case-insensitive). Non-matching enabled indexers are reported with status \"skipped\"."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000,
+          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). Slow indexers still running when timeoutMs expires are reported as \"timed_out\" and continue populating Ether's search cache in the background."
+        },
         "infoHashes": {
           "type": "array",
           "items": {
@@ -58,6 +95,71 @@
           "type": "integer",
           "minimum": 0,
           "description": "Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list, so zip-only debrid caches (e.g. TorBox at 100+ files) are checked via cached-only add."
+        }
+      }
+    },
+    "indexerSearchStatus": {
+      "type": "object",
+      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search responses.",
+      "required": [
+        "indexerId",
+        "indexer",
+        "status",
+        "ms"
+      ],
+      "properties": {
+        "indexerId": {
+          "type": "string",
+          "description": "Configured indexer ID in Ether."
+        },
+        "indexer": {
+          "type": "string",
+          "description": "Display name of the indexer."
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "timed_out",
+            "skipped",
+            "error"
+          ],
+          "description": "Outcome for this indexer within the caller's wait window."
+        },
+        "results": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Raw release count returned by this indexer when status is \"answered\"."
+        },
+        "ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Elapsed milliseconds until this indexer answered, failed, or the caller stopped waiting (0 for skipped indexers)."
+        },
+        "error": {
+          "type": "string",
+          "description": "Sanitized short error code when status is \"error\" (for example budget_exhausted, rate_limited, auth_failed, upstream_error, search_failed)."
+        }
+      }
+    },
+    "sourceResolveResult": {
+      "type": "object",
+      "description": "Response envelope returned by sources.resolve (both POST /host/v1/sources/resolve and ether.sources.resolve).",
+      "required": [
+        "candidates"
+      ],
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceCandidate"
+          }
+        },
+        "indexers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/indexerSearchStatus"
+          },
+          "description": "Per-indexer search outcome for indexer_search queries; omitted for other source query kinds."
         }
       }
     },

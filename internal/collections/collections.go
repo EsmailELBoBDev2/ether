@@ -903,6 +903,106 @@ func (s *Service) ListOwned(ctx context.Context, user *core.User, t core.MediaTy
 	return s.list(ctx, user, t, false)
 }
 
+// ListPage returns one page [offset, offset+limit) of a section's Collections
+// tab along with the total count, without materializing every TMDB franchise.
+// A zero limit returns no items with the total count (for Plex Size=0 probes).
+func (s *Service) ListPage(ctx context.Context, user *core.User, t core.MediaType, offset, limit int) ([]core.Collection, int, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 0 {
+		limit = 500
+	}
+	owned, err := s.list(ctx, user, t, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	ownedN := len(owned)
+	var out []core.Collection
+	if limit > 0 && offset < ownedN {
+		end := min(offset+limit, ownedN)
+		out = append(out, owned[offset:end]...)
+	}
+	hideFranchises := s.catCfg != nil && s.catCfg().HideFranchiseCollections
+	if hideFranchises || (t != "" && t != core.TypeMovie) {
+		return out, ownedN, nil
+	}
+	frOffset := max(0, offset-ownedN)
+	frNeed := limit - len(out)
+	if user == nil || user.MaxContentRating == "" {
+		frTotal, err := s.mirror.FranchiseTotal(ctx)
+		if err != nil {
+			s.log.Debug("collections: franchise total unavailable", "err", err)
+			return out, ownedN, nil
+		}
+		if frNeed > 0 && frOffset < frTotal {
+			fr, err := s.mirror.FranchisesPage(ctx, frOffset, frNeed)
+			if err != nil {
+				s.log.Debug("collections: franchise page unavailable", "err", err)
+			} else {
+				out = append(out, fr...)
+			}
+		}
+		return out, ownedN + frTotal, nil
+	}
+	level := contentrating.EnforceLevelOf(user.MaxContentRating)
+	if level == contentrating.Unrated {
+		return out, ownedN, nil
+	}
+	target := frOffset + frNeed + 1
+	batchSize := min(max(frNeed*2, 128), 400)
+	afterCount, afterID := 0, 0
+	matched := 0
+	hasMore := false
+	for {
+		batch, err := s.mirror.FranchisesCursor(ctx, afterCount, afterID, batchSize)
+		if err != nil {
+			s.log.Debug("collections: franchise cursor unavailable", "err", err)
+			return out, ownedN + matched, nil
+		}
+		if len(batch) == 0 {
+			break
+		}
+		ids := make([]int, len(batch))
+		for i, c := range batch {
+			ids[i] = int(c.Key.TMDB())
+		}
+		last := batch[len(batch)-1]
+		afterCount, afterID = last.ChildCount, int(last.Key.TMDB())
+		counts, err := s.mirror.FranchiseRatedCountsBatch(ctx, int(level), ids)
+		if err != nil {
+			s.log.Debug("collections: franchise rated counts unavailable", "err", err)
+			return out, ownedN + matched, nil
+		}
+		for _, c := range batch {
+			n := counts[c.Key.TMDB()]
+			if n <= 0 {
+				continue
+			}
+			c.ChildCount = n
+			if matched >= frOffset && len(out) < limit {
+				out = append(out, c)
+			}
+			matched++
+			if matched >= target {
+				hasMore = true
+				break
+			}
+		}
+		if hasMore || len(batch) < batchSize {
+			break
+		}
+	}
+	total := ownedN + matched
+	if hasMore {
+		total = ownedN + frOffset + (len(out) - max(0, min(ownedN, offset+limit)-min(ownedN, offset))) + 1
+		if total < ownedN+matched {
+			total = ownedN + matched
+		}
+	}
+	return out, total, nil
+}
+
 func (s *Service) list(ctx context.Context, user *core.User, t core.MediaType, withFranchises bool) ([]core.Collection, error) {
 	rows, err := s.loadRows(ctx)
 	if err != nil {

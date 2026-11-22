@@ -10,11 +10,8 @@ plex-appletv | /hubs/search star  # K/J (search): candidate hydration N+1 (visib
 plex-appletv | movies filter unwatched  # C: unwatched page walks titles in sort order past the viewer's watched ones
 plex-appletv | movies unwatched  # C: /unwatched total counted directly (not the tally-less-watched shape)
 plex-appletv | movies all addedAt 15k  # C: offset 15k page by date added walks the index (keyset wanted)
-plex-appletv | movies collections type=18  # C: the collections index snapshots the whole catalogue; every franchise is listed
-plex-appletv | movies collection dir  # C: every franchise of the library is listed and counted
 plex-web | /hubs/promoted bare  # C/E: Home rows' per-series continue and visibility reads on a cold build
 plex-web | /hubs/sections/movies  # C: section hubs' per-title reads on a cold build
-plex-web | movies collections type=18  # C: as plex-appletv
 plex-web | playlist items  # C: per-item Get of a 3000-item playlist (fixed by 7d270726b, PreloadStored)
 plex-appletv playback | playQueue show continuous  # C: a show queue reads every episode's series and state
 plex-appletv playback | playQueue playlist shuffle  # C: a play queue without window= renders all 3000 items with detail (PMS window semantics: owner question)

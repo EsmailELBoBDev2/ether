@@ -37,6 +37,7 @@ func jellyfinLibrarySteps(f string) []Step {
 		{Name: "movies p1 GenreIds", Class: classBrowse, Path: movies + "&genreIds={genreId}&sortBy=SortName&sortOrder=Ascending&startIndex=0"},
 		{Name: "/Studios movies", Class: classBrowse, Path: "/Studios?parentId={moviesView}&includeItemTypes=Movie&sortBy=SortName&sortOrder=Ascending&enableImages=false&userId={userId}", Discover: discoverMBItem("studioId", "Studio")},
 		{Name: "movies p1 StudioIds", Class: classBrowse, Path: movies + "&studioIds={studioId}&sortBy=SortName&sortOrder=Ascending&startIndex=0"},
+		{Name: "boxsets p1", Class: classBrowse, Path: "/Items?includeItemTypes=BoxSet&limit=50&startIndex=0&userId={userId}"},
 		{Name: "/Persons", Class: classBrowse, Path: "/Persons?limit=100&personTypes=Actor&enableImages=true&userId={userId}"},
 		{Name: "movie detail People", Class: classDetail, Path: "/Items/{movieId}?fields=" + f + "%2CPeople%2CStudios%2CTaglines&userId={userId}", Discover: discoverMBPerson},
 		{Name: "movies p1 PersonIds", Class: classBrowse, Path: "/Items?fields=" + f + "&includeItemTypes=Movie%2CSeries&limit=50&personIds={personId}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}"},

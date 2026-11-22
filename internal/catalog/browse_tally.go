@@ -156,6 +156,9 @@ func RebuildLibraryCounts(ctx context.Context, db *sql.DB) error {
 	if err := rebuildFacetIDs(ctx, tx); err != nil {
 		return err
 	}
+	if err := rebuildFranchiseTally(ctx, tx, store.DialectOf(db) == store.SQLite); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -178,6 +181,7 @@ var libraryTallies = []libraryTally{
 	{"catalog_browse_tally", "type,genre,rating_rank"},
 	{"catalog_stats_tally", "kind,browsable,home,year_pending"},
 	{"catalog_facet_tally", "type,facet,value,rating_rank"},
+	{"catalog_franchise_counts", "id"},
 }
 
 // foldLibraryTallies moves every tally's pending deltas into it, one

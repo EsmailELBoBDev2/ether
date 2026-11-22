@@ -1374,9 +1374,44 @@ func (s *Server) sectionCollections(w http.ResponseWriter, r *http.Request, sec 
 	mc := s.sectionContainer(sec)
 	_, mc.Title2 = sectionTypeTitle(sec)
 	mc.ViewGroup = string(sec.Type)
-	var all []frontend.Collection
+	q := r.URL.Query()
+	hasFilter := q.Has("title") || q.Has("title!") || q.Has("title<") || q.Has("title>")
+	// Bound unpaged directory responses (like /studio and /country at 200,
+	// or defaultUnpagedLimit for /collections) so listing collections never
+	// scales with the library.
+	offset, size := pr.Start, pr.Size
+	if !pr.HasPage {
+		offset = 0
+		if sub == "collection" {
+			size = 200
+		} else {
+			size = defaultUnpagedLimit
+		}
+	}
 	// Catalogue collections are typed by movie or show and belong to the
 	// built-in libraries. A plugin library has none of them.
+	if !hasFilter && s.collections() != nil && sec.PluginID == "" {
+		if pager, ok := s.collections().(interface {
+			ListPage(context.Context, *frontend.User, frontend.MediaType, int, int) ([]frontend.Collection, int, error)
+		}); ok {
+			page, total, err := pager.ListPage(ctx, pr.User, sec.Type, offset, size)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			before := len(page)
+			page = s.scopedCollectionCounts(ctx, pr.User, page)
+			if dropped := before - len(page); dropped > 0 && total >= dropped {
+				total -= dropped
+			}
+			mc.Metadata = append(mc.Metadata, s.collectionRows(ctx, page)...)
+			mc.Size = len(mc.Metadata)
+			mc.SetPage(offset, total)
+			s.write(w, r, mc)
+			return
+		}
+	}
+	var all []frontend.Collection
 	if s.collections() != nil && sec.PluginID == "" {
 		cs, err := s.collections().List(ctx, pr.User, sec.Type)
 		if err != nil {
@@ -1386,8 +1421,11 @@ func (s *Server) sectionCollections(w http.ResponseWriter, r *http.Request, sec 
 		all = cs
 	}
 	all = s.scopedCollectionCounts(ctx, pr.User, all)
-	all = filterCollectionTitles(all, r.URL.Query())
+	all = filterCollectionTitles(all, q)
 	lo, hi := pr.window(len(all))
+	if !pr.HasPage && hi-lo > size {
+		hi = lo + size
+	}
 	mc.Metadata = append(mc.Metadata, s.collectionRows(ctx, all[lo:hi])...)
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(lo, len(all))
@@ -1400,17 +1438,34 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 	pr := FromContext(ctx)
 	mc := libraryContainer()
 	if s.collections() != nil {
+		pager, hasPager := s.collections().(interface {
+			ListPage(context.Context, *frontend.User, frontend.MediaType, int, int) ([]frontend.Collection, int, error)
+		})
+		remaining := defaultUnpagedLimit
+		if pr.HasPage {
+			remaining = pr.Size
+		}
 		for _, sec := range s.userSections(pr.User) {
-			if sec.PluginID != "" {
+			if sec.PluginID != "" || remaining <= 0 {
 				continue
 			}
-			cs, err := s.collections().List(ctx, pr.User, sec.Type)
+			var cs []frontend.Collection
+			var err error
+			if hasPager {
+				cs, _, err = pager.ListPage(ctx, pr.User, sec.Type, 0, remaining)
+			} else {
+				cs, err = s.collections().List(ctx, pr.User, sec.Type)
+			}
 			if err != nil {
 				s.writeErr(w, r, err)
 				return
 			}
 			cs = s.scopedCollectionCounts(ctx, pr.User, cs)
+			if len(cs) > remaining {
+				cs = cs[:remaining]
+			}
 			mc.Metadata = append(mc.Metadata, s.collectionRows(ctx, cs)...)
+			remaining -= len(cs)
 		}
 	}
 	mc.Size = len(mc.Metadata)

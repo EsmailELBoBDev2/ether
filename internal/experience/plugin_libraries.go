@@ -475,6 +475,217 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 	return false
 }
 
+// sectionOrFilterAllowedBatch is sectionOrFilterAllowed evaluated across a
+// slice of titles with one set-based membership query per custom filter or
+// collection library instead of one query per title.
+func (s *Service) sectionOrFilterAllowedBatch(ctx context.Context, v *core.User, titles []core.Title, sectionFor func(core.MediaType) (int, bool)) map[core.RatingKey]bool {
+	allowed := make(map[core.RatingKey]bool, len(titles))
+	if sectionFor == nil || len(titles) == 0 {
+		return allowed
+	}
+	builtinOK := map[core.MediaType]bool{}
+	builtinChecked := map[core.MediaType]bool{}
+	checkBuiltin := func(typ core.MediaType) bool {
+		if builtinChecked[typ] {
+			return builtinOK[typ]
+		}
+		builtinChecked[typ] = true
+		id, ok := sectionFor(typ)
+		if !ok || !SectionAllowed(v, id) {
+			return false
+		}
+		if s.d.PluginLibraries == nil {
+			builtinOK[typ] = true
+			return true
+		}
+		if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil {
+			_, _, pub := s.publishedLibrary(ctx, lib)
+			if pub && lib.Source == core.LibraryBuiltin {
+				builtinOK[typ] = true
+				return true
+			}
+		}
+		return false
+	}
+
+	var remaining []int
+	for i := range titles {
+		if titles[i].Key.IsPluginKey() {
+			continue
+		}
+		if checkBuiltin(titles[i].Type) {
+			allowed[titles[i].Key] = true
+		} else {
+			remaining = append(remaining, i)
+		}
+	}
+	if len(remaining) == 0 {
+		return allowed
+	}
+	filterLibs := s.allowedFilterLibraries(ctx, v)
+	if len(filterLibs) == 0 {
+		return allowed
+	}
+	unrestrictedKind := map[core.MediaType]bool{}
+	for _, lib := range filterLibs {
+		if lib.Source != core.LibraryCatalog || lib.RulesBroken || len(lib.Rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
+			continue
+		}
+		kind := filterMediaType(lib)
+		if len(lib.Sources) == 0 {
+			unrestrictedKind[kind] = true
+			continue
+		}
+		for _, source := range lib.Sources {
+			if kind == core.TypeMovie && source == "tmdb-movies" || kind == core.TypeShow && source == "tmdb-tv" {
+				unrestrictedKind[kind] = true
+				break
+			}
+		}
+	}
+
+	var needMember []int
+	var parentKeys []core.RatingKey
+	seenParent := map[core.RatingKey]bool{}
+	for _, idx := range remaining {
+		t := &titles[idx]
+		kind := t.Type
+		if kind == core.TypeEpisode || kind == core.TypeSeason {
+			kind = core.TypeShow
+		}
+		if unrestrictedKind[kind] {
+			allowed[t.Key] = true
+			continue
+		}
+		needMember = append(needMember, idx)
+		if (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) && t.ShowKey != 0 && !seenParent[t.ShowKey] {
+			seenParent[t.ShowKey] = true
+			parentKeys = append(parentKeys, t.ShowKey)
+		}
+	}
+	if len(needMember) == 0 {
+		return allowed
+	}
+
+	shows := map[core.RatingKey]core.Title{}
+	if len(parentKeys) > 0 {
+		switch {
+		case s.d.ParentTitles != nil:
+			if m, err := s.d.ParentTitles(ctx, parentKeys); err == nil {
+				shows = m
+			}
+		case s.d.CachedGetMany != nil:
+			if m, err := s.d.CachedGetMany(ctx, parentKeys); err == nil {
+				shows = m
+			}
+		case s.d.CachedGet != nil:
+			for _, pk := range parentKeys {
+				if show, err := s.d.CachedGet(ctx, pk); err == nil && show != nil {
+					shows[pk] = *show
+				}
+			}
+		}
+	}
+
+	type targetRef struct {
+		titleKey   core.RatingKey
+		targetKey  core.RatingKey
+		targetType core.MediaType
+	}
+	refs := make([]targetRef, 0, len(needMember))
+	for _, idx := range needMember {
+		t := &titles[idx]
+		tk, tt := t.Key, t.Type
+		if (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) && t.ShowKey != 0 {
+			if show, ok := shows[t.ShowKey]; ok {
+				tk, tt = show.Key, show.Type
+			} else if s.d.CachedGet != nil {
+				continue
+			}
+		}
+		refs = append(refs, targetRef{titleKey: t.Key, targetKey: tk, targetType: tt})
+	}
+
+	batcher, hasBatcher := s.d.PluginLibraries.(interface {
+		MembersOf(context.Context, core.Library, []core.RatingKey) (map[core.RatingKey]bool, error)
+	})
+	for _, lib := range filterLibs {
+		wantType := filterMediaType(lib)
+		var unchecked []core.RatingKey
+		seenTarget := map[core.RatingKey]bool{}
+		for _, ref := range refs {
+			if allowed[ref.titleKey] || ref.targetType != wantType || seenTarget[ref.targetKey] {
+				continue
+			}
+			seenTarget[ref.targetKey] = true
+			unchecked = append(unchecked, ref.targetKey)
+		}
+		if len(unchecked) == 0 {
+			continue
+		}
+		var members map[core.RatingKey]bool
+		if hasBatcher {
+			if m, err := batcher.MembersOf(ctx, lib, unchecked); err == nil {
+				members = m
+			}
+		} else if s.d.LibraryMembers != nil {
+			if m, _, ok, err := s.d.LibraryMembers(ctx, lib.ID, unchecked); err == nil && ok {
+				members = m
+			}
+		}
+		if members == nil && s.d.PluginLibraries != nil {
+			members = make(map[core.RatingKey]bool, len(unchecked))
+			for _, k := range unchecked {
+				if ok, err := s.d.PluginLibraries.MemberOf(ctx, lib, k); err == nil && ok {
+					members[k] = true
+				}
+			}
+		}
+		for _, ref := range refs {
+			if !allowed[ref.titleKey] && ref.targetType == wantType && members[ref.targetKey] {
+				allowed[ref.titleKey] = true
+			}
+		}
+	}
+	return allowed
+}
+
+// movieSectionLibraries classifies how v may access movies via built-in or
+// custom filter/collection libraries. unrestricted is true when every visible
+// movie is admitted without per-library filtering.
+func (s *Service) movieSectionLibraries(ctx context.Context, v *core.User) (unrestricted bool, libs []core.Library) {
+	if s.d.Visibility.SectionFor != nil {
+		if id, ok := s.d.Visibility.SectionFor(core.TypeMovie); ok && SectionAllowed(v, id) {
+			if s.d.PluginLibraries == nil {
+				return true, nil
+			}
+			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil {
+				_, _, pub := s.publishedLibrary(ctx, lib)
+				if pub && lib.Source == core.LibraryBuiltin {
+					return true, nil
+				}
+			}
+		}
+	}
+	for _, lib := range s.allowedFilterLibraries(ctx, v) {
+		if filterMediaType(lib) != core.TypeMovie {
+			continue
+		}
+		if lib.Source == core.LibraryCatalog && !lib.RulesBroken && len(lib.Rules) == 0 && (lib.VisibilityDefault == "" || lib.VisibilityDefault == "show") {
+			if len(lib.Sources) == 0 {
+				return true, nil
+			}
+			for _, src := range lib.Sources {
+				if src == "tmdb-movies" {
+					return true, nil
+				}
+			}
+		}
+		libs = append(libs, lib)
+	}
+	return false, libs
+}
+
 func (s *Service) pluginItem(ctx context.Context, v *core.User, key core.RatingKey) (PluginItemView, error) {
 	if s.d.PluginLibraries == nil || !key.IsPluginKey() {
 		return PluginItemView{}, core.ErrNotFound

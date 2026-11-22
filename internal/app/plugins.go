@@ -442,6 +442,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		TitleInLibrary: func(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error) {
 			return a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
 		},
+		TitlesInLibrary: func(ctx context.Context, lib core.Library, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+			return a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
+		},
 		Manager:   mgr,
 		Libraries: a.libraries,
 		Items:     itemsSvc,

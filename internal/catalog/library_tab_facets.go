@@ -55,7 +55,14 @@ func (c *Catalog) LibraryFacetCollections(ctx context.Context, q core.CatalogFac
 		}
 		pageBuckets = buckets
 		more = hasMore
-	} else if storageFacet != "franchise" {
+	} else if storageFacet == "franchise" {
+		if buckets, hasMore, usedIndex, fErr := c.libraryFacetFranchises(ctx, q.Filter, orderByName, rawQuery, offset, limit, where, args); fErr != nil {
+			return core.CatalogFacetCollectionsPage{}, fErr
+		} else if usedIndex {
+			pageBuckets = buckets
+			more = hasMore
+		}
+	} else {
 		if buckets, hasMore, usedTally, tErr := c.libraryFacetCollectionsFromTally(ctx, q.Filter, storageFacet, orderByName, rawQuery, foldedQuery, offset, limit, where, args); tErr != nil {
 			return core.CatalogFacetCollectionsPage{}, tErr
 		} else if usedTally {

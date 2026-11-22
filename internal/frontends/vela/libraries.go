@@ -1203,11 +1203,12 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	colPage, err := i.host.Experience.Collections(r.Context(), v, requestDevice(r), frontend.CollectionQuery{
-		ViewID: id,
-		Query:  query,
-		Types:  []frontend.MediaType{view.Type},
-		Offset: c.Offset,
-		Limit:  pageLimit + 1,
+		NoTotal: true,
+		ViewID:  id,
+		Query:   query,
+		Types:   []frontend.MediaType{view.Type},
+		Offset:  c.Offset,
+		Limit:   pageLimit + 1,
 	})
 	if err != nil {
 		fail(w, err, r)

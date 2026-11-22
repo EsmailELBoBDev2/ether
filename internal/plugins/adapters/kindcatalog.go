@@ -37,7 +37,8 @@ const (
 
 // KindCatalogDeps configures a KindCatalog adapter.
 type KindCatalogDeps struct {
-	TitleInLibrary func(context.Context, core.Library, core.RatingKey) (bool, error)
+	TitleInLibrary  func(context.Context, core.Library, core.RatingKey) (bool, error)
+	TitlesInLibrary func(context.Context, core.Library, []core.RatingKey) (map[core.RatingKey]bool, error)
 
 	Manager           *plugins.Manager
 	Libraries         *libraries.Service
@@ -58,7 +59,8 @@ type liveSearchCall struct {
 // experience.PluginLibraries so client surfaces read exclusively from the
 // local store on browse, detail, children and facet paths.
 type KindCatalog struct {
-	titleInLibrary func(context.Context, core.Library, core.RatingKey) (bool, error)
+	titleInLibrary  func(context.Context, core.Library, core.RatingKey) (bool, error)
+	titlesInLibrary func(context.Context, core.Library, []core.RatingKey) (map[core.RatingKey]bool, error)
 
 	syncCtx           context.Context
 	mgr               *plugins.Manager
@@ -108,6 +110,7 @@ func AttachKindCatalog(syncCtx context.Context, deps KindCatalogDeps) *KindCatal
 	c := &KindCatalog{
 		syncCtx:           syncCtx,
 		titleInLibrary:    deps.TitleInLibrary,
+		titlesInLibrary:   deps.TitlesInLibrary,
 		mgr:               deps.Manager,
 		libs:              deps.Libraries,
 		items:             deps.Items,
@@ -1530,6 +1533,27 @@ func (c *KindCatalog) MemberOf(ctx context.Context, lib core.Library, key core.R
 		return c.libs.CollectionMember(ctx, lib.CollectionID, key)
 	}
 	return len(lib.Rules) == 0 && lib.VisibilityDefault != "hide", nil
+}
+
+// MembersOf is MemberOf for a batch of keys in one set-based query.
+func (c *KindCatalog) MembersOf(ctx context.Context, lib core.Library, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+	if c == nil || c.libs == nil || len(keys) == 0 {
+		return nil, nil
+	}
+	if c.titlesInLibrary != nil {
+		return c.titlesInLibrary(ctx, lib, keys)
+	}
+	out := make(map[core.RatingKey]bool, len(keys))
+	for _, k := range keys {
+		ok, err := c.MemberOf(ctx, lib, k)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out[k] = true
+		}
+	}
+	return out, nil
 }
 
 func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRecord, query string, limit int) []core.KindItem {

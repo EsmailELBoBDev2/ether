@@ -183,7 +183,12 @@ type ServiceDeps struct {
 	Related               core.Recommender
 	FilterRecommendations func(context.Context, *core.User, []core.Title) ([]core.Title, error)
 	Collections           core.Collections
-	Playlists             core.Playlists
+	// Franchises answers page-first TMDB franchise listing, set-based
+	// visibility counts, metadata and fallback artwork from the indexed
+	// catalog_franchises summary table. Optional; tests with fake
+	// core.Collections leave it nil.
+	Franchises FranchiseStore
+	Playlists  core.Playlists
 	// Scheduled lists metadata-only future episodes for one season. Nil means
 	// the host has not opted in. Callers must not resolve a release from it.
 	Scheduled func(context.Context, core.RatingKey) ([]core.Title, error)
@@ -748,8 +753,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, err
 		}
 		var candidatesPage []core.Title
-		accept := func(title core.Title, vis Visibility) error {
-			if !s.sectionOrFilterAllowed(ctx, v, &title, vis.SectionFor) || !withoutSectionCheck(vis).Visible(ctx, v, &title) {
+		pageSectionAllowed := s.sectionOrFilterAllowedBatch(ctx, v, page.Items, s.d.Visibility.SectionFor)
+		accept := func(title core.Title, vis Visibility, sectionAllowed map[core.RatingKey]bool) error {
+			if !sectionAllowed[title.Key] || !withoutSectionCheck(vis).Visible(ctx, v, &title) {
 				return nil
 			}
 			if !expand {
@@ -793,7 +799,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			}
 			// Copy only accepted values into the bounded batch; do not duplicate
 			// or retain the catalogue's full per-show children slice.
-			if e := accept(*parent, s.d.Visibility); e != nil {
+			if e := accept(*parent, s.d.Visibility, pageSectionAllowed); e != nil {
 				return core.Page{}, e
 			}
 			for start := 0; start < len(children); start += 400 {
@@ -820,8 +826,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 						return &title, nil
 					}
 				}
+				chunkSectionAllowed := s.sectionOrFilterAllowedBatch(ctx, v, chunk, vis.SectionFor)
 				for j := range chunk {
-					if e := accept(chunk[j], vis); e != nil {
+					if e := accept(chunk[j], vis, chunkSectionAllowed); e != nil {
 						return core.Page{}, e
 					}
 				}
@@ -1239,13 +1246,14 @@ func (s *Service) allowTitles(ctx context.Context, v *core.User, titles []core.T
 			}
 		}
 	}
+	sectionAllowed := s.sectionOrFilterAllowedBatch(ctx, v, titles, s.d.Visibility.SectionFor)
 	candidates := make([]core.Title, 0, len(titles))
 	for i := range titles {
 		title := titles[i]
 		if title.Key.IsPluginKey() {
 			continue
 		}
-		if !s.sectionOrFilterAllowed(ctx, v, &title, s.d.Visibility.SectionFor) || !TitleAllowed(s.d.Visibility.Policy, v, &title) {
+		if !sectionAllowed[title.Key] || !TitleAllowed(s.d.Visibility.Policy, v, &title) {
 			continue
 		}
 		candidates = append(candidates, title)
@@ -2923,6 +2931,10 @@ func (s *Service) collectionItems(ctx context.Context, v *core.User, key core.Ra
 			upcoming = true
 		}
 	}
+	return s.collectionItemsFor(ctx, v, key, upcoming)
+}
+
+func (s *Service) collectionItemsFor(ctx context.Context, v *core.User, key core.RatingKey, upcoming bool) ([]core.Title, error) {
 	var out []core.Title
 	seen := map[core.RatingKey]bool{}
 	for offset := 0; ; {

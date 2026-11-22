@@ -1661,8 +1661,10 @@ func (e *Engine) lookupFlow(ctx context.Context, flowID string) (*Flow, error) {
 func (e *Engine) wakeClusterOrLocal(ctx context.Context) {
 	if e.IsLeading() {
 		e.kickWork()
-		return
 	}
+	// Always ping the cluster too: a node that just lost leadership still
+	// reports leading until its loop exits, and a run it creates in that
+	// window must still reach the new leader. A duplicate kick is harmless.
 	if e.cbus != nil {
 		pctx, cancel := context.WithTimeout(ctx, outboxPublishTimeout)
 		_ = e.cbus.Publish(pctx, TopicOutboxWake, []byte(e.nodeID))

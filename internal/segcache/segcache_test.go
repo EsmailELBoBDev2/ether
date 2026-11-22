@@ -976,6 +976,11 @@ func TestConcurrentStress(t *testing.T) {
 		t.Fatalf("used=%d > budget=%d with nothing protected", used, b)
 	}
 	checkInvariants(t, c)
+	// Finish unlinks the stress run queued (or a drain still has in flight)
+	// before comparing the disk with the index.
+	c.evictMu.Lock()
+	c.drainPendingUnlinks()
+	c.evictMu.Unlock()
 	if du, n := diskUsage(t, c); du != mustUsed(c) || n != c.segCountSafe() {
 		t.Fatalf("disk=%d,%d index=%d,%d", du, n, mustUsed(c), c.segCountSafe())
 	}

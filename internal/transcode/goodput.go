@@ -91,24 +91,34 @@ func remoteDelivery(r *http.Request) bool {
 func (s *Session) GoodputKbps() int { return s.goodput.Kbps() }
 
 // countingWriter wraps a ResponseWriter counting body bytes, so serveFile
-// can time the write phase of a segment delivery and sample TCP send backlog.
+// can time the write phase of a segment delivery and sample TCP send state.
 type countingWriter struct {
 	http.ResponseWriter
-	ctx            context.Context
-	bytes          int64
-	status         int
-	err            error
-	maxBacklog     int
-	backlogSampled bool
+	ctx         context.Context
+	bytes       int64
+	status      int
+	err         error
+	tcp         sockerr.TCPDeliveryTracker
+	sinceSample int64
 }
 
-func (w *countingWriter) sampleBacklog() {
+func (w *countingWriter) beginTCP() {
+	if w.ctx != nil {
+		w.tcp.Begin(w.ctx)
+	}
+}
+
+func (w *countingWriter) sampleTCP() {
+	if w.ctx != nil {
+		w.tcp.Sample(w.ctx)
+	}
+}
+
+func (w *countingWriter) finishTCP() (int, sockerr.TCPStallKind) {
 	if w.ctx == nil {
-		return
+		return 0, sockerr.TCPStallUnknown
 	}
-	if q, ok := sockerr.TCPSendBacklog(w.ctx); ok && q > w.maxBacklog {
-		w.maxBacklog = q
-	}
+	return w.tcp.Finish(w.ctx)
 }
 
 func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -126,9 +136,10 @@ func (w *countingWriter) Write(b []byte) (int, error) {
 	}
 	n, err := w.ResponseWriter.Write(b)
 	w.bytes += int64(n)
-	if !w.backlogSampled && w.bytes >= 64<<10 {
-		w.backlogSampled = true
-		w.sampleBacklog()
+	w.sinceSample += int64(n)
+	if w.sinceSample >= 64<<10 {
+		w.sinceSample = 0
+		w.sampleTCP()
 	}
 	if err != nil {
 		w.err = err
@@ -150,7 +161,7 @@ func (w *countingWriter) ReadFrom(r io.Reader) (int64, error) {
 		n, err = io.Copy(struct{ io.Writer }{w.ResponseWriter}, r)
 	}
 	w.bytes += n // bytes accepted by Write, not bytes read before a failed write
-	w.sampleBacklog()
+	w.sampleTCP()
 	if err != nil {
 		w.err = err
 	}

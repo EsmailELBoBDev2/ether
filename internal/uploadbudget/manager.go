@@ -77,8 +77,9 @@ type Manager struct {
 	hysteresis *HysteresisController
 	poller     *PMSPoller
 
-	mu     sync.Mutex
-	capped map[string]sessionCapRecord
+	mu            sync.Mutex
+	capped        map[string]sessionCapRecord
+	lastBufEvents map[string]int
 
 	wake chan struct{}
 }
@@ -94,14 +95,15 @@ func NewManager(opts Options) *Manager {
 		opts.Logger = slog.Default()
 	}
 	return &Manager{
-		opts:       opts,
-		log:        opts.Logger,
-		now:        opts.Now,
-		estimator:  NewEstimator(opts.Now),
-		hysteresis: NewHysteresisController(),
-		poller:     opts.Poller,
-		capped:     map[string]sessionCapRecord{},
-		wake:       make(chan struct{}, 1),
+		opts:          opts,
+		log:           opts.Logger,
+		now:           opts.Now,
+		estimator:     NewEstimator(opts.Now),
+		hysteresis:    NewHysteresisController(),
+		poller:        opts.Poller,
+		capped:        map[string]sessionCapRecord{},
+		lastBufEvents: map[string]int{},
+		wake:          make(chan struct{}, 1),
 	}
 }
 
@@ -115,6 +117,11 @@ func (m *Manager) EffectiveCapacity() (capacityKbps int, source string, override
 		overrideKbps = max(0, m.opts.OverrideKbps())
 	}
 	measuredKbps, samples = m.estimator.Estimate()
+	if measuredKbps > 0 {
+		if smoothKbps := m.activeSmoothRemoteKbps(); smoothKbps > 0 && UsableBudgetKbps(measuredKbps) < smoothKbps {
+			measuredKbps = minCapacityForUsable(smoothKbps)
+		}
+	}
 	if overrideKbps > 0 {
 		return overrideKbps, "override", overrideKbps, measuredKbps, samples
 	}
@@ -122,6 +129,59 @@ func (m *Manager) EffectiveCapacity() (capacityKbps int, source string, override
 		return measuredKbps, "measured", 0, measuredKbps, samples
 	}
 	return 0, "learning", 0, 0, samples
+}
+
+// activeSmoothRemoteKbps sums the current playing bitrates of remote streams
+// that are demonstrably playing smoothly right now (without buffering), so an
+// automatic learned budget is never lowered below them.
+func (m *Manager) activeSmoothRemoteKbps() int {
+	if m == nil || m.opts.ActiveSessions == nil {
+		return 0
+	}
+	now := m.now()
+	total := 0
+	for _, ps := range m.opts.ActiveSessions() {
+		if !core.SessionActiveStream(ps) || !ps.Client.Remote {
+			continue
+		}
+		if m.estimator.IsSessionStarved(ps.ID, now) {
+			continue
+		}
+		if ps.Experience != nil && ps.Experience.BufferEvents > 0 {
+			continue
+		}
+		smooth := m.estimator.IsSessionSmooth(ps.ID, now)
+		if !smooth && ps.Experience != nil && ps.Experience.Pictured && !ps.Experience.PicturedAt.IsZero() && now.Sub(ps.Experience.PicturedAt) >= minSmoothSpan {
+			smooth = true
+		}
+		if !smooth {
+			continue
+		}
+		curKbps, _ := sessionBitrates(ps)
+		if curKbps > 0 {
+			total += curKbps
+		}
+	}
+	return total
+}
+
+// NoteBufferEvents tracks a session's cumulative client BufferEvents count and
+// returns true only when BufferEvents increased since the previous check.
+func (m *Manager) NoteBufferEvents(sessionID string, bufferEvents int) bool {
+	if m == nil || sessionID == "" || bufferEvents <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastBufEvents == nil {
+		m.lastBufEvents = map[string]int{}
+	}
+	prev := m.lastBufEvents[sessionID]
+	if bufferEvents > prev {
+		m.lastBufEvents[sessionID] = bufferEvents
+		return true
+	}
+	return false
 }
 
 // RemoteCapForNewStream computes the dynamic bitrate cap for a newly starting
@@ -211,6 +271,9 @@ func (m *Manager) ObserveDelivery(sessionID string, obs Observation) bool {
 	if obs.At.IsZero() {
 		obs.At = m.now()
 	}
+	if obs.SessionID == "" {
+		obs.SessionID = sessionID
+	}
 	streamRate := obs.StreamRateKbps
 	if streamRate <= 0 && obs.Bytes > 0 && obs.Duration > 0 {
 		streamRate = int(float64(obs.Bytes*8) / obs.Duration.Seconds() / 1000)
@@ -244,11 +307,9 @@ func (m *Manager) ObserveDelivery(sessionID string, obs Observation) bool {
 
 	beforeCap, _, _, _, _ := m.EffectiveCapacity()
 	recorded := m.estimator.Observe(obs)
-	if recorded {
-		afterCap, _, _, _, _ := m.EffectiveCapacity()
-		if beforeCap != afterCap {
-			m.OnSessionsChanged()
-		}
+	afterCap, _, _, _, _ := m.EffectiveCapacity()
+	if beforeCap != afterCap {
+		m.OnSessionsChanged()
 	}
 	return recorded
 }
@@ -311,6 +372,11 @@ func (m *Manager) ReconcileOnce(ctx context.Context) []Adjustment {
 	for id, rec := range m.capped {
 		if _, ok := liveIDs[id]; !ok && now.Sub(rec.updatedAt) > 30*time.Second {
 			delete(m.capped, id)
+		}
+	}
+	for id := range m.lastBufEvents {
+		if _, ok := liveIDs[id]; !ok {
+			delete(m.lastBufEvents, id)
 		}
 	}
 	m.mu.Unlock()

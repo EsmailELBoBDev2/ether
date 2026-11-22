@@ -155,7 +155,7 @@ func (a *App) observeTranscodeRemoteDelivery(ev transcode.RemoteDeliveryEvent) {
 		}
 		sessionID = matched.ID
 		if matched.Experience != nil && matched.Experience.BufferEvents > 0 {
-			starved = true
+			starved = a.uploadBudget.NoteBufferEvents(sessionID, matched.Experience.BufferEvents)
 		}
 	} else {
 		host, _, err := net.SplitHostPort(ev.RemoteAddr)
@@ -173,6 +173,8 @@ func (a *App) observeTranscodeRemoteDelivery(ev transcode.RemoteDeliveryEvent) {
 		SegDuration:      ev.SegDuration,
 		MediaBitrateKbps: ev.MediaBitrateKbps,
 		TCPBacklogBytes:  ev.TCPBacklogBytes,
+		TCPStall:         ev.TCPStall,
+		BufferFilling:    ev.BufferFilling,
 		Starved:          starved,
 	})
 }
@@ -186,6 +188,8 @@ func (a *App) observeDirectRemoteDelivery(ev playback.RemoteDeliveryEvent) {
 		Duration:         ev.Duration,
 		MediaBitrateKbps: ev.MediaBitrateKbps,
 		TCPBacklogBytes:  ev.TCPBacklogBytes,
+		TCPStall:         ev.TCPStall,
+		BufferFilling:    ev.BufferFilling,
 		Starved:          ev.Starved,
 	})
 }

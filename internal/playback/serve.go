@@ -15,15 +15,31 @@ import (
 
 // RemoteDeliveryEvent captures one sustained outbound write window on a remote
 // direct-play HTTP stream so the upload budget estimator can observe real
-// sustained throughput, buffer-starved clients, and TCP send backlog.
+// sustained throughput, buffer-starved clients, and TCP send congestion.
 type RemoteDeliveryEvent struct {
 	SessionID        string
 	Bytes            int64
 	Duration         time.Duration
 	MediaBitrateKbps int
 	TCPBacklogBytes  int
+	TCPStall         sockerr.TCPStallKind
+	BufferFilling    bool
 	Starved          bool
 }
+
+const (
+	// directBufferFillWindow bounds initial/post-seek buffer-fill observation
+	// on a direct-play media range. Exited immediately if TCP_INFO observes
+	// receiver-window limiting (client buffer full).
+	directBufferFillWindow = 10 * time.Second
+
+	// directRangeSeekSlack tolerates small overlaps or gaps between sequential
+	// chunked Range requests so only genuine seeks re-arm buffer-fill mode.
+	directRangeSeekSlack = 2 << 20
+
+	// directSampleBytes limits TCP_INFO sampling frequency on small writes.
+	directSampleBytes = 64 << 10
+)
 
 // SetRemoteDeliveryObserver installs an optional passive observer for remote
 // direct-play delivery windows. LAN streams are never reported.
@@ -48,29 +64,47 @@ func (m *Manager) notifyRemoteDelivery(ev RemoteDeliveryEvent) {
 }
 
 type remoteDeliveryMeter struct {
-	m          *Manager
-	ctx        context.Context
-	s          *session
-	w          io.Writer
-	mediaKbps  int
-	windowB    int64
-	windowDur  time.Duration
-	maxBacklog int
-	lastFlush  time.Time
-	lastBufEv  int
+	m            *Manager
+	ctx          context.Context
+	s            *session
+	w            io.Writer
+	pos          int64
+	isMediaRange bool
+	mediaKbps    int
+	windowB      int64
+	windowDur    time.Duration
+	lastWriteDur time.Duration
+	sinceSample  int64
+	tcp          sockerr.TCPDeliveryTracker
+	lastFlush    time.Time
+	lastBufEv    int
 }
 
 func (rm *remoteDeliveryMeter) Write(p []byte) (int, error) {
-	start := time.Now()
+	rm.tcp.Begin(rm.ctx)
+	if rm.windowB > 0 && (rm.lastWriteDur >= 5*time.Millisecond || rm.sinceSample >= directSampleBytes) {
+		// Sample pre-write socket state when prior writes blocked or after a
+		// full sampling stride: on a client-paced stream the kernel send buffer
+		// is often already full with rwnd closed right before Write blocks.
+		rm.tcp.Sample(rm.ctx)
+	}
+	start := rm.m.now()
 	n, err := rm.w.Write(p)
-	dur := time.Since(start)
+	now := rm.m.now()
+	dur := max(0, now.Sub(start))
+	rm.lastWriteDur = dur
 	if n > 0 {
+		rm.pos += int64(n)
+		if rm.isMediaRange {
+			rm.s.directRangeEnd.Store(rm.pos)
+		}
 		rm.windowB += int64(n)
 		rm.windowDur += dur
-		if q, ok := sockerr.TCPSendBacklog(rm.ctx); ok && q > rm.maxBacklog {
-			rm.maxBacklog = q
+		rm.sinceSample += int64(n)
+		if dur >= 5*time.Millisecond || rm.sinceSample >= directSampleBytes {
+			rm.tcp.Sample(rm.ctx)
+			rm.sinceSample = 0
 		}
-		now := rm.m.now()
 		if rm.lastFlush.IsZero() {
 			rm.lastFlush = now
 		}
@@ -82,30 +116,70 @@ func (rm *remoteDeliveryMeter) Write(p []byte) (int, error) {
 }
 
 func (rm *remoteDeliveryMeter) flush(now time.Time) {
+	if rm.windowB == 0 {
+		rm.windowDur = 0
+		rm.sinceSample = 0
+		rm.lastFlush = now
+		return
+	}
+	backlog, stall := rm.tcp.Finish(rm.ctx)
 	if rm.windowB >= 64<<10 && rm.windowDur >= 100*time.Millisecond {
 		starved := false
+		inactive := false
+		bufferFilling := false
 		rm.s.mu.Lock()
-		if !rm.s.caps.NoPlaybackTelemetry {
-			ev := rm.s.exp.snapshot(now).BufferEvents
-			if ev > rm.lastBufEv {
-				starved = true
-				rm.lastBufEv = ev
+		inactive = rm.s.closed || rm.s.viewerState == "paused" || rm.s.viewerState == "stopped" || !rm.s.stopAt.IsZero() || rm.s.stoppedBySurface
+		if !inactive {
+			if !rm.s.caps.NoPlaybackTelemetry {
+				if snap := rm.s.exp.snapshot(now); snap != nil && snap.BufferEvents > rm.lastBufEv {
+					starved = true
+					rm.lastBufEv = snap.BufferEvents
+				}
+			}
+			if rm.isMediaRange && !rm.s.directFillUntil.IsZero() && !now.After(rm.s.directFillUntil) {
+				bufferFilling = true
+			}
+			if stall == sockerr.TCPStallRwnd {
+				// Peer receive window closed: client buffer is full.
+				rm.s.directFillUntil = time.Time{}
 			}
 		}
 		rm.s.mu.Unlock()
-		rm.m.notifyRemoteDelivery(RemoteDeliveryEvent{
-			SessionID:        rm.s.id,
-			Bytes:            rm.windowB,
-			Duration:         rm.windowDur,
-			MediaBitrateKbps: rm.mediaKbps,
-			TCPBacklogBytes:  rm.maxBacklog,
-			Starved:          starved,
-		})
+		if !inactive {
+			rm.m.notifyRemoteDelivery(RemoteDeliveryEvent{
+				SessionID:        rm.s.id,
+				Bytes:            rm.windowB,
+				Duration:         rm.windowDur,
+				MediaBitrateKbps: rm.mediaKbps,
+				TCPBacklogBytes:  backlog,
+				TCPStall:         stall,
+				BufferFilling:    bufferFilling,
+				Starved:          starved,
+			})
+		}
 	}
 	rm.windowB = 0
 	rm.windowDur = 0
-	rm.maxBacklog = 0
+	rm.sinceSample = 0
 	rm.lastFlush = now
+}
+
+// beginDirectRangeLocked classifies a direct-play range request as a media
+// playback range (excluding tiny header probes and near-EOF tail probes) and
+// arms the initial/post-seek buffer-fill window when starting or jumping
+// non-sequentially. Caller holds s.mu.
+func (s *session) beginDirectRangeLocked(start, length int64, now time.Time) bool {
+	tailProbe := s.virtual.Size > 64<<20 && start >= s.virtual.Size-(32<<20)
+	isMediaRange := length >= 1<<20 && !tailProbe
+	if !isMediaRange {
+		return false
+	}
+	prevEnd := s.directRangeEnd.Load()
+	if prevEnd < 0 || start < prevEnd-directRangeSeekSlack || start > prevEnd+directRangeSeekSlack {
+		s.directFillUntil = now.Add(directBufferFillWindow)
+		s.directRangeEnd.Store(start)
+	}
+	return true
 }
 
 var (
@@ -190,28 +264,39 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		began := time.Now()
 		var meter *remoteDeliveryMeter
 		if m.remoteDelivery.Load() != nil {
+			now := m.now()
 			s.mu.Lock()
 			isRemote := s.caps.Remote
 			mediaKbps := 0
 			lastBufEv := 0
+			isMediaRange := false
 			if isRemote {
 				if g := s.cur; g != nil {
-					mediaKbps = g.infoSnapshot().BitrateKbps
+					info := g.infoSnapshot()
+					mediaKbps = info.BitrateKbps
+					if mediaKbps <= 0 && info.Size > 0 && info.Duration > 0 {
+						mediaKbps = int(float64(info.Size*8) / info.Duration.Seconds() / 1000)
+					}
 				}
 				if !s.caps.NoPlaybackTelemetry {
-					lastBufEv = s.exp.snapshot(m.now()).BufferEvents
+					if snap := s.exp.snapshot(now); snap != nil {
+						lastBufEv = snap.BufferEvents
+					}
 				}
+				isMediaRange = s.beginDirectRangeLocked(start, length, now)
 			}
 			s.mu.Unlock()
 			if isRemote {
 				meter = &remoteDeliveryMeter{
-					m:         m,
-					ctx:       r.Context(),
-					s:         s,
-					w:         w,
-					mediaKbps: mediaKbps,
-					lastFlush: m.now(),
-					lastBufEv: lastBufEv,
+					m:            m,
+					ctx:          r.Context(),
+					s:            s,
+					w:            w,
+					pos:          start,
+					isMediaRange: isMediaRange,
+					mediaKbps:    mediaKbps,
+					lastFlush:    now,
+					lastBufEv:    lastBufEv,
 				}
 				w = meter
 			}

@@ -320,3 +320,44 @@ func TestEveryRegistryProductMatchHasAppsRow(t *testing.T) {
 		}
 	}
 }
+
+func TestOverrideMatchesDeviceOrDeviceName(t *testing.T) {
+	on := true
+	id := Identity{
+		Product:    "PlxNative",
+		Platform:   "webOS",
+		Device:     "LG webOS TV",
+		DeviceName: "PlxNative (LG TV)",
+	}
+	overrides := []core.ClientCapabilityOverride{
+		{Product: "PlxNative", Device: "plxnative (lg tv)", MaxHeight: 2160, HDR10: &on, DolbyVision: &on, DolbyVisionProfiles: []int{5, 7, 8}},
+		{Product: "PlxNative", Device: "LG webOS", MaxHeight: 1080},
+		{Product: "PlxNative", Device: "Samsung", MaxHeight: 720},
+	}
+	if got := MatchingOverrides(id, overrides); !slices.Equal(got, []int{0, 1}) {
+		t.Fatalf("MatchingOverrides = %v, want [0 1]", got)
+	}
+	play := Playback(id, overrides[:1])
+	if play.MaxHeight != 2160 || !play.HDR10 || !play.DolbyVision || !slices.Equal(play.DolbyVisionProfiles, []int{5, 7, 8}) {
+		t.Fatalf("Playback missed DeviceName override: %+v", play)
+	}
+	pol := Policy(id, overrides[:1])
+	if !slices.Equal(pol.DolbyVisionProfiles, []int{5, 7, 8}) {
+		t.Fatalf("Policy missed DeviceName override: %+v", pol)
+	}
+
+	// Built-in rules must still classify using Device (not arbitrary friendly
+	// DeviceName) so a phone named "Living Room TV" does not trigger android-tv.
+	phoneNamedTV := Identity{
+		Product:    "Plex for Android (Mobile)",
+		Platform:   "Android",
+		Device:     "Pixel 8",
+		DeviceName: "Living Room TV",
+	}
+	if got := Policy(phoneNamedTV, nil); got.ID == "android-tv" {
+		t.Fatalf("friendly DeviceName triggered built-in android-tv rule: %+v", got)
+	}
+	if got := MatchingOverrides(phoneNamedTV, []core.ClientCapabilityOverride{{ID: "android-tv", MaxHeight: 1080}, {Device: "Living Room TV", MaxHeight: 720}}); !slices.Equal(got, []int{1}) {
+		t.Fatalf("MatchingOverrides for phone named TV = %v, want [1]", got)
+	}
+}

@@ -306,6 +306,66 @@ describe("Playback devices", () => {
     expect(createBtn).toHaveTextContent("Override");
     const editBtn = within(bedroomRow).getByRole("button", { name: "Edit override" });
     expect(editBtn).toHaveTextContent("Edit");
+
+    // Creating an override from a seen device pre-fills Match from row.device (runtime field),
+    // not the friendly device name.
+    fireEvent.click(createBtn);
+    const createDrawer = await screen.findByRole("dialog", { name: "Edit Living room Apple TV" });
+    expect(within(createDrawer).getByLabelText("Match")).toHaveValue("Apple TV");
+    expect(within(createDrawer).getByLabelText("Platform")).toHaveValue("tvOS");
+  });
+
+  it("preserves an existing override's empty platform and falls back to name when device is empty", async () => {
+    renderApp("/playback/devices/seen", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        const res = await original(input, init);
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes("/playback/policy") && (!init?.method || init.method === "GET")) {
+          const data = await res.json();
+          data.overrides = [{ product: "PlxNative", device: "PlxNative (LG TV)", maxHeight: 2160 }];
+          data.seenDevices = [
+            {
+              clientIdentifier: "plx-lg",
+              name: "PlxNative (LG TV)",
+              platform: "webOS",
+              device: "LG webOS TV",
+              app: "PlxNative",
+              viewer: "You",
+              lastSeen: new Date(Date.now() - 600_000).toISOString(),
+              overrideIndex: 0,
+            },
+            {
+              clientIdentifier: "legacy-dev",
+              name: "Legacy Box",
+              platform: "Android",
+              device: "",
+              app: "",
+              viewer: "You",
+              lastSeen: new Date(Date.now() - 1200_000).toISOString(),
+            },
+          ];
+          return new Response(JSON.stringify(data), {
+            status: res.status,
+            headers: res.headers,
+          });
+        }
+        return res;
+      };
+    });
+
+    const plxRow = (await screen.findByText("PlxNative (LG TV)", {}, WAIT)).closest("tr")!;
+    fireEvent.click(within(plxRow).getByRole("button", { name: "Edit override" }));
+    const editDrawer = await screen.findByRole("dialog", { name: "Edit PlxNative (LG TV)" });
+    expect(within(editDrawer).getByLabelText("Match")).toHaveValue("PlxNative (LG TV)");
+    expect(within(editDrawer).getByLabelText("Platform")).toHaveValue("");
+    fireEvent.click(within(editDrawer).getByRole("button", { name: "Cancel" }));
+
+    const legacyRow = screen.getByText("Legacy Box").closest("tr")!;
+    fireEvent.click(within(legacyRow).getByRole("button", { name: "Create override" }));
+    const legacyDrawer = await screen.findByRole("dialog", { name: "Edit Legacy Box" });
+    expect(within(legacyDrawer).getByLabelText("Match")).toHaveValue("Legacy Box");
   });
 
   it("toggles Always convert video in the app compatibility drawer and persists cleanly", async () => {

@@ -46,11 +46,7 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	if !s.policy.NativePlaybackCapabilities {
 		declared = playbackFloor(declared, overrides)
 	} else {
-		device := declared.Device
-		if device == "" {
-			device = declared.DeviceName
-		}
-		if transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, device, "", declared.Version, overrides).AlwaysEncodeVideo {
+		if transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, declared.Device, declared.DeviceName, "", declared.Version, overrides).AlwaysEncodeVideo {
 			declared.AlwaysEncodeVideo = true
 		}
 	}
@@ -140,7 +136,7 @@ func playbackFloor(declared core.ClientCaps, overrides []core.ClientCapabilityOv
 	if device == "" {
 		device = declared.DeviceName
 	}
-	defaults := transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, device, "", declared.Version, overrides)
+	defaults := transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, declared.Device, declared.DeviceName, "", declared.Version, overrides)
 	if defaults.AlwaysEncodeVideo {
 		declared.AlwaysEncodeVideo = true
 	}

@@ -203,7 +203,7 @@ func (a *App) observedClients(ctx context.Context) ([]observedClient, error) {
 // The registry's last-seen index supplies at most 100 rows. Each latest play
 // is a primary-key lookup, independent of the size of playback history.
 func (a *App) seenPlaybackDevices(ctx context.Context) ([]seenDevice, error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT d.client_identifier,d.name,d.platform,COALESCE(NULLIF(p.device_match,''),d.name),COALESCE(p.product,''),COALESCE(p.username,''),d.last_seen FROM (SELECT * FROM stats_device_registry WHERE last_seen>0 ORDER BY last_seen DESC,id DESC LIMIT 100) d LEFT JOIN stats_plays p ON p.id=d.latest_play_id ORDER BY d.last_seen DESC,d.id DESC`)
+	rows, err := a.db.QueryContext(ctx, `SELECT d.client_identifier,d.name,d.platform,COALESCE(p.device_match,''),COALESCE(p.product,''),COALESCE(p.username,''),d.last_seen FROM (SELECT * FROM stats_device_registry WHERE last_seen>0 ORDER BY last_seen DESC,id DESC LIMIT 100) d LEFT JOIN stats_plays p ON p.id=d.latest_play_id ORDER BY d.last_seen DESC,d.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -217,15 +217,12 @@ func (a *App) seenPlaybackDevices(ctx context.Context) ([]seenDevice, error) {
 			return nil, err
 		}
 		d.LastSeen = time.Unix(seen, 0).UTC()
-		identity := clientreg.Identity{Product: d.App, Platform: d.Platform, Device: d.Device}
-		playback, policy := clientreg.Playback(identity, nil), clientreg.Policy(identity, nil)
-		for i, o := range overrides {
-			// Version is unavailable for historical observations; do not claim a
-			// version-scoped edit applies when that cannot be established.
-			if clientreg.OverrideApplies(o, []string{playback.ID, policy.ID}, identity) {
-				index := i
-				d.OverrideIndex = &index
-			}
+		// Version is unavailable for historical observations; do not claim a
+		// version-scoped edit applies when that cannot be established.
+		identity := clientreg.Identity{Product: d.App, Platform: d.Platform, Device: d.Device, DeviceName: d.Name}
+		if matched := clientreg.MatchingOverrides(identity, overrides); len(matched) > 0 {
+			index := matched[len(matched)-1]
+			d.OverrideIndex = &index
 		}
 		out = append(out, d)
 	}

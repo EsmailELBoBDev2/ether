@@ -20,11 +20,14 @@ type ClientPolicy struct {
 }
 
 func identityOf(c core.ClientCaps) clientreg.Identity {
-	device := c.Device
+	return identityWith(c.Product, c.Platform, c.Device, c.DeviceName, "", c.Version)
+}
+
+func identityWith(product, platform, device, deviceName, model, version string) clientreg.Identity {
 	if device == "" {
-		device = c.DeviceName
+		device = deviceName
 	}
-	return clientreg.Identity{Product: c.Product, Platform: c.Platform, Device: device, Version: c.Version}
+	return clientreg.Identity{Product: product, Platform: platform, Device: device, DeviceName: deviceName, Model: model, Version: version}
 }
 
 // PlaybackDefaults is the registry baseline for a client that sent no profile.
@@ -43,8 +46,8 @@ type PlaybackDefaults struct {
 
 // PlaybackDefaultsFor evaluates the registry, including owner overrides.
 // Model is separate from ClientCaps because Plex carries it on the request.
-func PlaybackDefaultsFor(product, platform, device, model, version string, overrides []core.ClientCapabilityOverride) PlaybackDefaults {
-	got := clientreg.Playback(clientreg.Identity{Product: product, Platform: platform, Device: device, Model: model, Version: version}, overrides)
+func PlaybackDefaultsFor(product, platform, device, deviceName, model, version string, overrides []core.ClientCapabilityOverride) PlaybackDefaults {
+	got := clientreg.Playback(identityWith(product, platform, device, deviceName, model, version), overrides)
 	return PlaybackDefaults{
 		ID: got.ID, Video: got.Video, Audio: got.Audio, Containers: got.Containers,
 		MaxHeight: got.MaxHeight, HDR10: got.HDR10, DolbyVision: got.DolbyVision, HeightLocked: got.HeightLocked,
@@ -55,8 +58,8 @@ func PlaybackDefaultsFor(product, platform, device, model, version string, overr
 // PolicyStamp returns Dolby Vision profiles and subtitle codecs when an owner
 // override changed them. Unchanged defaults stay unset so a Plex client cap
 // matches the historical shape.
-func PolicyStamp(product, platform, device, model, version string, overrides []core.ClientCapabilityOverride) (dv []int, subs []string, dvChanged, subsChanged bool) {
-	id := clientreg.Identity{Product: product, Platform: platform, Device: device, Model: model, Version: version}
+func PolicyStamp(product, platform, device, deviceName, model, version string, overrides []core.ClientCapabilityOverride) (dv []int, subs []string, dvChanged, subsChanged bool) {
+	id := identityWith(product, platform, device, deviceName, model, version)
 	plain, edited := clientreg.Policy(id, nil), clientreg.Policy(id, overrides)
 	return slices.Clone(edited.DolbyVisionProfiles), slices.Clone(edited.Subtitles),
 		!slices.Equal(plain.DolbyVisionProfiles, edited.DolbyVisionProfiles),
@@ -119,9 +122,9 @@ func ApplyForcedOverrides(c core.ClientCaps, model string, overrides []core.Clie
 	}
 	id := identityOf(c)
 	id.Model = model
-	playback, policy := clientreg.Playback(id, nil), clientreg.Policy(id, nil)
-	for _, o := range overrides {
-		if !o.Force || !clientreg.OverrideApplies(o, []string{playback.ID, policy.ID}, id) {
+	for _, i := range clientreg.MatchingOverrides(id, overrides) {
+		o := overrides[i]
+		if !o.Force {
 			continue
 		}
 		before := c

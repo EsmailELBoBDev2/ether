@@ -64,6 +64,17 @@ ALTER TABLE stats_plays ADD COLUMN audio_copy INTEGER;`)
 	store.Register("stats_seen_devices", 1, `ALTER TABLE stats_plays ADD COLUMN product TEXT NOT NULL DEFAULT '';
 ALTER TABLE stats_plays ADD COLUMN device_match TEXT NOT NULL DEFAULT '';
 CREATE INDEX stats_plays_device_latest ON stats_plays(platform,device,updated DESC,id DESC);`)
+	// Backfill device_match for older plays where it can be derived:
+	// 1. Copy device_match from the latest play of the same (platform, device)
+	//    that recorded it (recovers pre-v1 plays and headerless plays).
+	// 2. Post-v1 plays (product <> '') that still have empty device_match came
+	//    from protocols without a separate Device field (Jellyfin/Emby, Silo,
+	//    Vela) or headerless Plex, where device IS the runtime match field.
+	// 3. Propagate those derived values back to pre-v1 plays of the same
+	//    (platform, device). Pre-v1 plays with no post-v1 play stay empty.
+	store.Register("stats_seen_devices", 2, `UPDATE stats_plays SET device_match=COALESCE((SELECT p2.device_match FROM stats_plays p2 WHERE p2.platform=stats_plays.platform AND p2.device=stats_plays.device AND p2.device_match<>'' ORDER BY p2.updated DESC,p2.id DESC LIMIT 1),'') WHERE device_match='' AND device<>'';
+UPDATE stats_plays SET device_match=device WHERE device_match='' AND product<>'' AND device<>'';
+UPDATE stats_plays SET device_match=COALESCE((SELECT p2.device_match FROM stats_plays p2 WHERE p2.platform=stats_plays.platform AND p2.device=stats_plays.device AND p2.device_match<>'' ORDER BY p2.updated DESC,p2.id DESC LIMIT 1),'') WHERE device_match='' AND product='' AND device<>'';`)
 }
 
 type Options struct {
@@ -276,6 +287,10 @@ func (s *Service) record(ctx context.Context, r playRecord) error {
 	if device == "" {
 		device = p.Client.Device
 	}
+	deviceMatch := p.Client.Device
+	if deviceMatch == "" {
+		deviceMatch = p.Client.DeviceName
+	}
 	clientID := p.Client.ClientID
 	if clientID == "" {
 		clientID = p.ClientID
@@ -290,7 +305,7 @@ func (s *Service) record(ctx context.Context, r playRecord) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO stats_plays(id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,bytes,duration_ms,failovers,error,node_id,`+
 		`measured,played,pictured,ttff_ms,start_failed,buffer_events,buffer_ms,down_failovers,source_kbps,uhd,hdr,remote,origin,release_name,reason_kind,reason_detail,quality_fallback,client_ip,audio_copy,product,device_match) `+
 		`VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,title=excluded.title,platform=excluded.platform,device=excluded.device,decision=excluded.decision,updated=excluded.updated,`+
-		`ended=excluded.ended,product=excluded.product,device_match=excluded.device_match,`+
+		`ended=excluded.ended,product=CASE WHEN excluded.product='' THEN stats_plays.product ELSE excluded.product END,device_match=CASE WHEN excluded.device_match='' THEN stats_plays.device_match ELSE excluded.device_match END,`+
 		`bytes=CASE WHEN excluded.bytes>stats_plays.bytes THEN excluded.bytes ELSE stats_plays.bytes END,`+
 		`duration_ms=CASE WHEN excluded.duration_ms>stats_plays.duration_ms THEN excluded.duration_ms ELSE stats_plays.duration_ms END,`+
 		`failovers=excluded.failovers,error=CASE WHEN excluded.error='' THEN stats_plays.error ELSE excluded.error END,node_id=excluded.node_id,`+
@@ -308,7 +323,7 @@ func (s *Service) record(ctx context.Context, r playRecord) error {
 		`reason_detail=CASE WHEN excluded.decision='' THEN stats_plays.reason_detail ELSE excluded.reason_detail END,`+
 		`quality_fallback=CASE WHEN excluded.quality_fallback='' THEN stats_plays.quality_fallback ELSE excluded.quality_fallback END`,
 		p.ID, p.UserID, int64(p.Key), p.Username, p.TitleName, p.Client.Platform, device, string(p.Decision), start.Unix(), now.Unix(), end, p.BytesServed, p.Info.Duration.Milliseconds(), p.Failovers, problem, s.opts.NodeID,
-		q.played, q.pictured, q.ttffMS, q.startFailed, q.bufferEvents, q.bufferMS, p.DownFailovers, q.sourceKbps, q.uhd, q.hdr, q.remote, p.Origin, q.release, q.reasonKind, q.reasonDetail, p.QualityFallback, nullIP(p.Client.ClientIP), audioCopy(p), p.Client.Product, p.Client.Device)
+		q.played, q.pictured, q.ttffMS, q.startFailed, q.bufferEvents, q.bufferMS, p.DownFailovers, q.sourceKbps, q.uhd, q.hdr, q.remote, p.Origin, q.release, q.reasonKind, q.reasonDetail, p.QualityFallback, nullIP(p.Client.ClientIP), audioCopy(p), p.Client.Product, deviceMatch)
 	if err == nil && clientID != "" {
 		_, err = s.db.ExecContext(ctx, `UPDATE stats_device_registry SET last_seen=?,latest_play_id=? WHERE client_identifier=? AND last_seen<=?`, now.Unix(), p.ID, clientID, now.Unix())
 	}

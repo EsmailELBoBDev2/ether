@@ -51,6 +51,12 @@ type VersionHeaderProber interface {
 	ProbeVersionHeaders(context.Context, *User, RatingKey, ClientCaps) error
 }
 
+// WithVersionProbeSearchWait attaches a concurrent Auto-probe completion signal
+// to ctx for ProbeVersionHeaders.
+func WithVersionProbeSearchWait(ctx context.Context, done <-chan struct{}) context.Context {
+	return core.WithVersionProbeSearchWait(ctx, done)
+}
+
 // DetailRevealer schedules a background season-drop check when a viewer opens
 // a show, season, or episode detail page, subject to detail-burst gating.
 type DetailRevealer interface {

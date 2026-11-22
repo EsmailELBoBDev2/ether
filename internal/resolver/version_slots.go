@@ -56,8 +56,8 @@ func (s *Service) VersionSlots(ctx context.Context, req core.ResolveRequest, lim
 		// remove or renumber a choice while background discovery fills them.
 		return s.versionSlots(ctx, req, limit, false)
 	}
-	versions, err := s.versionSlots(ctx, req, limit, labels)
-	if err == nil && labels && len(versions) > 0 {
+	versions, partialLive, err := s.evalVersionSlots(ctx, req, limit, labels, true)
+	if err == nil && labels && len(versions) > 0 && !partialLive {
 		s.cacheDetailVariants(req, limit, true, versions)
 	}
 	return versions, err
@@ -81,6 +81,39 @@ func (s *Service) playedReleaseForSlots(req core.ResolveRequest) (core.Release, 
 }
 
 func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, limit int, labels bool) ([]core.ReleaseVariant, error) {
+	versions, _, err := s.evalVersionSlots(ctx, req, limit, labels, false)
+	return versions, err
+}
+
+func (s *Service) evalVersionSlots(ctx context.Context, req core.ResolveRequest, limit int, labels, allowLive bool) ([]core.ReleaseVariant, bool, error) {
+	if req.Title == nil {
+		return nil, false, fmt.Errorf("resolver: nil title")
+	}
+	// Local/plugin/extra sources own their version contracts and do not
+	// admit indexer-backed logical selectors through this resolver.
+	if kind := req.Title.Key.Kind(); kind != core.KindMovie && kind != core.KindEpisode {
+		return nil, false, nil
+	}
+	var results []core.Release
+	searchWarm := false
+	partialLive := false
+	if labels {
+		key := searchCacheKey(searchRequestFor(req.Title))
+		var ok bool
+		results, ok = s.peekSearchCache(key)
+		searchWarm = ok
+		if !ok && allowLive {
+			if live := s.peekLiveSearch(key); len(live) > 0 {
+				results = live
+				partialLive = true
+			}
+		}
+	}
+	versions, err := s.versionSlotsWithResults(ctx, req, limit, labels, results, searchWarm)
+	return versions, partialLive, err
+}
+
+func (s *Service) versionSlotsWithResults(ctx context.Context, req core.ResolveRequest, limit int, labels bool, results []core.Release, searchWarm bool) ([]core.ReleaseVariant, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}
@@ -102,14 +135,11 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 	if req.Client.Download {
 		hasOwnerPin = false
 	}
-	searchWarm := false
 	if labels {
 		titleVC = s.viewerTitleChoiceForResolve(req, nil)
 		showVC := s.viewerShowChoiceForResolve(req)
-		results, ok := s.peekSearchCache(searchCacheKey(searchRequestFor(req.Title)))
-		searchWarm = ok
 		playedRel, hasPlayed := s.playedReleaseForSlots(req)
-		if !ok {
+		if !searchWarm && len(results) == 0 {
 			if titleVC != nil {
 				results = withRelease(results, titleVC.Release)
 			}

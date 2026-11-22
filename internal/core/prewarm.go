@@ -104,3 +104,27 @@ type PlayMetadataProber interface {
 type VersionHeaderProber interface {
 	ProbeVersionHeaders(context.Context, *User, RatingKey, ClientCaps) error
 }
+
+type versionProbeSearchWaitKey struct{}
+
+// WithVersionProbeSearchWait attaches a signal channel closed when a concurrent
+// play-intent probe (Auto) has finished. ProbeVersionHeaders uses it to observe
+// an indexer search started by that concurrent probe instead of exiting before
+// searchCached begins, while still returning promptly if Auto finishes without
+// running a search.
+func WithVersionProbeSearchWait(ctx context.Context, done <-chan struct{}) context.Context {
+	if done == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, versionProbeSearchWaitKey{}, done)
+}
+
+// VersionProbeSearchWait returns the concurrent Auto-probe completion signal
+// attached by WithVersionProbeSearchWait, or nil when none was set.
+func VersionProbeSearchWait(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	ch, _ := ctx.Value(versionProbeSearchWaitKey{}).(<-chan struct{})
+	return ch
+}

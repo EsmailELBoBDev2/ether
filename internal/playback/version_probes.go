@@ -668,7 +668,11 @@ type versionSlotResolver interface {
 	VersionSlots(context.Context, core.ResolveRequest, int, bool) ([]core.ReleaseVariant, error)
 }
 
-func (m *Manager) offeredVariantsForProbing(ctx context.Context, user *core.User, title *core.Title, caps core.ClientCaps) []core.ReleaseVariant {
+type versionSlotWatcher interface {
+	WatchVersionSlots(context.Context, core.ResolveRequest, int, <-chan struct{}, func([]core.ReleaseVariant)) error
+}
+
+func (m *Manager) versionProbeRequest(ctx context.Context, user *core.User, title *core.Title, caps core.ClientCaps) core.ResolveRequest {
 	req := core.ResolveRequest{
 		Title:  title,
 		User:   user,
@@ -680,6 +684,11 @@ func (m *Manager) offeredVariantsForProbing(ctx context.Context, user *core.User
 		relCopy := rel
 		req.PlayedReleaseRecord = &relCopy
 	}
+	return req
+}
+
+func (m *Manager) offeredVariantsForProbing(ctx context.Context, user *core.User, title *core.Title, caps core.ClientCaps) []core.ReleaseVariant {
+	req := m.versionProbeRequest(ctx, user, title, caps)
 	var variants []core.ReleaseVariant
 	var err error
 	if slots, ok := m.deps.Resolver.(versionSlotResolver); ok {
@@ -701,11 +710,12 @@ func (m *Manager) offeredVariantsForProbing(ctx context.Context, user *core.User
 var _ core.VersionHeaderProber = (*Manager)(nil)
 
 // ProbeVersionHeaders runs bounded, parallel container header probes on any
-// unprobed offered versions of key that can be opened without indexer searches
-// or NZB grabs (already-cached debrid torrents, direct HTTP streams, or
-// vaulted Usenet NZBs). Used by play-time metadata reads (such as Plezy's
-// Play Version picker) so non-Auto versions carry real streams and viewer
-// rule-selected subtitles on first play without spending indexer budget.
+// unprobed non-Auto offered versions of key that can be opened without indexer
+// searches or NZB grabs (already-cached debrid torrents, direct HTTP streams,
+// or vaulted Usenet NZBs). When the resolver supports live slot observation,
+// each version's header probe starts as soon as its slot fills from the search
+// cache or arriving search batches instead of waiting for the full indexer
+// fleet to finish (#678, #715).
 func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
 	if m == nil || user == nil || key == 0 {
 		return nil
@@ -723,52 +733,151 @@ func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key 
 	if err != nil || title == nil {
 		return nil
 	}
-	variants := m.offeredVariantsForProbing(core.WithoutLocalResponse(ctx), user, title, caps)
-	if len(variants) == 0 {
-		return nil
-	}
-	var todo []core.Release
-	seen := make(map[string]bool, len(variants))
-	for _, v := range variants {
-		rel := v.Release
-		if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) || seen[rel.ID] {
-			continue
-		}
-		seen[rel.ID] = true
-		if _, hit := m.CachedReleaseProbe(rel); hit {
-			continue
-		}
-		if _, hit := m.CachedVariantInfo(ctx, user.ID, key, rel.ID); hit {
-			continue
-		}
-		todo = append(todo, rel)
-	}
-	if len(todo) == 0 {
-		return nil
-	}
+
 	budget := m.deps.HeaderProbeBudget
 	if budget <= 0 {
 		budget = transcode.DefaultHeaderProbeBudget
 	}
 	sem := make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	for _, rel := range todo {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
-			return ctx.Err()
-		}
+	var (
+		wg             sync.WaitGroup
+		mu             sync.Mutex
+		inFlight       = make(map[string]bool)
+		inFlightCached = make(map[string]bool)
+		retryCached    = make(map[string]core.Release)
+		triedUncached  = make(map[string]bool)
+		done           = make(map[string]bool)
+	)
+	schedule := func(variants []core.ReleaseVariant) {
 		if ctx.Err() != nil {
-			<-sem
-			break
+			return
 		}
-		wg.Add(1)
-		go func(r core.Release) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			m.probeOneVersionHeaderWithYield(ctx, key, r, budget, m.isShuttingDown)
-		}(rel)
+		if len(variants) > core.MaxVariants {
+			variants = variants[:core.MaxVariants]
+		}
+		for _, v := range variants {
+			// Auto is resolved and probed by ProbePlayMetadata (or already exact);
+			// skipping it prevents duplicate work when Auto and version probes run
+			// concurrently.
+			if v.Auto {
+				continue
+			}
+			rel := v.Release
+			if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) {
+				continue
+			}
+			knownCached := v.Availability == core.VersionCached ||
+				v.Availability == core.VersionInstant ||
+				len(rel.DebridCached) > 0
+
+			mu.Lock()
+			if done[rel.ID] {
+				mu.Unlock()
+				continue
+			}
+			if inFlight[rel.ID] {
+				if knownCached && !inFlightCached[rel.ID] && rel.Protocol == core.ProtocolTorrent {
+					retryCached[rel.ID] = rel
+				}
+				mu.Unlock()
+				continue
+			}
+			if !knownCached && triedUncached[rel.ID] {
+				mu.Unlock()
+				continue
+			}
+			mu.Unlock()
+
+			if _, hit := m.CachedReleaseProbe(rel); hit {
+				mu.Lock()
+				done[rel.ID] = true
+				mu.Unlock()
+				continue
+			}
+			if _, hit := m.CachedVariantInfo(ctx, user.ID, key, rel.ID); hit {
+				mu.Lock()
+				done[rel.ID] = true
+				mu.Unlock()
+				continue
+			}
+
+			mu.Lock()
+			if done[rel.ID] {
+				mu.Unlock()
+				continue
+			}
+			if inFlight[rel.ID] {
+				if knownCached && !inFlightCached[rel.ID] && rel.Protocol == core.ProtocolTorrent {
+					retryCached[rel.ID] = rel
+				}
+				mu.Unlock()
+				continue
+			}
+			if !knownCached && triedUncached[rel.ID] {
+				mu.Unlock()
+				continue
+			}
+			inFlight[rel.ID] = true
+			inFlightCached[rel.ID] = knownCached
+			mu.Unlock()
+
+			wg.Add(1)
+			go func(r core.Release, cached bool) {
+				defer wg.Done()
+				acquired := false
+				select {
+				case sem <- struct{}{}:
+					acquired = true
+					defer func() { <-sem }()
+				case <-ctx.Done():
+				}
+				if !acquired || ctx.Err() != nil {
+					mu.Lock()
+					delete(inFlight, r.ID)
+					delete(inFlightCached, r.ID)
+					delete(retryCached, r.ID)
+					mu.Unlock()
+					return
+				}
+				for {
+					probed := m.probeOneVersionHeaderWithYield(ctx, key, r, budget, m.isShuttingDown)
+					mu.Lock()
+					if !probed && ctx.Err() == nil {
+						if r2, ok := retryCached[r.ID]; ok {
+							delete(retryCached, r.ID)
+							inFlightCached[r.ID] = true
+							r = r2
+							cached = true
+							mu.Unlock()
+							continue
+						}
+					}
+					delete(inFlight, r.ID)
+					delete(inFlightCached, r.ID)
+					delete(retryCached, r.ID)
+					if probed || cached || r.Protocol != core.ProtocolTorrent {
+						done[r.ID] = true
+					} else {
+						triedUncached[r.ID] = true
+					}
+					mu.Unlock()
+					return
+				}
+			}(rel, knownCached)
+		}
+	}
+
+	if watcher, ok := m.deps.Resolver.(versionSlotWatcher); ok {
+		req := m.versionProbeRequest(ctx, user, title, caps)
+		_ = watcher.WatchVersionSlots(
+			core.WithoutLocalResponse(ctx),
+			req,
+			core.MaxVariants,
+			core.VersionProbeSearchWait(ctx),
+			schedule,
+		)
+	} else {
+		schedule(m.offeredVariantsForProbing(core.WithoutLocalResponse(ctx), user, title, caps))
 	}
 	wg.Wait()
 	return ctx.Err()

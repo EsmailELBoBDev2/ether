@@ -78,7 +78,7 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 	if mark := s.refillRetryAfter[key]; s.now().Before(mark.until) {
 		return nil
 	}
-	if _, ok := s.peekSearchCache(key); ok || len(s.refills) >= maxSearchRefills {
+	if _, ok := s.peekSearchCache(key); ok || s.activeLiveSearch(key) != nil || len(s.refills) >= maxSearchRefills {
 		return nil
 	}
 	if e, ok := s.getAvailability(s.bgCtx, int64(title.Key)); ok && !e.available {
@@ -91,17 +91,22 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 	done := make(chan struct{})
 	s.refills[key] = done
 	cooloff := s.cooloffFor(title)
+	// Publish the live search synchronously before returning so a concurrent
+	// play-intent version prober never misses a refill started by a resumed Auto.
+	ls := s.beginLiveSearch(req)
 	// Use the service lifetime, not the metadata request or source warm-up.
 	searchCtx := core.WithIndexerPurpose(context.WithValue(s.bgCtx, refillSearchContextKey{}, true), core.IndexerPurposeDetail)
 	if unattended {
 		searchCtx = core.WithUnattendedSearch(core.WithIndexerPurpose(searchCtx, core.IndexerPurposeWarmup))
 	}
+	searchCtx = context.WithValue(searchCtx, liveSearchContextKey{}, ls)
 	ctx, cancel := context.WithTimeout(searchCtx, searchRefillBudget)
 	s.bgWG.Add(1)
 	go func() {
 		defer s.bgWG.Done()
 		var err error
 		defer func() {
+			s.finishLiveSearch(ls, nil)
 			cancel()
 			s.bgMu.Lock()
 			if s.refillRetryAfter == nil {

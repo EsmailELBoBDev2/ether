@@ -37,26 +37,29 @@ func bedrockPlayProbeClient(pr *Request) bool {
 }
 
 // probeBedrockPlay runs or joins the shared foreground resolve+probe flight
-// for an explicit Bedrock play-intent request (POST /playQueues, play-queue
-// re-centering, or a pre-play /library/metadata fetch for an item in the
-// client's active queue). It returns true when handled via PlayMetadataProber
-// (or exact probed tracks are already available), and false when the playback
-// backend does not implement PlayMetadataProber so callers can fall back to
-// warmDetail.
+// (and concurrent free-source non-Auto version header probes) for an explicit
+// Bedrock play-intent request (POST /playQueues, play-queue re-centering, or a
+// pre-play /library/metadata fetch for an item in the client's active queue).
+// It returns true when handled via PlayMetadataProber (or exact probed tracks
+// are already available), and false when the playback backend does not
+// implement PlayMetadataProber so callers can fall back to warmDetail.
 func (s *Server) probeBedrockPlay(ctx context.Context, pr *Request, t *frontend.Title) bool {
 	if pr == nil || pr.User == nil || t == nil || !isPlayable(t.Type) || t.Key.IsPluginKey() || s.playback() == nil || libraryToolClient(pr) {
 		return false
 	}
-	if _, _, exact := s.mediaInfoWithSource(ctx, pr, t); exact {
-		return true
-	}
+	_, _, exact := s.mediaInfoWithSource(ctx, pr, t)
 	prober, ok := s.playback().(frontend.PlayMetadataProber)
-	if !ok {
+	if !exact && !ok {
 		return false
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, bedrockPlayProbeWait)
-	defer cancel()
-	_ = prober.ProbePlayMetadata(probeCtx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key))
+	var autoProbe func(context.Context) error
+	if !exact {
+		caps := s.clientCapsForKey(pr, t.Key)
+		autoProbe = func(c context.Context) error {
+			return prober.ProbePlayMetadata(c, pr.User, t.Key, caps)
+		}
+	}
+	s.runPlayIntentProbes(ctx, pr, t, exact, bedrockPlayProbeWait, plezyVersionProbeWait, autoProbe)
 	return true
 }
 

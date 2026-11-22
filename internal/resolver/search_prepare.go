@@ -318,9 +318,13 @@ func (p *searchPreparation) readyResultsAfter(window time.Duration) []core.Relea
 	return nil
 }
 
-func (p *searchPreparation) searchLive(ctx context.Context, indexer core.StreamingIndexer, req core.SearchRequest) ([]core.Release, bool, error) {
+func (p *searchPreparation) searchLive(ctx context.Context, indexer core.StreamingIndexer, req core.SearchRequest, ls *liveSearch) ([]core.Release, bool, error) {
+	onArrived := func(batch []core.Release) {
+		ls.add(p.svc, batch)
+		p.arrived(batch)
+	}
 	if p.disabled {
-		r, e := indexer.SearchWith(ctx, req, p.arrived)
+		r, e := indexer.SearchWith(ctx, req, onArrived)
 		return filterOutPlaceholders(r), false, e
 	}
 	// Detach from Play cancel so a first healthy hit can start while the
@@ -337,6 +341,7 @@ func (p *searchPreparation) searchLive(ctx context.Context, indexer core.Streami
 	if p.svc.bgClosed {
 		p.svc.bgMu.Unlock()
 		cancel()
+		p.svc.finishLiveSearch(ls, nil)
 		return nil, false, context.Canceled
 	}
 	p.svc.bgWG.Add(1)
@@ -344,16 +349,22 @@ func (p *searchPreparation) searchLive(ctx context.Context, indexer core.Streami
 	go func() {
 		defer p.svc.bgWG.Done()
 		defer cancel()
-		r, e := indexer.SearchWith(searchCtx, req, p.arrived)
+		defer p.svc.finishLiveSearch(ls, nil)
+		r, e := indexer.SearchWith(searchCtx, req, onArrived)
 		r = filterOutPlaceholders(r)
 		// Publish every complete answer before notifying the caller. Completion
 		// can race with the early-play ticker: checking partial here could
 		// miss an early return chosen just after the check, losing the cache.
 		// Normalizing before send also keeps the caller from mutating the
 		// same release slice while this worker writes the cache.
-		if e == nil && len(r) > 0 && !coverage.Incomplete() {
-			p.svc.rememberSearchResults(req, r)
+		var norm []core.Release
+		if e == nil && len(r) > 0 {
+			norm = p.svc.normalizeSearchResults(req, append([]core.Release(nil), r...))
+			if !coverage.Incomplete() {
+				p.svc.storeSearchCache(req, norm)
+			}
 		}
+		p.svc.finishLiveSearch(ls, norm)
 		done <- answer{r, e}
 	}()
 	ticker := time.NewTicker(25 * time.Millisecond)

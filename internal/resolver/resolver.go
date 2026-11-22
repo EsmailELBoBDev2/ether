@@ -322,6 +322,13 @@ type Service struct {
 	traces    []Trace
 	maxTraces int
 
+	// liveMu is a leaf lock guarding in-flight search streaming for
+	// concurrent version-slot observation (WatchVersionSlots). Never acquire
+	// s.mu, s.bgMu, or ls.mu while holding s.liveMu.
+	liveMu       sync.Mutex
+	liveSearches map[string]*liveSearch
+	liveWaiters  map[string][]chan struct{}
+
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
 	bgMu     sync.Mutex
@@ -1768,6 +1775,7 @@ func novelReleases(existing, incoming []core.Release) []core.Release {
 // reports whether the answer came from the cache.
 func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fresh bool) (results []core.Release, cached bool, err error) {
 	key := searchCacheKey(req)
+	ls, _ := ctx.Value(liveSearchContextKey{}).(*liveSearch)
 	// A detail search starts before playback preparation. Join it rather
 	// than spending a second set of indexer requests for the same title.
 	if !fresh && ctx.Value(refillSearchContextKey{}) == nil {
@@ -1809,22 +1817,43 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
 	if ok && !fresh && s.now().Before(e.expires) {
-		return append([]core.Release(nil), e.results...), true, nil
+		cachedRes := append([]core.Release(nil), e.results...)
+		if ls != nil {
+			s.finishLiveSearch(ls, cachedRes)
+		}
+		return cachedRes, true, nil
 	}
 	if !fresh && s.speculativeBudgetPaused(ctx) {
+		if ls != nil {
+			s.finishLiveSearch(ls, nil)
+		}
 		return nil, false, core.ErrBudgetExhausted
 	}
 	coverage := core.SearchCoverageFrom(ctx)
 	if coverage == nil {
 		ctx, coverage = core.WithSearchCoverage(ctx)
 	}
+	if ls == nil {
+		ls = s.beginLiveSearch(req)
+	}
+	liveOwnedByBg := false
+	defer func() {
+		if !liveOwnedByBg {
+			s.finishLiveSearch(ls, nil)
+		}
+	}()
 	partial := false
 	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok && early != nil {
 		if streaming, ok := s.indexer.(core.StreamingIndexer); ok {
-			results, partial, err = early.searchLive(ctx, streaming, req)
+			liveOwnedByBg = !early.disabled
+			results, partial, err = early.searchLive(ctx, streaming, req, ls)
 		} else {
 			results, err = s.indexer.Search(ctx, req)
 		}
+	} else if streaming, ok := s.indexer.(core.StreamingIndexer); ok {
+		results, err = streaming.SearchWith(ctx, req, func(batch []core.Release) {
+			ls.add(s, batch)
+		})
 	} else {
 		results, err = s.indexer.Search(ctx, req)
 	}
@@ -1838,9 +1867,15 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 	if partial || coverage.Incomplete() {
 		// Never cache an incomplete fleet answer: an early Play start,
 		// or an indexer that was paused or did not answer.
+		if !liveOwnedByBg {
+			s.finishLiveSearch(ls, results)
+		}
 		return results, false, nil
 	}
 	s.storeSearchCache(req, results)
+	if !liveOwnedByBg {
+		s.finishLiveSearch(ls, results)
+	}
 	return results, false, nil
 }
 
@@ -1897,6 +1932,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	}
 	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
 	s.mu.Unlock()
+	s.notifyLiveWaiters(key)
 	s.InvalidateDetailVariants()
 }
 

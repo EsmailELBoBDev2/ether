@@ -201,29 +201,81 @@ func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *fro
 		// the arm intact for the play-time re-ask.
 		return
 	}
-	pr.playIntentVersions = true
 	if reqCtx == nil {
 		reqCtx = ctx
 	}
-	// Join (or start) the one foreground resolve+probe flight for this
-	// title and wait bounded by the request context and
-	// plezyPlayProbeWait. Using reqCtx (without NoProviderWait's
-	// LocalResponse) and PlayMetadataProber ensures the play re-ask is
-	// never short-circuited by local-only browsing gates, speculation
-	// toggles, or a prior speculative warm miss, while publishing the
-	// warm entry the following file.mkv request adopts directly.
-	probeCtx, cancel := context.WithTimeout(reqCtx, plezyPlayProbeWait)
-	defer cancel()
+	var autoProbe func(context.Context) error
 	if !exact {
-		_ = s.probePlezyPlay(probeCtx, pr, t)
+		autoProbe = func(c context.Context) error { return s.probePlezyPlay(c, pr, t) }
 	}
-	if prober, ok := s.playback().(frontend.VersionHeaderProber); ok {
-		vCtx, vCancel := context.WithTimeout(probeCtx, plezyVersionProbeWait)
-		_ = prober.ProbeVersionHeaders(vCtx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key))
-		vCancel()
-	}
+	s.runPlayIntentProbes(reqCtx, pr, t, exact, plezyPlayProbeWait, plezyVersionProbeWait, autoProbe)
 	if _, _, exactNow := s.mediaInfoWithSource(ctx, pr, t); exactNow {
 		s.plezyReasks.forget(k)
+	}
+}
+
+// runPlayIntentProbes joins (or starts) the foreground Auto resolve+probe
+// flight (when !exact) and runs bounded header probes on free-source non-Auto
+// offered versions CONCURRENTLY under the single wait budget (#618, #670,
+// #678, #715). Once Auto finishes, any remaining wait for non-Auto version
+// probes is capped at versionTail (still bounded by wait), so first-tap
+// latency never exceeds the serial Auto + versionTail budget while giving
+// non-Auto version probes Auto's full runtime as head start.
+func (s *Server) runPlayIntentProbes(ctx context.Context, pr *Request, t *frontend.Title, exact bool, wait, versionTail time.Duration, autoProbe func(context.Context) error) {
+	if pr == nil || pr.User == nil || t == nil || s.playback() == nil {
+		return
+	}
+	pr.playIntentVersionKey = t.Key
+	probeCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	vhp, hasVersionProber := s.playback().(frontend.VersionHeaderProber)
+	caps := s.clientCapsForKey(pr, t.Key)
+
+	if exact || autoProbe == nil {
+		if hasVersionProber {
+			vCtx, vCancel := context.WithTimeout(probeCtx, versionTail)
+			_ = vhp.ProbeVersionHeaders(vCtx, pr.User, t.Key, caps)
+			vCancel()
+		}
+		return
+	}
+	if !hasVersionProber {
+		_ = autoProbe(probeCtx)
+		return
+	}
+
+	autoDone := make(chan struct{})
+	versionsDone := make(chan struct{})
+	vCtx, vCancel := context.WithCancel(frontend.WithVersionProbeSearchWait(probeCtx, autoDone))
+	defer func() {
+		vCancel()
+		<-versionsDone
+	}()
+
+	go func() {
+		defer close(versionsDone)
+		_ = vhp.ProbeVersionHeaders(vCtx, pr.User, t.Key, caps)
+	}()
+
+	func() {
+		defer close(autoDone)
+		_ = autoProbe(probeCtx)
+	}()
+
+	select {
+	case <-versionsDone:
+		return
+	case <-probeCtx.Done():
+		return
+	default:
+	}
+	timer := time.NewTimer(versionTail)
+	defer timer.Stop()
+	select {
+	case <-versionsDone:
+	case <-probeCtx.Done():
+	case <-timer.C:
 	}
 }
 

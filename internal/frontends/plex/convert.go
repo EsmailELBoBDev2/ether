@@ -695,7 +695,7 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 			req.PlayedReleaseRecord = &relCopy
 		}
 		vctx := ctx
-		if pr != nil && pr.playIntentVersions {
+		if pr != nil && pr.playIntentVersionKey == t.Key {
 			vctx = frontend.WithoutLocalResponse(vctx)
 		}
 		versions, err := source.VersionSlots(vctx, req, frontend.MaxVariants, withVariants && withStreams)

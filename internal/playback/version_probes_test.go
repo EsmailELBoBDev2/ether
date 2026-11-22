@@ -623,6 +623,189 @@ func TestProbeVersionHeadersProbesFreeSourceNonAutoVersions(t *testing.T) {
 	}
 }
 
+type streamingSlotWatcherResolver struct {
+	*fakeResolver
+	emitFn func(ctx context.Context, emit func([]core.ReleaseVariant)) error
+}
+
+func (r *streamingSlotWatcherResolver) WatchVersionSlots(
+	ctx context.Context,
+	_ core.ResolveRequest,
+	_ int,
+	_ <-chan struct{},
+	emit func([]core.ReleaseVariant),
+) error {
+	return r.emitFn(ctx, emit)
+}
+
+// TestProbeVersionHeadersStartsAsSlotsFillAndRetriesOnCacheConfirmation verifies:
+//   - A non-Auto free-source version probe starts and completes while the
+//     indexer stream is still blocked on slower indexers.
+//   - Auto (v.Auto == true) is skipped so concurrent Auto probing is never
+//     duplicated.
+//   - A torrent that first arrives with unknown cache status (OpenCachedDebrid
+//     misses) is retried once debrid earlyCacheChecks re-emits it as cached.
+//   - Unvaulted Usenet releases do not trigger NZB grabs.
+func TestProbeVersionHeadersStartsAsSlotsFillAndRetriesOnCacheConfirmation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mkvBytes := loadMKVFixture(t)
+	h := newHarness(t, nil, nil)
+	db := store.OpenTest(t)
+	dir := t.TempDir()
+	cfg := config.Defaults(dir)
+
+	autoRel := core.Release{
+		ID: "rel-auto-live", Name: "The.Signal.1999.1080p.WEB-DL.H264-GRP",
+		Protocol: core.ProtocolTorrent, InfoHash: "1111111111111111111111111111111111111111",
+		Size: int64(len(mkvBytes)),
+	}
+	rel4K := core.Release{
+		ID: "rel-4k-live", Name: "The.Signal.1999.2160p.WEB-DL.HEVC-GRP",
+		Protocol: core.ProtocolTorrent, InfoHash: "2222222222222222222222222222222222222222",
+		Size: int64(len(mkvBytes)),
+	}
+	relLateCache := core.Release{
+		ID: "rel-720-late", Name: "The.Signal.1999.720p.WEB-DL.H264-GRP",
+		Protocol: core.ProtocolTorrent, InfoHash: "3333333333333333333333333333333333333333",
+		Size: int64(len(mkvBytes)),
+	}
+	relUnvaulted := core.Release{
+		ID: "rel-usenet-cold", Name: "The.Signal.1999.1080p.BluRay.x264-COLD",
+		Protocol: core.ProtocolUsenet, Size: 5 << 30,
+	}
+
+	var lateCached atomic.Bool
+	probed4K := make(chan struct{}, 1)
+	firstLateAttempt := make(chan struct{}, 1)
+	probedLate := make(chan struct{}, 1)
+	releaseSearch := make(chan struct{})
+	var autoOpened atomic.Int32
+	var vaultOpens atomic.Int32
+
+	wr := &streamingSlotWatcherResolver{
+		fakeResolver: h.resolver,
+		emitFn: func(wctx context.Context, emit func([]core.ReleaseVariant)) error {
+			// Batch 1: Auto, cached 4K, not-yet-confirmed 720p torrent, unvaulted Usenet.
+			emit([]core.ReleaseVariant{
+				{ID: core.KindAutoVersionID, Label: "Auto", Auto: true, Release: autoRel, Availability: core.VersionCached, Info: core.MediaInfo{Estimated: true}},
+				{ID: core.VersionSelectorPrefix + "4k", Label: "4K", Release: rel4K, Availability: core.VersionCached, Info: core.MediaInfo{Estimated: true}},
+				{ID: core.VersionSelectorPrefix + "720", Label: "720p", Release: relLateCache, Availability: core.VersionFetch, Info: core.MediaInfo{Estimated: true}},
+				{ID: core.VersionSelectorPrefix + "usenet", Label: "1080p", Release: relUnvaulted, Availability: core.VersionFetch, Info: core.MediaInfo{Estimated: true}},
+			})
+			// Wait until 4K has actually been probed AND 720p's initial uncached
+			// check ran, while the search stream is still open.
+			select {
+			case <-probed4K:
+			case <-wctx.Done():
+				return wctx.Err()
+			}
+			select {
+			case <-firstLateAttempt:
+			case <-wctx.Done():
+				return wctx.Err()
+			}
+			// Batch 2: debrid earlyCacheChecks confirms 720p is cached.
+			lateCached.Store(true)
+			emit([]core.ReleaseVariant{
+				{ID: core.KindAutoVersionID, Label: "Auto", Auto: true, Release: autoRel, Availability: core.VersionCached, Info: core.MediaInfo{Estimated: true}},
+				{ID: core.VersionSelectorPrefix + "4k", Label: "4K", Release: rel4K, Availability: core.VersionCached, Info: core.MediaInfo{Estimated: true}},
+				{ID: core.VersionSelectorPrefix + "720", Label: "720p", Release: relLateCache, Availability: core.VersionCached, Info: core.MediaInfo{Estimated: true}},
+				{ID: core.VersionSelectorPrefix + "usenet", Label: "1080p", Release: relUnvaulted, Availability: core.VersionFetch, Info: core.MediaInfo{Estimated: true}},
+			})
+			select {
+			case <-releaseSearch:
+				return nil
+			case <-wctx.Done():
+				return wctx.Err()
+			}
+		},
+	}
+
+	m, err := New(Deps{
+		Resolver:   wr,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB: db,
+		OpenCachedDebrid: func(_ context.Context, rel core.Release) (core.MediaSource, error) {
+			switch rel.ID {
+			case autoRel.ID:
+				autoOpened.Add(1)
+				return nil, core.ErrNotFound
+			case relLateCache.ID:
+				if !lateCached.Load() {
+					select {
+					case firstLateAttempt <- struct{}{}:
+					default:
+					}
+					return nil, core.ErrNotFound
+				}
+				return &fixtureMediaSource{id: rel.ID, name: rel.Name + ".mkv", data: mkvBytes}, nil
+			case rel4K.ID:
+				return &fixtureMediaSource{id: rel.ID, name: rel.Name + ".mkv", data: mkvBytes}, nil
+			default:
+				return nil, core.ErrNotFound
+			}
+		},
+		OpenVaulted: func(_ context.Context, _ core.Release) (core.MediaSource, []byte, error) {
+			vaultOpens.Add(1)
+			return nil, nil, core.ErrNotFound
+		},
+		OnVersionProbed: func(_ core.RatingKey, rel core.Release) {
+			if rel.ID == rel4K.ID {
+				select {
+				case probed4K <- struct{}{}:
+				default:
+				}
+			}
+			if rel.ID == relLateCache.ID {
+				select {
+				case probedLate <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- m.ProbeVersionHeaders(ctx, owner, movieKey, defaultCaps("plezy-live"))
+	}()
+
+	// Both 4K and the late-confirmed 720p must finish probing BEFORE the
+	// search stream closes.
+	select {
+	case <-probedLate:
+	case <-time.After(3 * time.Second):
+		t.Fatal("late cache-confirmed 720p torrent was not probed before search completed")
+	}
+	close(releaseSearch)
+
+	if err := <-done; err != nil {
+		t.Fatalf("ProbeVersionHeaders: %v", err)
+	}
+	if autoOpened.Load() != 0 {
+		t.Fatalf("ProbeVersionHeaders duplicated Auto open (%d times)", autoOpened.Load())
+	}
+	if vaultOpens.Load() != 1 {
+		t.Fatalf("unvaulted Usenet release OpenVaulted calls = %d, want 1 (never retried)", vaultOpens.Load())
+	}
+	if _, ok := m.CachedReleaseProbe(rel4K); !ok {
+		t.Fatal("4K probe not persisted")
+	}
+	if _, ok := m.CachedReleaseProbe(relLateCache); !ok {
+		t.Fatal("late-confirmed 720p probe not persisted")
+	}
+}
+
 func TestCachedProbeByKeysPersistenceAndPackFileIsolation(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)

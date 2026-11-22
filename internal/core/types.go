@@ -284,12 +284,26 @@ func (videoTranscodingDisabledError) Error() string {
 func (videoTranscodingDisabledError) Unwrap() error { return ErrNotAvailable }
 
 // PreparingError wraps ErrPreparing with a suggested retry delay (#580).
+// Err, when set, preserves an underlying cause (such as core.ErrDownloadQueued)
+// while keeping ErrPreparing as the primary sentinel.
 type PreparingError struct {
 	RetryAfter time.Duration
+	Err        error
 }
 
-func (e *PreparingError) Error() string        { return ErrPreparing.Error() }
+func (e *PreparingError) Error() string {
+	if e != nil && e.Err != nil {
+		return e.Err.Error()
+	}
+	return ErrPreparing.Error()
+}
 func (e *PreparingError) Is(target error) bool { return target == ErrPreparing }
+func (e *PreparingError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // PreparingFromPending constructs an ErrPreparing carrying a retry delay from
 // a plugin's PendingReply.RetryInMS hint, defaulting to 5s when unspecified.

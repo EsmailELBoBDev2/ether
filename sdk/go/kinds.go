@@ -361,6 +361,9 @@ type ReleaseHint struct {
 	FileHint       string     `json:"fileHint,omitempty"`
 	Track          *TrackHint `json:"track,omitempty"`
 	PasswordSecret string     `json:"passwordSecret,omitempty"`
+	// CachedOnly requires an already-cached debrid copy even when the owner turned
+	// "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting.
+	CachedOnly bool `json:"cachedOnly,omitempty"`
 }
 
 // KindResolveRequest asks a resolver for playable sources for one item.

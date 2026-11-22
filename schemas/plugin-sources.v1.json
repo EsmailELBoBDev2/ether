@@ -304,6 +304,10 @@
         "track": {
           "$ref": "#/$defs/trackHint",
           "description": "Structured audio track hint ({disc?, number?, title?}) matched against release files or archive members by disc/track number first, then normalised title tokens, failing on ambiguity."
+        },
+        "cachedOnly": {
+          "type": "boolean",
+          "description": "Require an already-cached debrid copy even when the owner turned \"Cached torrents only\" off. Omit or set false to follow the owner's debrid setting (queueing an uncached download and answering preparing / 503 Retry-After until ready when cached-only is off)."
         }
       }
     }

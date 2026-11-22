@@ -713,6 +713,18 @@ func (s *lazyStreams) sourceGone(w http.ResponseWriter, r *http.Request) {
 // 404. Only a full encoder or admission slot stays 503, with Retry-After
 // when the broker named a delay.
 func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, core.ErrPreparing) {
+		w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "preparing")
+		http.Error(w, "The item is still being prepared. Try again shortly.", http.StatusServiceUnavailable)
+		return
+	}
+	if errors.Is(err, core.ErrJobsBusy) {
+		w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "jobs_busy")
+		http.Error(w, core.JobsBusyMessage(err), http.StatusServiceUnavailable)
+		return
+	}
 	if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone) {
 		s.sourceGone(w, r)
 		return

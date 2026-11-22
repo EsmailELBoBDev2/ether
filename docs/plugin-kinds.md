@@ -265,7 +265,15 @@ order. Patterns:
   set `release.track` (`{disc?, number?, title?}`) instead: Ether matches
   candidates by disc and track number first (using `title` to break ties),
   then by normalised title tokens when no number matches, failing on
-  ambiguity.
+  ambiguity. Torrent releases follow the owner's debrid setting: Ether tries
+  every candidate cached-first, and when the owner has turned "Cached
+  torrents only" off and every candidate is an uncached public torrent (or
+  permanent non-torrent failure), Ether sends the best eligible release to
+  the first debrid service to download and answers `preparing` (`503` with
+  `Retry-After`) until ready, following the queued download on retries and
+  across items that share the same torrent. Set `release.cachedOnly: true`
+  to opt a release out of uncached downloads explicitly. Private torrents
+  and background/warm-up calls are always cached-only.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
@@ -531,7 +539,7 @@ unless the plugin explicitly declares a custom mapping.
   | 404 | `item_not_found` | The item (or requested part index) is not in a library this viewer can open |
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
-  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
+  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget, or an uncached torrent release was queued on the owner's debrid service (`Retry-After` gives seconds to wait) |
   | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
   | 503 | `source_unavailable` | The source is temporarily unavailable (includes `Retry-After` when the plugin instance pool is busy) |
   | 502 | `open_failed` | The source could not be opened |

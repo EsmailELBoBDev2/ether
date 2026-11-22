@@ -100,6 +100,19 @@ func TestPlaybackAdmissionBusyReturnsRetryableProblem(t *testing.T) {
 	}
 }
 
+func TestPlaybackPreparingQueuedReturnsRetryableProblem(t *testing.T) {
+	w := httptest.NewRecorder()
+	playbackError(w, &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: frontend.ErrDownloadQueued}})
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "5" || w.Header().Get("X-Ether-Media-Error") != "preparing" || w.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("preparing response: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	if doc := spectest.Document(t, "silo"); doc != nil {
+		if err := doc.Validate("POST", "/api/v2/playback/start", w.Code, w.Header().Get("Content-Type"), w.Body.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestTranscodeCapacityReturnsValidRetryableProblem(t *testing.T) {
 	w := httptest.NewRecorder()
 	playbackError(w, &frontend.TranscodeCapacityError{RetryAfter: 1200 * time.Millisecond})

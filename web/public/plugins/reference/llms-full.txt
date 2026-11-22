@@ -419,7 +419,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Source discovery
 
-Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler.
+Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler. Torrent releases follow the owner's debrid setting (queueing uncached downloads and answering preparing / 503 Retry-After when Cached torrents only is off); set release.cachedOnly: true to opt out.
 
 ```ts
 const candidates = ether.sources.resolve({kind: "indexer_search", query: "Example"});
@@ -981,7 +981,15 @@ order. Patterns:
   set `release.track` (`{disc?, number?, title?}`) instead: Ether matches
   candidates by disc and track number first (using `title` to break ties),
   then by normalised title tokens when no number matches, failing on
-  ambiguity.
+  ambiguity. Torrent releases follow the owner's debrid setting: Ether tries
+  every candidate cached-first, and when the owner has turned "Cached
+  torrents only" off and every candidate is an uncached public torrent (or
+  permanent non-torrent failure), Ether sends the best eligible release to
+  the first debrid service to download and answers `preparing` (`503` with
+  `Retry-After`) until ready, following the queued download on retries and
+  across items that share the same torrent. Set `release.cachedOnly: true`
+  to opt a release out of uncached downloads explicitly. Private torrents
+  and background/warm-up calls are always cached-only.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
@@ -1247,7 +1255,7 @@ unless the plugin explicitly declares a custom mapping.
   | 404 | `item_not_found` | The item (or requested part index) is not in a library this viewer can open |
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
-  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
+  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget, or an uncached torrent release was queued on the owner's debrid service (`Retry-After` gives seconds to wait) |
   | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
   | 503 | `source_unavailable` | The source is temporarily unavailable (includes `Retry-After` when the plugin instance pool is busy) |
   | 502 | `open_failed` | The source could not be opened |
@@ -2825,6 +2833,7 @@ type TrackHint struct {
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
 | `track` | `*TrackHint` | may be omitted (see validation for conditions) |  |
 | `passwordSecret` | `string` | may be omitted (see validation for conditions) |  |
+| `cachedOnly` | `bool` | may be omitted (see validation for conditions) | CachedOnly forces debrid acquisition to require an already-cached copy even when the owner turned "Cached torrents only" off. When omitted or false, torrent releases follow the owner's debrid setting (queuing uncached downloads when cached-only is off). |
 
 
 ## Source: internal/core/kinditem.go#ReleaseHint
@@ -2846,6 +2855,11 @@ type ReleaseHint struct {
 	FileHint       string     `json:"fileHint,omitempty"`
 	Track          *TrackHint `json:"track,omitempty"`
 	PasswordSecret string     `json:"passwordSecret,omitempty"`
+	// CachedOnly forces debrid acquisition to require an already-cached copy
+	// even when the owner turned "Cached torrents only" off. When omitted or
+	// false, torrent releases follow the owner's debrid setting (queuing
+	// uncached downloads when cached-only is off).
+	CachedOnly bool `json:"cachedOnly,omitempty"`
 }
 ``````
 
@@ -34489,6 +34503,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "track": {
           "$ref": "#/$defs/trackHint",
           "description": "Structured audio track hint ({disc?, number?, title?}) matched against release files or archive members by disc/track number first, then normalised title tokens, failing on ambiguity."
+        },
+        "cachedOnly": {
+          "type": "boolean",
+          "description": "Require an already-cached debrid copy even when the owner turned \"Cached torrents only\" off. Omit or set false to follow the owner's debrid setting (queueing an uncached download and answering preparing / 503 Retry-After until ready when cached-only is off)."
         }
       }
     }
@@ -46851,6 +46869,7 @@ type TrackHint struct {
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
 | `track` | `*TrackHint` | may be omitted (see validation for conditions) |  |
 | `passwordSecret` | `string` | may be omitted (see validation for conditions) |  |
+| `cachedOnly` | `bool` | may be omitted (see validation for conditions) | CachedOnly requires an already-cached debrid copy even when the owner turned "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting. |
 
 
 ## Source: sdk/go/kinds.go#ReleaseHint
@@ -46870,6 +46889,9 @@ type ReleaseHint struct {
 	FileHint       string     `json:"fileHint,omitempty"`
 	Track          *TrackHint `json:"track,omitempty"`
 	PasswordSecret string     `json:"passwordSecret,omitempty"`
+	// CachedOnly requires an already-cached debrid copy even when the owner turned
+	// "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting.
+	CachedOnly bool `json:"cachedOnly,omitempty"`
 }
 ``````
 
@@ -64062,6 +64084,8 @@ export interface PlayableSource {
     /** Structured track hint ({disc?, number?, title?}) matched by disc/track number first, then title tokens. */
     track?: TrackHint;
     passwordSecret?: string;
+    /** Require an already-cached debrid copy even when the owner turned "Cached torrents only" off. */
+    cachedOnly?: boolean;
   };
   parts?: KindItemPart[];
 }

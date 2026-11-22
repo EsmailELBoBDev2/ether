@@ -685,6 +685,11 @@ type ReleaseHint struct {
 	FileHint       string     `json:"fileHint,omitempty"`
 	Track          *TrackHint `json:"track,omitempty"`
 	PasswordSecret string     `json:"passwordSecret,omitempty"`
+	// CachedOnly forces debrid acquisition to require an already-cached copy
+	// even when the owner turned "Cached torrents only" off. When omitted or
+	// false, torrent releases follow the owner's debrid setting (queuing
+	// uncached downloads when cached-only is off).
+	CachedOnly bool `json:"cachedOnly,omitempty"`
 }
 
 // KindResolveRequest is the payload sent to a plugin's kind_resolve handler

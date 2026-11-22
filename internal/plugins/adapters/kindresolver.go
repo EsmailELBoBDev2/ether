@@ -19,7 +19,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/debrid"
@@ -57,6 +59,34 @@ type debridKnownCachedByBackend interface {
 
 type debridServiceRefBackend interface {
 	ServiceRef(id, kind string) (core.DebridServiceRef, bool)
+}
+
+type debridDownloadQueuer interface {
+	QueueDownload(ctx context.Context, rel core.Release) ([]byte, error)
+}
+
+type debridConfigBackend interface {
+	Config() config.Debrid
+}
+
+const (
+	maxKindQueueAttempts      = 3
+	defaultDebridPrepareRetry = 5 * time.Second
+)
+
+type releaseQueueModeKey struct{}
+
+func withReleaseQueueMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, releaseQueueModeKey{}, true)
+}
+
+func withoutReleaseQueueMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, releaseQueueModeKey{}, false)
+}
+
+func isReleaseQueueMode(ctx context.Context) bool {
+	v, _ := ctx.Value(releaseQueueModeKey{}).(bool)
+	return v
 }
 
 const (
@@ -343,11 +373,21 @@ func (r *KindResolver) projectedTitle(ctx context.Context, item core.KindItem, r
 	return &t
 }
 
-func (r *KindResolver) openSingleSource(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, targetSrc core.PlayableSource) (*frontend.KindMedia, error) {
+func (r *KindResolver) openSingleSource(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, targetSrc core.PlayableSource, allowQueue bool) (*frontend.KindMedia, error) {
 	ksDeps := r.kindstreamDeps(ctx, rec, lib, item, partIdx, nil)
 	bs, err := kindstream.Open(ctx, targetSrc, ksDeps)
 	if err != nil {
-		return nil, err
+		if allowQueue && isTorrentReleaseSource(targetSrc) && errors.Is(err, core.ErrNotCached) {
+			if qbs, _, qerr, settled := r.settleUncachedReleases(ctx, []kindstream.SourceFailure{{Source: targetSrc, Err: err}}, ksDeps); settled {
+				if qerr != nil {
+					return nil, qerr
+				}
+				bs, err = qbs, nil
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	parts := r.itemParts(ctx, item)
 	var dur time.Duration
@@ -415,6 +455,9 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
+	if core.IndexerPurpose(ctx) == "" {
+		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
+	}
 	var forcedPart *int
 	if parentKey, pIdx, isPart := key.PluginPart(); isPart {
 		key = parentKey
@@ -454,7 +497,7 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	if !matched {
 		return nil, core.ErrNotAvailable
 	}
-	return r.openSingleSource(ctx, rec, lib, item, partIdx, src)
+	return r.openSingleSource(ctx, rec, lib, item, partIdx, src, true)
 }
 
 // OpenKindPartSource opens exactly one resolver source (and optional zero-based
@@ -526,11 +569,11 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 	fk := flightKeyForItemSource(targetItem.Ref, effectivePart, sourceID)
 	if cached, ok := r.cachedCandidates(fk); ok {
 		if src, matched := matchPlayableSource(cached, targetItem.Title, sourceID, r.now().Unix()); matched {
-			km, oerr := r.openSingleSource(ctx, rec, lib, targetItem, effectivePart, src)
+			km, oerr := r.openSingleSource(ctx, rec, lib, targetItem, effectivePart, src, true)
 			if oerr == nil {
 				return km, nil
 			}
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(oerr, core.ErrPreparing) {
 				return nil, oerr
 			}
 		}
@@ -546,8 +589,11 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 	if !matched {
 		return nil, core.ErrNotAvailable
 	}
-	km, err := r.openSingleSource(ctx, rec, lib, targetItem, effectivePart, src)
+	km, err := r.openSingleSource(ctx, rec, lib, targetItem, effectivePart, src, true)
 	if err != nil {
+		if errors.Is(err, core.ErrPreparing) {
+			r.storeCandidates(fk, []core.PlayableSource{src})
+		}
 		return nil, err
 	}
 	r.storeCandidates(fk, []core.PlayableSource{src})
@@ -903,7 +949,7 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 							rels = append(rels, playableSourceRelease(src, item.Title))
 						}
 						if idx, _ := r.resolver.MatchViewerChoice(viewer.ID, title, rels); idx >= 0 {
-							if media, oerr := r.openSingleSource(ctx, rec, lib, item, partIdx, live[idx]); oerr == nil {
+							if media, oerr := r.openSingleSource(ctx, rec, lib, item, partIdx, live[idx], false); oerr == nil {
 								return media, nil
 							}
 						}
@@ -1129,7 +1175,7 @@ func (r *KindResolver) tryOpenPartFromParentRelease(ctx context.Context, rec plu
 		return nil, true, core.ErrNotAvailable
 	}
 	idx := partIndex
-	media, err := r.openSingleSource(ctx, rec, lib, parent, &idx, partSrc)
+	media, err := r.openSingleSource(ctx, rec, lib, parent, &idx, partSrc, true)
 	if err != nil {
 		return nil, true, err
 	}
@@ -1913,7 +1959,15 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 // plugin's answer was wrong (#641).
 type skippedSources struct {
 	failures        []kindstream.SourceFailure
+	attempts        []kindstream.SourceFailure
 	anyPluginAnswer bool
+}
+
+func (s *skippedSources) resetAttempts() {
+	if s == nil {
+		return
+	}
+	s.attempts = nil
 }
 
 func (s *skippedSources) pluginAnswerFailed() bool {
@@ -2000,8 +2054,11 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		ItemIndex:            effectiveItemIndex(item.Index, partIdx),
 		Backoff:              r.backoff,
 		OnSourceFailed: func(attempt, total int, src core.PlayableSource, took time.Duration, err error) {
-			if skipped != nil && errors.Is(err, kindstream.ErrPluginAnswer) {
-				skipped.anyPluginAnswer = true
+			if skipped != nil {
+				skipped.attempts = append(skipped.attempts, kindstream.SourceFailure{Source: src, Err: err})
+				if errors.Is(err, kindstream.ErrPluginAnswer) {
+					skipped.anyPluginAnswer = true
+				}
 			}
 			if r.log == nil {
 				return
@@ -2191,8 +2248,15 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 		return nil, core.PlayableSource{}, core.ErrNotAvailable
 	}
 	openStart := time.Now()
+	skipped.resetAttempts()
 	bs, winning, err := kindstream.OpenSources(ctx, cands, ksDeps)
 	if err != nil {
+		if qbs, qwin, qerr, settled := r.settleUncachedReleases(ctx, skipped.attempts, ksDeps); settled {
+			if qerr == nil {
+				return saveAndReturn(qbs, qwin)
+			}
+			err = qerr
+		}
 		if skipped.pluginAnswerFailed() {
 			r.deleteCandidates(fk)
 			if r.items != nil {
@@ -2200,7 +2264,16 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 			}
 		}
 		if r.log != nil {
-			if errors.Is(err, core.ErrArchiveUnstreamable) {
+			if errors.Is(err, core.ErrPreparing) {
+				r.log.Info("kindresolver: release download queued; item preparing",
+					"plugin", rec.PluginID,
+					"library", lib.Key,
+					"item", item.ID,
+					"candidates", len(cands),
+					"took", time.Since(openStart).Round(time.Millisecond),
+					"err", err,
+				)
+			} else if errors.Is(err, core.ErrArchiveUnstreamable) {
 				r.log.Warn("this archive format or compression method cannot be streamed",
 					"plugin", rec.PluginID,
 					"library", lib.Key,
@@ -2223,6 +2296,188 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 		return nil, core.PlayableSource{}, err
 	}
 	return saveAndReturn(bs, winning)
+}
+
+func (r *KindResolver) debridCachedOnly() bool {
+	if r == nil || r.debrid == nil {
+		return true
+	}
+	if cfg, ok := r.debrid.(debridConfigBackend); ok {
+		return cfg.Config().CachedOnly
+	}
+	if _, canQueue := r.debrid.(debridDownloadQueuer); canQueue {
+		return false
+	}
+	return true
+}
+
+func (r *KindResolver) allowUncachedReleaseQueue(ctx context.Context) bool {
+	if r.debridCachedOnly() {
+		return false
+	}
+	if core.IsBackgroundCheck(ctx) || core.IsSpeculative(ctx) || core.IsUnattendedSearch(ctx) {
+		return false
+	}
+	switch core.IndexerPurpose(ctx) {
+	case core.IndexerPurposeWarmup, core.IndexerPurposeAvailability, core.IndexerPurposeDetail, core.IndexerPurposeFeed:
+		return false
+	}
+	return true
+}
+
+func preparingQueuedError(err error) error {
+	return &core.PreparingError{
+		RetryAfter: defaultDebridPrepareRetry,
+		Err:        &core.UncachedError{Err: err, CachedOnly: false},
+	}
+}
+
+func isTorrentReleaseSource(src core.PlayableSource) bool {
+	pattern := strings.ToLower(strings.TrimSpace(src.Pattern))
+	if pattern == "" && src.Release != nil && src.Container == nil {
+		pattern = kindstream.PatternRelease
+	}
+	if pattern != kindstream.PatternRelease || src.Release == nil {
+		return false
+	}
+	rel := src.Release
+	if strings.TrimSpace(rel.InfoHash) != "" || strings.TrimSpace(rel.Magnet) != "" || strings.TrimSpace(rel.TorrentURL) != "" {
+		return true
+	}
+	if rel.Candidate != nil {
+		return strings.TrimSpace(rel.Candidate.InfoHash) != "" ||
+			strings.TrimSpace(rel.Candidate.Magnet) != "" ||
+			strings.TrimSpace(rel.Candidate.TorrentURL) != ""
+	}
+	return false
+}
+
+func isPermanentReleaseFailure(err error) bool {
+	for _, target := range []error{
+		core.ErrReleaseRejected,
+		core.ErrArchiveUnstreamable,
+		core.ErrNoUsableFile,
+		core.ErrArticleMissing,
+		core.ErrArticleCorrupt,
+		core.ErrWrongContent,
+		kindstream.ErrPluginAnswer,
+		archive.ErrMissingVolume,
+		archive.ErrCorrupt,
+		archive.ErrCompressed,
+		archive.ErrEncrypted,
+		archive.ErrSolid,
+		archive.ErrUnsupported,
+		nzb.ErrInvalid,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// settleUncachedReleases applies Ether's uncached-torrent policy after every
+// candidate failed its cached-first open pass: if a candidate is already being
+// followed as a queued download it answers preparing (ErrPreparing wrapping
+// ErrDownloadQueued); otherwise, when every failure was either an uncached
+// torrent or a permanent non-torrent failure, it honours the owner's "Cached
+// torrents only" setting and per-release cachedOnly opt-out, queueing at most
+// one uncached torrent download (trying up to maxKindQueueAttempts on refusal,
+// stopping immediately on active-download limits or a ready/queued torrent).
+func (r *KindResolver) settleUncachedReleases(ctx context.Context, failures []kindstream.SourceFailure, ksDeps kindstream.Deps) (kindstream.ByteSource, core.PlayableSource, error, bool) {
+	if len(failures) == 0 || ctx.Err() != nil {
+		return nil, core.PlayableSource{}, nil, false
+	}
+	var (
+		uncached          []int
+		queuedErr         error
+		otherNonPermanent bool
+	)
+	for i, f := range failures {
+		if isTorrentReleaseSource(f.Source) && errors.Is(f.Err, core.ErrNotCached) {
+			if errors.Is(f.Err, core.ErrDownloadQueued) && !f.Source.Release.CachedOnly && queuedErr == nil {
+				queuedErr = f.Err
+			}
+			uncached = append(uncached, i)
+			continue
+		}
+		if !isPermanentReleaseFailure(f.Err) {
+			otherNonPermanent = true
+		}
+	}
+	if queuedErr != nil {
+		return nil, core.PlayableSource{}, preparingQueuedError(queuedErr), true
+	}
+	if len(uncached) == 0 || otherNonPermanent {
+		return nil, core.PlayableSource{}, nil, false
+	}
+
+	var (
+		errs      []error
+		queueable []int
+	)
+	for _, i := range uncached {
+		f := failures[i]
+		ferr := f.Err
+		if f.Source.Release.CachedOnly && errors.Is(ferr, core.ErrDownloadQueued) {
+			ferr = core.ErrNotCached
+		}
+		errs = append(errs, ferr)
+		if errors.Is(f.Err, core.ErrPrivateUncached) || f.Source.Release.CachedOnly {
+			continue
+		}
+		queueable = append(queueable, i)
+	}
+
+	ownerCachedOnly := r.debridCachedOnly()
+	out := &core.UncachedError{
+		Err:        errors.Join(errs...),
+		CachedOnly: ownerCachedOnly && len(queueable) > 0,
+	}
+	if len(queueable) == 0 || !r.allowUncachedReleaseQueue(ctx) {
+		return nil, core.PlayableSource{}, out, true
+	}
+	if _, canQueue := r.debrid.(debridDownloadQueuer); !canQueue {
+		return nil, core.PlayableSource{}, out, true
+	}
+
+	qDeps := ksDeps
+	qDeps.OnSourceFailed = nil
+	qDeps.OnSourceSkipped = nil
+	var refused []error
+	for n, i := range queueable {
+		if n == maxKindQueueAttempts {
+			break
+		}
+		cand := failures[i].Source
+		candCtx := withReleaseQueueMode(ctx)
+		var candCancel context.CancelFunc
+		if ksDeps.CandidateOpenTimeout > 0 {
+			candCtx, candCancel = context.WithTimeout(candCtx, ksDeps.CandidateOpenTimeout)
+		}
+		bs, qerr := kindstream.Open(candCtx, cand, qDeps)
+		if candCancel != nil {
+			candCancel()
+		}
+		if qerr == nil {
+			return bs, cand, nil, true
+		}
+		if ctx.Err() != nil {
+			return nil, core.PlayableSource{}, ctx.Err(), true
+		}
+		if errors.Is(qerr, core.ErrDownloadQueued) {
+			return nil, core.PlayableSource{}, preparingQueuedError(qerr), true
+		}
+		refused = append(refused, qerr)
+		if errors.Is(qerr, core.ErrDownloadLimit) {
+			break
+		}
+	}
+	out.Err = errors.Join(refused...)
+	if !errors.Is(out.Err, core.ErrDownloadRefused) {
+		out.Err = fmt.Errorf("%w: %w", core.ErrDownloadRefused, out.Err)
+	}
+	return nil, core.PlayableSource{}, out, true
 }
 
 func (r *KindResolver) storeCandidates(fk resolveFlightKey, sources []core.PlayableSource) {
@@ -2999,6 +3254,9 @@ func (r *KindResolver) openReleaseWithCategory(ctx context.Context, hint core.Re
 	if r.engine == nil {
 		return nil, core.ErrSourceUnavailable
 	}
+	if hint.CachedOnly && isReleaseQueueMode(ctx) {
+		ctx = withoutReleaseQueueMode(ctx)
+	}
 	rel, err := releaseFromHint(hint, "")
 	if err != nil {
 		return nil, err
@@ -3016,6 +3274,9 @@ func (r *KindResolver) openReleaseForSource(ctx context.Context, src core.Playab
 func (r *KindResolver) openReleaseForSourceWithCategory(ctx context.Context, src core.PlayableSource, fallbackMIME string, fallbackCategory int, secretFn func(context.Context, string) (string, error)) (core.MediaSource, error) {
 	if r.engine == nil {
 		return nil, core.ErrSourceUnavailable
+	}
+	if src.Release != nil && src.Release.CachedOnly && isReleaseQueueMode(ctx) {
+		ctx = withoutReleaseQueueMode(ctx)
 	}
 	rel, err := releaseFromSource(src, "", fallbackMIME)
 	if err != nil {
@@ -3148,8 +3409,9 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolTorrent
+		queueMode := isReleaseQueueMode(ctx)
 		if r.log != nil {
-			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol)
+			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "queue", queueMode)
 		}
 		acqCtx, acqCancel := withHardTimeout(ctx, r.engineOpenTimeout)
 		defer acqCancel()
@@ -3163,12 +3425,38 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			}
 			rel = resolved
 		}
-		payload, err := r.debrid.Acquire(acqCtx, rel)
-		if err != nil {
-			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", err)
+		var (
+			payload []byte
+			err     error
+		)
+		if queueMode {
+			q, canQueue := r.debrid.(debridDownloadQueuer)
+			if !canQueue || !r.allowUncachedReleaseQueue(ctx) {
+				return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
 			}
-			return nil, err
+			payload, err = q.QueueDownload(acqCtx, rel)
+			if err != nil {
+				if r.log != nil {
+					if errors.Is(err, core.ErrDownloadQueued) {
+						r.log.Info("kindresolver: release download queued", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", err)
+					} else {
+						r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_queue", "took", time.Since(start).Round(time.Millisecond), "err", err)
+					}
+				}
+				return nil, err
+			}
+		} else {
+			payload, err = r.debrid.Acquire(acqCtx, rel)
+			if err != nil {
+				if r.log != nil {
+					if errors.Is(err, core.ErrDownloadQueued) {
+						r.log.Info("kindresolver: queued release still downloading", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", err)
+					} else {
+						r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", err)
+					}
+				}
+				return nil, err
+			}
 		}
 		openStart := time.Now()
 		openCtx, openCancel := withHardTimeout(ctx, r.engineOpenTimeout)

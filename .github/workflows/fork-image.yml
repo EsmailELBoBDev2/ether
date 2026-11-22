@@ -51,7 +51,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # Own package name: an "ether" package may already exist on the account without
+          # Actions access to it, which fails the push with permission_denied: write_package.
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-fork"
           branch="${GITHUB_REF_NAME#fork/}"
           tag="$(printf '%s' "$branch" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-100)"
           base="$(ls release-notes | sed -n 's/^v\([0-9][0-9.]*[0-9]\)\.md$/\1/p' | sort -V | tail -n 1)"

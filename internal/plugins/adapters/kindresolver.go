@@ -2133,6 +2133,8 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 	if ok && lv.Playable && parent.Playable {
 		return []core.KindItem{parent}, nil
 	}
+	kindMedia := ResolveKindMediaClass(rec.Decl, rec.Decl.Present)
+	parentMedia := rec.Decl.EffectiveLevelMedia(parent.Level, kindMedia)
 	var leaves []core.KindItem
 	queue := []core.ItemRef{parent.Ref}
 	const maxLeaves = 2000
@@ -2147,6 +2149,12 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 			}
 			for _, child := range page.Items {
 				if child.Unavailable != nil {
+					continue
+				}
+				// Stay within the container's own media class when expanding
+				// playable leaves (e.g. artist Play/Shuffle stays on audio
+				// album/track levels and excludes video concerts).
+				if rec.Decl.EffectiveLevelMedia(child.Level, kindMedia) != parentMedia {
 					continue
 				}
 				clv, _, cok := rec.Decl.Level(child.Level)
@@ -2229,8 +2237,8 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 			return host.SecretGet(sctx, name)
 		}
 	}
-	defaultMIME := kindDefaultMIME(rec.Decl)
-	defaultCategory := kindDefaultCategory(rec.Decl)
+	defaultMIME := kindDefaultMIMEForLevel(rec.Decl, item.Level)
+	defaultCategory := kindDefaultCategoryForLevel(rec.Decl, item.Level)
 	return kindstream.Deps{
 		OpenFile: func(ctx context.Context, src core.PlayableSource) (kindstream.ByteSource, error) {
 			s := &StreamSources{mgr: r.mgr}
@@ -3298,6 +3306,24 @@ func releaseIDWithTarget(rel core.Release) string {
 	return id
 }
 
+func kindDefaultCategoryForLevel(decl plugins.MediaKindMeta, level string) int {
+	if lv, _, ok := decl.Level(level); ok {
+		switch strings.ToLower(strings.TrimSpace(lv.Media)) {
+		case "video":
+			return 2000
+		case "music":
+			return 3000
+		case "audiobook":
+			return 3030
+		case "book":
+			return 7000
+		case "podcast", "photo":
+			return 0
+		}
+	}
+	return kindDefaultCategory(decl)
+}
+
 func kindDefaultCategory(decl plugins.MediaKindMeta) int {
 	switch strings.ToLower(strings.TrimSpace(string(decl.Media))) {
 	case "music":
@@ -3332,6 +3358,22 @@ func kindDefaultCategory(decl plugins.MediaKindMeta) int {
 		}
 	}
 	return 0
+}
+
+func kindDefaultMIMEForLevel(decl plugins.MediaKindMeta, level string) string {
+	if lv, _, ok := decl.Level(level); ok {
+		switch strings.ToLower(strings.TrimSpace(lv.Media)) {
+		case "video":
+			return ""
+		case "music", "audiobook", "podcast":
+			return "audio/*"
+		case "book":
+			return "application/epub+zip"
+		case "photo":
+			return "image/*"
+		}
+	}
+	return kindDefaultMIME(decl)
 }
 
 func kindDefaultMIME(decl plugins.MediaKindMeta) string {

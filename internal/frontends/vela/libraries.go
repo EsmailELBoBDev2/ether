@@ -150,6 +150,10 @@ func libraryWire(view frontend.View) object {
 					tabCard = t.Card
 				}
 				tab["card"] = tabCard
+			case t.Kind == "recommended":
+				if t.Card == "poster" || t.Card == "square" || t.Card == "landscape" {
+					tab["card"] = t.Card
+				}
 			case t.Kind == "collections" && t.Facet != "":
 				tab["facet"] = t.Facet
 				effOrder := t.Order
@@ -771,7 +775,7 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 	}
 	for name, entries := range r.URL.Query() {
 		switch name {
-		case "cursor", "limit":
+		case "cursor", "limit", "tab":
 		default:
 			problem(w, 400, "request", "unsupported_library_query")
 			return
@@ -800,6 +804,36 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	tabID := strings.TrimSpace(r.URL.Query().Get("tab"))
+	var activeTab *frontend.ViewTab
+	if tabID != "" {
+		if len(view.Tabs) > 0 {
+			for idx := range view.Tabs {
+				if view.Tabs[idx].ID == tabID {
+					activeTab = &view.Tabs[idx]
+					break
+				}
+			}
+			if activeTab == nil {
+				problem(w, 404, "not-found", "not_found")
+				return
+			}
+			if activeTab.Kind != "recommended" {
+				problem(w, 400, "request", "unsupported_library_query")
+				return
+			}
+		} else if tabID != "recommended" {
+			problem(w, 404, "not-found", "not_found")
+			return
+		}
+	} else if len(view.Tabs) > 0 {
+		for idx := range view.Tabs {
+			if view.Tabs[idx].Kind == "recommended" {
+				activeTab = &view.Tabs[idx]
+				break
+			}
+		}
+	}
 	if view.PluginID != "" || view.KindKey != "" {
 		reader, ok := i.host.Experience.(frontend.PluginLibraryRowsReader)
 		if !ok {
@@ -815,7 +849,7 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
-		c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-rows", id, pageLimit}))
+		c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-rows", id, tabID, pageLimit}))
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -825,7 +859,16 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			fail(w, frontend.ErrLiveGuideStale)
 			return
 		}
-		srcRows, err := reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id)
+		var srcRows []frontend.Row
+		if tabID != "" {
+			if tabReader, ok := i.host.Experience.(frontend.PluginLibraryTabRowsReader); ok {
+				srcRows, err = tabReader.PluginLibraryTabRows(r.Context(), v, requestDevice(r), id, tabID)
+			} else {
+				srcRows, err = reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id)
+			}
+		} else {
+			srcRows, err = reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id)
+		}
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -833,7 +876,11 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 		start := min(c.Offset, len(srcRows))
 		end := min(start+pageLimit, len(srcRows))
 		pageRows := srcRows[start:end]
-		markLandscapeRows(pageRows, view)
+		effectiveView := view
+		if activeTab != nil && (activeTab.Card == "poster" || activeTab.Card == "landscape" || activeTab.Card == "square") {
+			effectiveView.Card = activeTab.Card
+		}
+		markLandscapeRows(pageRows, effectiveView)
 		rows, err := i.rowsToWire(r, v, token, pageRows, nil, false, defaultRowItemLimit)
 		if err != nil {
 			fail(w, err, r)

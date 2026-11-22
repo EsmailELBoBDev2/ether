@@ -223,6 +223,12 @@ type PluginLibraryRowsReader interface {
 	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID string) ([]Row, error)
 }
 
+// PluginLibraryTabRowsReader is an optional Experience capability returning the
+// shelves for a specific recommended tab of a plugin library.
+type PluginLibraryTabRowsReader interface {
+	PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, tabID string) ([]Row, error)
+}
+
 // RowEntryKind identifies a neutral entry independently of wire formats.
 type RowEntryKind string
 
@@ -401,7 +407,9 @@ type ItemQuery struct {
 	// ExcludedTypes contains core media type names excluded by the client.
 	ExcludedTypes []core.MediaType
 	// Level selects a specific declared hierarchy level key on a plugin library.
-	Level         string
+	Level string
+	// Role selects children matching a semantic role (or role-less level key) on a plugin library.
+	Role          string
 	Recursive     bool
 	Season        *int // Optional presented season number.
 	CollectionKey core.RatingKey

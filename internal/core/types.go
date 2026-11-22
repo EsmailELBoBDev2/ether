@@ -217,8 +217,9 @@ type Title struct {
 	CollectionID   int64  `json:"collectionId,omitempty"` // TMDB franchise
 	CollectionName string `json:"collectionName,omitempty"`
 
-	ChildCount int `json:"childCount,omitempty"` // seasons of a show, episodes of a season
-	LeafCount  int `json:"leafCount,omitempty"`  // episodes of a show
+	ChildCount  int            `json:"childCount,omitempty"` // seasons of a show, episodes of a season
+	LeafCount   int            `json:"leafCount,omitempty"`  // episodes of a show
+	ChildCounts map[string]int `json:"-"`                    // plugin container child counts keyed by role (or level key when role-less)
 
 	UpdatedAt time.Time `json:"updatedAt,omitempty"`
 }

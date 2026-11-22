@@ -329,7 +329,7 @@ func TestContentManifestRules(t *testing.T) {
 		{"search fields without search", func(m *Manifest) { kind(m).Browse.Search = false }, "browse.search"},
 		{"builtin art role", func(m *Manifest) { kind(m).Art[0].Role = "poster" }, "art[0].role"},
 		{"invalid media class", func(m *Manifest) { kind(m).Media = "games" }, ".media"},
-		{"invalid level role", func(m *Manifest) { kind(m).Levels[0].Role = "chapter" }, ".levels[0].role"},
+		{"invalid level role", func(m *Manifest) { kind(m).Levels[0].Role = " leading" }, ".levels[0].role"},
 		{"adapter only without adapter", func(m *Manifest) {
 			kind(m).Present = core.Presentations{AdapterOnly: true}
 		}, ".present.adapterOnly"},

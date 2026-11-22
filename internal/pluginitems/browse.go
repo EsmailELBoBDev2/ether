@@ -279,6 +279,17 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	if parentRef != "" {
 		baseWhere.WriteString(` AND i.parent_ref = ?`)
 		baseArgs = append(baseArgs, parentRef)
+		if len(q.Levels) > 0 {
+			placeholders := make([]string, len(q.Levels))
+			for idx, lv := range q.Levels {
+				placeholders[idx] = "?"
+				baseArgs = append(baseArgs, strings.TrimSpace(lv))
+			}
+			baseWhere.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
+		} else if level != "" {
+			baseWhere.WriteString(` AND i.level = ?`)
+			baseArgs = append(baseArgs, level)
+		}
 	} else if len(q.Levels) > 0 {
 		placeholders := make([]string, len(q.Levels))
 		for idx, lv := range q.Levels {
@@ -513,8 +524,72 @@ func dedupCleanValues(vals []string) []string {
 }
 
 func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef, level string) (browseTallyInfo, error) {
-	if parentRef != "" || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0 {
+	if !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0 {
 		return browseTallyInfo{}, nil
+	}
+	if parentRef != "" {
+		if hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) {
+			return browseTallyInfo{}, nil
+		}
+		var pLevels []string
+		switch {
+		case len(q.Levels) > 0:
+			pLevels = dedupCleanValues(q.Levels)
+			if len(pLevels) == 0 {
+				return browseTallyInfo{}, nil
+			}
+		case level != "":
+			pLevels = []string{level}
+		}
+		var n int
+		var err error
+		if len(pLevels) == 0 {
+			err = s.db.QueryRowContext(ctx,
+				`SELECT COALESCE(SUM(child_count), 0) FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref = ?`,
+				int64(q.LibraryID), parentRef).Scan(&n)
+		} else if len(pLevels) == 1 {
+			err = s.db.QueryRowContext(ctx,
+				`SELECT COALESCE(child_count, 0) FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref = ? AND child_level = ?`,
+				int64(q.LibraryID), parentRef, pLevels[0]).Scan(&n)
+			if errors.Is(err, sql.ErrNoRows) {
+				n, err = 0, nil
+			}
+		} else {
+			placeholders := make([]string, len(pLevels))
+			args := make([]any, 0, len(pLevels)+2)
+			args = append(args, int64(q.LibraryID), parentRef)
+			for i, lv := range pLevels {
+				placeholders[i] = "?"
+				args = append(args, lv)
+			}
+			err = s.db.QueryRowContext(ctx,
+				`SELECT COALESCE(SUM(child_count), 0) FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref = ? AND child_level IN (`+strings.Join(placeholders, ",")+`)`,
+				args...).Scan(&n)
+		}
+		if err != nil {
+			return browseTallyInfo{}, err
+		}
+		if n == 0 {
+			// Guard against raw-SQL test fixtures that seeded plugin_items without parent tallies.
+			var hasAny int
+			var probeErr error
+			if len(pLevels) == 1 {
+				probeErr = s.db.QueryRowContext(ctx,
+					`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE library_id = ? AND parent_ref = ? AND level = ?)`,
+					int64(q.LibraryID), parentRef, pLevels[0]).Scan(&hasAny)
+			} else {
+				probeErr = s.db.QueryRowContext(ctx,
+					`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE library_id = ? AND parent_ref = ?)`,
+					int64(q.LibraryID), parentRef).Scan(&hasAny)
+			}
+			if probeErr != nil {
+				return browseTallyInfo{}, probeErr
+			}
+			if hasAny > 0 {
+				return browseTallyInfo{}, nil
+			}
+		}
+		return browseTallyInfo{total: n, totalExact: true}, nil
 	}
 
 	var (

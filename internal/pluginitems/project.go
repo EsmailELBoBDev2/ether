@@ -58,10 +58,17 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 // ResolveMediaClassAndRole derives the effective MediaClass and per-level
 // MediaRole for a declared kind and level via libraries.ResolveKindPresentations.
 func ResolveMediaClassAndRole(level string, decl plugins.MediaKindMeta, present core.Presentations) (core.MediaClass, core.MediaRole) {
+	class, role, _ := resolveLevelPresentation(level, decl, present)
+	return class, role
+}
+
+func resolveLevelPresentation(level string, decl plugins.MediaKindMeta, present core.Presentations) (core.MediaClass, core.MediaRole, string) {
 	levels := make([]libraries.KindPresentationLevel, len(decl.Levels))
 	for i, lv := range decl.Levels {
 		levels[i] = libraries.KindPresentationLevel{
 			Key:       lv.Key,
+			Parent:    lv.Parent,
+			Media:     lv.Media,
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
@@ -72,12 +79,20 @@ func ResolveMediaClassAndRole(level string, decl plugins.MediaKindMeta, present 
 		Levels:  levels,
 		Present: present,
 	}, core.PresentationOverrides{})
-	class := res.MediaClass
+	class := decl.EffectiveLevelMedia(level, res.MediaClass)
 	role := res.LevelRoles[level]
 	if role == "" && class != "" {
 		role = core.MediaRoleItem
 	}
-	return class, role
+	mbItemType := ""
+	if present.MediaBrowser != nil {
+		if len(present.MediaBrowser.ItemTypes) > 0 {
+			mbItemType = present.MediaBrowser.ItemTypes[level]
+		} else if res.Effective.MediaBrowser != nil {
+			mbItemType = res.Effective.MediaBrowser.ItemTypes[level]
+		}
+	}
+	return class, role, mbItemType
 }
 
 // ProjectWithText behaves like Project and resolves "$t:" field labels through
@@ -88,11 +103,7 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		ownerCard = cardShape[0]
 	}
 	mediaType := projectMediaType(item.Level, decl, present)
-	mediaClass, mediaRole := ResolveMediaClassAndRole(item.Level, decl, present)
-	mbItemType := ""
-	if present.MediaBrowser != nil {
-		mbItemType = present.MediaBrowser.ItemTypes[item.Level]
-	}
+	mediaClass, mediaRole, mbItemType := resolveLevelPresentation(item.Level, decl, present)
 
 	sortTitle := core.EffectiveSortTitle(item.Title, item.SortTitle)
 
@@ -144,7 +155,7 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		t.Season = item.Index
 	case core.TypeEpisode:
 		t.Episode = item.Index
-		if len(decl.Levels) == 2 {
+		if decl.LevelDepth(item.Level) == 1 {
 			t.Season = 1
 		}
 	}
@@ -408,9 +419,12 @@ func extractProjectedPeople(fields map[string]json.RawMessage, decl plugins.Medi
 }
 
 func projectMediaType(level string, decl plugins.MediaKindMeta, present core.Presentations) core.MediaType {
+	if decl.IsVideoTitleLevel(level) {
+		return core.TypeMovie
+	}
 	if present.MediaBrowser != nil && len(present.MediaBrowser.ItemTypes) > 0 {
 		switch present.MediaBrowser.ItemTypes[level] {
-		case "Movie":
+		case "Movie", "Video":
 			return core.TypeMovie
 		case "Series":
 			return core.TypeShow
@@ -428,34 +442,36 @@ func projectMediaType(level string, decl plugins.MediaKindMeta, present core.Pre
 	}
 
 	levels := decl.Levels
-	n := len(levels)
-	if n <= 1 {
+	if len(levels) <= 1 {
 		return core.TypeMovie
 	}
 
-	idx := -1
-	for i, l := range levels {
-		if l.Key == level {
-			idx = i
-			break
+	depth := decl.LevelDepth(level)
+	isLeaf := decl.IsLeafLevel(level)
+	maxDepth := 0
+	for _, lv := range levels {
+		if d := decl.LevelDepth(lv.Key); d > maxDepth {
+			maxDepth = d
 		}
 	}
 
-	if n == 2 {
-		if idx == 0 {
+	if maxDepth <= 0 {
+		return core.TypeMovie
+	}
+	if maxDepth == 1 {
+		if depth == 0 {
 			return core.TypeShow
 		}
 		return core.TypeEpisode
 	}
 
-	switch idx {
-	case 0:
+	if depth == 0 {
 		return core.TypeShow
-	case n - 1:
-		return core.TypeEpisode
-	default:
-		return core.TypeSeason
 	}
+	if isLeaf {
+		return core.TypeEpisode
+	}
+	return core.TypeSeason
 }
 
 func extractDiscNumber(item core.KindItem) int {

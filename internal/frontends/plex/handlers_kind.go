@@ -554,6 +554,11 @@ func (s *Server) kindSectionBaseForTitle(t *frontend.Title) (string, bool) {
 func kindTypeForBase(base, projected string, t *frontend.Title) string {
 	switch base {
 	case plexBaseArtist:
+		if t != nil && t.MediaClass == frontend.MediaClassVideo {
+			// A video level inside a music library maps to a Plex clip
+			// (listed on the artist as Extras and playable as video).
+			return "clip"
+		}
 		if t != nil && t.SelfChild {
 			// A flat playable album's own playable incarnation.
 			return plexBaseTrack
@@ -578,6 +583,9 @@ func kindTypeForBase(base, projected string, t *frontend.Title) string {
 		}
 		return plexBaseArtist
 	case plexBasePhoto:
+		if t != nil && t.MediaClass == frontend.MediaClassVideo {
+			return "clip"
+		}
 		return plexBasePhoto
 	default:
 		return projected
@@ -603,6 +611,18 @@ func (s *Server) writeKindChildren(w http.ResponseWriter, r *http.Request, pr *R
 	mc.Thumb = s.thumbURL(parent)
 	mc.Art = s.artURL(parent)
 	base, _ := s.kindSectionBaseForTitle(parent)
+	if base == plexBaseArtist && parent.Type == frontend.TypeShow {
+		// Video children under a music artist are surfaced via Plex Extras
+		// rather than mixed into the artist's album listing.
+		filtered := make([]frontend.Title, 0, len(kids))
+		for _, k := range kids {
+			if k.MediaClass == frontend.MediaClassVideo {
+				continue
+			}
+			filtered = append(filtered, k)
+		}
+		kids = filtered
+	}
 	mc.ViewGroup = kindViewGroupForBase(base, parent.Type)
 	mc.ViewMode = viewModeList
 	lo, hi := pr.window(len(kids))
@@ -617,6 +637,47 @@ func (s *Server) writeKindChildren(w http.ResponseWriter, r *http.Request, pr *R
 		mc.SetPage(lo, len(kids))
 	}
 	s.write(w, r, mc)
+}
+
+// pluginVideoExtras returns video-media children of a non-video plugin
+// container (e.g. concerts under a music artist) rendered as Plex clip Extras.
+func (s *Server) pluginVideoExtras(ctx context.Context, pr *Request, parent *frontend.Title) []model.Metadata {
+	if parent == nil || !parent.Key.IsPluginKey() {
+		return nil
+	}
+	base, ok := s.kindSectionBaseForTitle(parent)
+	if !ok || base != plexBaseArtist || parent.Type != frontend.TypeShow {
+		return nil
+	}
+	page, err := s.exp().Children(ctx, pr.User, plexDevice(pr), parent.Key, frontend.ItemQuery{Limit: 200})
+	if err != nil || len(page.Items) == 0 {
+		return nil
+	}
+	var videoKids []frontend.Title
+	for _, k := range page.Items {
+		if k.MediaClass == frontend.MediaClassVideo {
+			videoKids = append(videoKids, k)
+		}
+	}
+	if len(videoKids) == 0 {
+		return nil
+	}
+	rendered := s.renderTitles(ctx, pr, videoKids, renderOpts{media: true, inSection: true, storedOnly: true})
+	parentKeyStr := parent.Key.String()
+	for i := range rendered {
+		child := &videoKids[i]
+		rendered[i].Type = "clip"
+		subtype := strings.TrimSpace(string(child.MediaRole))
+		if subtype == "" {
+			subtype = "live"
+		}
+		rendered[i].Subtype = subtype
+		rendered[i].ParentRatingKey = parentKeyStr
+		rendered[i].ParentKey = "/library/metadata/" + parentKeyStr
+		rendered[i].ParentTitle = parent.Title
+		rendered[i].Extra = append(rendered[i].Extra, model.A("extraType", 12))
+	}
+	return rendered
 }
 
 // kindViewGroupForBase is the Plex viewGroup for a plugin section's child

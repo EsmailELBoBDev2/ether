@@ -137,6 +137,8 @@ func consoleKindPresentationInput(decl plugins.MediaKindMeta) libraries.KindPres
 	for i, lv := range decl.Levels {
 		levels[i] = libraries.KindPresentationLevel{
 			Key:       lv.Key,
+			Parent:    lv.Parent,
+			Media:     lv.Media,
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,

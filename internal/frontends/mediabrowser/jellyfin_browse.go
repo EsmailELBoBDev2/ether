@@ -799,6 +799,12 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 	if show == 0 && (t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason) {
 		show = frontend.ShowKey(t.Key.TMDB())
 	}
+	if show == 0 && t.MBItemType == "Video" && t.ParentKey != 0 {
+		m["ParentId"] = ids.RatingKeyGUID(t.ParentKey)
+		if t.ItemIndex > 0 {
+			m["IndexNumber"] = t.ItemIndex
+		}
+	}
 	if show != 0 {
 		m["SeriesId"] = ids.RatingKeyGUID(show)
 		if t.ShowTitle != "" {

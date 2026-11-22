@@ -2406,11 +2406,8 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	}
 	defer tx.Rollback()
 
-	leafLevel := ""
-	if n := len(kind.Decl.Levels); n > 0 {
-		leafLevel = kind.Decl.Levels[n-1].Key
-	}
-	if err := s.deleteRefsAndDescendantsTx(ctx, tx, kind.LibraryID, refs, len(kind.Decl.Levels), leafLevel); err != nil {
+	leafLevels := kind.Decl.LeafLevels()
+	if err := s.deleteRefsAndDescendantsTx(ctx, tx, kind.LibraryID, refs, len(kind.Decl.Levels), leafLevels); err != nil {
 		return err
 	}
 	if bumpGen {
@@ -2426,7 +2423,7 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	return nil
 }
 
-func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, rootRefs []core.ItemRef, levelCount int, leafLevel string) error {
+func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, rootRefs []core.ItemRef, levelCount int, leafLevels map[string]bool) error {
 	if len(rootRefs) == 0 {
 		return nil
 	}
@@ -2488,11 +2485,11 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			}
 			parents := chunk
 			parentArgs := args
-			if leafLevel != "" {
+			if len(leafLevels) > 0 {
 				parents = parents[:0]
 				parentArgs = parentArgs[:0]
 				for _, r := range chunk {
-					if t, known := allTargets[r]; known && t.level == leafLevel {
+					if t, known := allTargets[r]; known && leafLevels[t.level] {
 						continue
 					}
 					parents = append(parents, r)
@@ -2549,7 +2546,7 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 
 	var parentTally *parentTallyTracker
 	if levelCount > 1 && libraryID > 0 {
-		parentTally = newParentTallyTracker(tx, libraryID, leafLevel, nil)
+		parentTally = newParentTallyTracker(tx, libraryID, leafLevels, nil)
 		skipSet := make(map[core.ItemRef]struct{}, len(allTargets))
 		for r := range allTargets {
 			skipSet[r] = struct{}{}
@@ -2568,7 +2565,7 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			cutRoots = append(cutRoots, t)
 			primeParents = append(primeParents, t.parentRef)
 			primeLeaves = append(primeLeaves, t.parentRef)
-			if t.level != leafLevel {
+			if !leafLevels[t.level] {
 				primeLeaves = append(primeLeaves, t.ref)
 			}
 		}
@@ -2581,7 +2578,7 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			}
 			for _, t := range cutRoots {
 				var childLeaves int64
-				if t.level != leafLevel {
+				if !leafLevels[t.level] {
 					var err error
 					childLeaves, err = parentTally.leafCount(ctx, t.ref)
 					if err != nil {
@@ -2589,9 +2586,9 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 					}
 				}
 				sub := parentTally.ownLeaf(t.level) + childLeaves
-				parentTally.addChild(t.parentRef, -1)
+				parentTally.addChild(t.parentRef, t.level, -1)
 				if sub > 0 {
-					if err := parentTally.addLeafAncestors(ctx, t.parentRef, t.ref, -sub, skipSet); err != nil {
+					if err := parentTally.addLeafAncestors(ctx, t.parentRef, t.ref, t.level, -sub, skipSet); err != nil {
 						return err
 					}
 				}

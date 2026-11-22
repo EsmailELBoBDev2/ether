@@ -553,19 +553,20 @@ type KindLibraryDecl struct {
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key               string          `json:"key"`
-	Label             string          `json:"label"`
-	Kind              string          `json:"kind"`                        // recommended|library|collections|people|view|live
-	Level             string          `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
-	Facet             string          `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
-	Sort              string          `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
-	Direction         string          `json:"direction,omitempty"`         // asc|desc (facet collections or view)
-	Order             string          `json:"order,omitempty"`             // count|name (facet collections or people)
-	Card              string          `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
-	Layout            string          `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
-	Search            *bool           `json:"search,omitempty"`            // collections, people, view or live (default true)
-	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
-	Filters           *core.TabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
+	Key               string             `json:"key"`
+	Label             string             `json:"label"`
+	Kind              string             `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string             `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
+	Facet             string             `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
+	Sort              string             `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
+	Direction         string             `json:"direction,omitempty"`         // asc|desc (facet collections or view)
+	Order             string             `json:"order,omitempty"`             // count|name (facet collections or people)
+	Card              string             `json:"card,omitempty"`              // landscape|poster|square (live or recommended tabs; defaults to landscape on live)
+	Layout            string             `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
+	Search            *bool              `json:"search,omitempty"`            // collections, people, view or live (default true)
+	SearchPlaceholder string             `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+	Filters           *core.TabFilter    `json:"filters,omitempty"`           // saved filter rules (view tabs only)
+	Shelves           []KindLibraryShelf `json:"shelves,omitempty"`           // recommended tabs only; overrides library.shelves for that tab
 }
 
 // EffectiveSearch reports whether tab search is enabled. Search defaults to
@@ -596,17 +597,23 @@ func (t KindLibraryTab) EffectiveLayout() string {
 }
 
 // EffectiveCard returns the tab's card shape ("landscape" by default for live
-// tabs, empty for other tab kinds).
+// tabs, explicit card when set on recommended tabs, empty otherwise).
 func (t KindLibraryTab) EffectiveCard() string {
-	if t.Kind != "live" {
-		return ""
+	switch t.Kind {
+	case "live":
+		switch t.Card {
+		case "poster", "landscape", "square":
+			return t.Card
+		default:
+			return "landscape"
+		}
+	case "recommended":
+		switch t.Card {
+		case "poster", "landscape", "square":
+			return t.Card
+		}
 	}
-	switch t.Card {
-	case "poster", "landscape", "square":
-		return t.Card
-	default:
-		return "landscape"
-	}
+	return ""
 }
 
 // IsZero reports whether every field of the library declaration is empty.
@@ -950,7 +957,9 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
-	Role      string `json:"role,omitempty"`      // item|artist|album|track|series|book|audiobook|part|show|episode|collection
+	Parent    string `json:"parent,omitempty"`    // optional earlier level key; defaults to the previous level
+	Media     string `json:"media,omitempty"`     // optional media class override: video|music|audiobook|book|podcast|photo
+	Role      string `json:"role,omitempty"`      // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
 }

@@ -3221,6 +3221,12 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	if !matchesFilter(t, q.Filter) {
 		return false, nil
 	}
+	if q.Level != "" && !strings.EqualFold(t.KindLevel, q.Level) {
+		return false, nil
+	}
+	if q.Role != "" && !strings.EqualFold(string(t.MediaRole), q.Role) && !strings.EqualFold(t.KindLevel, q.Role) {
+		return false, nil
+	}
 	if q.Season != nil && t.Season != *q.Season {
 		return false, nil
 	}

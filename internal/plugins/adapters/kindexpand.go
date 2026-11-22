@@ -422,7 +422,7 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 	if parentItem.ChildCount <= 0 || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels) {
 		return
 	}
-	isContainer := levelIdx < len(rec.Decl.Levels)-1 || rec.Decl.Levels[levelIdx].Container
+	isContainer := rec.Decl.HasChildLevels(parentItem.Level) || rec.Decl.Levels[levelIdx].Container
 	if !isContainer || !c.IsPluginLibraryActive(ctx, lib) {
 		return
 	}
@@ -538,22 +538,25 @@ func (c *KindCatalog) runContainerHydration(
 		c.items.BumpGeneration()
 	}
 
-	childLevel := ""
-	if levelIdx+1 < len(rec.Decl.Levels) {
-		childLevel = rec.Decl.Levels[levelIdx+1].Key
+	childLevels := make([]string, 0, 2)
+	for _, lv := range rec.Decl.ChildLevels(parentItem.Level) {
+		childLevels = append(childLevels, lv.Key)
+	}
+	if len(childLevels) == 0 {
+		childLevels = []string{""}
 	}
 	expandPath := "/ether/v1/kinds/" + rec.KindKey + "/expand"
 	browsePath := "/ether/v1/kinds/" + rec.KindKey + "/browse"
 
-	upsertSlice := func(items []core.KindItem) (accepted int, added int, err error) {
+	upsertSlice := func(defaultLevel string, items []core.KindItem) (accepted int, added int, err error) {
 		normalized := make([]core.KindItem, len(items))
 		copy(normalized, items)
 		for i := range normalized {
 			if normalized[i].ParentID == "" {
 				normalized[i].ParentID = parentItem.ID
 			}
-			if normalized[i].Level == "" && childLevel != "" {
-				normalized[i].Level = childLevel
+			if normalized[i].Level == "" && defaultLevel != "" {
+				normalized[i].Level = defaultLevel
 			}
 		}
 		for start := 0; start < len(normalized); start += pluginitems.MaxUpsertBatch {
@@ -569,144 +572,150 @@ func (c *KindCatalog) runContainerHydration(
 	}
 
 	var (
-		cursor        string
-		useBrowse     bool
 		totalAccepted int
 		totalAdded    int
-		seenCursor    = make(map[string]bool)
 	)
 
-	callExpand := func(cur string) (items []core.KindItem, next string, fallback bool, err error) {
-		body, mErr := json.Marshal(core.KindExpandRequest{
-			ParentID: parentItem.ID,
-			Level:    childLevel,
-			Cursor:   cur,
-		})
-		if mErr != nil {
-			return nil, "", false, mErr
+	for _, childLevel := range childLevels {
+		if totalAccepted >= MaxKindExpandItems {
+			break
 		}
-		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
-			PluginID: rec.PluginID,
-			Method:   http.MethodPost,
-			Path:     expandPath,
-			Headers:  map[string]string{"content-type": "application/json"},
-			Body:     body,
-		})
-		if cErr != nil {
-			return nil, "", false, cErr
-		}
-		if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented || resp.Status == http.StatusBadRequest {
-			return nil, "", true, nil
-		}
-		if resp.Status < 200 || resp.Status >= 300 {
-			return nil, "", false, fmt.Errorf("container expand %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
-		}
-		var page core.KindExpandResponse
-		if len(resp.Body) > 0 {
-			if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
-				return nil, "", false, uErr
-			}
-		}
-		return page.Items, page.EffectiveCursor(), false, nil
-	}
-
-	callBrowse := func(cur string) (items []core.KindItem, next string, unsupported bool, err error) {
-		body, mErr := json.Marshal(core.KindBrowseRequest{
-			ParentID: parentItem.ID,
-			Level:    childLevel,
-			Cursor:   cur,
-			Limit:    pluginitems.DefaultWalkPageLimit,
-		})
-		if mErr != nil {
-			return nil, "", false, mErr
-		}
-		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
-			PluginID: rec.PluginID,
-			Method:   http.MethodPost,
-			Path:     browsePath,
-			Headers:  map[string]string{"content-type": "application/json"},
-			Body:     body,
-		})
-		if cErr != nil {
-			return nil, "", false, cErr
-		}
-		if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented {
-			return nil, "", true, nil
-		}
-		if resp.Status < 200 || resp.Status >= 300 {
-			return nil, "", false, fmt.Errorf("container browse %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
-		}
-		var page core.KindPage
-		if len(resp.Body) > 0 {
-			if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
-				return nil, "", false, uErr
-			}
-		}
-		return page.Items, strings.TrimSpace(page.NextCursor), false, nil
-	}
-
-	for pageIdx := 0; pageIdx < MaxKindExpandPages && totalAccepted < MaxKindExpandItems; pageIdx++ {
 		var (
-			pageItems   []core.KindItem
-			next        string
-			fallback    bool
-			unsupported bool
-			err         error
+			cursor     string
+			useBrowse  bool
+			seenCursor = make(map[string]bool)
 		)
-		if !useBrowse {
-			pageItems, next, fallback, err = callExpand(cursor)
-			if err != nil {
-				finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
-				return
+
+		callExpand := func(cur string) (items []core.KindItem, next string, fallback bool, err error) {
+			body, mErr := json.Marshal(core.KindExpandRequest{
+				ParentID: parentItem.ID,
+				Level:    childLevel,
+				Cursor:   cur,
+			})
+			if mErr != nil {
+				return nil, "", false, mErr
 			}
-			// Fall back to /browse if /expand doesn't support container hydration
-			// (404/501/400) or returned an empty first page for a non-empty container.
-			if fallback || (pageIdx == 0 && len(pageItems) == 0 && next == "") {
-				useBrowse = true
+			resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
+				PluginID: rec.PluginID,
+				Method:   http.MethodPost,
+				Path:     expandPath,
+				Headers:  map[string]string{"content-type": "application/json"},
+				Body:     body,
+			})
+			if cErr != nil {
+				return nil, "", false, cErr
+			}
+			if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented || resp.Status == http.StatusBadRequest {
+				return nil, "", true, nil
+			}
+			if resp.Status < 200 || resp.Status >= 300 {
+				return nil, "", false, fmt.Errorf("container expand %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
+			}
+			var page core.KindExpandResponse
+			if len(resp.Body) > 0 {
+				if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
+					return nil, "", false, uErr
+				}
+			}
+			return page.Items, page.EffectiveCursor(), false, nil
+		}
+
+		callBrowse := func(cur string) (items []core.KindItem, next string, unsupported bool, err error) {
+			body, mErr := json.Marshal(core.KindBrowseRequest{
+				ParentID: parentItem.ID,
+				Level:    childLevel,
+				Cursor:   cur,
+				Limit:    pluginitems.DefaultWalkPageLimit,
+			})
+			if mErr != nil {
+				return nil, "", false, mErr
+			}
+			resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
+				PluginID: rec.PluginID,
+				Method:   http.MethodPost,
+				Path:     browsePath,
+				Headers:  map[string]string{"content-type": "application/json"},
+				Body:     body,
+			})
+			if cErr != nil {
+				return nil, "", false, cErr
+			}
+			if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented {
+				return nil, "", true, nil
+			}
+			if resp.Status < 200 || resp.Status >= 300 {
+				return nil, "", false, fmt.Errorf("container browse %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
+			}
+			var page core.KindPage
+			if len(resp.Body) > 0 {
+				if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
+					return nil, "", false, uErr
+				}
+			}
+			return page.Items, strings.TrimSpace(page.NextCursor), false, nil
+		}
+
+		for pageIdx := 0; pageIdx < MaxKindExpandPages && totalAccepted < MaxKindExpandItems; pageIdx++ {
+			var (
+				pageItems   []core.KindItem
+				next        string
+				fallback    bool
+				unsupported bool
+				err         error
+			)
+			if !useBrowse {
+				pageItems, next, fallback, err = callExpand(cursor)
+				if err != nil {
+					finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+					return
+				}
+				// Fall back to /browse if /expand doesn't support container hydration
+				// (404/501/400) or returned an empty first page for a non-empty container.
+				if fallback || (pageIdx == 0 && len(pageItems) == 0 && next == "") {
+					useBrowse = true
+					pageItems, next, unsupported, err = callBrowse(cursor)
+					if err != nil {
+						finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+						return
+					}
+					if unsupported {
+						break
+					}
+				}
+			} else {
 				pageItems, next, unsupported, err = callBrowse(cursor)
 				if err != nil {
 					finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
 					return
 				}
 				if unsupported {
-					finish(pluginitems.ExpansionStateDone, totalAdded, "")
-					return
+					break
 				}
 			}
-		} else {
-			pageItems, next, unsupported, err = callBrowse(cursor)
-			if err != nil {
-				finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
-				return
-			}
-			if unsupported {
-				finish(pluginitems.ExpansionStateDone, totalAdded, "")
-				return
-			}
-		}
 
-		if len(pageItems) > 0 {
-			remaining := MaxKindExpandItems - totalAccepted
-			batch := pageItems
-			if len(batch) > remaining {
-				batch = batch[:remaining]
+			if len(pageItems) > 0 {
+				remaining := MaxKindExpandItems - totalAccepted
+				batch := pageItems
+				if len(batch) > remaining {
+					batch = batch[:remaining]
+				}
+				acc, add, uErr := upsertSlice(childLevel, batch)
+				if uErr != nil {
+					finish(pluginitems.ExpansionStateError, totalAdded, uErr.Error())
+					return
+				}
+				totalAccepted += acc
+				totalAdded += add
+				c.items.BumpGeneration()
+				signalFirst()
 			}
-			acc, add, uErr := upsertSlice(batch)
-			if uErr != nil {
-				finish(pluginitems.ExpansionStateError, totalAdded, uErr.Error())
-				return
-			}
-			totalAccepted += acc
-			totalAdded += add
-			c.items.BumpGeneration()
-			signalFirst()
-		}
 
-		if next == "" || len(pageItems) == 0 || seenCursor[next] || totalAccepted >= MaxKindExpandItems {
-			break
+			if next == "" || len(pageItems) == 0 || seenCursor[next] || totalAccepted >= MaxKindExpandItems {
+				break
+			}
+			seenCursor[next] = true
+			cursor = next
 		}
-		seenCursor[next] = true
-		cursor = next
 	}
 
 	finish(pluginitems.ExpansionStateDone, totalAdded, "")

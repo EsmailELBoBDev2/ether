@@ -82,7 +82,7 @@ func mbIsBookItem(t frontend.Title) bool {
 // a Video MediaType) must not be stamped on it.
 func mbDeclaredNonVideo(t frontend.Title) bool {
 	switch t.MBItemType {
-	case "", "Movie", "Series", "Season", "Episode":
+	case "", "Movie", "Series", "Season", "Episode", "Video":
 		return false
 	}
 	return true
@@ -95,7 +95,7 @@ func mbIsFolder(t frontend.Title) bool {
 	switch t.MBItemType {
 	case "Series", "Season", "MusicArtist", "MusicAlbum", "PhotoAlbum":
 		return true
-	case "Movie", "Episode", "Audio", "AudioBook", "Book", "Photo":
+	case "Movie", "Episode", "Video", "Audio", "AudioBook", "Book", "Photo":
 		return false
 	}
 	return t.Type == "show" || t.Type == "season" || t.Type == "boxset"
@@ -103,9 +103,11 @@ func mbIsFolder(t frontend.Title) bool {
 
 // mbMediaType is the MediaBrowser MediaType a leaf item carries: Audio for
 // tracks and audiobooks, Book for books, Photo for photos, Video for the
-// movie/episode leaves that have always carried it. Containers carry none.
+// movie/episode/video leaves that carry video playback. Containers carry none.
 func mbMediaType(t frontend.Title) (string, bool) {
 	switch t.MBItemType {
+	case "Video":
+		return "Video", true
 	case "Audio", "AudioBook":
 		return "Audio", true
 	case "Book":

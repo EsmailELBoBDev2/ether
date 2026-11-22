@@ -94,6 +94,14 @@ ALTER TABLE plugin_sync_state ADD COLUMN guard_json TEXT NOT NULL DEFAULT '';
 	store.RegisterDialect("pluginitems", 15, store.Postgres, migration15PostgresDDL)
 	store.RegisterSQLiteApply("pluginitems", 15, applyMigration15SQLite)
 	store.RegisterPostgresApply("pluginitems", 15, applyMigration15Postgres)
+	// Migration 16: partition plugin_item_parent_tally by child_level so
+	// branching kinds report per-role/per-level counts in O(1), and index
+	// (library_id, parent_ref, level, idx, item_ref) for O(page) filtered
+	// children paging.
+	store.Register("pluginitems", 16, migration16SQLiteDDL)
+	store.RegisterDialect("pluginitems", 16, store.Postgres, migration16PostgresDDL)
+	store.RegisterSQLiteApply("pluginitems", 16, applyMigration16SQLite)
+	store.RegisterPostgresApply("pluginitems", 16, applyMigration16Postgres)
 
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain

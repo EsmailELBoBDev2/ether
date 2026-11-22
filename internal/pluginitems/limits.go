@@ -164,9 +164,12 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 	if !ok {
 		return ValidatedItem{}, fmt.Errorf("%w: item %q: undeclared level %q", ErrInvalidItem, it.ID, it.Level)
 	}
-	if at > 0 && parentLevel != "" && parentLevel != decl.Levels[at-1].Key {
-		return ValidatedItem{}, fmt.Errorf("%w: item %q: level %q requires parent level %q, got %q",
-			ErrInvalidItem, it.ID, it.Level, decl.Levels[at-1].Key, parentLevel)
+	if at > 0 && parentLevel != "" {
+		expectedParent := decl.LevelParent(it.Level)
+		if parentLevel != expectedParent {
+			return ValidatedItem{}, fmt.Errorf("%w: item %q: level %q requires parent level %q, got %q",
+				ErrInvalidItem, it.ID, it.Level, expectedParent, parentLevel)
+		}
 	}
 	if !lv.Playable {
 		it.Playable = false

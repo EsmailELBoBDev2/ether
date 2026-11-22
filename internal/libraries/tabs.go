@@ -147,14 +147,21 @@ func (s *Service) ValidateTabs(ctx context.Context, lib core.Library, tabs []cor
 			return nil, fmt.Errorf("%w: tab %q has unknown kind %q", ErrInvalid, t.Key, t.Kind)
 		}
 
-		// Card validation (live tabs only).
+		// Card validation (live and recommended tabs).
 		t.Card = strings.ToLower(strings.TrimSpace(t.Card))
-		if t.Kind == core.TabLive {
+		switch t.Kind {
+		case core.TabLive:
 			if !core.ValidCardShape(t.Card) {
 				return nil, fmt.Errorf("%w: live tab %q card must be poster, landscape or square", ErrInvalid, t.Key)
 			}
-		} else if t.Card != "" {
-			return nil, fmt.Errorf("%w: tab %q of kind %s cannot set card", ErrInvalid, t.Key, t.Kind)
+		case core.TabRecommended:
+			if t.Card != "" && !core.ValidCardShape(t.Card) {
+				return nil, fmt.Errorf("%w: recommended tab %q card must be poster, landscape or square", ErrInvalid, t.Key)
+			}
+		default:
+			if t.Card != "" {
+				return nil, fmt.Errorf("%w: tab %q of kind %s cannot set card", ErrInvalid, t.Key, t.Kind)
+			}
 		}
 
 		// Layout validation (view tabs only).

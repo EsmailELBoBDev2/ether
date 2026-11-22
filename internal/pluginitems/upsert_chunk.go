@@ -132,6 +132,54 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 	isPG := store.DialectOf(s.db) == store.Postgres
 	tallyDelta := map[string]int64{}
 
+	var parentTally *parentTallyTracker
+	if len(kind.Decl.Levels) >= 2 && kind.LibraryID > 0 {
+		leafLevel := kind.Decl.Levels[len(kind.Decl.Levels)-1].Key
+		parentTally = newParentTallyTracker(tx, kind.LibraryID, leafLevel, existing)
+		primeParentRefs := make([]core.ItemRef, 0, len(chunk))
+		primeLeafRefs := make([]core.ItemRef, 0, len(chunk))
+		for i := range chunk {
+			if !changed[i] {
+				continue
+			}
+			p := &chunk[i]
+			it := &p.validated.Item
+			ex, isExisting := existing[it.Ref]
+			newParent := core.ItemRef(p.parentRef)
+			if isExisting && ex.parentRef == newParent && ex.level == it.Level {
+				continue
+			}
+			if ex.parentRef != "" {
+				primeParentRefs = append(primeParentRefs, ex.parentRef)
+				primeLeafRefs = append(primeLeafRefs, ex.parentRef)
+			}
+			if newParent != "" {
+				primeParentRefs = append(primeParentRefs, newParent)
+				primeLeafRefs = append(primeLeafRefs, newParent)
+			}
+			if it.Level != leafLevel || (isExisting && ex.level != leafLevel) {
+				primeLeafRefs = append(primeLeafRefs, it.Ref)
+			}
+		}
+		if err := parentTally.primeParents(ctx, primeParentRefs); err != nil {
+			return res, err
+		}
+		if err := parentTally.primeLeaves(ctx, primeLeafRefs); err != nil {
+			return res, err
+		}
+		for i := range chunk {
+			if !changed[i] {
+				continue
+			}
+			p := &chunk[i]
+			it := &p.validated.Item
+			ex, isExisting := existing[it.Ref]
+			if err := parentTally.apply(ctx, it.Ref, isExisting, ex.parentRef, core.ItemRef(p.parentRef), ex.level, it.Level); err != nil {
+				return res, err
+			}
+		}
+	}
+
 	for i := range chunk {
 		if !changed[i] {
 			continue
@@ -277,6 +325,11 @@ INSERT INTO plugin_items(
 	}
 	if err := applyFieldTallyDeltaTx(ctx, tx, kind.LibraryID, fieldTallyDelta); err != nil {
 		return res, err
+	}
+	if parentTally != nil {
+		if err := applyParentTallyDeltaTx(ctx, tx, kind.LibraryID, parentTally.delta); err != nil {
+			return res, err
+		}
 	}
 	if bumpGen {
 		total, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, nowUnix, markOK)

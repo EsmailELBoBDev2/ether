@@ -1559,6 +1559,10 @@ func (i *instance) pluginSeason(r *http.Request, v *frontend.Viewer, show fronte
 		if err != nil || !key.IsPluginKey() || key == show {
 			return 0, true
 		}
+		detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+		if err != nil || detail.Title.Type != "season" || (detail.Title.ShowKey != show && detail.Title.ParentKey != show) {
+			return 0, true
+		}
 		return key, true
 	}
 	if number == nil {

@@ -27,6 +27,9 @@ func (h *Handler) presentConnectURLs(r *http.Request, info FrontendInfo) Fronten
 			info.Status.PublishedAddresses = frontendPublishedURLs(cfg, id)
 		}
 	}
+	if info.PortalURL == "" {
+		info.PortalURL = h.publishedPortalURL()
+	}
 	return info
 }
 
@@ -41,6 +44,7 @@ type FrontendInfo struct {
 	Descriptor frontend.Descriptor `json:"descriptor"`
 	Enabled    bool                `json:"enabled"`
 	Status     frontend.Status     `json:"status"`
+	PortalURL  string              `json:"portalUrl,omitempty"`
 }
 
 func (h *Handler) frontendAvailable(w http.ResponseWriter) bool {

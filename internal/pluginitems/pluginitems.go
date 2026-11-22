@@ -87,6 +87,13 @@ ALTER TABLE plugin_resolutions ADD COLUMN candidates TEXT NOT NULL DEFAULT '';
 ALTER TABLE plugin_items ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE plugin_sync_state ADD COLUMN guard_json TEXT NOT NULL DEFAULT '';
 `)
+	// Migration 15: maintain per-parent child and descendant-leaf tallies for
+	// multi-level plugin kinds so containers (series, seasons, albums) report
+	// ChildCount and LeafCount in O(1) without walking descendants.
+	store.Register("pluginitems", 15, migration15SQLiteDDL)
+	store.RegisterDialect("pluginitems", 15, store.Postgres, migration15PostgresDDL)
+	store.RegisterSQLiteApply("pluginitems", 15, applyMigration15SQLite)
+	store.RegisterPostgresApply("pluginitems", 15, applyMigration15Postgres)
 
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain

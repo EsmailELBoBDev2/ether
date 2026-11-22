@@ -17,6 +17,7 @@ type FrontendInfo = {
   descriptor: { id: string };
   enabled: boolean;
   status: ReachabilityStatus;
+  portalUrl?: string;
 };
 
 const APP_NAMES: Record<string, string> = {
@@ -30,12 +31,21 @@ const APP_NAMES: Record<string, string> = {
 };
 
 /**
- * The viewer portal address to put in a message for someone else. The invite
- * link comes from the server on the published address, so its origin wins over
- * the address the owner happens to be browsing the console from (a LAN IP, a
- * tunnel on 127.0.0.1, the public IP).
+ * The viewer portal address to put in a message for someone else. Prefer the
+ * server-supplied published portal address (same source as invite links) so
+ * every viewer path uses it instead of the address the owner happens to be
+ * browsing the console from (a LAN IP, a tunnel on 127.0.0.1, the public IP),
+ * falling back to window.location only when no published address exists.
  */
-function portalUrl(inviteLink = ""): string {
+function portalUrl(publishedPortal = "", inviteLink = ""): string {
+  if (publishedPortal) {
+    try {
+      const u = new URL(publishedPortal);
+      if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+    } catch {
+      // fall through
+    }
+  }
   if (inviteLink) {
     try {
       const u = new URL(inviteLink);
@@ -101,6 +111,8 @@ export function AddViewerDrawer({
   }, [open]);
 
   const enabledApps = frontends.filter((f) => f.enabled && APP_NAMES[f.descriptor.id]);
+  const publishedPortal = frontends.find((f) => f.portalUrl)?.portalUrl ?? "";
+  const portal = portalUrl(publishedPortal, link);
   const addressFor = (id: string) => {
     const info = enabledApps.find((f) => f.descriptor.id === id);
     return usableAddresses(info?.status)[0] ?? info?.status?.connectUrls?.[0] ?? "";
@@ -190,7 +202,7 @@ export function AddViewerDrawer({
       }
       lines.push(
         t("Or use Quick Connect: they approve the code from the app at {url}.", {
-          url: portalUrl(link),
+          url: portal,
         }),
       );
       lines.push(
@@ -203,7 +215,7 @@ export function AddViewerDrawer({
       connectCards.push({
         id,
         title,
-        lines: [t("They get their link at {url}.", { url: portalUrl(link) })],
+        lines: [t("They get their link at {url}.", { url: portal })],
       });
     }
   }
@@ -211,7 +223,7 @@ export function AddViewerDrawer({
     connectCards.push({
       id: "portal",
       title: t("On the web"),
-      lines: [t("They get their link at {url}.", { url: portalUrl(link) })],
+      lines: [t("They get their link at {url}.", { url: portal })],
     });
   }
 

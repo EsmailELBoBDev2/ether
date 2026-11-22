@@ -43,6 +43,16 @@ func (i *instance) embyItemDTO(m map[string]any, t frontend.Title, _ frontend.Wa
 	if len(urls) > 0 {
 		m["ExternalUrls"] = urls
 	}
+	if t.ChildCount > 0 {
+		if _, ok := m["ChildCount"]; !ok {
+			m["ChildCount"] = t.ChildCount
+		}
+	}
+	if t.LeafCount > 0 {
+		if _, ok := m["RecursiveItemCount"]; !ok {
+			m["RecursiveItemCount"] = t.LeafCount
+		}
+	}
 	// List and detail responses both carry these collections. An empty value
 	// means this item has no such asset.
 	if _, ok := m["BackdropImageTags"]; !ok {
@@ -87,10 +97,15 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 		if _, ok := m["DisplayOrder"]; !ok {
 			m["DisplayOrder"] = "Aired"
 		}
-		if d.Title.ChildCount > 0 {
-			if _, ok := m["ChildCount"]; !ok {
-				m["ChildCount"] = d.Title.ChildCount
-			}
+	}
+	if d.Title.ChildCount > 0 {
+		if _, ok := m["ChildCount"]; !ok {
+			m["ChildCount"] = d.Title.ChildCount
+		}
+	}
+	if d.Title.LeafCount > 0 {
+		if _, ok := m["RecursiveItemCount"]; !ok {
+			m["RecursiveItemCount"] = d.Title.LeafCount
 		}
 	}
 	if id, ok := m["Id"].(string); ok && id != "" {

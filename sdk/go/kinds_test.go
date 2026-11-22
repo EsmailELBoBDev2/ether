@@ -700,4 +700,37 @@ func TestResolveSourcesWithResult(t *testing.T) {
 	if err != nil || len(mres.Candidates) != 1 || len(mres.Indexers) != 1 || mres.Indexers[0].IndexerID != "m" {
 		t.Fatalf("mock ResolveSourcesWithResult = (%+v, %v)", mres, err)
 	}
+
+	// Streaming, pending, and kind:"indexers" round-trip through SourceResolveResult.
+	doneFalse := false
+	med, last := int64(180), int64(140)
+	streamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var sq etherplugin.SourceQuery
+		_ = json.NewDecoder(r.Body).Decode(&sq)
+		switch sq.Kind {
+		case "indexer_search":
+			_ = json.NewEncoder(w).Encode(etherplugin.SourceResolveResult{
+				Candidates: []etherplugin.SourceCandidate{},
+				SearchID:   "srch_abc",
+				Done:       &doneFalse,
+				Pending:    []etherplugin.IndexerRef{{IndexerID: "slow", Indexer: "Slow"}},
+				Indexers:   []etherplugin.IndexerSearchStatus{{IndexerID: "slow", Indexer: "Slow", Status: etherplugin.IndexerStatusPending, MS: 0}},
+			})
+		case "indexers":
+			_ = json.NewEncoder(w).Encode(etherplugin.SourceResolveResult{
+				Candidates: []etherplugin.SourceCandidate{},
+				Indexers:   []etherplugin.IndexerSearchStatus{{IndexerID: "idx1", Indexer: "One", Kind: "newznab", MedianMS: &med, LastMS: &last}},
+			})
+		}
+	}))
+	defer streamSrv.Close()
+	sc := &etherplugin.Context{Context: context.Background(), Ether: etherplugin.NewRemoteHostClient(etherplugin.RemoteHostOptions{BaseURL: streamSrv.URL, Credential: "cred"})}
+	sres, err := sc.ResolveSourcesWithResult(etherplugin.SourceQuery{Kind: "indexer_search", Query: "Dune", Stream: true})
+	if err != nil || sres.SearchID != "srch_abc" || sres.Done == nil || *sres.Done || len(sres.Pending) != 1 || sres.Indexers[0].Status != etherplugin.IndexerStatusPending {
+		t.Fatalf("streaming start = (%+v, %v)", sres, err)
+	}
+	lres, err := sc.ResolveSourcesWithResult(etherplugin.SourceQuery{Kind: "indexers"})
+	if err != nil || len(lres.Indexers) != 1 || lres.Indexers[0].Kind != "newznab" || lres.Indexers[0].MedianMS == nil || *lres.Indexers[0].MedianMS != 180 {
+		t.Fatalf("indexers listing = (%+v, %v)", lres, err)
+	}
 }

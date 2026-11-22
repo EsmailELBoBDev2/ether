@@ -547,6 +547,19 @@ func (v *VODIndexer) Search(ctx context.Context, r core.SearchRequest) ([]core.R
 	return v.SearchWith(ctx, r, nil)
 }
 func (v *VODIndexer) SearchWith(ctx context.Context, r core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
+	// Generic plugin streaming searches carry a status observer and no
+	// TMDB/year VOD target; forward directly to Inner without spawning a
+	// VODSearch goroutine.
+	if core.HasIndexerStatusObserver(ctx) && r.IDs.TMDB == 0 && r.Year == 0 {
+		if streaming, ok := v.Inner.(core.StreamingIndexer); ok {
+			return streaming.SearchWith(ctx, r, arrived)
+		}
+		a, err := v.Inner.Search(ctx, r)
+		if arrived != nil && len(a) > 0 {
+			arrived(a)
+		}
+		return a, err
+	}
 	type result struct {
 		releases []core.Release
 		err      error
@@ -595,6 +608,42 @@ func (v *VODIndexer) SearchWith(ctx context.Context, r core.SearchRequest, arriv
 		return nil, nil
 	}
 	return nil, err
+}
+
+func (v *VODIndexer) SearchWithOptions(ctx context.Context, r core.SearchRequest, opts core.IndexerSearchOptions) (core.IndexerSearchResult, error) {
+	if csi, ok := v.Inner.(core.ControlledSearchIndexer); ok {
+		return csi.SearchWithOptions(ctx, r, opts)
+	}
+	started := time.Now()
+	rels, err := v.Search(ctx, r)
+	if err != nil {
+		return core.IndexerSearchResult{}, err
+	}
+	name := v.Name()
+	return core.IndexerSearchResult{
+		Releases: rels,
+		Indexers: []core.IndexerSearchStatus{{
+			IndexerID: name,
+			Indexer:   name,
+			Status:    core.IndexerStatusAnswered,
+			Results:   len(rels),
+			MS:        max(int64(0), time.Since(started).Milliseconds()),
+		}},
+	}, nil
+}
+
+func (v *VODIndexer) EnabledIndexerStatuses(status string) []core.IndexerSearchStatus {
+	if dir, ok := v.Inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexerStatuses(status)
+	}
+	return nil
+}
+
+func (v *VODIndexer) EnabledIndexers() []core.IndexerSearchStatus {
+	if dir, ok := v.Inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexers()
+	}
+	return []core.IndexerSearchStatus{}
 }
 func (v *VODIndexer) ResolveTorrent(ctx context.Context, r core.Release) (core.Release, error) {
 	if inner, ok := v.Inner.(interface {

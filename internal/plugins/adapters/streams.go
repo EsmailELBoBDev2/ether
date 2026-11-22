@@ -286,6 +286,49 @@ func (s *StreamSources) SearchWith(ctx context.Context, req core.SearchRequest, 
 	return rels, err
 }
 
+// SearchWithOptions forwards controlled fan-out searches to the wrapped indexer.
+func (s *StreamSources) SearchWithOptions(ctx context.Context, req core.SearchRequest, opts core.IndexerSearchOptions) (core.IndexerSearchResult, error) {
+	if s.inner == nil {
+		return core.IndexerSearchResult{}, core.ErrNoSources
+	}
+	if csi, ok := s.inner.(core.ControlledSearchIndexer); ok {
+		return csi.SearchWithOptions(ctx, req, opts)
+	}
+	started := time.Now()
+	rels, err := s.inner.Search(ctx, req)
+	name := s.Name()
+	ms := max(int64(0), time.Since(started).Milliseconds())
+	if err != nil {
+		return core.IndexerSearchResult{}, err
+	}
+	return core.IndexerSearchResult{
+		Releases: rels,
+		Indexers: []core.IndexerSearchStatus{{
+			IndexerID: name,
+			Indexer:   name,
+			Status:    core.IndexerStatusAnswered,
+			Results:   len(rels),
+			MS:        ms,
+		}},
+	}, nil
+}
+
+// EnabledIndexerStatuses forwards per-indexer status listing to the wrapped indexer.
+func (s *StreamSources) EnabledIndexerStatuses(status string) []core.IndexerSearchStatus {
+	if dir, ok := s.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexerStatuses(status)
+	}
+	return nil
+}
+
+// EnabledIndexers forwards enabled indexer listing to the wrapped indexer.
+func (s *StreamSources) EnabledIndexers() []core.IndexerSearchStatus {
+	if dir, ok := s.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexers()
+	}
+	return []core.IndexerSearchStatus{}
+}
+
 // SearchRescue implements core.RescueIndexer.
 func (s *StreamSources) SearchRescue(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
 	return s.SearchRescueWith(ctx, req, nil)

@@ -224,6 +224,31 @@ credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
   client request paths** (including `/resolve`, `/search`, `/catalog/*`,
   `/stream/*`, `/meta/*`, and remote requests carrying `X-Ether-Viewer-Token`).
 
+## Indexer search controls, streaming, and listing (`sources.resolve`)
+
+With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`),
+`sources.resolve` (use `resolveSourcesWithResult` / `ResolveSourcesWithResult`
+/ `resolve_sources_with_result` to read the full response envelope) supports:
+
+- **Controlled fan-out (`kind: "indexer_search"`):** optional `firstResults`,
+  `settleMs` (default 250 ms, `0` = immediate), `minResults`, `timeoutMs`
+  (up to the 30 s ceiling), and case-insensitive `skipIndexers` / `onlyIndexers`
+  filters. Early returns keep slower indexers filling Ether's search cache in
+  the background (bounded at 30 s and coalesced), reporting them as
+  `status: "pending"` and in top-level `pending: [{indexerId, indexer}]`;
+  `status: "timed_out"` is reserved for indexers that hit the ceiling.
+- **Streaming arrivals:** pass `stream: true` on `indexer_search` to get an
+  immediate `{searchId, pending, done, indexers}` handle, poll new arrivals
+  with `kind: "indexer_search_results"` (`{searchId, waitMs?}`, `waitMs` capped
+  at 10 s), and cancel unfinished indexers with `kind: "indexer_search_cancel"`
+  (`{searchId}`). Handles are scoped to the calling plugin (foreign or expired
+  handles return `not_found`), capped at 4 live searches per plugin, dropped
+  after 15 s with no polls, and expire 3 min after the last poll.
+- **Enabled indexer listing (`kind: "indexers"`):** returns the owner's enabled
+  indexers in `indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`
+  (`kind`: `newznab`, `torznab`, `builtin`, `stremio`, `zilean`, `addon`), with
+  sanitized error codes and no API keys, URLs, or cookies.
+
 ## Poster badges
 
 A plugin with capability `poster_badges` declares up to 4 badge sets in

@@ -1032,6 +1032,9 @@ export function createHostedClient(): EtherHost {
         const r = callHost<import("./types.ts").SourceResolveResult>("sources.resolve", [q]);
         const out: import("./types.ts").SourceResolveResult = { candidates: r?.candidates ?? [] };
         if (r?.indexers !== undefined) out.indexers = r.indexers;
+        if (r?.pending !== undefined) out.pending = r.pending;
+        if (r?.searchId !== undefined) out.searchId = r.searchId;
+        if (r?.done !== undefined) out.done = r.done;
         return out;
       },
     },
@@ -1377,6 +1380,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         const r = await callJson<import("./types.ts").SourceResolveResult>("POST", "/ether/plugin-host/sources/resolve", q);
         const out: import("./types.ts").SourceResolveResult = { candidates: r?.candidates ?? [] };
         if (r?.indexers !== undefined) out.indexers = r.indexers;
+        if (r?.pending !== undefined) out.pending = r.pending;
+        if (r?.searchId !== undefined) out.searchId = r.searchId;
+        if (r?.done !== undefined) out.done = r.done;
         return out;
       },
     },

@@ -787,6 +787,8 @@ func mapHostError(err error) error {
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
 	case errors.Is(err, ErrPermissionDenied):
 		return wasm.Forbidden(err.Error())
+	case errors.Is(err, ErrNotFound):
+		return &wasm.Fault{Code: "not_found", Message: err.Error()}
 	case errors.Is(err, ErrNotConfigured):
 		return &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
 	case errors.Is(err, ErrInvalidOutput):

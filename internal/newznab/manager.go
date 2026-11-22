@@ -32,6 +32,7 @@ type Manager struct {
 	clients        []*Client
 	searchTimingMu sync.RWMutex
 	searchTimings  []SearchTiming
+	timingHistory  map[string]*indexerTimingHistory
 	shareLogMu     sync.Mutex
 	shareLogDay    map[string]string
 
@@ -98,7 +99,12 @@ func (m *Manager) clearSpeculativeShareLog(key string) {
 	m.shareLogMu.Unlock()
 }
 
-var _ core.Indexer = (*Manager)(nil)
+var (
+	_ core.Indexer                 = (*Manager)(nil)
+	_ core.StreamingIndexer        = (*Manager)(nil)
+	_ core.ControlledSearchIndexer = (*Manager)(nil)
+	_ core.IndexerDirectory        = (*Manager)(nil)
+)
 
 // NewManager builds a Manager from indexer configs.
 func NewManager(db *sql.DB, cfgs []config.Indexer, opts Options) *Manager {
@@ -146,6 +152,17 @@ func (m *Manager) Reload(cfgs []config.Indexer) {
 		return next[i].Config().Priority < next[j].Config().Priority
 	})
 	m.clients = next
+	keep := make(map[string]struct{}, len(next))
+	for _, cl := range next {
+		keep[cl.indexerID()] = struct{}{}
+	}
+	m.searchTimingMu.Lock()
+	for id := range m.timingHistory {
+		if _, ok := keep[id]; !ok {
+			delete(m.timingHistory, id)
+		}
+	}
+	m.searchTimingMu.Unlock()
 }
 
 // ApplyConfig reloads indexers and the search-cache TTL from a full
@@ -320,28 +337,48 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 		parallel = max(1, len(clients))
 	}
 	sem := make(chan struct{}, parallel)
+	searchStart := time.Now()
 	var wg sync.WaitGroup
 	for i, cl := range clients {
 		cfg := cl.Config()
-		if !cfg.Enabled || core.IndexerSkipped(ctx, cl.indexerID()) || (core.TorrentOnlySearch(ctx) && !cfg.IsTorrent()) {
+		if !cfg.Enabled {
 			slots[i].skipped = true
 			continue
 		}
+		id := cl.indexerID()
+		name := cl.Name()
+		if core.IndexerSkipped(ctx, id) || (core.TorrentOnlySearch(ctx) && !cfg.IsTorrent()) {
+			slots[i].skipped = true
+			core.ObserveIndexerStatus(ctx, core.IndexerSearchStatus{
+				IndexerID: id,
+				Indexer:   name,
+				Status:    core.IndexerStatusSkipped,
+				MS:        0,
+			})
+			continue
+		}
 		wg.Add(1)
-		go func(i int, cl *Client) {
+		go func(i int, cl *Client, id, name string) {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
+				dur := time.Since(searchStart)
+				slots[i].duration = dur
 				slots[i].err = ctx.Err()
+				core.ObserveIndexerStatus(ctx, buildIndexerStatus(ctx, id, name, nil, slots[i].err, dur))
+				m.recordIndexerTiming(id, dur, slots[i].err)
 				return
 			}
 			started := time.Now()
-			res, err := cl.SearchWith(ctx, req, arrived)
-			slots[i].duration = time.Since(started)
+			res, err := m.searchClientCoalescedWith(ctx, cl, req, arrived)
+			dur := time.Since(started)
+			slots[i].duration = dur
 			slots[i].results, slots[i].err = res, err
-		}(i, cl)
+			core.ObserveIndexerStatus(ctx, buildIndexerStatus(ctx, id, name, res, err, dur))
+			m.recordIndexerTiming(id, dur, err)
+		}(i, cl, id, name)
 	}
 	wg.Wait()
 	timings := make([]SearchTiming, 0, len(clients))

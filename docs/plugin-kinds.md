@@ -330,7 +330,7 @@ Release probes run strictly cached-only without queuing uncached debrid
 downloads; pattern-specific network, folder, secret, and blob grants
 still apply.
 
-`ResolveSources({kind: "indexer_search", query?, category?, profile?, firstResults?, settleMs?, minResults?, skipIndexers?, onlyIndexers?, timeoutMs?})` accepts a
+`ResolveSources({kind: "indexer_search", query?, category?, profile?, stream?, firstResults?, settleMs?, minResults?, skipIndexers?, onlyIndexers?, timeoutMs?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
@@ -342,6 +342,21 @@ By default `indexer_search` waits for every enabled indexer up to Ether's 30 s
 ceiling. Optional fan-out controls let a resolver stay responsive when one
 indexer is slow or rate-paced:
 
+- `stream: true`: starts the fan-out (reusing Ether's `SearchWith` arrival
+  callback and `WithIndexerSkip` filters) and answers immediately with
+  `{candidates: [], searchId, pending, done, indexers}`. Poll incremental
+  batches with `sources.resolve({kind: "indexer_search_results", searchId, waitMs?})`,
+  which waits up to `waitMs` (capped at `10000` ms; `0` returns immediately) for
+  at least one new arrival or completion and returns only candidates that
+  arrived since the previous poll alongside `pending: [{indexerId, indexer}]`,
+  `done` (`true` once every indexer has answered, failed, timed out, or been
+  skipped), and per-indexer `indexers` statuses. Stop unfinished indexers at any
+  time with `sources.resolve({kind: "indexer_search_cancel", searchId})`.
+  Streaming searches are scoped strictly to the calling plugin (another plugin's
+  `searchId` returns `"not_found"`), capped per plugin (`4` live searches),
+  bounded by the 30 s indexer ceiling (or a shorter `timeoutMs`), dropped if
+  never polled (`15 s`), and expired after idle polls (`3 min` after the last
+  poll) or cleaned up once `done: true` is consumed or cancelled.
 - `firstResults: true`: return as soon as the fastest indexers produce results
   plus `settleMs` (default `250` ms when omitted; `0` returns immediately;
   capped at `30000` ms). Slow indexers still in flight continue in the
@@ -356,21 +371,37 @@ indexer is slow or rate-paced:
   each) of indexer IDs (`indexerId`) or display names (`indexer`) to exclude or
   include for this search. `skipIndexers` takes precedence over `onlyIndexers`.
 - `timeoutMs`: per-call wait budget in milliseconds, capped by Ether's 30 s
-  ceiling (and any shorter parent request deadline). Slow indexers still
-  running when `timeoutMs` expires are reported as `"timed_out"` while
-  continuing to fill the search cache in the background.
+  ceiling (and any shorter parent request deadline). When `timeoutMs` is shorter
+  than the ceiling and expires while slow indexers keep filling the search cache
+  in the background, those indexers are reported as `"pending"` (and listed in
+  top-level `pending`). Indexers that hit the 30 s ceiling (or are cancelled
+  because the detached background cap is full) are reported as `"timed_out"`.
 
-For `indexer_search`, the `sources.resolve` response envelope includes
+For `indexer_search`, `indexer_search_results`, and `indexer_search_cancel`,
+the `sources.resolve` response envelope includes
 `indexers: [{indexerId, indexer, status, results?, ms, error?}]` alongside
-`candidates`, where `status` is `"answered"`, `"timed_out"`, `"skipped"`, or
-`"error"` (with a sanitized short `error` code on failure), so a resolver can
-inspect which indexers answered and decide whether to run a follow-up search.
-Non-`indexer_search` queries omit `indexers`. In Go, TypeScript, and Python
-SDKs, `ResolveSources` / `kinds.resolveSources` / `resolve_sources` continue
-returning candidates only, while `ResolveSourcesWithResult` /
-`kinds.resolveSourcesWithResult` / `resolve_sources_with_result` return the
-full `{candidates, indexers}` envelope (raw hosted `ether.sources.resolve`
-returns `{candidates, indexers?}` directly).
+`candidates`, where `status` is `"answered"`, `"pending"`, `"timed_out"`,
+`"skipped"`, or `"error"` (with a sanitized short `error` code on failure), plus
+top-level `pending: [{indexerId, indexer}]` whenever indexers remain running in
+the background (and `searchId`/`done` for streaming calls).
+
+`ResolveSources({kind: "indexers"})` (gated by the same `permissions.sources: "search"`
+permission) lists the owner's currently enabled indexers in priority order under
+`indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`, where
+`kind` is `"newznab"`, `"torznab"`, `"builtin"`, `"stremio"`, `"zilean"`, or
+`"addon"`, `medianMs` and `lastMs` summarize recent search timings (omitted
+until the indexer has been searched), and `lastError` carries a sanitized error
+code when the indexer's most recent search failed. The listing never includes
+API keys, URLs with secrets, or cookies.
+
+Non-indexer source queries (`debrid_check`, `debrid_acquire`, `release_files`,
+`usenet_check`) omit `indexers`, `pending`, `searchId`, and `done`. In Go,
+TypeScript, and Python SDKs, `ResolveSources` / `kinds.resolveSources` /
+`resolve_sources` continue returning candidates only, while
+`ResolveSourcesWithResult` / `kinds.resolveSourcesWithResult` /
+`resolve_sources_with_result` return the full
+`{candidates, indexers?, pending?, searchId?, done?}` envelope (raw hosted
+`ether.sources.resolve` returns that envelope directly).
 
 Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored

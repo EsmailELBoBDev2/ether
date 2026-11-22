@@ -447,7 +447,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -472,6 +472,17 @@ type SourceQuery struct {
 	// has not seen its file list yet (e.g. a magnet for a large collection),
 	// so zip-only debrid caches are checked via cached-only add.
 	FileCount int `json:"fileCount,omitempty"`
+	// Stream, when true on indexer_search, starts the indexer fan-out and
+	// returns immediately with a searchId handle to poll via
+	// indexer_search_results or stop via indexer_search_cancel.
+	Stream bool `json:"stream,omitempty"`
+	// SearchID identifies a streaming search started by indexer_search with
+	// stream:true; required on indexer_search_results and indexer_search_cancel.
+	SearchID string `json:"searchId,omitempty"`
+	// WaitMS sets how long indexer_search_results waits (in milliseconds,
+	// capped at 10000 ms) for at least one new arrival or search completion
+	// before returning. Zero returns immediately with arrivals buffered so far.
+	WaitMS int `json:"waitMs,omitempty"`
 	// FirstResults, when true on indexer_search, returns early as soon as the
 	// fastest indexer(s) return results plus the SettleMS window (default
 	// 250 ms; 0 returns immediately), while slower indexers keep running in the
@@ -498,38 +509,138 @@ type SourceQuery struct {
 	OnlyIndexers []string `json:"onlyIndexers,omitempty"`
 	// TimeoutMS sets a per-call wait limit in milliseconds for indexer_search,
 	// capped by Ether's 30 s indexer-search ceiling and any shorter route
-	// deadline. When TimeoutMS expires before the parent deadline, Ether
-	// returns candidates arrived so far with timed_out statuses while slower
-	// indexers continue filling the search cache. Omit or 0 keeps the 30 s
-	// default.
+	// deadline. When TimeoutMS is shorter than the ceiling and expires while
+	// slow indexers keep filling the search cache, those indexers are reported
+	// as pending (and listed in top-level pending); indexers that hit the 30 s
+	// ceiling are reported as timed_out. Omit or 0 keeps the 30 s default.
 	TimeoutMS int `json:"timeoutMs,omitempty"`
 }
 
 // Status values for IndexerSearchStatus.Status.
 const (
 	IndexerStatusAnswered = "answered"
+	IndexerStatusPending  = "pending"
 	IndexerStatusTimedOut = "timed_out"
 	IndexerStatusSkipped  = "skipped"
 	IndexerStatusError    = "error"
 )
 
-// IndexerSearchStatus reports one enabled indexer's outcome on an
-// indexer_search query so a resolver can decide whether to wait or retry.
+// IndexerRef identifies one configured indexer by ID and display name,
+// returned in the top-level pending list on indexer_search and
+// indexer_search_results responses.
+type IndexerRef struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+}
+
+// IndexerSearchStatus reports either one enabled indexer's outcome on an
+// indexer_search / indexer_search_results / indexer_search_cancel query
+// (Status, Results, MS, Error) or one enabled indexer's summary on an
+// indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
 	IndexerID string `json:"indexerId"`
 	Indexer   string `json:"indexer"`
-	Status    string `json:"status"` // answered|timed_out|skipped|error
+	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
 	Results   int    `json:"results,omitempty"`
 	MS        int64  `json:"ms"`
 	Error     string `json:"error,omitempty"`
+	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
+	// responses (never carrying API keys, URLs with secrets, or cookies).
+	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
+	MedianMS  *int64 `json:"medianMs,omitempty"`
+	LastMS    *int64 `json:"lastMs,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+
+// MarshalJSON preserves ms:0 on search status entries (Status != "") while
+// omitting status/ms/results/error on kind:"indexers" listing entries
+// (Status == "").
+func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
+	if s.Status == "" {
+		type listing struct {
+			IndexerID string `json:"indexerId"`
+			Indexer   string `json:"indexer"`
+			Kind      string `json:"kind,omitempty"`
+			MedianMS  *int64 `json:"medianMs,omitempty"`
+			LastMS    *int64 `json:"lastMs,omitempty"`
+			LastError string `json:"lastError,omitempty"`
+		}
+		return json.Marshal(listing{
+			IndexerID: s.IndexerID,
+			Indexer:   s.Indexer,
+			Kind:      s.Kind,
+			MedianMS:  s.MedianMS,
+			LastMS:    s.LastMS,
+			LastError: s.LastError,
+		})
+	}
+	type searchStatus struct {
+		IndexerID string `json:"indexerId"`
+		Indexer   string `json:"indexer"`
+		Status    string `json:"status"`
+		Results   int    `json:"results,omitempty"`
+		MS        int64  `json:"ms"`
+		Error     string `json:"error,omitempty"`
+		Kind      string `json:"kind,omitempty"`
+		MedianMS  *int64 `json:"medianMs,omitempty"`
+		LastMS    *int64 `json:"lastMs,omitempty"`
+		LastError string `json:"lastError,omitempty"`
+	}
+	return json.Marshal(searchStatus{
+		IndexerID: s.IndexerID,
+		Indexer:   s.Indexer,
+		Status:    s.Status,
+		Results:   s.Results,
+		MS:        s.MS,
+		Error:     s.Error,
+		Kind:      s.Kind,
+		MedianMS:  s.MedianMS,
+		LastMS:    s.LastMS,
+		LastError: s.LastError,
+	})
 }
 
 // SourceResolveResult is the full wire response envelope returned by
 // sources.resolve: Candidates for every query kind, plus per-indexer outcomes
-// in Indexers on indexer_search.
+// or listings in Indexers, pending indexers in Pending, and streaming state
+// (SearchID, Done) when streaming.
 type SourceResolveResult struct {
 	Candidates []SourceCandidate     `json:"candidates"`
 	Indexers   []IndexerSearchStatus `json:"indexers,omitempty"`
+	Pending    []IndexerRef          `json:"pending,omitempty"`
+	SearchID   string                `json:"searchId,omitempty"`
+	Done       *bool                 `json:"done,omitempty"`
+}
+
+// MarshalJSON always emits candidates (as [] when nil), omits nil Indexers and
+// Pending slices (for non-search kinds), and preserves non-nil empty Indexers
+// and Pending slices as [] (for kind:"indexers" with zero indexers and
+// finished streaming searches).
+func (r SourceResolveResult) MarshalJSON() ([]byte, error) {
+	cands := r.Candidates
+	if cands == nil {
+		cands = []SourceCandidate{}
+	}
+	wire := struct {
+		Candidates []SourceCandidate      `json:"candidates"`
+		Indexers   *[]IndexerSearchStatus `json:"indexers,omitempty"`
+		Pending    *[]IndexerRef          `json:"pending,omitempty"`
+		SearchID   string                 `json:"searchId,omitempty"`
+		Done       *bool                  `json:"done,omitempty"`
+	}{
+		Candidates: cands,
+		SearchID:   r.SearchID,
+		Done:       r.Done,
+	}
+	if r.Indexers != nil {
+		s := r.Indexers
+		wire.Indexers = &s
+	}
+	if r.Pending != nil {
+		s := r.Pending
+		wire.Pending = &s
+	}
+	return json.Marshal(wire)
 }
 
 // ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)

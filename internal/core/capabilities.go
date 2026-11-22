@@ -189,6 +189,68 @@ type StreamingRescueIndexer interface {
 	SearchRescueWith(context.Context, SearchRequest, func([]Release)) ([]Release, error)
 }
 
+// IndexerSearchOptions configures fan-out filtering, early return, and wait
+// budgets for ControlledSearchIndexer.SearchWithOptions. The zero value matches
+// Indexer.Search: query every enabled indexer and wait for all of them.
+type IndexerSearchOptions struct {
+	// FirstResults returns early once the fastest indexer(s) produce at least
+	// one result plus Settle (default 250 ms when SettleSet is false; 0
+	// returns immediately), while remaining indexers keep running in the
+	// background to populate Ether's search cache.
+	FirstResults bool
+	// Settle sets the settle window after the first results arrive (under
+	// FirstResults) or after MinResults is met (when FirstResults is false and
+	// SettleSet is true).
+	Settle    time.Duration
+	SettleSet bool
+	// MinResults sets a minimum deduplicated result count for early return.
+	// When combined with FirstResults, returns as soon as either MinResults is
+	// reached or the settle window after the first results elapses.
+	MinResults int
+	// SkipIndexers excludes matching enabled indexers by id or name
+	// (case-insensitive, trimmed).
+	SkipIndexers []string
+	// OnlyIndexers, when non-empty, restricts the search to matching enabled
+	// indexers by id or name (case-insensitive, trimmed). SkipIndexers still
+	// removes entries from the OnlyIndexers set.
+	OnlyIndexers []string
+	// WaitTimeout bounds how long the caller waits before returning whatever
+	// arrived so far. When shorter than BackgroundTimeout, unfinished indexers
+	// are reported as pending while continuing to fill Ether's search cache;
+	// when at or above BackgroundTimeout, unfinished indexers hit the ceiling
+	// and are reported as timed_out. Zero waits for ctx.
+	WaitTimeout time.Duration
+	// BackgroundTimeout caps how long detached background indexers may continue
+	// running after an early return or WaitTimeout. Zero uses the indexer
+	// manager's default ceiling (30 s).
+	BackgroundTimeout time.Duration
+}
+
+// IndexerSearchResult carries merged, deduplicated releases alongside
+// per-indexer outcomes (and any still-running pending indexers) for every
+// enabled indexer in priority order.
+type IndexerSearchResult struct {
+	Releases []Release
+	Indexers []IndexerSearchStatus
+	Pending  []IndexerRef
+}
+
+// ControlledSearchIndexer exposes controlled indexer_search fan-out options
+// (firstResults, settle, minResults, skip/only filters, wait timeout) and
+// per-indexer outcomes. Implemented by *newznab.Manager and forwarded by
+// indexer wrapper layers.
+type ControlledSearchIndexer interface {
+	SearchWithOptions(ctx context.Context, req SearchRequest, opts IndexerSearchOptions) (IndexerSearchResult, error)
+}
+
+// IndexerDirectory lists the owner's currently enabled indexers (without
+// secrets, API keys, URLs, or cookies) for status envelopes and the
+// sources.resolve({kind: "indexers"}) listing.
+type IndexerDirectory interface {
+	EnabledIndexerStatuses(status string) []IndexerSearchStatus
+	EnabledIndexers() []IndexerSearchStatus
+}
+
 // TrickplayCanceler exposes the optional CancelTrickplay capability.
 type TrickplayCanceler interface{ CancelTrickplay(string) }
 

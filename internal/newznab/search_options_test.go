@@ -107,8 +107,11 @@ func TestManagerSearchWithOptionsFirstResultsBackgroundCacheAndCoalesce(t *testi
 	if byID["fast-id"].Status != core.IndexerStatusAnswered || byID["fast-id"].Results != 1 {
 		t.Fatalf("fast status = %+v, want answered/1", byID["fast-id"])
 	}
-	if byID["slow-id"].Status != core.IndexerStatusTimedOut {
-		t.Fatalf("slow status = %+v, want timed_out while still in flight", byID["slow-id"])
+	if byID["slow-id"].Status != core.IndexerStatusPending {
+		t.Fatalf("slow status = %+v, want pending while still in flight", byID["slow-id"])
+	}
+	if len(res.Pending) != 1 || res.Pending[0].IndexerID != "slow-id" || res.Pending[0].Indexer != "Slow Indexer" {
+		t.Fatalf("pending = %+v, want [{slow-id Slow Indexer}]", res.Pending)
 	}
 
 	// Wait until the detached slow search is in flight, then launch a follow-up
@@ -250,8 +253,11 @@ func TestManagerSearchWithOptionsMinResultsDeduplicated(t *testing.T) {
 		t.Fatalf("len(releases) = %d, want 2 deduplicated releases", len(res.Releases))
 	}
 	byID := statusByID(res.Indexers)
-	if byID["c"].Status != core.IndexerStatusAnswered || byID["d"].Status != core.IndexerStatusTimedOut {
-		t.Fatalf("statuses c=%+v d=%+v, want c=answered d=timed_out", byID["c"], byID["d"])
+	if byID["c"].Status != core.IndexerStatusAnswered || byID["d"].Status != core.IndexerStatusPending {
+		t.Fatalf("statuses c=%+v d=%+v, want c=answered d=pending", byID["c"], byID["d"])
+	}
+	if len(res.Pending) != 1 || res.Pending[0].IndexerID != "d" || res.Pending[0].Indexer != "D" {
+		t.Fatalf("pending = %+v, want [{d D}]", res.Pending)
 	}
 }
 
@@ -364,5 +370,304 @@ func TestManagerSearchWithOptionsErrorSanitizationAndDefaultWaitAll(t *testing.T
 	}
 	if strings.Contains(byID["bad"].Error, "super-secret-key-999") || strings.Contains(byID["bad"].Error, "http") {
 		t.Fatalf("bad error leaked secret/URL: %q", byID["bad"].Error)
+	}
+}
+
+// Early cutoffs shorter than BackgroundTimeout report unfinished indexers as
+// pending (and list them in Pending); hitting the ceiling (WaitTimeout >=
+// BackgroundTimeout or parent deadline) cancels them and reports timed_out.
+func TestManagerSearchWithOptionsPendingVsTimedOut(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	fastSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, rssEnvelope(rssItem("Fast.Item", "fast-1", "http://fast.example/1.nzb", "")))
+	}))
+	defer fastSrv.Close()
+
+	// 1. WaitTimeout shorter than BackgroundTimeout -> pending, continues filling cache.
+	slowRelease := make(chan struct{})
+	slowDone := make(chan struct{})
+	slowSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-slowRelease:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, rssEnvelope(rssItem("Slow.Item", "slow-1", "http://slow.example/1.nzb", "")))
+		close(slowDone)
+	}))
+	defer slowSrv.Close()
+
+	cFast := testConfig(fastSrv.URL)
+	cFast.ID, cFast.Name = "fast", "Fast"
+	cSlow := testConfig(slowSrv.URL)
+	cSlow.ID, cSlow.Name = "slow", "Slow"
+
+	m := NewManager(db, []config.Indexer{cFast, cSlow}, Options{Vault: &testVault{}})
+	defer m.Close()
+
+	res, err := m.SearchWithOptions(ctx, core.SearchRequest{Title: "PendingCase"}, SearchOptions{
+		WaitTimeout:       20 * time.Millisecond,
+		BackgroundTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("SearchWithOptions(short wait): %v", err)
+	}
+	byID := statusByID(res.Indexers)
+	if byID["slow"].Status != core.IndexerStatusPending {
+		t.Fatalf("slow status = %+v, want pending", byID["slow"])
+	}
+	if len(res.Pending) != 1 || res.Pending[0].IndexerID != "slow" {
+		t.Fatalf("pending = %+v, want [slow]", res.Pending)
+	}
+	close(slowRelease)
+	<-slowDone
+
+	// 2. WaitTimeout == BackgroundTimeout (hits ceiling) -> timed_out, NOT pending, request cancelled.
+	ceilCanceled := make(chan struct{})
+	var ceilOnce sync.Once
+	ceilSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		ceilOnce.Do(func() { close(ceilCanceled) })
+	}))
+	defer ceilSrv.Close()
+
+	cCeil := testConfig(ceilSrv.URL)
+	cCeil.ID, cCeil.Name = "ceil", "Ceiling"
+	mCeil := NewManager(db, []config.Indexer{cFast, cCeil}, Options{Vault: &testVault{}})
+	defer mCeil.Close()
+
+	ceilRes, err := mCeil.SearchWithOptions(ctx, core.SearchRequest{Title: "CeilingCase"}, SearchOptions{
+		WaitTimeout:       25 * time.Millisecond,
+		BackgroundTimeout: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("SearchWithOptions(ceiling): %v", err)
+	}
+	byCeil := statusByID(ceilRes.Indexers)
+	if byCeil["ceil"].Status != core.IndexerStatusTimedOut {
+		t.Fatalf("ceiling status = %+v, want timed_out", byCeil["ceil"])
+	}
+	if len(ceilRes.Pending) != 0 {
+		t.Fatalf("ceiling pending = %+v, want empty", ceilRes.Pending)
+	}
+	<-ceilCanceled
+
+	// 3. Parent context deadline hit (even with FirstResults:true) -> timed_out, not error:"canceled".
+	parentCanceled := make(chan struct{})
+	var parentOnce sync.Once
+	stuckSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		parentOnce.Do(func() { close(parentCanceled) })
+	}))
+	defer stuckSrv.Close()
+
+	cStuck := testConfig(stuckSrv.URL)
+	cStuck.ID, cStuck.Name = "stuck", "Stuck"
+	mStuck := NewManager(db, []config.Indexer{cStuck}, Options{Vault: &testVault{}})
+	defer mStuck.Close()
+
+	pctx, pcancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer pcancel()
+	stuckRes, err := mStuck.SearchWithOptions(pctx, core.SearchRequest{Title: "ParentDeadline"}, SearchOptions{
+		FirstResults:      true,
+		BackgroundTimeout: 5 * time.Second,
+	})
+	if err == nil {
+		t.Fatalf("expected parent deadline error, got nil (res=%+v)", stuckRes)
+	}
+	byStuck := statusByID(stuckRes.Indexers)
+	if byStuck["stuck"].Status != core.IndexerStatusTimedOut {
+		t.Fatalf("parent deadline status = %+v, want timed_out", byStuck["stuck"])
+	}
+	if len(stuckRes.Pending) != 0 {
+		t.Fatalf("parent deadline pending = %+v, want empty", stuckRes.Pending)
+	}
+	<-parentCanceled
+}
+
+// EnabledIndexers lists only enabled indexers with kind, recent timing stats,
+// and sanitized lastError, never leaking API keys, URLs, or cookies.
+func TestManagerEnabledIndexersListingAndTimings(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	okSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, rssEnvelope(rssItem("Listing.Item", "l-1", "http://ok.example/1.nzb", "")))
+	}))
+	defer okSrv.Close()
+
+	errSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad apikey secret-token-abc cookie=session=xyz", http.StatusUnauthorized)
+	}))
+	defer errSrv.Close()
+
+	cNewz := testConfig(okSrv.URL)
+	cNewz.ID, cNewz.Name, cNewz.APIKey = "idx-nzb", "Geek", "secret-key-1"
+
+	cTorz := testConfig(errSrv.URL)
+	cTorz.ID, cTorz.Name, cTorz.Protocol, cTorz.APIKey = "idx-tor", "Torznabber", "torrent", "secret-key-2"
+
+	cBuiltin := config.Indexer{
+		ID: "idx-builtin", Name: "Site", Kind: config.IndexerKindCardigann,
+		URL: "https://private.example/secret-path", Enabled: true,
+		Settings:       map[string]string{"cookie": "uid=1; pass=supersecret"},
+		SecretSettings: map[string]string{"password": "pw-secret"},
+	}
+	cStremio := config.Indexer{ID: "idx-stremio", Name: "Addon", Kind: config.IndexerKindStremio, URL: "https://addon.example/tok/manifest.json", Enabled: true}
+	cZilean := config.Indexer{ID: "idx-zilean", Name: "Zilean", Kind: config.IndexerKindZilean, URL: "https://zilean.example", Enabled: true}
+	cPlugin := config.Indexer{ID: "idx-addon", Name: "PluginSrc", Kind: config.IndexerKindAddon, Enabled: true}
+	cDisabled := config.Indexer{ID: "idx-off", Name: "Disabled", URL: "https://off.example", APIKey: "off-secret", Enabled: false}
+
+	m := NewManager(db, []config.Indexer{cNewz, cTorz, cBuiltin, cStremio, cZilean, cPlugin, cDisabled}, Options{Vault: &testVault{}})
+	defer m.Close()
+
+	// Before any search: kinds match and timing fields are nil/omitted.
+	before := m.EnabledIndexers()
+	if len(before) != 6 {
+		t.Fatalf("len(EnabledIndexers) = %d, want 6 (disabled omitted)", len(before))
+	}
+	wantKinds := map[string]string{
+		"idx-nzb":     "newznab",
+		"idx-tor":     "torznab",
+		"idx-builtin": "builtin",
+		"idx-stremio": "stremio",
+		"idx-zilean":  "zilean",
+		"idx-addon":   "addon",
+	}
+	for _, entry := range before {
+		if entry.Kind != wantKinds[entry.IndexerID] {
+			t.Fatalf("%s kind = %q, want %q", entry.IndexerID, entry.Kind, wantKinds[entry.IndexerID])
+		}
+		if entry.MedianMS != nil || entry.LastMS != nil || entry.LastError != "" {
+			t.Fatalf("%s before search had unexpected timing/error: %+v", entry.IndexerID, entry)
+		}
+	}
+
+	// Run a search across the two HTTP indexers.
+	_, _ = m.SearchWithOptions(ctx, core.SearchRequest{Title: "Check"}, SearchOptions{
+		OnlyIndexers: []string{"idx-nzb", "idx-tor"},
+	})
+
+	// A cancelled timing call must not pollute lastError with "canceled".
+	m.recordIndexerTiming("idx-nzb", 5*time.Second, context.Canceled)
+
+	after := m.EnabledIndexers()
+	byID := statusByID(after)
+	if byID["idx-nzb"].MedianMS == nil || byID["idx-nzb"].LastMS == nil || byID["idx-nzb"].LastError != "" {
+		t.Fatalf("idx-nzb after search = %+v, want timing set and empty lastError", byID["idx-nzb"])
+	}
+	if byID["idx-tor"].MedianMS == nil || byID["idx-tor"].LastMS == nil || byID["idx-tor"].LastError != "auth_failed" {
+		t.Fatalf("idx-tor after search = %+v, want timing set and lastError=auth_failed", byID["idx-tor"])
+	}
+
+	// Verify wire JSON contains no secrets, URLs, cookies, or bogus search status/ms fields.
+	raw, err := core.SourceResolveResult{Candidates: []core.SourceCandidate{}, Indexers: after}.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	wire := string(raw)
+	for _, forbidden := range []string{"secret-key-1", "secret-key-2", "pw-secret", "supersecret", "private.example", "addon.example", "off-secret", `"status"`, `"ms"`} {
+		if strings.Contains(wire, forbidden) {
+			t.Fatalf("indexers listing wire JSON contained forbidden %q: %s", forbidden, wire)
+		}
+	}
+}
+
+// SearchWith emits per-indexer status via WithIndexerStatusObserver as each
+// indexer finishes (before slower indexers unblock) and honours WithIndexerSkip.
+func TestManagerSearchWithStatusObserverAndSkip(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	fastSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, rssEnvelope(rssItem("Fast.Stream", "fs-1", "http://fast.example/1.nzb", "")))
+	}))
+	defer fastSrv.Close()
+
+	releaseSlow := make(chan struct{})
+	slowSrv := httptest.NewServer(newznabSearchHandler(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-releaseSlow:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, rssEnvelope(rssItem("Slow.Stream", "ss-1", "http://slow.example/1.nzb", "")))
+	}))
+	defer slowSrv.Close()
+
+	cFast := testConfig(fastSrv.URL)
+	cFast.ID, cFast.Name = "fast", "Fast"
+	cSlow := testConfig(slowSrv.URL)
+	cSlow.ID, cSlow.Name = "slow", "Slow"
+	cSkip := testConfig(fastSrv.URL)
+	cSkip.ID, cSkip.Name = "skip", "Skipped"
+
+	m := NewManager(db, []config.Indexer{cFast, cSlow, cSkip}, Options{Vault: &testVault{}})
+	defer m.Close()
+
+	fastStatusCh := make(chan core.IndexerSearchStatus, 1)
+	slowStatusCh := make(chan core.IndexerSearchStatus, 1)
+	skipStatusCh := make(chan core.IndexerSearchStatus, 1)
+	arrivedCh := make(chan []core.Release, 4)
+
+	sctx := core.WithIndexerSkip(ctx, map[string]bool{"skip": true})
+	sctx = core.WithIndexerStatusObserver(sctx, func(st core.IndexerSearchStatus) {
+		switch st.IndexerID {
+		case "fast":
+			fastStatusCh <- st
+		case "slow":
+			slowStatusCh <- st
+		case "skip":
+			skipStatusCh <- st
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.SearchWith(sctx, core.SearchRequest{Title: "Stream"}, func(batch []core.Release) {
+			arrivedCh <- batch
+		})
+		done <- err
+	}()
+
+	// Skipped and fast arrive while slow is still blocked on releaseSlow.
+	if st := <-skipStatusCh; st.Status != core.IndexerStatusSkipped {
+		t.Fatalf("skip status = %+v, want skipped", st)
+	}
+	if batch := <-arrivedCh; len(batch) != 1 || batch[0].Name != "Fast.Stream" {
+		t.Fatalf("first arrival = %+v, want Fast.Stream", batch)
+	}
+	if st := <-fastStatusCh; st.Status != core.IndexerStatusAnswered || st.Results != 1 {
+		t.Fatalf("fast status = %+v, want answered/1", st)
+	}
+	select {
+	case st := <-slowStatusCh:
+		t.Fatalf("slow finished before release: %+v", st)
+	default:
+	}
+
+	close(releaseSlow)
+	if batch := <-arrivedCh; len(batch) != 1 || batch[0].Name != "Slow.Stream" {
+		t.Fatalf("second arrival = %+v, want Slow.Stream", batch)
+	}
+	if st := <-slowStatusCh; st.Status != core.IndexerStatusAnswered || st.Results != 1 {
+		t.Fatalf("slow status = %+v, want answered/1", st)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("SearchWith err: %v", err)
 	}
 }

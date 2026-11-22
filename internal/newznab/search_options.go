@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -21,47 +23,23 @@ const (
 	// searches may remain detached after early return or WaitTimeout across a
 	// Manager at once.
 	maxDetachedSearchFills = 64
+
+	// maxIndexerTimingSamples caps the per-indexer sliding window used to
+	// report recent median/last latency on sources.resolve({kind: "indexers"}).
+	maxIndexerTimingSamples = 20
 )
 
-// SearchOptions configures fan-out filtering, early return, and wait budgets
-// for Manager.SearchWithOptions. The zero value matches Manager.Search: query
-// every enabled indexer and wait for all of them.
-type SearchOptions struct {
-	// FirstResults returns early once the fastest indexer(s) produce at least
-	// one result plus Settle (DefaultSearchSettle when SettleSet is false; 0
-	// returns immediately), while remaining indexers keep running in the
-	// background to populate Ether's search cache.
-	FirstResults bool
-	// Settle sets the settle window after the first results arrive (under
-	// FirstResults) or after MinResults is met (when FirstResults is false and
-	// SettleSet is true).
-	Settle    time.Duration
-	SettleSet bool
-	// MinResults sets a minimum deduplicated result count for early return.
-	// When combined with FirstResults, returns as soon as either MinResults is
-	// reached or the settle window after the first results elapses.
-	MinResults int
-	// SkipIndexers excludes matching enabled indexers by id or name
-	// (case-insensitive, trimmed).
-	SkipIndexers []string
-	// OnlyIndexers, when non-empty, restricts the search to matching enabled
-	// indexers by id or name (case-insensitive, trimmed). SkipIndexers still
-	// removes entries from the OnlyIndexers set.
-	OnlyIndexers []string
-	// WaitTimeout bounds how long the caller waits before returning whatever
-	// arrived so far (marking unfinished indexers timed_out while they keep
-	// filling Ether's search cache up to BackgroundTimeout). Zero waits for ctx.
-	WaitTimeout time.Duration
-	// BackgroundTimeout caps how long detached background indexers may continue
-	// running after an early return or WaitTimeout. Zero uses defaultHTTPTimeout.
-	BackgroundTimeout time.Duration
-}
+// SearchOptions aliases core.IndexerSearchOptions for Manager.SearchWithOptions.
+type SearchOptions = core.IndexerSearchOptions
 
-// SearchResult carries merged, deduplicated releases alongside per-indexer
-// outcomes for every enabled indexer in priority order.
-type SearchResult struct {
-	Releases []core.Release
-	Indexers []core.IndexerSearchStatus
+// SearchResult aliases core.IndexerSearchResult for Manager.SearchWithOptions.
+type SearchResult = core.IndexerSearchResult
+
+type indexerTimingHistory struct {
+	samples   []int64
+	lastMS    int64
+	hasSample bool
+	lastError string
 }
 
 type searchFlight struct {
@@ -102,6 +80,128 @@ func (m *Manager) EnabledIndexerStatuses(status string) []core.IndexerSearchStat
 		})
 	}
 	return out
+}
+
+func indexerKind(cfg config.Indexer) string {
+	switch {
+	case cfg.IsBuiltin():
+		return "builtin"
+	case cfg.IsStremio():
+		return "stremio"
+	case cfg.IsZilean():
+		return "zilean"
+	case cfg.IsAddon():
+		return "addon"
+	case cfg.IsTorrent():
+		return "torznab"
+	default:
+		return "newznab"
+	}
+}
+
+// EnabledIndexers lists the owner's currently enabled indexers in priority
+// order with kind, recent median/last latency (from Manager's timing history),
+// and sanitized lastError. It never returns API keys, URLs, secrets, or cookies.
+func (m *Manager) EnabledIndexers() []core.IndexerSearchStatus {
+	if m == nil {
+		return []core.IndexerSearchStatus{}
+	}
+	clients := m.Clients()
+	m.searchTimingMu.RLock()
+	out := make([]core.IndexerSearchStatus, 0, len(clients))
+	for _, cl := range clients {
+		cfg := cl.Config()
+		if !cfg.Enabled {
+			continue
+		}
+		id := cl.indexerID()
+		entry := core.IndexerSearchStatus{
+			IndexerID: id,
+			Indexer:   cl.Name(),
+			Kind:      indexerKind(cfg),
+		}
+		if h := m.timingHistory[id]; h != nil && h.hasSample {
+			med := medianInt64(h.samples)
+			last := h.lastMS
+			entry.MedianMS = &med
+			entry.LastMS = &last
+			entry.LastError = h.lastError
+		}
+		out = append(out, entry)
+	}
+	m.searchTimingMu.RUnlock()
+	return out
+}
+
+func medianInt64(samples []int64) int64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	cp := make([]int64, len(samples))
+	copy(cp, samples)
+	slices.Sort(cp)
+	n := len(cp)
+	if n%2 == 1 {
+		return cp[n/2]
+	}
+	return (cp[n/2-1] + cp[n/2]) / 2
+}
+
+func (m *Manager) recordIndexerTiming(id string, dur time.Duration, err error) {
+	if m == nil || id == "" {
+		return
+	}
+	// Caller cancellation (for example indexer_search_cancel) is neither an
+	// indexer latency sample nor an indexer error.
+	if err != nil && errors.Is(err, context.Canceled) {
+		return
+	}
+	ms := max(int64(0), dur.Milliseconds())
+	errCode := ""
+	if err != nil {
+		errCode = classifyIndexerError(err)
+	}
+	m.searchTimingMu.Lock()
+	m.recordIndexerTimingLocked(id, ms, errCode)
+	m.searchTimingMu.Unlock()
+}
+
+func (m *Manager) recordIndexerTimingLocked(id string, ms int64, errCode string) {
+	if m.timingHistory == nil {
+		m.timingHistory = map[string]*indexerTimingHistory{}
+	}
+	h := m.timingHistory[id]
+	if h == nil {
+		h = &indexerTimingHistory{}
+		m.timingHistory[id] = h
+	}
+	h.samples = append(h.samples, ms)
+	if len(h.samples) > maxIndexerTimingSamples {
+		h.samples = append(h.samples[:0], h.samples[len(h.samples)-maxIndexerTimingSamples:]...)
+	}
+	h.lastMS = ms
+	h.hasSample = true
+	h.lastError = errCode
+}
+
+func buildIndexerStatus(ctx context.Context, id, name string, res []core.Release, err error, dur time.Duration) core.IndexerSearchStatus {
+	st := core.IndexerSearchStatus{
+		IndexerID: id,
+		Indexer:   name,
+		MS:        max(int64(0), dur.Milliseconds()),
+	}
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+			st.Status = core.IndexerStatusTimedOut
+		} else {
+			st.Status = core.IndexerStatusError
+			st.Error = classifyIndexerError(err)
+		}
+		return st
+	}
+	st.Status = core.IndexerStatusAnswered
+	st.Results = len(res)
+	return st
 }
 
 func normalizeIndexerFilter(list []string) map[string]bool {
@@ -369,75 +469,105 @@ waitLoop:
 	}
 
 	if parentDone {
+		parentTimedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+		var merged []core.Release
+		var statuses []core.IndexerSearchStatus
+		if parentTimedOut {
+			// Snapshot unfinished indexers as timed_out before bgCancel turns
+			// their error into context.Canceled.
+			stateMu.Lock()
+			merged, statuses, _, _ = snapshotSearchSlots(slots, searchStart, core.IndexerStatusTimedOut)
+			stateMu.Unlock()
+		}
 		if bgCancel != nil {
 			bgCancel()
 		}
 		wg.Wait()
 		finishBG()
-		m.recordSlotsAfterWait(ctx, slots)
-		merged, statuses, errs := snapshotSearchSlots(slots, searchStart)
+		m.recordSlotsAfterWait(ctx, slots, parentTimedOut)
+		if !parentTimedOut {
+			merged, statuses, _, _ = snapshotSearchSlots(slots, searchStart, core.IndexerStatusTimedOut)
+		}
 		if len(merged) == 0 {
 			return SearchResult{Indexers: statuses}, ctx.Err()
 		}
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return SearchResult{Indexers: statuses}, ctx.Err()
 		}
-		_ = errs
 		return SearchResult{Releases: merged, Indexers: statuses}, nil
 	}
 
 	stateMu.Lock()
-	merged, statuses, errs := snapshotSearchSlots(slots, searchStart)
 	remaining := active - doneCount
-	stateMu.Unlock()
-
 	if remaining == 0 {
+		merged, statuses, _, errs := snapshotSearchSlots(slots, searchStart, core.IndexerStatusTimedOut)
+		stateMu.Unlock()
 		wg.Wait()
 		finishBG()
-		m.recordSlotsAfterWait(ctx, slots)
+		m.recordSlotsAfterWait(ctx, slots, false)
 		if len(merged) == 0 && len(errs) > 0 && !earlyCut && !timedOutWait {
 			return SearchResult{Indexers: statuses}, aggregateSearchErrors(errs)
 		}
 		return SearchResult{Releases: merged, Indexers: statuses}, nil
 	}
+	stateMu.Unlock()
 
-	// Early return or WaitTimeout with slow indexers still in flight: keep them
-	// running in the background (within our detached cap) so their results
-	// populate Ether's search cache for subsequent calls.
+	// Early return (firstResults / minResults) or a WaitTimeout shorter than
+	// the background ceiling leaves slow indexers running in the background
+	// (within our detached cap) so their results populate Ether's search cache.
+	// Those indexers are reported as pending (and listed in top-level pending).
+	// When WaitTimeout reaches/exceeds the background ceiling (or the detached
+	// cap is full), unfinished indexers are cancelled and reported as timed_out.
+	hitCeiling := timedOutWait && opts.WaitTimeout >= bgLimit
+	canDetach := detachOnCutoff && !hitCeiling
 	reserved := 0
-	if detachOnCutoff {
+	if canDetach {
 		m.bgMu.Lock()
 		if !m.bgClosed && m.detachedCount+remaining <= maxDetachedSearchFills {
 			m.detachedCount += remaining
 			reserved = remaining
 		}
 		m.bgMu.Unlock()
-		if reserved == 0 {
-			bgCancel()
-		}
+	}
+
+	if reserved > 0 {
+		stateMu.Lock()
+		merged, statuses, pending, _ := snapshotSearchSlots(slots, searchStart, core.IndexerStatusPending)
+		stateMu.Unlock()
 		go func(rem int) {
 			defer func() {
-				if rem > 0 {
-					m.bgMu.Lock()
-					m.detachedCount -= rem
-					m.bgMu.Unlock()
-				}
+				m.bgMu.Lock()
+				m.detachedCount -= rem
+				m.bgMu.Unlock()
 				finishBG()
 			}()
 			wg.Wait()
-			m.recordSlotsAfterWait(runCtx, slots)
+			m.recordSlotsAfterWait(runCtx, slots, false)
 		}(reserved)
-	} else {
-		wg.Wait()
-		m.recordSlotsAfterWait(ctx, slots)
+		return SearchResult{Releases: merged, Indexers: statuses, Pending: pending}, nil
 	}
 
+	// Snapshot unfinished indexers as timed_out before cancelling them so they
+	// are not reclassified as error:"canceled".
+	stateMu.Lock()
+	merged, statuses, _, _ := snapshotSearchSlots(slots, searchStart, core.IndexerStatusTimedOut)
+	stateMu.Unlock()
+	if bgCancel != nil {
+		bgCancel()
+	}
+	wg.Wait()
+	finishBG()
+	m.recordSlotsAfterWait(ctx, slots, hitCeiling)
 	return SearchResult{Releases: merged, Indexers: statuses}, nil
 }
 
 func (m *Manager) searchClientCoalesced(ctx context.Context, cl *Client, req core.SearchRequest) ([]core.Release, error) {
+	return m.searchClientCoalescedWith(ctx, cl, req, nil)
+}
+
+func (m *Manager) searchClientCoalescedWith(ctx context.Context, cl *Client, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
 	if cl.ttl() <= 0 {
-		return cl.Search(ctx, req)
+		return cl.SearchWith(ctx, req, arrived)
 	}
 	speculative := core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	key := cl.indexerID() + "|" + cacheKey(cl, req)
@@ -455,7 +585,11 @@ func (m *Manager) searchClientCoalesced(ctx context.Context, cl *Client, req cor
 				if errors.Is(f.err, context.Canceled) && ctx.Err() == nil {
 					continue
 				}
-				return append([]core.Release(nil), f.results...), f.err
+				out := append([]core.Release(nil), f.results...)
+				if f.err == nil && arrived != nil && len(out) > 0 {
+					arrived(out)
+				}
+				return out, f.err
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -478,17 +612,18 @@ func (m *Manager) searchClientCoalesced(ctx context.Context, cl *Client, req cor
 				m.flightMu.Unlock()
 				close(f.done)
 			}()
-			return cl.Search(ctx, req)
+			return cl.SearchWith(ctx, req, arrived)
 		}()
 		return res, err
 	}
 }
 
-func snapshotSearchSlots(slots []searchSlot, searchStart time.Time) ([]core.Release, []core.IndexerSearchStatus, []error) {
+func snapshotSearchSlots(slots []searchSlot, searchStart time.Time, unfinishedStatus string) ([]core.Release, []core.IndexerSearchStatus, []core.IndexerRef, []error) {
 	now := time.Now()
 	seen := map[string]int{}
 	var merged []core.Release
 	var errs []error
+	var pending []core.IndexerRef
 	statuses := make([]core.IndexerSearchStatus, len(slots))
 
 	for i, s := range slots {
@@ -501,12 +636,18 @@ func snapshotSearchSlots(slots []searchSlot, searchStart time.Time) ([]core.Rele
 			st.Status = core.IndexerStatusSkipped
 			st.MS = 0
 		case !s.finished:
-			st.Status = core.IndexerStatusTimedOut
+			st.Status = unfinishedStatus
 			ref := s.started
 			if ref.IsZero() {
 				ref = searchStart
 			}
 			st.MS = max(int64(0), now.Sub(ref).Milliseconds())
+			if unfinishedStatus == core.IndexerStatusPending {
+				pending = append(pending, core.IndexerRef{
+					IndexerID: s.id,
+					Indexer:   s.name,
+				})
+			}
 		case s.err != nil:
 			errs = append(errs, s.err)
 			st.MS = max(int64(0), s.duration.Milliseconds())
@@ -534,7 +675,7 @@ func snapshotSearchSlots(slots []searchSlot, searchStart time.Time) ([]core.Rele
 		}
 		statuses[i] = st
 	}
-	return merged, statuses, errs
+	return merged, statuses, pending, errs
 }
 
 func aggregateSearchErrors(errs []error) error {
@@ -554,7 +695,7 @@ func aggregateSearchErrors(errs []error) error {
 	return errs[0]
 }
 
-func (m *Manager) recordSlotsAfterWait(ctx context.Context, slots []searchSlot) {
+func (m *Manager) recordSlotsAfterWait(ctx context.Context, slots []searchSlot, deadlineHit bool) {
 	timings := make([]SearchTiming, 0, len(slots))
 	purpose := usagePurpose(ctx)
 	day := time.Now().UTC().Format("2006-01-02")
@@ -585,6 +726,23 @@ func (m *Manager) recordSlotsAfterWait(ctx context.Context, slots []searchSlot) 
 	}
 	m.searchTimingMu.Lock()
 	m.searchTimings = timings
+	for _, s := range slots {
+		if s.skipped {
+			continue
+		}
+		err := s.err
+		if deadlineHit && errors.Is(err, context.Canceled) {
+			err = context.DeadlineExceeded
+		}
+		if err != nil && errors.Is(err, context.Canceled) {
+			continue
+		}
+		errCode := ""
+		if err != nil {
+			errCode = classifyIndexerError(err)
+		}
+		m.recordIndexerTimingLocked(s.id, max(int64(0), s.duration.Milliseconds()), errCode)
+	}
 	m.searchTimingMu.Unlock()
 }
 

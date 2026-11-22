@@ -537,6 +537,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
           const r = await state.sourceHandler(q);
           const out: import("./types.ts").SourceResolveResult = { candidates: [...(r?.candidates ?? [])] };
           if (r?.indexers !== undefined) out.indexers = [...r.indexers];
+          if (r?.pending !== undefined) out.pending = [...r.pending];
+          if (r?.searchId !== undefined) out.searchId = r.searchId;
+          if (r?.done !== undefined) out.done = r.done;
           return out;
         }
         const out: import("./types.ts").SourceResolveResult = { candidates: [...state.sources] };

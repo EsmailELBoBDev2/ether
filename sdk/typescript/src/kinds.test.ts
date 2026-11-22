@@ -559,4 +559,31 @@ test("resolveSourcesWithResult forwards indexer_search options and decodes index
   const mRes = await mock.kinds!.resolveSourcesWithResult!(query);
   assert.deepEqual(mRes, reply);
   assert.deepEqual(await mock.kinds!.resolveSources(query), reply.candidates);
+
+  // Streaming envelope (searchId, pending, done) and kind:"indexers" listing round-trip.
+  const streamReply = {
+    candidates: [],
+    searchId: "srch_1",
+    done: false,
+    pending: [{ indexerId: "slow", indexer: "Slow" }],
+    indexers: [{ indexerId: "slow", indexer: "Slow", status: "pending" as const, ms: 0 }],
+  };
+  const streamRemote = createRemoteHostClient({
+    baseUrl: "http://ether.local",
+    credential: "cred",
+    fetchImpl: (async () => new Response(JSON.stringify(streamReply), { status: 200 })) as typeof fetch,
+  });
+  const srRes = await streamRemote.kinds!.resolveSourcesWithResult!({ kind: "indexer_search", query: "Dune", stream: true });
+  assert.deepEqual(srRes, streamReply);
+
+  const mockStream = createMockHostClient({
+    sourceHandler: (q) => (q.kind === "indexers"
+      ? { candidates: [], indexers: [{ indexerId: "a", indexer: "Alpha", kind: "builtin", medianMs: 320, lastMs: 280 }] }
+      : streamReply),
+  });
+  assert.deepEqual(await mockStream.kinds!.resolveSourcesWithResult!({ kind: "indexer_search", query: "Dune", stream: true }), streamReply);
+  assert.deepEqual(await mockStream.kinds!.resolveSourcesWithResult!({ kind: "indexers" }), {
+    candidates: [],
+    indexers: [{ indexerId: "a", indexer: "Alpha", kind: "builtin", medianMs: 320, lastMs: 280 }],
+  });
 });

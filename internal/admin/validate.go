@@ -577,9 +577,6 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Transcode.RemoteMaxBitrateKbps < 0 {
 		v.add("transcode.remoteMaxBitrateKbps", "must be >= 0")
 	}
-	if n := cfg.Transcode.ThrottleSeconds; n != 0 && (n < 8 || n > 600) {
-		v.add("transcode.throttleSeconds", "must be 0 (built-in) or between 8 and 600")
-	}
 	if cfg.Transcode.RemoteUploadBudgetKbps < 0 {
 		v.add("transcode.remoteUploadBudgetKbps", "must be >= 0")
 	}

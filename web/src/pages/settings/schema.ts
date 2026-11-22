@@ -575,16 +575,6 @@ export const TRANSCODE: FieldGroup[] = localized(() => {
             "How many videos can be converted at once. Leave the default unless several people watch together and the computer struggles.",
           ),
         },
-        {
-          key: "throttleSeconds",
-          label: t("Throttle buffer (seconds)"),
-          kind: "number",
-          min: 0,
-          step: 1,
-          help: t(
-            "How far ahead of the viewer Ether prepares video before it pauses the work, in every app. 0 uses the built-in distance: 16 seconds when converting, two minutes otherwise. A larger number survives short network drops but uses more processor, disk and download quota for video that may never be watched.",
-          ),
-        },
       ],
     },
     {

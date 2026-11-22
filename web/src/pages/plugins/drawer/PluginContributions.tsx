@@ -6,6 +6,7 @@ import {
   Film,
   FolderSearch,
   Library,
+  Radio,
   Subtitles,
   Tv,
   type LucideIcon,
@@ -31,6 +32,13 @@ const META: Record<
     about: () => t("Its channels and programme guide, in Live TV."),
     href: "/livetv",
     link: () => t("Open Live TV"),
+  },
+  live_events: {
+    icon: Radio,
+    title: () => t("Live events"),
+    about: () => t("Live event feeds and screens shown in your apps."),
+    href: "/apps/vela",
+    link: () => t("Open Vela"),
   },
   list_source: {
     icon: Library,
@@ -247,6 +255,50 @@ function PartRows({
     }
     case "livetv_channels":
       return <LiveTVRow detail={detail} onClose={onClose} />;
+    case "live_events": {
+      const feeds = detail.manifest.ether?.contributes?.liveFeeds ?? [];
+      const screens = detail.manifest.ether?.contributes?.screens ?? [];
+      if (!feeds.length && !screens.length) {
+        return (
+          <ul>
+            <Row title={t("No live event feeds or screens declared")} action={link} />
+          </ul>
+        );
+      }
+      return (
+        <ul className="divide-y divide-border">
+          {screens.map((sc) => {
+            const title = sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id;
+            return (
+              <Row
+                key={`screen:${sc.id}`}
+                title={t("{app} › {screen}", { app: "Vela", screen: title })}
+                badge={<Badge variant="secondary">{t("App screen")}</Badge>}
+                detail={t("Top-level screen in Vela")}
+                action={link}
+              />
+            );
+          })}
+          {feeds.map((lf) => {
+            const title = lf.title && !lf.title.startsWith("$t:") ? lf.title : lf.id;
+            return (
+              <Row
+                key={`feed:${lf.id}`}
+                title={title}
+                badge={<Badge variant="secondary">{t("Live feed")}</Badge>}
+                detail={
+                  lf.minIntervalSec
+                    ? t("Minimum poll interval: {seconds}s", {
+                        seconds: formatNumber(lf.minIntervalSec, 0),
+                      })
+                    : undefined
+                }
+              />
+            );
+          })}
+        </ul>
+      );
+    }
     case "debrid_provider":
       return (
         <ul>

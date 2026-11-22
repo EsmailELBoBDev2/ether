@@ -675,6 +675,7 @@ func (a *App) pluginHandlers(m map[string]http.Handler) {
 		if a.pluginsRT.studio != nil {
 			h = a.pluginsRT.studio.WrapPluginHandler(h)
 		}
+		h = a.wrapPluginLiveEventsHandler(h)
 		if a.pluginsRT.pairing != nil {
 			wrapped := a.pluginsRT.pairing.WrapOwner(h)
 			h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

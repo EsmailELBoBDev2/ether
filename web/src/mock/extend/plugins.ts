@@ -6,7 +6,11 @@
  * extension with a page, a list source and an attention health.
  */
 import type { Descriptor } from "../../lib/extend";
-import type { CatalogueEntry, DeclaredPermissions } from "../../pages/plugins/types";
+import type {
+  CatalogueEntry,
+  DeclaredPermissions,
+  PluginLiveEventsOverview,
+} from "../../pages/plugins/types";
 import type { ExtendHandler } from "./index";
 import { createStudioMock } from "./studio";
 
@@ -586,8 +590,139 @@ function fixturePlugins(): Fixture[] {
     logs: [],
     calls: [],
   } as unknown as Fixture;
+
+  const sports: PluginDetail = {
+    id: "org.ether.sports",
+    name: "Sports",
+    version: "1.0.0",
+    kind: "extension",
+    summary: "Live scores, standings and schedules across your followed leagues.",
+    enabled: true,
+    verified: true,
+    shadow: false,
+    autoUpdate: true,
+    health: "ok",
+    capabilities: ["live_events"],
+    roles: [{ role: "live_events", on: true }],
+    installedAt: NOW - 86400 * 3,
+    manifest: {
+      id: "org.ether.sports",
+      version: "1.0.0",
+      name: "Sports",
+      description: "Live scores, standings and schedules across your followed leagues.",
+      ether: {
+        protocol: 1,
+        kind: "extension",
+        summary: "Live scores, standings and schedules across your followed leagues.",
+        capabilities: ["live_events"],
+        author: { name: "Ether" },
+        license: "MIT",
+        runtime: { kind: "hosted", entry: "src/plugin.ts", limits: { memoryBytes: 67108864 } },
+        permissions: {
+          network: ["site.api.espn.com", "site.web.api.espn.com"],
+        },
+        contributes: {
+          liveFeeds: [
+            {
+              id: "sports",
+              title: "Live scores",
+              minIntervalSec: 15,
+              entityKinds: ["team", "driver"],
+            },
+          ],
+          screens: [
+            {
+              id: "sports",
+              title: "Sports",
+              icon: "trophy",
+              frontends: ["vela"],
+              sections: [
+                { id: "leagues", type: "leagues", feed: "sports" },
+                { id: "live", type: "events", title: "Live now", feed: "sports" },
+                { id: "today", type: "events", title: "Today", feed: "sports" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    permissions: {
+      lines: [
+        "Connects to site.api.espn.com, site.web.api.espn.com",
+        "Adds a screen: Sports",
+        "Provides live event feeds",
+      ],
+      declared: { network: ["site.api.espn.com", "site.web.api.espn.com"] },
+      grants: {},
+      needsViewers: false,
+      needsFolders: false,
+    },
+    healthDetail: {
+      status: "ok",
+      restarts: 0,
+      slow: 0,
+      drops: 0,
+      lastOk: new Date(Date.now() - 12_000).toISOString(),
+      observed: { "site.api.espn.com": 84, "site.web.api.espn.com": 14 },
+      egressBytes: 428_000,
+    },
+    privacy: {
+      declaredHosts: ["site.api.espn.com", "site.web.api.espn.com"],
+      observedHosts: { "site.api.espn.com": 84, "site.web.api.espn.com": 14 },
+    },
+    impact: {
+      calls: 98,
+      errors: 0,
+      p50Ms: 145,
+      p95Ms: 410,
+      egressBytes: 428_000,
+      kvBytes: 24_576,
+      slow: 0,
+      eventDrops: 0,
+      restarts: 0,
+    },
+  };
+
   return [
     streamAddon,
+    {
+      detail: sports,
+      settings: { leagues: ["nfl", "nba", "nhl", "f1", "epl", "mlb"] },
+      schema: {
+        fields: [
+          {
+            key: "leagues",
+            kind: "list",
+            label: "Leagues",
+            help: "Leagues included in the live event feed.",
+          },
+        ],
+      },
+      descriptors: [],
+      journal: [],
+      shadowJournal: [],
+      logs: ["info: polled 6 leagues (21 events cached)", "info: loaded 144 entities"],
+      calls: [
+        {
+          id: 12,
+          plugin: sports.id,
+          route: "/ether/v1/live/sports/events",
+          method: "GET",
+          status: 200,
+          ms: 142,
+          created: new Date(Date.now() - 12_000).toISOString(),
+        },
+        {
+          id: 11,
+          plugin: sports.id,
+          route: "/ether/v1/live/sports/entities",
+          method: "GET",
+          status: 200,
+          ms: 215,
+          created: new Date(Date.now() - 4 * 60_000).toISOString(),
+        },
+      ],
+    },
     {
       detail: hass,
       settings: {},
@@ -1557,6 +1692,15 @@ export function createPluginsMock(): {
     }
     if (method === "GET" && seg[2] === "logs") return json({ lines: f.logs });
     if (method === "GET" && seg[2] === "calls") return json({ calls: f.calls });
+    if (method === "GET" && seg[2] === "jobs") return json([]);
+    if (method === "GET" && seg[2] === "live-events") {
+      const limit = Math.max(1, Math.min(50, Number(q.get("limit")) || 12));
+      const failing =
+        q.get("fail") === "1" ||
+        (typeof window !== "undefined" &&
+          new URLSearchParams(window.location.search).get("mockLiveFeedFail") === "1");
+      return json(mockLiveEventsOverview(d, limit, failing));
+    }
     if (method === "POST" && seg[2] === "update" && seg[3] === "check") {
       return json({
         updateAvailable: Boolean(d.updateVersion),
@@ -1631,6 +1775,197 @@ export function createPluginsMock(): {
     handle,
     descriptors: () => fixtures.filter((f) => f.detail.enabled).flatMap((f) => f.descriptors),
     version: () => version,
+  };
+}
+
+function mockLiveEventsOverview(
+  d: PluginDetail,
+  limit: number,
+  failing: boolean,
+): PluginLiveEventsOverview {
+  const roleOff = Boolean(d.roles?.some((r) => r.role === "live_events" && !r.on));
+  const published = d.enabled && !d.shadow && !roleOff;
+  const reason = !d.enabled
+    ? "plugin_disabled"
+    : d.shadow
+      ? "shadow"
+      : roleOff
+        ? "capability_off"
+        : "published";
+
+  const ether = (d.manifest.ether ?? {}) as {
+    contributes?: {
+      liveFeeds?: { id: string; title?: string; minIntervalSec?: number; entityKinds?: string[] }[];
+      screens?: {
+        id: string;
+        title?: string;
+        icon?: string;
+        feed?: string;
+        frontends?: string[];
+      }[];
+    };
+  };
+  const declaredScreens = ether.contributes?.screens ?? [];
+  const declaredFeeds = ether.contributes?.liveFeeds ?? [];
+
+  const screens = declaredScreens.map((sc) => ({
+    id: sc.id,
+    title: sc.title || sc.id,
+    icon: sc.icon,
+    feed: sc.feed,
+    frontends: (sc.frontends?.length ? sc.frontends : ["vela"]).map((feId) => ({
+      id: feId,
+      name: feId === "vela" ? "Vela" : feId,
+      published,
+      reason,
+    })),
+  }));
+
+  if (d.id !== "org.ether.sports") {
+    return {
+      pluginId: d.id,
+      feeds: declaredFeeds.map((lf) => ({
+        id: lf.id,
+        title: lf.title || lf.id,
+        minIntervalSec: lf.minIntervalSec ?? 15,
+        entityKinds: lf.entityKinds,
+        active: published,
+        health: { consecutiveErrors: 0, subscribers: 0, polling: false },
+        eventCount: 0,
+        liveCount: 0,
+        upcomingCount: 0,
+        leagues: [],
+        entityTotal: 0,
+      })),
+      screens,
+      events: [],
+      totalEvents: 0,
+      liveCount: 0,
+      upcomingCount: 0,
+    };
+  }
+
+  const nowMs = Date.now();
+  const events: PluginLiveEventsOverview["events"] = [
+    {
+      id: "nfl-kc-buf",
+      feed: "sports",
+      title: "Kansas City Chiefs vs Buffalo Bills",
+      league: { id: "nfl", name: "National Football League", abbr: "NFL" },
+      status: { state: "in", detail: "4th · 2:14", period: 4, clock: "2:14", close: true },
+      start: new Date(nowMs - 2 * 3600_000).toISOString(),
+      competitors: [
+        { id: "team:kc", name: "Kansas City Chiefs", abbr: "KC", score: "24", home: false },
+        { id: "team:buf", name: "Buffalo Bills", abbr: "BUF", score: "21", home: true },
+      ],
+      watchCount: 2,
+    },
+    {
+      id: "nba-bos-lal",
+      feed: "sports",
+      title: "Boston Celtics vs Los Angeles Lakers",
+      league: { id: "nba", name: "National Basketball Association", abbr: "NBA" },
+      status: { state: "in", detail: "Q3 · 4:32", period: 3, clock: "4:32", close: true },
+      start: new Date(nowMs - 75 * 60_000).toISOString(),
+      competitors: [
+        { id: "team:bos", name: "Boston Celtics", abbr: "BOS", score: "88", home: false },
+        { id: "team:lal", name: "Los Angeles Lakers", abbr: "LAL", score: "84", home: true },
+      ],
+      watchCount: 1,
+    },
+    {
+      id: "f1-lv-gp",
+      feed: "sports",
+      title: "Las Vegas Grand Prix",
+      league: { id: "f1", name: "Formula 1", abbr: "F1" },
+      status: { state: "in", detail: "Lap 38 / 50" },
+      start: new Date(nowMs - 50 * 60_000).toISOString(),
+      competitors: [],
+      ranking: [
+        { pos: 1, name: "Max Verstappen", detail: "1:33.412" },
+        { pos: 2, name: "Lando Norris", detail: "+1.842s" },
+      ],
+      watchCount: 1,
+    },
+    {
+      id: "nhl-tor-mtl",
+      feed: "sports",
+      title: "Toronto Maple Leafs vs Montreal Canadiens",
+      league: { id: "nhl", name: "National Hockey League", abbr: "NHL" },
+      status: { state: "pre", detail: "Tonight · 7:00 PM" },
+      start: new Date(nowMs + 2 * 3600_000).toISOString(),
+      competitors: [
+        { id: "team:tor", name: "Toronto Maple Leafs", abbr: "TOR", home: false },
+        { id: "team:mtl", name: "Montreal Canadiens", abbr: "MTL", home: true },
+      ],
+      watchCount: 2,
+    },
+    {
+      id: "nba-gsw-den",
+      feed: "sports",
+      title: "Golden State Warriors vs Denver Nuggets",
+      league: { id: "nba", name: "National Basketball Association", abbr: "NBA" },
+      status: { state: "pre", detail: "Tonight · 9:30 PM" },
+      start: new Date(nowMs + 4 * 3600_000).toISOString(),
+      competitors: [
+        { id: "team:gsw", name: "Golden State Warriors", abbr: "GSW", home: false },
+        { id: "team:den", name: "Denver Nuggets", abbr: "DEN", home: true },
+      ],
+      watchCount: 0,
+    },
+  ];
+
+  const feedHealth = failing
+    ? {
+        lastPollAt: new Date(nowMs - 95_000).toISOString(),
+        lastOkAt: new Date(nowMs - 12 * 60_000).toISOString(),
+        lastError: "liveevents: upstream HTTP 503: site.api.espn.com unavailable",
+        consecutiveErrors: 3,
+        nextPollSec: 120,
+        nextPollAt: new Date(nowMs + 25_000).toISOString(),
+        subscribers: 1,
+        polling: true,
+      }
+    : {
+        lastPollAt: new Date(nowMs - 12_000).toISOString(),
+        lastOkAt: new Date(nowMs - 12_000).toISOString(),
+        consecutiveErrors: 0,
+        nextPollSec: 15,
+        nextPollAt: new Date(nowMs + 3_000).toISOString(),
+        subscribers: 1,
+        polling: published,
+      };
+
+  return {
+    pluginId: d.id,
+    feeds: [
+      {
+        id: "sports",
+        title: "Live scores",
+        minIntervalSec: 15,
+        entityKinds: ["team", "driver"],
+        active: published,
+        health: feedHealth,
+        eventCount: 21,
+        liveCount: 3,
+        upcomingCount: 2,
+        leagues: [
+          { id: "nba", name: "National Basketball Association", abbr: "NBA", eventCount: 6 },
+          { id: "nhl", name: "National Hockey League", abbr: "NHL", eventCount: 5 },
+          { id: "nfl", name: "National Football League", abbr: "NFL", eventCount: 4 },
+          { id: "epl", name: "Premier League", abbr: "EPL", eventCount: 3 },
+          { id: "mlb", name: "Major League Baseball", abbr: "MLB", eventCount: 2 },
+          { id: "f1", name: "Formula 1", abbr: "F1", eventCount: 1 },
+        ],
+        entityCounts: { team: 124, driver: 20 },
+        entityTotal: 144,
+      },
+    ],
+    screens,
+    events: events.slice(0, limit),
+    totalEvents: 21,
+    liveCount: 3,
+    upcomingCount: 2,
   };
 }
 

@@ -77,6 +77,119 @@ export interface DeclaredPermissions {
   secrets?: string[];
 }
 
+export interface LiveFeedContribution {
+  id: string;
+  title: string;
+  minIntervalSec?: number;
+  entityKinds?: string[];
+}
+
+export interface ScreenContribution {
+  id: string;
+  title: string;
+  icon?: string;
+  feed?: string;
+  frontends?: string[];
+  sections?: {
+    id?: string;
+    type: string;
+    title?: string;
+    feed?: string;
+    league?: string;
+    leagues?: { id: string; name: string }[];
+  }[];
+}
+
+export interface PluginFeedHealth {
+  lastPollAt?: string;
+  lastOkAt?: string;
+  lastError?: string;
+  consecutiveErrors: number;
+  nextPollSec?: number;
+  nextPollAt?: string;
+  subscribers: number;
+  polling: boolean;
+}
+
+export interface PluginFeedLeagueSummary {
+  id: string;
+  name: string;
+  abbr?: string;
+  eventCount: number;
+}
+
+export interface PluginFeedOverview {
+  id: string;
+  title: string;
+  minIntervalSec: number;
+  entityKinds?: string[];
+  active: boolean;
+  health: PluginFeedHealth;
+  eventCount: number;
+  liveCount: number;
+  upcomingCount: number;
+  leagues?: PluginFeedLeagueSummary[];
+  entityCounts?: Record<string, number>;
+  entityTotal: number;
+}
+
+export interface PluginScreenFrontendOverview {
+  id: string;
+  name: string;
+  published: boolean;
+  reason: string;
+}
+
+export interface PluginScreenOverview {
+  id: string;
+  title: string;
+  icon?: string;
+  feed?: string;
+  frontends: PluginScreenFrontendOverview[];
+}
+
+export interface PluginLiveEventCompetitor {
+  id: string;
+  name: string;
+  short?: string;
+  abbr?: string;
+  logo?: string;
+  score?: string;
+  home?: boolean;
+  winner?: boolean;
+}
+
+export interface PluginLiveEventRankRow {
+  pos: number;
+  name: string;
+  abbr?: string;
+  detail?: string;
+  secondary?: string;
+}
+
+export interface PluginLiveEventSummary {
+  id: string;
+  feed: string;
+  league: { id: string; name: string; abbr?: string; logo?: string };
+  title?: string;
+  start: string;
+  status: { state: string; detail?: string; period?: number; clock?: string; close?: boolean };
+  competitors: PluginLiveEventCompetitor[];
+  ranking?: PluginLiveEventRankRow[];
+  venue?: string;
+  watchCount: number;
+}
+
+export interface PluginLiveEventsOverview {
+  pluginId: string;
+  feeds: PluginFeedOverview[];
+  screens: PluginScreenOverview[];
+  events: PluginLiveEventSummary[];
+  totalEvents: number;
+  liveCount: number;
+  upcomingCount: number;
+}
+
 export interface PluginManifest {
   id: string;
   version: string;
@@ -106,6 +219,8 @@ export interface PluginManifest {
     permissions?: DeclaredPermissions;
     contributes?: {
       mediaKinds?: { key: string; label: string; library: { name: string } }[];
+      liveFeeds?: LiveFeedContribution[];
+      screens?: ScreenContribution[];
       setup?: { steps: { key: string; label: string; required: boolean }[] };
       events?: { subscribe?: string[] };
       pages?: { key: string; label: string; route: string }[];
@@ -326,12 +441,21 @@ export function isPrivateUrl(raw: string): boolean {
 
 const LOCAL_REACH_PREFIX = "May reach on your network: ";
 const CONNECTS_PREFIX = "Connects to ";
+const ADDS_SCREEN_PREFIX = "Adds a screen: ";
 
 export function translatePermissionLine(line: string): string {
   if (line.startsWith(LOCAL_REACH_PREFIX)) {
     return t("May reach on your network: {hosts}", {
       hosts: line.slice(LOCAL_REACH_PREFIX.length),
     });
+  }
+  if (line.startsWith(ADDS_SCREEN_PREFIX)) {
+    return t("Adds a screen: {screen}", {
+      screen: line.slice(ADDS_SCREEN_PREFIX.length),
+    });
+  }
+  if (line === "Provides live event feeds") {
+    return t("Provides live event feeds");
   }
   if (
     line.startsWith(CONNECTS_PREFIX) &&
@@ -485,11 +609,36 @@ export interface PlacementLink {
   href: string;
 }
 
+function frontendDisplayName(id: string): string {
+  switch (id) {
+    case "vela":
+      return "Vela";
+    case "plex":
+      return "Plex";
+    case "jellyfin":
+      return "Jellyfin";
+    case "emby":
+      return "Emby";
+    case "silo":
+      return "Silo";
+    case "stremio":
+      return "Stremio";
+    case "xtream":
+      return "Xtream";
+    default:
+      return humanizeKey(id);
+  }
+}
+
 /**
- * Turns registry descriptors owned by a plugin into deep links showing where
- * the plugin appears across the console.
+ * Turns registry descriptors and manifest contributions owned by a plugin into
+ * deep links showing where the plugin appears across the console and apps.
  */
-export function buildPlacements(descriptors: Descriptor[], pluginId: string): PlacementLink[] {
+export function buildPlacements(
+  descriptors: Descriptor[],
+  pluginId: string,
+  manifest?: PluginManifest,
+): PlacementLink[] {
   const owned = descriptors.filter((d) => d.owner === pluginId);
   const out: PlacementLink[] = [];
   const seen = new Set<string>();
@@ -574,6 +723,35 @@ export function buildPlacements(descriptors: Descriptor[], pluginId: string): Pl
     seen.add(dedupeKey);
     out.push({ kind, id: dedupeKey, label, area, href });
   }
+
+  const contributes = manifest?.ether?.contributes;
+  for (const sc of contributes?.screens ?? []) {
+    const title = sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id;
+    const frontends = sc.frontends?.length ? sc.frontends : ["vela"];
+    for (const fe of frontends) {
+      const label = t("{app} › {screen}", { app: frontendDisplayName(fe), screen: title });
+      const href = `/apps/${encodeURIComponent(fe)}`;
+      const dedupeKey = `screen:${fe}:${sc.id}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      out.push({ kind: "screen", id: dedupeKey, label, area: label, href });
+    }
+  }
+
+  for (const lf of contributes?.liveFeeds ?? []) {
+    const title = lf.title && !lf.title.startsWith("$t:") ? lf.title : lf.id;
+    const dedupeKey = `liveFeed:${lf.id}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      kind: "liveFeed",
+      id: dedupeKey,
+      label: title,
+      area: t("Live events"),
+      href: "/apps/vela",
+    });
+  }
+
   return out;
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -209,6 +210,47 @@ type ScreenFeedResolver func(ctx context.Context, viewer *core.Viewer, screenID 
 // ChangeHandler observes raw (unmasked) event transitions detected by the hub.
 // prev is nil when the event is seen for the first time.
 type ChangeHandler func(prev *core.LiveEvent, next core.LiveEvent)
+
+// FeedPollHandler observes completion of a feed poll attempt (success or error)
+// so console observers can refresh cached health and events without extra polls.
+type FeedPollHandler func(pluginID, feedID string)
+
+// FeedHealth reports the hub's observed polling health for one live event feed.
+type FeedHealth struct {
+	LastPollAt        time.Time `json:"lastPollAt,omitempty"`
+	LastOkAt          time.Time `json:"lastOkAt,omitempty"`
+	LastError         string    `json:"lastError,omitempty"`
+	ConsecutiveErrors int       `json:"consecutiveErrors"`
+	NextPollSec       int       `json:"nextPollSec,omitempty"`
+	NextPollAt        time.Time `json:"nextPollAt,omitempty"`
+	Subscribers       int       `json:"subscribers"`
+	Polling           bool      `json:"polling"`
+}
+
+// FeedLeagueSummary summarizes one league present in a feed's cached state.
+type FeedLeagueSummary struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Abbr       string `json:"abbr,omitempty"`
+	EventCount int    `json:"eventCount"`
+}
+
+// FeedOverview summarizes one feed's cached events, leagues, entity counts,
+// and observed polling health without triggering plugin calls.
+type FeedOverview struct {
+	FeedID         string              `json:"id"`
+	Title          string              `json:"title"`
+	MinIntervalSec int                 `json:"minIntervalSec"`
+	EntityKinds    []string            `json:"entityKinds,omitempty"`
+	Active         bool                `json:"active"`
+	Health         FeedHealth          `json:"health"`
+	EventCount     int                 `json:"eventCount"`
+	LiveCount      int                 `json:"liveCount"`
+	UpcomingCount  int                 `json:"upcomingCount"`
+	Leagues        []FeedLeagueSummary `json:"leagues,omitempty"`
+	EntityCounts   map[string]int      `json:"entityCounts,omitempty"`
+	EntityTotal    int                 `json:"entityTotal"`
+}
 
 // SubscribeRequest configures a hub subscription.
 type SubscribeRequest struct {

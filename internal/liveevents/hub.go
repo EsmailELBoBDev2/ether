@@ -245,6 +245,7 @@ type Hub struct {
 	events              map[string]*cachedEvent
 	feedEventCounts     map[string]int
 	feedLastPolled      map[string]time.Time
+	feedHealth          map[string]*FeedHealth
 	queryCache          map[string]*cachedQuery
 	detailCache         map[string]*cachedDetail
 	entitiesCache       map[string]*cachedEntities
@@ -259,6 +260,8 @@ type Hub struct {
 	remotePruneCancel   context.CancelFunc
 	nextChangeHookID    int64
 	changeHooks         map[int64]ChangeHandler
+	nextPollHookID      int64
+	pollHooks           map[int64]FeedPollHandler
 	watchEnricher       WatchEnricher
 	detailWatchEnricher DetailWatchEnricher
 	screenResolver      ScreenFeedResolver
@@ -325,6 +328,7 @@ func NewHub(opts Options) *Hub {
 		events:              make(map[string]*cachedEvent),
 		feedEventCounts:     make(map[string]int),
 		feedLastPolled:      make(map[string]time.Time),
+		feedHealth:          make(map[string]*FeedHealth),
 		queryCache:          make(map[string]*cachedQuery),
 		detailCache:         make(map[string]*cachedDetail),
 		entitiesCache:       make(map[string]*cachedEntities),
@@ -334,6 +338,7 @@ func NewHub(opts Options) *Hub {
 		pollers:             make(map[string]*feedPoller),
 		remoteInterests:     make(map[string]remotePeerInterest),
 		changeHooks:         make(map[int64]ChangeHandler),
+		pollHooks:           make(map[int64]FeedPollHandler),
 		watchEnricher:       opts.WatchEnricher,
 		detailWatchEnricher: opts.DetailWatchEnricher,
 		screenResolver:      opts.ScreenFeedResolver,
@@ -500,6 +505,24 @@ func (h *Hub) OnEventChange(fn ChangeHandler) func() {
 	}
 }
 
+// OnFeedPoll registers a callback invoked whenever a feed poll finishes
+// (whether it succeeded or failed). Returns an unsubscribe function.
+func (h *Hub) OnFeedPoll(fn FeedPollHandler) func() {
+	if h == nil || fn == nil {
+		return func() {}
+	}
+	h.mu.Lock()
+	h.nextPollHookID++
+	id := h.nextPollHookID
+	h.pollHooks[id] = fn
+	h.mu.Unlock()
+	return func() {
+		h.mu.Lock()
+		delete(h.pollHooks, id)
+		h.mu.Unlock()
+	}
+}
+
 // SyncFeeds refreshes the active feed registry from PluginSource and stops
 // pollers for any feeds whose plugin was disabled, shadowed, revoked, or removed.
 func (h *Hub) SyncFeeds(ctx context.Context) {
@@ -530,6 +553,11 @@ func (h *Hub) SyncFeeds(ctx context.Context) {
 	for k := range h.feedLastPolled {
 		if _, ok := next[k]; !ok {
 			delete(h.feedLastPolled, k)
+		}
+	}
+	for k := range h.feedHealth {
+		if _, ok := next[k]; !ok {
+			delete(h.feedHealth, k)
 		}
 	}
 	for k := range h.detailCache {
@@ -690,12 +718,16 @@ func (h *Hub) FetchEvents(ctx context.Context, pluginID, feedID string, q EventQ
 
 	callCtx, cancel := context.WithTimeout(h.runCtx, defaultCallTimeout)
 	defer cancel()
+	fullQuery := q.From == "" && q.To == "" && q.League == "" && len(q.IDs) == 0
 	resp, err := h.sfEvents.Do(ctx, callCtx, cacheKey, func(runCtx context.Context) (core.LiveEventsResponse, error) {
-		res, _, err := h.callFeedEvents(runCtx, info, q)
+		res, retryAfter, err := h.callFeedEvents(runCtx, info, q)
 		if err != nil {
+			if runCtx.Err() == nil {
+				h.recordFeedPoll(info, retryAfter, 0, fullQuery, err)
+			}
 			return core.LiveEventsResponse{}, err
 		}
-		ttl := effectivePollInterval(info, res.NextPollSec)
+		ttl := h.recordFeedPoll(info, 0, res.NextPollSec, fullQuery, nil)
 		h.ingestEvents(pluginID, feedID, res.Events, h.IsLeading())
 		h.storeQueryCache(cacheKey, res, ttl)
 		return res, nil
@@ -1634,7 +1666,6 @@ func (h *Hub) pollQueryForFeed(feedKey string) (FeedInfo, EventQuery, bool) {
 }
 
 func (h *Hub) runFeedPoller(ctx context.Context, feedKey string) {
-	consecutiveErrors := 0
 	var timer Timer
 	defer func() {
 		if timer != nil {
@@ -1642,24 +1673,29 @@ func (h *Hub) runFeedPoller(ctx context.Context, feedKey string) {
 		}
 	}()
 
-	// Respect feed minIntervalSec if this feed was polled very recently.
+	// Respect feed minIntervalSec and any active error backoff / nextPollAt if
+	// this feed was polled recently (so brief subscriptions never force extra polling).
 	h.mu.Lock()
 	info, ok := h.feeds[feedKey]
 	lastPolled := h.feedLastPolled[feedKey]
+	var waitUntil time.Time
+	minInterval := time.Duration(max(info.MinIntervalSec, plugins.MinLiveFeedIntervalSec)) * time.Second
+	if !lastPolled.IsZero() {
+		waitUntil = lastPolled.Add(minInterval)
+	}
+	if fh := h.feedHealth[feedKey]; fh != nil && fh.NextPollAt.After(waitUntil) {
+		waitUntil = fh.NextPollAt
+	}
 	h.mu.Unlock()
 	if !ok {
 		return
 	}
-	minInterval := time.Duration(max(info.MinIntervalSec, plugins.MinLiveFeedIntervalSec)) * time.Second
-	if !lastPolled.IsZero() {
-		if elapsed := h.clock.Now().Sub(lastPolled); elapsed < minInterval {
-			wait := minInterval - elapsed
-			timer = h.clock.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C():
-			}
+	if wait := waitUntil.Sub(h.clock.Now()); wait > 0 {
+		timer = h.clock.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C():
 		}
 	}
 
@@ -1680,13 +1716,18 @@ func (h *Hub) runFeedPoller(ctx context.Context, feedKey string) {
 		callCtx, cancel := context.WithTimeout(ctx, defaultCallTimeout)
 		cacheKey := q.canonicalKey(info.PluginID, info.FeedID)
 		var retryAfter time.Duration
+		var pollDelay time.Duration
 		resp, err := h.sfEvents.Do(ctx, callCtx, cacheKey, func(runCtx context.Context) (core.LiveEventsResponse, error) {
 			res, ra, callErr := h.callFeedEvents(runCtx, info, q)
 			retryAfter = ra
 			if callErr != nil {
+				if runCtx.Err() == nil {
+					pollDelay = h.recordFeedPoll(info, ra, 0, true, callErr)
+				}
 				return core.LiveEventsResponse{}, callErr
 			}
-			ttl := effectivePollInterval(info, res.NextPollSec)
+			ttl := h.recordFeedPoll(info, 0, res.NextPollSec, true, nil)
+			pollDelay = ttl
 			h.ingestEvents(info.PluginID, info.FeedID, res.Events, true)
 			h.storeQueryCache(cacheKey, res, ttl)
 			return res, nil
@@ -1698,12 +1739,22 @@ func (h *Hub) runFeedPoller(ctx context.Context, feedKey string) {
 			if ctx.Err() != nil {
 				return
 			}
-			consecutiveErrors++
-			delay = errorBackoff(baseInterval, consecutiveErrors, retryAfter)
+			delay = pollDelay
+			if delay <= 0 {
+				h.mu.Lock()
+				errs := 1
+				if fh := h.feedHealth[feedKey]; fh != nil && fh.ConsecutiveErrors > 0 {
+					errs = fh.ConsecutiveErrors
+				}
+				h.mu.Unlock()
+				delay = errorBackoff(baseInterval, errs, retryAfter)
+			}
 			h.log.Debug("liveevents: feed poll failed", "feed", feedKey, "err", err, "backoff", delay)
 		} else {
-			consecutiveErrors = 0
-			delay = effectivePollInterval(info, resp.NextPollSec)
+			delay = pollDelay
+			if delay <= 0 {
+				delay = effectivePollInterval(info, resp.NextPollSec)
+			}
 		}
 
 		if timer == nil {
@@ -1717,6 +1768,238 @@ func (h *Hub) runFeedPoller(ctx context.Context, feedKey string) {
 		case <-timer.C():
 		}
 	}
+}
+
+func (h *Hub) recordFeedPoll(info FeedInfo, retryAfter time.Duration, nextPollSec int, updateThrottle bool, pollErr error) time.Duration {
+	baseInterval := time.Duration(max(info.MinIntervalSec, plugins.MinLiveFeedIntervalSec)) * time.Second
+	now := h.clock.Now()
+	fk := info.Key()
+
+	h.mu.Lock()
+	if updateThrottle {
+		h.feedLastPolled[fk] = now
+	}
+	st := h.feedHealth[fk]
+	if st == nil {
+		st = &FeedHealth{}
+		h.feedHealth[fk] = st
+	}
+	st.LastPollAt = now
+	var delay time.Duration
+	if pollErr == nil {
+		delay = effectivePollInterval(info, nextPollSec)
+		st.LastOkAt = now
+		st.LastError = ""
+		st.ConsecutiveErrors = 0
+		st.NextPollSec = int(delay / time.Second)
+		if updateThrottle {
+			st.NextPollAt = now.Add(delay)
+		} else if st.NextPollAt.Before(now) {
+			st.NextPollAt = time.Time{}
+		}
+	} else {
+		st.ConsecutiveErrors++
+		delay = errorBackoff(baseInterval, st.ConsecutiveErrors, retryAfter)
+		st.LastError = pollErr.Error()
+		st.NextPollSec = int(delay / time.Second)
+		st.NextPollAt = now.Add(delay)
+	}
+	hooks := make([]FeedPollHandler, 0, len(h.pollHooks))
+	for _, fn := range h.pollHooks {
+		hooks = append(hooks, fn)
+	}
+	h.mu.Unlock()
+
+	for _, fn := range hooks {
+		fn(info.PluginID, info.FeedID)
+	}
+	return delay
+}
+
+// PluginCachedSnapshot returns cached feed overviews (health, leagues, entity
+// counts) and cached events for pluginID without calling the plugin.
+func (h *Hub) PluginCachedSnapshot(ctx context.Context, pluginID string) ([]FeedOverview, []core.LiveEvent) {
+	if h == nil || pluginID == "" {
+		return nil, nil
+	}
+	h.ensureFeedsLoaded(ctx)
+	now := h.clock.Now()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var infos []FeedInfo
+	for _, info := range h.feeds {
+		if info.PluginID == pluginID {
+			infos = append(infos, info)
+		}
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].FeedID < infos[j].FeedID })
+
+	overviews := make([]FeedOverview, 0, len(infos))
+	var allEvents []core.LiveEvent
+
+	for _, info := range infos {
+		fk := info.Key()
+		defaultKind := "entity"
+		if len(info.EntityKinds) > 0 && info.EntityKinds[0] != "" {
+			defaultKind = info.EntityKinds[0]
+		}
+
+		leaguesByID := make(map[string]*FeedLeagueSummary)
+		entitySets := make(map[string]map[string]struct{})
+		addEntity := func(kind, id string) {
+			kind = strings.TrimSpace(kind)
+			id = strings.TrimSpace(id)
+			if kind == "" || id == "" {
+				return
+			}
+			set := entitySets[kind]
+			if set == nil {
+				set = make(map[string]struct{})
+				entitySets[kind] = set
+			}
+			set[id] = struct{}{}
+		}
+
+		var evCount, liveCount, upcomingCount int
+		for _, ce := range h.events {
+			if ce.feedKey != fk {
+				continue
+			}
+			ev := ce.event.Clone()
+			allEvents = append(allEvents, ev)
+			evCount++
+			switch ev.Status.State {
+			case core.LiveEventStateIn, core.LiveEventStateDelayed:
+				liveCount++
+			case core.LiveEventStatePre:
+				upcomingCount++
+			}
+			if lid := strings.TrimSpace(ev.League.ID); lid != "" {
+				ls := leaguesByID[lid]
+				if ls == nil {
+					name := strings.TrimSpace(ev.League.Name)
+					if name == "" {
+						name = lid
+					}
+					ls = &FeedLeagueSummary{ID: lid, Name: name, Abbr: strings.TrimSpace(ev.League.Abbr)}
+					leaguesByID[lid] = ls
+				}
+				ls.EventCount++
+			}
+			for _, comp := range ev.Competitors {
+				if comp.EntityID != "" {
+					addEntity(defaultKind, comp.EntityID)
+				}
+			}
+			for _, row := range ev.Ranking {
+				if row.EntityID != "" {
+					addEntity(defaultKind, row.EntityID)
+				}
+			}
+		}
+
+		for ck, cached := range h.entitiesCache {
+			if !now.Before(cached.expiresAt) {
+				continue
+			}
+			p, f, ok := splitNullPrefix2(ck)
+			if !ok || p != info.PluginID || f != info.FeedID {
+				continue
+			}
+			for _, ent := range cached.resp.Entities {
+				kind := ent.Kind
+				if kind == "" {
+					kind = defaultKind
+				}
+				addEntity(kind, ent.ID)
+				if lid := strings.TrimSpace(ent.League); lid != "" {
+					if _, exists := leaguesByID[lid]; !exists {
+						leaguesByID[lid] = &FeedLeagueSummary{ID: lid, Name: lid}
+					}
+				}
+			}
+		}
+
+		leagues := make([]FeedLeagueSummary, 0, len(leaguesByID))
+		for _, ls := range leaguesByID {
+			leagues = append(leagues, *ls)
+		}
+		sort.Slice(leagues, func(i, j int) bool {
+			if leagues[i].EventCount != leagues[j].EventCount {
+				return leagues[i].EventCount > leagues[j].EventCount
+			}
+			if leagues[i].Name != leagues[j].Name {
+				return leagues[i].Name < leagues[j].Name
+			}
+			return leagues[i].ID < leagues[j].ID
+		})
+
+		var entityCounts map[string]int
+		entityTotal := 0
+		if len(entitySets) > 0 {
+			entityCounts = make(map[string]int, len(entitySets))
+			for kind, set := range entitySets {
+				entityCounts[kind] = len(set)
+				entityTotal += len(set)
+			}
+		}
+
+		subs := 0
+		for _, sub := range h.subs {
+			if _, ok := sub.feeds[fk]; ok {
+				subs++
+				continue
+			}
+			for eid := range sub.eventIDs {
+				if p, f, _, ok := core.ParseLiveEventID(eid); ok && p+":"+f == fk {
+					subs++
+					break
+				}
+			}
+		}
+		for _, peer := range h.remoteInterests {
+			if !now.Before(peer.expires) {
+				continue
+			}
+			if _, ok := peer.feeds[fk]; ok {
+				subs++
+				continue
+			}
+			for eid := range peer.eventIDs {
+				if p, f, _, ok := core.ParseLiveEventID(eid); ok && p+":"+f == fk {
+					subs++
+					break
+				}
+			}
+		}
+
+		var health FeedHealth
+		if fh := h.feedHealth[fk]; fh != nil {
+			health = *fh
+		}
+		health.Subscribers = subs
+		_, health.Polling = h.pollers[fk]
+
+		overviews = append(overviews, FeedOverview{
+			FeedID:         info.FeedID,
+			Title:          info.Title,
+			MinIntervalSec: info.MinIntervalSec,
+			EntityKinds:    append([]string(nil), info.EntityKinds...),
+			Active:         true,
+			Health:         health,
+			EventCount:     evCount,
+			LiveCount:      liveCount,
+			UpcomingCount:  upcomingCount,
+			Leagues:        leagues,
+			EntityCounts:   entityCounts,
+			EntityTotal:    entityTotal,
+		})
+	}
+
+	sort.Slice(allEvents, func(i, j int) bool { return allEvents[i].ID < allEvents[j].ID })
+	return overviews, allEvents
 }
 
 func effectivePollInterval(info FeedInfo, nextPollSec int) time.Duration {

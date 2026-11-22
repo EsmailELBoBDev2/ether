@@ -55,11 +55,11 @@ func TestIdleBroadcastProviderPreemption(t *testing.T) {
 						t.Fatal(err)
 					}
 					life, cancel := context.WithCancel(ctx)
-					b := &broadcast{ctx: life, cancel: cancel, created: time.Now(), lastViewer: time.Now()}
+					b := &broadcast{ctx: life, cancel: cancel, created: time.Now(), lastViewer: time.Now(), hadViewer: true}
 					if state == "viewer" {
 						b.viewers = 1
 					} else if state == "starting" {
-						b.lastViewer = time.Time{}
+						b.lastViewer, b.hadViewer = time.Time{}, false
 					}
 					b.wg.Add(1)
 					go func() {

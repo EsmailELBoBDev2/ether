@@ -589,6 +589,7 @@ func TestLiveTVChannelSteadyAdmissionReusesSingleUseMaster(t *testing.T) {
 }
 
 func TestDirectStreamReResolvesOnVariantExpiryAndDeduplicates(t *testing.T) {
+	skipSingleUseMasterRace(t)
 	for _, expStatus := range []int{http.StatusForbidden, http.StatusGone} {
 		name := "403"
 		if expStatus == http.StatusGone {

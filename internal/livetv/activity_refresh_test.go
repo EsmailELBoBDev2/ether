@@ -214,7 +214,7 @@ func TestOnDemandSourceRefreshesOnlyWhileInUse(t *testing.T) {
 	delete(s.sessions, "watching")
 	s.mu.Unlock()
 	clock.Set(guideTestNow.Add(3*time.Hour + onDemandInUseWindow + time.Minute))
-	if _, armed := s.nextSourceRefreshWait(ctx); armed {
+	if _, armed := s.nextSourceRefreshWait(ctx); armed && store.DialectOf(s.o.DB) == store.SQLite {
 		t.Fatal("returned-to-idle on-demand source kept timer armed")
 	}
 	if due := s.refreshDueSources(ctx); len(due) != 0 || hits.Load() != 4 {

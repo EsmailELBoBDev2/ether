@@ -437,6 +437,10 @@ func (d *SharedUserDirectory) Merge(list ...SharedUser) {
 			}
 			dst.Home = dst.Home || u.Home
 			dst.Restricted = dst.Restricted || u.Restricted
+			dst.AcceptedShare = dst.AcceptedShare || u.AcceptedShare
+			dst.PendingShare = dst.PendingShare || u.PendingShare
+			dst.Friend = dst.Friend || u.Friend
+			dst.CommunityFriend = dst.CommunityFriend || u.CommunityFriend
 			for _, m := range u.Servers {
 				if m == "" {
 					continue
@@ -452,10 +456,28 @@ func (d *SharedUserDirectory) Merge(list ...SharedUser) {
 					dst.Servers = append(dst.Servers, m)
 				}
 			}
+			for _, m := range u.PendingServers {
+				if m == "" {
+					continue
+				}
+				found := false
+				for _, cur := range dst.PendingServers {
+					if cur == m {
+						found = true
+						break
+					}
+				}
+				if !found {
+					dst.PendingServers = append(dst.PendingServers, m)
+				}
+			}
 			continue
 		}
 		if len(u.Servers) > 0 {
 			u.Servers = append([]string(nil), u.Servers...)
+		}
+		if len(u.PendingServers) > 0 {
+			u.PendingServers = append([]string(nil), u.PendingServers...)
 		}
 		idx := len(d.users)
 		d.byID[u.PlexID] = idx
@@ -472,10 +494,12 @@ func (d *SharedUserDirectory) EnrichCommunity(friends []CommunityFriend) {
 	for _, cf := range friends {
 		if id, err := strconv.ParseInt(cf.ID, 10, 64); err == nil && id > 0 {
 			d.Merge(SharedUser{
-				PlexID:       id,
-				Username:     cf.Username,
-				FriendlyName: cf.DisplayName,
-				Thumb:        cf.Avatar,
+				PlexID:          id,
+				Username:        cf.Username,
+				FriendlyName:    cf.DisplayName,
+				Thumb:           cf.Avatar,
+				Friend:          true,
+				CommunityFriend: true,
 			})
 		}
 	}
@@ -491,6 +515,8 @@ func (d *SharedUserDirectory) EnrichCommunity(friends []CommunityFriend) {
 			continue
 		}
 		dst := &d.users[idx]
+		dst.Friend = true
+		dst.CommunityFriend = true
 		if cf.DisplayName != "" {
 			if dst.FriendlyName == "" {
 				dst.FriendlyName = cf.DisplayName

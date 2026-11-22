@@ -181,25 +181,6 @@ func fallbackPMSAccountPlexID(acct plexwatch.PMSAccount) int64 {
 	return acct.ID
 }
 
-func (h *Handler) ensurePlexViewer(ctx context.Context, viewers []ViewerRecord, friend plextv.SharedUser) (viewerID int64, fromExisting bool) {
-	if friend.PlexID <= 0 {
-		return 0, false
-	}
-	for i := range viewers {
-		if viewers[i].PlexID == friend.PlexID {
-			return viewers[i].ID, true
-		}
-	}
-	if h.deps.EnsurePlexFriend == nil {
-		return 0, false
-	}
-	id, err := h.deps.EnsurePlexFriend(ctx, friend)
-	if err != nil || id <= 0 {
-		return 0, false
-	}
-	return id, false
-}
-
 func findSyncedFriendViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount, resolved *plextv.SharedUser) *ViewerRecord {
 	if m := findExactViewer(viewers, acct); m != nil {
 		return m
@@ -845,12 +826,13 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 	}
 
 	type deferredImport struct {
-		resultIdx int
-		serverID  int64
-		acct      plexwatch.PMSAccount
-		name      string
-		direction int
-		shareErr  string
+		resultIdx   int
+		serverID    int64
+		acct        plexwatch.PMSAccount
+		name        string
+		direction   int
+		shareUserID int64
+		shareErr    string
 	}
 
 	var (
@@ -1023,30 +1005,22 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 					}
 					// Defer post-share resolution so ListPlexUsers runs at most once
 					// for the entire batch instead of once per unresolved account.
-					if vID == 0 && resolved == nil && sharedPlex && shareUserID == 0 {
+					if vID == 0 && resolved == nil && sharedPlex {
 						idx := len(results)
 						results = append(results, bulkImportResultItem{})
 						deferred = append(deferred, deferredImport{
-							resultIdx: idx,
-							serverID:  srv.ID,
-							acct:      acct,
-							name:      name,
-							direction: direction,
-							shareErr:  shareErr,
+							resultIdx:   idx,
+							serverID:    srv.ID,
+							acct:        acct,
+							name:        name,
+							direction:   direction,
+							shareUserID: shareUserID,
+							shareErr:    shareErr,
 						})
 						continue
 					}
 					if vID == 0 && resolved != nil {
 						if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, name); id > 0 {
-							vID = id
-							status = st
-						}
-					}
-					if vID == 0 && sharedPlex && shareUserID > 0 {
-						if id, st := h.ensureResolvedViewer(r.Context(), &viewers, &plextv.SharedUser{
-							PlexID: shareUserID,
-							Title:  name,
-						}, name); id > 0 {
 							vID = id
 							status = st
 						}
@@ -1067,6 +1041,14 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 			)
 			if resolved := resolvePlexUser(d.acct, plexUsers); resolved != nil {
 				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, resolved, d.name); id > 0 {
+					vID = id
+					status = st
+				}
+			} else if d.shareUserID > 0 {
+				if id, st := h.ensureResolvedViewer(r.Context(), &viewers, &plextv.SharedUser{
+					PlexID: d.shareUserID,
+					Title:  d.name,
+				}, d.name); id > 0 {
 					vID = id
 					status = st
 				}

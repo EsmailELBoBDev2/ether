@@ -70,7 +70,8 @@
               "catalog_provider",
               "kind_resolver",
               "frontend_adapter",
-              "matcher"
+              "matcher",
+              "live_events"
             ]
           },
           "type": "array",
@@ -544,6 +545,29 @@
                   "label",
                   "catalog"
                 ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "liveFeeds": {
+              "items": {
+                "properties": {
+                  "entityKinds": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "minIntervalSec": {
+                    "type": "integer"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
                 "type": "object"
               },
               "type": "array"
@@ -1441,6 +1465,125 @@
                   "key",
                   "label"
                 ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "screens": {
+              "items": {
+                "properties": {
+                  "feed": {
+                    "type": "string"
+                  },
+                  "frontends": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "sections": {
+                    "items": {
+                      "properties": {
+                        "entityKind": {
+                          "type": "string"
+                        },
+                        "feed": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "league": {
+                          "type": "string"
+                        },
+                        "leagues": {
+                          "items": {
+                            "properties": {
+                              "abbr": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "logo": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "query": {
+                          "properties": {
+                            "category": {
+                              "type": "string"
+                            },
+                            "favorites": {
+                              "type": "boolean"
+                            },
+                            "feed": {
+                              "type": "string"
+                            },
+                            "league": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "items": {
+                                "enum": [
+                                  "pre",
+                                  "in",
+                                  "post",
+                                  "delayed",
+                                  "postponed",
+                                  "canceled"
+                                ]
+                              },
+                              "type": "array"
+                            },
+                            "window": {
+                              "enum": [
+                                "today",
+                                "week",
+                                "recent"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "hero",
+                            "events",
+                            "table",
+                            "schedule",
+                            "leagues",
+                            "entities"
+                          ]
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
                 "type": "object"
               },
               "type": "array"

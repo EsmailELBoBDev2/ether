@@ -7,6 +7,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -283,6 +284,42 @@ func (videoTranscodingDisabledError) Error() string {
 
 func (videoTranscodingDisabledError) Unwrap() error { return ErrNotAvailable }
 
+// ProviderConnectionCapError reports that an upstream live provider's
+// concurrent connection limit has been reached.
+type ProviderConnectionCapError struct {
+	Provider string
+	Max      int
+	InUse    int
+	Cause    error
+}
+
+func (e *ProviderConnectionCapError) Error() string {
+	if e == nil {
+		return "provider connection limit reached"
+	}
+	name := strings.TrimSpace(e.Provider)
+	if name == "" {
+		name = "Your provider"
+	}
+	if e.Max == 1 {
+		return fmt.Sprintf("%s allows 1 connection", name)
+	}
+	if e.Max > 0 {
+		return fmt.Sprintf("%s allows %d connections", name, e.Max)
+	}
+	return fmt.Sprintf("%s connection limit reached", name)
+}
+
+func (e *ProviderConnectionCapError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	if e.Cause != nil {
+		return e.Cause
+	}
+	return ErrStreamLimit
+}
+
 // PreparingError wraps ErrPreparing with a suggested retry delay (#580).
 // Err, when set, preserves an underlying cause (such as core.ErrDownloadQueued)
 // while keeping ErrPreparing as the primary sentinel.
@@ -487,6 +524,8 @@ type ClientCaps struct {
 	DeviceName      string                    `json:"deviceName"`
 	ClientID        string                    `json:"clientId"` // X-Plex-Client-Identifier
 	Version         string                    `json:"version"`
+	MultiviewGroup  string                    `json:"multiviewGroup,omitempty"`
+	MultiviewTile   int                       `json:"multiviewTile,omitempty"`
 
 	// PreferredSourceHeight softly favors a known HD source for a new quality
 	// request. It never constrains eligibility or replaces an active source.

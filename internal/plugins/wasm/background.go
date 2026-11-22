@@ -15,7 +15,8 @@ func ViewerRequestPath(path string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)
+	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
+		strings.HasPrefix(path, "/ether/v1/live/")
 }
 
 // KindSyncPath identifies a media kind's background catalogue calls (browse,
@@ -138,6 +139,8 @@ func DeadlineFor(path string) time.Duration {
 			return 5 * time.Second
 		}
 		return 10 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/live/"):
+		return 15 * time.Second
 	default:
 		return 30 * time.Second
 	}

@@ -35,6 +35,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins/remote"
 	"github.com/braedonsaunders/ether/internal/plugins/studio"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"github.com/braedonsaunders/ether/internal/state"
 )
 
@@ -51,6 +52,7 @@ type pluginRuntime struct {
 	blobcache     *blobcache.Cache
 	kindCatalog   *adapters.KindCatalog
 	kindResolver  *adapters.KindResolver
+	screens       *screens.Service
 	// adapterCtrl keeps plugin-provided frontend adapters registered with
 	// the frontend registry; adapterTickets mints the scoped stream tickets
 	// adapter responses embed.
@@ -546,6 +548,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		a.reapplyAddonIndexers()
 		a.publishLibrarySections()
 	})
+	screensSvc := a.buildScreensService(mgr)
 
 	if a.resolver != nil {
 		a.resolver.SetRankingHooks(adapters.Ranking{Manager: mgr, Registry: a.extendRT.registry})
@@ -660,6 +663,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		blobcache:      blobs,
 		kindCatalog:    kindCatalog,
 		kindResolver:   kindResolver,
+		screens:        screensSvc,
 		adapterTickets: adapterTickets,
 	}, nil
 }

@@ -670,6 +670,7 @@ type authCache struct {
 }
 
 type authEntry struct {
+	name          string
 	unratedRating string
 	adultGroups   map[string]bool
 	pool          *Source
@@ -775,7 +776,7 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 		c.mu.Unlock()
 		return authEntry{}, core.ErrNotAvailable
 	}
-	e = authEntry{auth: src.Auth, at: s.o.Now(), perHour: max(src.TunesPerHour, 0), unratedRating: src.UnratedRating, adultGroups: map[string]bool{}}
+	e = authEntry{name: src.Name, auth: src.Auth, at: s.o.Now(), perHour: max(src.TunesPerHour, 0), unratedRating: src.UnratedRating, adultGroups: map[string]bool{}}
 	for _, g := range src.Groups {
 		if g.Adult {
 			e.adultGroups[normGroup(g.Name)] = true

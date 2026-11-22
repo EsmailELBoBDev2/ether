@@ -49,6 +49,7 @@ import {
   type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
+  type LiveFeedProvider,
   type SetupTester,
 } from "./kinds.ts";
 import {
@@ -145,6 +146,7 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onResolve(kind: string, resolver: KindResolver<S>): void;
   onMatch(kind: string, matcher: KindMatcher<S>): void;
   onLive(kind: string, provider: KindLiveProvider<S>): void;
+  onLiveFeed(feed: string, provider: LiveFeedProvider<S>): void;
   onFrontend(key: string, adapter: FrontendAdapter<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
@@ -832,6 +834,7 @@ export function plugin<S = Record<string, unknown>>(
     onResolve: (kind, resolver) => { kindHandlers.resolve.set(kind, resolver); },
     onMatch: (kind, matcher) => { kindHandlers.match.set(kind, matcher); },
     onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
+    onLiveFeed: (feed, provider) => { kindHandlers.liveFeeds.set(feed, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };

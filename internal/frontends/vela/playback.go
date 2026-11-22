@@ -38,6 +38,9 @@ type playSession struct {
 	id                  string
 	item                frontend.RatingKey
 	titleID             string
+	channelID           string
+	liveProgrammeKey    string
+	liveEvent           *frontend.LiveEventRef
 	client              client
 	declaredCaps        frontend.ClientCaps
 	activeVersionHandle string
@@ -84,6 +87,9 @@ type playSession struct {
 	disconnectTimer                  *time.Timer
 	ended                            time.Time
 	previewExpires                   time.Time
+	multiviewGroup                   string
+	multiviewTile                    int
+	multiviewTileHeight              int
 }
 
 func seconds(n float64) (time.Duration, bool) {
@@ -111,6 +117,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		AllowTranscode              *bool
 		AudioTrackID                string
 		SubtitleTrackID             json.RawMessage
+		Multiview                   *multiviewPlaybackRequest `json:"multiview,omitempty"`
 	}
 	if body(r, &b) != nil || b.Client.Device.ID != requestDevice(r).ID {
 		problem(w, 400, "request", "invalid_target")
@@ -147,6 +154,23 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	if b.LiveMode != "" && b.LiveMode != "adaptive" && b.LiveMode != "low-delay" {
 		problem(w, 400, "request", "invalid_live_mode")
 		return
+	}
+	var mvTarget *frontend.MultiviewTarget
+	if b.Multiview != nil {
+		if b.ChannelID == "" {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		if !i.multiviewAvailable() {
+			i.unavailable(w, r)
+			return
+		}
+		var ok bool
+		mvTarget, ok = parseMultiviewPlayback(b.Multiview)
+		if !ok {
+			problem(w, 400, "request", "invalid_multiview")
+			return
+		}
 	}
 	var pos time.Duration
 	if b.PositionSeconds != nil {
@@ -228,7 +252,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	plan, e := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Protocol: "vela", Viewer: v, Device: requestDevice(r), Item: item, Channel: b.ChannelID, Version: b.VersionID, Caps: declared.Client, Intent: frontend.PlayIntent{Options: options, AudioSet: audioSet, SubtitleSet: subtitleSet, Position: pos, ExactVersion: b.VersionID != "", AllowTranscoding: b.AllowTranscode, DeclaredCaps: true, OriginalPlayback: b.Client.OriginalPlayback}})
+	plan, e := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Protocol: "vela", Viewer: v, Device: requestDevice(r), Item: item, Channel: b.ChannelID, Multiview: mvTarget, Version: b.VersionID, Caps: declared.Client, Intent: frontend.PlayIntent{Options: options, AudioSet: audioSet, SubtitleSet: subtitleSet, Position: pos, ExactVersion: b.VersionID != "", AllowTranscoding: b.AllowTranscode, DeclaredCaps: true, OriginalPlayback: b.Client.OriginalPlayback}})
 	if e != nil {
 		if b.VersionID != "" && errors.Is(e, frontend.ErrNotFound) {
 			if _, itemErr := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), item), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: item}); itemErr == nil {
@@ -245,7 +269,16 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	s, e := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: "vela", PlanID: plan.ID, Viewer: v, Device: requestDevice(r)})
 	if e != nil {
+		var capErr *frontend.ProviderConnectionCapError
+		if errors.As(e, &capErr) {
+			sendProviderConnectionCap(w, capErr)
+			return
+		}
 		if b.ChannelID != "" {
+			if mvTarget != nil && (errors.Is(e, frontend.ErrNotFound) || errors.Is(e, frontend.ErrUnauthorized) || errors.Is(e, frontend.ErrInvalidMultiview)) {
+				fail(w, e, r)
+				return
+			}
 			detail := frontend.DiagnoseLiveTV("tune", e)
 			send(w, 503, object{"error": object{"class": "source", "code": detail.Code, "message": detail.Message, "retry": object{"allowed": false}}})
 		} else {
@@ -353,6 +386,19 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			mode = "adaptive"
 		}
 		p["live"] = object{"mode": mode}
+		if s.Multiview != nil {
+			mvDoc := object{
+				"groupId": s.Multiview.GroupID,
+				"tile":    s.Multiview.Tile,
+			}
+			if s.Multiview.MaxHeight > 0 {
+				mvDoc["maxHeight"] = s.Multiview.MaxHeight
+			}
+			if s.Multiview.Focused {
+				mvDoc["focused"] = true
+			}
+			p["multiview"] = mvDoc
+		}
 		delete(p, "durationSeconds")
 	}
 	if (original || (audioOnly && transport == "file")) && (b.Client.HLS || b.Client.MSE) && plan.HLS {
@@ -363,7 +409,26 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		p["paths"] = []object{path, {"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}}}
 	}
 	dev := requestDevice(r)
-	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
+	mvGroup := ""
+	mvTile := 0
+	mvTileHeight := 0
+	if s.Multiview != nil {
+		mvGroup = s.Multiview.GroupID
+		mvTile = s.Multiview.Tile
+		if mvTarget != nil {
+			mvTileHeight = mvTarget.MaxHeight
+		}
+	}
+	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, channelID: b.ChannelID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos, multiviewGroup: mvGroup, multiviewTile: mvTile, multiviewTileHeight: mvTileHeight}
+	if b.ChannelID != "" && i.host.LiveEventLink != nil {
+		if progKey, ref, err := i.host.LiveEventLink.LiveEventForChannel(r.Context(), v, b.ChannelID); err == nil {
+			ps.liveProgrammeKey = progKey
+			ps.liveEvent = cloneLiveEventRef(ref)
+			if ref != nil {
+				p["liveEvent"] = liveEventObject(ref)
+			}
+		}
+	}
 	ps.noteActivity()
 
 	if !plan.SourceChosenAt.IsZero() {
@@ -440,7 +505,11 @@ func (i *instance) session(w http.ResponseWriter, r *http.Request) (*frontend.Vi
 	return v, s
 }
 func (s *playSession) snapshot() object {
-	return object{"cursor": strconv.FormatUint(s.cursor, 10), "revision": s.revision, "plan": s.plan, "publishedRanges": []object{}, "lastObservationSequence": s.sequence, "diagnostics": object{"encoder": s.diagnostics, "media": s.observedRecords, "history": s.diagnosticHistory, "clientErrors": s.clientErrors}}
+	out := object{"cursor": strconv.FormatUint(s.cursor, 10), "revision": s.revision, "plan": s.plan, "publishedRanges": []object{}, "lastObservationSequence": s.sequence, "diagnostics": object{"encoder": s.diagnostics, "media": s.observedRecords, "history": s.diagnosticHistory, "clientErrors": s.clientErrors}}
+	if s.channelID != "" {
+		out["liveEvent"] = liveEventObject(s.liveEvent)
+	}
+	return out
 }
 func (s *playSession) publish(kind string) {
 	s.cursor++
@@ -471,6 +540,7 @@ func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.refreshColdVersions(r, v, s)
+	i.refreshSessionLiveEvent(r.Context(), v, s)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	send(w, 200, s.snapshot())
@@ -518,6 +588,8 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		Kind, PathID, AudioTrackID       string
 		VersionID                        string
 		MaxBitrate                       int
+		MaxHeight                        *int
+		Focused                          *bool
 		AtSeconds                        *float64
 		SubtitleTrackID                  json.RawMessage
 		PositionSeconds                  *float64
@@ -1026,6 +1098,10 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			}
 			s.versionsCold = cold
 		}
+	case "replan":
+		if !i.replanLiveSession(w, r, v, s, id, b.MaxHeight, b.Focused) {
+			return
+		}
 	case "pause", "resume":
 		state := "paused"
 		if b.Kind == "resume" {
@@ -1334,7 +1410,11 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		// Serialize while holding the plan lock; the snapshot shares the plan map.
 		chunks := []string{}
 		for _, e := range events {
-			b, _ := json.Marshal(e)
+			var payload any = e
+			if raw, ok := e["data"]; ok {
+				payload = raw
+			}
+			b, _ := json.Marshal(payload)
 			chunks = append(chunks, fmt.Sprintf("id: %s\nevent: %s\ndata: %s\n\n", e["cursor"], e["type"], b))
 		}
 		signal := s.signal

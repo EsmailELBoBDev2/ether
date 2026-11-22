@@ -399,15 +399,14 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 			p = ep
 		}
 	}
-	// A single client device watches one live channel at a time. When it
-	// retunes without explicitly stopping the previous channel (common on
-	// Fire TV / Android TV), supersede its prior live session immediately
-	// while leaving other devices and viewers intact.
+	// A single client device watches one live channel at a time, except tiles
+	// belonging to the same multiview group. A non-group tune supersedes the
+	// entire group; re-tuning a tile replaces only that tile.
 	if caps.ClientID != "" {
 		var superseded []*session
 		s.mu.Lock()
 		for id, old := range s.sessions {
-			if old.info.UserID == u.ID && old.caps.ClientID == caps.ClientID {
+			if shouldSupersedeLiveSession(old, u.ID, caps) {
 				delete(s.sessions, id)
 				superseded = append(superseded, old)
 			}
@@ -426,22 +425,10 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		playbackSessions = s.o.Playback.Sessions()
 	}
 	s.mu.Lock()
-	count := 0
-	for _, ss := range s.sessions {
-		if ss.info.UserID == u.ID {
-			count++
-		}
-	}
+	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions)
 	limit := u.StreamLimit
 	if s.o.StreamLimit != nil {
 		limit = s.o.StreamLimit(u)
-	}
-	if s.o.Playback != nil {
-		for _, ps := range playbackSessions {
-			if core.SessionCountsForLimit(ps) && ps.UserID == u.ID && ps.PlaybackGroup == "" {
-				count++
-			}
-		}
 	}
 	if limit > 0 && count >= limit {
 		s.mu.Unlock()
@@ -460,7 +447,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 			if active := len(playing) + s.inputRelay.taps.externalCount(c.SourceID); !playing[c.ID] && active >= max {
 				s.mu.Unlock()
 				s.emitProviderLimitReached(c.SourceID, active, max, c.ID)
-				return SessionInfo{}, ErrProviderBusy
+				return SessionInfo{}, s.providerConnectionCapError(c.SourceID, max, active, ErrProviderBusy)
 			}
 		}
 	}
@@ -565,7 +552,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		}
 		if err != nil {
 			s.Stop(ctx, ss.info.ID, u)
-			return SessionInfo{}, err
+			return SessionInfo{}, s.wrapProviderConnectionCap(c.SourceID, err)
 		}
 	} else {
 		err = s.startIPTVSession(ctx, ss)
@@ -574,7 +561,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		}
 		if err != nil {
 			s.Stop(ctx, ss.info.ID, u)
-			return SessionInfo{}, err
+			return SessionInfo{}, s.wrapProviderConnectionCap(c.SourceID, err)
 		}
 	}
 	ss.mu.Lock()
@@ -677,7 +664,7 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		var superseded []*session
 		s.mu.Lock()
 		for id, old := range s.sessions {
-			if old.info.UserID == u.ID && old.caps.ClientID == caps.ClientID {
+			if shouldSupersedeLiveSession(old, u.ID, caps) {
 				delete(s.sessions, id)
 				superseded = append(superseded, old)
 			}
@@ -696,22 +683,10 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		playbackSessions = s.o.Playback.Sessions()
 	}
 	s.mu.Lock()
-	count := 0
-	for _, ss := range s.sessions {
-		if ss.info.UserID == u.ID {
-			count++
-		}
-	}
+	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions)
 	limit := u.StreamLimit
 	if s.o.StreamLimit != nil {
 		limit = s.o.StreamLimit(u)
-	}
-	if s.o.Playback != nil {
-		for _, ps := range playbackSessions {
-			if core.SessionCountsForLimit(ps) && ps.UserID == u.ID && ps.PlaybackGroup == "" {
-				count++
-			}
-		}
 	}
 	if limit > 0 && count >= limit {
 		s.mu.Unlock()
@@ -1080,7 +1055,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, sniffBudget,
 	}
 	c := ss.info.Channel
 	c.StreamURL = ss.inputURL
-	analyze := len(ss.caps.VideoCodecs) > 0 || len(ss.caps.AudioCodecs) > 0 || ss.caps.ProbeLiveWithoutCodecs
+	analyze := len(ss.caps.VideoCodecs) > 0 || len(ss.caps.AudioCodecs) > 0 || ss.caps.ProbeLiveWithoutCodecs || (ss.caps.MultiviewGroup != "" && ss.caps.MaxHeight > 0)
 	probe := analyze || c.Transcode || ss.caps.ProbeLiveInput
 	// Codec analysis overlaps the playlist prefix read. The first tune of a
 	// channel still waits on the probe; a retune inside liveProbeTTL does not.
@@ -1459,4 +1434,107 @@ func (s *Service) ViewingSessions() []*core.PlaySession {
 		out = append(out, &p)
 	}
 	return out
+}
+
+func shouldSupersedeLiveSession(old *session, userID int64, caps core.ClientCaps) bool {
+	if old.info.UserID != userID || old.caps.ClientID != caps.ClientID {
+		return false
+	}
+	// A non-multiview tune on the same device supersedes every prior session on
+	// that device, including all tiles of an active multiview group.
+	if caps.MultiviewGroup == "" {
+		return true
+	}
+	// Sibling tiles in the same multiview group coexist; re-tuning the same
+	// tile replaces only that tile, and starting a different group replaces
+	// any prior sessions on the device.
+	if old.caps.MultiviewGroup != caps.MultiviewGroup {
+		return true
+	}
+	return old.caps.MultiviewTile == caps.MultiviewTile
+}
+
+func (s *Service) activeStreamCountLocked(userID int64, incomingGroup, clientID string, playbackSessions []*core.PlaySession) int {
+	count := 0
+	mvGroups := map[string]bool{}
+	for _, ss := range s.sessions {
+		if ss.info.UserID != userID {
+			continue
+		}
+		if g := ss.caps.MultiviewGroup; g != "" {
+			if incomingGroup != "" && g == incomingGroup {
+				continue
+			}
+			if !mvGroups[g] {
+				mvGroups[g] = true
+				count++
+			}
+			continue
+		}
+		count++
+	}
+	for _, ps := range playbackSessions {
+		if core.SessionCountsForLimit(ps) && ps.UserID == userID && ps.PlaybackGroup == "" {
+			if clientID != "" && ps.ClientID == clientID {
+				continue
+			}
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) sourceConnectionsInUse(sourceID string) int {
+	if sourceID == "" {
+		return 0
+	}
+	playing := map[string]bool{}
+	s.mu.Lock()
+	for _, other := range s.sessions {
+		if other.info.Channel.SourceID == sourceID {
+			playing[other.info.Channel.ID] = true
+		}
+	}
+	for chID := range s.broadcastProviders[sourceID] {
+		playing[chID] = true
+	}
+	s.mu.Unlock()
+	return len(playing) + s.inputRelay.taps.externalCount(sourceID)
+}
+
+func (s *Service) providerConnectionCapError(sourceID string, maxConns, inUse int, cause error) error {
+	if cause == nil {
+		cause = ErrProviderBusy
+	}
+	name := ""
+	if sourceID != "" {
+		if e, err := s.sourceEntry(s.serviceContext(), sourceID); err == nil {
+			name = strings.TrimSpace(e.name)
+			if maxConns <= 0 {
+				maxConns = e.limit
+			}
+		}
+	}
+	if maxConns > 0 && inUse < maxConns {
+		inUse = maxConns
+	}
+	return &core.ProviderConnectionCapError{
+		Provider: name,
+		Max:      maxConns,
+		InUse:    inUse,
+		Cause:    cause,
+	}
+}
+
+func (s *Service) wrapProviderConnectionCap(sourceID string, err error) error {
+	if err == nil || !errors.Is(err, ErrProviderBusy) {
+		return err
+	}
+	var existing *core.ProviderConnectionCapError
+	if errors.As(err, &existing) {
+		return err
+	}
+	maxConns := s.sourceConnectionLimit(sourceID)
+	inUse := s.sourceConnectionsInUse(sourceID)
+	return s.providerConnectionCapError(sourceID, maxConns, inUse, err)
 }

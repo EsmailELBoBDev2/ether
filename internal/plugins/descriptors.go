@@ -177,6 +177,7 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncLiveFeeds(ctx, r)
 	m.syncFlowsPlugin(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor
@@ -362,6 +363,13 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		}
 		lines = append(lines, "Adds a library: "+name)
 	}
+	for _, sc := range man.Ether.Contributes.Screens {
+		title := sc.Title
+		if strings.HasPrefix(title, "$t:") {
+			title = sc.ID
+		}
+		lines = append(lines, "Adds a screen: "+title)
+	}
 	for range p.Secrets {
 		lines = append(lines, "Stores an access token")
 	}
@@ -379,6 +387,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	}
 	if man.HasCapability(CapPosterBadges) {
 		lines = append(lines, "Adds badges to library posters")
+	}
+	if man.HasCapability(CapLiveEvents) {
+		lines = append(lines, "Provides live event feeds")
 	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
@@ -502,6 +513,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
 		added = append(added, "Adds badges to library posters")
+	}
+	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
+		added = append(added, "Provides live event feeds")
 	}
 	return added
 }

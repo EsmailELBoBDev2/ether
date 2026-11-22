@@ -126,6 +126,9 @@ func withoutRoles(e *EtherBlock, off []Capability) *EtherBlock {
 	if isOff[CapFlowActions] {
 		c.FlowActions = nil
 	}
+	if isOff[CapLiveEvents] {
+		c.LiveFeeds = nil
+	}
 	cp.Contributes = c
 	return &cp
 }

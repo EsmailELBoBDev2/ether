@@ -39,6 +39,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
+	"github.com/braedonsaunders/ether/internal/liveevents"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
@@ -315,16 +316,21 @@ type App struct {
 	// Extensibility (docs/extend/SPEC.md). Each runtime type lives in its own
 	// file and is owned by one workstream: extend.go, console_stream.go,
 	// plugins.go and agent.go.
-	extendRT       *extendRuntime
-	streamRT       *consoleStreamRuntime
-	pluginsRT      *pluginRuntime
-	agentRT        *agentRuntime
-	eventBus       *events.Bus
-	eventRegistry  *events.Registry
-	systemEvents   *systemEventHooks
-	flowsRT        *flowsRuntime
-	pluginLiveOnce sync.Once
-	pluginLive     *PluginLiveService
+	extendRT           *extendRuntime
+	streamRT           *consoleStreamRuntime
+	pluginsRT          *pluginRuntime
+	agentRT            *agentRuntime
+	eventBus           *events.Bus
+	eventRegistry      *events.Registry
+	systemEvents       *systemEventHooks
+	flowsRT            *flowsRuntime
+	liveEvents         *liveevents.Hub
+	liveWatchMatcher   *liveevents.WatchMatcher
+	liveTicker         *liveevents.TickerService
+	liveAlertEngine    *liveevents.AlertEngine
+	liveAlertScheduler *liveevents.AlertScheduler
+	pluginLiveOnce     sync.Once
+	pluginLive         *PluginLiveService
 }
 
 // New builds every component. Nothing listens until Run.
@@ -944,6 +950,7 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.runEgress(ctx) })
 	background.start(func() { a.runSystemEvents(ctx) })
 	background.start(func() { a.runFlows(ctx) })
+	background.start(func() { a.runLiveEvents(ctx) })
 
 	if next := startupNextStep(cfg, uiURL); next != "" {
 		a.log.Info(next)

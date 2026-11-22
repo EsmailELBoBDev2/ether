@@ -129,6 +129,7 @@ type brokerPlan struct {
 	// external is a Plex admission: the adapter already prepared the source.
 	external      bool
 	budgetCapKbps int
+	baseMaxHeight int
 }
 type brokerSession struct {
 	// qualityCapped records that a quality pick turned off copying, so a
@@ -161,6 +162,9 @@ type brokerSession struct {
 	segmentDuration       time.Duration
 	live                  bool
 	directLive            *frontend.DirectLiveTarget
+	multiviewGroup        string
+	multiviewTile         int
+	baseMaxHeight         int
 	sequence              uint64
 	historyEpoch          int64
 	historySequence       int64
@@ -218,6 +222,7 @@ type Broker struct {
 	mu                  sync.Mutex
 	plans               map[string]brokerPlan
 	sessions            map[string]*brokerSession
+	multiviewGroups     map[string]*multiviewGroup
 	adapterActivities   map[string]*PlaybackActivity
 	adapterActivityNext int
 	retired             map[string]retiredSession
@@ -404,6 +409,10 @@ func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
 		d.Headers = maps.Clone(d.Headers)
 		r.DirectLive = &d
 	}
+	if r.Multiview != nil {
+		mv := *r.Multiview
+		r.Multiview = &mv
+	}
 	r.Caps.VideoCodecs = slices.Clone(r.Caps.VideoCodecs)
 	r.Caps.AudioCodecs = slices.Clone(r.Caps.AudioCodecs)
 	r.Caps.TranscodeAudioCodecs = slices.Clone(r.Caps.TranscodeAudioCodecs)
@@ -534,6 +543,9 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 				req.Intent.Options.MaxBitrateKbps = capKbps
 			}
 		}
+	}
+	if req.Multiview != nil && req.Channel == "" {
+		return frontend.PlayPlan{}, frontend.ErrInvalidMultiview
 	}
 	if req.Channel != "" || req.DirectLive != nil {
 		if req.Version != "" || req.Intent.ExactVersion || req.ExpectedSourceETag != "" || req.DetailSource != "" {
@@ -1818,6 +1830,7 @@ func (b *Broker) Close(ctx context.Context) {
 	}
 	firstClose := !b.closed
 	b.closed = true
+	b.multiviewGroups = nil
 	for _, s := range b.previews {
 		s.cancel()
 	}

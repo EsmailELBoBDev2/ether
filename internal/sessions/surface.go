@@ -861,3 +861,30 @@ func (s surface) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow
 	}
 	return frontend.LiveWindow{}, core.ErrNotAvailable
 }
+
+func (s surface) MultiviewAvailable() bool {
+	mv, ok := s.broker.(frontend.MultiviewSessions)
+	return ok && mv.MultiviewAvailable()
+}
+
+func (s surface) CreateMultiviewGroup(ctx context.Context, a frontend.SessionAccess) (frontend.MultiviewGroup, error) {
+	if a.Protocol != s.protocol {
+		return frontend.MultiviewGroup{}, core.ErrUnauthorized
+	}
+	mv, ok := s.broker.(frontend.MultiviewSessions)
+	if !ok {
+		return frontend.MultiviewGroup{}, core.ErrNotAvailable
+	}
+	return mv.CreateMultiviewGroup(ctx, a)
+}
+
+func (s surface) DeleteMultiviewGroup(ctx context.Context, a frontend.SessionAccess, groupID string) error {
+	if a.Protocol != s.protocol {
+		return core.ErrUnauthorized
+	}
+	mv, ok := s.broker.(frontend.MultiviewSessions)
+	if !ok {
+		return core.ErrNotAvailable
+	}
+	return mv.DeleteMultiviewGroup(ctx, a, groupID)
+}

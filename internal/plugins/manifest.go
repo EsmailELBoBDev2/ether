@@ -46,6 +46,7 @@ var (
 	idRe             = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
 	keyRe            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	posterBadgeKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	liveFeedIDRe     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	pluginEventKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,2}$`)
 	flowActionKeyRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	eventFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
@@ -120,7 +121,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
 }
 
 var knownKinds = map[Kind]bool{
@@ -332,7 +333,7 @@ func (m Manifest) Validate() error {
 }
 
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
 }
 
 func unsafePath(p string) bool {
@@ -575,10 +576,19 @@ func contributesUseT(c Contributes) bool {
 	for _, a := range c.FrontendAdapters {
 		check(a.Label)
 	}
+	for _, lf := range c.LiveFeeds {
+		check(lf.Title)
+	}
 	if c.Setup != nil {
 		for _, s := range c.Setup.Steps {
 			check(s.Label)
 			check(s.Hint)
+		}
+	}
+	for _, sc := range c.Screens {
+		check(sc.Title)
+		for _, sec := range sc.Sections {
+			check(sec.Title)
 		}
 	}
 	return any
@@ -949,7 +959,9 @@ func validateContributes(m Manifest, add func(string, string)) {
 	}
 	validateMediaKinds(m, add, label)
 	validateFrontendAdapters(m, add, label)
+	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
+	validateScreens(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")
@@ -975,6 +987,35 @@ var knownSlots = map[string]bool{
 	"dashboard.panel": true, "actionMenu.title": true,
 	"actionMenu.viewer": true, "actionMenu.collection": true,
 	"actionMenu.release": true, "command": true,
+}
+
+func validateLiveFeeds(m Manifest, add func(string, string), label func(string, string, int)) {
+	feeds := m.Ether.Contributes.LiveFeeds
+	if m.HasCapability(CapLiveEvents) && len(feeds) == 0 {
+		add("ether.contributes.liveFeeds", "is required for live_events")
+	}
+	if !m.HasCapability(CapLiveEvents) && len(feeds) > 0 {
+		add("ether.capabilities", "live_events is required for liveFeeds")
+	}
+	seenID := map[string]bool{}
+	for i, lf := range feeds {
+		base := fmt.Sprintf("ether.contributes.liveFeeds[%d]", i)
+		if !liveFeedIDRe.MatchString(lf.ID) || seenID[lf.ID] {
+			add(base+".id", "must be a unique lower case key matching ^[a-z][a-z0-9_-]{0,31}$")
+		}
+		seenID[lf.ID] = true
+		label(base+".title", lf.Title, 60)
+		if lf.MinIntervalSec < MinLiveFeedIntervalSec {
+			add(base+".minIntervalSec", fmt.Sprintf("must be at least %d", MinLiveFeedIntervalSec))
+		}
+		seenKind := map[string]bool{}
+		for j, ek := range lf.EntityKinds {
+			if !liveFeedIDRe.MatchString(ek) || seenKind[ek] {
+				add(fmt.Sprintf("%s.entityKinds[%d]", base, j), "must be a unique lower case key matching ^[a-z][a-z0-9_-]{0,31}$")
+			}
+			seenKind[ek] = true
+		}
+	}
 }
 
 // ParseSemVer parses a plain major.minor.patch version.

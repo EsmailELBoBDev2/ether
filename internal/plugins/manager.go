@@ -207,6 +207,9 @@ type Manager struct {
 	posterBadgesLoaded bool
 	posterBadgeSets    map[string][]ActivePosterBadgeSet
 	badgeQuotaTitles   int64
+	// liveFeeds caches active live event feeds per plugin (guarded by mu).
+	liveFeedsLoaded bool
+	liveFeeds       map[string][]ActiveLiveFeed
 }
 
 func (m *Manager) notificationLock(id string) *sync.Mutex {
@@ -369,6 +372,12 @@ func (m *Manager) SubscribeInvalidations() func() {
 			}
 		}
 		m.posterBadgesLoaded = true
+		for id := range m.liveFeeds {
+			if !seen[id] {
+				delete(m.liveFeeds, id)
+			}
+		}
+		m.liveFeedsLoaded = true
 		m.mu.Unlock()
 		if m.deps.Notifications != nil {
 			for _, kind := range m.deps.Notifications.Kinds().List() {
@@ -451,6 +460,7 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 	m.pruneBlockedLocalHosts(id, g.LocalHosts)
 	m.pruneBlockedOperatorHosts(id, g.OperatorHosts)
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncLiveFeeds(ctx, r)
 	m.syncFlowsPlugin(ctx, r)
 	m.clearAISearchCache(id)
 	m.closeRuntime(id)
@@ -1403,6 +1413,7 @@ func (m *Manager) SetShadow(ctx context.Context, id string, shadow bool) error {
 	m.shadow[id] = shadow
 	m.mu.Unlock()
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncLiveFeeds(ctx, r)
 	m.broadcast(ctx)
 	return nil
 }
@@ -1458,6 +1469,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	m.clearBlockedOperatorHosts(id)
 	m.clearAISearchCache(id)
 	m.mu.Lock()
+	delete(m.liveFeeds, id)
 	delete(m.eventPublishTimes, id)
 	delete(m.usenetCheckTimes, id)
 	delete(m.aiCompleteTimes, id)

@@ -39,6 +39,7 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapPosterBadges    Capability = "poster_badges"
+	CapLiveEvents      Capability = "live_events"
 )
 
 // Manifest is the EPP/1 manifest document served at GET /manifest.json.
@@ -228,7 +229,61 @@ type Contributes struct {
 	Commands         []CommandMeta         `json:"commands,omitempty"`
 	MediaKinds       []MediaKindMeta       `json:"mediaKinds,omitempty"`
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
+	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
+	Screens          []ScreenMeta          `json:"screens,omitempty"`
+}
+
+// ScreenMeta declares one generic top-level screen contributed by a plugin.
+type ScreenMeta struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	Icon      string          `json:"icon,omitempty"`
+	Feed      string          `json:"feed,omitempty"`
+	Sections  []ScreenSection `json:"sections"`
+	Frontends []string        `json:"frontends,omitempty"`
+}
+
+// ScreenSection declares one generic section inside a contributed screen.
+type ScreenSection struct {
+	ID         string            `json:"id,omitempty"`
+	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
+	Title      string            `json:"title,omitempty"`
+	Feed       string            `json:"feed,omitempty"`
+	League     string            `json:"league,omitempty"`
+	EntityKind string            `json:"entityKind,omitempty"`
+	Limit      int               `json:"limit,omitempty"`
+	Query      *ScreenEventQuery `json:"query,omitempty"`
+	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
+}
+
+// ScreenEventQuery filters live events for an events, hero, or schedule section.
+type ScreenEventQuery struct {
+	Feed      string   `json:"feed,omitempty"`
+	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
+	League    string   `json:"league,omitempty"`
+	Favorites bool     `json:"favorites,omitempty"`
+	Window    string   `json:"window,omitempty"` // today|week|recent
+	Category  string   `json:"category,omitempty"`
+}
+
+// ScreenLeague optionally declares one static league filter chip on a leagues section.
+type ScreenLeague struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Abbr string `json:"abbr,omitempty"`
+	Logo string `json:"logo,omitempty"`
+}
+
+// MinLiveFeedIntervalSec is the minimum polling interval a live feed may declare.
+const MinLiveFeedIntervalSec = 10
+
+// LiveFeedMeta declares one live events feed contributed by a plugin.
+type LiveFeedMeta struct {
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	MinIntervalSec int      `json:"minIntervalSec"`
+	EntityKinds    []string `json:"entityKinds,omitempty"`
 }
 
 // Poster badge bounds (#594).

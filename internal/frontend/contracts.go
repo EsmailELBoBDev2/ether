@@ -346,6 +346,7 @@ const (
 	FavoritePerson     FavoriteKind = "person"
 	FavoriteCollection FavoriteKind = "collection"
 	FavoriteChannel    FavoriteKind = "channel"
+	FavoriteEntity     FavoriteKind = "entity"
 )
 
 // FavoriteRef identifies an entity in its own namespace.
@@ -1063,6 +1064,7 @@ type PlanRequest struct {
 	// Channel, or DirectLive must be supplied.
 	Channel    string
 	DirectLive *DirectLiveTarget
+	Multiview  *MultiviewTarget
 	Caps       core.ClientCaps
 	Intent     PlayIntent
 }
@@ -1134,6 +1136,7 @@ type Session struct {
 	Device          core.Device
 	Item            core.RatingKey
 	Channel         string
+	Multiview       *MultiviewTarget
 	Media           *core.MediaInfo
 	StartedAt       time.Time
 	Capabilities    *SessionCapabilities

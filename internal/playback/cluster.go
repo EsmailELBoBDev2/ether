@@ -286,6 +286,9 @@ func (r *registry) desired() []unitRow {
 				if e.slot.broadcast != "" {
 					return e.slot.broadcast
 				}
+				if e.slot.caps.MultiviewGroup != "" {
+					return "multiview-" + e.slot.caps.MultiviewGroup
+				}
 				return e.group
 			}(), kind: unitGroup, data: sharedSnapshot(ps), started: ps.StartedAt.UnixMilli()})
 	}

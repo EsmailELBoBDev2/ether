@@ -226,6 +226,18 @@ Dial your storage footprint from **Pass-through (0 GiB)** to **Everyday (32 GiB)
 
 ---
 
+
+### Plugins and the community marketplace
+Ether can be extended with plugins. You browse and install them from **Plugins** in the console. They can:
+- add whole new kinds of library;
+- bring in Live TV channels;
+- find extra sources;
+- add Home lists and ranking rules;
+- fetch subtitles;
+- provide Flows actions and AI tools.
+
+Plugins run sandboxed and ask for each permission up front. The catalogue Ether reads by default is the signed **community marketplace**, [`braedonsaunders/ether-plugins`](https://github.com/braedonsaunders/ether-plugins). Today it includes Pluto TV and Canada Live channels, Anime Tosho, TVmaze lists, Movie Night and seasonal collections. To publish your own, open a pull request there; see [Build a plugin](#build-a-plugin).
+
 ## Install in five minutes
 
 | Platform | Download / image | Details |

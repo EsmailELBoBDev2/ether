@@ -57,7 +57,7 @@ type rawItem struct {
 	usenetDate string
 	// Torznab
 	infoHash, magnet, encType string
-	seeders, peers            int
+	seeders, peers, files     int
 	ids                       core.IDs
 }
 
@@ -91,7 +91,7 @@ func (r rawItem) toRelease(indexer string) core.Release {
 	if name != "" {
 		rel.Info = releaseparse.Parse(name)
 	}
-	rel.Seeders, rel.Peers = r.seeders, r.peers
+	rel.Seeders, rel.Peers, rel.FileCount = r.seeders, r.peers, r.files
 	magnet := r.magnet
 	if magnet == "" && strings.HasPrefix(strings.ToLower(r.link), "magnet:") {
 		magnet = r.link
@@ -308,6 +308,10 @@ func applyAttr(r *rawItem, name, val string) {
 	case "peers":
 		if n, err := strconv.Atoi(val); err == nil {
 			r.peers = n
+		}
+	case "files":
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			r.files = n
 		}
 	case "private":
 		r.private = val == "1" || strings.EqualFold(val, "true") || strings.EqualFold(val, "yes")

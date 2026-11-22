@@ -141,7 +141,8 @@ type File struct {
 	// link, AllDebrid file link, Premiumize, Debrid-Link and Offcloud
 	// direct link).
 	Link     string
-	selected bool // Real-Debrid: already selected in a reused torrent
+	Zip      *ZipMember // non-nil when Path/Size name a member inside a provider server-side ZIP
+	selected bool       // Real-Debrid: already selected in a reused torrent
 }
 
 // AcquireRequest asks a provider to make a torrent available.
@@ -157,6 +158,10 @@ type AcquireRequest struct {
 	RemoveUncached bool
 	Private        bool
 	privateChecked bool
+	// AllowCompressedZip permits selecting a deflate-compressed member inside
+	// a provider's server-side ZIP archive (used for non-video release sources
+	// decoded by kindstream and for file-list inspection).
+	AllowCompressedZip bool
 	// MayRemove, when set, is asked before a torrent this call added is
 	// removed again (RemoveUncached); false keeps it on the account because
 	// a cluster node is streaming from it.
@@ -862,6 +867,19 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			if exactMatch(f) {
 				chosen = f
 				count++
+			}
+		}
+		if count == 0 {
+			cleanWant := strings.TrimPrefix(strings.ReplaceAll(target.ExactFile, "\\", "/"), "/")
+			if strings.Contains(cleanWant, "/") {
+				suffix := "/" + cleanWant
+				for _, f := range files {
+					cleanName := strings.TrimPrefix(strings.ReplaceAll(f.Path, "\\", "/"), "/")
+					if strings.HasSuffix(cleanName, suffix) {
+						chosen = f
+						count++
+					}
+				}
 			}
 		}
 		if count != 1 {

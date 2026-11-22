@@ -25,6 +25,9 @@ func (s *Service) reusablePayload(ctx context.Context, rel core.Release) (Payloa
 	if !fileIdentityMatches(File{Path: p.Path}, rel.Target) || !chosenFileMatchesTarget(p.Path, rel.Target) {
 		return Payload{}, false
 	}
+	if p.isCompressedZip() && (rel.Target == nil || !rel.Target.AllowNonVideo) {
+		return Payload{}, false
+	}
 	p.Target = rel.Target
 	return p, true
 }

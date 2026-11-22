@@ -1615,6 +1615,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
 		for i := range scored {
 			scored[i] = r.stripCandidateAuth(scored[i])
+			if fc := rels[i].KnownFileCount(); fc > scored[i].FileCount {
+				scored[i].FileCount = fc
+			}
 			if hasKnownLookup && (scored[i].Cached || scored[i].InfoHash != "") {
 				if refs := knownLookup.KnownCachedBy(scored[i].InfoHash, rels[i].DebridCached); len(refs) > 0 {
 					scored[i].Cached = true
@@ -1709,10 +1712,11 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		// The listing answers for the whole release; any file choice the
 		// candidate already carries does not narrow it.
 		cand = r.stripCandidateAuth(cand)
+		fileCount := max(q.FileCount, cand.FileCount, len(cand.Files))
 		listCand := cand
 		listCand.FileIndex = nil
 		listCand.Files = nil
-		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &listCand}, "")
+		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &listCand, FileCount: fileCount}, "")
 		if err != nil {
 			return nil, err
 		}
@@ -1769,6 +1773,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 					cand.CachedBy = knownLookup.KnownCachedBy(cand.InfoHash, nil)
 				}
 				cand.Files = files
+				cand.FileCount = len(files)
 				return []core.SourceCandidate{cand}, nil
 			}
 			if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
@@ -1779,6 +1784,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		}
 		if len(rel.TorrentFiles) > 0 {
 			cand.Files = slices.Clone(rel.TorrentFiles)
+			cand.FileCount = len(cand.Files)
 		}
 		return []core.SourceCandidate{cand}, nil
 
@@ -1828,7 +1834,8 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			}
 		}
 		cand = r.stripCandidateAuth(cand)
-		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &cand}, "plugin-kind-acquire")
+		fileCount := max(q.FileCount, cand.FileCount, len(cand.Files))
+		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &cand, FileCount: fileCount}, "plugin-kind-acquire")
 		if err != nil {
 			return nil, err
 		}
@@ -3023,6 +3030,10 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.Indexer = hint.Candidate.Indexer
 		rel.IndexerID = hint.Candidate.IndexerID
 		rel.Category = hint.Candidate.Category
+		rel.FileCount = max(hint.Candidate.FileCount, len(hint.Candidate.Files))
+	}
+	if hint.FileCount > rel.FileCount {
+		rel.FileCount = hint.FileCount
 	}
 	if h := strings.ToLower(strings.TrimSpace(hint.InfoHash)); h != "" {
 		rel.InfoHash = h
@@ -3162,8 +3173,14 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 	var memberIdx *int
 	var track *core.TrackHint
 	if src.Container != nil {
-		member = strings.TrimSpace(src.Container.Member)
-		memberIdx = src.Container.MemberIndex
+		if strings.TrimSpace(src.Release.File) == "" && strings.TrimSpace(src.Release.FileHint) != "" {
+			// release.fileHint names the archive file inside the release while
+			// src.Container selects the member inside that archive (#709).
+			member = strings.TrimSpace(src.Release.FileHint)
+		} else {
+			member = strings.TrimSpace(src.Container.Member)
+			memberIdx = src.Container.MemberIndex
+		}
 	} else {
 		member = strings.TrimSpace(src.Release.FileHint)
 	}
@@ -3344,6 +3361,9 @@ func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (co
 		return rel, err
 	}
 	resolved.Protocol = core.ProtocolTorrent
+	if resolved.FileCount < rel.FileCount {
+		resolved.FileCount = rel.FileCount
+	}
 	if resolved.InfoHash != "" {
 		resolved.ID = releaseIDWithTarget(resolved)
 	}

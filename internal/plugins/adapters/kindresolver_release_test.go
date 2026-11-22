@@ -340,3 +340,33 @@ func TestCardigannTorrentCandidateUsesTorrentPathNeverFetchNZB(t *testing.T) {
 		t.Fatalf("debrid.Acquire saw %+v, want torrent %s", deb.lastRelease, resolvedHash)
 	}
 }
+
+// When a source sets both release.fileHint and container (member-inside-a-member,
+// e.g. a named ROM .zip inside a pack torrent whose inner .nes is selected by
+// container.member), releaseFromSource must keep fileHint on Release.Target.Member
+// and propagate FileCount (#709, #667).
+func TestKindResolverReleaseFileHintAndFileCountWithContainer(t *testing.T) {
+	src := core.PlayableSource{
+		ID:      "rom-nested",
+		Pattern: "release",
+		MIME:    "application/octet-stream",
+		Release: &core.ReleaseHint{
+			InfoHash:  "0123456789abcdef0123456789abcdef01234567",
+			FileHint:  "Super Mario Bros. (World).zip",
+			FileCount: 250,
+		},
+		Container: &core.ContainerRef{
+			Member: "Super Mario Bros. (World).nes",
+		},
+	}
+	rel, err := releaseFromSource(src, "No-Intro NES", "")
+	if err != nil {
+		t.Fatalf("releaseFromSource: %v", err)
+	}
+	if rel.FileCount != 250 {
+		t.Fatalf("FileCount = %d, want 250", rel.FileCount)
+	}
+	if rel.Target == nil || rel.Target.Member != "Super Mario Bros. (World).zip" || !rel.Target.AllowNonVideo {
+		t.Fatalf("Target = %+v, want Member=Super Mario Bros. (World).zip AllowNonVideo=true", rel.Target)
+	}
+}

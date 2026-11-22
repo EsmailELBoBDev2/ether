@@ -161,6 +161,10 @@ type SourceQuery struct {
 	// Candidate carries an indexer_search candidate back for release_files
 	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when passing
+	// a magnet or infoHash without a file list (e.g. large collection torrents
+	// held as zip-only caches on TorBox).
+	FileCount int `json:"fileCount,omitempty"`
 }
 
 // ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
@@ -242,6 +246,9 @@ type SourceCandidate struct {
 	Codec      string `json:"codec,omitempty"`
 	// Files is populated only by a release_files query.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// FileCount is the torrent's known file count when reported by an indexer
+	// or release_files query.
+	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
@@ -364,6 +371,11 @@ type ReleaseHint struct {
 	// CachedOnly requires an already-cached debrid copy even when the owner turned
 	// "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting.
 	CachedOnly bool `json:"cachedOnly,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether has
+	// not seen its file list yet (e.g. a magnet for one entry of a large collection),
+	// so providers whose cache check cannot see zip-only 100+-file torrents (TorBox)
+	// try a cached-only add instead of trusting a checkcached miss.
+	FileCount int `json:"fileCount,omitempty"`
 }
 
 // KindResolveRequest asks a resolver for playable sources for one item.

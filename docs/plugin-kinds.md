@@ -273,7 +273,17 @@ order. Patterns:
   `Retry-After`) until ready, following the queued download on retries and
   across items that share the same torrent. Set `release.cachedOnly: true`
   to opt a release out of uncached downloads explicitly. Private torrents
-  and background/warm-up calls are always cached-only.
+  and background/warm-up calls are always cached-only. When a torrent has
+  100 or more files (known from parsed `.torrent` / indexer metadata, a
+  prior `release_files` call, or an optional `release.fileCount` hint on a
+  magnet whose file list Ether has not seen yet), debrid providers that
+  keep large torrents cached only as a single server-side ZIP (such as
+  TorBox) ignore a `checkcached` miss, probe with a cached-only add, and
+  read the named file directly from inside the server-side ZIP over HTTP
+  range requests (stored or deflate members). If that member is itself an
+  archive (for example a ROM `.zip`) and the source also sets `container`,
+  Ether unwraps the inner member transparently and checks declared digests
+  against the final bytes served.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`

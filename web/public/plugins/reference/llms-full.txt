@@ -989,7 +989,17 @@ order. Patterns:
   `Retry-After`) until ready, following the queued download on retries and
   across items that share the same torrent. Set `release.cachedOnly: true`
   to opt a release out of uncached downloads explicitly. Private torrents
-  and background/warm-up calls are always cached-only.
+  and background/warm-up calls are always cached-only. When a torrent has
+  100 or more files (known from parsed `.torrent` / indexer metadata, a
+  prior `release_files` call, or an optional `release.fileCount` hint on a
+  magnet whose file list Ether has not seen yet), debrid providers that
+  keep large torrents cached only as a single server-side ZIP (such as
+  TorBox) ignore a `checkcached` miss, probe with a cached-only add, and
+  read the named file directly from inside the server-side ZIP over HTTP
+  range requests (stored or deflate members). If that member is itself an
+  archive (for example a ROM `.zip`) and the source also sets `container`,
+  Ether unwraps the inner member transparently and checks declared digests
+  against the final bytes served.
 
 Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
 polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
@@ -2420,6 +2430,7 @@ type KindMatchResponse struct {
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link for torrent indexers that do not emit an info hash or magnet in search results. |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when the plugin does not pass a full Candidate from indexer_search. |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer. |
+| `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when Ether has not seen its file list yet (e.g. a magnet for a large collection), so zip-only debrid caches are checked via cached-only add. |
 
 
 ## Source: internal/core/kinditem.go#SourceQuery
@@ -2449,6 +2460,10 @@ type SourceQuery struct {
 	// back for release_files or usenet_check, so an NZB or torrent link is
 	// resolved through its originating indexer.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether
+	// has not seen its file list yet (e.g. a magnet for a large collection),
+	// so zip-only debrid caches are checked via cached-only add.
+	FileCount int `json:"fileCount,omitempty"`
 }
 ``````
 
@@ -2590,6 +2605,7 @@ type DebridServiceRef struct {
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query: the files inside this candidate release. |
+| `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount is the torrent's known file count when reported by an indexer or release_files query, allowing zip-only debrid caches to be probed by cached-only add even when Files is omitted. |
 | `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query: the sampled article availability verdict and any recorded playback failure for this NZB release. |
 
 
@@ -2637,6 +2653,10 @@ type SourceCandidate struct {
 	// Files is populated only by a release_files query: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// FileCount is the torrent's known file count when reported by an indexer
+	// or release_files query, allowing zip-only debrid caches to be probed by
+	// cached-only add even when Files is omitted.
+	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query: the sampled
 	// article availability verdict and any recorded playback failure for
 	// this NZB release.
@@ -2834,6 +2854,7 @@ type TrackHint struct {
 | `track` | `*TrackHint` | may be omitted (see validation for conditions) |  |
 | `passwordSecret` | `string` | may be omitted (see validation for conditions) |  |
 | `cachedOnly` | `bool` | may be omitted (see validation for conditions) | CachedOnly forces debrid acquisition to require an already-cached copy even when the owner turned "Cached torrents only" off. When omitted or false, torrent releases follow the owner's debrid setting (queuing uncached downloads when cached-only is off). |
+| `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when Ether has not seen its file list yet (for example a magnet for one entry in a large collection). Providers whose cache check cannot see zip-only high-file-count torrents (such as TorBox at 100+ files) use this to try a cached-only add instead of trusting a checkcached miss. |
 
 
 ## Source: internal/core/kinditem.go#ReleaseHint
@@ -2860,6 +2881,12 @@ type ReleaseHint struct {
 	// false, torrent releases follow the owner's debrid setting (queuing
 	// uncached downloads when cached-only is off).
 	CachedOnly bool `json:"cachedOnly,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether
+	// has not seen its file list yet (for example a magnet for one entry in a
+	// large collection). Providers whose cache check cannot see zip-only
+	// high-file-count torrents (such as TorBox at 100+ files) use this to try
+	// a cached-only add instead of trusting a checkcached miss.
+	FileCount int `json:"fileCount,omitempty"`
 }
 ``````
 
@@ -34252,6 +34279,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
           "description": "A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list, so zip-only debrid caches (e.g. TorBox at 100+ files) are checked via cached-only add."
         }
       }
     },
@@ -34460,6 +34492,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           },
           "description": "Files inside this release; populated only by a release_files query."
         },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Known file count of the torrent when reported by an indexer or release_files query."
+        },
         "usenetCheck": {
           "$ref": "#/$defs/usenetCheckResult",
           "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
@@ -34507,6 +34544,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "cachedOnly": {
           "type": "boolean",
           "description": "Require an already-cached debrid copy even when the owner turned \"Cached torrents only\" off. Omit or set false to follow the owner's debrid setting (queueing an uncached download and answering preparing / 503 Retry-After until ready when cached-only is off)."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
         }
       }
     }
@@ -46438,6 +46480,7 @@ type KindChangesRequest struct {
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link when an indexer did not supply an infoHash or magnet. |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when not passing a full Candidate from indexer_search. |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files or usenet_check. |
+| `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when passing a magnet or infoHash without a file list (e.g. large collection torrents held as zip-only caches on TorBox). |
 
 
 ## Source: sdk/go/kinds.go#SourceQuery
@@ -46465,6 +46508,10 @@ type SourceQuery struct {
 	// Candidate carries an indexer_search candidate back for release_files
 	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when passing
+	// a magnet or infoHash without a file list (e.g. large collection torrents
+	// held as zip-only caches on TorBox).
+	FileCount int `json:"fileCount,omitempty"`
 }
 ``````
 
@@ -46595,6 +46642,7 @@ type DebridServiceRef struct {
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query. |
+| `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount is the torrent's known file count when reported by an indexer or release_files query. |
 | `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query. |
 
 
@@ -46632,6 +46680,9 @@ type SourceCandidate struct {
 	Codec      string `json:"codec,omitempty"`
 	// Files is populated only by a release_files query.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// FileCount is the torrent's known file count when reported by an indexer
+	// or release_files query.
+	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
@@ -46870,6 +46921,7 @@ type TrackHint struct {
 | `track` | `*TrackHint` | may be omitted (see validation for conditions) |  |
 | `passwordSecret` | `string` | may be omitted (see validation for conditions) |  |
 | `cachedOnly` | `bool` | may be omitted (see validation for conditions) | CachedOnly requires an already-cached debrid copy even when the owner turned "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting. |
+| `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when Ether has not seen its file list yet (e.g. a magnet for one entry of a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss. |
 
 
 ## Source: sdk/go/kinds.go#ReleaseHint
@@ -46892,6 +46944,11 @@ type ReleaseHint struct {
 	// CachedOnly requires an already-cached debrid copy even when the owner turned
 	// "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting.
 	CachedOnly bool `json:"cachedOnly,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether has
+	// not seen its file list yet (e.g. a magnet for one entry of a large collection),
+	// so providers whose cache check cannot see zip-only 100+-file torrents (TorBox)
+	// try a cached-only add instead of trusting a checkcached miss.
+	FileCount int `json:"fileCount,omitempty"`
 }
 ``````
 
@@ -57910,6 +57967,7 @@ class SourceCandidate(TypedDict, total=False):
     source: str
     codec: str
     files: List[ReleaseFile]
+    fileCount: int
     usenetCheck: UsenetCheckResult
 
 
@@ -57926,6 +57984,7 @@ class SourceQuery(TypedDict, total=False):
     torrentUrl: str
     nzbUrl: str
     candidate: SourceCandidate
+    fileCount: int
 
 
 class CatalogProvider:
@@ -63950,6 +64009,8 @@ export interface SourceQuery {
   nzbUrl?: string;
   /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
+  /** Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list. */
+  fileCount?: number;
 }
 
 /** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */
@@ -64024,6 +64085,8 @@ export interface SourceCandidate {
   codec?: string;
   /** Files inside this release; populated only by a release_files query. */
   files?: ReleaseFile[];
+  /** Known file count of the torrent when reported by an indexer or release_files query. */
+  fileCount?: number;
   /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
   usenetCheck?: UsenetCheckResult;
 }
@@ -64086,6 +64149,8 @@ export interface PlayableSource {
     passwordSecret?: string;
     /** Require an already-cached debrid copy even when the owner turned "Cached torrents only" off. */
     cachedOnly?: boolean;
+    /** Optional torrent file count hint when Ether has not seen the file list yet (e.g. a large collection magnet), so zip-only debrid caches (TorBox at 100+ files) are checked via cached-only add. */
+    fileCount?: number;
   };
   parts?: KindItemPart[];
 }

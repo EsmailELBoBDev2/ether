@@ -337,7 +337,31 @@ func (e *Engine) Open(ctx context.Context, releaseID string, payload []byte) (co
 	}
 	s := &httpSource{f: f, last: -2, priority: func() bool { return callerUrgent(ctx) }}
 	s.raCtx, s.raCancel = newSeekEpoch(f.ctx)
+	if p, _ := f.payload(); p.isCompressedZip() {
+		return &zipDeflateSource{
+			httpSource: s,
+			name:       p.Name(),
+			method:     p.Zip.Method,
+			uncompSize: p.Size,
+			crc32:      p.Zip.CRC32,
+		}, nil
+	}
 	return s, nil
+}
+
+// zipDeflateSource wraps an httpSource streaming the compressed byte extent of
+// a single member inside a provider's server-side ZIP archive so callers that
+// support archive extraction (kindstream) can inflate and verify it.
+type zipDeflateSource struct {
+	*httpSource
+	name       string
+	method     uint16
+	uncompSize int64
+	crc32      uint32
+}
+
+func (z *zipDeflateSource) CompressedZipMember() (name string, method uint16, uncompressedSize int64, expectedCRC32 uint32) {
+	return z.name, z.method, z.uncompSize, z.crc32
 }
 
 // Prefetch implements core.Engine. For a debrid payload it pulls
@@ -659,11 +683,12 @@ type remoteFile struct {
 
 func (e *Engine) newFile(id string, p Payload) *remoteFile {
 	_, conns, _ := e.tuning()
-	f := &remoteFile{e: e, id: id, tag: p.fileTag(), size: p.Size, pl: p,
+	size := p.streamSize()
+	f := &remoteFile{e: e, id: id, tag: p.fileTag(), size: size, pl: p,
 		flights: map[int64]*blockFlight{}, mem: lru.New(lru.Options[int64, []byte]{MaxEntries: memBlocksPerFile}), stored: map[int64]bool{}, failedGen: -1,
 		conns: make(chan struct{}, conns), raSlots: make(chan struct{}, max(1, conns-1)),
 		sustainSlot: make(chan struct{}, 1), yieldSig: make(chan struct{}), rerouteSem: make(chan struct{}, 1)}
-	f.nblocks = (p.Size + e.block - 1) / e.block
+	f.nblocks = (size + e.block - 1) / e.block
 	f.ctx, f.cancel = context.WithCancel(e.ctx)
 	return f
 }
@@ -736,7 +761,7 @@ func (f *remoteFile) adopt(p Payload) {
 		// torrent: take its identity with it, so refreshes and timings go
 		// to the right place.
 		f.pl.URL, f.pl.Expires = p.URL, p.Expires
-		f.pl.Provider, f.pl.Kind, f.pl.TorrentID, f.pl.FileID, f.pl.Link = p.Provider, p.Kind, p.TorrentID, p.FileID, p.Link
+		f.pl.Provider, f.pl.Kind, f.pl.TorrentID, f.pl.FileID, f.pl.Link, f.pl.Zip = p.Provider, p.Kind, p.TorrentID, p.FileID, p.Link, p.Zip
 		f.pl.OnReplayEdge = p.OnReplayEdge // a provider link arrives unmarked; a resumed replay stays marked
 		f.routeDegraded = false            // the provider's new route answers for itself; any old hunt is moot
 		f.gen++
@@ -781,7 +806,7 @@ func (f *remoteFile) link(ctx context.Context, force bool, gen ...int) (Payload,
 	}
 	f.e.stats.refreshes.Add(1)
 	f.mu.Lock()
-	if out.Size != f.size {
+	if !f.pl.sameStreamEncoding(out) || out.streamSize() != f.size {
 		f.mu.Unlock()
 		return Payload{}, g, fmt.Errorf("debrid: %s changed size: %w", p.Name(), core.ErrArticleCorrupt)
 	}
@@ -809,11 +834,11 @@ func (f *remoteFile) moveFromHost(ctx context.Context, gen int) bool {
 	if current != gen {
 		return true
 	}
-	if p.IsDirect() || p.IsPluginProvider() {
+	if p.IsDirect() || p.IsPluginProvider() || p.isCompressedZip() {
 		return false
 	}
 	out, err := f.e.svc.alternateProvider(ctx, p)
-	if err != nil || out.Size != f.size {
+	if err != nil || !p.sameStreamEncoding(out) || out.streamSize() != f.size {
 		return false
 	}
 	f.mu.Lock()
@@ -1768,7 +1793,8 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			f.analysis.requests.Add(1)
 			f.e.svc.analysisTotals.requests.Add(1)
 		}
-		resp, tm, err := f.e.get(rctx, u, start, end, urgent, f.conns)
+		wireStart, wireEnd, wireSize := payload.wireRange(start, end)
+		resp, tm, err := f.e.get(rctx, u, wireStart, wireEnd, urgent, f.conns)
 		if err != nil && isAnalysisRead(ctx) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 			f.analysis.errors.Add(1)
 			if f.e.svc != nil {
@@ -1803,7 +1829,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 		}
 		switch {
 		case resp.StatusCode == http.StatusPartialContent:
-			if err := checkContentRange(resp.Header.Get("Content-Range"), start, f.size); err != nil {
+			if err := checkContentRange(resp.Header.Get("Content-Range"), wireStart, wireSize); err != nil {
 				resp.Body.Close()
 				return nil, tm, servedBy{}, directMediaError(payload, err)
 			}
@@ -1821,7 +1847,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			f.mediaHealthyKey = mediaPauseKey(payload.Provider, u)
 			f.mu.Unlock()
 			return resp.Body, tm, served, nil
-		case resp.StatusCode == http.StatusOK && start == 0 && resp.ContentLength == f.size:
+		case resp.StatusCode == http.StatusOK && wireStart == 0 && resp.ContentLength == wireSize:
 			// A server that ignores Range but serves exactly this file.
 			f.mu.Lock()
 			f.mediaHealthyKey = mediaPauseKey(payload.Provider, u)

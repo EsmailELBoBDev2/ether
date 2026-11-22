@@ -768,6 +768,19 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 		return openContainerOverVolumes(ctx, vols, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, src.Release.Track, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
 	}
 
+	// A deflate-compressed member streamed out of a provider's server-side ZIP
+	// (such as TorBox's 100+-file auto-zip) is inflated into deps.Cache first,
+	// then continues through normal container unwrapping (member-inside-a-member)
+	// and digest verification (#709).
+	if czs, ok := ms.(core.CompressedZipMemberSource); ok {
+		decoded, err := extractCompressedZipMember(ctx, ms, czs, effMIME, src.MaxBytes, deps)
+		_ = ms.Close()
+		if err != nil {
+			return nil, err
+		}
+		ms = decoded
+	}
+
 	wrapped := &mediaSourceByteSource{
 		ms:   ms,
 		name: path.Base(ms.Name()),
@@ -822,7 +835,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 			member = src.Container.Member
 			memberIdx = src.Container.MemberIndex
 			fmtHint = src.Container.Format
-		} else if src.Release.FileHint != "" {
+		} else if src.Release.FileHint != "" && !fileHintMatchesFile(src.Release.FileHint, wrapped.name) {
 			member = src.Release.FileHint
 		}
 		cacheSeed := ms.ReleaseID() + "|" + wrapped.name
@@ -846,6 +859,14 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	return applyDigests(ctx, wrapped, digestsOf(src), src.MaxBytes, cacheKey, deps)
 }
 
+func fileHintMatchesFile(fileHint, fileName string) bool {
+	hint := strings.TrimSpace(strings.ReplaceAll(fileHint, "\\", "/"))
+	if hint == "" || fileName == "" {
+		return false
+	}
+	return strings.EqualFold(path.Base(fileName), path.Base(hint))
+}
+
 func shouldAutoComposeReleaseArchive(src core.PlayableSource, effectiveMIME, fileName string, head []byte) bool {
 	decl := normalizeMIME(effectiveMIME)
 	if nzb.IsArchiveMIME(decl) {
@@ -861,7 +882,7 @@ func shouldAutoComposeReleaseArchive(src core.PlayableSource, effectiveMIME, fil
 	if nzb.MIMEFamily(decl) == "comic" {
 		return false
 	}
-	if src.Release != nil && (strings.TrimSpace(src.Release.FileHint) != "" || (src.Release.Track != nil && (src.Release.Track.Number > 0 || strings.TrimSpace(src.Release.Track.Title) != ""))) {
+	if src.Release != nil && ((strings.TrimSpace(src.Release.FileHint) != "" && !fileHintMatchesFile(src.Release.FileHint, fileName)) || (src.Release.Track != nil && (src.Release.Track.Number > 0 || strings.TrimSpace(src.Release.Track.Title) != ""))) {
 		return true
 	}
 	if decl == "application/octet-stream" {
@@ -870,7 +891,7 @@ func shouldAutoComposeReleaseArchive(src core.PlayableSource, effectiveMIME, fil
 	// When a plugin explicitly selects a file in the release without a
 	// ContainerRef or inner media MIME, serve the selected file itself rather
 	// than unwrapping its first archive entry.
-	if decl == "" && src.Release != nil && hasExplicitReleaseSelector(*src.Release) {
+	if decl == "" && src.Release != nil && (hasExplicitReleaseSelector(*src.Release) || fileHintMatchesFile(src.Release.FileHint, fileName)) {
 		return false
 	}
 	return true
@@ -944,7 +965,7 @@ func openContainerOverVolumes(
 		closeAll()
 		return nil, wrapArchiveUnstreamable(err)
 	}
-	members, err := listContainerMembers(ctx, format, bufVols, password)
+	members, zipEntries, err := listContainerMembers(ctx, format, bufVols, password)
 	if err != nil {
 		closeAll()
 		return nil, wrapArchiveUnstreamable(err)
@@ -962,6 +983,14 @@ func openContainerOverVolumes(
 	}
 	streamErr := selected.Streamable()
 	if streamErr == nil {
+		if format == archive.FormatZIP && len(selected.Extents) == 0 && selected.Size > 0 {
+			resolved, rerr := resolveZIPMemberAt(bufVols, zipEntries, nonDirIdx)
+			if rerr != nil {
+				closeAll()
+				return nil, wrapArchiveUnstreamable(rerr)
+			}
+			selected = resolved
+		}
 		mr, err := archive.NewMemberReader(selected, vols)
 		if err != nil {
 			closeAll()

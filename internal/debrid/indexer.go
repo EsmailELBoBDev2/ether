@@ -208,7 +208,7 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	explain := x.explainUncached(out, cached)
 	var explained []string // ids kept only to explain a not-cached failure
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
 			if explain == 0 {
 				continue
 			}
@@ -389,7 +389,7 @@ func (x *Indexer) searchSeasonPacks(ctx context.Context, req core.SearchRequest)
 	}
 	kept := packs[:0]
 	for _, r := range packs {
-		if r.InfoHash != "" && definitive && !cached[r.InfoHash] {
+		if r.InfoHash != "" && definitive && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
 			continue
 		}
 		kept = append(kept, r)
@@ -454,7 +454,7 @@ func (x *Indexer) SearchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	dropUncached := definitive && x.svc.Config().CachedOnly
 	explain := x.explainUncached(out, cached)
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
 			if explain == 0 {
 				continue
 			}
@@ -537,6 +537,9 @@ func (x *Indexer) fetchTorrentOnce(ctx context.Context, r core.Release) (data []
 		descriptor = time.Since(phase)
 		if err != nil {
 			return nil, err
+		}
+		if resolved.FileCount < r.FileCount {
+			resolved.FileCount = r.FileCount
 		}
 		r = resolved
 	}

@@ -33,8 +33,9 @@ import (
 //	POST /torrents/controltorrent {torrent_id, operation:"delete"}
 //	GET  /user/me -> data{email, plan, premium_expires_at}
 const (
-	torBoxBase    = "https://api.torbox.app/v1/api"
-	torBoxLinkTTL = 3 * time.Hour
+	torBoxBase             = "https://api.torbox.app/v1/api"
+	torBoxLinkTTL          = 3 * time.Hour
+	torBoxAutoZipThreshold = 100
 )
 
 type torBox struct {
@@ -44,8 +45,11 @@ type torBox struct {
 	// each other; production approval runs without it.
 	edgeApproval func(raw, candidate string) bool
 	list         listCache
+	recent       recentLinks
 	knownMu      sync.Mutex
 	known        map[string]string // validated owned ids; no network lock on Play
+	zipMu        sync.Mutex
+	zipCDs       map[string]torBoxZipCD // bounded Central Directory cache for server-side zips
 }
 
 func newTorBox(key string, opts ProviderOptions) *torBox {
@@ -53,6 +57,11 @@ func newTorBox(key string, opts ProviderOptions) *torBox {
 }
 
 func (p *torBox) Kind() string { return "torbox" }
+
+// zipOnlyCheckThreshold: TorBox caches torrents of 100+ files only as a single
+// server-side zip, which /torrents/checkcached reports as uncached even though
+// cached-only /torrents/createtorrent returns the cached zip (#667, #709).
+func (p *torBox) zipOnlyCheckThreshold() int { return torBoxAutoZipThreshold }
 
 // edgePortableLinks: TorBox download links stand on the nexus CDN as a
 // whole. During the 2026-11-09 maintenance window a link minted on the
@@ -119,6 +128,14 @@ func (e *tbEnvelope) UnmarshalJSON(body []byte) error {
 	return nil
 }
 
+type tbFile struct {
+	ID       json.Number `json:"id"`
+	Name     string      `json:"name"`
+	Size     int64       `json:"size"`
+	MIMEType string      `json:"mimetype"`
+	Zipped   bool        `json:"zipped"`
+}
+
 type tbTorrent struct {
 	ID               json.Number `json:"id"`
 	Hash             string      `json:"hash"`
@@ -126,13 +143,7 @@ type tbTorrent struct {
 	DownloadPresent  bool        `json:"download_present"`
 	DownloadFinished bool        `json:"download_finished"`
 	DownloadState    string      `json:"download_state"`
-	Files            []struct {
-		ID       json.Number `json:"id"`
-		Name     string      `json:"name"`
-		Size     int64       `json:"size"`
-		MIMEType string      `json:"mimetype"`
-		Zipped   bool        `json:"zipped"`
-	} `json:"files"`
+	Files            []tbFile    `json:"files"`
 }
 
 func (p *torBox) do(ctx context.Context, r apiRequest) (json.RawMessage, error) {
@@ -345,13 +356,13 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 	for _, f := range t.Files {
 		files = append(files, File{ID: f.ID.String(), Path: f.Name, Size: f.Size, MIMEType: f.MIMEType})
 	}
-	// If TorBox already cached this >100-file torrent as a single server-side
-	// zip archive despite allow_zip=false, do not pass the synthetic .zip to
-	// Choose (which would falsely fail with ErrWrongContent and stop failover
-	// to other providers).
+	// If TorBox already cached this 100+-file torrent as a single server-side
+	// zip archive despite allow_zip=false, inspect the zip over HTTP range
+	// requests (Central Directory + chosen member's Local File Header) so the
+	// named member can be streamed directly; fall back to errProviderZipped
+	// only when the zip or chosen member cannot be streamed (#667, #709).
 	if len(t.Files) == 1 && t.Files[0].Zipped {
-		cleanup()
-		return nil, fmt.Errorf("torbox: torrent cached as zipped archive (%s): %w", torrentFileSummary(files), errProviderZipped)
+		return p.acquireFromZip(ctx, req, id, t.Name, t.Files[0], files, added, cleanup)
 	}
 	chosen, err := req.Choose(files)
 	if err != nil {
@@ -366,7 +377,14 @@ func (p *torBox) Link(ctx context.Context, h Handle) (DirectLink, error) {
 	if h.TorrentID == "" || h.FileID == "" {
 		return DirectLink{}, ErrGone
 	}
-	q := url.Values{"token": {p.key}, "torrent_id": {h.TorrentID}, "file_id": {h.FileID}, "zip_link": {"false"}}
+	if u := p.recent.take(h.TorrentID, h.FileID, p.opts.Now()); u != "" {
+		return DirectLink{URL: u, Size: h.Size, Expires: p.opts.Now().Add(torBoxLinkTTL)}, nil
+	}
+	return p.requestDL(ctx, h.TorrentID, h.FileID, h.Size)
+}
+
+func (p *torBox) requestDL(ctx context.Context, torrentID, fileID string, size int64) (DirectLink, error) {
+	q := url.Values{"token": {p.key}, "torrent_id": {torrentID}, "file_id": {fileID}, "zip_link": {"false"}}
 	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/requestdl", query: q})
 	if err != nil {
 		return DirectLink{}, err
@@ -375,7 +393,7 @@ func (p *torBox) Link(ctx context.Context, h Handle) (DirectLink, error) {
 	if err := json.Unmarshal(data, &link); err != nil || link == "" {
 		return DirectLink{}, fmt.Errorf("torbox: requestdl returned no link: %w", ErrGone)
 	}
-	return DirectLink{URL: link, Size: h.Size, Expires: p.opts.Now().Add(torBoxLinkTTL)}, nil
+	return DirectLink{URL: link, Size: size, Expires: p.opts.Now().Add(torBoxLinkTTL)}, nil
 }
 
 func (p *torBox) Remove(ctx context.Context, torrentID string) error {
@@ -383,6 +401,8 @@ func (p *torBox) Remove(ctx context.Context, torrentID string) error {
 		return nil
 	}
 	p.list.forget(torrentID)
+	p.recent.forget(torrentID)
+	p.forgetZipCD(torrentID)
 	p.knownMu.Lock()
 	for hash, id := range p.known {
 		if id == torrentID {

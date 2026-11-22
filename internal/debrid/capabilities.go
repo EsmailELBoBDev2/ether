@@ -34,3 +34,11 @@ type edgePortableLinks interface{ edgePortableLinks() bool }
 type cdnEdgeApprover interface {
 	approvesCDNEdge(raw, candidate string) bool
 }
+
+// zipOnlyCheckBlindProvider is a provider whose bulk CheckCached cannot see
+// torrents cached only as a single server-side ZIP archive (TorBox zips
+// torrents of 100+ files and reports them uncached in /torrents/checkcached
+// even when cached-only /torrents/createtorrent returns the cached zip).
+// Returning a positive file-count threshold tells Service not to trust a
+// CheckCached miss for public torrents at or above that file count.
+type zipOnlyCheckBlindProvider interface{ zipOnlyCheckThreshold() int }

@@ -724,6 +724,8 @@ export interface SourceQuery {
   nzbUrl?: string;
   /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
+  /** Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list. */
+  fileCount?: number;
 }
 
 /** One non-directory file inside an archive (RAR, 7z, ZIP) from a release_files query. */
@@ -798,6 +800,8 @@ export interface SourceCandidate {
   codec?: string;
   /** Files inside this release; populated only by a release_files query. */
   files?: ReleaseFile[];
+  /** Known file count of the torrent when reported by an indexer or release_files query. */
+  fileCount?: number;
   /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
   usenetCheck?: UsenetCheckResult;
 }
@@ -860,6 +864,8 @@ export interface PlayableSource {
     passwordSecret?: string;
     /** Require an already-cached debrid copy even when the owner turned "Cached torrents only" off. */
     cachedOnly?: boolean;
+    /** Optional torrent file count hint when Ether has not seen the file list yet (e.g. a large collection magnet), so zip-only debrid caches (TorBox at 100+ files) are checked via cached-only add. */
+    fileCount?: number;
   };
   parts?: KindItemPart[];
 }

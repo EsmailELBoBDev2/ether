@@ -365,7 +365,7 @@ func (s *Service) reloadKnown(ctx context.Context, providerID, hash string) {
 		delete(s.known, key)
 		return
 	}
-	s.known[key] = knownState{cached: cached == 1, until: until}
+	s.known[key] = knownState{cached: cached == 1, checkUncertain: cached == 2, until: until}
 }
 
 // ---------------------------------------------------------------------------

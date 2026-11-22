@@ -157,6 +157,7 @@ type LiveEventBroadcast struct {
 	Name   string `json:"name"`
 	Kind   string `json:"kind,omitempty"` // tv|stream|radio
 	Region string `json:"region,omitempty"`
+	URL    string `json:"url,omitempty"`
 }
 
 // LiveEventMatchHints supplies normalised terms and broadcast callsigns used by

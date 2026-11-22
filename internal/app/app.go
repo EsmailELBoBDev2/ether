@@ -316,17 +316,21 @@ type App struct {
 	// Extensibility (docs/extend/SPEC.md). Each runtime type lives in its own
 	// file and is owned by one workstream: extend.go, console_stream.go,
 	// plugins.go and agent.go.
-	extendRT       *extendRuntime
-	streamRT       *consoleStreamRuntime
-	pluginsRT      *pluginRuntime
-	agentRT        *agentRuntime
-	eventBus       *events.Bus
-	eventRegistry  *events.Registry
-	systemEvents   *systemEventHooks
-	flowsRT        *flowsRuntime
-	liveEvents     *liveevents.Hub
-	pluginLiveOnce sync.Once
-	pluginLive     *PluginLiveService
+	extendRT           *extendRuntime
+	streamRT           *consoleStreamRuntime
+	pluginsRT          *pluginRuntime
+	agentRT            *agentRuntime
+	eventBus           *events.Bus
+	eventRegistry      *events.Registry
+	systemEvents       *systemEventHooks
+	flowsRT            *flowsRuntime
+	liveEvents         *liveevents.Hub
+	liveWatchMatcher   *liveevents.WatchMatcher
+	liveTicker         *liveevents.TickerService
+	liveAlertEngine    *liveevents.AlertEngine
+	liveAlertScheduler *liveevents.AlertScheduler
+	pluginLiveOnce     sync.Once
+	pluginLive         *PluginLiveService
 }
 
 // New builds every component. Nothing listens until Run.

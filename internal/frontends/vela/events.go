@@ -20,11 +20,26 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
+		var liveEventC <-chan time.Time
+		if i.host.LiveEventLink != nil {
+			s.mu.Lock()
+			isLiveChannel := s.channelID != ""
+			s.mu.Unlock()
+			if isLiveChannel {
+				lt := time.NewTicker(i.liveEventPollInterval())
+				defer lt.Stop()
+				liveEventC = lt.C
+			}
+		}
+
 		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
 		output := t.C
 		for {
 			select {
+
+			case <-liveEventC:
+				i.refreshSessionLiveEvent(ctx, viewer, s)
 
 			case <-output:
 				s.mu.Lock()

@@ -44,20 +44,26 @@ const (
 
 // Options configures a live events Hub.
 type Options struct {
-	Source             PluginSource
-	DB                 *sql.DB
-	Cluster            cluster.Cluster
-	ClusterBus         clusterbus.Bus
-	Clock              Clock
-	Log                *slog.Logger
-	MaxEventsPerFeed   int
-	MaxTotalEvents     int
-	MaxCachedDetails   int
-	MaxCachedQueries   int
-	MaxSubscribers     int
-	WatchEnricher      WatchEnricher
-	ScreenFeedResolver ScreenFeedResolver
+	Source              PluginSource
+	DB                  *sql.DB
+	Cluster             cluster.Cluster
+	ClusterBus          clusterbus.Bus
+	Clock               Clock
+	Log                 *slog.Logger
+	MaxEventsPerFeed    int
+	MaxTotalEvents      int
+	MaxCachedDetails    int
+	MaxCachedQueries    int
+	MaxSubscribers      int
+	AlertHub            *AlertHub
+	WatchEnricher       WatchEnricher
+	DetailWatchEnricher DetailWatchEnricher
+	ScreenFeedResolver  ScreenFeedResolver
 }
+
+// DetailWatchEnricher attaches viewer-scoped watch targets (including plugin
+// stream links from detail.Links) to a single LiveEventDetail.
+type DetailWatchEnricher func(ctx context.Context, viewer *core.Viewer, detail *core.LiveEventDetail)
 
 type cachedEvent struct {
 	event     core.LiveEvent
@@ -110,7 +116,7 @@ type Subscription struct {
 	feeds          map[string]struct{} // "pluginID:feedID"
 	eventIDs       map[string]struct{} // "pluginID:feedID:eventID"
 	updates        chan []core.LiveEvent
-	alerts         chan core.LiveEventAlert
+	alertSub       *AlertSubscription
 
 	sendMu       sync.Mutex
 	closed       bool
@@ -129,10 +135,10 @@ func (s *Subscription) Updates() <-chan []core.LiveEvent {
 // Alerts returns a channel delivering viewer-scoped in-app alerts, or nil if
 // Alerts was false in SubscribeRequest.
 func (s *Subscription) Alerts() <-chan core.LiveEventAlert {
-	if s == nil {
+	if s == nil || s.alertSub == nil {
 		return nil
 	}
-	return s.alerts
+	return s.alertSub.C
 }
 
 // Close unsubscribes from the hub. When the last subscriber for a feed closes,
@@ -186,31 +192,6 @@ func (s *Subscription) enqueueUpdates(batch []core.LiveEvent) {
 	}
 }
 
-func (s *Subscription) enqueueAlert(alert core.LiveEventAlert) {
-	if !s.wantsAlerts || s.alerts == nil {
-		return
-	}
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-	if s.closed {
-		return
-	}
-	select {
-	case s.alerts <- alert:
-		return
-	default:
-	}
-	// Drop oldest alert to make room for newest without blocking the hub.
-	select {
-	case <-s.alerts:
-	default:
-	}
-	select {
-	case s.alerts <- alert:
-	default:
-	}
-}
-
 func mergeEventBatches(older, newer []core.LiveEvent) []core.LiveEvent {
 	index := make(map[string]int, len(older)+len(newer))
 	out := make([]core.LiveEvent, 0, len(older)+len(newer))
@@ -256,30 +237,31 @@ type Hub struct {
 	sfEntities  singleflight[core.LiveEventEntitiesResponse]
 	sfStandings singleflight[core.LiveEventStandingsResponse]
 
-	mu                sync.Mutex
-	closed            bool
-	leading           bool
-	feedsLoaded       bool
-	feeds             map[string]FeedInfo // "pluginID:feedID" -> info
-	events            map[string]*cachedEvent
-	feedEventCounts   map[string]int
-	feedLastPolled    map[string]time.Time
-	queryCache        map[string]*cachedQuery
-	detailCache       map[string]*cachedDetail
-	entitiesCache     map[string]*cachedEntities
-	standingsCache    map[string]*cachedStandings
-	cacheSeq          int64
-	nextSubID         int64
-	subs              map[int64]*Subscription
-	alertSubs         map[int64]map[int64]*Subscription // viewerID -> subID -> sub
-	pollers           map[string]*feedPoller            // feedKey -> active poller
-	remoteInterests   map[string]remotePeerInterest     // origin -> peer interest
-	interestCancel    context.CancelFunc
-	remotePruneCancel context.CancelFunc
-	nextChangeHookID  int64
-	changeHooks       map[int64]ChangeHandler
-	watchEnricher     WatchEnricher
-	screenResolver    ScreenFeedResolver
+	mu                  sync.Mutex
+	closed              bool
+	leading             bool
+	feedsLoaded         bool
+	feeds               map[string]FeedInfo // "pluginID:feedID" -> info
+	events              map[string]*cachedEvent
+	feedEventCounts     map[string]int
+	feedLastPolled      map[string]time.Time
+	queryCache          map[string]*cachedQuery
+	detailCache         map[string]*cachedDetail
+	entitiesCache       map[string]*cachedEntities
+	standingsCache      map[string]*cachedStandings
+	cacheSeq            int64
+	nextSubID           int64
+	subs                map[int64]*Subscription
+	alertHub            *AlertHub
+	pollers             map[string]*feedPoller        // feedKey -> active poller
+	remoteInterests     map[string]remotePeerInterest // origin -> peer interest
+	interestCancel      context.CancelFunc
+	remotePruneCancel   context.CancelFunc
+	nextChangeHookID    int64
+	changeHooks         map[int64]ChangeHandler
+	watchEnricher       WatchEnricher
+	detailWatchEnricher DetailWatchEnricher
+	screenResolver      ScreenFeedResolver
 }
 
 // NewHub builds a live events hub. In standalone mode (opts.Cluster == nil),
@@ -319,37 +301,42 @@ func NewHub(opts Options) *Hub {
 	if maxSubs <= 0 {
 		maxSubs = defaultMaxSubscribers
 	}
+	alertHub := opts.AlertHub
+	if alertHub == nil {
+		alertHub = NewAlertHub()
+	}
 	runCtx, runCancel := context.WithCancel(context.Background())
 	h := &Hub{
-		source:           opts.Source,
-		cluster:          opts.Cluster,
-		cbus:             cbus,
-		origin:           clusterbus.NewOrigin(),
-		clock:            clk,
-		log:              log,
-		maxEventsPerFeed: maxPerFeed,
-		maxTotalEvents:   maxTotal,
-		maxCachedDetails: maxDetails,
-		maxCachedQueries: maxQueries,
-		maxSubscribers:   maxSubs,
-		runCtx:           runCtx,
-		runCancel:        runCancel,
-		leading:          opts.Cluster == nil,
-		feeds:            make(map[string]FeedInfo),
-		events:           make(map[string]*cachedEvent),
-		feedEventCounts:  make(map[string]int),
-		feedLastPolled:   make(map[string]time.Time),
-		queryCache:       make(map[string]*cachedQuery),
-		detailCache:      make(map[string]*cachedDetail),
-		entitiesCache:    make(map[string]*cachedEntities),
-		standingsCache:   make(map[string]*cachedStandings),
-		subs:             make(map[int64]*Subscription),
-		alertSubs:        make(map[int64]map[int64]*Subscription),
-		pollers:          make(map[string]*feedPoller),
-		remoteInterests:  make(map[string]remotePeerInterest),
-		changeHooks:      make(map[int64]ChangeHandler),
-		watchEnricher:    opts.WatchEnricher,
-		screenResolver:   opts.ScreenFeedResolver,
+		source:              opts.Source,
+		cluster:             opts.Cluster,
+		cbus:                cbus,
+		origin:              clusterbus.NewOrigin(),
+		clock:               clk,
+		log:                 log,
+		maxEventsPerFeed:    maxPerFeed,
+		maxTotalEvents:      maxTotal,
+		maxCachedDetails:    maxDetails,
+		maxCachedQueries:    maxQueries,
+		maxSubscribers:      maxSubs,
+		runCtx:              runCtx,
+		runCancel:           runCancel,
+		leading:             opts.Cluster == nil,
+		feeds:               make(map[string]FeedInfo),
+		events:              make(map[string]*cachedEvent),
+		feedEventCounts:     make(map[string]int),
+		feedLastPolled:      make(map[string]time.Time),
+		queryCache:          make(map[string]*cachedQuery),
+		detailCache:         make(map[string]*cachedDetail),
+		entitiesCache:       make(map[string]*cachedEntities),
+		standingsCache:      make(map[string]*cachedStandings),
+		subs:                make(map[int64]*Subscription),
+		alertHub:            alertHub,
+		pollers:             make(map[string]*feedPoller),
+		remoteInterests:     make(map[string]remotePeerInterest),
+		changeHooks:         make(map[int64]ChangeHandler),
+		watchEnricher:       opts.WatchEnricher,
+		detailWatchEnricher: opts.DetailWatchEnricher,
+		screenResolver:      opts.ScreenFeedResolver,
 	}
 	h.spoilers = NewSpoilerStore(opts.DB, clk, func(viewerID int64) {
 		h.publishClusterSpoiler(viewerID)
@@ -443,6 +430,44 @@ func (h *Hub) SetWatchEnricher(fn WatchEnricher) {
 	h.mu.Lock()
 	h.watchEnricher = fn
 	h.mu.Unlock()
+}
+
+// SetDetailWatchEnricher installs or replaces the optional detail-level watch
+// target enricher (A5), which has access to detail.Links in addition to the
+// event's broadcasts and matchHints. Safe to call concurrently.
+func (h *Hub) SetDetailWatchEnricher(fn DetailWatchEnricher) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.detailWatchEnricher = fn
+	h.mu.Unlock()
+}
+
+// AlertHub returns the unified in-app alert broker backing /live/stream?alerts=1.
+func (h *Hub) AlertHub() *AlertHub {
+	if h == nil {
+		return nil
+	}
+	return h.alertHub
+}
+
+// AlertDeliverer returns an AlertInAppDeliverer that delivers alerts through
+// this hub's unified AlertHub and clusterbus relay, returning the number of
+// local in-app subscribers reached.
+func (h *Hub) AlertDeliverer() AlertInAppDeliverer {
+	return hubAlertDeliverer{hub: h}
+}
+
+type hubAlertDeliverer struct {
+	hub *Hub
+}
+
+func (d hubAlertDeliverer) PublishAlert(viewerID int64, alert core.LiveEventAlert) int {
+	if d.hub == nil {
+		return 0
+	}
+	return d.hub.publishAlert(d.hub.runCtx, viewerID, alert)
 }
 
 // SetScreenFeedResolver installs or replaces the optional screen-to-feed
@@ -1028,9 +1053,6 @@ func (h *Hub) Subscribe(ctx context.Context, req SubscribeRequest) (*Subscriptio
 		updates:        make(chan []core.LiveEvent, defaultSubBuffer),
 		lastSentHash:   make(map[string]string),
 	}
-	if sub.wantsAlerts {
-		sub.alerts = make(chan core.LiveEventAlert, defaultAlertBuffer)
-	}
 
 	h.mu.Lock()
 	if h.closed {
@@ -1043,13 +1065,10 @@ func (h *Hub) Subscribe(ctx context.Context, req SubscribeRequest) (*Subscriptio
 	}
 	h.nextSubID++
 	sub.id = h.nextSubID
-	h.subs[sub.id] = sub
-	if sub.wantsAlerts {
-		if h.alertSubs[viewerID] == nil {
-			h.alertSubs[viewerID] = make(map[int64]*Subscription)
-		}
-		h.alertSubs[viewerID][sub.id] = sub
+	if sub.wantsAlerts && h.alertHub != nil {
+		sub.alertSub = h.alertHub.SubscribeAlerts(viewerID)
 	}
+	h.subs[sub.id] = sub
 	leading := h.leading
 	if leading {
 		h.reconcilePollersLocked()
@@ -1196,14 +1215,7 @@ func (h *Hub) unsubscribe(subID int64) {
 		return
 	}
 	delete(h.subs, subID)
-	if sub.wantsAlerts && sub.viewerID > 0 {
-		if set := h.alertSubs[sub.viewerID]; set != nil {
-			delete(set, subID)
-			if len(set) == 0 {
-				delete(h.alertSubs, sub.viewerID)
-			}
-		}
-	}
+	alertSub := sub.alertSub
 	leading := h.leading
 	hadInterest := len(sub.feeds) > 0 || len(sub.eventIDs) > 0
 	if leading {
@@ -1213,6 +1225,9 @@ func (h *Hub) unsubscribe(subID int64) {
 	}
 	h.mu.Unlock()
 
+	if alertSub != nil {
+		alertSub.Close()
+	}
 	if !leading && hadInterest {
 		h.publishLocalInterest(h.runCtx)
 	}
@@ -1222,8 +1237,12 @@ func (h *Hub) unsubscribe(subID int64) {
 // node and relays it over clusterbus so follower nodes deliver it as well.
 // Spoiler-free viewers receive start alerts only (A7).
 func (h *Hub) PublishAlert(ctx context.Context, viewerID int64, alert core.LiveEventAlert) {
+	_ = h.publishAlert(ctx, viewerID, alert)
+}
+
+func (h *Hub) publishAlert(ctx context.Context, viewerID int64, alert core.LiveEventAlert) int {
 	if h == nil || viewerID <= 0 {
-		return
+		return 0
 	}
 	if ctx == nil {
 		ctx = h.runCtx
@@ -1231,30 +1250,26 @@ func (h *Hub) PublishAlert(ctx context.Context, viewerID int64, alert core.LiveE
 	if alert.At == "" {
 		alert.At = h.clock.Now().UTC().Format(time.RFC3339)
 	}
-	h.deliverAlertLocal(ctx, viewerID, alert)
+	delivered := h.deliverAlertLocal(ctx, viewerID, alert)
 	h.publishClusterAlert(ctx, viewerID, alert)
+	return delivered
 }
 
-func (h *Hub) deliverAlertLocal(ctx context.Context, viewerID int64, alert core.LiveEventAlert) {
-	h.mu.Lock()
-	set := h.alertSubs[viewerID]
-	if len(set) == 0 {
-		h.mu.Unlock()
-		return
+func (h *Hub) deliverAlertLocal(ctx context.Context, viewerID int64, alert core.LiveEventAlert) int {
+	if h == nil || h.alertHub == nil || h.alertHub.SubscriberCount(viewerID) == 0 {
+		return 0
 	}
-	targets := make([]*Subscription, 0, len(set))
-	for _, sub := range set {
-		targets = append(targets, sub)
-	}
-	h.mu.Unlock()
-
 	spoilerFree, _ := h.spoilers.SpoilerFree(ctx, viewerID)
-	if spoilerFree && !AllowAlertWhenSpoilerFree(alert.Kind) {
-		return
+	if spoilerFree {
+		revealed := false
+		if alert.EventID != "" {
+			revealed, _ = h.spoilers.IsRevealed(ctx, viewerID, alert.EventID)
+		}
+		if !revealed && !AllowAlertWhenSpoilerFree(alert.Kind) {
+			return 0
+		}
 	}
-	for _, sub := range targets {
-		sub.enqueueAlert(alert)
-	}
+	return h.alertHub.PublishAlert(viewerID, alert)
 }
 
 // SpoilerFree returns viewerID's spoilerFree preference (default false).
@@ -1422,12 +1437,17 @@ func (h *Hub) prepareEventsForViewer(ctx context.Context, viewer *core.Viewer, e
 func (h *Hub) prepareDetailForViewer(ctx context.Context, viewer *core.Viewer, d core.LiveEventDetail) *core.LiveEventDetail {
 	out := d.Clone()
 	h.mu.Lock()
+	detailEnricher := h.detailWatchEnricher
 	enricher := h.watchEnricher
 	h.mu.Unlock()
-	if enricher != nil && viewer != nil {
-		slice := []core.LiveEvent{out.LiveEvent}
-		enricher(ctx, viewer, slice)
-		out.LiveEvent = slice[0]
+	if viewer != nil {
+		if detailEnricher != nil {
+			detailEnricher(ctx, viewer, &out)
+		} else if enricher != nil {
+			slice := []core.LiveEvent{out.LiveEvent}
+			enricher(ctx, viewer, slice)
+			out.LiveEvent = slice[0]
+		}
 	}
 	if viewer == nil || viewer.ID <= 0 {
 		return &out

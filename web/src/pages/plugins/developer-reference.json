@@ -393,11 +393,11 @@
   },
   {
     "path": "internal/core/liveevent.go#LiveEventBroadcast.fields.md",
-    "code": "| Field | Go type | Wire presence | Description |\n|---|---|---|---|\n| `name` | `string` | emitted (validation may require a value) |  |\n| `kind` | `string` | may be omitted (see validation for conditions) | tv\\|stream\\|radio |\n| `region` | `string` | may be omitted (see validation for conditions) |  |\n"
+    "code": "| Field | Go type | Wire presence | Description |\n|---|---|---|---|\n| `name` | `string` | emitted (validation may require a value) |  |\n| `kind` | `string` | may be omitted (see validation for conditions) | tv\\|stream\\|radio |\n| `region` | `string` | may be omitted (see validation for conditions) |  |\n| `url` | `string` | may be omitted (see validation for conditions) |  |\n"
   },
   {
     "path": "internal/core/liveevent.go#LiveEventBroadcast",
-    "code": "// LiveEventBroadcast describes one network, stream, or radio carriage for an event.\ntype LiveEventBroadcast struct {\n\tName   string `json:\"name\"`\n\tKind   string `json:\"kind,omitempty\"` // tv|stream|radio\n\tRegion string `json:\"region,omitempty\"`\n}"
+    "code": "// LiveEventBroadcast describes one network, stream, or radio carriage for an event.\ntype LiveEventBroadcast struct {\n\tName   string `json:\"name\"`\n\tKind   string `json:\"kind,omitempty\"` // tv|stream|radio\n\tRegion string `json:\"region,omitempty\"`\n\tURL    string `json:\"url,omitempty\"`\n}"
   },
   {
     "path": "internal/core/liveevent.go#LiveEventMatchHints.fields.md",

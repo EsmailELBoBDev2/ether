@@ -253,6 +253,7 @@ type instance struct {
 	eventsWriteTimeout time.Duration
 	disconnectGrace    time.Duration
 	liveHeartbeatCh    <-chan time.Time
+	liveEventInterval  time.Duration
 
 	host            frontend.Host
 	ctx             context.Context
@@ -850,6 +851,7 @@ func (i *instance) routes() {
 	i.route("PUT", "/live/preferences", i.liveEventsPreferencesSet)
 	i.route("PATCH", "/live/preferences", i.liveEventsPreferencesSet)
 	i.route("GET", "/live/entities", i.liveEntities)
+	i.route("GET", "/live/ticker", i.liveTicker)
 	i.route("GET", "/screens/{id}", i.screen)
 	i.route("PUT", "/favorites/entities/{key}", i.favoriteEntity)
 	i.route("DELETE", "/favorites/entities/{key}", i.favoriteEntity)

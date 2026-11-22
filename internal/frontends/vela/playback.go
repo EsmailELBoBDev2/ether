@@ -38,6 +38,9 @@ type playSession struct {
 	id                  string
 	item                frontend.RatingKey
 	titleID             string
+	channelID           string
+	liveProgrammeKey    string
+	liveEvent           *frontend.LiveEventRef
 	client              client
 	declaredCaps        frontend.ClientCaps
 	activeVersionHandle string
@@ -363,7 +366,16 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		p["paths"] = []object{path, {"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}}}
 	}
 	dev := requestDevice(r)
-	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
+	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, channelID: b.ChannelID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
+	if b.ChannelID != "" && i.host.LiveEventLink != nil {
+		if progKey, ref, err := i.host.LiveEventLink.LiveEventForChannel(r.Context(), v, b.ChannelID); err == nil {
+			ps.liveProgrammeKey = progKey
+			ps.liveEvent = cloneLiveEventRef(ref)
+			if ref != nil {
+				p["liveEvent"] = liveEventObject(ref)
+			}
+		}
+	}
 	ps.noteActivity()
 
 	if !plan.SourceChosenAt.IsZero() {
@@ -440,7 +452,11 @@ func (i *instance) session(w http.ResponseWriter, r *http.Request) (*frontend.Vi
 	return v, s
 }
 func (s *playSession) snapshot() object {
-	return object{"cursor": strconv.FormatUint(s.cursor, 10), "revision": s.revision, "plan": s.plan, "publishedRanges": []object{}, "lastObservationSequence": s.sequence, "diagnostics": object{"encoder": s.diagnostics, "media": s.observedRecords, "history": s.diagnosticHistory, "clientErrors": s.clientErrors}}
+	out := object{"cursor": strconv.FormatUint(s.cursor, 10), "revision": s.revision, "plan": s.plan, "publishedRanges": []object{}, "lastObservationSequence": s.sequence, "diagnostics": object{"encoder": s.diagnostics, "media": s.observedRecords, "history": s.diagnosticHistory, "clientErrors": s.clientErrors}}
+	if s.channelID != "" {
+		out["liveEvent"] = liveEventObject(s.liveEvent)
+	}
+	return out
 }
 func (s *playSession) publish(kind string) {
 	s.cursor++
@@ -471,6 +487,7 @@ func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.refreshColdVersions(r, v, s)
+	i.refreshSessionLiveEvent(r.Context(), v, s)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	send(w, 200, s.snapshot())
@@ -1334,7 +1351,11 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		// Serialize while holding the plan lock; the snapshot shares the plan map.
 		chunks := []string{}
 		for _, e := range events {
-			b, _ := json.Marshal(e)
+			var payload any = e
+			if raw, ok := e["data"]; ok {
+				payload = raw
+			}
+			b, _ := json.Marshal(payload)
 			chunks = append(chunks, fmt.Sprintf("id: %s\nevent: %s\ndata: %s\n\n", e["cursor"], e["type"], b))
 		}
 		signal := s.signal

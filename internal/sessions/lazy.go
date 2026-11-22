@@ -10,15 +10,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 )
 
@@ -42,7 +44,14 @@ type lazyStreams struct {
 	grants       LazyGrants
 	ttl          time.Duration
 	remote       func(*http.Request) bool
+	clientIP     func(*http.Request) (netip.Addr, bool)
 	newHeartbeat func(time.Duration) (<-chan time.Time, func())
+}
+
+// SetClientIP binds a host peer resolver so every lazy stream request updates
+// both ClientIP and Remote directly from the authenticated source address.
+func (s *lazyStreams) SetClientIP(fn func(*http.Request) (netip.Addr, bool)) {
+	s.clientIP = fn
 }
 
 // NewLazyStreams creates a surface-bound durable, reusable capability issuer.
@@ -426,7 +435,17 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Caps.Remote = req.Caps.Remote || s.remote(r)
+	if s.clientIP != nil {
+		if ip, ok := s.clientIP(r); ok && ip.IsValid() && !ip.IsUnspecified() && !ip.IsMulticast() {
+			req.Caps.ClientIP = ip.Unmap().String()
+			req.Caps.Remote = !clientnet.LAN(ip)
+		} else {
+			req.Caps.ClientIP = ""
+			req.Caps.Remote = true
+		}
+	} else {
+		req.Caps.Remote = s.remote(r)
+	}
 	fresh, err := s.broker.confirmCurrent(ctx, viewer, req.Caps)
 	if err != nil || (req.Item == 0) == (req.Channel == "") {
 		http.NotFound(w, r)
@@ -532,7 +551,7 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if id != "" {
 		if existing, _, err := s.broker.access(ctx, access, id); err != nil {
 			id = ""
-		} else if req.Caps.Remote && !existing.caps.Remote {
+		} else if req.Caps.Remote != existing.caps.Remote {
 			if err := s.broker.Stop(ctx, access, id); err != nil {
 				http.NotFound(w, r)
 				return

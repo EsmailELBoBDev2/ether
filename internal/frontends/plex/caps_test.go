@@ -234,14 +234,25 @@ func TestRemoteBitrateCap(t *testing.T) {
 	if c.MaxBitrateKbps != 8000 || !c.Remote {
 		t.Fatalf("remote cap: %+v", c)
 	}
+	// A public client claiming location=lan stays remote.
+	applyDecisionQuery(&c, url.Values{"location": {"lan"}})
+	if !c.Remote {
+		t.Fatalf("remote client flipped to local by location=lan: %+v", c)
+	}
 	c = (&Request{Product: "Plex for iOS", Platform: "iOS"}).ClientCaps(8000)
 	if c.MaxBitrateKbps != 0 {
 		t.Fatalf("local capped: %+v", c)
 	}
+	// Explicit bitrate/resolution limits apply, but location=cellular/wan must
+	// never flip a local client to remote.
 	q := url.Values{"maxVideoBitrate": {"3000"}, "videoResolution": {"1280x720"}, "location": {"cellular"}}
 	applyDecisionQuery(&c, q)
-	if c.MaxBitrateKbps != 3000 || c.MaxHeight != 720 || !c.Remote {
+	if c.MaxBitrateKbps != 3000 || c.MaxHeight != 720 || c.Remote {
 		t.Fatalf("decision query: %+v", c)
+	}
+	applyDecisionQuery(&c, url.Values{"location": {"wan"}})
+	if c.Remote {
+		t.Fatalf("local client flipped to remote by location=wan: %+v", c)
 	}
 	for in, want := range map[string]int{"1920x1080": 1080, "1080x1920": 1080, "720": 720, "1080p": 1080, "bad": 0, "": 0} {
 		if got := parseResolutionHeight(in); got != want {

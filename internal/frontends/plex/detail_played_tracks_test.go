@@ -330,11 +330,12 @@ func TestDetailKeepsPlayedReleaseTracksWhenSearchFails(t *testing.T) {
 		{"lan", 0, playedLowBitrate, playedLAN, url.Values{}, playedLAN, true},
 		// The player asks a lower bitrate than the detail request declares.
 		{"decision-bitrate-only", 0, playedHighBitrate, playedLAN, url.Values{"maxVideoBitrate": {"4000"}}, playedLAN, true},
-		// A bridged LAN client: the decision says location=wan, the detail
-		// request looks local.
+		// A LAN client sending location=wan stays local (source IP decides).
 		{"decision-wan-detail-lan", 0, playedLowBitrate, playedLAN, wan, playedLAN, true},
-		// Same, with a remote ceiling the stored release exceeds.
-		{"decision-wan-detail-lan-remote-cap", 8000, playedHighBitrate, playedLAN, wan, playedLAN, false},
+		// Same with a remote ceiling configured: LAN client stays local and is not remote-capped.
+		{"decision-wan-detail-lan-remote-cap", 8000, playedHighBitrate, playedLAN, wan, playedLAN, true},
+		// An actual public WAN play with a remote ceiling the stored release exceeds.
+		{"wan-play-lan-detail-remote-cap", 8000, playedHighBitrate, playedPublic, wan, playedLAN, false},
 		// Played at home, detail page later opened away from home.
 		{"lan-play-wan-detail", 0, playedLowBitrate, playedLAN, url.Values{}, playedPublic, false},
 	}

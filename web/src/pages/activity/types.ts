@@ -189,6 +189,7 @@ export type PlayDetail = Play &
     platform: string;
     durationMs: number;
     ip?: string;
+    networkReason?: string;
     avgBitrateKbps?: number;
     sourceKbps?: number;
     uhd?: boolean;

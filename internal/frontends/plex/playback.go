@@ -576,8 +576,8 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	sourceLimits.MaxBitrateKbps = 0
 	sourceLimits.DefaultRemoteBitrate = false
 	applyDecisionQuery(&caps, q)
-	// The decision query can identify WAN even when the metadata request
-	// looked local. This ceiling constrains delivery, including direct play.
+	// Remote bitrate ceilings apply only when the authenticated source address
+	// is remote. This ceiling constrains delivery, including direct play.
 	if limit := s.cfg().Transcode.RemoteMaxBitrateKbps; caps.Remote && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
 		if caps.MaxBitrateKbps == 0 {
 			caps.DefaultRemoteBitrate = true

@@ -185,7 +185,7 @@ func TestPlayByIDResolvesLiveAndCoalescedSessions(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil {
 		t.Fatalf("coalesced live session: %d %s", w.Code, w.Body)
 	}
-	if got["id"] != "part-2" || got["watchedMs"] != 180000.0 || got["bytes"] != float64(22<<20) || got["bufferEvents"] != 4.0 || got["reasonKind"] != "audio_codec" || got["reasonDetail"] != "dts" || got["release"] != "Harbor.Lights.2025.1080p.WEB-DL" || got["ip"] != "192.168.1.50" {
+	if got["id"] != "part-2" || got["watchedMs"] != 180000.0 || got["bytes"] != float64(22<<20) || got["bufferEvents"] != 4.0 || got["reasonKind"] != "audio_codec" || got["reasonDetail"] != "dts" || got["release"] != "Harbor.Lights.2025.1080p.WEB-DL" || got["ip"] != "192.168.1.50" || got["networkReason"] != "Home network (source 192.168.1.50)" {
 		t.Fatalf("unexpected coalesced detail: %v", got)
 	}
 
@@ -203,7 +203,7 @@ func TestPlayByIDResolvesLiveAndCoalescedSessions(t *testing.T) {
 	if w2.Code != 200 || json.Unmarshal(w2.Body.Bytes(), &gotFresh) != nil {
 		t.Fatalf("fresh live session: %d %s", w2.Code, w2.Body)
 	}
-	if gotFresh["id"] != "fresh-1" || gotFresh["username"] != "Alex" || gotFresh["startMs"] != 1500.0 || gotFresh["bufferEvents"] != 0.0 || gotFresh["remote"] != true || gotFresh["ip"] != "203.0.113.9" {
+	if gotFresh["id"] != "fresh-1" || gotFresh["username"] != "Alex" || gotFresh["startMs"] != 1500.0 || gotFresh["bufferEvents"] != 0.0 || gotFresh["remote"] != true || gotFresh["ip"] != "203.0.113.9" || gotFresh["networkReason"] != "Remote network (source 203.0.113.9)" {
 		t.Fatalf("unexpected fresh detail: %v", gotFresh)
 	}
 }

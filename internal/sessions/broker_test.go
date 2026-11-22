@@ -51,7 +51,7 @@ func (f *fakePlayback) Prepare(_ context.Context, u *core.User, key core.RatingK
 		return nil, core.ErrStreamLimit
 	}
 	id := fmt.Sprintf("source-%d", f.prepares)
-	p := &core.PlaySession{ID: id, UserID: u.ID, ClientID: c.ClientID, Key: key, Info: core.MediaInfo{Container: "mp4", Streams: []core.StreamInfo{{Type: "subtitle", ExternalURL: "https://upstream.invalid/?token=account-credential-secret"}}}}
+	p := &core.PlaySession{ID: id, UserID: u.ID, ClientID: c.ClientID, Client: c, Key: key, Info: core.MediaInfo{Container: "mp4", Streams: []core.StreamInfo{{Type: "subtitle", ExternalURL: "https://upstream.invalid/?token=account-credential-secret"}}}}
 	f.sessions[id] = p
 	return p, nil
 }

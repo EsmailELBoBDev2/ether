@@ -97,6 +97,7 @@ function backend(cluster = false, summaryOverride: Record<string, unknown> = emp
           origin: "Usenet",
           release: "Other.Film.2025.2160p.WEB-DL.HDR10.DTS-GRP",
           ip: "198.51.100.8",
+          networkReason: "Remote network (source 198.51.100.8)",
           remote: true,
           measured: true,
           startMs: 2400,
@@ -127,6 +128,8 @@ function backend(cluster = false, summaryOverride: Record<string, unknown> = emp
               Username: "Sam",
               Decision: "directplay",
               SpeedBps: 125000,
+              ip: "192.168.3.10",
+              networkReason: "Home network (source 192.168.3.10)",
               Client: { deviceName: "Phone" },
             },
             {
@@ -147,6 +150,7 @@ function backend(cluster = false, summaryOverride: Record<string, unknown> = emp
               container: "hls",
               origin: "Usenet",
               ip: "198.51.100.8",
+              networkReason: "Remote network (source 198.51.100.8)",
               viewOffset: 900_000,
               BufferedUntil: 1_200e9,
               Info: { size: 10.8 * 1024 ** 3, duration: 3_600e9, bitrateKbps: 24000 },
@@ -381,6 +385,7 @@ describe("Activity", () => {
     expect(within(drawer).getByText("Usenet")).toBeInTheDocument();
     expect(within(drawer).getByText("Away from home")).toBeInTheDocument();
     expect(within(drawer).getByText("198.51.100.8")).toBeInTheDocument();
+    expect(within(drawer).getByText("Remote network (source 198.51.100.8)")).toBeInTheDocument();
     expect(within(drawer).getByText(/2 times, 4\.2\s*s/)).toBeInTheDocument();
     expect(calls.some((c) => c.url.endsWith("/stats/plays/other"))).toBe(true);
 
@@ -389,11 +394,20 @@ describe("Activity", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByTestId("search")).toHaveTextContent("");
 
+    // Card view shows computed locality reason for LAN sessions.
+    const liveCard = screen.getByText("Example film").closest("article")!;
+    expect(within(liveCard).getByText("Home network (source 192.168.3.10)")).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     const otherRow = screen.getByText("Other film").closest("li")!;
     const otherGrid = otherRow.querySelector(":scope > div.grid")!;
     // Keep strictly 6 grid cells (poster, title+release, codecs, network, progress, action) so long filenames never shift columns.
     expect(otherGrid.children).toHaveLength(6);
+    expect(
+      within(otherGrid.children[3] as HTMLElement).getByText(
+        "Remote network (source 198.51.100.8)",
+      ),
+    ).toBeInTheDocument();
     expect(
       within(otherGrid.children[1] as HTMLElement).getByText(
         "Other.Film.2025.2160p.WEB-DL.HDR10.DTS-GRP",

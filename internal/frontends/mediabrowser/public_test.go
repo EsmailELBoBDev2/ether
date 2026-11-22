@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/conform"
 	"github.com/braedonsaunders/ether/internal/conform/openapi/spectest"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
@@ -117,6 +120,12 @@ func TestConnectionPageLocaleCoverage(t *testing.T) {
 }
 
 func TestSystemEndpointReportsCallerNetwork(t *testing.T) {
+	restore := clientnet.OverrideHostPrefixes([]netip.Prefix{
+		netip.MustParsePrefix("198.18.10.0/24"),
+		netip.MustParsePrefix("2001:db8:abcd:1::/64"),
+	})
+	t.Cleanup(restore)
+
 	r := &route.Router{}
 	if err := PublicRoutes(r, PublicInfo{ID: "123", ServerName: "Ether", ProductName: "Emby Server"}); err != nil {
 		t.Fatal(err)
@@ -129,6 +138,10 @@ func TestSystemEndpointReportsCallerNetwork(t *testing.T) {
 		{"/System/Endpoint", "192.168.68.70:51000", false, true},
 		{"/emby/System/Endpoint", "127.0.0.1:51000", true, true},
 		{"/emby/System/Endpoint", "[fe80::1]:51000", false, true},
+		{"/System/Endpoint", "100.64.1.10:51000", false, true},
+		{"/System/Endpoint", "198.18.10.25:51000", false, true},
+		{"/System/Endpoint", "[2001:db8:abcd:1::42]:51000", false, true},
+		{"/System/Endpoint", "[2001:db8:ffff:1::42]:51000", false, false},
 		{"/System/Endpoint", "203.0.113.9:51000", false, false},
 	} {
 		req := httptest.NewRequest("GET", tc.path, nil)
@@ -139,6 +152,26 @@ func TestSystemEndpointReportsCallerNetwork(t *testing.T) {
 		var got map[string]bool
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got["IsLocal"] != tc.local || got["IsInNetwork"] != tc.lan {
 			t.Fatalf("%s from %s: %d %s", tc.path, tc.remote, w.Code, w.Body.String())
+		}
+	}
+
+	// away() used by pre-rolls shares the same clientnet.LAN classification.
+	for _, tc := range []struct {
+		ip       string
+		wantAway bool
+	}{
+		{"192.168.3.10", false},
+		{"100.64.1.10", false},
+		{"198.18.10.25", false},
+		{"2001:db8:abcd:1::42", false},
+		{"2001:db8:ffff:1::42", true},
+		{"203.0.113.9", true},
+	} {
+		inst := &instance{host: frontend.Host{ClientIP: func(*http.Request) (netip.Addr, bool) {
+			return netip.MustParseAddr(tc.ip), true
+		}}}
+		if got := inst.away(httptest.NewRequest("GET", "/", nil)); got != tc.wantAway {
+			t.Errorf("away(%s) = %v, want %v", tc.ip, got, tc.wantAway)
 		}
 	}
 }

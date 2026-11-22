@@ -135,13 +135,42 @@ describe("Viewer Actions menu", () => {
     expect(screen.queryByText("Sam Rivera")).toBeNull();
   });
 
-  it("hides pause, remove, merge and invite on the owner's page", async () => {
+  it("copies settings from another viewer after confirming", async () => {
+    const { fake } = renderApp("/viewers/2/overview");
+    await openActions();
+    await pick("Copy settings from another viewer");
+    const dialog = await screen.findByRole(
+      "dialog",
+      { name: "Copy settings from another viewer" },
+      WAIT,
+    );
+    const submit = within(dialog).getByRole("button", { name: "Copy settings" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("radio", { name: /The Kids/ }));
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+    const confirm = await screen.findByRole(
+      "dialog",
+      { name: /Copy The Kids's settings to Sam Rivera\?/ },
+      WAIT,
+    );
+    fireEvent.click(within(confirm).getByRole("button", { name: "Copy settings" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/livetv/policies/2")).toHaveLength(1), WAIT);
+    expect(calls(fake, "PATCH", "/users/2")).toHaveLength(1);
+    expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(1);
+    expect(calls(fake, "PUT", "/stream-preferences/2")).toHaveLength(1);
+  });
+
+  it("hides pause, remove, merge, invite and copy on the owner's page", async () => {
     renderApp("/viewers/1/overview");
     await openActions();
     expect(screen.queryByRole("menuitem", { name: "Pause access" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Remove viewer" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Merge into another viewer" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Send invite link" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Copy settings from another viewer" }),
+    ).toBeNull();
     expect(screen.getByRole("menuitem", { name: "Reset password" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Approve a TV code" })).toBeInTheDocument();
   });

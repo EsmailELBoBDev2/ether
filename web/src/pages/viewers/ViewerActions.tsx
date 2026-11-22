@@ -31,7 +31,7 @@ import { PasswordInput } from "../../components/fields";
 import { viewerName } from "../../components/pickers";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { t, tn } from "../../i18n";
-import { api, apiFetch, errorMessage } from "../../lib/api";
+import { api, ApiError, apiFetch, errorMessage } from "../../lib/api";
 import type { Viewer } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
 import { MIN_LOCAL_PASSWORD } from "../me/SignInMethods";
@@ -172,12 +172,16 @@ export function ViewerActions({
       icon: Tv,
       onSelect: () => setPanel("tvcode"),
     },
-    {
-      key: "copy",
-      label: t("Copy settings from another viewer"),
-      icon: Copy,
-      onSelect: () => setPanel("copy"),
-    },
+    ...(!viewer.isOwner
+      ? [
+          {
+            key: "copy",
+            label: t("Copy settings from another viewer"),
+            icon: Copy,
+            onSelect: () => setPanel("copy"),
+          } satisfies ContextMenuEntry,
+        ]
+      : []),
     {
       key: "signout",
       label: t("Sign out everywhere"),
@@ -601,6 +605,12 @@ function CopySettingsPanel({
   const [from, setFrom] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setFrom(null);
+      setError("");
+    }
+  }, [open, viewer.id]);
   const name = viewerName(viewer);
   const choices = (viewers.data ?? []).filter((v) => v.id !== viewer.id);
   const source = choices.find((v) => v.id === from);
@@ -618,7 +628,15 @@ function CopySettingsPanel({
     setBusy(true);
     setError("");
     try {
-      const users = await api.users();
+      const [users, safetyPolicy, streamPrefs, liveTVPolicy] = await Promise.all([
+        api.users(),
+        apiFetch<unknown>(`/safety/policies/${source.id}`),
+        apiFetch<unknown>(`/stream-preferences/${source.id}`),
+        apiFetch<unknown>(`/livetv/policies/${source.id}`).catch((err: unknown) => {
+          if (err instanceof ApiError && err.status === 404) return null;
+          throw err;
+        }),
+      ]);
       const template = users.find((u) => u.id === source.id);
       if (!template) throw new Error(t("That viewer no longer exists."));
       await api.updateUser(viewer.id, {
@@ -626,9 +644,19 @@ function CopySettingsPanel({
         maxContentRating: template.maxContentRating,
         allowedLibraries: template.allowedLibraries ?? [],
       });
-      for (const path of ["/safety/policies", "/stream-preferences", "/livetv/policies"]) {
-        const value = await apiFetch<unknown>(`${path}/${source.id}`);
-        await apiFetch(`${path}/${viewer.id}`, { method: "PUT", body: JSON.stringify(value) });
+      await apiFetch(`/safety/policies/${viewer.id}`, {
+        method: "PUT",
+        body: JSON.stringify(safetyPolicy),
+      });
+      await apiFetch(`/stream-preferences/${viewer.id}`, {
+        method: "PUT",
+        body: JSON.stringify(streamPrefs),
+      });
+      if (liveTVPolicy !== null) {
+        await apiFetch(`/livetv/policies/${viewer.id}`, {
+          method: "PUT",
+          body: JSON.stringify(liveTVPolicy),
+        });
       }
       toast.success(t("Settings copied"), {
         description: t("{name} now has {source}'s settings.", {

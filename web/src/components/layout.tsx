@@ -41,6 +41,7 @@ export function DomainPage({
   tabHref,
   children,
   className,
+  fit = false,
 }: {
   title: string;
   description?: string;
@@ -57,11 +58,18 @@ export function DomainPage({
   active?: string;
   children: ReactNode;
   className?: string;
+  /**
+   * The active tab fills the viewport height on desktop instead of the page
+   * scrolling (dashboards, full-height tables). Children get a flex column
+   * that takes the remaining height; give them min heights so a very short
+   * window scrolls rather than crushing them.
+   */
+  fit?: boolean;
 }) {
   const navigate = useNavigate();
   const tabsRoot = useRef<HTMLDivElement>(null);
-  return (
-    <PageContainer className={cn("space-y-6", className)}>
+  const head = (
+    <>
       <PageHeader title={title} description={description} actions={actions} />
       {status}
       {tabs && tabs.length > 1 ? (
@@ -87,6 +95,26 @@ export function DomainPage({
           ) : null}
         </div>
       ) : null}
+    </>
+  );
+  if (fit) {
+    return (
+      <div className="app-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div
+          className={cn(
+            "reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-1 flex-col gap-6 p-4 sm:p-6 lg:min-h-0",
+            className,
+          )}
+        >
+          {head}
+          <div className="flex flex-1 flex-col lg:min-h-0">{children}</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <PageContainer className={cn("space-y-6", className)}>
+      {head}
       <div className="space-y-6 pb-4">{children}</div>
     </PageContainer>
   );

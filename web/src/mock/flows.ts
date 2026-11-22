@@ -19,9 +19,11 @@ import {
   type FieldSchema,
   type Flow,
   type FlowNode,
+  type FlowSummary,
   type FlowTemplate,
   type Graph,
   type Run,
+  type RunStats,
   type RunStep,
   type ValidationIssue,
   type ValidationResult,
@@ -2151,8 +2153,13 @@ export function createFlowsMock(opts: FlowsMockOptions = {}) {
         }
         return notFound();
       }
+      if (method === "GET" && seg[1] === "stats" && seg.length === 2) {
+        const range = q.get("range") === "24h" || q.get("range") === "30d" ? q.get("range")! : "7d";
+        return json({ range, stats: mockRunStats(range as "24h" | "7d" | "30d", flows, runs) });
+      }
       if (seg.length === 1) {
-        if (method === "GET") return json({ flows });
+        // The live list carries summaries, never graphs.
+        if (method === "GET") return json({ flows: flows.map(flowSummaryOf) });
         if (method === "POST") {
           const graph = b.graph as Graph;
           const v = validateFlowGraph(graph);
@@ -2273,6 +2280,192 @@ export function createFlowsMock(opts: FlowsMockOptions = {}) {
       }
       return notFound();
     },
+  };
+}
+
+/** A flow as GET /api/flows lists it (internal/admin flowSummary). */
+function flowSummaryOf(f: Flow): FlowSummary {
+  const kinds = [
+    ...new Set(
+      f.graph.nodes.filter((n) => n.kind.startsWith("trigger.") && !n.disabled).map((n) => n.kind),
+    ),
+  ].sort();
+  const events = [
+    ...new Set(
+      f.graph.nodes
+        .filter((n) => n.kind === "trigger.event" && !n.disabled)
+        .flatMap((n) => (n.config as { events?: string[] } | undefined)?.events ?? []),
+    ),
+  ];
+  return {
+    id: f.id,
+    name: f.name,
+    description: f.description,
+    enabled: f.enabled,
+    disabledReason: f.disabledReason,
+    version: f.version,
+    tags: f.tags,
+    templateId: f.templateId,
+    consecutiveFailures: f.consecutiveFailures,
+    trigger: { kinds, events },
+    lastRunAt: f.lastRunAt,
+    lastStatus: f.lastStatus,
+    runs24h: f.runs24h ?? 0,
+    failures24h: f.failures24h ?? 0,
+    activeRuns: f.activeRuns ?? 0,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+  };
+}
+
+/**
+ * Overview aggregates for mock mode: a deterministic, realistic history
+ * (busier evenings, the lighting flow failing now and then) shaped like
+ * GET /api/flows/stats.
+ */
+function mockRunStats(range: "24h" | "7d" | "30d", flows: Flow[], runs: Run[]): RunStats {
+  const bucketMs = range === "24h" ? H : range === "7d" ? 6 * H : 24 * H;
+  const n = range === "24h" ? 24 : range === "7d" ? 28 : 30;
+  const now = new Date();
+  const end = new Date(now);
+  if (range === "30d") end.setHours(0, 0, 0, 0);
+  else if (range === "7d") end.setHours(Math.floor(now.getHours() / 6) * 6, 0, 0, 0);
+  else end.setMinutes(0, 0, 0);
+  const since = end.getTime() - (n - 1) * bucketMs;
+  let seed = 7;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  const weights = flows.map((f) => (f.enabled ? Math.max(1, f.runs24h ?? 1) : 0.2));
+  const perFlow = flows.map((f) => ({
+    flowId: f.id,
+    name: f.name,
+    runs: 0,
+    failed: 0,
+    dur: 0,
+    timed: 0,
+  }));
+  const buckets = Array.from({ length: n }, (_, i) => {
+    const start = since + i * bucketMs;
+    const hour = new Date(start).getHours();
+    const evening = range === "30d" ? 1 : hour >= 17 && hour <= 23 ? 1.8 : hour < 7 ? 0.3 : 1;
+    const scale = range === "24h" ? 0.4 : range === "7d" ? 1.6 : 5;
+    const b = {
+      start: new Date(start).toISOString(),
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      active: 0,
+      avgDurationMs: 0,
+    };
+    let dur = 0;
+    let timed = 0;
+    flows.forEach((f, k) => {
+      const count = Math.round(weights[k]! * evening * scale * (0.5 + rand()));
+      for (let c = 0; c < count; c++) {
+        const failRate = f.id.includes("cinema") ? 0.12 : f.id.includes("failure") ? 0.05 : 0.01;
+        const r = rand();
+        const ms = f.id.includes("idle") ? 600_000 + rand() * 900_000 : 400 + rand() * 4_000;
+        perFlow[k]!.runs++;
+        if (r < failRate) {
+          b.failed++;
+          perFlow[k]!.failed++;
+        } else if (r < failRate + 0.04) b.skipped++;
+        else b.succeeded++;
+        if (r >= failRate && r < failRate + 0.04) continue;
+        dur += ms;
+        timed++;
+        perFlow[k]!.dur += ms;
+        perFlow[k]!.timed++;
+      }
+    });
+    b.avgDurationMs = timed ? Math.round(dur / timed) : 0;
+    return b;
+  });
+  if (n)
+    buckets[n - 1]!.active = runs.filter(
+      (r) => r.status === "waiting" || r.status === "running",
+    ).length;
+  const totals = buckets.reduce(
+    (t, b) => ({
+      runs: t.runs + b.succeeded + b.failed + b.skipped + b.active,
+      succeeded: t.succeeded + b.succeeded,
+      failed: t.failed + b.failed,
+      skipped: t.skipped + b.skipped,
+      active: t.active + b.active,
+      avgDurationMs: 0,
+    }),
+    { runs: 0, succeeded: 0, failed: 0, skipped: 0, active: 0, avgDurationMs: 0 },
+  );
+  const timedAll = perFlow.reduce((s, f) => s + f.timed, 0);
+  totals.avgDurationMs = timedAll
+    ? Math.round(perFlow.reduce((s, f) => s + f.dur, 0) / timedAll)
+    : 0;
+  const triggerCounts = new Map<
+    string,
+    { kind: Run["triggerKind"]; eventType?: string; runs: number }
+  >();
+  flows.forEach((f, k) => {
+    const sum = flowSummaryOf(f);
+    const ev = sum.trigger?.events?.[0];
+    const kind = (sum.trigger?.kinds[0] ?? "trigger.event") as Run["triggerKind"];
+    const key = `${kind}:${ev ?? ""}`;
+    const cur = triggerCounts.get(key) ?? {
+      kind,
+      eventType: kind === "trigger.event" ? ev : undefined,
+      runs: 0,
+    };
+    cur.runs += perFlow[k]!.runs;
+    triggerCounts.set(key, cur);
+  });
+  const failedNames = [
+    "MQTT broker unreachable: dial tcp 10.0.0.51:1883: i/o timeout",
+    "Discord webhook answered 429 Too Many Requests",
+    "Viewer has no active session",
+  ];
+  const failing = flows.filter((_, k) => perFlow[k]!.failed > 0);
+  const recentFailures: Run[] = failing.length
+    ? Array.from({ length: Math.min(6, totals.failed) }, (_, i) => {
+        const f = failing[i % failing.length]!;
+        const at = new Date(now.getTime() - (i * 2 + 1) * 47 * M).toISOString();
+        return {
+          id: runs.find((r) => r.flowId === f.id && r.status === "failed")?.id ?? `run_fail_${i}`,
+          flowId: f.id,
+          flowName: f.name,
+          flowVersion: f.version,
+          triggerKind: "trigger.event",
+          eventType: "playback.session.started",
+          status: "failed",
+          attempt: 1,
+          error: failedNames[i % failedNames.length],
+          stepCount: 3,
+          startedAt: at,
+          updatedAt: at,
+          finishedAt: at,
+        };
+      })
+    : [];
+  return {
+    since: new Date(since).toISOString(),
+    bucketMs,
+    totals,
+    buckets,
+    flows: perFlow
+      .filter((f) => f.runs > 0)
+      .map((f) => ({
+        flowId: f.flowId,
+        name: f.name,
+        runs: f.runs,
+        failed: f.failed,
+        avgDurationMs: f.timed ? Math.round(f.dur / f.timed) : 0,
+      }))
+      .sort((a, b) => b.runs - a.runs),
+    triggers: [...triggerCounts.values()]
+      .filter((x) => x.runs > 0)
+      .sort((a, b) => b.runs - a.runs)
+      .slice(0, 8),
+    recentFailures,
   };
 }
 

@@ -842,6 +842,202 @@ export function StackedColumns({
   );
 }
 
+/** A series in {@link StackedSeriesColumns}, bottom of the stack first. */
+export interface StackSeries {
+  key: string;
+  label: string;
+  color: Viz;
+}
+
+/** One column of {@link StackedSeriesColumns}: a value per series, in series order. */
+export interface StackRow {
+  key: string;
+  label: string;
+  values: number[];
+}
+
+/**
+ * Columns over time stacked from several series (e.g. runs by outcome):
+ * a 2px surface gap between segments, the top one rounded, a legend with
+ * each series' total, and every series' value on hover. `fill` takes the
+ * container's height so the chart can fit a dashboard cell.
+ */
+export function StackedSeriesColumns({
+  data,
+  series,
+  height: fixedHeight = 180,
+  fill = false,
+  ariaLabel,
+  valueFormat = (v) => String(v),
+  tickFormat,
+  className,
+}: {
+  data: StackRow[];
+  series: StackSeries[];
+  height?: number;
+  fill?: boolean;
+  ariaLabel: string;
+  valueFormat?: (v: number) => string;
+  tickFormat?: (v: number) => string;
+  className?: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const [ref, size] = useElementSize<HTMLDivElement>();
+  const width = Math.max(240, Math.round(size.width || 600));
+  const height = fill ? Math.max(96, Math.round(size.height || fixedHeight)) : fixedHeight;
+  const padB = 22;
+  const padT = 8;
+  const totals = data.map((d) => d.values.reduce((s, v) => s + Math.max(0, v), 0));
+  const max = niceMax(Math.max(0, ...totals));
+  const ticks = [0, max / 2, max];
+  const fmtTick = tickFormat ?? valueFormat;
+  const padL = axisPad(ticks.map(fmtTick));
+  const plotH = height - padB - padT;
+  const slot = data.length ? (width - padL) / data.length : 0;
+  const gap = Math.min(2, slot * 0.25);
+  const barW = Math.max(1, Math.min(slot - gap, 28));
+  const base = padT + plotH;
+  const labels = tickIndexes(data.length, width - padL, 72);
+  const h = hover !== null ? data[hover] : undefined;
+  const seriesTotals = series.map((_, k) => data.reduce((s, d) => s + (d.values[k] ?? 0), 0));
+  return (
+    <div className={cn("flex flex-col", fill && "h-full min-h-0", className)}>
+      <div ref={ref} className={cn("relative", fill && "min-h-0 flex-1")}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          width="100%"
+          height={height}
+          className={cn("block overflow-visible", fill && "absolute inset-0")}
+          role="img"
+          aria-label={ariaLabel}
+          onMouseLeave={() => setHover(null)}
+        >
+          {ticks.map((tick) => {
+            const y = base - (tick / max) * plotH;
+            return (
+              <g key={tick}>
+                <line
+                  x1={padL}
+                  x2={width}
+                  y1={y}
+                  y2={y}
+                  className="stroke-border-subtle"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={padL - 6}
+                  y={y + 3}
+                  textAnchor="end"
+                  className="fill-fg-subtle text-[10px] tabular-nums"
+                >
+                  {fmtTick(tick)}
+                </text>
+              </g>
+            );
+          })}
+          {data.map((d, i) => {
+            const x = padL + i * slot + (slot - barW) / 2;
+            const parts = d.values.map((v, k) => ({ k, h: (Math.max(0, v) / max) * plotH }));
+            const top = parts.reduce((last, p) => (p.h > 0 ? p.k : last), -1);
+            let y = base;
+            return (
+              <g
+                key={d.key}
+                className={cn("transition-opacity", hover !== null && hover !== i && "opacity-40")}
+              >
+                <rect
+                  x={padL + i * slot}
+                  y={padT}
+                  width={slot}
+                  height={plotH}
+                  fill="transparent"
+                  onMouseEnter={() => setHover(i)}
+                  onFocus={() => setHover(i)}
+                  onBlur={() => setHover(null)}
+                  tabIndex={0}
+                  aria-label={`${d.label}: ${series
+                    .map((s, k) => `${s.label} ${valueFormat(d.values[k] ?? 0)}`)
+                    .join(", ")}`}
+                  className="focus:outline-none"
+                />
+                {parts.map((p) => {
+                  if (p.h <= 0) return null;
+                  const segTop = y - p.h;
+                  const path =
+                    p.k === top
+                      ? roundedTopBar(x, segTop, barW, p.h, 4)
+                      : `M${x},${y}V${segTop}H${x + barW}V${y}Z`;
+                  y = segTop - 2;
+                  return (
+                    <path
+                      key={p.k}
+                      d={path}
+                      className={cn("pointer-events-none", VIZ[series[p.k]!.color].fill)}
+                    />
+                  );
+                })}
+              </g>
+            );
+          })}
+          <line
+            x1={padL}
+            x2={width}
+            y1={base}
+            y2={base}
+            className="stroke-border"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+          {labels.map((i, n) => {
+            const d = data[i];
+            if (!d) return null;
+            const first = n === 0;
+            const last = n === labels.length - 1 && labels.length > 1;
+            return (
+              <text
+                key={`l${i}`}
+                x={first ? padL : last ? width : padL + i * slot + slot / 2}
+                y={height - 6}
+                textAnchor={first ? "start" : last ? "end" : "middle"}
+                className="fill-fg-subtle text-[10px]"
+              >
+                {d.label}
+              </text>
+            );
+          })}
+        </svg>
+        {h && hover !== null ? (
+          <div
+            className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-elevated px-2.5 py-1.5 text-xs shadow-md"
+            style={{
+              left: `${Math.min(88, Math.max(12, ((padL + hover * slot + slot / 2) / width) * 100))}%`,
+            }}
+          >
+            <div className="font-medium text-fg">{h.label}</div>
+            {series.map((s, k) => (
+              <div key={s.key} className="flex items-center gap-1.5 tabular-nums text-fg-muted">
+                <span className={cn("size-2 rounded-sm", VIZ[s.color].bg)} aria-hidden />
+                {s.label}{" "}
+                <span className="font-medium text-fg">{valueFormat(h.values[k] ?? 0)}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <ul className="mt-2 flex shrink-0 flex-wrap gap-x-4 gap-y-1 text-xs">
+        {series.map((s, k) => (
+          <li key={s.key} className="flex items-center gap-1.5">
+            <span className={cn("size-2.5 rounded-sm", VIZ[s.color].bg)} aria-hidden />
+            <span className="text-fg">{s.label}</span>
+            <span className="tabular-nums text-fg-muted">{valueFormat(seriesTotals[k] ?? 0)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 interface LineSeries {
   key: string;
   label: string;

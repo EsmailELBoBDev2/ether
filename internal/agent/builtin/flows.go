@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -218,7 +219,7 @@ func flowsTools(d Deps) []tools.Tool {
 				}
 				return tools.Result{
 					Data:  data,
-					Links: []tools.Link{{Label: "Flows", Route: "/flows"}},
+					Links: []tools.Link{{Label: "Flows", Route: "/flows/list"}},
 				}, nil
 			},
 		}),
@@ -248,7 +249,7 @@ func flowsTools(d Deps) []tools.Tool {
 				_ = json.Unmarshal(raw, &data)
 				return tools.Result{
 					Data:  map[string]any{"flow": data},
-					Links: []tools.Link{{Label: f.Name, Route: "/flows/" + f.ID}},
+					Links: []tools.Link{{Label: f.Name, Route: "/flows/edit/" + f.ID}},
 				}, nil
 			},
 		}),
@@ -328,7 +329,7 @@ func flowsTools(d Deps) []tools.Tool {
 						}
 						return tools.Result{
 							Data:  map[string]any{"created": true, "flow": flowSummary(*saved)},
-							Links: []tools.Link{{Label: saved.Name, Route: "/flows/" + saved.ID}},
+							Links: []tools.Link{{Label: saved.Name, Route: "/flows/edit/" + saved.ID}},
 						}, nil
 					},
 				), nil
@@ -388,7 +389,7 @@ func flowsTools(d Deps) []tools.Tool {
 						}
 						return tools.Result{
 							Data:  map[string]any{"changed": true, "flowId": id, "enabled": enabled},
-							Links: []tools.Link{{Label: existing.Name, Route: "/flows/" + existing.ID}},
+							Links: []tools.Link{{Label: existing.Name, Route: "/flows/edit/" + existing.ID}},
 						}, nil
 					},
 				), nil
@@ -488,7 +489,7 @@ func flowsTools(d Deps) []tools.Tool {
 							"run":   runSummary(res.Run),
 							"steps": steps,
 						},
-						Links: []tools.Link{{Label: existing.Name, Route: "/flows/" + existing.ID}},
+						Links: []tools.Link{{Label: existing.Name, Route: "/flows/edit/" + existing.ID}},
 					}, nil
 				}
 				if dryRun {
@@ -547,7 +548,7 @@ func flowsTools(d Deps) []tools.Tool {
 							"run":   runSummary(*run),
 							"steps": stepItems,
 						},
-						Links: []tools.Link{{Label: "Flow runs", Route: "/flows/" + run.FlowID}},
+						Links: []tools.Link{{Label: "Run trace", Route: "/flows/runs?run=" + url.QueryEscape(run.ID)}},
 					}, nil
 				}
 				flowID, err := optStr(in, "flowId", 128)
@@ -590,7 +591,7 @@ func flowsTools(d Deps) []tools.Tool {
 				}
 				return tools.Result{
 					Data:  data,
-					Links: []tools.Link{{Label: "Flows", Route: "/flows"}},
+					Links: []tools.Link{{Label: "Flow runs", Route: "/flows/runs"}},
 				}, nil
 			},
 		}),

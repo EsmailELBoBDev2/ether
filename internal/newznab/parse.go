@@ -81,7 +81,7 @@ func (r rawItem) toRelease(indexer string) core.Release {
 		Size: r.size, PubDate: pub, UsenetDate: usenetDate, Poster: strings.TrimSpace(r.poster),
 		Grabs: r.grabs, Password: r.password, Category: r.category,
 		IndexerSubtitles: r.subs,
-		TitleIDs: r.ids,
+		TitleIDs:         r.ids,
 	}
 	// The id keeps its original link-first input so stored releases, pins and
 	// cached NZBs keep their ids.

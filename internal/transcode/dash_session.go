@@ -219,14 +219,19 @@ func (s *Session) renderMPDLocked() []byte {
 			reps[i].Codecs = c
 		}
 	}
-	if s.info.Duration <= 0 {
+	dur := s.info.Duration
+	if s.plan != nil && s.plan.span > 0 {
+		dur = s.plan.span
+	}
+	if dur <= 0 {
 		s.log.Warn("using growing DASH manifest", "reason", "source duration unavailable")
 		return renderLiveMPD(s.created, time.Now(), s.segDur, s.commonDoneLocked(), s.dash.initURL, s.dash.mediaURL, reps)
 	}
+	minBuffer := s.segDur
 	if s.dash.pms {
-		return renderMPDWithBuffer(s.info.Duration, s.segDur, 2*s.segDur, s.dash.initURL, s.dash.mediaURL, reps)
+		minBuffer = 2 * s.segDur
 	}
-	return renderMPD(s.info.Duration, s.segDur, s.dash.initURL, s.dash.mediaURL, reps)
+	return renderMPDWithPlan(dur, s.segDur, minBuffer, s.plan, s.dash.initURL, s.dash.mediaURL, reps)
 }
 
 // ServeInit implements core.DASHSession: representation rep's
@@ -326,6 +331,13 @@ func (s *Session) collectDASH(r *run, exited bool) {
 				break
 			}
 			tr.next++
+			if tr.sl.index != nil && r.startSeg > 0 && !tr.sl.started &&
+				c.start < r.spec.Start-tr.sl.tol && c.end <= r.spec.Start+tr.sl.tol {
+				// Pure seek preroll ending at or before this run's planned
+				// segment start; drop it so sought segments match the MPD.
+				s.removals.remove(c.path)
+				continue
+			}
 			for _, o := range tr.sl.add(c) {
 				segs = append(segs, segPub{t: st, mt: t, out: o})
 			}
@@ -385,9 +397,9 @@ func (s *Session) collectDASH(r *run, exited bool) {
 		}
 		done := s.done[sp.t]
 		n := sp.out.n
-		if done[n] {
-			// An earlier run's copy is as good; don't keep this one on
-			// disk until the run exits.
+		if done[n] || (r.planEnd > 0 && n >= r.planEnd) {
+			// An earlier run's copy is as good (or past this run's forced-key
+			// boundary); don't keep this one on disk until the run exits.
 			if sp.file != "" {
 				s.removals.remove(sp.file)
 			}
@@ -409,10 +421,18 @@ func (s *Session) collectDASH(r *run, exited bool) {
 	}
 	produced, maxDone := -1, -1
 	for _, tr := range dr.tracks {
-		if produced < 0 || tr.sl.count < produced {
-			produced, maxDone = tr.sl.count, tr.sl.last
-		} else if tr.sl.count == produced && tr.sl.last < maxDone {
-			maxDone = tr.sl.last
+		slLast := tr.sl.last
+		slCount := tr.sl.count
+		if r.planEnd > 0 && slLast >= r.planEnd {
+			slLast = r.planEnd - 1
+			if limit := r.planEnd - r.startSeg; limit >= 0 && slCount > limit {
+				slCount = limit
+			}
+		}
+		if produced < 0 || slCount < produced {
+			produced, maxDone = slCount, slLast
+		} else if slCount == produced && slLast < maxDone {
+			maxDone = slLast
 		}
 	}
 	if produced > r.produced {
@@ -433,6 +453,7 @@ func (s *Session) collectDASH(r *run, exited bool) {
 			s.failErr = nil
 		}
 		s.throttleLocked()
+		s.chainOrHoldLocked(r)
 		s.broadcastLocked()
 	}
 }

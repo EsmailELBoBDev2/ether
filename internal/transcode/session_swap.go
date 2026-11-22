@@ -235,7 +235,7 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 func (s *Session) segForOffsetLocked(at time.Duration) int {
 	seg := 0
 	if at > s.base {
-		if s.plan != nil && !s.isDASH() {
+		if s.plan != nil {
 			seg = s.plan.IndexAt(at - s.base)
 		} else if s.segDur > 0 {
 			seg = int((at - s.base) / s.segDur)

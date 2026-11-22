@@ -371,6 +371,24 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		if spec.ChunkDur > s.segDur/2 {
 			spec.ChunkDur = s.segDur / 2
 		}
+		if s.plan != nil && spec.Decision.EncodesVideo(s.info) {
+			// A keyframe-planned DASH session (copy primary) may run an
+			// encoded lower rung or failover re-encode; force keyframes at
+			// the plan's boundaries so every rendition shares the MPD's
+			// SegmentTimeline.
+			end := s.total
+			if end-seg > maxForcedKeySegments {
+				end = seg + maxForcedKeySegments
+				rp.planEnd = end
+			}
+			origin := time.Duration(0)
+			if len(inputTimestampArgs(spec)) == 0 {
+				origin = spec.Start
+			}
+			for k := seg + 1; k <= end && k < s.total; k++ {
+				spec.KeyTimes = append(spec.KeyTimes, s.segStart(k)-origin)
+			}
+		}
 		// The muxer produces video (the wanted rung) then audio; map
 		// those to their session tracks.
 		var mapping []int
@@ -385,6 +403,12 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 			mapping = append(mapping, at)
 		}
 		dr = newDASHRun(spec.Dir, mapping, s.base, s.segDur, s.total, seg)
+		if s.plan != nil {
+			plan, base := s.plan, s.base // boundaries never change after StartHLS
+			for _, tr := range dr.tracks {
+				tr.sl.index = func(t time.Duration) int { return plan.IndexAt(t - base) }
+			}
+		}
 	}
 	var cr *chunkRun
 	if s.chunkedLocked(spec.Decision) {

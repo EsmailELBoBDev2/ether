@@ -261,3 +261,13 @@ type samsungSourcePlayback struct {
 }
 
 func (p *samsungSourcePlayback) InputURL(string) string { return p.url }
+
+func TestSessionWithInfoPreservesLateKeyframes(t *testing.T) {
+	kfs := []core.KeyframePoint{{Offset: 0, Time: 0}, {Offset: 1000, Time: 2002 * time.Millisecond}}
+	ps := &core.PlaySession{ID: "p1", Info: core.MediaInfo{Container: "mkv", Duration: 60 * time.Second, Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc"}}, Keyframes: kfs}}
+	entryInfo := core.MediaInfo{Container: "mkv", Duration: 60 * time.Second, Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc"}}}
+	got := sessionWithInfo(ps, entryInfo)
+	if len(got.Info.Keyframes) != len(kfs) || got.Info.Keyframes[1].Time != 2002*time.Millisecond {
+		t.Fatalf("sessionWithInfo dropped late keyframes: %+v", got.Info.Keyframes)
+	}
+}

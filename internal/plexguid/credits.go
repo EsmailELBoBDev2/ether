@@ -403,16 +403,6 @@ func (s *Service) catalogStamp(ctx context.Context, k core.RatingKey) int64 {
 	return stamp
 }
 
-func (s *Service) storeCreditsFromItem(ctx context.Context, k core.RatingKey, guid string, it providerItem) {
-	if s == nil || s.db == nil {
-		return
-	}
-	if _, _, ok := validCreditsGUID(guid); !ok {
-		return
-	}
-	_ = s.StoreCredits(ctx, k, guid, creditsFromProviderItem(it))
-}
-
 // StoreCredits durably caches tc for (k, guid) stamped against the title's
 // current catalogue refresh timestamp.
 func (s *Service) StoreCredits(ctx context.Context, k core.RatingKey, guid string, tc TitleCredits) error {
@@ -543,21 +533,6 @@ func (s *Service) CachedCreditsMany(ctx context.Context, keys []core.RatingKey, 
 		rows.Close()
 	}
 	return out
-}
-
-// ScheduleCredits kicks off one deduplicated background credit fetch for
-// (k, guid) when Background is enabled. Safe to call on hot paths.
-func (s *Service) ScheduleCredits(k core.RatingKey, guid string) {
-	if s == nil || s.jobs == nil || s.ctx.Err() != nil {
-		return
-	}
-	if s.o.Token == nil || s.o.Token() == "" {
-		return
-	}
-	if _, _, ok := validCreditsGUID(guid); !ok {
-		return
-	}
-	_, _ = s.ResolveCreditsBounded(s.ctx, k, guid, 0)
 }
 
 // ResolveCreditsBounded returns cached provider credits for (k, guid)

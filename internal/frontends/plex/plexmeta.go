@@ -181,12 +181,16 @@ func applyPlexMetaDates(t *frontend.Title, m *model.Metadata, o frontend.Metadat
 
 // Slugs are Plex catalogue identities, not a formatting of a title. Only use
 // the provider's slug when its cached record still matches the verified GUID.
-func (s *Server) verifiedPlexSlug(ctx context.Context, key frontend.RatingKey) string {
+// Non-detail list paths only check the batched plexmeta overlay and never fall
+// back to per-item provider-credit lookups.
+func (s *Server) verifiedPlexSlug(ctx context.Context, key frontend.RatingKey, allowCredits bool) string {
 	if row, ok := s.plexMetaCached(ctx, key); ok && row.Slug != "" {
 		return row.Slug
 	}
-	if credits, ok := s.plexCreditsCached(ctx, key); ok && credits.Slug != "" {
-		return credits.Slug
+	if allowCredits {
+		if credits, ok := s.plexCreditsCached(ctx, key); ok && credits.Slug != "" {
+			return credits.Slug
+		}
 	}
 	return ""
 }

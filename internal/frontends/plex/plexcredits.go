@@ -26,29 +26,18 @@ func (s *Server) libraryCredits() frontend.LibraryCredits {
 	return c
 }
 
-func (s *Server) withPlexCredits(ctx context.Context, keys []frontend.RatingKey, guids map[frontend.RatingKey]string, scheduleDetail bool) context.Context {
-	credSrc := s.libraryCredits()
-	if credSrc == nil || len(keys) == 0 || len(guids) == 0 {
-		return ctx
-	}
-	rows := credSrc.CachedCreditsMany(ctx, keys, guids)
-	if scheduleDetail {
-		seen := make(map[frontend.RatingKey]bool, len(keys))
-		for _, k := range keys {
-			if k == 0 || seen[k] {
-				continue
-			}
-			seen[k] = true
-			guid := guids[k]
-			if !strings.HasPrefix(guid, "plex://") {
-				continue
-			}
-			if _, ok := rows[k]; !ok {
-				credSrc.ScheduleCredits(k, guid)
-			}
+// withPlexCredits attaches a read-only batch snapshot of cached provider
+// credits for this render. Non-detail list/section/hub renders always attach
+// an empty snapshot without touching the database so metadata() never falls
+// back to per-item GUID or credit lookups on list paths.
+func (s *Server) withPlexCredits(ctx context.Context, keys []frontend.RatingKey, guids map[frontend.RatingKey]string, detail bool) context.Context {
+	batch := plexCreditsBatch{guids: guids}
+	if detail && len(keys) > 0 && len(guids) > 0 {
+		if credSrc := s.libraryCredits(); credSrc != nil {
+			batch.rows = credSrc.CachedCreditsMany(ctx, keys, guids)
 		}
 	}
-	return context.WithValue(ctx, plexCreditsCtxKey{}, plexCreditsBatch{rows: rows, guids: guids})
+	return context.WithValue(ctx, plexCreditsCtxKey{}, batch)
 }
 
 func (s *Server) plexCreditsCached(ctx context.Context, k frontend.RatingKey) (frontend.LibraryTitleCredits, bool) {
@@ -196,6 +185,7 @@ func (s *Server) applyDetailCredits(ctx context.Context, t *frontend.Title, md *
 	if t == nil || md == nil {
 		return
 	}
+	t = s.enrich(t)
 	if ov, ok := s.plexMetaOverlay(ctx, t.Key); ok {
 		t = applyPlexMetaTitle(t, ov.Overlay)
 	}

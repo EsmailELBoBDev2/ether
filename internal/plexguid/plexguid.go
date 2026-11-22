@@ -1171,7 +1171,6 @@ func (s *Service) verifyItemsWithProof(ctx context.Context, k core.RatingKey, ki
 				"rating_key", int64(k), "guid", guid, "kind", kind)
 			continue
 		}
-		s.storeCreditsFromItem(ctx, k, guid, item)
 		return identityRecord{GUID: guid, TMDB: k.TMDB(), Title: item.Title, Year: item.Year}
 	}
 	return identityRecord{}

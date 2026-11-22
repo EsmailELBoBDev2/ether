@@ -569,11 +569,10 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 
 	// Per-viewer decision header (#31); detail pages only, never lists.
 	s.decorateDetail(ctx, pr, t, &md)
-	_, hadCredits := s.plexCreditsCached(ctx, t.Key)
 	start := time.Now()
 	s.projectDetailBlocks(ctx, pr, t, &md, memo, children, onDeck, related, extras, extraTypes)
 	if extras || related {
-		s.refreshDetailGUID(ctx, t, &md, start, extras, hadCredits)
+		s.refreshDetailGUID(ctx, t, &md, start, extras)
 	}
 	return md
 }
@@ -590,7 +589,7 @@ type boundedGUIDResolver interface {
 // during the request or within the remaining first-open budget. Only called
 // for detail page opens (includeExtras=1 or includeRelated=1), never for bare
 // metadata/Play requests or batches.
-func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *model.Metadata, start time.Time, extras, hadCredits bool) {
+func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *model.Metadata, start time.Time, extras bool) {
 	guidSrc := s.libraryGUIDs()
 	if guidSrc == nil || t == nil || md == nil {
 		return
@@ -608,7 +607,7 @@ func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *m
 			}
 		}
 	}
-	if !hadCredits && strings.HasPrefix(md.GUID, "plex://") && t.Type != frontend.TypeSeason {
+	if strings.HasPrefix(md.GUID, "plex://") && t.Type != frontend.TypeSeason {
 		if credSrc := s.libraryCredits(); credSrc != nil {
 			credits, ok := credSrc.CachedCredits(ctx, t.Key, md.GUID)
 			if !ok {

@@ -655,6 +655,10 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 		s.preloadShowLanguages(ctx, pr, page, o)
 		s.preloadTrackChoices(ctx, pr, page, o)
 	}
+	// PlayQueue rows are playback lists, not detail opens: attach an empty
+	// credits snapshot so per-row metadata() calls never hit plexguid_mappings
+	// or plexguid_title_credits one row at a time.
+	ctx = s.withPlexCredits(ctx, nil, nil, false)
 	for _, row := range rows {
 		var md model.Metadata
 		if row.extra != nil {

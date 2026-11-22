@@ -2,6 +2,7 @@ package mediabrowser
 
 import (
 	"errors"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -762,6 +763,12 @@ func (i *instance) browseRoutes() error {
 	return i.playlistRoutes()
 }
 
+// sortByRandom reports whether the app asked for Jellyfin's Random order as
+// its first sort key.
+func sortByRandom(r *http.Request) bool {
+	return strings.EqualFold(firstListValue(route.Query(r.URL.Query(), "SortBy")), "Random")
+}
+
 func itemQuery(r *http.Request) frontend.ItemQuery {
 	q := frontend.ItemQuery{Offset: queryInt(r, "StartIndex", 0), Limit: queryInt(r, "Limit", 50)}
 	// SortBy and SortOrder are lists. Clients send them comma-joined
@@ -1350,7 +1357,22 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		i.writePersonalItems(w, r, v, id)
 		return
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil {
-		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), q)
+		// SortBy=Random: a random window of the library, shuffled. The reply
+		// still reports the offset the app asked for.
+		pq := q
+		random := sortByRandom(r) && q.Limit > 0 && q.Offset == 0
+		if random {
+			probe := q
+			probe.Sort, probe.Desc, probe.Limit = "", false, 1
+			if first, e := i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), probe); e == nil && first.Total > q.Limit {
+				pq.Sort, pq.Desc = "", false
+				pq.Offset = rand.IntN(first.Total - q.Limit + 1)
+			}
+		}
+		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), pq)
+		if random && err == nil {
+			rand.Shuffle(len(page.Items), func(a, b int) { page.Items[a], page.Items[b] = page.Items[b], page.Items[a] })
+		}
 	} else if key, e := ids.ParseRatingKeyGUID(parent[0]); e == nil {
 		page, err = i.host.Experience.Children(r.Context(), v, device(r), key, q)
 		if key.Kind() == frontend.KindCollection && err == nil {

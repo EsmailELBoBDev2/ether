@@ -707,6 +707,12 @@ func taglessImage(images []frontend.Image, imageType string, index int) (fronten
 		kinds = []string{frontend.ImageThumb, frontend.ImageStill}
 	case "banner":
 		kinds = []string{frontend.ImageBanner}
+	case "chapter":
+		// Ether has no per-chapter stills. Every chapter of an item shows the
+		// item's own cover, so apps that only list chapters with an image
+		// (Jellyfin Web) still list them.
+		kinds = []string{frontend.ImagePoster, "primary", frontend.ImageStill, frontend.ImageThumb}
+		index = 0
 	default:
 		return frontend.Image{}, false
 	}

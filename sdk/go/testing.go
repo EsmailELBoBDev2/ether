@@ -120,7 +120,9 @@ type MockHost struct {
 	Kinds             map[string][]KindItem      // kindKey -> pushed items, in upsert order
 	KindHiddenIDs     map[string]map[string]bool // kindKey -> externalID -> hidden by mock library Rules (#615)
 	KindPolicyFilter  func(kindKey string, item KindItem) bool
-	Sources           []SourceCandidate // returned by ResolveSources
+	Sources           []SourceCandidate     // returned by ResolveSources
+	SourceIndexers    []IndexerSearchStatus // returned alongside Sources by ResolveSourcesWithResult (#733)
+	SourceHandler     func(ctx context.Context, q SourceQuery) (SourceResolveResult, error)
 	Blobs             map[string][]byte // cache blob ref -> bytes
 	Folders           map[string][]FolderEntry
 	PublishedEvents   []RecordedPublishedEvent
@@ -763,11 +765,27 @@ func mockItemMatchesAllFacets(item KindItem, facets map[string][]string) bool {
 	return true
 }
 
-// ResolveSources returns the canned Sources.
-func (m *MockHost) ResolveSources(_ context.Context, _ SourceQuery) ([]SourceCandidate, error) {
+// ResolveSources returns the canned Sources (or calls SourceHandler if set).
+func (m *MockHost) ResolveSources(ctx context.Context, q SourceQuery) ([]SourceCandidate, error) {
+	res, err := m.ResolveSourcesWithResult(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return res.Candidates, nil
+}
+
+// ResolveSourcesWithResult returns the canned Sources and SourceIndexers (or
+// delegates to SourceHandler when set) (#733).
+func (m *MockHost) ResolveSourcesWithResult(ctx context.Context, q SourceQuery) (SourceResolveResult, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return append([]SourceCandidate{}, m.Sources...), nil
+	handler := m.SourceHandler
+	cands := append([]SourceCandidate{}, m.Sources...)
+	idx := append([]IndexerSearchStatus(nil), m.SourceIndexers...)
+	m.mu.RUnlock()
+	if handler != nil {
+		return handler(ctx, q)
+	}
+	return SourceResolveResult{Candidates: cands, Indexers: idx}, nil
 }
 
 // CachePut stores bytes under a sha256 blob ref, like the real cache.

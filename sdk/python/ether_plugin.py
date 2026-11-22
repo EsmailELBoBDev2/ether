@@ -2758,6 +2758,8 @@ class MockHostClient:
         self.kind_hidden_ids: Dict[str, set] = {}
         self.kind_policy_filter: Optional[Callable[[str, Dict[str, Any]], bool]] = None
         self.sources: List[Dict[str, Any]] = []
+        self.source_indexers: Optional[List[Dict[str, Any]]] = None
+        self.source_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
         self.blobs: Dict[str, bytes] = {}
         self.limits: RuntimeLimits = {
             "memoryBytes": 32 * 1024 * 1024,
@@ -2943,7 +2945,20 @@ class MockHostClient:
             return out
 
         def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
-            return list(self._p.sources)
+            res = self.resolve_sources_with_result(query)
+            return list(res.get("candidates") or [])
+
+        def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
+            if self._p.source_handler is not None:
+                res = self._p.source_handler(dict(query))
+                out: Dict[str, Any] = {"candidates": list((res or {}).get("candidates") or [])}
+                if res and "indexers" in res and res["indexers"] is not None:
+                    out["indexers"] = list(res["indexers"])
+                return out  # type: ignore[return-value]
+            out = {"candidates": list(self._p.sources)}
+            if self._p.source_indexers is not None:
+                out["indexers"] = list(self._p.source_indexers)
+            return out  # type: ignore[return-value]
 
     class _Cache:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -3747,6 +3762,24 @@ class SourceCandidate(TypedDict, total=False):
     usenetCheck: UsenetCheckResult
 
 
+class IndexerSearchStatus(TypedDict, total=False):
+    """Per-indexer outcome entry returned alongside candidates on indexer_search."""
+
+    indexerId: str
+    indexer: str
+    status: Literal["answered", "timed_out", "skipped", "error"]
+    results: int
+    ms: int
+    error: str
+
+
+class SourceResolveResult(TypedDict, total=False):
+    """Full response envelope from sources.resolve."""
+
+    candidates: List[SourceCandidate]
+    indexers: List[IndexerSearchStatus]
+
+
 class SourceQuery(TypedDict, total=False):
     """Host sources.resolve query payload."""
 
@@ -3754,6 +3787,12 @@ class SourceQuery(TypedDict, total=False):
     query: str
     category: str
     profile: str
+    firstResults: bool
+    settleMs: int
+    minResults: int
+    skipIndexers: List[str]
+    onlyIndexers: List[str]
+    timeoutMs: int
     infoHashes: List[str]
     infoHash: str
     magnet: str
@@ -3956,6 +3995,14 @@ class _KindsClient:
         """
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
+
+    def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
+        """Run ``sources.resolve`` and return both ``candidates`` and per-indexer ``indexers`` status entries (#733)."""
+        result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query)) or {}
+        out: Dict[str, Any] = {"candidates": list(result.get("candidates") or [])}
+        if "indexers" in result and result["indexers"] is not None:
+            out["indexers"] = list(result["indexers"])
+        return out  # type: ignore[return-value]
 
 
 def archive_list(data: bytes) -> List[Dict[str, Any]]:

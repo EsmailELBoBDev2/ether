@@ -579,6 +579,8 @@ export interface EtherHost {
     /** Browses or searches a kind library with Rules and viewer policy applied for the requesting adapter viewer (#615). */
     browse(kind: string, query?: import("./types.ts").KindBrowseQuery, viewerToken?: string): MaybePromise<import("./types.ts").KindPage>;
     resolveSources(q: import("./types.ts").SourceQuery): MaybePromise<import("./types.ts").SourceCandidate[]>;
+    /** Runs sources.resolve and returns both candidates and per-indexer status entries for indexer_search queries (#733). */
+    resolveSourcesWithResult?(q: import("./types.ts").SourceQuery): MaybePromise<import("./types.ts").SourceResolveResult>;
   };
   cache?: {
     put(libraryKey: string, name: string, data: Uint8Array): MaybePromise<string>;
@@ -1021,8 +1023,14 @@ export function createHostedClient(): EtherHost {
         return callHost<import("./types.ts").KindPage>("kinds.browse", [kind, query]) ?? { items: [] };
       },
       resolveSources(q) {
-        const r = callHost<{ candidates: import("./types.ts").SourceCandidate[] }>("sources.resolve", [q]);
+        const r = callHost<import("./types.ts").SourceResolveResult>("sources.resolve", [q]);
         return r?.candidates ?? [];
+      },
+      resolveSourcesWithResult(q) {
+        const r = callHost<import("./types.ts").SourceResolveResult>("sources.resolve", [q]);
+        const out: import("./types.ts").SourceResolveResult = { candidates: r?.candidates ?? [] };
+        if (r?.indexers !== undefined) out.indexers = r.indexers;
+        return out;
       },
     },
     frontend: {
@@ -1360,8 +1368,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         return r ?? { items: [] };
       },
       async resolveSources(q) {
-        const r = await callJson<{ candidates: unknown[] }>("POST", "/ether/plugin-host/sources/resolve", q);
-        return (r?.candidates ?? []) as never[];
+        const r = await callJson<import("./types.ts").SourceResolveResult>("POST", "/ether/plugin-host/sources/resolve", q);
+        return r?.candidates ?? [];
+      },
+      async resolveSourcesWithResult(q) {
+        const r = await callJson<import("./types.ts").SourceResolveResult>("POST", "/ether/plugin-host/sources/resolve", q);
+        const out: import("./types.ts").SourceResolveResult = { candidates: r?.candidates ?? [] };
+        if (r?.indexers !== undefined) out.indexers = r.indexers;
+        return out;
       },
     },
     cache: {

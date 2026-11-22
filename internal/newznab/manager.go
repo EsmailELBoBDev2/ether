@@ -34,6 +34,35 @@ type Manager struct {
 	searchTimings  []SearchTiming
 	shareLogMu     sync.Mutex
 	shareLogDay    map[string]string
+
+	bgMu          sync.Mutex
+	bgClosed      bool
+	bgNextID      int
+	bgCancels     map[int]context.CancelFunc
+	detachedCount int
+	bgWG          sync.WaitGroup
+
+	flightMu sync.Mutex
+	flights  map[string]*searchFlight
+}
+
+// Close cancels any detached background cache-fill searches started by
+// SearchWithOptions and waits for them to finish.
+func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
+	m.bgMu.Lock()
+	m.bgClosed = true
+	cancels := make([]context.CancelFunc, 0, len(m.bgCancels))
+	for _, cancel := range m.bgCancels {
+		cancels = append(cancels, cancel)
+	}
+	m.bgMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	m.bgWG.Wait()
 }
 
 // SearchTiming records the most recent aggregate search's per-indexer cost.

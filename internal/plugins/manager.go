@@ -50,18 +50,19 @@ type Backends struct {
 	Notice func(text string)
 	// Kind host services (spec §3.6, §4.5, §5.4): plugin-item store,
 	// source resolver and per-library blob cache.
-	KindUpsert      func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
-	KindUpsertStats func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
-	KindDelete      func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems       func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
-	KindItemsByID   func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
-	KindItemCount   func(ctx context.Context, pluginID string) (int, error)
-	KindVisible     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
-	KindBrowse      func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
-	ResolveSources  func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
-	CachePut        func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
-	CacheOpen       func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
-	CacheDelete     func(ctx context.Context, pluginID, blobRef string) error
+	KindUpsert           func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
+	KindUpsertStats      func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
+	KindDelete           func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems            func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID        func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount        func(ctx context.Context, pluginID string) (int, error)
+	KindVisible          func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse           func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	ResolveSources       func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
+	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+	CachePut             func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen            func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete          func(ctx context.Context, pluginID, blobRef string) error
 	// StreamURL mints a scoped stream ticket for one of a plugin's own kind
 	// items for one viewer and returns the Ether stream URL (spec §6.5).
 	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)

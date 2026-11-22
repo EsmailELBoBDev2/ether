@@ -626,14 +626,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "sources.resolve takes a query object"}
 			}
 		}
-		cands, err := b.h.ResolveSources(ctx, q)
+		var (
+			res core.SourceResolveResult
+			err error
+		)
+		if rh, ok := b.h.(interface {
+			ResolveSourcesWithResult(context.Context, core.SourceQuery) (core.SourceResolveResult, error)
+		}); ok {
+			res, err = rh.ResolveSourcesWithResult(ctx, q)
+		} else {
+			res.Candidates, err = b.h.ResolveSources(ctx, q)
+		}
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		if cands == nil {
-			cands = []core.SourceCandidate{}
+		if res.Candidates == nil {
+			res.Candidates = []core.SourceCandidate{}
 		}
-		return result(map[string]any{"candidates": cands}, nil)
+		return result(res, nil)
 	case "cache.put":
 		var body []byte
 		if len(args) > 2 {

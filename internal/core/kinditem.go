@@ -472,6 +472,64 @@ type SourceQuery struct {
 	// has not seen its file list yet (e.g. a magnet for a large collection),
 	// so zip-only debrid caches are checked via cached-only add.
 	FileCount int `json:"fileCount,omitempty"`
+	// FirstResults, when true on indexer_search, returns early as soon as the
+	// fastest indexer(s) return results plus the SettleMS window (default
+	// 250 ms; 0 returns immediately), while slower indexers keep running in the
+	// background to populate Ether's search cache for later calls. Default
+	// false waits for every searched indexer.
+	FirstResults bool `json:"firstResults,omitempty"`
+	// SettleMS sets the settle window in milliseconds after the first results
+	// arrive under FirstResults (default 250 ms when nil; 0 returns
+	// immediately), or after MinResults is met when FirstResults is false.
+	// Clamped to the effective call timeout.
+	SettleMS *int `json:"settleMs,omitempty"`
+	// MinResults sets a minimum deduplicated candidate count for early return
+	// on indexer_search. Once at least MinResults unique results have arrived,
+	// Ether returns early while remaining indexers keep filling Ether's search
+	// cache. Combined with FirstResults, returns as soon as either MinResults
+	// is reached or the settle window elapses.
+	MinResults int `json:"minResults,omitempty"`
+	// SkipIndexers excludes matching enabled indexers from an indexer_search
+	// fan-out by indexerId or indexer name (case-insensitive, trimmed).
+	SkipIndexers []string `json:"skipIndexers,omitempty"`
+	// OnlyIndexers, when non-empty, restricts an indexer_search fan-out to
+	// matching enabled indexers by indexerId or indexer name (case-insensitive,
+	// trimmed). Entries also matching SkipIndexers are excluded.
+	OnlyIndexers []string `json:"onlyIndexers,omitempty"`
+	// TimeoutMS sets a per-call wait limit in milliseconds for indexer_search,
+	// capped by Ether's 30 s indexer-search ceiling and any shorter route
+	// deadline. When TimeoutMS expires before the parent deadline, Ether
+	// returns candidates arrived so far with timed_out statuses while slower
+	// indexers continue filling the search cache. Omit or 0 keeps the 30 s
+	// default.
+	TimeoutMS int `json:"timeoutMs,omitempty"`
+}
+
+// Status values for IndexerSearchStatus.Status.
+const (
+	IndexerStatusAnswered = "answered"
+	IndexerStatusTimedOut = "timed_out"
+	IndexerStatusSkipped  = "skipped"
+	IndexerStatusError    = "error"
+)
+
+// IndexerSearchStatus reports one enabled indexer's outcome on an
+// indexer_search query so a resolver can decide whether to wait or retry.
+type IndexerSearchStatus struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+	Status    string `json:"status"` // answered|timed_out|skipped|error
+	Results   int    `json:"results,omitempty"`
+	MS        int64  `json:"ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+// SourceResolveResult is the full wire response envelope returned by
+// sources.resolve: Candidates for every query kind, plus per-indexer outcomes
+// in Indexers on indexer_search.
+type SourceResolveResult struct {
+	Candidates []SourceCandidate     `json:"candidates"`
+	Indexers   []IndexerSearchStatus `json:"indexers,omitempty"`
 }
 
 // ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)

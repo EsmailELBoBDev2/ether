@@ -280,6 +280,14 @@ type StreamURLOptionsHost interface {
 	StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
 }
 
+// ResolveSourcesResultHost runs sources.resolve and returns both the candidate
+// list and per-indexer search statuses for indexer_search queries (#733).
+// RemoteHostClient and MockHost implement it; Context.ResolveSourcesWithResult
+// uses it automatically.
+type ResolveSourcesResultHost interface {
+	ResolveSourcesWithResult(ctx context.Context, q SourceQuery) (SourceResolveResult, error)
+}
+
 // CacheDeleteHost deletes cached blobs from this plugin's own library cache
 // namespaces. RemoteHostClient and MockHost implement it.
 type CacheDeleteHost interface {
@@ -1024,11 +1032,25 @@ func (c *RemoteHostClient) KindBrowse(ctx context.Context, kindKey string, query
 
 // ResolveSources asks Ether to find sources through its indexers/debrid.
 func (c *RemoteHostClient) ResolveSources(ctx context.Context, q SourceQuery) ([]SourceCandidate, error) {
-	var out struct {
-		Candidates []SourceCandidate `json:"candidates"`
+	res, err := c.ResolveSourcesWithResult(ctx, q)
+	if err != nil {
+		return nil, err
 	}
+	return res.Candidates, nil
+}
+
+// ResolveSourcesWithResult asks Ether to find sources and additionally returns
+// per-indexer search statuses for indexer_search queries (#733).
+func (c *RemoteHostClient) ResolveSourcesWithResult(ctx context.Context, q SourceQuery) (SourceResolveResult, error) {
+	var out SourceResolveResult
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/sources/resolve", q, &out, false)
-	return out.Candidates, err
+	if err != nil {
+		return SourceResolveResult{}, err
+	}
+	if out.Candidates == nil {
+		out.Candidates = []SourceCandidate{}
+	}
+	return out, nil
 }
 
 // CachePut stores one blob in a kind library's cache; the ref is content-addressed.

@@ -330,7 +330,7 @@ Release probes run strictly cached-only without queuing uncached debrid
 downloads; pattern-specific network, folder, secret, and blob grants
 still apply.
 
-`ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
+`ResolveSources({kind: "indexer_search", query?, category?, profile?, firstResults?, settleMs?, minResults?, skipIndexers?, onlyIndexers?, timeoutMs?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
@@ -338,6 +338,40 @@ and the query unchanged, rather than assuming a movie or TV request.
 When `query` is omitted or empty and `category` is set, Ether issues a
 recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
 the newest 100 candidates; an empty `query` with no `category` is refused.
+By default `indexer_search` waits for every enabled indexer up to Ether's 30 s
+ceiling. Optional fan-out controls let a resolver stay responsive when one
+indexer is slow or rate-paced:
+
+- `firstResults: true`: return as soon as the fastest indexers produce results
+  plus `settleMs` (default `250` ms when omitted; `0` returns immediately;
+  capped at `30000` ms). Slow indexers still in flight continue in the
+  background (bounded by the 30 s ceiling and coalesced with matching follow-up
+  searches) so their results populate Ether's search cache for subsequent calls.
+- `minResults`: minimum deduplicated candidate count required before returning
+  early. Combined with `firstResults: true`, returns as soon as either
+  `minResults` is reached or the `settleMs` window expires. Without
+  `firstResults`, waits until `minResults` is reached (plus `settleMs` if
+  explicitly provided) or all indexers finish.
+- `skipIndexers` / `onlyIndexers`: case-insensitive lists (up to 256 entries
+  each) of indexer IDs (`indexerId`) or display names (`indexer`) to exclude or
+  include for this search. `skipIndexers` takes precedence over `onlyIndexers`.
+- `timeoutMs`: per-call wait budget in milliseconds, capped by Ether's 30 s
+  ceiling (and any shorter parent request deadline). Slow indexers still
+  running when `timeoutMs` expires are reported as `"timed_out"` while
+  continuing to fill the search cache in the background.
+
+For `indexer_search`, the `sources.resolve` response envelope includes
+`indexers: [{indexerId, indexer, status, results?, ms, error?}]` alongside
+`candidates`, where `status` is `"answered"`, `"timed_out"`, `"skipped"`, or
+`"error"` (with a sanitized short `error` code on failure), so a resolver can
+inspect which indexers answered and decide whether to run a follow-up search.
+Non-`indexer_search` queries omit `indexers`. In Go, TypeScript, and Python
+SDKs, `ResolveSources` / `kinds.resolveSources` / `resolve_sources` continue
+returning candidates only, while `ResolveSourcesWithResult` /
+`kinds.resolveSourcesWithResult` / `resolve_sources_with_result` return the
+full `{candidates, indexers}` envelope (raw hosted `ether.sources.resolve`
+returns `{candidates, indexers?}` directly).
+
 Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is

@@ -2223,3 +2223,77 @@ func TestRemoteHostMediaProbeAndViewerTokenRefusal(t *testing.T) {
 		t.Fatalf("success probe: status=%d body=%+v", status, body)
 	}
 }
+
+type fakeSourcesResultHost struct {
+	*fakeHost
+	fn func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+}
+
+func (f *fakeSourcesResultHost) ResolveSourcesWithResult(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
+	return f.fn(ctx, pluginID, q)
+}
+
+func TestHostResolveSourcesWithResultEnvelope(t *testing.T) {
+	var got core.SourceQuery
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeSourcesResultHost{
+			fakeHost: newFakeHost(),
+			fn: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+				got = q
+				if q.Kind == "indexer_search" {
+					return core.SourceResolveResult{
+						Candidates: []core.SourceCandidate{{Title: q.Query, IndexerID: "a", Indexer: "Alpha"}},
+						Indexers: []core.IndexerSearchStatus{
+							{IndexerID: "a", Indexer: "Alpha", Status: core.IndexerStatusAnswered, Results: 1, MS: 15},
+							{IndexerID: "b", Indexer: "Beta", Status: core.IndexerStatusSkipped, MS: 0},
+						},
+					}, nil
+				}
+				return core.SourceResolveResult{
+					Candidates: []core.SourceCandidate{{InfoHash: q.InfoHash, Cached: true}},
+				}, nil
+			},
+		},
+		Auth: remotetest.Credentials{"cred-src": "plug.src"},
+	}))
+	defer srv.Close()
+
+	post := func(body string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/sources/resolve", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-src")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, out
+	}
+
+	status, body := post(`{"kind":"indexer_search","query":"Blade Runner","firstResults":true,"settleMs":200,"minResults":3,"onlyIndexers":["a"],"skipIndexers":["b"],"timeoutMs":2500}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%+v", status, body)
+	}
+	if !got.FirstResults || got.SettleMS == nil || *got.SettleMS != 200 || got.MinResults != 3 || got.TimeoutMS != 2500 || len(got.OnlyIndexers) != 1 || len(got.SkipIndexers) != 1 {
+		t.Fatalf("forwarded query = %+v", got)
+	}
+	if idxList, ok := body["indexers"].([]any); !ok || len(idxList) != 2 {
+		t.Fatalf("indexers = %#v, want 2 entries", body["indexers"])
+	}
+
+	status, body = post(`{"kind":"debrid_check","infoHash":"abcd"}`)
+	if status != http.StatusOK {
+		t.Fatalf("debrid_check status=%d body=%+v", status, body)
+	}
+	if _, has := body["indexers"]; has {
+		t.Fatalf("debrid_check unexpectedly included indexers: %#v", body)
+	}
+}

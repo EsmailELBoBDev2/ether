@@ -46,9 +46,12 @@ type KindBackends struct {
 	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
 	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
-	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
-	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
-	CacheDelete    func(ctx context.Context, pluginID, blobRef string) error
+	// ResolveSourcesResult, when set, is preferred over ResolveSources and
+	// carries per-indexer search status alongside candidates (#733).
+	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+	CachePut             func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen            func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete          func(ctx context.Context, pluginID, blobRef string) error
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
@@ -72,6 +75,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindVisible = b.KindVisible
 	m.deps.Backends.KindBrowse = b.KindBrowse
 	m.deps.Backends.ResolveSources = b.ResolveSources
+	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
 	m.deps.Backends.CacheDelete = b.CacheDelete
@@ -86,31 +90,33 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:       m.deps.Backends.KindUpsert,
-		KindUpsertStats:  m.deps.Backends.KindUpsertStats,
-		KindDelete:       m.deps.Backends.KindDelete,
-		KindItems:        m.deps.Backends.KindItems,
-		KindItemsByID:    m.deps.Backends.KindItemsByID,
-		KindItemCount:    m.deps.Backends.KindItemCount,
-		KindVisible:      m.deps.Backends.KindVisible,
-		KindBrowse:       m.deps.Backends.KindBrowse,
-		ResolveSources:   m.deps.Backends.ResolveSources,
-		CachePut:         m.deps.Backends.CachePut,
-		CacheOpen:        m.deps.Backends.CacheOpen,
-		CacheDelete:      m.deps.Backends.CacheDelete,
-		StreamURL:        m.deps.Backends.StreamURL,
-		StreamPartURL:    m.deps.Backends.StreamPartURL,
-		StreamURLOptions: m.deps.Backends.StreamURLOptions,
-		MediaProbe:       m.deps.Backends.MediaProbe,
+		KindUpsert:           m.deps.Backends.KindUpsert,
+		KindUpsertStats:      m.deps.Backends.KindUpsertStats,
+		KindDelete:           m.deps.Backends.KindDelete,
+		KindItems:            m.deps.Backends.KindItems,
+		KindItemsByID:        m.deps.Backends.KindItemsByID,
+		KindItemCount:        m.deps.Backends.KindItemCount,
+		KindVisible:          m.deps.Backends.KindVisible,
+		KindBrowse:           m.deps.Backends.KindBrowse,
+		ResolveSources:       m.deps.Backends.ResolveSources,
+		ResolveSourcesResult: m.deps.Backends.ResolveSourcesResult,
+		CachePut:             m.deps.Backends.CachePut,
+		CacheOpen:            m.deps.Backends.CacheOpen,
+		CacheDelete:          m.deps.Backends.CacheDelete,
+		StreamURL:            m.deps.Backends.StreamURL,
+		StreamPartURL:        m.deps.Backends.StreamPartURL,
+		StreamURLOptions:     m.deps.Backends.StreamURLOptions,
+		MediaProbe:           m.deps.Backends.MediaProbe,
 	}
 }
 
 // Per-call caps for kind host services (spec §3.3 sizes, host side).
 const (
-	MaxKindUpsertItems = 1000
-	MaxKindVisibleIDs  = 500
-	MaxKindHintsBytes  = 16 << 10
-	MaxKindArtRoles    = 16
+	MaxKindUpsertItems      = 1000
+	MaxKindVisibleIDs       = 500
+	MaxKindHintsBytes       = 16 << 10
+	MaxKindArtRoles         = 16
+	MaxSourceIndexerFilters = 256
 	// HeaderAdapterViewerToken carries a host-minted, request-scoped token on
 	// frontend adapter calls so remote plugins can prove the authenticated
 	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
@@ -467,35 +473,75 @@ func isBackgroundCall(ctx context.Context) bool {
 }
 
 func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
-	r, g, err := h.record(ctx)
+	res, err := h.ResolveSourcesWithResult(ctx, q)
 	if err != nil {
 		return nil, err
+	}
+	return res.Candidates, nil
+}
+
+// ResolveSourcesWithResult runs ResolveSources and preserves per-indexer
+// search status alongside candidates when the backend supports it (#733).
+func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery) (core.SourceResolveResult, error) {
+	r, g, err := h.record(ctx)
+	if err != nil {
+		return core.SourceResolveResult{}, err
 	}
 	man := r.Manifest
 	man.Ether = man.EffectiveEther()
 	if !man.HasCapability(CapKindResolver) {
 		h.noteDenied(string(CapKindResolver))
-		return nil, fmt.Errorf("%w: %s", ErrPermissionDenied, CapKindResolver)
+		return core.SourceResolveResult{}, fmt.Errorf("%w: %s", ErrPermissionDenied, CapKindResolver)
 	}
 	need := "search"
 	switch q.Kind {
 	case "indexer_search":
 		if strings.TrimSpace(q.Query) == "" && strings.TrimSpace(q.Category) == "" {
-			return nil, &ValidationError{Fields: []FieldError{{
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "query",
 				Message: "indexer_search needs a query or category",
 			}}}
 		}
+		if q.SettleMS != nil && *q.SettleMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "settleMs",
+				Message: "settleMs must be non-negative",
+			}}}
+		}
+		if q.MinResults < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "minResults",
+				Message: "minResults must be non-negative",
+			}}}
+		}
+		if q.TimeoutMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "timeoutMs",
+				Message: "timeoutMs must be non-negative",
+			}}}
+		}
+		if len(q.SkipIndexers) > MaxSourceIndexerFilters {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "skipIndexers",
+				Message: fmt.Sprintf("at most %d skipIndexers entries allowed", MaxSourceIndexerFilters),
+			}}}
+		}
+		if len(q.OnlyIndexers) > MaxSourceIndexerFilters {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "onlyIndexers",
+				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
+			}}}
+		}
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
-			return nil, &ValidationError{Fields: []FieldError{{
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHashes",
 				Message: "debrid_check needs an info hash",
 			}}}
 		}
 	case "release_files":
 		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
-			return nil, &ValidationError{Fields: []FieldError{{
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
 			}}}
@@ -503,14 +549,14 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	case "usenet_check":
 		if isBackgroundCall(ctx) {
 			h.noteDenied("usenet_check_background")
-			return nil, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
+			return core.SourceResolveResult{}, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
 		}
 		nzbURL := strings.TrimSpace(q.NZBURL)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
 		}
 		if nzbURL == "" {
-			return nil, &ValidationError{Fields: []FieldError{{
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "nzbUrl",
 				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
 			}}}
@@ -518,13 +564,13 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
-			return nil, &ValidationError{Fields: []FieldError{{
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
 	default:
-		return nil, &ValidationError{Fields: []FieldError{{
+		return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 			Field:   "kind",
 			Message: fmt.Sprintf("unknown source query kind %q", q.Kind),
 		}}}
@@ -533,11 +579,11 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
 		return l == "acquire" || (l == "search" && need == "search")
 	}); err != nil {
-		return nil, err
+		return core.SourceResolveResult{}, err
 	}
-	backend := h.m.kindBackends().ResolveSources
-	if backend == nil {
-		return nil, ErrUnavailable
+	backends := h.m.kindBackends()
+	if backends.ResolveSourcesResult == nil && backends.ResolveSources == nil {
+		return core.SourceResolveResult{}, ErrUnavailable
 	}
 	if q.Kind == "usenet_check" {
 		limit := h.m.usenetCheckLimit
@@ -545,10 +591,17 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 			limit = DefaultUsenetCheckPerMin
 		}
 		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
-			return nil, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+			return core.SourceResolveResult{}, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
 		}
 	}
-	return backend(ctx, h.plugin, q)
+	if backends.ResolveSourcesResult != nil {
+		return backends.ResolveSourcesResult(ctx, h.plugin, q)
+	}
+	cands, err := backends.ResolveSources(ctx, h.plugin, q)
+	if err != nil {
+		return core.SourceResolveResult{}, err
+	}
+	return core.SourceResolveResult{Candidates: cands}, nil
 }
 
 func (h *host) CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (string, error) {

@@ -148,7 +148,30 @@ type SourceQuery struct {
 	Category string `json:"category,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
-	Profile    string   `json:"profile,omitempty"`
+	Profile string `json:"profile,omitempty"`
+	// FirstResults (indexer_search only), when true, returns as soon as the
+	// fastest indexers produce results plus SettleMS (default 250 ms), while
+	// slower indexers keep populating Ether's search cache in the background (#733).
+	FirstResults bool `json:"firstResults,omitempty"`
+	// SettleMS (indexer_search only) sets the post-first-result grace window in
+	// milliseconds (nil uses 250 ms when FirstResults is true; 0 returns
+	// immediately). Also applies when MinResults is met if explicitly set.
+	// Capped at 30000 ms.
+	SettleMS *int `json:"settleMs,omitempty"`
+	// MinResults (indexer_search only) is the minimum deduplicated candidate
+	// count required before returning early.
+	MinResults int `json:"minResults,omitempty"`
+	// SkipIndexers (indexer_search only) excludes matching indexer IDs or
+	// display names (case-insensitive). Precedence over OnlyIndexers.
+	SkipIndexers []string `json:"skipIndexers,omitempty"`
+	// OnlyIndexers (indexer_search only) restricts the search to matching
+	// indexer IDs or display names (case-insensitive).
+	OnlyIndexers []string `json:"onlyIndexers,omitempty"`
+	// TimeoutMS (indexer_search only) caps how long the call waits in
+	// milliseconds, bounded by Ether's 30000 ms ceiling (and any shorter parent
+	// request deadline). Slow indexers still running when TimeoutMS expires are
+	// reported as timed_out and continue populating Ether's search cache.
+	TimeoutMS  int      `json:"timeoutMs,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -165,6 +188,32 @@ type SourceQuery struct {
 	// a magnet or infoHash without a file list (e.g. large collection torrents
 	// held as zip-only caches on TorBox).
 	FileCount int `json:"fileCount,omitempty"`
+}
+
+// Per-indexer search outcome status values reported in IndexerSearchStatus.Status.
+const (
+	IndexerStatusAnswered = "answered"
+	IndexerStatusTimedOut = "timed_out"
+	IndexerStatusSkipped  = "skipped"
+	IndexerStatusError    = "error"
+)
+
+// IndexerSearchStatus reports the outcome of one enabled indexer during an
+// indexer_search sources.resolve call (#733).
+type IndexerSearchStatus struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+	Status    string `json:"status"` // answered|timed_out|skipped|error
+	Results   int    `json:"results,omitempty"`
+	MS        int64  `json:"ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+// SourceResolveResult is the full response envelope from sources.resolve (#733).
+// Indexers is populated for indexer_search queries and omitted for other kinds.
+type SourceResolveResult struct {
+	Candidates []SourceCandidate     `json:"candidates"`
+	Indexers   []IndexerSearchStatus `json:"indexers,omitempty"`
 }
 
 // ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
@@ -647,6 +696,27 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
 	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+}
+
+// ResolveSourcesWithResult runs sources.resolve and returns both the candidate
+// list and per-indexer search statuses for indexer_search queries (#733).
+// Falls back to Host.ResolveSources when the host does not implement
+// ResolveSourcesResultHost.
+func (c *Context) ResolveSourcesWithResult(q SourceQuery) (SourceResolveResult, error) {
+	if c.Ether == nil {
+		return SourceResolveResult{}, errors.New("resolve sources: no host service available")
+	}
+	if rh, ok := c.Ether.(ResolveSourcesResultHost); ok {
+		return rh.ResolveSourcesWithResult(c.Context, q)
+	}
+	cands, err := c.Ether.ResolveSources(c.Context, q)
+	if err != nil {
+		return SourceResolveResult{}, err
+	}
+	if cands == nil {
+		cands = []SourceCandidate{}
+	}
+	return SourceResolveResult{Candidates: cands}, nil
 }
 
 func (c *Context) viewerToken() string {

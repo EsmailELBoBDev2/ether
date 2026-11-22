@@ -638,3 +638,66 @@ func TestKindLiveDispatch(t *testing.T) {
 		t.Fatalf("unexpected resolved: %+v", resolved)
 	}
 }
+
+func TestResolveSourcesWithResult(t *testing.T) {
+	var seen etherplugin.SourceQuery
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ether/plugin-host/sources/resolve" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Errorf("decode query: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(etherplugin.SourceResolveResult{
+			Candidates: []etherplugin.SourceCandidate{{Title: "Fast.Release", IndexerID: "fast", Indexer: "Fast"}},
+			Indexers: []etherplugin.IndexerSearchStatus{
+				{IndexerID: "fast", Indexer: "Fast", Status: etherplugin.IndexerStatusAnswered, Results: 1, MS: 22},
+				{IndexerID: "slow", Indexer: "Slow", Status: etherplugin.IndexerStatusTimedOut, MS: 250},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	settle := 250
+	q := etherplugin.SourceQuery{
+		Kind:         "indexer_search",
+		Query:        "Arrival",
+		FirstResults: true,
+		SettleMS:     &settle,
+		MinResults:   2,
+		SkipIndexers: []string{"broken"},
+		TimeoutMS:    4000,
+	}
+
+	client := etherplugin.NewRemoteHostClient(etherplugin.RemoteHostOptions{
+		BaseURL:    srv.URL,
+		Credential: "cred",
+	})
+	c := &etherplugin.Context{Context: context.Background(), Ether: client}
+	res, err := c.ResolveSourcesWithResult(q)
+	if err != nil {
+		t.Fatalf("ResolveSourcesWithResult: %v", err)
+	}
+	if !seen.FirstResults || seen.SettleMS == nil || *seen.SettleMS != 250 || seen.MinResults != 2 || seen.TimeoutMS != 4000 || len(seen.SkipIndexers) != 1 {
+		t.Fatalf("forwarded query = %+v", seen)
+	}
+	if len(res.Candidates) != 1 || len(res.Indexers) != 2 || res.Indexers[1].Status != etherplugin.IndexerStatusTimedOut {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	// Existing ResolveSources remains backward compatible.
+	cands, err := client.ResolveSources(context.Background(), q)
+	if err != nil || len(cands) != 1 || cands[0].Title != "Fast.Release" {
+		t.Fatalf("ResolveSources = (%+v, %v)", cands, err)
+	}
+
+	// MockHost supports SourceIndexers and ResolveSourcesWithResult.
+	mock := etherplugin.NewMockHost()
+	mock.Sources = []etherplugin.SourceCandidate{{Title: "Mock.Release"}}
+	mock.SourceIndexers = []etherplugin.IndexerSearchStatus{{IndexerID: "m", Indexer: "Mock", Status: etherplugin.IndexerStatusAnswered, Results: 1, MS: 5}}
+	mc := &etherplugin.Context{Context: context.Background(), Ether: mock}
+	mres, err := mc.ResolveSourcesWithResult(q)
+	if err != nil || len(mres.Candidates) != 1 || len(mres.Indexers) != 1 || mres.Indexers[0].IndexerID != "m" {
+		t.Fatalf("mock ResolveSourcesWithResult = (%+v, %v)", mres, err)
+	}
+}

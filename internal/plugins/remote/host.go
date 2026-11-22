@@ -586,14 +586,24 @@ func (h *HostHandler) resolveSources(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, maxHostBodyBytes, &q) {
 		return
 	}
-	cands, err := h.host.ResolveSources(r.Context(), pluginIDOf(r), q)
+	var (
+		res core.SourceResolveResult
+		err error
+	)
+	if rh, ok := h.host.(interface {
+		ResolveSourcesWithResult(context.Context, string, core.SourceQuery) (core.SourceResolveResult, error)
+	}); ok {
+		res, err = rh.ResolveSourcesWithResult(r.Context(), pluginIDOf(r), q)
+	} else {
+		res.Candidates, err = h.host.ResolveSources(r.Context(), pluginIDOf(r), q)
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
-	if cands == nil {
-		cands = []core.SourceCandidate{}
+	if res.Candidates == nil {
+		res.Candidates = []core.SourceCandidate{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"candidates": cands})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (h *HostHandler) cachePut(w http.ResponseWriter, r *http.Request) {

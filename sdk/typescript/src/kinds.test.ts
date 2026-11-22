@@ -500,3 +500,63 @@ test("onLive dispatches /live and /live/resolve", async () => {
   assert.deepEqual(seenResolve, { kind: "esports", id: "ch-1" });
   assert.equal((resolveRes.body as { url: string }).url, "https://stream.example/live/ch-1/master.m3u8?token=once");
 });
+
+test("resolveSourcesWithResult forwards indexer_search options and decodes indexers", async () => {
+  const query = {
+    kind: "indexer_search" as const,
+    query: "Dune",
+    firstResults: true,
+    settleMs: 150,
+    minResults: 2,
+    skipIndexers: ["slow"],
+    timeoutMs: 3000,
+  };
+  const reply = {
+    candidates: [{ title: "Fast.Release", indexerId: "fast", indexer: "Fast" }],
+    indexers: [
+      { indexerId: "fast", indexer: "Fast", status: "answered" as const, results: 1, ms: 18 },
+      { indexerId: "slow", indexer: "Slow", status: "skipped" as const, ms: 0 },
+    ],
+  };
+
+  let seenRemoteBody: unknown;
+  const remote = createRemoteHostClient({
+    baseUrl: "http://ether.local",
+    credential: "cred",
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      seenRemoteBody = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify(reply), { status: 200 });
+    }) as typeof fetch,
+  });
+  const rRes = await remote.kinds!.resolveSourcesWithResult!(query);
+  assert.deepEqual(seenRemoteBody, query);
+  assert.deepEqual(rRes, reply);
+  assert.deepEqual(await remote.kinds!.resolveSources(query), reply.candidates);
+
+  // Hosted client forwards query via sources.resolve and preserves indexers.
+  const g = globalThis as Record<string, unknown>;
+  const prevHost = g.__ether_host;
+  let seenHostedArgs: unknown;
+  g.__ether_host = (name: string, raw: string) => {
+    if (name === "sources.resolve") {
+      seenHostedArgs = JSON.parse(raw);
+      return JSON.stringify(reply);
+    }
+    throw new Error(`unexpected host call: ${name}`);
+  };
+  try {
+    const hosted = createHostedClient();
+    const hRes = hosted.kinds!.resolveSourcesWithResult!(query);
+    assert.deepEqual(seenHostedArgs, [query]);
+    assert.deepEqual(hRes, reply);
+    assert.deepEqual(hosted.kinds!.resolveSources(query), reply.candidates);
+  } finally {
+    if (prevHost === undefined) delete g.__ether_host;
+    else g.__ether_host = prevHost;
+  }
+
+  const mock = createMockHostClient({ sources: reply.candidates, sourceIndexers: reply.indexers });
+  const mRes = await mock.kinds!.resolveSourcesWithResult!(query);
+  assert.deepEqual(mRes, reply);
+  assert.deepEqual(await mock.kinds!.resolveSources(query), reply.candidates);
+});

@@ -600,14 +600,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 		md.SessionKey = strconv.Itoa(e.sessionKey)
 		md.ViewOffset = ms(e.offset)
-		sessionUserID := e.user.PlexID
-		if sessionUserID == 0 {
-			if e.user.IsOwner {
-				sessionUserID = 1
-			} else if e.user.ID > 0 {
-				sessionUserID = e.user.ID
-			}
-		}
+		sessionUserID := s.plexAccountIDFor(ctx, &e.user)
 		md.User = &model.SessionUser{ID: strconv.FormatInt(sessionUserID, 10), Thumb: e.user.Thumb, Title: e.user.Title}
 		if md.User.Title == "" {
 			md.User.Title = e.user.Username

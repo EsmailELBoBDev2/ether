@@ -144,6 +144,26 @@ func TestActivePlexUserByPlexID(t *testing.T) {
 	if got := s.OwnerPlexID(); got != 42 {
 		t.Fatalf("OwnerPlexID = %d, want 42", got)
 	}
+	ctx := context.Background()
+	if err := s.SyncFriends(ctx, []plextv.Friend{{PlexID: 100, Username: "alice", Token: "alice-access", Sections: []string{"1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if u := s.ActivePlexUserByPlexID(101); u != nil {
+		t.Fatalf("deactivated bob should not be active: %+v", u)
+	}
+	known, err := s.KnownUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundBob bool
+	for _, u := range known {
+		if u.PlexID == 101 && u.Username == "bob" {
+			foundBob = true
+		}
+	}
+	if !foundBob {
+		t.Fatalf("KnownUsers missing deactivated bob: %+v", known)
+	}
 }
 
 func TestAuthenticatePlexAccountRejectsUnconfiguredServer(t *testing.T) {

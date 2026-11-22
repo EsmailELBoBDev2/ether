@@ -18,8 +18,8 @@
 <Writer tag="Sasha Petrov" />
 <Role tag="Theo Varga" />
 <Role tag="Lucas Brandt" />
-<User id="1001" title="Owner" />
-<Player address="192.168.1.50" device="OSX" machineIdentifier="client-1" platform="Chrome" product="Plex Web" profile="Web" state="playing" title="Chrome" local="1" relayed="0" secure="0" userID="1001" />
+<User id="1" title="Owner" />
+<Player address="192.168.1.50" device="OSX" machineIdentifier="client-1" platform="Chrome" product="Plex Web" profile="Web" state="playing" title="Chrome" local="1" relayed="0" secure="0" userID="1" />
 <Session id="sess-1" bandwidth="15960" location="lan" />
 </Video>
 </MediaContainer>

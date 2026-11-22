@@ -561,7 +561,7 @@ func (c *clusterState) onNotify(msg []byte) {
 	if ev.Type == "activity" {
 		var root struct{ NotificationContainer model.NotificationContainer }
 		if json.Unmarshal(ev.Data, &root) == nil {
-			c.s.recordActivities(root.NotificationContainer)
+			c.s.recordActivities(root.NotificationContainer, ev.UserID)
 		}
 	}
 	c.s.notifier.deliver(newNotification(ev.Type, []byte(ev.Data)), ev.UserID)

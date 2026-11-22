@@ -1,12 +1,15 @@
 package plex
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
@@ -451,6 +454,42 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, &model.MediaContainer{Size: len(agents), Agent: agents})
 }
 
+func (s *Server) modelAccount(ctx context.Context, u frontend.User) model.Account {
+	id := plexAccountID(u)
+	a := model.Account{
+		ID:              id,
+		Key:             "/accounts/" + strconv.FormatInt(id, 10),
+		Name:            plexAccountName(u),
+		AutoSelectAudio: true,
+		Thumb:           u.Thumb,
+	}
+	if len(u.AudioLanguages) > 0 {
+		a.DefaultAudioLanguage = u.AudioLanguages[0]
+	}
+	if len(u.SubtitleLanguages) > 0 {
+		a.DefaultSubtitleLang = u.SubtitleLanguages[0]
+	}
+	if tp := s.svc().trackPrefs; tp != nil {
+		if rules, err := tp.GetRules(ctx, u.ID); err == nil {
+			// Project the effective (layered) preferences: account,
+			// household (user 0) and viewer rules all count, so a viewer
+			// who inherits Always-on/English reads the same here as one
+			// who saved it themselves (#617). With nothing configured at
+			// any layer GetRules returns the defaults (mode off, no
+			// languages), which leaves this document unchanged.
+			// Plex account subtitleMode: 0 manual, 1 with foreign audio, 2 always.
+			a.SubtitleMode = plexSubtitleMode(rules.SubtitleMode)
+			if len(rules.SubtitleLanguages) > 0 {
+				a.DefaultSubtitleLang = rules.SubtitleLanguages[0]
+			}
+			if len(rules.AudioLanguages) > 0 {
+				a.DefaultAudioLanguage = rules.AudioLanguages[0]
+			}
+		}
+	}
+	return a
+}
+
 func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	var users []frontend.User
 	if s.getHost().Identity != nil {
@@ -462,35 +501,29 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	mc := &model.MediaContainer{Identifier: "com.plexapp.system.accounts"}
 	for _, u := range users {
-		a := model.Account{ID: u.ID, Key: "/accounts/" + strconv.FormatInt(u.ID, 10), Name: u.Username, AutoSelectAudio: true, Thumb: u.Thumb}
-		if len(u.AudioLanguages) > 0 {
-			a.DefaultAudioLanguage = u.AudioLanguages[0]
-		}
-		if len(u.SubtitleLanguages) > 0 {
-			a.DefaultSubtitleLang = u.SubtitleLanguages[0]
-		}
-		if tp := s.svc().trackPrefs; tp != nil {
-			if rules, err := tp.GetRules(r.Context(), u.ID); err == nil {
-				// Project the effective (layered) preferences: account,
-				// household (user 0) and viewer rules all count, so a viewer
-				// who inherits Always-on/English reads the same here as one
-				// who saved it themselves (#617). With nothing configured at
-				// any layer GetRules returns the defaults (mode off, no
-				// languages), which leaves this document unchanged.
-				// Plex account subtitleMode: 0 manual, 1 with foreign audio, 2 always.
-				a.SubtitleMode = plexSubtitleMode(rules.SubtitleMode)
-				if len(rules.SubtitleLanguages) > 0 {
-					a.DefaultSubtitleLang = rules.SubtitleLanguages[0]
-				}
-				if len(rules.AudioLanguages) > 0 {
-					a.DefaultAudioLanguage = rules.AudioLanguages[0]
-				}
-			}
-		}
-		mc.Account = append(mc.Account, a)
+		mc.Account = append(mc.Account, s.modelAccount(r.Context(), u))
 	}
 	mc.Size = len(mc.Account)
 	s.write(w, r, mc)
+}
+
+func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseWhole(chi.URLParam(r, "id"))
+	if !ok || id <= 0 {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	dir := s.newPlexAccountDir(r.Context(), FromContext(r.Context()).User, true)
+	entry, found := dir.resolve(r.Context(), id)
+	if !found {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	s.write(w, r, &model.MediaContainer{
+		Size:       1,
+		Identifier: "com.plexapp.system.accounts",
+		Account:    []model.Account{s.modelAccount(r.Context(), entry.user)},
+	})
 }
 
 // plexSubtitleMode matches Plex's account attribute: 0 is manual, 1 is shown

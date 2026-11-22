@@ -1783,6 +1783,23 @@ func (s *Service) User(ctx context.Context, id int64) (*core.User, error) {
 	return &u, nil
 }
 
+// KnownUsers returns every known user (active and deactivated).
+func (s *Service) KnownUsers(ctx context.Context) ([]core.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]core.User, 0, len(s.users))
+	for _, r := range s.users {
+		out = append(out, r.effective())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IsOwner != out[j].IsOwner {
+			return out[i].IsOwner
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
 // Owner implements core.Auth.
 func (s *Service) Owner(ctx context.Context) (*core.User, error) {
 	s.mu.RLock()

@@ -362,6 +362,16 @@ func tapKey(raw string, h http.Header) string {
 // reports that the caller must open it. A capped source refuses a new tap
 // once its limit of open taps is reached.
 func (r *tapRegistry) acquire(key, source string, limit int, g *inputGrant) (t *upstreamTap, created bool, err error) {
+	t, _, created, err = r.acquireOrManifest(key, source, limit, g, nil)
+	return t, created, err
+}
+
+// acquireOrManifest atomically joins an in-flight tap, returns a cached
+// manifest published by a tap that just closed, or registers a new tap for
+// key. Re-checking cached under r.mu closes the race where a concurrent
+// manifest tap caches its master playlist and closes itself between a second
+// reader's pre-acquire cache miss and its call to acquire.
+func (r *tapRegistry) acquireOrManifest(key, source string, limit int, g *inputGrant, cached func() *cachedManifest) (t *upstreamTap, cm *cachedManifest, created bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.byKey == nil {
@@ -375,11 +385,16 @@ func (r *tapRegistry) acquire(key, source string, limit int, g *inputGrant) (t *
 		}
 		t.mu.Unlock()
 		if !closed {
-			return t, false, nil
+			return t, nil, false, nil
+		}
+	}
+	if cached != nil {
+		if cm = cached(); cm != nil {
+			return nil, cm, false, nil
 		}
 	}
 	if source != "" && limit > 0 && len(r.bySource[source])+r.external[source] >= limit {
-		return nil, false, ErrProviderBusy
+		return nil, nil, false, ErrProviderBusy
 	}
 	t = &upstreamTap{key: key, source: source, reg: r, ready: make(chan struct{}), refs: map[*inputGrant]struct{}{g: {}}}
 	t.cond = sync.NewCond(&t.mu)
@@ -390,7 +405,7 @@ func (r *tapRegistry) acquire(key, source string, limit int, g *inputGrant) (t *
 		}
 		r.bySource[source][t] = struct{}{}
 	}
-	return t, true, nil
+	return t, nil, true, nil
 }
 
 // canJoinOrOpen reports whether key already has an open tap that a new grant
@@ -1098,15 +1113,22 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 		}
 		source, limit := s.tapSource(g)
 		_, headers, mediaHeaders := g.requestScope()
+		var cm *cachedManifest
 		var created bool
 		var err error
-		t, created, err = s.inputRelay.taps.acquire(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g)
+		t, cm, created, err = s.inputRelay.taps.acquireOrManifest(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g, func() *cachedManifest {
+			return g.consumeManifest(raw)
+		})
 		if err != nil {
 			if errors.Is(err, ErrProviderBusy) && limit > 0 {
 				s.emitProviderLimitReached(source, limit, limit, g.histChannel)
 			}
 			w.Header().Set(tapBusyHeader, "1")
 			http.Error(w, "provider connections in use", http.StatusServiceUnavailable)
+			return true
+		}
+		if cm != nil {
+			s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
 			return true
 		}
 		if created {
@@ -2394,12 +2416,21 @@ func (s *Service) sniffInputAttempt(ctx context.Context, ss *session, n int, ref
 	}
 	source, limit := s.tapSource(g)
 	_, headers, mediaHeaders := g.requestScope()
-	t, created, err := r.taps.acquire(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g)
+	t, cm, created, err := r.taps.acquireOrManifest(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g, func() *cachedManifest {
+		return g.peekManifest(raw)
+	})
 	if err != nil {
 		if errors.Is(err, ErrProviderBusy) && limit > 0 {
 			s.emitProviderLimitReached(source, limit, limit, g.histChannel)
 		}
 		return nil, "", err
+	}
+	if cm != nil {
+		ss.setSniffedManifest(cm)
+		if cm.hls {
+			return []byte("#EXTM3U"), "application/vnd.apple.mpegurl", nil
+		}
+		return []byte("<?xml"), "application/dash+xml", nil
 	}
 	if created {
 		s.openTap(t, g, raw, http.Header{"User-Agent": {defaultUserAgent()}}, ctx)

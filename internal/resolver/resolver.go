@@ -1997,6 +1997,7 @@ type rankEnv struct {
 	rcfg                  config.Resolver
 	lang                  string
 	wanted, accepted      []string
+	wantedSubs            []string
 	allowReleaseTitleSync bool
 	allowReleaseTitleWarm bool
 }
@@ -2005,6 +2006,7 @@ type rankEnv struct {
 func (env *rankEnv) audio(profile core.QualityProfile, req core.ResolveRequest) {
 	env.wanted = wantedAudio(profile, req.User, env.lang)
 	env.accepted = acceptedAudio(profile, req.User, env.lang, req.Title)
+	env.wantedSubs = wantedSubtitles(req.User, env.lang)
 }
 
 // rankWith is rankCandidates with its environment already prepared.
@@ -2262,7 +2264,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		lowBitrate := bitrateScore(sizedForEpisode(rel), t) < 0
 		starved := lowBitrate || upscales[ri]
 		yearGuessed := seriesYearGuessed(rel, sreq)
-		facts := formatFacts{starved: starved, lowBitrate: lowBitrate, viewerLanguage: langWanted, yearDiffers: yearGuessed, pastRetention: s.pastRetention(rel, now)}
+		facts := formatFacts{starved: starved, lowBitrate: lowBitrate, viewerLanguage: langWanted, viewerSubs: indexerListsSubtitles(rel, env.wantedSubs), yearDiffers: yearGuessed, pastRetention: s.pastRetention(rel, now)}
 		sc, err := s.scoreRelease(rel, profile, req.Client, t, policyResult, facts)
 		if errors.Is(err, errFormatTimeout) {
 			// One (possibly hostile) release name must not fail the whole

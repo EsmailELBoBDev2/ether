@@ -1,6 +1,10 @@
 package mediabrowser
 
-import "github.com/braedonsaunders/ether/internal/frontend"
+import (
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
+)
 
 // jellyfinItemDetailDTO reports only the host's policy-backed estimate.
 func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[string]any) {
@@ -29,6 +33,30 @@ func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[str
 	}
 	dto["LocalTrailerCount"] = trailers
 	dto["SpecialFeatureCount"] = features
+	// Chapters the item itself declares, or that Ether derived from its
+	// ordered parts (a multi-part audiobook), are known before any source is
+	// probed. A probed version's own chapter list still replaces them.
+	if _, ok := dto["Chapters"]; !ok && len(detail.Chapters) > 0 {
+		// Jellyfin Web lists chapters only when they carry an image tag. The
+		// item's cover stands in (served as the Chapter image type).
+		cover := ""
+		if tags, ok := dto["ImageTags"].(map[string]any); ok {
+			cover, _ = tags["Primary"].(string)
+		}
+		chapters := make([]any, 0, len(detail.Chapters))
+		for _, chapter := range detail.Chapters {
+			// ImageDateModified is non-null in the Jellyfin SDK (#614).
+			entry := map[string]any{"StartPositionTicks": chapter.Start.Nanoseconds() / 100, "ImageDateModified": wireTime(time.Time{})}
+			if chapter.Title != "" {
+				entry["Name"] = chapter.Title
+			}
+			if cover != "" {
+				entry["ImageTag"] = cover
+			}
+			chapters = append(chapters, entry)
+		}
+		dto["Chapters"] = chapters
+	}
 	if detail.Title.Type != "movie" && detail.Title.Type != "episode" {
 		return
 	}

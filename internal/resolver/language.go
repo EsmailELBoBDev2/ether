@@ -258,3 +258,67 @@ func matchesAlternativeTitle(info core.ReleaseInfo, alts []string) bool {
 	}
 	return false
 }
+
+// wantedSubtitles is the canonical language names (releaseparse.LanguageName)
+// a release is credited for listing: the viewer's own, else the server
+// language. Normalized once per resolve so per-candidate checks stay
+// allocation-free.
+func wantedSubtitles(user *core.User, serverLang string) []string {
+	var raw []string
+	if user != nil && len(user.SubtitleLanguages) > 0 {
+		raw = user.SubtitleLanguages
+	} else if base, _, _ := strings.Cut(strings.TrimSpace(serverLang), "-"); base != "" {
+		raw = []string{base}
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, lang := range raw {
+		if name := releaseparse.LanguageName(lang); name != "" && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func isCanonicalLanguageName(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// indexerListsSubtitles reports whether the indexer lists a subtitle track in
+// one of the wanted canonical languages. A release whose indexer lists nothing
+// is not penalised: most indexers leave the attribute out.
+func indexerListsSubtitles(rel core.Release, wanted []string) bool {
+	if len(rel.IndexerSubtitles) == 0 || len(wanted) == 0 {
+		return false
+	}
+	for _, have := range rel.IndexerSubtitles {
+		canonical := isCanonicalLanguageName(have)
+		haveBase := ""
+		if canonical {
+			haveBase = releaseparse.LanguageBase(have)
+		}
+		for _, want := range wanted {
+			if canonical {
+				if have == want || haveBase == releaseparse.LanguageBase(want) {
+					return true
+				}
+				continue
+			}
+			if releaseparse.LanguageMatch(have, want) != releaseparse.LanguageNoMatch {
+				return true
+			}
+		}
+	}
+	return false
+}

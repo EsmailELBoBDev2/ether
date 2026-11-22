@@ -106,7 +106,7 @@ func cacheableBrowse(r *http.Request) bool {
 	// Search responses can reflect superseded search-as-you-type waits or
 	// bounded AI partial/keyword fallbacks before the background AI job caches
 	// its finished set, so search requests must not be frozen in browseCache.
-	if strings.HasSuffix(p, "/Search/Hints") || len(route.Query(r.URL.Query(), "SearchTerm")) > 0 || len(route.Query(r.URL.Query(), "AnyProviderIdEquals")) > 0 {
+	if strings.HasSuffix(p, "/Search/Hints") || len(route.Query(r.URL.Query(), "SearchTerm")) > 0 || len(route.Query(r.URL.Query(), "AnyProviderIdEquals")) > 0 || sortByRandom(r) {
 		return false
 	}
 	return strings.Contains(p, "/Items") || strings.HasSuffix(p, "/NextUp")

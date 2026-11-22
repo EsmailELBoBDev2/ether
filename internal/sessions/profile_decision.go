@@ -1025,6 +1025,21 @@ func (b *Broker) h264EncoderVerified() bool {
 	return hw.Name == transcode.AccelNVENC
 }
 
+// sideSubtitleStream reports the text subtitle stream selected for the client
+// to render beside the video when decideProfile cleared Decision.SubtitleStream
+// to -1 so the video encoder does not burn it in.
+func sideSubtitleStream(ps *core.PlaySession, req frontend.PlanRequest, dec core.Decision) *int {
+	if ps == nil || dec.SubtitleStream >= 0 || req.Intent.Options.SubtitleStream < 0 {
+		return nil
+	}
+	want := req.Intent.Options.SubtitleStream
+	if slices.Contains(progressiveTextTracks(string(req.Protocol), req.Caps, ps.Info), want) ||
+		(hlsOnlyTextClient(string(req.Protocol), req.Caps) && slices.Contains(hlsTextTracks(string(req.Protocol), req.Caps, ps.Info), want)) {
+		return &want
+	}
+	return nil
+}
+
 func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (core.Decision, error) {
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound

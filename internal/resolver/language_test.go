@@ -138,3 +138,53 @@ func TestResolveExcludeReleasesSkipsReposts(t *testing.T) {
 		t.Fatalf("ExcludeReleases got (%+v, %v), want %s", res, err, other.ID)
 	}
 }
+
+func TestViewerSubtitlesScoringAndRemoval(t *testing.T) {
+	viewer := &core.User{ID: 7, SubtitleLanguages: []string{"ar"}}
+	plain := rel("plain", "The.Signal.1999.1080p.WEB-DL.H264-AAA", 4000)
+	withSubs := rel("subs", "The.Signal.1999.1080p.WEB-DL.H264-BBB", 3800)
+	withSubs.IndexerSubtitles = []string{"english", "arabic"}
+
+	// When the profile scores FormatViewerSubtitles, the release listing the
+	// viewer's subtitle language wins the tie over the slightly larger release.
+	idx := &fakeIndexer{releases: []core.Release{plain, withSubs}}
+	cfg := testCfg()
+	s := New(idx, nil, nil, cfg, Options{Now: func() time.Time { return time.Unix(1800000000, 0) }})
+	defer s.Close()
+
+	res, err := s.Resolve(context.Background(), core.ResolveRequest{Title: matrixTitle(), User: viewer})
+	if err != nil || res.Release.ID != withSubs.ID {
+		t.Fatalf("scored viewer-subtitles got (%+v, %v), want %s", res, err, withSubs.ID)
+	}
+
+	// Removing FormatViewerSubtitles from CustomFormatScores (as the console
+	// Remove button does) must genuinely turn it off.
+	cfgNoSubs := testCfg()
+	for i := range cfgNoSubs.Quality.Profiles {
+		delete(cfgNoSubs.Quality.Profiles[i].CustomFormatScores, core.FormatViewerSubtitles)
+	}
+	sOff := New(idx, nil, nil, cfgNoSubs, Options{Now: func() time.Time { return time.Unix(1800000000, 0) }})
+	defer sOff.Close()
+
+	res, err = sOff.Resolve(context.Background(), core.ResolveRequest{Title: matrixTitle(), User: viewer})
+	if err != nil || res.Release.ID != plain.ID {
+		t.Fatalf("removed viewer-subtitles got (%+v, %v), want %s", res, err, plain.ID)
+	}
+
+	// Default score (15) must not force a video transcode (-20) over DirectPlay.
+	direct := rel("direct", "The.Signal.1999.1080p.WEB-DL.H264-AAA", 4000)
+	transcodeWithSubs := rel("xvid-subs", "The.Signal.1999.1080p.WEB-DL.XviD-BBB", 4000)
+	transcodeWithSubs.IndexerSubtitles = []string{"arabic"}
+	idx2 := &fakeIndexer{releases: []core.Release{transcodeWithSubs, direct}}
+	s2 := New(idx2, nil, nil, testCfg(), Options{Now: func() time.Time { return time.Unix(1800000000, 0) }})
+	defer s2.Close()
+
+	res, err = s2.Resolve(context.Background(), core.ResolveRequest{
+		Title:  matrixTitle(),
+		User:   viewer,
+		Client: core.ClientCaps{VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}},
+	})
+	if err != nil || res.Release.ID != direct.ID {
+		t.Fatalf("transcode with subs beat DirectPlay: got (%+v, %v), want %s", res, err, direct.ID)
+	}
+}

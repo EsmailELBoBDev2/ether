@@ -75,6 +75,7 @@ export default function ViewerProfile() {
   const viewer = useAsync<ViewerDetail | null>(() => api.viewer(id), [id]);
   const taste = useAsync(() => api.taste(id), [id]);
   const [refreshing, setRefreshing] = useState(false);
+  const [settingsRev, setSettingsRev] = useState(0);
   const loadFavorites = useCallback(
     () => apiFetch<{ enabled: boolean }>(`/viewers/${id}/favorites-mirror`),
     [id],
@@ -200,7 +201,10 @@ export default function ViewerProfile() {
             />
             <ViewerActions
               viewer={v}
-              onChange={() => void viewer.reload()}
+              onChange={() => {
+                void viewer.reload();
+                setSettingsRev((n) => n + 1);
+              }}
               onRebuild={() => void refresh()}
               rebuilding={refreshing}
               onPreviewHome={() => setTab("home")}
@@ -242,9 +246,9 @@ export default function ViewerProfile() {
       ) : tab === "overview" ? (
         <ViewerDashboard viewer={v} taste={taste.data} />
       ) : tab === "limits" ? (
-        <ViewerAccess key={id} viewer={v} />
+        <ViewerAccess key={`${id}:${settingsRev}`} viewer={v} />
       ) : tab === "playback" ? (
-        <ViewerPlayback key={id} viewer={v} />
+        <ViewerPlayback key={`${id}:${settingsRev}`} viewer={v} />
       ) : tab === "sign-in" ? (
         <div className="space-y-6">
           <PageSubtabs

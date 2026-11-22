@@ -160,6 +160,10 @@ type Release struct {
 	// importing it on request), so every open costs the source real work
 	// (additive). See OpensOnDemand.
 	StreamOnDemand bool `json:"streamOnDemand,omitempty"`
+	// IndexerSubtitles are the subtitle languages the indexer lists for the
+	// release (the Newznab "subs" attribute), as release language names.
+	// Empty means the indexer said nothing, not that there are none (additive).
+	IndexerSubtitles []string `json:"indexerSubtitles,omitempty"`
 }
 
 // KnownFileCount returns the torrent's known file count from FileCount or

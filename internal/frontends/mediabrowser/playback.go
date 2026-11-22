@@ -51,6 +51,7 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		EnableDirectStream  *caps.FlexBool     `json:"EnableDirectStream"`
 		EnableTranscoding   *caps.FlexBool     `json:"EnableTranscoding"`
 		StartTimeTicks      caps.FlexInt64     `json:"StartTimeTicks"`
+		MaxStreamingBitrate caps.FlexInt64     `json:"MaxStreamingBitrate"`
 		AudioStreamIndex    json.RawMessage    `json:"AudioStreamIndex"`
 		SubtitleStreamIndex json.RawMessage    `json:"SubtitleStreamIndex"`
 	}
@@ -94,6 +95,14 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		StartTimeTicks:      int64(raw.StartTimeTicks),
 		AudioStreamIndex:    flexInt(raw.AudioStreamIndex),
 		SubtitleStreamIndex: flexInt(raw.SubtitleStreamIndex),
+	}
+	// Jellyfin's PlaybackInfoDto carries the player's quality choice as its
+	// own MaxStreamingBitrate; Jellyfin Web leaves the device profile's at the
+	// device maximum. The lower of the two is the limit, as with the query.
+	if limit := int64(raw.MaxStreamingBitrate); limit > 0 && limit <= 1<<31-1 {
+		if p.DeviceProfile.MaxStreamingBitrate == 0 || int(limit) < p.DeviceProfile.MaxStreamingBitrate {
+			p.DeviceProfile.MaxStreamingBitrate = int(limit)
+		}
 	}
 	return nil
 }
@@ -239,7 +248,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
-		if body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate {
+		if n > 0 && (body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate) {
 			body.DeviceProfile.MaxStreamingBitrate = n
 		}
 	}
@@ -406,8 +415,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// when the client did not pick a version and this is a single playable
 	// item, never a live channel or a plugin kind.
 	var variants []frontend.ReleaseVariant
+	titleLanguage := ""
 	if i.host.Editions != nil && !versionRequested && channel == "" && !key.IsPluginKey() {
 		if title, ok := i.playbackTitle(r, v, key); ok {
+			titleLanguage = title.Language
 			variants = i.releaseVariants(r, scope, title)
 		}
 	}
@@ -724,13 +735,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if (i.protocol == "emby" || i.protocol == "jellyfin") && channel == "" {
-		applyPlannedStreamIndexes(source, media, plan.Decision)
+		applyPlannedStreamIndexes(source, media, plan.Decision, plan.SubtitleStream())
 	}
 	// With no explicit version pick, list Auto then the ranked release
 	// variants so the app's version picker offers them; a pick resolves to
 	// the exact release through the returned MediaSource Id.
 	if listVersions && !versionRequested && autoSwitchedRelease == "" {
-		if sources := i.releaseVersionSourcesFor(r, scope, key, variants, source); sources != nil {
+		if sources := i.releaseVersionSourcesFor(r, scope, key, titleLanguage, variants, source); sources != nil {
 			jsonReply(w, map[string]any{"MediaSources": sources, "PlaySessionId": playID})
 			return
 		}
@@ -792,7 +803,7 @@ func (i *instance) liveStreamsOpen(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
-		if body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate {
+		if n > 0 && (body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate) {
 			body.DeviceProfile.MaxStreamingBitrate = n
 		}
 	}

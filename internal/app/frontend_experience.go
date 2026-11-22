@@ -644,10 +644,10 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	} else if a.libraries != nil {
 		deps.PluginLibraries = adapters.AttachKindCatalog(context.Background(), adapters.KindCatalogDeps{
 			TitleInLibrary: func(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error) {
-				return a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
+				return a.catalog.TitleInFilter(ctx, libraryAccessFilter(lib), key)
 			},
 			TitlesInLibrary: func(ctx context.Context, lib core.Library, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
-				return a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
+				return a.catalog.TitlesInFilter(ctx, libraryAccessFilter(lib), keys)
 			},
 			Libraries: a.libraries,
 			Logger:    a.log,

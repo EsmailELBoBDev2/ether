@@ -13,7 +13,11 @@ import (
 // Scope limits where a hide rule applies. Empty or "everywhere" hides the
 // title from browsing and search. "discovery" hides it only from browsing,
 // Home and hub rows, recommendations, New Releases, Trending and catalogue
-// collections; search, direct lookup and playback still reach it.
+// collections; search, direct lookup and playback still reach it. "library"
+// hides it only inside the built-in library that owns the rule (browse,
+// sections, hubs, facets, allLeaves and section-scoped search); other
+// libraries, collections, server-wide search, direct lookup and playback
+// still reach it.
 type LibraryExclusion struct {
 	// Name is optional. Clients label a rule from its conditions.
 	Name      string           `json:"name"`
@@ -21,14 +25,72 @@ type LibraryExclusion struct {
 	MediaType string           `json:"mediaType"`        // movie, show, mixed
 	Match     string           `json:"match"`            // all, any
 	Rules     []CollectionRule `json:"rules"`
-	Scope     string           `json:"scope,omitempty"` // everywhere, discovery; empty means everywhere
+	Scope     string           `json:"scope,omitempty"` // everywhere, discovery, library; empty means everywhere
 }
 
 // Visibility rule scopes.
 const (
 	VisibilityEverywhere = "everywhere"
 	VisibilityDiscovery  = "discovery"
+	VisibilityLibrary    = "library"
 )
+
+// IsBuiltinLibrary reports whether id is one of the canonical built-in
+// libraries (Movies or TV Shows).
+func IsBuiltinLibrary(id LibraryID) bool {
+	return id == LibraryMovies || id == LibraryShows
+}
+
+// HasLibraryScopedRules reports whether any rule in rules has scope "library".
+func HasLibraryScopedRules(rules []LibraryExclusion) bool {
+	for _, r := range rules {
+		if r.Scope == VisibilityLibrary {
+			return true
+		}
+	}
+	return false
+}
+
+// WithoutLibraryScopedRules returns rules with VisibilityLibrary entries
+// omitted, preserving slice order.
+func WithoutLibraryScopedRules(rules []LibraryExclusion) []LibraryExclusion {
+	if !HasLibraryScopedRules(rules) {
+		return rules
+	}
+	out := make([]LibraryExclusion, 0, len(rules))
+	for _, r := range rules {
+		if r.Scope != VisibilityLibrary {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// BuiltinLibraryExtraRules projects a built-in library's rules into the
+// library-only overlay applied on top of the canonical catalogue policy (with
+// fallback "show"). It preserves show rules that precede a library-scoped hide
+// rule so first-match ordering stays exact, omits canonical hide rules (which
+// the catalogue policy enforces globally and viewers may exempt), and drops
+// trailing show rules that cannot change a "show" fallback.
+func BuiltinLibraryExtraRules(rules []LibraryExclusion) []LibraryExclusion {
+	lastLib := -1
+	for i, r := range rules {
+		if r.Scope == VisibilityLibrary {
+			lastLib = i
+		}
+	}
+	if lastLib < 0 {
+		return nil
+	}
+	out := make([]LibraryExclusion, 0, lastLib+1)
+	for i := 0; i <= lastLib; i++ {
+		r := rules[i]
+		if r.Action == "show" || r.Scope == VisibilityLibrary {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 type explicitSearchKey struct{}
 

@@ -493,9 +493,11 @@ func (h *Handler) handleViewerCatalogRules(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	pol := service.LibraryPolicies()
-	combined := make([]core.LibraryExclusion, 0, len(pol.MovieRules)+len(pol.ShowRules))
-	combined = append(combined, pol.MovieRules...)
-	combined = append(combined, pol.ShowRules...)
+	movieRules := core.WithoutLibraryScopedRules(pol.MovieRules)
+	showRules := core.WithoutLibraryScopedRules(pol.ShowRules)
+	combined := make([]core.LibraryExclusion, 0, len(movieRules)+len(showRules))
+	combined = append(combined, movieRules...)
+	combined = append(combined, showRules...)
 	ids := make([]string, len(combined))
 	for i, rule := range combined {
 		ids[i] = catalog.RuleIdentity(rule)

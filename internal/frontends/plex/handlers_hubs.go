@@ -482,6 +482,7 @@ func (s *Server) recentlyAddedHubPage(ctx context.Context, pr *Request, sec Sect
 		recent := s.exp().NewRecent(frontend.RecentOptions{Visibility: s.sectionVisibility(sec), Unrestricted: func(u *frontend.User) bool { return !s.viewerRestricted(u) }})
 		items, more, err = recent.Added(ctx, pr.User, sec.Type, count, func(ctx context.Context, q frontend.BrowseQuery) (frontend.Page, error) {
 			q.NoTotal = noTotal
+			q.Filter, _ = s.sectionBrowseScope(ctx, sec, pr.User, q.Filter)
 			return s.catalogBrowse(ctx, q)
 		})
 		if err != nil {
@@ -1911,10 +1912,59 @@ func (s *Server) searchClientID(pr *Request) string {
 	return pr.Token
 }
 
+func (s *Server) filterSectionReasoned(ctx context.Context, sec Section, items []reasonedTitle) []reasonedTitle {
+	if len(items) == 0 || sec.PluginID != "" || s.exp() == nil {
+		return items
+	}
+	sr, ok := s.exp().(frontend.LibraryScopeReader)
+	if !ok {
+		return items
+	}
+	libID := sectionLibraryID(sec)
+	if libID == 0 {
+		return items
+	}
+	keys := make([]frontend.RatingKey, len(items))
+	for i := range items {
+		k := items[i].title.Key
+		if (items[i].title.Type == frontend.TypeSeason || items[i].title.Type == frontend.TypeEpisode) && items[i].title.ShowKey != 0 {
+			k = items[i].title.ShowKey
+		}
+		keys[i] = k
+	}
+	members, scoped, err := sr.LibraryMembers(ctx, libID, keys)
+	if err != nil || !scoped {
+		return items
+	}
+	out := make([]reasonedTitle, 0, len(items))
+	for i := range items {
+		k := items[i].title.Key
+		if (items[i].title.Type == frontend.TypeSeason || items[i].title.Type == frontend.TypeEpisode) && items[i].title.ShowKey != 0 {
+			k = items[i].title.ShowKey
+		}
+		if members[k] {
+			out = append(out, items[i])
+		}
+	}
+	return out
+}
+
 func (s *Server) runSearch(ctx context.Context, pr *Request, query string, sectionID, limit int) ([]frontend.Title, error) {
 	pluginItems := s.searchPluginTitles(ctx, pr, query, sectionID, limit)
 	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
-	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, sectionID), s.saferFetchCount(pr.User, limit), false)
+	var scopedSec Section
+	scoped := false
+	fetch := s.saferFetchCount(pr.User, limit)
+	if sectionID > 0 {
+		if sec, ok := s.sectionByID(sectionID); ok && s.sectionHasLibraryScope(ctx, sec, pr.User) {
+			scopedSec, scoped = sec, true
+			fetch = min(max(fetch*4, 50), 200)
+		}
+	}
+	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, sectionID), fetch, false)
+	if scoped {
+		result.Items = s.filterSectionMembers(ctx, scopedSec, result.Items)
+	}
 	result.Items = s.takeVisible(pr.User, result.Items, limit)
 	result.Items = mergePluginSearchResults(result.Items, pluginItems, 0, limit)
 	return result.Items, err
@@ -2019,7 +2069,15 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sectionID, _ := strconv.Atoi(q.Get("sectionId"))
+	var scopedSec Section
+	scopedSection := false
 	fetch := max(limit*2, s.saferFetchCount(pr.User, limit))
+	if sectionID > 0 {
+		if sec, ok := s.sectionByID(sectionID); ok && s.sectionHasLibraryScope(ctx, sec, pr.User) {
+			scopedSec, scopedSection = sec, true
+			fetch = min(max(fetch*2, 50), 200)
+		}
+	}
 	// People are searched beside titles; neither waits for the other.
 	peopleDone := make(chan peopleSearchResult, 1)
 	peopleCtx := ctx // ctx is reassigned below; the goroutine keeps its own copy
@@ -2040,6 +2098,12 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeErr(w, r, err)
 		return
+	}
+	if scopedSection {
+		result.Items = s.filterSectionMembers(ctx, scopedSec, result.Items)
+		for mt, rts := range people.titles {
+			people.titles[mt] = s.filterSectionReasoned(ctx, scopedSec, rts)
+		}
 	}
 	vibe, res, isVibe := result.Collection, mergePluginSearchResults(result.Items, pluginItems, result.AIItems, fetch), result.CollectionSearch
 	aiRank := map[frontend.RatingKey]int{}

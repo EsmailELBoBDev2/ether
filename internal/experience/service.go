@@ -437,7 +437,7 @@ func (s *Service) LibraryCount(ctx context.Context, viewer *core.Viewer, viewID 
 		switch lib.Source {
 		case core.LibraryPlugin:
 			return s.d.PluginLibraries.Count(ctx, lib)
-		case core.LibraryCatalog, core.LibraryCollection:
+		case core.LibraryBuiltin, core.LibraryCatalog, core.LibraryCollection:
 			page, err := s.LibraryItems(ctx, v, core.Device{}, viewID, frontend.ItemQuery{Limit: 1})
 			if err != nil {
 				return 0, err

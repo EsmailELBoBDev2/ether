@@ -210,7 +210,15 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 			}
 		}
 	case core.LibraryBuiltin:
-		if c.app.catalog != nil {
+		if core.HasLibraryScopedRules(lib.Rules) && c.app.collections != nil {
+			if n, pending, err := c.app.collections.ConsoleCount(ctx, libraryScopeFilter(lib, core.Filter{})); err != nil {
+				if c.app.log != nil {
+					c.app.log.Warn("libraries: library could not be counted", "id", int64(lib.ID), "source", lib.Source, "err", err)
+				}
+			} else if !pending || n > 0 {
+				dto.ItemCount = &n
+			}
+		} else if c.app.catalog != nil {
 			if st, err := c.app.catalog.Stats(ctx); err == nil {
 				n := st.BrowsableMovies
 				if lib.MediaType == core.TypeShow {
@@ -248,14 +256,20 @@ func libraryScopeFilter(lib core.Library, req core.Filter) core.Filter {
 	if lib.MediaType != "" {
 		f.Type = lib.MediaType
 	}
-	if lib.Source == core.LibraryCatalog || lib.Source == core.LibraryCollection {
+	if lib.Source == core.LibraryBuiltin || lib.Source == core.LibraryCatalog || lib.Source == core.LibraryCollection {
 		if lib.Source == core.LibraryCollection && lib.CollectionID > 0 {
 			// Exactly the collection's titles: a SQL semi-join, so the
 			// page reads one statement whatever the collection's size.
 			f.CollectionMembers = lib.CollectionID
 			f.CatalogueSources = nil
 		}
-		if f.RuleVisibility != "" {
+		if core.IsBuiltinLibrary(lib.ID) {
+			if f.RuleVisibility == "" {
+				if extra := core.BuiltinLibraryExtraRules(lib.Rules); len(extra) > 0 {
+					f.ExtraRules = extra
+				}
+			}
+		} else if f.RuleVisibility != "" {
 			f.ApplyCanonicalInPreview = true
 		} else if len(lib.Rules) > 0 || lib.VisibilityDefault != "" {
 			f.ExtraRules = lib.Rules
@@ -265,12 +279,25 @@ func libraryScopeFilter(lib core.Library, req core.Filter) core.Filter {
 	return f
 }
 
+// libraryAccessFilter builds the membership filter for direct access, server-wide
+// search, and playback. Unlike libraryScopeFilter, it omits a built-in library's
+// library-only hide rules so titles hidden from a built-in library remain
+// reachable everywhere else.
+func libraryAccessFilter(lib core.Library) core.Filter {
+	f := libraryScopeFilter(lib, core.Filter{})
+	if core.IsBuiltinLibrary(lib.ID) {
+		f.ExtraRules = nil
+		f.ExtraFallback = ""
+	}
+	return f
+}
+
 // libraryRecommendationMembers implements personalize.Options.LibraryMembers:
-// catalogue and collection libraries scope their section recommendations to
-// their own titles, checked with the same indexed membership SQL as the All
-// browse. Built-in and plugin libraries stay unscoped (type-only sections,
-// as today). The revision is the library's UpdatedAt, so editing its
-// sources, rules or collection invalidates cached section assemblies.
+// catalogue, collection, and library-scoped built-in libraries scope their
+// section rows to their own titles, checked with the same indexed membership
+// SQL as the All browse. Unscoped built-in and plugin libraries stay unscoped.
+// The revision is the library's UpdatedAt, so editing its sources, rules or
+// collection invalidates cached section assemblies.
 func (a *App) libraryRecommendationMembers(ctx context.Context, id core.LibraryID, keys []core.RatingKey) (map[core.RatingKey]bool, int64, bool, error) {
 	if a.libraries == nil {
 		return nil, 0, false, nil
@@ -282,12 +309,50 @@ func (a *App) libraryRecommendationMembers(ctx context.Context, id core.LibraryI
 	if err != nil {
 		return nil, 0, false, err
 	}
-	if lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection {
+	if lib.Source != core.LibraryBuiltin && lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection {
 		return nil, 0, false, nil
 	}
-	members, err := a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
+	if core.IsBuiltinLibrary(lib.ID) && !core.HasLibraryScopedRules(lib.Rules) {
+		return nil, 0, false, nil
+	}
+	queryKeys := keys
+	var remapped bool
+	for _, k := range keys {
+		if k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode {
+			remapped = true
+			break
+		}
+	}
+	if remapped {
+		seen := make(map[core.RatingKey]struct{}, len(keys))
+		queryKeys = make([]core.RatingKey, 0, len(keys))
+		for _, k := range keys {
+			pk := k
+			if k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode {
+				pk = core.ShowKey(k.TMDB())
+			}
+			if _, ok := seen[pk]; !ok {
+				seen[pk] = struct{}{}
+				queryKeys = append(queryKeys, pk)
+			}
+		}
+	}
+	members, err := a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), queryKeys)
 	if err != nil {
 		return nil, 0, false, err
+	}
+	if remapped {
+		out := make(map[core.RatingKey]bool, len(keys))
+		for _, k := range keys {
+			pk := k
+			if k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode {
+				pk = core.ShowKey(k.TMDB())
+			}
+			if members[pk] {
+				out[k] = true
+			}
+		}
+		members = out
 	}
 	return members, lib.UpdatedAt.UnixNano(), true, nil
 }

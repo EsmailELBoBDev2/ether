@@ -402,7 +402,7 @@ func (s *Service) IndexedLibraryCount(ctx context.Context, viewer *core.Viewer, 
 		switch lib.Source {
 		case core.LibraryPlugin:
 			return s.d.PluginLibraries.Count(ctx, lib)
-		case core.LibraryCatalog:
+		case core.LibraryBuiltin, core.LibraryCatalog:
 			q := frontend.ItemQuery{Filter: s.libraryBrowseFilter(ctx, v, lib, core.Filter{}), Limit: 1}
 			if page, ok, err := s.indexedLibraryPage(ctx, v, target, q); err != nil {
 				return 0, err

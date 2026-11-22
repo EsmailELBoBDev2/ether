@@ -143,8 +143,21 @@ func (s *Service) providerIDLibraryItems(ctx context.Context, v *core.User, view
 			if (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) && t.ShowKey != 0 {
 				targetKey = t.ShowKey
 			}
-			member, err := s.d.PluginLibraries.MemberOf(ctx, *stored, targetKey)
-			if err != nil || !member {
+			var member bool
+			if core.IsBuiltinLibrary(stored.ID) && core.HasLibraryScopedRules(stored.Rules) && s.d.LibraryMembers != nil {
+				m, _, ok, err := s.d.LibraryMembers(ctx, stored.ID, []core.RatingKey{targetKey})
+				if err != nil || (ok && !m[targetKey]) {
+					continue
+				}
+				member = true
+			} else {
+				var err error
+				member, err = s.d.PluginLibraries.MemberOf(ctx, *stored, targetKey)
+				if err != nil || !member {
+					continue
+				}
+			}
+			if !member {
 				continue
 			}
 		}
@@ -251,7 +264,7 @@ func (s *Service) finishProviderIDPage(ctx context.Context, out []core.Title, q 
 }
 
 func libraryNeedsMemberCheck(lib core.Library) bool {
-	if lib.Source == core.LibraryCollection || lib.Source == core.LibraryCatalog {
+	if lib.Source == core.LibraryCollection || lib.Source == core.LibraryCatalog || core.HasLibraryScopedRules(lib.Rules) {
 		return true
 	}
 	if len(lib.Sources) == 0 {

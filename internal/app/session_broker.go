@@ -335,7 +335,7 @@ func (a *App) librarySessionTitle(ctx context.Context, v *core.Viewer, key core.
 		if !published {
 			continue
 		}
-		ok, err := a.catalog.TitleInFilter(core.WithCatalogViewer(ctx, v), libraryScopeFilter(lib, core.Filter{}), libraryProfileKey(title))
+		ok, err := a.catalog.TitleInFilter(core.WithCatalogViewer(ctx, v), libraryAccessFilter(lib), libraryProfileKey(title))
 		if err != nil {
 			return nil, err
 		}

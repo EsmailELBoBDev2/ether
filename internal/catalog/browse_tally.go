@@ -497,6 +497,43 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 		}
 		return total - watched, true, nil
 	}
+	if len(f.ExtraRules) > 0 && (f.ExtraFallback == "" || f.ExtraFallback == "show") {
+		base := f
+		base.ExtraRules = nil
+		base.ExtraFallback = ""
+		if _, ok := c.tallyShape(base); ok {
+			extra, err := c.compileLibraryRulesModeForViewer(f.ExtraRules, f.ExtraFallback, false, f.CatalogViewerID)
+			if err != nil {
+				return 0, false, err
+			}
+			if keySQL, keyArgs, ok := extra.SQLHiddenKeys(f.Type); ok {
+				baseWhere, baseArgs, err := c.browseWhere(base)
+				if err != nil {
+					return 0, false, err
+				}
+				baseTotal, tallyOK, err := c.tallyTotal(ctx, base, baseWhere, baseArgs)
+				if err != nil || !tallyOK {
+					return 0, tallyOK, err
+				}
+				if extra.Passive() || keySQL == "" {
+					return baseTotal, true, nil
+				}
+				hiddenSQL, hiddenArgs := extra.SQLHidden()
+				if f.Type != "" {
+					hiddenSQL, hiddenArgs = extra.SQLHiddenForType(f.Type)
+				}
+				var hidden int
+				allArgs := make([]any, 0, len(keyArgs)+len(baseArgs)+len(hiddenArgs))
+				allArgs = append(allArgs, keyArgs...)
+				allArgs = append(allArgs, baseArgs...)
+				allArgs = append(allArgs, hiddenArgs...)
+				if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (`+keySQL+`) AND (`+baseWhere+`) AND (`+hiddenSQL+`)`, allArgs...).Scan(&hidden); err != nil {
+					return 0, false, err
+				}
+				return baseTotal - hidden, true, nil
+			}
+		}
+	}
 	s, ok := c.tallyShape(f)
 	if !ok {
 		return 0, false, nil

@@ -95,14 +95,37 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 	exact := true
 	more := false
 	if term := q.Get("q"); term != "" {
-		result, e := i.host.Experience.Search(r.Context(), v, device(r), term, query)
-		if e != nil {
-			http.Error(w, "Unavailable", 503)
-			return
+		scopedView := ""
+		if rawLib := q.Get("library_id"); rawLib != "" && rawLib != nowAvailableLibraryID {
+			view, e := i.nativeID(r.Context(), "library", rawLib)
+			if e != nil {
+				notFound(w)
+				return
+			}
+			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+				if _, scoped, se := sr.LibraryBrowseFilter(r.Context(), v, view, frontend.Filter{}); se == nil && scoped {
+					scopedView = view
+				}
+			}
 		}
-		page = result.Page
-		exact = result.TotalExact
-		more = result.Continuation == frontend.ContinuationMore
+		if scopedView != "" {
+			query.Filter.Query = term
+			page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), scopedView, query)
+			if err != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			more = offset+len(page.Items) < page.Total
+		} else {
+			result, e := i.host.Experience.Search(r.Context(), v, device(r), term, query)
+			if e != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			page = result.Page
+			exact = result.TotalExact
+			more = result.Continuation == frontend.ContinuationMore
+		}
 	} else if q.Get("library_id") == nowAvailableLibraryID {
 		titles, ok := i.nowAvailableTitles(r, v)
 		if !ok {

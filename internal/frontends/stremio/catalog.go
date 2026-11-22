@@ -242,9 +242,23 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else if query := extra.Get("search"); query != "" {
-		q.Types = []frontend.MediaType{frontend.MediaType(map[string]string{"movie": "movie", "series": "show"}[typ])}
-		page, e := i.host.Experience.Search(r.Context(), viewer, device, query, q)
-		err, titles = e, page.Page.Items
+		scopedLib := false
+		if libID != "" {
+			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+				if _, scoped, se := sr.LibraryBrowseFilter(r.Context(), viewer, libID, frontend.Filter{}); se == nil && scoped {
+					scopedLib = true
+				}
+			}
+		}
+		if scopedLib {
+			q.Filter.Query = query
+			page, e := i.host.Experience.LibraryItems(r.Context(), viewer, device, libID, q)
+			err, titles = e, page.Items
+		} else {
+			q.Types = []frontend.MediaType{frontend.MediaType(map[string]string{"movie": "movie", "series": "show"}[typ])}
+			page, e := i.host.Experience.Search(r.Context(), viewer, device, query, q)
+			err, titles = e, page.Page.Items
+		}
 	} else if libID != "" {
 		page, e := i.host.Experience.LibraryItems(r.Context(), viewer, device, libID, q)
 		err, titles = e, page.Items

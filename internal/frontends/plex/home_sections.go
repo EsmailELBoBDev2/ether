@@ -385,7 +385,9 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		served[mh.HubIdentifier] = hs.Hub
 	}
 	if !promotedOnly && !metadataOptionOn(r.URL.Query().Get("excludeContinueWatching")) && !isKindSection(sec) {
-		add(s.continueHub(ctx, pr, cwSection, sec, visibleCount))
+		cw := s.continueHub(ctx, pr, cwSection, sec, visibleCount)
+		cw.Hub.Items = s.filterSectionMembers(ctx, sec, cw.Hub.Items)
+		add(cw)
 	}
 	if !isKindSection(sec) {
 		if ra, err := s.recentlyAddedHub(ctx, pr, sec, count); err == nil {
@@ -420,6 +422,10 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		// Mixed discovery rows (watchlist, Rediscover) keep only this section's titles.
 		for _, hs := range s.discoveryHubs(ctx, pr, count) {
 			if h, ok := frontend.SectionView(hs.Hub, sec.Type); ok {
+				h.Items = s.filterSectionMembers(ctx, sec, h.Items)
+				if len(h.Items) == 0 {
+					continue
+				}
 				if promotedOnly {
 					h.Promoted = true
 				}
@@ -621,6 +627,10 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 			for _, dh := range sharedDisc {
 				view, ok := frontend.SectionView(dh, sec.Type)
 				if !ok {
+					continue
+				}
+				view.Items = s.filterSectionMembers(ctx, sec, view.Items)
+				if len(view.Items) == 0 {
 					continue
 				}
 				if promotedOnly {

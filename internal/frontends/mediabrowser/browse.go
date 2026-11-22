@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -1126,20 +1127,45 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_, token, _ := i.viewer(r)
-	live, e := i.liveSearchItems(r, v, token, terms[0])
-	if e != nil {
-		http.Error(w, "Unavailable", 503)
-		return
+	parent := route.Query(r.URL.Query(), "parentId")
+	var result frontend.SearchPage
+	var live []any
+	var extra []any
+	if len(parent) == 1 && parent[0] != "" {
+		if id, pe := ids.ParseGUID(ids.View, parent[0]); pe == nil && !ids.PersonalView(id) {
+			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+				if _, scoped, se := sr.LibraryBrowseFilter(r.Context(), v, ids.Decimal(id), frontend.Filter{}); se == nil && scoped {
+					libQ := q
+					libQ.Filter.Query = terms[0]
+					page, le := i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), libQ)
+					if le != nil {
+						http.Error(w, "Unavailable", 503)
+						return
+					}
+					result.Page = page
+					goto hintsBuilt
+				}
+			}
+		}
 	}
-	extra := paging.Slice(live, q.Offset, q.Limit)
-	catalogQuery := q
-	catalogQuery.Offset = max(0, q.Offset-len(live))
-	catalogQuery.Limit = max(1, q.Limit-len(extra))
-	result, err := i.searchPage(r, v, terms[0], catalogQuery)
-	if err != nil {
-		http.Error(w, "Unavailable", 503)
-		return
+	{
+		var e error
+		live, e = i.liveSearchItems(r, v, token, terms[0])
+		if e != nil {
+			http.Error(w, "Unavailable", 503)
+			return
+		}
+		extra = paging.Slice(live, q.Offset, q.Limit)
+		catalogQuery := q
+		catalogQuery.Offset = max(0, q.Offset-len(live))
+		catalogQuery.Limit = max(1, q.Limit-len(extra))
+		result, err = i.searchPage(r, v, terms[0], catalogQuery)
+		if err != nil {
+			http.Error(w, "Unavailable", 503)
+			return
+		}
 	}
+hintsBuilt:
 	room := max(0, q.Limit-len(extra))
 	var personHints []any
 	personTotal := 0
@@ -1296,7 +1322,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var page frontend.Page
-	if search := q.Filter.Query; search != "" && !q.FilterByProviderIDs && i.searchableParent(parent) {
+	if search := q.Filter.Query; search != "" && !q.FilterByProviderIDs && i.searchableParent(r.Context(), v, parent) {
 		if q.Favorite == nil {
 			if only, excluded := personTypesOnly(q); only {
 				if excluded {
@@ -1438,15 +1464,24 @@ func (i *instance) writeItemsByID(w http.ResponseWriter, r *http.Request, v *fro
 	return true
 }
 
-// searchableParent reports whether a search may use the title index: no
-// parent, or a library view. Searches inside a show, season or personal
-// library keep filtering that listing.
-func (i *instance) searchableParent(parent []string) bool {
+// searchableParent reports whether a search may use the global title index:
+// no parent, or an unscoped library view. Searches inside a show, season,
+// personal library, custom library or library-scoped built-in library filter
+// that view directly.
+func (i *instance) searchableParent(ctx context.Context, v *frontend.Viewer, parent []string) bool {
 	if len(parent) == 0 || parent[0] == "" {
 		return true
 	}
 	id, err := ids.ParseGUID(ids.View, parent[0])
-	return err == nil && !ids.PersonalView(id)
+	if err != nil || ids.PersonalView(id) {
+		return false
+	}
+	if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+		if _, scoped, err := sr.LibraryBrowseFilter(ctx, v, ids.Decimal(id), frontend.Filter{}); err == nil && scoped {
+			return false
+		}
+	}
+	return true
 }
 
 func (i *instance) similar(w http.ResponseWriter, r *http.Request) {

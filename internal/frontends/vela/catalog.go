@@ -1119,8 +1119,21 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	if b.Mode == "descriptive" && incompatible {
 		p.Page.Items = []frontend.Title{}
 	} else if b.Mode == "descriptive" && targetView != nil {
-		kept := p.Page.Items[:0]
 		isPluginView := targetView.PluginID != "" || targetView.KindKey != ""
+		var libMembers map[frontend.RatingKey]bool
+		var libScoped bool
+		if !isPluginView && targetView.LibraryID != 0 && len(p.Page.Items) > 0 {
+			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+				keys := make([]frontend.RatingKey, len(p.Page.Items))
+				for idx, it := range p.Page.Items {
+					keys[idx] = it.Key
+				}
+				if m, ok, err := sr.LibraryMembers(r.Context(), targetView.LibraryID, keys); err == nil && ok {
+					libMembers, libScoped = m, true
+				}
+			}
+		}
+		kept := p.Page.Items[:0]
 		for _, item := range p.Page.Items {
 			match := false
 			if isPluginView {
@@ -1129,6 +1142,9 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 				match = item.LibraryID == targetView.LibraryID
 			} else {
 				match = targetView.Type == "" || item.Type == targetView.Type
+			}
+			if libScoped && !libMembers[item.Key] {
+				match = false
 			}
 			if match && (kindLibrary == 0 || item.LibraryID == kindLibrary) && len(kept) < n {
 				kept = append(kept, item)

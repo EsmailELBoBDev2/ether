@@ -569,9 +569,23 @@ func (s *Service) Resume(ctx context.Context, viewer *core.Viewer, _ core.Device
 			}
 			return s.d.CachedGet(ctx, key)
 		}
+		var libMembers map[core.RatingKey]bool
+		var libScoped bool
+		if lib != nil && s.d.LibraryMembers != nil && len(states[processed:]) > 0 {
+			batchKeys := make([]core.RatingKey, 0, len(states[processed:]))
+			for _, st := range states[processed:] {
+				batchKeys = append(batchKeys, st.Key)
+			}
+			if m, _, ok, err := s.d.LibraryMembers(ctx, core.LibraryID(lib.ID), batchKeys); err == nil && ok {
+				libMembers, libScoped = m, true
+			}
+		}
 		for _, status := range states[processed:] {
 			if err = ctx.Err(); err != nil {
 				return page, err
+			}
+			if libScoped && !libMembers[status.Key] {
+				continue
 			}
 			title, err := visibility.GetTitle(ctx, status.Key)
 			if errors.Is(err, core.ErrNotFound) {

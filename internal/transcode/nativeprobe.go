@@ -1153,6 +1153,9 @@ func (t mkvTrack) stream(index int) (core.StreamInfo, bool, error) {
 		return core.StreamInfo{}, true, nil
 	}
 	si := core.StreamInfo{Index: index, Title: t.name, Default: t.flagDefault, Forced: t.forced}
+	if t.number > 0 && t.number <= math.MaxInt32 {
+		si.ContainerTrackID = int(t.number)
+	}
 	// libavformat reports the legacy ISO 639-2 Language element, which
 	// mkvmerge writes next to LanguageBCP47. A BCP 47 tag alone is mapped
 	// to the same three-letter form.

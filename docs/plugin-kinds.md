@@ -329,6 +329,15 @@ owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
 
+`ResolveSources({kind: "debrid_check", infoHashes})` (or `infoHash`) checks
+which owner-configured debrid services currently hold each torrent and returns
+one candidate per hash with `cached` and `cachedBy: [{id, name}]` in the
+priority order Ether would acquire from them (using the service's configured
+ID and display name, e.g. `"TorBox"` or the owner's account name; omitted when
+not cached). `indexer_search` candidates that Ether already knows are cached
+and `debrid_acquire` results carry the same `cachedBy` field (for
+`debrid_acquire`, the service that actually served the acquisition).
+
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
 `torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
 one candidate whose `files` lists what is inside the release:

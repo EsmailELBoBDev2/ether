@@ -204,6 +204,13 @@ type ReleaseFile struct {
 	Members         []ReleaseMember `json:"members,omitempty"`
 }
 
+// DebridServiceRef identifies one owner-configured debrid service (without
+// exposing credentials) that holds a cached torrent or served an acquisition.
+type DebridServiceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // SourceCandidate is one Ether-found release for a resolver to rank.
 // Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
 // nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
@@ -221,8 +228,11 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
-	Indexer   string `json:"indexer,omitempty"`
-	IndexerID string `json:"indexerId,omitempty"`
+	// CachedBy lists the configured debrid services holding this torrent in
+	// acquisition order (or the service that served debrid_acquire); omitted when uncached.
+	CachedBy  []DebridServiceRef `json:"cachedBy,omitempty"`
+	Indexer   string             `json:"indexer,omitempty"`
+	IndexerID string             `json:"indexerId,omitempty"`
 	// Score, Resolution, Source and Codec are populated on indexer_search
 	// candidates whose release name identifies video; non-video candidates
 	// leave them empty.

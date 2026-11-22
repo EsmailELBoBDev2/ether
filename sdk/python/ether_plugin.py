@@ -3608,6 +3608,13 @@ class ReleaseFile(TypedDict, total=False):
     sizeApproximate: bool
 
 
+class DebridServiceRef(TypedDict):
+    """One owner-configured debrid service holding a cached torrent or serving debrid_acquire."""
+
+    id: str
+    name: str
+
+
 class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
@@ -3626,6 +3633,7 @@ class SourceCandidate(TypedDict, total=False):
     size: int
     seeders: int
     cached: bool
+    cachedBy: List[DebridServiceRef]
     indexer: str
     indexerId: str
     score: int

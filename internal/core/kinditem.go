@@ -521,6 +521,13 @@ type ReleaseFile struct {
 	Members         []ReleaseMember `json:"members,omitempty"`
 }
 
+// DebridServiceRef identifies one owner-configured debrid service (without
+// exposing credentials) that holds a cached torrent or served an acquisition.
+type DebridServiceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // SourceCandidate is one Ether-found release for a resolver to rank,
 // carrying the release-hint fields plus the facts matching needs.
 // Torrent candidates carry their infoHash, magnet, and/or torrentUrl and never
@@ -539,6 +546,10 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	// CachedBy lists the owner-configured debrid services holding this
+	// torrent in the order Ether would acquire from them (or, on
+	// debrid_acquire, the service that served it). Omitted when uncached.
+	CachedBy []DebridServiceRef `json:"cachedBy,omitempty"`
 	// Indexer and IndexerID name the indexer an indexer_search result came
 	// from, so a plugin that hands the candidate back can be fetched
 	// through that indexer (an NZB needs its originating indexer).

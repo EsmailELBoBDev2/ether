@@ -419,7 +419,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Source discovery
 
-Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. Return a release source after choosing a candidate instead of downloading in the request handler.
+Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler.
 
 ```ts
 const candidates = ether.sources.resolve({kind: "indexer_search", query: "Example"});
@@ -1044,6 +1044,15 @@ content) your resolver can ask Ether to find bytes through the
 owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
+
+`ResolveSources({kind: "debrid_check", infoHashes})` (or `infoHash`) checks
+which owner-configured debrid services currently hold each torrent and returns
+one candidate per hash with `cached` and `cachedBy: [{id, name}]` in the
+priority order Ether would acquire from them (using the service's configured
+ID and display name, e.g. `"TorBox"` or the owner's account name; omitted when
+not cached). `indexer_search` candidates that Ether already knows are cached
+and `debrid_acquire` results carry the same `cachedBy` field (for
+`debrid_acquire`, the service that actually served the acquisition).
 
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
 `torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
@@ -2532,6 +2541,25 @@ type ReleaseFile struct {
 }
 ``````
 
+## Source: internal/core/kinditem.go#DebridServiceRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/kinditem.go#DebridServiceRef
+
+``````
+// DebridServiceRef identifies one owner-configured debrid service (without
+// exposing credentials) that holds a cached torrent or served an acquisition.
+type DebridServiceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+``````
+
 ## Source: internal/core/kinditem.go#SourceCandidate.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2545,6 +2573,7 @@ type ReleaseFile struct {
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `seeders` | `int` | may be omitted (see validation for conditions) |  |
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
+| `cachedBy` | `[]DebridServiceRef` | may be omitted (see validation for conditions) | CachedBy lists the owner-configured debrid services holding this torrent in the order Ether would acquire from them (or, on debrid_acquire, the service that served it). Omitted when uncached. |
 | `indexer` | `string` | may be omitted (see validation for conditions) | Indexer and IndexerID name the indexer an indexer_search result came from, so a plugin that hands the candidate back can be fetched through that indexer (an NZB needs its originating indexer). |
 | `indexerId` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `int` | may be omitted (see validation for conditions) | Category is the standard Newznab/Torznab category ID reported for this release when known, preserving media type for follow-up downloads. |
@@ -2577,6 +2606,10 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	// CachedBy lists the owner-configured debrid services holding this
+	// torrent in the order Ether would acquire from them (or, on
+	// debrid_acquire, the service that served it). Omitted when uncached.
+	CachedBy []DebridServiceRef `json:"cachedBy,omitempty"`
 	// Indexer and IndexerID name the indexer an indexer_search result came
 	// from, so a plugin that hands the candidate back can be fetched
 	// through that indexer (an NZB needs its originating indexer).
@@ -34326,6 +34359,23 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         }
       }
     },
+    "debridServiceRef": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Configured debrid service ID in Ether."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name for the debrid service (the owner's configured account name, or the provider label such as TorBox or Real-Debrid)."
+        }
+      }
+    },
     "sourceCandidate": {
       "type": "object",
       "properties": {
@@ -34359,6 +34409,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "cached": {
           "type": "boolean"
+        },
+        "cachedBy": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/debridServiceRef"
+          },
+          "description": "Configured debrid services holding this torrent in Ether's acquisition priority order (or, on debrid_acquire, the service that served it). Omitted when uncached."
         },
         "indexer": {
           "type": "string"
@@ -46480,6 +46537,25 @@ type ReleaseFile struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#DebridServiceRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#DebridServiceRef
+
+``````
+// DebridServiceRef identifies one owner-configured debrid service (without
+// exposing credentials) that holds a cached torrent or served an acquisition.
+type DebridServiceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#SourceCandidate.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -46493,6 +46569,7 @@ type ReleaseFile struct {
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `seeders` | `int` | may be omitted (see validation for conditions) |  |
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
+| `cachedBy` | `[]DebridServiceRef` | may be omitted (see validation for conditions) | CachedBy lists the configured debrid services holding this torrent in acquisition order (or the service that served debrid_acquire); omitted when uncached. |
 | `indexer` | `string` | may be omitted (see validation for conditions) |  |
 | `indexerId` | `string` | may be omitted (see validation for conditions) |  |
 | `score` | `*int` | may be omitted (see validation for conditions) | Score, Resolution, Source and Codec are populated on indexer_search candidates whose release name identifies video; non-video candidates leave them empty. |
@@ -46523,8 +46600,11 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
-	Indexer   string `json:"indexer,omitempty"`
-	IndexerID string `json:"indexerId,omitempty"`
+	// CachedBy lists the configured debrid services holding this torrent in
+	// acquisition order (or the service that served debrid_acquire); omitted when uncached.
+	CachedBy  []DebridServiceRef `json:"cachedBy,omitempty"`
+	Indexer   string             `json:"indexer,omitempty"`
+	IndexerID string             `json:"indexerId,omitempty"`
 	// Score, Resolution, Source and Codec are populated on indexer_search
 	// candidates whose release name identifies video; non-video candidates
 	// leave them empty.
@@ -57775,6 +57855,13 @@ class ReleaseFile(TypedDict, total=False):
     sizeApproximate: bool
 
 
+class DebridServiceRef(TypedDict):
+    """One owner-configured debrid service holding a cached torrent or serving debrid_acquire."""
+
+    id: str
+    name: str
+
+
 class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
@@ -57793,6 +57880,7 @@ class SourceCandidate(TypedDict, total=False):
     size: int
     seeders: int
     cached: bool
+    cachedBy: List[DebridServiceRef]
     indexer: str
     indexerId: str
     score: int
@@ -63883,6 +63971,13 @@ export interface TrackHint {
   title?: string;
 }
 
+export interface DebridServiceRef {
+  /** Configured debrid service ID in Ether. */
+  id: string;
+  /** Display name for the debrid service (owner account name or provider label). */
+  name: string;
+}
+
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
@@ -63896,6 +63991,8 @@ export interface SourceCandidate {
   size?: number;
   seeders?: number;
   cached?: boolean;
+  /** Configured debrid services holding this torrent in acquisition order (or the service that served debrid_acquire); omitted when uncached. */
+  cachedBy?: DebridServiceRef[];
   indexer?: string;
   indexerId?: string;
   /** Quality-profile score and parsed video facts; omitted on non-video candidates. */

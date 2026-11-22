@@ -651,6 +651,40 @@ func (s *Service) ApplyHints(ctx context.Context, rels []core.Release) {
 	}
 }
 
+func (e *entry) serviceRef() core.DebridServiceRef {
+	e.mu.Lock()
+	cfg := e.cfg
+	e.mu.Unlock()
+	return core.DebridServiceRef{
+		ID:   cfg.ID,
+		Name: displayName(cfg),
+	}
+}
+
+// ServiceRef returns the configured debrid service's id and display name for
+// a provider id (e.g. from a decoded debrid Payload). Falls back to kind when
+// the provider is no longer present in the active list.
+func (s *Service) ServiceRef(id, kind string) (core.DebridServiceRef, bool) {
+	id = strings.TrimSpace(id)
+	kind = strings.TrimSpace(kind)
+	if id == "" {
+		return core.DebridServiceRef{}, false
+	}
+	s.mu.RLock()
+	entries := slices.Clone(s.entries)
+	s.mu.RUnlock()
+	for _, e := range entries {
+		ref := e.serviceRef()
+		if ref.ID == id {
+			return ref, true
+		}
+	}
+	return core.DebridServiceRef{
+		ID:   id,
+		Name: displayName(config.DebridProvider{ID: id, Kind: kind}),
+	}, true
+}
+
 // KnownCached reports, without any API call, whether an enabled provider
 // recently reported the hash as cached.
 func (s *Service) KnownCached(hash string) bool {
@@ -667,25 +701,80 @@ func (s *Service) KnownCached(hash string) bool {
 	return false
 }
 
+// KnownCachedBy returns, without any API call, the enabled debrid services
+// that recently reported hash as cached, in acquisition priority order.
+// When hintKinds is non-empty and an enabled provider has no fresh verdict in
+// Ether's cache, a provider whose kind matches hintKinds is also included.
+func (s *Service) KnownCachedBy(hash string, hintKinds []string) []core.DebridServiceRef {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	entries := s.active()
+	if len(entries) == 0 {
+		return nil
+	}
+	cfgs := make([]config.DebridProvider, len(entries))
+	for i, e := range entries {
+		e.mu.Lock()
+		cfgs[i] = e.cfg
+		e.mu.Unlock()
+	}
+	now := s.now()
+	var out []core.DebridServiceRef
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	for _, cfg := range cfgs {
+		if hash != "" {
+			if k, ok := s.known[knownKey(cfg.ID, hash)]; ok && now.Before(k.until) {
+				if k.cached {
+					out = append(out, core.DebridServiceRef{ID: cfg.ID, Name: displayName(cfg)})
+				}
+				continue
+			}
+		}
+		if len(hintKinds) > 0 && slices.Contains(hintKinds, cfg.Kind) {
+			out = append(out, core.DebridServiceRef{ID: cfg.ID, Name: displayName(cfg)})
+		}
+	}
+	return out
+}
+
 // CheckCached asks providers with bulk availability checks about hashes,
 // remembering the answers. It returns hash -> cached on some provider, and
 // definitive=true when every enabled provider could answer (so a false
 // entry means no provider has the torrent).
 func (s *Service) CheckCached(ctx context.Context, hashes []string) (map[string]bool, bool) {
-	return s.checkCached(ctx, hashes, false)
+	hits, _, def := s.checkCachedDetail(ctx, hashes, false)
+	return hits, def
+}
+
+// CheckCachedBy asks providers with bulk availability checks about hashes,
+// remembering the answers. It returns hash -> the enabled debrid services
+// holding that hash in acquisition priority order (omitting uncached hashes),
+// and definitive=true when every enabled provider could answer.
+func (s *Service) CheckCachedBy(ctx context.Context, hashes []string) (map[string][]core.DebridServiceRef, bool) {
+	_, by, def := s.checkCachedDetail(ctx, hashes, false)
+	return by, def
 }
 
 // VerifyCached asks configured providers directly for an owner-requested check.
 func (s *Service) VerifyCached(ctx context.Context, hash string) (bool, bool) {
-	hits, def := s.checkCached(ctx, []string{hash}, true)
+	hits, _, def := s.checkCachedDetail(ctx, []string{hash}, true)
 	cached, seen := hits[hash]
 	return cached, seen && (cached || def)
 }
 
-func (s *Service) checkCached(ctx context.Context, hashes []string, refresh bool) (map[string]bool, bool) {
+func (s *Service) checkCachedDetail(ctx context.Context, hashes []string, refresh bool) (map[string]bool, map[string][]core.DebridServiceRef, bool) {
 	out := map[string]bool{}
+	by := map[string][]core.DebridServiceRef{}
 	if len(hashes) == 0 {
-		return out, false
+		return out, by, false
+	}
+	addService := func(h string, ref core.DebridServiceRef) {
+		for _, existing := range by[h] {
+			if existing.ID == ref.ID {
+				return
+			}
+		}
+		by[h] = append(by[h], ref)
 	}
 	definitive := true
 	for _, e := range s.active() {
@@ -693,11 +782,15 @@ func (s *Service) checkCached(ctx context.Context, hashes []string, refresh bool
 			definitive = false
 			continue
 		}
+		ref := e.serviceRef()
 		var ask []string
 		for _, h := range hashes {
 			if !refresh {
-				if c, ok, _ := s.knownFor(ctx, e.cfg.ID, h); ok {
+				if c, ok, _ := s.knownFor(ctx, ref.ID, h); ok {
 					out[h] = out[h] || c
+					if c {
+						addService(h, ref)
+					}
 					continue
 				}
 			}
@@ -707,7 +800,7 @@ func (s *Service) checkCached(ctx context.Context, hashes []string, refresh bool
 			continue
 		}
 		if err := e.acquire(ctx); err != nil {
-			return out, false
+			return out, by, false
 		}
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		res, err := e.p.CheckCached(cctx, ask)
@@ -720,7 +813,7 @@ func (s *Service) checkCached(ctx context.Context, hashes []string, refresh bool
 		if err != nil && ctx.Err() != nil {
 			// A caller's short discovery budget says nothing about the
 			// provider's availability. Do not open its circuit for that.
-			return out, false
+			return out, by, false
 		}
 		s.observe(e, err)
 		if err != nil {
@@ -731,11 +824,14 @@ func (s *Service) checkCached(ctx context.Context, hashes []string, refresh bool
 		for _, h := range ask {
 			c := res[strings.ToLower(h)]
 			out[h] = out[h] || c
-			keys = append(keys, s.recordKnown(ctx, e.cfg.ID, h, "", c))
+			if c {
+				addService(h, ref)
+			}
+			keys = append(keys, s.recordKnown(ctx, ref.ID, h, "", c))
 		}
 		s.notifyKnown(keys...)
 	}
-	return out, definitive
+	return out, by, definitive
 }
 
 // ---------------------------------------------------------------------------

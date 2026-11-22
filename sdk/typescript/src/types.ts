@@ -767,6 +767,13 @@ export interface TrackHint {
   title?: string;
 }
 
+export interface DebridServiceRef {
+  /** Configured debrid service ID in Ether. */
+  id: string;
+  /** Display name for the debrid service (owner account name or provider label). */
+  name: string;
+}
+
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
@@ -780,6 +787,8 @@ export interface SourceCandidate {
   size?: number;
   seeders?: number;
   cached?: boolean;
+  /** Configured debrid services holding this torrent in acquisition order (or the service that served debrid_acquire); omitted when uncached. */
+  cachedBy?: DebridServiceRef[];
   indexer?: string;
   indexerId?: string;
   /** Quality-profile score and parsed video facts; omitted on non-video candidates. */

@@ -241,7 +241,7 @@
     "id": "host-sources",
     "title": "Source discovery",
     "group": "Host services",
-    "body": "Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. Return a release source after choosing a candidate instead of downloading in the request handler.\n\n```ts\nconst candidates = ether.sources.resolve({kind: \"indexer_search\", query: \"Example\"});\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
+    "body": "Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler.\n\n```ts\nconst candidates = ether.sources.resolve({kind: \"indexer_search\", query: \"Example\"});\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
     "patterns": ["@host:ResolveSources"]
   },
   {

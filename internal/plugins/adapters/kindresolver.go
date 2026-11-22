@@ -47,6 +47,18 @@ type DebridSourceBackend interface {
 	ListReleaseFiles(ctx context.Context, rel core.Release) ([]core.ReleaseFile, error)
 }
 
+type debridCachedByBackend interface {
+	CheckCachedBy(ctx context.Context, hashes []string) (map[string][]core.DebridServiceRef, bool)
+}
+
+type debridKnownCachedByBackend interface {
+	KnownCachedBy(hash string, hintKinds []string) []core.DebridServiceRef
+}
+
+type debridServiceRefBackend interface {
+	ServiceRef(id, kind string) (core.DebridServiceRef, bool)
+}
+
 const (
 	maxKindCandidateCacheEntries = 512
 	defaultKindCandidateCacheTTL = 15 * time.Minute
@@ -1554,8 +1566,15 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		if err != nil {
 			return nil, err
 		}
+		knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
 		for i := range scored {
 			scored[i] = r.stripCandidateAuth(scored[i])
+			if hasKnownLookup && (scored[i].Cached || scored[i].InfoHash != "") {
+				if refs := knownLookup.KnownCachedBy(scored[i].InfoHash, rels[i].DebridCached); len(refs) > 0 {
+					scored[i].Cached = true
+					scored[i].CachedBy = refs
+				}
+			}
 		}
 		if query != "" && r.isUsenetBackingOff() && len(scored) > 1 {
 			nonUsenet := make([]core.SourceCandidate, 0, len(scored))
@@ -1595,8 +1614,20 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		if len(hashes) == 0 {
 			return []core.SourceCandidate{}, nil
 		}
-		cached, _ := r.debrid.CheckCached(ctx, hashes)
 		out := make([]core.SourceCandidate, len(hashes))
+		if byBackend, ok := r.debrid.(debridCachedByBackend); ok {
+			by, _ := byBackend.CheckCachedBy(ctx, hashes)
+			for i, h := range hashes {
+				services := by[h]
+				out[i] = core.SourceCandidate{
+					InfoHash: h,
+					Cached:   len(services) > 0,
+					CachedBy: services,
+				}
+			}
+			return out, nil
+		}
+		cached, _ := r.debrid.CheckCached(ctx, hashes)
 		for i, h := range hashes {
 			out[i] = core.SourceCandidate{
 				InfoHash: h,
@@ -1688,6 +1719,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			files, err := r.debrid.ListReleaseFiles(ctx, rel)
 			if err == nil {
 				cand.Cached = true
+				if knownLookup, ok := r.debrid.(debridKnownCachedByBackend); ok && cand.InfoHash != "" {
+					cand.CachedBy = knownLookup.KnownCachedBy(cand.InfoHash, nil)
+				}
 				cand.Files = files
 				return []core.SourceCandidate{cand}, nil
 			}
@@ -1695,6 +1729,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 				return nil, err
 			}
 			cand.Cached = false
+			cand.CachedBy = nil
 		}
 		if len(rel.TorrentFiles) > 0 {
 			cand.Files = slices.Clone(rel.TorrentFiles)
@@ -1759,14 +1794,26 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			}
 			rel = resolved
 		}
-		if _, err := r.debrid.Acquire(ctx, rel); err != nil {
+		payloadBytes, err := r.debrid.Acquire(ctx, rel)
+		if err != nil {
 			return nil, err
+		}
+		var cachedBy []core.DebridServiceRef
+		if p, err := debrid.DecodePayload(payloadBytes); err == nil && p.Provider != "" {
+			if refLookup, ok := r.debrid.(debridServiceRefBackend); ok {
+				if ref, ok := refLookup.ServiceRef(p.Provider, p.Kind); ok {
+					cachedBy = []core.DebridServiceRef{ref}
+				}
+			} else {
+				cachedBy = []core.DebridServiceRef{{ID: p.Provider, Name: p.Provider}}
+			}
 		}
 		return []core.SourceCandidate{{
 			InfoHash:   rel.InfoHash,
 			Magnet:     rel.MagnetURL,
 			TorrentURL: cand.TorrentURL,
 			Cached:     true,
+			CachedBy:   cachedBy,
 		}}, nil
 
 	default:

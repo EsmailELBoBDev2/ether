@@ -1064,6 +1064,8 @@ export interface NowPlaying {
   failovers: number;
   /** The client's address, when the server reports it. */
   ip: string;
+  /** Server-computed explanation for local-vs-remote classification, e.g. "Home network (source 192.168.3.10)". */
+  networkReason?: string;
   /** Delivered bitrate now (or the encode's target), kbps; 0 when unknown. */
   bitrateKbps: number;
   /** Dynamic bitrate cap applied to this stream in kbps, when constrained by a shared budget. */
@@ -1189,6 +1191,9 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       ip:
         str(pick(s, "ip", "IP", "Ip")) ||
         str(pick(client, "clientIp", "ClientIP", "ip", "address")),
+      ...(str(pick(s, "networkReason", "NetworkReason"))
+        ? { networkReason: str(pick(s, "networkReason", "NetworkReason")) }
+        : {}),
       bitrateKbps: num(pick(s, "bitrateKbps", "BitrateKbps")),
       ...(num(pick(s, "bitrateCapKbps", "BitrateCapKbps")) > 0
         ? { bitrateCapKbps: num(pick(s, "bitrateCapKbps", "BitrateCapKbps")) }

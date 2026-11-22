@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
 
 // Activity › Experience: what each viewer actually saw. Aggregation reads
@@ -668,6 +669,11 @@ func (s *Service) PlayByID(ctx context.Context, id string) (map[string]any, erro
 	out["sourceKbps"], out["uhd"], out["hdr"], out["releaseName"] = sourceKbps, uhd != 0, hdr != 0, release
 	out["ttffMs"] = exp[0].StartMS
 	out["avgBitrateKbps"] = float64(0)
+	var ipStr string
+	if p.IP != nil {
+		ipStr = *p.IP
+	}
+	out["networkReason"] = clientnet.LocalityReason(ipStr, exp[0].Remote)
 	if p.WatchedMS > 0 {
 		out["avgBitrateKbps"] = float64(p.Bytes) * 8 / float64(p.WatchedMS)
 	}
@@ -747,6 +753,7 @@ func livePlayDetail(id string, live *core.PlaySession, lv liveViewing, hasViewin
 		"switches":       failovers,
 		"error":          "",
 		"ip":             ip,
+		"networkReason":  clientnet.LocalityReason(live.Client.ClientIP, live.Client.Remote),
 		"measured":       measured,
 		"startMs":        startMS,
 		"ttffMs":         startMS,
@@ -807,10 +814,13 @@ func overlayLivePlay(out map[string]any, live *core.PlaySession, lv liveViewing,
 	if rel := liveRelease(live); rel != "" {
 		out["release"], out["releaseName"] = rel, rel
 	}
+	ipStr, _ := out["ip"].(string)
 	if live.Client.ClientIP != "" {
-		out["ip"] = live.Client.ClientIP
+		ipStr = live.Client.ClientIP
+		out["ip"] = ipStr
 	}
 	out["remote"] = live.Client.Remote
+	out["networkReason"] = clientnet.LocalityReason(ipStr, live.Client.Remote)
 	if device := cmp.Or(live.Client.DeviceName, live.Client.Device); device != "" {
 		out["device"] = device
 	}

@@ -6,8 +6,19 @@ import (
 	"net/netip"
 )
 
-// LAN reports whether an address belongs to a LAN or overlay network.
+// Locality describes a computed local-vs-remote source classification.
+type Locality = clientnet.Locality
+
+// LAN reports whether an address belongs to a LAN, overlay, or host interface subnet.
 func LAN(ip netip.Addr) bool { return clientnet.LAN(ip) }
+
+// Classify returns the local-vs-remote classification and reason for ip.
+func Classify(ip netip.Addr) Locality { return clientnet.Classify(ip) }
+
+// LocalityReason formats the computed local-vs-remote reason for display.
+func LocalityReason(ipStr string, remote bool) string {
+	return clientnet.LocalityReason(ipStr, remote)
+}
 
 // ClientNet applies the shared frontend peer/proxy trust grammar.
 func ClientNet(r *http.Request, trusted ...netip.Prefix) (netip.Addr, bool) {

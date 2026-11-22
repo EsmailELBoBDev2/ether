@@ -207,7 +207,10 @@ function StreamCard({
           ) : null}
         </Fact>
         <Fact label={t("Network")}>
-          <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span
+            className="inline-flex min-w-0 items-center gap-1.5"
+            title={s.networkReason || undefined}
+          >
             {s.remote ? (
               <Globe size={13} className="shrink-0 text-info" />
             ) : (
@@ -218,6 +221,11 @@ function StreamCard({
               {s.ip ? <span className="font-mono text-xs text-fg-muted"> · {s.ip}</span> : null}
             </span>
           </span>
+          {s.networkReason ? (
+            <span className="block truncate text-xs text-fg-muted" title={s.networkReason}>
+              {s.networkReason}
+            </span>
+          ) : null}
         </Fact>
         <Fact label={t("Video")}>
           <Flow from={s.sourceVideo} to={s.outputVideo} />
@@ -374,7 +382,10 @@ function StreamRow({
           ) : null}
         </dl>
         <div className="hidden min-w-0 space-y-1 text-xs lg:block">
-          <p className="flex min-w-0 items-center gap-1.5 text-fg">
+          <p
+            className="flex min-w-0 items-center gap-1.5 text-fg"
+            title={s.networkReason || undefined}
+          >
             {s.remote ? (
               <Globe size={12} className="shrink-0 text-info" />
             ) : (
@@ -383,6 +394,11 @@ function StreamRow({
             <span className="shrink-0">{s.remote ? t("Away") : t("Home")}</span>
             {s.ip ? <span className="truncate font-mono text-fg-muted">{s.ip}</span> : null}
           </p>
+          {s.networkReason ? (
+            <p className="truncate text-fg-muted" title={s.networkReason}>
+              {s.networkReason}
+            </p>
+          ) : null}
           <p className="truncate text-fg-muted">
             <span className="font-medium tabular-nums text-fg">
               {mbpsOf((s.bitrateKbps ?? 0) * 1000)}

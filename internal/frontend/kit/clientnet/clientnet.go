@@ -3,17 +3,218 @@ package clientnet
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
+	"time"
 )
 
 var overlay = netip.MustParsePrefix("100.64.0.0/10")
 
-// LAN reports whether an address belongs to a LAN or overlay network.
+const hostPrefixTTL = 30 * time.Second
+
+var hostPrefixState struct {
+	mu           sync.RWMutex
+	fetched      time.Time
+	prefixes     []netip.Prefix
+	overrideSet  bool
+	overrideList []netip.Prefix
+}
+
+// Locality describes the computed local-vs-remote classification for a source IP.
+type Locality struct {
+	Local      bool
+	IP         netip.Addr
+	HostPrefix netip.Prefix
+	Reason     string
+}
+
+// OverrideHostPrefixes replaces detected host interface prefixes until the
+// returned restore function is called. Intended for deterministic tests.
+func OverrideHostPrefixes(prefixes []netip.Prefix) func() {
+	var cleaned []netip.Prefix
+	for _, p := range prefixes {
+		if p.IsValid() {
+			cleaned = append(cleaned, p.Masked())
+		}
+	}
+	hostPrefixState.mu.Lock()
+	prevSet := hostPrefixState.overrideSet
+	prevList := hostPrefixState.overrideList
+	hostPrefixState.overrideSet = true
+	hostPrefixState.overrideList = cleaned
+	hostPrefixState.mu.Unlock()
+	return func() {
+		hostPrefixState.mu.Lock()
+		hostPrefixState.overrideSet = prevSet
+		hostPrefixState.overrideList = prevList
+		hostPrefixState.fetched = time.Time{}
+		hostPrefixState.mu.Unlock()
+	}
+}
+
+func hostPrefixes() []netip.Prefix {
+	hostPrefixState.mu.RLock()
+	if hostPrefixState.overrideSet {
+		out := hostPrefixState.overrideList
+		hostPrefixState.mu.RUnlock()
+		return out
+	}
+	if !hostPrefixState.fetched.IsZero() && time.Since(hostPrefixState.fetched) < hostPrefixTTL {
+		out := hostPrefixState.prefixes
+		hostPrefixState.mu.RUnlock()
+		return out
+	}
+	hostPrefixState.mu.RUnlock()
+
+	hostPrefixState.mu.Lock()
+	defer hostPrefixState.mu.Unlock()
+	if hostPrefixState.overrideSet {
+		return hostPrefixState.overrideList
+	}
+	if !hostPrefixState.fetched.IsZero() && time.Since(hostPrefixState.fetched) < hostPrefixTTL {
+		return hostPrefixState.prefixes
+	}
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		hostPrefixState.prefixes = prefixesFromInterfaces(ifaces, func(iface net.Interface) ([]net.Addr, error) {
+			return iface.Addrs()
+		})
+	}
+	hostPrefixState.fetched = time.Now()
+	return hostPrefixState.prefixes
+}
+
+func prefixesFromInterfaces(ifaces []net.Interface, addrsOf func(net.Interface) ([]net.Addr, error)) []netip.Prefix {
+	var out []netip.Prefix
+	seen := make(map[netip.Prefix]struct{})
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagPointToPoint != 0 {
+			continue
+		}
+		addrs, err := addrsOf(iface)
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			p, ok := prefixFromIPNet(ipnet)
+			if !ok {
+				continue
+			}
+			if _, dup := seen[p]; dup {
+				continue
+			}
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func prefixFromIPNet(ipnet *net.IPNet) (netip.Prefix, bool) {
+	if ipnet == nil || ipnet.IP == nil {
+		return netip.Prefix{}, false
+	}
+	ip, ok := netip.AddrFromSlice(ipnet.IP)
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	ip = ip.Unmap().WithZone("")
+	if !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return netip.Prefix{}, false
+	}
+	ones, bits := ipnet.Mask.Size()
+	if ip.Is4() {
+		if bits == 128 && ones >= 96 {
+			ones -= 96
+			bits = 32
+		}
+		if bits != 32 || ones < 8 || ones > 32 {
+			return netip.Prefix{}, false
+		}
+		return netip.PrefixFrom(ip, ones).Masked(), true
+	}
+	if ip.Is6() && bits == 128 && ones > 0 && ones <= 128 {
+		// Global IPv6 LAN segments use /64 prefixes (even when the host
+		// receives a /128 via DHCPv6). Never widen past /64.
+		return netip.PrefixFrom(ip, 64).Masked(), true
+	}
+	return netip.Prefix{}, false
+}
+
+func matchHostPrefix(ip netip.Addr) (netip.Prefix, bool) {
+	for _, p := range hostPrefixes() {
+		if p.Contains(ip) {
+			return p, true
+		}
+	}
+	return netip.Prefix{}, false
+}
+
+// Classify evaluates whether ip is local based on well-known local ranges
+// (loopback, RFC1918/ULA private, link-local unicast, CGNAT 100.64.0.0/10)
+// or one of this host's own interface prefixes (IPv4 subnets and IPv6 /64
+// prefixes).
+func Classify(ip netip.Addr) Locality {
+	if !ip.IsValid() {
+		return Locality{Local: false, Reason: "Remote network"}
+	}
+	ip = ip.Unmap().WithZone("")
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || overlay.Contains(ip) {
+		return Locality{
+			Local:  true,
+			IP:     ip,
+			Reason: fmt.Sprintf("Home network (source %s)", ip),
+		}
+	}
+	if p, ok := matchHostPrefix(ip); ok {
+		return Locality{
+			Local:      true,
+			IP:         ip,
+			HostPrefix: p,
+			Reason:     fmt.Sprintf("Home network (source %s, local subnet %s)", ip, p),
+		}
+	}
+	return Locality{
+		Local:  false,
+		IP:     ip,
+		Reason: fmt.Sprintf("Remote network (source %s)", ip),
+	}
+}
+
+// LAN reports whether an address belongs to a local network: loopback,
+// RFC1918/ULA private space, link-local unicast, CGNAT overlay
+// (100.64.0.0/10), or one of this host's own interface prefixes (IPv4
+// subnets and IPv6 /64 prefixes).
 func LAN(ip netip.Addr) bool {
-	return ip.IsValid() && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || overlay.Contains(ip.Unmap()))
+	return Classify(ip).Local
+}
+
+// LocalityReason returns a human-readable explanation for a session's computed
+// local-vs-remote classification from its resolved source IP and remote flag.
+func LocalityReason(ipStr string, remote bool) string {
+	ip, err := netip.ParseAddr(strings.TrimSpace(ipStr))
+	if err != nil || !ip.IsValid() {
+		if remote {
+			return "Remote network"
+		}
+		return "Home network"
+	}
+	ip = ip.Unmap().WithZone("")
+	if remote {
+		return fmt.Sprintf("Remote network (source %s)", ip)
+	}
+	if c := Classify(ip); c.Local {
+		return c.Reason
+	}
+	return fmt.Sprintf("Home network (source %s)", ip)
 }
 
 func peerAddr(r *http.Request) (netip.Addr, bool) {

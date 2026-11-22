@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
@@ -368,10 +369,9 @@ func (i *instance) away(r *http.Request) bool {
 	}
 	ip, ok := i.host.ClientIP(r)
 	if !ok {
-		return false
+		return true
 	}
-	ip = ip.Unmap()
-	return !(ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
+	return !clientnet.LAN(ip)
 }
 
 // prerollPlayback answers PlaybackInfo for a pre-roll: a direct-play MP4.

@@ -118,10 +118,10 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 
 // endpointInfo reports where the caller sits relative to the server. Emby for
 // tvOS and other native clients call it before signing in and treat a 404 as
-// an unreachable server. IsLocal is a loopback peer and IsInNetwork a
-// loopback, private or link-local peer, as in Jellyfin. The peer comes from
-// the host's trusted-proxy resolution, so forwarding headers cannot claim
-// the LAN.
+// an unreachable server. IsLocal is a loopback peer and IsInNetwork follows
+// the shared clientnet.LAN classification (loopback, RFC1918/ULA, link-local,
+// CGNAT, and this host's own interface subnets). The peer comes from the
+// host's trusted-proxy resolution, so forwarding headers cannot claim the LAN.
 func endpointInfo(r *http.Request, clientIP func(*http.Request) (netip.Addr, bool)) map[string]bool {
 	var ip netip.Addr
 	ok := false
@@ -132,7 +132,7 @@ func endpointInfo(r *http.Request, clientIP func(*http.Request) (netip.Addr, boo
 	}
 	ip = ip.Unmap()
 	local := ok && ip.IsLoopback()
-	network := local || ok && (ip.IsPrivate() || ip.IsLinkLocalUnicast())
+	network := ok && clientnet.LAN(ip)
 	return map[string]bool{"IsLocal": local, "IsInNetwork": network}
 }
 

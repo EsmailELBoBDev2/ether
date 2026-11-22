@@ -389,6 +389,7 @@ export function PlayDrawer({
     .join(" · ");
   const remote = live ? live.remote : Boolean(p?.remote);
   const ip = live?.ip || p?.ip || "";
+  const networkReason = live?.networkReason || p?.networkReason || "";
   const origin = live?.origin || p?.origin || "";
   const release = live?.release || p?.release || "";
   const fallback = live?.qualityFallback || p?.qualityFallback;
@@ -659,6 +660,9 @@ export function PlayDrawer({
               <Detail label={t("Network")}>
                 {remote ? t("Away from home") : t("At home")}
                 {ip ? <span className="block font-mono text-xs text-fg-muted">{ip}</span> : null}
+                {networkReason ? (
+                  <span className="block text-xs text-fg-muted">{networkReason}</span>
+                ) : null}
               </Detail>
             </dl>
           </section>

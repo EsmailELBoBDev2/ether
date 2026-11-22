@@ -860,7 +860,9 @@ func splitDecoders(s string) []decoder {
 }
 
 // applyDecisionQuery refines caps with per-request transcode parameters
-// (maxVideoBitrate, videoResolution, location).
+// (maxVideoBitrate, videoResolution, audio limits). Locality (Remote) is
+// decided solely by the authenticated source IP resolved in ParseRequest,
+// never by the client-claimed location parameter.
 func applyDecisionQuery(c *frontend.ClientCaps, q url.Values) {
 	for _, name := range []string{"maxVideoBitrate", "videoBitrate", "musicBitrate"} {
 		if n, err := strconv.Atoi(q.Get(name)); err == nil && n > 0 {
@@ -892,13 +894,6 @@ func applyDecisionQuery(c *frontend.ClientCaps, q url.Values) {
 				c.MaxHeightSource = "request parameter videoResolution=" + raw
 			}
 		}
-	}
-	switch q.Get("location") {
-	case "wan", "cellular":
-		c.Remote = true
-	case "lan":
-		// Trust the network check over the client's claim for LAN; a client
-		// saying "lan" while coming from a public address is still remote.
 	}
 }
 

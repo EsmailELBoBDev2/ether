@@ -7,11 +7,14 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 func TestSurfaceCapabilitiesApplyQuirksAndOwnerRules(t *testing.T) {
@@ -240,5 +243,106 @@ func TestSurfaceCapabilitiesOverrideDeviceMatchingAcrossProtocols(t *testing.T) 
 		if got.Client.MaxHeight != tc.wantH {
 			t.Fatalf("%s %+v: MaxHeight = %d, want %d", tc.surface, tc.dev, got.Client.MaxHeight, tc.wantH)
 		}
+	}
+}
+
+func TestSourceIPDecidesLocalityAcrossAllFrontendsAndUploadBudget(t *testing.T) {
+	restore := clientnet.OverrideHostPrefixes([]netip.Prefix{
+		netip.MustParsePrefix("198.18.10.0/24"),
+		netip.MustParsePrefix("2001:db8:abcd:1::/64"),
+	})
+	t.Cleanup(restore)
+
+	a := setupTestApp(t, true)
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Server.TrustedProxyCIDRs = []string{"172.16.50.5"}
+		c.Quality = config.Quality{
+			Profiles: []core.QualityProfile{{Name: "home", MaxHeight: 2160}, {Name: "away", MaxHeight: 720}},
+			Default:  "home",
+			Remote:   "away",
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	surfaces := []core.Protocol{"jellyfin", "emby", "silo", "vela", "stremio", "xtream"}
+	cases := []struct {
+		name        string
+		peer        string
+		xff         string
+		claimRemote bool
+		wantRemote  bool
+		wantProfile string
+	}{
+		{"private-ipv4-behind-proxy-claims-remote", "172.16.50.5:41000", "192.168.3.10", true, false, "home"},
+		{"host-ipv4-subnet-claims-remote", "172.16.50.5:41001", "198.18.10.42", true, false, "home"},
+		{"host-ipv6-slash64-claims-remote", "172.16.50.5:41002", "2001:db8:abcd:1::42", true, false, "home"},
+		{"cgnat-claims-remote", "172.16.50.5:41003", "100.64.1.5", true, false, "home"},
+		{"public-ipv4-claims-local", "172.16.50.5:41004", "203.0.113.10", false, true, "away"},
+		{"public-ipv6-outside-host-claims-local", "172.16.50.5:41005", "2001:db8:ffff:1::42", false, true, "away"},
+	}
+
+	for _, surface := range surfaces {
+		provider := surfaceCapabilities{app: a, surface: surface}
+		for _, tc := range cases {
+			r := httptest.NewRequest("GET", "/", nil)
+			r.RemoteAddr = tc.peer
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			ip, ok := a.frontendClientIP(r)
+			if !ok {
+				t.Fatalf("%s/%s: failed to resolve client IP", surface, tc.name)
+			}
+			got, err := provider.Build(frontend.WithClientIP(context.Background(), ip), frontend.CapabilityRequest{
+				Viewer: &core.Viewer{ID: 1},
+				Device: caps.DeviceInfo{Product: "Test Client", Remote: tc.claimRemote},
+			})
+			if err != nil {
+				t.Fatalf("%s/%s: %v", surface, tc.name, err)
+			}
+			if got.Client.Remote != tc.wantRemote || got.Quality.Name != tc.wantProfile {
+				t.Fatalf("%s/%s: remote=%v profile=%q, want remote=%v profile=%q", surface, tc.name, got.Client.Remote, got.Quality.Name, tc.wantRemote, tc.wantProfile)
+			}
+		}
+	}
+
+	// Upload budget remote metering must exclude RFC1918, CGNAT, host IPv4
+	// subnets, and host IPv6 /64 prefixes, and meter only public remote IPs.
+	a.buildUploadBudget()
+	if a.uploadBudget == nil {
+		t.Fatal("upload budget not initialized")
+	}
+	for _, localAddr := range []string{
+		"192.168.3.10:51000",
+		"100.64.1.5:51000",
+		"198.18.10.42:51000",
+		"[2001:db8:abcd:1::42]:51000",
+	} {
+		a.observeTranscodeRemoteDelivery(transcode.RemoteDeliveryEvent{
+			SessionID:        "local-" + localAddr,
+			RemoteAddr:       localAddr,
+			Bytes:            4 << 20,
+			Duration:         5 * time.Second,
+			SegDuration:      4 * time.Second,
+			MediaBitrateKbps: 8000,
+			TCPBacklogBytes:  128 << 10,
+		})
+	}
+	if snap := a.uploadBudget.Status(); snap.MeasuredSamples != 0 {
+		t.Fatalf("local delivery fed upload budget estimator: samples=%d", snap.MeasuredSamples)
+	}
+	a.observeTranscodeRemoteDelivery(transcode.RemoteDeliveryEvent{
+		SessionID:        "remote-public",
+		RemoteAddr:       "203.0.113.10:51000",
+		Bytes:            4 << 20,
+		Duration:         5 * time.Second,
+		SegDuration:      4 * time.Second,
+		MediaBitrateKbps: 8000,
+		TCPBacklogBytes:  128 << 10,
+	})
+	if snap := a.uploadBudget.Status(); snap.MeasuredSamples != 1 {
+		t.Fatalf("public remote delivery did not feed upload budget estimator: samples=%d", snap.MeasuredSamples)
 	}
 }

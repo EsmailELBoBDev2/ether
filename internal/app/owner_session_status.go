@@ -5,12 +5,14 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
 
 // ownerSessionStatus adds console-only fields without changing protocol wire responses.
 type ownerSessionStatus struct {
 	*core.PlaySession
 	IP               string         `json:"ip"`
+	NetworkReason    string         `json:"networkReason,omitempty"`
 	BitrateKbps      int64          `json:"bitrateKbps"`
 	BitrateCapKbps   int            `json:"bitrateCapKbps,omitempty"`
 	BitrateCapSource string         `json:"bitrateCapSource,omitempty"`
@@ -50,7 +52,12 @@ func ownerSessionStatuses(sessions []*core.PlaySession) []ownerSessionStatus {
 	return out
 }
 func ownerSessionDetails(p *core.PlaySession) ownerSessionStatus {
-	out := ownerSessionStatus{PlaySession: p, IP: p.Client.ClientIP, RatingKey: p.Key}
+	out := ownerSessionStatus{
+		PlaySession:   p,
+		IP:            p.Client.ClientIP,
+		NetworkReason: clientnet.LocalityReason(p.Client.ClientIP, p.Client.Remote),
+		RatingKey:     p.Key,
+	}
 	// Direct play and copies carry the source's own bitrate. Delivery speed
 	// (SpeedBps) is bursty — zero while the player's buffer is full, hundreds
 	// of Mbps while it refills — so it is never shown as the stream bitrate.

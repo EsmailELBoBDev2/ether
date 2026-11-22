@@ -1,16 +1,32 @@
 package app
 
 import (
-	"github.com/braedonsaunders/ether/internal/core"
+	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
 
 func TestOwnerSessionDetails(t *testing.T) {
-	p := &core.PlaySession{Key: core.MovieKey(1), Client: core.ClientCaps{ClientIP: "192.0.2.1"}, Decision: core.DecisionTranscode, Info: core.MediaInfo{Container: "mkv", Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc", Height: 2160, ColorTransfer: "smpte2084"}, {Index: 1, Type: "audio", Codec: "eac3", Channels: 6, ChannelLayout: "5.1"}, {Index: 2, Type: "subtitle", Codec: "ass", Language: "eng"}}}, DeliveryDecision: &core.Decision{Kind: core.DecisionTranscode, VideoCodec: "h264", MaxHeight: 1080, ToneMap: true, AudioCodec: "aac", AudioChannels: 2, AudioStream: 1, SubtitleStream: 2, BurnSubtitles: true, Container: "mpegts", BitrateKbps: 5000}}
+	restore := clientnet.OverrideHostPrefixes([]netip.Prefix{
+		netip.MustParsePrefix("2001:db8:abcd:1::/64"),
+	})
+	t.Cleanup(restore)
+
+	p := &core.PlaySession{Key: core.MovieKey(1), Client: core.ClientCaps{ClientIP: "192.0.2.1", Remote: true}, Decision: core.DecisionTranscode, Info: core.MediaInfo{Container: "mkv", Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc", Height: 2160, ColorTransfer: "smpte2084"}, {Index: 1, Type: "audio", Codec: "eac3", Channels: 6, ChannelLayout: "5.1"}, {Index: 2, Type: "subtitle", Codec: "ass", Language: "eng"}}}, DeliveryDecision: &core.Decision{Kind: core.DecisionTranscode, VideoCodec: "h264", MaxHeight: 1080, ToneMap: true, AudioCodec: "aac", AudioChannels: 2, AudioStream: 1, SubtitleStream: 2, BurnSubtitles: true, Container: "mpegts", BitrateKbps: 5000}}
 	got := ownerSessionDetails(p)
-	if got.IP != "192.0.2.1" || got.SourceVideo != "HEVC 2160p HDR10" || got.OutputVideo != "H.264 1080p SDR" || got.SourceAudio != "EAC3 5.1" || got.OutputAudio != "AAC 2.0" || got.Subtitle != "eng ASS burned" || got.Container != "mpegts" || got.BitrateKbps != 5000 || got.RatingKey != p.Key {
+	if got.IP != "192.0.2.1" || got.NetworkReason != "Remote network (source 192.0.2.1)" || got.SourceVideo != "HEVC 2160p HDR10" || got.OutputVideo != "H.264 1080p SDR" || got.SourceAudio != "EAC3 5.1" || got.OutputAudio != "AAC 2.0" || got.Subtitle != "eng ASS burned" || got.Container != "mpegts" || got.BitrateKbps != 5000 || got.RatingKey != p.Key {
 		t.Fatalf("details: %+v", got)
+	}
+	lan := ownerSessionDetails(&core.PlaySession{Client: core.ClientCaps{ClientIP: "192.168.3.10", Remote: false}})
+	if lan.NetworkReason != "Home network (source 192.168.3.10)" {
+		t.Fatalf("LAN reason = %q, want %q", lan.NetworkReason, "Home network (source 192.168.3.10)")
+	}
+	lanV6 := ownerSessionDetails(&core.PlaySession{Client: core.ClientCaps{ClientIP: "2001:db8:abcd:1::42", Remote: false}})
+	if lanV6.NetworkReason != "Home network (source 2001:db8:abcd:1::42, local subnet 2001:db8:abcd:1::/64)" {
+		t.Fatalf("IPv6 host subnet reason = %q", lanV6.NetworkReason)
 	}
 	p.DeliveryDecision.VideoCopy = true
 	p.DeliveryDecision.AudioCopy = true

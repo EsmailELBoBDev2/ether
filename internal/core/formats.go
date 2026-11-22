@@ -123,10 +123,12 @@ func IsBuiltinFormat(id string) bool {
 // language is not among them: a profile scores it only when it expresses
 // that preference (Ether's own profiles do; an imported pack's language
 // formats are its authors' choice).
-// ViewerSubtitlesScore is what FormatViewerSubtitles is worth in a profile
-// that does not score it: more than a codec or audio preference, less than a
-// release type, so it settles ties between otherwise similar releases.
-const ViewerSubtitlesScore = 150
+// ViewerSubtitlesScore is the default StreamingFormatScores weight for
+// FormatViewerSubtitles: enough to settle ties and mild codec/audio
+// differences in favour of a release whose indexer lists the viewer's
+// subtitle language, without forcing video transcodes (-20), expired posts
+// (-20), low-bitrate encodes (-60) or overriding imported pack tiers.
+const ViewerSubtitlesScore = 15
 
 func StreamingFormatScores() map[string]int {
 	return map[string]int{

@@ -252,20 +252,11 @@ func parseXMLStream(reader io.Reader, indexer string, arrived func([]core.Releas
 	return out, nil
 }
 
-// iso6392 maps the three-letter codes indexers use in "subs" to the
-// two-letter codes the release parser names.
-var iso6392 = map[string]string{
-	"eng": "en", "fre": "fr", "fra": "fr", "spa": "es", "ger": "de", "deu": "de", "ita": "it", "por": "pt",
-	"dut": "nl", "nld": "nl", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh", "rus": "ru", "ara": "ar",
-	"swe": "sv", "nor": "no", "dan": "da", "fin": "fi", "pol": "pl", "tur": "tr", "hin": "hi", "heb": "he",
-	"gre": "el", "ell": "el", "cze": "cs", "ces": "cs", "hun": "hu", "rum": "ro", "ron": "ro", "tha": "th",
-	"vie": "vi", "ind": "id", "ukr": "uk", "bul": "bg", "hrv": "hr", "srp": "sr", "per": "fa", "fas": "fa",
-}
-
 // subtitleLanguages reads a Newznab "subs" value. Indexers separate the
 // languages with commas, semicolons, slashes or " - " and write names or ISO
 // codes ("English, French", "eng - spa"); anything that is not a language
-// ("None", "Yes") is dropped.
+// ("None", "Yes") is dropped. ISO 639-2 codes are folded by releaseparse via
+// langtag.ParseBCP47.
 func subtitleLanguages(val string) []string {
 	fields := strings.FieldsFunc(strings.ReplaceAll(val, " - ", ","), func(r rune) bool {
 		return r == ',' || r == ';' || r == '/' || r == '|'
@@ -273,9 +264,6 @@ func subtitleLanguages(val string) []string {
 	var out []string
 	for _, f := range fields {
 		f = strings.TrimSpace(f)
-		if two, ok := iso6392[strings.ToLower(f)]; ok {
-			f = two
-		}
 		if f == "" || !releaseparse.KnownLanguage(f) {
 			continue
 		}

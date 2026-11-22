@@ -2547,12 +2547,6 @@ func (s *Service) scoreRelease(rel core.Release, profile core.QualityProfile, ca
 			continue
 		}
 		score, scored := profile.CustomFormatScores[id]
-		if !scored && id == core.FormatViewerSubtitles {
-			// Profiles saved before this format existed still get its
-			// default; an explicit 0 turns it off.
-			score = core.ViewerSubtitlesScore
-			scored = true
-		}
 		if !scored || score == 0 {
 			continue // a built-in format the profile doesn't use
 		}

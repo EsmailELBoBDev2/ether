@@ -5659,9 +5659,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
             const index = activeOverrides.findLastIndex(
               (o) =>
                 o.device &&
-                row.device.toLowerCase().includes(String(o.device).toLowerCase()) &&
+                (row.device.toLowerCase().includes(String(o.device).toLowerCase()) ||
+                  row.name.toLowerCase().includes(String(o.device).toLowerCase())) &&
                 (!o.platform ||
-                  row.platform.toLowerCase().includes(String(o.platform).toLowerCase())),
+                  row.platform.toLowerCase().includes(String(o.platform).toLowerCase())) &&
+                (!o.product ||
+                  row.app.toLowerCase().includes(String(o.product).toLowerCase())),
             );
             return { ...row, ...(index >= 0 ? { overrideIndex: index } : {}) };
           }),

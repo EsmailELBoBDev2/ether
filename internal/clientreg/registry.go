@@ -21,9 +21,11 @@ import (
 //go:embed registry.json
 var registryJSON []byte
 
-// Identity is the client a match rule sees.
+// Identity is the client a match rule sees. Device is the hardware/model
+// identifier (such as X-Plex-Device); DeviceName is the user-visible name
+// (such as X-Plex-Device-Name or Jellyfin's Device/X-Emby-Device-Name).
 type Identity struct {
-	Product, Platform, Device, Model, Version string
+	Product, Platform, Device, DeviceName, Model, Version string
 }
 
 // Result is one resolved registry record after presets, patches and overrides.
@@ -398,7 +400,7 @@ func first(role string, id Identity) Result {
 // with matching owner overrides applied.
 func Policy(id Identity, overrides []core.ClientCapabilityOverride) Result {
 	base := first("policy", id)
-	return applyOverrides(base, base.ID, "", id, overrides)
+	return applyOverrides(base, recordIDs(base.ID, ""), id, overrides)
 }
 
 // Playback is the codec and limit set for a client that did not send its
@@ -427,7 +429,7 @@ func Playback(id Identity, overrides []core.ClientCapabilityOverride) Result {
 		}
 	}
 	policyID := first("policy", id).ID
-	return applyOverrides(base, base.ID, policyID, id, overrides)
+	return applyOverrides(base, recordIDs(base.ID, policyID), id, overrides)
 }
 
 // HasQuirk reports whether a named quirk matches id.
@@ -484,11 +486,17 @@ func OverrideApplies(o core.ClientCapabilityOverride, recordIDs []string, id Ide
 	}
 	// Device and platform selectors intentionally support partial names: the
 	// device editor accepts model fragments and an optional app-name filter.
+	// Device matches either the device model/header (e.g. X-Plex-Device) or
+	// the user-visible device name (e.g. X-Plex-Device-Name, Jellyfin Device).
 	if o.Platform != "" && !strings.Contains(strings.ToLower(id.Platform), strings.ToLower(o.Platform)) {
 		return false
 	}
-	if o.Device != "" && !strings.Contains(strings.ToLower(id.Device), strings.ToLower(o.Device)) {
-		return false
+	if o.Device != "" {
+		want := strings.ToLower(o.Device)
+		if !strings.Contains(strings.ToLower(id.Device), want) &&
+			!strings.Contains(strings.ToLower(id.DeviceName), want) {
+			return false
+		}
 	}
 	if o.Version != "" && semverCompare(id.Version, o.Version) < 0 {
 		return false
@@ -496,15 +504,36 @@ func OverrideApplies(o core.ClientCapabilityOverride, recordIDs []string, id Ide
 	return true
 }
 
-func applyOverrides(base Result, playbackID, policyID string, id Identity, overrides []core.ClientCapabilityOverride) Result {
-	ids := []string{playbackID}
-	if policyID != "" && policyID != playbackID {
-		ids = append(ids, policyID)
+func recordIDs(playbackID, policyID string) []string {
+	if policyID == "" || policyID == playbackID {
+		return []string{playbackID}
 	}
-	for _, o := range overrides {
-		if !OverrideApplies(o, ids, id) {
-			continue
+	return []string{playbackID, policyID}
+}
+
+func matchingOverrides(ids []string, id Identity, overrides []core.ClientCapabilityOverride) []int {
+	var out []int
+	for i, o := range overrides {
+		if OverrideApplies(o, ids, id) {
+			out = append(out, i)
 		}
+	}
+	return out
+}
+
+// MatchingOverrides returns the indices of overrides that apply to id at
+// runtime, in application order. Both runtime override application and the
+// console's seen-devices indicator use this matcher so they cannot disagree.
+func MatchingOverrides(id Identity, overrides []core.ClientCapabilityOverride) []int {
+	if len(overrides) == 0 {
+		return nil
+	}
+	return matchingOverrides(recordIDs(first("playback", id).ID, first("policy", id).ID), id, overrides)
+}
+
+func applyOverrides(base Result, ids []string, id Identity, overrides []core.ClientCapabilityOverride) Result {
+	for _, i := range matchingOverrides(ids, id, overrides) {
+		o := overrides[i]
 		if o.VideoCodecs != nil {
 			base.Video = slices.Clone(o.VideoCodecs)
 		}

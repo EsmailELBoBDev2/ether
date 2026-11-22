@@ -51,12 +51,12 @@ func HasQuirk(product, platform, device, model, version, name string) bool {
 	return transcode.HasQuirk(product, platform, device, model, version, name)
 }
 
-func PolicyStamp(product, platform, device, model, version string, overrides []core.ClientCapabilityOverride) (dv []int, subs []string, dvChanged, subsChanged bool) {
-	return transcode.PolicyStamp(product, platform, device, model, version, overrides)
+func PolicyStamp(product, platform, device, deviceName, model, version string, overrides []core.ClientCapabilityOverride) (dv []int, subs []string, dvChanged, subsChanged bool) {
+	return transcode.PolicyStamp(product, platform, device, deviceName, model, version, overrides)
 }
 
-func PlaybackDefaultsFor(product, platform, device, model, version string, overrides []core.ClientCapabilityOverride) PlaybackDefaults {
-	return transcode.PlaybackDefaultsFor(product, platform, device, model, version, overrides)
+func PlaybackDefaultsFor(product, platform, device, deviceName, model, version string, overrides []core.ClientCapabilityOverride) PlaybackDefaults {
+	return transcode.PlaybackDefaultsFor(product, platform, device, deviceName, model, version, overrides)
 }
 
 func ApplyForcedOverrides(c ClientCaps, model string, overrides []core.ClientCapabilityOverride) ClientCaps {

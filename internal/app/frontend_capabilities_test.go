@@ -201,3 +201,44 @@ func catalogHas(apps []compatApp, protocol, name string) bool {
 	}
 	return false
 }
+
+func TestSurfaceCapabilitiesOverrideDeviceMatchingAcrossProtocols(t *testing.T) {
+	a := setupTestApp(t, true)
+	on := true
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Clients.Overrides = []core.ClientCapabilityOverride{
+			{Product: "Swiftfin", Device: "Bedroom Apple TV", Force: true, MaxHeight: 1080, DolbyVision: &on, DolbyVisionProfiles: []int{5, 7, 8}},
+			{Product: "Silo", Platform: "tvOS", Device: "Living Room", Force: true, MaxHeight: 1080, HDR10: &on},
+			{Product: "Vela", Platform: "iOS", Device: "Den iPad", Force: true, MaxHeight: 720},
+			{Product: "Stremio", Platform: "Desktop", Force: true, MaxHeight: 1080},
+			{Product: "CustomDual", Device: "Friendly Label", Force: true, MaxHeight: 720},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lan := frontend.WithClientIP(context.Background(), netip.MustParseAddr("192.168.1.2"))
+	for _, tc := range []struct {
+		surface core.Protocol
+		dev     caps.DeviceInfo
+		wantH   int
+	}{
+		{"jellyfin", caps.DeviceInfo{Product: "Swiftfin", DeviceName: "Bedroom Apple TV"}, 1080},
+		{"emby", caps.DeviceInfo{Product: "Swiftfin", DeviceName: "Bedroom Apple TV"}, 1080},
+		{"silo", caps.DeviceInfo{Product: "Silo", Platform: "tvOS", DeviceName: "Living Room"}, 1080},
+		{"vela", caps.DeviceInfo{Product: "Vela", Platform: "iOS", DeviceName: "Den iPad"}, 720},
+		{"stremio", caps.DeviceInfo{Product: "Stremio", Platform: "Desktop"}, 1080},
+		{"jellyfin", caps.DeviceInfo{Product: "CustomDual", Device: "Hardware Model", DeviceName: "Friendly Label"}, 720},
+	} {
+		got, err := (surfaceCapabilities{app: a, surface: tc.surface}).Build(lan, frontend.CapabilityRequest{
+			Viewer: &core.Viewer{ID: 1},
+			Device: tc.dev,
+		})
+		if err != nil {
+			t.Fatalf("%s %+v: %v", tc.surface, tc.dev, err)
+		}
+		if got.Client.MaxHeight != tc.wantH {
+			t.Fatalf("%s %+v: MaxHeight = %d, want %d", tc.surface, tc.dev, got.Client.MaxHeight, tc.wantH)
+		}
+	}
+}

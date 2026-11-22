@@ -74,7 +74,7 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 	if b.alwaysEncodeVideo {
 		c.AlwaysEncodeVideo = true
 	}
-	dv, subs, dvChanged, subsChanged := frontend.PolicyStamp(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, overrides)
+	dv, subs, dvChanged, subsChanged := frontend.PolicyStamp(pr.Product, pr.Platform, pr.Device, pr.DeviceName, pr.Model, pr.Version, overrides)
 	if dvChanged {
 		c.DVProfiles = dv
 	}
@@ -100,7 +100,7 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 }
 
 func playbackCaps(pr *Request, overrides []frontend.ClientCapabilityOverride) baseCaps {
-	got := frontend.PlaybackDefaultsFor(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, overrides)
+	got := frontend.PlaybackDefaultsFor(pr.Product, pr.Platform, pr.Device, pr.DeviceName, pr.Model, pr.Version, overrides)
 	return baseCaps{id: got.ID, video: got.Video, audio: got.Audio, containers: got.Containers, maxHeight: got.MaxHeight, hdr10: got.HDR10, dv: got.DolbyVision, dvOff: got.DolbyVisionOff, alwaysEncodeVideo: got.AlwaysEncodeVideo, heightLocked: got.HeightLocked}
 }
 

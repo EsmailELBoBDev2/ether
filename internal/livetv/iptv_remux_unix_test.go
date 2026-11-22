@@ -108,7 +108,7 @@ func TestIPTVRealHEVCRemux(t *testing.T) {
 				if profile == "Plex for Apple TV" {
 					platform = "tvOS"
 				}
-				d := transcode.PlaybackDefaultsFor(profile, platform, "", "", "", nil)
+				d := transcode.PlaybackDefaultsFor(profile, platform, "", "", "", "", nil)
 				caps.VideoCodecs = d.Video
 				caps.MaxHeight = d.MaxHeight
 				caps.HDR10 = d.HDR10

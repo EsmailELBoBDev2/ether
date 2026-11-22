@@ -128,13 +128,13 @@ func TestAlwaysEncodeVideoOverride(t *testing.T) {
 
 	// Override applies without Force even when the client matches the generic record.
 	overrides := []core.ClientCapabilityOverride{{Product: "CustomPlayer", ProductExact: true, AlwaysEncodeVideo: true}}
-	if got := PlaybackDefaultsFor("CustomPlayer", "", "", "", "", overrides); !got.AlwaysEncodeVideo {
+	if got := PlaybackDefaultsFor("CustomPlayer", "", "", "", "", "", overrides); !got.AlwaysEncodeVideo {
 		t.Fatalf("PlaybackDefaultsFor missed generic-app AlwaysEncodeVideo: %+v", got)
 	}
 	if got := ResolvePolicy(core.ClientCaps{Product: "CustomPlayer"}, overrides); !got.AlwaysEncodeVideo {
 		t.Fatalf("ResolvePolicy missed AlwaysEncodeVideo: %+v", got)
 	}
-	if got := PlaybackDefaultsFor("OtherPlayer", "", "", "", "", overrides); got.AlwaysEncodeVideo {
+	if got := PlaybackDefaultsFor("OtherPlayer", "", "", "", "", "", overrides); got.AlwaysEncodeVideo {
 		t.Fatalf("AlwaysEncodeVideo leaked to non-matching app: %+v", got)
 	}
 }

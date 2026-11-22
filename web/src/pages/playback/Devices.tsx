@@ -687,13 +687,14 @@ export function DeviceCapabilities() {
   const openSeenDevice = (row: SeenDevice) => {
     const matched = seenOverride(row);
     const saved = matched && isDeviceMatch(matched) ? matched : undefined;
+    const defaultMatch = row.device || row.name;
     openDraft(
-      { mode: "device", name: row.name || row.device, device: row.device, custom: true, saved },
+      { mode: "device", name: row.name || row.device, device: defaultMatch, custom: true, saved },
       {
         ...blankDraft(),
         ...listsFrom(saved),
-        match: saved?.device || row.device,
-        platform: saved?.platform || row.platform,
+        match: saved?.device || defaultMatch,
+        platform: saved ? (saved.platform ?? "") : row.platform,
         product: saved?.product || "",
       },
     );

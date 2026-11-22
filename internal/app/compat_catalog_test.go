@@ -169,8 +169,8 @@ func TestBuiltinDevicesMatchRuntimeRegistry(t *testing.T) {
 		for i, device := range clientreg.Devices() {
 			row := rows[i]
 			id := device.Identity
-			play := transcode.PlaybackDefaultsFor(id.Product, id.Platform, id.Device, id.Model, id.Version, edits)
-			base := transcode.PlaybackDefaultsFor(id.Product, id.Platform, id.Device, id.Model, id.Version, nil)
+			play := transcode.PlaybackDefaultsFor(id.Product, id.Platform, id.Device, id.DeviceName, id.Model, id.Version, edits)
+			base := transcode.PlaybackDefaultsFor(id.Product, id.Platform, id.Device, id.DeviceName, id.Model, id.Version, nil)
 			policy := transcode.ResolvePolicy(core.ClientCaps{Product: id.Product, Platform: id.Platform, Device: id.Device, Version: id.Version}, edits)
 			if play.ID == "generic" {
 				t.Errorf("%s unexpectedly uses generic playback", row.Name)

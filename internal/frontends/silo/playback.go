@@ -114,7 +114,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: b.Capabilities.Video, AudioCodecs: audioCodecs, Containers: b.Capabilities.Containers, MaxHeight: height, HDR10: b.Capabilities.HDR}, UserAgent: r.UserAgent()})
+	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Platform: d.Platform, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: b.Capabilities.Video, AudioCodecs: audioCodecs, Containers: b.Capabilities.Containers, MaxHeight: height, HDR10: b.Capabilities.HDR}, UserAgent: r.UserAgent()})
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return

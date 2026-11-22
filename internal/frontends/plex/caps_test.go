@@ -383,3 +383,40 @@ func TestCapabilityOverrideChangesRegistryAndYieldsToProfile(t *testing.T) {
 		t.Fatalf("AlwaysEncodeVideo leaked to non-matching Plex app: %+v", other)
 	}
 }
+
+func TestCapabilityOverrideMatchesDeviceName(t *testing.T) {
+	on := true
+	pr := &Request{
+		Product:    "PlxNative",
+		Platform:   "webOS",
+		Device:     "LG webOS TV",
+		DeviceName: "PlxNative (LG TV)",
+	}
+	byName := []core.ClientCapabilityOverride{{
+		Product:             "PlxNative",
+		Device:              "PlxNative (LG TV)",
+		VideoCodecs:         []string{"h264", "hevc", "av1", "vp9"},
+		AudioCodecs:         []string{"aac", "ac3", "eac3"},
+		Containers:          []string{"mp4", "mkv"},
+		SubtitleCodecs:      []string{"srt", "ass", "webvtt"},
+		DolbyVisionProfiles: []int{5, 7, 8},
+		MaxHeight:           2160,
+		HDR10:               &on,
+		DolbyVision:         &on,
+	}}
+	got := pr.ClientCapsWith(0, byName)
+	if got.MaxHeight != 2160 || !got.HDR10 || !got.DolbyVision || !got.SupportsVideo("av1") || !slices.Equal(got.DVProfiles, []int{5, 7, 8}) || !slices.Equal(got.SubtitleCodecs, []string{"srt", "ass", "webvtt"}) {
+		t.Fatalf("DeviceName override did not apply: %+v", got)
+	}
+	byDevice := []core.ClientCapabilityOverride{{Product: "PlxNative", Device: "LG webOS TV", MaxHeight: 1080, HDR10: &on}}
+	if got2 := pr.ClientCapsWith(0, byDevice); got2.MaxHeight != 1080 || !got2.HDR10 {
+		t.Fatalf("Device override did not apply: %+v", got2)
+	}
+	// Forced override must also match X-Plex-Device-Name over ProfileExtra.
+	pr.ProfileExtra = "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=720)"
+	byName[0].Force = true
+	forced := pr.ClientCapsWith(0, byName)
+	if forced.MaxHeight != 2160 || !forced.ForcedOverrideApplied || !slices.Equal(forced.DVProfiles, []int{5, 7, 8}) {
+		t.Fatalf("forced DeviceName override did not apply: %+v", forced)
+	}
+}

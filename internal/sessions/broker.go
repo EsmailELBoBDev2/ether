@@ -647,7 +647,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		if chosen == nil && versionHandle != "" && len(variants) > 0 {
 			chosen = &core.ReleaseVariant{ID: req.Version, Auto: true, Info: variants[0].Info}
 		}
-		if chosen != nil && chosen.Availability == core.VersionUnavailable && req.Protocol == "vela" {
+		if chosen != nil && chosen.Availability == core.VersionUnavailable && req.Protocol == "vela" && !core.IsExplicitVersionSlotSelector(chosen.ID) {
 			return frontend.PlayPlan{}, core.ErrVersionUnavailable
 		}
 		if chosen == nil {
@@ -682,6 +682,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	release := ""
 	prepareExact := req.Intent.ExactVersion
+	slotSelector := false
 	if chosen != nil {
 		if req.Protocol == "vela" && chosen.Auto {
 			prepareExact = false
@@ -689,6 +690,14 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		} else {
 			release = chosen.ID
 		}
+	}
+	// A configured version slot (tier/alternative/distinct) is a logical
+	// selector, not a single concrete release: let playback fail over across
+	// matching copies and step down to lower tiers instead of failing closed
+	// on the first dead release or jumping back up to Auto.
+	if core.IsExplicitVersionSlotSelector(release) {
+		slotSelector = true
+		prepareExact = false
 	}
 	rememberedFallback := false
 	if remembered, rememberErr := b.rememberedDeliveryRelease(ctx, v.ID, string(req.Protocol), req.Device.ID, req.Item, req.Intent.ClientSessionID); rememberErr != nil {
@@ -724,7 +733,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		// no ExpectedSourceETag was pinned) is no longer available or changed,
 		// fall back cleanly to the next healthy candidate instead of failing
 		// replay with "not available yet: playback: source revision changed".
-		if err != nil && detail == nil && req.ExpectedSourceETag == "" && (rememberedFallback || (chosen != nil && chosen.Auto) || errors.Is(err, core.ErrSourceChanged)) {
+		if err != nil && detail == nil && req.ExpectedSourceETag == "" && !slotSelector && (rememberedFallback || (chosen != nil && chosen.Auto) || errors.Is(err, core.ErrSourceChanged)) {
 			if fallbackPS, fallbackErr := playback.PrepareSurface(ctx, v, req.Item, req.Caps, "", false); fallbackErr == nil && fallbackPS != nil {
 				ps, err = fallbackPS, nil
 				prepareExact = false
@@ -766,7 +775,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			planErr = fmt.Errorf("release %s: %w", ps.Resolution.Release.ID, planErr)
 		}
 	}()
-	if req.Intent.ExactVersion && !ps.Resolution.MatchesVersion(req.Version) {
+	if req.Intent.ExactVersion && !slotSelector && !ps.Resolution.MatchesVersion(req.Version) {
 		if !existed || previous == nil || previous.ID != ps.ID {
 			b.deps.Playback.Stop(ps.ID)
 		}

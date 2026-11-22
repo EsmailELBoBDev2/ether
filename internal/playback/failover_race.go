@@ -43,6 +43,7 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	results := make(chan raceResult, len(cands))
+	altSel, altFallback := s.alternateMeta()
 	next, running := 0, 0
 	launch := func() {
 		alt := cands[next]
@@ -54,7 +55,7 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 				results <- raceResult{alt: alt, err: err, fetch: true}
 				return
 			}
-			res := &core.Resolution{Title: s.ident.key, Release: alt, NZB: nzb, ResolvedAt: m.now()}
+			res := &core.Resolution{VersionSelector: altSel, QualityFallback: altFallback, Title: s.ident.key, Release: alt, NZB: nzb, ResolvedAt: m.now()}
 			g, err := m.openGeneration(rctx, s, res, fallback)
 			if err == nil {
 				if perr := m.preflightSwap(rctx, s, g); perr != nil {
@@ -225,6 +226,11 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 	for id := range m.openFailures[s.ident.key] {
 		openFailed[id] = true
 	}
+	if core.IsExplicitVersionSlotSelector(s.prefer) {
+		for _, id := range m.staleReleasesLocked(s.ident.key, m.now()) {
+			openFailed[id] = true
+		}
+	}
 	m.mu.Unlock()
 
 	var cands, remaining []core.Release
@@ -261,6 +267,7 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 	}
 	rctx, cancel := context.WithCancel(core.WithIndexerPurpose(openCtx, core.IndexerPurposePlayback))
 	results := make(chan initialRaceResult, len(cands))
+	altSel, altFallback := s.alternateMeta()
 	next, running := 0, 0
 	launch := func() {
 		alt := cands[next]
@@ -272,7 +279,7 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 				results <- initialRaceResult{alt: alt, err: err, fetch: true}
 				return
 			}
-			res := &core.Resolution{Title: s.ident.key, Release: alt, NZB: nzb, ResolvedAt: m.now()}
+			res := &core.Resolution{VersionSelector: altSel, QualityFallback: altFallback, Title: s.ident.key, Release: alt, NZB: nzb, ResolvedAt: m.now()}
 			if len(res.NZB) > 0 {
 				res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 			}

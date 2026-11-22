@@ -113,6 +113,9 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || !m.rememberedChoiceAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}
+	if res != nil && core.IsExplicitVersionSlotSelector(prefer) && m.isReleaseStale(s.ident.key, res.Release.ID) {
+		return nil, nil, false
+	}
 	if res != nil && (!m.rememberedReleaseMatchesTitle(ctx, res.Release, s.title) || !payloadMatchesTitle(res.NZB, s.title)) {
 		// An older stored/warmed selection may predate the series identity
 		// gate. Do not reuse a same-named reboot for this show's episode.
@@ -132,8 +135,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	if s.title != nil {
 		original = s.title.Language
 	}
+	isSlot := core.IsExplicitVersionSlotSelector(s.prefer)
 	res, cached, fromResume := m.preparedResolution(ctx, s, profile, original, s.prefer)
-	if res == nil && s.prefer != "" && !s.exact {
+	if res == nil && s.prefer != "" && !s.exact && !isSlot {
 		if auto, facts, remembered := m.preparedResolution(ctx, s, profile, original, ""); auto != nil {
 			// Resolve only the explicit pick. Resolving a fresh automatic
 			// fallback would health-check a source we then discard in favour
@@ -249,7 +253,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	const maxMoreCandidatePasses = 8
 	morePasses := 0
 	for attempt := 0; m.attemptAllowed(attempt) && ctx.Err() == nil; attempt++ {
-		if res == nil && attempt > 0 && !s.exact && s.prefer == "" && m.deps.FetchNZB != nil &&
+		if res == nil && attempt > 0 && !s.exact && (s.prefer == "" || isSlot) && m.deps.FetchNZB != nil &&
 			s.caps.BroadcastReadyRelease == "" && !s.isKind() && fallbackGen == nil && len(alternates) >= 2 {
 			maxBudget := 0
 			if m.opts.MaxAttempts > 0 {
@@ -257,6 +261,15 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			}
 			out := m.raceInitialAlternates(openCtx, s, profile, tried, audioRejected, alternates, fallback, failoverRaceWidth, maxBudget)
 			tried = append(tried, out.failed...)
+			if isSlot {
+				reason := "failed to open during picked version failover"
+				if out.lastErr != nil {
+					reason = out.lastErr.Error()
+				}
+				for _, failedID := range out.failed {
+					m.noteStaleRelease(s.ident.key, failedID, s.title, "", reason)
+				}
+			}
 			audioRejected = append(audioRejected, out.audioRejected...)
 			alternates = out.remaining
 			if out.g != nil {
@@ -282,7 +295,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			fromResume = false
 			var err error
 			res, err = m.nextResolutionTracking(ctx, s, &tried, audioRejected, alternates)
-			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && !res.MatchesVersion(s.prefer) {
+			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && !isSlot && !res.MatchesVersion(s.prefer) {
 				// The picked version fell back to normal ranking. Play the
 				// automatic choice the warm-up (or resume) already holds, so
 				// the opening prefetch is not wasted on another release, and
@@ -345,6 +358,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if s.exact && !res.MatchesVersion(s.prefer) {
 			return nil, fmt.Errorf("%w: %w", core.ErrNotAvailable, core.ErrSourceChanged)
 		}
+		s.setAlternateMeta(res.VersionSelector, res.QualityFallback)
 		if len(res.NZB) > 0 {
 			res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 		}
@@ -512,6 +526,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		}
 		allUncached = allUncached && errors.Is(err, core.ErrNotCached)
 		m.log.Warn("release failed to open", "session", s.id, "release", res.Release.Name, "err", err)
+		if isSlot {
+			m.noteStaleRelease(s.ident.key, res.Release.ID, s.title, "", err.Error())
+		}
 		tried = append(tried, res.Release.ID)
 		alternates = res.Alternates
 		res, cached, fromResume = nil, nil, false
@@ -582,14 +599,23 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried *[]string, audioRejected []core.Release, alternates []core.Release) (*core.Resolution, error) {
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	exclude := append(slices.Clone(*tried), s.caps.BroadcastExclude...)
+	isSlot := core.IsExplicitVersionSlotSelector(s.prefer)
 	m.mu.Lock()
 	for id := range m.openFailures[s.ident.key] {
 		if !slices.Contains(exclude, id) {
 			exclude = append(exclude, id)
 		}
 	}
+	if isSlot {
+		for _, id := range m.staleReleasesLocked(s.ident.key, m.now()) {
+			if !slices.Contains(exclude, id) {
+				exclude = append(exclude, id)
+			}
+		}
+	}
 	m.mu.Unlock()
 	if m.deps.FetchNZB != nil {
+		altSel, altFallback := s.alternateMeta()
 		// Fetches run sequentially. A timed-out on-demand fetch has returned
 		// and cancelled its request, so the next eligible source may open.
 		var fetchErr error
@@ -619,6 +645,9 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 					Detail:  OwnerError(err),
 				})
 				fetchErr = err
+				if isSlot {
+					m.noteStaleRelease(s.ident.key, alt.ID, s.title, "", err.Error())
+				}
 				// A fresh Resolve must not retry a link that just failed.
 				exclude = append(exclude, alt.ID)
 				if !slices.Contains(*tried, alt.ID) {
@@ -633,11 +662,13 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 				Detail:  timelineCandidateDetail(alt, len(alternates)-i-1),
 			})
 			return &core.Resolution{
-				Title:      s.ident.key,
-				Release:    alt,
-				NZB:        nzb,
-				Alternates: slices.Clone(alternates[i+1:]),
-				ResolvedAt: m.now(),
+				VersionSelector: altSel,
+				QualityFallback: altFallback,
+				Title:           s.ident.key,
+				Release:         alt,
+				NZB:             nzb,
+				Alternates:      slices.Clone(alternates[i+1:]),
+				ResolvedAt:      m.now(),
 			}, nil
 		}
 		if fetchErr != nil && m.opts.MaxAttempts > 0 && fetched >= m.opts.MaxAttempts {
@@ -691,6 +722,11 @@ func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried 
 	}
 	if res == nil || res.Release.ID == "" || len(res.NZB) == 0 {
 		return nil, fmt.Errorf("%w: resolver returned no usable release", core.ErrNotAvailable)
+	}
+	if isSlot && len(res.FailedReleases) > 0 {
+		for _, failedID := range res.FailedReleases {
+			m.noteStaleRelease(s.ident.key, failedID, s.title, res.Release.ID, "failed validation during picked version failover")
+		}
 	}
 	if slices.Contains(exclude, res.Release.ID) {
 		return nil, fmt.Errorf("%w: resolver returned an excluded release", core.ErrNotAvailable)
@@ -1448,6 +1484,12 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	// A provider outage is not evidence that the release itself is invalid.
 	if failure := cur.sourceFailure(); !fo.encoder && !s.isKind() && permanentSourceFailure(failure) {
 		m.markBad(cur.releaseID(), fo.reason)
+	}
+	if !fo.encoder && core.IsExplicitVersionSlotSelector(s.prefer) {
+		m.noteStaleRelease(s.ident.key, cur.releaseID(), s.title, "", fo.reason)
+	}
+	if cur.res != nil {
+		s.setAlternateMeta(cur.res.VersionSelector, cur.res.QualityFallback)
 	}
 
 	s.mu.Lock()
@@ -2239,11 +2281,16 @@ func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 	if s.ident.key.IsPluginKey() {
 		m.noteItemProbeMemory(s.ident.key, info)
 	}
-	if m.resume == nil || g.res == nil || len(g.res.NZB) == 0 {
+	steppedDownSlot := core.IsExplicitVersionSlotSelector(s.prefer) && g.res != nil && !g.res.MatchesVersion(s.prefer)
+	if m.resume == nil || g.res == nil || len(g.res.NZB) == 0 || steppedDownSlot {
 		if g.res != nil || s.ident.key.IsPluginKey() {
 			var rel core.Release
+			var nzb []byte
 			if g.res != nil {
 				rel = g.res.Release
+				if len(g.res.NZB) > 0 {
+					nzb = append([]byte(nil), g.res.NZB...)
+				}
 			}
 			key := s.ident.key
 			m.beginResumeSave()
@@ -2252,7 +2299,7 @@ func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 				pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				if rel.ID != "" || rel.InfoHash != "" || rel.ContentID != "" {
-					m.persistReleaseProbe(pctx, rel, nil, info)
+					m.persistReleaseProbe(pctx, rel, nzb, info)
 				}
 				if key.IsPluginKey() {
 					m.persistItemProbe(pctx, key, info)

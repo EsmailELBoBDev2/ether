@@ -120,11 +120,12 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 			}
 		}
 	}
-	if chosen != nil && chosen.Availability == core.VersionUnavailable {
+	slotSelector := core.IsExplicitVersionSlotSelector(targetSelector)
+	if chosen != nil && chosen.Availability == core.VersionUnavailable && !slotSelector {
 		return frontend.PlayPlan{}, core.ErrVersionUnavailable
 	}
 	isAuto := targetSelector == core.KindAutoVersionID || (chosen != nil && chosen.Auto && chosen.ID == targetSelector)
-	exact := !isAuto
+	exact := !isAuto && !slotSelector
 	if isAuto {
 		targetSelector = ""
 	}

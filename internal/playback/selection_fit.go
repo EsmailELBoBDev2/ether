@@ -14,7 +14,17 @@ func sessionFitsSelection(s *session, caps core.ClientCaps, prefer string, exact
 		return false
 	}
 	if prefer != "" {
-		return g.releaseID() == prefer || (!exact && g.res.MatchesVersion(prefer))
+		if g.releaseID() == prefer || (!exact && g.res.MatchesVersion(prefer)) {
+			return true
+		}
+		// A live session already opened for this configured version slot
+		// (including a lower-tier step-down when no copy at that tier worked)
+		// satisfies repeat requests for the same slot as long as bitrate caps fit.
+		if !exact && core.IsExplicitVersionSlotSelector(prefer) && s.prefer == prefer {
+			// Fall through to the bitrate cap check below.
+		} else {
+			return false
+		}
 	}
 	if !caps.DefaultRemoteBitrate && caps.MaxBitrateKbps > 0 &&
 		(s.caps.DefaultRemoteBitrate || s.caps.MaxBitrateKbps <= 0 || caps.MaxBitrateKbps < s.caps.MaxBitrateKbps) {

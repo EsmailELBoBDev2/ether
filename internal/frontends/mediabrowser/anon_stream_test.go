@@ -220,3 +220,55 @@ func TestAnonymousStreamWorksForEmbyAudioAlias(t *testing.T) {
 		t.Fatalf("served paths = %v", state.served)
 	}
 }
+
+// Findroid posts PlaybackInfo for every queued episode before it reads the
+// one it plays. The broker keeps one session per device, so those opens
+// retire the playing episode's session; its credential-less stream reopens
+// it. A stopped title is never reopened.
+func TestAnonymousStreamReopensSessionSupersededOnDevice(t *testing.T) {
+	state := &anonState{}
+	device := frontend.Device{ID: "tv"}
+	broker := newAnonBroker(state, device)
+	opened := 0
+	var planned []frontend.RatingKey
+	broker.PlanFunc = func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+		planned = append(planned, req.Item)
+		return frontend.PlayPlan{ID: "plan-" + ids.RatingKeyGUID(req.Item), Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true}, nil
+	}
+	broker.OpenFunc = func(_ context.Context, req frontend.OpenRequest) (frontend.Session, error) {
+		opened++
+		item := frontend.RatingKey(5)
+		if req.PlanID == "plan-"+ids.RatingKeyGUID(6) {
+			item = 6
+		}
+		id := "session-" + string(rune('0'+opened))
+		// One session per device: every open supersedes the previous one.
+		state.live = []frontend.Session{{ID: id, Item: item, Protocol: "jellyfin", Device: device, MediaPath: "/sessions/media/" + id + "/scoped/file"}}
+		return state.live[0], nil
+	}
+	inst := mountAnonTest(t, "jellyfin", broker)
+	openSession(t, inst, "jellyfin", 5, "192.0.2.1")
+	openSession(t, inst, "jellyfin", 6, "192.0.2.1") // the queued next episode
+
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent {
+		t.Fatalf("superseded stream = %d, want 206: %s", w.Code, w.Body.String())
+	}
+	if len(state.served) != 1 || state.served[0] != "/sessions/media/session-3/scoped/file" || planned[len(planned)-1] != 5 {
+		t.Fatalf("served %v after planning %v, want a reopened session for item 5", state.served, planned)
+	}
+	// A second ranged GET rides the reopened session.
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent || opened != 3 {
+		t.Fatalf("second GET = %d with %d opens, want 206 without another open", w.Code, opened)
+	}
+
+	stop := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/jellyfin/Sessions/Playing/Stopped", strings.NewReader(`{"ItemId":"`+ids.RatingKeyGUID(5)+`","PlaySessionId":"session-3"}`))
+	r.Header.Set("X-Emby-Token", "grant")
+	r.Header.Set("X-Emby-Device-Id", "tv")
+	r.Header.Set("X-Test-IP", "192.0.2.1")
+	inst.Handler().ServeHTTP(stop, r)
+	state.live = nil
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("stopped stream = %d, want 401", w.Code)
+	}
+}

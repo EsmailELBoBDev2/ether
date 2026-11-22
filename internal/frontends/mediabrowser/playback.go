@@ -545,7 +545,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 				i.host.Log.Warn("jellyfin static PlaybackInfo open", "err", err)
 			}
 		} else {
-			i.rememberAnonymousSession(r, v, session.ID, key, channel, dev, version, detailSource, sourceID)
+			i.rememberAnonymousSession(r, v, session.ID, key, channel, dev, version, detailSource, sourceID, planBase)
 			format := frontend.StreamDirect
 			audioOnly := channel == "" && plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
 			if channel != "" || (plan.Decision.Kind != "directplay" && ((i.protocol == "jellyfin" && intent.DeclaredCaps) || plan.Decision.Kind != "copy" || !plan.Decision.AudioCopy)) {
@@ -1200,6 +1200,9 @@ func (i *instance) timeline(w http.ResponseWriter, r *http.Request, stopped, sta
 		return
 	}
 	access := frontend.SessionAccess{Viewer: v, Device: device(r), Protocol: i.protocol}
+	if item, ok := timelineItem(body); ok || !stopped {
+		i.noteAnonymousTimeline(r, v, access.Device, item, stopped)
+	}
 	state := "playing"
 	if body.IsPaused {
 		state = "paused"

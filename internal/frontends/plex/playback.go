@@ -64,6 +64,15 @@ const (
 	msgVideoTranscodingOff = "This title needs a video transcode to play on this device, and video transcoding is turned off."
 )
 
+// playbackMessageFor is playbackMessage with the wording for a viewer whose
+// own account has video transcoding switched off.
+func (s *Server) playbackMessageFor(pr *Request, err error) string {
+	if pr != nil && pr.User != nil && errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		return frontend.VideoTranscodingOffMessage(s.policy(), pr.User)
+	}
+	return playbackMessage(err)
+}
+
 func playbackMessage(err error) string {
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
@@ -115,7 +124,7 @@ func (s *Server) writeStartErr(w http.ResponseWriter, r *http.Request, pr *Reque
 	}
 	s.log.Warn("playback start failed", "reason", playbackMessage(err), "err", err)
 	if pr != nil && pr.User != nil {
-		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), playbackMessage(err))
+		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), s.playbackMessageFor(pr, err))
 	}
 	// A completed attempt is terminal. Retry-After on a 503 makes media
 	// loaders retry while waiting for a timeline they may never send.
@@ -1206,7 +1215,7 @@ func (s *Server) decisionError(ctx context.Context, pr *Request, t *frontend.Tit
 	if errors.As(err, &profileErr) {
 		return profileErrorContainer(pr, p, profileErr)
 	}
-	msg := playbackMessage(err)
+	msg := s.playbackMessageFor(pr, err)
 	s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), msg)
 	mc := libraryContainer()
 	if t != nil {
@@ -3181,7 +3190,7 @@ func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Reques
 		return
 	}
 	if pr != nil && pr.User != nil {
-		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), playbackMessage(err))
+		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), s.playbackMessageFor(pr, err))
 	}
 	writePlaybackStatus(w, http.StatusBadGateway)
 }

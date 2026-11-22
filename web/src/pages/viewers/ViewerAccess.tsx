@@ -376,6 +376,31 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               }
             />
             <SettingsRow
+              title={t("Downloads")}
+              description={t(
+                "Whether this viewer can save titles for offline viewing in apps that support it. Server default follows the Downloads settings under Apps.",
+              )}
+              control={
+                <SearchSelect
+                  ariaLabel={t("Downloads")}
+                  value={
+                    p.allowDownloads === true ? "yes" : p.allowDownloads === false ? "no" : "default"
+                  }
+                  options={[
+                    { value: "default", label: t("Server default") },
+                    { value: "yes", label: t("Allowed") },
+                    { value: "no", label: t("Not allowed") },
+                  ]}
+                  onChange={(choice) =>
+                    patchPolicy({
+                      allowDownloads: choice === "yes" ? true : choice === "no" ? false : undefined,
+                    })
+                  }
+                  {...searchSelectLabels()}
+                />
+              }
+            />
+            <SettingsRow
               title={t("Maximum bitrate")}
               description={t("In kbps. 0 uses the server default.")}
               control={

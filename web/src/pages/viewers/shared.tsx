@@ -566,6 +566,8 @@ export type SafetyPolicy = {
   remoteDisabled: boolean;
   maxBitrateKbps: number;
   videoTranscodingDisabled?: boolean;
+  /** Owner override for offline downloads; absent follows the server setting. */
+  allowDownloads?: boolean | null;
   allowedHours: number[];
   timezone: string;
 };

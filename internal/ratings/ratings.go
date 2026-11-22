@@ -512,9 +512,13 @@ func parseOMDb(data []byte) ([]Badge, string, error) {
 	}
 	if response.Response == "False" {
 		// A title OMDb does not have is a definite answer (no ratings),
-		// cached like one; key, quota and server errors are retried.
-		if msg := strings.ToLower(response.Error); strings.Contains(msg, "not found") || strings.Contains(msg, "incorrect imdb id") {
+		// cached like one; key and quota refusals pause all lookups.
+		msg := strings.ToLower(response.Error)
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "incorrect imdb id") {
 			return []Badge{}, "", nil
+		}
+		if strings.Contains(msg, "limit") || strings.Contains(msg, "invalid api key") {
+			return nil, "", fmt.Errorf("%w: %s", errProviderRefused, response.Error)
 		}
 		return nil, "", errors.New("OMDb lookup failed")
 	}
@@ -590,6 +594,12 @@ const (
 // as ones a library rule hides. It walks the catalogue by key and wraps.
 func (s *Service) Backfill(ctx context.Context) {
 	if s.o.Unrated == nil {
+		return
+	}
+	s.qmu.Lock()
+	paused := s.o.Now().Before(s.pausedUntil)
+	s.qmu.Unlock()
+	if paused {
 		return
 	}
 	cfg, err := s.settings(ctx)

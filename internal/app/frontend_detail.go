@@ -66,13 +66,14 @@ func (s *surfaceExperience) ratingFact(ctx context.Context, viewer *core.Viewer,
 			continue
 		}
 		// "When a rating is missing" defaults to the catalogue rating; only
-		// "Show no rating" removes the catalogue score from a title.
-		hideMissing := cfg.Missing == "none"
+		// "Show no rating" or an explicit Audience == "none" removes the
+		// catalogue score from a title.
+		hideCommunity := cfg.Missing == "none" || cfg.Audience == "none"
 		fact := frontend.DetailFacts{RatingsKnown: true}
 		badges, ok := cached[title.Key]
 		if !ok {
 			s.detail.ratings.Queue(title)
-			if !hideMissing {
+			if !hideCommunity {
 				// Not fetched yet: leave the title as the catalogue has it
 				// rather than blanking its rating until the worker gets there.
 				continue
@@ -80,7 +81,7 @@ func (s *surfaceExperience) ratingFact(ctx context.Context, viewer *core.Viewer,
 		} else {
 			presented := ratings.Present(cfg, badges)
 			fact.Community = presented.Community
-			if fact.Community == nil && !hideMissing && title.Rating > 0 {
+			if fact.Community == nil && !hideCommunity && title.Rating > 0 {
 				catalogue := title.Rating
 				fact.Community = &catalogue
 			}

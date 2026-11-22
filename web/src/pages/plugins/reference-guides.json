@@ -280,10 +280,7 @@
     "title": "Media container probing",
     "group": "Host services",
     "body": "Reads container metadata (`{durationSec, container, width, height, sizeBytes}`) for any `PlayableSource` in the same shape `/resolve` returns, reusing Ether's durable `release_probes` cache. Requires `permissions.media: \"probe\"` (shown on the install sheet as \"Probes media container metadata\" and revocable live as `media`).\n\n```ts\nconst probe = ether.media.probe({\n  id: \"ep-01\",\n  pattern: \"release\",\n  mime: \"video/x-matroska\",\n  release: { infoHash, fileIndex: 1 },\n});\n// probe => { durationSec: 2280.4, container: \"mkv\", width: 1920, height: 1080, sizeBytes: 1234567890 }\n```\n\n## Route policy & bounds\n`media.probe` is allowed only on jobs (`/ether/job/*`), actions (`/ether/action/*`), Flow actions, tools, event handlers, setup/test routes, feed routes, background kind/Live TV sync, or declared `ether.schedule` routes. Every interactive viewer or client request path (`/resolve`, `/search`, `/catalog/*`, `/stream/*`, `/meta/*`, `/subtitles/*`, `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`, `/ether/configure`, and remote calls carrying `X-Ether-Viewer-Token`) is refused. Each call is bounded at 10 s and per-plugin rate-limited (60 calls/minute). Release probes run strictly cached-only without queuing uncached debrid downloads; URL, folder, secret, and blob permissions still apply per source pattern.\n\nFor playback-time verification without calling `media.probe`, set both `durationSec` and `durationToleranceSec` (> 0) on a `PlayableSource` returned by `/resolve`: Ether probes the container header on open (reusing `release_probes`) and rejects mismatches beyond `durationToleranceSec` as wrong content so the next candidate is tried.\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
-    "patterns": [
-      "@host:MediaProbe|MediaHost",
-      "internal/plugins/host_media.go"
-    ]
+    "patterns": ["@host:MediaProbe|MediaHost", "internal/plugins/host_media.go"]
   },
   {
     "id": "host-notify",

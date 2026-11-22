@@ -53,6 +53,20 @@ func TestStreamCapacityResponseIncludesRetryDelay(t *testing.T) {
 	}
 }
 
+func TestStreamErrorPreparingQueuedDownloadNotMaskedAsNotFound(t *testing.T) {
+	err := &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: frontend.ErrDownloadQueued}}
+	if noCompatibleStream(err) {
+		t.Fatal("noCompatibleStream(preparing+queued) = true, want false")
+	}
+	for _, proto := range []frontend.Protocol{"jellyfin", "emby"} {
+		w := httptest.NewRecorder()
+		streamError(proto, w, err)
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "5" || w.Header().Get("X-Ether-Media-Error") != "preparing" {
+			t.Fatalf("%s streamError(preparing+queued) = %d %v %s", proto, w.Code, w.Header(), w.Body.String())
+		}
+	}
+}
+
 func TestPlaybackInfoEstimatesAndOpens(t *testing.T) {
 	viewer := &frontend.Viewer{ID: 1}
 	var calls []string

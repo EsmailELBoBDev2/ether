@@ -1233,6 +1233,8 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 		return p.Encode(), nil, true
 	case ctx.Err() != nil:
 		return nil, ctx.Err(), true
+	case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
+		return nil, err, true
 	case errors.Is(err, core.ErrNotCached) && !refusal(err) && !errors.Is(err, core.ErrDownloadLimit):
 		return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), core.ErrDownloadQueued), true
 	}

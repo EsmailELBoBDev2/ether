@@ -165,7 +165,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	requested := b.deps.Now()
 	ps, err := kindPlayback.PrepareKind(ctx, v, *in, req.Caps)
 	if err != nil {
-		if req.Intent.ExactVersion && req.Protocol == "vela" && errors.Is(err, core.ErrNotAvailable) {
+		if req.Intent.ExactVersion && req.Protocol == "vela" && errors.Is(err, core.ErrNotAvailable) && !errors.Is(err, core.ErrPreparing) {
 			return frontend.PlayPlan{}, core.ErrVersionUnavailable
 		}
 		return frontend.PlayPlan{}, err

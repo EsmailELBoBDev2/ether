@@ -19,6 +19,7 @@ func TestVelaPreparingErrorMapsTo503RetryAfter(t *testing.T) {
 	}{
 		{"explicit retryAfter", &frontend.PreparingError{RetryAfter: 7 * time.Second}, "7", 7},
 		{"bare sentinel defaults to 5s", frontend.ErrPreparing, "5", 5},
+		{"preparing wrapping queued download", &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: frontend.ErrDownloadQueued}}, "5", 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()

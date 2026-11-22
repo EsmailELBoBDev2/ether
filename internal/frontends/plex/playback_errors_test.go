@@ -167,6 +167,7 @@ func TestPlaybackMessageNamesTheCause(t *testing.T) {
 		{"uncached among not-available", errors.Join(notCached("a"), fmt.Errorf("x: %w", core.ErrNotAvailable)), msgNotAvailable},
 		{"plain not available", fmt.Errorf("%q: %w", "x", core.ErrNotAvailable), msgNotAvailable},
 		{"sent to download", errors.Join(notCached("a"), fmt.Errorf("%q: %w", "b", core.ErrDownloadQueued)), msgDownloadQueued},
+		{"preparing queued plugin release", &core.PreparingError{RetryAfter: 5 * time.Second, Err: &core.UncachedError{Err: core.ErrDownloadQueued}}, msgDownloadQueued},
 		{"stream limit", core.ErrStreamLimit, msgStreamLimit},
 		{"cached-only", &core.UncachedError{Err: notCached("a"), CachedOnly: true}, msgNotCachedOnly},
 		{"cached-only, Usenet found nothing", &core.UncachedError{Err: notCached("a"), CachedOnly: true, Usenet: core.UsenetNone}, msgNotCachedOnlyNoNZB},

@@ -836,6 +836,18 @@ func playbackError(w http.ResponseWriter, err error) {
 		http.Error(w, "Track source unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if errors.Is(err, frontend.ErrPreparing) {
+		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "preparing")
+		requestID, idErr := controlCommandID()
+		if idErr != nil {
+			http.Error(w, "The item is still being prepared. Try again shortly.", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("X-Request-ID", requestID)
+		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "about:blank", "title": "Item is still being prepared", "status": http.StatusServiceUnavailable, "detail": "The item is still being prepared. Try again shortly.", "instance": "urn:silo:request:" + requestID})
+		return
+	}
 	if errors.Is(err, frontend.ErrSessionBusy) {
 		var busy *frontend.SessionBusyError
 		if errors.As(err, &busy) && busy.RetryAfter > 0 {
@@ -1036,7 +1048,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		// The transcode rung must encode: the copy it replaces is what the
 		// player refused, and serving that stream again only fails again.
 		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: chosen.format, Position: pos, ReencodeVideo: chosen.delivery == "server_transcode_hls"}); err != nil {
-			if errors.Is(err, frontend.ErrNotAvailable) {
+			if errors.Is(err, frontend.ErrNotAvailable) && !errors.Is(err, frontend.ErrPreparing) {
 				siloAdaptationUnavailable(w, id)
 				return
 			}

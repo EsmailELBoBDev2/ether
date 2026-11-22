@@ -224,6 +224,13 @@ func TestMediaHandlerPreparingReturns503RetryAfterWhileNoSourceStays409(t *testi
 			wantRetry:  "5",
 		},
 		{
+			name:       "preparing wrapping queued download stays 503 preparing",
+			openErr:    &core.PreparingError{RetryAfter: 5 * time.Second, Err: &core.UncachedError{Err: core.ErrDownloadQueued}},
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "preparing",
+			wantRetry:  "5",
+		},
+		{
 			name:       "real no_source stays 409",
 			openErr:    core.ErrNotAvailable,
 			wantStatus: http.StatusConflict,

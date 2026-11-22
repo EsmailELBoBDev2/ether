@@ -148,16 +148,6 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 		return
 	}
 
-	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone) {
-		if protocol == "jellyfin" {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, "Error processing request.")
-			return
-		}
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
 	if errors.Is(err, frontend.ErrPreparing) {
 		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "preparing")
@@ -174,6 +164,16 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write(frontend.JobsBusyErrorBody(err))
+		return
+	}
+	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone) {
+		if protocol == "jellyfin" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, "Error processing request.")
+			return
+		}
+		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 	var capacity *frontend.TranscodeCapacityError
@@ -1304,6 +1304,9 @@ func timelineItem(body timelineRequest) (frontend.RatingKey, bool) {
 }
 
 func noCompatibleStream(err error) bool {
+	if errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
+		return false
+	}
 	return errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone)
 }
 

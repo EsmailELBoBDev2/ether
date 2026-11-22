@@ -858,6 +858,8 @@ export interface PlayableSource {
     /** Structured track hint ({disc?, number?, title?}) matched by disc/track number first, then title tokens. */
     track?: TrackHint;
     passwordSecret?: string;
+    /** Require an already-cached debrid copy even when the owner turned "Cached torrents only" off. */
+    cachedOnly?: boolean;
   };
   parts?: KindItemPart[];
 }

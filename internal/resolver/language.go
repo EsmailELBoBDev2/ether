@@ -258,3 +258,29 @@ func matchesAlternativeTitle(info core.ReleaseInfo, alts []string) bool {
 	}
 	return false
 }
+
+// wantedSubtitles is the subtitle languages a release is credited for
+// listing: the viewer's own, else the server language.
+func wantedSubtitles(user *core.User, serverLang string) []string {
+	if user != nil && len(user.SubtitleLanguages) > 0 {
+		return user.SubtitleLanguages
+	}
+	if base, _, _ := strings.Cut(strings.TrimSpace(serverLang), "-"); base != "" {
+		return []string{base}
+	}
+	return nil
+}
+
+// indexerListsSubtitles reports whether the indexer lists a subtitle track in
+// one of the wanted languages. A release whose indexer lists nothing is not
+// penalised: most indexers leave the attribute out.
+func indexerListsSubtitles(rel core.Release, wanted []string) bool {
+	for _, have := range rel.IndexerSubtitles {
+		for _, want := range wanted {
+			if releaseparse.LanguageMatch(have, want) != releaseparse.LanguageNoMatch {
+				return true
+			}
+		}
+	}
+	return false
+}

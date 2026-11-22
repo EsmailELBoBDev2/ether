@@ -132,6 +132,7 @@ Streaming formats (context Ether knows and Radarr doesn't):
 | Format | Matches | Default |
 | --- | --- | --- |
 | Viewer's language | Foreign title; release declares the viewer's audio language or MULTi | 20000 |
+| Viewer's subtitles | The indexer lists subtitles (Newznab `subs`) in the viewer's subtitle language | 150 |
 | Series year differs | Accepted although the series year differs | −10000 |
 | Video transcode | The device can't decode a legacy codec | −20 |
 | Audio plays directly | The device plays the audio format | 10 |

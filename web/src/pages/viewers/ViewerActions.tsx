@@ -37,7 +37,7 @@ import { useAsync } from "../../lib/hooks";
 import { MIN_LOCAL_PASSWORD } from "../me/SignInMethods";
 import { PLEX_ACCESS_URL, viewerLifecycle } from "./ViewerStatus";
 
-type Panel = "invite" | "password" | "tvcode" | "merge" | "remove" | null;
+type Panel = "invite" | "password" | "tvcode" | "copy" | "merge" | "remove" | null;
 
 /**
  * The viewer page's one Actions menu: Home, sign-in help, access and removal.
@@ -157,6 +157,12 @@ export function ViewerActions({
       onSelect: () => setPanel("tvcode"),
     },
     {
+      key: "copy",
+      label: t("Copy settings from another viewer"),
+      icon: Copy,
+      onSelect: () => setPanel("copy"),
+    },
+    {
       key: "signout",
       label: t("Sign out everywhere"),
       icon: LogOut,
@@ -230,6 +236,12 @@ export function ViewerActions({
         onClose={() => setPanel(null)}
       />
       <TvCodePanel viewer={viewer} open={panel === "tvcode"} onClose={() => setPanel(null)} />
+      <CopySettingsPanel
+        viewer={viewer}
+        open={panel === "copy"}
+        onClose={() => setPanel(null)}
+        onDone={onChange}
+      />
       <MergePanel viewer={viewer} open={panel === "merge"} onClose={() => setPanel(null)} />
       <RemovePanel viewer={viewer} open={panel === "remove"} onClose={() => setPanel(null)} />
     </>
@@ -550,6 +562,126 @@ export function TvCodeForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Uses another viewer as a template: their limits, libraries, parental
+ * controls, audio and subtitle choices and Live TV access are written onto
+ * this viewer. Identity, sign-in methods, history and taste are not touched.
+ */
+function CopySettingsPanel({
+  viewer,
+  open,
+  onClose,
+  onDone,
+}: {
+  viewer: Viewer;
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const viewers = useAsync(() => (open ? api.viewers() : Promise.resolve([])), [open]);
+  const [from, setFrom] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const name = viewerName(viewer);
+  const choices = (viewers.data ?? []).filter((v) => v.id !== viewer.id);
+  const source = choices.find((v) => v.id === from);
+  async function submit() {
+    if (!source) return;
+    const ok = await confirmDialog({
+      title: t("Copy {source}'s settings to {name}?", { source: viewerName(source), name }),
+      message: t(
+        "{name}'s stream limit, rating limit, libraries, parental controls, audio and subtitle choices and Live TV access are replaced with {source}'s.",
+        { name, source: viewerName(source) },
+      ),
+      confirmLabel: t("Copy settings"),
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError("");
+    try {
+      const users = await api.users();
+      const template = users.find((u) => u.id === source.id);
+      if (!template) throw new Error(t("That viewer no longer exists."));
+      await api.updateUser(viewer.id, {
+        streamLimit: template.streamLimit,
+        maxContentRating: template.maxContentRating,
+        allowedLibraries: template.allowedLibraries ?? [],
+      });
+      for (const path of ["/safety/policies", "/stream-preferences", "/livetv/policies"]) {
+        const value = await apiFetch<unknown>(`${path}/${source.id}`);
+        await apiFetch(`${path}/${viewer.id}`, { method: "PUT", body: JSON.stringify(value) });
+      }
+      toast.success(t("Settings copied"), {
+        description: t("{name} now has {source}'s settings.", {
+          name,
+          source: viewerName(source),
+        }),
+      });
+      onDone();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Drawer open={open} onClose={onClose} title={t("Copy settings from another viewer")}>
+      <div className="space-y-4">
+        <p className="text-sm text-fg-muted">
+          {t(
+            "Pick a viewer to use as the template. Their stream limit, rating limit, allowed libraries, parental controls, audio and subtitle choices and Live TV access are copied to {name}. Sign-in, watch history and taste stay as they are.",
+            { name },
+          )}
+        </p>
+        <div role="radiogroup" aria-label={t("Copy from")}>
+          {viewers.error ? (
+            <p role="alert" className="text-sm text-danger">
+              {errorMessage(viewers.error)}
+            </p>
+          ) : !viewers.data ? (
+            <p className="text-sm text-fg-muted">{t("Loading viewers")}</p>
+          ) : choices.length === 0 ? (
+            <p className="text-sm text-fg-muted">{t("There is no other viewer to copy from.")}</p>
+          ) : (
+            <ul className="divide-y divide-border rounded-xl border border-border">
+              {choices.map((v) => (
+                <li key={v.id}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={from === v.id}
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-bg-subtle ${
+                      from === v.id ? "bg-bg-subtle" : ""
+                    }`}
+                    onClick={() => setFrom(v.id)}
+                  >
+                    <span className="font-medium text-fg">{viewerName(v)}</span>
+                    <span className="text-xs text-fg-muted">{v.username}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {error ? (
+          <p role="alert" className="text-sm text-danger">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            {t("Cancel")}
+          </Button>
+          <Button type="button" disabled={busy || !source} onClick={() => void submit()}>
+            {t("Copy settings")}
+          </Button>
+        </div>
+      </div>
+    </Drawer>
   );
 }
 

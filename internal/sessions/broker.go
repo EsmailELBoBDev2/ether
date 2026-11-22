@@ -165,6 +165,7 @@ type brokerSession struct {
 	multiviewGroup        string
 	multiviewTile         int
 	baseMaxHeight         int
+	knownVideoHeight      int
 	sequence              uint64
 	historyEpoch          int64
 	historySequence       int64
@@ -223,6 +224,7 @@ type Broker struct {
 	plans               map[string]brokerPlan
 	sessions            map[string]*brokerSession
 	multiviewGroups     map[string]*multiviewGroup
+	nonGroupEpoch       map[string]uint64
 	adapterActivities   map[string]*PlaybackActivity
 	adapterActivityNext int
 	retired             map[string]retiredSession
@@ -925,16 +927,22 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	if ok && (p.opening || p.request.Viewer.ID != v.ID || p.request.Protocol != req.Protocol || req.Device.ID == "" || p.request.Device.ID != req.Device.ID) {
 		ok = false
 	}
+	var openEpoch uint64
 	if ok {
 		p.opening = true
 		b.plans[req.PlanID] = p
+		openEpoch = b.nonGroupEpoch[ownerGateKey(v.ID, p.request.Caps.ClientID)]
 	}
 	b.mu.Unlock()
 	if !ok {
 		return frontend.Session{}, core.ErrUnauthorized
 	}
+	gateKey := ownerGateKey(v.ID, p.request.Caps.ClientID)
+	if p.live && p.request.Multiview != nil && p.request.Multiview.GroupID != "" {
+		gateKey = tileGateKey(v.ID, p.request.Caps.ClientID, p.request.Multiview.GroupID, p.request.Multiview.Tile)
+	}
 	gateCtx, cancelGate := context.WithTimeout(ctx, 10*time.Second)
-	unlock, err := b.gates.Acquire(gateCtx, fmt.Sprintf("broker/owner/%d/%s", v.ID, p.request.Caps.ClientID))
+	unlock, err := b.gates.Acquire(gateCtx, gateKey)
 	cancelGate()
 	if err != nil {
 		// Keep the scoped reference for the bounded sweeper; it must acquire
@@ -987,7 +995,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 		}
 	}
 	if p.live {
-		return b.openLive(ctx, req, p, v)
+		return b.openLive(ctx, req, p, v, openEpoch)
 	}
 	var title *core.Title
 	if p.request.Item.IsPluginKey() && b.deps.KindSource != nil {
@@ -1128,6 +1136,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	b.owners.BindFor("broker", v.ID, s.clientID, session.Item, s.playbackID, ps.ID, true, b.deps.Now())
 	superseded := b.collectSupersededLocked(s)
 	b.sessions[id] = s
+	b.bumpNonGroupEpochLocked(v.ID, s.clientID)
 	b.transferPlanSourceLocked(ps.ID)
 	transferred = true
 	b.mu.Unlock()
@@ -1831,6 +1840,7 @@ func (b *Broker) Close(ctx context.Context) {
 	firstClose := !b.closed
 	b.closed = true
 	b.multiviewGroups = nil
+	b.nonGroupEpoch = nil
 	for _, s := range b.previews {
 		s.cancel()
 	}

@@ -667,6 +667,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var envelope struct {
 		IdempotencyKey *string         `json:"idempotencyKey"`
+		Kind           string          `json:"kind"`
 		Device         json.RawMessage `json:"device"`
 		Client         struct {
 			Device device `json:"device"`
@@ -685,7 +686,8 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
 		return
 	}
-	if (optionalMultiviewIdem && envelope.IdempotencyKey == nil) || (isLivePreferencesWrite && (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "")) {
+	optionalReplanIdem := r.Method == http.MethodPost && r.Pattern == "POST /vela/v0/sessions/{id}/commands" && envelope.Kind == "replan"
+	if ((optionalMultiviewIdem || optionalReplanIdem) && envelope.IdempotencyKey == nil) || (isLivePreferencesWrite && (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "")) {
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")

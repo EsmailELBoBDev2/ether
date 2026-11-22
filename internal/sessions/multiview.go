@@ -240,7 +240,10 @@ func multiviewTileMaxHeight(deviceMaxHeight, tileCount, declaredTileHeight int, 
 
 // replanLive re-tunes an active live session (such as upgrading a focused
 // multiview tile) with a revised MaxHeight cap while preserving the broker
-// session identity and sibling multiview tiles. Caller holds the owner gate.
+// session identity and sibling multiview tiles. The old output continues
+// playing until the replacement is ready, and if the source cannot go higher
+// the existing output and URL are kept unchanged. Caller holds the tile or
+// owner gate.
 func (b *Broker) replanLive(ctx context.Context, viewer *core.Viewer, snap *brokerSession, requestedMaxHeight int) (string, error) {
 	if b.deps.Live == nil || snap == nil || !snap.live || snap.directLive != nil || snap.public.Channel == "" {
 		return "", core.ErrNotAvailable
@@ -259,18 +262,20 @@ func (b *Broker) replanLive(ctx context.Context, viewer *core.Viewer, snap *brok
 			nextHeight = snap.baseMaxHeight
 		}
 	}
-	if nextHeight == snap.caps.MaxHeight {
+	oldPath := "/sessions/media/" + snap.public.ID + "/" + snap.grant + "/live/index.m3u8"
+	upgrading := requestedMaxHeight == 0 || (snap.caps.MaxHeight > 0 && (nextHeight == 0 || nextHeight > snap.caps.MaxHeight))
+	if nextHeight == snap.caps.MaxHeight || (upgrading && snap.knownVideoHeight > 0 && snap.caps.MaxHeight > 0 && snap.knownVideoHeight < snap.caps.MaxHeight) {
 		b.mu.Lock()
 		b.touchMultiviewLocked(snap.multiviewGroup, b.deps.Now())
 		b.mu.Unlock()
-		return "/sessions/media/" + snap.public.ID + "/" + snap.grant + "/live/index.m3u8", nil
+		return oldPath, nil
 	}
 
 	nextCaps := snap.caps
 	nextCaps.MaxHeight = nextHeight
 	nextCaps.ExplicitMaxHeight = nextHeight > 0
 
-	liveCtx := core.WithLiveApp(ctx, string(snap.public.Protocol))
+	liveCtx := core.WithLiveHandover(core.WithLiveApp(ctx, string(snap.public.Protocol)))
 	if err := b.deps.Live.Allowed(liveCtx, viewer, snap.public.Channel); err != nil {
 		return "", err
 	}
@@ -286,7 +291,20 @@ func (b *Broker) replanLive(ctx context.Context, viewer *core.Viewer, snap *brok
 		return "", capacityError(err)
 	}
 
-	liveMedia := normalizeLiveMedia(tunedMedia)
+	newHeight := liveVideoHeight(tunedMedia)
+	if snap.knownVideoHeight > 0 && newHeight > 0 {
+		noUpgrade := upgrading && newHeight <= snap.knownVideoHeight
+		noDowngrade := !upgrading && nextHeight > 0 && (snap.caps.MaxHeight == 0 || nextHeight < snap.caps.MaxHeight) && newHeight >= snap.knownVideoHeight
+		if noUpgrade || noDowngrade {
+			_ = b.deps.Live.Stop(liveCtx, viewer, newLiveID)
+			b.mu.Lock()
+			b.touchMultiviewLocked(snap.multiviewGroup, b.deps.Now())
+			b.mu.Unlock()
+			return oldPath, nil
+		}
+	}
+
+	liveMedia := normalizeLiveMedia(tunedMedia, livePlanContainer(nextCaps))
 	newGrant := rand.Text()
 	newMediaPath := "/sessions/media/" + snap.public.ID + "/" + newGrant + "/live/index.m3u8"
 	now := b.deps.Now()
@@ -303,6 +321,7 @@ func (b *Broker) replanLive(ctx context.Context, viewer *core.Viewer, snap *brok
 	live.grant = newGrant
 	live.caps = nextCaps
 	live.opts.MaxHeight = nextHeight
+	live.knownVideoHeight = newHeight
 	live.public.MediaPath = newMediaPath
 	live.public.Media = &liveMedia
 	if live.public.Multiview != nil {

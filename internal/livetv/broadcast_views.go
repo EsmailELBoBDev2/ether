@@ -173,6 +173,26 @@ func (s *Service) broadcastWindow(ctx context.Context, ss *session, r *http.Requ
 	}
 	return index, segments, nil
 }
+
+// broadcastUsesFMP4 reports whether a client requests fMP4 HLS segments and
+// does not declare MPEG-TS support. Continuous broadcast encoders produce both
+// TS and fMP4 from the same encode, so both viewers share one encoder.
+func broadcastUsesFMP4(caps core.ClientCaps) bool {
+	if len(caps.HLSContainers) == 0 {
+		return false
+	}
+	wantsFMP4 := false
+	for _, c := range caps.HLSContainers {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "ts", "mpegts":
+			return false
+		case "fmp4", "mp4", "m4s", "m4a":
+			wantsFMP4 = true
+		}
+	}
+	return wantsFMP4
+}
+
 func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request, ss *session) {
 	index, segments, err := s.broadcastWindow(r.Context(), ss, r)
 	if err != nil {
@@ -183,7 +203,8 @@ func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	ss.mu.Lock()
-	lease, vela := ss.broadcast, ss.caps.Protocol == "vela"
+	lease, caps := ss.broadcast, ss.caps
+	vela := caps.Protocol == "vela"
 	ss.mu.Unlock()
 	if vela {
 		window, err := broadcastLiveWindow(r.Context(), lease, index, segments)
@@ -201,13 +222,27 @@ func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request,
 	for _, seg := range segments {
 		target = max(target, int(math.Ceil(seg.Duration.Seconds())))
 	}
+	fmp4 := broadcastUsesFMP4(caps)
+	version := 3
+	ext := "ts"
+	if fmp4 {
+		version = 7
+		ext = "m4s"
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:%d\n", target, segments[0].Seq)
+	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:%d\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:%d\n", version, target, segments[0].Seq)
 	fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=NO\n", s.latencyPolicy().TargetLatencySeconds)
-	for _, seg := range segments {
-		uri := fmt.Sprintf("relay/%d.ts", seg.Seq)
+	if fmp4 {
+		initURI := "resource/" + transcode.InitSegmentName
 		if !strings.Contains(r.URL.Path, "/livetv/sessions/") {
-			uri = fmt.Sprintf("/livetv/sessions/%s/0/relay/%d.ts", ss.info.ID, seg.Seq)
+			initURI = fmt.Sprintf("/livetv/sessions/%s/0/resource/%s", ss.info.ID, transcode.InitSegmentName)
+		}
+		fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", withAuth(initURI, ss.streamGrant))
+	}
+	for _, seg := range segments {
+		uri := fmt.Sprintf("relay/%d.%s", seg.Seq, ext)
+		if !strings.Contains(r.URL.Path, "/livetv/sessions/") {
+			uri = fmt.Sprintf("/livetv/sessions/%s/0/relay/%d.%s", ss.info.ID, seg.Seq, ext)
 		}
 		uri = withAuth(uri, ss.streamGrant)
 		precision := 6
@@ -221,6 +256,35 @@ func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request,
 	if r.Method != http.MethodHead {
 		fmt.Fprint(w, b.String())
 	}
+}
+func (s *Service) serveBroadcastInit(w http.ResponseWriter, r *http.Request, ss *session) {
+	index, err := s.broadcastSegments(r.Context(), ss)
+	if err != nil {
+		writeStreamError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	index.ServeInit(w, r)
+}
+func (s *Service) serveBroadcastFMP4(w http.ResponseWriter, r *http.Request, ss *session, seq int64) {
+	index, err := s.broadcastSegments(r.Context(), ss)
+	if err != nil {
+		writeStreamError(w, err)
+		return
+	}
+	segments := index.Since(seq-1, 1)
+	if len(segments) == 0 || segments[0].Seq != seq {
+		writeStreamError(w, core.ErrNotFound)
+		return
+	}
+	if !s.broadcastSegmentAllowed(r.Context(), ss, segments[0]) {
+		writeStreamError(w, core.ErrUnauthorized)
+		return
+	}
+	s.touchMedia(ss)
+	observed := s.observeMedia(w, ss)
+	defer observed.done()
+	index.ServeFMP4(observed, r, seq)
 }
 func (s *Service) serveBroadcastTS(w http.ResponseWriter, r *http.Request, ss *session, seq int64) {
 	index, err := s.broadcastSegments(r.Context(), ss)

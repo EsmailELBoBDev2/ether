@@ -61,7 +61,32 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 			result.Client.HDRFormats = append(result.Client.HDRFormats, format)
 		}
 	}
+	if (c.HLS || c.MSE) && !velaSupportsTS(c) {
+		result.Client.HLSContainers = []string{"fmp4"}
+	}
 	return result, err
+}
+
+// velaSupportsTS reports whether a Vela client can play MPEG-TS HLS segments.
+// Clients that explicitly declare TS or run native Apple AVPlayer HLS play TS;
+// browsers and MSE clients declaring only MP4/WebM require fMP4 HLS segments.
+func velaSupportsTS(c client) bool {
+	for _, container := range c.Containers {
+		switch strings.ToLower(strings.TrimSpace(container)) {
+		case "ts", "mpegts":
+			return true
+		}
+	}
+	if c.HLS {
+		switch strings.ToLower(strings.TrimSpace(c.Device.Platform)) {
+		case "tvos", "ios", "ipados", "macos", "visionos", "appletv":
+			return true
+		}
+		if len(c.Containers) == 0 && !c.MSE {
+			return true
+		}
+	}
+	return false
 }
 
 // velaAudioContainers lists the audio-only file containers implied by a Vela

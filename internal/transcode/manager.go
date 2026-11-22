@@ -685,18 +685,79 @@ func randomHex(n int) string {
 
 // encodingLocked counts the sessions other than except that are running an
 // encoder: transcodes, and copy sessions while their fast-start ramp, a
-// governor clamp or a lower rung is being encoded. Caller holds m.mu.
+// governor clamp or a lower rung is being encoded. All encoders sharing a
+// non-empty multiviewGroup share one slot. Caller holds m.mu.
 func (m *Manager) encodingLocked(except string) int {
-	n := m.downloadEncodes
+	n := 0
+	var groups map[string]struct{}
+	addGroup := func(g string) {
+		if groups == nil {
+			groups = make(map[string]struct{})
+		}
+		if _, seen := groups[g]; !seen {
+			groups[g] = struct{}{}
+			n++
+		}
+	}
+	countedHolders := 0
+	for _, h := range m.slotHolders {
+		if h.released || h.priority == SlotLivePrep {
+			continue
+		}
+		countedHolders++
+		if h.multiviewGroup != "" {
+			addGroup(h.multiviewGroup)
+			continue
+		}
+		n++
+	}
+	if m.downloadEncodes > countedHolders {
+		n += m.downloadEncodes - countedHolders
+	}
 	for life := range m.encoders {
 		if current := m.sessions[except]; except != "" && current != nil && current.encoder == life {
 			continue // planning a replacement; admission still requires old Close
 		}
 		if life.encoding.Load() || life.runs.Load() > 0 {
+			if life.multiviewGroup != "" {
+				addGroup(life.multiviewGroup)
+				continue
+			}
 			n++
 		}
 	}
 	return n
+}
+
+func (m *Manager) groupEncodingCountLocked(group string) int {
+	if group == "" {
+		return 0
+	}
+	n := 0
+	for _, h := range m.slotHolders {
+		if !h.released && h.priority != SlotLivePrep && h.multiviewGroup == group {
+			n++
+		}
+	}
+	for life := range m.encoders {
+		if life.multiviewGroup == group && (life.encoding.Load() || life.runs.Load() > 0) {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *Manager) transcodeFullLocked(group, except string) bool {
+	if group != "" {
+		inGroup := m.groupEncodingCountLocked(group)
+		if inGroup >= maxMultiviewGroupEncoders {
+			return true
+		}
+		if inGroup > 0 {
+			return false
+		}
+	}
+	return m.cfg.MaxTranscodes > 0 && m.encodingLocked(except) >= m.cfg.MaxTranscodes
 }
 
 // StartHLS implements core.Transcoder. A replacement cannot begin until the
@@ -844,7 +905,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		// on that same clock; never change the timeline on a VSR fallback.
 		adapt.FastStart = false
 	}
-	atCap := m.cfg.MaxTranscodes > 0 && m.encodingLocked(req.SessionID) >= m.cfg.MaxTranscodes
+	atCap := m.transcodeFullLocked(req.MultiviewGroup, req.SessionID)
 	m.mu.Unlock()
 	id := req.SessionID
 	if id == "" {
@@ -1175,15 +1236,16 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		m.mu.Unlock()
 		return nil, ErrVideoTranscodingDisabled
 	}
-	if d.EncodesVideo(req.Info) && m.cfg.MaxTranscodes > 0 {
-		if m.encodingLocked("") >= m.cfg.MaxTranscodes {
-			m.preemptBackgroundLocked()
+	if d.EncodesVideo(req.Info) {
+		for m.transcodeFullLocked(req.MultiviewGroup, "") && m.preemptBackgroundLocked() {
 		}
-		if n := m.encodingLocked(""); n >= m.cfg.MaxTranscodes {
+		if m.transcodeFullLocked(req.MultiviewGroup, "") {
+			n := m.encodingLocked("")
 			m.mu.Unlock()
 			return nil, fmt.Errorf("%w (%d running)", ErrTooManyTranscodes, n)
 		}
 	}
+	life.multiviewGroup = req.MultiviewGroup
 	life.encoding.Store(d.EncodesVideo(req.Info))
 	m.mu.Unlock()
 

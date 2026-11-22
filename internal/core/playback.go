@@ -58,6 +58,9 @@ type HLSRequest struct {
 	// only for DASH representation URL rendering. Empty retains SessionID. It
 	// never changes encoder registry identity, source scope or retirement ownership.
 	ManifestSessionID string
+	// MultiviewGroup scopes live tile transcode accounting so all tiles in one
+	// multiview group share a single transcode slot against MaxTranscodes.
+	MultiviewGroup string `json:",omitempty"`
 
 	// SlateText is trusted server-generated copy for a looping silent card.
 	// It is never decoded from client requests. Info.Duration bounds the slot.

@@ -352,41 +352,94 @@ func (b *broadcast) close() {
 	b.startMu.Unlock()
 	b.wg.Wait()
 }
+func (b *broadcast) dropIdleRenditions() bool {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return false
+	}
+	var idle []*broadcastRendition
+	for id, r := range b.renditions {
+		if r.viewers <= 0 {
+			delete(b.renditions, id)
+			r.cancel()
+			idle = append(idle, r)
+		}
+	}
+	b.mu.Unlock()
+	for _, r := range idle {
+		_ = r.encoder.Close()
+	}
+	return len(idle) > 0
+}
+
 func (b *broadcast) addRendition(ctx context.Context, id string, decision core.Decision, caps ...core.ClientCaps) (transcode.SegmentIndex, error) {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
+	var clientCaps core.ClientCaps
+	if len(caps) > 0 {
+		clientCaps = caps[0]
+	}
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
 		return nil, core.ErrNotFound
 	}
 	if r := b.renditions[id]; r != nil {
+		wasIdle := r.viewers <= 0
 		r.viewers++
 		b.viewers++
 		b.lastViewer = time.Now()
+		enc := r.encoder
 		b.mu.Unlock()
-		return r.encoder.Segments(), nil
+		if wasIdle {
+			if sg, ok := enc.(interface{ SetSlotGroup(string) }); ok {
+				sg.SetSlotGroup(clientCaps.MultiviewGroup)
+			}
+		}
+		return enc.Segments(), nil
 	}
-	if len(b.renditions) >= 2 {
-		b.mu.Unlock()
-		return nil, fmt.Errorf("channel rendition limit reached")
+	var idle []*broadcastRendition
+	for rid, r := range b.renditions {
+		if r.viewers <= 0 {
+			delete(b.renditions, rid)
+			r.cancel()
+			idle = append(idle, r)
+		}
 	}
 	b.mu.Unlock()
-	var clientCaps core.ClientCaps
-	if len(caps) > 0 {
-		clientCaps = caps[0]
+	for _, r := range idle {
+		_ = r.encoder.Close()
 	}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, core.ErrNotFound
+	}
+	if len(b.renditions) >= 3 {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("channel rendition limit reached: %w", transcode.ErrTooManyTranscodes)
+	}
+	b.mu.Unlock()
 	lifetime, cancel := context.WithCancel(b.ctx)
 	stop := context.AfterFunc(ctx, cancel)
 	encoder, err := b.runner.StartEncoder(lifetime, transcode.EncoderRequest{SessionID: id, Source: b.format, Decision: decision, ClientCaps: clientCaps, SegmentDuration: b.segment, DVRWindow: b.dvr, LiveSource: b.burstNoWait})
 	stop()
 	if err != nil {
 		cancel()
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return nil, err
 	}
 	if ctx.Err() != nil || b.ctx.Err() != nil {
 		cancel()
 		encoder.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, context.Canceled
 	}
 	r := &broadcastRendition{originDone: make(chan struct{}), height: decision.MaxHeight, id: id, encoder: encoder, queue: newBroadcastFrameQueue((b.format.FPSNum + b.format.FPSDen - 1) / b.format.FPSDen), cancel: cancel, viewers: 1}

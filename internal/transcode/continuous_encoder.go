@@ -38,6 +38,11 @@ type continuousEncoder struct {
 	stream        *continuousFanout
 	store         *continuousStore
 	m             *Manager
+	slot          *transcodeSlot
+}
+
+func (e *continuousEncoder) SetSlotGroup(multiviewGroup string) {
+	e.m.setSlotGroup(e.slot, multiviewGroup)
 }
 
 func (e *continuousEncoder) setChild(c *continuousChild) {
@@ -135,7 +140,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 		return nil, errors.New("transcode: continuous output requires AAC")
 	}
 	startSchedulerWatch(m.log)
-	ctx, release, e := m.AcquireTranscodeSlot(ctx, SlotViewer)
+	ctx, slot, release, e := m.acquirePrioritySlotForGroup(ctx, SlotViewer, false, r.ClientCaps.MultiviewGroup)
 	if e != nil {
 		return nil, e
 	}
@@ -167,6 +172,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 		writeMu:           make(chan struct{}, 1),
 		stream:            newContinuousFanout(),
 		m:                 m,
+		slot:              slot,
 	}
 	enc.index = newContinuousSegmentIndex(enc)
 	// Keep about 30 s of each container in memory: the live window clients

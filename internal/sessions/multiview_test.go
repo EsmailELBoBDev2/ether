@@ -520,3 +520,207 @@ func TestMultiviewClusterStoreAllowsFourActiveTiles(t *testing.T) {
 		t.Fatalf("cluster active rows after non-group play = %d (err=%v), want 1", activeRows, err)
 	}
 }
+
+type barrierMultiviewLive struct {
+	*multiviewFakeLive
+	onTune func(ctx context.Context, ch string, caps core.ClientCaps) (*core.MediaInfo, error)
+}
+
+func (l *barrierMultiviewLive) TuneMedia(ctx context.Context, v *core.Viewer, ch string, caps core.ClientCaps, cs string) (string, *core.MediaInfo, error) {
+	if l.onTune != nil {
+		override, err := l.onTune(ctx, ch, caps)
+		if err != nil {
+			return "", nil, err
+		}
+		if override != nil {
+			l.mu.Lock()
+			l.seq++
+			id := fmt.Sprintf("live-%d", l.seq)
+			l.active[id] = multiviewTuneRecord{id: id, channel: ch, caps: caps}
+			l.mu.Unlock()
+			return id, override, nil
+		}
+	}
+	return l.multiviewFakeLive.TuneMedia(ctx, v, ch, caps, cs)
+}
+
+func TestMultiviewParallelTileOpensDoNotSerializeOnDeviceGate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	entered := 0
+	allEntered := make(chan struct{})
+	live := &barrierMultiviewLive{
+		multiviewFakeLive: newMultiviewFakeLive(),
+		onTune: func(ctx context.Context, ch string, caps core.ClientCaps) (*core.MediaInfo, error) {
+			mu.Lock()
+			entered++
+			if entered == 4 {
+				close(allEntered)
+			}
+			mu.Unlock()
+			select {
+			case <-allEntered:
+				return nil, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+
+	b, _, _ := newMultiviewBroker(t, live, nil)
+	v := &core.Viewer{ID: 21}
+	dev := core.Device{ID: "web-parallel"}
+	access := frontend.SessionAccess{Viewer: v, Device: dev, Protocol: "vela"}
+	group, err := b.CreateMultiviewGroup(ctx, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errs := make(chan error, 4)
+	for tile := 0; tile < 4; tile++ {
+		go func(tile int) {
+			p, err := b.Plan(ctx, frontend.PlanRequest{
+				Viewer: v, Device: dev, Protocol: "vela", Channel: fmt.Sprintf("ch-%d", tile),
+				Multiview: &frontend.MultiviewTarget{GroupID: group.GroupID, Tile: tile, MaxHeight: 480},
+				Caps:      core.ClientCaps{MaxHeight: 1080, HLSContainers: []string{"fmp4"}},
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if p.HLSContainer != "fmp4" || p.Decision.Container != "fmp4" {
+				errs <- fmt.Errorf("tile %d plan container = %q/%q, want fmp4", tile, p.HLSContainer, p.Decision.Container)
+				return
+			}
+			_, err = b.Open(ctx, frontend.OpenRequest{Viewer: v, Device: dev, Protocol: "vela", PlanID: p.ID})
+			errs <- err
+		}(tile)
+	}
+	for i := 0; i < 4; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("parallel tile open failed: %v", err)
+		}
+	}
+	if live.activeCount() != 4 {
+		t.Fatalf("active live tiles = %d, want 4", live.activeCount())
+	}
+}
+
+func TestMultiviewHandoverAndInPlaceReplanContracts(t *testing.T) {
+	ctx := context.Background()
+	var live *barrierMultiviewLive
+	var b *Broker
+	live = &barrierMultiviewLive{multiviewFakeLive: newMultiviewFakeLive()}
+	b, _, _ = newMultiviewBroker(t, live, nil)
+
+	v := &core.Viewer{ID: 31}
+	dev := core.Device{ID: "web-upgrade"}
+	access := frontend.SessionAccess{Viewer: v, Device: dev, Protocol: "vela"}
+	group, err := b.CreateMultiviewGroup(ctx, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open tile 0 at 480p on a 1080p-capable channel.
+	openTile0 := func(maxH int) (frontend.Session, error) {
+		p, err := b.Plan(ctx, frontend.PlanRequest{
+			Viewer: v, Device: dev, Protocol: "vela", Channel: "ch-hd",
+			Multiview: &frontend.MultiviewTarget{GroupID: group.GroupID, Tile: 0, MaxHeight: maxH},
+			Caps:      core.ClientCaps{MaxHeight: 1080, HLSContainers: []string{"fmp4"}},
+		})
+		if err != nil {
+			return frontend.Session{}, err
+		}
+		return b.Open(ctx, frontend.OpenRequest{Viewer: v, Device: dev, Protocol: "vela", PlanID: p.ID})
+	}
+	sessA, err := openTile0(480)
+	if err != nil {
+		t.Fatalf("open sessA: %v", err)
+	}
+	if sessA.Media == nil || sessA.Media.Container != "mpegts" && sessA.Media.Container != "fmp4" {
+		t.Fatalf("unexpected media: %+v", sessA.Media)
+	}
+
+	// 1. Handover failure: old session A must stay active and playable.
+	sawHandoverOnFail := false
+	oldStillActiveDuringFail := false
+	live.onTune = func(tuneCtx context.Context, ch string, caps core.ClientCaps) (*core.MediaInfo, error) {
+		sawHandoverOnFail = core.LiveHandover(tuneCtx)
+		rec := httptest.NewRecorder()
+		b.ServeMedia(rec, httptest.NewRequest(http.MethodGet, sessA.MediaPath, nil))
+		oldStillActiveDuringFail = rec.Code == http.StatusOK && live.activeCount() == 1
+		return nil, core.ErrStreamLimit
+	}
+	if _, err := openTile0(1080); !errors.Is(err, core.ErrStreamLimit) {
+		t.Fatalf("expected failed handover ErrStreamLimit, got %v", err)
+	}
+	if !sawHandoverOnFail || !oldStillActiveDuringFail {
+		t.Fatalf("handover failure invariants broken: handover=%v oldActive=%v", sawHandoverOnFail, oldStillActiveDuringFail)
+	}
+	rec := httptest.NewRecorder()
+	b.ServeMedia(rec, httptest.NewRequest(http.MethodGet, sessA.MediaPath, nil))
+	if rec.Code != http.StatusOK || live.activeCount() != 1 {
+		t.Fatalf("sessA died after failed handover: status=%d active=%d", rec.Code, live.activeCount())
+	}
+
+	// 2. Handover success: old session A stays active WHILE B is tuning, then ends ONLY AFTER B commits.
+	oldActiveDuringB := false
+	live.onTune = func(tuneCtx context.Context, ch string, caps core.ClientCaps) (*core.MediaInfo, error) {
+		if !core.LiveHandover(tuneCtx) {
+			return nil, errors.New("missing LiveHandover on handover tune")
+		}
+		rec := httptest.NewRecorder()
+		b.ServeMedia(rec, httptest.NewRequest(http.MethodGet, sessA.MediaPath, nil))
+		oldActiveDuringB = rec.Code == http.StatusOK
+		return nil, nil
+	}
+	sessB, err := openTile0(1080)
+	if err != nil {
+		t.Fatalf("handover open sessB: %v", err)
+	}
+	if !oldActiveDuringB {
+		t.Fatal("sessA was ended before sessB finished tuning")
+	}
+	if live.activeCount() != 1 {
+		t.Fatalf("expected only sessB active after handover commit, got %d", live.activeCount())
+	}
+	recAfterA := httptest.NewRecorder()
+	b.ServeMedia(recAfterA, httptest.NewRequest(http.MethodGet, sessA.MediaPath, nil))
+	if recAfterA.Code == http.StatusOK {
+		t.Fatal("sessA should be ended after sessB committed")
+	}
+	recAfterB := httptest.NewRecorder()
+	b.ServeMedia(recAfterB, httptest.NewRequest(http.MethodGet, sessB.MediaPath, nil))
+	if recAfterB.Code != http.StatusOK {
+		t.Fatalf("sessB not playable after handover: status=%d", recAfterB.Code)
+	}
+
+	// 3. In-place replan when source cannot go higher (480p source replanned 480 -> 1080):
+	// returns exact same URL and keeps old live output running without rotating.
+	live.onTune = func(tuneCtx context.Context, ch string, caps core.ClientCaps) (*core.MediaInfo, error) {
+		return &core.MediaInfo{
+			Container: "fmp4",
+			Streams: []core.StreamInfo{
+				{Index: 0, Type: "video", Codec: "h264", Width: 854, Height: 480},
+				{Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000, Default: true},
+			},
+		}, nil
+	}
+	sessSD, err := openTile0(480)
+	if err != nil {
+		t.Fatalf("open SD tile: %v", err)
+	}
+	h1080 := 1080
+	samePath, err := b.StartStream(ctx, access, sessSD.ID, frontend.StreamRequest{Format: frontend.StreamHLS, MaxHeight: &h1080})
+	if err != nil {
+		t.Fatalf("replan SD 480->1080: %v", err)
+	}
+	if samePath != sessSD.MediaPath {
+		t.Fatalf("SD source replan rotated URL when source cannot go higher: old=%q new=%q", sessSD.MediaPath, samePath)
+	}
+	if live.activeCount() != 1 {
+		t.Fatalf("redundant tune leaked after unchanged SD replan: active=%d, want 1", live.activeCount())
+	}
+}

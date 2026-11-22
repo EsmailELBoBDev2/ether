@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 // TuneInputFailure retains a safe per-input startup diagnosis.
@@ -69,6 +70,8 @@ func (e *TuneError) Error() string {
 		return "The connection to the Live TV provider failed."
 	case "stream_limit":
 		return "The viewer has reached their simultaneous stream limit."
+	case "playback_capacity":
+		return "The server has reached its concurrent transcode capacity."
 	case "forbidden":
 		return "The viewer is not allowed to play this live channel."
 	case "not_found":
@@ -105,6 +108,8 @@ func Diagnose(stage string, err error) *TuneError {
 		e.Code = "provider_paced"
 	case errors.Is(err, core.ErrStreamLimit):
 		e.Code, e.RetryAfter = "stream_limit", 5*time.Second
+	case errors.Is(err, transcode.ErrTooManyTranscodes):
+		e.Code, e.RetryAfter = "playback_capacity", 5*time.Second
 	case errors.Is(err, core.ErrUnauthorized):
 		e.Code = "forbidden"
 	case errors.Is(err, core.ErrNotFound):

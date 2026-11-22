@@ -12,6 +12,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/streamgrant"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 const (
@@ -233,6 +234,9 @@ func (s *Service) startOwnedHLS(request context.Context, ss *session, req core.H
 	stop := context.AfterFunc(request, cancel)
 	hls, err := s.transcoder().StartHLS(lifetime, req)
 	stop()
+	if errors.Is(err, context.Canceled) && request.Err() != nil {
+		err = request.Err()
+	}
 	if err == nil && request.Err() != nil {
 		err = request.Err()
 	}
@@ -401,31 +405,16 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	// A single client device watches one live channel at a time, except tiles
 	// belonging to the same multiview group. A non-group tune supersedes the
-	// entire group; re-tuning a tile replaces only that tile.
-	if caps.ClientID != "" {
-		var superseded []*session
-		s.mu.Lock()
-		for id, old := range s.sessions {
-			if shouldSupersedeLiveSession(old, u.ID, caps) {
-				delete(s.sessions, id)
-				superseded = append(superseded, old)
-			}
-		}
-		s.mu.Unlock()
-		for _, old := range superseded {
-			s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
-			old.close(s)
-		}
-		if len(superseded) > 0 {
-			s.notifySessionsChanged()
-		}
-	}
+	// entire group; re-tuning a tile is a handover that keeps the old tile
+	// running until the replacement is ready.
+	callerHandover := core.LiveHandover(ctx)
+	handoverIDs := s.supersedeBeforeTune(u.ID, caps, attemptID, callerHandover)
 	var playbackSessions []*core.PlaySession
 	if s.o.Playback != nil {
 		playbackSessions = s.o.Playback.Sessions()
 	}
 	s.mu.Lock()
-	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions)
+	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions, handoverIDs)
 	limit := u.StreamLimit
 	if s.o.StreamLimit != nil {
 		limit = s.o.StreamLimit(u)
@@ -586,6 +575,9 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		info.MediaInfo = ss.relayInfo
 	}
 	ss.mu.Unlock()
+	if !callerHandover {
+		s.finishHandover(handoverIDs, attemptID)
+	}
 	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
@@ -660,30 +652,14 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		}},
 	}
 
-	if caps.ClientID != "" {
-		var superseded []*session
-		s.mu.Lock()
-		for id, old := range s.sessions {
-			if shouldSupersedeLiveSession(old, u.ID, caps) {
-				delete(s.sessions, id)
-				superseded = append(superseded, old)
-			}
-		}
-		s.mu.Unlock()
-		for _, old := range superseded {
-			s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
-			old.close(s)
-		}
-		if len(superseded) > 0 {
-			s.notifySessionsChanged()
-		}
-	}
+	callerHandover := core.LiveHandover(ctx)
+	handoverIDs := s.supersedeBeforeTune(u.ID, caps, attemptID, callerHandover)
 	var playbackSessions []*core.PlaySession
 	if s.o.Playback != nil {
 		playbackSessions = s.o.Playback.Sessions()
 	}
 	s.mu.Lock()
-	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions)
+	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions, handoverIDs)
 	limit := u.StreamLimit
 	if s.o.StreamLimit != nil {
 		limit = s.o.StreamLimit(u)
@@ -762,6 +738,9 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		info.MediaInfo = ss.relayInfo
 	}
 	ss.mu.Unlock()
+	if !callerHandover {
+		s.finishHandover(handoverIDs, attemptID)
+	}
 	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
@@ -1055,7 +1034,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, sniffBudget,
 	}
 	c := ss.info.Channel
 	c.StreamURL = ss.inputURL
-	analyze := len(ss.caps.VideoCodecs) > 0 || len(ss.caps.AudioCodecs) > 0 || ss.caps.ProbeLiveWithoutCodecs || (ss.caps.MultiviewGroup != "" && ss.caps.MaxHeight > 0)
+	analyze := len(ss.caps.VideoCodecs) > 0 || len(ss.caps.AudioCodecs) > 0 || ss.caps.ProbeLiveWithoutCodecs || (ss.caps.MultiviewGroup != "" && ss.caps.MaxHeight > 0) || broadcastUsesFMP4(ss.caps)
 	probe := analyze || c.Transcode || ss.caps.ProbeLiveInput
 	// Codec analysis overlaps the playlist prefix read. The first tune of a
 	// channel still waits on the probe; a retune inside liveProbeTTL does not.
@@ -1101,9 +1080,11 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, sniffBudget,
 				}
 				if analyze {
 					// A playlist is a transport, not evidence that its codecs are
-					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too.
+					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too,
+					// and clients that only play fMP4 cannot consume MPEG-TS HLS.
 					dec := s.transcoder().Decide(*info, ss.caps, core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1})
-					if !dec.VideoCopy || !dec.AudioCopy || info.Video().Codec == "hevc" {
+					needsFMP4 := broadcastUsesFMP4(ss.caps) && !strings.EqualFold(info.Container, "mp4") && !strings.EqualFold(info.Container, "fmp4")
+					if !dec.VideoCopy || !dec.AudioCopy || info.Video().Codec == "hevc" || needsFMP4 {
 						startCtx, stopStart := armStartBudget()
 						defer stopStart()
 						return s.startIPTVRelay(startCtx, ss, *info)
@@ -1343,11 +1324,20 @@ func (s *Service) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id s
 	}
 	ss.mu.Lock()
 	shared := ss.broadcast != nil
+	fmp4 := broadcastUsesFMP4(ss.caps)
 	lease := ss.owned
 	ss.mu.Unlock()
 	if shared {
+		if n == transcode.InitSegment {
+			s.serveBroadcastInit(w, r, ss)
+			return
+		}
 		if n < 0 {
 			writeStreamError(w, core.ErrNotFound)
+			return
+		}
+		if fmp4 || strings.HasSuffix(strings.ToLower(r.URL.Path), ".m4s") {
+			s.serveBroadcastFMP4(w, r, ss, int64(n))
 			return
 		}
 		s.serveBroadcastTS(w, r, ss, int64(n))
@@ -1454,11 +1444,75 @@ func shouldSupersedeLiveSession(old *session, userID int64, caps core.ClientCaps
 	return old.caps.MultiviewTile == caps.MultiviewTile
 }
 
-func (s *Service) activeStreamCountLocked(userID int64, incomingGroup, clientID string, playbackSessions []*core.PlaySession) int {
+func isHandoverLiveSession(old *session, userID int64, caps core.ClientCaps, callerHandover bool) bool {
+	if old.info.UserID != userID || caps.ClientID == "" || old.caps.ClientID != caps.ClientID {
+		return false
+	}
+	if caps.MultiviewGroup != "" && old.caps.MultiviewGroup == caps.MultiviewGroup && old.caps.MultiviewTile == caps.MultiviewTile {
+		return true
+	}
+	return callerHandover && caps.MultiviewGroup == "" && old.caps.MultiviewGroup == ""
+}
+
+func (s *Service) supersedeBeforeTune(userID int64, caps core.ClientCaps, attemptID string, callerHandover bool) map[string]bool {
+	if caps.ClientID == "" {
+		return nil
+	}
+	var superseded []*session
+	var handoverIDs map[string]bool
+	s.mu.Lock()
+	for id, old := range s.sessions {
+		if !shouldSupersedeLiveSession(old, userID, caps) {
+			continue
+		}
+		if isHandoverLiveSession(old, userID, caps, callerHandover) {
+			if handoverIDs == nil {
+				handoverIDs = map[string]bool{}
+			}
+			handoverIDs[id] = true
+			continue
+		}
+		delete(s.sessions, id)
+		superseded = append(superseded, old)
+	}
+	s.mu.Unlock()
+	for _, old := range superseded {
+		s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
+		old.close(s)
+	}
+	if len(superseded) > 0 {
+		s.notifySessionsChanged()
+	}
+	return handoverIDs
+}
+
+func (s *Service) finishHandover(handoverIDs map[string]bool, attemptID string) {
+	if len(handoverIDs) == 0 {
+		return
+	}
+	var replaced []*session
+	s.mu.Lock()
+	for id := range handoverIDs {
+		if old, ok := s.sessions[id]; ok {
+			delete(s.sessions, id)
+			replaced = append(replaced, old)
+		}
+	}
+	s.mu.Unlock()
+	for _, old := range replaced {
+		s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
+		old.close(s)
+	}
+	if len(replaced) > 0 {
+		s.notifySessionsChanged()
+	}
+}
+
+func (s *Service) activeStreamCountLocked(userID int64, incomingGroup, clientID string, playbackSessions []*core.PlaySession, handoverIDs map[string]bool) int {
 	count := 0
 	mvGroups := map[string]bool{}
 	for _, ss := range s.sessions {
-		if ss.info.UserID != userID {
+		if ss.info.UserID != userID || handoverIDs[ss.info.ID] {
 			continue
 		}
 		if g := ss.caps.MultiviewGroup; g != "" {

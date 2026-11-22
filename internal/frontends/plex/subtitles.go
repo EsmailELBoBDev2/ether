@@ -472,8 +472,10 @@ func (s *Server) handleSubtitleSearch(w http.ResponseWriter, r *http.Request) {
 	hi, forced := searchLevel(q.Get("hearingImpaired")), searchLevel(q.Get("forced"))
 	var preferred, rest []model.Stream
 	userID := int64(0)
+	accountID := int64(0)
 	if pr.User != nil {
 		userID = pr.User.ID
+		accountID = s.plexAccountIDFor(ctx, pr.User)
 	}
 	for _, o := range offers {
 		if !keepOffer(hi, o.HearingImpaired) || !keepOffer(forced, o.Forced) {
@@ -502,7 +504,7 @@ func (s *Server) handleSubtitleSearch(w http.ResponseWriter, r *http.Request) {
 				model.A("providerTitle", o.Provider),
 				model.A("score", strconv.Itoa(o.Score)),
 				model.A("sourceKey", strconv.FormatInt(o.ID, 10)),
-				model.A("userID", userID),
+				model.A("userID", accountID),
 			},
 		}
 		st.SetSubtitleSearchOrder()
@@ -570,6 +572,7 @@ func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 	}))
 	w.Header().Set("X-Plex-Activity", activity)
 	w.WriteHeader(http.StatusOK)
+	accountID := s.plexAccountIDFor(ctx, pr.User)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -580,12 +583,12 @@ func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 		stop := context.AfterFunc(s.ctx, cancel)
 		defer stop()
 		defer cancel()
-		s.publishNotification(model.NotificationContainer{Type: "activity", Size: 1, ActivityNotification: []model.ActivityNotification{{Event: "started", UUID: activity, Activity: &model.Activity{UUID: activity, Type: "subtitle.download", Title: "Downloading subtitles", UserID: pr.User.ID}}}}, pr.User.ID)
+		s.publishNotification(model.NotificationContainer{Type: "activity", Size: 1, ActivityNotification: []model.ActivityNotification{{Event: "started", UUID: activity, Activity: &model.Activity{UUID: activity, Type: "subtitle.download", Title: "Downloading subtitles", UserID: accountID}}}}, pr.User.ID)
 		s.log.Info("subtitle pick downloading", "key", t.Key, "part", partID, "offer", providerID)
 		st, err := searcher.DownloadSubtitle(ctx, t, pr.User, providerID)
 		if err != nil {
 			s.log.Warn("subtitle download failed", "key", t.Key, "offer", providerID, "err", err)
-			s.finishSubtitleActivity(activity, pr.User.ID)
+			s.finishSubtitleActivity(activity, pr.User.ID, accountID)
 			return
 		}
 		s.selections.update(pr.User.ID, int64(t.Key), func(sel *selection) {
@@ -595,7 +598,7 @@ func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 		// hold the client behind another polling wait.
 		finishPick()
 		s.log.Info("subtitle pick ready", "key", t.Key, "part", partID, "offer", providerID)
-		s.finishSubtitleActivity(activity, pr.User.ID)
+		s.finishSubtitleActivity(activity, pr.User.ID, accountID)
 		if s.svc().trackPrefs != nil {
 			if err := s.svc().trackPrefs.Remember(ctx, pr.User.ID, t.Key, "subtitle", &st); err != nil {
 				s.log.Warn("save stream preference", "error", err)
@@ -616,7 +619,7 @@ var subtitleActivityDelay = time.Second
 // X-Plex-Activity arrives on the event connection (it polls only when no
 // event connection is open), then re-reads the item and lists the track
 // (#268). The download already finished, so there is no progress to report.
-func (s *Server) finishSubtitleActivity(uuid string, userID int64) {
+func (s *Server) finishSubtitleActivity(uuid string, userID, accountID int64) {
 	if s.Closed() {
 		return
 	}
@@ -641,7 +644,7 @@ func (s *Server) finishSubtitleActivity(uuid string, userID int64) {
 					Type:     "subtitle.download",
 					Title:    "Downloading subtitles",
 					Progress: 100,
-					UserID:   userID,
+					UserID:   accountID,
 				},
 			}},
 		}, userID)

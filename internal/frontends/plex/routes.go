@@ -125,6 +125,7 @@ func (s *Server) routes() chi.Router {
 		get("/devices", s.ownerOnly(s.handleDevices))
 		get("/devices/{id}", s.ownerOnly(s.handleDevice))
 		get("/accounts", s.ownerOnly(s.handleAccounts))
+		get("/accounts/{id}", s.ownerOnly(s.handleAccount))
 		get("/:/prefs", s.ownerOnly(s.handlePrefs))
 		r.Put("/:/prefs", s.ownerOnly(s.handlePrefsSet))
 		get("/system/agents", s.handleAgents)

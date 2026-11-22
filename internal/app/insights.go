@@ -46,7 +46,10 @@ func (a *App) buildInsights() {
 		if err != nil || u == nil {
 			return ""
 		}
-		return u.Username
+		if u.Username != "" {
+			return u.Username
+		}
+		return u.Title
 	}, Debrid: func() []stats.DebridSample {
 		if a.debrid == nil {
 			return nil

@@ -402,6 +402,26 @@ func (b boundAuth) Users(ctx context.Context) ([]core.User, error) {
 	return b.auth.Users(ctx)
 }
 
+func (b boundAuth) User(ctx context.Context, id int64) (*core.User, error) {
+	if b.auth == nil {
+		return nil, core.ErrNotFound
+	}
+	if src, ok := b.auth.(UserLookupSource); ok {
+		return src.User(ctx, id)
+	}
+	return nil, core.ErrNotFound
+}
+
+func (b boundAuth) KnownUsers(ctx context.Context) ([]core.User, error) {
+	if b.auth == nil {
+		return nil, nil
+	}
+	if src, ok := b.auth.(KnownUsersSource); ok {
+		return src.KnownUsers(ctx)
+	}
+	return b.auth.Users(ctx)
+}
+
 func (boundAuth) ViewerTimes(context.Context, string, int64) (ViewerTimes, error) {
 	return ViewerTimes{}, ErrIdentityUnavailable
 }

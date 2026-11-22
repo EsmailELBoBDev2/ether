@@ -570,7 +570,7 @@ func (s *Server) notifyTimeline(key frontend.RatingKey, t frontend.MediaType, ti
 // publishNotification delivers a notification to this node's subscribers
 // and, on a clustered node, to every other node's.
 func (s *Server) publishNotification(nc model.NotificationContainer, userID int64) {
-	s.recordActivities(nc)
+	s.recordActivities(nc, userID)
 	msg, ok := encodeNotification(nc)
 	if !ok {
 		return

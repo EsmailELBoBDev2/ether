@@ -82,6 +82,20 @@ func (s surfaceIdentity) Users(ctx context.Context) ([]core.User, error) {
 	return s.users.Users(ctx)
 }
 
+func (s surfaceIdentity) User(ctx context.Context, id int64) (*core.User, error) {
+	if src, ok := s.users.(frontend.UserLookupSource); ok {
+		return src.User(ctx, id)
+	}
+	return nil, core.ErrNotFound
+}
+
+func (s surfaceIdentity) KnownUsers(ctx context.Context) ([]core.User, error) {
+	if src, ok := s.users.(frontend.KnownUsersSource); ok {
+		return src.KnownUsers(ctx)
+	}
+	return s.Users(ctx)
+}
+
 func (s surfaceIdentity) ViewerTimes(ctx context.Context, credential string, target int64) (frontend.ViewerTimes, error) {
 	if s.times == nil || target <= 0 {
 		return frontend.ViewerTimes{}, core.ErrUnauthorized

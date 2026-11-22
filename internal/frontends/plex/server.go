@@ -23,7 +23,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
-	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
 // DefaultPMSVersion is reported when Identity.Version is empty. Clients gate
@@ -126,7 +125,7 @@ type Server struct {
 	homePtr       atomic.Pointer[homeCache]
 
 	activityMu       sync.Mutex
-	activities       map[string]model.Activity
+	activities       map[string]recordedActivity
 	emittedHubMu     sync.Mutex
 	emittedHubs      map[string]emittedHub
 	emittedHubBytes  int
@@ -255,7 +254,7 @@ func NewServer(d Deps) *Server {
 		db = rt.DB()
 	}
 	s := &Server{
-		activities:        map[string]model.Activity{},
+		activities:        map[string]recordedActivity{},
 		d:                 d,
 		host:              host,
 		runtime:           rt,

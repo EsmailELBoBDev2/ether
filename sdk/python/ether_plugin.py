@@ -989,7 +989,7 @@ class _MediaClient:
 
     def probe(
         self,
-        source: Dict[str, Any],
+        source: Union[PlayableSource, Dict[str, Any]],
         viewer_token: Optional[str] = None,
     ) -> MediaProbeResult:
         tok = (
@@ -3279,7 +3279,7 @@ class MockHostClient:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
 
-        def probe(self, source: Dict[str, Any]) -> MediaProbeResult:
+        def probe(self, source: Union[PlayableSource, Dict[str, Any]]) -> MediaProbeResult:
             if self._p.media_probe_handler is None:
                 raise HostError("media.probe is not configured in mock host", code="unavailable", status=503)
             return self._p.media_probe_handler(source)
@@ -3846,6 +3846,84 @@ class SourceQuery(TypedDict, total=False):
     nzbUrl: str
     candidate: SourceCandidate
     fileCount: int
+
+
+class TrackHint(TypedDict, total=False):
+    """Structured track hint inside a multi-track audio release or archive."""
+
+    disc: int
+    number: int
+    title: str
+
+
+class VolumeRef(TypedDict, total=False):
+    """One archive volume located by URL or blobcache reference."""
+
+    url: str
+    headers: Dict[str, str]
+    keepHeadersOnRedirect: List[str]
+    blobRef: str
+    size: int
+
+
+class ContainerRef(TypedDict, total=False):
+    """Archive member selection inside one or more ordered volumes."""
+
+    format: str
+    volumes: List[VolumeRef]
+    member: str
+    memberIndex: int
+    passwordSecret: str
+
+
+class ReleaseHint(TypedDict, total=False):
+    """Release handed to Ether's Usenet / debrid / torrent acquisition pipeline."""
+
+    fileIndex: int
+    nzbUrl: str
+    magnet: str
+    infoHash: str
+    torrentUrl: str
+    candidate: SourceCandidate
+    file: str
+    fileHint: str
+    track: TrackHint
+    passwordSecret: str
+    cachedOnly: bool
+    fileCount: int
+
+
+class PlayableSource(TypedDict, total=False):
+    """One candidate way to acquire bytes for a content-kind item.
+
+    Set ``tier`` to the same integer on interchangeable sources of equal
+    quality so Ether can apply its source routing (auto/usenet/debrid,
+    measured startup, and stall demotion) within that tier while preserving
+    the plugin's order across tiers. Omit ``tier`` to keep exact plugin order.
+    """
+
+    path: str
+    id: str
+    label: str
+    pattern: Literal["range", "download", "direct", "container", "release", "file"]
+    mime: str
+    tier: int
+    size: int
+    sizeApproximate: bool
+    durationSec: float
+    durationToleranceSec: float
+    url: str
+    headers: Dict[str, str]
+    keepHeadersOnRedirect: List[str]
+    blobRef: str
+    sha256: str
+    sha1: str
+    crc32: str
+    maxBytes: int
+    expiresAt: int
+    container: ContainerRef
+    release: ReleaseHint
+    parts: List[Dict[str, Any]]
 
 
 class CatalogProvider:

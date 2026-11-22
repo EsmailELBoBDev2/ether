@@ -460,7 +460,13 @@ type PlayableSource struct {
 	Label   string `json:"label,omitempty"`
 	Pattern string `json:"pattern"` // range|download|direct|container|release|file
 	MIME    string `json:"mime"`
-	Size    int64  `json:"size,omitempty"`
+	// Tier optionally marks interchangeable sources of the same quality tier.
+	// Sources sharing a non-nil Tier may be reordered by Ether's source routing
+	// (auto/usenet/debrid, measured startup, and stall demotion) and may
+	// overtake each other after the ranked open grace period. Distinct tiers
+	// keep the plugin's tier order; omitting Tier keeps exact plugin order.
+	Tier *int  `json:"tier,omitempty"`
+	Size int64 `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count.
 	SizeApproximate bool    `json:"sizeApproximate,omitempty"`

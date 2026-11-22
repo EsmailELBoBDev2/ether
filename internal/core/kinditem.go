@@ -787,7 +787,14 @@ type PlayableSource struct {
 	Label   string `json:"label,omitempty"`
 	Pattern string `json:"pattern"` // "range" | "download" | "direct" | "container" | "release" | "file"
 	MIME    string `json:"mime"`
-	Size    int64  `json:"size,omitempty"`
+	// Tier optionally marks interchangeable sources of the same quality tier.
+	// Sources sharing a non-nil Tier may be reordered by Ether's source routing
+	// (owner preference, measured startup, and stall demotion) and may overtake
+	// each other after the ranked open grace period. Sources in different tiers
+	// keep the plugin's tier order; when Tier is nil, the plugin's exact order
+	// is kept.
+	Tier *int  `json:"tier,omitempty"`
+	Size int64 `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count:
 	// kindstream applies a tolerance band instead of failing on exact byte

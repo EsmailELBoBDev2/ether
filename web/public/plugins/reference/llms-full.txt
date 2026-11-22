@@ -975,8 +975,31 @@ only when someone actually opens that slice, declare `browse.expand`:
 
 ## Resolving bytes
 
-`resolve` returns ordered `PlayableSource`s; Ether tries them in
-order. Patterns:
+`resolve` returns ordered `PlayableSource`s. Ether opens them with the
+same ranked sliding window it uses for movies and TV: two opens stay in
+flight in rank order, failing opens advance immediately, a ready
+equivalent backup may overtake a stalled lead after the 2 s grace
+period, two confirmed permanent failures widen the window to four for
+equivalent candidates, and sources that spend an indexer grab (`nzbUrl`,
+or `torrentUrl` without an `infoHash`/`magnet`) join a single healthy
+in-flight open only as a hedge after the learned health-hedge delay
+(default 1.5 s) so a healthy open normally costs one grab. Losing opens
+are cancelled and their readers closed before playback starts.
+
+When a resolver returns multiple interchangeable releases of the same
+quality (for example a Usenet release and a cached debrid release of the
+same 1080p encode or lossless album), tag them with the same optional
+integer `tier` (`*int` in Go). Within each contiguous tier, Ether
+reorders candidates using its source router — honoring the owner's
+routing setting (`auto`, `usenet`, `debrid`), measured protocol startup
+times (fed by both core and plugin release opens), known-cached debrid
+copies, Usenet backoff, and stall-backed delivery demotion — and lets
+candidates in the same tier overtake each other after the grace period
+or take widened slots. Sources in different tiers always keep the
+plugin's tier order (Ether never swaps a lower tier ahead of a higher
+tier), and omitting `tier` keeps the plugin's exact order.
+
+Patterns:
 
 - **file** — a hosted resolver path inside an owner-picked folder; requires
   `folders: read` and live containment checks when resolving and opening.
@@ -3079,6 +3102,7 @@ func libraryKeySlug(s string) string {
 | `label` | `string` | may be omitted (see validation for conditions) |  |
 | `pattern` | `string` | emitted (validation may require a value) | "range" \| "download" \| "direct" \| "container" \| "release" \| "file" |
 | `mime` | `string` | emitted (validation may require a value) |  |
+| `tier` | `*int` | may be omitted (see validation for conditions) | Tier optionally marks interchangeable sources of the same quality tier. Sources sharing a non-nil Tier may be reordered by Ether's source routing (owner preference, measured startup, and stall demotion) and may overtake each other after the ranked open grace period. Sources in different tiers keep the plugin's tier order; when Tier is nil, the plugin's exact order is kept. |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count: kindstream applies a tolerance band instead of failing on exact byte inequality, while exact sizes (false/omitted) remain strict. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
@@ -3108,7 +3132,14 @@ type PlayableSource struct {
 	Label   string `json:"label,omitempty"`
 	Pattern string `json:"pattern"` // "range" | "download" | "direct" | "container" | "release" | "file"
 	MIME    string `json:"mime"`
-	Size    int64  `json:"size,omitempty"`
+	// Tier optionally marks interchangeable sources of the same quality tier.
+	// Sources sharing a non-nil Tier may be reordered by Ether's source routing
+	// (owner preference, measured startup, and stall demotion) and may overtake
+	// each other after the ranked open grace period. Sources in different tiers
+	// keep the plugin's tier order; when Tier is nil, the plugin's exact order
+	// is kept.
+	Tier *int  `json:"tier,omitempty"`
+	Size int64 `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count:
 	// kindstream applies a tolerance band instead of failing on exact byte
@@ -37991,6 +38022,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "mime": {
           "type": "string"
         },
+        "tier": {
+          "type": "integer",
+          "description": "Optional quality-tier marker for interchangeable sources. Sources sharing the same tier may be reordered by Ether's source routing (owner auto/usenet/debrid preference, measured startup, and stall demotion) and may overtake each other after the ranked open grace period. Distinct tiers keep the plugin's tier order; omitting tier keeps the plugin's exact order."
+        },
         "path": {
           "type": "string"
         },
@@ -55131,6 +55166,7 @@ type KindMatchResponse struct {
 | `label` | `string` | may be omitted (see validation for conditions) |  |
 | `pattern` | `string` | emitted (validation may require a value) | range\|download\|direct\|container\|release\|file |
 | `mime` | `string` | emitted (validation may require a value) |  |
+| `tier` | `*int` | may be omitted (see validation for conditions) | Tier optionally marks interchangeable sources of the same quality tier. Sources sharing a non-nil Tier may be reordered by Ether's source routing (auto/usenet/debrid, measured startup, and stall demotion) and may overtake each other after the ranked open grace period. Distinct tiers keep the plugin's tier order; omitting Tier keeps exact plugin order. |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
@@ -55161,7 +55197,13 @@ type PlayableSource struct {
 	Label   string `json:"label,omitempty"`
 	Pattern string `json:"pattern"` // range|download|direct|container|release|file
 	MIME    string `json:"mime"`
-	Size    int64  `json:"size,omitempty"`
+	// Tier optionally marks interchangeable sources of the same quality tier.
+	// Sources sharing a non-nil Tier may be reordered by Ether's source routing
+	// (auto/usenet/debrid, measured startup, and stall demotion) and may
+	// overtake each other after the ranked open grace period. Distinct tiers
+	// keep the plugin's tier order; omitting Tier keeps exact plugin order.
+	Tier *int  `json:"tier,omitempty"`
+	Size int64 `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count.
 	SizeApproximate bool    `json:"sizeApproximate,omitempty"`
@@ -64570,7 +64612,7 @@ class _MediaClient:
 
     def probe(
         self,
-        source: Dict[str, Any],
+        source: Union[PlayableSource, Dict[str, Any]],
         viewer_token: Optional[str] = None,
     ) -> MediaProbeResult:
         tok = (
@@ -66860,7 +66902,7 @@ class MockHostClient:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
 
-        def probe(self, source: Dict[str, Any]) -> MediaProbeResult:
+        def probe(self, source: Union[PlayableSource, Dict[str, Any]]) -> MediaProbeResult:
             if self._p.media_probe_handler is None:
                 raise HostError("media.probe is not configured in mock host", code="unavailable", status=503)
             return self._p.media_probe_handler(source)
@@ -67427,6 +67469,84 @@ class SourceQuery(TypedDict, total=False):
     nzbUrl: str
     candidate: SourceCandidate
     fileCount: int
+
+
+class TrackHint(TypedDict, total=False):
+    """Structured track hint inside a multi-track audio release or archive."""
+
+    disc: int
+    number: int
+    title: str
+
+
+class VolumeRef(TypedDict, total=False):
+    """One archive volume located by URL or blobcache reference."""
+
+    url: str
+    headers: Dict[str, str]
+    keepHeadersOnRedirect: List[str]
+    blobRef: str
+    size: int
+
+
+class ContainerRef(TypedDict, total=False):
+    """Archive member selection inside one or more ordered volumes."""
+
+    format: str
+    volumes: List[VolumeRef]
+    member: str
+    memberIndex: int
+    passwordSecret: str
+
+
+class ReleaseHint(TypedDict, total=False):
+    """Release handed to Ether's Usenet / debrid / torrent acquisition pipeline."""
+
+    fileIndex: int
+    nzbUrl: str
+    magnet: str
+    infoHash: str
+    torrentUrl: str
+    candidate: SourceCandidate
+    file: str
+    fileHint: str
+    track: TrackHint
+    passwordSecret: str
+    cachedOnly: bool
+    fileCount: int
+
+
+class PlayableSource(TypedDict, total=False):
+    """One candidate way to acquire bytes for a content-kind item.
+
+    Set ``tier`` to the same integer on interchangeable sources of equal
+    quality so Ether can apply its source routing (auto/usenet/debrid,
+    measured startup, and stall demotion) within that tier while preserving
+    the plugin's order across tiers. Omit ``tier`` to keep exact plugin order.
+    """
+
+    path: str
+    id: str
+    label: str
+    pattern: Literal["range", "download", "direct", "container", "release", "file"]
+    mime: str
+    tier: int
+    size: int
+    sizeApproximate: bool
+    durationSec: float
+    durationToleranceSec: float
+    url: str
+    headers: Dict[str, str]
+    keepHeadersOnRedirect: List[str]
+    blobRef: str
+    sha256: str
+    sha1: str
+    crc32: str
+    maxBytes: int
+    expiresAt: int
+    container: ContainerRef
+    release: ReleaseHint
+    parts: List[Dict[str, Any]]
 
 
 class CatalogProvider:
@@ -74032,6 +74152,14 @@ export interface PlayableSource {
   label?: string;
   pattern: "range" | "download" | "direct" | "container" | "release" | "file";
   mime: string;
+  /**
+   * Optional quality-tier marker for interchangeable sources. Sources sharing
+   * the same `tier` may be reordered by Ether's source routing (auto/usenet/
+   * debrid, measured startup, and stall demotion) and may overtake each other
+   * after the ranked open grace period. Distinct tiers keep the plugin's tier
+   * order; omitting `tier` keeps the plugin's exact order.
+   */
+  tier?: number;
   size?: number;
   /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
   sizeApproximate?: boolean;

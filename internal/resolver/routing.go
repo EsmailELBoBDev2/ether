@@ -183,6 +183,13 @@ func sourceName(protocol string) string {
 	return "usenet"
 }
 
+// ObserveSourceStartup records one completed source open duration into the
+// resolver's shared protocol startup statistics (used for auto routing and
+// grab-hedge timing).
+func (s *Service) ObserveSourceStartup(rel core.Release, took time.Duration) {
+	s.noteStartup(rel, took)
+}
+
 func (s *Service) noteStartup(rel core.Release, d time.Duration) {
 	if d <= 0 {
 		return
@@ -222,6 +229,10 @@ func (s *Service) knownCached(rel core.Release) bool {
 	sig := s.route.signals
 	s.route.mu.Unlock()
 	return sig != nil && sig.KnownCached(rel.InfoHash)
+}
+
+func (s *Service) candidateKnownCached(c candidate) bool {
+	return c.knownCachedHint || s.knownCached(c.rel)
 }
 
 // routeSources reorders ranked candidates (best first) by source, as
@@ -299,7 +310,7 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 		// ready copy before preparation so unrelated descriptor discovery
 		// does not delay its validation. Keep unknown copies as fallbacks.
 		for _, i := range indexes {
-			if !s.knownCached(cands[i].rel) || !equivalentHedge(lead, cands[i], margin) {
+			if !s.candidateKnownCached(cands[i]) || !equivalentHedge(lead, cands[i], margin) {
 				continue
 			}
 			if i == 0 {
@@ -321,15 +332,16 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	}
 
 	var want, why string
+	var hasWant bool
 	switch mode {
 	case PreferUsenet:
-		want, why = core.ProtocolUsenet, "owner prefers usenet"
+		want, why, hasWant = core.ProtocolUsenet, "owner prefers usenet", true
 	case PreferDebrid:
-		want, why = core.ProtocolTorrent, "owner prefers debrid"
+		want, why, hasWant = core.ProtocolTorrent, "owner prefers debrid", true
 	default:
-		want, why = s.autoSource(group, t)
+		want, why, hasWant = s.autoSource(group, t)
 	}
-	if want == "" {
+	if !hasWant {
 		return cands
 	}
 	fast := func(c candidate) bool {
@@ -338,7 +350,7 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 		}
 		// Under auto, only a known-cached torrent is fast; an owner who
 		// prefers debrid accepts the provider round trip.
-		return want != core.ProtocolTorrent || mode == PreferDebrid || s.knownCached(c.rel)
+		return want != core.ProtocolTorrent || mode == PreferDebrid || s.candidateKnownCached(c)
 	}
 	first := -1
 	// An explicit debrid preference still means ready-to-stream first.
@@ -346,7 +358,7 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	// validation budget before a known-cached equivalent gets a chance.
 	if want == core.ProtocolTorrent {
 		for i, c := range group {
-			if s.knownCached(c.rel) {
+			if s.candidateKnownCached(c) {
 				first = indexes[i]
 				break
 			}
@@ -383,7 +395,7 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	}
 	if trace != nil {
 		note := "faster source: " + why
-		if protocolOf(out[0].rel) == core.ProtocolTorrent && s.knownCached(out[0].rel) {
+		if protocolOf(out[0].rel) == core.ProtocolTorrent && s.candidateKnownCached(out[0]) {
 			note += " (cached on debrid)"
 		}
 		if out[0].trace >= 0 && out[0].trace < len(trace.Candidates) {
@@ -401,23 +413,23 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 }
 
 // autoSource picks the preferred protocol for "auto": measured startup
-// first, then popularity. "" means no preference.
-func (s *Service) autoSource(group []candidate, t *core.Title) (string, string) {
+// first, then popularity. ok == false means no preference.
+func (s *Service) autoSource(group []candidate, t *core.Title) (string, string, bool) {
 	u, uok := s.startupOf(core.ProtocolUsenet)
 	d, dok := s.startupOf(core.ProtocolTorrent)
 	if uok && dok {
 		switch {
 		case u-d >= minStartupGain:
-			return core.ProtocolTorrent, fmt.Sprintf("measured debrid %s vs usenet %s", roundMs(d), roundMs(u))
+			return core.ProtocolTorrent, fmt.Sprintf("measured debrid %s vs usenet %s", roundMs(d), roundMs(u)), true
 		case d-u >= minStartupGain:
-			return core.ProtocolUsenet, fmt.Sprintf("measured usenet %s vs debrid %s", roundMs(u), roundMs(d))
+			return core.ProtocolUsenet, fmt.Sprintf("measured usenet %s vs debrid %s", roundMs(u), roundMs(d)), true
 		}
 		// Too close to call: fall through to popularity.
 	}
 	if popular(group, t) {
-		return core.ProtocolTorrent, "popular title"
+		return core.ProtocolTorrent, "popular title", true
 	}
-	return "", ""
+	return "", "", false
 }
 
 func popular(group []candidate, t *core.Title) bool {
@@ -447,7 +459,7 @@ func (s *Service) sourceAlwaysFirst(cands []candidate, want string, trace *Trace
 		if protocolOf(c.rel) != want {
 			return false
 		}
-		return want != core.ProtocolTorrent || s.knownCached(c.rel)
+		return want != core.ProtocolTorrent || s.candidateKnownCached(c)
 	}
 	out := slices.Clone(cands)
 	sort.SliceStable(out, func(i, j int) bool {
@@ -484,4 +496,63 @@ func (s *Service) sourceAlwaysFirst(cands []candidate, want string, trace *Trace
 		}
 	}
 	return out
+}
+
+// PlayableRouteCandidate describes one candidate inside an interchangeable
+// plugin tier for RoutePlayableTier.
+type PlayableRouteCandidate struct {
+	// Release supplies protocol, ID, infohash, size, and seeders for routing,
+	// debrid-cache lookup, and delivery/stall evidence.
+	Release core.Release
+	// KnownCached marks a torrent candidate already known to be cached on
+	// debrid (for example from SourceCandidate.Cached / CachedBy), in addition
+	// to the resolver's live debrid cache signal.
+	KnownCached bool
+}
+
+// RoutePlayableTier returns the reordered indices [0..len(items)-1] for
+// interchangeable sources within one plugin tier, applying Ether's delivery /
+// stall demotion (delivery.go) and source routing (routing.go: auto/usenet/
+// debrid, measured startup, known-cached debrid, and Usenet backoff).
+func (s *Service) RoutePlayableTier(items []PlayableRouteCandidate, title *core.Title) []int {
+	if len(items) < 2 {
+		out := make([]int, len(items))
+		for i := range items {
+			out[i] = i
+		}
+		return out
+	}
+	cands := make([]candidate, len(items))
+	for i, item := range items {
+		bw, deliv, _ := s.deliveryFitReason(item.Release, core.ClientCaps{}, title)
+		if bw == 0 && deliv == 0 && (item.Release.Size <= 0 || title == nil || title.Runtime <= 0) && s.hasRecentStall(item.Release) {
+			bw, deliv = -1, -1
+		}
+		// Within one plugin tier the plugin has already declared all items
+		// interchangeable; zero movie/TV-specific quality/score fields so
+		// routeSources treats every item in the tier as same-quality while
+		// still honoring Protocol, ID, InfoHash, Size, Seeders, and delivery.
+		rel := item.Release
+		rel.Info = core.ReleaseInfo{}
+		rel.Score = 0
+		cands[i] = candidate{
+			rel:             rel,
+			trace:           i,
+			bandwidth:       bw,
+			delivery:        deliv,
+			knownCachedHint: item.KnownCached && rel.Protocol == core.ProtocolTorrent,
+		}
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].bandwidth != cands[j].bandwidth {
+			return cands[i].bandwidth > cands[j].bandwidth
+		}
+		return cands[i].delivery > cands[j].delivery
+	})
+	routed := s.routeSources(cands, title, nil)
+	order := make([]int, len(routed))
+	for i, c := range routed {
+		order[i] = c.trace
+	}
+	return order
 }

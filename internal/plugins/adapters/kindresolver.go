@@ -2181,6 +2181,26 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 	}
 	defaultMIME := kindDefaultMIMEForLevel(rec.Decl, item.Level)
 	defaultCategory := kindDefaultCategoryForLevel(rec.Decl, item.Level)
+	var sourceRouter kindstream.SourceRouter
+	if r.resolver != nil {
+		sourceRouter = r.resolver
+	}
+	var itemDur time.Duration
+	if partIdx != nil && *partIdx >= 0 {
+		if parts := core.ExtractKindItemParts(item.Hints); *partIdx < len(parts) && parts[*partIdx].DurationSec > 0 {
+			itemDur = time.Duration(parts[*partIdx].DurationSec * float64(time.Second))
+		}
+	}
+	if itemDur <= 0 {
+		itemDur = extractItemDuration(item, rec.Decl)
+	}
+	var routeTitle *core.Title
+	if itemDur > 0 || item.Title != "" {
+		routeTitle = &core.Title{
+			Title:   item.Title,
+			Runtime: itemDur,
+		}
+	}
 	return kindstream.Deps{
 		OpenFile: func(ctx context.Context, src core.PlayableSource) (kindstream.ByteSource, error) {
 			s := &StreamSources{mgr: r.mgr}
@@ -2218,6 +2238,11 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		MaxDownloadBytes:     quota.EffectiveMaxBytes(),
 		ItemIndex:            effectiveItemIndex(item.Index, partIdx),
 		Backoff:              r.backoff,
+		SourceRouter:         sourceRouter,
+		SourceRelease: func(src core.PlayableSource) core.Release {
+			return playableSourceRelease(src, item.Title)
+		},
+		Title: routeTitle,
 		ProbeMedia: func(pctx context.Context, src core.PlayableSource, bs kindstream.ByteSource) (*core.MediaInfo, error) {
 			return r.probeOpenByteSource(pctx, rec.PluginID, src, defaultMIME, bs)
 		},
@@ -3188,6 +3213,7 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.NZBURL = strings.TrimSpace(hint.Candidate.NZBURL)
 		rel.Name = hint.Candidate.Title
 		rel.Size = hint.Candidate.Size
+		rel.Seeders = hint.Candidate.Seeders
 		rel.Indexer = hint.Candidate.Indexer
 		rel.IndexerID = hint.Candidate.IndexerID
 		rel.Category = hint.Candidate.Category

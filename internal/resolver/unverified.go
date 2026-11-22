@@ -53,19 +53,23 @@ func drainValidations(ctx context.Context, cands []candidate, results <-chan val
 	for {
 		select {
 		case v := <-results:
-			for _, fv := range v.fallbacks {
-				noteValidation(ctx, fv.rel, fv.val)
-			}
-			if v.promoted == nil {
-				rel := cands[v.index].rel
-				if v.rel.ID != "" {
-					rel = v.rel
-				}
-				noteValidation(ctx, rel, v)
-			}
+			noteDroppedValidation(ctx, cands, v)
 		default:
 			return
 		}
+	}
+}
+
+func noteDroppedValidation(ctx context.Context, cands []candidate, v validation) {
+	for _, fv := range v.fallbacks {
+		noteValidation(ctx, fv.rel, fv.val)
+	}
+	if v.promoted == nil {
+		rel := cands[v.index].rel
+		if v.rel.ID != "" {
+			rel = v.rel
+		}
+		noteValidation(ctx, rel, v)
 	}
 }
 

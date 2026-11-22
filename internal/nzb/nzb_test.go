@@ -674,3 +674,55 @@ func TestEstimatedDecodedBytes(t *testing.T) {
 		t.Fatalf("EstimatedDecodedBytes = %d out of expected ~97%% band for %d", est, encoded)
 	}
 }
+
+func TestSubsetPreservesSubjectNameAcrossReencoding(t *testing.T) {
+	raw := []byte(`<nzb>` +
+		`<file poster="p" date="1" subject="Other.File.mkv (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">id0@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="Some Show Episode Title 4k.mp4 (1/2)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">id1@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="&quot;a1b2c3d4e5f6a1b2c3d4e5f6&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">id2@x</segment></segments></file>` +
+		`</nzb>`)
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Un-renamed NZBs should not emit ether-subject-names metadata.
+	plain, ok := doc.Subset(func(*File) bool { return true })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+	if strings.Contains(string(plain), MetaSubjectNames) {
+		t.Fatalf("unexpected %s in un-renamed subset:\n%s", MetaSubjectNames, plain)
+	}
+
+	// Simulate learned names diverging from original subject names.
+	doc.Files[1].Name = "4k.mp4"
+	doc.Files[2].Name = "01 - Hidden.flac"
+	doc.Files[2].Obfuscated = false
+
+	// Subset dropping index 0 must remap subject-names indices cleanly.
+	sub, ok := doc.Subset(func(f *File) bool { return f.Index >= 1 })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+	reparsed, err := Parse(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reparsed.Files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(reparsed.Files))
+	}
+	// File 0 (was 1): learned Name="4k.mp4", preserved SubjectName="Some Show Episode Title 4k.mp4".
+	if reparsed.Files[0].Name != "4k.mp4" || reparsed.Files[0].OriginalName() != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("file 0 = name=%q orig=%q", reparsed.Files[0].Name, reparsed.Files[0].OriginalName())
+	}
+	if got := reparsed.Files[0].StableName(); got != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("non-obfuscated StableName = %q, want subject name", got)
+	}
+	// File 1 (was 2): obfuscated subject -> StableName uses learned name.
+	if reparsed.Files[1].Name != "01 - Hidden.flac" || reparsed.Files[1].OriginalName() != "a1b2c3d4e5f6a1b2c3d4e5f6" {
+		t.Fatalf("file 1 = name=%q orig=%q", reparsed.Files[1].Name, reparsed.Files[1].OriginalName())
+	}
+	if got := reparsed.Files[1].StableName(); got != "01 - Hidden.flac" {
+		t.Fatalf("obfuscated StableName = %q, want learned name", got)
+	}
+}

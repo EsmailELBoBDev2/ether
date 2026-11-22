@@ -74,6 +74,41 @@ func TestPackRecovery(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestDecodeRefreshesStaleSubjectDerivedName(t *testing.T) {
+	raw := []byte(`<nzb><file subject="Some Show Episode Title 4k.mp4 (1/2)" poster="A"><groups><group>test</group></groups><segments><segment bytes="512" number="1">aa@a</segment></segments></file></nzb>`)
+	doc, err := nzb.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a legacy vault record written before NameFromSubject preserved
+	// spaces in unquoted filenames (no SubjectName persisted, stale Name).
+	doc.Files[0].Name = "4k.mp4"
+	doc.Files[0].SubjectName = ""
+	encoded, err := Encode(&Record{Key: "k", Kind: KindUsenet, NZB: doc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decoded.NZB.Files[0]
+	if got.Name != "Some Show Episode Title 4k.mp4" || got.SubjectName != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("decoded file = name=%q subjectName=%q", got.Name, got.SubjectName)
+	}
+	xmlOut, ok := decoded.NZB.Subset(func(*nzb.File) bool { return true })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+	reparsed, err := nzb.Parse(xmlOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reparsed.Files[0].Name != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("re-encoded XML name = %q, want %q", reparsed.Files[0].Name, "Some Show Episode Title 4k.mp4")
+	}
+}
 func FuzzDecode(f *testing.F) {
 	d, _ := nzb.Parse([]byte(fixture))
 	b, e := Encode(&Record{Kind: KindUsenet, NZB: d})

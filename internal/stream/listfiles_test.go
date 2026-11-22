@@ -95,6 +95,48 @@ func TestListFilesObfuscatedPar2NonVideo(t *testing.T) {
 	if files[0].Path != "01 - Hidden.flac" || files[0].Size != int64(len(track)) || files[0].SizeApproximate {
 		t.Fatalf("obfuscated track = %+v, want path=01 - Hidden.flac exact size=%d", files[0], len(track))
 	}
+	// Repeated ListFiles and NameFiles after ListFiles must keep the learned
+	// name stable and preserve the original subject name in the re-encoded NZB.
+	again, err := e.ListFiles(context.Background(), "rel-obf-music", doc)
+	if err != nil {
+		t.Fatalf("second ListFiles: %v", err)
+	}
+	if again[0].Path != "01 - Hidden.flac" || again[0].Size != int64(len(track)) || again[0].SizeApproximate {
+		t.Fatalf("second ListFiles drifted: %+v", again[0])
+	}
+	namedXML, err := e.NameFiles(context.Background(), "rel-obf-music", doc)
+	if err != nil {
+		t.Fatalf("NameFiles after ListFiles: %v", err)
+	}
+	parsedNamed, err := nzb.Parse(namedXML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsedNamed.Files[0].Name != "01 - Hidden.flac" || parsedNamed.Files[0].OriginalName() != obfName(7) {
+		t.Fatalf("NameFiles after ListFiles = name=%q orig=%q", parsedNamed.Files[0].Name, parsedNamed.Files[0].OriginalName())
+	}
+}
+
+func TestListFilesKeepsStableSubjectNameWhenRenamed(t *testing.T) {
+	f := newFakeFetcher()
+	raw := []byte(`<nzb><file poster="p" date="1" subject="Some Show Episode Title 4k.mp4 (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="100" number="1">s1@test</segment></segments></file></nzb>`)
+	doc, err := nzb.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.Files[0].Name = "4k.mp4"
+	reencoded, ok := doc.Subset(func(*nzb.File) bool { return true })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+	e := newTestEngine(t, f, nil, Options{})
+	files, err := e.ListFiles(context.Background(), "rel-renamed", reencoded)
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	if len(files) != 1 || files[0].Path != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("ListFiles = %+v, want stable subject name", files)
+	}
 }
 
 func TestListFilesFallsBackToApproximateWhenArticlesUnavailable(t *testing.T) {

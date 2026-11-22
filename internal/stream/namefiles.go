@@ -35,17 +35,19 @@ func (e *Engine) NameFiles(ctx context.Context, releaseID string, nzbData []byte
 		return rel.named, nil
 	}
 	b := &builder{e: e, rel: rel, prio: core.PriorityLive, fo: fetchOpts{cacheID: releaseID}}
-	unknown := b.unknownFilesExcept(nil, maxNamedFiles)
-	if len(unknown) == 0 {
-		return nzbData, nil
-	}
-	sort.SliceStable(unknown, func(i, j int) bool { return unknown[i].idx < unknown[j].idx })
-	set := rel.loadPar2(ctx, b.prio, b.fo, rel.par2IndexFile())
-	if _, _, err := b.probeObfuscated(ctx, unknown, set); err != nil {
-		return nil, fmt.Errorf("naming pack files: %w", err)
+	toName := b.namableFiles(maxNamedFiles)
+	if len(toName) > 0 {
+		sort.SliceStable(toName, func(i, j int) bool { return toName[i].idx < toName[j].idx })
+		set := rel.loadPar2(ctx, b.prio, b.fo, rel.par2IndexFile())
+		if _, _, err := b.probeObfuscated(ctx, toName, set); err != nil {
+			return nil, fmt.Errorf("naming pack files: %w", err)
+		}
 	}
 	rel.infoMu.Lock()
 	defer rel.infoMu.Unlock()
+	if len(toName) == 0 && !rel.hasRenamedFilesLocked() {
+		return nzbData, nil
+	}
 	// An obfuscated PAR2 file found by its head keeps a name that says
 	// nothing; give it a .par2 one so a later parse still classifies it.
 	for _, f := range rel.doc.Files {
@@ -59,4 +61,23 @@ func (e *Engine) NameFiles(ctx context.Context, releaseID string, nzbData []byte
 	}
 	rel.named = out
 	return out, nil
+}
+
+// namableFiles lists files whose real names may come from PAR2 or yEnc:
+// unidentified files (KindUnknown) and obfuscated non-PAR2 files (even if
+// their obfuscated subject carried a known extension).
+func (b *builder) namableFiles(limit int) []*postedFile {
+	b.rel.infoMu.RLock()
+	defer b.rel.infoMu.RUnlock()
+	var out []*postedFile
+	for _, pf := range b.rel.files {
+		if pf.file.Info.Kind == nzb.KindUnknown || (pf.file.Obfuscated && pf.file.Info.Kind != nzb.KindPar2) {
+			out = append(out, pf)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].file.Bytes() > out[j].file.Bytes() })
+	if len(out) > limit {
+		out = out[:max(limit, 0)]
+	}
+	return out
 }

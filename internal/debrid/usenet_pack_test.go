@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -296,5 +297,93 @@ func TestEpisodeNZBExactFileSelection(t *testing.T) {
 	}
 	if string(out) != string(data) {
 		t.Fatal("non-plugin target unexpectedly narrowed the NZB")
+	}
+}
+
+func TestEpisodeNZBExactFileAcceptsSubjectAndLearnedNamesAfterRename(t *testing.T) {
+	raw := packNZB(
+		`Some Show Episode Title 4k.mp4 (1/2)`,
+		`&quot;Other.Episode.mkv&quot; yEnc (1/1)`,
+	)
+	doc, err := nzb.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate learned name written into subject via Subset re-encoding.
+	doc.Files[0].Name = "4k.mp4"
+	reencoded, ok := doc.Subset(func(*nzb.File) bool { return true })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+
+	idx0 := 0
+	// Accepts the original subject-derived name from release_files.
+	if _, err := EpisodeNZB(reencoded, &core.ReleaseTarget{
+		AllowNonVideo: true,
+		FileIndex:     &idx0,
+		ExactFile:     "Some Show Episode Title 4k.mp4",
+	}); err != nil {
+		t.Fatalf("expected subject-derived name match, got: %v", err)
+	}
+	// Accepts the learned name as well.
+	if _, err := EpisodeNZB(reencoded, &core.ReleaseTarget{
+		AllowNonVideo: true,
+		FileIndex:     &idx0,
+		ExactFile:     "4k.mp4",
+	}); err != nil {
+		t.Fatalf("expected learned name match, got: %v", err)
+	}
+	// Still rejects an unrelated file name, reporting both learned and subject names.
+	_, err = EpisodeNZB(reencoded, &core.ReleaseTarget{
+		AllowNonVideo: true,
+		FileIndex:     &idx0,
+		ExactFile:     "Unrelated.File.mp4",
+	})
+	if !errors.Is(err, core.ErrWrongContent) {
+		t.Fatalf("err = %v, want ErrWrongContent", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "4k.mp4") || !strings.Contains(msg, "Some Show Episode Title 4k.mp4") {
+		t.Fatalf("wrong-content error missing both names: %q", msg)
+	}
+}
+
+type stubRawNZBIndexer struct{ data []byte }
+
+func (s stubRawNZBIndexer) Name() string { return "stub" }
+func (s stubRawNZBIndexer) Search(context.Context, core.SearchRequest) ([]core.Release, error) {
+	return nil, nil
+}
+func (s stubRawNZBIndexer) FetchNZB(context.Context, core.Release) ([]byte, error) {
+	return s.data, nil
+}
+
+func TestIndexerFetchNZBExactFileIndexNamesObfuscatedFile(t *testing.T) {
+	obf := packNZB(`&quot;a1b2c3d4e5f6a1b2c3d4e5f6&quot; yEnc (1/1)`)
+	namedDoc, err := nzb.Parse(obf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namedDoc.Files[0].Name = "01 - Hidden.flac"
+	namedDoc.Files[0].Obfuscated = false
+	namedXML, _ := namedDoc.Subset(func(*nzb.File) bool { return true })
+
+	idx0 := 0
+	x := &Indexer{inner: stubRawNZBIndexer{data: obf}, packNamer: fakeNamer{out: namedXML}}
+	out, err := x.FetchNZB(context.Background(), core.Release{
+		ID:       "rel-1",
+		Protocol: core.ProtocolUsenet,
+		Target: &core.ReleaseTarget{
+			AllowNonVideo: true,
+			FileIndex:     &idx0,
+			ExactFile:     "01 - Hidden.flac",
+		},
+	})
+	if err != nil {
+		t.Fatalf("FetchNZB with FileIndex + PAR2-learned ExactFile failed: %v", err)
+	}
+	parsed, err := nzb.Parse(out)
+	if err != nil || len(parsed.Files) != 1 || parsed.Files[0].Name != "01 - Hidden.flac" {
+		t.Fatalf("parsed = %+v, err=%v", parsed, err)
 	}
 }

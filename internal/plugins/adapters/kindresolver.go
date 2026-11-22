@@ -3340,7 +3340,7 @@ func (r *KindResolver) listNZBFiles(ctx context.Context, releaseID string, data 
 	for i, f := range doc.Files {
 		files[i] = core.ReleaseFile{
 			Index:           i,
-			Path:            f.Name,
+			Path:            f.StableName(),
 			Size:            f.EstimatedDecodedBytes(),
 			SizeApproximate: true,
 		}
@@ -3518,13 +3518,26 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			nzbHash = hashNZBBytes(nzbData)
 		}
 		if rel.Target != nil && rel.Target.AllowNonVideo {
-			nzbData, err = ensureNonVideoNZB(nzbData, rel.Target)
-			if err != nil {
-				if r.log != nil {
-					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", err)
+			prepared, perr := ensureNonVideoNZB(nzbData, rel.Target)
+			if errors.Is(perr, core.ErrWrongContent) && rel.Target.ExactFile != "" && debrid.NeedsExactFileNaming(nzbData, rel.Target) {
+				if namer, ok := r.engine.(debrid.PackNamer); ok {
+					nameCtx, nameCancel := withHardTimeout(ctx, r.engineOpenTimeout)
+					named, nerr := namer.NameFiles(nameCtx, rel.ID, nzbData)
+					nameCancel()
+					if nerr == nil {
+						prepared, perr = ensureNonVideoNZB(named, rel.Target)
+					} else if !errors.Is(nerr, core.ErrNotAvailable) {
+						perr = nerr
+					}
 				}
-				return nil, err
 			}
+			if perr != nil {
+				if r.log != nil {
+					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", perr)
+				}
+				return nil, perr
+			}
+			nzbData = prepared
 		}
 		openStart := time.Now()
 		openCtx, openCancel := withHardTimeout(ctx, r.engineOpenTimeout)

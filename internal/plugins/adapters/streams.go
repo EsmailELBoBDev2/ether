@@ -1024,6 +1024,15 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 	return nil, core.ErrNotAvailable
 }
 
+// NameFiles forwards PAR2/yEnc obfuscated file naming to the wrapped streaming
+// engine.
+func (e *Engine) NameFiles(ctx context.Context, releaseID string, nzbData []byte) ([]byte, error) {
+	if namer, ok := e.inner.(debrid.PackNamer); ok {
+		return namer.NameFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
 // CheckArticles forwards bounded Usenet article availability checks to the
 // wrapped streaming engine.
 func (e *Engine) CheckArticles(ctx context.Context, releaseID string, nzbData []byte) (core.UsenetCheckResult, error) {

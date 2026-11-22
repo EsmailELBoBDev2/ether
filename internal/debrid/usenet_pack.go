@@ -56,6 +56,33 @@ func hasUnnamedFiles(data []byte) bool {
 	return false
 }
 
+// NeedsExactFileNaming reports whether an explicit ExactFile selection failed
+// against an NZB that still has obfuscated or unidentified files whose real
+// PAR2/yEnc names have not been probed yet.
+func NeedsExactFileNaming(data []byte, t *core.ReleaseTarget) bool {
+	if t == nil || t.ExactFile == "" {
+		return false
+	}
+	doc, err := nzb.Parse(data)
+	if err != nil {
+		return false
+	}
+	if t.FileIndex != nil {
+		i := *t.FileIndex
+		if i < 0 || i >= len(doc.Files) {
+			return false
+		}
+		f := doc.Files[i]
+		return f.Obfuscated || f.Info.Kind == nzb.KindUnknown
+	}
+	for _, f := range doc.Files {
+		if f.Obfuscated || f.Info.Kind == nzb.KindUnknown {
+			return true
+		}
+	}
+	return false
+}
+
 func coreTrackToNZB(t *core.TrackHint) *nzb.TrackHint {
 	if t == nil || (t.Number <= 0 && strings.TrimSpace(t.Title) == "") {
 		return nil
@@ -179,13 +206,13 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 			return nil, fmt.Errorf("usenet fileIndex %d outside file list of %d: %w", i, len(doc.Files), core.ErrWrongContent)
 		}
 		selected = doc.Files[i]
-		if t.ExactFile != "" && !exactNZBNameMatches(selected.Name, t.ExactFile) {
-			return nil, fmt.Errorf("usenet file at index %d is %q, not %q: %w", i, selected.Name, t.ExactFile, core.ErrWrongContent)
+		if t.ExactFile != "" && !exactNZBFileMatches(selected, t.ExactFile) {
+			return nil, wrongContentIndexError(i, selected, t.ExactFile)
 		}
 	} else {
 		var matches []*nzb.File
 		for _, f := range doc.Files {
-			if exactNZBNameMatches(f.Name, t.ExactFile) {
+			if exactNZBFileMatches(f, t.ExactFile) {
 				matches = append(matches, f)
 			}
 		}
@@ -204,6 +231,11 @@ func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 
 	keep := map[*nzb.File]bool{selected: true}
 	stems := []string{strings.ToLower(strings.TrimSuffix(selected.Name, path.Ext(selected.Name)))}
+	if orig := selected.OriginalName(); orig != "" && orig != selected.Name {
+		if stem := strings.ToLower(strings.TrimSuffix(orig, path.Ext(orig))); stem != "" && stem != stems[0] {
+			stems = append(stems, stem)
+		}
+	}
 	if unwrapArchive {
 		for _, s := range nzb.GroupSets(doc.Files) {
 			for _, v := range s.Volumes {
@@ -277,9 +309,37 @@ func nonVideoNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 	return out, nil
 }
 
+func exactNZBFileMatches(f *nzb.File, want string) bool {
+	if f == nil {
+		return false
+	}
+	if exactNZBNameMatches(f.Name, want) {
+		return true
+	}
+	if orig := f.OriginalName(); orig != "" && orig != f.Name && exactNZBNameMatches(orig, want) {
+		return true
+	}
+	return false
+}
+
+func wrongContentIndexError(i int, f *nzb.File, want string) error {
+	orig := f.OriginalName()
+	if orig != "" && orig != f.Name {
+		return fmt.Errorf("usenet file at index %d is %q (subject %q), not %q: %w", i, f.Name, orig, want, core.ErrWrongContent)
+	}
+	actual := f.Name
+	if actual == "" {
+		actual = orig
+	}
+	return fmt.Errorf("usenet file at index %d is %q, not %q: %w", i, actual, want, core.ErrWrongContent)
+}
+
 func exactNZBNameMatches(name, want string) bool {
 	want = strings.ReplaceAll(strings.TrimSpace(want), "\\", "/")
-	name = strings.ReplaceAll(name, "\\", "/")
+	name = strings.ReplaceAll(strings.TrimSpace(name), "\\", "/")
+	if name == "" || want == "" {
+		return false
+	}
 	if strings.TrimPrefix(name, "/") == strings.TrimPrefix(want, "/") {
 		return true
 	}

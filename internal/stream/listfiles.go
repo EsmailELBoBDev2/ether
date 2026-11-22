@@ -2,7 +2,9 @@ package stream
 
 import (
 	"context"
+	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -39,21 +41,23 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 	out := make([]core.ReleaseFile, len(rel.files))
 	needProbe := false
 	for i, pf := range rel.files {
+		rel.infoMu.RLock()
+		isPar2 := pf.file.Info.Kind == nzb.KindPar2
+		obf := pf.file.Obfuscated
+		stablePath := pf.file.StableName()
+		rel.infoMu.RUnlock()
 		out[i] = core.ReleaseFile{
 			Index: i,
-			Path:  pf.Name(),
+			Path:  stablePath,
 		}
 		if pf.SizeKnown() {
 			out[i].Size = pf.Size()
 		} else {
 			out[i].Size = pf.file.EstimatedDecodedBytes()
 			out[i].SizeApproximate = true
-			rel.infoMu.RLock()
-			isPar2 := pf.file.Info.Kind == nzb.KindPar2
-			rel.infoMu.RUnlock()
-			if !isPar2 {
-				needProbe = true
-			}
+		}
+		if !isPar2 && (out[i].SizeApproximate || obf) {
+			needProbe = true
 		}
 	}
 	if !needProbe || e.fetcher == nil || ctx.Err() != nil {
@@ -80,11 +84,17 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 			}
 			rel.infoMu.RLock()
 			obf := pf.file.Obfuscated
+			name := pf.file.Name
+			orig := pf.file.OriginalName()
 			rel.infoMu.RUnlock()
 			if obf {
 				continue
 			}
-			if length, ok := uniquePar2Length(set.Named(pf.Name())); ok {
+			cands := set.Named(name)
+			if len(cands) == 0 && orig != "" && orig != name {
+				cands = set.Named(orig)
+			}
+			if length, ok := uniquePar2Length(cands); ok {
 				out[i].Size = length
 				out[i].SizeApproximate = false
 				pf.setAssumed(length)
@@ -92,16 +102,17 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 		}
 	}
 
-	// 2. yEnc =ybegin size= (and PAR2 first-16k MD5 identification for
-	//    obfuscated files): fetch slot 0 for remaining non-PAR2 files.
+	// 2. yEnc =ybegin size= (and PAR2/yEnc identification for obfuscated
+	//    files): fetch slot 0 for remaining non-PAR2 files.
 	var toProbe []int
 	for i, pf := range rel.files {
-		if !out[i].SizeApproximate {
-			continue
-		}
 		rel.infoMu.RLock()
 		isPar2 := pf.file.Info.Kind == nzb.KindPar2
+		obf := pf.file.Obfuscated
 		rel.infoMu.RUnlock()
+		if !out[i].SizeApproximate && !obf {
+			continue
+		}
 		if isPar2 || pf.numSlots() == 0 || pf.msgID(0) == "" {
 			continue
 		}
@@ -137,6 +148,9 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 			out[idx].Size = pf.Size()
 			out[idx].SizeApproximate = false
 		}
+		rel.infoMu.RLock()
+		obf := pf.file.Obfuscated
+		rel.infoMu.RUnlock()
 		if seg != nil && set != nil {
 			if f := identifyByPar2(set, pf, seg); f != nil {
 				if f.Length > 0 {
@@ -146,13 +160,26 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 						pf.setAssumed(f.Length)
 					}
 				}
-				rel.infoMu.RLock()
-				obf := pf.file.Obfuscated
-				rel.infoMu.RUnlock()
 				if obf {
-					if base := f.BaseName(); base != "" && base != "." {
-						out[idx].Path = base
+					if b.nameFromPar2(pf, f) {
+						out[idx].Path = rel.stableFileName(pf)
+						obf = false
+					} else if base := f.BaseName(); base != "" && base != "." && !nzb.IsObfuscated(base) {
+						info := nzb.Classify(base)
+						rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = base, info, false })
+						pf.setName(base)
+						out[idx].Path = rel.stableFileName(pf)
+						obf = false
 					}
+				}
+			}
+		}
+		if obf && seg != nil {
+			if yn := path.Base(strings.ReplaceAll(seg.name, `\`, "/")); yn != "" && yn != "." {
+				if info := nzb.Classify(yn); info.Kind != nzb.KindUnknown && !nzb.IsObfuscated(yn) {
+					rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = yn, info, false })
+					pf.setName(yn)
+					out[idx].Path = rel.stableFileName(pf)
 				}
 			}
 		}

@@ -26,6 +26,11 @@ func (b *Broker) KeepAlive(ctx context.Context, a frontend.SessionAccess, id str
 	}
 	// Live sessions have their own backend lifecycle, not a playback source.
 	if s.live {
+		if s.multiviewGroup != "" {
+			b.mu.Lock()
+			b.touchMultiviewLocked(s.multiviewGroup, b.deps.Now())
+			b.mu.Unlock()
+		}
 		return core.ErrNotAvailable
 	}
 	if !activity.KeepAlive(s.playID) {

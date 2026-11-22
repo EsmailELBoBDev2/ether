@@ -55,6 +55,7 @@ func authEntryFromSource(src Source, now time.Time) authEntry {
 		return authEntry{at: now, disabled: true}
 	}
 	e := authEntry{
+		name:          src.Name,
 		auth:          src.Auth,
 		at:            now,
 		perHour:       max(src.TunesPerHour, 0),

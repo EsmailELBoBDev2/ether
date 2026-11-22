@@ -358,6 +358,11 @@ func problemMessage(w http.ResponseWriter, status int, class, code, message stri
 	send(w, status, object{"error": object{"class": class, "code": code, "message": message, "retry": object{"allowed": false}}})
 }
 func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
+	var capErr *frontend.ProviderConnectionCapError
+	if errors.As(err, &capErr) {
+		sendProviderConnectionCap(w, capErr)
+		return
+	}
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
 		send(w, http.StatusForbidden, object{"error": object{"class": "policy", "code": "bedtime", "message": bedtime.Error(), "nextAllowedAt": bedtime.NextAllowedAt.UTC().Format(time.RFC3339), "retry": object{"allowed": false}}})
@@ -389,6 +394,8 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 	case errors.Is(err, frontend.ErrArchiveUnstreamable):
 		logFailure(err, requests...)
 		send(w, http.StatusUnprocessableEntity, object{"error": object{"class": "source", "code": "archive_unstreamable", "message": frontend.ErrArchiveUnstreamable.Error(), "retry": object{"allowed": false}}})
+	case errors.Is(err, frontend.ErrInvalidMultiview):
+		problem(w, 400, "request", "invalid_multiview")
 	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit):
 		problem(w, 400, "request", "invalid_request")
 	case errors.Is(err, frontend.ErrPreferencesLimit), errors.Is(err, frontend.ErrDownloadBudget):
@@ -626,9 +633,16 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	// A bounded read, followed by per-key serialization, makes refresh rotation
 	// and playback admission safe to retry. No worker or allocation exists at idle.
+	optionalMultiviewIdem := (r.Method == http.MethodPost && r.URL.Path == "/vela/v0/multiview") ||
+		(r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/vela/v0/multiview/"))
 	var raw json.RawMessage
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if dec.Decode(&raw) != nil {
+	if err := dec.Decode(&raw); err != nil {
+		if errors.Is(err, io.EOF) && r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/vela/v0/multiview/") {
+			r.Body = http.NoBody
+			i.mux.ServeHTTP(w, r)
+			return
+		}
 		problem(w, 400, "request", "invalid_json")
 		return
 	}
@@ -645,16 +659,31 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var envelope struct {
-		IdempotencyKey string `json:"idempotencyKey"`
-		Device         device `json:"device"`
+		IdempotencyKey *string         `json:"idempotencyKey"`
+		Device         json.RawMessage `json:"device"`
 		Client         struct {
 			Device device `json:"device"`
 		} `json:"client"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.IdempotencyKey == "" || len(envelope.IdempotencyKey) > 256 {
+	if json.Unmarshal(raw, &envelope) != nil {
 		problem(w, 400, "request", "idempotency_key_required")
 		return
 	}
+	if optionalMultiviewIdem && envelope.IdempotencyKey == nil {
+		var trailing any
+		if dec.Decode(&trailing) != io.EOF {
+			problem(w, 400, "request", "invalid_json")
+			return
+		}
+		r.Body = http.NoBody
+		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
+		return
+	}
+	if envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "" || len(*envelope.IdempotencyKey) > 256 {
+		problem(w, 400, "request", "idempotency_key_required")
+		return
+	}
+	idemKey := *envelope.IdempotencyKey
 	public := strings.HasPrefix(r.URL.Path, "/vela/v0/auth/") && !strings.HasSuffix(r.URL.Path, "/approve") && !strings.HasSuffix(r.URL.Path, "/revoke") && r.URL.Path != "/vela/v0/auth/web-code" && r.URL.Path != "/vela/v0/auth/plex/profiles/challenge"
 	public = public || r.URL.Path == "/vela/v0/negotiate"
 	scope := ""
@@ -668,7 +697,11 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		d := envelope.Device
+		var d device
+		if len(envelope.Device) > 0 && json.Unmarshal(envelope.Device, &d) != nil {
+			problem(w, 400, "request", "idempotency_key_required")
+			return
+		}
 		if d.ID == "" {
 			d = envelope.Client.Device
 		}
@@ -678,7 +711,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		scope = d.ID
 	}
-	key := hash(scope + "\x00" + r.Method + "\x00" + r.URL.Path + "\x00" + envelope.IdempotencyKey)
+	key := hash(scope + "\x00" + r.Method + "\x00" + r.URL.Path + "\x00" + idemKey)
 	digest := hash(string(raw))
 	i.replayMu.Lock()
 	if old := i.replays[key]; old != nil {
@@ -698,7 +731,9 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			w.Header()[k] = v
 		}
 		w.WriteHeader(old.status)
-		_, _ = w.Write(old.body)
+		if len(old.body) > 0 {
+			_, _ = w.Write(old.body)
+		}
 		return
 	}
 	if len(i.replays) >= 10000 {
@@ -726,7 +761,9 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			out.Header()[k] = v
 		}
 		out.WriteHeader(persisted.Status)
-		_, _ = out.Write(persisted.Body)
+		if len(persisted.Body) > 0 {
+			_, _ = out.Write(persisted.Body)
+		}
 	} else {
 		i.mux.ServeHTTP(out, r)
 		var saveErr error
@@ -755,7 +792,9 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(entry.status)
-	_, _ = w.Write(entry.body)
+	if len(entry.body) > 0 {
+		_, _ = w.Write(entry.body)
+	}
 }
 
 type bodyKey struct{}
@@ -810,6 +849,8 @@ func (i *instance) routes() {
 	i.route("POST", "/search/ai/{id}/cancel", i.cancelAISearch)
 	i.route("GET", "/images/{secret}", i.image)
 	i.route("POST", "/interactions", i.interactions)
+	i.route("POST", "/multiview", i.createMultiviewGroup)
+	i.route("DELETE", "/multiview/{groupId}", i.deleteMultiviewGroup)
 	i.route("POST", "/playback", i.playback)
 	i.route("POST", "/titles/{id}/trailer-preview", i.trailerPreview)
 	i.route("GET", "/titles/{id}/trailer-preview", i.trailerPreviewStatus)
@@ -895,7 +936,7 @@ func (i *instance) capabilities() object {
 	passwordAvail := auth.Password && methods.Password
 	plexAvail := auth.PlexAccountSignIn && methods.Plex
 	quickAvail := auth.QuickConnect && methods.QuickConnect
-	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "mediaClasses": object{"available": true, "classes": []string{string(frontend.MediaClassVideo), string(frontend.MediaClassMusic), string(frontend.MediaClassAudiobook), string(frontend.MediaClassBook), string(frontend.MediaClassPodcast), string(frontend.MediaClassPhoto)}}, "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "multiview": object{"available": i.multiviewAvailable(), "maxTiles": frontend.MaxMultiviewTiles}, "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "mediaClasses": object{"available": true, "classes": []string{string(frontend.MediaClassVideo), string(frontend.MediaClassMusic), string(frontend.MediaClassAudiobook), string(frontend.MediaClassBook), string(frontend.MediaClassPodcast), string(frontend.MediaClassPhoto)}}, "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if plexAvail {
 		caps["plexAccountSignIn"] = true
 	}

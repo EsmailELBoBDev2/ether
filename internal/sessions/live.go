@@ -53,6 +53,24 @@ func (b *Broker) planLive(ctx context.Context, req frontend.PlanRequest, viewer 
 	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
+	baseMaxHeight := req.Caps.MaxHeight
+	if req.Multiview != nil {
+		if req.DirectLive != nil {
+			return frontend.PlayPlan{}, frontend.ErrInvalidMultiview
+		}
+		b.mu.Lock()
+		_, tileCount, err := b.validateMultiviewLocked(viewer.ID, req.Protocol, req.Device, req.Multiview, b.deps.Now())
+		b.mu.Unlock()
+		if err != nil {
+			return frontend.PlayPlan{}, err
+		}
+		tileHeight := multiviewTileMaxHeight(baseMaxHeight, tileCount, req.Multiview.MaxHeight, req.Multiview.Focused)
+		req.Caps.MultiviewGroup = req.Multiview.GroupID
+		req.Caps.MultiviewTile = req.Multiview.Tile
+		req.Caps.MaxHeight = tileHeight
+		req.Caps.ExplicitMaxHeight = tileHeight > 0
+		req.Intent.Options.MaxHeight = tileHeight
+	}
 	info := core.MediaInfo{Container: "mpegts", Estimated: true}
 	decision := core.Decision{Kind: core.DecisionRemux, Container: "mpegts", VideoCodec: "h264", AudioCodec: "aac", VideoCopy: true, AudioCopy: true, AudioChannels: 2, AudioStream: -1, SubtitleStream: -1, Reason: "live_remux_hls"}
 	if req.Intent.Estimate {
@@ -68,13 +86,35 @@ func (b *Broker) planLive(ctx context.Context, req frontend.PlanRequest, viewer 
 	if b.closed {
 		return frontend.PlayPlan{}, core.ErrStreamLimit
 	}
-	b.plans[id] = brokerPlan{request: req, decision: decision, created: b.deps.Now(), live: true}
+	b.plans[id] = brokerPlan{request: req, decision: decision, created: b.deps.Now(), live: true, baseMaxHeight: baseMaxHeight}
 	return frontend.PlayPlan{ID: id, Media: info, Decision: decision, Transcoding: true, HLS: true, HLSContainer: "mpegts"}, nil
 }
 
 func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p brokerPlan, viewer *core.Viewer) (frontend.Session, error) {
 	if b.deps.Live == nil {
 		return frontend.Session{}, core.ErrNotAvailable
+	}
+	var mvSession *frontend.MultiviewTarget
+	if p.request.Multiview != nil {
+		b.mu.Lock()
+		_, tileCount, err := b.validateMultiviewLocked(viewer.ID, req.Protocol, p.request.Device, p.request.Multiview, b.deps.Now())
+		b.mu.Unlock()
+		if err != nil {
+			return frontend.Session{}, err
+		}
+		tileHeight := multiviewTileMaxHeight(p.baseMaxHeight, tileCount, p.request.Multiview.MaxHeight, p.request.Multiview.Focused)
+		p.request.Caps.MultiviewGroup = p.request.Multiview.GroupID
+		p.request.Caps.MultiviewTile = p.request.Multiview.Tile
+		p.request.Caps.MaxHeight = tileHeight
+		p.request.Caps.ExplicitMaxHeight = tileHeight > 0
+		p.request.Intent.Options.MaxHeight = tileHeight
+		mvSession = &frontend.MultiviewTarget{
+			GroupID:   p.request.Multiview.GroupID,
+			Tile:      p.request.Multiview.Tile,
+			TileCount: tileCount,
+			MaxHeight: tileHeight,
+			Focused:   p.request.Multiview.Focused,
+		}
 	}
 	ctx = core.WithLiveApp(ctx, string(req.Protocol))
 	var liveID string
@@ -120,7 +160,7 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 	}
 	liveMedia := normalizeLiveMedia(tunedMedia)
 	grant := rand.Text()
-	session := frontend.Session{ID: id, MediaPath: "/sessions/media/" + id + "/" + grant + "/live/index.m3u8", Protocol: req.Protocol, ViewerID: viewer.ID, Device: p.request.Device, Channel: p.request.Channel, Media: &liveMedia, StartedAt: b.deps.Now(), PlayMethod: "Transcode"}
+	session := frontend.Session{ID: id, MediaPath: "/sessions/media/" + id + "/" + grant + "/live/index.m3u8", Protocol: req.Protocol, ViewerID: viewer.ID, Device: p.request.Device, Channel: p.request.Channel, Multiview: mvSession, Media: &liveMedia, StartedAt: b.deps.Now(), PlayMethod: "Transcode"}
 	if req.Protocol == "silo" {
 		session.ClientSessionID = p.request.Intent.ClientSessionID
 	}
@@ -128,7 +168,13 @@ func (b *Broker) openLive(ctx context.Context, req frontend.OpenRequest, p broke
 		_ = b.deps.Live.Stop(ctx, viewer, liveID)
 		return frontend.Session{}, err
 	}
-	s := &brokerSession{public: copySession(session), grant: grant, playID: liveID, clientID: p.request.Caps.ClientID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, live: true, directLive: directRef}
+	mvGroup := ""
+	mvTile := 0
+	if mvSession != nil {
+		mvGroup = mvSession.GroupID
+		mvTile = mvSession.Tile
+	}
+	s := &brokerSession{public: copySession(session), grant: grant, playID: liveID, clientID: p.request.Caps.ClientID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, live: true, directLive: directRef, multiviewGroup: mvGroup, multiviewTile: mvTile, baseMaxHeight: p.baseMaxHeight}
 	if b.cluster != nil && !b.policy(session.Protocol).ExternalAdmission {
 		if err := b.cluster.store.put(ctx, session, liveID, *viewer, b.deps.Now()); err != nil {
 			_ = b.deps.Live.Stop(ctx, viewer, liveID)

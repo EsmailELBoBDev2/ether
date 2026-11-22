@@ -550,6 +550,12 @@ type ClientCaps struct {
 	// segmented output because a start stalled on it for this client.
 	// Direct play of the original file is unaffected (additive).
 	SegmentedSurroundOff bool `json:"segmentedSurroundOff,omitempty"`
+
+	// AlwaysEncodeVideo forces every transcoded or remuxed video stream for
+	// this client onto the encoded path (keyframes on segment boundaries)
+	// instead of stream-copying video. Direct play of the original file is
+	// unaffected (additive).
+	AlwaysEncodeVideo bool `json:"alwaysEncodeVideo,omitempty"`
 }
 
 // AudioLimit applies to one audio codec, or all codecs when Codec is "*".

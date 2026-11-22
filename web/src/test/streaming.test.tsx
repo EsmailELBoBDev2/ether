@@ -307,6 +307,39 @@ describe("Playback devices", () => {
     const editBtn = within(bedroomRow).getByRole("button", { name: "Edit override" });
     expect(editBtn).toHaveTextContent("Edit");
   });
+
+  it("toggles Always convert video in the app compatibility drawer and persists cleanly", async () => {
+    const { fake } = renderApp("/playback/devices");
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Plezy" }, WAIT));
+    const drawer = await screen.findByRole("dialog", { name: "Edit Plezy" });
+
+    const toggle = within(drawer).getByRole("switch", { name: "Always convert video" });
+    expect(toggle).not.toBeChecked();
+    expect(
+      within(drawer).getByText(
+        "Encode video instead of copying it when streaming. Direct play of the original file is unaffected.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/clients")).toHaveLength(1));
+    expect(calls(fake, "PUT", "/config/clients")[0]!.body).toMatchObject({
+      overrides: [{ product: "Plezy", productExact: true, alwaysEncodeVideo: true }],
+    });
+
+    // Reopen and toggle back off: removes the now-empty override cleanly.
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Plezy" }, WAIT));
+    const reopenDrawer = await screen.findByRole("dialog", { name: "Edit Plezy" });
+    const reopenToggle = within(reopenDrawer).getByRole("switch", { name: "Always convert video" });
+    expect(reopenToggle).toBeChecked();
+    fireEvent.click(reopenToggle);
+    expect(reopenToggle).not.toBeChecked();
+    fireEvent.click(within(reopenDrawer).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/clients")).toHaveLength(2));
+    expect(calls(fake, "PUT", "/config/clients")[1]!.body).toEqual({ overrides: [] });
+  });
 });
 
 describe("Releases", () => {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 type decisionTranscoder struct{ decision core.Decision }
@@ -281,5 +282,75 @@ func TestUnverifiedSourceNeverTakesLossyOptionalRemux(t *testing.T) {
 		if err != nil || got.Kind != tc.want {
 			t.Fatalf("%s: decision %+v err %v", name, got, err)
 		}
+	}
+}
+
+type realDecideTranscoder struct{}
+
+func (realDecideTranscoder) Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions) core.Decision {
+	return transcode.Decide(info, caps, opts, transcode.Policy{})
+}
+func (realDecideTranscoder) StartHLS(context.Context, core.HLSRequest) (core.HLSSession, error) {
+	return nil, core.ErrNotAvailable
+}
+func (realDecideTranscoder) Session(string) (core.HLSSession, bool) { return nil, false }
+func (realDecideTranscoder) Stop(string)                            {}
+func (realDecideTranscoder) HWAccel() core.HWAccel                  { return core.HWAccel{} }
+func (realDecideTranscoder) Probe(context.Context, string) (*core.MediaInfo, error) {
+	return nil, core.ErrNotAvailable
+}
+
+func TestAlwaysEncodeVideoAcrossSessionsAndHLSOutput(t *testing.T) {
+	info := core.MediaInfo{
+		Container: "mkv",
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "aac", Channels: 2},
+		},
+	}
+	caps := core.ClientCaps{
+		Containers:        []string{"mkv"},
+		VideoCodecs:       []string{"h264"},
+		AudioCodecs:       []string{"aac"},
+		MaxHeight:         2160,
+		AlwaysEncodeVideo: true,
+	}
+	tr := realDecideTranscoder{}
+
+	// Required remux or PreferRemux encodes video rather than copying it.
+	ps := &core.PlaySession{
+		Resolution: &core.Resolution{HealthVerified: true, Release: core.Release{ID: "usenet:1"}},
+		Info:       info,
+	}
+	got, err := Decide(nil, tr, DecisionRequest{
+		Session:     ps,
+		Caps:        caps,
+		Options:     core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS},
+		PreferRemux: true,
+	})
+	if err != nil || got.Kind != core.DecisionTranscode || got.VideoCopy {
+		t.Fatalf("PreferRemux with AlwaysEncodeVideo: got %+v err=%v", got, err)
+	}
+
+	// Optional health-safety remux without PreferRemux still keeps direct play.
+	unverified := &core.PlaySession{
+		Resolution: &core.Resolution{HealthVerified: false, Release: core.Release{ID: "usenet:2"}},
+		Info:       info,
+	}
+	got, err = Decide(nil, tr, DecisionRequest{
+		Session: unverified,
+		Caps:    caps,
+		Options: core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS},
+	})
+	if err != nil || got.Kind != core.DecisionDirectPlay {
+		t.Fatalf("optional healthSafety should keep direct play: got %+v err=%v", got, err)
+	}
+
+	// Late DirectPlay -> HLS output promotion encodes video instead of copying.
+	b := &Broker{deps: BrokerDeps{Transcoder: tr}}
+	direct := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: "mkv", VideoCodec: "h264", AudioCodec: "aac"}
+	out, ok := b.hlsOutputDecision(ps, caps, core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS}, nil, direct)
+	if !ok || out.Kind != core.DecisionTranscode || out.VideoCopy {
+		t.Fatalf("hlsOutputDecision should encode video: ok=%v dec=%+v", ok, out)
 	}
 }

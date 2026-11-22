@@ -44,6 +44,9 @@ type Result struct {
 	HeightLocked bool
 	// DolbyVisionOff is set when an owner override turned Dolby Vision off.
 	DolbyVisionOff bool
+	// AlwaysEncodeVideo is set when an owner override disables video copy on
+	// transcoded/remuxed streams.
+	AlwaysEncodeVideo bool
 }
 
 // App describes a client application in the registry catalogue.
@@ -530,6 +533,9 @@ func applyOverrides(base Result, playbackID, policyID string, id Identity, overr
 		if o.DolbyVision != nil {
 			base.DolbyVision = *o.DolbyVision
 			base.DolbyVisionOff = !*o.DolbyVision
+		}
+		if o.AlwaysEncodeVideo {
+			base.AlwaysEncodeVideo = true
 		}
 		if o.Notes != "" {
 			base.Notes = o.Notes

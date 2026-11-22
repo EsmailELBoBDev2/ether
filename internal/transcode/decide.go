@@ -900,7 +900,7 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 	audioCopy, audioCodec, audioKbps, audioNote := planAudio(a, caps, audioIssues, bitrateCap, matroskaOut, opts.Protocol != core.ProtocolHTTP && !caps.Download)
 
 	// 2. Remux: copy video into HLS.
-	videoCopyable := v == nil || (len(videoIssues) == 0 && hlsVideoOK(v.Codec))
+	videoCopyable := v == nil || (!caps.AlwaysEncodeVideo && len(videoIssues) == 0 && hlsVideoOK(v.Codec))
 	copyVideo := ""
 	if v != nil {
 		copyVideo = v.Codec
@@ -953,6 +953,8 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 	}
 	if !opts.DirectStream {
 		why = append(why, "direct stream not allowed by client")
+	} else if v != nil && caps.AlwaysEncodeVideo {
+		why = append(why, "app compatibility override requires video encoding")
 	} else if v != nil && len(videoIssues) == 0 && !hlsVideoOK(v.Codec) {
 		why = append(why, fmt.Sprintf("video codec %s cannot be carried in HLS", v.Codec))
 	}
@@ -1178,6 +1180,9 @@ func HasHDR10Base(v *core.StreamInfo, caps core.ClientCaps) bool { return hasHDR
 // SegmentedVideoCopyOK reports whether codec may be copied into this
 // client's segmented output when the client declared a streaming target.
 func SegmentedVideoCopyOK(caps core.ClientCaps, codec string) bool {
+	if caps.AlwaysEncodeVideo {
+		return false
+	}
 	return len(caps.TranscodeVideoCodecs) == 0 || slices.Contains(caps.TranscodeVideoCodecs, codec)
 }
 

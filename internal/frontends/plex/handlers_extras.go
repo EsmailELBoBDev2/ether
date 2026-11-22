@@ -607,7 +607,14 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	}
 	dec := sess.decision
 	if dec.Kind == frontend.DecisionDirectPlay {
-		dec.Kind, dec.VideoCopy, dec.AudioCopy, dec.Container = frontend.DecisionRemux, true, true, "mpegts"
+		if sess.info.Video() != nil && sess.caps.AlwaysEncodeVideo {
+			opts := sess.opts
+			opts.DirectPlay = false
+			opts.DirectStream = false
+			dec = s.transcoder().Decide(sess.info, sess.caps, opts)
+		} else {
+			dec.Kind, dec.VideoCopy, dec.AudioCopy, dec.Container = frontend.DecisionRemux, true, true, "mpegts"
+		}
 	}
 	if dec.Container == "" {
 		dec.Container = "mpegts"

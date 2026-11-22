@@ -150,6 +150,49 @@ func TestSwiftfinWithoutProfileUsesAppleCodecs(t *testing.T) {
 	}
 }
 
+func TestSurfaceCapabilitiesAlwaysEncodeVideoWithoutForce(t *testing.T) {
+	a := setupTestApp(t, true)
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Clients.Overrides = []core.ClientCapabilityOverride{
+			{Product: "Swiftfin", ProductExact: true, AlwaysEncodeVideo: true},
+			{Product: "MysteryTVApp", ProductExact: true, AlwaysEncodeVideo: true},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lan := frontend.WithClientIP(context.Background(), netip.MustParseAddr("192.168.1.2"))
+	provider := surfaceCapabilities{app: a, surface: "jellyfin"}
+
+	// Known app with declared DeviceProfile gets AlwaysEncodeVideo without Force.
+	swiftfin, err := provider.Build(lan, frontend.CapabilityRequest{
+		Viewer:  &core.Viewer{ID: 1},
+		Device:  caps.DeviceInfo{Product: "Swiftfin", Platform: "tvOS"},
+		Profile: caps.DeviceProfile{DirectPlayProfiles: []caps.DirectPlayProfile{{Container: "mp4", VideoCodec: "h264", AudioCodec: "aac"}}},
+	})
+	if err != nil || !swiftfin.Client.AlwaysEncodeVideo {
+		t.Fatalf("known app AlwaysEncodeVideo missing: %+v %v", swiftfin.Client, err)
+	}
+
+	// Unknown/generic app also gets AlwaysEncodeVideo despite matching the generic preset.
+	custom, err := provider.Build(lan, frontend.CapabilityRequest{
+		Viewer: &core.Viewer{ID: 1},
+		Device: caps.DeviceInfo{Product: "MysteryTVApp"},
+	})
+	if err != nil || !custom.Client.AlwaysEncodeVideo {
+		t.Fatalf("generic app AlwaysEncodeVideo missing: %+v %v", custom.Client, err)
+	}
+
+	// Non-matching app remains unaffected.
+	other, err := provider.Build(lan, frontend.CapabilityRequest{
+		Viewer: &core.Viewer{ID: 1},
+		Device: caps.DeviceInfo{Product: "VLC"},
+	})
+	if err != nil || other.Client.AlwaysEncodeVideo {
+		t.Fatalf("non-matching app should not get AlwaysEncodeVideo: %+v %v", other.Client, err)
+	}
+}
+
 func catalogHas(apps []compatApp, protocol, name string) bool {
 	for _, app := range apps {
 		if app.Protocol == protocol && app.Name == name {

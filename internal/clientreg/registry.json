@@ -234,6 +234,7 @@
     {
       "protocol": "emby",
       "name": "Infuse",
+      "products": ["Infuse", "Infuse-Direct"],
       "devices": ["Apple TV", "iOS"],
       "directPlay": "reported",
       "note": "capture",
@@ -654,6 +655,30 @@
         {"field": "product", "op": "equals", "value": "pm4k"},
         {"field": "product", "op": "equals", "value": "plex for kodi"}
       ]}
+    },
+    {
+      "id": "infuse",
+      "role": "playback",
+      "preset": "htpc",
+      "video": ["h264", "hevc", "vp9", "mpeg2video", "vc1", "mpeg4"],
+      "audio": ["aac", "ac3", "eac3", "truehd", "dts", "dtshd", "mp3", "flac", "alac", "opus", "vorbis", "pcm"],
+      "dolbyVision": true,
+      "match": {
+        "all": [
+          {"field": "product", "op": "contains", "value": "infuse"},
+          {
+            "any": [
+              {"field": "platform", "op": "equals", "value": "tvos"},
+              {"field": "platform", "op": "equals", "value": "ios"},
+              {"field": "platform", "op": "equals", "value": "ipados"},
+              {"field": "device", "op": "contains", "value": "apple tv"},
+              {"field": "device", "op": "contains", "value": "appletv"},
+              {"field": "device", "op": "contains", "value": "iphone"},
+              {"field": "device", "op": "contains", "value": "ipad"}
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "apple-tv",
@@ -1098,7 +1123,8 @@
             {"field": "platform", "op": "equals", "value": "android"},
             {"field": "platform", "op": "equals", "value": "ios"}
           ]}
-        ]}
+        ]},
+        {"field": "product", "op": "contains", "value": "infuse"}
       ]}
     }
   ]

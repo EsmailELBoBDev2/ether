@@ -20,23 +20,55 @@ import (
 // SubtitleURL authorizes a subtitle by the session's probed stream index.
 // The returned URL contains only the scoped stream capability.
 func (b *Broker) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id string, index int, format string) (string, error) {
-	s, viewer, err := b.access(ctx, a, id)
+	s, ps, err := b.subtitleSession(ctx, a, id)
 	if err != nil {
 		return "", err
+	}
+	return b.subtitleURLForSession(s, ps, index, format)
+}
+
+// SubtitleURLs authorizes a batch of subtitle stream URLs for one session with
+// a single viewer and policy check. Tracks that cannot be delivered are left
+// empty in the returned slice.
+func (b *Broker) SubtitleURLs(ctx context.Context, a frontend.SessionAccess, id string, reqs []frontend.SubtitleURLRequest) ([]string, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	s, ps, err := b.subtitleSession(ctx, a, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(reqs))
+	for i, req := range reqs {
+		if url, e := b.subtitleURLForSession(s, ps, req.Index, req.Format); e == nil {
+			out[i] = url
+		}
+	}
+	return out, nil
+}
+
+func (b *Broker) subtitleSession(ctx context.Context, a frontend.SessionAccess, id string) (*brokerSession, *core.PlaySession, error) {
+	s, viewer, err := b.access(ctx, a, id)
+	if err != nil {
+		return nil, nil, err
 	}
 	if viewer.ID != s.public.ViewerID {
 		viewer, err = b.deps.ActiveViewer(ctx, s.public.ViewerID)
 	}
 	if err != nil || !b.currentMediaPolicy(ctx, viewer, s) {
-		return "", core.ErrUnauthorized
-	}
-	format = strings.ToLower(format)
-	if index < 0 || (!subtitleFormat(format) && format != "hls") {
-		return "", core.ErrNotAvailable
+		return nil, nil, core.ErrUnauthorized
 	}
 	ps, ok := b.deps.Playback.Session(s.playID)
 	if !ok || ps == nil {
-		return "", core.ErrNotFound
+		return nil, nil, core.ErrNotFound
+	}
+	return s, ps, nil
+}
+
+func (b *Broker) subtitleURLForSession(s *brokerSession, ps *core.PlaySession, index int, format string) (string, error) {
+	format = strings.ToLower(format)
+	if index < 0 || (!subtitleFormat(format) && format != "hls") {
+		return "", core.ErrNotAvailable
 	}
 	if format == "hls" {
 		// "hls" asks for the track's rendition in the session's HLS stream.

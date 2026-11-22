@@ -561,6 +561,22 @@ func (r *LocalRuntime) SubtitleURL(ctx context.Context, a frontend.SessionAccess
 	return "", core.ErrNotAvailable
 }
 
+func (r *LocalRuntime) SubtitleURLs(ctx context.Context, a frontend.SessionAccess, id string, reqs []frontend.SubtitleURLRequest) ([]string, error) {
+	if r != nil && r.deps.Sessions != nil {
+		if batch, ok := r.deps.Sessions.(frontend.SubtitleURLBatch); ok {
+			return batch.SubtitleURLs(ctx, a, id, reqs)
+		}
+		out := make([]string, len(reqs))
+		for i, req := range reqs {
+			if url, err := r.deps.Sessions.SubtitleURL(ctx, a, id, req.Index, req.Format); err == nil {
+				out[i] = url
+			}
+		}
+		return out, nil
+	}
+	return nil, core.ErrNotAvailable
+}
+
 func (r *LocalRuntime) Markers(ctx context.Context, a frontend.SessionAccess, id string) (frontend.SessionMarkers, error) {
 	if r != nil && r.deps.Sessions != nil {
 		return r.deps.Sessions.Markers(ctx, a, id)

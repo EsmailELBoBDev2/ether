@@ -105,6 +105,15 @@ func (s surface) MatchDetailSession(ctx context.Context, scope frontend.VersionS
 	}
 	return core.ErrNotAvailable
 }
+func (s surface) ResolveStaleDetailParent(ctx context.Context, scope frontend.VersionScope, handle string) (core.RatingKey, error) {
+	if scope.Protocol != s.protocol {
+		return 0, core.ErrUnauthorized
+	}
+	if resolver, ok := s.broker.(frontend.StaleDetailResolver); ok {
+		return resolver.ResolveStaleDetailParent(ctx, scope, handle)
+	}
+	return 0, core.ErrNotAvailable
+}
 func (s surface) Open(ctx context.Context, r frontend.OpenRequest) (frontend.Session, error) {
 	if r.Protocol != s.protocol {
 		return frontend.Session{}, core.ErrUnauthorized
@@ -146,6 +155,21 @@ func (s surface) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id s
 		return "", core.ErrUnauthorized
 	}
 	return s.broker.SubtitleURL(ctx, a, id, index, format)
+}
+func (s surface) SubtitleURLs(ctx context.Context, a frontend.SessionAccess, id string, reqs []frontend.SubtitleURLRequest) ([]string, error) {
+	if a.Protocol != s.protocol {
+		return nil, core.ErrUnauthorized
+	}
+	if batch, ok := s.broker.(frontend.SubtitleURLBatch); ok {
+		return batch.SubtitleURLs(ctx, a, id, reqs)
+	}
+	out := make([]string, len(reqs))
+	for i, req := range reqs {
+		if url, err := s.broker.SubtitleURL(ctx, a, id, req.Index, req.Format); err == nil {
+			out[i] = url
+		}
+	}
+	return out, nil
 }
 func (s surface) HasAuthoredASSSubtitle(ctx context.Context, a frontend.SessionAccess, id string, index int) bool {
 	if a.Protocol != s.protocol {

@@ -178,12 +178,8 @@ func (i *instance) releaseVariants(r *http.Request, scope frontend.VersionScope,
 // handle machinery (and dialect shaping) the edition versions use. It returns
 // false when this viewer may not be issued the release, so the source is
 // omitted rather than offered with an unusable Id.
-func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, v frontend.ReleaseVariant) (map[string]any, bool) {
-	if i.host.VersionHandles == nil || v.Release.ID == "" {
-		return nil, false
-	}
-	handle, err := i.host.VersionHandles.Issue(i.identityContext(r), scope, key, v.Release.ID)
-	if err != nil || handle == "" {
+func (i *instance) releaseVersionSourceWithHandle(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, v frontend.ReleaseVariant, handle string) (map[string]any, bool) {
+	if handle == "" {
 		return nil, false
 	}
 	source := i.detailMediaSourceDTO(handle, v.Info)
@@ -197,6 +193,17 @@ func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionS
 		i.jellyfinViewerStreamDefaults(r, scope.Viewer, key, original, source, v.Info)
 	}
 	return source, true
+}
+
+func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, v frontend.ReleaseVariant) (map[string]any, bool) {
+	if i.host.VersionHandles == nil || v.Release.ID == "" {
+		return nil, false
+	}
+	handle, err := i.host.VersionHandles.Issue(i.identityContext(r), scope, key, v.Release.ID)
+	if err != nil || handle == "" {
+		return nil, false
+	}
+	return i.releaseVersionSourceWithHandle(r, scope, key, original, v, handle)
 }
 
 // releaseVersionSources appends one Auto source (today's source) followed by
@@ -264,12 +271,37 @@ func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.Vers
 		}
 		out = append(out, auto)
 	}
+	var batched map[string]string
+	if batch, ok := i.host.VersionHandles.(frontend.VersionHandleBatch); ok {
+		releases := make([]string, 0, len(variants))
+		seen := make(map[string]bool, len(variants))
+		for _, v := range variants {
+			if v.Auto || v.Release.ID == "" || seen[v.Release.ID] {
+				continue
+			}
+			seen[v.Release.ID] = true
+			releases = append(releases, v.Release.ID)
+		}
+		if len(releases) > 0 {
+			if issued, err := batch.IssueBatch(i.identityContext(r), scope, key, releases); err == nil {
+				batched = issued
+			}
+		}
+	}
 	offered := 0
 	for _, v := range variants {
 		if v.Auto {
 			continue
 		}
-		source, ok := i.releaseVersionSource(r, scope, key, original, v)
+		var (
+			source map[string]any
+			ok     bool
+		)
+		if batched != nil {
+			source, ok = i.releaseVersionSourceWithHandle(r, scope, key, original, v, batched[v.Release.ID])
+		} else {
+			source, ok = i.releaseVersionSource(r, scope, key, original, v)
+		}
 		if !ok {
 			continue
 		}
@@ -314,13 +346,25 @@ func (i *instance) issueReleaseHandle(r *http.Request, scope frontend.VersionSco
 	return handle
 }
 
-// playbackTitle loads the title facts the variants service needs. It is one
-// cached catalogue read on the single-item PlaybackInfo path.
+// playbackTitle loads the title facts the variants service needs. It uses
+// StoredItem when available to avoid full detail enrichment on PlaybackInfo.
 func (i *instance) playbackTitle(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
 	if i.host.Experience == nil || key == 0 || v == nil {
 		return frontend.Title{}, false
 	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	req := frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}
+	type storedItemReader interface {
+		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
+	}
+	var (
+		detail frontend.ItemDetail
+		err    error
+	)
+	if stored, ok := i.host.Experience.(storedItemReader); ok {
+		detail, err = stored.StoredItem(i.identityContext(r), req)
+	} else {
+		detail, err = i.host.Experience.Item(i.identityContext(r), req)
+	}
 	if err != nil || detail.Title.Title == "" {
 		return frontend.Title{}, false
 	}

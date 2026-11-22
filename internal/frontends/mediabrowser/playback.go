@@ -262,8 +262,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	if itemIDError != nil {
 		if target, _, _, e := i.resolveSource(r, scope, wireID); e == nil && target != 0 {
 			key, versionFromItem = target, wireID
+		} else if staleItem, ok := i.resolveStaleSource(r, scope, wireID); ok && staleItem != 0 {
+			key = staleItem
 		}
-		if versionFromItem == "" {
+		if key == 0 && versionFromItem == "" {
 			if i.host.LiveTV == nil {
 				http.NotFound(w, r)
 				return
@@ -393,10 +395,18 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 		target, kind, tag, e := i.resolveSource(r, scope, version)
 		if e != nil || target != key || (versionFromItem != "" && !sameVersionHandle(version, versionFromItem)) {
-			http.NotFound(w, r)
-			return
-		}
-		if kind == "detail" {
+			if versionFromItem == "" {
+				if staleItem, ok := i.resolveStaleSource(r, scope, version); ok && staleItem == key {
+					version = ""
+				} else {
+					http.NotFound(w, r)
+					return
+				}
+			} else {
+				http.NotFound(w, r)
+				return
+			}
+		} else if kind == "detail" {
 			detailSource, expectedETag, version = version, tag, ""
 		} else {
 			intent.ExactVersion = true
@@ -415,10 +425,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// when the client did not pick a version and this is a single playable
 	// item, never a live channel or a plugin kind.
 	var variants []frontend.ReleaseVariant
-	titleLanguage := ""
+	titleLanguage, titleName := "", ""
 	if i.host.Editions != nil && !versionRequested && channel == "" && !key.IsPluginKey() {
 		if title, ok := i.playbackTitle(r, v, key); ok {
-			titleLanguage = title.Language
+			titleLanguage, titleName = title.Language, title.Title
 			variants = i.releaseVariants(r, scope, title)
 		}
 	}
@@ -630,6 +640,16 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 					i.shapeLiveMediaSource(source, sourceID, channelName, session.ID, url, media, true)
 				} else if subtitleService := i.host.Sessions; subtitleService != nil {
 					streams := i.mediaStreams(plan.Media.Streams)
+					subAccess := frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}
+					type subSlot struct {
+						dtoIndex  int
+						stream    frontend.StreamInfo
+						embed     bool
+						hlsReqIdx int
+						vttReqIdx int
+					}
+					var slots []subSlot
+					var reqs []frontend.SubtitleURLRequest
 					n := -1
 					for _, stream := range plan.Media.Streams {
 						if mediaStreamKind(stream.Type) == "" {
@@ -639,18 +659,6 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 						if stream.Type != "subtitle" {
 							continue
 						}
-						// A track the HLS stream carries as a rendition is
-						// delivered there, as Jellyfin does for "Hls" clients.
-						if format == frontend.StreamHLS {
-							if rendition, e := subtitleService.SubtitleURL(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, stream.Index, "hls"); e == nil && rendition != "" {
-								dto := streams[n].(map[string]any)
-								dto["DeliveryMethod"] = "Hls"
-								delete(dto, "DeliveryUrl")
-								dto["IsTextSubtitleStream"] = true
-								dto["SupportsExternalStream"] = true
-								continue
-							}
-						}
 						// A direct-played file carries its embedded tracks: a
 						// player that declares it embeds this format renders it
 						// from the file, as Jellyfin answers. Delivering it as an
@@ -659,20 +667,62 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 						// Wholphin spun until it arrived, and the added side
 						// tracks broke Jellyfin for Android's track mapping.
 						if format == frontend.StreamDirect && !stream.External && stream.ExternalURL == "" && embedsSubtitle(body.DeviceProfile.SubtitleProfiles, stream.Codec) {
-							dto := streams[n].(map[string]any)
+							slots = append(slots, subSlot{dtoIndex: n, stream: stream, embed: true, hlsReqIdx: -1, vttReqIdx: -1})
+							continue
+						}
+						slot := subSlot{dtoIndex: n, stream: stream, hlsReqIdx: -1, vttReqIdx: -1}
+						if format == frontend.StreamHLS {
+							slot.hlsReqIdx = len(reqs)
+							reqs = append(reqs, frontend.SubtitleURLRequest{Index: stream.Index, Format: "hls"})
+						}
+						slot.vttReqIdx = len(reqs)
+						reqs = append(reqs, frontend.SubtitleURLRequest{Index: stream.Index, Format: "vtt"})
+						slots = append(slots, slot)
+					}
+					var urls []string
+					if len(reqs) > 0 {
+						if batch, ok := subtitleService.(frontend.SubtitleURLBatch); ok {
+							if got, err := batch.SubtitleURLs(r.Context(), subAccess, session.ID, reqs); err == nil && len(got) == len(reqs) {
+								urls = got
+							}
+						}
+						if urls == nil {
+							urls = make([]string, len(reqs))
+							for idx, req := range reqs {
+								if u, e := subtitleService.SubtitleURL(r.Context(), subAccess, session.ID, req.Index, req.Format); e == nil {
+									urls[idx] = u
+								}
+							}
+						}
+					}
+					prefix, hasPrefix := r.Context().Value(prefixKey{}).(string)
+					for _, slot := range slots {
+						dto := streams[slot.dtoIndex].(map[string]any)
+						// A track the HLS stream carries as a rendition is
+						// delivered there, as Jellyfin does for "Hls" clients.
+						if slot.hlsReqIdx >= 0 && slot.hlsReqIdx < len(urls) && urls[slot.hlsReqIdx] != "" {
+							dto["DeliveryMethod"] = "Hls"
+							delete(dto, "DeliveryUrl")
+							dto["IsTextSubtitleStream"] = true
+							dto["SupportsExternalStream"] = true
+							continue
+						}
+						if slot.embed {
 							dto["DeliveryMethod"] = "Embed"
 							delete(dto, "DeliveryUrl")
-							dto["IsTextSubtitleStream"] = frontend.IsTextSubtitle(stream.Codec)
+							dto["IsTextSubtitleStream"] = frontend.IsTextSubtitle(slot.stream.Codec)
 							continue
 						}
-						subtitleURL, e := subtitleService.SubtitleURL(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, stream.Index, "vtt")
-						if e != nil || !strings.HasPrefix(subtitleURL, "/sessions/media/") || strings.ContainsAny(subtitleURL, "\r\n") {
+						if slot.vttReqIdx < 0 || slot.vttReqIdx >= len(urls) {
 							continue
 						}
-						if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
+						subtitleURL := urls[slot.vttReqIdx]
+						if !strings.HasPrefix(subtitleURL, "/sessions/media/") || strings.ContainsAny(subtitleURL, "\r\n") {
+							continue
+						}
+						if hasPrefix {
 							subtitleURL = prefix + subtitleURL
 						}
-						dto := streams[n].(map[string]any)
 						dto["DeliveryUrl"] = subtitleURL
 						dto["DeliveryMethod"] = "External"
 						dto["IsTextSubtitleStream"] = true
@@ -728,9 +778,14 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		if body.DeviceProfile.AlwaysUseMostCompatibleTranscodingProfile {
 			source["UseMostCompatibleTranscodingProfile"] = true
 		}
-		if name, _ := source["Name"].(string); name == "" && key != 0 && i.host.Experience != nil {
-			if detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: dev, Key: key}); err == nil && detail.Title.Title != "" {
-				source["Name"] = detail.Title.Title
+		if name, _ := source["Name"].(string); name == "" && key != 0 {
+			if titleName == "" {
+				if title, ok := i.playbackTitle(r, v, key); ok {
+					titleName = title.Title
+				}
+			}
+			if titleName != "" {
+				source["Name"] = titleName
 			}
 		}
 	}
@@ -1438,9 +1493,11 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 				} else {
 					version = r.PathValue("id")
 				}
+			} else if staleItem, ok := i.resolveStaleSource(r, versionScope, r.PathValue("id")); ok && staleItem != 0 {
+				key = staleItem
 			}
 		}
-		if version == "" && detailSource == "" {
+		if key == 0 && version == "" && detailSource == "" {
 			if i.host.LiveTV == nil {
 				http.NotFound(w, r)
 				return
@@ -1496,10 +1553,14 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 				}
 				target, kind, tag, e := i.resolveSource(r, versionScope, sourceIDs[0])
 				if e != nil || target != key {
-					http.NotFound(w, r)
-					return
-				}
-				if kind == "detail" {
+					if staleItem, ok := i.resolveStaleSource(r, versionScope, sourceIDs[0]); ok && staleItem == key {
+						// Stale MediaSourceId for this item and viewer: map to
+						// the current source for (key, viewer) instead of 404.
+					} else {
+						http.NotFound(w, r)
+						return
+					}
+				} else if kind == "detail" {
 					detailSource, expectedETag = sourceIDs[0], tag
 				} else {
 					version = sourceIDs[0]
@@ -1517,12 +1578,13 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	explicitSession := len(vals) == 1 && vals[0] != ""
 	sessionID := ""
 	for _, session := range sessions {
 		if session.Item != key || session.Channel != channel || session.Protocol != i.protocol || session.Device.ID != access.Device.ID {
 			continue
 		}
-		if len(vals) == 1 && vals[0] != "" && session.ID != vals[0] {
+		if explicitSession && session.ID != vals[0] {
 			continue
 		}
 		if sessionID != "" {
@@ -1531,11 +1593,28 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 		}
 		sessionID = session.ID
 	}
+	if sessionID != "" && !explicitSession {
+		// When a client omits PlaySessionId (e.g. Infuse Static=true) and sends
+		// a verified handle whose source moved on during PlaybackInfo, map to
+		// the current session or open the requested version instead of 404ing.
+		if detailSource != "" {
+			if planner, ok := i.host.Sessions.(frontend.DetailPlanner); ok {
+				if errors.Is(planner.MatchDetailSession(i.identityContext(r), versionScope, detailSource, sessionID), frontend.ErrSourceGone) {
+					detailSource = ""
+				}
+			}
+		}
+		if version != "" && i.host.VersionHandles != nil && channel == "" && format == frontend.StreamDirect && queryBool(r, "Static", false) {
+			if i.host.VersionHandles.MatchSession(i.identityContext(r), versionScope, version, sessionID) != nil {
+				sessionID = ""
+			}
+		}
+	}
 	// Infuse opens PlaybackInfo, then ignores PlaySessionId and reads
 	// /Videos/{id}/stream?Static=true. Reuse the session PlaybackInfo
 	// already started so Range hits the same file. Without a session,
 	// open the source through the authenticated lazy broker.
-	if sessionID == "" && channel == "" && format == frontend.StreamDirect && queryBool(r, "Static", false) && (len(vals) == 0 || vals[0] == "") {
+	if sessionID == "" && channel == "" && format == frontend.StreamDirect && queryBool(r, "Static", false) && !explicitSession {
 		lazy, ok := i.host.LazyStreams.(frontend.AuthenticatedLazyStreams)
 		if !ok || i.host.Capabilities == nil {
 			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
@@ -1559,7 +1638,7 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	i.serveAliasSession(w, r, access, sessions, sessionID, versionScope, version, detailSource, format)
+	i.serveAliasSession(w, r, access, sessions, sessionID, versionScope, version, detailSource, format, explicitSession)
 }
 
 // Both MediaBrowser dialects resolve tune failures with a native playback code.

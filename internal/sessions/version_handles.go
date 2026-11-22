@@ -278,6 +278,33 @@ func (v *versionHandles) Resolve(ctx context.Context, scope frontend.VersionScop
 	return frontend.VersionTarget{Item: item, Release: release}, err
 }
 
+// ResolveStaleParent identifies the parent item of a previously issued handle
+// on this surface whose release is no longer offered, while still verifying
+// viewer authorization and item visibility.
+func (v *versionHandles) ResolveStaleParent(ctx context.Context, scope frontend.VersionScope, handle string) (core.RatingKey, error) {
+	item, _, err := v.lookupRow(ctx, scope, handle)
+	if err != nil {
+		return 0, err
+	}
+	viewer, err := v.broker.viewer(ctx, scope.Viewer)
+	if err != nil {
+		return 0, err
+	}
+	caps := v.broker.playCaps(viewer, v.protocol, scope.Device, scope.Caps)
+	viewer, err = v.broker.confirm(ctx, viewer, caps)
+	if err != nil {
+		return 0, err
+	}
+	title, err := v.broker.deps.Lookup(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, scope.Device, item)
+	if err != nil || title == nil || title.Key != item || (!title.Released.IsZero() && title.Released.After(v.broker.deps.Now())) {
+		return 0, core.ErrNotFound
+	}
+	if title.Type == core.TypeShow || title.Type == core.TypeSeason {
+		return 0, core.ErrNotFound
+	}
+	return item, nil
+}
+
 func (v *versionHandles) resolveRecord(ctx context.Context, scope frontend.VersionScope, handle string) (core.RatingKey, string, error) {
 	item, release, err := v.lookupRow(ctx, scope, handle)
 	if err != nil {

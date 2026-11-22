@@ -33,6 +33,13 @@ type VersionHandles interface {
 	MatchSession(context.Context, VersionScope, string, string) error
 }
 
+// StaleVersionResolver identifies a previously issued version handle on this
+// surface whose release is no longer offered, while still verifying the viewer
+// can access its parent item.
+type StaleVersionResolver interface {
+	ResolveStaleParent(context.Context, VersionScope, string) (core.RatingKey, error)
+}
+
 // Editions is an optional local-media catalogue and release variant resolver.
 type Editions interface {
 	Editions(context.Context, *core.Viewer, core.Device, core.RatingKey) ([]Version, error)

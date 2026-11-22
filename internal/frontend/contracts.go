@@ -1139,6 +1139,25 @@ type DetailPlanner interface {
 	MatchDetailSession(ctx context.Context, scope VersionScope, handle, sessionID string) error
 }
 
+// StaleDetailResolver identifies an expired detail-source handle that belonged
+// to the same authenticated viewer, device, and surface for an accessible item.
+type StaleDetailResolver interface {
+	ResolveStaleDetailParent(ctx context.Context, scope VersionScope, handle string) (RatingKey, error)
+}
+
+// SubtitleURLRequest describes one subtitle stream URL to authorize in a batch.
+type SubtitleURLRequest struct {
+	Index  int
+	Format string
+}
+
+// SubtitleURLBatch authorizes multiple subtitle stream URLs for one session
+// with a single viewer and policy check. Entries that cannot be delivered are
+// returned as empty strings in the corresponding slice position.
+type SubtitleURLBatch interface {
+	SubtitleURLs(ctx context.Context, access SessionAccess, sessionID string, reqs []SubtitleURLRequest) ([]string, error)
+}
+
 type DetailSourceTarget struct {
 	Item RatingKey
 	ETag string
@@ -1272,6 +1291,10 @@ type SessionAccess struct {
 	Device   core.Device
 	Protocol Protocol
 	Owner    bool
+	// VisibleOnly restricts Sessions() to actively playing or explicitly
+	// paused sessions (for activity/device lists), hiding freshly opened
+	// Starting sessions before their first media byte.
+	VisibleOnly bool
 }
 
 // ScopedMedia serves a stream only to the authenticated device that owns it.

@@ -609,11 +609,12 @@ type Transcode struct {
 	VBVReservoir       bool     `json:"vbvReservoir"`       // constant-quality + generous VBV for capped transcodes
 	VBVBufferSeconds   int      `json:"vbvBufferSeconds"`   // VBV buffer depth in seconds of maxrate (default 8)
 	// ThrottleSeconds is how far ahead of the player ffmpeg may run before it
-	// is paused, for every app. 0 keeps the built-in distances: 16 seconds
-	// when the video is re-encoded, two minutes when it is copied.
-	ThrottleSeconds int `json:"throttleSeconds"`
-	SpikeGovernor      bool     `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
-	SpikeMarginPercent int      `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
+	// is paused, for every app (non-live streams; 16–600 seconds). 0 keeps the
+	// built-in distances: 16 seconds when the video is re-encoded, two minutes
+	// when it is copied.
+	ThrottleSeconds    int  `json:"throttleSeconds"`
+	SpikeGovernor      bool `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
+	SpikeMarginPercent int  `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
 }
 
 // VideoTranscodingOff reports whether video re-encoding is disabled for movies

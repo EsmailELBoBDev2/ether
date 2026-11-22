@@ -264,8 +264,8 @@ type Manager struct {
 	// graphErr is the latest owner-visible reason a graph could not be built.
 	graphErr string
 
-	mu              sync.Mutex
-	cfg             config.Transcode
+	mu  sync.Mutex
+	cfg config.Transcode
 	// throttleSeconds mirrors cfg.ThrottleSeconds for sessions, which read it
 	// under their own lock and must not take the manager's.
 	throttleSeconds atomic.Int64

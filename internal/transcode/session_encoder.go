@@ -97,17 +97,19 @@ func (s *Session) aheadLimit() int {
 	if s.speculative {
 		return 2
 	}
-	// The owner's throttle distance applies to encodes and copies alike.
-	if seconds := s.m.throttleSeconds.Load(); seconds > 0 && s.segDur > 0 {
-		return max(2, int(time.Duration(seconds)*time.Second/s.segDur))
-	}
-	// Encoders compete at normal priority while playback needs media. Once
-	// four segments are ready the reversible pause/resume throttle yields
-	// the CPU until only two remain. Renicing a running child back from 5
-	// to 0 requires privileges on Unix; never strand playback at nice 5.
-	// Copies retain the owner's larger read-ahead and background priority.
-	if !s.liveInput && s.decision.EncodesVideo(s.info) {
-		return 4
+	if !s.liveInput {
+		// The owner's throttle distance applies to non-live encodes and copies alike.
+		if seconds := s.m.throttleSeconds.Load(); seconds > 0 && s.segDur > 0 {
+			return max(4, int(time.Duration(seconds)*time.Second/s.segDur))
+		}
+		// Encoders compete at normal priority while playback needs media. Once
+		// four segments are ready the reversible pause/resume throttle yields
+		// the CPU until only two remain. Renicing a running child back from 5
+		// to 0 requires privileges on Unix; never strand playback at nice 5.
+		// Copies retain the owner's larger read-ahead and background priority.
+		if s.decision.EncodesVideo(s.info) {
+			return 4
+		}
 	}
 	limit := int(s.m.opts.maxAhead / s.segDur)
 	if limit < 4 {

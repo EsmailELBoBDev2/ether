@@ -60,3 +60,29 @@ func TestVideoTranscodingConfigValidation(t *testing.T) {
 	}
 	t.Fatal("invalid transcode.videoTranscoding value was accepted")
 }
+
+func TestThrottleSecondsValidation(t *testing.T) {
+	for _, valid := range []int{0, 16, 60, 600} {
+		cfg := config.Defaults(t.TempDir())
+		cfg.Transcode.ThrottleSeconds = valid
+		for _, e := range admin.ValidateConfig(cfg) {
+			if e.Field == "transcode.throttleSeconds" {
+				t.Fatalf("valid throttleSeconds=%d rejected: %v", valid, e)
+			}
+		}
+	}
+	for _, invalid := range []int{-1, 8, 15, 601} {
+		cfg := config.Defaults(t.TempDir())
+		cfg.Transcode.ThrottleSeconds = invalid
+		found := false
+		for _, e := range admin.ValidateConfig(cfg) {
+			if e.Field == "transcode.throttleSeconds" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("invalid throttleSeconds=%d was accepted", invalid)
+		}
+	}
+}

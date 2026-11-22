@@ -940,6 +940,20 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 step: 1,
               },
               {
+                key: "throttleSeconds",
+                label: {
+                  source: "Throttle buffer (seconds)",
+                },
+                help: {
+                  source:
+                    "How far ahead of the viewer Ether prepares video before it pauses the work, in every app (16–600 seconds; Live TV is unaffected). 0 uses the built-in distance: 16 seconds when converting, two minutes otherwise. A larger number survives short network drops but uses more processor, disk and download quota for video that may never be watched.",
+                },
+                kind: "number",
+                min: 0,
+                max: 600,
+                step: 1,
+              },
+              {
                 key: "remoteMaxBitrateKbps",
                 label: {
                   source: "Remote bitrate cap",

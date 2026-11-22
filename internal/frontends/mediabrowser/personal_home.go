@@ -789,6 +789,9 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		}
 		titles = kept
 	}
+	if !latest && !shelf.row.RankedTop10 && personalSortAsked(r, q) {
+		sortPersonalTitles(titles, q)
+	}
 	if shelf.row.RankedTop10 {
 		titles = titles[:min(10, len(titles))]
 	}
@@ -798,6 +801,60 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		limit = total
 	}
 	return paging.Slice(titles, offset, limit), total, nil
+}
+
+// personalSortAsked reports whether the app picked a sort for a personal row
+// opened as a folder. Apps open every view folder with SortBy=SortName
+// ascending, so that default keeps the row's own (curated) order; any other
+// choice from the app's sort menu reorders the row.
+func personalSortAsked(r *http.Request, q frontend.ItemQuery) bool {
+	if r == nil || q.Sort == "" || len(route.Query(r.URL.Query(), "SortBy")) == 0 {
+		return false
+	}
+	return !(q.Sort == frontend.SortTitle && !q.Desc)
+}
+
+// sortPersonalTitles orders a row's titles in place by the facts the titles
+// already carry. Orders that need viewer state keep the row's order.
+func sortPersonalTitles(titles []frontend.Title, q frontend.ItemQuery) {
+	var less func(a, b *frontend.Title) int
+	cmpFloat := func(x, y float64) int {
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
+		}
+		return 0
+	}
+	switch q.Sort {
+	case frontend.SortTitle:
+		less = func(a, b *frontend.Title) int {
+			return strings.Compare(frontend.EffectiveSortTitle(a.Title, a.SortTitle), frontend.EffectiveSortTitle(b.Title, b.SortTitle))
+		}
+	case frontend.SortRating:
+		less = func(a, b *frontend.Title) int { return cmpFloat(a.Rating, b.Rating) }
+	case frontend.SortPopularity:
+		less = func(a, b *frontend.Title) int { return cmpFloat(a.Popularity, b.Popularity) }
+	case frontend.SortDuration:
+		less = func(a, b *frontend.Title) int { return cmpFloat(float64(a.Runtime), float64(b.Runtime)) }
+	case frontend.SortReleased, frontend.SortAdded, frontend.SortYear:
+		less = func(a, b *frontend.Title) int {
+			if c := a.Released.Compare(b.Released); c != 0 {
+				return c
+			}
+			return cmpFloat(float64(a.Year), float64(b.Year))
+		}
+	default:
+		return
+	}
+	sort.SliceStable(titles, func(x, y int) bool {
+		c := less(&titles[x], &titles[y])
+		if q.Desc {
+			return c > 0
+		}
+		return c < 0
+	})
 }
 
 func titleTypeMatches(typ frontend.MediaType, types []frontend.MediaType) bool {

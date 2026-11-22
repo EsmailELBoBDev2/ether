@@ -51,6 +51,7 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		EnableDirectStream  *caps.FlexBool     `json:"EnableDirectStream"`
 		EnableTranscoding   *caps.FlexBool     `json:"EnableTranscoding"`
 		StartTimeTicks      caps.FlexInt64     `json:"StartTimeTicks"`
+		MaxStreamingBitrate caps.FlexInt64     `json:"MaxStreamingBitrate"`
 		AudioStreamIndex    json.RawMessage    `json:"AudioStreamIndex"`
 		SubtitleStreamIndex json.RawMessage    `json:"SubtitleStreamIndex"`
 	}
@@ -94,6 +95,14 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		StartTimeTicks:      int64(raw.StartTimeTicks),
 		AudioStreamIndex:    flexInt(raw.AudioStreamIndex),
 		SubtitleStreamIndex: flexInt(raw.SubtitleStreamIndex),
+	}
+	// Jellyfin's PlaybackInfoDto carries the player's quality choice as its
+	// own MaxStreamingBitrate; Jellyfin Web leaves the device profile's at the
+	// device maximum. The lower of the two is the limit, as with the query.
+	if limit := int64(raw.MaxStreamingBitrate); limit > 0 && limit <= 1<<31-1 {
+		if p.DeviceProfile.MaxStreamingBitrate == 0 || int(limit) < p.DeviceProfile.MaxStreamingBitrate {
+			p.DeviceProfile.MaxStreamingBitrate = int(limit)
+		}
 	}
 	return nil
 }
@@ -725,6 +734,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if (i.protocol == "emby" || i.protocol == "jellyfin") && channel == "" {
 		applyPlannedStreamIndexes(source, media, plan.Decision)
+		if i.protocol == "jellyfin" {
+			i.jellyfinSideSubtitleDefault(r, v, key, source, media, opts.SubtitleStream, subtitleSet)
+		}
 	}
 	// With no explicit version pick, list Auto then the ranked release
 	// variants so the app's version picker offers them; a pick resolves to

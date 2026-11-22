@@ -126,6 +126,20 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 			}
 		}
 	}
+	// Item-level chapters (declared, or derived from an audiobook's ordered
+	// parts) are known before any source is probed; a probed version's own
+	// chapters replace them below.
+	if len(d.Chapters) > 0 {
+		chapters := make([]any, 0, len(d.Chapters))
+		for index, chapter := range d.Chapters {
+			entry := map[string]any{"ChapterIndex": index, "MarkerType": "Chapter", "StartPositionTicks": chapter.Start.Nanoseconds() / 100}
+			if chapter.Title != "" {
+				entry["Name"] = chapter.Title
+			}
+			chapters = append(chapters, entry)
+		}
+		m["Chapters"] = chapters
+	}
 	v, ok := embyDetailVersion(d.Versions)
 	if !ok {
 		return

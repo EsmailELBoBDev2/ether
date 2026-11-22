@@ -263,7 +263,8 @@ export function createSportsHandler(
         now,
         log: (level, message, fields) => {
           if (typeof host.log === "function") {
-            host.log(level, message, fields);
+            const detail = fields ? `${message} ${JSON.stringify(fields)}` : message;
+            host.log(level, detail);
           }
         },
       };

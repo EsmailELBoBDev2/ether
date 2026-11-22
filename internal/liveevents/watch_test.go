@@ -261,6 +261,7 @@ func TestWatchMatcherIntegrationWithLiveTVService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("livetv.New: %v", err)
 	}
+	defer ltv.Close()
 
 	ch := livetv.Channel{
 		ID: "ch-sports-1", Number: "40", Name: "Metro Sports 1 HD",

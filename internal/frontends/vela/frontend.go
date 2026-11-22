@@ -252,6 +252,7 @@ type instance struct {
 	eventsHeartbeat    time.Duration
 	eventsWriteTimeout time.Duration
 	disconnectGrace    time.Duration
+	liveEventInterval  time.Duration
 
 	host            frontend.Host
 	ctx             context.Context
@@ -822,6 +823,7 @@ func (i *instance) routes() {
 	i.route("GET", "/live/channels", i.channels)
 	i.route("GET", "/live/guide", i.guide)
 	i.route("POST", "/live/guide/window", i.guideWindow)
+	i.route("GET", "/live/ticker", i.liveTicker)
 	i.route("POST", "/titles/{id}/watch", i.watch)
 	i.route("POST", "/titles/{id}/read", i.read)
 	i.route("GET", "/read/{ticket}", i.readFile)

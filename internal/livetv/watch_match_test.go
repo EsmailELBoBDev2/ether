@@ -55,6 +55,7 @@ func TestWatchCandidatesWindowVisibilityAndStremioEventChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("livetv.New: %v", err)
 	}
+	defer svc.Close()
 
 	saveCh := func(c Channel) {
 		t.Helper()

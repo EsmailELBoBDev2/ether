@@ -189,6 +189,9 @@ func (b pluginLiveFeedBridge) Entities(ctx context.Context, _ *core.User, q scre
 	if q.Query != "" {
 		vals.Set("q", q.Query)
 	}
+	if len(q.IDs) > 0 {
+		vals.Set("ids", strings.Join(q.IDs, ","))
+	}
 	path := "/ether/v1/live/" + url.PathEscape(q.Feed) + "/entities"
 	if encoded := vals.Encode(); encoded != "" {
 		path += "?" + encoded
@@ -258,6 +261,13 @@ func (h liveEventsScreenHub) Standings(ctx context.Context, _ *core.User, plugin
 func (h liveEventsScreenHub) Entities(ctx context.Context, _ *core.User, q screens.EntityQuery) ([]core.LiveEventEntity, error) {
 	if h.hub == nil || q.PluginID == "" || q.Feed == "" {
 		return nil, nil
+	}
+	if len(q.IDs) > 0 {
+		resp, err := h.hub.GetEntitiesByIDs(ctx, q.PluginID, q.Feed, q.Kind, q.IDs)
+		if err != nil {
+			return nil, mapScreenHubError(err)
+		}
+		return resp.Entities, nil
 	}
 	resp, err := h.hub.GetEntities(ctx, q.PluginID, q.Feed, q.Kind, q.League, q.Query)
 	if err != nil {

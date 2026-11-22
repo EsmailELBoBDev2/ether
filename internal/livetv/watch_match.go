@@ -30,7 +30,8 @@ const (
 )
 
 // WatchGuideEntry is one viewer-visible channel + overlapping guide programme
-// returned by a bounded guide lookup for A5/A6 live-event matching.
+// (or a callsign-matched channel without guide data) returned by a bounded
+// lookup for A5/A6 live-event matching.
 type WatchGuideEntry struct {
 	ChannelID     string
 	ChannelName   string
@@ -39,6 +40,7 @@ type WatchGuideEntry struct {
 	TvgName       string
 	GuideID       string
 	IsEventAddon  bool
+	ChannelOnly   bool
 	Programme     Programme
 	Live          bool
 }
@@ -110,25 +112,33 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 	normCallsigns := normalizeCallsignHints(callsigns)
 	byGuideKey := make(map[guideKey][]Channel)
 	targeted := make(map[guideKey][]Channel)
+	var callsignMatched []Channel
 	targetedCount := 0
 
 	for _, c := range all {
-		if c.Kind == "virtual" || c.GuideID == "" {
+		if c.Kind == "virtual" {
 			continue
 		}
 		if !s.audienceAllowed(ctx, u, c) {
 			continue
 		}
+		matchesCallsign := channelMatchesAnyCallsignHint(c, normCallsigns)
+		if matchesCallsign && len(callsignMatched) < watchTargetedChannelCap {
+			callsignMatched = append(callsignMatched, c)
+		}
+		if c.GuideID == "" {
+			continue
+		}
 		gk := guideKey{source: guideSource(c), guide: c.GuideID}
 		byGuideKey[gk] = append(byGuideKey[gk], c)
-		if targetedCount < watchTargetedChannelCap && (isStremioEventChannel(c) || channelMatchesAnyCallsignHint(c, normCallsigns)) {
+		if targetedCount < watchTargetedChannelCap && (isStremioEventChannel(c) || matchesCallsign) {
 			if _, exists := targeted[gk]; !exists {
 				targetedCount++
 			}
 			targeted[gk] = append(targeted[gk], c)
 		}
 	}
-	if len(byGuideKey) == 0 {
+	if len(byGuideKey) == 0 && len(callsignMatched) == 0 {
 		return nil, rev, nil
 	}
 
@@ -138,6 +148,7 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 		startMS int64
 	}
 	seen := make(map[progDedupKey]struct{})
+	channelsWithProg := make(map[string]bool)
 	var out []WatchGuideEntry
 	now := s.o.Now()
 
@@ -153,6 +164,10 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 		}
 		live := !now.Before(p.Start) && now.Before(p.End)
 		for _, c := range chans {
+			// Record that this channel has real guide data in [from, until) even
+			// if policy hides the programme, so callsign-only fallback never
+			// overrides known EPG schedules or policy-blocked programmes.
+			channelsWithProg[c.ID] = true
 			cp := p
 			cp.ChannelID = c.ID
 			if cp.ID == "" {
@@ -189,27 +204,48 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 	}
 
 	// Step 2a: Primary time-indexed slice [from, until) via livetv_programmes_time.
-	fromMS := from.UnixMilli()
-	untilMS := until.UnixMilli()
-	if err := s.scanWatchTimeSlice(ctx,
-		`SELECT source_id, channel_id, data FROM livetv_programmes WHERE start_ms>=? AND start_ms<? AND end_ms>? ORDER BY start_ms ASC LIMIT ?`,
-		[]any{fromMS, untilMS, fromMS, watchPrimaryWindowLimit},
-		byGuideKey,
-		appendCandidate,
-	); err != nil {
-		return nil, "", err
+	if len(byGuideKey) > 0 {
+		fromMS := from.UnixMilli()
+		untilMS := until.UnixMilli()
+		if err := s.scanWatchTimeSlice(ctx,
+			`SELECT source_id, channel_id, data FROM livetv_programmes WHERE start_ms>=? AND start_ms<? AND end_ms>? ORDER BY start_ms ASC LIMIT ?`,
+			[]any{fromMS, untilMS, fromMS, watchPrimaryWindowLimit},
+			byGuideKey,
+			appendCandidate,
+		); err != nil {
+			return nil, "", err
+		}
+
+		// Step 2b: Carry-over slice for programmes that started shortly before from
+		// and are still airing across from.
+		carryFromMS := from.Add(-watchCarryoverLookback).UnixMilli()
+		if err := s.scanWatchTimeSlice(ctx,
+			`SELECT source_id, channel_id, data FROM livetv_programmes WHERE start_ms>=? AND start_ms<? AND end_ms>? ORDER BY start_ms DESC LIMIT ?`,
+			[]any{carryFromMS, fromMS, fromMS, watchCarryoverWindowLimit},
+			byGuideKey,
+			appendCandidate,
+		); err != nil {
+			return nil, "", err
+		}
 	}
 
-	// Step 2b: Carry-over slice for programmes that started shortly before from
-	// and are still airing across from.
-	carryFromMS := from.Add(-watchCarryoverLookback).UnixMilli()
-	if err := s.scanWatchTimeSlice(ctx,
-		`SELECT source_id, channel_id, data FROM livetv_programmes WHERE start_ms>=? AND start_ms<? AND end_ms>? ORDER BY start_ms DESC LIMIT ?`,
-		[]any{carryFromMS, fromMS, fromMS, watchCarryoverWindowLimit},
-		byGuideKey,
-		appendCandidate,
-	); err != nil {
-		return nil, "", err
+	// Step 3: Callsign-only fallback for viewer-visible channels matching an
+	// event's broadcast callsign that have no EPG guide data in [from, until)
+	// (e.g. IPTV playlists without XMLTV guide data).
+	for _, c := range callsignMatched {
+		if channelsWithProg[c.ID] {
+			continue
+		}
+		out = append(out, WatchGuideEntry{
+			ChannelID:     c.ID,
+			ChannelName:   c.Name,
+			ChannelNumber: c.Number,
+			ChannelLogo:   c.Logo,
+			TvgName:       c.TvgName,
+			GuideID:       c.GuideID,
+			IsEventAddon:  isStremioEventChannel(c),
+			ChannelOnly:   true,
+		})
 	}
 
 	return out, rev, nil
@@ -278,8 +314,26 @@ func (s *Service) CurrentProgrammeForWatch(ctx context.Context, u *core.User, ch
 		return nil, "", nil
 	}
 	p, found, err := s.programmeAt(ctx, c, at)
-	if err != nil || !found {
+	if err != nil {
 		return nil, "", err
+	}
+	if !found {
+		// Guide-free fallback (A6): channel is visible to the viewer but has
+		// no current EPG programme; expose its metadata so the matcher can
+		// link it to an unambiguously matching live event.
+		entry := &WatchGuideEntry{
+			ChannelID:     c.ID,
+			ChannelName:   c.Name,
+			ChannelNumber: c.Number,
+			ChannelLogo:   c.Logo,
+			TvgName:       c.TvgName,
+			GuideID:       c.GuideID,
+			IsEventAddon:  isStremioEventChannel(c),
+			ChannelOnly:   true,
+			Live:          true,
+		}
+		progKey := fmt.Sprintf("%s|channel-only|%s|%s", c.ID, c.Name, c.TvgName)
+		return entry, progKey, nil
 	}
 	if !s.allowedProgramme(ctx, u, c, &p) {
 		return nil, "", nil
@@ -325,10 +379,32 @@ func normalizeCallsignHints(callsigns []string) []string {
 		return nil
 	}
 	out := make([]string, 0, len(callsigns))
-	for _, raw := range callsigns {
-		norm := compactAlnumLower(raw)
+	add := func(norm string) {
 		if len(norm) >= 2 && !slices.Contains(out, norm) {
 			out = append(out, norm)
+		}
+	}
+	for _, raw := range callsigns {
+		norm := compactAlnumLower(raw)
+		add(norm)
+		// Strip common network/channel suffixes so "USA Network" matches
+		// channel "USA" and "Golf Chnl" matches "Golf Channel".
+		for _, suffix := range []string{"network", "channel", "chnl", "net"} {
+			if len(norm) > len(suffix)+1 && strings.HasSuffix(norm, suffix) {
+				add(strings.TrimSuffix(norm, suffix))
+			}
+		}
+		switch norm {
+		case "fs1":
+			add("foxsports1")
+		case "foxsports1":
+			add("fs1")
+		case "fs2":
+			add("foxsports2")
+		case "foxsports2":
+			add("fs2")
+		case "cbssn":
+			add("cbssports")
 		}
 	}
 	return out

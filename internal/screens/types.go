@@ -32,13 +32,14 @@ type EventQuery struct {
 }
 
 // EntityQuery asks the live event hub for entities from one plugin feed
-// (maps onto GET /ether/v1/live/{feed}/entities?kind=&league=&q=).
+// (maps onto GET /ether/v1/live/{feed}/entities?kind=&league=&q=&ids=).
 type EntityQuery struct {
 	PluginID string
 	Feed     string
 	Kind     string
 	League   string
 	Query    string
+	IDs      []string
 }
 
 // LiveFeedHub is the read boundary screens require from the live event hub
@@ -54,6 +55,13 @@ type LiveFeedHub interface {
 // live event (W257, spec A5). A nil resolver yields an empty watch slice.
 type WatchTargetResolver interface {
 	WatchTargets(ctx context.Context, viewer *core.User, event core.LiveEvent) ([]core.LiveEventWatchTarget, error)
+}
+
+// BatchWatchTargetResolver is an optional extension of WatchTargetResolver
+// allowing screens to resolve watch targets for all events in a screen in one
+// bounded guide lookup.
+type BatchWatchTargetResolver interface {
+	WatchTargetsBatch(ctx context.Context, viewer *core.User, events []core.LiveEvent) (map[string][]core.LiveEventWatchTarget, error)
 }
 
 // FavoriteEntities reads the viewer's favorited entity keys (spec A4).
@@ -101,6 +109,30 @@ type ResolvedEvent struct {
 	startTime time.Time
 }
 
+// MarshalJSON preserves embedded LiveEvent fields while guaranteeing
+// competitors and watch always encode as [] rather than null.
+func (e ResolvedEvent) MarshalJSON() ([]byte, error) {
+	type liveEventAlias core.LiveEvent
+	type wire struct {
+		liveEventAlias
+		Watch    []core.LiveEventWatchTarget `json:"watch"`
+		Favorite bool                        `json:"favorite,omitempty"`
+	}
+	base := liveEventAlias(e.LiveEvent)
+	if base.Competitors == nil {
+		base.Competitors = []core.LiveEventCompetitor{}
+	}
+	watch := e.Watch
+	if watch == nil {
+		watch = []core.LiveEventWatchTarget{}
+	}
+	return json.Marshal(wire{
+		liveEventAlias: base,
+		Watch:          watch,
+		Favorite:       e.Favorite,
+	})
+}
+
 // ScheduleDay is one selectable date chip on a schedule section.
 type ScheduleDay struct {
 	Date  string `json:"date"`
@@ -128,6 +160,16 @@ type EntitySearchResult struct {
 	Feed       string           `json:"feed"`
 	EntityKind string           `json:"entityKind"`
 	Entities   []ResolvedEntity `json:"entities"`
+}
+
+// MarshalJSON guarantees entities encodes as [] rather than null.
+func (r EntitySearchResult) MarshalJSON() ([]byte, error) {
+	type wire EntitySearchResult
+	cp := wire(r)
+	if cp.Entities == nil {
+		cp.Entities = []ResolvedEntity{}
+	}
+	return json.Marshal(cp)
 }
 
 // ResolvedSection is one generically rendered section in a resolved screen.
@@ -241,4 +283,14 @@ type ResolvedScreen struct {
 	League   string            `json:"league,omitempty"`
 	Date     string            `json:"date"`
 	Sections []ResolvedSection `json:"sections"`
+}
+
+// MarshalJSON guarantees sections encodes as [] rather than null.
+func (s ResolvedScreen) MarshalJSON() ([]byte, error) {
+	type wire ResolvedScreen
+	cp := wire(s)
+	if cp.Sections == nil {
+		cp.Sections = []ResolvedSection{}
+	}
+	return json.Marshal(cp)
 }

@@ -165,17 +165,9 @@ func (i *instance) liveEventsPreferencesSet(w http.ResponseWriter, r *http.Reque
 	var payload struct {
 		SpoilerFree *bool `json:"spoilerFree"`
 	}
-	if r.Method == http.MethodPatch {
-		if body(r, &payload) != nil || payload.SpoilerFree == nil {
-			problem(w, 400, "request", "invalid_request")
-			return
-		}
-	} else {
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
-		if dec.Decode(&payload) != nil || payload.SpoilerFree == nil {
-			problem(w, 400, "request", "invalid_request")
-			return
-		}
+	if body(r, &payload) != nil || payload.SpoilerFree == nil {
+		problem(w, 400, "request", "invalid_request")
+		return
 	}
 	if err := i.host.LiveEvents.SetSpoilerFree(r.Context(), v, *payload.SpoilerFree); err != nil {
 		fail(w, err, r)

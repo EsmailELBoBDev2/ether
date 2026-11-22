@@ -356,7 +356,7 @@ export function createSportsHandler(
         return jsonResponse(200, detail);
       }
 
-      // GET /ether/v1/live/sports/entities?kind=team&league=&q=
+      // GET /ether/v1/live/sports/entities?kind=team&league=&q=&ids=
       if (path === `${FEED_PREFIX}/entities` && method === "GET") {
         const kind = queryParam(query, "kind") || "team";
         const leagueParams = queryList(query, "league");
@@ -368,12 +368,28 @@ export function createSportsHandler(
             `Unknown league: ${resolved.unknown.join(", ")}`,
           );
         }
+        const ids = queryList(query, "ids").map((raw) => {
+          const colon = raw.lastIndexOf(":");
+          return colon >= 0 ? raw.slice(colon + 1) : raw;
+        });
+        let targetLeagues = resolved.leagues || enabledLeagues;
+        if (ids.length > 0 && leagueParams.length === 0) {
+          const byId = new Map<string, LeagueConfig>();
+          for (const id of ids) {
+            const parsed = parseEventId(id);
+            if (parsed) byId.set(parsed.league.id, parsed.league);
+          }
+          if (byId.size > 0) {
+            targetLeagues = [...byId.values()];
+          }
+        }
         const q = queryParam(query, "q");
         const entities = provider.getEntities(
           {
-            leagues: resolved.leagues || enabledLeagues,
+            leagues: targetLeagues,
             kind,
             q,
+            ids: ids.length > 0 ? ids : undefined,
           },
           rt,
         );

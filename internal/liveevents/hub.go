@@ -844,6 +844,17 @@ func (h *Hub) GetDetail(ctx context.Context, viewer *core.Viewer, eventID string
 // GetEntities fetches followable entities from a plugin feed via single-flight
 // with bounded caching, populating each entity's namespaced Key.
 func (h *Hub) GetEntities(ctx context.Context, pluginID, feedID, kind, league, q string) (core.LiveEventEntitiesResponse, error) {
+	return h.getEntities(ctx, pluginID, feedID, kind, league, q, nil)
+}
+
+// GetEntitiesByIDs fetches specific followable entities by plugin-local IDs
+// (used by screens to include a viewer's favourites from non-selected leagues
+// without pulling the full catalogue).
+func (h *Hub) GetEntitiesByIDs(ctx context.Context, pluginID, feedID, kind string, ids []string) (core.LiveEventEntitiesResponse, error) {
+	return h.getEntities(ctx, pluginID, feedID, kind, "", "", ids)
+}
+
+func (h *Hub) getEntities(ctx context.Context, pluginID, feedID, kind, league, q string, ids []string) (core.LiveEventEntitiesResponse, error) {
 	if h == nil || h.source == nil {
 		return core.LiveEventEntitiesResponse{}, ErrUnavailable
 	}
@@ -851,7 +862,27 @@ func (h *Hub) GetEntities(ctx context.Context, pluginID, feedID, kind, league, q
 	if !ok {
 		return core.LiveEventEntitiesResponse{}, ErrNotFound
 	}
-	cacheKey := strings.Join([]string{pluginID, feedID, strings.TrimSpace(kind), strings.TrimSpace(league), strings.TrimSpace(q)}, "\x00")
+	var cleanIDs []string
+	var wantedSet map[string]struct{}
+	if len(ids) > 0 {
+		seen := make(map[string]struct{}, len(ids))
+		cleanIDs = make([]string, 0, len(ids))
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			cleanIDs = append(cleanIDs, id)
+		}
+		sort.Strings(cleanIDs)
+		wantedSet = seen
+	}
+	idsKey := strings.Join(cleanIDs, ",")
+	cacheKey := strings.Join([]string{pluginID, feedID, strings.TrimSpace(kind), strings.TrimSpace(league), strings.TrimSpace(q), idsKey}, "\x00")
 	now := h.clock.Now()
 
 	h.mu.Lock()
@@ -876,6 +907,9 @@ func (h *Hub) GetEntities(ctx context.Context, pluginID, feedID, kind, league, q
 		}
 		if v := strings.TrimSpace(q); v != "" {
 			query["q"] = v
+		}
+		if idsKey != "" {
+			query["ids"] = idsKey
 		}
 		if len(query) == 0 {
 			query = nil
@@ -903,6 +937,15 @@ func (h *Hub) GetEntities(ctx context.Context, pluginID, feedID, kind, league, q
 			if err := json.Unmarshal(pr.Body, &out); err != nil {
 				return core.LiveEventEntitiesResponse{}, fmt.Errorf("%w: invalid entities payload: %v", ErrUnavailable, err)
 			}
+		}
+		if len(wantedSet) > 0 && len(out.Entities) > 0 {
+			filtered := make([]core.LiveEventEntity, 0, len(wantedSet))
+			for _, e := range out.Entities {
+				if _, match := wantedSet[e.ID]; match {
+					filtered = append(filtered, e)
+				}
+			}
+			out.Entities = filtered
 		}
 		if out.Entities == nil {
 			out.Entities = []core.LiveEventEntity{}

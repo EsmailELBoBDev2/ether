@@ -43,6 +43,17 @@ type homeRevisionSource interface {
 	HomeRevision(context.Context, *frontend.Viewer) (frontend.HomeRevision, bool, error)
 }
 
+func (i *instance) viewerSpoilerFree(ctx context.Context, v *frontend.Viewer) (bool, error) {
+	if i.host.LiveEvents == nil || v == nil {
+		return false, nil
+	}
+	sf, err := i.host.LiveEvents.SpoilerFree(ctx, v)
+	if errors.Is(err, frontend.ErrNotAvailable) {
+		return false, nil
+	}
+	return sf, err
+}
+
 func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	v, token, err := i.viewer(r)
 	if err != nil {
@@ -51,10 +62,6 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	dev := requestDevice(r)
 	avatar := i.viewerAvatar(r, v, token, dev)
-	// Credentials scope the image grants and cursor scope includes the complete
-	// viewer policy. Do not reuse wire responses between refresh families/devices
-	// or certificate-region preferences.
-	scope := hashJSON([]any{v, dev, token, avatar, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration()})
 	if local, ok := i.host.Experience.(interface {
 		NoProviderWait(context.Context) context.Context
 	}); ok {
@@ -62,6 +69,15 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	source, hasRevision := i.host.Experience.(homeRevisionSource)
 	for attempt := 0; attempt < bootstrapAttempts; attempt++ {
+		spoilerFree, err := i.viewerSpoilerFree(r.Context(), v)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		// Credentials scope the image grants and cursor scope includes the complete
+		// viewer policy. Do not reuse wire responses between refresh families/devices,
+		// certificate-region preferences, or viewer spoiler-free preferences.
+		scope := hashJSON([]any{v, dev, token, avatar, spoilerFree, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration()})
 		freshness := i.bootstrapFreshness()
 		var before frontend.HomeRevision
 		cacheable := false
@@ -123,16 +139,19 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 				buildRequest = buildRequest.WithContext(source.BeginBootstrapRead(buildRequest.Context(), v, before))
 			}
 		}
-		out, buildErr := i.buildBootstrap(buildRequest, v, token, avatar, attempt > 0)
+		out, buildErr := i.buildBootstrap(buildRequest, v, token, avatar, spoilerFree, attempt > 0)
 		var payload json.RawMessage
 		if buildErr == nil {
 			payload, buildErr = json.Marshal(out)
 		}
 		if buildErr == nil && cacheable {
 			after, available, revisionErr := source.HomeRevision(r.Context(), v)
+			afterSpoilerFree, sfErr := i.viewerSpoilerFree(r.Context(), v)
 			if revisionErr != nil {
 				buildErr = revisionErr
-			} else if !available || before != after || freshness != i.bootstrapFreshness() {
+			} else if sfErr != nil {
+				buildErr = sfErr
+			} else if !available || before != after || freshness != i.bootstrapFreshness() || afterSpoilerFree != spoilerFree {
 				buildErr = frontend.ErrRowViewStale
 			}
 		}

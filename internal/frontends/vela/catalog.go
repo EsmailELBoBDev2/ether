@@ -713,7 +713,7 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	return wire, nil
 }
 
-func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, avatar object, refresh bool) (object, error) {
+func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, avatar object, spoilerFree bool, refresh bool) (object, error) {
 	sources := map[string]heroSource{}
 	rows, _, e := i.homeVisit(r, v, t, refresh, sources)
 	if e != nil {
@@ -733,6 +733,7 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	if err != nil {
 		return nil, err
 	}
+	viewer["spoilerFree"] = spoilerFree
 	appDoc := i.appearanceDocument()
 	navigation, err := i.screenNavigation(r, v)
 	if err != nil {

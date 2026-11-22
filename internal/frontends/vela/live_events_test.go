@@ -381,18 +381,34 @@ func TestVelaLiveEventsEndpointsSpoilerRevealAndSSE(t *testing.T) {
 		t.Fatalf("missing event detail status = %d, want 404", w.Code)
 	}
 
-	// 5. Spoiler-free preference (PUT + GET) masks scores, probability, plays, tables.
+	// 5. Spoiler-free preference (PUT + PATCH, with or without idempotencyKey) masks scores, probability, plays, tables.
 	w = doReq("tok-alice", http.MethodGet, "/vela/v0/live/preferences", nil)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"spoilerFree":false`) {
 		t.Fatalf("default prefs = %d %s", w.Code, w.Body.String())
 	}
+	// PUT without idempotencyKey
 	w = doReq("tok-alice", http.MethodPut, "/vela/v0/live/preferences", object{"spoilerFree": true})
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"spoilerFree":true`) {
-		t.Fatalf("PUT prefs = %d %s", w.Code, w.Body.String())
+		t.Fatalf("PUT prefs (no key) = %d %s", w.Code, w.Body.String())
 	}
+	// PUT with idempotencyKey + replay + conflict
+	w = doReq("tok-alice", http.MethodPut, "/vela/v0/live/preferences", object{"idempotencyKey": "alice-sf-1", "spoilerFree": true})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"spoilerFree":true`) {
+		t.Fatalf("PUT prefs (with key) = %d %s", w.Code, w.Body.String())
+	}
+	w = doReq("tok-alice", http.MethodPut, "/vela/v0/live/preferences", object{"idempotencyKey": "alice-sf-1", "spoilerFree": false})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("PUT prefs (key conflict) = %d, want 409", w.Code)
+	}
+	// PATCH without idempotencyKey
+	w = doReq("tok-bob", http.MethodPatch, "/vela/v0/live/preferences", object{"spoilerFree": true})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"spoilerFree":true`) {
+		t.Fatalf("PATCH prefs (no key) = %d %s", w.Code, w.Body.String())
+	}
+	// PATCH with idempotencyKey
 	w = doReq("tok-bob", http.MethodPatch, "/vela/v0/live/preferences", object{"idempotencyKey": "bob-sf-1", "spoilerFree": true})
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"spoilerFree":true`) {
-		t.Fatalf("PATCH prefs = %d %s", w.Code, w.Body.String())
+		t.Fatalf("PATCH prefs (with key) = %d %s", w.Code, w.Body.String())
 	}
 
 	w = doReq("tok-alice", http.MethodGet, "/vela/v0/live/events/plug.a:scores:g1", nil)
@@ -537,5 +553,141 @@ func TestVelaLiveEventsEndpointsSpoilerRevealAndSSE(t *testing.T) {
 	_ = resp2.Body.Close()
 	// Drain until reader goroutine finishes.
 	for range frames2 {
+	}
+}
+
+type cachedLiveTestExperience struct {
+	frontendtest.Experience
+}
+
+func (cachedLiveTestExperience) HomeRevision(context.Context, *frontend.Viewer) (frontend.HomeRevision, bool, error) {
+	return frontend.HomeRevision{Viewer: "v1", Policy: 1}, true, nil
+}
+
+func TestBootstrapViewerSpoilerFreeAndETag(t *testing.T) {
+	pluginSrc := &velaLiveEventsPluginFake{
+		feeds: []liveevents.FeedInfo{{PluginID: "plug.a", FeedID: "scores", Title: "Scores", MinIntervalSec: 15}},
+	}
+	hub := liveevents.NewHub(liveevents.Options{Source: pluginSrc})
+	defer hub.Close()
+
+	ident := &multiViewerIdentityFake{
+		viewers: map[string]*frontend.Viewer{
+			"tok-alice": {ID: 1, Username: "alice"},
+			"tok-bob":   {ID: 2, Username: "bob"},
+		},
+	}
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE vela_replays(key TEXT PRIMARY KEY,digest TEXT NOT NULL,response BLOB,expires INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+
+	host := frontend.Host{
+		Identity:     ident,
+		Experience:   cachedLiveTestExperience{},
+		Sessions:     frontendtest.Sessions{},
+		Capabilities: frontendtest.Capabilities{},
+		LiveEvents:   hubFrontendBridge{hub: hub},
+	}
+	inst, err := (Frontend{DB: db, ReplayKey: make([]byte, 32)}).Mount(context.Background(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inst.Close(context.Background()) })
+	h := inst.Handler()
+
+	getBootstrap := func(token, ifNoneMatch string) (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/vela/v0/bootstrap", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Vela-Device-Id", "dev-"+token)
+		if ifNoneMatch != "" {
+			req.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		var doc map[string]any
+		if w.Code == http.StatusOK {
+			if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+				t.Fatalf("decode bootstrap: %v", err)
+			}
+		}
+		return w, doc
+	}
+
+	setPref := func(token string, enabled bool) {
+		t.Helper()
+		b, _ := json.Marshal(object{"spoilerFree": enabled})
+		req := httptest.NewRequest(http.MethodPut, "/vela/v0/live/preferences", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Vela-Device-Id", "dev-"+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("PUT /live/preferences = %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	// 1. Default bootstrap carries viewer.spoilerFree: false and a strong ETag.
+	w1, doc1 := getBootstrap("tok-alice", "")
+	if w1.Code != http.StatusOK {
+		t.Fatalf("GET /bootstrap = %d %s", w1.Code, w1.Body.String())
+	}
+	etag1 := w1.Header().Get("ETag")
+	if etag1 == "" {
+		t.Fatal("missing bootstrap ETag")
+	}
+	v1 := doc1["viewer"].(map[string]any)
+	if sf, ok := v1["spoilerFree"].(bool); !ok || sf {
+		t.Fatalf("default bootstrap viewer.spoilerFree = %#v (ok=%v), want false", v1["spoilerFree"], ok)
+	}
+
+	// 2. Unchanged preference returns 304 Not Modified on If-None-Match.
+	w304, _ := getBootstrap("tok-alice", etag1)
+	if w304.Code != http.StatusNotModified {
+		t.Fatalf("unchanged bootstrap with If-None-Match = %d, want 304", w304.Code)
+	}
+
+	// 3. Enabling spoilerFree flips bootstrap.viewer.spoilerFree to true and changes ETag (no stale 304).
+	setPref("tok-alice", true)
+	w2, doc2 := getBootstrap("tok-alice", etag1)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("bootstrap after enabling spoilerFree = %d, want 200 (ETag must change)", w2.Code)
+	}
+	etag2 := w2.Header().Get("ETag")
+	if etag2 == "" || etag2 == etag1 {
+		t.Fatalf("bootstrap ETag did not change after spoilerFree=true: old=%q new=%q", etag1, etag2)
+	}
+	v2 := doc2["viewer"].(map[string]any)
+	if sf, ok := v2["spoilerFree"].(bool); !ok || !sf {
+		t.Fatalf("bootstrap viewer.spoilerFree after PUT true = %#v (ok=%v), want true", v2["spoilerFree"], ok)
+	}
+
+	// 4. Bob's bootstrap remains false (viewer-scoped).
+	wBob, docBob := getBootstrap("tok-bob", "")
+	if wBob.Code != http.StatusOK {
+		t.Fatalf("Bob GET /bootstrap = %d", wBob.Code)
+	}
+	if sf, ok := docBob["viewer"].(map[string]any)["spoilerFree"].(bool); !ok || sf {
+		t.Fatalf("Bob bootstrap viewer.spoilerFree = %#v, want false", docBob["viewer"])
+	}
+
+	// 5. Disabling spoilerFree flips back to false and changes ETag again.
+	setPref("tok-alice", false)
+	w3, doc3 := getBootstrap("tok-alice", etag2)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("bootstrap after disabling spoilerFree = %d, want 200", w3.Code)
+	}
+	if etag3 := w3.Header().Get("ETag"); etag3 == "" || etag3 == etag2 {
+		t.Fatalf("bootstrap ETag did not change after spoilerFree=false: old=%q new=%q", etag2, etag3)
+	}
+	if sf, ok := doc3["viewer"].(map[string]any)["spoilerFree"].(bool); !ok || sf {
+		t.Fatalf("bootstrap viewer.spoilerFree after PUT false = %#v, want false", doc3["viewer"])
 	}
 }

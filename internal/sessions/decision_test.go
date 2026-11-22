@@ -283,3 +283,38 @@ func TestUnverifiedSourceNeverTakesLossyOptionalRemux(t *testing.T) {
 		}
 	}
 }
+
+// A declared streaming profile that cannot take the optional copy (H.264-only
+// TS: Wholphin, Jellyfin for Android) keeps the file it direct-plays instead
+// of letting the profile check turn the copy into a full encode.
+func TestUnverifiedSourceOptionalRemuxHonoursDeclaredStreamingProfile(t *testing.T) {
+	ps := &core.PlaySession{Resolution: &core.Resolution{Release: core.Release{ID: "usenet:hevc"}}, Info: core.MediaInfo{Container: "mkv", Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc"}, {Index: 1, Type: "audio", Codec: "eac3"}}}}
+	copyDecision := core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, VideoCodec: "hevc", AudioCodec: "eac3", Container: "mpegts", AudioStream: 1}
+	for name, tc := range map[string]struct {
+		video []string
+		want  core.DecisionKind
+	}{
+		"h264-only streaming": {[]string{"h264"}, core.DecisionDirectPlay},
+		"hevc streaming":      {[]string{"h264", "hevc"}, core.DecisionRemux},
+	} {
+		profiles := &core.ClientCapabilityProfiles{
+			DirectPlay:  []core.ClientDirectPlayProfile{{MediaType: "video", Containers: []string{"mkv"}, VideoCodecs: []string{"hevc"}, AudioCodecs: []string{"eac3"}}},
+			Transcoding: []core.ClientTranscodeProfile{{MediaType: "video", Delivery: "hls", Containers: []string{"ts", "mp4"}, VideoCodecs: tc.video, AudioCodecs: []string{"eac3"}}},
+		}
+		got, err := Decide(nil, profileDecisionTranscoder{segmentedDecisionTranscoder{copyDecision}}, DecisionRequest{Session: ps, Caps: core.ClientCaps{Profiles: profiles, Containers: []string{"mkv", "mpegts"}, VideoCodecs: []string{"hevc"}, AudioCodecs: []string{"eac3"}}, Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 1}})
+		if err != nil || got.Kind != tc.want {
+			t.Fatalf("%s: decision %+v err %v", name, got, err)
+		}
+	}
+}
+
+// profileDecisionTranscoder direct-plays with the codecs named, as the real
+// decision does, and returns segmented otherwise.
+type profileDecisionTranscoder struct{ segmentedDecisionTranscoder }
+
+func (f profileDecisionTranscoder) Decide(_ core.MediaInfo, _ core.ClientCaps, opts core.DecideOptions) core.Decision {
+	if opts.DirectPlay {
+		return core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, VideoCodec: "hevc", AudioCodec: "eac3", Container: "mkv", AudioStream: 1}
+	}
+	return f.segmented
+}

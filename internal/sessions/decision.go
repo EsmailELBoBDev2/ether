@@ -134,6 +134,19 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		if segmented.EncodesVideo(ps.Info) || !segmented.AudioCopy || (segmented.StripDolbyVision && !original.StripDolbyVision) {
 			dec = original
 		}
+		// The codec lists say the copy fits, but a declared streaming profile
+		// may not take it (Wholphin, Jellyfin for Android and Silo stream only
+		// H.264 in TS). The profile check would then replace the optional
+		// copy with a full encode; the original file plays as it is.
+		if dec.Kind == core.DecisionRemux && r.Caps.Profiles != nil && len(r.Caps.Profiles.Transcoding) > 0 {
+			delivery := "hls"
+			if r.Protocol == core.ProtocolDASH {
+				delivery = "dash"
+			}
+			if !profileDeliveryAllowed(r.Caps.Profiles, dec, ps.Info, delivery) {
+				dec = original
+			}
+		}
 	}
 	return dec, nil
 }

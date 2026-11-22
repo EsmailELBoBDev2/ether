@@ -56,34 +56,20 @@ func (a *App) favoriteAllowedStored(ctx context.Context, u *core.User, subject f
 }
 
 func (a *App) favoriteEntityAllowed(ctx context.Context, viewer *core.User, rawKey string) (bool, error) {
-	if a == nil || viewer == nil || a.pluginsRT == nil || a.pluginsRT.mgr == nil {
+	if a == nil || viewer == nil || a.pluginsRT == nil {
+		return false, nil
+	}
+	if a.pluginsRT.screens != nil {
+		return a.pluginsRT.screens.Registry().EntityAllowed(ctx, viewer, rawKey), nil
+	}
+	if a.pluginsRT.mgr == nil {
 		return false, nil
 	}
 	key, ok := favorites.ParseEntityKey(rawKey)
 	if !ok {
 		return false, nil
 	}
-	rec, err := a.pluginsRT.mgr.Get(ctx, key.PluginID)
-	if err != nil || !rec.Enabled || rec.Shadow {
-		return false, nil
-	}
-	if rec.Manifest.Ether != nil && rec.Manifest.Ether.Permissions.Viewers.Identity == "granted_viewers" && !viewer.IsOwner {
-		grants, gerr := a.pluginsRT.mgr.GrantsOf(ctx, key.PluginID)
-		if gerr != nil {
-			return false, nil
-		}
-		granted := false
-		for _, id := range grants.Viewers {
-			if id == viewer.ID {
-				granted = true
-				break
-			}
-		}
-		if !granted {
-			return false, nil
-		}
-	}
-	return true, nil
+	return a.screenPluginViewerAllowed(ctx, a.pluginsRT.mgr, viewer, key.PluginID), nil
 }
 
 func (a *App) favoritePersonPage(ctx context.Context, person int64, offset, limit int) ([]core.Title, error) {

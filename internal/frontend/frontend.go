@@ -472,6 +472,7 @@ type Host struct {
 	TrackPreferences   TrackPreferenceService
 	LiveTV             LiveTV
 	LibraryLive        LibraryLive
+	Screens            Screens
 	VirtualPaths       VirtualPaths
 	Sessions           Sessions
 	LastPlayedSource   LastPlayedSourceReader
@@ -612,7 +613,7 @@ type PersonalHomeStore interface {
 // PageFreshness is every input of a cached browse response. A change drops
 // the cached body.
 type PageFreshness struct {
-	Catalog, Config, Layout, Watch, Favorite, Hidden, Listed, Images, Grants, Accounts, Safety, Libraries, KindSync uint64
+	Catalog, Config, Layout, Watch, Favorite, Hidden, Listed, Images, Grants, Accounts, Safety, Libraries, KindSync, Screens uint64
 }
 
 var ErrNotRegistered = errors.New("frontend not registered")

@@ -1,0 +1,303 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/screens"
+)
+
+func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
+	reg := screens.NewRegistry(screens.RegistryOptions{
+		IsViewerAllowed: func(ctx context.Context, viewer *core.User, pluginID, _ string) bool {
+			return a.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID)
+		},
+	})
+	svc := screens.NewService(screens.ServiceOptions{
+		Registry:  reg,
+		Hub:       pluginLiveFeedBridge{mgr: mgr},
+		Favorites: appFavoriteEntities{app: a},
+		Now:       time.Now,
+	})
+	mgr.OnSync(func(ctx context.Context, r plugins.Record) {
+		reg.Sync(r, func(key string) string {
+			text, _ := mgr.ResolveText(ctx, r.ID, key, "en")
+			return text
+		})
+	})
+	mgr.OnRemove(func(_ context.Context, id string) {
+		reg.Remove(id)
+	})
+	return svc
+}
+
+func (a *App) screenPluginViewerAllowed(ctx context.Context, mgr *plugins.Manager, viewer *core.User, pluginID string) bool {
+	if viewer == nil || mgr == nil {
+		return false
+	}
+	rec, err := mgr.Get(ctx, pluginID)
+	if err != nil || !rec.Enabled || rec.Shadow {
+		return false
+	}
+	if rec.Manifest.Ether != nil && rec.Manifest.Ether.Permissions.Viewers.Identity == "granted_viewers" && !viewer.IsOwner {
+		grants, gerr := mgr.GrantsOf(ctx, pluginID)
+		if gerr != nil {
+			return false
+		}
+		for _, id := range grants.Viewers {
+			if id == viewer.ID {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+type appFavoriteEntities struct{ app *App }
+
+func (f appFavoriteEntities) ListEntityKeys(ctx context.Context, viewer *core.User) ([]string, error) {
+	if f.app == nil || f.app.favorites == nil || viewer == nil {
+		return nil, nil
+	}
+	entries, err := f.app.favorites.List(ctx, viewer, favorites.KindEntity, 0)
+	if errors.Is(err, favorites.ErrForbidden) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		keys = append(keys, entry.Subject.ID)
+	}
+	return keys, nil
+}
+
+// pluginLiveFeedBridge is a zero-background-work fallback LiveFeedHub that calls
+// plugin live-feed routes on demand via plugins.Manager.Call until W255's
+// liveevents.Hub attaches via screens.Service.SetHub.
+type pluginLiveFeedBridge struct {
+	mgr *plugins.Manager
+}
+
+func (b pluginLiveFeedBridge) Events(ctx context.Context, _ *core.User, q screens.EventQuery) ([]core.LiveEvent, error) {
+	if b.mgr == nil || q.PluginID == "" || q.Feed == "" {
+		return nil, nil
+	}
+	vals := url.Values{}
+	if !q.From.IsZero() {
+		vals.Set("from", q.From.UTC().Format(time.RFC3339))
+	}
+	if !q.To.IsZero() {
+		vals.Set("to", q.To.UTC().Format(time.RFC3339))
+	}
+	if q.League != "" {
+		vals.Set("league", q.League)
+	}
+	if len(q.IDs) > 0 {
+		vals.Set("ids", strings.Join(q.IDs, ","))
+	}
+	path := "/ether/v1/live/" + url.PathEscape(q.Feed) + "/events"
+	if encoded := vals.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	resp, err := b.mgr.Call(ctx, q.PluginID, plugins.Request{
+		PluginID: q.PluginID,
+		Method:   http.MethodGet,
+		Path:     path,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == http.StatusNotFound {
+		return nil, core.ErrNotFound
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		return nil, core.ErrNotAvailable
+	}
+	var payload struct {
+		Events []core.LiveEvent `json:"events"`
+	}
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		return nil, err
+	}
+	prefix := q.PluginID + ":"
+	for i := range payload.Events {
+		if payload.Events[i].Feed == "" {
+			payload.Events[i].Feed = q.Feed
+		}
+		if payload.Events[i].ID != "" && !strings.HasPrefix(payload.Events[i].ID, prefix) {
+			payload.Events[i].ID = q.PluginID + ":" + q.Feed + ":" + payload.Events[i].ID
+		}
+	}
+	return payload.Events, nil
+}
+
+func (b pluginLiveFeedBridge) Standings(ctx context.Context, _ *core.User, pluginID, feed, league string) ([]core.LiveEventTable, error) {
+	if b.mgr == nil || pluginID == "" || feed == "" {
+		return nil, nil
+	}
+	path := "/ether/v1/live/" + url.PathEscape(feed) + "/standings"
+	if league != "" {
+		path += "?league=" + url.QueryEscape(league)
+	}
+	resp, err := b.mgr.Call(ctx, pluginID, plugins.Request{
+		PluginID: pluginID,
+		Method:   http.MethodGet,
+		Path:     path,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == http.StatusNotFound {
+		return nil, core.ErrNotFound
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		return nil, core.ErrNotAvailable
+	}
+	var payload struct {
+		Tables []core.LiveEventTable `json:"tables"`
+	}
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Tables, nil
+}
+
+func (b pluginLiveFeedBridge) Entities(ctx context.Context, _ *core.User, q screens.EntityQuery) ([]core.LiveEntity, error) {
+	if b.mgr == nil || q.PluginID == "" || q.Feed == "" {
+		return nil, nil
+	}
+	vals := url.Values{}
+	if q.Kind != "" {
+		vals.Set("kind", q.Kind)
+	}
+	if q.League != "" {
+		vals.Set("league", q.League)
+	}
+	if q.Query != "" {
+		vals.Set("q", q.Query)
+	}
+	path := "/ether/v1/live/" + url.PathEscape(q.Feed) + "/entities"
+	if encoded := vals.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	resp, err := b.mgr.Call(ctx, q.PluginID, plugins.Request{
+		PluginID: q.PluginID,
+		Method:   http.MethodGet,
+		Path:     path,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == http.StatusNotFound {
+		return nil, core.ErrNotFound
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		return nil, core.ErrNotAvailable
+	}
+	var payload struct {
+		Entities []core.LiveEntity `json:"entities"`
+	}
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Entities, nil
+}
+
+type surfaceScreens struct {
+	app     *App
+	surface string
+}
+
+func (s surfaceScreens) Generation() uint64 {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil {
+		return 0
+	}
+	return s.app.pluginsRT.screens.Generation()
+}
+
+func (s surfaceScreens) Navigation(ctx context.Context, viewer *frontend.Viewer) ([]frontend.NavigationScreen, error) {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
+		return nil, nil
+	}
+	items, err := s.app.pluginsRT.screens.Navigation(ctx, viewer, s.surface)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]frontend.NavigationScreen, len(items))
+	for i, item := range items {
+		out[i] = frontend.NavigationScreen{
+			Kind:  item.Kind,
+			ID:    item.ID,
+			Title: item.Title,
+			Icon:  item.Icon,
+		}
+	}
+	return out, nil
+}
+
+func (s surfaceScreens) ResolveScreen(ctx context.Context, viewer *frontend.Viewer, id, league, date string) (json.RawMessage, error) {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
+		return nil, frontend.ErrNotFound
+	}
+	resolved, err := s.app.pluginsRT.screens.Resolve(ctx, viewer, screens.ResolveRequest{
+		FrontendID: s.surface,
+		ScreenID:   id,
+		League:     league,
+		Date:       date,
+	})
+	if err != nil {
+		if errors.Is(err, screens.ErrInvalidDate) {
+			return nil, frontend.ErrInvalidScreenDate
+		}
+		return nil, err
+	}
+	b, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
+func (s surfaceScreens) QueryEntities(ctx context.Context, viewer *frontend.Viewer, feed, kind, league, q string) (json.RawMessage, error) {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
+		return nil, frontend.ErrNotFound
+	}
+	res, err := s.app.pluginsRT.screens.QueryEntities(ctx, viewer, s.surface, feed, kind, league, q)
+	if err != nil {
+		if errors.Is(err, screens.ErrFeedNotFound) {
+			return nil, frontend.ErrNotFound
+		}
+		return nil, err
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
+func (s surfaceScreens) SetFavoriteEntity(ctx context.Context, viewer *frontend.Viewer, key string, on bool) error {
+	if s.app == nil || s.app.favorites == nil || viewer == nil {
+		return frontend.ErrNotFound
+	}
+	if _, ok := favorites.ParseEntityKey(key); !ok {
+		return frontend.ErrInvalidEntityKey
+	}
+	_, err := s.app.favorites.Set(ctx, viewer, favorites.Subject{Kind: favorites.KindEntity, ID: key}, on)
+	if errors.Is(err, favorites.ErrForbidden) {
+		return frontend.ErrForbidden
+	}
+	return err
+}

@@ -20,13 +20,15 @@ var (
 	reSpanishEpisode       = regexp.MustCompile(`(?i)\b(?:Cap|Cap[ií]tulo)\s*(\d{3,4})(?:\s*(?:-|al|a)\s*(?:Cap(?:[ií]tulo)?\s*)?(\d{1,4}))?\b`)
 	reSpanishShortEpisode  = regexp.MustCompile(`(?i)\b(?:Cap|Cap[ií]tulo)\s*0?([1-9]\d?)(?:\s*(?:-|al|a)\s*(?:Cap(?:[ií]tulo)?\s*)?0?([1-9]\d?))?\b`)
 	reBracketedSpanishCap  = regexp.MustCompile(`(?i)\[\s*(?:Cap|Cap[ií]tulo)\b`)
-	reSeasonAndEp          = regexp.MustCompile(`(?i)\b(?:(?:Season|Series|Saison|Stagione|Temporada)\s*(\d{1,2})|([1-9]\d?)(?:st|nd|rd|th)\s+Season)\b[\s-]*\b(?:Episode|Ep)\s*(\d{1,3})\b`)
+	reSeasonAndEp          = regexp.MustCompile(`(?i)\b(?:(?:Season|Series|Saison|Stagione|Temporada)\s*(\d{1,2})|([1-9]\d?)(?:st|nd|rd|th)\s+Season)\b[\s-]*(?:\b(?:Episode|Ep)\s*(\d{1,4})\b|\bE(\d{2,4})\b)`)
 	reSeasonOnly           = regexp.MustCompile(`(?i)\bS(\d{1,2})(?:\s*(?:-|to)\s*S?(\d{1,2}))?\b`)
 	reSeasonWord           = regexp.MustCompile(`(?i)\b(?:Seasons?|Saison|Stagione|Temporada)\s*(\d{1,2})(?:\s*(?:-|to)\s*(?:Seasons?|S)?\s*(\d{1,2}))?\b`)
 	reOrdinalSeasonWord    = regexp.MustCompile(`(?i)\b([1-9]\d?)(?:st|nd|rd|th)\s+Season(?:\s*(?:-|to)\s*([1-9]\d?)(?:st|nd|rd|th)\s+Season)?\b`)
 	rePrecedingOrdinal     = regexp.MustCompile(`(?i)\b([1-9]\d?)(?:st|nd|rd|th)\s+Season[\s-]*$`)
 	reXEpisode             = regexp.MustCompile(`(?i)\b(\d{1,2})x(\d{1,3})(?:\s*-\s*(?:\d{1,2}x)?(\d{1,3}))?(?:\s+(?:из|of)\s+(\d{1,3}))?\b`)
-	reBareEpisode          = regexp.MustCompile(`(?i)\b(?:Episodes?\s*(\d{1,3})|Ep\s*(\d{1,3})|E(\d{2,3}))(?:\s*(?:-|~|to)\s*(?:Episodes?\s*|Ep\s*|E)?(\d{1,3}))?\b`)
+	reBareEpisode          = regexp.MustCompile(`(?i)\b(?:Episodes?\s*(\d{1,4})|Ep\s*(\d{1,4})|E(\d{2,4}))(?:\s*(?:-|~|to)\s*(?:Episodes?\s*|Ep\s*|E)?(\d{1,4}))?\b`)
+	reKoreanSeason         = regexp.MustCompile(`(?:^|\s)시즌\s*(\d{1,2})(?:$|\s|-)`)
+	reKoreanEpisode        = regexp.MustCompile(`(?:^|\s)(\d{1,4})\s*[회화](?:$|\s|-)`)
 	reDashEpisode          = regexp.MustCompile(`(?i)\s-\s*(\d{2,3})\s+(?:\d{3,4}[pi]\b|BD\b|BLURAY\b|WEB|HDTV\b|DVD|X264\b|X265\b|HEVC\b|H264\b|H265\b|AV1\b|XVID\b)`)
 	reEpRange              = regexp.MustCompile(`(?i)E(\d{1,4})`)
 	// Anime absolute numbering and "Season N - EE" / "Nth Season - EE"
@@ -155,10 +157,21 @@ func Parse(name string) core.ReleaseInfo {
 	if abs, _, _ := seasonAbsoluteAnnotation(normStem); abs > 0 && len(info.Episodes) == 1 {
 		info.AbsoluteEpisodes = []int{abs}
 	}
+	// Broadcast air date (YYYY.MM.DD, YYYY-MM-DD, YYYYMMDD, YYMMDD).
+	// Parsed before the release year so an episode's air year is never
+	// mistaken for the show's premiere year.
+	airAt := -1
+	yearStem, yearSpaced := normStem, spaced
+	if ad, ok := parseAirDate(normStem, spaced); ok {
+		info.AirDate = ad.date
+		airAt = ad.spacedStart
+		yearStem = normStem[:ad.stemStart] + strings.Repeat(" ", ad.stemEnd-ad.stemStart) + normStem[ad.stemEnd:]
+		yearSpaced = spaced[:ad.spacedStart] + strings.Repeat(" ", ad.spacedEnd-ad.spacedStart) + spaced[ad.spacedEnd:]
+	}
 	var yearAt int
-	info.Year, yearAt = parseYearAtWithStem(normStem, spaced)
+	info.Year, yearAt = parseYearAtWithStem(yearStem, yearSpaced)
 	metaAt := firstMetadataAt(normStem, spaced)
-	// Words before the release year, episode/season marker, or post-title
+	// Words before the release year, episode/season marker, air date, or post-title
 	// technical metadata block are the title ("The.Spanish.Princess.S01E01",
 	// "The.French.Dispatch.2021", "Pelicula [BluRay 1080p][Castellano] (2019)").
 	// A technical metadata block also establishes the floor without a year
@@ -166,6 +179,9 @@ func Parse(name string) core.ReleaseInfo {
 	floor := yearAt
 	if markerAt >= 0 && (floor < 0 || markerAt < floor) {
 		floor = markerAt
+	}
+	if airAt >= 0 && (floor < 0 || airAt < floor) {
+		floor = airAt
 	}
 	if metaAt > 0 && (floor < 0 || metaAt-1 < floor) {
 		floor = metaAt - 1
@@ -267,7 +283,7 @@ func Parse(name string) core.ReleaseInfo {
 	if len(info.SubtitleLanguages) > 0 {
 		info.Subbed = true
 	}
-	info.Title = extractTitle(spaced, yearAt, markerAt, metaAt, floor, &info)
+	info.Title = extractTitle(spaced, yearAt, markerAt, airAt, metaAt, floor, &info)
 	return info
 }
 
@@ -786,13 +802,27 @@ func parseStandardEpisodes(spaced, upper string, info *core.ReleaseInfo) int {
 			return at
 		}
 	}
-	if strings.Contains(upper, " E") {
+	if strings.Contains(spaced, "시즌") {
+		if season, episodes, fullPack, at, ok := parseKoreanSeasonEpisode(spaced); ok {
+			info.Seasons = []int{season}
+			info.Episodes = episodes
+			info.FullSeason = fullPack
+			return at
+		}
+	}
+	if strings.Contains(upper, " E") || strings.Contains(upper, "-E") {
 		if episodes, fullPack, at, ok := parseBareEpisode(spaced); ok {
 			if fullPack {
 				info.FullSeason = true
 			} else {
 				info.Episodes = episodes
 			}
+			return at
+		}
+	}
+	if strings.ContainsAny(spaced, "회화") {
+		if episode, at, ok := parseKoreanEpisode(spaced); ok {
+			info.Episodes = []int{episode}
 			return at
 		}
 	}
@@ -858,11 +888,50 @@ func parseSeasonEpisode(spaced string) (season, episode, at int, ok bool) {
 		sTok = m[2]
 	}
 	s, _ := strconv.Atoi(sTok)
-	e, _ := strconv.Atoi(m[3])
+	eTok := m[3]
+	if eTok == "" {
+		eTok = m[4]
+	}
+	e, _ := strconv.Atoi(eTok)
 	if s < 1 || s > 50 || e < 1 {
 		return 0, 0, -1, false
 	}
 	return s, e, loc[0], true
+}
+
+func parseKoreanSeasonEpisode(spaced string) (season int, episodes []int, fullPack bool, at int, ok bool) {
+	loc := reKoreanSeason.FindStringSubmatchIndex(spaced)
+	if loc == nil {
+		return 0, nil, false, -1, false
+	}
+	s, err := strconv.Atoi(spaced[loc[2]:loc[3]])
+	if err != nil || s < 1 || s > 50 {
+		return 0, nil, false, -1, false
+	}
+	start := loc[0]
+	if start < len(spaced) && spaced[start] == ' ' {
+		start++
+	}
+	rest := spaced[loc[1]:]
+	if eps, pack, _, ok := parseBareEpisode(" " + rest); ok && !pack && len(eps) > 0 {
+		return s, eps, false, start, true
+	}
+	if ep, _, ok := parseKoreanEpisode(" " + rest); ok {
+		return s, []int{ep}, false, start, true
+	}
+	return s, nil, true, start, true
+}
+
+func parseKoreanEpisode(spaced string) (episode, at int, ok bool) {
+	loc := reKoreanEpisode.FindStringSubmatchIndex(spaced)
+	if loc == nil {
+		return 0, -1, false
+	}
+	e, err := strconv.Atoi(spaced[loc[2]:loc[3]])
+	if err != nil || e < 1 || e > 9999 {
+		return 0, -1, false
+	}
+	return e, loc[2], true
 }
 
 // parseXEpisode reads the NxM pattern (reXEpisode), including multi-episode
@@ -927,7 +996,7 @@ func parseBareEpisode(spaced string) (episodes []int, fullPack bool, at int, ok 
 			tok = m[3]
 		}
 		e, err := strconv.Atoi(tok)
-		if err != nil || e < 1 || e > 999 {
+		if err != nil || e < 1 || e > 9999 {
 			continue
 		}
 		if m[4] != "" {
@@ -1467,7 +1536,7 @@ var titleWordKeywords = map[string]bool{
 	"SUBBED": true, "DUBBED": true, "CAM": true, "WEB": true, "PAL": true,
 }
 
-func extractTitle(spaced string, yearAt, markerAt, metaAt, floor int, info *core.ReleaseInfo) string {
+func extractTitle(spaced string, yearAt, markerAt, airAt, metaAt, floor int, info *core.ReleaseInfo) string {
 	cut := len(spaced)
 	consider := func(idx int) {
 		if idx > 0 && idx < cut {
@@ -1475,9 +1544,10 @@ func extractTitle(spaced string, yearAt, markerAt, metaAt, floor int, info *core
 		}
 	}
 	// Year boundary (the occurrence parseYearAt chose), episode/season marker,
-	// and earliest post-title technical metadata block.
+	// air date, and earliest post-title technical metadata block.
 	consider(yearAt)
 	consider(markerAt)
+	consider(airAt)
 	consider(metaAt)
 	for _, kw := range boundaryKeywords {
 		// Keywords are whole tokens ("Multiverse" is not MULTI, "Scam" is

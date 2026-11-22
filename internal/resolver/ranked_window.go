@@ -71,7 +71,7 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 			// an equivalent was already healthy; that time counts too.
 			startedAt[i] = gs
 		}
-		s.launchValidation(&wg, workCtx, cands[i], i, results)
+		s.launchValidation(&wg, workCtx, cands[i], i, i >= limit-width, results)
 	}
 	// stalled reports whether the lead is still checking past its grace,
 	// so that a healthy equivalent backup would already be allowed to win.

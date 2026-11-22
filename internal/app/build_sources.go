@@ -193,6 +193,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	animeCour := resolver.AnimeCour(a.addons)
 	animeIDs := resolver.AnimeIDs(animeMap)
 	releaseTitleIDs := a.releaseTitleIDs
+	verifyTitleIDs := a.verifyTitleIDs
 	usenetServing := func() bool {
 		return a.fetcher == nil || a.fetcher.HasServingProvider()
 	}
@@ -201,6 +202,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		animeCour = nil
 		animeIDs = nil
 		releaseTitleIDs = nil
+		verifyTitleIDs = nil
 		usenetServing = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
@@ -230,7 +232,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			}
 			return sceneNumbers.Lookup(ctx, req, func() (core.EpisodeLayout, error) { return a.catalog.ReleaseEpisodeLayout(ctx, show) })
 		}
-	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, ReleaseTitleIDs: releaseTitleIDs, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, AnimeIDs: animeIDs, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
+	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, ReleaseTitleIDs: releaseTitleIDs, VerifyTitleIDs: verifyTitleIDs, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, AnimeIDs: animeIDs, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)
 	a.closers = append(a.closers, func() { a.resolver.Close() })
 

@@ -47,7 +47,7 @@ func claimHealthAttempt(ctx context.Context) bool {
 // result with its candidate index and sending it on results.
 // The caller owns workCtx cancellation and joining wg; results buffering is
 // the caller's choice and is unchanged by this extraction.
-func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, cand candidate, i int, results chan<- validation) {
+func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, cand candidate, i int, finalWave bool, results chan<- validation) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -55,8 +55,8 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 			results <- validation{index: i, err: errHealthBudget, budgetExhausted: true}
 			return
 		}
-		runMemberCtx := func(parent context.Context, m candidate) validation {
-			checkCtx, cancel := context.WithTimeout(parent, checkBudget(m.rel))
+		runMemberCtx := func(parent context.Context, m candidate, final bool) validation {
+			checkCtx, cancel := context.WithTimeout(parent, checkBudgetFor(parent, m.rel, final))
 			defer cancel()
 			var mv validation
 			if m.prepared != nil {
@@ -110,7 +110,7 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 			subWG.Add(1)
 			go func() {
 				defer subWG.Done()
-				leadCh <- runMemberCtx(leadCtx, cand)
+				leadCh <- runMemberCtx(leadCtx, cand, false)
 			}()
 
 			select {
@@ -129,7 +129,7 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 					subWG.Add(1)
 					go func() {
 						defer subWG.Done()
-						hedgeCh <- runMemberCtx(hedgeCtx, fb)
+						hedgeCh <- runMemberCtx(hedgeCtx, fb, finalWave && hedgedIdx == len(cand.fallbacks)-1)
 					}()
 				} else if workCtx.Err() == nil {
 					budgetExhausted = true
@@ -195,7 +195,7 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 			}
 			cleanup()
 		} else {
-			v = runMemberCtx(workCtx, cand)
+			v = runMemberCtx(workCtx, cand, finalWave && len(cand.fallbacks) == 0)
 		}
 
 		if v.promoted == nil && (!v.healthy || v.err != nil) && len(cand.fallbacks) > 0 && workCtx.Err() == nil {
@@ -224,7 +224,7 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 					budgetExhausted = true
 					break
 				}
-				fv := runMemberCtx(workCtx, fb)
+				fv := runMemberCtx(workCtx, fb, finalWave && fbi == len(cand.fallbacks)-1)
 				if errors.Is(fv.err, errHealthBudget) {
 					budgetExhausted = true
 					break
@@ -344,7 +344,20 @@ func (c *candidateCheck) wait(ctx context.Context) validation {
 		// before failover can launch another open; never reopen a live check.
 		c.cancel()
 		<-c.done
-		return validation{err: ctx.Err()}
+		res := c.result
+		if res.healthy && res.err == nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return res
+			}
+			return validation{err: ctx.Err()}
+		}
+		// Preserve any already-fetched NZB and healthChecked state so
+		// lastResort can play an inconclusive Usenet check after a timeout,
+		// while reporting ctx.Err() when c.cancel() stopped the check.
+		if res.err == nil || errors.Is(res.err, context.Canceled) {
+			res.err = ctx.Err()
+		}
+		return res
 	}
 }
 
@@ -365,7 +378,11 @@ type candidateChecks struct {
 }
 
 func (c *candidateChecks) start(ctx context.Context, s *Service, rel core.Release) *candidateCheck {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), candidateBudget)
+	budget := candidateBudget
+	if !core.IsSpeculative(ctx) && !core.IsBackgroundCheck(ctx) {
+		budget = finalCandidateBudget
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	stop := context.AfterFunc(s.bgCtx, cancel)
 	f := &candidateCheck{started: time.Now(), done: make(chan struct{}), cancel: cancel}
 	c.all = append(c.all, f)

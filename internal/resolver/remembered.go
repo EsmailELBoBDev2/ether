@@ -43,6 +43,8 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 		return false
 	}
 	s.prepareSeriesYears(ctx, t, req, []core.Release{rel})
+	s.prepareTitleIDVerifications(ctx, t, req, s.catalogLanguage(), []core.Release{rel})
+	rel = s.applyVerifiedTitleIDs(rel, t, req)
 	if rejectIdentityMetadata(rel, t, req, s.catalogLanguage(), func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }, s.metadataTitleMatches(rel, req)) != "" {
 		return false
 	}
@@ -59,5 +61,5 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 }
 
 func episodeNamesakeConflict(rel core.Release, t *core.Title, req core.SearchRequest) bool {
-	return episodeRegionConflict(rel, t) && releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year) == 0 && !releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle)
+	return episodeRegionConflict(rel, t) && releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year) == 0 && !releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle) && !releaseparse.EpisodeMatchesAirDate(rel.Info, req.Released)
 }

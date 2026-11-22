@@ -82,12 +82,20 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 				}
 			}
 		}
+		if season > 0 && !info.FullSeason && releaseparse.EpisodeMatchesAirDate(info, title.Released) {
+			if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
+				return true
+			}
+			if season > 1 && absolute <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > episode {
+				return true
+			}
+		}
 		return false
 	}
-	if len(baseInfo.Episodes) > 0 || len(baseInfo.AbsoluteEpisodes) > 0 {
+	if len(baseInfo.Episodes) > 0 || len(baseInfo.AbsoluteEpisodes) > 0 || baseInfo.AirDate != "" {
 		return matchesEpisode(baseInfo)
 	}
-	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 {
+	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 || fullInfo.AirDate != "" {
 		return matchesEpisode(fullInfo)
 	}
 	return true
@@ -143,10 +151,10 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 		}
 	}
 	info := rel.Info
-	if len(info.Episodes) == 0 && !info.FullSeason {
+	if len(info.Episodes) == 0 && !info.FullSeason && info.AirDate == "" {
 		info = releaseparse.Parse(rel.Name)
 	}
-	if episode > 0 && (len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 || info.FullSeason) {
+	if episode > 0 && (len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 || info.FullSeason || info.AirDate != "") {
 		if info.FullSeason {
 			if len(info.Seasons) > 0 {
 				found := false
@@ -172,6 +180,13 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 						matched = true
 						break
 					}
+				}
+			}
+			if !matched && season > 0 && !releaseparse.AbsoluteConflict(info, absolute) && releaseparse.EpisodeMatchesAirDate(info, title.Released) {
+				if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
+					matched = true
+				} else if season > 1 && absolute <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > episode {
+					matched = true
 				}
 			}
 			if !matched {

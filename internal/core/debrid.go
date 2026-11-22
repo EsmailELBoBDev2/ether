@@ -76,6 +76,7 @@ type ReleaseTarget struct {
 	CourEpisode   int      `json:"courEpisode,omitempty"`
 	Season        int      `json:"season,omitempty"`
 	Episode       int      `json:"episode,omitempty"`
+	AirDate       string   `json:"airDate,omitempty"`
 	ShowYear      int      `json:"showYear,omitempty"`
 	EpisodeTitle  string   `json:"episodeTitle,omitempty"`
 	ShowTitles    []string `json:"showTitles,omitempty"`

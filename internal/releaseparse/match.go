@@ -278,10 +278,19 @@ func TitlesMatch(a, b string) bool {
 			}
 		}
 	}
-	// Tracker dual titles pair a Cyrillic original with a Latin title.
-	// Keep slashes in ordinary titles ("Face / Off") meaningful.
+	if containsHangul(a) || containsHangul(b) {
+		ra, rb := transliterateHangul(a), transliterateHangul(b)
+		if !containsHangul(ra) && !containsHangul(rb) && TitlesMatch(ra, rb) {
+			return true
+		}
+	}
+	// Tracker dual titles pair a non-Latin original (Cyrillic/Hangul/CJK) with
+	// a Latin title. Keep slashes in ordinary titles ("Face / Off") meaningful.
+	isNonLatinDual := func(r rune) bool {
+		return unicode.In(r, unicode.Cyrillic, unicode.Hangul, unicode.Han, unicode.Hiragana, unicode.Katakana)
+	}
 	for _, pair := range [][2]string{{a, b}, {b, a}} {
-		if !strings.ContainsFunc(pair[0], func(r rune) bool { return unicode.In(r, unicode.Cyrillic) }) ||
+		if !strings.ContainsFunc(pair[0], isNonLatinDual) ||
 			!strings.ContainsFunc(pair[0], func(r rune) bool { return unicode.In(r, unicode.Latin) }) {
 			continue
 		}
@@ -445,24 +454,33 @@ func IsObfuscated(title string) bool {
 		return true
 	}
 	fields := strings.Fields(t)
-	if len(fields) == 1 && len(fields[0]) >= 12 {
-		w := fields[0]
-		hasDigit, hasLetter := false, false
-		for _, r := range w {
-			if unicode.IsDigit(r) {
-				hasDigit = true
-			}
-			if unicode.IsLetter(r) {
-				hasLetter = true
-			}
+	if len(fields) != 1 {
+		return false
+	}
+	w := fields[0]
+	// Obfuscated Usenet/scene hashes are pure ASCII; non-Latin single-word
+	// titles (Korean, Japanese, Chinese, Cyrillic, etc.) have no ASCII vowels
+	// and occupy 3+ UTF-8 bytes per character.
+	hasDigit, hasLetter := false, false
+	runeCount := 0
+	for _, r := range w {
+		if r >= 128 {
+			return false
 		}
-		if hasDigit && hasLetter {
-			return true
+		runeCount++
+		if unicode.IsDigit(r) {
+			hasDigit = true
+		}
+		if unicode.IsLetter(r) {
+			hasLetter = true
 		}
 	}
-	// No vowel in a longish single token is a strong obfuscation signal.
-	if len(fields) == 1 && len(fields[0]) >= 10 {
-		lower := strings.ToLower(fields[0])
+	if runeCount >= 12 && hasDigit && hasLetter {
+		return true
+	}
+	// No vowel in a longish single ASCII token is a strong obfuscation signal.
+	if runeCount >= 10 {
+		lower := strings.ToLower(w)
 		if !strings.ContainsAny(lower, "aeiou") {
 			return true
 		}
@@ -517,6 +535,14 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 	if len(parsed.AbsoluteEpisodes) > 0 {
 		return EpisodeMatchesAbsolute(parsed, absolute)
 	}
+	if len(parsed.Seasons) == 0 {
+		for _, n := range parsed.Episodes {
+			if n == absolute {
+				return true
+			}
+		}
+		return false
+	}
 	if len(parsed.Seasons) != 1 || parsed.Seasons[0] <= 0 {
 		return false
 	}
@@ -529,8 +555,9 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 }
 
 // EpisodeMatchesRequest reports whether parsed info matches req's canonical
-// episode, verified absolute count, anime cour mapping, or configured release
-// numbering aliases. Shared by the resolver and Stremio stream name selection.
+// episode, verified absolute count, anime cour mapping, configured release
+// numbering aliases, or exact broadcast air date. Shared by the resolver and
+// Stremio stream name selection.
 func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 	abs := req.AbsoluteEpisode
 	if abs <= 0 && req.Season == 1 {
@@ -563,6 +590,17 @@ func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 	}
 	for _, n := range core.EpisodeAliases(req) {
 		if EpisodeMatches(info, n.Season, n.Episode) {
+			return true
+		}
+	}
+	if req.Season > 0 && !info.FullSeason && EpisodeMatchesAirDate(info, req.Released) {
+		if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
+			return true
+		}
+		// Cumulative bare episode numbering (e.g. Korean variety E600) on a
+		// multi-season show whose absolute count is unknown still identifies
+		// the episode when its air date matches exactly.
+		if req.Season > 1 && abs <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > req.Episode {
 			return true
 		}
 	}

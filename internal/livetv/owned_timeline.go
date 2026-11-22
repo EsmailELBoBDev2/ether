@@ -12,6 +12,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 // ownedTimeline is the live playlist a client actually reads on the Direct
@@ -90,10 +91,32 @@ type ownedTimeline struct {
 	slateTime     time.Duration
 	codecSplices  int
 	spans         int
+
+	// Immutable DASH timeline anchors for fMP4 owned sessions.
+	dashOrigin time.Time
+	dashSpans  map[int]*ownedDashSpan
+}
+
+type ownedDashSpan struct {
+	id        int
+	start     time.Duration
+	mapRes    string
+	tracks    []transcode.DASHTrack
+	originSec float64
+}
+
+type ownedDashPeriod struct {
+	id        int
+	start     time.Duration
+	mapRes    string
+	tracks    []transcode.DASHTrack
+	originSec float64
+	segs      []*ownedSegment
 }
 
 type ownedSegment struct {
 	seq    int64
+	span   int
 	start  time.Duration // exact cumulative session time, independent of PDT
 	dur    time.Duration
 	disc   bool
@@ -493,6 +516,7 @@ func (t *ownedTimeline) publishLocked(seg *ownedSegment, at time.Time) {
 	t.format = mergeFormat(t.format, seg.format)
 	seg.format = t.format
 	t.mapRes = seg.mapRes
+	seg.span = t.spans
 	t.appendLocked(seg, at)
 }
 
@@ -536,10 +560,14 @@ func (t *ownedTimeline) appendLocked(seg *ownedSegment, at time.Time) {
 // references.
 func (t *ownedTimeline) collectLocked() {
 	live := map[string]bool{}
+	liveSpans := map[int]bool{}
 	for _, list := range [][]*ownedSegment{t.history, t.window, t.pending} {
 		for _, s := range list {
 			live[s.mapRes] = true
 			live[s.key.res] = true
+			if s.span > 0 {
+				liveSpans[s.span] = true
+			}
 		}
 	}
 	for name := range t.resources {
@@ -547,6 +575,192 @@ func (t *ownedTimeline) collectLocked() {
 			delete(t.resources, name)
 		}
 	}
+	for id := range t.dashSpans {
+		if !liveSpans[id] {
+			delete(t.dashSpans, id)
+		}
+	}
+}
+
+// isFMP4 reports whether this timeline is publishing fMP4 segments with an init
+// section that can be exposed directly as DASH without a second transcoder.
+func (t *ownedTimeline) isFMP4() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := len(t.window) - 1; i >= 0; i-- {
+		if t.window[i].ext == "m4s" && t.window[i].mapRes != "" {
+			return true
+		}
+	}
+	for i := len(t.pending) - 1; i >= 0; i-- {
+		if t.pending[i].ext == "m4s" && t.pending[i].mapRes != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// dashSnapshot returns an immutable availabilityStartTime and per-span DASH
+// Periods for the current fMP4 window. Period start times and media-clock
+// presentationTimeOffsets are anchored once per span so sliding old segments
+// out of the window never shifts an active Period.
+func (t *ownedTimeline) dashSnapshot(now time.Time) (origin time.Time, target time.Duration, periods []ownedDashPeriod, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var fmp4Segs []*ownedSegment
+	for _, seg := range t.window {
+		if seg.ext == "m4s" && seg.mapRes != "" {
+			fmp4Segs = append(fmp4Segs, seg)
+		}
+	}
+	if len(fmp4Segs) == 0 {
+		return time.Time{}, 0, nil, false
+	}
+	if t.dashSpans == nil {
+		t.dashSpans = map[int]*ownedDashSpan{}
+	}
+	for i := 0; i < len(fmp4Segs); {
+		spanID := fmp4Segs[i].span
+		if spanID <= 0 {
+			spanID = 1
+		}
+		j := i + 1
+		for j < len(fmp4Segs) {
+			nextID := fmp4Segs[j].span
+			if nextID <= 0 {
+				nextID = 1
+			}
+			if nextID != spanID || fmp4Segs[j].mapRes != fmp4Segs[i].mapRes {
+				break
+			}
+			j++
+		}
+		group := fmp4Segs[i:j]
+		sp := t.dashSpans[spanID]
+		if sp == nil || sp.mapRes != group[0].mapRes {
+			initRes, has := t.resources[group[0].mapRes]
+			if !has || len(initRes.data) == 0 {
+				i = j
+				continue
+			}
+			tracks, err := transcode.ParseDASHInit(initRes.data)
+			if err != nil {
+				i = j
+				continue
+			}
+			originSec := 0.0
+			haveOrigin := false
+			for _, tr := range tracks {
+				if tr.Timescale == 0 {
+					continue
+				}
+				if start, _, ok := transcode.FMP4TrackSpan(group[0].data, tr.ID, tr.DefaultDuration, tr.EditShift); ok {
+					sec := float64(start) / float64(tr.Timescale)
+					if !haveOrigin || sec < originSec {
+						originSec = sec
+						haveOrigin = true
+					}
+				}
+			}
+			sp = &ownedDashSpan{
+				id:        spanID,
+				start:     group[0].start,
+				mapRes:    group[0].mapRes,
+				tracks:    tracks,
+				originSec: originSec,
+			}
+			t.dashSpans[spanID] = sp
+		}
+		segsCopy := make([]*ownedSegment, len(group))
+		copy(segsCopy, group)
+		periods = append(periods, ownedDashPeriod{
+			id:        sp.id,
+			start:     sp.start,
+			mapRes:    sp.mapRes,
+			tracks:    sp.tracks,
+			originSec: sp.originSec,
+			segs:      segsCopy,
+		})
+		i = j
+	}
+	if len(periods) == 0 {
+		return time.Time{}, 0, nil, false
+	}
+	if t.dashOrigin.IsZero() {
+		maxEnd := t.elapsed
+		lastP := periods[len(periods)-1]
+		lastSeg := lastP.segs[len(lastP.segs)-1]
+		for _, tr := range lastP.tracks {
+			if tr.Timescale == 0 {
+				continue
+			}
+			if start, dur, ok := transcode.FMP4TrackSpan(lastSeg.data, tr.ID, tr.DefaultDuration, tr.EditShift); ok {
+				endSec := float64(start+dur)/float64(tr.Timescale) - lastP.originSec
+				if end := lastP.start + time.Duration(endSec*float64(time.Second)); end > maxEnd {
+					maxEnd = end
+				}
+			}
+		}
+		t.dashOrigin = now.Add(-maxEnd)
+	}
+	return t.dashOrigin, t.target, periods, true
+}
+
+func (t *ownedTimeline) dashInit(mapRes string) ([]byte, []transcode.DASHTrack, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if mapRes == "" {
+		mapRes = t.mapRes
+	}
+	res, ok := t.resources[mapRes]
+	if !ok || len(res.data) == 0 {
+		return nil, nil, false
+	}
+	for _, sp := range t.dashSpans {
+		if sp.mapRes == mapRes && len(sp.tracks) > 0 {
+			return res.data, sp.tracks, true
+		}
+	}
+	tracks, err := transcode.ParseDASHInit(res.data)
+	if err != nil {
+		return nil, nil, false
+	}
+	return res.data, tracks, true
+}
+
+func (t *ownedTimeline) dashSegment(seq int64) ([]byte, []transcode.DASHTrack, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var seg *ownedSegment
+	for i := len(t.window) - 1; i >= 0; i-- {
+		if t.window[i].seq == seq {
+			seg = t.window[i]
+			break
+		}
+	}
+	if seg == nil {
+		for i := len(t.history) - 1; i >= 0; i-- {
+			if t.history[i].seq == seq {
+				seg = t.history[i]
+				break
+			}
+		}
+	}
+	if seg == nil || seg.ext != "m4s" || seg.mapRes == "" {
+		return nil, nil, false
+	}
+	if sp := t.dashSpans[seg.span]; sp != nil && sp.mapRes == seg.mapRes && len(sp.tracks) > 0 {
+		return seg.data, sp.tracks, true
+	}
+	res, ok := t.resources[seg.mapRes]
+	if !ok || len(res.data) == 0 {
+		return nil, nil, false
+	}
+	tracks, err := transcode.ParseDASHInit(res.data)
+	if err != nil {
+		return nil, nil, false
+	}
+	return seg.data, tracks, true
 }
 
 func (t *ownedTimeline) slateProfileLocked() slateProfile {

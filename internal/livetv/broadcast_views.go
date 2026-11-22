@@ -328,8 +328,9 @@ func (s *Service) serveBroadcastDASH(w http.ResponseWriter, r *http.Request, ss 
 	}
 	init := withAuth(fmt.Sprintf("/livetv/sessions/%s/0/dash/0/header", ss.info.ID), ss.streamGrant)
 	media := withAuth(fmt.Sprintf("/livetv/sessions/%s/0/dash/0/$Number$.m4s", ss.info.ID), ss.streamGrant)
+	minBufSec, windowSec, delaySec := s.broadcastDASHWindow(ss, lease)
 	var b strings.Builder
-	fmt.Fprintf(&b, `<?xml version="1.0" encoding="utf-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011" availabilityStartTime="%s" publishTime="%s" minimumUpdatePeriod="PT2S" minBufferTime="PT2S" timeShiftBufferDepth="PT1800S"><Period id="0" start="PT0S"><AdaptationSet mimeType="video/mp4" segmentAlignment="true"><Representation id="0" codecs="%s" width="%d" height="%d" bandwidth="%d"><SegmentTemplate timescale="1000000000" startNumber="%d" initialization="%s" media="%s"><SegmentTimeline>`, origin.UTC().Format(time.RFC3339Nano), s.o.Now().UTC().Format(time.RFC3339Nano), html.EscapeString(codecs), width, height, bandwidth, first.Seq, html.EscapeString(init), html.EscapeString(media))
+	fmt.Fprintf(&b, `<?xml version="1.0" encoding="utf-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011" availabilityStartTime="%s" publishTime="%s" minimumUpdatePeriod="PT2S" minBufferTime="PT%dS" timeShiftBufferDepth="PT%dS" suggestedPresentationDelay="PT%dS"><Period id="0" start="PT0S"><AdaptationSet mimeType="video/mp4" segmentAlignment="true"><Representation id="0" codecs="%s" width="%d" height="%d" bandwidth="%d"><SegmentTemplate timescale="1000000000" startNumber="%d" initialization="%s" media="%s"><SegmentTimeline>`, origin.UTC().Format(time.RFC3339Nano), s.o.Now().UTC().Format(time.RFC3339Nano), minBufSec, windowSec, delaySec, html.EscapeString(codecs), width, height, bandwidth, first.Seq, html.EscapeString(init), html.EscapeString(media))
 	for _, seg := range segments {
 		fmt.Fprintf(&b, `<S t="%d" d="%d"/>`, seg.Start.Sub(origin).Nanoseconds(), seg.Duration.Nanoseconds())
 	}
@@ -379,6 +380,21 @@ func (s *Service) serveBroadcastDASHPart(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// broadcastDASHWindow returns MPD timing attributes (minBufferTime,
+// timeShiftBufferDepth, suggestedPresentationDelay) in seconds matching the
+// session's actual segment length and live playlist window.
+func (s *Service) broadcastDASHWindow(ss *session, lease *broadcastLease) (minBufSec, windowSec, delaySec int) {
+	policy := s.latencyPolicy()
+	minBufSec = max(2, int(math.Ceil(broadcastSegment(lease).Seconds())))
+	delaySec = max(minBufSec, int(math.Ceil(policy.TargetLatency().Seconds())))
+	if ss.info.Channel.Kind == "virtual" {
+		windowSec = 1800
+	} else {
+		windowSec = max(minBufSec*3, int(math.Ceil(policy.PlaylistWindow().Seconds())))
+	}
+	return minBufSec, windowSec, delaySec
+}
+
 // Separate AdaptationSets give browser capability checks real audio parameters.
 // Older clients otherwise guess a 1 Hz sample rate for multiplexed video/audio.
 func (s *Service) serveBroadcastTrackDASH(w http.ResponseWriter, r *http.Request, ss *session, index transcode.DASHSegmentIndex, segments []transcode.Segment) error {
@@ -396,8 +412,9 @@ func (s *Service) serveBroadcastTrackDASH(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return err
 	}
+	minBufSec, windowSec, delaySec := s.broadcastDASHWindow(ss, lease)
 	var b strings.Builder
-	fmt.Fprintf(&b, `<?xml version="1.0" encoding="utf-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011" availabilityStartTime="%s" publishTime="%s" minimumUpdatePeriod="PT2S" minBufferTime="PT2S" timeShiftBufferDepth="PT1800S"><Period id="0" start="PT0S">`, origin.UTC().Format(time.RFC3339Nano), s.o.Now().UTC().Format(time.RFC3339Nano))
+	fmt.Fprintf(&b, `<?xml version="1.0" encoding="utf-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011" availabilityStartTime="%s" publishTime="%s" minimumUpdatePeriod="PT2S" minBufferTime="PT%dS" timeShiftBufferDepth="PT%dS" suggestedPresentationDelay="PT%dS"><Period id="0" start="PT0S">`, origin.UTC().Format(time.RFC3339Nano), s.o.Now().UTC().Format(time.RFC3339Nano), minBufSec, windowSec, delaySec)
 	for rep, t := range tracks {
 		fmt.Fprintf(&b, `<AdaptationSet contentType="%s" mimeType="%s/mp4" segmentAlignment="true"><Representation id="%d" codecs="%s" bandwidth="%d"`, t.Kind, t.Kind, rep, html.EscapeString(t.Codec), t.Bandwidth)
 		if t.Kind == "audio" {

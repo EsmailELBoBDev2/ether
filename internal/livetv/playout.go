@@ -1391,8 +1391,8 @@ func (s *Service) sessionLivenessLocked(ss *session, now time.Time) core.Session
 		OpenedAt:       started,
 		IsLive:         true,
 		ActiveReads:    ss.activeReads.Load(),
-		AbandonedAfter: 30 * time.Second,
-		IdleTimeout:    2 * time.Minute,
+		AbandonedAfter: 20 * time.Second,
+		IdleTimeout:    30 * time.Second,
 	}
 	if ss.mediaStarted {
 		in.LastMediaAt = ss.last

@@ -653,7 +653,7 @@ func buildCodecArgs(s runSpec) []string {
 			// The HLS muxer's nested MP4 writer does not auto-insert the
 			// ADTS-to-ASC filter. Preserve compressed audio while moving its
 			// configuration into the initialization segment.
-			if s.Protocol == core.ProtocolHLS && container == ContainerFMP4 && a.Codec == "aac" && (s.Info.Container == "mpegts" || s.Info.Container == "aac") {
+			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && a.Codec == "aac" && (s.Info.Container == "mpegts" || s.Info.Container == "aac") {
 				audioFilters = append(audioFilters, "aac_adtstoasc")
 			}
 			if len(audioFilters) > 0 {
@@ -1994,7 +1994,7 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	// VAAPI's software-filter paths end in hwupload too. Output colour
 	// options after that upload cause FFmpeg to insert an impossible software
 	// conversion between VAAPI surfaces and the encoder.
-	p.encodeArgs = planEncodeArgs(s, pic, enc, codec, hwFrames || (accel == AccelVAAPI && burn))
+	p.encodeArgs = planEncodeArgs(s, pic, enc, codec, hwFrames || accel == AccelVAAPI)
 	return p
 }
 

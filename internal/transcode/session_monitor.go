@@ -573,9 +573,10 @@ func (s *Session) finish(r *run) {
 		if err != nil && s.retryMissingLiveAudioLocked(r) {
 			return
 		}
-		if err != nil && r.hw && !s.forceCPU && looksLikeEncoderFailure(r.stderr.String(), r.spec) {
+		if err != nil && r.hw && !s.forceCPU && (looksLikeEncoderFailure(r.stderr.String(), r.spec) || r.produced == 0) {
+			enc, _ := videoEncoder(r.spec.Decision.VideoCodec, r.spec.Accel, r.spec.Features)
 			s.forceCPU = true
-			log.Warn("live hardware encoder failed; falling back to CPU", "hwaccel", r.spec.Accel.Name, "segment", r.next())
+			log.Warn("live hardware encoder failed; falling back to CPU", "hwaccel", r.spec.Accel.Name, "encoder", enc, "segment", r.next(), "produced", r.produced, "err", err)
 			s.emitTranscodeFallback(r.spec.Accel.Name, "libx264", "live hardware encoder failed")
 		}
 		s.recoverLiveLocked(r, err)

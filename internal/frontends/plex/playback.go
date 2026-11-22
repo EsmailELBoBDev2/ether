@@ -2245,6 +2245,14 @@ func (s *Server) handleTranscodeStop(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		if s.liveTVEnabled() && pr.User != nil && id != "" {
+			if liveID, le, ok := s.liveManifests.lookup(id); ok && le.userID == pr.User.ID {
+				s.liveManifests.dropByID(liveID)
+				_ = s.svc().liveTV.Stop(r.Context(), liveID, pr.User)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+		}
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}

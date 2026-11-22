@@ -151,6 +151,28 @@ func (s *Service) screenStyle(c Channel, offair bool) string {
 // source, or a host without encode capacity, and take a direct path. A channel
 // whose owner chose no screen at all ("error") never shows one, so it plays
 // direct.
+// preferSteadyAtTune reports whether a channel should start directly on the
+// Steady decode/re-encode pipeline instead of trying direct copy/remux first.
+// Standard IPTV channels copy or remux by default and only escalate to Steady
+// when the viewer cannot decode the source video, the owner opts in (force
+// transcode, rock-solid reserve, or station look), a shared Steady broadcast
+// is already active, or the channel's preferred source has proven flaky.
+func (s *Service) preferSteadyAtTune(c Channel, key broadcastKey) bool {
+	if c.Kind != "iptv" {
+		return true
+	}
+	if c.Transcode || s.stabilityPreset(c) == stabilityRockSolid || (c.Look != nil && c.Look.LookID != "") {
+		return true
+	}
+	if s.broadcasts.running(key) != nil {
+		return true
+	}
+	for _, src := range s.orderedSourceCandidates(c) {
+		return s.steadyClass(c, src) == steadyClassFlaky
+	}
+	return false
+}
+
 func (s *Service) useBroadcast(c Channel) bool {
 	if c.Kind == "virtual" {
 		return true
@@ -397,6 +419,12 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 		full := 0
 		if running := s.broadcasts.running(key); running != nil {
 			format, full = running.format, running.steadyBitrate
+		} else if !s.preferSteadyAtTune(c, key) {
+			s.sessionLog(ss).Debug("live steady deferred", "reason", steadyRefusedCopy)
+			ss.mu.Lock()
+			ss.steadyRefused = steadyRefusedCopy
+			ss.mu.Unlock()
+			return fmt.Errorf("%w: direct copy preferred", errSteadyRefused)
 		} else {
 			var code, detail string
 			var admissionErr error

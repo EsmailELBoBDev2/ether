@@ -50,7 +50,7 @@ const broadcastStartup = 45 * time.Second
 // A cold programme gets a bounded source-and-picture admission window.
 // Its title holds while alternate releases and substitutes are prepared.
 const broadcastColdProgrammeWait = 20 * time.Second
-const broadcastIdle = 60 * time.Second
+const broadcastIdle = 5 * time.Second
 const broadcastDVR = 30 * time.Minute
 
 // broadcastPlan is immutable. Open performs blocking resolution away from the

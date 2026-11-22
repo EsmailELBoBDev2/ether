@@ -70,7 +70,7 @@ func (l *ownedLease) close() {
 
 // ownedLinger keeps a channel's timeline (and its reserve) briefly after the
 // last viewer leaves, so a retune or a Plex session restart rejoins it.
-const ownedLinger = 10 * time.Second
+const ownedLinger = 5 * time.Second
 
 var errNeedsRelay = errors.New("livetv: provider variants need the relay")
 

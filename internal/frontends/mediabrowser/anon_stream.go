@@ -337,6 +337,13 @@ func (i *instance) reopenAnonymous(r *http.Request, peer netip.Addr, key fronten
 	if err != nil {
 		return anonEntry{}, frontend.SessionAccess{}, nil, false
 	}
+	// As PlaybackInfo does: the direct file is served, and the session
+	// listed, only once its stream has started.
+	access := frontend.SessionAccess{Viewer: &viewer, Device: entry.device, Protocol: i.protocol}
+	if _, err := i.host.Sessions.StartStream(r.Context(), access, session.ID, frontend.StreamRequest{Format: frontend.StreamDirect, Position: request.Intent.Position}); err != nil {
+		_ = i.host.Sessions.Stop(r.Context(), access, session.ID)
+		return anonEntry{}, frontend.SessionAccess{}, nil, false
+	}
 	if i.host.Log != nil {
 		i.host.Log.Debug("reopened superseded credential-less stream", "item", key, "old", entry.sessionID, "session", session.ID)
 	}

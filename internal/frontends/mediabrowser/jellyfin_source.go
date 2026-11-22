@@ -107,6 +107,38 @@ func applyPlannedStreamIndexes(source map[string]any, media frontend.MediaInfo, 
 	}
 }
 
+// jellyfinSideSubtitleDefault restores the subtitle choice on a PlaybackInfo
+// source when the track is rendered beside the video. The plan clears a text
+// track the client fetches itself (the progressive web reader, an HLS
+// rendition) so the video is never asked to burn it in; publishing that -1
+// told Jellyfin Web the viewer wanted subtitles off. An explicit -1 from the
+// client stays off; with no choice in the request the viewer's rules pick.
+func (i *instance) jellyfinSideSubtitleDefault(r *http.Request, v *frontend.Viewer, key frontend.RatingKey, source map[string]any, media frontend.MediaInfo, asked int, askedSet bool) {
+	if current, ok := source["DefaultSubtitleStreamIndex"].(int); ok && current >= 0 {
+		return
+	}
+	if media.Estimated || (askedSet && asked < 0) {
+		return
+	}
+	want := -1
+	if askedSet {
+		want = asked
+	} else if i.host.TrackPreferences != nil && r != nil && v != nil {
+		if selection, err := i.host.TrackPreferences.Select(r.Context(), v.ID, key, media, ""); err == nil && selection.Subtitle >= 0 && selection.Subtitle < len(media.Streams) {
+			want = media.Streams[selection.Subtitle].Index
+		}
+	}
+	if want < 0 {
+		return
+	}
+	for _, stream := range media.Streams {
+		if stream.Type == "subtitle" && stream.Index == want && frontend.IsTextSubtitle(stream.Codec) {
+			source["DefaultSubtitleStreamIndex"] = want
+			return
+		}
+	}
+}
+
 // jellyfinResumeSubtitle records the lab viewer's in-progress choice. Jellyfin
 // stores -1 on a partially watched item when no subtitle stream is selected,
 // and omits the field once the item is unplayed or finished.

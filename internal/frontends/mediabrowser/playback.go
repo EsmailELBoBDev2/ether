@@ -725,6 +725,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if (i.protocol == "emby" || i.protocol == "jellyfin") && channel == "" {
 		applyPlannedStreamIndexes(source, media, plan.Decision)
+		if i.protocol == "jellyfin" {
+			i.jellyfinSideSubtitleDefault(r, v, key, source, media, opts.SubtitleStream, subtitleSet)
+		}
 	}
 	// With no explicit version pick, list Auto then the ranked release
 	// variants so the app's version picker offers them; a pick resolves to

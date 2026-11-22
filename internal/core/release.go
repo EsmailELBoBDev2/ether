@@ -117,6 +117,11 @@ type Release struct {
 	// TorrentFiles holds the file list parsed from a .torrent metainfo
 	// document during ResolveTorrent, when available. In-memory only.
 	TorrentFiles []ReleaseFile `json:"-"`
+	// FileCount hints how many files a torrent contains when TorrentFiles has
+	// not been parsed (from indexer metadata or a plugin release hint). Debrid
+	// providers that zip high-file-count torrents use it to avoid trusting a
+	// cache-check miss on zip-only torrents.
+	FileCount int `json:"fileCount,omitempty"`
 	// Private marks a private-tracker torrent (info.private == 1 or a
 	// Cardigann definition with type: private). Debrid providers may only
 	// check or play an existing cache by bare info hash.
@@ -152,6 +157,12 @@ type Release struct {
 	// importing it on request), so every open costs the source real work
 	// (additive). See OpensOnDemand.
 	StreamOnDemand bool `json:"streamOnDemand,omitempty"`
+}
+
+// KnownFileCount returns the torrent's known file count from FileCount or
+// parsed TorrentFiles, or 0 when unknown.
+func (r Release) KnownFileCount() int {
+	return max(r.FileCount, len(r.TorrentFiles))
 }
 
 // PreFetchContentIDPrefix namespaces Usenet pre-fetch content identities

@@ -396,7 +396,8 @@ func (f *remoteFile) rerouteWave(ctx context.Context, failed string, usable func
 			f.edgeCursorKey, f.edgeCursorHost = cursorKey, host
 			f.mu.Unlock()
 			pctx, cancel := context.WithTimeout(ctx, edgeProbeBudget)
-			verdict := f.e.probeLink(pctx, u, off, f.size)
+			wireOff, _, wireSize := p.wireRange(off, off)
+			verdict := f.e.probeLink(pctx, u, wireOff, wireSize)
 			timedOut := pctx.Err() != nil && ctx.Err() == nil
 			cancel()
 			f.mu.Lock()

@@ -27,7 +27,7 @@ func (s *httpSource) DirectURL() (core.DirectSourceLink, bool) {
 	f.mu.Lock()
 	p, closed := f.pl, f.closed
 	f.mu.Unlock()
-	if closed || p.Kind != "torbox" || p.Provider == "" || p.OnReplayEdge || !f.e.svc.fresh(p) {
+	if closed || p.Kind != "torbox" || p.Provider == "" || p.OnReplayEdge || p.Zip != nil || !f.e.svc.fresh(p) {
 		return core.DirectSourceLink{}, false
 	}
 	dest, err := url.Parse(p.URL)

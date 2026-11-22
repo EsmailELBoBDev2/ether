@@ -53,6 +53,11 @@
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
           "description": "A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list, so zip-only debrid caches (e.g. TorBox at 100+ files) are checked via cached-only add."
         }
       }
     },
@@ -261,6 +266,11 @@
           },
           "description": "Files inside this release; populated only by a release_files query."
         },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Known file count of the torrent when reported by an indexer or release_files query."
+        },
         "usenetCheck": {
           "$ref": "#/$defs/usenetCheckResult",
           "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
@@ -308,6 +318,11 @@
         "cachedOnly": {
           "type": "boolean",
           "description": "Require an already-cached debrid copy even when the owner turned \"Cached torrents only\" off. Omit or set false to follow the owner's debrid setting (queueing an uncached download and answering preparing / 503 Retry-After until ready when cached-only is off)."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
         }
       }
     }

@@ -3641,6 +3641,7 @@ class SourceCandidate(TypedDict, total=False):
     source: str
     codec: str
     files: List[ReleaseFile]
+    fileCount: int
     usenetCheck: UsenetCheckResult
 
 
@@ -3657,6 +3658,7 @@ class SourceQuery(TypedDict, total=False):
     torrentUrl: str
     nzbUrl: str
     candidate: SourceCandidate
+    fileCount: int
 
 
 class CatalogProvider:

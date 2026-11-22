@@ -122,7 +122,13 @@ type knownState struct {
 	// infringing_file, a file it will not serve): it is not offered there
 	// again, not even as a download, until the memory expires.
 	refused bool
-	until   time.Time
+	// checkUncertain marks a negative verdict produced only by a zip-blind
+	// CheckCached call (such as TorBox, whose checkcached reports 100+-file
+	// server-side zips as not cached). Ordinary torrents still honour it for
+	// UncachedTTL, while likely zip-only torrents ignore it and try the
+	// cached-only add.
+	checkUncertain bool
+	until          time.Time
 }
 
 // entry is one configured provider with its breaker and counters.
@@ -552,7 +558,14 @@ func (s *Service) setKnown(ctx context.Context, providerID, hash, torrentID stri
 // recordKnown is setKnown without the cluster notification (bulk callers
 // notify once for many hashes); it returns the hash's known-map key.
 func (s *Service) recordKnown(ctx context.Context, providerID, hash, torrentID string, cached bool) string {
+	return s.recordKnownState(ctx, providerID, hash, torrentID, cached, false)
+}
+
+func (s *Service) recordKnownState(ctx context.Context, providerID, hash, torrentID string, cached, checkUncertain bool) string {
 	hash = strings.ToLower(hash)
+	if cached {
+		checkUncertain = false
+	}
 	ttl := s.opts.UncachedTTL
 	if cached {
 		ttl = s.opts.CachedTTL
@@ -560,7 +573,7 @@ func (s *Service) recordKnown(ctx context.Context, providerID, hash, torrentID s
 	now := s.now()
 	key := knownKey(providerID, hash)
 	s.knownMu.Lock()
-	s.known[key] = knownState{cached: cached, until: now.Add(ttl)}
+	s.known[key] = knownState{cached: cached, checkUncertain: checkUncertain, until: now.Add(ttl)}
 	s.knownMu.Unlock()
 	if s.db == nil {
 		return key
@@ -568,6 +581,8 @@ func (s *Service) recordKnown(ctx context.Context, providerID, hash, torrentID s
 	cachedInt := 0
 	if cached {
 		cachedInt = 1
+	} else if checkUncertain {
+		cachedInt = 2
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO debrid_torrents (provider_id, info_hash, torrent_id, cached, checked_at)
 VALUES (?, ?, ?, ?, ?)
@@ -583,13 +598,18 @@ ON CONFLICT (provider_id, info_hash) DO UPDATE SET
 
 // knownFor reports a remembered answer for provider+hash.
 func (s *Service) knownFor(ctx context.Context, providerID, hash string) (cached, ok bool, torrentID string) {
+	cached, ok, _, torrentID = s.knownForDetail(ctx, providerID, hash)
+	return cached, ok, torrentID
+}
+
+func (s *Service) knownForDetail(ctx context.Context, providerID, hash string) (cached, ok, checkUncertain bool, torrentID string) {
 	hash = strings.ToLower(hash)
 	now := s.now()
 	s.knownMu.Lock()
 	k, hit := s.known[knownKey(providerID, hash)]
 	s.knownMu.Unlock()
 	if hit && (now.Before(k.until) || (k.refused && k.until.IsZero())) {
-		cached, ok = k.cached, true
+		cached, ok, checkUncertain = k.cached, true, k.checkUncertain
 	}
 	if s.db != nil {
 		var tid string
@@ -604,12 +624,88 @@ func (s *Service) knownFor(ctx context.Context, providerID, hash string) (cached
 					ttl = s.opts.CachedTTL
 				}
 				if now.Sub(time.Unix(at, 0)) < ttl {
-					cached, ok = c == 1, true
+					cached, ok, checkUncertain = c == 1, true, c == 2
 				}
 			}
 		}
 	}
-	return cached, ok, torrentID
+	return cached, ok, checkUncertain, torrentID
+}
+
+func zipOnlyCheckThreshold(p Provider) int {
+	if z, ok := p.(zipOnlyCheckBlindProvider); ok {
+		return z.zipOnlyCheckThreshold()
+	}
+	return 0
+}
+
+// likelyZipOnly reports whether rel is a public torrent at or above e's
+// zip-only cache-check blindness threshold (e.g. TorBox's 100-file auto-zip),
+// using metadata on rel or previously recorded torrent files in the vault.
+func (s *Service) likelyZipOnly(ctx context.Context, e *entry, rel core.Release) bool {
+	if rel.Private || e == nil {
+		return false
+	}
+	thresh := zipOnlyCheckThreshold(e.p)
+	if thresh <= 0 {
+		return false
+	}
+	if rel.KnownFileCount() >= thresh {
+		return true
+	}
+	if s.vault != nil {
+		if hash := strings.ToLower(strings.TrimSpace(rel.InfoHash)); hash != "" {
+			if rec, err := s.vault.Get(ctx, vault.TorrentKey(hash)); err == nil && rec != nil && rec.Torrent != nil && len(rec.Torrent.Files) >= thresh {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// knownUncachedForRelease reports whether e is definitively known not to hold
+// rel cached. A negative CheckCached verdict from a zip-blind provider is
+// ignored for likely zip-only public torrents so Acquire/ListReleaseFiles
+// tries the cached-only add.
+func (s *Service) knownUncachedForRelease(ctx context.Context, e *entry, rel core.Release) bool {
+	hash := strings.ToLower(strings.TrimSpace(rel.InfoHash))
+	if hash == "" {
+		return false
+	}
+	cached, ok, checkUncertain, _ := s.knownForDetail(ctx, e.cfg.ID, hash)
+	if !ok || cached {
+		return false
+	}
+	if checkUncertain && s.likelyZipOnly(ctx, e, rel) {
+		return false
+	}
+	return true
+}
+
+// mayBeZipOnlyCached reports whether a public torrent that CheckCached marked
+// uncached may still be held as a server-side zip by an active zip-blind
+// provider whose cached-only add has not yet rejected it.
+func (s *Service) mayBeZipOnlyCached(ctx context.Context, rel core.Release) bool {
+	if rel.Private || rel.Protocol != core.ProtocolTorrent {
+		return false
+	}
+	hash := strings.ToLower(strings.TrimSpace(rel.InfoHash))
+	if hash == "" {
+		return false
+	}
+	for _, e := range s.active() {
+		if e.blocked(s.now()) != nil {
+			continue
+		}
+		if !s.likelyZipOnly(ctx, e, rel) {
+			continue
+		}
+		cached, ok, checkUncertain, _ := s.knownForDetail(ctx, e.cfg.ID, hash)
+		if !ok || cached || checkUncertain {
+			return true
+		}
+	}
+	return false
 }
 
 // hintTTL bounds how long a source's cached marker stands in for a
@@ -821,13 +917,14 @@ func (s *Service) checkCachedDetail(ctx context.Context, hashes []string, refres
 			continue
 		}
 		keys := make([]string, 0, len(ask))
+		zipBlind := zipOnlyCheckThreshold(e.p) > 0
 		for _, h := range ask {
 			c := res[strings.ToLower(h)]
 			out[h] = out[h] || c
 			if c {
 				addService(h, ref)
 			}
-			keys = append(keys, s.recordKnown(ctx, ref.ID, h, "", c))
+			keys = append(keys, s.recordKnownState(ctx, ref.ID, h, "", c, !c && zipBlind))
 		}
 		s.notifyKnown(keys...)
 	}
@@ -944,7 +1041,7 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			errs = append(errs, err)
 			continue
 		}
-		if cached, ok, _ := s.knownFor(ctx, e.cfg.ID, hash); ok && !cached {
+		if s.knownUncachedForRelease(ctx, e, rel) {
 			notCached++
 			continue
 		}
@@ -1036,13 +1133,13 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 	// (no-op for hashes already known and for providers without bulk checks).
 	s.CheckCached(ctx, []string{hash})
 
-	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Release: rel.Name}
+	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Release: rel.Name, Target: &core.ReleaseTarget{AllowNonVideo: true}}
 	var errs []error
 	for _, e := range entries {
 		if e.blocked(s.now()) != nil {
 			continue
 		}
-		if cached, known, _ := s.knownFor(ctx, e.cfg.ID, hash); known && !cached {
+		if s.knownUncachedForRelease(ctx, e, rel) {
 			continue
 		}
 		var captured []File
@@ -1057,13 +1154,18 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 			if f, err := ChooseFile(files, nil); err == nil {
 				return f, nil
 			}
+			for _, f := range files {
+				if f.Size > 0 {
+					return f, nil
+				}
+			}
 			if len(files) > 0 {
 				return files[0], nil
 			}
 			return File{}, core.ErrWrongContent
 		}
 		_, err := s.acquireOn(ctx, e, base, choose, false)
-		if err == nil && len(captured) > 0 {
+		if (err == nil || errors.Is(err, errProviderZipped)) && len(captured) > 0 {
 			out := make([]core.ReleaseFile, len(captured))
 			for i, f := range captured {
 				out[i] = core.ReleaseFile{Index: i, Path: f.Path, Size: f.Size}
@@ -1109,7 +1211,7 @@ func (s *Service) CachedPackMatcher(ctx context.Context, rel core.Release) (func
 			definitive = false
 			continue
 		}
-		if cached, ok, _ := s.knownFor(ctx, e.cfg.ID, hash); ok && !cached {
+		if s.knownUncachedForRelease(ctx, e, rel) {
 			continue
 		}
 		var captured []File
@@ -1448,7 +1550,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		cacheOnlyBackground = true
 	}
 	req := AcquireRequest{InfoHash: hash, Magnet: base.Magnet, TorrentID: torrentID, Choose: choose, CachedOnly: !download || core.IsBackgroundCheck(ctx),
-		RemoveUncached: cfg.RemoveUncached, Private: base.Private, MayRemove: s.mayRemove(e.cfg.ID)}
+		RemoveUncached: cfg.RemoveUncached, Private: base.Private, AllowCompressedZip: base.Target != nil && base.Target.AllowNonVideo, MayRemove: s.mayRemove(e.cfg.ID)}
 	if base.Private {
 		var perr error
 		req, perr = prepareAcquire(ctx, e.p, req, knownCached)
@@ -1536,9 +1638,11 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		return Payload{}, err
 	}
 	if err != nil {
-		if errors.Is(err, core.ErrNotCached) && !errors.Is(err, core.ErrDownloadLimit) {
+		if errors.Is(err, core.ErrNotCached) && !errors.Is(err, core.ErrDownloadLimit) && !errors.Is(err, errProviderZipped) {
 			// A download left on the account keeps its id, so a later
-			// check follows it instead of adding the torrent again.
+			// check follows it instead of adding the torrent again. Do not
+			// remember errProviderZipped as uncached for 30 minutes: the
+			// torrent is cached as a zip and another target may be streamable.
 			e.count(func(st *ProviderStats) { st.NotCached++ })
 			s.setKnown(ctx, e.cfg.ID, hash, pendingTorrent(err), false)
 		}
@@ -1560,7 +1664,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 
 	p := base
 	p.Provider, p.Kind = e.cfg.ID, e.cfg.Kind
-	p.TorrentID, p.FileID, p.Path, p.Size, p.Link = acq.TorrentID, acq.File.ID, acq.File.Path, acq.File.Size, acq.File.Link
+	p.TorrentID, p.FileID, p.Path, p.Size, p.Link, p.Zip = acq.TorrentID, acq.File.ID, acq.File.Path, acq.File.Size, acq.File.Link, acq.File.Zip
 	linkStart := s.now()
 	linkWallStarted := time.Now()
 	dl, err := e.p.Link(ctx, p.handle())
@@ -1627,7 +1731,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		return p, nil
 	}
 	if !force {
-		if stored, ok := s.storedPayload(ctx, p.Key); ok && s.fresh(stored) && stored.Path == p.Path && stored.Size == p.Size {
+		if stored, ok := s.storedPayload(ctx, p.Key); ok && s.fresh(stored) && stored.Path == p.Path && stored.sameStreamEncoding(p) {
 			return stored, nil
 		}
 		if s.fresh(p) {

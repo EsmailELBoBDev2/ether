@@ -84,7 +84,7 @@ func OpenContainer(ctx context.Context, c core.ContainerRef, declaredMIME string
 		return nil, wrapArchiveUnstreamable(err)
 	}
 
-	members, err := listContainerMembers(ctx, format, vols, password)
+	members, zipEntries, err := listContainerMembers(ctx, format, vols, password)
 	if err != nil {
 		closeAll()
 		return nil, wrapArchiveUnstreamable(err)
@@ -98,6 +98,14 @@ func OpenContainer(ctx context.Context, c core.ContainerRef, declaredMIME string
 
 	streamErr := selected.Streamable()
 	if streamErr == nil {
+		if format == archive.FormatZIP && len(selected.Extents) == 0 && selected.Size > 0 {
+			resolved, rerr := resolveZIPMemberAt(vols, zipEntries, nonDirIdx)
+			if rerr != nil {
+				closeAll()
+				return nil, wrapArchiveUnstreamable(rerr)
+			}
+			selected = resolved
+		}
 		// Rebind direct extent reads to raw volume readers so random seeks into
 		// store-mode members do not share sequential buffer state across callers.
 		rawVols := make([]archive.Volume, len(vols))
@@ -527,7 +535,7 @@ func detectContainerFormat(vol0 archive.Volume, hint string) (archive.Format, er
 	}
 }
 
-func listContainerMembers(ctx context.Context, format archive.Format, vols []archive.Volume, password string) ([]archive.Member, error) {
+func listContainerMembers(ctx context.Context, format archive.Format, vols []archive.Volume, password string) ([]archive.Member, []archive.ZIPEntry, error) {
 	switch format {
 	case archive.FormatRAR4, archive.FormatRAR5:
 		parsed := make([]*archive.RARVolume, len(vols))
@@ -538,52 +546,146 @@ func listContainerMembers(ctx context.Context, format archive.Format, vols []arc
 		for i, v := range vols {
 			rv, err := archive.ReadRARVolume(v.R, v.Size, opts)
 			if err != nil {
-				return nil, fmt.Errorf("kindstream: read rar volume %d: %w", i, wrapArchiveUnstreamable(err))
+				return nil, nil, fmt.Errorf("kindstream: read rar volume %d: %w", i, wrapArchiveUnstreamable(err))
 			}
 			parsed[i] = rv
 		}
 		members, err := archive.ComposeRAR(parsed)
 		if err != nil {
-			return nil, wrapArchiveUnstreamable(err)
+			return nil, nil, wrapArchiveUnstreamable(err)
 		}
-		return members, nil
+		return members, nil, nil
 
 	case archive.Format7z:
 		mr := archive.NewMultiReader(vols)
 		members, err := archive.List7zWithPassword(ctx, mr, mr.Size(), password)
 		if err != nil {
-			return nil, wrapArchiveUnstreamable(err)
+			return nil, nil, wrapArchiveUnstreamable(err)
 		}
 		for i := range members {
 			if len(members[i].Extents) > 0 {
 				exts, err := archive.SplitExtents(vols, members[i].Extents)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				members[i].Extents = exts
 			}
 		}
-		return members, nil
+		return members, nil, nil
 
 	case archive.FormatZIP:
-		members, err := archive.ListZIP(vols)
+		entries, err := archive.ReadZIPDirectory(vols)
 		if err != nil {
-			return nil, wrapArchiveUnstreamable(err)
+			return nil, nil, wrapArchiveUnstreamable(err)
 		}
-		for i := range members {
-			if len(members[i].Extents) > 0 {
-				exts, err := archive.SplitExtents(vols, members[i].Extents)
-				if err != nil {
-					return nil, err
-				}
-				members[i].Extents = exts
-			}
+		members := make([]archive.Member, len(entries))
+		for i, e := range entries {
+			members[i] = e.Member
 		}
-		return members, nil
+		return members, entries, nil
 
 	default:
-		return nil, archive.ErrNotArchive
+		return nil, nil, archive.ErrNotArchive
 	}
+}
+
+func resolveZIPMemberAt(vols []archive.Volume, entries []archive.ZIPEntry, nonDirIdx int) (archive.Member, error) {
+	idx := 0
+	for _, e := range entries {
+		if e.Dir {
+			continue
+		}
+		if idx == nonDirIdx {
+			m, _, err := archive.ResolveZIPEntry(vols, e)
+			if err != nil {
+				return archive.Member{}, err
+			}
+			if len(m.Extents) > 0 {
+				exts, err := archive.SplitExtents(vols, m.Extents)
+				if err != nil {
+					return archive.Member{}, err
+				}
+				m.Extents = exts
+			}
+			return m, nil
+		}
+		idx++
+	}
+	return archive.Member{}, fmt.Errorf("kindstream: zip member index %d not found: %w", nonDirIdx, archive.ErrCorrupt)
+}
+
+type cachedMediaSource struct {
+	src       ByteSource
+	name      string
+	releaseID string
+}
+
+func (c *cachedMediaSource) ReadAt(p []byte, off int64) (int, error) { return c.src.ReadAt(p, off) }
+func (c *cachedMediaSource) Size() int64                             { return c.src.Size() }
+func (c *cachedMediaSource) Name() string                            { return c.name }
+func (c *cachedMediaSource) ReleaseID() string                       { return c.releaseID }
+func (c *cachedMediaSource) Close() error                            { return c.src.Close() }
+
+// extractCompressedZipMember decodes a single compressed (deflate) member
+// streamed from inside a provider's server-side ZIP archive into deps.Cache
+// using adaptive sequential read-ahead, verifying unpacked size and CRC-32.
+func extractCompressedZipMember(
+	ctx context.Context,
+	ms core.MediaSource,
+	czs core.CompressedZipMemberSource,
+	declaredMIME string,
+	maxBytes int64,
+	deps Deps,
+) (core.MediaSource, error) {
+	memberName, method, uncompSize, wantCRC := czs.CompressedZipMember()
+	if method != archive.ZIPMethodStore && method != archive.ZIPMethodDeflate {
+		return nil, fmt.Errorf("%w: zip member %q uses unsupported method %d", ErrMemberUndecodable, memberName, method)
+	}
+	if deps.Cache == nil {
+		return nil, fmt.Errorf("%w: blobcache namespace required to extract compressed member %q", ErrMemberUndecodable, memberName)
+	}
+	limit := effectiveDownloadMaxBytes(maxBytes, deps)
+	if limit > 0 && uncompSize > limit {
+		return nil, fmt.Errorf("%w: member %q unpacked size %d exceeds limit %d", ErrSizeLimitExceeded, memberName, uncompSize, limit)
+	}
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s|provider-zip|member=%s|method=%d|size=%d|crc=%08x|item=%d",
+		ms.ReleaseID(), normalizeArchivePath(memberName), method, uncompSize, wantCRC, deps.ItemIndex)))
+	extractKey := "extract-" + hex.EncodeToString(h[:12]) + "-" + memberDisplayName(memberName)
+
+	ref, err := deps.Cache.SingleFlightPut(ctx, extractKey, func(ctx context.Context) (blobcache.Ref, error) {
+		seq := newSeqBufferedReaderAt(ctx, ms, ms.Size())
+		sec := io.NewSectionReader(seq, 0, ms.Size())
+		rc, err := archive.OpenZIPDataReader(sec, memberName, method, uncompSize, wantCRC)
+		if err != nil {
+			return "", wrapExtractErr(err)
+		}
+		defer rc.Close()
+
+		var reader io.Reader = rc
+		if limit > 0 {
+			reader = &limitEnforcingReader{r: rc, max: limit}
+		}
+		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, extractKey, reader, uncompSize, "", declaredMIME)
+		if err != nil {
+			if errors.Is(err, blobcache.ErrTooLarge) {
+				return "", fmt.Errorf("%w: %v", ErrSizeLimitExceeded, err)
+			}
+			return "", err
+		}
+		return ref, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cachedSrc, err := deps.Cache.Open(ref)
+	if err != nil {
+		return nil, err
+	}
+	return &cachedMediaSource{
+		src:       cachedSrc,
+		name:      memberDisplayName(memberName),
+		releaseID: ms.ReleaseID(),
+	}, nil
 }
 
 func selectArchiveMember(members []archive.Member, wantName string, wantIndex *int) (archive.Member, int, error) {

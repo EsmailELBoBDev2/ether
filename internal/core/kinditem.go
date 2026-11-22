@@ -468,6 +468,10 @@ type SourceQuery struct {
 	// back for release_files or usenet_check, so an NZB or torrent link is
 	// resolved through its originating indexer.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether
+	// has not seen its file list yet (e.g. a magnet for a large collection),
+	// so zip-only debrid caches are checked via cached-only add.
+	FileCount int `json:"fileCount,omitempty"`
 }
 
 // ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
@@ -569,6 +573,10 @@ type SourceCandidate struct {
 	// Files is populated only by a release_files query: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// FileCount is the torrent's known file count when reported by an indexer
+	// or release_files query, allowing zip-only debrid caches to be probed by
+	// cached-only add even when Files is omitted.
+	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query: the sampled
 	// article availability verdict and any recorded playback failure for
 	// this NZB release.
@@ -690,6 +698,12 @@ type ReleaseHint struct {
 	// false, torrent releases follow the owner's debrid setting (queuing
 	// uncached downloads when cached-only is off).
 	CachedOnly bool `json:"cachedOnly,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether
+	// has not seen its file list yet (for example a magnet for one entry in a
+	// large collection). Providers whose cache check cannot see zip-only
+	// high-file-count torrents (such as TorBox at 100+ files) use this to try
+	// a cached-only add instead of trusting a checkcached miss.
+	FileCount int `json:"fileCount,omitempty"`
 }
 
 // KindResolveRequest is the payload sent to a plugin's kind_resolve handler

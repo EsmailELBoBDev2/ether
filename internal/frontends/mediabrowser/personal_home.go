@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
@@ -789,8 +790,12 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		}
 		titles = kept
 	}
-	if !latest && !shelf.row.RankedTop10 && personalSortAsked(r, q) {
-		sortPersonalTitles(titles, q)
+	if !latest && !shelf.row.RankedTop10 {
+		if sortByRandom(r) {
+			rand.Shuffle(len(titles), func(a, b int) { titles[a], titles[b] = titles[b], titles[a] })
+		} else if personalSortAsked(r, q) {
+			sortPersonalTitles(titles, q)
+		}
 	}
 	if shelf.row.RankedTop10 {
 		titles = titles[:min(10, len(titles))]

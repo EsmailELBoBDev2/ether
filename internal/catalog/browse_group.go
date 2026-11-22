@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-func (c *Catalog) compileBrowseGroup(g *core.FilterGroup, alias string, kind core.KeyKind) (string, []any, error) {
+func (c *Catalog) compileBrowseGroup(g *core.FilterGroup, alias string, kind core.KeyKind, rootType core.MediaType) (string, []any, error) {
 	if g.ParentOnly && kind != 0 {
 		copy := *g
 		copy.ParentOnly = false
-		return c.compileBrowseGroup(&copy, "t", 0)
+		return c.compileBrowseGroup(&copy, "t", 0, core.TypeShow)
 	}
 	if g.OnWatchlist != nil || g.Watchlist != nil || g.Favorite != nil || g.StateField != "" ||
 		g.Watched != nil || g.Unwatched != nil || g.InProgress != nil || g.History != nil ||
@@ -73,11 +73,24 @@ func (c *Catalog) compileBrowseGroup(g *core.FilterGroup, alias string, kind cor
 				args = append(args, g.UserID)
 			}
 		}
+		addWatched := func(want bool) {
+			if g.UserID <= 0 {
+				if want {
+					parts = append(parts, "1=0")
+				} else {
+					parts = append(parts, "1=1")
+				}
+				return
+			}
+			clause, wArgs := c.watchedPredicateSQL(alias, kind, rootType, g.UserID, want)
+			parts = append(parts, clause)
+			args = append(args, wArgs...)
+		}
 		if g.Watched != nil {
-			addWatch("w.view_count>0", *g.Watched)
+			addWatched(*g.Watched)
 		}
 		if g.Unwatched != nil {
-			addWatch("w.view_count>0", !*g.Unwatched)
+			addWatched(!*g.Unwatched)
 		}
 		if g.InProgress != nil {
 			addWatch("w.view_offset_ns>0", *g.InProgress)
@@ -222,7 +235,7 @@ func (c *Catalog) compileBrowseGroup(g *core.FilterGroup, alias string, kind cor
 	parts := make([]string, 0, len(g.Children))
 	var args []any
 	for i := range g.Children {
-		sql, vals, err := c.compileBrowseGroup(&g.Children[i], alias, kind)
+		sql, vals, err := c.compileBrowseGroup(&g.Children[i], alias, kind, rootType)
 		if err != nil {
 			return "", nil, err
 		}

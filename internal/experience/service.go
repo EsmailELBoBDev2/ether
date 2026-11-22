@@ -206,7 +206,10 @@ type ServiceDeps struct {
 	// CountWatched counts the titles matching a filter that a viewer has
 	// played, from their watch rows. Optional; without it a played filter's
 	// total is counted over the whole type.
-	CountWatched            func(context.Context, core.Filter, int64) (int, error)
+	CountWatched func(context.Context, core.Filter, int64) (int, error)
+	// WatchedTitles reports which keys a viewer has fully watched, matching
+	// Browse's watched predicate for shows and seasons. Optional.
+	WatchedTitles           func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
 	IsNotInterestedMany     func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
 	IsWatchlistedMany       func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
 	FavoriteMembership      func(context.Context, *core.User, core.RatingKey) (frontend.Membership, error)
@@ -632,14 +635,10 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return nil
 		}
 		chunk := recursiveBatch
-		var watched map[core.RatingKey]core.WatchStatus
+		var watched map[core.RatingKey]bool
 		if q.Watched != nil {
-			keys := make([]core.RatingKey, len(chunk))
-			for i := range chunk {
-				keys[i] = chunk[i].Key
-			}
 			var e error
-			watched, e = s.d.State.GetMany(ctx, v.ID, keys)
+			watched, e = s.titlesWatched(ctx, v, chunk)
 			if e != nil {
 				return e
 			}
@@ -648,7 +647,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		// and no title pointers escape the batch.
 		eligible := chunk[:0]
 		for _, title := range chunk {
-			if q.Watched == nil || (watched[title.Key].ViewCount > 0) == *q.Watched {
+			if q.Watched == nil || watched[title.Key] == *q.Watched {
 				eligible = append(eligible, title)
 			}
 		}
@@ -830,13 +829,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		}
 		for start := 0; start < len(candidatesPage); start += 400 {
 			chunk := candidatesPage[start:min(start+400, len(candidatesPage))]
-			var watched map[core.RatingKey]core.WatchStatus
+			var watched map[core.RatingKey]bool
 			if q.Watched != nil {
-				keys := make([]core.RatingKey, len(chunk))
-				for i := range chunk {
-					keys[i] = chunk[i].Key
-				}
-				watched, err = s.d.State.GetMany(ctx, v.ID, keys)
+				watched, err = s.titlesWatched(ctx, v, chunk)
 				if err != nil {
 					return core.Page{}, err
 				}
@@ -856,7 +851,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 				query.Favorite = nil
 			}
 			for _, title := range chunk {
-				if q.Watched != nil && (watched[title.Key].ViewCount > 0) != *q.Watched {
+				if q.Watched != nil && watched[title.Key] != *q.Watched {
 					continue
 				}
 				if q.Favorite != nil && s.d.IsFavoriteMany != nil && favorites[title.Key] != *q.Favorite {
@@ -3062,11 +3057,11 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	}
 
 	if q.Watched != nil {
-		st, err := s.d.State.Get(ctx, v.ID, t.Key)
+		watched, err := s.titlesWatched(ctx, v, []core.Title{t})
 		if err != nil {
 			return false, err
 		}
-		if (st.ViewCount > 0) != *q.Watched {
+		if watched[t.Key] != *q.Watched {
 			return false, nil
 		}
 	}

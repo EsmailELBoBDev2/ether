@@ -487,7 +487,8 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 			return 0, ok, err
 		}
 		var watched int
-		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (SELECT w.rating_key FROM state_watch w WHERE w.user_id=? AND w.view_count>0) AND `+allWhere, append([]any{g.UserID}, allArgs...)...).Scan(&watched); err != nil {
+		wSQL, wArgs := c.watchedKeysForTypeSQL(all.Type, g.UserID)
+		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (`+wSQL+`) AND `+allWhere, append(wArgs, allArgs...)...).Scan(&watched); err != nil {
 			return 0, false, err
 		}
 		return total - watched, true, nil

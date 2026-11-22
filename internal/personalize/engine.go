@@ -659,8 +659,12 @@ func (e *Engine) SectionHubsFor(ctx context.Context, user *core.User, t core.Med
 		hc.SectionID = e.firstSectionID(ctx, t)
 	}
 	p := e.home(ctx, user, hc, t, limit, false)
-	target := layoutTargetForMedia(t, hc.SectionID)
-	p.Rows = arrangeLayoutFor(p.Rows, e.layoutForContext(ctx), userID(user), hc, target, e.opts.MaxSectionRows)
+	target := layoutTargetForContext(t, hc)
+	def := e.opts.MaxSectionRows
+	if hc.HomeScoped {
+		def = e.opts.MaxHomeRows
+	}
+	p.Rows = arrangeLayoutFor(p.Rows, e.layoutForContext(ctx), userID(user), hc, target, def)
 	return toHubs(p.Rows), nil
 }
 
@@ -724,15 +728,16 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	layoutVer := e.layoutVersion()
 	day := dayOf(hc.Now, e.loc)
 	intent, intentVer := e.intentFor(u.ID, hc.Now)
-	target := layoutTargetForMedia(section, hc.SectionID)
+	target := layoutTargetForContext(section, hc)
 	tune := resolveTuning(layoutDoc, u.ID, target)
 	// Library Recommended pages keep what the Home leads with off the page
-	// (the draft layout's switch and Home in a preview).
+	// (the draft layout's switch and Home in a preview). Scoped Home requests
+	// ARE the viewer's Home, so they never dedupe against Home.
 	var lead *homeLead
-	if section != "" && resolveDedupeHome(layoutDoc, u.ID, target) {
+	if section != "" && !hc.HomeScoped && resolveDedupeHome(layoutDoc, u.ID, target) {
 		lead = e.homeLeadFor(ctx, &u, hc, layoutDoc, limit, wait, allow)
 	}
-	key := memoKey{user: u.ID, section: section, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
+	key := memoKey{user: u.ID, section: section, homeScoped: hc.HomeScoped, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
 		layout: layoutVer, stats: stats.at.UnixNano(), owner: ownerVer, cw: progressSig(inprog),
 		limits: u.MaxContentRating + "|" + fmt.Sprint(u.AllowedLibraries, u.IsOwner), intent: intentVer, tuning: tune.key(), exclusions: exclusionSig}
 	// A section is one library: same-type libraries never share an assembly.
@@ -841,6 +846,8 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 		} else {
 			a.cw = e.continueFrom(ctx, inprog)
 		}
+	} else if hc.HomeScoped {
+		a.pageLen = e.opts.MaxHomeRows
 	} else {
 		a.pageLen = e.opts.MaxSectionRows
 	}
@@ -868,6 +875,7 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 type memoKey struct {
 	user       int64
 	section    core.MediaType
+	homeScoped bool
 	library    core.LibraryID // the section's library; 0 = Home or unknown
 	libraryRev int64          // that library's membership/rules revision
 	bucket     string

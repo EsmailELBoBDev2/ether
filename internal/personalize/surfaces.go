@@ -70,7 +70,7 @@ func (a *assembly) surface() string { return sectionName(a.section) }
 
 // layoutTarget is the assembly's layout page ("home" or "library:<id>").
 func (a *assembly) layoutTarget() string {
-	return layoutTargetForMedia(a.section, a.hc.SectionID)
+	return layoutTargetForContext(a.section, a.hc)
 }
 
 // surfaceWeight is the row's prior weight on this surface; 0 = not a

@@ -1,7 +1,9 @@
 package collections
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -109,7 +111,8 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 	if err := s.validate(&sp); err != nil {
 		return nil, err
 	}
-	if err := s.updateRow(ctx, row.id, sp); err != nil {
+	keepBuild := row.buildHash != "" && !row.lastBuilt.IsZero() && membershipSpecEqual(row.spec, sp)
+	if err := s.updateRow(ctx, row.id, sp, keepBuild); err != nil {
 		return nil, err
 	}
 	s.changed(row.id)
@@ -117,7 +120,54 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 	if err != nil {
 		return nil, err
 	}
+	if keepBuild {
+		v := row.view()
+		return &v, nil
+	}
 	return s.afterSave(ctx, row)
+}
+
+// membershipSpecEqual reports whether two normalized specs evaluate to the same
+// persisted member set and order. Presentation and publication edits (targets,
+// schedule, artwork, rotate, description, enabled, refresh) do not invalidate
+// existing built members.
+func membershipSpecEqual(a, b core.CollectionSpec) bool {
+	type key struct {
+		MediaType     string                  `json:"mediaType"`
+		Sources       []core.CollectionSource `json:"sources"`
+		Match         string                  `json:"match"`
+		Rules         []core.CollectionRule   `json:"rules"`
+		Exclude       []core.CollectionRule   `json:"exclude"`
+		Sort          string                  `json:"sort"`
+		SortDesc      bool                    `json:"sortDesc"`
+		Limit         int                     `json:"limit"`
+		LocalOnly     bool                    `json:"localOnly"`
+		ReleaseMode   string                  `json:"releaseMode"`
+		LookaheadDays int                     `json:"lookaheadDays"`
+		RandomName    string                  `json:"randomName,omitempty"`
+	}
+	makeKey := func(sp core.CollectionSpec) key {
+		k := key{
+			MediaType:     sp.MediaType,
+			Sources:       sp.Sources,
+			Match:         sp.Match,
+			Rules:         sp.Rules,
+			Exclude:       sp.Exclude,
+			Sort:          sp.Sort,
+			SortDesc:      sp.SortDesc,
+			Limit:         sp.Limit,
+			LocalOnly:     sp.LocalOnly,
+			ReleaseMode:   sp.ReleaseMode,
+			LookaheadDays: sp.LookaheadDays,
+		}
+		if sp.Sort == "random" {
+			k.RandomName = sp.Name
+		}
+		return k
+	}
+	ja, errA := json.Marshal(makeKey(a))
+	jb, errB := json.Marshal(makeKey(b))
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
 }
 
 func (s *Service) afterSave(ctx context.Context, row *specRow) (*core.CollectionSpec, error) {

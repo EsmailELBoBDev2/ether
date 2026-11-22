@@ -408,13 +408,16 @@ func (s *Service) insertSpecTx(ctx context.Context, tx *sql.Tx, sp core.Collecti
 	return id, nil
 }
 
-func (s *Service) updateRow(ctx context.Context, id int64, sp core.CollectionSpec) error {
+func (s *Service) updateRow(ctx context.Context, id int64, sp core.CollectionSpec, keepBuild bool) error {
 	js, err := specJSON(sp)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, build_hash='' WHERE id=?`,
-		js, store.BoolInt(sp.Enabled), s.now().Unix(), id)
+	q := `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, build_hash='' WHERE id=?`
+	if keepBuild {
+		q = `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=? WHERE id=?`
+	}
+	res, err := s.db.ExecContext(ctx, q, js, store.BoolInt(sp.Enabled), s.now().Unix(), id)
 	if err != nil {
 		return err
 	}

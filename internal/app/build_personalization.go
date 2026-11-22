@@ -126,6 +126,22 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		Logger:  log.With("component", "llm"),
 	})
 	// Per-viewer Homes, built in the background and served to Plex.
+	librarySections := func(ctx context.Context) map[int]core.MediaType {
+		if a.libraries == nil {
+			return nil
+		}
+		listed, err := a.libraries.List(ctx)
+		if err != nil {
+			return nil
+		}
+		out := make(map[int]core.MediaType, len(listed))
+		for _, l := range listed {
+			if l.Source != core.LibraryPlugin && (l.MediaType == core.TypeMovie || l.MediaType == core.TypeShow) {
+				out[int(l.ID)] = l.MediaType
+			}
+		}
+		return out
+	}
 	if a.personalize, err = personalize.New(personalize.Options{
 		PersonalWatchlist: func(ctx context.Context, u *core.User) ([]core.Title, error) {
 			if a.watchlist == nil {
@@ -159,28 +175,13 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		CatalogRulesRevision: a.catalog.ViewerRulesRevision,
 		// A custom library's Recommended rows are scoped to that library's
 		// membership — the same filter its All browse runs (#549).
-		LibraryMembers: a.libraryRecommendationMembers,
-		LibrarySections: func(ctx context.Context) map[int]core.MediaType {
-			if a.libraries == nil {
-				return nil
-			}
-			listed, err := a.libraries.List(ctx)
-			if err != nil {
-				return nil
-			}
-			out := make(map[int]core.MediaType, len(listed))
-			for _, l := range listed {
-				if l.Source != core.LibraryPlugin && (l.MediaType == core.TypeMovie || l.MediaType == core.TypeShow) {
-					out[int(l.ID)] = l.MediaType
-				}
-			}
-			return out
-		},
-		UserPolicy: a.safety.UserPolicy, Allowed: a.safety.Allowed,
+		LibraryMembers:  a.libraryRecommendationMembers,
+		LibrarySections: librarySections,
+		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {
-			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer))
+			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
 			var err error
 			a.collections, err = collections.New(a.db, a.catalog, log.With("component", "collections"), opts...)
 			if err != nil {

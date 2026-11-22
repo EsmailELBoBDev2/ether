@@ -560,6 +560,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 		secCopy := sec
 		renderHC := hubCtx{visible: count, renderSec: &secCopy}
 		pc := s.hubContext(pr, sec.ID)
+		pc.HomeScoped = true
 		vis := s.sectionVisibility(sec)
 		var secRows []model.Hub
 		var layoutHubs []frontend.Hub

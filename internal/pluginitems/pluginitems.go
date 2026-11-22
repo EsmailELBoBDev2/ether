@@ -30,6 +30,29 @@ func init() {
 	// search_tsv exists only on PostgreSQL (SQLite searches plugin_item_fts),
 	// so a cluster's dump restored on a standalone server skips it.
 	store.RegisterLocalColumn("plugin_items", "search_tsv")
+	// Logical restores never carry SQLite's virtual plugin_item_fts table,
+	// and a SQLite backup restored onto PostgreSQL lacks plugin_items.search_tsv
+	// (which defaults to ''::tsvector). Mark affected kinds pending so startup
+	// rebuilds the engine's search index in bounded, resumable keyset batches.
+	store.RegisterRestore("pluginitems_search", func(ctx context.Context, tx *sql.Tx) (func(context.Context, *sql.Tx) error, error) {
+		return func(ctx context.Context, tx *sql.Tx) error {
+			if store.RestoreDialect(ctx) == store.Postgres {
+				_, err := tx.ExecContext(ctx, `
+UPDATE plugin_kinds
+SET fts_version = 0
+WHERE EXISTS (
+	SELECT 1
+	FROM plugin_items i
+	WHERE i.plugin_id = plugin_kinds.plugin_id
+	  AND i.kind_key = plugin_kinds.kind_key
+	  AND i.search_tsv = ''::tsvector
+)`)
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE plugin_kinds SET fts_version = 0`)
+			return err
+		}, nil
+	})
 	// Migration 9: persist each item's content-rating enforcement level
 	// (contentrating.Level, 0 = unrated) so a viewer's MaxContentRating is
 	// applied in SQL by Browse instead of by walking the library in memory.

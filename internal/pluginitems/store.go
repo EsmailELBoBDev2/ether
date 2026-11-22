@@ -918,6 +918,7 @@ func (s *Service) reindexPendingKinds(ctx context.Context) error {
 		return err
 	}
 	var pending []pendingKindRow
+	seen := map[string]bool{}
 	for rows.Next() {
 		var r pendingKindRow
 		var libID int64
@@ -927,17 +928,20 @@ func (s *Service) reindexPendingKinds(ctx context.Context) error {
 		}
 		r.libraryID = core.LibraryID(libID)
 		pending = append(pending, r)
+		seen[workerKey(r.pluginID, r.kindKey)] = true
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return err
 	}
 	rows.Close()
-	if len(pending) == 0 {
-		return nil
-	}
 
 	isPG := store.DialectOf(s.db) == store.Postgres
+	extra, hasOrphans, err := s.findKindsMissingSearchIndex(ctx, isPG, seen)
+	if err != nil {
+		return err
+	}
+
 	for _, k := range pending {
 		var decl plugins.MediaKindMeta
 		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
@@ -947,7 +951,382 @@ func (s *Service) reindexPendingKinds(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, k := range extra {
+		var decl plugins.MediaKindMeta
+		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
+			continue
+		}
+		if err := s.reindexSearchIndexChunked(ctx, isPG, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
+			return err
+		}
+	}
+	if hasOrphans {
+		if err := s.reindexOrphanSearchChunked(ctx, isPG); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// reindexSearchIndexChunked recomputes only the engine-local search index
+// (PostgreSQL plugin_items.search_tsv with title A / fields B / people C
+// weighting, or SQLite plugin_item_fts) for rows missing an index entry in
+// bounded keyset batches without touching plugin_item_fields or holding a
+// full-table lock. Already-indexed rows are skipped so an interrupted run
+// resumes cleanly on the next startup.
+func (s *Service) reindexSearchIndexChunked(ctx context.Context, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		mu := s.kindLock(pluginID, kindKey)
+		mu.Lock()
+		nextCursor, done, wrote, err := s.reindexSearchIndexOneChunkLocked(ctx, isPG, pluginID, kindKey, fallbackLibID, decl, cursor)
+		mu.Unlock()
+		if err != nil {
+			return err
+		}
+		cursor = nextCursor
+		if done {
+			return nil
+		}
+		if wrote {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(reindexChunkYield):
+			}
+			if err := store.WaitWALBudget(ctx, s.db); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *Service) reindexSearchIndexOneChunkLocked(ctx context.Context, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta, cursor string) (string, bool, bool, error) {
+	var q string
+	if isPG {
+		q = `
+SELECT item_ref, seq, library_id, title, fields
+FROM plugin_items
+WHERE plugin_id = ? AND kind_key = ? AND item_ref > ?
+  AND search_tsv = ''::tsvector
+ORDER BY item_ref ASC
+LIMIT ?`
+	} else {
+		q = `
+SELECT p.item_ref, p.seq, p.library_id, p.title, p.fields
+FROM plugin_items p
+WHERE p.plugin_id = ? AND p.kind_key = ? AND p.item_ref > ?
+  AND NOT EXISTS (SELECT 1 FROM plugin_item_fts f WHERE f.rowid = p.seq)
+ORDER BY p.item_ref ASC
+LIMIT ?`
+	}
+	rows, err := s.db.QueryContext(ctx, q, pluginID, kindKey, cursor, upsertChunkSize)
+	if err != nil {
+		return cursor, false, false, err
+	}
+	var batch []reindexItemRow
+	for rows.Next() {
+		var r reindexItemRow
+		var libID int64
+		if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.title, &r.fieldsJSON); err != nil {
+			rows.Close()
+			return cursor, false, false, err
+		}
+		if libID > 0 {
+			r.libraryID = core.LibraryID(libID)
+		} else {
+			r.libraryID = fallbackLibID
+		}
+		batch = append(batch, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return cursor, false, false, err
+	}
+	rows.Close()
+	if len(batch) == 0 {
+		return cursor, true, false, nil
+	}
+
+	var ftsWrites []reindexFTSWrite
+	for _, r := range batch {
+		_, searchFields, searchPeople := extractIndexData(decl, r.fieldsJSON)
+		if !isPG && strings.TrimSpace(r.title) == "" && strings.TrimSpace(searchFields) == "" && strings.TrimSpace(searchPeople) == "" {
+			continue
+		}
+		ftsWrites = append(ftsWrites, reindexFTSWrite{
+			seq:       r.seq,
+			itemRef:   r.itemRef,
+			libraryID: r.libraryID,
+			title:     r.title,
+			fields:    searchFields,
+			people:    searchPeople,
+		})
+	}
+
+	nextCursor := batch[len(batch)-1].itemRef
+	done := len(batch) < upsertChunkSize
+	if len(ftsWrites) == 0 {
+		return nextCursor, done, false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return cursor, false, false, err
+	}
+	defer tx.Rollback()
+
+	for _, fw := range ftsWrites {
+		if isPG {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_items
+SET search_tsv = setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
+WHERE item_ref = ?
+  AND search_tsv IS DISTINCT FROM (setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C'))`,
+				fw.title, fw.fields, fw.people, fw.itemRef, fw.title, fw.fields, fw.people); err != nil {
+				return cursor, false, false, err
+			}
+		} else {
+			if err := sqliteIndexFTS(ctx, tx, fw.seq, core.ItemRef(fw.itemRef), fw.libraryID, fw.title, fw.fields, fw.people); err != nil {
+				return cursor, false, false, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return cursor, false, false, err
+	}
+	s.noteWrite()
+	s.syncGen.Add(1)
+	return nextCursor, done, true, nil
+}
+
+// findKindsMissingSearchIndex detects restored or unindexed plugin items whose
+// kind already carries fts_version >= currentFTSVersion (for example a database
+// restored from SQLite onto PostgreSQL before the restore hook existed) as well
+// as orphan items without a plugin_kinds row.
+func (s *Service) findKindsMissingSearchIndex(ctx context.Context, isPG bool, seen map[string]bool) ([]pendingKindRow, bool, error) {
+	if isPG {
+		// Guard with to_tsvector('simple', title) <> ''::tsvector so items with
+		// punctuation-only titles (which legitimately produce an empty tsvector)
+		// do not re-trigger a rebuild on every startup.
+		rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT plugin_id, kind_key
+FROM plugin_items
+WHERE search_tsv = ''::tsvector
+  AND title <> ''
+  AND to_tsvector('simple', title) <> ''::tsvector
+ORDER BY plugin_id, kind_key`)
+		if err != nil {
+			return nil, false, err
+		}
+		type kindPair struct{ pluginID, kindKey string }
+		var missing []kindPair
+		for rows.Next() {
+			var p kindPair
+			if err := rows.Scan(&p.pluginID, &p.kindKey); err != nil {
+				rows.Close()
+				return nil, false, err
+			}
+			if !seen[workerKey(p.pluginID, p.kindKey)] {
+				missing = append(missing, p)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		rows.Close()
+		if len(missing) == 0 {
+			return nil, false, nil
+		}
+		var extra []pendingKindRow
+		var hasOrphans bool
+		for _, p := range missing {
+			var r pendingKindRow
+			var libID int64
+			err := s.db.QueryRowContext(ctx,
+				`SELECT plugin_id, kind_key, library_id, decl FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
+				p.pluginID, p.kindKey).Scan(&r.pluginID, &r.kindKey, &libID, &r.declJSON)
+			if errors.Is(err, sql.ErrNoRows) {
+				hasOrphans = true
+				continue
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			r.libraryID = core.LibraryID(libID)
+			seen[workerKey(r.pluginID, r.kindKey)] = true
+			extra = append(extra, r)
+		}
+		return extra, hasOrphans, nil
+	}
+
+	// SQLite: O(1) probe for an empty plugin_item_fts alongside titled items
+	// (e.g. a logical restore performed before pluginitems registered a restore
+	// hook). Trim avoids re-triggering when only whitespace-only titles exist.
+	var anyItem int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM plugin_items WHERE trim(title) <> '' LIMIT 1`).Scan(&anyItem); errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, err
+	}
+	var anyFTS int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM plugin_item_fts LIMIT 1`).Scan(&anyFTS)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT plugin_id, kind_key, library_id, decl FROM plugin_kinds ORDER BY plugin_id, kind_key`)
+		if err != nil {
+			return nil, false, err
+		}
+		var extra []pendingKindRow
+		for rows.Next() {
+			var r pendingKindRow
+			var libID int64
+			if err := rows.Scan(&r.pluginID, &r.kindKey, &libID, &r.declJSON); err != nil {
+				rows.Close()
+				return nil, false, err
+			}
+			r.libraryID = core.LibraryID(libID)
+			if !seen[workerKey(r.pluginID, r.kindKey)] {
+				seen[workerKey(r.pluginID, r.kindKey)] = true
+				extra = append(extra, r)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		rows.Close()
+		return extra, true, nil
+	}
+	if len(seen) > 0 {
+		var orphan int
+		err := s.db.QueryRowContext(ctx, `
+SELECT 1
+FROM plugin_items p
+WHERE trim(p.title) <> ''
+  AND NOT EXISTS (SELECT 1 FROM plugin_kinds k WHERE k.plugin_id = p.plugin_id AND k.kind_key = p.kind_key)
+  AND NOT EXISTS (SELECT 1 FROM plugin_item_fts f WHERE f.rowid = p.seq)
+LIMIT 1`).Scan(&orphan)
+		if err == nil && orphan == 1 {
+			return nil, true, nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, err
+		}
+	}
+	return nil, false, nil
+}
+
+// reindexOrphanSearchChunked rebuilds search indexes for any plugin_items rows
+// without a matching plugin_kinds entry, in bounded keyset batches using
+// title-only weight 'A' (matching reindexAllTx).
+func (s *Service) reindexOrphanSearchChunked(ctx context.Context, isPG bool) error {
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var q string
+		if isPG {
+			q = `
+SELECT p.item_ref, p.seq, p.library_id, p.title
+FROM plugin_items p
+WHERE p.item_ref > ?
+  AND p.search_tsv = ''::tsvector
+  AND p.title <> ''
+  AND to_tsvector('simple', p.title) <> ''::tsvector
+  AND NOT EXISTS (SELECT 1 FROM plugin_kinds k WHERE k.plugin_id = p.plugin_id AND k.kind_key = p.kind_key)
+ORDER BY p.item_ref ASC
+LIMIT ?`
+		} else {
+			q = `
+SELECT p.item_ref, p.seq, p.library_id, p.title
+FROM plugin_items p
+WHERE p.item_ref > ?
+  AND trim(p.title) <> ''
+  AND NOT EXISTS (SELECT 1 FROM plugin_kinds k WHERE k.plugin_id = p.plugin_id AND k.kind_key = p.kind_key)
+  AND NOT EXISTS (SELECT 1 FROM plugin_item_fts f WHERE f.rowid = p.seq)
+ORDER BY p.item_ref ASC
+LIMIT ?`
+		}
+		rows, err := s.db.QueryContext(ctx, q, cursor, upsertChunkSize)
+		if err != nil {
+			return err
+		}
+		type orphanRow struct {
+			itemRef   string
+			seq       int64
+			libraryID core.LibraryID
+			title     string
+		}
+		var batch []orphanRow
+		for rows.Next() {
+			var r orphanRow
+			var libID int64
+			if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.title); err != nil {
+				rows.Close()
+				return err
+			}
+			r.libraryID = core.LibraryID(libID)
+			batch = append(batch, r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			return nil
+		}
+
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		for _, r := range batch {
+			if isPG {
+				if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_items
+SET search_tsv = setweight(to_tsvector('simple', ?), 'A')
+WHERE item_ref = ?
+  AND search_tsv IS DISTINCT FROM setweight(to_tsvector('simple', ?), 'A')`,
+					r.title, r.itemRef, r.title); err != nil {
+					tx.Rollback()
+					return err
+				}
+			} else {
+				if err := sqliteIndexFTS(ctx, tx, r.seq, core.ItemRef(r.itemRef), r.libraryID, r.title, "", ""); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.noteWrite()
+		s.syncGen.Add(1)
+
+		cursor = batch[len(batch)-1].itemRef
+		if len(batch) < upsertChunkSize {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(reindexChunkYield):
+		}
+		if err := store.WaitWALBudget(ctx, s.db); err != nil {
+			return err
+		}
+	}
 }
 
 // scheduleStaleArtistReindexes checks existing kinds that declare string-typed

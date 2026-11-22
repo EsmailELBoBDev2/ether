@@ -108,26 +108,27 @@ type RecordedPublishedEvent struct {
 
 // MockHost is an in-memory Host implementation for unit tests.
 type MockHost struct {
-	mu               sync.RWMutex
-	KV               map[string]string
-	Badges           map[string]map[string][]string
-	BadgeQuotaTitles int64
-	Secrets          map[string]string
-	Catalog          map[string]CatalogTitleSummary
-	History          map[int64][]ViewerWatchEntry
-	WatchState       map[string]bool
-	Collections      []map[string]any
-	Kinds            map[string][]KindItem      // kindKey -> pushed items, in upsert order
-	KindHiddenIDs    map[string]map[string]bool // kindKey -> externalID -> hidden by mock library Rules (#615)
-	KindPolicyFilter func(kindKey string, item KindItem) bool
-	Sources          []SourceCandidate // returned by ResolveSources
-	Blobs            map[string][]byte // cache blob ref -> bytes
-	Folders          map[string][]FolderEntry
-	PublishedEvents  []RecordedPublishedEvent
-	Notifications    []string
-	Logs             []RecordedLog
-	FetchHandler     func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
-	AIHandler        func(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+	mu                sync.RWMutex
+	KV                map[string]string
+	Badges            map[string]map[string][]string
+	BadgeQuotaTitles  int64
+	Secrets           map[string]string
+	Catalog           map[string]CatalogTitleSummary
+	History           map[int64][]ViewerWatchEntry
+	WatchState        map[string]bool
+	Collections       []map[string]any
+	Kinds             map[string][]KindItem      // kindKey -> pushed items, in upsert order
+	KindHiddenIDs     map[string]map[string]bool // kindKey -> externalID -> hidden by mock library Rules (#615)
+	KindPolicyFilter  func(kindKey string, item KindItem) bool
+	Sources           []SourceCandidate // returned by ResolveSources
+	Blobs             map[string][]byte // cache blob ref -> bytes
+	Folders           map[string][]FolderEntry
+	PublishedEvents   []RecordedPublishedEvent
+	Notifications     []string
+	Logs              []RecordedLog
+	FetchHandler      func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
+	AIHandler         func(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+	MediaProbeHandler func(ctx context.Context, src PlayableSource) (MediaProbeResult, error)
 	// LastStreamURLViewer/Item/Part/Source record the most recent StreamURL,
 	// StreamPartURL, or StreamURLWithOptions call.
 	LastStreamURLViewer int64
@@ -491,6 +492,18 @@ func (m *MockHost) AIComplete(ctx context.Context, req AICompleteRequest) (AICom
 		Status:  http.StatusNotImplemented,
 		Code:    "not_configured",
 		Message: "Language model is not configured",
+	}
+}
+
+// MediaProbe invokes MediaProbeHandler if set, or returns a *HostError with Code "unavailable".
+func (m *MockHost) MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error) {
+	if m.MediaProbeHandler != nil {
+		return m.MediaProbeHandler(ctx, src)
+	}
+	return MediaProbeResult{}, &HostError{
+		Status:  http.StatusServiceUnavailable,
+		Code:    "unavailable",
+		Message: "media.probe is not configured in mock host",
 	}
 }
 

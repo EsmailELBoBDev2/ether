@@ -74,6 +74,12 @@ type Host interface {
 	// when viewerToken identifies an active frontend-adapter search call; #702).
 	AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 
+	// MediaProbe reads container metadata ({durationSec, container, width,
+	// height, sizeBytes}) for a PlayableSource in the same shape /resolve
+	// returns, reusing release_probes (requires permissions.media: "probe";
+	// refused when viewerToken is set; #712).
+	MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error)
+
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
 }
@@ -153,6 +159,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
 	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
 	mux.HandleFunc("POST /ether/plugin-host/ai/complete", h.aiComplete)
+	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -734,6 +741,19 @@ func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), viewerToken, req)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *HostHandler) mediaProbe(w http.ResponseWriter, r *http.Request) {
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	var src core.PlayableSource
+	if !h.decode(w, r, maxHostBodyBytes, &src) {
+		return
+	}
+	resp, err := h.host.MediaProbe(r.Context(), pluginIDOf(r), viewerToken, src)
 	if !h.finishErr(w, err) {
 		return
 	}

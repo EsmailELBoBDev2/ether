@@ -211,6 +211,8 @@ export interface Permissions {
   sources?: "none" | "search" | "acquire";
   /** Lets a plugin call ether.ai.complete on the owner's configured language model ("complete" for actions/jobs/sync/non-viewer routes; "complete+search" also allows bounded 20 s cached calls on interactive search routes). */
   ai?: "none" | "complete" | "complete+search";
+  /** Lets a plugin probe container metadata via ether.media.probe from jobs, actions, and background sync (refused on viewer/client request paths). */
+  media?: "none" | "probe";
 }
 
 export type SettingFieldKind =
@@ -829,6 +831,14 @@ export interface PlayableSource {
   /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
   sizeApproximate?: boolean;
   durationSec?: number;
+  /**
+   * Opts into open-time container duration verification when `durationSec > 0`:
+   * Ether reads the container duration (reusing the durable `release_probes`
+   * cache) and refuses the source as wrong content (trying the next candidate
+   * and flagging the plugin answer) if the observed running time differs from
+   * `durationSec` by more than this many seconds.
+   */
+  durationToleranceSec?: number;
   url?: string;
   headers?: Record<string, string>;
   /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */

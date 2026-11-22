@@ -109,6 +109,8 @@ type KindResolverDeps struct {
 	Now           func() time.Time
 	HTTP          *http.Client
 	Authorize     func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error
+	ProbeCache    MediaProbeCache
+	ProbeStream   func(ctx context.Context, inputURL string) (*core.MediaInfo, error)
 	Logger        *slog.Logger
 	// Optional release-open budget overrides (0 uses sensible production defaults).
 	NZBFetchTimeout      time.Duration
@@ -160,6 +162,8 @@ type KindResolver struct {
 	now                  func() time.Time
 	http                 *http.Client
 	authorize            func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error
+	probeCache           MediaProbeCache
+	probeStream          func(ctx context.Context, inputURL string) (*core.MediaInfo, error)
 	backoff              *kindstream.HostBackoff
 	log                  *slog.Logger
 	nzbFetchTimeout      time.Duration
@@ -236,6 +240,8 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		now:                  nowFn,
 		http:                 hc,
 		authorize:            deps.Authorize,
+		probeCache:           deps.ProbeCache,
+		probeStream:          deps.ProbeStream,
 		backoff:              kindstream.NewHostBackoff(),
 		log:                  log.With("component", "kindresolver"),
 		nzbFetchTimeout:      nzbFetchTimeout,
@@ -2060,6 +2066,9 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		MaxDownloadBytes:     quota.EffectiveMaxBytes(),
 		ItemIndex:            effectiveItemIndex(item.Index, partIdx),
 		Backoff:              r.backoff,
+		ProbeMedia: func(pctx context.Context, src core.PlayableSource, bs kindstream.ByteSource) (*core.MediaInfo, error) {
+			return r.probeOpenByteSource(pctx, rec.PluginID, src, defaultMIME, bs)
+		},
 		OnSourceFailed: func(attempt, total int, src core.PlayableSource, took time.Duration, err error) {
 			if skipped != nil {
 				skipped.attempts = append(skipped.attempts, kindstream.SourceFailure{Source: src, Err: err})

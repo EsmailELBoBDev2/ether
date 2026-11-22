@@ -2,9 +2,11 @@ package core
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Release protocols (Release.Protocol).
@@ -173,4 +175,37 @@ var ErrDebridAuth = errors.New("debrid: authentication failed")
 func TargetReleaseID(releaseID string, t ReleaseTarget) string {
 	h := sha1.Sum([]byte(fmt.Sprintf("%s|s%de%d", releaseID, t.Season, t.Episode)))
 	return hex.EncodeToString(h[:])
+}
+
+// fileSelectionKey returns a stable hash suffix when t names an explicit file,
+// archive member, or audio track inside a multi-file release, or "" when no
+// explicit selector is set.
+func (t ReleaseTarget) fileSelectionKey() string {
+	exact := strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(t.ExactFile), "\\", "/"), "/")
+	member := strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(t.Member), "\\", "/"), "/")
+	var trackKey string
+	if t.Track != nil && (t.Track.Disc > 0 || t.Track.Number > 0 || strings.TrimSpace(t.Track.Title) != "") {
+		trackKey = fmt.Sprintf("d=%d|n=%d|t=%s", t.Track.Disc, t.Track.Number, strings.ToLower(strings.TrimSpace(t.Track.Title)))
+	}
+	if t.FileIndex == nil && exact == "" && member == "" && t.MemberIndex == nil && trackKey == "" {
+		return ""
+	}
+	var b strings.Builder
+	if t.FileIndex != nil {
+		fmt.Fprintf(&b, "fi=%d|", *t.FileIndex)
+	}
+	if exact != "" {
+		fmt.Fprintf(&b, "ef=%s|", strings.ToLower(exact))
+	}
+	if member != "" {
+		fmt.Fprintf(&b, "m=%s|", strings.ToLower(member))
+	}
+	if t.MemberIndex != nil {
+		fmt.Fprintf(&b, "mi=%d|", *t.MemberIndex)
+	}
+	if trackKey != "" {
+		fmt.Fprintf(&b, "tr=%s|", trackKey)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
 }

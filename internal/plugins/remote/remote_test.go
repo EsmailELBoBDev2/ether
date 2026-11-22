@@ -1077,6 +1077,10 @@ func (f *fakeHost) AIComplete(_ context.Context, pluginID, viewerToken string, r
 	return plugins.AICompleteResponse{}, ErrNotConfigured
 }
 
+func (f *fakeHost) MediaProbe(_ context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error) {
+	return core.MediaProbeResult{}, ErrPermissionDenied
+}
+
 func (f *fakeHost) NotifyOwner(_ context.Context, pluginID, text string) error {
 	f.mu.Lock()
 	f.notices = append(f.notices, pluginID+":"+text)
@@ -1850,6 +1854,7 @@ type adapterTestHost struct {
 	onVisible    func(ctx context.Context, kindKey string, ids []string) ([]string, error)
 	onBrowse     func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	onAIComplete func(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+	onMediaProbe func(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error)
 }
 
 func (a *adapterTestHost) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
@@ -1862,6 +1867,13 @@ func (a *adapterTestHost) KindBrowse(ctx context.Context, kindKey string, q core
 
 func (a *adapterTestHost) AIComplete(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
 	return a.onAIComplete(ctx, req)
+}
+
+func (a *adapterTestHost) MediaProbe(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error) {
+	if a.onMediaProbe == nil {
+		return core.MediaProbeResult{}, plugins.ErrPermissionDenied
+	}
+	return a.onMediaProbe(ctx, src)
 }
 
 func TestHostHandlerDerivedSecrets(t *testing.T) {
@@ -2132,5 +2144,82 @@ func TestRemoteHostAdapterAICompleteSearchToken(t *testing.T) {
 	}
 	if seenViewer != 42 || resp.Text != `{"q":"noir"}` {
 		t.Fatalf("viewer=%d resp=%+v", seenViewer, resp)
+	}
+}
+
+type fakeMediaProbeHost struct {
+	*fakeHost
+	fn func(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error)
+}
+
+func (f *fakeMediaProbeHost) MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error) {
+	return f.fn(ctx, pluginID, viewerToken, src)
+}
+
+func TestRemoteHostMediaProbeAndViewerTokenRefusal(t *testing.T) {
+	t.Parallel()
+
+	adapter := HostAdapter{
+		HostFor: func(pluginID string) plugins.Host {
+			if pluginID != "plug.media" {
+				return nil
+			}
+			return &adapterTestHost{
+				onMediaProbe: func(_ context.Context, src core.PlayableSource) (core.MediaProbeResult, error) {
+					if src.Pattern != "range" {
+						return core.MediaProbeResult{}, errors.New("invalid pattern")
+					}
+					return core.MediaProbeResult{
+						DurationSec: 2345.5,
+						Container:   "mkv",
+						Width:       1920,
+						Height:      1080,
+						SizeBytes:   4096,
+					}, nil
+				},
+			}
+		},
+	}
+
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeMediaProbeHost{
+			fakeHost: newFakeHost(),
+			fn:       adapter.MediaProbe,
+		},
+		Auth: remotetest.Credentials{"cred-media": "plug.media"},
+	}))
+	defer srv.Close()
+
+	post := func(body, viewerTok string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/media/probe", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-media")
+		req.Header.Set("Content-Type", "application/json")
+		if viewerTok != "" {
+			req.Header.Set(HeaderViewerToken, viewerTok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	// Viewer-scoped remote calls MUST be refused with 403 permission_denied.
+	status, body := post(`{"pattern":"range","mime":"video/x-matroska","url":"https://media.example/a.mkv"}`, "vt-viewer")
+	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "permission_denied" {
+		t.Fatalf("viewer token refusal: status=%d body=%+v", status, body)
+	}
+
+	// Job/action call without viewer token succeeds and returns all 5 fields.
+	status, body = post(`{"pattern":"range","mime":"video/x-matroska","url":"https://media.example/a.mkv"}`, "")
+	if status != http.StatusOK || body["durationSec"] != 2345.5 || body["container"] != "mkv" || body["width"] != float64(1920) || body["height"] != float64(1080) || body["sizeBytes"] != float64(4096) {
+		t.Fatalf("success probe: status=%d body=%+v", status, body)
 	}
 }

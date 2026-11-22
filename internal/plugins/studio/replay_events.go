@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
@@ -624,6 +625,24 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
 		}
 		return nil, &wasm.Fault{Code: "not_configured", Message: "language model is not available in dry-run replay"}
+
+	case "media.probe":
+		if h.manifest.Ether == nil || !plugins.MediaPermissionAllowsProbe(h.manifest.Ether.Permissions.Media) {
+			return nil, wasm.Forbidden("media: probe permission not declared in manifest")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.MediaProbeAllowedPath(h.manifest, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("media.probe cannot run on viewer or client request path " + callPath)
+		}
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		if err := plugins.ValidateMediaProbeSource(src); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return nil, &wasm.Fault{Code: "unavailable", Message: "media.probe is not available in dry-run replay"}
 
 	case "secret.get":
 		secName := str(0)

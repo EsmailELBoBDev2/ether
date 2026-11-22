@@ -461,6 +461,24 @@ func (c *Cache) HostBackends(quotaFor func(pluginID, libraryKey string) Quota) (
 	return cachePut, cacheOpen, cacheDelete
 }
 
+// NamespaceForPluginBlob returns the plugin-owned Namespace that holds blobRef,
+// or nil when no namespace owned by pluginID contains it.
+func (c *Cache) NamespaceForPluginBlob(pluginID, blobRef string) *Namespace {
+	if c == nil || strings.TrimSpace(pluginID) == "" {
+		return nil
+	}
+	if _, err := ParseRef(blobRef); err != nil {
+		return nil
+	}
+	for _, ns := range c.namespacesForPlugin(pluginID) {
+		if src, err := ns.Open(Ref(blobRef)); err == nil {
+			_ = src.Close()
+			return ns
+		}
+	}
+	return nil
+}
+
 func (c *Cache) namespacesForPlugin(pluginID string) []*Namespace {
 	c.mu.Lock()
 	defer c.mu.Unlock()

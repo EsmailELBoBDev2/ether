@@ -60,6 +60,20 @@ func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) 
 	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
 }
 
+// MediaProbe probes container metadata for a PlayableSource in the same shape
+// /resolve returns. Requires permissions.media: "probe" and is restricted to
+// jobs, actions, and background routes (refused on viewer/client paths).
+func (c *Context) MediaProbe(src PlayableSource) (MediaProbeResult, error) {
+	if mh, ok := c.Ether.(MediaHost); ok {
+		ctx := c.Context
+		if tok := c.viewerToken(); tok != "" {
+			ctx = WithViewerToken(ctx, tok)
+		}
+		return mh.MediaProbe(ctx, src)
+	}
+	return MediaProbeResult{}, fmt.Errorf("media.probe is not supported by this host")
+}
+
 // Routes holds the capability handlers for a Plugin.
 type Routes struct {
 	Catalog          func(ctx *Context, req CatalogRequest) (CatalogResponse, error)

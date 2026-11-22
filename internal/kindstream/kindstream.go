@@ -116,11 +116,33 @@ type Deps struct {
 	// before a later one opened, so the caller can log it and decide
 	// whether the winner may be saved as the item's resolution.
 	OnSourceSkipped func(failures []SourceFailure, winning core.PlayableSource)
+	// ProbeMedia, when set, reads container metadata for an already-opened
+	// ByteSource when a source opts into open-time duration verification
+	// (DurationSec > 0 and DurationToleranceSec > 0). Typically wired by
+	// KindResolver to consult and populate the durable release_probes cache
+	// using ProbeByteSource. When nil, Open falls back directly to
+	// ProbeByteSource without a cache or ffprobe fallback.
+	ProbeMedia func(ctx context.Context, src core.PlayableSource, bs ByteSource) (*core.MediaInfo, error)
 }
 
 // Open resolves a single core.PlayableSource into a random-access ByteSource
-// according to its retrieval pattern (spec §4.3, §5.1).
+// according to its retrieval pattern (spec §4.3, §5.1). When the source sets
+// both DurationSec and DurationToleranceSec > 0, Open verifies the container's
+// running time before returning and rejects mismatches as core.ErrWrongContent
+// and ErrPluginAnswer.
 func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
+	bs, err := openSource(ctx, src, deps)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifySourceDuration(ctx, src, bs, deps); err != nil {
+		_ = bs.Close()
+		return nil, err
+	}
+	return bs, nil
+}
+
+func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -268,6 +290,7 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	var failures []SourceFailure
 	allUnstreamable := true
 	allRejected := true
+	allWrongContent := true
 	for i, cand := range sources {
 		if err := ctx.Err(); err != nil {
 			return nil, core.PlayableSource{}, err
@@ -280,12 +303,16 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 				if !isPermanentRejection(prev) {
 					allRejected = false
 				}
+				if !errors.Is(prev, core.ErrWrongContent) {
+					allWrongContent = false
+				}
 				continue
 			}
 			if isUsenet && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
 				errs = append(errs, fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", cand.ID, cand.Pattern, maxUsenetGrabs))
 				allUnstreamable = false
 				allRejected = false
+				allWrongContent = false
 				continue
 			}
 			if isUsenet {
@@ -321,6 +348,9 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if !isPermanentRejection(err) {
 			allRejected = false
 		}
+		if !errors.Is(err, core.ErrWrongContent) {
+			allWrongContent = false
+		}
 		failures = append(failures, SourceFailure{Source: cand, Err: err})
 		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, err))
 	}
@@ -333,6 +363,9 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			return nil, core.PlayableSource{}, joined
 		}
 		return nil, core.PlayableSource{}, fmt.Errorf("%w: %w", core.ErrReleaseRejected, joined)
+	}
+	if allWrongContent && len(errs) > 0 {
+		return nil, core.PlayableSource{}, errors.Join(errs...)
 	}
 	return nil, core.PlayableSource{}, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, errors.Join(errs...))
 }

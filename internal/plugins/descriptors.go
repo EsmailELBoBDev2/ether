@@ -349,6 +349,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Uses your configured language model")
 		lines = append(lines, "Uses your language model while a viewer searches")
 	}
+	if normLevel(p.Media) == "probe" {
+		lines = append(lines, "Probes media container metadata")
+	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
 			continue
@@ -415,7 +418,7 @@ func PermissionDiff(cur, next Manifest) []string {
 	if len(addedLocal) > 0 {
 		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
 	}
-	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "all": 2}
+	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "probe": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }
 	if raised(a.Catalog, b.Catalog) {
 		added = append(added, "Reads your catalogue")
@@ -434,6 +437,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
+	}
+	if raised(a.Media, b.Media) {
+		added = append(added, "Probes media container metadata")
 	}
 	aiLevel := map[string]int{"none": 0, "complete": 1, "complete+search": 2}
 	if aiLevel[normLevel(b.AI)] > aiLevel[normLevel(a.AI)] {

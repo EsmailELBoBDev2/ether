@@ -300,8 +300,35 @@ the next candidate source is tried. When several sources are returned and
 an earlier one fails, Ether logs the failure (plugin, library, item,
 source id, pattern, error) even though a later source plays; if the
 failure contradicts your answer itself (a missing archive member, an
-out-of-range index, a digest or size mismatch), the fallback that played
-is not saved as the item's resolution, so the next play resolves again.
+out-of-range index, a digest, size, or duration mismatch), the fallback
+that played is not saved as the item's resolution, so the next play
+resolves again.
+
+To verify a file's running time on open (for example when picking one
+file out of a multi-file pack by name where a trailer or bonus clip
+could share tokens with the episode), set both `durationSec` and
+`durationToleranceSec` (a positive number of seconds) on the
+`PlayableSource`. Ether consults the durable `release_probes` cache
+first (scoped per selected file/member so entries in a pack never
+collide), otherwise reads the container headers within a 10 s bound
+using its native prober (and ffprobe fallback when configured), and
+refuses the source as wrong content (`core.ErrWrongContent` /
+`ErrPluginAnswer`) when `|observedDurationSec - durationSec| >
+durationToleranceSec`, advancing to the next candidate. Leaving
+`durationToleranceSec` omitted or zero keeps `durationSec` as estimated
+metadata only.
+
+Background jobs, actions, and sync routes can also inspect container
+metadata ahead of time via `ether.media.probe(source)` (hosted) or
+`POST /ether/plugin-host/media/probe` (remote). It accepts the same
+`PlayableSource` shape `/resolve` returns, returns
+`{durationSec, container, width, height, sizeBytes}`, reuses
+`release_probes`, is hard-bounded at 10 s per probe and rate-limited per
+plugin (60/min), requires `permissions.media: "probe"`, and is refused
+on every viewer/client request path (including `/resolve` and search).
+Release probes run strictly cached-only without queuing uncached debrid
+downloads; pattern-specific network, folder, secret, and blob grants
+still apply.
 
 `ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard

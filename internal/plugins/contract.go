@@ -256,7 +256,10 @@ type Permissions struct {
 	Sources string `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
 	// AI lets a plugin send bounded completion requests to the owner's
 	// configured language model (actions/jobs/sync only, never viewer paths).
-	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete|complete+search
+	AI string `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete|complete+search
+	// Media lets a plugin probe container metadata via media.probe from jobs,
+	// actions, and background sync (never viewer or client request paths).
+	Media   string   `json:"media,omitempty" yaml:"media,omitempty"` // ""|none|probe
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 
@@ -1289,6 +1292,14 @@ type Host interface {
 	// request path stays refused. Returns ErrNotConfigured when no model is
 	// configured.
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+
+	// MediaProbe reads container metadata ({durationSec, container, width,
+	// height, sizeBytes}) for a PlayableSource in the same shape /resolve
+	// returns, reusing Ether's durable release_probes cache. Requires
+	// permissions.media: "probe", is restricted to jobs, actions, and
+	// background routes (never viewer or client request paths), is rate-limited
+	// per plugin, and is bounded at 10 s per probe.
+	MediaProbe(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error)
 
 	// NotifyOwner posts a console notice (rate-limited).
 	NotifyOwner(ctx context.Context, text string) error

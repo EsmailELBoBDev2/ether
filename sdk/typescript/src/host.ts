@@ -125,6 +125,18 @@ export interface AICompleteResponse<T = unknown> {
   json?: T;
 }
 
+export const DefaultMediaProbePerMin = 60;
+export const MediaProbeTimeoutMs = 10_000;
+
+/** Container metadata summary returned by `media.probe(source)`. */
+export interface MediaProbeResult {
+  durationSec: number;
+  container: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+}
+
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
 export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
@@ -544,6 +556,16 @@ export interface EtherHost {
   ai?: {
     complete<T = unknown>(req: AICompleteRequest): MaybePromise<AICompleteResponse<T>>;
   };
+  /**
+   * Container metadata probing (`media.probe`). Accepts the same `PlayableSource` shape
+   * `/resolve` returns, reuses Ether's durable `release_probes` cache, is rate-limited per
+   * plugin (60/min), and is bounded at 10 s per probe. Requires `permissions.media: "probe"`
+   * and is restricted to jobs, actions, background sync, and other non-viewer routes (refused
+   * on viewer/client request paths).
+   */
+  media?: {
+    probe(source: import("./types.ts").PlayableSource): MaybePromise<MediaProbeResult>;
+  };
   notify: {
     owner(text: string): MaybePromise<void>;
   };
@@ -657,6 +679,9 @@ interface GlobalEtherBindings {
     };
     ai?: {
       complete: <T = unknown>(req: AICompleteRequest) => AICompleteResponse<T>;
+    };
+    media?: {
+      probe: (source: import("./types.ts").PlayableSource) => MediaProbeResult;
     };
     kinds?: {
       upsert: (kind: string, items: import("./types.ts").KindItem[]) => { accepted: number } | number;
@@ -939,6 +964,14 @@ export function createHostedClient(): EtherHost {
           return g.ether.ai.complete<T>(req);
         }
         return callHost<AICompleteResponse<T>>("ai.complete", [req]);
+      },
+    },
+    media: {
+      probe(source: import("./types.ts").PlayableSource): MediaProbeResult {
+        if (g.ether?.media?.probe) {
+          return g.ether.media.probe(source);
+        }
+        return callHost<MediaProbeResult>("media.probe", [source]);
       },
     },
     notify: {
@@ -1377,6 +1410,20 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
             false,
             tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
           )) ?? { text: "" }
+        );
+      },
+    },
+    media: {
+      async probe(source: import("./types.ts").PlayableSource): Promise<MediaProbeResult> {
+        const tok = (opts.viewerToken ?? "").trim();
+        return (
+          (await callJson<MediaProbeResult>(
+            "POST",
+            "/ether/plugin-host/media/probe",
+            source,
+            false,
+            tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
+          )) ?? { durationSec: 0, container: "", width: 0, height: 0, sizeBytes: 0 }
         );
       },
     },

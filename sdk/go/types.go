@@ -158,6 +158,9 @@ type Permissions struct {
 	// and other non-viewer routes, while "complete+search" also allows bounded
 	// 20 s cached calls on interactive search routes).
 	AI string `json:"ai,omitempty"`
+	// Media lets a plugin call MediaProbe (media.probe) from jobs, actions,
+	// and background sync (""|none|probe; refused on viewer/client paths).
+	Media string `json:"media,omitempty"`
 }
 
 // ViewerPermissions scopes viewer identity and watch-history access.

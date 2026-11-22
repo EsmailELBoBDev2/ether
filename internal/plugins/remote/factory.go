@@ -636,6 +636,20 @@ func (a HostAdapter) AIComplete(ctx context.Context, pluginID, viewerToken strin
 	return resp, mapHostErr(err)
 }
 
+func (a HostAdapter) MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error) {
+	if viewerToken != "" {
+		// media.probe is restricted to jobs, actions, and background routes
+		// and never runs on an interactive viewer request.
+		return core.MediaProbeResult{}, fmt.Errorf("%w: media.probe cannot run on viewer request", ErrPermissionDenied)
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.MediaProbeResult{}, err
+	}
+	resp, err := h.MediaProbe(ctx, src)
+	return resp, mapHostErr(err)
+}
+
 func (a HostAdapter) NotifyOwner(ctx context.Context, pluginID, text string) error {
 	h, err := a.host(pluginID)
 	if err != nil {

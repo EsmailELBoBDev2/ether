@@ -256,6 +256,15 @@ type AIHost interface {
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 }
 
+// MediaHost probes container metadata for a PlayableSource in the same shape
+// /resolve returns, reusing Ether's durable release_probes cache (requires
+// permissions.media: "probe"; jobs, actions, and background routes only).
+// RemoteHostClient and MockHost implement it; Context.MediaProbe uses it
+// automatically.
+type MediaHost interface {
+	MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error)
+}
+
 // PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
 // part of a multi-file kind item (#576). RemoteHostClient and MockHost
 // implement it; Context.StreamPartURL uses it automatically.
@@ -881,6 +890,20 @@ func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest
 		headers = map[string]string{HeaderViewerToken: tok}
 	}
 	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", headers, req, &res, false)
+	return res, err
+}
+
+// MediaProbe probes container metadata for a PlayableSource through
+// POST /ether/plugin-host/media/probe. Requires permissions.media: "probe" and
+// may only be called from jobs, actions, and background routes (never viewer
+// requests; forwarding X-Ether-Viewer-Token is refused by the host).
+func (c *RemoteHostClient) MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error) {
+	var res MediaProbeResult
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/media/probe", headers, src, &res, false)
 	return res, err
 }
 

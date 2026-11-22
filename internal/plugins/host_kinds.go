@@ -55,6 +55,8 @@ type KindBackends struct {
 	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
 	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+	// MediaProbe reads container metadata for a PlayableSource (#712).
+	MediaProbe func(ctx context.Context, pluginID string, src core.PlayableSource) (core.MediaProbeResult, error)
 }
 
 // SetKindBackends wires the kind host services into the Manager's
@@ -76,6 +78,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
+	m.deps.Backends.MediaProbe = b.MediaProbe
 	m.mu.Unlock()
 }
 
@@ -98,6 +101,7 @@ func (m *Manager) kindBackends() KindBackends {
 		StreamURL:        m.deps.Backends.StreamURL,
 		StreamPartURL:    m.deps.Backends.StreamPartURL,
 		StreamURLOptions: m.deps.Backends.StreamURLOptions,
+		MediaProbe:       m.deps.Backends.MediaProbe,
 	}
 }
 

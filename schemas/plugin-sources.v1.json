@@ -325,6 +325,190 @@
           "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
         }
       }
+    },
+    "volumeRef": {
+      "type": "object",
+      "required": [
+        "size"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "keepHeadersOnRedirect": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blobRef": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "containerRef": {
+      "type": "object",
+      "required": [
+        "volumes"
+      ],
+      "properties": {
+        "format": {
+          "enum": [
+            "",
+            "rar",
+            "7z",
+            "zip"
+          ]
+        },
+        "volumes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/volumeRef"
+          }
+        },
+        "member": {
+          "type": "string"
+        },
+        "memberIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passwordSecret": {
+          "type": "string"
+        }
+      }
+    },
+    "playableSource": {
+      "type": "object",
+      "description": "One candidate way to acquire bytes for a content-kind item (returned by /resolve and accepted by media.probe).",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "pattern": {
+          "enum": [
+            "range",
+            "download",
+            "direct",
+            "container",
+            "release",
+            "file"
+          ]
+        },
+        "mime": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is an approximate decoded estimate rather than an exact byte count."
+        },
+        "durationSec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Expected running time in seconds. Estimated metadata only unless durationToleranceSec is also positive."
+        },
+        "durationToleranceSec": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Opts into open-time container duration verification when durationSec > 0. Ether probes the container (reusing the durable release_probes cache) and refuses the source as wrong content (trying the next candidate and flagging the plugin answer) if the observed duration differs from durationSec by more than this many seconds."
+        },
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "keepHeadersOnRedirect": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blobRef": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "crc32": {
+          "type": "string"
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiresAt": {
+          "type": "integer"
+        },
+        "container": {
+          "$ref": "#/$defs/containerRef"
+        },
+        "release": {
+          "$ref": "#/$defs/releaseHint"
+        }
+      }
+    },
+    "mediaProbeResult": {
+      "type": "object",
+      "description": "Container metadata returned by the media.probe(source) host service (jobs/actions/sync only; requires permissions.media: \"probe\").",
+      "required": [
+        "durationSec",
+        "container",
+        "width",
+        "height",
+        "sizeBytes"
+      ],
+      "properties": {
+        "durationSec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "container": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     }
   }
 }

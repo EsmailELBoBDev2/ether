@@ -134,13 +134,21 @@ func TestPublishedManifestSchema(t *testing.T) {
 		"description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (\"complete\"), or also on interactive search routes — Stremio catalog search, kinds search, and frontend adapter search routes — with a hard 20 s bound and per-query caching (\"complete+search\"). Every other viewer/client path stays refused.",
 		"enum":        []string{"none", "complete", "complete+search"},
 	}
+	wantMedia := map[string]any{
+		"description": "Probe container metadata ({durationSec, container, width, height, sizeBytes}) for a PlayableSource via media.probe from jobs, actions, background sync, and other non-viewer routes (\"probe\"). Reuses Ether's durable release_probes cache, is rate-limited per plugin, and is bounded at 10 s per probe. Every viewer or client request path is refused.",
+		"enum":        []string{"none", "probe"},
+	}
+	wantSources := map[string]any{
+		"description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.",
+		"enum":        []string{"none", "search", "acquire"},
+	}
 	contrib := ether["contributes"].(map[string]any)["properties"].(map[string]any)
 	kind := schemaType(reflect.TypeFor[plugins.MediaKindMeta]())
 	adapter := schemaType(reflect.TypeFor[plugins.FrontendAdapterMeta]())
 	wantKinds := map[string]any{"type": "array", "items": kind}
 	wantAdapters := map[string]any{"type": "array", "items": adapter}
 	equal := func(a, b any) bool { x, _ := json.Marshal(a); y, _ := json.Marshal(b); return string(x) == string(y) }
-	changed := !equal(ether["kind"], expected["kind"]) || !equal(ether["capabilities"], expected["capabilities"]) || !equal(perms["ai"], wantAI) || !equal(contrib["mediaKinds"], wantKinds) || !equal(contrib["frontendAdapters"], wantAdapters)
+	changed := !equal(ether["kind"], expected["kind"]) || !equal(ether["capabilities"], expected["capabilities"]) || !equal(perms["ai"], wantAI) || !equal(perms["media"], wantMedia) || !equal(perms["sources"], wantSources) || !equal(contrib["mediaKinds"], wantKinds) || !equal(contrib["frontendAdapters"], wantAdapters)
 	if changed {
 		if os.Getenv("UPDATE_MANIFEST_SCHEMA") != "1" {
 			t.Fatal("manifest schema drift: run UPDATE_MANIFEST_SCHEMA=1 go test ./internal/plugins/studio -run TestPublishedManifestSchema")
@@ -148,6 +156,8 @@ func TestPublishedManifestSchema(t *testing.T) {
 		ether["kind"] = expected["kind"]
 		ether["capabilities"] = expected["capabilities"]
 		perms["ai"] = wantAI
+		perms["media"] = wantMedia
+		perms["sources"] = wantSources
 		contrib["mediaKinds"] = wantKinds
 		contrib["frontendAdapters"] = wantAdapters
 		raw, err = json.MarshalIndent(doc, "", "  ")

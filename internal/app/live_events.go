@@ -57,6 +57,7 @@ func (a *App) buildLiveEvents() {
 		Guide:            appLiveTVGuideSource{app: a},
 		ActiveEvents:     hubActiveEventsSource{hub: hub},
 		FavoriteEntities: appFavoriteEntities{app: a}.ListEntityKeys,
+		FavoriteChannels: appFavoriteEntities{app: a}.ListChannelIDs,
 	})
 	a.liveWatchMatcher = watchMatcher
 
@@ -234,12 +235,12 @@ func (g appLiveTVGuideSource) GuideRevision(ctx context.Context, viewer *core.Us
 	return src.GuideRevision(ctx, viewer)
 }
 
-func (g appLiveTVGuideSource) WatchCandidates(ctx context.Context, viewer *core.User, from, until time.Time, callsigns []string) ([]liveevents.GuideCandidate, string, error) {
+func (g appLiveTVGuideSource) WatchCandidates(ctx context.Context, viewer *core.User, q liveevents.GuideWatchQuery) ([]liveevents.GuideCandidate, string, error) {
 	src := g.source()
 	if src == nil {
 		return nil, "none", nil
 	}
-	return src.WatchCandidates(ctx, viewer, from, until, callsigns)
+	return src.WatchCandidates(ctx, viewer, q)
 }
 
 func (g appLiveTVGuideSource) CurrentProgramme(ctx context.Context, viewer *core.User, channelID string, at time.Time) (*liveevents.GuideCandidate, string, error) {

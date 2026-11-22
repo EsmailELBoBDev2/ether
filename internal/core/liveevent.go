@@ -173,21 +173,39 @@ type LiveEventMatchHints struct {
 // Available is omitted when playable and set to false when the only matching
 // channels are currently unhealthy so clients can show "Unavailable right now".
 type LiveEventWatchTarget struct {
-	Kind       string  `json:"kind"` // channel|addon|plugin
-	ChannelID  string  `json:"channelId,omitempty"`
-	Name       string  `json:"name"`
-	Number     string  `json:"number,omitempty"`
-	Logo       string  `json:"logo,omitempty"`
-	Live       bool    `json:"live"`
-	Confidence float64 `json:"confidence,omitempty"`
-	URL        string  `json:"url,omitempty"`
-	Available  *bool   `json:"available,omitempty"`
+	Kind       string                 `json:"kind"` // channel|addon|plugin
+	ChannelID  string                 `json:"channelId,omitempty"`
+	Name       string                 `json:"name"`
+	Number     string                 `json:"number,omitempty"`
+	Logo       string                 `json:"logo,omitempty"`
+	Live       bool                   `json:"live"`
+	Confidence float64                `json:"confidence,omitempty"`
+	URL        string                 `json:"url,omitempty"`
+	Available  *bool                  `json:"available,omitempty"`
+	Alternates []LiveEventWatchTarget `json:"alternates,omitempty"`
 }
 
 // IsAvailable reports whether the watch target is currently playable
 // (Available omitted or true).
 func (t LiveEventWatchTarget) IsAvailable() bool {
 	return t.Available == nil || *t.Available
+}
+
+// Clone returns a deep copy of t including its availability flag and any
+// collapsed alternate feeds.
+func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
+	out := t
+	if t.Available != nil {
+		av := *t.Available
+		out.Available = &av
+	}
+	if len(t.Alternates) > 0 {
+		out.Alternates = make([]LiveEventWatchTarget, len(t.Alternates))
+		for i, alt := range t.Alternates {
+			out.Alternates[i] = alt.Clone()
+		}
+	}
+	return out
 }
 
 // LiveEvent is Ether's JSON-stable, generic live event model suitable for
@@ -261,11 +279,7 @@ func (e LiveEvent) Clone() LiveEvent {
 	if e.Watch != nil {
 		out.Watch = make([]LiveEventWatchTarget, len(e.Watch))
 		for i, w := range e.Watch {
-			if w.Available != nil {
-				av := *w.Available
-				w.Available = &av
-			}
-			out.Watch[i] = w
+			out.Watch[i] = w.Clone()
 		}
 	}
 	return out

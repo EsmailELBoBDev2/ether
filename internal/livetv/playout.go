@@ -470,6 +470,9 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	s.sessions[ss.info.ID] = ss
 	s.noteWatchedLocked(c.ID)
+	if u != nil && u.ID > 0 {
+		s.noteViewerWatchedLocked(u.ID, c.ID)
+	}
 	s.noteSourceUsedLocked(c.SourceID)
 	s.mu.Unlock()
 	if c.SourceID != "" && s.hasOnDemand.Load() {

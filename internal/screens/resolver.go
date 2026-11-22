@@ -621,11 +621,7 @@ func (rc *resolveContext) resolveEvent(ev core.LiveEvent, feed, entityKind strin
 	} else if len(ev.Watch) > 0 {
 		targets = make([]core.LiveEventWatchTarget, len(ev.Watch))
 		for i, w := range ev.Watch {
-			if w.Available != nil {
-				av := *w.Available
-				w.Available = &av
-			}
-			targets[i] = w
+			targets[i] = w.Clone()
 		}
 	}
 	if targets == nil {

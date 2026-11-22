@@ -43,6 +43,30 @@ func TestWatchTimeIndexQueryPlanUsesIndex(t *testing.T) {
 	if strings.Contains(joined, "SCAN livetv_programmes") {
 		t.Fatalf("query plan performed full table scan:\n%s", joined)
 	}
+
+	// Joined time-slice lookup must probe livetv_search_channel_guide without
+	// scanning either livetv_programmes or livetv_channels.
+	joinRows, err := db.Query(`EXPLAIN QUERY PLAN SELECT c.id, p.data FROM (SELECT source_id, channel_id, data FROM livetv_programmes WHERE start_ms>=? AND start_ms<? AND end_ms>? ORDER BY start_ms ASC LIMIT ?) p JOIN livetv_channels c ON coalesce(nullif(json_extract(c.data,'$.guideSourceId'),''),json_extract(c.data,'$.sourceId'))=+p.source_id AND json_extract(c.data,'$.guideId')=+p.channel_id`, int64(1000), int64(9000), int64(1000), 2000)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN join: %v", err)
+	}
+	defer joinRows.Close()
+	var joinPlans []string
+	for joinRows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := joinRows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan join plan: %v", err)
+		}
+		joinPlans = append(joinPlans, detail)
+	}
+	joinPlanText := strings.Join(joinPlans, "\n")
+	if !strings.Contains(joinPlanText, "livetv_programmes_time") || !strings.Contains(joinPlanText, "livetv_search_channel_guide") {
+		t.Fatalf("expected joined query plan to use livetv_programmes_time and livetv_search_channel_guide, got:\n%s", joinPlanText)
+	}
+	if strings.Contains(joinPlanText, "SCAN livetv_channels") || strings.Contains(joinPlanText, "SCAN livetv_programmes") {
+		t.Fatalf("joined query plan performed full table scan:\n%s", joinPlanText)
+	}
 }
 
 func TestWatchCandidatesWindowVisibilityAndStremioEventChannel(t *testing.T) {
@@ -452,6 +476,140 @@ func TestWatchCandidatesHealthSignalsAndRevisionInvalidation(t *testing.T) {
 	if e, ok := viewerMap[chPaused.ID]; !ok || e.Unhealthy {
 		t.Fatalf("ch-paused after unpause = (%+v, %v), want healthy", e, ok)
 	}
+}
+
+func TestWatchCandidatesIndexedOnLargeLineup(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	svc, err := New(Options{DB: db, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("livetv.New: %v", err)
+	}
+	defer svc.Close()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	insert := func(c Channel) {
+		b, _ := json.Marshal(c)
+		if _, err := stmt.ExecContext(ctx, c.ID, string(b)); err != nil {
+			t.Fatalf("insert %s: %v", c.ID, err)
+		}
+	}
+	// Populate 10,000 unrelated channels plus 100 local FOX decoys so any full-lineup
+	// scan or naive un-boosted FTS cutoff would fail or blow up candidates.
+	for i := 0; i < 10000; i++ {
+		id := "filler-" + strings.Repeat("0", 5-len(itoa(i))) + itoa(i)
+		insert(Channel{ID: id, Number: itoa(1000 + i), Name: "ZZ Filler Channel " + itoa(i), Group: "General", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/filler.m3u8"})
+	}
+	for i := 0; i < 100; i++ {
+		insert(Channel{ID: "fox-local-" + itoa(i), Number: itoa(20000 + i), Name: "US| FOX Local " + itoa(i) + " HD", Group: "US| Locals", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/foxlocal.m3u8"})
+	}
+	insert(Channel{ID: "target-espn", Number: "30001", Name: "US| ESPN FHD", Group: "US| Sports", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/espn.m3u8"})
+	insert(Channel{ID: "target-sky", Number: "30002", Name: "UK - Sky Sports Main Event ᴴᴰ", Group: "UK| Sports", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/sky.m3u8"})
+	insert(Channel{ID: "target-event", Number: "30003", Name: "NFL 03: Giants vs Eagles 8:15 PM ET", Group: "NFL Game Pass", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/nfl03.m3u8"})
+	insert(Channel{ID: "target-fox-fav", Number: "30004", Name: "US| FOX FHD", Group: "US| Entertainment", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/foxfhd.m3u8"})
+	insert(Channel{ID: "hidden-espn", Number: "30005", Name: "US| ESPN 4K", Group: "Hidden", Kind: "iptv", Enabled: true, SourceID: "prov", StreamURL: "https://ex/hidden.m3u8"})
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := svc.SaveOwnerGroups(ctx, []OwnerGroup{
+		{ID: "hidden", Name: "Hidden", Hidden: true, Groups: []OwnerGroupSource{{SourceID: "prov", Name: "Hidden"}}},
+	}); err != nil {
+		t.Fatalf("SaveOwnerGroups: %v", err)
+	}
+
+	viewer := &core.User{ID: 11}
+	// Demand migration 27 search index and wait for background backfill of 10k channels.
+	if err := svc.demandSearchIndex(ctx); err != nil {
+		t.Fatalf("demandSearchIndex: %v", err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); !svc.isSearchReady(); {
+		if time.Now().After(deadline) {
+			t.Fatalf("search index did not finish backfilling 10k channels in time")
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	revBefore, err := svc.GuideRevision(ctx, viewer)
+	if err != nil {
+		t.Fatalf("GuideRevision before: %v", err)
+	}
+	svc.NoteViewerWatched(viewer.ID, "target-espn")
+	revAfter, err := svc.GuideRevision(ctx, viewer)
+	if err != nil || revAfter == revBefore {
+		t.Fatalf("GuideRevision should advance after NoteViewerWatched: %q -> %q (err=%v)", revBefore, revAfter, err)
+	}
+
+	cands, _, err := svc.WatchCandidatesQuery(ctx, viewer, WatchQuery{
+		From:      now.Add(-30 * time.Minute),
+		Until:     now.Add(4 * time.Hour),
+		Callsigns: []string{"ESPN", "Sky Sports Main Event", "FOX"},
+		EventQueries: []WatchEventQuery{
+			{SideA: []string{"giants", "nyg"}, SideB: []string{"eagles", "phi"}},
+		},
+		FavoriteChannelIDs: []string{"target-fox-fav"},
+	})
+	if err != nil {
+		t.Fatalf("WatchCandidatesQuery: %v", err)
+	}
+	if len(cands) > watchSearchTotalChannelCap {
+		t.Fatalf("candidates not bounded: got %d > cap %d", len(cands), watchSearchTotalChannelCap)
+	}
+	byID := make(map[string]WatchGuideEntry, len(cands))
+	for _, c := range cands {
+		byID[c.ChannelID] = c
+	}
+	for _, want := range []string{"target-espn", "target-sky", "target-event", "target-fox-fav"} {
+		if _, ok := byID[want]; !ok {
+			t.Fatalf("missing expected channel %s in indexed candidates (got %d total)", want, len(cands))
+		}
+	}
+	if _, leaked := byID["hidden-espn"]; leaked {
+		t.Fatalf("hidden owner-group channel leaked into WatchCandidatesQuery")
+	}
+	if byID["target-event"].Group != "NFL Game Pass" {
+		t.Fatalf("target-event.Group = %q, want NFL Game Pass", byID["target-event"].Group)
+	}
+	if !byID["target-fox-fav"].Favorite {
+		t.Fatalf("target-fox-fav should be marked Favorite=true")
+	}
+	if byID["target-espn"].WatchedAt.IsZero() {
+		t.Fatalf("target-espn should carry non-zero WatchedAt after NoteViewerWatched")
+	}
+	// Verify snapshot was NOT populated by WatchCandidatesQuery (no full lineup scan).
+	svc.chanSnap.mu.Lock()
+	snapLoaded := len(svc.chanSnap.list)
+	svc.chanSnap.mu.Unlock()
+	if snapLoaded != 0 {
+		t.Fatalf("WatchCandidatesQuery loaded full channelSnapshot (%d channels) instead of using migration 27 index", snapLoaded)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 func TestWatchCandidatesPrioritizesHealthyUnderTargetCap(t *testing.T) {

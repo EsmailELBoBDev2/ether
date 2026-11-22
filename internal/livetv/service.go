@@ -40,6 +40,7 @@ type Service struct {
 	searchVirtualSnapshots                    map[string]virtualSearchIndexedSnapshot
 	searchMu                                  sync.Mutex
 	searchBuilding, searchReady, searchClosed bool
+	searchDone                                chan struct{}
 
 	ownerGroupsMu        sync.Mutex
 	ownerGroupsIndex     *ownerGroupIndex
@@ -118,11 +119,15 @@ type Service struct {
 	sessions              map[string]*session
 	// watched is when each channel was last tuned or playing (guarded by
 	// mu). activeWatched tracks channels with an active viewer right now.
-	watched       map[string]time.Time
-	activeWatched map[string]time.Time
-	warmMu        sync.Mutex
-	warmed        map[warmTarget]time.Time
-	vis           broadcastVisibilityState
+	// viewerWatched tracks bounded per-viewer recent channel tunes for
+	// sports watch-target preference ranking.
+	watched          map[string]time.Time
+	activeWatched    map[string]time.Time
+	viewerWatched    map[int64]map[string]time.Time
+	viewerWatchedGen map[int64]uint64
+	warmMu           sync.Mutex
+	warmed           map[warmTarget]time.Time
+	vis              broadcastVisibilityState
 
 	progressMu       sync.Mutex
 	progress         map[string]*progressTracker
@@ -263,6 +268,8 @@ func (s *Service) ReconcileEnabled() {
 		s.sessions = map[string]*session{}
 		s.watched = nil
 		s.activeWatched = nil
+		s.viewerWatched = nil
+		s.viewerWatchedGen = nil
 		s.sourceUsed = nil
 		s.mu.Unlock()
 		for _, ss := range all {

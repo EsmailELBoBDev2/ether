@@ -533,12 +533,19 @@ func (s *Service) demandSearchIndex(ctx context.Context) error {
 	if s.searchReady {
 		return nil
 	}
+	if store.DialectOf(s.o.DB) == store.Postgres {
+		// PostgreSQL maintains GIN indexes unconditionally.
+		s.searchReady = true
+		return nil
+	}
 	var ready int
 	if err := s.o.DB.QueryRowContext(ctx, `SELECT ready FROM livetv_search_state WHERE id=1`).Scan(&ready); err != nil {
 		return err
 	}
 	if !s.searchBuilding {
 		s.searchBuilding = true
+		done := make(chan struct{})
+		s.searchDone = done
 		s.wg.Add(1)
 		s.ctxMu.Lock()
 		workerCtx := s.ctx
@@ -549,6 +556,10 @@ func (s *Service) demandSearchIndex(ctx context.Context) error {
 			s.searchMu.Lock()
 			s.searchBuilding = false
 			s.searchReady = err == nil
+			if s.searchDone == done {
+				s.searchDone = nil
+			}
+			close(done)
 			s.searchMu.Unlock()
 			if err != nil && !errors.Is(err, context.Canceled) {
 				s.o.Logger.Warn("live search index preparation failed", "error", err)
@@ -556,6 +567,44 @@ func (s *Service) demandSearchIndex(ctx context.Context) error {
 		}()
 	}
 	return nil
+}
+
+func (s *Service) isSearchReady() bool {
+	if s == nil {
+		return false
+	}
+	if s.o.DB != nil && store.DialectOf(s.o.DB) == store.Postgres {
+		return true
+	}
+	s.searchMu.Lock()
+	ready := s.searchReady
+	s.searchMu.Unlock()
+	return ready
+}
+
+// prepareWatchSearchIndex activates migration 27's channel search index and
+// waits briefly for small lineups to finish indexing without blocking on
+// tens-of-thousands-of-channel backfills.
+func (s *Service) prepareWatchSearchIndex(ctx context.Context) (bool, error) {
+	if err := s.demandSearchIndex(ctx); err != nil {
+		return false, err
+	}
+	s.searchMu.Lock()
+	ready := s.searchReady
+	done := s.searchDone
+	s.searchMu.Unlock()
+	if ready || done == nil {
+		return ready, nil
+	}
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return s.isSearchReady(), nil
 }
 func (s *Service) buildSearchIndex(ctx context.Context, backfill bool) error {
 	if _, err := s.o.DB.ExecContext(ctx, `UPDATE livetv_search_state SET active=1 WHERE id=1`); err != nil {
@@ -588,6 +637,7 @@ func (s *Service) buildSearchIndex(ctx context.Context, backfill bool) error {
 				batch.Rollback()
 				return err
 			}
+			var batchCount int
 			if table == "livetv_channels" {
 				type chanIndexRow struct {
 					docid   int64
@@ -619,6 +669,7 @@ func (s *Service) buildSearchIndex(ctx context.Context, backfill bool) error {
 					batch.Rollback()
 					return re
 				}
+				batchCount = len(buf)
 				mainStmt, serr := batch.PrepareContext(ctx, `INSERT OR REPLACE INTO livetv_search_channels(rowid,id,body) VALUES(?,?,?)`)
 				if serr != nil {
 					batch.Rollback()
@@ -646,15 +697,22 @@ func (s *Service) buildSearchIndex(ctx context.Context, backfill bool) error {
 				}
 			} else {
 				query := `INSERT OR REPLACE INTO livetv_search_programmes(rowid,source,channel,start,body) SELECT (SELECT docid FROM livetv_search_programme_keys k WHERE k.source=livetv_programmes.source_id AND k.channel=livetv_programmes.channel_id AND k.start=livetv_programmes.start_ms),source_id,channel_id,start_ms,coalesce(json_extract(data,'$.item.title'),'') || ' ' || coalesce(json_extract(data,'$.item.episodeTitle'),'') || ' ' || coalesce(json_extract(data,'$.item.summary'),'') FROM livetv_programmes WHERE rowid>? AND rowid<=?`
-				if _, err = batch.ExecContext(ctx, query, last, end); err != nil {
+				res, qerr := batch.ExecContext(ctx, query, last, end)
+				if qerr != nil {
 					batch.Rollback()
-					return err
+					return qerr
+				}
+				if n, rerr := res.RowsAffected(); rerr == nil {
+					batchCount = int(n)
 				}
 			}
 			if err = batch.Commit(); err != nil {
 				return err
 			}
 			last = end
+			if batchCount < 500 {
+				continue
+			}
 			timer := time.NewTimer(10 * time.Millisecond)
 			select {
 			case <-ctx.Done():

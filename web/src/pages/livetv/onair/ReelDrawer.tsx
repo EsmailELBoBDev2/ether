@@ -217,6 +217,7 @@ export function ReelDrawer({
       open={open}
       onClose={onClose}
       title={draft.name || t("New reel")}
+      documentTitle={draft.name || t("New reel")}
       size="lg"
       footer={
         <div className="flex w-full flex-wrap items-center gap-2">

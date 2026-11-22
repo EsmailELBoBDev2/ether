@@ -199,6 +199,7 @@ export function SourceDrawer({
         open={open}
         onClose={onClose}
         title={title}
+        documentTitle={title}
         size="lg"
         footer={sourceId && (sources === null || !selected) ? fallbackFooter : footer}
       >

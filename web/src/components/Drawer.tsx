@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { t } from "../i18n";
+import { useDrawerTitle } from "../lib/document-title";
 
 const DrawerContext = createContext(false);
 
@@ -43,13 +44,18 @@ function RecordTitle({ children }: { children: ReactNode }) {
 /** Preserve AppKit focus, scroll and Escape handling when editors open a child drawer. */
 export function Drawer({
   title,
+  documentTitle,
   stacked,
   bodyClassName,
   onExitComplete,
   children,
   ...props
-}: DrawerProps) {
+}: DrawerProps & {
+  /** When set, appends this title to the browser tab title while the drawer is open. */
+  documentTitle?: string | null;
+}) {
   const nested = useContext(DrawerContext);
+  useDrawerTitle(props.open ? documentTitle : null);
   useEffect(() => {
     if (!props.open) {
       resetShellHorizontalScroll();

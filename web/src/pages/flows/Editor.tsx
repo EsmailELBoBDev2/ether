@@ -31,6 +31,7 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { errorMessage } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { flowsApi } from "../../lib/flowsApi";
 import { useAsync } from "../../lib/hooks";
 import { DescribeFlowDialog } from "./DescribeFlowDialog";
@@ -98,6 +99,8 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
   const [ready, setReady] = useState(false);
   const [savedId, setSavedId] = useState<string | undefined>(flowId);
   const [name, setName] = useState("");
+  const loadedMatches = !flowId || loaded.data?.id === flowId;
+  usePageTitle(loadedMatches && name.trim() ? [t("Flows"), name.trim()] : null);
   const [description, setDescription] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [graph, setGraph] = useState<Graph>({ schemaVersion: 1, nodes: [], edges: [] });

@@ -86,6 +86,13 @@ import {
   type NavItemMeta,
   type PageMeta,
 } from "./lib/console-descriptors";
+import {
+  DocumentTitleProvider,
+  resolveRouteTitle,
+  useDocumentBrand,
+  useRouteDocumentTitle,
+  type RouteDocumentTitle,
+} from "./lib/document-title";
 import type { Bootstrap } from "./lib/types";
 import { theme } from "./theme";
 import Home from "./pages/Home";
@@ -442,6 +449,8 @@ const BUILTIN_PAGES: Record<
   maintenance: { element: <MaintenancePage />, suffix: "/:tab?/:backupTab?" },
 };
 
+const BUILTIN_PAGE_IDS = new Set(Object.keys(BUILTIN_PAGES));
+
 /** Old catalogue bookmarks land in the matching library, query intact (one release). */
 function CatalogRedirect() {
   const location = useLocation();
@@ -472,6 +481,13 @@ function Shell() {
   const remoteSession = boot.authRequired && Boolean(getToken());
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether";
+  useDocumentBrand(serverName);
+  useRouteDocumentTitle(
+    resolveRouteTitle(location.pathname, location.search, navDescriptors, {
+      registryLoading,
+      mountedPageIds: BUILTIN_PAGE_IDS,
+    }),
+  );
   const signOut = () => {
     // End the session on the server too, so a copy cannot outlive
     // sign-out; leave the browser either way.
@@ -733,6 +749,17 @@ function Gate({ onReady }: { onReady: (animation?: boolean, version?: string) =>
     if (error) onReady();
   }, [boot, error, onReady]);
 
+  const gateTitle: RouteDocumentTitle | null =
+    !boot && isStarting(error)
+      ? { matched: true, parts: [t("Starting")] }
+      : !boot
+        ? { matched: true, parts: [] }
+        : boot.authRequired && !boot.authenticated && !unlocked
+          ? { matched: true, parts: [t("Sign in")] }
+          : null;
+  useDocumentBrand(boot?.serverName);
+  useRouteDocumentTitle(gateTitle);
+
   if (!boot && isStarting(error)) return <Startup onReady={() => void loadBoot()} />;
   if (!boot) {
     return (
@@ -794,6 +821,15 @@ function Chrome({ children }: { children: ReactNode }) {
 
 const Me = lazy(() => import("./pages/me/Me"));
 
+function MeScreen() {
+  useRouteDocumentTitle({ matched: true, parts: [t("Approve a TV")] });
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <Me />
+    </Suspense>
+  );
+}
+
 export default function App() {
   const location = useLocation();
   const [ready, setReady] = useState(false);
@@ -828,22 +864,18 @@ export default function App() {
   return (
     <I18nProvider>
       {() => (
-        <ThemeProvider {...theme}>
-          <UiLinkProvider link={RouterAnchor}>
-            <Chrome>
-              {location.pathname === "/me" ? (
-                <Suspense fallback={<PageFallback />}>
-                  <Me />
-                </Suspense>
-              ) : (
-                <Gate onReady={onReady} />
-              )}
-            </Chrome>
-            {location.pathname !== "/me" && animation ? <BrandSplash ready={ready} /> : null}
-            <UpdateReady bootVersion={bootVersion} />
-            <Toaster richColors closeButton position="bottom-right" />
-          </UiLinkProvider>
-        </ThemeProvider>
+        <DocumentTitleProvider>
+          <ThemeProvider {...theme}>
+            <UiLinkProvider link={RouterAnchor}>
+              <Chrome>
+                {location.pathname === "/me" ? <MeScreen /> : <Gate onReady={onReady} />}
+              </Chrome>
+              {location.pathname !== "/me" && animation ? <BrandSplash ready={ready} /> : null}
+              <UpdateReady bootVersion={bootVersion} />
+              <Toaster richColors closeButton position="bottom-right" />
+            </UiLinkProvider>
+          </ThemeProvider>
+        </DocumentTitleProvider>
       )}
     </I18nProvider>
   );

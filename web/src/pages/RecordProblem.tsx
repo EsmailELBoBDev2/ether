@@ -160,6 +160,7 @@ export function RecordProblem({ open, onClose }: { open: boolean; onClose: () =>
       open={open}
       onClose={() => void close()}
       title={t("Record a problem")}
+      documentTitle={t("Record a problem")}
       description={t("One support package for the device you choose. It does not change playback.")}
       size="lg"
       footer={

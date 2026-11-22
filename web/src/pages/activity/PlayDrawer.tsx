@@ -434,6 +434,7 @@ export function PlayDrawer({
       onClose={onClose}
       size="md"
       title={displayTitle}
+      documentTitle={displayTitle}
       description={description}
       subtabs={
         id ? (

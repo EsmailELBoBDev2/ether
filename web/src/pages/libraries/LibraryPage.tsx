@@ -10,6 +10,7 @@ import { LevelBadge } from "../../components/status";
 import { Workspace } from "../../components/workspace";
 import { t } from "../../i18n";
 import { api, ApiError, errorMessage } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { useAsync } from "../../lib/hooks";
 import { isRuleComplete } from "../../lib/rules";
 import { asObj } from "../settings/SchemaForm";
@@ -127,6 +128,16 @@ export function LibraryPage() {
   const id = Number(rawId);
   const library = useAsync((signal) => librariesApi.get(id, signal), [id]);
   const lib = library.data;
+  const activeLib = lib && lib.id === id ? lib : null;
+  const activeTabLabel =
+    rawTab === "rules"
+      ? t("Rules")
+      : rawTab === "tabs"
+        ? t("Tabs")
+        : rawTab === "settings"
+          ? t("Settings")
+          : null;
+  usePageTitle(activeLib ? [t("Libraries"), activeLib.name, activeTabLabel] : null);
   const catalogHealth = health.find((h) => h.id === "catalog");
   const pluginRunning = Boolean(lib?.source === "plugin" && lib.sync?.running);
 

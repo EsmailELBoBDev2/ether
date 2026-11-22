@@ -60,11 +60,15 @@ func (b *Broker) authorizeSubtitleArtifact(ctx context.Context, a frontend.Sessi
 	s = &copied
 	b.mu.Unlock()
 
-	readCtx := core.WithReadRetirement(ctx, tracker)
+	readCtx, cancel := context.WithCancel(ctx)
+	tracker.OnInterrupt(cancel)
+	readCtx = core.WithReadRetirement(readCtx, tracker)
 	if remote, ok := b.deps.Playback.(interface{ Touch(string) }); ok && s.playID != "" {
 		remote.Touch(s.playID)
 	}
 	release := func() {
+		tracker.OnInterrupt(nil)
+		cancel()
 		<-tracker.Seal()
 		b.mu.Lock()
 		if cur := b.sessions[id]; cur != nil {

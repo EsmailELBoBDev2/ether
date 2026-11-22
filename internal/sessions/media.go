@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -17,6 +18,11 @@ import (
 )
 
 func waitReadRetirement(reads []*core.ReadRetirement) {
+	for _, tracker := range reads {
+		if tracker != nil {
+			tracker.Interrupt()
+		}
+	}
 	for _, tracker := range reads {
 		if tracker != nil {
 			<-tracker.Seal()
@@ -724,12 +730,29 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 	live, ok := b.sessions[parts[0]]
 	var tracker *core.ReadRetirement
 	var s *brokerSession
+	var interruptMu sync.Mutex
+	interruptible := false
 	if ok {
 		tracker = &core.ReadRetirement{}
 		live.servingReads = append(live.servingReads, tracker)
 		copied := *live
 		s = &copied
-		r = r.WithContext(core.WithReadRetirement(r.Context(), tracker))
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		// Retirement cuts this response short: cancel its reads and fail a
+		// write blocked on a client that stopped reading. The response
+		// controller is valid only while this handler runs.
+		controller := http.NewResponseController(w)
+		interruptible = true
+		tracker.OnInterrupt(func() {
+			cancel()
+			interruptMu.Lock()
+			defer interruptMu.Unlock()
+			if interruptible {
+				_ = controller.SetWriteDeadline(time.Now())
+			}
+		})
+		r = r.WithContext(core.WithReadRetirement(ctx, tracker))
 	}
 	b.mu.Unlock()
 	if !ok {
@@ -745,6 +768,10 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		return
 	}
 	defer func() {
+		interruptMu.Lock()
+		interruptible = false
+		interruptMu.Unlock()
+		tracker.OnInterrupt(nil)
 		<-tracker.Seal()
 		b.mu.Lock()
 		if cur := b.sessions[parts[0]]; cur != nil {

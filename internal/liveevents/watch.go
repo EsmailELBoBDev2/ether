@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -89,10 +90,13 @@ func guideCandidateFromLiveTV(e livetv.WatchGuideEntry) GuideCandidate {
 		TvgName:       e.TvgName,
 		GuideID:       e.GuideID,
 		IsEventAddon:  e.IsEventAddon,
+		ChannelOnly:   e.ChannelOnly,
 		Title:         e.Programme.Item.Title,
 		EpisodeTitle:  e.Programme.Item.EpisodeTitle,
 		Summary:       e.Programme.Item.Summary,
 		Genres:        slices.Clone(e.Programme.Item.Genres),
+		Start:         e.Programme.Start,
+		End:           e.Programme.End,
 		Live:          e.Live,
 	}
 }
@@ -101,9 +105,10 @@ func guideCandidateFromLiveTV(e livetv.WatchGuideEntry) GuideCandidate {
 // linking), caching forward results per event + guide revision and reverse
 // results per programme + events revision within bounded memory.
 type WatchMatcher struct {
-	guide        GuideSource
-	activeEvents ActiveEventsSource
-	now          func() time.Time
+	guide            GuideSource
+	activeEvents     ActiveEventsSource
+	favoriteEntities func(ctx context.Context, viewer *core.User) ([]string, error)
+	now              func() time.Time
 
 	mu           sync.Mutex
 	watchCap     int
@@ -116,10 +121,11 @@ type WatchMatcher struct {
 
 // WatchMatcherOptions configures a WatchMatcher.
 type WatchMatcherOptions struct {
-	Guide        GuideSource
-	ActiveEvents ActiveEventsSource
-	Now          func() time.Time
-	CacheCap     int
+	Guide            GuideSource
+	ActiveEvents     ActiveEventsSource
+	FavoriteEntities func(ctx context.Context, viewer *core.User) ([]string, error)
+	Now              func() time.Time
+	CacheCap         int
 }
 
 // NewWatchMatcher constructs a bounded, cached A5/A6 matcher.
@@ -133,19 +139,45 @@ func NewWatchMatcher(opts WatchMatcherOptions) *WatchMatcher {
 		capVal = defaultWatchCacheCap
 	}
 	return &WatchMatcher{
-		guide:        opts.Guide,
-		activeEvents: opts.ActiveEvents,
-		now:          nowFn,
-		watchCap:     capVal,
-		watchCache:   make(map[string][]core.WatchTarget),
-		reverseCap:   capVal,
-		reverseCache: make(map[string]*core.LiveEventRef),
+		guide:            opts.Guide,
+		activeEvents:     opts.ActiveEvents,
+		favoriteEntities: opts.FavoriteEntities,
+		now:              nowFn,
+		watchCap:         capVal,
+		watchCache:       make(map[string][]core.WatchTarget),
+		reverseCap:       capVal,
+		reverseCache:     make(map[string]*core.LiveEventRef),
 	}
 }
 
-// WatchTargets resolves where viewer can watch ev (A5).
+const (
+	watchBatchMaxSpan         = 36 * time.Hour
+	watchBatchPrimaryCapGuard = 1800
+)
+
+// eventWatchWindow returns the guide overlap window for ev.
+// Multi-day live tournaments (such as PGA or F1) have ev.Start days earlier,
+// so in-progress/delayed events outside [start-30m, start+4h] anchor around now.
+func eventWatchWindow(ev core.LiveEvent, now time.Time) (time.Time, time.Time, bool) {
+	before := time.Duration(WatchWindowBefore) * time.Second
+	after := time.Duration(WatchWindowAfter) * time.Second
+	start := parseEventTime(ev.Start)
+	if ev.Status.State == core.LiveEventStateIn || ev.Status.State == core.LiveEventStateDelayed {
+		if start.IsZero() || now.After(start.Add(after)) || now.Before(start.Add(-before)) {
+			return now.Add(-before), now.Add(after), true
+		}
+	}
+	if start.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	return start.Add(-before), start.Add(after), true
+}
+
+// WatchTargets resolves playable watch targets for ev (spec A5).
+// External reference links (detail.Links) are intentionally excluded; only
+// Live TV channels, event add-ons, and playable plugin streams are returned.
 // Results are cached per event fingerprint and viewer guide revision.
-func (m *WatchMatcher) WatchTargets(ctx context.Context, ev core.LiveEvent, viewer *core.User, pluginLinks ...core.LiveEventLink) ([]core.WatchTarget, error) {
+func (m *WatchMatcher) WatchTargets(ctx context.Context, ev core.LiveEvent, viewer *core.User) ([]core.WatchTarget, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -158,30 +190,194 @@ func (m *WatchMatcher) WatchTargets(ctx context.Context, ev core.LiveEvent, view
 		guideRev = rev
 	}
 
-	cacheKey := watchCacheKey(ev, pluginLinks, guideRev)
+	cacheKey := watchCacheKey(ev, guideRev)
 	if cached, ok := m.getWatchCached(cacheKey); ok {
 		return cached, nil
 	}
 
 	var candidates []GuideCandidate
-	start := parseEventTime(ev.Start)
-	if m.guide != nil && viewer != nil && !start.IsZero() {
-		winFrom := start.Add(-time.Duration(WatchWindowBefore) * time.Second)
-		winUntil := start.Add(time.Duration(WatchWindowAfter) * time.Second)
-		callsigns := collectEventCallsigns(ev)
-		cands, rev, err := m.guide.WatchCandidates(ctx, viewer, winFrom, winUntil, callsigns)
-		if err != nil {
-			return nil, err
-		}
-		candidates = cands
-		if rev != "" && rev != guideRev {
-			cacheKey = watchCacheKey(ev, pluginLinks, rev)
+	if m.guide != nil && viewer != nil {
+		if winFrom, winUntil, ok := eventWatchWindow(ev, m.now()); ok {
+			callsigns := collectEventCallsigns(ev)
+			cands, rev, err := m.guide.WatchCandidates(ctx, viewer, winFrom, winUntil, callsigns)
+			if err != nil {
+				return nil, err
+			}
+			candidates = cands
+			if rev != "" && rev != guideRev {
+				cacheKey = watchCacheKey(ev, rev)
+			}
 		}
 	}
 
-	targets := matchEventToCandidates(ev, candidates, pluginLinks)
+	targets := matchEventToCandidates(ev, candidates)
 	m.putWatchCached(cacheKey, targets)
 	return slices.Clone(targets), nil
+}
+
+// WatchTargetsBatch resolves playable watch targets for many events with one
+// GuideRevision check and a single bounded guide query for cache-missed events
+// falling within a compact time span.
+func (m *WatchMatcher) WatchTargetsBatch(ctx context.Context, events []core.LiveEvent, viewer *core.User) (map[string][]core.WatchTarget, error) {
+	out := make(map[string][]core.WatchTarget, len(events))
+	if m == nil || len(events) == 0 {
+		return out, nil
+	}
+
+	guideRev := "none"
+	if m.guide != nil {
+		rev, err := m.guide.GuideRevision(ctx, viewer)
+		if err != nil {
+			return nil, err
+		}
+		guideRev = rev
+	}
+
+	type pendingEvent struct {
+		ev       core.LiveEvent
+		cacheKey string
+		winFrom  time.Time
+		winUntil time.Time
+		hasWin   bool
+	}
+
+	now := m.now()
+	seenID := make(map[string]struct{}, len(events))
+	var missed []pendingEvent
+	for _, ev := range events {
+		if _, dup := seenID[ev.ID]; dup {
+			continue
+		}
+		seenID[ev.ID] = struct{}{}
+		ck := watchCacheKey(ev, guideRev)
+		if cached, ok := m.getWatchCached(ck); ok {
+			out[ev.ID] = cached
+			continue
+		}
+		wf, wu, ok := eventWatchWindow(ev, now)
+		missed = append(missed, pendingEvent{
+			ev:       ev,
+			cacheKey: ck,
+			winFrom:  wf,
+			winUntil: wu,
+			hasWin:   ok,
+		})
+	}
+	if len(missed) == 0 {
+		return out, nil
+	}
+
+	if m.guide == nil || viewer == nil {
+		for _, p := range missed {
+			targets := matchEventToCandidates(p.ev, nil)
+			m.putWatchCached(p.cacheKey, targets)
+			out[p.ev.ID] = slices.Clone(targets)
+		}
+		return out, nil
+	}
+
+	// Single bounded union lookup when missed events cluster within watchBatchMaxSpan.
+	var minFrom, maxUntil time.Time
+	var unionCallsigns []string
+	seenCS := make(map[string]struct{})
+	hasWindowed := false
+	for _, p := range missed {
+		if !p.hasWin {
+			continue
+		}
+		if !hasWindowed {
+			minFrom, maxUntil = p.winFrom, p.winUntil
+			hasWindowed = true
+		} else {
+			if p.winFrom.Before(minFrom) {
+				minFrom = p.winFrom
+			}
+			if p.winUntil.After(maxUntil) {
+				maxUntil = p.winUntil
+			}
+		}
+		for _, cs := range collectEventCallsigns(p.ev) {
+			low := strings.ToLower(strings.TrimSpace(cs))
+			if low == "" {
+				continue
+			}
+			if _, ok := seenCS[low]; !ok {
+				seenCS[low] = struct{}{}
+				unionCallsigns = append(unionCallsigns, cs)
+			}
+		}
+	}
+
+	var batchCands []GuideCandidate
+	batchRev := guideRev
+	batchUsable := false
+	if hasWindowed && maxUntil.Sub(minFrom) <= watchBatchMaxSpan {
+		cands, rev, err := m.guide.WatchCandidates(ctx, viewer, minFrom, maxUntil, unionCallsigns)
+		if err != nil {
+			return nil, err
+		}
+		if rev != "" {
+			batchRev = rev
+		}
+		// Only reuse the shared slice when it did not approach the primary
+		// programme cap (ensures huge EPGs never drop any event's window).
+		progCount := 0
+		for _, c := range cands {
+			if !c.ChannelOnly {
+				progCount++
+			}
+		}
+		if progCount < watchBatchPrimaryCapGuard {
+			batchCands = cands
+			batchUsable = true
+		}
+	}
+
+	for _, p := range missed {
+		var cands []GuideCandidate
+		rev := batchRev
+		if p.hasWin {
+			if batchUsable {
+				cands = filterCandidatesForWindow(batchCands, p.winFrom, p.winUntil)
+			} else {
+				var err error
+				cands, rev, err = m.guide.WatchCandidates(ctx, viewer, p.winFrom, p.winUntil, collectEventCallsigns(p.ev))
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		ck := p.cacheKey
+		if rev != "" && rev != guideRev {
+			ck = watchCacheKey(p.ev, rev)
+		}
+		targets := matchEventToCandidates(p.ev, cands)
+		m.putWatchCached(ck, targets)
+		out[p.ev.ID] = slices.Clone(targets)
+	}
+	return out, nil
+}
+
+func filterCandidatesForWindow(all []GuideCandidate, from, until time.Time) []GuideCandidate {
+	if len(all) == 0 {
+		return nil
+	}
+	out := make([]GuideCandidate, 0, len(all))
+	for _, c := range all {
+		if c.ChannelOnly {
+			out = append(out, c)
+			continue
+		}
+		if c.Start.IsZero() && c.End.IsZero() {
+			// Fake/test candidates without timestamps pass through.
+			out = append(out, c)
+			continue
+		}
+		if c.Start.Before(until) && c.End.After(from) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // LiveEventForChannel resolves the live event matching the programme currently
@@ -206,11 +402,30 @@ func (m *WatchMatcher) LiveEventForChannel(ctx context.Context, viewer *core.Use
 	}
 
 	revKey := progKey + "|" + eventsRev
+	var favKeys []string
+	if cand.ChannelOnly && m.favoriteEntities != nil {
+		keys, ferr := m.favoriteEntities(ctx, viewer)
+		if ferr == nil && len(keys) > 0 {
+			favKeys = slices.Clone(keys)
+			slices.Sort(favKeys)
+			h := sha256.New()
+			for _, k := range favKeys {
+				_, _ = io.WriteString(h, k)
+				_, _ = io.WriteString(h, "\x00")
+			}
+			revKey += "|fav:" + hex.EncodeToString(h.Sum(nil)[:8])
+		}
+	}
 	if ref, ok := m.getReverseCached(revKey); ok {
 		return progKey, ref, nil
 	}
 
-	ref := matchProgrammeToEvents(*cand, events)
+	var ref *core.LiveEventRef
+	if cand.ChannelOnly {
+		ref = matchChannelOnlyToEvents(*cand, events, favKeys)
+	} else {
+		ref = matchProgrammeToEvents(*cand, events)
+	}
 	m.putReverseCached(revKey, ref)
 	return progKey, cloneLiveEventRef(ref), nil
 }
@@ -298,7 +513,7 @@ func collectEventCallsigns(ev core.LiveEvent) []string {
 	return out
 }
 
-func watchCacheKey(ev core.LiveEvent, links []core.LiveEventLink, guideRev string) string {
+func watchCacheKey(ev core.LiveEvent, guideRev string) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "id=%s|rev=%s|start=%s|state=%s|title=%s|cat=%s|lg=%s:%s",
 		ev.ID, guideRev, ev.Start, ev.Status.State, ev.Title, ev.Category, ev.League.Name, ev.League.Abbr)
@@ -315,9 +530,6 @@ func watchCacheKey(ev core.LiveEvent, links []core.LiveEventLink, guideRev strin
 		for _, cs := range ev.MatchHints.Callsigns {
 			_, _ = fmt.Fprintf(h, "|cs=%s", cs)
 		}
-	}
-	for _, l := range links {
-		_, _ = fmt.Fprintf(h, "|l=%s:%s", l.Label, l.URL)
 	}
 	return hex.EncodeToString(h.Sum(nil)[:16])
 }

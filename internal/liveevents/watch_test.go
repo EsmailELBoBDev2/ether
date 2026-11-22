@@ -82,6 +82,10 @@ func TestWatchScoringChannelAddonPluginAndFalsePositives(t *testing.T) {
 		Broadcasts: []core.LiveEventBroadcast{
 			{Name: "Net 2", Kind: "tv"},
 			{Name: "Radio Net", Kind: "radio"},
+			// Playable HLS broadcast URL -> allowed as kind "plugin".
+			{Name: "Direct Stream", Kind: "stream", URL: "https://stream.example.invalid/e1.m3u8"},
+			// Informational ESPN web page -> must NOT appear in watch[].
+			{Name: "Commentary", Kind: "stream", URL: "https://www.espn.com/soccer/commentary/_/gameId/123"},
 		},
 		MatchHints: &core.LiveEventMatchHints{
 			Terms:     []string{"North Wolves", "Wolves", "NW", "South Hawks", "Hawks", "SH"},
@@ -121,13 +125,9 @@ func TestWatchScoringChannelAddonPluginAndFalsePositives(t *testing.T) {
 		},
 	}
 
-	links := []core.LiveEventLink{
-		{Label: "Plugin Stream", URL: "https://stream.example.invalid/e1"},
-	}
-
-	targets := matchEventToCandidates(ev, cands, links)
+	targets := matchEventToCandidates(ev, cands)
 	if len(targets) != 3 {
-		t.Fatalf("expected 3 targets (channel, addon, plugin), got %d: %+v", len(targets), targets)
+		t.Fatalf("expected 3 targets (channel, addon, playable plugin stream), got %d: %+v", len(targets), targets)
 	}
 	if targets[0].ChannelID != "ch-exact" || targets[0].Kind != core.WatchTargetKindChannel {
 		t.Fatalf("top target = %+v, want ch-exact channel", targets[0])
@@ -135,8 +135,8 @@ func TestWatchScoringChannelAddonPluginAndFalsePositives(t *testing.T) {
 	if targets[1].ChannelID != "ch-addon-ok" || targets[1].Kind != core.WatchTargetKindAddon {
 		t.Fatalf("second target = %+v, want ch-addon-ok addon", targets[1])
 	}
-	if targets[2].Kind != core.WatchTargetKindPlugin || targets[2].URL != "https://stream.example.invalid/e1" {
-		t.Fatalf("third target = %+v, want plugin stream link", targets[2])
+	if targets[2].Kind != core.WatchTargetKindPlugin || targets[2].URL != "https://stream.example.invalid/e1.m3u8" {
+		t.Fatalf("third target = %+v, want playable stream URL", targets[2])
 	}
 }
 
@@ -311,5 +311,451 @@ func TestWatchMatcherIntegrationWithLiveTVService(t *testing.T) {
 	progKey, ref, err := matcher.LiveEventForChannel(ctx, viewer, "ch-sports-1")
 	if err != nil || progKey == "" || ref == nil || ref.ID != ev.ID || ref.Feed != ev.Feed {
 		t.Fatalf("LiveEventForChannel integration = (%q, %+v, %v), want %s", progKey, ref, err, ev.ID)
+	}
+}
+
+func TestWatchMatchingRealisticGuideTitles(t *testing.T) {
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+	cases := []struct {
+		name      string
+		event     core.LiveEvent
+		candidate GuideCandidate
+	}{
+		{
+			name: "NFL Football: Giants at Eagles",
+			event: core.LiveEvent{
+				ID:       "org.ether.sports:sports:nfl-1",
+				Feed:     "sports",
+				Category: "football",
+				League:   core.LiveEventLeague{ID: "nfl", Name: "NFL", Abbr: "NFL"},
+				Start:    now,
+				Status:   core.LiveEventStatus{State: core.LiveEventStateIn},
+				Competitors: []core.LiveEventCompetitor{
+					{ID: "nfl-19", Name: "New York Giants", Short: "Giants", Abbr: "NYG"},
+					{ID: "nfl-21", Name: "Philadelphia Eagles", Short: "Eagles", Abbr: "PHI", Home: true},
+				},
+				Broadcasts: []core.LiveEventBroadcast{{Name: "FOX", Kind: "tv"}},
+				MatchHints: &core.LiveEventMatchHints{
+					Terms:     []string{"New York Giants", "Giants", "NYG", "Philadelphia Eagles", "Eagles", "PHI"},
+					Callsigns: []string{"FOX"},
+				},
+			},
+			candidate: GuideCandidate{
+				ChannelID: "ch-fox", ChannelName: "FOX", ChannelNumber: "134",
+				Title: "NFL Football: Giants at Eagles", Genres: []string{"Sports"}, Live: true,
+			},
+		},
+		{
+			name: "Premier League: Liverpool v Arsenal",
+			event: core.LiveEvent{
+				ID:       "org.ether.sports:sports:epl-1",
+				Feed:     "sports",
+				Category: "soccer",
+				League:   core.LiveEventLeague{ID: "epl", Name: "Premier League", Abbr: "EPL"},
+				Start:    now,
+				Status:   core.LiveEventStatus{State: core.LiveEventStateIn},
+				Competitors: []core.LiveEventCompetitor{
+					{ID: "epl-364", Name: "Liverpool", Short: "Liverpool", Abbr: "LIV"},
+					{ID: "epl-359", Name: "Arsenal", Short: "Arsenal", Abbr: "ARS", Home: true},
+				},
+				Broadcasts: []core.LiveEventBroadcast{{Name: "USA Net", Kind: "tv"}},
+				MatchHints: &core.LiveEventMatchHints{
+					Terms:     []string{"Liverpool", "LIV", "Arsenal", "ARS"},
+					Callsigns: []string{"USA Net", "USA Network"},
+				},
+			},
+			candidate: GuideCandidate{
+				ChannelID: "ch-usa", ChannelName: "USA Network", ChannelNumber: "138",
+				Title: "Premier League: Liverpool v Arsenal", Live: true,
+			},
+		},
+		{
+			name: "Formula 1: Las Vegas Grand Prix (sponsor-prefixed event title)",
+			event: core.LiveEvent{
+				ID:         "org.ether.sports:sports:f1-600057449",
+				Feed:       "sports",
+				Category:   "motorsport",
+				League:     core.LiveEventLeague{ID: "f1", Name: "Formula 1", Abbr: "F1"},
+				Title:      "Heineken Las Vegas Grand Prix",
+				Start:      now,
+				Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+				Ranking:    []core.LiveEventRankRow{{Pos: 1, Name: "Max Verstappen", Abbr: "VER"}},
+				Broadcasts: []core.LiveEventBroadcast{{Name: "Sky Sports F1", Kind: "tv"}},
+				MatchHints: &core.LiveEventMatchHints{
+					Terms:     []string{"Max Verstappen", "VER", "Formula 1", "F1", "Heineken Las Vegas Grand Prix"},
+					Callsigns: []string{"Sky Sports F1"},
+				},
+			},
+			candidate: GuideCandidate{
+				ChannelID: "ch-skyf1", ChannelName: "Sky Sports F1", ChannelNumber: "113",
+				Title: "Formula 1: Las Vegas Grand Prix", Live: true,
+			},
+		},
+		{
+			name: "NBA Basketball: Celtics at Knicks",
+			event: core.LiveEvent{
+				ID:       "org.ether.sports:sports:nba-1",
+				Feed:     "sports",
+				Category: "basketball",
+				League:   core.LiveEventLeague{ID: "nba", Name: "NBA", Abbr: "NBA"},
+				Start:    now,
+				Status:   core.LiveEventStatus{State: core.LiveEventStatePre},
+				Competitors: []core.LiveEventCompetitor{
+					{ID: "nba-2", Name: "Boston Celtics", Short: "Celtics", Abbr: "BOS"},
+					{ID: "nba-18", Name: "New York Knicks", Short: "Knicks", Abbr: "NYK", Home: true},
+				},
+				Broadcasts: []core.LiveEventBroadcast{{Name: "ESPN", Kind: "tv"}},
+				MatchHints: &core.LiveEventMatchHints{
+					Terms:     []string{"Boston Celtics", "Celtics", "BOS", "New York Knicks", "Knicks", "NYK"},
+					Callsigns: []string{"ESPN"},
+				},
+			},
+			candidate: GuideCandidate{
+				ChannelID: "ch-espn", ChannelName: "ESPN", ChannelNumber: "139",
+				Title: "NBA Basketball: Celtics at Knicks", Genres: []string{"Sports"}, Live: false,
+			},
+		},
+		{
+			name: "Live: prefix on matching broadcast channel without EPG genres",
+			event: core.LiveEvent{
+				ID:       "org.ether.sports:sports:epl-2",
+				Feed:     "sports",
+				Category: "soccer",
+				League:   core.LiveEventLeague{ID: "epl", Name: "Premier League", Abbr: "EPL"},
+				Start:    now,
+				Status:   core.LiveEventStatus{State: core.LiveEventStateIn},
+				Competitors: []core.LiveEventCompetitor{
+					{ID: "epl-360", Name: "Manchester United", Short: "Man Utd", Abbr: "MAN"},
+					{ID: "epl-364", Name: "Liverpool", Short: "Liverpool", Abbr: "LIV", Home: true},
+				},
+				Broadcasts: []core.LiveEventBroadcast{{Name: "USA Net", Kind: "tv"}},
+				MatchHints: &core.LiveEventMatchHints{
+					Terms:     []string{"Manchester United", "Liverpool"},
+					Callsigns: []string{"USA Net", "USA Network"},
+				},
+			},
+			candidate: GuideCandidate{
+				ChannelID: "ch-usa", ChannelName: "USA Network", ChannelNumber: "138",
+				Title: "Live: Premier League Football", Live: true,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			targets := matchEventToCandidates(tc.event, []GuideCandidate{tc.candidate})
+			if len(targets) != 1 || targets[0].ChannelID != tc.candidate.ChannelID {
+				t.Fatalf("got targets %+v, want match on %s", targets, tc.candidate.ChannelID)
+			}
+		})
+	}
+}
+
+func TestWatchCallsignMappingWithoutEPGAndBatchLookup(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	ltv, err := livetv.New(livetv.Options{DB: db, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("livetv.New: %v", err)
+	}
+	defer ltv.Close()
+
+	// Realistic IPTV lineup without EPG guides (mirrors real lab channels),
+	// including lookalike sister channels that must NOT falsely match.
+	lineup := []livetv.Channel{
+		{ID: "ch-cbs", Number: "132", Name: "CBS", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/cbs.m3u8"},
+		{ID: "ch-fox", Number: "134", Name: "FOX", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/fox.m3u8"},
+		{ID: "ch-foxnews", Number: "150", Name: "Fox News", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/foxnews.m3u8"},
+		{ID: "ch-nbc", Number: "133", Name: "NBC", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/nbc.m3u8"},
+		{ID: "ch-cnbc", Number: "151", Name: "CNBC", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/cnbc.m3u8"},
+		{ID: "ch-abc", Number: "131", Name: "ABC", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/abc.m3u8"},
+		{ID: "ch-abcau", Number: "152", Name: "ABC Australia", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/abcau.m3u8"},
+		{ID: "ch-tnt", Number: "137", Name: "TNT", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/tnt.m3u8"},
+		{ID: "ch-tntsp1", Number: "115", Name: "TNT Sports 1", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/tntsp1.m3u8"},
+		{ID: "ch-tntsp2", Number: "116", Name: "TNT Sports 2", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/tntsp2.m3u8"},
+		{ID: "ch-usa", Number: "138", Name: "USA Network", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/usa.m3u8"},
+		{ID: "ch-espn", Number: "139", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/espn.m3u8"},
+		{ID: "ch-espn2", Number: "140", Name: "ESPN2", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/espn2.m3u8"},
+		{ID: "ch-fs1", Number: "141", Name: "FS1", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/fs1.m3u8"},
+		{ID: "ch-golf", Number: "505", Name: "Golf Channel", Kind: "iptv", Enabled: true, SourceID: "iptv2", StreamURL: "https://ex/golf.m3u8"},
+		{ID: "ch-bein", Number: "501", Name: "beIN Sports", Kind: "iptv", Enabled: true, SourceID: "iptv2", StreamURL: "https://ex/bein.m3u8"},
+		{ID: "ch-skymain", Number: "111", Name: "Sky Sports Main Event", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/skymain.m3u8"},
+		{ID: "ch-skypl", Number: "112", Name: "Sky Sports Premier League", Kind: "iptv", Enabled: true, SourceID: "iptv1", StreamURL: "https://ex/skypl.m3u8"},
+		{ID: "ch-peacock", Number: "510", Name: "Peacock", Kind: "iptv", Enabled: true, SourceID: "iptv2", StreamURL: "https://ex/peacock.m3u8"},
+	}
+	for _, ch := range lineup {
+		cb, _ := json.Marshal(ch)
+		if _, err := db.ExecContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`, ch.ID, string(cb)); err != nil {
+			t.Fatalf("insert channel %s: %v", ch.ID, err)
+		}
+	}
+
+	matcher := NewWatchMatcher(WatchMatcherOptions{
+		Guide: NewLiveTVGuideSource(ltv),
+		Now:   func() time.Time { return now },
+	})
+	viewer := &core.User{ID: 7}
+
+	events := []core.LiveEvent{
+		{
+			ID: "org.ether.sports:sports:nfl-fox", Feed: "sports", Start: now.Add(time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "Fox", Kind: "tv"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"Fox", "FOX"}},
+		},
+		{
+			ID: "org.ether.sports:sports:fs1-alias", Feed: "sports", Start: now.Add(time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "FOX Sports 1", Kind: "tv"}},
+		},
+		{
+			ID: "org.ether.sports:sports:epl-usa", Feed: "sports", Start: now.Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "USA", Kind: "tv"}},
+		},
+		{
+			// Multi-day PGA tournament started 3 days ago, currently live on Golf Channel.
+			ID: "org.ether.sports:sports:pga-live", Feed: "sports", Start: now.Add(-72 * time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "Golf Chnl", Kind: "tv"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"Golf Chnl", "Golf Channel"}},
+		},
+		{
+			ID: "org.ether.sports:sports:nba-tnt", Feed: "sports", Start: now.Add(2 * time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "TNT", Kind: "tv"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"TNT"}},
+		},
+		{
+			ID: "org.ether.sports:sports:uk-tnt1", Feed: "sports", Start: now.Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "TNT Sports 1", Kind: "tv"}},
+		},
+		{
+			ID: "org.ether.sports:sports:espn-game", Feed: "sports", Start: now.Add(2 * time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "ESPN", Kind: "tv"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"ESPN"}},
+		},
+		{
+			ID: "org.ether.sports:sports:espn2-game", Feed: "sports", Start: now.Add(2 * time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "ESPN2", Kind: "tv"}},
+		},
+		{
+			// Peacock is a streaming app (not a linear TV channel): must match ONLY NBC, never Peacock.
+			ID: "org.ether.sports:sports:nbc-peacock", Feed: "sports", Start: now.Add(2 * time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "NBC", Kind: "tv"}, {Name: "Peacock", Kind: "stream"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"NBC", "Peacock"}},
+		},
+		{
+			// Peacock-only event must produce ZERO guide-free linear TV watch targets.
+			ID: "org.ether.sports:sports:peacock-only", Feed: "sports", Start: now.Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "Peacock", Kind: "stream"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"Peacock"}},
+		},
+		{
+			ID: "org.ether.sports:sports:sky-main", Feed: "sports", Start: now.Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "Sky Sports Main Event", Kind: "tv"}},
+		},
+		{
+			ID: "org.ether.sports:sports:sky-pl", Feed: "sports", Start: now.Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "Sky Sports Premier League", Kind: "tv"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"Sky Sports Premier League"}},
+		},
+		{
+			// Completed game must NOT emit callsign-only channel fallback.
+			ID: "org.ether.sports:sports:nfl-post", Feed: "sports", Start: now.Add(-5 * time.Hour).Format(time.RFC3339),
+			Status:     core.LiveEventStatus{State: core.LiveEventStatePost},
+			Broadcasts: []core.LiveEventBroadcast{{Name: "CBS", Kind: "tv"}},
+			MatchHints: &core.LiveEventMatchHints{Callsigns: []string{"CBS"}},
+		},
+	}
+
+	batch, err := matcher.WatchTargetsBatch(ctx, events, viewer)
+	if err != nil {
+		t.Fatalf("WatchTargetsBatch: %v", err)
+	}
+
+	expectExact := func(evID string, wantIDs ...string) {
+		t.Helper()
+		got := batch[evID]
+		if len(got) != len(wantIDs) {
+			t.Fatalf("%s: got %d targets %+v, want %v", evID, len(got), got, wantIDs)
+		}
+		for i, want := range wantIDs {
+			if got[i].ChannelID != want {
+				t.Fatalf("%s[%d] = %s, want %s (all=%+v)", evID, i, got[i].ChannelID, want, got)
+			}
+			if got[i].Confidence >= 0.68 {
+				t.Fatalf("%s[%d] guide-free confidence %.2f should be lower than EPG guide match", evID, i, got[i].Confidence)
+			}
+		}
+	}
+
+	expectExact("org.ether.sports:sports:nfl-fox", "ch-fox")   // NOT Fox News or FS1!
+	expectExact("org.ether.sports:sports:fs1-alias", "ch-fs1") // FOX Sports 1 <-> FS1, NOT FOX!
+	expectExact("org.ether.sports:sports:epl-usa", "ch-usa")   // USA <-> USA Network!
+	expectExact("org.ether.sports:sports:pga-live", "ch-golf")
+	if !batch["org.ether.sports:sports:pga-live"][0].Live {
+		t.Fatalf("live PGA Golf Channel target should have Live=true")
+	}
+	expectExact("org.ether.sports:sports:nba-tnt", "ch-tnt")      // NOT TNT Sports 1!
+	expectExact("org.ether.sports:sports:uk-tnt1", "ch-tntsp1")   // NOT TNT or TNT Sports 2!
+	expectExact("org.ether.sports:sports:espn-game", "ch-espn")   // NOT ESPN2!
+	expectExact("org.ether.sports:sports:espn2-game", "ch-espn2") // NOT ESPN!
+	expectExact("org.ether.sports:sports:nbc-peacock", "ch-nbc")  // NBC only; Peacock excluded!
+	expectExact("org.ether.sports:sports:peacock-only")           // Peacock is NOT a linear channel!
+	expectExact("org.ether.sports:sports:sky-main", "ch-skymain") // NOT Sky Sports Premier League!
+	expectExact("org.ether.sports:sports:sky-pl", "ch-skypl")     // NOT Sky Sports Main Event!
+	expectExact("org.ether.sports:sports:nfl-post")               // finished game -> no callsign-only fallback
+}
+
+func TestLiveEventForChannelGuideFreeFallbackAndFavoriteTieBreak(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	ltv, err := livetv.New(livetv.Options{DB: db, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("livetv.New: %v", err)
+	}
+	defer ltv.Close()
+
+	for _, ch := range []livetv.Channel{
+		{ID: "ch-usa", Number: "138", Name: "USA Network", Kind: "iptv", Enabled: true, SourceID: "iptv1", GuideID: "strong-38", StreamURL: "https://ex/usa.m3u8"},
+		{ID: "ch-espn", Number: "139", Name: "ESPN", Kind: "iptv", Enabled: true, SourceID: "iptv1", GuideID: "strong-39", StreamURL: "https://ex/espn.m3u8"},
+		{ID: "ch-espn2", Number: "140", Name: "ESPN2", Kind: "iptv", Enabled: true, SourceID: "iptv1", GuideID: "strong-40", StreamURL: "https://ex/espn2.m3u8"},
+		{ID: "ch-fox", Number: "134", Name: "FOX", Kind: "iptv", Enabled: true, SourceID: "iptv1", GuideID: "strong-34", StreamURL: "https://ex/fox.m3u8"},
+		{ID: "ch-fs1", Number: "141", Name: "FS1", Kind: "iptv", Enabled: true, SourceID: "iptv1", GuideID: "strong-41", StreamURL: "https://ex/fs1.m3u8"},
+		{ID: "ch-nbc", Number: "133", Name: "NBC", Kind: "iptv", Enabled: true, SourceID: "iptv1", GuideID: "strong-33", StreamURL: "https://ex/nbc.m3u8"},
+	} {
+		cb, _ := json.Marshal(ch)
+		if _, err := db.ExecContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`, ch.ID, string(cb)); err != nil {
+			t.Fatalf("insert channel: %v", err)
+		}
+	}
+
+	evUSALive := core.LiveEvent{
+		ID: "org.ether.sports:sports:epl-1", Feed: "sports", Start: now.Format(time.RFC3339),
+		Status:      core.LiveEventStatus{State: core.LiveEventStateIn},
+		Competitors: []core.LiveEventCompetitor{{ID: "364", Name: "Liverpool", EntityID: "epl-364"}, {ID: "359", Name: "Arsenal", EntityID: "epl-359", Home: true}},
+		Broadcasts:  []core.LiveEventBroadcast{{Name: "USA", Kind: "tv"}},
+	}
+	evUSAPre := core.LiveEvent{
+		ID: "org.ether.sports:sports:epl-2", Feed: "sports", Start: now.Add(2 * time.Hour).Format(time.RFC3339),
+		Status:     core.LiveEventStatus{State: core.LiveEventStatePre},
+		Broadcasts: []core.LiveEventBroadcast{{Name: "USA Network", Kind: "tv"}},
+	}
+	// Two live regional NFL games airing simultaneously on FOX.
+	evFOX1 := core.LiveEvent{
+		ID: "org.ether.sports:sports:nfl-1", Feed: "sports", Start: now.Format(time.RFC3339),
+		Status:      core.LiveEventStatus{State: core.LiveEventStateIn},
+		Competitors: []core.LiveEventCompetitor{{ID: "19", Name: "Giants", EntityID: "nfl-19"}, {ID: "21", Name: "Eagles", EntityID: "nfl-21", Home: true}},
+		Broadcasts:  []core.LiveEventBroadcast{{Name: "FOX", Kind: "tv"}},
+	}
+	evFOX2 := core.LiveEvent{
+		ID: "org.ether.sports:sports:nfl-2", Feed: "sports", Start: now.Format(time.RFC3339),
+		Status:      core.LiveEventStatus{State: core.LiveEventStateIn},
+		Competitors: []core.LiveEventCompetitor{{ID: "6", Name: "Cowboys", EntityID: "nfl-6"}, {ID: "9", Name: "Packers", EntityID: "nfl-9", Home: true}},
+		Broadcasts:  []core.LiveEventBroadcast{{Name: "FOX", Kind: "tv"}},
+	}
+	evFS1 := core.LiveEvent{
+		ID: "org.ether.sports:sports:mls-1", Feed: "sports", Start: now.Format(time.RFC3339),
+		Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+		Broadcasts: []core.LiveEventBroadcast{{Name: "FOX Sports 1", Kind: "tv"}},
+	}
+	evESPN2 := core.LiveEvent{
+		ID: "org.ether.sports:sports:nba-2", Feed: "sports", Start: now.Format(time.RFC3339),
+		Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+		Broadcasts: []core.LiveEventBroadcast{{Name: "ESPN2", Kind: "tv"}},
+	}
+	evPeacock := core.LiveEvent{
+		ID: "org.ether.sports:sports:epl-3", Feed: "sports", Start: now.Format(time.RFC3339),
+		Status:     core.LiveEventStatus{State: core.LiveEventStateIn},
+		Broadcasts: []core.LiveEventBroadcast{{Name: "Peacock", Kind: "stream"}},
+	}
+
+	favsByViewer := map[int64][]string{
+		1: nil,                                                                           // no favourites
+		2: {"org.ether.sports:sports:team:nfl-21"},                                       // Eagles -> resolves FOX ambiguity to nfl-1!
+		3: {"org.ether.sports:sports:team:nfl-21", "org.ether.sports:sports:team:nfl-9"}, // both FOX games favourited -> ambiguous -> nil!
+	}
+
+	matcher := NewWatchMatcher(WatchMatcherOptions{
+		Guide: NewLiveTVGuideSource(ltv),
+		ActiveEvents: &fakeActiveEvents{
+			events: []core.LiveEvent{evUSALive, evUSAPre, evFOX1, evFOX2, evFS1, evESPN2, evPeacock},
+			rev:    "r1",
+		},
+		FavoriteEntities: func(_ context.Context, u *core.User) ([]string, error) {
+			return favsByViewer[u.ID], nil
+		},
+		Now: func() time.Time { return now },
+	})
+
+	// 1. Single live event on USA Network (ignoring pre-game evUSAPre) -> linked!
+	progKey, ref, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-usa")
+	if err != nil || progKey == "" || ref == nil || ref.ID != evUSALive.ID {
+		t.Fatalf("ch-usa = (%q, %+v, %v), want %s", progKey, ref, err, evUSALive.ID)
+	}
+
+	// 2. ESPN2 live event links ch-espn2, NOT ch-espn!
+	_, refESPN2, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-espn2")
+	if err != nil || refESPN2 == nil || refESPN2.ID != evESPN2.ID {
+		t.Fatalf("ch-espn2 = (%+v, %v), want %s", refESPN2, err, evESPN2.ID)
+	}
+	_, refESPN, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-espn")
+	if err != nil || refESPN != nil {
+		t.Fatalf("ch-espn = (%+v, %v), want nil (must not match ESPN2)", refESPN, err)
+	}
+
+	// 3. FOX Sports 1 links ch-fs1 (not confused with FOX).
+	_, refFS1, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-fs1")
+	if err != nil || refFS1 == nil || refFS1.ID != evFS1.ID {
+		t.Fatalf("ch-fs1 = (%+v, %v), want %s", refFS1, err, evFS1.ID)
+	}
+
+	// 4. Two live events on FOX:
+	//    - Viewer 1 (no favs) -> nil
+	//    - Viewer 2 (1 fav in nfl-1) -> nfl-1
+	//    - Viewer 3 (favs in BOTH nfl-1 and nfl-2) -> nil
+	_, refFOX1, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-fox")
+	if err != nil || refFOX1 != nil {
+		t.Fatalf("ch-fox viewer 1 (ambiguous, no favs) = (%+v, %v), want nil", refFOX1, err)
+	}
+	_, refFOX2, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 2}, "ch-fox")
+	if err != nil || refFOX2 == nil || refFOX2.ID != evFOX1.ID {
+		t.Fatalf("ch-fox viewer 2 (single fav tie-break) = (%+v, %v), want %s", refFOX2, err, evFOX1.ID)
+	}
+	_, refFOX3, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 3}, "ch-fox")
+	if err != nil || refFOX3 != nil {
+		t.Fatalf("ch-fox viewer 3 (both favs -> still ambiguous) = (%+v, %v), want nil", refFOX3, err)
+	}
+	// Verify Viewer 1 cache stays isolated from Viewer 2.
+	_, refFOX1Again, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-fox")
+	if err != nil || refFOX1Again != nil {
+		t.Fatalf("ch-fox viewer 1 re-read leaked viewer 2 fav: (%+v, %v)", refFOX1Again, err)
+	}
+
+	// 5. NBC with only a Peacock-streamed live event -> nil.
+	_, refNBC, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-nbc")
+	if err != nil || refNBC != nil {
+		t.Fatalf("ch-nbc = (%+v, %v), want nil", refNBC, err)
 	}
 }

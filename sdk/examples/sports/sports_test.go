@@ -52,8 +52,8 @@ func loadFixtureMap(t *testing.T) map[string]string {
 		"basketball/nba/scoreboard":              read("scoreboard-nba.json"),
 		"hockey/nhl/scoreboard":                  read("scoreboard-nhl.json"),
 		"soccer/eng.1/scoreboard":                read("scoreboard-epl.json"),
-		"racing/f1/scoreboard":                   read("scoreboard-f1.json"),
-		"golf/pga/scoreboard":                    read("scoreboard-pga.json"),
+		"racing/leaderboard?league=f1":           read("scoreboard-f1.json"),
+		"golf/leaderboard?league=pga":            read("scoreboard-pga.json"),
 		"mma/ufc/scoreboard":                     read("scoreboard-ufc.json"),
 		"football/nfl/summary?event=401873066":   read("summary-nfl.json"),
 		"basketball/nba/summary?event=401910023": read("summary-nba.json"),
@@ -98,6 +98,8 @@ func TestCompileAndRunInQuickJS(t *testing.T) {
 		withEvent := u.Path
 		if ev := u.Query().Get("event"); ev != "" {
 			withEvent += "?event=" + ev
+		} else if lg := u.Query().Get("league"); lg != "" {
+			withEvent += "?league=" + lg
 		}
 		for suffix, body := range fixtures {
 			if strings.HasSuffix(withEvent, suffix) || strings.HasSuffix(u.Path, suffix) {

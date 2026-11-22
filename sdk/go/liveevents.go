@@ -53,11 +53,12 @@ type LiveEventCompetitor struct {
 
 // LiveEventRankRow describes one leaderboard row for N-competitor events.
 type LiveEventRankRow struct {
-	Pos      int    `json:"pos"`
-	Name     string `json:"name"`
-	Abbr     string `json:"abbr,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	EntityID string `json:"entityId,omitempty"`
+	Pos       int    `json:"pos"`
+	Name      string `json:"name"`
+	Abbr      string `json:"abbr,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Secondary string `json:"secondary,omitempty"`
+	EntityID  string `json:"entityId,omitempty"`
 }
 
 // LiveEventProbability holds an optional live outcome probability (0..1).
@@ -90,7 +91,7 @@ type LiveEvent struct {
 	Title       string                `json:"title,omitempty"`
 	Start       string                `json:"start"`
 	Status      LiveEventStatus       `json:"status"`
-	Competitors []LiveEventCompetitor `json:"competitors,omitempty"`
+	Competitors []LiveEventCompetitor `json:"competitors"`
 	Ranking     []LiveEventRankRow    `json:"ranking,omitempty"`
 	Situation   map[string]string     `json:"situation,omitempty"`
 	Probability *LiveEventProbability `json:"probability,omitempty"`
@@ -253,6 +254,11 @@ func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []str
 		if res.Events == nil {
 			res.Events = []LiveEvent{}
 		}
+		for i := range res.Events {
+			if res.Events[i].Competitors == nil {
+				res.Events[i].Competitors = []LiveEventCompetitor{}
+			}
+		}
 		return okJSON(res, http.StatusOK)
 
 	case len(tail) == 2 && tail[0] == "events" && tail[1] != "":
@@ -260,6 +266,17 @@ func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []str
 		res, err := prov.EventDetail(pctx, LiveEventDetailRequest{Feed: feed, ID: id})
 		if err != nil {
 			return toRouteErrorResponse(err)
+		}
+		if res.Competitors == nil {
+			res.Competitors = []LiveEventCompetitor{}
+		}
+		for i := range res.Tables {
+			if res.Tables[i].Columns == nil {
+				res.Tables[i].Columns = []string{}
+			}
+			if res.Tables[i].Rows == nil {
+				res.Tables[i].Rows = [][]string{}
+			}
 		}
 		return okJSON(res, http.StatusOK)
 
@@ -296,6 +313,14 @@ func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []str
 		}
 		if res.Tables == nil {
 			res.Tables = []LiveEventTable{}
+		}
+		for i := range res.Tables {
+			if res.Tables[i].Columns == nil {
+				res.Tables[i].Columns = []string{}
+			}
+			if res.Tables[i].Rows == nil {
+				res.Tables[i].Rows = [][]string{}
+			}
 		}
 		return okJSON(res, http.StatusOK)
 	}

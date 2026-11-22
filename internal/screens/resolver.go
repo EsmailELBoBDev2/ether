@@ -149,18 +149,26 @@ func (s *Service) Resolve(ctx context.Context, viewer *core.User, req ResolveReq
 
 	hub, watch := s.deps()
 	rc := &resolveContext{
-		ctx:        ctx,
-		viewer:     viewer,
-		pluginID:   sc.PluginID,
-		hub:        hub,
-		watch:      watch,
-		favorites:  favSet,
-		now:        now,
-		day:        selectedDay,
-		reqLeague:  strings.TrimSpace(req.League),
-		eventCache: map[eventCacheKey][]core.LiveEvent{},
-		watchCache: map[string][]core.LiveEventWatchTarget{},
+		ctx:            ctx,
+		viewer:         viewer,
+		pluginID:       sc.PluginID,
+		hub:            hub,
+		watch:          watch,
+		favorites:      favSet,
+		now:            now,
+		day:            selectedDay,
+		reqLeague:      strings.TrimSpace(req.League),
+		eventCache:     map[eventCacheKey][]core.LiveEvent{},
+		standingsCache: map[standingsCacheKey][]core.LiveEventTable{},
+		entitiesCache:  map[entitiesCacheKey][]core.LiveEventEntity{},
+		watchCache:     map[string][]core.LiveEventWatchTarget{},
+		screenLeagues:  map[string][]core.LiveEventLeague{},
 	}
+
+	if err := rc.prefetch(sc); err != nil {
+		return ResolvedScreen{}, err
+	}
+	rc.prefetchWatchTargets()
 
 	sections := make([]ResolvedSection, 0, len(sc.Sections))
 	usedIDs := map[string]bool{}
@@ -256,18 +264,242 @@ type eventCacheKey struct {
 	league string
 }
 
+type standingsCacheKey struct {
+	feed   string
+	league string
+}
+
+type entitiesCacheKey struct {
+	feed   string
+	kind   string
+	league string
+}
+
 type resolveContext struct {
-	ctx        context.Context
-	viewer     *core.User
-	pluginID   string
-	hub        LiveFeedHub
-	watch      WatchTargetResolver
-	favorites  *favoriteSet
-	now        time.Time
-	day        time.Time
-	reqLeague  string
-	eventCache map[eventCacheKey][]core.LiveEvent
-	watchCache map[string][]core.LiveEventWatchTarget
+	ctx            context.Context
+	viewer         *core.User
+	pluginID       string
+	hub            LiveFeedHub
+	watch          WatchTargetResolver
+	favorites      *favoriteSet
+	now            time.Time
+	day            time.Time
+	reqLeague      string
+	mu             sync.Mutex
+	eventCache     map[eventCacheKey][]core.LiveEvent
+	standingsCache map[standingsCacheKey][]core.LiveEventTable
+	entitiesCache  map[entitiesCacheKey][]core.LiveEventEntity
+	watchCache     map[string][]core.LiveEventWatchTarget
+	screenLeagues  map[string][]core.LiveEventLeague
+}
+
+// prefetch runs independent hub requests (events, standings, and known-league
+// entities) concurrently before section assembly so screen latency is bounded
+// by the slowest single plugin call rather than the sum of all sections.
+func (rc *resolveContext) prefetch(sc DeclaredScreen) error {
+	if rc.hub == nil {
+		return nil
+	}
+
+	type eventTask struct {
+		feed   string
+		from   time.Time
+		to     time.Time
+		league string
+	}
+	type standingsTask struct {
+		feed   string
+		league string
+	}
+	type entitiesTask struct {
+		feed   string
+		kind   string
+		league string
+	}
+
+	seenEvents := map[eventCacheKey]bool{}
+	seenStandings := map[standingsCacheKey]bool{}
+	seenEntities := map[entitiesCacheKey]bool{}
+	var eventTasks []eventTask
+	var standingsTasks []standingsTask
+	var entitiesTasks []entitiesTask
+
+	declaredFirstLeague := map[string]string{}
+	for _, sec := range sc.Sections {
+		if sec.Type == "leagues" && len(sec.Leagues) > 0 {
+			feed := sectionFeedHint(sec, sc.DefaultFeed)
+			if _, ok := declaredFirstLeague[feed]; !ok {
+				declaredFirstLeague[feed] = strings.TrimSpace(sec.Leagues[0].ID)
+			}
+		}
+	}
+
+	addEvent := func(feed string, from, to time.Time, league string) {
+		if feed == "" {
+			return
+		}
+		k := eventCacheKey{
+			feed:   feed,
+			from:   from.UTC().Unix(),
+			to:     to.UTC().Unix(),
+			league: strings.ToLower(strings.TrimSpace(league)),
+		}
+		if seenEvents[k] {
+			return
+		}
+		seenEvents[k] = true
+		eventTasks = append(eventTasks, eventTask{feed: feed, from: from, to: to, league: strings.TrimSpace(league)})
+	}
+
+	for _, sec := range sc.Sections {
+		feed := sectionFeedHint(sec, sc.DefaultFeed)
+		if feed == "" {
+			continue
+		}
+		league := rc.effectiveLeague(sec)
+		switch sec.Type {
+		case "leagues":
+			from, to := windowRange(rc.now, "today", nil)
+			addEvent(feed, from, to, "")
+		case "hero":
+			window := "today"
+			if sec.Query != nil && sec.Query.Window != "" {
+				window = sec.Query.Window
+			}
+			from, to := windowRange(rc.now, window, nil)
+			addEvent(feed, from, to, league)
+		case "events":
+			if sec.Query != nil && sec.Query.Favorites && !rc.favorites.hasAnyForFeed(rc.pluginID, feed) {
+				continue
+			}
+			window := "today"
+			var states []string
+			if sec.Query != nil {
+				if sec.Query.Window != "" {
+					window = sec.Query.Window
+				}
+				states = sec.Query.State
+			}
+			from, to := windowRange(rc.now, window, states)
+			addEvent(feed, from, to, league)
+		case "schedule":
+			addEvent(feed, rc.day, rc.day.Add(24*time.Hour), league)
+		case "table":
+			sk := standingsCacheKey{feed: feed, league: strings.ToLower(strings.TrimSpace(league))}
+			if !seenStandings[sk] {
+				seenStandings[sk] = true
+				standingsTasks = append(standingsTasks, standingsTask{feed: feed, league: strings.TrimSpace(league)})
+			}
+		case "entities":
+			targetLeague := league
+			if targetLeague == "" {
+				targetLeague = declaredFirstLeague[feed]
+			}
+			if targetLeague != "" {
+				kind := sec.EntityKind
+				if kind == "" {
+					kind = sc.EntityKind
+				}
+				if kind == "" {
+					kind = "team"
+				}
+				ek := entitiesCacheKey{feed: feed, kind: kind, league: strings.ToLower(targetLeague)}
+				if !seenEntities[ek] {
+					seenEntities[ek] = true
+					entitiesTasks = append(entitiesTasks, entitiesTask{feed: feed, kind: kind, league: targetLeague})
+				}
+			}
+		}
+	}
+
+	total := len(eventTasks) + len(standingsTasks) + len(entitiesTasks)
+	if total <= 1 {
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
+
+	for _, t := range eventTasks {
+		wg.Add(1)
+		go func(task eventTask) {
+			defer wg.Done()
+			if _, err := rc.fetchEvents(task.feed, task.from, task.to, task.league); err != nil {
+				recordErr(err)
+			}
+		}(t)
+	}
+	for _, t := range standingsTasks {
+		wg.Add(1)
+		go func(task standingsTask) {
+			defer wg.Done()
+			if _, err := rc.fetchStandings(task.feed, task.league); err != nil {
+				recordErr(err)
+			}
+		}(t)
+	}
+	for _, t := range entitiesTasks {
+		wg.Add(1)
+		go func(task entitiesTask) {
+			defer wg.Done()
+			if _, err := rc.fetchLeagueEntities(task.feed, task.kind, task.league); err != nil {
+				recordErr(err)
+			}
+		}(t)
+	}
+
+	wg.Wait()
+	return firstErr
+}
+
+// prefetchWatchTargets populates rc.watchCache for all prefetched events in a
+// single batched lookup when the WatchTargetResolver supports batching.
+func (rc *resolveContext) prefetchWatchTargets() {
+	if rc.watch == nil {
+		return
+	}
+	batch, ok := rc.watch.(BatchWatchTargetResolver)
+	if !ok {
+		return
+	}
+	seen := map[string]bool{}
+	var all []core.LiveEvent
+	rc.mu.Lock()
+	for _, list := range rc.eventCache {
+		for _, ev := range list {
+			if ev.ID == "" || seen[ev.ID] {
+				continue
+			}
+			seen[ev.ID] = true
+			all = append(all, ev)
+		}
+	}
+	rc.mu.Unlock()
+	if len(all) == 0 {
+		return
+	}
+	res, err := batch.WatchTargetsBatch(rc.ctx, rc.viewer, all)
+	if err != nil {
+		return
+	}
+	for _, ev := range all {
+		targets := res[ev.ID]
+		if targets == nil {
+			targets = []core.LiveEventWatchTarget{}
+		}
+		rc.watchCache[ev.ID] = targets
+	}
 }
 
 func (rc *resolveContext) fetchEvents(feed string, from, to time.Time, league string) ([]core.LiveEvent, error) {
@@ -280,7 +512,10 @@ func (rc *resolveContext) fetchEvents(feed string, from, to time.Time, league st
 		to:     to.UTC().Unix(),
 		league: strings.ToLower(strings.TrimSpace(league)),
 	}
-	if cached, ok := rc.eventCache[key]; ok {
+	rc.mu.Lock()
+	cached, ok := rc.eventCache[key]
+	rc.mu.Unlock()
+	if ok {
 		return cached, nil
 	}
 	events, err := rc.hub.Events(rc.ctx, rc.viewer, EventQuery{
@@ -293,11 +528,83 @@ func (rc *resolveContext) fetchEvents(feed string, from, to time.Time, league st
 	if err != nil {
 		return nil, err
 	}
+	rc.mu.Lock()
 	rc.eventCache[key] = events
+	rc.mu.Unlock()
 	return events, nil
 }
 
+func (rc *resolveContext) fetchStandings(feed, league string) ([]core.LiveEventTable, error) {
+	if rc.hub == nil || feed == "" {
+		return []core.LiveEventTable{}, nil
+	}
+	key := standingsCacheKey{feed: feed, league: strings.ToLower(strings.TrimSpace(league))}
+	rc.mu.Lock()
+	cached, ok := rc.standingsCache[key]
+	rc.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+	tables, err := rc.hub.Standings(rc.ctx, rc.viewer, rc.pluginID, feed, league)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrNotAvailable) {
+			empty := []core.LiveEventTable{}
+			rc.mu.Lock()
+			rc.standingsCache[key] = empty
+			rc.mu.Unlock()
+			return empty, nil
+		}
+		return nil, err
+	}
+	if tables == nil {
+		tables = []core.LiveEventTable{}
+	}
+	rc.mu.Lock()
+	rc.standingsCache[key] = tables
+	rc.mu.Unlock()
+	return tables, nil
+}
+
+func (rc *resolveContext) fetchLeagueEntities(feed, kind, league string) ([]core.LiveEventEntity, error) {
+	if rc.hub == nil || feed == "" {
+		return []core.LiveEventEntity{}, nil
+	}
+	key := entitiesCacheKey{feed: feed, kind: kind, league: strings.ToLower(strings.TrimSpace(league))}
+	rc.mu.Lock()
+	cached, ok := rc.entitiesCache[key]
+	rc.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+	raw, err := rc.hub.Entities(rc.ctx, rc.viewer, EntityQuery{
+		PluginID: rc.pluginID,
+		Feed:     feed,
+		Kind:     kind,
+		League:   strings.TrimSpace(league),
+	})
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrNotAvailable) {
+			empty := []core.LiveEventEntity{}
+			rc.mu.Lock()
+			rc.entitiesCache[key] = empty
+			rc.mu.Unlock()
+			return empty, nil
+		}
+		return nil, err
+	}
+	if raw == nil {
+		raw = []core.LiveEventEntity{}
+	}
+	rc.mu.Lock()
+	rc.entitiesCache[key] = raw
+	rc.mu.Unlock()
+	return raw, nil
+}
+
 func (rc *resolveContext) resolveEvent(ev core.LiveEvent, feed, entityKind string) ResolvedEvent {
+	if ev.Competitors == nil {
+		ev.Competitors = []core.LiveEventCompetitor{}
+	}
 	var targets []core.LiveEventWatchTarget
 	if rc.watch != nil {
 		if cached, ok := rc.watchCache[ev.ID]; ok {
@@ -425,6 +732,12 @@ func (rc *resolveContext) resolveEvents(out ResolvedSection, sec plugins.ScreenS
 			window = sec.Query.Window
 		}
 		states = sec.Query.State
+		// Skip multi-day favourite queries entirely when the viewer has no
+		// favourited entities in this feed (avoids unnecessary 7-day fetches).
+		if sec.Query.Favorites && !rc.favorites.hasAnyForFeed(rc.pluginID, feed) {
+			out.Events = []ResolvedEvent{}
+			return out, nil
+		}
 	}
 	from, to := windowRange(rc.now, window, states)
 	raw, err := rc.fetchEvents(feed, from, to, league)
@@ -454,20 +767,12 @@ func (rc *resolveContext) resolveEvents(out ResolvedSection, sec plugins.ScreenS
 }
 
 func (rc *resolveContext) resolveTable(out ResolvedSection, feed, league string) (ResolvedSection, error) {
-	out.Tables = []core.LiveEventTable{}
-	if rc.hub == nil || feed == "" {
-		return out, nil
-	}
-	tables, err := rc.hub.Standings(rc.ctx, rc.viewer, rc.pluginID, feed, league)
+	tables, err := rc.fetchStandings(feed, league)
 	if err != nil {
-		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrNotAvailable) {
-			return out, nil
-		}
+		out.Tables = []core.LiveEventTable{}
 		return out, err
 	}
-	if tables != nil {
-		out.Tables = tables
-	}
+	out.Tables = tables
 	return out, nil
 }
 
@@ -588,28 +893,125 @@ func (rc *resolveContext) resolveLeagues(out ResolvedSection, sec plugins.Screen
 	}
 	out.Leagues = chips
 	out.Selected = selected
+	rc.screenLeagues[feed] = chips
 	return out, nil
 }
 
+// resolveEntities bounds the inline entities section payload to the viewer's
+// favourites plus the selected league's entities (or the screen's first league
+// when none is selected). Frontends page other leagues via /live/entities?league=.
 func (rc *resolveContext) resolveEntities(out ResolvedSection, feed, entityKind, league string) (ResolvedSection, error) {
 	out.Entities = []ResolvedEntity{}
 	if rc.hub == nil || feed == "" {
 		return out, nil
 	}
-	raw, err := rc.hub.Entities(rc.ctx, rc.viewer, EntityQuery{
-		PluginID: rc.pluginID,
-		Feed:     feed,
-		Kind:     entityKind,
-		League:   league,
-	})
-	if err != nil {
-		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrNotAvailable) {
-			return out, nil
+
+	var leagueRaw []core.LiveEventEntity
+	var err error
+	if league != "" {
+		leagueRaw, err = rc.fetchLeagueEntities(feed, entityKind, league)
+		if err != nil {
+			return out, err
 		}
-		return out, err
+	} else {
+		// No league explicitly selected: use the first league on the screen.
+		// If that league has no entities of this kind (e.g. an individual
+		// sport with no teams), try the first league whose today events have
+		// team/competitor entities so the picker starts populated.
+		candidates := rc.defaultEntityLeagueCandidates(feed)
+		for _, candLeague := range candidates {
+			rows, ferr := rc.fetchLeagueEntities(feed, entityKind, candLeague)
+			if ferr != nil {
+				return out, ferr
+			}
+			if len(rows) > 0 {
+				leagueRaw = rows
+				break
+			}
+		}
 	}
-	out.Entities = annotateEntities(raw, rc.pluginID, feed, entityKind, rc.favorites)
+
+	// Merge any viewer-favourited entities for this feed/kind not already in the
+	// selected league without pulling the full catalogue.
+	merged := make([]core.LiveEventEntity, 0, len(leagueRaw))
+	seenID := make(map[string]bool, len(leagueRaw))
+	for _, e := range leagueRaw {
+		seenID[e.ID] = true
+	}
+
+	favIDs := rc.favorites.localIDs(rc.pluginID, feed, entityKind)
+	var missingFavIDs []string
+	missingSet := map[string]bool{}
+	for _, id := range favIDs {
+		if !seenID[id] && len(missingFavIDs) < 100 {
+			missingFavIDs = append(missingFavIDs, id)
+			missingSet[id] = true
+		}
+	}
+	if len(missingFavIDs) > 0 {
+		favRaw, ferr := rc.hub.Entities(rc.ctx, rc.viewer, EntityQuery{
+			PluginID: rc.pluginID,
+			Feed:     feed,
+			Kind:     entityKind,
+			IDs:      missingFavIDs,
+		})
+		if ferr != nil && !errors.Is(ferr, core.ErrNotFound) && !errors.Is(ferr, core.ErrNotAvailable) {
+			return out, ferr
+		}
+		for _, e := range favRaw {
+			if !missingSet[e.ID] || seenID[e.ID] {
+				continue
+			}
+			seenID[e.ID] = true
+			merged = append(merged, e)
+		}
+	}
+	merged = append(merged, leagueRaw...)
+	out.Entities = annotateEntities(merged, rc.pluginID, feed, entityKind, rc.favorites)
 	return out, nil
+}
+
+func (rc *resolveContext) defaultEntityLeagueCandidates(feed string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		low := strings.ToLower(id)
+		if low == "" || seen[low] {
+			return
+		}
+		seen[low] = true
+		out = append(out, id)
+	}
+
+	// Start with the first league declared/discovered on the screen.
+	leagues := rc.screenLeagues[feed]
+	if len(leagues) > 0 {
+		add(leagues[0].ID)
+	}
+
+	// If that league is an individual/ranking sport with zero teams, prefer the
+	// first league on today's slate that actually has competitor entities.
+	from, to := windowRange(rc.now, "today", nil)
+	key := eventCacheKey{feed: feed, from: from.UTC().Unix(), to: to.UTC().Unix(), league: ""}
+	rc.mu.Lock()
+	todayEvents := rc.eventCache[key]
+	rc.mu.Unlock()
+	for _, ev := range todayEvents {
+		if len(ev.Competitors) > 0 && ev.League.ID != "" {
+			add(ev.League.ID)
+			if len(out) >= 3 {
+				break
+			}
+		}
+	}
+	for _, lg := range leagues {
+		add(lg.ID)
+		if len(out) >= 4 {
+			break
+		}
+	}
+	return out
 }
 
 func (rc *resolveContext) filterEvents(raw []core.LiveEvent, feed, entityKind string, q *plugins.ScreenEventQuery, league string, from, to time.Time, window string) []core.LiveEvent {
@@ -815,14 +1217,16 @@ func annotateEntities(raw []core.LiveEventEntity, pluginID, feedID, fallbackKind
 }
 
 type favoriteSet struct {
-	full   map[string]bool
-	byFeed map[string]map[string]bool // "pluginID:feed" -> { "kind:id", "id" }
+	full       map[string]bool
+	byFeed     map[string]map[string]bool // "pluginID:feed" -> { "kind:id", "id" }
+	byFeedKind map[string][]string        // "pluginID:feed:kind" -> local entity IDs
 }
 
 func newFavoriteSet() *favoriteSet {
 	return &favoriteSet{
-		full:   map[string]bool{},
-		byFeed: map[string]map[string]bool{},
+		full:       map[string]bool{},
+		byFeed:     map[string]map[string]bool{},
+		byFeedKind: map[string][]string{},
 	}
 }
 
@@ -834,6 +1238,9 @@ func (f *favoriteSet) add(rawKey string) {
 	if !ok {
 		return
 	}
+	if f.full[rawKey] {
+		return
+	}
 	f.full[rawKey] = true
 	scope := parsed.PluginID + ":" + parsed.Feed
 	m := f.byFeed[scope]
@@ -843,6 +1250,28 @@ func (f *favoriteSet) add(rawKey string) {
 	}
 	m[parsed.Kind+":"+parsed.ID] = true
 	m[parsed.ID] = true
+	kindScope := scope + ":" + parsed.Kind
+	f.byFeedKind[kindScope] = append(f.byFeedKind[kindScope], parsed.ID)
+}
+
+func (f *favoriteSet) hasAnyForFeed(pluginID, feed string) bool {
+	if f == nil || len(f.full) == 0 {
+		return false
+	}
+	return len(f.byFeed[pluginID+":"+feed]) > 0
+}
+
+func (f *favoriteSet) localIDs(pluginID, feed, entityKind string) []string {
+	if f == nil || len(f.full) == 0 {
+		return nil
+	}
+	ids := f.byFeedKind[pluginID+":"+feed+":"+entityKind]
+	if len(ids) == 0 {
+		return nil
+	}
+	out := slices.Clone(ids)
+	sort.Strings(out)
+	return out
 }
 
 func (f *favoriteSet) hasKey(rawKey string) bool {

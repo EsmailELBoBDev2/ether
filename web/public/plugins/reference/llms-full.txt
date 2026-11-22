@@ -3253,6 +3253,7 @@ type LiveEventCompetitor struct {
 | `name` | `string` | emitted (validation may require a value) |  |
 | `abbr` | `string` | may be omitted (see validation for conditions) |  |
 | `detail` | `string` | may be omitted (see validation for conditions) |  |
+| `secondary` | `string` | may be omitted (see validation for conditions) |  |
 | `entityId` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -3262,11 +3263,12 @@ type LiveEventCompetitor struct {
 // LiveEventRankRow describes one leaderboard row for N-competitor events
 // (such as motorsport or tournament leaderboards).
 type LiveEventRankRow struct {
-	Pos      int    `json:"pos"`
-	Name     string `json:"name"`
-	Abbr     string `json:"abbr,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	EntityID string `json:"entityId,omitempty"`
+	Pos       int    `json:"pos"`
+	Name      string `json:"name"`
+	Abbr      string `json:"abbr,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Secondary string `json:"secondary,omitempty"`
+	EntityID  string `json:"entityId,omitempty"`
 }
 ``````
 
@@ -3373,7 +3375,7 @@ type LiveEventWatchTarget struct {
 | `title` | `string` | may be omitted (see validation for conditions) |  |
 | `start` | `string` | emitted (validation may require a value) | RFC3339 |
 | `status` | `LiveEventStatus` | emitted (validation may require a value) |  |
-| `competitors` | `[]LiveEventCompetitor` | may be omitted (see validation for conditions) |  |
+| `competitors` | `[]LiveEventCompetitor` | emitted (validation may require a value) |  |
 | `ranking` | `[]LiveEventRankRow` | may be omitted (see validation for conditions) |  |
 | `situation` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `probability` | `*LiveEventProbability` | may be omitted (see validation for conditions) |  |
@@ -3398,7 +3400,7 @@ type LiveEvent struct {
 	Title       string                 `json:"title,omitempty"`
 	Start       string                 `json:"start"` // RFC3339
 	Status      LiveEventStatus        `json:"status"`
-	Competitors []LiveEventCompetitor  `json:"competitors,omitempty"`
+	Competitors []LiveEventCompetitor  `json:"competitors"`
 	Ranking     []LiveEventRankRow     `json:"ranking,omitempty"`
 	Situation   map[string]string      `json:"situation,omitempty"`
 	Probability *LiveEventProbability  `json:"probability,omitempty"`
@@ -3411,6 +3413,21 @@ type LiveEvent struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEvent.MarshalJSON
+
+``````
+// MarshalJSON guarantees spec-required array fields (competitors) encode as []
+// rather than null or omitted.
+func (e LiveEvent) MarshalJSON() ([]byte, error) {
+	type wire LiveEvent
+	cp := wire(e)
+	if cp.Competitors == nil {
+		cp.Competitors = []LiveEventCompetitor{}
+	}
+	return json.Marshal(cp)
+}
+``````
+
 ## Source: internal/core/liveevent.go#LiveEvent.Clone
 
 ``````
@@ -3418,8 +3435,10 @@ type LiveEvent struct {
 // without mutating shared cached state.
 func (e LiveEvent) Clone() LiveEvent {
 	out := e
-	if e.Competitors != nil {
+	if len(e.Competitors) > 0 {
 		out.Competitors = append([]LiveEventCompetitor(nil), e.Competitors...)
+	} else {
+		out.Competitors = []LiveEventCompetitor{}
 	}
 	if e.Ranking != nil {
 		out.Ranking = append([]LiveEventRankRow(nil), e.Ranking...)
@@ -3475,22 +3494,45 @@ type LiveEventTable struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEventTable.MarshalJSON
+
+``````
+// MarshalJSON guarantees columns and rows encode as [] rather than null.
+func (t LiveEventTable) MarshalJSON() ([]byte, error) {
+	type wire LiveEventTable
+	cp := wire(t)
+	if cp.Columns == nil {
+		cp.Columns = []string{}
+	}
+	if cp.Rows == nil {
+		cp.Rows = [][]string{}
+	}
+	return json.Marshal(cp)
+}
+``````
+
 ## Source: internal/core/liveevent.go#LiveEventTable.Clone
 
 ``````
 // Clone returns a deep copy of t.
 func (t LiveEventTable) Clone() LiveEventTable {
 	out := LiveEventTable{Title: t.Title}
-	if t.Columns != nil {
+	if len(t.Columns) > 0 {
 		out.Columns = append([]string(nil), t.Columns...)
+	} else {
+		out.Columns = []string{}
 	}
-	if t.Rows != nil {
+	if len(t.Rows) > 0 {
 		out.Rows = make([][]string, len(t.Rows))
 		for i, row := range t.Rows {
-			if row != nil {
+			if len(row) > 0 {
 				out.Rows[i] = append([]string(nil), row...)
+			} else {
+				out.Rows[i] = []string{}
 			}
 		}
+	} else {
+		out.Rows = [][]string{}
 	}
 	return out
 }
@@ -3671,6 +3713,34 @@ type LiveEventDetail struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEventDetail.MarshalJSON
+
+``````
+// MarshalJSON preserves embedded LiveEvent fields while guaranteeing
+// spec-required array fields (competitors) encode as [].
+func (d LiveEventDetail) MarshalJSON() ([]byte, error) {
+	type liveEventAlias LiveEvent
+	type wire struct {
+		liveEventAlias
+		Tables            []LiveEventTable            `json:"tables,omitempty"`
+		Plays             []LiveEventPlay             `json:"plays,omitempty"`
+		ProbabilitySeries []LiveEventProbabilityPoint `json:"probabilitySeries,omitempty"`
+		Links             []LiveEventLink             `json:"links,omitempty"`
+	}
+	base := liveEventAlias(d.LiveEvent)
+	if base.Competitors == nil {
+		base.Competitors = []LiveEventCompetitor{}
+	}
+	return json.Marshal(wire{
+		liveEventAlias:    base,
+		Tables:            d.Tables,
+		Plays:             d.Plays,
+		ProbabilitySeries: d.ProbabilitySeries,
+		Links:             d.Links,
+	})
+}
+``````
+
 ## Source: internal/core/liveevent.go#LiveEventDetail.Clone
 
 ``````
@@ -3716,6 +3786,20 @@ func (d LiveEventDetail) Clone() LiveEventDetail {
 type LiveEventsResponse struct {
 	Events      []LiveEvent `json:"events"`
 	NextPollSec int         `json:"nextPollSec,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventsResponse.MarshalJSON
+
+``````
+// MarshalJSON guarantees events encodes as [] rather than null.
+func (r LiveEventsResponse) MarshalJSON() ([]byte, error) {
+	type wire LiveEventsResponse
+	cp := wire(r)
+	if cp.Events == nil {
+		cp.Events = []LiveEvent{}
+	}
+	return json.Marshal(cp)
 }
 ``````
 
@@ -3770,6 +3854,20 @@ type LiveEventEntitiesResponse struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEventEntitiesResponse.MarshalJSON
+
+``````
+// MarshalJSON guarantees entities encodes as [] rather than null.
+func (r LiveEventEntitiesResponse) MarshalJSON() ([]byte, error) {
+	type wire LiveEventEntitiesResponse
+	cp := wire(r)
+	if cp.Entities == nil {
+		cp.Entities = []LiveEventEntity{}
+	}
+	return json.Marshal(cp)
+}
+``````
+
 ## Source: internal/core/liveevent.go#LiveEventStandingsResponse.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -3783,6 +3881,20 @@ type LiveEventEntitiesResponse struct {
 // LiveEventStandingsResponse is returned by GET /ether/v1/live/{feed}/standings.
 type LiveEventStandingsResponse struct {
 	Tables []LiveEventTable `json:"tables"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventStandingsResponse.MarshalJSON
+
+``````
+// MarshalJSON guarantees tables encodes as [] rather than null.
+func (r LiveEventStandingsResponse) MarshalJSON() ([]byte, error) {
+	type wire LiveEventStandingsResponse
+	cp := wire(r)
+	if cp.Tables == nil {
+		cp.Tables = []LiveEventTable{}
+	}
+	return json.Marshal(cp)
 }
 ``````
 
@@ -45683,7 +45795,7 @@ export function normalizeRegion(raw: unknown): string {
 export interface RawEspnGeoBroadcast {
   type?: { shortName?: string; id?: string };
   market?: { type?: string };
-  media?: { shortName?: string; name?: string };
+  media?: { shortName?: string; name?: string; callLetters?: string };
   region?: string;
 }
 
@@ -45691,12 +45803,12 @@ export interface RawEspnBroadcast {
   market?: string;
   names?: string[];
   type?: { shortName?: string };
-  media?: { shortName?: string; name?: string };
+  media?: { shortName?: string; name?: string; callLetters?: string };
   region?: string;
 }
 
 const STREAM_NAME_RE =
-  /espn\+|peacock|paramount\+|prime video|amazon prime|apple tv|dazn|fubo|netflix|hulu|max\b|nfl\+|nba league pass|mls season pass|mlb\.tv|vict\+|stan sport|discovery\+|viaplay|youtube|streaming/i;
+  /espn\+|peacock|paramount\+|prime video|amazon prime|apple tv|dazn|fubo|fandango|netflix|hulu|max\b|nfl\+|nba league pass|mls season pass|mlb\.tv|vict\+|stan sport|discovery\+|viaplay|youtube|streaming/i;
 
 const RADIO_NAME_RE = /radio|sirius|xm\b|westwood one|talksport/i;
 
@@ -45720,34 +45832,72 @@ function classifyBroadcastKind(
 }
 
 const CALLSIGN_EXPANSIONS: Record<string, string[]> = {
+  "usa": ["USA Network", "USA"],
   "usa net": ["USA Network", "USA"],
+  "usa network": ["USA Network", "USA"],
   "golf chnl": ["Golf Channel"],
+  "golf channel": ["Golf Channel"],
+  "tennis chnl": ["Tennis Channel"],
+  "tennis channel": ["Tennis Channel"],
   "nhl net": ["NHL Network"],
   "nfl net": ["NFL Network"],
   "mlb net": ["MLB Network"],
   "fox": ["FOX"],
+  "fox dep": ["FOX Deportes"],
   "cbs": ["CBS"],
   "nbc": ["NBC"],
+  "nbc sports": ["NBC Sports"],
   "abc": ["ABC"],
   "tnt": ["TNT"],
   "tbs": ["TBS"],
   "fs1": ["FS1", "FOX Sports 1"],
+  "fox sports 1": ["FOX Sports 1", "FS1"],
   "fs2": ["FS2", "FOX Sports 2"],
+  "fox sports 2": ["FOX Sports 2", "FS2"],
   "cbssn": ["CBS Sports Network"],
   "espn": ["ESPN"],
   "espn2": ["ESPN2"],
   "espnu": ["ESPNU"],
   "espn+": ["ESPN+"],
+  "espn dep": ["ESPN Deportes"],
+  "espn deportes": ["ESPN Deportes"],
   "tru": ["truTV"],
   "trutv": ["truTV"],
   "nbatv": ["NBA TV"],
   "nba tv": ["NBA TV"],
+  "secn": ["SEC Network"],
+  "sec network": ["SEC Network"],
+  "accn": ["ACC Network"],
+  "acc network": ["ACC Network"],
+  "btn": ["Big Ten Network"],
+  "big ten network": ["Big Ten Network"],
+  "cw": ["The CW", "CW"],
+  "the cw": ["The CW", "CW"],
   "tele": ["Telemundo"],
+  "telemundo": ["Telemundo"],
   "uni": ["Univision"],
-  "tsn": ["TSN"],
-  "sn": ["Sportsnet"],
-  "sportsnet": ["Sportsnet"],
-  "sky": ["Sky Sports"],
+  "univ": ["Univision"],
+  "universo": ["Universo"],
+  "fdsn": ["FanDuel Sports Network"],
+  "fanduel": ["FanDuel Sports Network"],
+  "bein": ["beIN Sports"],
+  "bein sports": ["beIN Sports"],
+  "dazn": ["DAZN", "DAZN 1"],
+  "tsn": ["TSN", "TSN 1"],
+  "sn": ["Sportsnet", "Sportsnet One"],
+  "sportsnet": ["Sportsnet", "Sportsnet One"],
+  "sky": ["Sky Sports", "Sky Sports Main Event"],
+  "sky sports": ["Sky Sports", "Sky Sports Main Event"],
+  "sky sports main event": ["Sky Sports Main Event"],
+  "sky sports pl": ["Sky Sports Premier League"],
+  "sky sports premier league": ["Sky Sports Premier League"],
+  "sky sports f1": ["Sky Sports F1"],
+  "sky sports golf": ["Sky Sports Golf"],
+  "sky sports football": ["Sky Sports Football"],
+  "tnt sports": ["TNT Sports 1", "TNT Sports 2"],
+  "tnt sports 1": ["TNT Sports 1"],
+  "tnt sports 2": ["TNT Sports 2"],
+  "eurosport": ["Eurosport 1"],
   "prime video": ["Prime Video", "Amazon Prime"],
   "peacock": ["Peacock"],
   "apple tv": ["Apple TV", "Apple TV+"],
@@ -45811,8 +45961,8 @@ export function extractBroadcasts(
 
   if (Array.isArray(broadcasts)) {
     for (const b of broadcasts) {
-      if (b?.media?.shortName || b?.media?.name) {
-        const name = b.media.shortName || b.media.name || "";
+      if (b?.media?.shortName || b?.media?.name || b?.media?.callLetters) {
+        const name = b.media.shortName || b.media.name || b.media.callLetters || "";
         push(name, classifyBroadcastKind(name, b.type?.shortName), b.region);
       }
       if (Array.isArray(b?.names)) {
@@ -45855,8 +46005,18 @@ export function buildMatchHints(
   const termSeen = new Set<string>();
   const addTerm = (value?: string) => {
     if (!value) return;
-    const clean = value.trim();
+    let clean = value.trim().replace(/\s+/g, " ");
     if (!clean) return;
+    // Collapse accidental doubled phrases like "Real Sociedad Real Sociedad".
+    const words = clean.split(" ");
+    if (words.length >= 2 && words.length % 2 === 0) {
+      const half = words.length / 2;
+      const left = words.slice(0, half).join(" ");
+      const right = words.slice(half).join(" ");
+      if (left.toLowerCase() === right.toLowerCase()) {
+        clean = left;
+      }
+    }
     const key = clean.toLowerCase();
     if (termSeen.has(key)) return;
     termSeen.add(key);
@@ -45868,10 +46028,20 @@ export function buildMatchHints(
       addTerm(t.displayName);
       addTerm(t.shortDisplayName);
       addTerm(t.name);
-      if (t.location && t.name) {
-        addTerm(`${t.location} ${t.name}`);
+      const loc = t.location?.trim();
+      const name = t.name?.trim();
+      if (loc && name) {
+        const locLow = loc.toLowerCase();
+        const nameLow = name.toLowerCase();
+        if (
+          locLow !== nameLow &&
+          !nameLow.includes(locLow) &&
+          !locLow.includes(nameLow)
+        ) {
+          addTerm(`${loc} ${name}`);
+        }
       }
-      addTerm(t.location);
+      addTerm(loc);
       addTerm(t.abbreviation);
     }
   }
@@ -46065,7 +46235,7 @@ export const DEFAULT_LEAGUES: readonly LeagueConfig[] = [
   {
     id: "laliga",
     name: "La Liga",
-    abbr: "LAL",
+    abbr: "La Liga",
     category: "soccer",
     espnSport: "soccer",
     espnLeague: "esp.1",
@@ -46076,12 +46246,12 @@ export const DEFAULT_LEAGUES: readonly LeagueConfig[] = [
     supportsStandings: true,
     regulationPeriods: 2,
     defaultLogo: "https://a.espncdn.com/i/leaguelogos/soccer/500/15.png",
-    aliases: ["laliga", "esp.1", "la-liga", "la_liga"],
+    aliases: ["laliga", "lal", "esp.1", "la-liga", "la_liga"],
   },
   {
     id: "bundesliga",
     name: "Bundesliga",
-    abbr: "BUN",
+    abbr: "Bundesliga",
     category: "soccer",
     espnSport: "soccer",
     espnLeague: "ger.1",
@@ -46092,12 +46262,12 @@ export const DEFAULT_LEAGUES: readonly LeagueConfig[] = [
     supportsStandings: true,
     regulationPeriods: 2,
     defaultLogo: "https://a.espncdn.com/i/leaguelogos/soccer/500/10.png",
-    aliases: ["bundesliga", "ger.1"],
+    aliases: ["bundesliga", "bun", "ger.1"],
   },
   {
     id: "seriea",
     name: "Serie A",
-    abbr: "SA",
+    abbr: "Serie A",
     category: "soccer",
     espnSport: "soccer",
     espnLeague: "ita.1",
@@ -46108,12 +46278,12 @@ export const DEFAULT_LEAGUES: readonly LeagueConfig[] = [
     supportsStandings: true,
     regulationPeriods: 2,
     defaultLogo: "https://a.espncdn.com/i/leaguelogos/soccer/500/12.png",
-    aliases: ["seriea", "ita.1", "serie-a", "serie_a"],
+    aliases: ["seriea", "sa", "ita.1", "serie-a", "serie_a"],
   },
   {
     id: "ligue1",
     name: "Ligue 1",
-    abbr: "L1",
+    abbr: "Ligue 1",
     category: "soccer",
     espnSport: "soccer",
     espnLeague: "fra.1",
@@ -46124,7 +46294,7 @@ export const DEFAULT_LEAGUES: readonly LeagueConfig[] = [
     supportsStandings: true,
     regulationPeriods: 2,
     defaultLogo: "https://a.espncdn.com/i/leaguelogos/soccer/500/9.png",
-    aliases: ["ligue1", "fra.1", "ligue-1", "ligue_1"],
+    aliases: ["ligue1", "l1", "fra.1", "ligue-1", "ligue_1"],
   },
   {
     id: "ucl",
@@ -46664,7 +46834,7 @@ export function createSportsHandler(
         return jsonResponse(200, detail);
       }
 
-      // GET /ether/v1/live/sports/entities?kind=team&league=&q=
+      // GET /ether/v1/live/sports/entities?kind=team&league=&q=&ids=
       if (path === `${FEED_PREFIX}/entities` && method === "GET") {
         const kind = queryParam(query, "kind") || "team";
         const leagueParams = queryList(query, "league");
@@ -46676,12 +46846,28 @@ export function createSportsHandler(
             `Unknown league: ${resolved.unknown.join(", ")}`,
           );
         }
+        const ids = queryList(query, "ids").map((raw) => {
+          const colon = raw.lastIndexOf(":");
+          return colon >= 0 ? raw.slice(colon + 1) : raw;
+        });
+        let targetLeagues = resolved.leagues || enabledLeagues;
+        if (ids.length > 0 && leagueParams.length === 0) {
+          const byId = new Map<string, LeagueConfig>();
+          for (const id of ids) {
+            const parsed = parseEventId(id);
+            if (parsed) byId.set(parsed.league.id, parsed.league);
+          }
+          if (byId.size > 0) {
+            targetLeagues = [...byId.values()];
+          }
+        }
         const q = queryParam(query, "q");
         const entities = provider.getEntities(
           {
-            leagues: resolved.leagues || enabledLeagues,
+            leagues: targetLeagues,
             kind,
             q,
+            ids: ids.length > 0 ? ids : undefined,
           },
           rt,
         );
@@ -46867,18 +47053,47 @@ interface RawEspnRecord {
   summary?: string;
 }
 
+interface RawEspnCompetitorStatus {
+  displayValue?: string;
+  thru?: number;
+  displayThru?: string;
+  period?: number;
+  position?: {
+    id?: string;
+    displayName?: string;
+    isTie?: boolean;
+  };
+  type?: RawEspnStatusType;
+}
+
+interface RawEspnVehicle {
+  number?: string;
+  manufacturer?: string;
+  teamColor?: string;
+}
+
 interface RawEspnCompetitor {
   id?: string;
   type?: string;
   order?: number;
+  sortOrder?: number;
   homeAway?: string;
   winner?: boolean;
   score?: string | number | { displayValue?: string; value?: number };
   linescores?: RawEspnLineScore[];
   records?: RawEspnRecord[];
+  statistics?: RawEspnStandingStat[];
+  status?: RawEspnCompetitorStatus;
+  vehicle?: RawEspnVehicle;
   curatedRank?: { current?: number };
   team?: RawEspnTeam;
   athlete?: RawEspnAthlete;
+}
+
+interface RawEspnProbValue {
+  homeWinPercentage?: number;
+  awayWinPercentage?: number;
+  tiePercentage?: number;
 }
 
 interface RawEspnSituation {
@@ -46887,20 +47102,53 @@ interface RawEspnSituation {
   possessionText?: string;
   possession?: string;
   isRedZone?: boolean;
+  homeBonus?: boolean;
+  awayBonus?: boolean;
+  bonus?: string;
+  homeTimeouts?: number;
+  awayTimeouts?: number;
+  powerPlay?: boolean;
+  homePowerPlay?: boolean;
+  awayPowerPlay?: boolean;
+  strength?: string;
   outs?: number;
   balls?: number;
   strikes?: number;
   onFirst?: boolean;
   onSecond?: boolean;
   onThird?: boolean;
+  probability?: RawEspnProbValue;
   lastPlay?: {
     text?: string;
-    probability?: {
-      homeWinPercentage?: number;
-      awayWinPercentage?: number;
-      tiePercentage?: number;
-    };
+    probability?: RawEspnProbValue;
   };
+}
+
+interface RawEspnCompDetail {
+  type?: { text?: string };
+  clock?: { displayValue?: string };
+  team?: { id?: string };
+  scoringPlay?: boolean;
+  redCard?: boolean;
+  yellowCard?: boolean;
+  athletesInvolved?: Array<{ displayName?: string; shortName?: string }>;
+}
+
+interface RawEspnPredictor {
+  homeTeam?: {
+    id?: string;
+    gameProjection?: string | number;
+  };
+  awayTeam?: {
+    id?: string;
+    gameProjection?: string | number;
+  };
+}
+
+interface RawEspnCourse {
+  name?: string;
+  host?: boolean;
+  address?: { city?: string; state?: string; country?: string };
 }
 
 interface RawEspnVenue {
@@ -46919,6 +47167,8 @@ interface RawEspnCompetition {
   geoBroadcasts?: RawEspnGeoBroadcast[];
   competitors?: RawEspnCompetitor[];
   situation?: RawEspnSituation;
+  details?: RawEspnCompDetail[];
+  predictor?: RawEspnPredictor;
 }
 
 interface RawEspnEvent {
@@ -46931,6 +47181,7 @@ interface RawEspnEvent {
   links?: RawEspnLink[];
   circuit?: RawEspnVenue;
   venues?: RawEspnVenue[];
+  courses?: RawEspnCourse[];
   competitions?: RawEspnCompetition[];
 }
 
@@ -47009,6 +47260,8 @@ interface RawEspnSummary {
   plays?: RawEspnPlay[];
   keyEvents?: RawEspnPlay[];
   winprobability?: RawEspnWinProb[];
+  predictor?: RawEspnPredictor;
+  situation?: RawEspnSituation;
 }
 
 interface RawEspnTeamsResponse {
@@ -47180,7 +47433,11 @@ function formatStatusDetail(
   league: LeagueConfig,
   state: LiveEventState,
   rawStatus?: RawEspnStatus,
-): string {
+): string | undefined {
+  if (state === "pre") {
+    // Leave detail empty for pre-game events; clients format `start` in the viewer's timezone.
+    return undefined;
+  }
   const type = rawStatus?.type;
   const typeName = (type?.name || "").toUpperCase();
   if (state === "in") {
@@ -47239,6 +47496,13 @@ function extractRecord(records?: RawEspnRecord[]): string | undefined {
       r?.name === "total",
   );
   return (overall?.summary || records[0]?.summary || "").trim() || undefined;
+}
+
+function formatCourseVenue(courses?: RawEspnCourse[]): string | undefined {
+  if (!Array.isArray(courses) || courses.length === 0) return undefined;
+  const host = courses.find((c) => c?.host) || courses[0];
+  if (!host?.name) return undefined;
+  return formatVenue({ fullName: host.name, address: host.address });
 }
 
 function formatVenue(venue?: RawEspnVenue): string | undefined {
@@ -47343,60 +47607,185 @@ function mapFighterCompetitor(
   return comp;
 }
 
+function findTeamAbbr(
+  rawCompetitors: RawEspnCompetitor[],
+  teamId?: string,
+): string | undefined {
+  if (!teamId) return undefined;
+  const owner = rawCompetitors.find(
+    (c) => String(c.id || c.team?.id) === String(teamId),
+  );
+  return owner?.team?.abbreviation?.toUpperCase() || undefined;
+}
+
 function extractTeamSituation(
   league: LeagueConfig,
   comp: RawEspnCompetition,
   rawCompetitors: RawEspnCompetitor[],
+  status: LiveEventStatus,
+  situationOverride?: RawEspnSituation,
 ): Record<string, string> | undefined {
-  const sit = comp.situation;
-  if (!sit) return undefined;
+  if (status.state !== "in" && status.state !== "delayed") {
+    return undefined;
+  }
+  const sit = situationOverride || comp.situation;
   const out: Record<string, string> = {};
 
-  if (league.category === "football") {
-    const down = sit.shortDownDistanceText || sit.downDistanceText;
-    if (down) out["Down"] = down;
-    if (sit.possessionText) out["Ball on"] = sit.possessionText;
-    if (sit.possession) {
-      const owner = rawCompetitors.find(
-        (c) => String(c.id || c.team?.id) === String(sit.possession),
-      );
-      if (owner?.team?.abbreviation) {
-        out["Possession"] = owner.team.abbreviation;
+  const awayRaw = rawCompetitors.find((c) => c.homeAway === "away") || rawCompetitors[0];
+  const homeRaw = rawCompetitors.find((c) => c.homeAway === "home") || rawCompetitors[1];
+  const awayAbbr = awayRaw?.team?.abbreviation?.toUpperCase() || "AWAY";
+  const homeAbbr = homeRaw?.team?.abbreviation?.toUpperCase() || "HOME";
+
+  if (sit) {
+    if (league.category === "football") {
+      const down = sit.shortDownDistanceText || sit.downDistanceText;
+      if (down) out["Down"] = down;
+      if (sit.possessionText) out["Ball on"] = sit.possessionText;
+      const poss = findTeamAbbr(rawCompetitors, sit.possession);
+      if (poss) out["Possession"] = poss;
+      if (sit.isRedZone) out["Zone"] = "Red Zone";
+      if (typeof sit.awayTimeouts === "number" && typeof sit.homeTimeouts === "number") {
+        out["Timeouts"] = `${awayAbbr} ${sit.awayTimeouts} · ${homeAbbr} ${sit.homeTimeouts}`;
+      }
+    } else if (league.category === "basketball") {
+      if (sit.homeBonus && sit.awayBonus) {
+        out["Bonus"] = "Both";
+      } else if (sit.homeBonus) {
+        out["Bonus"] = homeAbbr;
+      } else if (sit.awayBonus) {
+        out["Bonus"] = awayAbbr;
+      } else if (typeof sit.bonus === "string" && sit.bonus.trim()) {
+        out["Bonus"] = sit.bonus.trim();
+      }
+      if (typeof sit.awayTimeouts === "number" && typeof sit.homeTimeouts === "number") {
+        out["Timeouts"] = `${awayAbbr} ${sit.awayTimeouts} · ${homeAbbr} ${sit.homeTimeouts}`;
+      }
+      const poss = findTeamAbbr(rawCompetitors, sit.possession);
+      if (poss) out["Possession"] = poss;
+      if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
+        out["Last play"] = sit.lastPlay.text;
+      }
+    } else if (league.category === "hockey") {
+      if (sit.homePowerPlay) {
+        out["Power play"] = homeAbbr;
+      } else if (sit.awayPowerPlay) {
+        out["Power play"] = awayAbbr;
+      } else if (typeof sit.strength === "string" && sit.strength.trim()) {
+        out["Power play"] = sit.strength.trim();
+      } else if (sit.powerPlay === true) {
+        out["Power play"] = findTeamAbbr(rawCompetitors, sit.possession) || "Active";
+      }
+      if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
+        out["Last play"] = sit.lastPlay.text;
+      }
+    } else if (league.category === "baseball") {
+      if (typeof sit.outs === "number") out["Outs"] = String(sit.outs);
+      if (typeof sit.balls === "number" && typeof sit.strikes === "number") {
+        out["Count"] = `${sit.balls}-${sit.strikes}`;
+      }
+      const bases: string[] = [];
+      if (sit.onFirst) bases.push("1st");
+      if (sit.onSecond) bases.push("2nd");
+      if (sit.onThird) bases.push("3rd");
+      if (bases.length === 3) out["Bases"] = "Loaded";
+      else if (bases.length > 0) out["Bases"] = bases.join(", ");
+    } else if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
+      out["Last play"] = sit.lastPlay.text;
+    }
+  }
+
+  if (league.category === "soccer" && Array.isArray(comp.details) && comp.details.length > 0) {
+    const redByTeam = new Map<string, number>();
+    let lastGoal: string | undefined;
+    for (const d of comp.details) {
+      if (d?.redCard) {
+        const abbr = findTeamAbbr(rawCompetitors, d.team?.id) || "Red";
+        redByTeam.set(abbr, (redByTeam.get(abbr) || 0) + 1);
+      }
+      if (d?.scoringPlay) {
+        const scorer =
+          d.athletesInvolved?.[0]?.shortName ||
+          d.athletesInvolved?.[0]?.displayName;
+        const clk = d.clock?.displayValue?.trim();
+        if (scorer && clk) {
+          lastGoal = `${scorer} ${clk}`;
+        } else if (scorer) {
+          lastGoal = scorer;
+        }
       }
     }
-    if (sit.isRedZone) out["Zone"] = "Red Zone";
-  } else if (league.category === "baseball") {
-    if (typeof sit.outs === "number") out["Outs"] = String(sit.outs);
-    if (typeof sit.balls === "number" && typeof sit.strikes === "number") {
-      out["Count"] = `${sit.balls}-${sit.strikes}`;
+    if (redByTeam.size > 0) {
+      const parts: string[] = [];
+      for (const [abbr, count] of redByTeam.entries()) {
+        parts.push(count > 1 ? `${abbr} (${count})` : abbr);
+      }
+      out["Red card"] = parts.join(" · ");
     }
-    const bases: string[] = [];
-    if (sit.onFirst) bases.push("1st");
-    if (sit.onSecond) bases.push("2nd");
-    if (sit.onThird) bases.push("3rd");
-    if (bases.length === 3) out["Bases"] = "Loaded";
-    else if (bases.length > 0) out["Bases"] = bases.join(", ");
-  } else if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
-    out["Last play"] = sit.lastPlay.text;
+    if (lastGoal) {
+      out["Last goal"] = lastGoal;
+    }
+  }
+
+  if (status.state === "in" && status.clock && status.detail) {
+    out["Clock"] = status.detail;
   }
 
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function extractScoreboardProbability(
-  comp: RawEspnCompetition,
+function normalizeProbNumber(raw: unknown): number | null {
+  let n: number;
+  if (typeof raw === "number") {
+    n = raw;
+  } else if (typeof raw === "string" && raw.trim() !== "") {
+    n = Number(raw);
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(n)) return null;
+  return clamp01(n > 1 ? n / 100 : n);
+}
+
+function extractPredictorProbability(
+  predictor: RawEspnPredictor | undefined,
   competitors: Competitor[],
 ): Probability | undefined {
-  const prob = comp.situation?.lastPlay?.probability;
-  if (!prob || typeof prob.homeWinPercentage !== "number") return undefined;
+  const homeVal = normalizeProbNumber(predictor?.homeTeam?.gameProjection);
+  const awayVal = normalizeProbNumber(predictor?.awayTeam?.gameProjection);
+  const value = homeVal !== null ? homeVal : awayVal !== null ? clamp01(1 - awayVal) : null;
+  if (value === null) return undefined;
   const home = competitors.find((c) => c.home) || competitors[0];
   if (!home) return undefined;
-  const value = clamp01(prob.homeWinPercentage);
   return {
     label: `${home.abbr} win`,
     value,
     competitorId: home.id,
   };
+}
+
+function extractScoreboardProbability(
+  comp: RawEspnCompetition,
+  competitors: Competitor[],
+  situationOverride?: RawEspnSituation,
+): Probability | undefined {
+  const sit = situationOverride || comp.situation;
+  const prob = sit?.lastPlay?.probability || sit?.probability;
+  if (prob) {
+    const homeVal = normalizeProbNumber(prob.homeWinPercentage);
+    const awayVal = normalizeProbNumber(prob.awayWinPercentage);
+    const value =
+      homeVal !== null ? homeVal : awayVal !== null ? clamp01(1 - awayVal) : null;
+    if (value !== null) {
+      const home = competitors.find((c) => c.home) || competitors[0];
+      if (!home) return undefined;
+      return {
+        label: `${home.abbr} win`,
+        value,
+        competitorId: home.id,
+      };
+    }
+  }
+  return extractPredictorProbability(comp.predictor, competitors);
 }
 
 function clamp01(n: number): number {
@@ -47473,6 +47862,258 @@ function buildLeagueRef(
   };
 }
 
+interface MappedGolfRow {
+  row: RankingRow;
+  tied: boolean;
+  isCutOrWD: boolean;
+  rounds: string[];
+}
+
+function formatGolfSecondary(
+  c: RawEspnCompetitor,
+  eventState: LiveEventState,
+): { secondary?: string; isCutOrWD: boolean } {
+  const st = c.status;
+  const typeName = (st?.type?.name || "").toUpperCase();
+  const dv = (st?.displayValue || "").trim();
+  const dvUp = dv.toUpperCase();
+  if (typeName === "STATUS_CUT" || dvUp === "CUT") {
+    return { secondary: "CUT", isCutOrWD: true };
+  }
+  if (typeName === "STATUS_WD" || dvUp === "WD" || typeName === "STATUS_WITHDRAWN") {
+    return { secondary: "WD", isCutOrWD: true };
+  }
+  if (typeName === "STATUS_DQ" || dvUp === "DQ") {
+    return { secondary: "DQ", isCutOrWD: true };
+  }
+  const displayThru = (st?.displayThru || "").trim().toUpperCase();
+  if (
+    dvUp === "F" ||
+    displayThru === "F" ||
+    st?.thru === 18 ||
+    st?.type?.state === "post"
+  ) {
+    return { secondary: "F", isCutOrWD: false };
+  }
+  if (typeof st?.thru === "number" && st.thru > 0 && st.thru < 18) {
+    return { secondary: `thru ${st.thru}`, isCutOrWD: false };
+  }
+  const thruMatch = dv.match(/^thru\s+(\d+)$/i);
+  if (thruMatch) {
+    return { secondary: `thru ${thruMatch[1]}`, isCutOrWD: false };
+  }
+  if (dv && dv !== "-") {
+    return { secondary: dv, isCutOrWD: false };
+  }
+  if (eventState === "post") {
+    return { secondary: "F", isCutOrWD: false };
+  }
+  const rounds = (c.linescores || []).filter((ls) => ls.displayValue && ls.displayValue !== "-");
+  if (rounds.length > 0) {
+    return { secondary: `R${rounds.length}`, isCutOrWD: false };
+  }
+  return { secondary: undefined, isCutOrWD: false };
+}
+
+function parseGolfPosition(st?: RawEspnCompetitorStatus): number | null {
+  const posObj = st?.position;
+  if (!posObj) return null;
+  const disp = (posObj.displayName || "").trim();
+  if (disp === "-" || disp === "") {
+    return null;
+  }
+  const dispNum = disp.replace(/^T/i, "");
+  if (/^\d+$/.test(dispNum)) {
+    const n = Number(dispNum);
+    if (n > 0) return n;
+  }
+  if (posObj.id && /^\d+$/.test(posObj.id)) {
+    const n = Number(posObj.id);
+    if (n > 0) return n;
+  }
+  return null;
+}
+
+function mapGolfRows(
+  league: LeagueConfig,
+  rawCompetitors: RawEspnCompetitor[],
+  eventState: LiveEventState,
+): MappedGolfRow[] {
+  const sorted = [...rawCompetitors].sort(
+    (a, b) => (a.sortOrder ?? a.order ?? 999) - (b.sortOrder ?? b.order ?? 999),
+  );
+
+  const items: MappedGolfRow[] = sorted.map((c, idx) => {
+    const ath = c.athlete || {};
+    const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
+    const abbr = deriveAthleteAbbr(ath);
+    const s2pStat = statLookup(c.statistics, ["scoreToPar"]);
+    const rawScore = s2pStat !== "-" ? s2pStat : extractScore(c.score);
+    // Detail is total-to-par only (e.g. "-10", "E", "+2"); never round breakdowns.
+    const detail = rawScore && rawScore !== "-" ? rawScore : undefined;
+    const { secondary, isCutOrWD } = formatGolfSecondary(c, eventState);
+    const espnPos = parseGolfPosition(c.status);
+    const pos = espnPos ?? idx + 1;
+    const rounds = (c.linescores || []).map((ls) => ls.displayValue || "-");
+
+    const row: RankingRow = {
+      pos,
+      name,
+      abbr,
+      entityId: formatEntityId(league.id, String(c.id || ath.id || idx + 1)),
+    };
+    if (detail) row.detail = detail;
+    if (secondary) row.secondary = secondary;
+    return { row, tied: Boolean(c.status?.position?.isTie), isCutOrWD, rounds };
+  });
+
+  // Normalize standard competition ties (e.g. 1,1,1,1 or 1,2,2,2,2,6) so tied
+  // players always share the same `pos` even when ESPN's payload lacks position.isTie.
+  let lastScore: string | undefined;
+  let lastRank = 0;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.isCutOrWD) continue;
+    const scoreKey = item.row.detail?.trim().toUpperCase();
+    if (scoreKey && scoreKey === lastScore) {
+      item.row.pos = lastRank;
+    } else {
+      lastRank = i + 1;
+      // Preserve ESPN's tie rank if it agrees with standard ranking, else use i+1.
+      if (item.row.pos <= 0 || item.row.pos > i + 1) {
+        item.row.pos = lastRank;
+      } else {
+        lastRank = item.row.pos;
+      }
+      lastScore = scoreKey;
+    }
+  }
+
+  const posCounts = new Map<number, number>();
+  for (const item of items) {
+    if (!item.isCutOrWD) {
+      posCounts.set(item.row.pos, (posCounts.get(item.row.pos) || 0) + 1);
+    }
+  }
+  for (const item of items) {
+    item.tied = !item.isCutOrWD && (posCounts.get(item.row.pos) || 0) > 1;
+  }
+
+  return items;
+}
+
+interface MappedF1Row {
+  row: RankingRow;
+  constructorName?: string;
+  pts?: string;
+}
+
+function formatF1Gap(raw: string): string {
+  const clean = raw.trim();
+  if (!clean || clean === "-") return "";
+  if (clean.includes(":")) return clean;
+  if (/s$/i.test(clean)) return clean;
+  if (/^[+-]?\d+(\.\d+)?$/.test(clean)) return `${clean}s`;
+  return clean;
+}
+
+function mapF1Rows(
+  league: LeagueConfig,
+  rawCompetitors: RawEspnCompetitor[],
+): MappedF1Row[] {
+  const sorted = [...rawCompetitors].sort(
+    (a, b) => (a.order ?? a.sortOrder ?? 999) - (b.order ?? b.sortOrder ?? 999),
+  );
+
+  return sorted.map((c, idx) => {
+    const ath = c.athlete || {};
+    const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
+    const abbr = deriveAthleteAbbr(ath);
+    const pos =
+      typeof c.order === "number" && c.order > 0
+        ? c.order
+        : typeof c.sortOrder === "number" && c.sortOrder > 0
+          ? c.sortOrder
+          : idx + 1;
+
+    const statusType = (c.status?.type?.name || "").toUpperCase();
+    const statusDisp = (c.status?.displayValue || "").trim();
+    const isRetired =
+      statusType === "STATUS_RETIRED" ||
+      statusDisp.toLowerCase() === "retired" ||
+      statusDisp.toUpperCase() === "DNF";
+
+    const totalTime = statLookup(c.statistics, ["totalTime"]);
+    const behindTime = statLookup(c.statistics, ["behindTime"]);
+    const behindLaps = statNumeric(c.statistics, ["behindLaps"]);
+    const lapsCompleted = statNumeric(c.statistics, ["lapsCompleted"]);
+    const ptsRaw = statLookup(c.statistics, ["championshipPts", "points"]);
+    const ptsNum = statNumeric(c.statistics, ["championshipPts", "points"]);
+
+    let detail: string | undefined;
+    if (isRetired) {
+      detail = "DNF";
+    } else if (pos === 1 && totalTime !== "-" && totalTime !== "0.000") {
+      detail = totalTime;
+    } else if (behindTime !== "-" && behindTime !== "0.000") {
+      detail = formatF1Gap(behindTime);
+    } else if (behindLaps !== null && behindLaps > 0) {
+      detail = behindLaps === 1 ? "+1 Lap" : `+${behindLaps} Laps`;
+    } else if (totalTime !== "-" && totalTime !== "0.000") {
+      detail = totalTime;
+    } else if (lapsCompleted !== null && lapsCompleted > 0) {
+      detail = `Lap ${lapsCompleted}`;
+    } else if (ptsNum !== null && ptsNum > 0) {
+      detail = `${ptsNum} pts`;
+    }
+
+    const constructorName = c.vehicle?.manufacturer?.trim() || undefined;
+    const secondary =
+      constructorName || (ptsNum !== null && ptsNum > 0 ? `${ptsNum} pts` : undefined);
+
+    const row: RankingRow = {
+      pos,
+      name,
+      abbr,
+      entityId: formatEntityId(league.id, String(c.id || ath.id || pos)),
+    };
+    if (detail) row.detail = detail;
+    if (secondary) row.secondary = secondary;
+
+    return {
+      row,
+      constructorName,
+      pts: ptsRaw !== "-" ? ptsRaw : undefined,
+    };
+  });
+}
+
+function deriveEventNameHints(name?: string): string[] {
+  if (!name) return [];
+  const clean = name.trim();
+  if (!clean) return [];
+  const out = [clean];
+  // Strip leading title-sponsor word(s) before Grand Prix / GP so EPG titles like
+  // "Formula 1: Las Vegas Grand Prix" match "Heineken Las Vegas Grand Prix".
+  const gpMatch = clean.match(/\b((?:[A-Za-zÀ-ÿ'-]+\s+){1,3}(?:Grand Prix|GP))$/i);
+  if (gpMatch) {
+    const phrase = gpMatch[1].trim();
+    const words = phrase.split(/\s+/);
+    if (words.length >= 3) {
+      out.push(words.slice(1).join(" "));
+    }
+    if (/GP$/i.test(phrase)) {
+      const expanded = phrase.replace(/\bGP$/i, "Grand Prix");
+      out.push(expanded);
+      const expWords = expanded.split(/\s+/);
+      if (expWords.length >= 4) {
+        out.push(expWords.slice(1).join(" "));
+      }
+    }
+  }
+  return out;
+}
+
 function mapScoreboardEvent(
   league: LeagueConfig,
   leagueRef: LeagueRef,
@@ -47493,10 +48134,9 @@ function mapScoreboardEvent(
       ? rawStatus.displayClock.trim()
       : undefined;
 
-  const status: LiveEventStatus = {
-    state,
-    detail: formatStatusDetail(league, state, rawStatus),
-  };
+  const statusDetail = formatStatusDetail(league, state, rawStatus);
+  const status: LiveEventStatus = { state };
+  if (statusDetail) status.detail = statusDetail;
   if (period !== undefined) status.period = period;
   if (clock) status.clock = clock;
 
@@ -47511,10 +48151,11 @@ function mapScoreboardEvent(
   const venue =
     formatVenue(comp?.venue) ||
     formatVenue(rawEvent.circuit) ||
+    formatCourseVenue(rawEvent.courses) ||
     formatVenue(rawEvent.venues?.[0]);
 
   const rawCompetitors = comp?.competitors || [];
-  let competitors: Competitor[] | undefined;
+  let competitors: Competitor[] = [];
   let ranking: RankingRow[] | undefined;
   let rawHints: CompetitorHintInput[] | undefined;
   let situation: Record<string, string> | undefined;
@@ -47543,43 +48184,36 @@ function mapScoreboardEvent(
     }
 
     if (comp) {
-      situation = extractTeamSituation(league, comp, rawCompetitors);
+      situation = extractTeamSituation(league, comp, rawCompetitors, status);
       probability = extractScoreboardProbability(comp, competitors);
     }
   } else if (league.mode === "ranking") {
-    const sorted = [...rawCompetitors].sort(
-      (a, b) => (a.order ?? 999) - (b.order ?? 999),
-    );
-    ranking = sorted.slice(0, MAX_SCOREBOARD_RANKING).map((c, idx) => {
-      const ath = c.athlete || {};
-      const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
-      const abbr = deriveAthleteAbbr(ath);
-      const pos = typeof c.order === "number" && c.order > 0 ? c.order : idx + 1;
-      const scoreVal = extractScore(c.score);
-      let detail: string | undefined;
-      if (league.id === "pga") {
-        const rounds = (c.linescores || [])
-          .map((ls) => ls.displayValue)
-          .filter((v): v is string => Boolean(v && v !== "-"));
-        detail = scoreVal
-          ? rounds.length > 0
-            ? `${scoreVal} (${rounds.join("-")})`
-            : scoreVal
-          : undefined;
-      } else if (league.id === "f1") {
-        detail = c.winner ? "Winner" : ath.flag?.alt || `P${pos}`;
-      } else {
-        detail = scoreVal;
-      }
-      const row: RankingRow = {
-        pos,
-        name,
-        abbr,
-        entityId: formatEntityId(league.id, String(c.id || ath.id || pos)),
-      };
-      if (detail) row.detail = detail;
-      return row;
-    });
+    if (league.id === "pga") {
+      const golfRows = mapGolfRows(league, rawCompetitors, state);
+      ranking = golfRows.slice(0, MAX_SCOREBOARD_RANKING).map((g) => g.row);
+    } else if (league.id === "f1") {
+      const f1Rows = mapF1Rows(league, rawCompetitors);
+      ranking = f1Rows.slice(0, MAX_SCOREBOARD_RANKING).map((r) => r.row);
+    } else {
+      const sorted = [...rawCompetitors].sort(
+        (a, b) => (a.order ?? a.sortOrder ?? 999) - (b.order ?? b.sortOrder ?? 999),
+      );
+      ranking = sorted.slice(0, MAX_SCOREBOARD_RANKING).map((c, idx) => {
+        const ath = c.athlete || {};
+        const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
+        const abbr = deriveAthleteAbbr(ath);
+        const pos = typeof c.order === "number" && c.order > 0 ? c.order : idx + 1;
+        const scoreVal = extractScore(c.score);
+        const row: RankingRow = {
+          pos,
+          name,
+          abbr,
+          entityId: formatEntityId(league.id, String(c.id || ath.id || pos)),
+        };
+        if (scoreVal) row.detail = scoreVal;
+        return row;
+      });
+    }
 
     const sit: Record<string, string> = {};
     if (league.id === "f1") {
@@ -47589,14 +48223,14 @@ function mapScoreboardEvent(
     } else if (league.id === "pga") {
       if (ranking[0]) {
         sit["Leader"] = ranking[0].detail
-          ? `${ranking[0].name} (${ranking[0].detail.split(" ")[0]})`
+          ? `${ranking[0].name} (${ranking[0].detail})`
           : ranking[0].name;
       }
       if (period) sit["Round"] = `Round ${period}`;
       extraTerms.push("PGA Tour", "PGA", "Golf");
     }
-    if (rawEvent.name) extraTerms.push(rawEvent.name);
-    if (rawEvent.shortName) extraTerms.push(rawEvent.shortName);
+    extraTerms.push(...deriveEventNameHints(rawEvent.name));
+    extraTerms.push(...deriveEventNameHints(rawEvent.shortName));
     if (Object.keys(sit).length > 0) situation = sit;
   } else if (league.mode === "card") {
     // UFC: highlight Main Event (or currently active bout) in competitors.
@@ -47622,17 +48256,23 @@ function mapScoreboardEvent(
     extraTerms,
   );
 
+  // Omit `title` for 2-competitor team events (avoids cryptic ESPN shortNames like "RSO @ RAC").
+  const title =
+    league.mode === "team"
+      ? undefined
+      : rawEvent.name || rawEvent.shortName || undefined;
+
   const event: LiveEvent = {
     id: formatEventId(league.id, rawEvent.id),
     feed: FEED_ID,
     category: league.category,
     league: leagueRef,
-    title: rawEvent.shortName || rawEvent.name || undefined,
     start,
     status,
+    competitors,
     updatedAt,
   };
-  if (competitors && competitors.length > 0) event.competitors = competitors;
+  if (title) event.title = title;
   if (ranking && ranking.length > 0) event.ranking = ranking;
   if (situation) event.situation = situation;
   if (probability) event.probability = probability;
@@ -47849,51 +48489,58 @@ function extractSummaryPlays(
 function extractWinProbability(
   league: LeagueConfig,
   summary: RawEspnSummary,
+  comp: RawEspnCompetition,
   competitors: Competitor[],
   status: LiveEventStatus,
   numericClock?: number,
 ): { probability?: Probability; series?: ProbabilityPoint[] } {
   const raw = summary.winprobability;
-  if (!Array.isArray(raw) || raw.length === 0) return {};
+  if (Array.isArray(raw) && raw.length > 0) {
+    const valid: number[] = [];
+    for (const p of raw) {
+      const val = normalizeProbNumber(p?.homeWinPercentage);
+      if (val !== null) valid.push(val);
+    }
+    if (valid.length > 0) {
+      // Downsample cleanly while preserving start and end points.
+      let sampled = valid;
+      if (valid.length > MAX_PROBABILITY_POINTS) {
+        sampled = [];
+        const step = (valid.length - 1) / (MAX_PROBABILITY_POINTS - 1);
+        for (let i = 0; i < MAX_PROBABILITY_POINTS; i++) {
+          sampled.push(valid[Math.round(i * step)]);
+        }
+      }
 
-  const valid = raw.filter(
-    (p): p is { homeWinPercentage: number } =>
-      typeof p?.homeWinPercentage === "number" &&
-      Number.isFinite(p.homeWinPercentage),
-  );
-  if (valid.length === 0) return {};
+      const maxT =
+        status.state === "post"
+          ? 1
+          : Math.max(0.05, estimateGameProgress(league, status, numericClock));
+      const denom = Math.max(1, sampled.length - 1);
+      const series: ProbabilityPoint[] = sampled.map((val, idx) => ({
+        t: sampled.length === 1 ? clamp01(maxT) : clamp01((idx / denom) * maxT),
+        value: val,
+      }));
 
-  // Downsample cleanly while preserving start and end points.
-  let sampled = valid;
-  if (valid.length > MAX_PROBABILITY_POINTS) {
-    sampled = [];
-    const step = (valid.length - 1) / (MAX_PROBABILITY_POINTS - 1);
-    for (let i = 0; i < MAX_PROBABILITY_POINTS; i++) {
-      sampled.push(valid[Math.round(i * step)]);
+      const home = competitors.find((c) => c.home) || competitors[0];
+      const lastVal = series[series.length - 1].value;
+      const probability: Probability | undefined = home
+        ? {
+            label: `${home.abbr} win`,
+            value: lastVal,
+            competitorId: home.id,
+          }
+        : undefined;
+
+      return { probability, series };
     }
   }
 
-  const maxT =
-    status.state === "post"
-      ? 1
-      : Math.max(0.05, estimateGameProgress(league, status, numericClock));
-  const denom = Math.max(1, sampled.length - 1);
-  const series: ProbabilityPoint[] = sampled.map((pt, idx) => ({
-    t: sampled.length === 1 ? clamp01(maxT) : clamp01((idx / denom) * maxT),
-    value: clamp01(pt.homeWinPercentage),
-  }));
-
-  const home = competitors.find((c) => c.home) || competitors[0];
-  const lastVal = series[series.length - 1].value;
-  const probability: Probability | undefined = home
-    ? {
-        label: `${home.abbr} win`,
-        value: lastVal,
-        competitorId: home.id,
-      }
-    : undefined;
-
-  return { probability, series };
+  // Fallback for pre-game or summaries without time-series winprobability.
+  const fallback =
+    extractPredictorProbability(summary.predictor, competitors) ||
+    extractScoreboardProbability(comp, competitors, summary.situation);
+  return fallback ? { probability: fallback } : {};
 }
 
 function extractLinks(rawLinks?: RawEspnLink[]): EventLink[] | undefined {
@@ -47921,18 +48568,17 @@ function buildFallbackEventDetailTables(
   if (league.id === "f1") {
     const active = selectActiveCompetition(league, rawEvent);
     if (active?.competitors?.length) {
-      const sorted = [...active.competitors].sort(
-        (a, b) => (a.order ?? 999) - (b.order ?? 999),
-      );
+      const rows = mapF1Rows(league, active.competitors);
       const sessionName = active.type?.abbreviation || "Classification";
       tables.push({
         title: `${sessionName} results`,
-        columns: ["Pos", "Driver", "Code", "Country"],
-        rows: sorted.map((c, idx) => [
-          String(c.order || idx + 1),
-          c.athlete?.displayName || c.athlete?.fullName || "TBD",
-          deriveAthleteAbbr(c.athlete),
-          c.athlete?.flag?.alt || "-",
+        columns: ["Pos", "Driver", "Constructor", "Time / Gap", "Pts"],
+        rows: rows.map((r) => [
+          String(r.row.pos),
+          r.row.name,
+          r.constructorName || "-",
+          r.row.detail || "-",
+          r.pts || "-",
         ]),
       });
     }
@@ -47943,11 +48589,11 @@ function buildFallbackEventDetailTables(
         rows: comps.map((c) => {
           const st = mapEventState(c.status);
           const first = [...(c.competitors || [])].sort(
-            (a, b) => (a.order ?? 999) - (b.order ?? 999),
+            (a, b) => (a.order ?? a.sortOrder ?? 999) - (b.order ?? b.sortOrder ?? 999),
           )[0];
           return [
             c.type?.abbreviation || c.type?.text || "Session",
-            formatStatusDetail(league, st, c.status),
+            formatStatusDetail(league, st, c.status) || "Scheduled",
             first?.athlete?.shortName || first?.athlete?.displayName || "-",
           ];
         }),
@@ -47956,26 +48602,31 @@ function buildFallbackEventDetailTables(
   } else if (league.id === "pga") {
     const active = comps[0];
     if (active?.competitors?.length) {
-      const sorted = [...active.competitors].sort(
-        (a, b) => (a.order ?? 999) - (b.order ?? 999),
-      );
+      const eventState = mapEventState(active.status || rawEvent.status);
+      const golfRows = mapGolfRows(league, active.competitors, eventState);
       const maxRounds = Math.max(
         1,
-        ...sorted.slice(0, 20).map((c) => c.linescores?.length || 0),
+        ...golfRows.slice(0, 25).map((g) => g.rounds.length),
       );
-      const columns = ["Pos", "Player", "Score"];
+      const columns = ["Pos", "Player", "Score", "Thru"];
       for (let r = 1; r <= maxRounds; r++) columns.push(`R${r}`);
       tables.push({
         title: "Leaderboard",
         columns,
-        rows: sorted.slice(0, 25).map((c, idx) => {
+        rows: golfRows.slice(0, 25).map((g) => {
+          const posStr = g.isCutOrWD
+            ? g.row.secondary || "-"
+            : g.tied
+              ? `T${g.row.pos}`
+              : String(g.row.pos);
           const row = [
-            String(c.order || idx + 1),
-            c.athlete?.displayName || c.athlete?.fullName || "TBD",
-            extractScore(c.score) || "-",
+            posStr,
+            g.row.name,
+            g.row.detail || "-",
+            g.row.secondary || "-",
           ];
           for (let r = 0; r < maxRounds; r++) {
-            row.push(c.linescores?.[r]?.displayValue || "-");
+            row.push(g.rounds[r] || "-");
           }
           return row;
         }),
@@ -48002,7 +48653,7 @@ function buildFallbackEventDetailTables(
           return [
             bout,
             c.type?.abbreviation || "Bout",
-            formatStatusDetail(league, st, c.status),
+            formatStatusDetail(league, st, c.status) || "Scheduled",
           ];
         }),
       });
@@ -48241,6 +48892,14 @@ function sortEvents(events: LiveEvent[]): LiveEvent[] {
 }
 
 function scoreboardUrl(league: LeagueConfig, dateKey: string): string {
+  if (league.id === "pga") {
+    const base = `${ESPN_SITE_API}/golf/leaderboard?league=pga`;
+    return dateKey === "current" ? base : `${base}&dates=${encodeURIComponent(dateKey)}`;
+  }
+  if (league.id === "f1") {
+    const base = `${ESPN_SITE_API}/racing/leaderboard?league=f1`;
+    return dateKey === "current" ? base : `${base}&dates=${encodeURIComponent(dateKey)}`;
+  }
   const base = `${ESPN_SITE_API}/${league.espnSport}/${league.espnLeague}/scoreboard`;
   return dateKey === "current" ? base : `${base}?dates=${encodeURIComponent(dateKey)}`;
 }
@@ -48474,10 +49133,9 @@ export class EspnSportsProvider implements SportsProvider {
           ? rawStatus.displayClock.trim()
           : undefined;
 
-      const status: LiveEventStatus = {
-        state,
-        detail: formatStatusDetail(league, state, rawStatus),
-      };
+      const statusDetail = formatStatusDetail(league, state, rawStatus);
+      const status: LiveEventStatus = { state };
+      if (statusDetail) status.detail = statusDetail;
       if (period !== undefined) status.period = period;
       if (clock) status.clock = clock;
 
@@ -48510,10 +49168,17 @@ export class EspnSportsProvider implements SportsProvider {
       );
       const matchHints = buildMatchHints(competitors, rawHints, undefined, broadcasts);
       const venue = formatVenue(summary.gameInfo?.venue || comp.venue);
-      const situation = extractTeamSituation(league, comp, rawCompetitors);
+      const situation = extractTeamSituation(
+        league,
+        comp,
+        rawCompetitors,
+        status,
+        summary.situation,
+      );
       const { probability, series } = extractWinProbability(
         league,
         summary,
+        comp,
         competitors,
         status,
         rawStatus?.clock,
@@ -48522,17 +49187,11 @@ export class EspnSportsProvider implements SportsProvider {
       const plays = extractSummaryPlays(league, summary);
       const links = extractLinks(summary.header?.links);
 
-      const away = competitors[0];
-      const home = competitors[1];
-      const title =
-        away && home ? `${away.abbr} @ ${home.abbr}` : undefined;
-
       const detail: LiveEventDetail = {
         id: formatEventId(league.id, rawEventId),
         feed: FEED_ID,
         category: league.category,
         league: buildLeagueRef(league),
-        title,
         start: toRfc3339(comp.date || comp.startDate, nowMs),
         status,
         competitors,
@@ -48667,6 +49326,10 @@ export class EspnSportsProvider implements SportsProvider {
     }
 
     let filtered = entities;
+    if (query.ids && query.ids.length > 0) {
+      const wanted = new Set(query.ids);
+      filtered = filtered.filter((e) => wanted.has(e.id));
+    }
     const needle = query.q?.trim().toLowerCase();
     if (needle) {
       filtered = filtered.filter(
@@ -48892,6 +49555,7 @@ export interface EntitiesQuery {
   leagues: LeagueConfig[];
   kind: string;
   q?: string;
+  ids?: string[];
 }
 
 export interface StandingsQuery {
@@ -54599,6 +55263,7 @@ type LiveEventCompetitor struct {
 | `name` | `string` | emitted (validation may require a value) |  |
 | `abbr` | `string` | may be omitted (see validation for conditions) |  |
 | `detail` | `string` | may be omitted (see validation for conditions) |  |
+| `secondary` | `string` | may be omitted (see validation for conditions) |  |
 | `entityId` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -54607,11 +55272,12 @@ type LiveEventCompetitor struct {
 ``````
 // LiveEventRankRow describes one leaderboard row for N-competitor events.
 type LiveEventRankRow struct {
-	Pos      int    `json:"pos"`
-	Name     string `json:"name"`
-	Abbr     string `json:"abbr,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	EntityID string `json:"entityId,omitempty"`
+	Pos       int    `json:"pos"`
+	Name      string `json:"name"`
+	Abbr      string `json:"abbr,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Secondary string `json:"secondary,omitempty"`
+	EntityID  string `json:"entityId,omitempty"`
 }
 ``````
 
@@ -54685,7 +55351,7 @@ type LiveEventMatchHints struct {
 | `title` | `string` | may be omitted (see validation for conditions) |  |
 | `start` | `string` | emitted (validation may require a value) |  |
 | `status` | `LiveEventStatus` | emitted (validation may require a value) |  |
-| `competitors` | `[]LiveEventCompetitor` | may be omitted (see validation for conditions) |  |
+| `competitors` | `[]LiveEventCompetitor` | emitted (validation may require a value) |  |
 | `ranking` | `[]LiveEventRankRow` | may be omitted (see validation for conditions) |  |
 | `situation` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `probability` | `*LiveEventProbability` | may be omitted (see validation for conditions) |  |
@@ -54708,7 +55374,7 @@ type LiveEvent struct {
 	Title       string                `json:"title,omitempty"`
 	Start       string                `json:"start"`
 	Status      LiveEventStatus       `json:"status"`
-	Competitors []LiveEventCompetitor `json:"competitors,omitempty"`
+	Competitors []LiveEventCompetitor `json:"competitors"`
 	Ranking     []LiveEventRankRow    `json:"ranking,omitempty"`
 	Situation   map[string]string     `json:"situation,omitempty"`
 	Probability *LiveEventProbability `json:"probability,omitempty"`
@@ -55048,6 +55714,11 @@ func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []str
 		if res.Events == nil {
 			res.Events = []LiveEvent{}
 		}
+		for i := range res.Events {
+			if res.Events[i].Competitors == nil {
+				res.Events[i].Competitors = []LiveEventCompetitor{}
+			}
+		}
 		return okJSON(res, http.StatusOK)
 
 	case len(tail) == 2 && tail[0] == "events" && tail[1] != "":
@@ -55055,6 +55726,17 @@ func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []str
 		res, err := prov.EventDetail(pctx, LiveEventDetailRequest{Feed: feed, ID: id})
 		if err != nil {
 			return toRouteErrorResponse(err)
+		}
+		if res.Competitors == nil {
+			res.Competitors = []LiveEventCompetitor{}
+		}
+		for i := range res.Tables {
+			if res.Tables[i].Columns == nil {
+				res.Tables[i].Columns = []string{}
+			}
+			if res.Tables[i].Rows == nil {
+				res.Tables[i].Rows = [][]string{}
+			}
 		}
 		return okJSON(res, http.StatusOK)
 
@@ -55091,6 +55773,14 @@ func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []str
 		}
 		if res.Tables == nil {
 			res.Tables = []LiveEventTable{}
+		}
+		for i := range res.Tables {
+			if res.Tables[i].Columns == nil {
+				res.Tables[i].Columns = []string{}
+			}
+			if res.Tables[i].Rows == nil {
+				res.Tables[i].Rows = [][]string{}
+			}
 		}
 		return okJSON(res, http.StatusOK)
 	}
@@ -70493,6 +71183,7 @@ export interface LiveEventRankRow {
   name: string;
   abbr?: string;
   detail?: string;
+  secondary?: string;
   entityId?: string;
 }
 
@@ -70522,7 +71213,7 @@ export interface LiveEvent {
   /** RFC3339 timestamp. */
   start: string;
   status: LiveEventStatus;
-  competitors?: LiveEventCompetitor[];
+  competitors: LiveEventCompetitor[];
   ranking?: LiveEventRankRow[];
   situation?: Record<string, string>;
   probability?: LiveEventProbability;

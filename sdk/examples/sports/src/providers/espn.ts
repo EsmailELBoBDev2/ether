@@ -131,18 +131,47 @@ interface RawEspnRecord {
   summary?: string;
 }
 
+interface RawEspnCompetitorStatus {
+  displayValue?: string;
+  thru?: number;
+  displayThru?: string;
+  period?: number;
+  position?: {
+    id?: string;
+    displayName?: string;
+    isTie?: boolean;
+  };
+  type?: RawEspnStatusType;
+}
+
+interface RawEspnVehicle {
+  number?: string;
+  manufacturer?: string;
+  teamColor?: string;
+}
+
 interface RawEspnCompetitor {
   id?: string;
   type?: string;
   order?: number;
+  sortOrder?: number;
   homeAway?: string;
   winner?: boolean;
   score?: string | number | { displayValue?: string; value?: number };
   linescores?: RawEspnLineScore[];
   records?: RawEspnRecord[];
+  statistics?: RawEspnStandingStat[];
+  status?: RawEspnCompetitorStatus;
+  vehicle?: RawEspnVehicle;
   curatedRank?: { current?: number };
   team?: RawEspnTeam;
   athlete?: RawEspnAthlete;
+}
+
+interface RawEspnProbValue {
+  homeWinPercentage?: number;
+  awayWinPercentage?: number;
+  tiePercentage?: number;
 }
 
 interface RawEspnSituation {
@@ -151,20 +180,53 @@ interface RawEspnSituation {
   possessionText?: string;
   possession?: string;
   isRedZone?: boolean;
+  homeBonus?: boolean;
+  awayBonus?: boolean;
+  bonus?: string;
+  homeTimeouts?: number;
+  awayTimeouts?: number;
+  powerPlay?: boolean;
+  homePowerPlay?: boolean;
+  awayPowerPlay?: boolean;
+  strength?: string;
   outs?: number;
   balls?: number;
   strikes?: number;
   onFirst?: boolean;
   onSecond?: boolean;
   onThird?: boolean;
+  probability?: RawEspnProbValue;
   lastPlay?: {
     text?: string;
-    probability?: {
-      homeWinPercentage?: number;
-      awayWinPercentage?: number;
-      tiePercentage?: number;
-    };
+    probability?: RawEspnProbValue;
   };
+}
+
+interface RawEspnCompDetail {
+  type?: { text?: string };
+  clock?: { displayValue?: string };
+  team?: { id?: string };
+  scoringPlay?: boolean;
+  redCard?: boolean;
+  yellowCard?: boolean;
+  athletesInvolved?: Array<{ displayName?: string; shortName?: string }>;
+}
+
+interface RawEspnPredictor {
+  homeTeam?: {
+    id?: string;
+    gameProjection?: string | number;
+  };
+  awayTeam?: {
+    id?: string;
+    gameProjection?: string | number;
+  };
+}
+
+interface RawEspnCourse {
+  name?: string;
+  host?: boolean;
+  address?: { city?: string; state?: string; country?: string };
 }
 
 interface RawEspnVenue {
@@ -183,6 +245,8 @@ interface RawEspnCompetition {
   geoBroadcasts?: RawEspnGeoBroadcast[];
   competitors?: RawEspnCompetitor[];
   situation?: RawEspnSituation;
+  details?: RawEspnCompDetail[];
+  predictor?: RawEspnPredictor;
 }
 
 interface RawEspnEvent {
@@ -195,6 +259,7 @@ interface RawEspnEvent {
   links?: RawEspnLink[];
   circuit?: RawEspnVenue;
   venues?: RawEspnVenue[];
+  courses?: RawEspnCourse[];
   competitions?: RawEspnCompetition[];
 }
 
@@ -273,6 +338,8 @@ interface RawEspnSummary {
   plays?: RawEspnPlay[];
   keyEvents?: RawEspnPlay[];
   winprobability?: RawEspnWinProb[];
+  predictor?: RawEspnPredictor;
+  situation?: RawEspnSituation;
 }
 
 interface RawEspnTeamsResponse {
@@ -444,7 +511,11 @@ function formatStatusDetail(
   league: LeagueConfig,
   state: LiveEventState,
   rawStatus?: RawEspnStatus,
-): string {
+): string | undefined {
+  if (state === "pre") {
+    // Leave detail empty for pre-game events; clients format `start` in the viewer's timezone.
+    return undefined;
+  }
   const type = rawStatus?.type;
   const typeName = (type?.name || "").toUpperCase();
   if (state === "in") {
@@ -503,6 +574,13 @@ function extractRecord(records?: RawEspnRecord[]): string | undefined {
       r?.name === "total",
   );
   return (overall?.summary || records[0]?.summary || "").trim() || undefined;
+}
+
+function formatCourseVenue(courses?: RawEspnCourse[]): string | undefined {
+  if (!Array.isArray(courses) || courses.length === 0) return undefined;
+  const host = courses.find((c) => c?.host) || courses[0];
+  if (!host?.name) return undefined;
+  return formatVenue({ fullName: host.name, address: host.address });
 }
 
 function formatVenue(venue?: RawEspnVenue): string | undefined {
@@ -607,60 +685,185 @@ function mapFighterCompetitor(
   return comp;
 }
 
+function findTeamAbbr(
+  rawCompetitors: RawEspnCompetitor[],
+  teamId?: string,
+): string | undefined {
+  if (!teamId) return undefined;
+  const owner = rawCompetitors.find(
+    (c) => String(c.id || c.team?.id) === String(teamId),
+  );
+  return owner?.team?.abbreviation?.toUpperCase() || undefined;
+}
+
 function extractTeamSituation(
   league: LeagueConfig,
   comp: RawEspnCompetition,
   rawCompetitors: RawEspnCompetitor[],
+  status: LiveEventStatus,
+  situationOverride?: RawEspnSituation,
 ): Record<string, string> | undefined {
-  const sit = comp.situation;
-  if (!sit) return undefined;
+  if (status.state !== "in" && status.state !== "delayed") {
+    return undefined;
+  }
+  const sit = situationOverride || comp.situation;
   const out: Record<string, string> = {};
 
-  if (league.category === "football") {
-    const down = sit.shortDownDistanceText || sit.downDistanceText;
-    if (down) out["Down"] = down;
-    if (sit.possessionText) out["Ball on"] = sit.possessionText;
-    if (sit.possession) {
-      const owner = rawCompetitors.find(
-        (c) => String(c.id || c.team?.id) === String(sit.possession),
-      );
-      if (owner?.team?.abbreviation) {
-        out["Possession"] = owner.team.abbreviation;
+  const awayRaw = rawCompetitors.find((c) => c.homeAway === "away") || rawCompetitors[0];
+  const homeRaw = rawCompetitors.find((c) => c.homeAway === "home") || rawCompetitors[1];
+  const awayAbbr = awayRaw?.team?.abbreviation?.toUpperCase() || "AWAY";
+  const homeAbbr = homeRaw?.team?.abbreviation?.toUpperCase() || "HOME";
+
+  if (sit) {
+    if (league.category === "football") {
+      const down = sit.shortDownDistanceText || sit.downDistanceText;
+      if (down) out["Down"] = down;
+      if (sit.possessionText) out["Ball on"] = sit.possessionText;
+      const poss = findTeamAbbr(rawCompetitors, sit.possession);
+      if (poss) out["Possession"] = poss;
+      if (sit.isRedZone) out["Zone"] = "Red Zone";
+      if (typeof sit.awayTimeouts === "number" && typeof sit.homeTimeouts === "number") {
+        out["Timeouts"] = `${awayAbbr} ${sit.awayTimeouts} · ${homeAbbr} ${sit.homeTimeouts}`;
+      }
+    } else if (league.category === "basketball") {
+      if (sit.homeBonus && sit.awayBonus) {
+        out["Bonus"] = "Both";
+      } else if (sit.homeBonus) {
+        out["Bonus"] = homeAbbr;
+      } else if (sit.awayBonus) {
+        out["Bonus"] = awayAbbr;
+      } else if (typeof sit.bonus === "string" && sit.bonus.trim()) {
+        out["Bonus"] = sit.bonus.trim();
+      }
+      if (typeof sit.awayTimeouts === "number" && typeof sit.homeTimeouts === "number") {
+        out["Timeouts"] = `${awayAbbr} ${sit.awayTimeouts} · ${homeAbbr} ${sit.homeTimeouts}`;
+      }
+      const poss = findTeamAbbr(rawCompetitors, sit.possession);
+      if (poss) out["Possession"] = poss;
+      if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
+        out["Last play"] = sit.lastPlay.text;
+      }
+    } else if (league.category === "hockey") {
+      if (sit.homePowerPlay) {
+        out["Power play"] = homeAbbr;
+      } else if (sit.awayPowerPlay) {
+        out["Power play"] = awayAbbr;
+      } else if (typeof sit.strength === "string" && sit.strength.trim()) {
+        out["Power play"] = sit.strength.trim();
+      } else if (sit.powerPlay === true) {
+        out["Power play"] = findTeamAbbr(rawCompetitors, sit.possession) || "Active";
+      }
+      if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
+        out["Last play"] = sit.lastPlay.text;
+      }
+    } else if (league.category === "baseball") {
+      if (typeof sit.outs === "number") out["Outs"] = String(sit.outs);
+      if (typeof sit.balls === "number" && typeof sit.strikes === "number") {
+        out["Count"] = `${sit.balls}-${sit.strikes}`;
+      }
+      const bases: string[] = [];
+      if (sit.onFirst) bases.push("1st");
+      if (sit.onSecond) bases.push("2nd");
+      if (sit.onThird) bases.push("3rd");
+      if (bases.length === 3) out["Bases"] = "Loaded";
+      else if (bases.length > 0) out["Bases"] = bases.join(", ");
+    } else if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
+      out["Last play"] = sit.lastPlay.text;
+    }
+  }
+
+  if (league.category === "soccer" && Array.isArray(comp.details) && comp.details.length > 0) {
+    const redByTeam = new Map<string, number>();
+    let lastGoal: string | undefined;
+    for (const d of comp.details) {
+      if (d?.redCard) {
+        const abbr = findTeamAbbr(rawCompetitors, d.team?.id) || "Red";
+        redByTeam.set(abbr, (redByTeam.get(abbr) || 0) + 1);
+      }
+      if (d?.scoringPlay) {
+        const scorer =
+          d.athletesInvolved?.[0]?.shortName ||
+          d.athletesInvolved?.[0]?.displayName;
+        const clk = d.clock?.displayValue?.trim();
+        if (scorer && clk) {
+          lastGoal = `${scorer} ${clk}`;
+        } else if (scorer) {
+          lastGoal = scorer;
+        }
       }
     }
-    if (sit.isRedZone) out["Zone"] = "Red Zone";
-  } else if (league.category === "baseball") {
-    if (typeof sit.outs === "number") out["Outs"] = String(sit.outs);
-    if (typeof sit.balls === "number" && typeof sit.strikes === "number") {
-      out["Count"] = `${sit.balls}-${sit.strikes}`;
+    if (redByTeam.size > 0) {
+      const parts: string[] = [];
+      for (const [abbr, count] of redByTeam.entries()) {
+        parts.push(count > 1 ? `${abbr} (${count})` : abbr);
+      }
+      out["Red card"] = parts.join(" · ");
     }
-    const bases: string[] = [];
-    if (sit.onFirst) bases.push("1st");
-    if (sit.onSecond) bases.push("2nd");
-    if (sit.onThird) bases.push("3rd");
-    if (bases.length === 3) out["Bases"] = "Loaded";
-    else if (bases.length > 0) out["Bases"] = bases.join(", ");
-  } else if (sit.lastPlay?.text && sit.lastPlay.text.length <= 64) {
-    out["Last play"] = sit.lastPlay.text;
+    if (lastGoal) {
+      out["Last goal"] = lastGoal;
+    }
+  }
+
+  if (status.state === "in" && status.clock && status.detail) {
+    out["Clock"] = status.detail;
   }
 
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function extractScoreboardProbability(
-  comp: RawEspnCompetition,
+function normalizeProbNumber(raw: unknown): number | null {
+  let n: number;
+  if (typeof raw === "number") {
+    n = raw;
+  } else if (typeof raw === "string" && raw.trim() !== "") {
+    n = Number(raw);
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(n)) return null;
+  return clamp01(n > 1 ? n / 100 : n);
+}
+
+function extractPredictorProbability(
+  predictor: RawEspnPredictor | undefined,
   competitors: Competitor[],
 ): Probability | undefined {
-  const prob = comp.situation?.lastPlay?.probability;
-  if (!prob || typeof prob.homeWinPercentage !== "number") return undefined;
+  const homeVal = normalizeProbNumber(predictor?.homeTeam?.gameProjection);
+  const awayVal = normalizeProbNumber(predictor?.awayTeam?.gameProjection);
+  const value = homeVal !== null ? homeVal : awayVal !== null ? clamp01(1 - awayVal) : null;
+  if (value === null) return undefined;
   const home = competitors.find((c) => c.home) || competitors[0];
   if (!home) return undefined;
-  const value = clamp01(prob.homeWinPercentage);
   return {
     label: `${home.abbr} win`,
     value,
     competitorId: home.id,
   };
+}
+
+function extractScoreboardProbability(
+  comp: RawEspnCompetition,
+  competitors: Competitor[],
+  situationOverride?: RawEspnSituation,
+): Probability | undefined {
+  const sit = situationOverride || comp.situation;
+  const prob = sit?.lastPlay?.probability || sit?.probability;
+  if (prob) {
+    const homeVal = normalizeProbNumber(prob.homeWinPercentage);
+    const awayVal = normalizeProbNumber(prob.awayWinPercentage);
+    const value =
+      homeVal !== null ? homeVal : awayVal !== null ? clamp01(1 - awayVal) : null;
+    if (value !== null) {
+      const home = competitors.find((c) => c.home) || competitors[0];
+      if (!home) return undefined;
+      return {
+        label: `${home.abbr} win`,
+        value,
+        competitorId: home.id,
+      };
+    }
+  }
+  return extractPredictorProbability(comp.predictor, competitors);
 }
 
 function clamp01(n: number): number {
@@ -737,6 +940,258 @@ function buildLeagueRef(
   };
 }
 
+interface MappedGolfRow {
+  row: RankingRow;
+  tied: boolean;
+  isCutOrWD: boolean;
+  rounds: string[];
+}
+
+function formatGolfSecondary(
+  c: RawEspnCompetitor,
+  eventState: LiveEventState,
+): { secondary?: string; isCutOrWD: boolean } {
+  const st = c.status;
+  const typeName = (st?.type?.name || "").toUpperCase();
+  const dv = (st?.displayValue || "").trim();
+  const dvUp = dv.toUpperCase();
+  if (typeName === "STATUS_CUT" || dvUp === "CUT") {
+    return { secondary: "CUT", isCutOrWD: true };
+  }
+  if (typeName === "STATUS_WD" || dvUp === "WD" || typeName === "STATUS_WITHDRAWN") {
+    return { secondary: "WD", isCutOrWD: true };
+  }
+  if (typeName === "STATUS_DQ" || dvUp === "DQ") {
+    return { secondary: "DQ", isCutOrWD: true };
+  }
+  const displayThru = (st?.displayThru || "").trim().toUpperCase();
+  if (
+    dvUp === "F" ||
+    displayThru === "F" ||
+    st?.thru === 18 ||
+    st?.type?.state === "post"
+  ) {
+    return { secondary: "F", isCutOrWD: false };
+  }
+  if (typeof st?.thru === "number" && st.thru > 0 && st.thru < 18) {
+    return { secondary: `thru ${st.thru}`, isCutOrWD: false };
+  }
+  const thruMatch = dv.match(/^thru\s+(\d+)$/i);
+  if (thruMatch) {
+    return { secondary: `thru ${thruMatch[1]}`, isCutOrWD: false };
+  }
+  if (dv && dv !== "-") {
+    return { secondary: dv, isCutOrWD: false };
+  }
+  if (eventState === "post") {
+    return { secondary: "F", isCutOrWD: false };
+  }
+  const rounds = (c.linescores || []).filter((ls) => ls.displayValue && ls.displayValue !== "-");
+  if (rounds.length > 0) {
+    return { secondary: `R${rounds.length}`, isCutOrWD: false };
+  }
+  return { secondary: undefined, isCutOrWD: false };
+}
+
+function parseGolfPosition(st?: RawEspnCompetitorStatus): number | null {
+  const posObj = st?.position;
+  if (!posObj) return null;
+  const disp = (posObj.displayName || "").trim();
+  if (disp === "-" || disp === "") {
+    return null;
+  }
+  const dispNum = disp.replace(/^T/i, "");
+  if (/^\d+$/.test(dispNum)) {
+    const n = Number(dispNum);
+    if (n > 0) return n;
+  }
+  if (posObj.id && /^\d+$/.test(posObj.id)) {
+    const n = Number(posObj.id);
+    if (n > 0) return n;
+  }
+  return null;
+}
+
+function mapGolfRows(
+  league: LeagueConfig,
+  rawCompetitors: RawEspnCompetitor[],
+  eventState: LiveEventState,
+): MappedGolfRow[] {
+  const sorted = [...rawCompetitors].sort(
+    (a, b) => (a.sortOrder ?? a.order ?? 999) - (b.sortOrder ?? b.order ?? 999),
+  );
+
+  const items: MappedGolfRow[] = sorted.map((c, idx) => {
+    const ath = c.athlete || {};
+    const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
+    const abbr = deriveAthleteAbbr(ath);
+    const s2pStat = statLookup(c.statistics, ["scoreToPar"]);
+    const rawScore = s2pStat !== "-" ? s2pStat : extractScore(c.score);
+    // Detail is total-to-par only (e.g. "-10", "E", "+2"); never round breakdowns.
+    const detail = rawScore && rawScore !== "-" ? rawScore : undefined;
+    const { secondary, isCutOrWD } = formatGolfSecondary(c, eventState);
+    const espnPos = parseGolfPosition(c.status);
+    const pos = espnPos ?? idx + 1;
+    const rounds = (c.linescores || []).map((ls) => ls.displayValue || "-");
+
+    const row: RankingRow = {
+      pos,
+      name,
+      abbr,
+      entityId: formatEntityId(league.id, String(c.id || ath.id || idx + 1)),
+    };
+    if (detail) row.detail = detail;
+    if (secondary) row.secondary = secondary;
+    return { row, tied: Boolean(c.status?.position?.isTie), isCutOrWD, rounds };
+  });
+
+  // Normalize standard competition ties (e.g. 1,1,1,1 or 1,2,2,2,2,6) so tied
+  // players always share the same `pos` even when ESPN's payload lacks position.isTie.
+  let lastScore: string | undefined;
+  let lastRank = 0;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.isCutOrWD) continue;
+    const scoreKey = item.row.detail?.trim().toUpperCase();
+    if (scoreKey && scoreKey === lastScore) {
+      item.row.pos = lastRank;
+    } else {
+      lastRank = i + 1;
+      // Preserve ESPN's tie rank if it agrees with standard ranking, else use i+1.
+      if (item.row.pos <= 0 || item.row.pos > i + 1) {
+        item.row.pos = lastRank;
+      } else {
+        lastRank = item.row.pos;
+      }
+      lastScore = scoreKey;
+    }
+  }
+
+  const posCounts = new Map<number, number>();
+  for (const item of items) {
+    if (!item.isCutOrWD) {
+      posCounts.set(item.row.pos, (posCounts.get(item.row.pos) || 0) + 1);
+    }
+  }
+  for (const item of items) {
+    item.tied = !item.isCutOrWD && (posCounts.get(item.row.pos) || 0) > 1;
+  }
+
+  return items;
+}
+
+interface MappedF1Row {
+  row: RankingRow;
+  constructorName?: string;
+  pts?: string;
+}
+
+function formatF1Gap(raw: string): string {
+  const clean = raw.trim();
+  if (!clean || clean === "-") return "";
+  if (clean.includes(":")) return clean;
+  if (/s$/i.test(clean)) return clean;
+  if (/^[+-]?\d+(\.\d+)?$/.test(clean)) return `${clean}s`;
+  return clean;
+}
+
+function mapF1Rows(
+  league: LeagueConfig,
+  rawCompetitors: RawEspnCompetitor[],
+): MappedF1Row[] {
+  const sorted = [...rawCompetitors].sort(
+    (a, b) => (a.order ?? a.sortOrder ?? 999) - (b.order ?? b.sortOrder ?? 999),
+  );
+
+  return sorted.map((c, idx) => {
+    const ath = c.athlete || {};
+    const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
+    const abbr = deriveAthleteAbbr(ath);
+    const pos =
+      typeof c.order === "number" && c.order > 0
+        ? c.order
+        : typeof c.sortOrder === "number" && c.sortOrder > 0
+          ? c.sortOrder
+          : idx + 1;
+
+    const statusType = (c.status?.type?.name || "").toUpperCase();
+    const statusDisp = (c.status?.displayValue || "").trim();
+    const isRetired =
+      statusType === "STATUS_RETIRED" ||
+      statusDisp.toLowerCase() === "retired" ||
+      statusDisp.toUpperCase() === "DNF";
+
+    const totalTime = statLookup(c.statistics, ["totalTime"]);
+    const behindTime = statLookup(c.statistics, ["behindTime"]);
+    const behindLaps = statNumeric(c.statistics, ["behindLaps"]);
+    const lapsCompleted = statNumeric(c.statistics, ["lapsCompleted"]);
+    const ptsRaw = statLookup(c.statistics, ["championshipPts", "points"]);
+    const ptsNum = statNumeric(c.statistics, ["championshipPts", "points"]);
+
+    let detail: string | undefined;
+    if (isRetired) {
+      detail = "DNF";
+    } else if (pos === 1 && totalTime !== "-" && totalTime !== "0.000") {
+      detail = totalTime;
+    } else if (behindTime !== "-" && behindTime !== "0.000") {
+      detail = formatF1Gap(behindTime);
+    } else if (behindLaps !== null && behindLaps > 0) {
+      detail = behindLaps === 1 ? "+1 Lap" : `+${behindLaps} Laps`;
+    } else if (totalTime !== "-" && totalTime !== "0.000") {
+      detail = totalTime;
+    } else if (lapsCompleted !== null && lapsCompleted > 0) {
+      detail = `Lap ${lapsCompleted}`;
+    } else if (ptsNum !== null && ptsNum > 0) {
+      detail = `${ptsNum} pts`;
+    }
+
+    const constructorName = c.vehicle?.manufacturer?.trim() || undefined;
+    const secondary =
+      constructorName || (ptsNum !== null && ptsNum > 0 ? `${ptsNum} pts` : undefined);
+
+    const row: RankingRow = {
+      pos,
+      name,
+      abbr,
+      entityId: formatEntityId(league.id, String(c.id || ath.id || pos)),
+    };
+    if (detail) row.detail = detail;
+    if (secondary) row.secondary = secondary;
+
+    return {
+      row,
+      constructorName,
+      pts: ptsRaw !== "-" ? ptsRaw : undefined,
+    };
+  });
+}
+
+function deriveEventNameHints(name?: string): string[] {
+  if (!name) return [];
+  const clean = name.trim();
+  if (!clean) return [];
+  const out = [clean];
+  // Strip leading title-sponsor word(s) before Grand Prix / GP so EPG titles like
+  // "Formula 1: Las Vegas Grand Prix" match "Heineken Las Vegas Grand Prix".
+  const gpMatch = clean.match(/\b((?:[A-Za-zÀ-ÿ'-]+\s+){1,3}(?:Grand Prix|GP))$/i);
+  if (gpMatch) {
+    const phrase = gpMatch[1].trim();
+    const words = phrase.split(/\s+/);
+    if (words.length >= 3) {
+      out.push(words.slice(1).join(" "));
+    }
+    if (/GP$/i.test(phrase)) {
+      const expanded = phrase.replace(/\bGP$/i, "Grand Prix");
+      out.push(expanded);
+      const expWords = expanded.split(/\s+/);
+      if (expWords.length >= 4) {
+        out.push(expWords.slice(1).join(" "));
+      }
+    }
+  }
+  return out;
+}
+
 function mapScoreboardEvent(
   league: LeagueConfig,
   leagueRef: LeagueRef,
@@ -757,10 +1212,9 @@ function mapScoreboardEvent(
       ? rawStatus.displayClock.trim()
       : undefined;
 
-  const status: LiveEventStatus = {
-    state,
-    detail: formatStatusDetail(league, state, rawStatus),
-  };
+  const statusDetail = formatStatusDetail(league, state, rawStatus);
+  const status: LiveEventStatus = { state };
+  if (statusDetail) status.detail = statusDetail;
   if (period !== undefined) status.period = period;
   if (clock) status.clock = clock;
 
@@ -775,10 +1229,11 @@ function mapScoreboardEvent(
   const venue =
     formatVenue(comp?.venue) ||
     formatVenue(rawEvent.circuit) ||
+    formatCourseVenue(rawEvent.courses) ||
     formatVenue(rawEvent.venues?.[0]);
 
   const rawCompetitors = comp?.competitors || [];
-  let competitors: Competitor[] | undefined;
+  let competitors: Competitor[] = [];
   let ranking: RankingRow[] | undefined;
   let rawHints: CompetitorHintInput[] | undefined;
   let situation: Record<string, string> | undefined;
@@ -807,43 +1262,36 @@ function mapScoreboardEvent(
     }
 
     if (comp) {
-      situation = extractTeamSituation(league, comp, rawCompetitors);
+      situation = extractTeamSituation(league, comp, rawCompetitors, status);
       probability = extractScoreboardProbability(comp, competitors);
     }
   } else if (league.mode === "ranking") {
-    const sorted = [...rawCompetitors].sort(
-      (a, b) => (a.order ?? 999) - (b.order ?? 999),
-    );
-    ranking = sorted.slice(0, MAX_SCOREBOARD_RANKING).map((c, idx) => {
-      const ath = c.athlete || {};
-      const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
-      const abbr = deriveAthleteAbbr(ath);
-      const pos = typeof c.order === "number" && c.order > 0 ? c.order : idx + 1;
-      const scoreVal = extractScore(c.score);
-      let detail: string | undefined;
-      if (league.id === "pga") {
-        const rounds = (c.linescores || [])
-          .map((ls) => ls.displayValue)
-          .filter((v): v is string => Boolean(v && v !== "-"));
-        detail = scoreVal
-          ? rounds.length > 0
-            ? `${scoreVal} (${rounds.join("-")})`
-            : scoreVal
-          : undefined;
-      } else if (league.id === "f1") {
-        detail = c.winner ? "Winner" : ath.flag?.alt || `P${pos}`;
-      } else {
-        detail = scoreVal;
-      }
-      const row: RankingRow = {
-        pos,
-        name,
-        abbr,
-        entityId: formatEntityId(league.id, String(c.id || ath.id || pos)),
-      };
-      if (detail) row.detail = detail;
-      return row;
-    });
+    if (league.id === "pga") {
+      const golfRows = mapGolfRows(league, rawCompetitors, state);
+      ranking = golfRows.slice(0, MAX_SCOREBOARD_RANKING).map((g) => g.row);
+    } else if (league.id === "f1") {
+      const f1Rows = mapF1Rows(league, rawCompetitors);
+      ranking = f1Rows.slice(0, MAX_SCOREBOARD_RANKING).map((r) => r.row);
+    } else {
+      const sorted = [...rawCompetitors].sort(
+        (a, b) => (a.order ?? a.sortOrder ?? 999) - (b.order ?? b.sortOrder ?? 999),
+      );
+      ranking = sorted.slice(0, MAX_SCOREBOARD_RANKING).map((c, idx) => {
+        const ath = c.athlete || {};
+        const name = ath.displayName || ath.fullName || c.team?.displayName || "TBD";
+        const abbr = deriveAthleteAbbr(ath);
+        const pos = typeof c.order === "number" && c.order > 0 ? c.order : idx + 1;
+        const scoreVal = extractScore(c.score);
+        const row: RankingRow = {
+          pos,
+          name,
+          abbr,
+          entityId: formatEntityId(league.id, String(c.id || ath.id || pos)),
+        };
+        if (scoreVal) row.detail = scoreVal;
+        return row;
+      });
+    }
 
     const sit: Record<string, string> = {};
     if (league.id === "f1") {
@@ -853,14 +1301,14 @@ function mapScoreboardEvent(
     } else if (league.id === "pga") {
       if (ranking[0]) {
         sit["Leader"] = ranking[0].detail
-          ? `${ranking[0].name} (${ranking[0].detail.split(" ")[0]})`
+          ? `${ranking[0].name} (${ranking[0].detail})`
           : ranking[0].name;
       }
       if (period) sit["Round"] = `Round ${period}`;
       extraTerms.push("PGA Tour", "PGA", "Golf");
     }
-    if (rawEvent.name) extraTerms.push(rawEvent.name);
-    if (rawEvent.shortName) extraTerms.push(rawEvent.shortName);
+    extraTerms.push(...deriveEventNameHints(rawEvent.name));
+    extraTerms.push(...deriveEventNameHints(rawEvent.shortName));
     if (Object.keys(sit).length > 0) situation = sit;
   } else if (league.mode === "card") {
     // UFC: highlight Main Event (or currently active bout) in competitors.
@@ -886,17 +1334,23 @@ function mapScoreboardEvent(
     extraTerms,
   );
 
+  // Omit `title` for 2-competitor team events (avoids cryptic ESPN shortNames like "RSO @ RAC").
+  const title =
+    league.mode === "team"
+      ? undefined
+      : rawEvent.name || rawEvent.shortName || undefined;
+
   const event: LiveEvent = {
     id: formatEventId(league.id, rawEvent.id),
     feed: FEED_ID,
     category: league.category,
     league: leagueRef,
-    title: rawEvent.shortName || rawEvent.name || undefined,
     start,
     status,
+    competitors,
     updatedAt,
   };
-  if (competitors && competitors.length > 0) event.competitors = competitors;
+  if (title) event.title = title;
   if (ranking && ranking.length > 0) event.ranking = ranking;
   if (situation) event.situation = situation;
   if (probability) event.probability = probability;
@@ -1113,51 +1567,58 @@ function extractSummaryPlays(
 function extractWinProbability(
   league: LeagueConfig,
   summary: RawEspnSummary,
+  comp: RawEspnCompetition,
   competitors: Competitor[],
   status: LiveEventStatus,
   numericClock?: number,
 ): { probability?: Probability; series?: ProbabilityPoint[] } {
   const raw = summary.winprobability;
-  if (!Array.isArray(raw) || raw.length === 0) return {};
+  if (Array.isArray(raw) && raw.length > 0) {
+    const valid: number[] = [];
+    for (const p of raw) {
+      const val = normalizeProbNumber(p?.homeWinPercentage);
+      if (val !== null) valid.push(val);
+    }
+    if (valid.length > 0) {
+      // Downsample cleanly while preserving start and end points.
+      let sampled = valid;
+      if (valid.length > MAX_PROBABILITY_POINTS) {
+        sampled = [];
+        const step = (valid.length - 1) / (MAX_PROBABILITY_POINTS - 1);
+        for (let i = 0; i < MAX_PROBABILITY_POINTS; i++) {
+          sampled.push(valid[Math.round(i * step)]);
+        }
+      }
 
-  const valid = raw.filter(
-    (p): p is { homeWinPercentage: number } =>
-      typeof p?.homeWinPercentage === "number" &&
-      Number.isFinite(p.homeWinPercentage),
-  );
-  if (valid.length === 0) return {};
+      const maxT =
+        status.state === "post"
+          ? 1
+          : Math.max(0.05, estimateGameProgress(league, status, numericClock));
+      const denom = Math.max(1, sampled.length - 1);
+      const series: ProbabilityPoint[] = sampled.map((val, idx) => ({
+        t: sampled.length === 1 ? clamp01(maxT) : clamp01((idx / denom) * maxT),
+        value: val,
+      }));
 
-  // Downsample cleanly while preserving start and end points.
-  let sampled = valid;
-  if (valid.length > MAX_PROBABILITY_POINTS) {
-    sampled = [];
-    const step = (valid.length - 1) / (MAX_PROBABILITY_POINTS - 1);
-    for (let i = 0; i < MAX_PROBABILITY_POINTS; i++) {
-      sampled.push(valid[Math.round(i * step)]);
+      const home = competitors.find((c) => c.home) || competitors[0];
+      const lastVal = series[series.length - 1].value;
+      const probability: Probability | undefined = home
+        ? {
+            label: `${home.abbr} win`,
+            value: lastVal,
+            competitorId: home.id,
+          }
+        : undefined;
+
+      return { probability, series };
     }
   }
 
-  const maxT =
-    status.state === "post"
-      ? 1
-      : Math.max(0.05, estimateGameProgress(league, status, numericClock));
-  const denom = Math.max(1, sampled.length - 1);
-  const series: ProbabilityPoint[] = sampled.map((pt, idx) => ({
-    t: sampled.length === 1 ? clamp01(maxT) : clamp01((idx / denom) * maxT),
-    value: clamp01(pt.homeWinPercentage),
-  }));
-
-  const home = competitors.find((c) => c.home) || competitors[0];
-  const lastVal = series[series.length - 1].value;
-  const probability: Probability | undefined = home
-    ? {
-        label: `${home.abbr} win`,
-        value: lastVal,
-        competitorId: home.id,
-      }
-    : undefined;
-
-  return { probability, series };
+  // Fallback for pre-game or summaries without time-series winprobability.
+  const fallback =
+    extractPredictorProbability(summary.predictor, competitors) ||
+    extractScoreboardProbability(comp, competitors, summary.situation);
+  return fallback ? { probability: fallback } : {};
 }
 
 function extractLinks(rawLinks?: RawEspnLink[]): EventLink[] | undefined {
@@ -1185,18 +1646,17 @@ function buildFallbackEventDetailTables(
   if (league.id === "f1") {
     const active = selectActiveCompetition(league, rawEvent);
     if (active?.competitors?.length) {
-      const sorted = [...active.competitors].sort(
-        (a, b) => (a.order ?? 999) - (b.order ?? 999),
-      );
+      const rows = mapF1Rows(league, active.competitors);
       const sessionName = active.type?.abbreviation || "Classification";
       tables.push({
         title: `${sessionName} results`,
-        columns: ["Pos", "Driver", "Code", "Country"],
-        rows: sorted.map((c, idx) => [
-          String(c.order || idx + 1),
-          c.athlete?.displayName || c.athlete?.fullName || "TBD",
-          deriveAthleteAbbr(c.athlete),
-          c.athlete?.flag?.alt || "-",
+        columns: ["Pos", "Driver", "Constructor", "Time / Gap", "Pts"],
+        rows: rows.map((r) => [
+          String(r.row.pos),
+          r.row.name,
+          r.constructorName || "-",
+          r.row.detail || "-",
+          r.pts || "-",
         ]),
       });
     }
@@ -1207,11 +1667,11 @@ function buildFallbackEventDetailTables(
         rows: comps.map((c) => {
           const st = mapEventState(c.status);
           const first = [...(c.competitors || [])].sort(
-            (a, b) => (a.order ?? 999) - (b.order ?? 999),
+            (a, b) => (a.order ?? a.sortOrder ?? 999) - (b.order ?? b.sortOrder ?? 999),
           )[0];
           return [
             c.type?.abbreviation || c.type?.text || "Session",
-            formatStatusDetail(league, st, c.status),
+            formatStatusDetail(league, st, c.status) || "Scheduled",
             first?.athlete?.shortName || first?.athlete?.displayName || "-",
           ];
         }),
@@ -1220,26 +1680,31 @@ function buildFallbackEventDetailTables(
   } else if (league.id === "pga") {
     const active = comps[0];
     if (active?.competitors?.length) {
-      const sorted = [...active.competitors].sort(
-        (a, b) => (a.order ?? 999) - (b.order ?? 999),
-      );
+      const eventState = mapEventState(active.status || rawEvent.status);
+      const golfRows = mapGolfRows(league, active.competitors, eventState);
       const maxRounds = Math.max(
         1,
-        ...sorted.slice(0, 20).map((c) => c.linescores?.length || 0),
+        ...golfRows.slice(0, 25).map((g) => g.rounds.length),
       );
-      const columns = ["Pos", "Player", "Score"];
+      const columns = ["Pos", "Player", "Score", "Thru"];
       for (let r = 1; r <= maxRounds; r++) columns.push(`R${r}`);
       tables.push({
         title: "Leaderboard",
         columns,
-        rows: sorted.slice(0, 25).map((c, idx) => {
+        rows: golfRows.slice(0, 25).map((g) => {
+          const posStr = g.isCutOrWD
+            ? g.row.secondary || "-"
+            : g.tied
+              ? `T${g.row.pos}`
+              : String(g.row.pos);
           const row = [
-            String(c.order || idx + 1),
-            c.athlete?.displayName || c.athlete?.fullName || "TBD",
-            extractScore(c.score) || "-",
+            posStr,
+            g.row.name,
+            g.row.detail || "-",
+            g.row.secondary || "-",
           ];
           for (let r = 0; r < maxRounds; r++) {
-            row.push(c.linescores?.[r]?.displayValue || "-");
+            row.push(g.rounds[r] || "-");
           }
           return row;
         }),
@@ -1266,7 +1731,7 @@ function buildFallbackEventDetailTables(
           return [
             bout,
             c.type?.abbreviation || "Bout",
-            formatStatusDetail(league, st, c.status),
+            formatStatusDetail(league, st, c.status) || "Scheduled",
           ];
         }),
       });
@@ -1505,6 +1970,14 @@ function sortEvents(events: LiveEvent[]): LiveEvent[] {
 }
 
 function scoreboardUrl(league: LeagueConfig, dateKey: string): string {
+  if (league.id === "pga") {
+    const base = `${ESPN_SITE_API}/golf/leaderboard?league=pga`;
+    return dateKey === "current" ? base : `${base}&dates=${encodeURIComponent(dateKey)}`;
+  }
+  if (league.id === "f1") {
+    const base = `${ESPN_SITE_API}/racing/leaderboard?league=f1`;
+    return dateKey === "current" ? base : `${base}&dates=${encodeURIComponent(dateKey)}`;
+  }
   const base = `${ESPN_SITE_API}/${league.espnSport}/${league.espnLeague}/scoreboard`;
   return dateKey === "current" ? base : `${base}?dates=${encodeURIComponent(dateKey)}`;
 }
@@ -1738,10 +2211,9 @@ export class EspnSportsProvider implements SportsProvider {
           ? rawStatus.displayClock.trim()
           : undefined;
 
-      const status: LiveEventStatus = {
-        state,
-        detail: formatStatusDetail(league, state, rawStatus),
-      };
+      const statusDetail = formatStatusDetail(league, state, rawStatus);
+      const status: LiveEventStatus = { state };
+      if (statusDetail) status.detail = statusDetail;
       if (period !== undefined) status.period = period;
       if (clock) status.clock = clock;
 
@@ -1774,10 +2246,17 @@ export class EspnSportsProvider implements SportsProvider {
       );
       const matchHints = buildMatchHints(competitors, rawHints, undefined, broadcasts);
       const venue = formatVenue(summary.gameInfo?.venue || comp.venue);
-      const situation = extractTeamSituation(league, comp, rawCompetitors);
+      const situation = extractTeamSituation(
+        league,
+        comp,
+        rawCompetitors,
+        status,
+        summary.situation,
+      );
       const { probability, series } = extractWinProbability(
         league,
         summary,
+        comp,
         competitors,
         status,
         rawStatus?.clock,
@@ -1786,17 +2265,11 @@ export class EspnSportsProvider implements SportsProvider {
       const plays = extractSummaryPlays(league, summary);
       const links = extractLinks(summary.header?.links);
 
-      const away = competitors[0];
-      const home = competitors[1];
-      const title =
-        away && home ? `${away.abbr} @ ${home.abbr}` : undefined;
-
       const detail: LiveEventDetail = {
         id: formatEventId(league.id, rawEventId),
         feed: FEED_ID,
         category: league.category,
         league: buildLeagueRef(league),
-        title,
         start: toRfc3339(comp.date || comp.startDate, nowMs),
         status,
         competitors,
@@ -1931,6 +2404,10 @@ export class EspnSportsProvider implements SportsProvider {
     }
 
     let filtered = entities;
+    if (query.ids && query.ids.length > 0) {
+      const wanted = new Set(query.ids);
+      filtered = filtered.filter((e) => wanted.has(e.id));
+    }
     const needle = query.q?.trim().toLowerCase();
     if (needle) {
       filtered = filtered.filter(

@@ -524,6 +524,7 @@ export interface LiveEventRankRow {
   name: string;
   abbr?: string;
   detail?: string;
+  secondary?: string;
   entityId?: string;
 }
 
@@ -553,7 +554,7 @@ export interface LiveEvent {
   /** RFC3339 timestamp. */
   start: string;
   status: LiveEventStatus;
-  competitors?: LiveEventCompetitor[];
+  competitors: LiveEventCompetitor[];
   ranking?: LiveEventRankRow[];
   situation?: Record<string, string>;
   probability?: LiveEventProbability;

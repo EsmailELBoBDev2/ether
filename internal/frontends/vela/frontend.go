@@ -631,7 +631,8 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	// and unsupported methods dispatch straight to ServeMux so they answer 404
 	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
-	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") || (r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/vela/v0/favorites/entities/")) {
+	isLivePreferencesWrite := (r.Method == http.MethodPut || r.Method == http.MethodPatch) && r.URL.Path == "/vela/v0/live/preferences"
+	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (!isLivePreferencesWrite && r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") || (r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/vela/v0/favorites/entities/")) {
 		i.mux.ServeHTTP(w, r)
 		return
 	}
@@ -672,6 +673,10 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		} `json:"client"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
+		if isLivePreferencesWrite {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
 		problem(w, 400, "request", "idempotency_key_required")
 		return
 	}
@@ -680,7 +685,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
 		return
 	}
-	if optionalMultiviewIdem && envelope.IdempotencyKey == nil {
+	if (optionalMultiviewIdem && envelope.IdempotencyKey == nil) || (isLivePreferencesWrite && (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "")) {
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")

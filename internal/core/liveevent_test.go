@@ -153,3 +153,91 @@ func TestLiveEventDetailJSONAndClone(t *testing.T) {
 		t.Fatalf("entity favorite = %#v (ok=%v), want explicit false", entMap["favorite"], ok)
 	}
 }
+
+func TestLiveEventSpecArraysAndRankingSecondary(t *testing.T) {
+	// Ranking event with nil Competitors must still serialize "competitors":[] (never omitted or null)
+	// and preserve ranking[].secondary.
+	ev := LiveEvent{
+		ID:     "p:f:golf-1",
+		Feed:   "f",
+		League: LiveEventLeague{ID: "pga", Name: "PGA Tour", Abbr: "PGA"},
+		Start:  "2026-11-22T12:00:00Z",
+		Status: LiveEventStatus{State: LiveEventStateIn},
+		Ranking: []LiveEventRankRow{
+			{Pos: 1, Name: "Player A", Abbr: "PLA", Detail: "-10", Secondary: "thru 14"},
+			{Pos: 2, Name: "Player B", Abbr: "PLB", Detail: "-9", Secondary: "F"},
+			{Pos: 2, Name: "Player C", Abbr: "PLC", Detail: "-9", Secondary: "thru 12"},
+		},
+	}
+
+	evRaw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal LiveEvent: %v", err)
+	}
+	var evMap map[string]any
+	if err := json.Unmarshal(evRaw, &evMap); err != nil {
+		t.Fatalf("unmarshal LiveEvent: %v", err)
+	}
+	comps, present := evMap["competitors"]
+	if !present || comps == nil {
+		t.Fatalf("LiveEvent missing or null competitors: %s", evRaw)
+	}
+	if arr, ok := comps.([]any); !ok || len(arr) != 0 {
+		t.Fatalf("LiveEvent competitors = %#v, want []", comps)
+	}
+	rows := evMap["ranking"].([]any)
+	if rows[0].(map[string]any)["secondary"] != "thru 14" {
+		t.Fatalf("ranking[0].secondary = %#v, want 'thru 14'", rows[0])
+	}
+
+	// LiveEventDetail preserves both embedded LiveEvent fields and empty competitors[].
+	detailRaw, err := json.Marshal(LiveEventDetail{
+		LiveEvent: ev,
+		Tables:    []LiveEventTable{{Title: "Leaderboard"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal LiveEventDetail: %v", err)
+	}
+	var detailMap map[string]any
+	if err := json.Unmarshal(detailRaw, &detailMap); err != nil {
+		t.Fatalf("unmarshal LiveEventDetail: %v", err)
+	}
+	if arr, ok := detailMap["competitors"].([]any); !ok || len(arr) != 0 {
+		t.Fatalf("LiveEventDetail competitors = %#v, want []", detailMap["competitors"])
+	}
+	tbl := detailMap["tables"].([]any)[0].(map[string]any)
+	if _, ok := tbl["columns"].([]any); !ok {
+		t.Fatalf("LiveEventTable.columns = %#v, want []", tbl["columns"])
+	}
+	if _, ok := tbl["rows"].([]any); !ok {
+		t.Fatalf("LiveEventTable.rows = %#v, want []", tbl["rows"])
+	}
+
+	// LiveTickerItem preserves empty competitors[].
+	tickerRaw, err := json.Marshal(TickerItemFromEvent(ev))
+	if err != nil {
+		t.Fatalf("marshal LiveTickerItem: %v", err)
+	}
+	var tickerMap map[string]any
+	if err := json.Unmarshal(tickerRaw, &tickerMap); err != nil {
+		t.Fatalf("unmarshal LiveTickerItem: %v", err)
+	}
+	if arr, ok := tickerMap["competitors"].([]any); !ok || len(arr) != 0 {
+		t.Fatalf("LiveTickerItem competitors = %#v, want []", tickerMap["competitors"])
+	}
+
+	// Response wrappers never emit null arrays.
+	for name, payload := range map[string]any{
+		"events":    LiveEventsResponse{},
+		"entities":  LiveEventEntitiesResponse{},
+		"standings": LiveEventStandingsResponse{},
+	} {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", name, err)
+		}
+		if string(b) == "" || reflect.DeepEqual(string(b), `{"events":null}`) {
+			t.Fatalf("%s encoded null: %s", name, b)
+		}
+	}
+}

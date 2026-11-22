@@ -138,11 +138,12 @@ type LiveEventCompetitor struct {
 // LiveEventRankRow describes one leaderboard row for N-competitor events
 // (such as motorsport or tournament leaderboards).
 type LiveEventRankRow struct {
-	Pos      int    `json:"pos"`
-	Name     string `json:"name"`
-	Abbr     string `json:"abbr,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	EntityID string `json:"entityId,omitempty"`
+	Pos       int    `json:"pos"`
+	Name      string `json:"name"`
+	Abbr      string `json:"abbr,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Secondary string `json:"secondary,omitempty"`
+	EntityID  string `json:"entityId,omitempty"`
 }
 
 // LiveEventProbability holds an optional live win or outcome probability (0..1).
@@ -190,7 +191,7 @@ type LiveEvent struct {
 	Title       string                 `json:"title,omitempty"`
 	Start       string                 `json:"start"` // RFC3339
 	Status      LiveEventStatus        `json:"status"`
-	Competitors []LiveEventCompetitor  `json:"competitors,omitempty"`
+	Competitors []LiveEventCompetitor  `json:"competitors"`
 	Ranking     []LiveEventRankRow     `json:"ranking,omitempty"`
 	Situation   map[string]string      `json:"situation,omitempty"`
 	Probability *LiveEventProbability  `json:"probability,omitempty"`
@@ -202,12 +203,25 @@ type LiveEvent struct {
 	UpdatedAt   string                 `json:"updatedAt,omitempty"` // RFC3339
 }
 
+// MarshalJSON guarantees spec-required array fields (competitors) encode as []
+// rather than null or omitted.
+func (e LiveEvent) MarshalJSON() ([]byte, error) {
+	type wire LiveEvent
+	cp := wire(e)
+	if cp.Competitors == nil {
+		cp.Competitors = []LiveEventCompetitor{}
+	}
+	return json.Marshal(cp)
+}
+
 // Clone returns a deep copy of e so callers may apply viewer-specific filters
 // without mutating shared cached state.
 func (e LiveEvent) Clone() LiveEvent {
 	out := e
-	if e.Competitors != nil {
+	if len(e.Competitors) > 0 {
 		out.Competitors = append([]LiveEventCompetitor(nil), e.Competitors...)
+	} else {
+		out.Competitors = []LiveEventCompetitor{}
 	}
 	if e.Ranking != nil {
 		out.Ranking = append([]LiveEventRankRow(nil), e.Ranking...)
@@ -249,19 +263,38 @@ type LiveEventTable struct {
 	Rows    [][]string `json:"rows"`
 }
 
+// MarshalJSON guarantees columns and rows encode as [] rather than null.
+func (t LiveEventTable) MarshalJSON() ([]byte, error) {
+	type wire LiveEventTable
+	cp := wire(t)
+	if cp.Columns == nil {
+		cp.Columns = []string{}
+	}
+	if cp.Rows == nil {
+		cp.Rows = [][]string{}
+	}
+	return json.Marshal(cp)
+}
+
 // Clone returns a deep copy of t.
 func (t LiveEventTable) Clone() LiveEventTable {
 	out := LiveEventTable{Title: t.Title}
-	if t.Columns != nil {
+	if len(t.Columns) > 0 {
 		out.Columns = append([]string(nil), t.Columns...)
+	} else {
+		out.Columns = []string{}
 	}
-	if t.Rows != nil {
+	if len(t.Rows) > 0 {
 		out.Rows = make([][]string, len(t.Rows))
 		for i, row := range t.Rows {
-			if row != nil {
+			if len(row) > 0 {
 				out.Rows[i] = append([]string(nil), row...)
+			} else {
+				out.Rows[i] = []string{}
 			}
 		}
+	} else {
+		out.Rows = [][]string{}
 	}
 	return out
 }
@@ -358,6 +391,30 @@ type LiveEventDetail struct {
 	Links             []LiveEventLink             `json:"links,omitempty"`
 }
 
+// MarshalJSON preserves embedded LiveEvent fields while guaranteeing
+// spec-required array fields (competitors) encode as [].
+func (d LiveEventDetail) MarshalJSON() ([]byte, error) {
+	type liveEventAlias LiveEvent
+	type wire struct {
+		liveEventAlias
+		Tables            []LiveEventTable            `json:"tables,omitempty"`
+		Plays             []LiveEventPlay             `json:"plays,omitempty"`
+		ProbabilitySeries []LiveEventProbabilityPoint `json:"probabilitySeries,omitempty"`
+		Links             []LiveEventLink             `json:"links,omitempty"`
+	}
+	base := liveEventAlias(d.LiveEvent)
+	if base.Competitors == nil {
+		base.Competitors = []LiveEventCompetitor{}
+	}
+	return json.Marshal(wire{
+		liveEventAlias:    base,
+		Tables:            d.Tables,
+		Plays:             d.Plays,
+		ProbabilitySeries: d.ProbabilitySeries,
+		Links:             d.Links,
+	})
+}
+
 // Clone returns a deep copy of d.
 func (d LiveEventDetail) Clone() LiveEventDetail {
 	out := LiveEventDetail{
@@ -390,6 +447,16 @@ type LiveEventsResponse struct {
 	NextPollSec int         `json:"nextPollSec,omitempty"`
 }
 
+// MarshalJSON guarantees events encodes as [] rather than null.
+func (r LiveEventsResponse) MarshalJSON() ([]byte, error) {
+	type wire LiveEventsResponse
+	cp := wire(r)
+	if cp.Events == nil {
+		cp.Events = []LiveEvent{}
+	}
+	return json.Marshal(cp)
+}
+
 // LiveEventEntity describes a followable entity (such as a team, driver, or
 // player) returned by GET /ether/v1/live/{feed}/entities.
 // Key (pluginID:feed:entityKind:id) and Favorite are populated by Ether for
@@ -411,9 +478,29 @@ type LiveEventEntitiesResponse struct {
 	Entities []LiveEventEntity `json:"entities"`
 }
 
+// MarshalJSON guarantees entities encodes as [] rather than null.
+func (r LiveEventEntitiesResponse) MarshalJSON() ([]byte, error) {
+	type wire LiveEventEntitiesResponse
+	cp := wire(r)
+	if cp.Entities == nil {
+		cp.Entities = []LiveEventEntity{}
+	}
+	return json.Marshal(cp)
+}
+
 // LiveEventStandingsResponse is returned by GET /ether/v1/live/{feed}/standings.
 type LiveEventStandingsResponse struct {
 	Tables []LiveEventTable `json:"tables"`
+}
+
+// MarshalJSON guarantees tables encodes as [] rather than null.
+func (r LiveEventStandingsResponse) MarshalJSON() ([]byte, error) {
+	type wire LiveEventStandingsResponse
+	cp := wire(r)
+	if cp.Tables == nil {
+		cp.Tables = []LiveEventTable{}
+	}
+	return json.Marshal(cp)
 }
 
 // LiveEventAlert is an in-app alert emitted on /vela/v0/live/stream?alerts=1

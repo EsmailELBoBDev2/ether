@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,16 +14,21 @@ import (
 )
 
 type fakeHub struct {
+	mu           sync.Mutex
 	events       []core.LiveEvent
 	tables       []core.LiveEventTable
 	entities     []core.LiveEventEntity
 	eventCalls   int
+	eventReqs    []EventQuery
 	standingsReq []string
 	entityReqs   []EntityQuery
 }
 
 func (f *fakeHub) Events(_ context.Context, _ *core.User, q EventQuery) ([]core.LiveEvent, error) {
+	f.mu.Lock()
 	f.eventCalls++
+	f.eventReqs = append(f.eventReqs, q)
+	f.mu.Unlock()
 	var out []core.LiveEvent
 	for _, ev := range f.events {
 		if q.Feed != "" && ev.Feed != "" && ev.Feed != q.Feed {
@@ -37,16 +43,32 @@ func (f *fakeHub) Events(_ context.Context, _ *core.User, q EventQuery) ([]core.
 }
 
 func (f *fakeHub) Standings(_ context.Context, _ *core.User, _, _, league string) ([]core.LiveEventTable, error) {
+	f.mu.Lock()
 	f.standingsReq = append(f.standingsReq, league)
+	f.mu.Unlock()
 	return f.tables, nil
 }
 
 func (f *fakeHub) Entities(_ context.Context, _ *core.User, q EntityQuery) ([]core.LiveEventEntity, error) {
+	f.mu.Lock()
 	f.entityReqs = append(f.entityReqs, q)
+	f.mu.Unlock()
+	var idSet map[string]struct{}
+	if len(q.IDs) > 0 {
+		idSet = make(map[string]struct{}, len(q.IDs))
+		for _, id := range q.IDs {
+			idSet[id] = struct{}{}
+		}
+	}
 	var out []core.LiveEventEntity
 	for _, e := range f.entities {
 		if q.League != "" && e.League != q.League {
 			continue
+		}
+		if len(idSet) > 0 {
+			if _, ok := idSet[e.ID]; !ok {
+				continue
+			}
 		}
 		out = append(out, e)
 	}
@@ -550,5 +572,154 @@ func TestQueryEntitiesAnnotatesKeyAndFavorite(t *testing.T) {
 	// Unknown feed fails with ErrFeedNotFound.
 	if _, err := svc.QueryEntities(ctx, &core.User{ID: 1}, "vela", "missing", "", "", ""); !errors.Is(err, ErrFeedNotFound) {
 		t.Fatalf("missing feed err = %v, want ErrFeedNotFound", err)
+	}
+}
+
+type fakeBatchWatch struct {
+	batchCalls  int
+	singleCalls int
+}
+
+func (w *fakeBatchWatch) WatchTargets(_ context.Context, _ *core.User, _ core.LiveEvent) ([]core.LiveEventWatchTarget, error) {
+	w.singleCalls++
+	return []core.LiveEventWatchTarget{}, nil
+}
+
+func (w *fakeBatchWatch) WatchTargetsBatch(_ context.Context, _ *core.User, events []core.LiveEvent) (map[string][]core.LiveEventWatchTarget, error) {
+	w.batchCalls++
+	out := make(map[string][]core.LiveEventWatchTarget, len(events))
+	for _, ev := range events {
+		out[ev.ID] = []core.LiveEventWatchTarget{{Kind: core.LiveEventWatchChannel, ChannelID: "ch-1", Name: "FOX", Live: ev.Status.State == core.LiveEventStateIn}}
+	}
+	return out, nil
+}
+
+func TestResolveScreenScopesEntitiesSkipsEmptyFavWeekAndBatchesWatch(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	pluginID := "community.example.scores"
+	feed := "scores"
+	reg := NewRegistry(RegistryOptions{})
+	reg.Sync(testScreenRecord(pluginID, "scores", "Scores", feed, true), nil)
+
+	hub := &fakeHub{
+		events: []core.LiveEvent{
+			{
+				ID:     pluginID + ":" + feed + ":rank-1",
+				Feed:   feed,
+				League: core.LiveEventLeague{ID: "pga", Name: "PGA Tour", Abbr: "PGA"},
+				Title:  "The RSM Classic",
+				Start:  now.Format(time.RFC3339),
+				Status: core.LiveEventStatus{State: core.LiveEventStateIn},
+				Ranking: []core.LiveEventRankRow{
+					{Pos: 1, Name: "Leader", Detail: "-10", Secondary: "thru 14"},
+				},
+			},
+			{
+				ID:     pluginID + ":" + feed + ":g1",
+				Feed:   feed,
+				League: core.LiveEventLeague{ID: "league-a", Name: "League A", Abbr: "LA"},
+				Start:  now.Add(time.Hour).Format(time.RFC3339),
+				Status: core.LiveEventStatus{State: core.LiveEventStatePre},
+				Competitors: []core.LiveEventCompetitor{
+					{ID: "a1", Name: "Alpha", Abbr: "ALP", EntityID: "a1"},
+					{ID: "a2", Name: "Bravo", Abbr: "BRV", EntityID: "a2", Home: true},
+				},
+			},
+			{
+				ID:     pluginID + ":" + feed + ":g2",
+				Feed:   feed,
+				League: core.LiveEventLeague{ID: "league-b", Name: "League B", Abbr: "LB"},
+				Start:  now.Add(2 * time.Hour).Format(time.RFC3339),
+				Status: core.LiveEventStatus{State: core.LiveEventStatePre},
+				Competitors: []core.LiveEventCompetitor{
+					{ID: "b1", Name: "Gamma", Abbr: "GAM", EntityID: "b1"},
+					{ID: "b2", Name: "Delta", Abbr: "DLT", EntityID: "b2", Home: true},
+				},
+			},
+		},
+		entities: []core.LiveEventEntity{
+			{ID: "a1", Kind: "team", Name: "Alpha", League: "league-a"},
+			{ID: "a2", Kind: "team", Name: "Bravo", League: "league-a"},
+			{ID: "b1", Kind: "team", Name: "Gamma", League: "league-b"},
+			{ID: "c1", Kind: "team", Name: "Omega", League: "league-c"},
+		},
+	}
+
+	batchWatch := &fakeBatchWatch{}
+	svc := NewService(ServiceOptions{
+		Registry:  reg,
+		Hub:       hub,
+		Watch:     batchWatch,
+		Favorites: fakeFavs{}, // zero favourites
+		Now:       func() time.Time { return now },
+	})
+
+	// 1. Viewer with ZERO favourites:
+	//    - your-teams must NOT trigger a 7-day Events query
+	//    - entities must NOT inline all 4 leagues' teams (falls back from teamless pga to league-a: 2 teams only)
+	//    - ranking event must serialize competitors: []
+	//    - watch matcher runs ONCE in batch mode
+	res, err := svc.Resolve(ctx, &core.User{ID: 99}, ResolveRequest{FrontendID: "vela", ScreenID: "scores"})
+	if err != nil {
+		t.Fatalf("Resolve (no favs): %v", err)
+	}
+	if batchWatch.batchCalls != 1 || batchWatch.singleCalls != 0 {
+		t.Fatalf("watch calls = (batch=%d, single=%d), want (1, 0)", batchWatch.batchCalls, batchWatch.singleCalls)
+	}
+	for _, eq := range hub.eventReqs {
+		if eq.To.Sub(eq.From) > 24*time.Hour {
+			t.Fatalf("unexpected multi-day Events query when viewer has zero favourites: %+v", eq)
+		}
+	}
+
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal screen: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal screen: %v", err)
+	}
+	byID := map[string]map[string]any{}
+	for _, s := range doc["sections"].([]any) {
+		m := s.(map[string]any)
+		byID[m["id"].(string)] = m
+	}
+	ents := byID["picker"]["entities"].([]any)
+	if len(ents) != 2 {
+		t.Fatalf("entities len = %d (%v), want 2 (league-a only, not full catalogue)", len(ents), ents)
+	}
+	heroEv := byID["hero"]["event"].(map[string]any)
+	if comps, ok := heroEv["competitors"].([]any); !ok || len(comps) != 0 {
+		t.Fatalf("ranking hero event competitors = %#v, want []", heroEv["competitors"])
+	}
+
+	// 2. Viewer with favourite in league-c and ?league=league-b selected:
+	//    must return league-c favourite + league-b teams (2 total), NOT league-a!
+	favC1 := favorites.FormatEntityKey(pluginID, feed, "team", "c1")
+	svcFav := NewService(ServiceOptions{
+		Registry:  reg,
+		Hub:       hub,
+		Watch:     &fakeBatchWatch{},
+		Favorites: fakeFavs{byViewer: map[int64][]string{7: {favC1}}},
+		Now:       func() time.Time { return now },
+	})
+	resFav, err := svcFav.Resolve(ctx, &core.User{ID: 7}, ResolveRequest{FrontendID: "vela", ScreenID: "scores", League: "league-b"})
+	if err != nil {
+		t.Fatalf("Resolve (with fav + league): %v", err)
+	}
+	var picker ResolvedSection
+	for _, sec := range resFav.Sections {
+		if sec.ID == "picker" {
+			picker = sec
+			break
+		}
+	}
+	if len(picker.Entities) != 2 {
+		t.Fatalf("entities len = %d (%+v), want 2 (fav c1 + league-b b1)", len(picker.Entities), picker.Entities)
+	}
+	if picker.Entities[0].ID != "c1" || !picker.Entities[0].Favorite || picker.Entities[1].ID != "b1" || picker.Entities[1].Favorite {
+		t.Fatalf("unexpected scoped entities = %+v", picker.Entities)
 	}
 }

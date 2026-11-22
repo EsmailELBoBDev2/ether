@@ -2,9 +2,11 @@ package liveevents
 
 import (
 	"math"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -21,7 +23,8 @@ const (
 )
 
 // GuideCandidate is the package-neutral view of one viewer-visible Live TV
-// channel + guide programme used by the A5/A6 matcher.
+// channel + guide programme (or a callsign-only channel without guide data)
+// used by the A5/A6 matcher.
 type GuideCandidate struct {
 	ChannelID     string
 	ChannelName   string
@@ -30,10 +33,13 @@ type GuideCandidate struct {
 	TvgName       string
 	GuideID       string
 	IsEventAddon  bool
+	ChannelOnly   bool
 	Title         string
 	EpisodeTitle  string
 	Summary       string
 	Genres        []string
+	Start         time.Time
+	End           time.Time
 	Live          bool
 }
 
@@ -42,10 +48,12 @@ type competitorTerms struct {
 }
 
 type eventMatchProfile struct {
-	competitors []competitorTerms // per-competitor phrases (2 for head-to-head)
-	extraTerms  [][]string        // matchHints.terms + event title phrases
-	callsigns   [][]string        // normalized broadcast names + matchHints.callsigns
-	category    []string          // normalized category/league words for genre fallback
+	state           string            // event lifecycle state (pre|in|post|delayed|...)
+	competitors     []competitorTerms // per-competitor phrases (2 for head-to-head)
+	extraTerms      [][]string        // matchHints.terms + event title phrases
+	callsigns       [][]string        // normalized broadcast names + matchHints.callsigns
+	linearCallsigns [][]string        // non-OTT linear broadcast callsigns for guide-free ChannelOnly fallback
+	category        []string          // normalized category/league words for genre fallback
 }
 
 // normalizeTokens lowercases text, splits on non-alphanumeric Unicode runs,
@@ -88,22 +96,54 @@ func normalizeTokens(s string) []string {
 	return out
 }
 
-// normalizeCallsignTokens strips common regional/quality tags from channel or
-// broadcast labels so "US: Network 2 HD" matches "Network 2" cleanly without
-// confusing numbered variants like "Network 1" vs "Network 2".
+// normalizeCallsignTokens strips common regional prefixes and quality/network
+// suffixes from channel or broadcast labels so "US: Network 2 HD" matches
+// "Network 2", "USA Net" matches "USA Network", and "Golf Chnl" matches
+// "Golf Channel" without confusing numbered variants or brand names.
 func normalizeCallsignTokens(s string) []string {
 	raw := normalizeTokens(s)
 	if len(raw) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(raw))
-	for _, tok := range raw {
+	isQualityOrSuffix := func(tok string) bool {
 		switch tok {
-		case "hd", "fhd", "uhd", "sd", "4k", "hevc", "raw", "east", "west", "us", "usa", "uk", "ca", "can", "au", "tv", "network", "channel", "ch":
-			continue
+		case "hd", "fhd", "uhd", "sd", "4k", "hevc", "raw", "east", "west", "tv", "network", "channel", "chnl", "ch":
+			return true
 		default:
-			out = append(out, tok)
+			return false
 		}
+	}
+	isRegionTag := func(tok string) bool {
+		switch tok {
+		case "us", "usa", "uk", "gb", "ca", "can", "au", "ie":
+			return true
+		default:
+			return false
+		}
+	}
+
+	// Strip a leading country prefix (e.g. "US: Net 2 HD" or "UK: Sky Sports")
+	// while preserving "USA" / "USA Network" / "USA Net" as a network brand.
+	start := 0
+	if len(raw) >= 2 && isRegionTag(raw[0]) {
+		next := raw[1]
+		isUSABrand := raw[0] == "usa" && (next == "net" || isQualityOrSuffix(next))
+		isSingleRegionSuffix := len(raw) == 2 && isQualityOrSuffix(next)
+		if !isUSABrand && !isSingleRegionSuffix {
+			start = 1
+		}
+	}
+
+	out := make([]string, 0, len(raw)-start)
+	for i := start; i < len(raw); i++ {
+		tok := raw[i]
+		if isQualityOrSuffix(tok) {
+			continue
+		}
+		if tok == "net" && len(out) > 0 {
+			continue
+		}
+		out = append(out, tok)
 	}
 	if len(out) == 0 {
 		return raw
@@ -112,7 +152,7 @@ func normalizeCallsignTokens(s string) []string {
 }
 
 func buildEventMatchProfile(ev core.LiveEvent) eventMatchProfile {
-	var prof eventMatchProfile
+	prof := eventMatchProfile{state: ev.Status.State}
 
 	addPhrase := func(dst *[][]string, raw string) {
 		toks := normalizeTokens(raw)
@@ -177,27 +217,39 @@ func buildEventMatchProfile(ev core.LiveEvent) eventMatchProfile {
 		addPhrase(&prof.extraTerms, ev.Title)
 	}
 
-	addCallsign := func(raw string) {
-		toks := normalizeCallsignTokens(raw)
+	appendUniqueTokens := func(dst *[][]string, toks []string) {
 		if len(toks) == 0 {
 			return
 		}
-		for _, existing := range prof.callsigns {
+		for _, existing := range *dst {
 			if slices.Equal(existing, toks) {
 				return
 			}
 		}
-		prof.callsigns = append(prof.callsigns, toks)
+		*dst = append(*dst, toks)
+	}
+	addCallsign := func(raw string, allowLinear bool) {
+		toks := normalizeCallsignTokens(raw)
+		if len(toks) == 0 {
+			return
+		}
+		variants := expandCallsignAliases(toks)
+		for _, v := range variants {
+			appendUniqueTokens(&prof.callsigns, v)
+			if allowLinear && !isStreamingOnlyCallsign(v) {
+				appendUniqueTokens(&prof.linearCallsigns, v)
+			}
+		}
 	}
 	for _, b := range ev.Broadcasts {
 		if b.Kind == "radio" {
 			continue
 		}
-		addCallsign(b.Name)
+		addCallsign(b.Name, b.Kind != "stream")
 	}
 	if ev.MatchHints != nil {
 		for _, cs := range ev.MatchHints.Callsigns {
-			addCallsign(cs)
+			addCallsign(cs, true)
 		}
 	}
 
@@ -259,10 +311,11 @@ func phraseMatched(haystack []string, phrases [][]string) (matched bool, distinc
 }
 
 // callsignMatchesChannel checks whether any normalized event callsign matches
-// the channel's name, tvgName, or guideId without confusing numbered channels.
-func callsignMatchesChannel(callsigns [][]string, cand GuideCandidate) bool {
+// the channel's name, tvgName, or guideId without confusing numbered channels
+// or unrelated sister networks (e.g. FOX vs Fox News, TNT vs TNT Sports 1).
+func callsignMatchesChannel(callsigns [][]string, cand GuideCandidate) (matched bool, exact bool) {
 	if len(callsigns) == 0 {
-		return false
+		return false, false
 	}
 	fields := [][]string{
 		normalizeCallsignTokens(cand.ChannelName),
@@ -271,44 +324,60 @@ func callsignMatchesChannel(callsigns [][]string, cand GuideCandidate) bool {
 	}
 	for _, cs := range callsigns {
 		for _, field := range fields {
-			if callsignMatchesField(cs, field) {
-				return true
+			ok, isExact := callsignMatchesField(cs, field)
+			if isExact {
+				return true, true
+			}
+			if ok {
+				matched = true
 			}
 		}
 	}
-	return false
+	return matched, false
 }
 
-func callsignMatchesField(callsign, field []string) bool {
+func callsignMatchesField(callsign, field []string) (matched bool, exact bool) {
 	if len(callsign) == 0 || len(field) == 0 || len(callsign) > len(field) {
-		return false
+		return false, false
 	}
 	if slices.Equal(callsign, field) {
-		return true
+		return true, true
 	}
+	callsignHasSports := slices.Contains(callsign, "sports") || slices.Contains(callsign, "sport")
 	for i := 0; i <= len(field)-len(callsign); i++ {
 		if !slices.Equal(field[i:i+len(callsign)], callsign) {
 			continue
 		}
-		// Prevent "net" matching "net plus" or "net 2" when the callsign
-		// itself did not specify "plus" or a channel variant number.
-		// Affiliate numbers like "net 5 city" (followed by non-digit city)
-		// remain allowed when the callsign has no trailing digit and is not
-		// followed by a bare single-digit suffix at the end of the channel name.
+		// Single-token callsigns (e.g. "fox", "usa", "golf") must anchor at the
+		// start of the channel name so they do not falsely match mid-name brands
+		// like "Silver Fox Movies" or "beIN Sports USA".
+		if i > 0 && len(callsign) == 1 {
+			continue
+		}
+		// Prevent matching distinct sister networks or numbered sub-channels
+		// when the callsign did not name them (e.g. FOX vs Fox News / FOX Sports 1,
+		// TNT vs TNT Sports 1, ESPN vs ESPN+, Net vs Net 2, ABC vs ABC Australia).
 		nextIdx := i + len(callsign)
 		if nextIdx < len(field) {
 			next := field[nextIdx]
-			if next == "plus" {
+			switch next {
+			case "plus", "news", "business", "movies", "movie", "cinema",
+				"kids", "junior", "jr", "music", "radio", "deportes", "espanol",
+				"australia", "uk", "canada", "ireland", "extra", "alt", "alternate":
 				continue
+			case "sports", "sport":
+				if !callsignHasSports {
+					continue
+				}
 			}
 			if isAllDigits(next) && nextIdx == len(field)-1 && len(next) == 1 {
 				// e.g., callsign "alpha" vs channel "alpha 2" -> distinct sub-channel
 				continue
 			}
 		}
-		return true
+		return true, false
 	}
-	return false
+	return false, false
 }
 
 func isAllDigits(s string) bool {
@@ -339,9 +408,36 @@ func hasSportsGenre(genres []string, categoryTokens []string) bool {
 	return false
 }
 
+func isGenericLiveSportsTitle(tokens []string) bool {
+	return slices.Contains(tokens, "live") && (slices.Contains(tokens, "sports") || slices.Contains(tokens, "sport"))
+}
+
 // scoreGuideCandidate evaluates a single Live TV or Stremio event channel
-// programme against an event profile. Returns (confidence in [0, 1], ok).
+// programme (or callsign-only channel without EPG) against an event profile.
+// Returns (confidence in [0, 1], ok).
 func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, bool) {
+	// Callsign-only fallback for channels that have no EPG guide programmes
+	// covering the event window (e.g. IPTV playlists without XMLTV).
+	if cand.ChannelOnly {
+		if cand.IsEventAddon {
+			return 0, false
+		}
+		linearMatch, linearExact := callsignMatchesChannel(prof.linearCallsigns, cand)
+		if !linearMatch {
+			return 0, false
+		}
+		switch prof.state {
+		case core.LiveEventStatePost, core.LiveEventStateCanceled, core.LiveEventStatePostponed:
+			return 0, false
+		}
+		if linearExact {
+			return 0.60, true
+		}
+		return 0.52, true
+	}
+
+	callsignMatch, _ := callsignMatchesChannel(prof.callsigns, cand)
+
 	titleTokens := normalizeTokens(cand.Title)
 	if cand.EpisodeTitle != "" {
 		titleTokens = append(titleTokens, normalizeTokens(cand.EpisodeTitle)...)
@@ -352,7 +448,6 @@ func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, 
 	allTokens = append(allTokens, summaryTokens...)
 
 	sportsGenre := hasSportsGenre(cand.Genres, prof.category)
-	callsignMatch := callsignMatchesChannel(prof.callsigns, cand)
 
 	// Head-to-head competitor matching (2 competitors).
 	if len(prof.competitors) == 2 {
@@ -397,10 +492,12 @@ func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, 
 			score = 0.24
 		}
 
+		catInTitle := matchesCategoryInTokens(titleTokens, prof.category)
+		liveSportsTitle := isGenericLiveSportsTitle(titleTokens)
 		if callsignMatch {
 			if score > 0 {
 				score += 0.24
-			} else if sportsGenre || matchesCategoryInTokens(titleTokens, prof.category) {
+			} else if sportsGenre || catInTitle || liveSportsTitle {
 				// Broadcast channel matches AND programme is live sports / matches
 				// league/category during the event window even if EPG omitted teams.
 				score = 0.36
@@ -409,7 +506,7 @@ func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, 
 
 		if sportsGenre && score > 0 {
 			score += 0.12
-		} else if matchesCategoryInTokens(titleTokens, prof.category) && score > 0 {
+		} else if (catInTitle || liveSportsTitle) && score > 0 {
 			score += 0.10
 		}
 
@@ -422,7 +519,12 @@ func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, 
 	// N-competitor or non-head-to-head event (e.g., motorsport, golf, single-title event).
 	extraTitleHits := countDistinctPhraseHits(titleTokens, prof.extraTerms)
 	extraAnyHits := countDistinctPhraseHits(allTokens, prof.extraTerms)
+	if hasStrongTitleOverlap(titleTokens, prof.extraTerms) {
+		extraTitleHits++
+		extraAnyHits++
+	}
 	catInTitle := matchesCategoryInTokens(titleTokens, prof.category)
+	liveSportsTitle := isGenericLiveSportsTitle(titleTokens)
 
 	if cand.IsEventAddon {
 		if extraTitleHits == 0 && extraAnyHits < 2 {
@@ -448,13 +550,13 @@ func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, 
 	if callsignMatch {
 		if score > 0 {
 			score += 0.24
-		} else if sportsGenre || catInTitle {
+		} else if sportsGenre || catInTitle || liveSportsTitle {
 			score = 0.36
 		}
 	}
 	if sportsGenre && score > 0 {
 		score += 0.12
-	} else if catInTitle && score > 0 {
+	} else if (catInTitle || liveSportsTitle) && score > 0 {
 		score += 0.10
 	}
 
@@ -464,10 +566,26 @@ func scoreGuideCandidate(prof eventMatchProfile, cand GuideCandidate) (float64, 
 	return clampConfidence(score), true
 }
 
+func isShortDistinctiveAlnum(tok string) bool {
+	if len(tok) != 2 {
+		return false
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, r := range tok {
+		if unicode.IsLetter(r) {
+			hasLetter = true
+		} else if unicode.IsDigit(r) {
+			hasDigit = true
+		}
+	}
+	return hasLetter && hasDigit
+}
+
 func countDistinctPhraseHits(tokens []string, phrases [][]string) int {
 	hits := 0
 	for _, p := range phrases {
-		if len(p) == 1 && len(p[0]) < 3 {
+		if len(p) == 1 && len(p[0]) < 3 && !isShortDistinctiveAlnum(p[0]) {
 			continue
 		}
 		if containsPhrase(tokens, p) {
@@ -475,6 +593,35 @@ func countDistinctPhraseHits(tokens []string, phrases [][]string) int {
 		}
 	}
 	return hits
+}
+
+// hasStrongTitleOverlap reports whether tokens cover most distinctive words of
+// any multi-word event title phrase (handles title-sponsor prefixes like
+// "Heineken Las Vegas Grand Prix" against "Formula 1: Las Vegas Grand Prix").
+func hasStrongTitleOverlap(tokens []string, phrases [][]string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, p := range phrases {
+		if len(p) < 3 {
+			continue
+		}
+		distinctive := 0
+		matched := 0
+		for _, word := range p {
+			if len(word) < 3 {
+				continue
+			}
+			distinctive++
+			if slices.Contains(tokens, word) {
+				matched++
+			}
+		}
+		if distinctive >= 3 && matched >= 3 && matched*4 >= distinctive*3 {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesCategoryInTokens(tokens, category []string) bool {
@@ -499,10 +646,34 @@ func clampConfidence(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
-// matchEventToCandidates scores guide candidates + plugin stream links for ev,
-// returning deduplicated, deterministically sorted WatchTargets.
-func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate, pluginLinks []core.LiveEventLink) []core.WatchTarget {
+// isPlayableStreamURL reports whether rawURL is a directly playable stream
+// reference (plugin:// or streaming media scheme/manifest) rather than an
+// informational web page such as an ESPN Gamecast/Commentary/Odds URL.
+func isPlayableStreamURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme == "" {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "plugin", "rtmp", "rtmps", "rtsp", "rtsps", "udp", "rtp":
+		return true
+	case "http", "https":
+		p := strings.ToLower(u.Path)
+		return strings.HasSuffix(p, ".m3u8") ||
+			strings.HasSuffix(p, ".mpd") ||
+			strings.HasSuffix(p, ".ts") ||
+			strings.HasSuffix(p, ".mp4")
+	default:
+		return false
+	}
+}
+
+// matchEventToCandidates scores guide candidates + playable plugin broadcast
+// streams for ev, returning deduplicated, deterministically sorted WatchTargets.
+// Informational reference links (detail.Links) are excluded per spec A5.
+func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate) []core.WatchTarget {
 	prof := buildEventMatchProfile(ev)
+	eventLive := ev.Status.State == core.LiveEventStateIn
 
 	// Deduplicate by channelId, retaining the best-scoring programme per channel.
 	bestByChannel := make(map[string]core.WatchTarget)
@@ -515,13 +686,17 @@ func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate, plug
 		if cand.IsEventAddon {
 			kind = core.WatchTargetKindAddon
 		}
+		live := cand.Live
+		if cand.ChannelOnly {
+			live = eventLive
+		}
 		t := core.WatchTarget{
 			Kind:       kind,
 			ChannelID:  cand.ChannelID,
 			Name:       cand.ChannelName,
 			Number:     cand.ChannelNumber,
 			Logo:       cand.ChannelLogo,
-			Live:       cand.Live,
+			Live:       live,
 			Confidence: conf,
 		}
 		prev, exists := bestByChannel[cand.ChannelID]
@@ -530,17 +705,16 @@ func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate, plug
 		}
 	}
 
-	out := make([]core.WatchTarget, 0, len(bestByChannel)+len(pluginLinks))
+	out := make([]core.WatchTarget, 0, len(bestByChannel)+len(ev.Broadcasts))
 	for _, t := range bestByChannel {
 		out = append(out, t)
 	}
 
-	// Source #3: Plugin-provided stream links (from broadcasts with URL or detail links).
+	// Source #3: Plugin-provided directly playable stream URLs (never web pages).
 	seenURL := make(map[string]struct{})
-	eventLive := ev.Status.State == core.LiveEventStateIn
 	for _, b := range ev.Broadcasts {
 		u := strings.TrimSpace(b.URL)
-		if u == "" {
+		if !isPlayableStreamURL(u) {
 			continue
 		}
 		if _, dup := seenURL[u]; dup {
@@ -557,27 +731,6 @@ func matchEventToCandidates(ev core.LiveEvent, candidates []GuideCandidate, plug
 			URL:        u,
 			Live:       eventLive,
 			Confidence: 0.55,
-		})
-	}
-	for _, link := range pluginLinks {
-		u := strings.TrimSpace(link.URL)
-		if u == "" {
-			continue
-		}
-		if _, dup := seenURL[u]; dup {
-			continue
-		}
-		seenURL[u] = struct{}{}
-		name := strings.TrimSpace(link.Label)
-		if name == "" {
-			name = "Stream"
-		}
-		out = append(out, core.WatchTarget{
-			Kind:       core.WatchTargetKindPlugin,
-			Name:       name,
-			URL:        u,
-			Live:       eventLive,
-			Confidence: 0.50,
 		})
 	}
 
@@ -620,6 +773,55 @@ func sortWatchTargets(targets []core.WatchTarget) {
 	})
 }
 
+// expandCallsignAliases returns normalized token variants for common broadcast
+// abbreviations (e.g. FS1 <-> FOX Sports 1, ESPN2 <-> ESPN 2) without blurring
+// distinct sibling channels (FOX vs FS1, ESPN vs ESPN2, TNT vs TNT Sports 1).
+func expandCallsignAliases(toks []string) [][]string {
+	out := [][]string{toks}
+	key := strings.Join(toks, " ")
+	switch key {
+	case "fs1":
+		out = append(out, []string{"fox", "sports", "1"})
+	case "fox sports 1":
+		out = append(out, []string{"fs1"})
+	case "fs2":
+		out = append(out, []string{"fox", "sports", "2"})
+	case "fox sports 2":
+		out = append(out, []string{"fs2"})
+	case "espn2":
+		out = append(out, []string{"espn", "2"})
+	case "espn 2":
+		out = append(out, []string{"espn2"})
+	case "nbatv":
+		out = append(out, []string{"nba"})
+	case "cbssn":
+		out = append(out, []string{"cbs", "sports"})
+	case "cbs sports":
+		out = append(out, []string{"cbssn"})
+	case "tru":
+		out = append(out, []string{"trutv"})
+	case "trutv":
+		out = append(out, []string{"tru"})
+	}
+	return out
+}
+
+// isStreamingOnlyCallsign identifies OTT streaming services (like Peacock or
+// ESPN+) that are not linear TV channels and must not produce guide-free
+// ChannelOnly watch or channel-link matches.
+func isStreamingOnlyCallsign(toks []string) bool {
+	switch strings.Join(toks, " ") {
+	case "peacock", "espn plus", "paramount plus", "apple", "apple plus",
+		"prime video", "amazon prime", "amazon", "netflix", "hulu", "max",
+		"fubo", "fandango", "fandango home", "youtube", "nba league pass",
+		"mls season pass", "nfl plus", "discovery plus", "stan sport",
+		"viaplay", "vict plus":
+		return true
+	default:
+		return false
+	}
+}
+
 // matchProgrammeToEvents performs the reverse of A5 (for A6 Live TV overlay):
 // given a currently airing channel programme and active/near-active events,
 // pick the highest-confidence matching LiveEventRef, or nil if none meets the
@@ -649,4 +851,80 @@ func matchProgrammeToEvents(cand GuideCandidate, events []core.LiveEvent) *core.
 		}
 	}
 	return bestRef
+}
+
+// matchChannelOnlyToEvents performs the A6 guide-free fallback when a live
+// channel has no current EPG programme: link it to the single live event whose
+// linear broadcasts match that channel. If several live events match the same
+// network, return nil unless exactly one features a viewer-favourited entity.
+func matchChannelOnlyToEvents(cand GuideCandidate, events []core.LiveEvent, favKeys []string) *core.LiveEventRef {
+	if cand.IsEventAddon {
+		return nil
+	}
+	var exactMatches []core.LiveEvent
+	var prefixMatches []core.LiveEvent
+	for _, ev := range events {
+		if ev.ID == "" || ev.Status.State != core.LiveEventStateIn {
+			continue
+		}
+		prof := buildEventMatchProfile(ev)
+		matched, exact := callsignMatchesChannel(prof.linearCallsigns, cand)
+		if !matched {
+			continue
+		}
+		if exact {
+			exactMatches = append(exactMatches, ev)
+		} else {
+			prefixMatches = append(prefixMatches, ev)
+		}
+	}
+	matches := exactMatches
+	if len(matches) == 0 {
+		matches = prefixMatches
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	if len(matches) == 1 {
+		return &core.LiveEventRef{ID: matches[0].ID, Feed: matches[0].Feed}
+	}
+	// Multiple live events match the same network: only link when exactly one
+	// features a viewer-favourited competitor or ranking entity.
+	if len(favKeys) == 0 {
+		return nil
+	}
+	var favMatches []core.LiveEvent
+	for _, ev := range matches {
+		if eventMatchesAnyFavoriteKey(ev, favKeys) {
+			favMatches = append(favMatches, ev)
+		}
+	}
+	if len(favMatches) == 1 {
+		return &core.LiveEventRef{ID: favMatches[0].ID, Feed: favMatches[0].Feed}
+	}
+	return nil
+}
+
+func eventMatchesAnyFavoriteKey(ev core.LiveEvent, favKeys []string) bool {
+	pluginID, feedID, _, ok := core.ParseLiveEventID(ev.ID)
+	if !ok {
+		return false
+	}
+	for _, fk := range favKeys {
+		fp, ff, _, fEntityID, fok := core.ParseLiveEntityKey(fk)
+		if !fok || fp != pluginID || ff != feedID {
+			continue
+		}
+		for _, c := range ev.Competitors {
+			if c.EntityID != "" && c.EntityID == fEntityID {
+				return true
+			}
+		}
+		for _, r := range ev.Ranking {
+			if r.EntityID != "" && r.EntityID == fEntityID {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -22,7 +22,7 @@ export function normalizeRegion(raw: unknown): string {
 export interface RawEspnGeoBroadcast {
   type?: { shortName?: string; id?: string };
   market?: { type?: string };
-  media?: { shortName?: string; name?: string };
+  media?: { shortName?: string; name?: string; callLetters?: string };
   region?: string;
 }
 
@@ -30,12 +30,12 @@ export interface RawEspnBroadcast {
   market?: string;
   names?: string[];
   type?: { shortName?: string };
-  media?: { shortName?: string; name?: string };
+  media?: { shortName?: string; name?: string; callLetters?: string };
   region?: string;
 }
 
 const STREAM_NAME_RE =
-  /espn\+|peacock|paramount\+|prime video|amazon prime|apple tv|dazn|fubo|netflix|hulu|max\b|nfl\+|nba league pass|mls season pass|mlb\.tv|vict\+|stan sport|discovery\+|viaplay|youtube|streaming/i;
+  /espn\+|peacock|paramount\+|prime video|amazon prime|apple tv|dazn|fubo|fandango|netflix|hulu|max\b|nfl\+|nba league pass|mls season pass|mlb\.tv|vict\+|stan sport|discovery\+|viaplay|youtube|streaming/i;
 
 const RADIO_NAME_RE = /radio|sirius|xm\b|westwood one|talksport/i;
 
@@ -59,34 +59,72 @@ function classifyBroadcastKind(
 }
 
 const CALLSIGN_EXPANSIONS: Record<string, string[]> = {
+  "usa": ["USA Network", "USA"],
   "usa net": ["USA Network", "USA"],
+  "usa network": ["USA Network", "USA"],
   "golf chnl": ["Golf Channel"],
+  "golf channel": ["Golf Channel"],
+  "tennis chnl": ["Tennis Channel"],
+  "tennis channel": ["Tennis Channel"],
   "nhl net": ["NHL Network"],
   "nfl net": ["NFL Network"],
   "mlb net": ["MLB Network"],
   "fox": ["FOX"],
+  "fox dep": ["FOX Deportes"],
   "cbs": ["CBS"],
   "nbc": ["NBC"],
+  "nbc sports": ["NBC Sports"],
   "abc": ["ABC"],
   "tnt": ["TNT"],
   "tbs": ["TBS"],
   "fs1": ["FS1", "FOX Sports 1"],
+  "fox sports 1": ["FOX Sports 1", "FS1"],
   "fs2": ["FS2", "FOX Sports 2"],
+  "fox sports 2": ["FOX Sports 2", "FS2"],
   "cbssn": ["CBS Sports Network"],
   "espn": ["ESPN"],
   "espn2": ["ESPN2"],
   "espnu": ["ESPNU"],
   "espn+": ["ESPN+"],
+  "espn dep": ["ESPN Deportes"],
+  "espn deportes": ["ESPN Deportes"],
   "tru": ["truTV"],
   "trutv": ["truTV"],
   "nbatv": ["NBA TV"],
   "nba tv": ["NBA TV"],
+  "secn": ["SEC Network"],
+  "sec network": ["SEC Network"],
+  "accn": ["ACC Network"],
+  "acc network": ["ACC Network"],
+  "btn": ["Big Ten Network"],
+  "big ten network": ["Big Ten Network"],
+  "cw": ["The CW", "CW"],
+  "the cw": ["The CW", "CW"],
   "tele": ["Telemundo"],
+  "telemundo": ["Telemundo"],
   "uni": ["Univision"],
-  "tsn": ["TSN"],
-  "sn": ["Sportsnet"],
-  "sportsnet": ["Sportsnet"],
-  "sky": ["Sky Sports"],
+  "univ": ["Univision"],
+  "universo": ["Universo"],
+  "fdsn": ["FanDuel Sports Network"],
+  "fanduel": ["FanDuel Sports Network"],
+  "bein": ["beIN Sports"],
+  "bein sports": ["beIN Sports"],
+  "dazn": ["DAZN", "DAZN 1"],
+  "tsn": ["TSN", "TSN 1"],
+  "sn": ["Sportsnet", "Sportsnet One"],
+  "sportsnet": ["Sportsnet", "Sportsnet One"],
+  "sky": ["Sky Sports", "Sky Sports Main Event"],
+  "sky sports": ["Sky Sports", "Sky Sports Main Event"],
+  "sky sports main event": ["Sky Sports Main Event"],
+  "sky sports pl": ["Sky Sports Premier League"],
+  "sky sports premier league": ["Sky Sports Premier League"],
+  "sky sports f1": ["Sky Sports F1"],
+  "sky sports golf": ["Sky Sports Golf"],
+  "sky sports football": ["Sky Sports Football"],
+  "tnt sports": ["TNT Sports 1", "TNT Sports 2"],
+  "tnt sports 1": ["TNT Sports 1"],
+  "tnt sports 2": ["TNT Sports 2"],
+  "eurosport": ["Eurosport 1"],
   "prime video": ["Prime Video", "Amazon Prime"],
   "peacock": ["Peacock"],
   "apple tv": ["Apple TV", "Apple TV+"],
@@ -150,8 +188,8 @@ export function extractBroadcasts(
 
   if (Array.isArray(broadcasts)) {
     for (const b of broadcasts) {
-      if (b?.media?.shortName || b?.media?.name) {
-        const name = b.media.shortName || b.media.name || "";
+      if (b?.media?.shortName || b?.media?.name || b?.media?.callLetters) {
+        const name = b.media.shortName || b.media.name || b.media.callLetters || "";
         push(name, classifyBroadcastKind(name, b.type?.shortName), b.region);
       }
       if (Array.isArray(b?.names)) {
@@ -194,8 +232,18 @@ export function buildMatchHints(
   const termSeen = new Set<string>();
   const addTerm = (value?: string) => {
     if (!value) return;
-    const clean = value.trim();
+    let clean = value.trim().replace(/\s+/g, " ");
     if (!clean) return;
+    // Collapse accidental doubled phrases like "Real Sociedad Real Sociedad".
+    const words = clean.split(" ");
+    if (words.length >= 2 && words.length % 2 === 0) {
+      const half = words.length / 2;
+      const left = words.slice(0, half).join(" ");
+      const right = words.slice(half).join(" ");
+      if (left.toLowerCase() === right.toLowerCase()) {
+        clean = left;
+      }
+    }
     const key = clean.toLowerCase();
     if (termSeen.has(key)) return;
     termSeen.add(key);
@@ -207,10 +255,20 @@ export function buildMatchHints(
       addTerm(t.displayName);
       addTerm(t.shortDisplayName);
       addTerm(t.name);
-      if (t.location && t.name) {
-        addTerm(`${t.location} ${t.name}`);
+      const loc = t.location?.trim();
+      const name = t.name?.trim();
+      if (loc && name) {
+        const locLow = loc.toLowerCase();
+        const nameLow = name.toLowerCase();
+        if (
+          locLow !== nameLow &&
+          !nameLow.includes(locLow) &&
+          !locLow.includes(nameLow)
+        ) {
+          addTerm(`${loc} ${name}`);
+        }
       }
-      addTerm(t.location);
+      addTerm(loc);
       addTerm(t.abbreviation);
     }
   }

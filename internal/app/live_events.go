@@ -54,19 +54,23 @@ func (a *App) buildLiveEvents() {
 	a.liveEvents = hub
 
 	watchMatcher := liveevents.NewWatchMatcher(liveevents.WatchMatcherOptions{
-		Guide:        appLiveTVGuideSource{app: a},
-		ActiveEvents: hubActiveEventsSource{hub: hub},
+		Guide:            appLiveTVGuideSource{app: a},
+		ActiveEvents:     hubActiveEventsSource{hub: hub},
+		FavoriteEntities: appFavoriteEntities{app: a}.ListEntityKeys,
 	})
 	a.liveWatchMatcher = watchMatcher
 
-	// Wire A5 watch matcher into W255 hub (events/stream + detail with plugin links).
+	// Wire A5 watch matcher into W255 hub (events/stream + detail, playable targets only).
 	hub.SetWatchEnricher(func(ctx context.Context, viewer *core.Viewer, events []core.LiveEvent) {
 		if viewer == nil || len(events) == 0 {
 			return
 		}
+		byID, err := watchMatcher.WatchTargetsBatch(ctx, events, viewer)
+		if err != nil {
+			return
+		}
 		for i := range events {
-			targets, err := watchMatcher.WatchTargets(ctx, events[i], viewer)
-			if err == nil && len(targets) > 0 {
+			if targets := byID[events[i].ID]; len(targets) > 0 {
 				events[i].Watch = targets
 			}
 		}
@@ -75,7 +79,7 @@ func (a *App) buildLiveEvents() {
 		if viewer == nil || detail == nil {
 			return
 		}
-		targets, err := watchMatcher.WatchTargets(ctx, detail.LiveEvent, viewer, detail.Links...)
+		targets, err := watchMatcher.WatchTargets(ctx, detail.LiveEvent, viewer)
 		if err == nil && len(targets) > 0 {
 			detail.Watch = targets
 		}
@@ -202,6 +206,13 @@ func (w watchTargetAdapter) WatchTargets(ctx context.Context, viewer *core.User,
 		return nil, nil
 	}
 	return w.matcher.WatchTargets(ctx, event, viewer)
+}
+
+func (w watchTargetAdapter) WatchTargetsBatch(ctx context.Context, viewer *core.User, events []core.LiveEvent) (map[string][]core.LiveEventWatchTarget, error) {
+	if w.matcher == nil {
+		return nil, nil
+	}
+	return w.matcher.WatchTargetsBatch(ctx, events, viewer)
 }
 
 type appLiveTVGuideSource struct {

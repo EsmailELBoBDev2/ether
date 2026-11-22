@@ -63,6 +63,7 @@ export interface EntitiesQuery {
   leagues: LeagueConfig[];
   kind: string;
   q?: string;
+  ids?: string[];
 }
 
 export interface StandingsQuery {

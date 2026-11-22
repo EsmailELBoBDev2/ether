@@ -1,6 +1,9 @@
 package core
 
-import "slices"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // Watch target kinds returned by A5 "Where to watch".
 const (
@@ -30,24 +33,35 @@ type LiveTickerItem struct {
 	Title       string                `json:"title,omitempty"`
 	Start       string                `json:"start"` // RFC3339
 	Status      LiveEventStatus       `json:"status"`
-	Competitors []LiveEventCompetitor `json:"competitors,omitempty"`
+	Competitors []LiveEventCompetitor `json:"competitors"`
 	Ranking     []LiveEventRankRow    `json:"ranking,omitempty"`
 	Spoiler     bool                  `json:"spoiler,omitempty"`
 	UpdatedAt   string                `json:"updatedAt,omitempty"` // RFC3339
 }
 
+// MarshalJSON guarantees competitors encodes as [] rather than null.
+func (t LiveTickerItem) MarshalJSON() ([]byte, error) {
+	type wire LiveTickerItem
+	cp := wire(t)
+	if cp.Competitors == nil {
+		cp.Competitors = []LiveEventCompetitor{}
+	}
+	return json.Marshal(cp)
+}
+
 // TickerItemFromEvent projects a LiveEvent into its compact ticker form.
 func TickerItemFromEvent(ev LiveEvent) LiveTickerItem {
 	item := LiveTickerItem{
-		ID:        ev.ID,
-		Feed:      ev.Feed,
-		Category:  ev.Category,
-		League:    ev.League,
-		Title:     ev.Title,
-		Start:     ev.Start,
-		Status:    ev.Status,
-		Spoiler:   ev.Spoiler,
-		UpdatedAt: ev.UpdatedAt,
+		ID:          ev.ID,
+		Feed:        ev.Feed,
+		Category:    ev.Category,
+		League:      ev.League,
+		Title:       ev.Title,
+		Start:       ev.Start,
+		Status:      ev.Status,
+		Competitors: []LiveEventCompetitor{},
+		Spoiler:     ev.Spoiler,
+		UpdatedAt:   ev.UpdatedAt,
 	}
 	if len(ev.Competitors) > 0 {
 		item.Competitors = slices.Clone(ev.Competitors)

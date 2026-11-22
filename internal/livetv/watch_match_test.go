@@ -181,4 +181,44 @@ func TestWatchCandidatesWindowVisibilityAndStremioEventChannel(t *testing.T) {
 	if err != nil || rev2 == rev1 {
 		t.Fatalf("GuideRevision did not advance after epoch bump: %q -> %q (err=%v)", rev1, rev2, err)
 	}
+
+	// No-EPG IPTV channel (GuideID == "") matching callsign emits ChannelOnly=true,
+	// while a private no-EPG channel remains hidden from non-owner viewers.
+	saveCh(Channel{ID: "ch-noepg-fox", Number: "134", Name: "FOX", Kind: "iptv", Enabled: true, SourceID: "iptv", StreamURL: "https://example.invalid/fox.m3u8"})
+	saveCh(Channel{ID: "ch-noepg-priv", Number: "135", Name: "FOX VIP", Kind: "iptv", Enabled: true, Private: true, SourceID: "iptv", StreamURL: "https://example.invalid/foxvip.m3u8"})
+	noEpgCands, _, err := svc.WatchCandidates(ctx, viewer, now.Add(-30*time.Minute), now.Add(4*time.Hour), []string{"FOX", "North Sports"})
+	if err != nil {
+		t.Fatalf("WatchCandidates no-EPG: %v", err)
+	}
+	var foxOnly, northOnly, privLeaked bool
+	for _, c := range noEpgCands {
+		if c.ChannelID == "ch-noepg-fox" && c.ChannelOnly {
+			foxOnly = true
+		}
+		if c.ChannelID == "ch-public" && c.ChannelOnly {
+			northOnly = true
+		}
+		if c.ChannelID == "ch-noepg-priv" {
+			privLeaked = true
+		}
+	}
+	if !foxOnly {
+		t.Fatalf("expected ch-noepg-fox ChannelOnly candidate, got %+v", noEpgCands)
+	}
+	if northOnly {
+		t.Fatalf("channel WITH overlapping EPG must not emit ChannelOnly fallback")
+	}
+	if privLeaked {
+		t.Fatalf("private no-EPG channel leaked to regular viewer")
+	}
+
+	// CurrentProgrammeForWatch returns a ChannelOnly entry for a visible guide-less
+	// channel (A6 guide-free fallback), while keeping private channels blocked.
+	noEpgCurr, noEpgKey, err := svc.CurrentProgrammeForWatch(ctx, viewer, "ch-noepg-fox", now)
+	if err != nil || noEpgCurr == nil || !noEpgCurr.ChannelOnly || noEpgCurr.ChannelID != "ch-noepg-fox" || noEpgKey == "" {
+		t.Fatalf("CurrentProgrammeForWatch no-EPG = (%+v, %q, %v), want ChannelOnly entry", noEpgCurr, noEpgKey, err)
+	}
+	if privCurr, _, err := svc.CurrentProgrammeForWatch(ctx, viewer, "ch-noepg-priv", now); err != nil || privCurr != nil {
+		t.Fatalf("CurrentProgrammeForWatch private no-EPG leaked: (%+v, %v)", privCurr, err)
+	}
 }

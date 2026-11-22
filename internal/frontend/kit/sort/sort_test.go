@@ -6,7 +6,7 @@ import (
 )
 
 func TestOrder(t *testing.T) {
-	for input, want := range map[string]core.SortOrder{"SortName": core.SortTitle, "DateCreated": core.SortAdded, "PremiereDate": core.SortReleased, "CommunityRating": core.SortRating, "Popularity": core.SortPopularity, "DatePlayed": core.SortPlayed} {
+	for input, want := range map[string]core.SortOrder{"SortName": core.SortTitle, "DateCreated": core.SortAdded, "PremiereDate": core.SortReleased, "CommunityRating": core.SortRating, "Popularity": core.SortPopularity, "DatePlayed": core.SortPlayed, "Runtime": core.SortDuration} {
 		got, ok := Order(input)
 		if !ok || got != want {
 			t.Fatal(input, got, ok)

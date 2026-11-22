@@ -383,7 +383,7 @@ func channelMatches(c ChannelSummary, q ChannelPageQuery, stats map[guideKey]gui
 		}
 	}
 	if needle := strings.ToLower(strings.TrimSpace(q.Q)); needle != "" {
-		if !strings.Contains(strings.ToLower(c.Number+" "+c.Name+" "+c.Group), needle) {
+		if !strings.Contains(strings.ToLower(c.Number+" "+c.Name+" "+c.Group), needle) && !channelMatchesText(c.Name, c.Number, c.Group, needle) {
 			return false
 		}
 	}

@@ -434,3 +434,189 @@ func TestHubSearchLiveTVChannelTunesDirectlyAndHonorsPolicy(t *testing.T) {
 		}
 	}
 }
+
+// Plex for iOS and Plex for Android TV only query /library/search (never
+// /hubs/search or the EPG provider's /library/search). /library/search must
+// return matching Live TV channels (in the EPG SearchResult.Channel shape) and
+// on-now airings when searchTypes is empty or includes livetv, support
+// space-insensitive channel queries, and enforce viewer Live TV policy.
+func TestLibrarySearchIncludesLiveTVChannelsOnNowAndHonorsPolicy(t *testing.T) {
+	f, service, ch := liveFixture(t)
+	ctx := context.Background()
+	ch.Name = "NFL RedZone"
+	ch.Number = "701"
+	ch.Group = "Sports"
+	var err error
+	if ch, err = service.SaveChannel(ctx, ch); err != nil {
+		t.Fatal(err)
+	}
+	search := service.Frontend().(frontend.LiveTVSearch)
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		hits, e := search.SearchLiveTV(ctx, &ownerUser, "redzone", 10)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if !hits.Partial {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("search index did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	wantSource := "server://" + f.srv.identity().MachineIdentifier + liveProviderPath
+	wantChannelKey := liveProviderPath + "/channels/" + url.PathEscape(ch.ID)
+
+	findHits := func(mc map[string]any) (chanHit, onNowHit map[string]any) {
+		raw, _ := mc["SearchResult"].([]any)
+		for _, r := range raw {
+			hit := r.(map[string]any)
+			if c, ok := hit["Channel"].(map[string]any); ok && c["id"] == ch.ID {
+				chanHit = c
+			}
+			if m, ok := hit["Metadata"].(map[string]any); ok && m["source"] == wantSource {
+				onNowHit = m
+			}
+		}
+		return chanHit, onNowHit
+	}
+
+	// 1. Space-insensitive variants work on /library/search with empty searchTypes,
+	// mixed searchTypes=movies,tv,livetv, and livetv-only (+ searchProviders),
+	// as well as on the EPG provider /library/search.
+	for _, target := range []string{
+		"/library/search?query=" + url.QueryEscape("red zone"),
+		"/library/search?query=" + url.QueryEscape("redzone") + "&searchTypes=movies,tv,livetv",
+		"/library/search?query=" + url.QueryEscape("redz") + "&searchTypes=livetv",
+		"/library/search?query=" + url.QueryEscape("nfl red") + "&searchTypes=livetv&searchProviders=" + url.QueryEscape(frontend.LiveTVProvider),
+	} {
+		rec := f.request(t, http.MethodGet, target, map[string]string{
+			"Accept":          "application/json",
+			"X-Plex-Token":    ownerToken,
+			"X-Plex-Product":  "Plex for iOS",
+			"X-Plex-Platform": "iOS",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", target, rec.Code, rec.Body.String())
+		}
+		mc := decodeJSON(t, rec)
+		c, onNow := findHits(mc)
+		if c == nil {
+			t.Fatalf("%s missing Channel hit: %#v", target, mc)
+		}
+		if c["id"] != ch.ID ||
+			c["identifier"] != ch.ID ||
+			c["channelIdentifier"] != ch.ID ||
+			c["slug"] != ch.ID ||
+			c["key"] != wantChannelKey ||
+			c["type"] != "channel" ||
+			c["gridKey"] != ch.ID ||
+			c["vcn"] != ch.Number ||
+			c["title"] != ch.Name ||
+			c["shortTitle"] != ch.Name ||
+			c["callSign"] != ch.Name ||
+			c["providerIdentifier"] != frontend.LiveTVProvider ||
+			c["source"] != wantSource {
+			t.Fatalf("%s unexpected Channel shape: %#v", target, c)
+		}
+		logo, _ := c["coverPoster"].(string)
+		if !strings.Contains(logo, signedLogoPrefix) || strings.Contains(logo, ownerToken) || c["thumb"] != logo {
+			t.Fatalf("%s expected cloud-safe logo URL, got %#v", target, c)
+		}
+		if onNow == nil {
+			t.Fatalf("%s missing on-now airing Metadata hit: %#v", target, mc)
+		}
+		mediaList, _ := onNow["Media"].([]any)
+		if len(mediaList) != 1 {
+			t.Fatalf("%s on-now hit missing Media: %#v", target, onNow)
+		}
+		media := mediaList[0].(map[string]any)
+		if media["protocol"] != "livetv" || media["channelIdentifier"] != ch.ID || media["onAir"] != true {
+			t.Fatalf("%s unexpected on-now Media: %#v", target, media)
+		}
+	}
+
+	// EPG provider /library/search also matches space-insensitive channel queries.
+	for _, q := range []string{"red zone", "redzone", "redz", "nfl red"} {
+		rec := f.request(t, http.MethodGet, liveProviderPath+"/library/search?query="+url.QueryEscape(q), map[string]string{
+			"Accept":       "application/json",
+			"X-Plex-Token": ownerToken,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("EPG search %q: %d %s", q, rec.Code, rec.Body.String())
+		}
+		c, _ := findHits(decodeJSON(t, rec))
+		if c == nil {
+			t.Fatalf("EPG search %q missing NFL RedZone", q)
+		}
+	}
+
+	// 2. Explicit non-LiveTV searchTypes excludes Live TV results.
+	noLiveRec := f.request(t, http.MethodGet, "/library/search?query=redzone&searchTypes=movies,tv", map[string]string{
+		"Accept":       "application/json",
+		"X-Plex-Token": ownerToken,
+	})
+	if noLiveRec.Code != http.StatusOK {
+		t.Fatalf("movies,tv search: %d", noLiveRec.Code)
+	}
+	if c, onNow := findHits(decodeJSON(t, noLiveRec)); c != nil || onNow != nil {
+		t.Fatalf("searchTypes=movies,tv leaked Live TV: channel=%#v onNow=%#v", c, onNow)
+	}
+
+	// 3. XML /library/search emits <SearchResult><Channel .../></SearchResult> cleanly.
+	xmlRec := f.request(t, http.MethodGet, "/library/search?query="+url.QueryEscape("red zone")+"&searchTypes=livetv", map[string]string{
+		"Accept":          "application/xml",
+		"X-Plex-Token":    ownerToken,
+		"X-Plex-Product":  "Plex for Android (TV)",
+		"X-Plex-Platform": "Android",
+	})
+	if xmlRec.Code != http.StatusOK {
+		t.Fatalf("XML /library/search: %d %s", xmlRec.Code, xmlRec.Body.String())
+	}
+	var xmlDoc struct {
+		Results []struct {
+			Channel *struct {
+				ID     string `xml:"id,attr"`
+				Key    string `xml:"key,attr"`
+				Title  string `xml:"title,attr"`
+				Source string `xml:"source,attr"`
+			} `xml:"Channel"`
+		} `xml:"SearchResult"`
+	}
+	if err := xml.Unmarshal(xmlRec.Body.Bytes(), &xmlDoc); err != nil {
+		t.Fatalf("XML unmarshal: %v\n%s", err, xmlRec.Body.String())
+	}
+	foundXMLChan := false
+	for _, r := range xmlDoc.Results {
+		if r.Channel != nil && r.Channel.ID == ch.ID && r.Channel.Key == wantChannelKey && r.Channel.Title == ch.Name && r.Channel.Source == wantSource {
+			foundXMLChan = true
+		}
+	}
+	if !foundXMLChan {
+		t.Fatalf("XML /library/search missing Channel hit: %s", xmlRec.Body.String())
+	}
+
+	// 4. Viewer Live TV policy (Restricted, MaxRating, Disabled) blocks Live TV hits.
+	for _, pol := range []livetv.Policy{
+		{UserID: friendUser.ID, Restricted: true},
+		{UserID: friendUser.ID, MaxRating: "G"},
+		{UserID: friendUser.ID, Disabled: true},
+	} {
+		if err := service.SavePolicy(ctx, pol); err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range []string{"/library/search?query=redzone", "/library/search?query=redzone&searchTypes=livetv"} {
+			rec := f.request(t, http.MethodGet, target, map[string]string{
+				"Accept":       "application/json",
+				"X-Plex-Token": friendToken,
+			})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("friend %s (%+v): %d", target, pol, rec.Code)
+			}
+			if c, onNow := findHits(decodeJSON(t, rec)); c != nil || onNow != nil {
+				t.Fatalf("policy %+v leaked Live TV in %s: channel=%#v onNow=%#v", pol, target, c, onNow)
+			}
+		}
+	}
+}

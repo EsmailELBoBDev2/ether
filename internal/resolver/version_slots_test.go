@@ -2,11 +2,14 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -368,4 +371,95 @@ func TestDetailVariantCacheIgnoresVolatileTitleFieldsAndRefreshKeepsConcrete(t *
 	if err != nil || len(stale) != len(warm) || stale[0].Release.ID != warm[0].Release.ID {
 		t.Fatalf("RefreshDetailVariants dropped back to placeholders: got %+v, want %s", stale, warm[0].Release.ID)
 	}
+}
+
+func TestPickedTierSlotFailsOverWithinTierAndStepsDownNeverUp(t *testing.T) {
+	ctx := context.Background()
+	slot1080 := versionSlot{Kind: "tier", Height: 1080}.id()
+
+	newCfg := func() config.Config {
+		cfg := testCfg()
+		cfg.Quality.Rules = nil
+		cfg.Quality.Default, cfg.Quality.Remote = "4K", "4K"
+		cfg.Resolver.AlternativesPerResolution = true
+		cfg.Resolver.SameQualityAlternatives = 1
+		return cfg
+	}
+
+	rels := []core.Release{
+		rel("uhd1", "The.Signal.1999.2160p.WEB-DL.DV.DDP5.1.HEVC-UHD", 20000),
+		rel("hd1", "The.Signal.1999.1080p.BluRay.x265.DTS-HD.MA.5.1-DEAD1", 12000),
+		rel("hd2", "The.Signal.1999.1080p.BluRay.x264.DDP5.1-DEAD2", 10000),
+		rel("hd3", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-GOOD1", 8000),
+		rel("hd4", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-GOOD2", 7500),
+		rel("sd1", "The.Signal.1999.720p.BluRay.x264-SD1", 4000),
+	}
+
+	t.Run("same-tier failover skips dead copies and keeps slot receipt", func(t *testing.T) {
+		svc := New(&fakeIndexer{releases: rels}, fakeHealth{unhealthy: map[string]bool{"hd1": true, "hd2": true}}, nil, newCfg(), Options{})
+		defer svc.Close()
+
+		req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps(), Prefer: slot1080}
+		res, err := svc.Resolve(ctx, req)
+		if err != nil || res == nil {
+			t.Fatalf("Resolve(slot1080) = %+v, %v", res, err)
+		}
+		if res.Release.ID != "hd3" || !res.MatchesVersion(slot1080) || res.QualityFallback != "" {
+			t.Fatalf("got rel=%q selector=%q fallback=%q, want hd3 fulfilling %q", res.Release.ID, res.VersionSelector, res.QualityFallback, slot1080)
+		}
+		if !slices.Contains(res.FailedReleases, "hd1") || !slices.Contains(res.FailedReleases, "hd2") {
+			t.Fatalf("FailedReleases = %v, want hd1 and hd2", res.FailedReleases)
+		}
+		for _, alt := range res.Alternates {
+			if alt.Info.Height != 1080 {
+				t.Fatalf("alternate %s has height %d, want only 1080p same-slot alternates", alt.ID, alt.Info.Height)
+			}
+		}
+
+		// Exact concrete release pick still fails closed on a dead release.
+		exactReq := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps(), Prefer: "hd1", PreferredOnly: true}
+		if got, err := svc.Resolve(ctx, exactReq); !errors.Is(err, core.ErrNotAvailable) || got != nil {
+			t.Fatalf("exact dead pick = %+v, %v; want ErrNotAvailable", got, err)
+		}
+	})
+
+	t.Run("exhausted tier steps down to nearest lower tier and surfaces fallback", func(t *testing.T) {
+		svc := New(&fakeIndexer{releases: rels}, fakeHealth{unhealthy: map[string]bool{
+			"hd1": true, "hd2": true, "hd3": true, "hd4": true,
+		}}, nil, newCfg(), Options{})
+		defer svc.Close()
+
+		req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps(), Prefer: slot1080}
+		res, err := svc.Resolve(ctx, req)
+		if err != nil || res == nil {
+			t.Fatalf("Resolve(slot1080 step-down) = %+v, %v", res, err)
+		}
+		if res.Release.ID != "sd1" {
+			t.Fatalf("step-down release = %q, want sd1 (720p), never 4K uhd1", res.Release.ID)
+		}
+		if res.VersionSelector != "" {
+			t.Fatalf("step-down VersionSelector = %q, want empty", res.VersionSelector)
+		}
+		if res.QualityFallback == "" {
+			t.Fatal("step-down must surface QualityFallback")
+		}
+		if trace, ok := svc.LatestDecision(matrixTitle().Key); !ok || trace.QualityFallback == "" {
+			t.Fatalf("LatestDecision QualityFallback missing: ok=%v trace=%+v", ok, trace)
+		}
+	})
+
+	t.Run("exhausted tier with no lower tier never climbs up to 4K", func(t *testing.T) {
+		noLower := []core.Release{
+			rel("uhd1", "The.Signal.1999.2160p.WEB-DL.DV.DDP5.1.HEVC-UHD", 20000),
+			rel("hd1", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-DEAD1", 8000),
+		}
+		svc := New(&fakeIndexer{releases: noLower}, fakeHealth{unhealthy: map[string]bool{"hd1": true}}, nil, newCfg(), Options{})
+		defer svc.Close()
+
+		req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps(), Prefer: slot1080}
+		res, err := svc.Resolve(ctx, req)
+		if !errors.Is(err, core.ErrNotAvailable) || res != nil {
+			t.Fatalf("exhausted tier with only 4K left = %+v, %v; want ErrNotAvailable (never 4K)", res, err)
+		}
+	})
 }

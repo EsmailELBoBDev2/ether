@@ -36,9 +36,14 @@ type stalePreferKey struct {
 	release string
 }
 
-// preferenceStale reports a picked release that recently fell back. The
-// caller holds m.mu.
+// preferenceStaleLocked reports a picked concrete release that recently fell
+// back. Menu slots (ether-slot:v1:...) are never latched here: stale-pick
+// memory is keyed per concrete release so a repeat pick moves on to the next
+// copy. The caller holds m.mu.
 func (m *Manager) preferenceStaleLocked(key core.RatingKey, release string, now time.Time) bool {
+	if release == "" || core.IsExplicitVersionSlotSelector(release) {
+		return false
+	}
 	entry, ok := m.stalePrefers[stalePreferKey{key, release}]
 	if !ok {
 		return false
@@ -55,8 +60,51 @@ func (m *Manager) preferenceStaleLocked(key core.RatingKey, release string, now 
 	return true
 }
 
-func (m *Manager) notePreferenceStale(ctx context.Context, s *session, played, reason string) {
-	key, release := s.ident.key, s.prefer
+// isReleaseStale reports whether a concrete release for key is inside the
+// 10-minute stale-pick window.
+func (m *Manager) isReleaseStale(key core.RatingKey, release string) bool {
+	if release == "" || core.IsExplicitVersionSlotSelector(release) {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.preferenceStaleLocked(key, release, m.now())
+}
+
+// staleReleasesLocked returns concrete release IDs for key that failed within
+// stalePreferTTL so a repeat pick of a menu slot skips them and moves on to the
+// next copy. The caller holds m.mu.
+func (m *Manager) staleReleasesLocked(key core.RatingKey, now time.Time) []string {
+	if len(m.stalePrefers) == 0 {
+		return nil
+	}
+	var out []string
+	for k, entry := range m.stalePrefers {
+		if k.key != key || k.release == "" || core.IsExplicitVersionSlotSelector(k.release) {
+			continue
+		}
+		if now.Sub(entry.at) >= stalePreferTTL {
+			delete(m.stalePrefers, k)
+			continue
+		}
+		if observer, ok := m.deps.Resolver.(core.PreferenceFallbackObserver); ok && observer.PreferredVersionRecovered(entry.title, k.release, entry.played, entry.at) {
+			delete(m.stalePrefers, k)
+			if entry.title != nil {
+				m.log.Info("picked release found in refreshed search; retrying", "key", key, "title", entry.title.Title, "release", k.release)
+			}
+			continue
+		}
+		out = append(out, k.release)
+	}
+	return out
+}
+
+// noteStaleRelease records a single concrete release failure for stalePreferTTL
+// so repeat picks of the same menu slot skip it rather than latching the slot.
+func (m *Manager) noteStaleRelease(key core.RatingKey, release string, title *core.Title, played, reason string) (stalePreference, bool) {
+	if release == "" || core.IsExplicitVersionSlotSelector(release) {
+		return stalePreference{}, false
+	}
 	now := m.now()
 	m.mu.Lock()
 	if m.stalePrefers == nil {
@@ -77,9 +125,18 @@ func (m *Manager) notePreferenceStale(ctx context.Context, s *session, played, r
 			delete(m.stalePrefers, oldest)
 		}
 	}
-	entry := stalePreference{at: now, title: s.title, played: played, reason: reason}
+	entry := stalePreference{at: now, title: title, played: played, reason: reason}
 	m.stalePrefers[stalePreferKey{key, release}] = entry
 	m.mu.Unlock()
+	return entry, true
+}
+
+func (m *Manager) notePreferenceStale(ctx context.Context, s *session, played, reason string) {
+	key, release := s.ident.key, s.prefer
+	entry, ok := m.noteStaleRelease(key, release, s.title, played, reason)
+	if !ok {
+		return
+	}
 	m.recordPreferenceFallback(ctx, key, release, entry, stalePreferTTL, false)
 }
 

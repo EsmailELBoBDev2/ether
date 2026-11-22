@@ -271,6 +271,7 @@ type Resolution struct {
 	Release         Release   `json:"release"`
 	NZB             []byte    `json:"-"`
 	Alternates      []Release `json:"alternates"` // next candidates, best first
+	FailedReleases  []string  `json:"-"`          // concrete release IDs rejected during this resolve
 	ResolvedAt      time.Time `json:"resolvedAt"`
 }
 

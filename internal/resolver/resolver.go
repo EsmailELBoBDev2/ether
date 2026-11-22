@@ -910,12 +910,17 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}()
 	}
 	var selector, slotRelease string
+	var slotAutoFulfilled bool
+	var failedReleases []string
 	defer func() {
 		if resolved != nil {
 			copy := *resolved
 			copy.VersionSelector = ""
-			if slotRelease != "" && copy.Release.ID == slotRelease {
+			if (slotRelease != "" && copy.Release.ID == slotRelease) || (slotAutoFulfilled && selector != "") {
 				copy.VersionSelector = selector
+			}
+			if len(failedReleases) > 0 {
+				copy.FailedReleases = failedReleases
 			}
 			resolved = &copy
 		}
@@ -932,6 +937,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	trace.Limits = &TraceLimits{ProfileMinHeight: profile.MinHeight, ProfileMaxHeight: profile.MaxHeight, ProfileConfiguredMaxHeight: traceConfiguredMaxHeight(profile), ClientMaxHeight: req.Client.MaxHeight, ClientMaxBitrateKbps: req.Client.MaxBitrateKbps, AllowHDR: profile.AllowHDR, AllowDolbyVision: profile.AllowDolbyVision}
 	defer func() {
 		trace.TotalDuration = time.Since(started)
+		if resolved != nil {
+			failedReleases = rejectedAttemptedReleaseIDs(&trace, resolved.Release.ID)
+		}
 		if !core.IsSpeculative(ctx) && !channelAvailabilityCheck(ctx) {
 			s.logPlayDecision(trace)
 		}
@@ -1216,8 +1224,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 	}
 	// Logical version selectors are resolved only after normal discovery and
-	// policy gates. A missing slot falls back exactly like an unavailable
-	// explicit release, never bypassing the owner's profile.
+	// policy gates. An authorized non-Auto slot tries all matching candidates
+	// in that slot with Auto's failover machinery, stepping down only to lower
+	// tiers the client allows and never up to Auto/4K.
 	if slot, ok := parseVersionSlot(req.Prefer); ok {
 		plan := s.configuredSlots(profile, req.Client, core.MaxVariants)
 		selected := -1
@@ -1227,44 +1236,68 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 				break
 			}
 		}
-		cands = pinFirst(acceptableVariantAudio(clearIdentityVariants(cands)), pinID)
-		pool := cands
-		autoReq := req
-		autoReq.Prefer = ""
-		titleVC := s.viewerTitleChoiceForResolve(autoReq, nil)
-		showVC := s.viewerShowChoiceForResolve(autoReq)
-		if s.resolverCfg().OfferHigherVersions && slot.Kind != "auto" && slot.Kind != "alternative" {
-			if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
-				if ranked, _, e := s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, &trace, pinID, false); e == nil {
-					pool = pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
+		if slot.Kind != "auto" {
+			if selected < 0 {
+				if req.PreferredOnly {
+					return nil, core.ErrNotAvailable
 				}
+				req.Prefer = ""
+			} else {
+				return s.resolveVersionSlot(ctx, slotResolveParams{
+					slot:         slot,
+					origPrefer:   req.Prefer,
+					selected:     selected,
+					plan:         plan,
+					req:          &req,
+					sreq:         sreq,
+					profile:      profile,
+					results:      results,
+					cands:        cands,
+					pinID:        pinID,
+					searchErr:    searchErr,
+					hasExclude:   hasExclude,
+					inconclusive: inconclusive,
+					trace:        &trace,
+					rcfg:         rcfg,
+					early:        early,
+					selector:     &selector,
+					slotRelease:  &slotRelease,
+				})
 			}
-		}
-		auto, _ := s.slotAutoWithSource(autoReq, cands, pool, titleVC, showVC)
-		picks := slotPicks(plan, pool, auto, req, titleVC)
-		if selected >= 0 && selected < len(picks) && picks[selected].ID != "" {
-			selector, slotRelease = req.Prefer, picks[selected].ID
-			found := false
-			for _, c := range cands {
-				if c.rel.ID == slotRelease {
-					found = true
-					break
-				}
-			}
-			if !found {
-				for _, c := range pool {
+		} else {
+			cands = pinFirst(acceptableVariantAudio(clearIdentityVariants(cands)), pinID)
+			pool := cands
+			autoReq := req
+			autoReq.Prefer = ""
+			titleVC := s.viewerTitleChoiceForResolve(autoReq, nil)
+			showVC := s.viewerShowChoiceForResolve(autoReq)
+			auto, _ := s.slotAutoWithSource(autoReq, cands, pool, titleVC, showVC)
+			picks := slotPicks(plan, pool, auto, req, titleVC)
+			if selected >= 0 && selected < len(picks) && picks[selected].ID != "" {
+				selector, slotRelease = req.Prefer, picks[selected].ID
+				slotAutoFulfilled = !req.PreferredOnly
+				found := false
+				for _, c := range cands {
 					if c.rel.ID == slotRelease {
-						cands = append(cands, c)
+						found = true
 						break
 					}
 				}
+				if !found {
+					for _, c := range pool {
+						if c.rel.ID == slotRelease {
+							cands = append(cands, c)
+							break
+						}
+					}
+				}
+				req.Prefer = slotRelease
+			} else {
+				if req.PreferredOnly {
+					return nil, core.ErrNotAvailable
+				}
+				req.Prefer = ""
 			}
-			req.Prefer = slotRelease
-		} else {
-			if req.PreferredOnly {
-				return nil, core.ErrNotAvailable
-			}
-			req.Prefer = ""
 		}
 	}
 

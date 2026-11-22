@@ -72,6 +72,10 @@ func (m *Manager) observeViewerVersionChoice(s *session, position time.Duration,
 		s.mu.Unlock()
 		return
 	}
+	if core.IsExplicitVersionSlotSelector(s.prefer) && !s.cur.res.MatchesVersion(s.prefer) {
+		s.mu.Unlock()
+		return
+	}
 	if !s.choiceStartSet {
 		s.choiceStartSet = true
 		s.choiceLastPos = 0

@@ -261,19 +261,21 @@ type session struct {
 	// after its flight completed (see abandonFlightLocked).
 	claimed bool
 
-	mu               sync.Mutex
-	preparedOnly     bool
-	backgroundHold   *backgroundSourceHold
-	analysisSource   bool
-	stoppedBySurface bool
-	sourcePins       int
-	cur              *generation
-	virtualGen       *generation // generation whose layout virtual mirrors
-	gens             int
-	tried            []string
-	alternates       []core.Release
-	failovers        int
-	downFailovers    int
+	mu                 sync.Mutex
+	preparedOnly       bool
+	backgroundHold     *backgroundSourceHold
+	analysisSource     bool
+	stoppedBySurface   bool
+	sourcePins         int
+	cur                *generation
+	virtualGen         *generation // generation whose layout virtual mirrors
+	gens               int
+	tried              []string
+	alternates         []core.Release
+	altVersionSelector string // slot selector carried by alternates when a slot pick fails over
+	altQualityFallback string // fallback note carried by alternates when a stepped-down pick fails over
+	failovers          int
+	downFailovers      int
 	// downMisses counts speed-driven down-failovers that found no
 	// lower-bitrate release. They count toward MaxDownFailovers so a
 	// source that stays too slow cannot retry forever.
@@ -655,6 +657,20 @@ func (g *generation) noteReadFailure(err error) {
 	if g.readFailure == nil {
 		g.readFailure = err
 	}
+}
+
+func (s *session) setAlternateMeta(versionSelector, qualityFallback string) {
+	s.mu.Lock()
+	s.altVersionSelector = versionSelector
+	s.altQualityFallback = qualityFallback
+	s.mu.Unlock()
+}
+
+func (s *session) alternateMeta() (string, string) {
+	s.mu.Lock()
+	sel, qf := s.altVersionSelector, s.altQualityFallback
+	s.mu.Unlock()
+	return sel, qf
 }
 func (g *generation) sourceFailure() error {
 	g.mu.Lock()

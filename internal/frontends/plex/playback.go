@@ -511,6 +511,9 @@ func sessionWithInfo(ps *frontend.PlaySession, info frontend.MediaInfo) *fronten
 	}
 	cp := *ps
 	cp.Info = info
+	if len(cp.Info.Keyframes) == 0 && len(ps.Info.Keyframes) > 0 {
+		cp.Info.Keyframes = ps.Info.Keyframes
+	}
 	return &cp
 }
 
@@ -1878,7 +1881,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 				return s.transcoder().Decide(ps.Info, entry.caps, opts)
 			}
 		}
-		videoOK := dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(entry.caps, dec.VideoCodec)
+		videoOK := !(ps.Info.Video() != nil && entry.caps.AlwaysEncodeVideo) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(entry.caps, dec.VideoCodec))
 		audioOK := dec.AudioCodec == "" || frontend.SegmentedAudioCopyOK(entry.caps, dec.AudioCodec)
 		if !videoOK || !audioOK {
 			opts := entry.opts

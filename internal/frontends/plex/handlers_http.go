@@ -141,10 +141,12 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 				return s.transcoder().Decide(ps.Info, caps, opts)
 			}
 		}
-		if len(caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(caps.TranscodeAudioCodecs, dec.AudioCodec) {
+		videoBlocked := ps.Info.Video() != nil && caps.AlwaysEncodeVideo
+		audioBlocked := len(caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(caps.TranscodeAudioCodecs, dec.AudioCodec)
+		if videoBlocked || audioBlocked {
 			opts := entry.opts
 			opts.DirectPlay = false
-			opts.DirectStream = true
+			opts.DirectStream = !videoBlocked
 			opts.Protocol = frontend.ProtocolHTTP
 			return s.transcoder().Decide(ps.Info, caps, opts)
 		}

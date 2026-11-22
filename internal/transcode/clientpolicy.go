@@ -16,6 +16,7 @@ type ClientPolicy struct {
 	DolbyVisionProfiles []int    `json:"dolbyVisionProfiles"`
 	SubtitleCodecs      []string `json:"subtitleCodecs"`
 	Notes               string   `json:"notes"`
+	AlwaysEncodeVideo   bool     `json:"alwaysEncodeVideo,omitempty"`
 }
 
 func identityOf(c core.ClientCaps) clientreg.Identity {
@@ -36,6 +37,8 @@ type PlaybackDefaults struct {
 	// DolbyVisionOff: an owner override turned Dolby Vision off, so a
 	// profile 7/8 copy carries only its compatible base layer.
 	DolbyVisionOff bool
+	// AlwaysEncodeVideo: an owner override disabled video copy on streams.
+	AlwaysEncodeVideo bool
 }
 
 // PlaybackDefaultsFor evaluates the registry, including owner overrides.
@@ -45,7 +48,7 @@ func PlaybackDefaultsFor(product, platform, device, model, version string, overr
 	return PlaybackDefaults{
 		ID: got.ID, Video: got.Video, Audio: got.Audio, Containers: got.Containers,
 		MaxHeight: got.MaxHeight, HDR10: got.HDR10, DolbyVision: got.DolbyVision, HeightLocked: got.HeightLocked,
-		DolbyVisionOff: got.DolbyVisionOff,
+		DolbyVisionOff: got.DolbyVisionOff, AlwaysEncodeVideo: got.AlwaysEncodeVideo,
 	}
 }
 
@@ -80,6 +83,7 @@ func ResolvePolicy(c core.ClientCaps, overrides []core.ClientCapabilityOverride)
 		DolbyVisionProfiles: slices.Clone(got.DolbyVisionProfiles),
 		SubtitleCodecs:      slices.Clone(got.Subtitles),
 		Notes:               got.Notes,
+		AlwaysEncodeVideo:   got.AlwaysEncodeVideo,
 	}
 	if len(c.DVProfiles) > 0 || c.DVProfilesExplicit {
 		policy.DolbyVisionProfiles = slices.Clone(c.DVProfiles)
@@ -154,6 +158,9 @@ func ApplyForcedOverrides(c core.ClientCaps, model string, overrides []core.Clie
 		if o.DolbyVision != nil {
 			c.DolbyVision = *o.DolbyVision
 			c.DolbyVisionBaseOnly = !*o.DolbyVision
+		}
+		if o.AlwaysEncodeVideo {
+			c.AlwaysEncodeVideo = true
 		}
 		if !reflect.DeepEqual(before, c) {
 			c.ForcedOverrideApplied = true

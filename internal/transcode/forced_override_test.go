@@ -83,3 +83,58 @@ func TestShieldForcedDVProfile7DirectPlayAndRemuxStrip(t *testing.T) {
 		t.Fatalf("forced P7 remux did not strip DV: %+v", d)
 	}
 }
+
+func TestAlwaysEncodeVideoOverride(t *testing.T) {
+	video := core.MediaInfo{
+		Container:   "mkv",
+		BitrateKbps: 3000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "aac", Channels: 2},
+		},
+	}
+	caps := core.ClientCaps{
+		Product:           "CustomPlayer",
+		Containers:        []string{"mkv"},
+		VideoCodecs:       []string{"h264", "hevc"},
+		AudioCodecs:       []string{"aac"},
+		MaxHeight:         2160,
+		AlwaysEncodeVideo: true,
+	}
+
+	// Direct play of the original file is unaffected.
+	if d := Decide(video, caps, core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS}, Policy{}); d.Kind != core.DecisionDirectPlay {
+		t.Fatalf("direct play should be unaffected, got %+v", d)
+	}
+
+	// Any stream that does not direct-play must encode video (no remux copy),
+	// even for low-bitrate files under any cap, while still copying audio.
+	enc := Decide(video, caps, core.DecideOptions{DirectPlay: false, DirectStream: true, Protocol: core.ProtocolHLS}, Policy{})
+	if enc.Kind != core.DecisionTranscode || enc.VideoCopy || !enc.AudioCopy || enc.MaxHeight != 1080 {
+		t.Fatalf("stream should encode video at source height and copy audio, got %+v", enc)
+	}
+	if SegmentedVideoCopyOK(caps, "h264") {
+		t.Fatal("SegmentedVideoCopyOK must be false when AlwaysEncodeVideo is set")
+	}
+
+	// Audio-only items remain unaffected.
+	audioOnly := core.MediaInfo{
+		Container: "flac",
+		Streams:   []core.StreamInfo{{Index: 0, Type: "audio", Codec: "aac", Channels: 2}},
+	}
+	if d := Decide(audioOnly, caps, core.DecideOptions{DirectPlay: false, DirectStream: true, Protocol: core.ProtocolHLS}, Policy{}); d.Kind != core.DecisionRemux || !d.AudioCopy {
+		t.Fatalf("audio-only remux should be unaffected, got %+v", d)
+	}
+
+	// Override applies without Force even when the client matches the generic record.
+	overrides := []core.ClientCapabilityOverride{{Product: "CustomPlayer", ProductExact: true, AlwaysEncodeVideo: true}}
+	if got := PlaybackDefaultsFor("CustomPlayer", "", "", "", "", overrides); !got.AlwaysEncodeVideo {
+		t.Fatalf("PlaybackDefaultsFor missed generic-app AlwaysEncodeVideo: %+v", got)
+	}
+	if got := ResolvePolicy(core.ClientCaps{Product: "CustomPlayer"}, overrides); !got.AlwaysEncodeVideo {
+		t.Fatalf("ResolvePolicy missed AlwaysEncodeVideo: %+v", got)
+	}
+	if got := PlaybackDefaultsFor("OtherPlayer", "", "", "", "", overrides); got.AlwaysEncodeVideo {
+		t.Fatalf("AlwaysEncodeVideo leaked to non-matching app: %+v", got)
+	}
+}

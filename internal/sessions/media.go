@@ -247,7 +247,15 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if req.Format == frontend.StreamDASH {
 		proto = core.ProtocolDASH
 		if dec.Kind == core.DecisionDirectPlay {
-			dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, !ps.Info.AudioOnly(), true
+			if ps.Info.Video() != nil && s.caps.AlwaysEncodeVideo {
+				options := s.opts
+				options.DirectPlay = false
+				options.DirectStream = false
+				options.Protocol = core.ProtocolDASH
+				dec = b.deps.Transcoder.Decide(ps.Info, s.caps, options)
+			} else {
+				dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, !ps.Info.AudioOnly(), true
+			}
 		}
 	} else if req.Format == frontend.StreamHTTP {
 		proto = core.ProtocolHTTP
@@ -530,7 +538,19 @@ func (b *Broker) hlsOutputDecision(ps *core.PlaySession, caps core.ClientCaps, o
 		}
 		return b.decideAudioProfile(ps, caps, opts, allowTranscoding, "hls")
 	}
-	dec = HLSDecision(dec, opts.DirectPlay, func() core.Decision { return b.deps.Transcoder.Decide(ps.Info, caps, opts) }, nil)
+	dec = HLSDecision(dec, opts.DirectPlay, func() core.Decision {
+		retry := opts
+		retry.DirectPlay = false
+		return b.deps.Transcoder.Decide(ps.Info, caps, retry)
+	}, func(d core.Decision) core.Decision {
+		if ps.Info.Video() != nil && caps.AlwaysEncodeVideo {
+			retry := opts
+			retry.DirectPlay = false
+			retry.DirectStream = false
+			return b.deps.Transcoder.Decide(ps.Info, caps, retry)
+		}
+		return d
+	})
 	if b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
 		return dec, false
 	}

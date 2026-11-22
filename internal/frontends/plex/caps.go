@@ -13,15 +13,16 @@ import (
 // profile. The values come from the capability registry. Profile-extra
 // directives refine them afterwards.
 type baseCaps struct {
-	id           string
-	video        []string
-	audio        []string
-	containers   []string
-	maxHeight    int
-	hdr10        bool
-	dv           bool
-	dvOff        bool // owner override turned Dolby Vision off
-	heightLocked bool
+	id                string
+	video             []string
+	audio             []string
+	containers        []string
+	maxHeight         int
+	hdr10             bool
+	dv                bool
+	dvOff             bool // owner override turned Dolby Vision off
+	alwaysEncodeVideo bool // owner override disabled video copy on streams
+	heightLocked      bool
 }
 
 // ClientCaps derives frontend.ClientCaps for the request. remoteMaxKbps caps
@@ -70,6 +71,9 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 	if b.dvOff {
 		c.DolbyVisionBaseOnly = true
 	}
+	if b.alwaysEncodeVideo {
+		c.AlwaysEncodeVideo = true
+	}
 	dv, subs, dvChanged, subsChanged := frontend.PolicyStamp(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, overrides)
 	if dvChanged {
 		c.DVProfiles = dv
@@ -97,7 +101,7 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 
 func playbackCaps(pr *Request, overrides []frontend.ClientCapabilityOverride) baseCaps {
 	got := frontend.PlaybackDefaultsFor(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, overrides)
-	return baseCaps{id: got.ID, video: got.Video, audio: got.Audio, containers: got.Containers, maxHeight: got.MaxHeight, hdr10: got.HDR10, dv: got.DolbyVision, dvOff: got.DolbyVisionOff, heightLocked: got.HeightLocked}
+	return baseCaps{id: got.ID, video: got.Video, audio: got.Audio, containers: got.Containers, maxHeight: got.MaxHeight, hdr10: got.HDR10, dv: got.DolbyVision, dvOff: got.DolbyVisionOff, alwaysEncodeVideo: got.AlwaysEncodeVideo, heightLocked: got.HeightLocked}
 }
 
 func baseMaxHeightSource(pr *Request, b baseCaps) string {

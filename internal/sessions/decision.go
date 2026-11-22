@@ -102,7 +102,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		if healthSafety {
 			dec.Reason = "remux for failover safety: health unverified"
 		}
-		videoCopyOK := videoCodec == "" || transcode.SegmentedVideoCopyOK(r.Caps, videoCodec)
+		videoCopyOK := !(ps.Info.Video() != nil && r.Caps.AlwaysEncodeVideo) && (videoCodec == "" || transcode.SegmentedVideoCopyOK(r.Caps, videoCodec))
 		audioCopyOK := audioCodec == "" || transcode.SegmentedAudioCopyOK(r.Caps, audioCodec)
 		if !videoCopyOK || !audioCopyOK {
 			opts := r.Options

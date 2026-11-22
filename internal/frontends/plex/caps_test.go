@@ -375,4 +375,11 @@ func TestCapabilityOverrideChangesRegistryAndYieldsToProfile(t *testing.T) {
 	if !slices.Equal(forced.AudioCodecs, runtime.AudioCodecs) {
 		t.Fatal("force replaced an unedited audio declaration")
 	}
+	always := pr.ClientCapsWith(0, []core.ClientCapabilityOverride{{Product: "Plex for Apple TV", ProductExact: true, AlwaysEncodeVideo: true}})
+	if !always.AlwaysEncodeVideo {
+		t.Fatalf("AlwaysEncodeVideo should apply without Force even with ProfileExtra: %+v", always)
+	}
+	if other := (&Request{Product: "Plex for Roku", Platform: "Roku"}).ClientCapsWith(0, []core.ClientCapabilityOverride{{Product: "Plex for Apple TV", ProductExact: true, AlwaysEncodeVideo: true}}); other.AlwaysEncodeVideo {
+		t.Fatalf("AlwaysEncodeVideo leaked to non-matching Plex app: %+v", other)
+	}
 }

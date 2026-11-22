@@ -77,6 +77,7 @@ type CapabilityOverride = {
   maxHeight?: number;
   hdr10?: boolean;
   dolbyVision?: boolean;
+  alwaysEncodeVideo?: boolean;
   notes?: string;
 };
 
@@ -121,6 +122,7 @@ type Draft = {
   height: string;
   hdr: boolean;
   dolby: boolean;
+  alwaysEncodeVideo: boolean;
   product: string;
 };
 
@@ -267,6 +269,7 @@ function blankDraft(): Draft {
     height: "",
     hdr: false,
     dolby: false,
+    alwaysEncodeVideo: false,
     product: "",
   };
 }
@@ -284,6 +287,7 @@ function listsFrom(saved?: CapabilityOverride, builtinHeight = 0) {
     height: height > 0 && height !== builtinHeight ? String(height) : "",
     hdr: Boolean(saved?.hdr10),
     dolby: Boolean(saved?.dolbyVision),
+    alwaysEncodeVideo: Boolean(saved?.alwaysEncodeVideo),
   };
 }
 
@@ -475,6 +479,8 @@ function applyCapabilityDiff(
   }
   if (draft.hdr !== baseline.hdr) override.hdr10 = draft.hdr;
   if (draft.dolby !== baseline.dolby) override.dolbyVision = draft.dolby;
+  if (draft.alwaysEncodeVideo) override.alwaysEncodeVideo = true;
+  else delete override.alwaysEncodeVideo;
   if (!keepProduct && draft.product !== baseline.product) {
     if (draft.product.trim()) override.product = draft.product.trim();
     else delete override.product;
@@ -809,7 +815,14 @@ export function DeviceCapabilities() {
       (target.override.device ?? "") !== (target.saved?.device ?? "") ||
       (target.override.platform ?? "") !== (target.saved?.platform ?? "") ||
       Boolean(target.override.force) !== Boolean(target.saved?.force);
+    const alwaysEncodeChanged =
+      Boolean(target.override.alwaysEncodeVideo) !== Boolean(target.saved?.alwaysEncodeVideo);
     if (!capabilityChanged(target.override) && !renamed) {
+      if (alwaysEncodeChanged && target.saved) {
+        const others = overrides.filter((item) => item !== target.saved);
+        await persist(others, true);
+        return;
+      }
       setEditing(null);
       return;
     }
@@ -1742,6 +1755,14 @@ export function DeviceCapabilities() {
               onChange={(platform) => setDraft({ ...draft, platform })}
             />
           ) : null}
+          <BoolRow
+            label={t("Always convert video")}
+            help={t(
+              "Encode video instead of copying it when streaming. Direct play of the original file is unaffected.",
+            )}
+            value={draft.alwaysEncodeVideo}
+            onChange={(alwaysEncodeVideo) => setDraft({ ...draft, alwaysEncodeVideo })}
+          />
           <BoolRow
             label={t("Use these settings even when the app reports otherwise")}
             help={t("Use this when your device can play something its app is too cautious about.")}

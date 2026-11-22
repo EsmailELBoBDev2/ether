@@ -45,6 +45,14 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	// Otherwise fill only missing codec lists; an explicit declaration wins.
 	if !s.policy.NativePlaybackCapabilities {
 		declared = playbackFloor(declared, overrides)
+	} else {
+		device := declared.Device
+		if device == "" {
+			device = declared.DeviceName
+		}
+		if transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, device, "", declared.Version, overrides).AlwaysEncodeVideo {
+			declared.AlwaysEncodeVideo = true
+		}
 	}
 	policy := transcode.ResolvePolicy(declared, overrides)
 	if declared.SubtitleCodecs == nil {
@@ -52,6 +60,9 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	}
 	if len(declared.DVProfiles) == 0 {
 		declared.DVProfiles = append([]int(nil), policy.DolbyVisionProfiles...)
+	}
+	if policy.AlwaysEncodeVideo {
+		declared.AlwaysEncodeVideo = true
 	}
 	declared = transcode.ApplyForcedOverrides(declared, "", overrides)
 	declared.PreserveEmptyVideoCodecs = s.policy.NativePlaybackCapabilities
@@ -130,6 +141,9 @@ func playbackFloor(declared core.ClientCaps, overrides []core.ClientCapabilityOv
 		device = declared.DeviceName
 	}
 	defaults := transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, device, "", declared.Version, overrides)
+	if defaults.AlwaysEncodeVideo {
+		declared.AlwaysEncodeVideo = true
+	}
 	if defaults.ID == "" || defaults.ID == "generic" {
 		return declared
 	}

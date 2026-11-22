@@ -130,12 +130,15 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 
 	dec := entry.decision
 	if dec.Kind == frontend.DecisionDirectPlay {
-		// The client asked for DASH anyway: remux.
+		// The client asked for DASH anyway: remux unless the app override
+		// requires video encoding or the DASH target rejects the stream.
 		dec.Kind, dec.VideoCopy, dec.AudioCopy = frontend.DecisionRemux, true, true
-		if len(entry.caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(entry.caps.TranscodeAudioCodecs, dec.AudioCodec) {
+		videoOK := !(ps.Info.Video() != nil && entry.caps.AlwaysEncodeVideo) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(entry.caps, dec.VideoCodec))
+		audioOK := len(entry.caps.TranscodeAudioCodecs) == 0 || dec.AudioCodec == "" || slices.Contains(entry.caps.TranscodeAudioCodecs, dec.AudioCodec)
+		if !videoOK || !audioOK {
 			opts := entry.opts
 			opts.DirectPlay = false
-			opts.DirectStream = true
+			opts.DirectStream = videoOK
 			dec = s.transcoder().Decide(ps.Info, entry.caps, opts)
 		}
 	}

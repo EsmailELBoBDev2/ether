@@ -27,5 +27,10 @@ type ClientCapabilityOverride struct {
 	MaxBitrateKbps      int      `json:"maxBitrateKbps,omitempty"`
 	HDR10               *bool    `json:"hdr10,omitempty"`
 	DolbyVision         *bool    `json:"dolbyVision,omitempty"`
-	Notes               string   `json:"notes,omitempty"`
+	// AlwaysEncodeVideo forces every transcoded or remuxed video stream for
+	// matching clients onto the encoded path (keyframes on segment boundaries)
+	// instead of stream-copying video. Direct play of the original file is
+	// unaffected. Applies even when Force is false.
+	AlwaysEncodeVideo bool   `json:"alwaysEncodeVideo,omitempty"`
+	Notes             string `json:"notes,omitempty"`
 }

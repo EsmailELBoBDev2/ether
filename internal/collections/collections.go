@@ -71,23 +71,24 @@ type Service struct {
 	auth     core.Auth
 	chat     Chatter
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
-	describeMu     sync.Mutex
-	describeJobs   map[string]*describeJob
-	describeDrafts map[string]*describeDraft
-	describeActive int
-	describeAgent  CollectionDraftAgent
-	vibe           *vibeRegistry
-	vibeTTL        time.Duration
-	vibeMax        int
-	scorer         atomic.Pointer[scorerBox]
-	onBuilt        atomic.Pointer[func()]
-	onRebuilt      atomic.Pointer[func(RebuildEvent)]
-	art            *artwork.Renderer
-	images         *artwork.Images
-	catCfg         func() config.Catalog
-	kinds          *KindRegistry
-	traktCfg       func() config.Trakt
-	sealer         config.FieldSealer
+	describeMu      sync.Mutex
+	describeJobs    map[string]*describeJob
+	describeDrafts  map[string]*describeDraft
+	describeActive  int
+	describeAgent   CollectionDraftAgent
+	vibe            *vibeRegistry
+	vibeTTL         time.Duration
+	vibeMax         int
+	scorer          atomic.Pointer[scorerBox]
+	onBuilt         atomic.Pointer[func()]
+	onRebuilt       atomic.Pointer[func(RebuildEvent)]
+	art             *artwork.Renderer
+	images          *artwork.Images
+	catCfg          func() config.Catalog
+	librarySections func(context.Context) map[int]core.MediaType
+	kinds           *KindRegistry
+	traktCfg        func() config.Trakt
+	sealer          config.FieldSealer
 
 	liveTTL     time.Duration
 	tick        time.Duration
@@ -144,6 +145,13 @@ func WithLLM(c Chatter) Option { return func(s *Service) { s.SetLLM(c) } }
 // WithArtwork enables generated collection posters.
 func WithArtwork(r *artwork.Renderer, im *artwork.Images) Option {
 	return func(s *Service) { s.art, s.images = r, im }
+}
+
+// WithLibrarySections supplies the live map of non-plugin video library section
+// IDs to their media types so viewer AllowedLibraries checks recognize custom
+// movie/show libraries beyond the canonical IDs 1 and 2.
+func WithLibrarySections(fn func(context.Context) map[int]core.MediaType) Option {
+	return func(s *Service) { s.librarySections = fn }
 }
 
 // WithCatalogConfig supplies the catalogue settings (region for streaming
@@ -449,16 +457,24 @@ func (s *Service) membersFor(ctx context.Context, row *specRow, wait bool) (*mem
 	if fresh {
 		return ms, nil
 	}
-	if row.spec.Refresh != RefreshLive && !row.lastBuilt.IsZero() && row.buildHash != "" {
+	if ms == nil && !row.lastBuilt.IsZero() && row.buildHash != "" {
 		keys, unshared, err := s.loadMembers(ctx, row.id)
 		if err != nil {
 			return nil, err
 		}
-		ms := s.newMemberSet(row.spec, keys, unshared, row.lastBuilt, row.buildHash)
+		ms = s.newMemberSet(row.spec, keys, unshared, row.lastBuilt, row.buildHash)
+		if row.spec.Refresh == RefreshLive {
+			ms.loadedAt = row.lastBuilt
+		}
 		s.mu.Lock()
 		s.members[row.id] = ms
 		s.mu.Unlock()
-		return ms, nil
+		if row.spec.Refresh != RefreshLive {
+			return ms, nil
+		}
+		if min := s.minimumSourceRefresh(row.spec); min > 0 && s.now().Sub(row.lastBuilt) < min {
+			return ms, nil
+		}
 	}
 	bk := buildKey{row.id, row.rawSpec}
 	if s.recentlyFailed(bk) {
@@ -473,19 +489,6 @@ func (s *Service) membersFor(ctx context.Context, row *specRow, wait bool) (*mem
 	for _, src := range row.spec.Sources {
 		if backgroundOnlySource(src) {
 			wait = false
-			if ms == nil && !row.lastBuilt.IsZero() && row.buildHash != "" {
-				keys, unshared, err := s.loadMembers(ctx, row.id)
-				if err != nil {
-					return nil, err
-				}
-				ms = s.newMemberSet(row.spec, keys, unshared, row.lastBuilt, row.buildHash)
-				s.mu.Lock()
-				s.members[row.id] = ms
-				s.mu.Unlock()
-				if row.spec.Refresh == RefreshLive && s.now().Sub(row.lastBuilt) < s.minimumSourceRefresh(row.spec) {
-					return ms, nil
-				}
-			}
 			break
 		}
 	}

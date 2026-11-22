@@ -1185,15 +1185,33 @@ func (s *Service) filterForUserWithStatuses(ctx context.Context, keys []core.Rat
 	if statuses == nil {
 		statuses = map[core.RatingKey]core.WatchStatus{} // nothing watched
 	}
+	var allowedMovie, allowedShow bool
+	if allowedLibs {
+		allowedMovie = user.AllowsLibrary(core.LibraryMovies)
+		allowedShow = user.AllowsLibrary(core.LibraryShows)
+		if (!allowedMovie || !allowedShow) && s.librarySections != nil {
+			for id, typ := range s.librarySections(ctx) {
+				if !user.AllowsLibrary(core.LibraryID(id)) {
+					continue
+				}
+				switch typ {
+				case core.TypeMovie:
+					allowedMovie = true
+				case core.TypeShow:
+					allowedShow = true
+				}
+			}
+		}
+	}
 	ec := &evalCtx{now: s.now(), status: statuses}
 	out := make([]core.RatingKey, 0, len(keys))
 	for _, k := range keys {
 		if allowedLibs {
-			kind := core.TypeShow
 			if k.Kind() == core.KindMovie {
-				kind = core.TypeMovie
-			}
-			if !user.AllowsLibrary(core.CanonicalLibraryForTitle(kind)) {
+				if !allowedMovie {
+					continue
+				}
+			} else if !allowedShow {
 				continue
 			}
 		}

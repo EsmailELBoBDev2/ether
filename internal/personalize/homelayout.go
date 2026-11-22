@@ -65,6 +65,16 @@ func layoutTargetForMedia(section core.MediaType, sectionID int) string {
 	return "library:1"
 }
 
+// layoutTargetForContext returns the layout page for a request context: "home"
+// for Home and library-scoped Home requests (Plex contentDirectoryID), or
+// "library:<id>" for a library's Recommended page.
+func layoutTargetForContext(section core.MediaType, hc core.HubContext) string {
+	if hc.HomeScoped {
+		return surfHome
+	}
+	return layoutTargetForMedia(section, hc.SectionID)
+}
+
 // layoutTarget resolves a caller section ("home", "library:<id>", or legacy
 // internal media-type markers accompanied by HubContext.SectionID) into the
 // independent layout page ("home" or "library:<id>").
@@ -1171,7 +1181,7 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 	}
 	day := dayOf(hc.Now, e.loc)
 	intent, _ := e.intentFor(user.ID, hc.Now)
-	target := layoutTargetForMedia(section, hc.SectionID)
+	target := layoutTargetForContext(section, hc)
 	tune := resolveTuning(layoutDoc, user.ID, target)
 	allowed := e.allowedFor(&user)
 	for _, mod := range models {

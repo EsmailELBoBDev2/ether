@@ -136,7 +136,7 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 		def = e.opts.MaxSectionRows
 	}
 	layoutDoc := e.layoutForContext(ctx)
-	target := layoutTargetForMedia(section, hc.SectionID)
+	target := layoutTargetForContext(section, hc)
 	p.Rows = arrangeLayoutFor(p.Rows, layoutDoc, user.ID, hc, target, def)
 	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, target, emptiedByRestrictions)
 	return &p, nil
@@ -323,25 +323,33 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 	surf := sectionName(section)
 	if collID := collectionRowID(pol.Row); collID != "" {
 		cr, hasCR := e.cachedOwnerCollection(user, hc, section, d, collID)
+		var spec *core.CollectionSpec
 		for _, sp := range e.collectionSpecs(ctx) {
-			if sp.ID != collID {
-				continue
+			if sp.ID == collID {
+				spCopy := sp
+				spec = &spCopy
+				break
 			}
-			if !sp.Enabled {
+		}
+		if spec != nil {
+			if !spec.Enabled {
 				return "collection_disabled", "Collection is disabled in Collection Studio"
 			}
 			var targetUser *core.User
 			if user != nil && user.ID > 0 {
 				targetUser = user
 			}
-			if (sp.Targets.Users.All || len(sp.Targets.Users.IDs) > 0) && !sp.Targets.Users.Includes(targetUser) {
+			if spec.OwnerUserID != 0 && (targetUser == nil || targetUser.ID != spec.OwnerUserID) {
 				return "collection_not_shared", "Collection is not shared with this viewer"
 			}
-			if !slices.Contains(collectionSections(sp.MediaType), surf) {
+			if (spec.Targets.Users.All || spec.Targets.Users.IDs != nil) && !spec.Targets.Users.Includes(targetUser) {
+				return "collection_not_shared", "Collection is not shared with this viewer"
+			}
+			if !slices.Contains(collectionSections(spec.MediaType), surf) {
 				return "wrong_surface", "Not available on this page"
 			}
 			if !hasCR && !(layer == "override" && pol.When != nil) {
-				sc := sp.Targets.Schedule
+				sc := spec.Targets.Schedule
 				if draft, ok := d.CollectionSchedules[collID]; ok {
 					sc = draft
 				}
@@ -349,18 +357,82 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 					return "outside_collection_schedule", "Outside collection schedule"
 				}
 			}
-			break
 		}
 		if hasCR {
 			if !collectionScheduleAllows(d, user.ID, section, hc, cr) {
 				return "outside_collection_schedule", "Outside collection schedule"
 			}
-			if len(cr.Hub.Items) > 0 && e.opts.FilterAvailable != nil && len(e.opts.FilterAvailable(ctx, cr.Hub.Items)) == 0 {
-				return "filtered_by_availability", "No available titles right now"
+			if len(cr.Hub.Items) > 0 {
+				typed := cr.Hub.Items
+				if section != "" {
+					typed = make([]core.Title, 0, len(cr.Hub.Items))
+					for _, it := range cr.Hub.Items {
+						if it.Type == section {
+							typed = append(typed, it)
+						}
+					}
+					if len(typed) == 0 {
+						return "no_matching_titles", "No matching titles for this library"
+					}
+				}
+				libScoped := typed
+				if section != "" && hc.SectionID > 0 && e.opts.LibraryMembers != nil {
+					keys := make([]core.RatingKey, len(typed))
+					for i, it := range typed {
+						keys[i] = it.Key
+					}
+					if members, _, scoped, err := e.opts.LibraryMembers(ctx, core.LibraryID(hc.SectionID), keys); err == nil && scoped {
+						libScoped = make([]core.Title, 0, len(typed))
+						for _, it := range typed {
+							if members[it.Key] {
+								libScoped = append(libScoped, it)
+							}
+						}
+						if len(libScoped) == 0 {
+							return "no_matching_titles", "No titles from this collection are in this library"
+						}
+					}
+				}
+				allowed := e.allowedFor(user)
+				restrictedOut := true
+				for _, it := range libScoped {
+					typ := it.Type
+					if typ == core.TypeSeason || typ == core.TypeEpisode {
+						typ = core.TypeShow
+					}
+					if allowed != nil && !allowed(typ) {
+						continue
+					}
+					if user != nil && !contentrating.Allowed(it.ContentRating, user.MaxContentRating) {
+						continue
+					}
+					if e.opts.Allowed != nil && !e.opts.Allowed(user, &it) {
+						continue
+					}
+					restrictedOut = false
+					break
+				}
+				if restrictedOut {
+					return "filtered_by_restrictions", "No titles allowed for this viewer"
+				}
+				if e.opts.FilterAvailable != nil && len(e.opts.FilterAvailable(ctx, libScoped)) == 0 {
+					return "filtered_by_availability", "No available titles right now"
+				}
 			}
 		}
 		if emptied[kind] || emptied[hubID] || emptied[pol.Row] {
 			return "filtered_by_restrictions", "No titles allowed for this viewer"
+		}
+		if !hasCR && spec != nil {
+			if spec.LastBuiltAt == nil && spec.ItemCount == 0 && hasRemoteCollectionSource(spec.Sources) {
+				return "collection_building", "Collection has not finished building yet"
+			}
+			if spec.ItemCount > 0 {
+				if user != nil && !user.IsOwner && (user.MaxContentRating != "" || len(user.AllowedLibraries) > 0) {
+					return "filtered_by_restrictions", "No titles allowed for this viewer"
+				}
+				return "no_matching_titles", "No matching titles for this viewer"
+			}
 		}
 		return "collection_empty", "Collection has no titles for this viewer"
 	}
@@ -439,6 +511,15 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 	default:
 		return "no_matching_titles", "No matching titles for this viewer"
 	}
+}
+
+func hasRemoteCollectionSource(sources []core.CollectionSource) bool {
+	for _, src := range sources {
+		if src.Kind != "" && src.Kind != "catalog" && src.Kind != "titles" {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveSection maps a preview section name ("home", "library:<id>", or "<id>")

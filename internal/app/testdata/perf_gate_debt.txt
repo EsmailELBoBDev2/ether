@@ -52,3 +52,4 @@ plex-web | collection children  # C: as plex-appletv collection children
 plex-appletv | playlist items  # C: 3000-item playlist page sums every item's duration from its stored title (PreloadStored, 7d270726b, reads them in batches)
 silo-appletv | search people  # K/J (search): per-candidate credits and title reads, more candidates match on the larger library
 stremio | catalog recent  # D: first-pass statements grow
+infuse-jellyfin | /Search/Hints star  # K (search): steady 1,451 rows, but one replay pass intermittently reads ~2,000 against the 1,500 bound (flaky on CI since 0.3.17)

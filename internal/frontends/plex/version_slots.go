@@ -19,16 +19,24 @@ func versionIdentity(v frontend.ReleaseVariant) string {
 // slotMedia is the single projection for configured menus, including hubs.
 // Settings choose the identities; cache/probe state can change their labels
 // and stream facts but never the shape. No release search occurs here.
-func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, versions []frontend.ReleaseVariant, info frontend.MediaInfo, ps *frontend.PlaySession, stamp int64, streams bool) []model.Media {
+func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, versions []frontend.ReleaseVariant, info frontend.MediaInfo, ps *frontend.PlaySession, resumed resumedVersionResult, stamp int64, streams, batchDetail bool) []model.Media {
 	ik := s.playIdentityFor(pr, t.Key)
 	now := s.now()
-	pin := s.playIDs.pinned(ik, ps != nil, now)
+	issuePlayID := !batchDetail || ps != nil || s.playIDs.has(ik)
+	streamIK := ik
+	if !issuePlayID {
+		streamIK = playIdentityKey{}
+	}
+	var pin pinnedVariants
+	if issuePlayID {
+		pin = s.playIDs.pinned(ik, ps != nil, now)
+	}
 	selected := pin.selected
 	var (
-		resumedInfo     frontend.MediaInfo
-		resumedRel      frontend.Release
-		resumedSelector string
-		hasResumed      bool
+		resumedInfo     = resumed.info
+		resumedRel      = resumed.rel
+		resumedSelector = resumed.selector
+		hasResumed      = resumed.ok
 		slotInfo        = info
 		infoTarget      int64
 	)
@@ -47,7 +55,6 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 		}
 		infoTarget = selected
 	} else {
-		resumedInfo, resumedRel, resumedSelector, hasResumed = s.resumedVersion(ctx, pr, t)
 		if hasResumed {
 			slotInfo = resumedInfo
 			explicitSlot := frontend.IsExplicitVersionSlotSelector(resumedSelector)
@@ -125,10 +132,12 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 		v.Info = variantInfoForClient(v.Info, caps)
 		m := buildMediaVariant(t, v, stamp, s.variantIDs)
 		if streams {
-			m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, now)
+			if issuePlayID {
+				m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, now)
+			}
 			facts := s.withCachedSidecars(ctx, pr.User, t, v.Info)
 			sel := s.preferredSelection(ctx, pr.User, t.Key, facts, t.Language, resolveSelection(stored, facts))
-			m.Part[0].Stream = s.issuedStreams(t.Key, ik, m.ID, facts, sel, pr.User, pr)
+			m.Part[0].Stream = s.issuedStreams(t.Key, streamIK, m.ID, facts, sel, pr.User, pr)
 		}
 		if id == selected {
 			m.Selected = model.Ptr(true)
@@ -136,9 +145,9 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 		}
 		out = append(out, m)
 	}
-	// A settings list is issued only by detail/queue. Hubs merely project the
-	// same configured slots and do not create per-client flow rows.
-	if streams {
+	// A settings list is issued only by detail/queue. Hubs and batch lookups
+	// project the same configured slots without creating per-client flow rows.
+	if streams && issuePlayID {
 		s.playIDs.issueConfiguredSlots(ik, versions, now)
 	}
 	return out

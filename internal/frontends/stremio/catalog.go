@@ -184,15 +184,42 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
+				var promotedShows map[frontend.RatingKey]frontend.Title
+				if typ == "series" {
+					if batch, ok := i.host.Experience.(frontend.TitleBatchReader); ok {
+						var need []frontend.RatingKey
+						for _, title := range items {
+							if _, ok := promoteSeries(title); !ok && title.ShowKey != 0 {
+								need = append(need, title.ShowKey)
+							}
+						}
+						if len(need) > 0 {
+							if shows, berr := batch.BatchTitles(r.Context(), viewer, need); berr == nil {
+								promotedShows = make(map[frontend.RatingKey]frontend.Title, len(shows))
+								for _, sh := range shows {
+									promotedShows[sh.Key] = sh
+								}
+							}
+						}
+					}
+				}
 				for _, title := range items {
 					if typ == "series" {
 						promoted, ok := promoteSeries(title)
 						if !ok {
-							detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: viewer, Device: device, Key: title.ShowKey})
-							if e != nil {
-								continue
+							if promotedShows != nil {
+								sh, found := promotedShows[title.ShowKey]
+								if !found {
+									continue
+								}
+								title = sh
+							} else {
+								detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: viewer, Device: device, Key: title.ShowKey})
+								if e != nil {
+									continue
+								}
+								title = detail.Title
 							}
-							title = detail.Title
 						} else {
 							title = promoted
 						}

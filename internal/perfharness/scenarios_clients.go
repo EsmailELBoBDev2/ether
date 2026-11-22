@@ -19,7 +19,8 @@ func jellyfinLibrarySteps(f string) []Step {
 	return []Step{
 		// Infuse's library sync pages in order: page 2 follows page 1 (the
 		// remembered page end lets it seek), the jumps below do not.
-		{Name: "movies p2 SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=50"},
+		{Name: "movies p2 SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=50", Discover: discoverMBItemBatch("movieIds100", "Movie", 100)},
+		{Name: "movies by Ids 100", Class: classBrowse, QueriesBound: detailQueriesBound, Path: "/Items?Ids={movieIds100}&fields=" + f + "&userId={userId}"},
 		{Name: "movies p3 SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=100"},
 		{Name: "movies very deep SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=24000"},
 		{Name: "movies deep DateCreated", Class: classBrowse, Path: movies + "&sortBy=DateCreated%2CSortName&sortOrder=Descending&startIndex=12000"},

@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -406,11 +407,28 @@ func (s *Server) tracePlaybackEnabled() bool {
 }
 
 func (s *Server) getSections() []Section {
+	return s.getSectionsCtx(context.Background())
+}
+
+func (s *Server) getSectionsCtx(ctx context.Context) []Section {
 	if s == nil {
 		return nil
 	}
+	if reqmemo.Active(ctx) {
+		secs, _ := reqmemo.Do(ctx, "plex:sections", func() ([]Section, error) {
+			return s.loadSections(ctx), nil
+		})
+		return secs
+	}
+	return s.loadSections(s.ctx)
+}
+
+func (s *Server) loadSections(ctx context.Context) []Section {
+	if ctx == nil {
+		ctx = s.ctx
+	}
 	// Stored publication is authoritative even when the last library was deleted.
-	if secs := s.publishedKindSections(s.ctx); secs != nil {
+	if secs := s.publishedKindSections(ctx); secs != nil {
 		for i := range secs {
 			secs[i] = s.sectionDefaults(secs[i])
 		}
@@ -1048,7 +1066,11 @@ func (s *Server) sectionByID(id int) (Section, bool) {
 
 // sectionFor returns the section an item of type t lives in.
 func (s *Server) sectionFor(t frontend.MediaType) (Section, bool) {
-	sec, ok := s.untitledSectionFor(t)
+	return s.sectionForCtx(context.Background(), t)
+}
+
+func (s *Server) sectionForCtx(ctx context.Context, t frontend.MediaType) (Section, bool) {
+	sec, ok := s.untitledSectionForCtx(ctx, t)
 	if !ok {
 		return Section{}, false
 	}
@@ -1059,12 +1081,16 @@ func (s *Server) sectionFor(t frontend.MediaType) (Section, bool) {
 // visibility check needs only the section id, and runs for every title a
 // page shows, so it reads no configuration.
 func (s *Server) untitledSectionFor(t frontend.MediaType) (Section, bool) {
+	return s.untitledSectionForCtx(context.Background(), t)
+}
+
+func (s *Server) untitledSectionForCtx(ctx context.Context, t frontend.MediaType) (Section, bool) {
 	want := frontend.TypeMovie
 	switch t {
 	case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
 		want = frontend.TypeShow
 	}
-	secs := s.getSections()
+	secs := s.getSectionsCtx(ctx)
 	for _, sec := range secs {
 		if !isKindSection(sec) && sec.Type == want {
 			return sec, true

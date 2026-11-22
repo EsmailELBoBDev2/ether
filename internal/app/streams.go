@@ -10,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/markers"
@@ -69,6 +70,15 @@ func (s subtitleSurface) OpenFormatFrom(id, format, source string) (io.ReadClose
 }
 
 func (s subtitleSurface) CachedSidecars(ctx context.Context, t *core.Title, u *core.User, embedded []core.StreamInfo) []core.StreamInfo {
+	if t == nil {
+		return nil
+	}
+	has, _ := reqmemo.Do(ctx, "subtitles:has:"+strconv.FormatInt(int64(t.Key), 10), func() (bool, error) {
+		return s.app.subtitles.HasTitleSelections(t.Key), nil
+	})
+	if !has {
+		return nil
+	}
 	out := s.app.subtitles.CachedSidecars(t, s.app.subtitleUser(ctx, u), embedded, s.app.subtitlePrefs(ctx, u))
 	if !s.app.subtitles.Enabled() {
 		out = append(out, s.app.subtitles.ManualSidecars(t, embedded)...)

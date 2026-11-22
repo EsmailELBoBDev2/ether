@@ -164,6 +164,18 @@ func (p *playIdentities) entryLocked(k playIdentityKey, now time.Time) *playIden
 	return e
 }
 
+// has reports whether k already has a live or pinned identity without
+// allocating one or extending any TTL.
+func (p *playIdentities) has(k playIdentityKey) bool {
+	if p == nil || !k.valid() {
+		return false
+	}
+	p.mu.Lock()
+	_, ok := p.m[k]
+	p.mu.Unlock()
+	return ok
+}
+
 // selectedPart reads the current Part without freezing or extending the issued
 // version list merely because a client is checking for a pending subtitle pick.
 func (p *playIdentities) selectedPart(k playIdentityKey) int64 {

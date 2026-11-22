@@ -130,15 +130,19 @@ func (s *Server) visibilityWithSectionFor(sectionFor func(frontend.MediaType) (i
 }
 
 func (s *Server) visibility() frontend.Visibility {
-	// Resolve the published sections once per Visibility: title checks run
-	// for every row of a hub, and each section listing reads the published
-	// libraries (and their plugins) again.
+	return s.visibilityCtx(context.Background())
+}
+
+func (s *Server) visibilityCtx(ctx context.Context) frontend.Visibility {
+	// Resolve the published sections once per Visibility (and per request
+	// via reqmemo when ctx carries one): title checks run for every row of a
+	// hub or batch, and each section listing reads published libraries again.
 	var once sync.Once
 	var movie, show Section
 	var movieOK, showOK bool
 	sectionFor := func(t frontend.MediaType) (int, bool) {
 		once.Do(func() {
-			secs := s.getSections()
+			secs := s.getSectionsCtx(ctx)
 			for _, sec := range secs {
 				if isKindSection(sec) {
 					continue
@@ -249,7 +253,7 @@ func (s *Server) openableTitlesWith(ctx context.Context, vis frontend.Visibility
 }
 
 func (s *Server) visibleTitle(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
-	return s.visibleTitleWith(ctx, s.visibility(), u, t)
+	return s.visibleTitleWith(ctx, s.visibilityCtx(ctx), u, t)
 }
 
 // visibleTitleWith is visibleTitle through vis (s.visibility() with a
@@ -282,7 +286,7 @@ func (s *Server) playableTitle(ctx context.Context, u *frontend.User, t *fronten
 	if t != nil && (t.MediaClass == frontend.MediaClassBook || t.MBItemType == "Book") {
 		return false
 	}
-	return s.visibility().Playable(ctx, u, t) && s.plexMetaRatingAllowed(u, t)
+	return s.visibilityCtx(ctx).Playable(ctx, u, t) && s.plexMetaRatingAllowed(u, t)
 }
 
 // pluginAwarePlayable is playableTitle for plugin items. A plugin item's

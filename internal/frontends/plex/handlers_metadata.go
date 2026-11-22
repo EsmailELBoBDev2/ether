@@ -364,6 +364,9 @@ func applyRelatedCountCap(md *model.Metadata, q url.Values) {
 // series visibility, GUID, artwork, and episode leaf-count queries instead of
 // N single-item detail round-trips. It returns ok=false only if ctx cancelled.
 func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *Request, q url.Values, keys []frontend.RatingKey) (*model.MediaContainer, bool) {
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
 	var preload []frontend.RatingKey
 	seenPreload := make(map[frontend.RatingKey]bool, len(keys)*2)
 	addPreload := func(k frontend.RatingKey) {
@@ -489,6 +492,12 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 	includeExtras := metadataOptionOn(q.Get("includeExtras"))
 	includePrefs := q.Get("includePreferences") == "1"
 	extraTypes := q.Get("extraTypes")
+	needsMedia := metadataOptionOn(q.Get("includeChapters")) ||
+		metadataOptionOn(q.Get("includeMarkers")) ||
+		metadataOptionOn(q.Get("includeStreams")) ||
+		metadataOptionOn(q.Get("checkFiles")) ||
+		metadataOptionOn(q.Get("asyncCheckFiles")) ||
+		metadataOptionOn(q.Get("checkFileAvailability"))
 
 	renderedByKey := make(map[string]model.Metadata, len(uniqueTitles))
 	var memo showEpisodes
@@ -505,10 +514,11 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 			}
 		}
 		rendered := s.renderTitles(ctx, pr, uniqueTitles, renderOpts{
-			detail:         true,
-			batchDetail:    true,
-			skipLeafCounts: true,
-			media:          true,
+			detail:            true,
+			batchDetail:       true,
+			skipExcludedMedia: !needsMedia,
+			skipLeafCounts:    true,
+			media:             true,
 		})
 		if hasShowOrSeason {
 			var states map[frontend.RatingKey]frontend.WatchStatus

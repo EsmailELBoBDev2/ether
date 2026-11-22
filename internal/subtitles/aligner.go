@@ -306,21 +306,22 @@ func (a *Aligner) timelines(ctx context.Context, bs *buildState, title *core.Tit
 	}
 	// Sidecars already on disk for this title+language, any release.
 	if a.s.dir != "" {
-		pat := filepath.Join(a.s.dir, "index", fmt.Sprintf("%d.%s.*.json", int64(title.Key), lang))
-		if paths, _ := filepath.Glob(pat); len(paths) > 0 {
-			sort.Strings(paths)
-			for _, p := range paths {
-				if len(out) >= 3 {
-					break
-				}
-				raw, err := os.ReadFile(p)
-				if err != nil {
-					continue
-				}
-				var sel selection
-				if json.Unmarshal(raw, &sel) == nil && sel.ID != "" {
-					add(sel.ID, sel.FileID, sel.Release)
-				}
+		dir := filepath.Join(a.s.dir, "index")
+		prefix := fmt.Sprintf("%d.%s.", int64(title.Key), lang)
+		for _, name := range a.s.indexNamesFor(title.Key) {
+			if !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			if len(out) >= 3 {
+				break
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				continue
+			}
+			var sel selection
+			if json.Unmarshal(raw, &sel) == nil && sel.ID != "" {
+				add(sel.ID, sel.FileID, sel.Release)
 			}
 		}
 	}

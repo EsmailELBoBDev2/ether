@@ -1413,13 +1413,20 @@ func (i *instance) writeItemsByID(w http.ResponseWriter, r *http.Request, v *fro
 			keys = append(keys, key)
 		}
 	}
+	r = withBrowseMemo(r)
 	page := frontend.Page{Items: make([]frontend.Title, 0, len(keys))}
-	for _, key := range keys {
-		detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
-		if err != nil {
-			continue
+	if batch, ok := i.host.Experience.(frontend.TitleBatchReader); ok {
+		if titles, err := batch.BatchTitles(r.Context(), v, keys); err == nil {
+			page.Items = titles
 		}
-		page.Items = append(page.Items, detail.Title)
+	} else {
+		for _, key := range keys {
+			detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+			if err != nil {
+				continue
+			}
+			page.Items = append(page.Items, detail.Title)
+		}
 	}
 	page.Total = len(page.Items)
 	i.page(w, r, v, page, 0)

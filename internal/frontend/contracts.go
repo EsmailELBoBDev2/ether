@@ -926,6 +926,13 @@ type ReadingProgressWriter interface {
 	SetReadingProgress(ctx context.Context, viewer *core.Viewer, key core.RatingKey, progress core.ReadingProgress) error
 }
 
+// TitleBatchReader is an optional interface implemented by Experience hosts
+// that batch-authorize and return titles for a list of rating keys without
+// per-item detail enrichment, user-data, or artwork queries.
+type TitleBatchReader interface {
+	BatchTitles(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) ([]core.Title, error)
+}
+
 type PlayIntent struct {
 	// OriginalPlayback declares an installed demux/decoder runtime independently
 	// of native media element capabilities. Originals are pinned for byte reads.

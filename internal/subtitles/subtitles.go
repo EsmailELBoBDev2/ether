@@ -117,6 +117,15 @@ type Service struct {
 	// while another rename of it is in progress.
 	pickMu sync.Mutex
 
+	// indexMu guards the lazy in-memory map of <dir>/index filenames by
+	// RatingKey so listing cached sidecars is O(1) instead of scanning the
+	// entire index directory via filepath.Glob on every request.
+	indexMu      sync.RWMutex
+	indexLoaded  bool
+	indexDirMod  time.Time
+	indexDirSize int64
+	indexByKey   map[core.RatingKey][]string
+
 	alignLanguages []string
 	aligner        *Aligner
 	alignOnce      sync.Once

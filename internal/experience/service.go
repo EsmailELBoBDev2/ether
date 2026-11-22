@@ -1217,6 +1217,141 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 	return d, err
 }
 
+// BatchTitles authorizes and returns titles for keys in the requested order
+// using batched catalogue, plugin, availability, and parent lookups rather
+// than per-item detail enrichment, watch-state, or artwork queries. Keys that
+// are missing, non-title entities, or hidden from viewer are omitted.
+func (s *Service) BatchTitles(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) ([]core.Title, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	ctx = s.NoProviderWait(ctx)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		pluginKeys  []core.RatingKey
+		catalogKeys []core.RatingKey
+		seen        = make(map[core.RatingKey]bool, len(keys))
+	)
+	for _, key := range keys {
+		if key == 0 || seen[key] {
+			continue
+		}
+		if key.IsPluginKey() {
+			seen[key] = true
+			pluginKeys = append(pluginKeys, key)
+			continue
+		}
+		switch key.Kind() {
+		case core.KindCollection, core.KindSmart, core.KindPlaylist:
+			continue
+		}
+		seen[key] = true
+		catalogKeys = append(catalogKeys, key)
+	}
+	allowed := make(map[core.RatingKey]core.Title, len(pluginKeys)+len(catalogKeys))
+	if len(pluginKeys) > 0 && s.d.PluginLibraries != nil {
+		views, err := s.d.PluginLibraries.ItemsMany(ctx, pluginKeys)
+		if err != nil {
+			return nil, err
+		}
+		for k, piv := range views {
+			if s.pluginItemAllowed(ctx, v, piv) {
+				allowed[k] = piv.Title
+			}
+		}
+	}
+	if len(catalogKeys) > 0 {
+		var cached map[core.RatingKey]core.Title
+		if s.d.CachedGetMany != nil {
+			cached, err = s.d.CachedGetMany(ctx, catalogKeys)
+			if err != nil {
+				return nil, err
+			}
+		}
+		cachedList := make([]core.Title, 0, len(cached))
+		var missed []core.RatingKey
+		for _, k := range catalogKeys {
+			if t, ok := cached[k]; ok && t.Key == k {
+				cachedList = append(cachedList, t)
+			} else {
+				missed = append(missed, k)
+			}
+		}
+		if len(cachedList) > 0 {
+			admitted, err := s.allowTitles(ctx, v, cachedList)
+			if err != nil {
+				return nil, err
+			}
+			for _, t := range admitted {
+				allowed[t.Key] = t
+			}
+			for _, t := range cachedList {
+				if _, ok := allowed[t.Key]; !ok && t.Key.Kind() == core.KindEpisode {
+					if ep := s.scheduledTitle(ctx, v, t.Key); ep != nil {
+						allowed[t.Key] = *ep
+					}
+				}
+			}
+		}
+		for _, k := range missed {
+			if s.d.Get != nil {
+				if t, e := s.item(ctx, v, k); e == nil && t != nil {
+					allowed[k] = *t
+					continue
+				}
+			}
+			if ep := s.scheduledTitle(ctx, v, k); ep != nil {
+				allowed[k] = *ep
+			}
+		}
+	}
+	if s.d.CachedGetMany != nil {
+		var needShows []core.RatingKey
+		seenShow := map[core.RatingKey]bool{}
+		for _, t := range allowed {
+			if !t.Key.IsPluginKey() && t.ShowKey != 0 && t.ShowTitle == "" && !seenShow[t.ShowKey] {
+				seenShow[t.ShowKey] = true
+				needShows = append(needShows, t.ShowKey)
+			}
+		}
+		if len(needShows) > 0 {
+			if shows, e := s.d.CachedGetMany(ctx, needShows); e == nil && len(shows) > 0 {
+				showList := make([]core.Title, 0, len(shows))
+				for _, sh := range shows {
+					showList = append(showList, sh)
+				}
+				if okShows, e := s.allowTitles(ctx, v, showList); e == nil && len(okShows) > 0 {
+					byKey := make(map[core.RatingKey]core.Title, len(okShows))
+					for _, sh := range okShows {
+						byKey[sh.Key] = sh
+					}
+					for k, t := range allowed {
+						if t.ShowKey != 0 && t.ShowTitle == "" {
+							if sh, ok := byKey[t.ShowKey]; ok {
+								t.ShowTitle = sh.Title
+								if t.ShowYear == 0 {
+									t.ShowYear = sh.Year
+								}
+								allowed[k] = t
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	out := make([]core.Title, 0, len(allowed))
+	for _, k := range keys {
+		if t, ok := allowed[k]; ok {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 // AuthorizeArtwork applies the same active-viewer and item policy as Item,
 // without running playback or track enrichment for a grid of images.
 // allowTitles applies library, policy, availability and parent visibility to a

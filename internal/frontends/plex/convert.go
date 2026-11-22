@@ -45,6 +45,10 @@ type renderOpts struct {
 	// mediaExcluded: the client excluded Media, so list rows skip building
 	// it (and every read behind it). Set by renderTitles.
 	mediaExcluded bool
+	// skipExcludedMedia allows a detail batch that asked for nothing
+	// needing Media (chapters, markers, streams, or file checks) to take
+	// the same excludeElements=Media shortcut as list renders.
+	skipExcludedMedia bool
 	// vis overrides canonical section visibility when rendering rows scoped
 	// to a specific library section (such as a custom library).
 	vis *frontend.Visibility
@@ -260,9 +264,9 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	if len(t.Studios) > 0 {
 		m.Studio = t.Studios[0]
 	}
-	sec, secOK := s.sectionFor(t.Type)
+	sec, secOK := s.sectionForCtx(ctx, t.Type)
 	if t.Key.IsPluginKey() && t.LibraryID != 0 {
-		sec, secOK = s.sectionForLibrary(t.LibraryID)
+		sec, secOK = s.sectionForLibraryCtx(ctx, t.LibraryID)
 	}
 	if o.section != nil && o.section.ID != 0 {
 		sec, secOK = *o.section, true
@@ -460,19 +464,20 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	}
 	if withMedia && isPlayable(t.Type) {
 		var editionTitle string
-		withVariants := o.detail
+		var info frontend.MediaInfo
+		withVariants := o.detail && !o.batchDetail
 		if t.Key.IsPluginKey() && (o.listRender || o.batchDetail || o.detailEpisodes || libraryToolClient(pr)) {
 			// Plugin /resolve must only run on single-item detail or play
 			// intent, never per row in a list, hub, On Deck, or batch lookup.
 			withVariants = false
 		}
-		m.Media, editionTitle = s.mediaFor(ctx, pr, t, detail, withVariants, o.session)
+		m.Media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail)
 		applyEditionTitle(&m, editionTitle)
 		if s.downloadsAllowed(pr.User) {
 			m.AllowSync = model.Ptr(true)
 		}
 		if detail {
-			s.addStreamFeatures(ctx, pr, t, &m)
+			s.addProbedStreamFeatures(ctx, t.Key, info, &m)
 		}
 		if m.Duration == 0 && len(m.Media) > 0 {
 			m.Duration = m.Media[0].Duration
@@ -586,32 +591,44 @@ func (s *Server) personTags(key frontend.RatingKey, ps []frontend.Person, kind s
 // item they navigated with, so once a warm-up has probed the file its
 // real tracks must be rendered there: the estimate invents a single
 // audio track and no subtitles.
-func (s *Server) mediaInfoWithSource(ctx context.Context, pr *Request, t *frontend.Title) (frontend.MediaInfo, *frontend.PlaySession, bool) {
+type resumedVersionResult struct {
+	info     frontend.MediaInfo
+	rel      frontend.Release
+	selector string
+	ok       bool
+}
+
+func (s *Server) mediaInfoWithResumed(ctx context.Context, pr *Request, t *frontend.Title) (frontend.MediaInfo, *frontend.PlaySession, resumedVersionResult, bool) {
 	if s.playback() == nil || pr == nil {
 		dur := time.Duration(0)
 		if t != nil {
 			dur = t.Runtime
 		}
-		return frontend.MediaInfo{Estimated: true, Duration: dur}, nil, false
+		return frontend.MediaInfo{Estimated: true, Duration: dur}, nil, resumedVersionResult{}, false
 	}
 	if pr.User != nil {
 		if ps, ok := s.playback().SessionFor(pr.User.ID, pr.ClientID, t.Key); ok && ps != nil {
-			return ps.Info, ps, !ps.Info.Estimated && len(ps.Info.Streams) > 0
+			return ps.Info, ps, resumedVersionResult{}, !ps.Info.Estimated && len(ps.Info.Streams) > 0
 		}
-		if info, _, ok := s.resumedTracks(ctx, pr, t); ok {
-			return info, nil, true
+		if info, rel, sel, ok := s.resumedVersion(ctx, pr, t); ok {
+			return info, nil, resumedVersionResult{info: info, rel: rel, selector: sel, ok: true}, true
 		}
 		if wp, ok := s.playback().(frontend.WarmProber); ok {
 			caps := s.clientCapsForKey(pr, t.Key)
 			if info, warm := wp.WarmProbeInfo(pr.User, caps, t.Key); warm {
-				return info, nil, true
+				return info, nil, resumedVersionResult{}, true
 			}
 		}
 	}
 	info, ps := frontend.Estimate(ctx, s.playback(), pr.User, pr.ClientID, t, func() frontend.ClientCaps {
 		return s.clientCapsForKey(pr, t.Key)
 	})
-	return info, ps, false
+	return info, ps, resumedVersionResult{}, false
+}
+
+func (s *Server) mediaInfoWithSource(ctx context.Context, pr *Request, t *frontend.Title) (frontend.MediaInfo, *frontend.PlaySession, bool) {
+	info, ps, _, probed := s.mediaInfoWithResumed(ctx, pr, t)
+	return info, ps, probed
 }
 
 func (s *Server) mediaInfoFor(ctx context.Context, pr *Request, t *frontend.Title) (frontend.MediaInfo, *frontend.PlaySession) {
@@ -669,7 +686,12 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 // pages. The second result is editionTitle; session monitoring projects only
 // the admitted source. withVariants permits cached labels on detail/queue.
 func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia bool) ([]model.Media, string) {
-	info, ps, probedSource := s.mediaInfoWithSource(ctx, pr, t)
+	media, edition, _ := s.mediaForWithInfo(ctx, pr, t, withStreams, withVariants, sessionMedia, false)
+	return media, edition
+}
+
+func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia, batchDetail bool) ([]model.Media, string, frontend.MediaInfo) {
+	info, ps, resumed, probedSource := s.mediaInfoWithResumed(ctx, pr, t)
 	stamp := unixOrZero(t.UpdatedAt)
 	if ps != nil && !ps.StartedAt.IsZero() {
 		stamp = ps.StartedAt.Unix()
@@ -688,10 +710,10 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 			req.PlayedSelector = ps.Resolution.VersionSelector
 			relCopy := ps.Resolution.Release
 			req.PlayedReleaseRecord = &relCopy
-		} else if _, rel, sel, ok := s.resumedVersion(ctx, pr, t); ok {
-			req.PlayedRelease = rel.ID
-			req.PlayedSelector = sel
-			relCopy := rel
+		} else if resumed.ok {
+			req.PlayedRelease = resumed.rel.ID
+			req.PlayedSelector = resumed.selector
+			relCopy := resumed.rel
 			req.PlayedReleaseRecord = &relCopy
 		}
 		vctx := ctx
@@ -701,11 +723,11 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 		versions, err := source.VersionSlots(vctx, req, frontend.MaxVariants, withVariants && withStreams)
 		if err != nil {
 			pr.versionErr = err
-			return nil, ""
+			return nil, "", info
 		}
 		if len(versions) > 0 {
 			pr.configuredSlots = true
-			return s.slotMedia(ctx, pr, t, versions, info, ps, stamp, withStreams), versions[0].Edition
+			return s.slotMedia(ctx, pr, t, versions, info, ps, resumed, stamp, withStreams, batchDetail), versions[0].Edition, info
 		}
 	}
 	if withVariants && withStreams && !sessionMedia {
@@ -728,31 +750,36 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 			if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
 				probed = info
 			}
-		} else if facts, rel, sel, ok := s.resumedVersion(ctx, pr, t); ok {
-			probed, probedRelease, playedSelector, info = facts, rel.ID, sel, facts
-			relCopy := rel
+		} else if resumed.ok {
+			probed, probedRelease, playedSelector, info = resumed.info, resumed.rel.ID, resumed.selector, resumed.info
+			relCopy := resumed.rel
 			playedRec = &relCopy
 		} else if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
 			probed = info
 		}
 		if media, edition := s.mediaForVariants(ctx, pr, t, stamp, probed, probedRelease, playedSelector, playedRec, ps); len(media) > 0 {
-			return media, edition
+			return media, edition, info
 		}
 	}
 	m := buildMedia(t, info, stamp)
 	// Detail pages and live sessions render with the ids this client was
 	// issued (play_identity.go); /status/sessions names the Media the
-	// session was admitted on.
+	// session was admitted on. Batch metadata fetches do not allocate new
+	// play_identity rows for unpinned items so library syncs never evict
+	// active clients.
 	var ik playIdentityKey
 	if withStreams || ps != nil {
-		ik = s.playIdentityFor(pr, t.Key)
-		pin := s.playIDs.pinned(ik, ps != nil, s.now())
-		if sessionMedia && ps != nil && pin.selected != 0 && pin.selected != int64(t.Key) {
-			m.ID = pin.selected
-			m.Part[0].ID = pin.selected
-			m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", pin.selected, stamp, containerExt(m.Container))
+		cand := s.playIdentityFor(pr, t.Key)
+		if !batchDetail || ps != nil || s.playIDs.has(cand) {
+			ik = cand
+			pin := s.playIDs.pinned(ik, ps != nil, s.now())
+			if sessionMedia && ps != nil && pin.selected != 0 && pin.selected != int64(t.Key) {
+				m.ID = pin.selected
+				m.Part[0].ID = pin.selected
+				m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", pin.selected, stamp, containerExt(m.Container))
+			}
+			m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
 		}
-		m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
 	}
 	if ps != nil && ps.Resolution != nil && s.trickplayAvailable(frontend.TrickplayCacheKey(ps)) {
 		m.Part[0].Indexes = "sd"
@@ -772,7 +799,7 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 		sel = s.preferredSelection(ctx, pr.User, t.Key, info, t.Language, sel)
 		m.Part[0].Stream = s.issuedStreams(t.Key, ik, m.ID, info, sel, pr.User, pr)
 	}
-	return []model.Media{m}, ""
+	return []model.Media{m}, "", info
 }
 
 // partFileName is the virtual file name shown in "Get Info".
@@ -1474,16 +1501,16 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 		ctx = reqmemo.With(ctx)
 	}
 	ctx = withStoredPolicy(ctx)
-	if o.media && pr.excludeMedia && listMediaSkip && !o.detail && !o.detailEpisodes && !o.session {
+	if o.media && pr.excludeMedia && listMediaSkip && (!o.detail || o.skipExcludedMedia) && !o.detailEpisodes && !o.session {
 		// The response drops Media (and mediaCount stands in for it), so
-		// light list rows need not build it, nor read what it is drawn
-		// from. Full rows keep it: their chapters, markers and probed
-		// duration are read alongside.
+		// light list rows (and batch detail rows that do not ask for
+		// chapters, markers, streams, or file checks) need not build it,
+		// nor read what it is drawn from.
 		o.media, o.mediaExcluded = false, true
 	}
 	// The rendering's own Playable checks (resumed tracks) read the same
 	// series rows as admission.
-	vis := s.visibility()
+	vis := s.visibilityCtx(ctx)
 	if o.vis != nil {
 		vis = *o.vis
 	}

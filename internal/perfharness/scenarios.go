@@ -178,10 +178,12 @@ func plexClient(name, product, platform, device string) Client {
 		{Name: "/library/onDeck", Class: classHome, Path: "/library/onDeck"},
 		{Name: "/hubs/sections/movies", Class: classHome, Path: "/hubs/sections/{movieSection}?count=12&includeMeta=1&excludeFields=summary&includeLibraryPlaylists=1", Discover: discoverPlexHubMore},
 		{Name: "/hubs/sections/shows", Class: classHome, Path: "/hubs/sections/{showSection}?count=12&includeMeta=1&excludeFields=summary"},
-		{Name: "movies all titleSort p1", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=titleSort&X-Plex-Container-Start=0" + page, Discover: discoverPlexItem("movieKey", "movie")},
+		{Name: "movies all titleSort p1", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=titleSort&X-Plex-Container-Start=0" + page, Discover: combineDiscover(discoverPlexItem("movieKey", "movie"), discoverPlexItemBatch("movieBatch100", "movie", 100))},
 		{Name: "movies all titleSort deep", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=titleSort&X-Plex-Container-Start=6000" + page},
-		{Name: "movies all addedAt", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=addedAt:desc&X-Plex-Container-Start=0" + page},
-		{Name: "movies all rating", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=rating:desc&X-Plex-Container-Start=0" + page},
+		{Name: "movies all addedAt", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=addedAt:desc&X-Plex-Container-Start=0" + page, Discover: discoverPlexItemBatch("movieBatch100", "movie", 100)},
+		{Name: "movies all rating", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=rating:desc&X-Plex-Container-Start=0" + page, Discover: discoverPlexItemBatch("movieBatch100", "movie", 100)},
+		{Name: "metadata batch 100", Class: classBrowse, QueriesBound: detailQueriesBound, Path: "/library/metadata/{movieBatch100}"},
+		{Name: "metadata batch 100 excludeMedia", Class: classBrowse, QueriesBound: detailQueriesBound, Path: "/library/metadata/{movieBatch100}?excludeElements=Media,Role,Director,Writer,Producer,Country,Guid,Rating,Image,UltraBlurColors,Location,Similar,Field&excludeFields=summary,tagline"},
 		{Name: "movies genre filter list", Class: classBrowse, Path: "/library/sections/{movieSection}/genre?type=1"},
 		{Name: "movies jump bar", Class: classBrowse, Path: "/library/sections/{movieSection}/firstCharacter?type=1"},
 		{Name: "shows all titleSort p1", Class: classBrowse, Path: "/library/sections/{showSection}/all?type=2&sort=titleSort&X-Plex-Container-Start=0" + page, Discover: discoverPlexItem("showKey", "show")},
@@ -256,6 +258,95 @@ func discoverPlexItem(name, typ string) func(map[string]string, []byte) {
 func setOnce(vars map[string]string, k, v string) {
 	if vars[k] == "" && v != "" {
 		vars[k] = v
+	}
+}
+
+func combineDiscover(fns ...func(map[string]string, []byte)) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		for _, fn := range fns {
+			if fn != nil {
+				fn(vars, body)
+			}
+		}
+	}
+}
+
+func appendUniqueBatch(vars map[string]string, name string, values []string, limit int) {
+	if limit <= 0 || len(values) == 0 {
+		return
+	}
+	var cur []string
+	seen := map[string]bool{}
+	if existing := vars[name]; existing != "" {
+		for _, p := range strings.Split(existing, ",") {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				cur = append(cur, p)
+			}
+		}
+	}
+	for _, v := range values {
+		if len(cur) >= limit {
+			break
+		}
+		if v != "" && !seen[v] {
+			seen[v] = true
+			cur = append(cur, v)
+		}
+	}
+	if len(cur) > 0 {
+		vars[name] = strings.Join(cur, ",")
+	}
+}
+
+func discoverPlexItemBatch(name, typ string, limit int) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		var c struct {
+			MediaContainer struct {
+				Metadata []struct {
+					RatingKey string `json:"ratingKey"`
+					Type      string `json:"type"`
+				} `json:"Metadata"`
+			} `json:"MediaContainer"`
+		}
+		if json.Unmarshal(body, &c) != nil {
+			return
+		}
+		keys := make([]string, 0, len(c.MediaContainer.Metadata))
+		for _, m := range c.MediaContainer.Metadata {
+			if (typ == "" || m.Type == typ) && m.RatingKey != "" {
+				keys = append(keys, m.RatingKey)
+			}
+		}
+		appendUniqueBatch(vars, name, keys, limit)
+	}
+}
+
+func discoverMBItemBatch(name, typ string, limit int) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		var r struct {
+			Items []struct {
+				ID   string `json:"Id"`
+				Type string `json:"Type"`
+			} `json:"Items"`
+		}
+		if json.Unmarshal(body, &r) != nil {
+			var list []struct {
+				ID   string `json:"Id"`
+				Type string `json:"Type"`
+			}
+			if json.Unmarshal(body, &list) != nil {
+				return
+			}
+			r.Items = list
+		}
+		ids := make([]string, 0, len(r.Items))
+		for _, it := range r.Items {
+			if (typ == "" || it.Type == typ) && it.ID != "" {
+				ids = append(ids, it.ID)
+			}
+		}
+		appendUniqueBatch(vars, name, ids, limit)
 	}
 }
 
@@ -374,7 +465,7 @@ func infuseJellyfin() Client {
 		{Name: "/UserViews/GroupingOptions", Class: classStatic, Path: "/UserViews/GroupingOptions?userId={userId}"},
 		{Name: "/Library/VirtualFolders", Class: classStatic, Path: "/Library/VirtualFolders?userId={userId}"},
 		{Name: "/DisplayPreferences/usersettings", Class: classStatic, Path: "/DisplayPreferences/usersettings?client=emby&userId={userId}"},
-		{Name: "movies p1 SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}", Discover: discoverMBItem("movieId", "Movie")},
+		{Name: "movies p1 SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}", Discover: combineDiscover(discoverMBItem("movieId", "Movie"), discoverMBItemBatch("movieIds100", "Movie", 100))},
 		{Name: "movies deep SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=6000&userId={userId}"},
 		{Name: "movies p1 DateCreated", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=DateCreated%2CSortName&sortOrder=Descending&startIndex=0&userId={userId}"},
 		{Name: "series p1 SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Series&limit=50&parentId={showsView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}", Discover: discoverMBItem("seriesId", "Series")},

@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/resolver"
@@ -160,17 +162,20 @@ func (a *App) buildPlaybackPresentation() {
 			if a.cfg == nil {
 				return ""
 			}
-			return a.cfg.Get().Catalog.Language
+			return a.cfg.Read().Catalog.Language
 		},
 		ProfileLanguages: func(ctx context.Context, user int64, _ core.RatingKey) []string {
 			if a.resolver == nil || a.users == nil {
 				return nil
 			}
-			u, err := a.users.ActiveUser(ctx, user)
-			if err != nil || u == nil {
-				return nil
-			}
-			return a.resolver.ProfileFor(core.ClientCaps{}, u).PreferredLanguages
+			langs, _ := reqmemo.Do(ctx, "trackprefs:profile-langs:"+strconv.FormatInt(user, 10), func() ([]string, error) {
+				u, err := a.users.ActiveUser(ctx, user)
+				if err != nil || u == nil {
+					return nil, nil
+				}
+				return a.resolver.ProfileFor(core.ClientCaps{}, u).PreferredLanguages, nil
+			})
+			return langs
 		},
 		AccountLayer: func(_ context.Context, user int64) (trackprefs.AccountLayer, bool) {
 			if a.users == nil {
@@ -190,8 +195,8 @@ func (a *App) buildPlaybackPresentation() {
 		},
 	})
 	a.markers = markers.New(markers.Options{DB: a.db, Logger: log.With("component", "markers"), Config: func() markers.Lookup {
-		c := a.cfg.Get().Markers
-		return markers.Lookup{Enabled: c.TheIntroDB, APIKey: c.APIKey, IntroOff: !c.OfferIntro(), CreditsOff: !c.OfferCredits(), SourceOrder: c.SourceOrder, SkipDB: c.SkipDB}
+		c := a.cfg.Read().Markers
+		return markers.Lookup{Enabled: c.TheIntroDB, APIKey: c.APIKey, IntroOff: !c.OfferIntro(), CreditsOff: !c.OfferCredits(), SourceOrder: append([]string(nil), c.SourceOrder...), SkipDB: c.SkipDB}
 	}, Aligner: a.subtitles.TimelineAligner(), Dialogue: a.markerDialogue})
 	a.buildAdoption()
 }

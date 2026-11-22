@@ -23,7 +23,7 @@ func (s *Server) trackScope(ctx context.Context, key frontend.RatingKey) fronten
 		wanted = frontend.TypeShow
 		scope.Series = strconv.FormatInt(int64(frontend.ShowKey(key.TMDB())), 10)
 	}
-	for _, section := range s.LibrarySections() {
+	for _, section := range s.getSectionsCtx(ctx) {
 		if section.Type == wanted {
 			scope.Library = strconv.Itoa(section.ID)
 			break

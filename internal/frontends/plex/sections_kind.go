@@ -108,7 +108,11 @@ func mergeKindSections(base []Section, extra []Section) []Section {
 
 // sectionForLibrary returns the section for a library id (spec §6.4).
 func (s *Server) sectionForLibrary(id frontend.LibraryID) (Section, bool) {
-	for _, sec := range s.withLibraryTitles(s.getSections()) {
+	return s.sectionForLibraryCtx(context.Background(), id)
+}
+
+func (s *Server) sectionForLibraryCtx(ctx context.Context, id frontend.LibraryID) (Section, bool) {
+	for _, sec := range s.withLibraryTitles(s.getSectionsCtx(ctx)) {
 		if sec.LibraryID == id || frontend.LibraryID(sec.ID) == id {
 			return sec, true
 		}

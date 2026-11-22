@@ -397,7 +397,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	markerCtx, cancelMarkers := context.WithCancel(context.Background())
 	markerBridge := adapters.AttachMarkers(markerCtx, mgr, a.markers, a.catalog, adapters.MarkerBridgeOptions{
 		Selected: func(id string) bool {
-			for _, source := range a.cfg.Get().Markers.SourceOrder {
+			for _, source := range a.cfg.Read().Markers.SourceOrder {
 				if source == id {
 					return true
 				}
@@ -405,7 +405,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 			return false
 		},
 		SkipDB: func() (enabled bool, apiKey, baseURL string) {
-			c := a.cfg.Get().Markers
+			c := a.cfg.Read().Markers
 			return c.SkipDB, c.SkipDBAPIKey, ""
 		},
 	})

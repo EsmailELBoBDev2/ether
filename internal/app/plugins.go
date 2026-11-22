@@ -507,6 +507,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Logger:      a.log,
 	})
 	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
+	cachePartial := blobs.HostPartialBackend(kindCatalog.QuotaFor)
 	adapterTickets := frontendadapter.NewTicketIssuer()
 	mgr.SetKindBackends(plugins.KindBackends{
 		KindUpsert:       itemsSvc.KindUpsert,
@@ -521,6 +522,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		CachePut:         cachePut,
 		CacheOpen:        cacheOpen,
 		CacheDelete:      cacheDelete,
+		CachePartial:     cachePartial,
 		StreamURL:        a.adapterStreamURL(adapterTickets),
 		StreamPartURL:    a.adapterStreamPartURL(adapterTickets),
 		StreamURLOptions: a.adapterStreamURLOptions(adapterTickets),

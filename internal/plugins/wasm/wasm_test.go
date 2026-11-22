@@ -698,3 +698,79 @@ globalThis.handle = function() {
 		t.Fatalf("unexpected usage: %+v", u)
 	}
 }
+
+func TestFetchToCacheHostCallTimeoutExtension(t *testing.T) {
+	e := testEngine(t)
+	var seenDeadline time.Time
+	var seenHasDeadline bool
+	host := HostFunc(func(ctx context.Context, name string, _ json.RawMessage) (json.RawMessage, error) {
+		if name != "http.fetchToCache" {
+			return json.RawMessage("null"), nil
+		}
+		seenDeadline, seenHasDeadline = ctx.Deadline()
+		return json.RawMessage(`{"blob":"blob:0000000000000000000000000000000000000000000000000000000000000000","size":1,"crc32":"00000000","md5":"00","sha1":"00","status":200}`), nil
+	})
+	js := `
+globalThis.handle = function(req) {
+  ether.http.fetchToCache(req.body);
+  return { status: 200, body: { ok: true } };
+};
+`
+	p, err := e.LoadJS("test.fetch-timeout", "1.0.0", js, host, Limits{Deadline: 2 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	run := func(ctx context.Context, path string, foreground bool, timeoutMS int64) time.Duration {
+		t.Helper()
+		seenDeadline = time.Time{}
+		seenHasDeadline = false
+		body, _ := json.Marshal(map[string]any{
+			"url":        "https://example.test/file.zip",
+			"libraryKey": "pk-test-lib",
+			"name":       "file.zip",
+			"timeoutMs":  timeoutMS,
+		})
+		before := time.Now()
+		resp, _, err := p.CallDetailed(ctx, Request{Method: "POST", Path: path, Body: body, Foreground: foreground})
+		if err != nil || resp.Status != 200 {
+			t.Fatalf("CallDetailed(%s, fg=%v, timeoutMs=%d): status=%d err=%v", path, foreground, timeoutMS, resp.Status, err)
+		}
+		if !seenHasDeadline {
+			t.Fatalf("CallDetailed(%s): host ctx missing deadline", path)
+		}
+		return seenDeadline.Sub(before)
+	}
+
+	// 1. Job without timeoutMs keeps the 10-minute default (not 2 h).
+	if rem := run(context.Background(), "/ether/job/import", false, 0); rem < 9*time.Minute || rem > 11*time.Minute {
+		t.Fatalf("job default timeout = %v, want ~10m", rem)
+	}
+	// 2. Job with 1 h timeoutMs extends past 10 m up to 1 h.
+	if rem := run(context.Background(), "/ether/job/import", false, int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("job 1h timeout = %v, want ~1h", rem)
+	}
+	// 3. Foreground resolver job (/ether/job/prepare) also extends past 10 m.
+	if rem := run(context.Background(), "/ether/job/prepare", true, int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("resolver job 1h timeout = %v, want ~1h", rem)
+	}
+	// 4. Job requesting 4 h is clamped to the calling job's remaining deadline (45 m).
+	tightJobCtx, cancelTight := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancelTight()
+	if rem := run(tightJobCtx, "/ether/job/import", false, int64((4*time.Hour)/time.Millisecond)); rem < 40*time.Minute || rem > 46*time.Minute {
+		t.Fatalf("job clamped to remaining deadline = %v, want ~45m", rem)
+	}
+	// 5. Explicit background context (e.g., scheduled call) extends up to its deadline.
+	if rem := run(WithBackgroundCall(context.Background()), "/ether/job/schedule", false, int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("background call 1h timeout = %v, want ~1h", rem)
+	}
+	// 6. Non-job request path (/ether/action/import has 2h granted deadline) stays capped at 10 m.
+	if rem := run(context.Background(), "/ether/action/import", false, int64(time.Hour/time.Millisecond)); rem > 11*time.Minute {
+		t.Fatalf("action path timeout = %v, want <= 10m ceiling", rem)
+	}
+	// 7. Viewer path stays capped at its short route deadline (well below 10 m).
+	if rem := run(context.Background(), "/ether/v1/kinds/games/resolve", false, int64(time.Hour/time.Millisecond)); rem > 10*time.Second {
+		t.Fatalf("viewer path timeout = %v, want <= 5s route deadline", rem)
+	}
+}

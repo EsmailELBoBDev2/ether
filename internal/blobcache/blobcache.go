@@ -364,6 +364,19 @@ func (c *Cache) enforceGlobalLimit() {
 	}
 	c.mu.Unlock()
 
+	// Evict idle incomplete partials oldest-first before touching completed blobs.
+	for _, pc := range c.collectIdlePartials(nss) {
+		if used <= limit {
+			break
+		}
+		if freed := pc.ns.evictPartial(pc.id); freed > 0 {
+			used -= freed
+		}
+	}
+	if used <= limit {
+		return
+	}
+
 	var cands []globalCandidate
 	for _, ns := range nss {
 		ns.mu.Lock()
@@ -575,15 +588,18 @@ type Namespace struct {
 	libraryKey string
 	dir        string
 
-	mu        sync.Mutex
-	quota     Quota
-	used      int64
-	blobs     map[string]*blobEntry // sha256 hex -> entry
-	keys      map[string]string     // caller key -> sha256 hex
-	flights   map[string]*putFlight // single-flight per caller key
-	dirty     bool
-	lastSaved time.Time
-	tempSeq   atomic.Uint64
+	mu           sync.Mutex
+	quota        Quota
+	used         int64
+	blobs        map[string]*blobEntry    // sha256 hex -> entry
+	keys         map[string]string        // caller key -> sha256 hex
+	flights      map[string]*putFlight    // single-flight per caller key
+	partials     map[string]*partialEntry // partial id -> tracked partial
+	partialUsed  int64                    // total bytes staged in partials
+	partialLocks map[string]chan struct{} // active partial writers by id
+	dirty        bool
+	lastSaved    time.Time
+	tempSeq      atomic.Uint64
 
 	saveMu sync.Mutex
 }
@@ -593,14 +609,16 @@ func newEmptyNamespace(c *Cache, key string, quota Quota) *Namespace {
 		quota.MaxBytes = DefaultMaxBytes
 	}
 	return &Namespace{
-		cache:      c,
-		key:        key,
-		libraryKey: key,
-		dir:        filepath.Join(c.dir, key),
-		quota:      quota,
-		blobs:      make(map[string]*blobEntry),
-		keys:       make(map[string]string),
-		flights:    make(map[string]*putFlight),
+		cache:        c,
+		key:          key,
+		libraryKey:   key,
+		dir:          filepath.Join(c.dir, key),
+		quota:        quota,
+		blobs:        make(map[string]*blobEntry),
+		keys:         make(map[string]string),
+		flights:      make(map[string]*putFlight),
+		partials:     make(map[string]*partialEntry),
+		partialLocks: make(map[string]chan struct{}),
 	}
 }
 
@@ -611,6 +629,7 @@ func (c *Cache) openNamespaceLocked(key string, quota Quota) (*Namespace, error)
 	}
 	ns.cleanStaleTempFiles()
 	ns.loadIndex()
+	ns.loadPartials()
 	return ns, nil
 }
 
@@ -742,11 +761,12 @@ func (n *Namespace) Quota() Quota {
 	return n.quota
 }
 
-// Stats returns the current bytes and blob count in this namespace.
+// Stats returns the current bytes (including staged resumable partials) and
+// completed readable blob count in this namespace.
 func (n *Namespace) Stats() (bytes int64, blobs int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.used, len(n.blobs)
+	return n.used + n.partialUsed, len(n.blobs)
 }
 
 // LookupKey checks if a blob was stored under key, is not expired, and still
@@ -935,7 +955,7 @@ func (n *Namespace) PutWithExpectedSHA256(ctx context.Context, key string, r io.
 		}
 	}
 	n.dirty = true
-	overNamespace := n.used > n.quota.EffectiveMaxBytes()
+	overNamespace := n.used+n.partialUsed > n.quota.EffectiveMaxBytes()
 	n.mu.Unlock()
 
 	if overNamespace {
@@ -1147,7 +1167,8 @@ func (n *Namespace) Sweep() {
 			pathsToRemove = append(pathsToRemove, n.blobPath(h))
 		}
 	}
-	if n.used > maxBytes {
+	pathsToRemove = append(pathsToRemove, n.sweepPartialsLocked(now, maxBytes)...)
+	if n.used+n.partialUsed > maxBytes {
 		sort.Slice(active, func(i, j int) bool {
 			if active[i].LastOpen != active[j].LastOpen {
 				return active[i].LastOpen < active[j].LastOpen
@@ -1155,7 +1176,7 @@ func (n *Namespace) Sweep() {
 			return active[i].Hash < active[j].Hash
 		})
 		for _, e := range active {
-			if n.used <= maxBytes {
+			if n.used+n.partialUsed <= maxBytes {
 				break
 			}
 			if n.dropEntryLocked(e.Hash) > 0 {
@@ -1184,7 +1205,9 @@ func (n *Namespace) Purge() {
 	n.mu.Lock()
 	n.blobs = make(map[string]*blobEntry)
 	n.keys = make(map[string]string)
+	n.partials = make(map[string]*partialEntry)
 	n.used = 0
+	n.partialUsed = 0
 	n.dirty = false
 	dir := n.dir
 	n.mu.Unlock()

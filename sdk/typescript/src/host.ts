@@ -141,7 +141,7 @@ export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
 export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
 export interface FetchCacheRequest {
-  /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
+  /** Defaults to 10 minutes (also the ceiling on viewer and request paths). In a job, schedule, or background context, may extend up to the calling job's remaining deadline. Timeout throws an error with code "timeout". */
   timeoutMs?: number;
   url: string;
   headers?: Record<string, string>;
@@ -149,6 +149,8 @@ export interface FetchCacheRequest {
   keepHeadersOnRedirect?: string[];
   libraryKey: string;
   name: string;
+  /** Continue an incomplete partial download using `Range: bytes=<cached>-` when the server supports ranges and ETag / Last-Modified validators match (restarting cleanly from byte 0 otherwise). Partial bytes stay unreadable in cache until the download completes. */
+  resume?: boolean;
 }
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }

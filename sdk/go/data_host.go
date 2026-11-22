@@ -42,6 +42,15 @@ type ArchiveReadResult struct {
 	Size   int    `json:"size"`
 	Body   []byte `json:"body"`
 }
+
+// FetchCacheRequest streams a remote GET response into the plugin's own
+// library blob cache. TimeoutMS defaults to 10 minutes (which is also the
+// ceiling on viewer and interactive request paths); in a job, schedule, or
+// background context TimeoutMS may extend up to the calling job's remaining
+// deadline. Setting Resume to true continues an incomplete partial download
+// using Range: bytes=<cached>- when the server supports ranges and ETag or
+// Last-Modified validators still match, restarting cleanly from byte 0 if they
+// do not; the blob becomes readable in cache only once complete.
 type FetchCacheRequest struct {
 	TimeoutMS             int64             `json:"timeoutMs,omitempty"`
 	URL                   string            `json:"url"`
@@ -49,6 +58,7 @@ type FetchCacheRequest struct {
 	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 	LibraryKey            string            `json:"libraryKey"`
 	Name                  string            `json:"name"`
+	Resume                bool              `json:"resume,omitempty"`
 }
 type FetchCacheResult struct {
 	Blob   string `json:"blob"`

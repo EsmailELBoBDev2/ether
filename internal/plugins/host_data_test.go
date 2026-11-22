@@ -14,6 +14,7 @@ import (
 
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/artwork"
@@ -590,4 +591,665 @@ globalThis.handle = function(req) {
 	if committed {
 		t.Fatal("timed-out fetchToCache unexpectedly committed a cache blob")
 	}
+}
+
+func TestFetchToCacheLongJobTimeout(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	rec := installContent(t, env)
+	rec.Manifest.Ether.Permissions.Network = []string{"data.example.test"}
+	rec.Manifest.Ether.Schedule = []ScheduleEntry{{Every: "1h", Call: "/ether/refresh"}}
+	var err error
+	rec.ManifestRaw, err = json.Marshal(rec.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = env.m.store.upsert(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	libraryKey := core.PluginLibraryKey(rec.ID, "recording")
+
+	var gotDeadline time.Time
+	var hasDeadline bool
+	env.m.client = &http.Client{
+		Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+			gotDeadline, hasDeadline = r.Context().Deadline()
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewReader([]byte("ok"))),
+				Header:     make(http.Header),
+				Request:    r,
+			}, nil
+		}),
+	}
+	env.m.SetKindBackends(KindBackends{CachePut: func(_ context.Context, _, _, _ string, r io.Reader) (string, error) {
+		_, _ = io.Copy(io.Discard, r)
+		return "blob:" + strings.Repeat("a", 64), nil
+	}})
+
+	h := env.m.HostFor(rec.ID)
+	run := func(callCtx context.Context, timeoutMS int64) time.Duration {
+		t.Helper()
+		gotDeadline = time.Time{}
+		hasDeadline = false
+		args, _ := json.Marshal([]any{map[string]any{
+			"url":        "https://data.example.test/large.zip",
+			"libraryKey": libraryKey,
+			"name":       "large.zip",
+			"timeoutMs":  timeoutMS,
+		}})
+		before := time.Now()
+		if _, err := CallDataHost(callCtx, h, "http.fetchToCache", args); err != nil {
+			t.Fatalf("CallDataHost(timeoutMs=%d): %v", timeoutMS, err)
+		}
+		if !hasDeadline {
+			t.Fatal("outbound HTTP request had no context deadline")
+		}
+		return gotDeadline.Sub(before)
+	}
+
+	twoHourCtx, cancelTwo := context.WithTimeout(ctx, 2*time.Hour)
+	defer cancelTwo()
+
+	// 1. Job without timeoutMs stays at the 10-minute default.
+	if rem := run(withCallPath(twoHourCtx, "/ether/job/import"), 0); rem < 9*time.Minute || rem > 11*time.Minute {
+		t.Fatalf("job default timeout = %v, want ~10m", rem)
+	}
+	// 2. Job with 1 h timeoutMs extends past 10 m up to 1 h.
+	if rem := run(withCallPath(twoHourCtx, "/ether/job/import"), int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("job 1h timeout = %v, want ~1h", rem)
+	}
+	// 3. Job requesting 5 h is clamped to the calling job's remaining 2 h deadline.
+	if rem := run(withCallPath(twoHourCtx, "/ether/job/import"), int64((5*time.Hour)/time.Millisecond)); rem < 115*time.Minute || rem > 125*time.Minute {
+		t.Fatalf("job 5h timeout = %v, want clamped to ~2h", rem)
+	}
+	// 4. Declared schedule route and explicit background context also extend up to remaining deadline.
+	if rem := run(withCallPath(twoHourCtx, "/ether/refresh"), int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("schedule route 1h timeout = %v, want ~1h", rem)
+	}
+	if rem := run(WithBackgroundCall(twoHourCtx), int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("background ctx 1h timeout = %v, want ~1h", rem)
+	}
+	// 5. Viewer and interactive request paths stay capped at 10 m even if ctx has 2 h left.
+	for _, p := range []string{"/stream/movie/tt1.json", "/ether/v1/kinds/recording/resolve", "/ether/v1/frontend/opds/feed", "/ether/action/import", ""} {
+		callCtx := twoHourCtx
+		if p != "" {
+			callCtx = withCallPath(twoHourCtx, p)
+		}
+		if rem := run(callCtx, int64(time.Hour/time.Millisecond)); rem > 11*time.Minute {
+			t.Fatalf("request path %q timeout = %v, want <= 10m ceiling", p, rem)
+		}
+	}
+	// 6. Even if WithBackgroundCall wraps a viewer path, viewer path ceiling still wins.
+	if rem := run(withCallPath(WithBackgroundCall(twoHourCtx), "/ether/v1/kinds/recording/resolve"), int64(time.Hour/time.Millisecond)); rem > 11*time.Minute {
+		t.Fatalf("viewer path with background flag timeout = %v, want <= 10m", rem)
+	}
+}
+
+type failingPrefixReader struct {
+	data []byte
+	pos  int
+	err  error
+}
+
+func (r *failingPrefixReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	if r.pos >= len(r.data) {
+		return n, r.err
+	}
+	return n, nil
+}
+
+func TestFetchToCacheResume(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	rec := installContent(t, env)
+	rec.Manifest.Ether.Permissions.Network = []string{"data.example.test"}
+	var err error
+	rec.ManifestRaw, err = json.Marshal(rec.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = env.m.store.upsert(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	libraryKey := core.PluginLibraryKey(rec.ID, "recording")
+
+	var quotaBytes int64 = 16 << 20
+	blobs, err := blobcache.Open(t.TempDir(), blobcache.Options{SweepPeriod: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blobs.Close()
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		return blobcache.Quota{MaxBytes: quotaBytes}
+	})
+	cachePartial := blobs.HostPartialBackend(func(_, _ string) blobcache.Quota {
+		return blobcache.Quota{MaxBytes: quotaBytes}
+	})
+	env.m.SetKindBackends(KindBackends{
+		CachePut:     cachePut,
+		CacheOpen:    cacheOpen,
+		CacheDelete:  cacheDelete,
+		CachePartial: cachePartial,
+	})
+	h := env.m.HostFor(rec.ID)
+	ns := blobs.Namespace(libraryKey, blobcache.Quota{MaxBytes: quotaBytes})
+
+	callResume := func(rawURL, name string, extraHeaders map[string]string) (FetchCacheResult, error) {
+		req := map[string]any{
+			"url":        rawURL,
+			"libraryKey": libraryKey,
+			"name":       name,
+			"resume":     true,
+		}
+		if len(extraHeaders) > 0 {
+			req["headers"] = extraHeaders
+		}
+		args, _ := json.Marshal([]any{req})
+		raw, err := CallDataHost(withCallPath(ctx, "/ether/job/import"), h, "http.fetchToCache", args)
+		if err != nil {
+			return FetchCacheResult{}, err
+		}
+		var out FetchCacheResult
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal FetchCacheResult: %v", err)
+		}
+		return out, nil
+	}
+
+	// 1. Multi-hop resume with Range: bytes=<cached>-, server-capped 206 chunks,
+	//    and unreadable partial until complete.
+	t.Run("resumes across failures and capped 206 chunks with exact digests", func(t *testing.T) {
+		payload := bytes.Repeat([]byte("chunked-archive-content-0123456789abcdef"), 100) // 4000 bytes
+		const etag = `"archive-v1"`
+		const lm = "Sun, 22 Nov 2026 10:00:00 GMT"
+		var seenRanges []string
+		callNum := 0
+
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				callNum++
+				rng := r.Header.Get("Range")
+				seenRanges = append(seenRanges, rng)
+				hdr := make(http.Header)
+				hdr.Set("ETag", etag)
+				hdr.Set("Last-Modified", lm)
+				switch callNum {
+				case 1:
+					// First attempt: delivers 1000 bytes then drops connection.
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(payload)),
+						Header:        hdr,
+						Body:          io.NopCloser(&failingPrefixReader{data: payload[:1000], err: io.ErrUnexpectedEOF}),
+						Request:       r,
+					}, nil
+				case 2:
+					// Second attempt: server returns 206 starting at 1000, caps chunk at 1500 bytes (1000..2499),
+					// succeeds cleanly, leaving bytes 2500..3999 for the next chunk request inside the same call.
+					if rng != "bytes=1000-" {
+						t.Fatalf("attempt 2 Range = %q, want bytes=1000-", rng)
+					}
+					hdr.Set("Content-Range", fmt.Sprintf("bytes 1000-2499/%d", len(payload)))
+					return &http.Response{
+						StatusCode:    206,
+						ContentLength: 1500,
+						Header:        hdr,
+						Body:          io.NopCloser(bytes.NewReader(payload[1000:2500])),
+						Request:       r,
+					}, nil
+				case 3:
+					// Third request (auto-continued in call 2): delivers 2500..3200 then times out!
+					if rng != "bytes=2500-" {
+						t.Fatalf("attempt 3 Range = %q, want bytes=2500-", rng)
+					}
+					hdr.Set("Content-Range", fmt.Sprintf("bytes 2500-%d/%d", len(payload)-1, len(payload)))
+					return &http.Response{
+						StatusCode:    206,
+						ContentLength: int64(len(payload) - 2500),
+						Header:        hdr,
+						Body:          io.NopCloser(&failingPrefixReader{data: payload[2500:3200], err: context.DeadlineExceeded}),
+						Request:       r,
+					}, nil
+				case 4:
+					// Final call: resumes at 3200 and completes!
+					if rng != "bytes=3200-" {
+						t.Fatalf("attempt 4 Range = %q, want bytes=3200-", rng)
+					}
+					hdr.Set("Content-Range", fmt.Sprintf("bytes 3200-%d/%d", len(payload)-1, len(payload)))
+					return &http.Response{
+						StatusCode:    206,
+						ContentLength: int64(len(payload) - 3200),
+						Header:        hdr,
+						Body:          io.NopCloser(bytes.NewReader(payload[3200:])),
+						Request:       r,
+					}, nil
+				default:
+					t.Fatalf("unexpected call %d", callNum)
+					return nil, nil
+				}
+			}),
+		}
+
+		if _, err := callResume("https://data.example.test/game.zip", "game.zip", nil); err == nil {
+			t.Fatal("attempt 1 unexpectedly succeeded")
+		}
+		if _, ok := ns.LookupKey("game.zip"); ok {
+			t.Fatal("partial blob became readable after attempt 1 failure")
+		}
+		if pBytes, _ := ns.PartialStats(); pBytes != 1000 {
+			t.Fatalf("staged partial bytes after attempt 1 = %d, want 1000", pBytes)
+		}
+
+		if _, err := callResume("https://data.example.test/game.zip", "game.zip", nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt 2 err = %v, want DeadlineExceeded", err)
+		}
+		if _, ok := ns.LookupKey("game.zip"); ok {
+			t.Fatal("partial blob became readable after attempt 2 failure")
+		}
+		if pBytes, _ := ns.PartialStats(); pBytes != 3200 {
+			t.Fatalf("staged partial bytes after attempt 2 = %d, want 3200", pBytes)
+		}
+
+		res, err := callResume("https://data.example.test/game.zip", "game.zip", nil)
+		if err != nil {
+			t.Fatalf("final resume call failed: %v", err)
+		}
+		wantSHA256 := sha256.Sum256(payload)
+		wantSHA1 := sha1.Sum(payload)
+		wantMD5 := md5.Sum(payload)
+		wantCRC := fmt.Sprintf("%08x", crc32.ChecksumIEEE(payload))
+		if res.Blob != "blob:"+hex.EncodeToString(wantSHA256[:]) ||
+			res.Size != int64(len(payload)) ||
+			res.SHA1 != hex.EncodeToString(wantSHA1[:]) ||
+			res.MD5 != hex.EncodeToString(wantMD5[:]) ||
+			res.CRC32 != wantCRC ||
+			res.Status != 206 {
+			t.Fatalf("resumed FetchCacheResult = %+v, want blob=blob:%x size=%d status=206", res, wantSHA256, len(payload))
+		}
+		rc, err := h.CacheOpen(ctx, res.Blob)
+		if err != nil {
+			t.Fatalf("CacheOpen(%s): %v", res.Blob, err)
+		}
+		gotBytes, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if !bytes.Equal(gotBytes, payload) {
+			t.Fatalf("cached bytes mismatch: got %d bytes", len(gotBytes))
+		}
+		wantRanges := []string{"", "bytes=1000-", "bytes=2500-", "bytes=3200-"}
+		if fmt.Sprint(seenRanges) != fmt.Sprint(wantRanges) {
+			t.Fatalf("seen Range headers = %v, want %v", seenRanges, wantRanges)
+		}
+	})
+
+	// 2. Validator mismatch on 206 (server ignores If-Range and returns new ETag) -> restarts cleanly from byte 0.
+	t.Run("restarts cleanly when ETag or Last-Modified changes on 206", func(t *testing.T) {
+		v1 := bytes.Repeat([]byte("version-one-data"), 100) // 1600 bytes
+		v2 := bytes.Repeat([]byte("VERSION-TWO-NEW!"), 100) // 1600 bytes
+		var requests []string
+		step := 0
+
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				step++
+				requests = append(requests, r.Header.Get("Range"))
+				switch step {
+				case 1:
+					h1 := make(http.Header)
+					h1.Set("ETag", `"etag-v1"`)
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(v1)),
+						Header:        h1,
+						Body:          io.NopCloser(&failingPrefixReader{data: v1[:600], err: io.ErrUnexpectedEOF}),
+						Request:       r,
+					}, nil
+				case 2:
+					// Server ignores If-Range and returns 206 with mismatched ETag `"etag-v2"`.
+					h2 := make(http.Header)
+					h2.Set("ETag", `"etag-v2"`)
+					h2.Set("Content-Range", fmt.Sprintf("bytes 600-%d/%d", len(v2)-1, len(v2)))
+					return &http.Response{
+						StatusCode:    206,
+						ContentLength: int64(len(v2) - 600),
+						Header:        h2,
+						Body:          io.NopCloser(bytes.NewReader(v2[600:])),
+						Request:       r,
+					}, nil
+				case 3:
+					// Clean restart without Range header returns full v2.
+					if r.Header.Get("Range") != "" {
+						t.Fatalf("restart request unexpectedly sent Range=%q", r.Header.Get("Range"))
+					}
+					h3 := make(http.Header)
+					h3.Set("ETag", `"etag-v2"`)
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(v2)),
+						Header:        h3,
+						Body:          io.NopCloser(bytes.NewReader(v2)),
+						Request:       r,
+					}, nil
+				default:
+					t.Fatalf("unexpected step %d", step)
+					return nil, nil
+				}
+			}),
+		}
+
+		if _, err := callResume("https://data.example.test/changing.zip", "changing.zip", nil); err == nil {
+			t.Fatal("step 1 unexpectedly succeeded")
+		}
+		res, err := callResume("https://data.example.test/changing.zip", "changing.zip", nil)
+		if err != nil {
+			t.Fatalf("resume after ETag change failed: %v", err)
+		}
+		wantV2Hash := sha256.Sum256(v2)
+		if res.Blob != "blob:"+hex.EncodeToString(wantV2Hash[:]) || res.Status != 200 {
+			t.Fatalf("restarted result = %+v, want v2 blob:%x status=200", res, wantV2Hash)
+		}
+		if want := []string{"", "bytes=600-", ""}; fmt.Sprint(requests) != fmt.Sprint(want) {
+			t.Fatalf("requests = %v, want %v", requests, want)
+		}
+	})
+
+	// 3. Server ignoring Range (returning 200 OK) resets partial cleanly without corrupting bytes.
+	t.Run("resets cleanly when server ignores Range and returns 200", func(t *testing.T) {
+		payload := bytes.Repeat([]byte("no-range-server-data"), 80) // 1600 bytes
+		step := 0
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				step++
+				hdr := http.Header{"Last-Modified": {"Sun, 22 Nov 2026 11:00:00 GMT"}}
+				if step == 1 {
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(payload)),
+						Header:        hdr,
+						Body:          io.NopCloser(&failingPrefixReader{data: payload[:500], err: io.ErrUnexpectedEOF}),
+						Request:       r,
+					}, nil
+				}
+				return &http.Response{
+					StatusCode:    200,
+					ContentLength: int64(len(payload)),
+					Header:        hdr,
+					Body:          io.NopCloser(bytes.NewReader(payload)),
+					Request:       r,
+				}, nil
+			}),
+		}
+
+		if _, err := callResume("https://data.example.test/norange.zip", "norange.zip", nil); err == nil {
+			t.Fatal("step 1 unexpectedly succeeded")
+		}
+		res, err := callResume("https://data.example.test/norange.zip", "norange.zip", nil)
+		if err != nil {
+			t.Fatalf("resume against 200-only server failed: %v", err)
+		}
+		wantHash := sha256.Sum256(payload)
+		if res.Blob != "blob:"+hex.EncodeToString(wantHash[:]) || res.Size != int64(len(payload)) {
+			t.Fatalf("200 fallback result = %+v, want blob:%x size=%d", res, wantHash, len(payload))
+		}
+	})
+
+	// 4. Quota enforcement rejects an oversized resumed download and discards the partial.
+	t.Run("enforces cache quota and cleans up oversized partial", func(t *testing.T) {
+		quotaBytes = 1024
+		ns.SetQuota(blobcache.Quota{MaxBytes: quotaBytes})
+		t.Cleanup(func() {
+			quotaBytes = 16 << 20
+			ns.SetQuota(blobcache.Quota{MaxBytes: quotaBytes})
+		})
+
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				hdr := make(http.Header)
+				hdr.Set("ETag", `"huge"`)
+				return &http.Response{
+					StatusCode:    200,
+					ContentLength: -1, // unknown upfront so quota trips mid-stream
+					Header:        hdr,
+					Body:          io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), 2048))),
+					Request:       r,
+				}, nil
+			}),
+		}
+		if _, err := callResume("https://data.example.test/huge.zip", "huge.zip", nil); !errors.Is(err, ErrQuotaExceeded) {
+			t.Fatalf("oversized resume err = %v, want ErrQuotaExceeded", err)
+		}
+		if pBytes, pCount := ns.PartialStats(); pBytes != 0 || pCount != 0 {
+			t.Fatalf("oversized partial left on disk: (%d, %d)", pBytes, pCount)
+		}
+	})
+
+	// 5. Last-Modified mismatch on 206, 416 Range Not Satisfiable, and premature EOF before Content-Length.
+	t.Run("restarts on Last-Modified mismatch or 416 and never commits premature EOF", func(t *testing.T) {
+		payload := bytes.Repeat([]byte("lm-and-eof-payload"), 80) // 1440 bytes
+		step := 0
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				step++
+				switch step {
+				case 1:
+					// Clean EOF after only 400 of 1440 bytes: must NOT commit, must keep 400-byte partial.
+					hdr := make(http.Header)
+					hdr.Set("Last-Modified", "Sun, 22 Nov 2026 09:00:00 GMT")
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(payload)),
+						Header:        hdr,
+						Body:          io.NopCloser(bytes.NewReader(payload[:400])),
+						Request:       r,
+					}, nil
+				case 2:
+					// Server returns 416 -> client discards partial and restarts from byte 0.
+					if r.Header.Get("Range") != "bytes=400-" {
+						t.Fatalf("step 2 Range = %q, want bytes=400-", r.Header.Get("Range"))
+					}
+					return &http.Response{
+						StatusCode: http.StatusRequestedRangeNotSatisfiable,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(bytes.NewReader(nil)),
+						Request:    r,
+					}, nil
+				case 3:
+					// Restarted GET after 416 completes cleanly.
+					if r.Header.Get("Range") != "" {
+						t.Fatalf("step 3 Range = %q, want empty", r.Header.Get("Range"))
+					}
+					hdr := make(http.Header)
+					hdr.Set("Last-Modified", "Sun, 22 Nov 2026 09:30:00 GMT")
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(payload)),
+						Header:        hdr,
+						Body:          io.NopCloser(bytes.NewReader(payload)),
+						Request:       r,
+					}, nil
+				default:
+					t.Fatalf("unexpected step %d", step)
+					return nil, nil
+				}
+			}),
+		}
+
+		if _, err := callResume("https://data.example.test/truncated.zip", "truncated.zip", nil); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("premature EOF err = %v, want io.ErrUnexpectedEOF", err)
+		}
+		if _, ok := ns.LookupKey("truncated.zip"); ok {
+			t.Fatal("premature EOF committed an incomplete blob")
+		}
+		if pBytes, _ := ns.PartialStats(); pBytes != 400 {
+			t.Fatalf("partial bytes after premature EOF = %d, want 400", pBytes)
+		}
+
+		res, err := callResume("https://data.example.test/truncated.zip", "truncated.zip", nil)
+		if err != nil {
+			t.Fatalf("resume after 416 restart failed: %v", err)
+		}
+		wantHash := sha256.Sum256(payload)
+		if res.Blob != "blob:"+hex.EncodeToString(wantHash[:]) || res.Size != int64(len(payload)) {
+			t.Fatalf("restarted result = %+v, want blob:%x size=%d", res, wantHash, len(payload))
+		}
+	})
+
+	// 6. Last-Modified mismatch on 206 discards partial and restarts cleanly from byte 0.
+	t.Run("restarts cleanly when Last-Modified changes on 206", func(t *testing.T) {
+		v1 := bytes.Repeat([]byte("old-lm-version-01"), 60)
+		v2 := bytes.Repeat([]byte("new-lm-version-02"), 60)
+		step := 0
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				step++
+				switch step {
+				case 1:
+					hdr := make(http.Header)
+					hdr.Set("Last-Modified", "Sat, 21 Nov 2026 08:00:00 GMT")
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(v1)),
+						Header:        hdr,
+						Body:          io.NopCloser(&failingPrefixReader{data: v1[:300], err: io.ErrUnexpectedEOF}),
+						Request:       r,
+					}, nil
+				case 2:
+					hdr := make(http.Header)
+					hdr.Set("Last-Modified", "Sun, 22 Nov 2026 08:00:00 GMT")
+					hdr.Set("Content-Range", fmt.Sprintf("bytes 300-%d/%d", len(v2)-1, len(v2)))
+					return &http.Response{
+						StatusCode:    206,
+						ContentLength: int64(len(v2) - 300),
+						Header:        hdr,
+						Body:          io.NopCloser(bytes.NewReader(v2[300:])),
+						Request:       r,
+					}, nil
+				case 3:
+					if r.Header.Get("Range") != "" {
+						t.Fatalf("restart after LM mismatch sent Range=%q", r.Header.Get("Range"))
+					}
+					hdr := make(http.Header)
+					hdr.Set("Last-Modified", "Sun, 22 Nov 2026 08:00:00 GMT")
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(v2)),
+						Header:        hdr,
+						Body:          io.NopCloser(bytes.NewReader(v2)),
+						Request:       r,
+					}, nil
+				default:
+					t.Fatalf("unexpected step %d", step)
+					return nil, nil
+				}
+			}),
+		}
+		if _, err := callResume("https://data.example.test/lm-change.zip", "lm-change.zip", nil); err == nil {
+			t.Fatal("step 1 unexpectedly succeeded")
+		}
+		res, err := callResume("https://data.example.test/lm-change.zip", "lm-change.zip", nil)
+		if err != nil {
+			t.Fatalf("resume after Last-Modified mismatch failed: %v", err)
+		}
+		wantHash := sha256.Sum256(v2)
+		if res.Blob != "blob:"+hex.EncodeToString(wantHash[:]) || res.Status != 200 {
+			t.Fatalf("result = %+v, want v2 blob:%x status=200", res, wantHash)
+		}
+	})
+
+	// 7. Hosted JS job end-to-end: long timeoutMs (> 10 m) and resume: true through wasm + host_data + blobcache.
+	t.Run("hosted JS job end-to-end long timeout and resume", func(t *testing.T) {
+		payload := bytes.Repeat([]byte("hosted-job-resume-payload!"), 80) // 2080 bytes
+		const etag = `"hosted-v1"`
+		var seenDeadline time.Time
+		step := 0
+		env.m.client = &http.Client{
+			Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+				step++
+				seenDeadline, _ = r.Context().Deadline()
+				hdr := make(http.Header)
+				hdr.Set("ETag", etag)
+				if step == 1 {
+					return &http.Response{
+						StatusCode:    200,
+						ContentLength: int64(len(payload)),
+						Header:        hdr,
+						Body:          io.NopCloser(&failingPrefixReader{data: payload[:800], err: io.ErrUnexpectedEOF}),
+						Request:       r,
+					}, nil
+				}
+				if r.Header.Get("Range") != "bytes=800-" {
+					t.Fatalf("hosted resume Range = %q, want bytes=800-", r.Header.Get("Range"))
+				}
+				hdr.Set("Content-Range", fmt.Sprintf("bytes 800-%d/%d", len(payload)-1, len(payload)))
+				return &http.Response{
+					StatusCode:    206,
+					ContentLength: int64(len(payload) - 800),
+					Header:        hdr,
+					Body:          io.NopCloser(bytes.NewReader(payload[800:])),
+					Request:       r,
+				}, nil
+			}),
+		}
+
+		eng := wasm.NewEngine(nil)
+		t.Cleanup(func() { _ = eng.Close() })
+		jsSrc := `
+globalThis.handle = function(req) {
+  try {
+    const res = ether.http.fetchToCache(req.body);
+    return { status: 200, body: { ok: true, res: res } };
+  } catch (e) {
+    return { status: 200, body: { ok: false, err: String(e && e.message || e) } };
+  }
+};
+`
+		p, err := eng.LoadJS(rec.ID, "1.0.0", jsSrc, hostBridge{h: h}, wasm.Limits{Deadline: 2 * time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = p.Close() })
+
+		reqBody, _ := json.Marshal(map[string]any{
+			"url":        "https://data.example.test/hosted.zip",
+			"libraryKey": libraryKey,
+			"name":       "hosted.zip",
+			"timeoutMs":  int64(time.Hour / time.Millisecond),
+			"resume":     true,
+		})
+		before := time.Now()
+		resp1, err := p.Call(ctx, wasm.Request{Method: "POST", Path: "/ether/job/import", Body: reqBody})
+		if err != nil {
+			t.Fatalf("hosted job attempt 1 failed: %v", err)
+		}
+		var reply1 struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(resp1.Body, &reply1); err != nil || reply1.OK {
+			t.Fatalf("hosted job attempt 1 reply = %s (err=%v), want ok=false", resp1.Body, err)
+		}
+		if rem := seenDeadline.Sub(before); rem < 55*time.Minute || rem > 65*time.Minute {
+			t.Fatalf("hosted job fetch deadline = %v, want ~1h (past 10m ceiling)", rem)
+		}
+
+		resp2, err := p.Call(ctx, wasm.Request{Method: "POST", Path: "/ether/job/import", Body: reqBody})
+		if err != nil {
+			t.Fatalf("hosted job attempt 2 failed: %v", err)
+		}
+		var reply2 struct {
+			OK  bool             `json:"ok"`
+			Res FetchCacheResult `json:"res"`
+		}
+		if err := json.Unmarshal(resp2.Body, &reply2); err != nil || !reply2.OK {
+			t.Fatalf("hosted job attempt 2 reply = %s (err=%v), want ok=true", resp2.Body, err)
+		}
+		wantHash := sha256.Sum256(payload)
+		if reply2.Res.Blob != "blob:"+hex.EncodeToString(wantHash[:]) || reply2.Res.Size != int64(len(payload)) {
+			t.Fatalf("hosted job resume result = %+v, want blob:%x size=%d", reply2.Res, wantHash, len(payload))
+		}
+	})
 }

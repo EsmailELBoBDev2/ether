@@ -1334,9 +1334,14 @@ func (h *Hub) RevealEvent(ctx context.Context, viewer *core.Viewer, eventID stri
 	visHash := VisibleHash(ev)
 	for _, sub := range targets {
 		sub.sendMu.Lock()
-		sub.lastSentHash[ev.ID] = visHash
+		alreadySent := sub.lastSentHash[ev.ID] == visHash
+		if !alreadySent {
+			sub.lastSentHash[ev.ID] = visHash
+		}
 		sub.sendMu.Unlock()
-		sub.enqueueUpdates([]core.LiveEvent{ev.Clone()})
+		if !alreadySent {
+			sub.enqueueUpdates([]core.LiveEvent{ev.Clone()})
+		}
 	}
 	return &ev, nil
 }

@@ -252,6 +252,7 @@ type instance struct {
 	eventsHeartbeat    time.Duration
 	eventsWriteTimeout time.Duration
 	disconnectGrace    time.Duration
+	liveHeartbeatCh    <-chan time.Time
 
 	host            frontend.Host
 	ctx             context.Context
@@ -628,7 +629,15 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	// and playback admission safe to retry. No worker or allocation exists at idle.
 	var raw json.RawMessage
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if dec.Decode(&raw) != nil {
+	if err := dec.Decode(&raw); err != nil {
+		// POST /vela/v0/live/events/{id}/reveal is naturally idempotent and
+		// may be called either with a standard idempotencyKey envelope or with
+		// an empty body.
+		if errors.Is(err, io.EOF) && r.Method == "POST" && r.Pattern == "POST /vela/v0/live/events/{id}/reveal" {
+			r.Body = http.NoBody
+			i.mux.ServeHTTP(w, r)
+			return
+		}
 		problem(w, 400, "request", "invalid_json")
 		return
 	}
@@ -651,7 +660,16 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			Device device `json:"device"`
 		} `json:"client"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.IdempotencyKey == "" || len(envelope.IdempotencyKey) > 256 {
+	if json.Unmarshal(raw, &envelope) != nil {
+		problem(w, 400, "request", "idempotency_key_required")
+		return
+	}
+	if envelope.IdempotencyKey == "" && r.Method == "POST" && r.Pattern == "POST /vela/v0/live/events/{id}/reveal" {
+		r.Body = http.NoBody
+		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
+		return
+	}
+	if envelope.IdempotencyKey == "" || len(envelope.IdempotencyKey) > 256 {
 		problem(w, 400, "request", "idempotency_key_required")
 		return
 	}
@@ -822,6 +840,13 @@ func (i *instance) routes() {
 	i.route("GET", "/live/channels", i.channels)
 	i.route("GET", "/live/guide", i.guide)
 	i.route("POST", "/live/guide/window", i.guideWindow)
+	i.route("GET", "/live/events", i.liveEventsSnapshot)
+	i.route("GET", "/live/events/{id}", i.liveEventDetail)
+	i.route("POST", "/live/events/{id}/reveal", i.liveEventReveal)
+	i.route("GET", "/live/stream", i.liveEventsStream)
+	i.route("GET", "/live/preferences", i.liveEventsPreferencesGet)
+	i.route("PUT", "/live/preferences", i.liveEventsPreferencesSet)
+	i.route("PATCH", "/live/preferences", i.liveEventsPreferencesSet)
 	i.route("POST", "/titles/{id}/watch", i.watch)
 	i.route("POST", "/titles/{id}/read", i.read)
 	i.route("GET", "/read/{ticket}", i.readFile)
@@ -895,7 +920,7 @@ func (i *instance) capabilities() object {
 	passwordAvail := auth.Password && methods.Password
 	plexAvail := auth.PlexAccountSignIn && methods.Plex
 	quickAvail := auth.QuickConnect && methods.QuickConnect
-	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "mediaClasses": object{"available": true, "classes": []string{string(frontend.MediaClassVideo), string(frontend.MediaClassMusic), string(frontend.MediaClassAudiobook), string(frontend.MediaClassBook), string(frontend.MediaClassPodcast), string(frontend.MediaClassPhoto)}}, "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "liveEvents": f(i.liveEventsAvailable()), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "mediaClasses": object{"available": true, "classes": []string{string(frontend.MediaClassVideo), string(frontend.MediaClassMusic), string(frontend.MediaClassAudiobook), string(frontend.MediaClassBook), string(frontend.MediaClassPodcast), string(frontend.MediaClassPhoto)}}, "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if plexAvail {
 		caps["plexAccountSignIn"] = true
 	}

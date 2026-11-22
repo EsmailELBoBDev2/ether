@@ -39,6 +39,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
+	"github.com/braedonsaunders/ether/internal/liveevents"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
@@ -323,6 +324,7 @@ type App struct {
 	eventRegistry  *events.Registry
 	systemEvents   *systemEventHooks
 	flowsRT        *flowsRuntime
+	liveEvents     *liveevents.Hub
 	pluginLiveOnce sync.Once
 	pluginLive     *PluginLiveService
 }
@@ -944,6 +946,7 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.runEgress(ctx) })
 	background.start(func() { a.runSystemEvents(ctx) })
 	background.start(func() { a.runFlows(ctx) })
+	background.start(func() { a.runLiveEvents(ctx) })
 
 	if next := startupNextStep(cfg, uiURL); next != "" {
 		a.log.Info(next)

@@ -472,6 +472,7 @@ type Host struct {
 	TrackPreferences   TrackPreferenceService
 	LiveTV             LiveTV
 	LibraryLive        LibraryLive
+	LiveEvents         LiveEvents
 	VirtualPaths       VirtualPaths
 	Sessions           Sessions
 	LastPlayedSource   LastPlayedSourceReader

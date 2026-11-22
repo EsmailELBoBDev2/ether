@@ -2360,6 +2360,7 @@ type librarySearchFilter struct {
 	wantPlaylists        bool
 	wantSeasons          bool
 	wantEpisodes         bool
+	wantLiveTV           bool
 }
 
 // parseLibrarySearchTypes parses all searchTypes query values (both comma-
@@ -2413,6 +2414,8 @@ func parseLibrarySearchTypes(q url.Values) librarySearchFilter {
 				f.wantPeople = true
 			case "playlists", "playlist":
 				f.wantPlaylists = true
+			case "livetv", "channels", "channel":
+				f.wantLiveTV = true
 			}
 		}
 	}
@@ -2420,6 +2423,7 @@ func parseLibrarySearchTypes(q url.Values) librarySearchFilter {
 		f.wantPeople = true
 		f.wantCollections = true
 		f.wantPlaylists = true
+		f.wantLiveTV = true
 	}
 	return f
 }
@@ -2437,7 +2441,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sf := parseLibrarySearchTypes(q)
-	// People are searched beside titles when the request wants them.
+	// People and Live TV are searched beside titles when the request wants them.
 	var peopleDone chan peopleSearchResult
 	if sf.wantPeople {
 		peopleDone = make(chan peopleSearchResult, 1)
@@ -2446,6 +2450,14 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			catPeople := s.searchPeople(peopleCtx, pr, query, 0, limit, false)
 			plugPeople := s.searchPluginPeople(peopleCtx, pr, query, 0, limit, false)
 			peopleDone <- mergePeopleSearchResults(catPeople, plugPeople, limit)
+		}()
+	}
+	var liveDone chan liveLibrarySearchResult
+	if sf.wantLiveTV {
+		liveDone = make(chan liveLibrarySearchResult, 1)
+		liveReq := r.WithContext(ctx)
+		go func() {
+			liveDone <- s.searchLiveTVLibrary(liveReq, pr, query, limit)
 		}()
 	}
 	baseTypes := s.searchTypes(pr.User, 0)
@@ -2486,6 +2498,10 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	var people peopleSearchResult
 	if peopleDone != nil {
 		people = <-peopleDone
+	}
+	var live liveLibrarySearchResult
+	if liveDone != nil {
+		live = <-liveDone
 	}
 	if err != nil {
 		s.writeErr(w, r, err)
@@ -2603,6 +2619,10 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: score, Metadata: &md})
 			raw = append(raw, score)
 		}
+	}
+	for i := range live.results {
+		mc.SearchResult = append(mc.SearchResult, live.results[i])
+		raw = append(raw, live.scores[i])
 	}
 	// PMS lists every result best match first.
 	order := make([]int, len(raw))

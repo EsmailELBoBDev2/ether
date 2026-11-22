@@ -344,11 +344,20 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## HTTP requests
 
-Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too, and credentials or caller headers follow redirects only within the same origin, to a strict same-site subdomain (verified via the Public Suffix List, no port change or HTTPS→HTTP downgrade), or to hosts explicitly listed in `keepHeadersOnRedirect` (still within granted network hosts, never across HTTPS→HTTP downgrades, and sticky once an untrusted hop is reached). The same redirect policy applies to `http.fetchToCache`, `http.hash`, and playable sources (`range`, `download`, `direct`, `container`). `http.hash` accepts optional `headers` with `{secret:<name>}` expansion (no hop-by-hop/framing headers, never logged or cached). Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
+Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too, and credentials or caller headers follow redirects only within the same origin, to a strict same-site subdomain (verified via the Public Suffix List, no port change or HTTPS→HTTP downgrade), or to hosts explicitly listed in `keepHeadersOnRedirect` (still within granted network hosts, never across HTTPS→HTTP downgrades, and sticky once an untrusted hop is reached). The same redirect policy applies to `http.fetchMany`, `http.fetchToCache`, `http.hash`, and playable sources (`range`, `download`, `direct`, `container`). Use `ether.http.fetchMany(requests, {concurrency?})` to overlap up to 64 independent HTTP requests on the host (bounded to 8 in-flight per batch, 6 per origin across Ether, 10 MiB aggregate response bytes, and 100 units per request); results return in input order with either `{status, headers, body, bodyBase64?}` or `{error: {code, message}}`, and parent request cancellation aborts in-flight calls. `http.hash` accepts optional `headers` with `{secret:<name>}` expansion (no hop-by-hop/framing headers, never logged or cached). Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
 
 ```ts
 const r = ether.http.fetch({url: "https://api.example.org/status", method: "GET"});
 if (r.status !== 200) throw new Error("Service unavailable");
+
+const batch = ether.http.fetchMany(
+  [
+    {url: "https://a.example.org/item/1", timeoutMs: 1500},
+    {url: "https://b.example.org/item/1", timeoutMs: 1500},
+  ],
+  {concurrency: 6},
+);
+const ok = batch.filter((item) => !item.error && item.status === 200);
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -6178,6 +6187,63 @@ type FetchResponse struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#FetchManyOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `concurrency` | `int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FetchManyOptions
+
+``````
+// FetchManyOptions configures a bounded concurrent http.fetchMany batch call.
+// Concurrency defaults to DefaultFetchManyConcurrency (8) and clamps to
+// MaxFetchManyConcurrency (8); there is no owner setting.
+type FetchManyOptions struct {
+	Concurrency int `json:"concurrency,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#FetchManyError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `code` | `string` | emitted (validation may require a value) |  |
+| `message` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/contract.go#FetchManyError
+
+``````
+// FetchManyError describes one failed request inside http.fetchMany. Code
+// matches the hosted fault code vocabulary ("timeout", "forbidden",
+// "invalid_input", "host_error", "bad_arguments").
+type FetchManyError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+``````
+
+## Source: internal/plugins/contract.go#FetchManyResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `error` | `*FetchManyError` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FetchManyResult
+
+``````
+// FetchManyResult is one ordered answer from http.fetchMany. Either Error is
+// non-nil or Response carries the received HTTP response (including non-2xx
+// statuses, matching http.fetch).
+type FetchManyResult struct {
+	Response FetchResponse   `json:"-"`
+	Error    *FetchManyError `json:"error,omitempty"`
+}
+``````
+
 ## Source: internal/plugins/contract.go#FolderHashJob.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -8108,6 +8174,8 @@ func (h *host) deny(r Record, g Grants, key, level string, allowed func(string) 
 func (h *host) noteDenied(key string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	h.m.healthMu.Lock()
+	defer h.m.healthMu.Unlock()
 	if hh, err := h.m.store.health(ctx, h.plugin); err == nil && hh.Status == "ok" {
 		hh.Status = "attention"
 		hh.Reason = "A permission it needs was taken back: " + key
@@ -8461,6 +8529,7 @@ func fetchError(host string, err error) error {
 type fetchOptions struct {
 	stripCrossOriginHeaders []string
 	stripAllCallerHeaders   bool
+	applyHostLimit          bool
 }
 ``````
 
@@ -8645,14 +8714,26 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 		}
 		return nil
 	}
+	release := func() {}
+	if opts.applyHostLimit && h.m.fetchHosts != nil {
+		var aerr error
+		release, aerr = h.m.fetchHosts.Acquire(ctx, req.URL)
+		if aerr != nil {
+			return nil, fetchError(u.Hostname(), aerr)
+		}
+	}
 	resp, err := client.Do(hr)
 	if err != nil {
+		release()
 		if isNonPublicBlockError(err) {
 			blocked := urlHostPortDisplay(lastURL)
 			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
 			return nil, fetchError(blocked, err)
 		}
 		return nil, fetchError(u.Hostname(), err)
+	}
+	if opts.applyHostLimit {
+		resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
 	}
 	return resp, nil
 }
@@ -8671,32 +8752,9 @@ const (
 
 ``````
 func (h *host) HTTPFetch(ctx context.Context, req FetchRequest) (FetchResponse, error) {
-	timeout := defaultHostHTTPFetchTimeout
-	if req.TimeoutMS > 0 {
-		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostHTTPFetchTimeout)
-	}
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, timeout)
-	defer cancel()
-	resp, err := h.openFetch(ctx, req)
-	if err != nil {
-		return FetchResponse{}, err
-	}
-	u, _ := url.Parse(req.URL)
-	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxFetchBytes+1))
-	if err != nil {
-		return FetchResponse{}, fetchError(u.Hostname(), err)
-	}
-	if len(body) > MaxFetchBytes {
-		return FetchResponse{}, fmt.Errorf("plugins: response larger than %d bytes", MaxFetchBytes)
-	}
-	h.noteFetchTraffic(ctx, req, int64(len(body)))
-	out := FetchResponse{Status: resp.StatusCode, Headers: map[string]string{}, Body: body}
-	for k := range resp.Header {
-		out.Headers[k] = resp.Header.Get(k)
-	}
-	return out, nil
+	return h.fetchOne(ctx, req, nil, func(r FetchRequest, respBytes int64) {
+		h.noteFetchTraffic(ctx, r, respBytes)
+	})
 }
 ``````
 
@@ -12798,6 +12856,687 @@ func defaultDataLimits() RuntimeLimits {
 }
 ``````
 
+## Source: internal/plugins/host_fetch_many.go#DefaultFetchManyConcurrency
+
+``````
+const (
+	// DefaultFetchManyConcurrency and MaxFetchManyConcurrency bound the
+	// per-call parallelism of http.fetchMany (safe host default, no owner setting).
+	DefaultFetchManyConcurrency = 8
+	MaxFetchManyConcurrency     = 8
+	// MaxFetchManyRequests caps the number of requests in one http.fetchMany call.
+	MaxFetchManyRequests = 64
+	// DefaultMaxFetchPerHost bounds concurrent outbound plugin HTTP fetches
+	// (http.fetch and http.fetchMany) to any single origin (scheme://host:port)
+	// across the manager so plugins cannot flood an upstream host.
+	DefaultMaxFetchPerHost = 6
+	// MaxFetchManyBytes caps the aggregate raw response body bytes buffered across
+	// all items in one http.fetchMany call so a batch cannot exhaust host or guest
+	// memory. Each individual response remains bounded by MaxFetchBytes as well.
+	MaxFetchManyBytes = MaxFetchBytes
+)
+``````
+
+## Source: internal/plugins/host_fetch_many.go#fetchHostLimiter.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_fetch_many.go#fetchHostLimiter
+
+``````
+// fetchHostLimiter bounds in-flight HTTP fetch requests per normalized origin
+// (scheme://host:port). Idle origin entries are dropped once their last holder
+// or waiter leaves.
+type fetchHostLimiter struct {
+	limit int
+	mu    sync.Mutex
+	hosts map[string]*fetchHostGate
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#fetchHostGate.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_fetch_many.go#fetchHostGate
+
+``````
+type fetchHostGate struct {
+	sem  chan struct{}
+	refs int
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#newFetchHostLimiter
+
+``````
+func newFetchHostLimiter(limit int) *fetchHostLimiter {
+	if limit == 0 {
+		limit = DefaultMaxFetchPerHost
+	}
+	return &fetchHostLimiter{limit: limit}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*fetchHostLimiter.Acquire
+
+``````
+// Acquire claims one in-flight slot for rawURL's normalized origin, waiting
+// until a slot is free or ctx ends. The returned release func is idempotent.
+func (l *fetchHostLimiter) Acquire(ctx context.Context, rawURL string) (func(), error) {
+	if l == nil || l.limit < 0 {
+		return func() {}, nil
+	}
+	key := fetchHostKey(rawURL)
+	if key == "" {
+		return func() {}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	if l.hosts == nil {
+		l.hosts = make(map[string]*fetchHostGate)
+	}
+	g, ok := l.hosts[key]
+	if !ok {
+		g = &fetchHostGate{sem: make(chan struct{}, l.limit)}
+		l.hosts[key] = g
+	}
+	g.refs++
+	l.mu.Unlock()
+
+	deref := func() {
+		l.mu.Lock()
+		g.refs--
+		if g.refs == 0 && l.hosts[key] == g {
+			delete(l.hosts, key)
+		}
+		l.mu.Unlock()
+	}
+
+	select {
+	case g.sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-g.sem
+				deref()
+			})
+		}, nil
+	case <-ctx.Done():
+		deref()
+		return nil, ctx.Err()
+	}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#fetchHostKey
+
+``````
+func fetchHostKey(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#releaseOnCloseReadCloser.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_fetch_many.go#releaseOnCloseReadCloser
+
+``````
+type releaseOnCloseReadCloser struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*releaseOnCloseReadCloser.Close
+
+``````
+func (r *releaseOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.once.Do(func() {
+		if r.release != nil {
+			r.release()
+		}
+	})
+	return err
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#fetchByteBudget.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_fetch_many.go#fetchByteBudget
+
+``````
+// fetchByteBudget tracks aggregate raw response body bytes reserved across
+// concurrent workers in one http.fetchMany batch.
+type fetchByteBudget struct {
+	mu        sync.Mutex
+	remaining int64
+	limit     int64
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#newFetchByteBudget
+
+``````
+func newFetchByteBudget(limit int64) *fetchByteBudget {
+	return &fetchByteBudget{remaining: limit, limit: limit}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*fetchByteBudget.reserve
+
+``````
+func (b *fetchByteBudget) reserve(n int64) bool {
+	if b == nil || n <= 0 {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > b.remaining {
+		return false
+	}
+	b.remaining -= n
+	return true
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*fetchByteBudget.refund
+
+``````
+func (b *fetchByteBudget) refund(n int64) {
+	if b == nil || n <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.remaining += n
+	if b.remaining > b.limit {
+		b.remaining = b.limit
+	}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#readFetchBody
+
+``````
+// readFetchBody reads up to perItemMax bytes from body while enforcing an
+// optional shared batch byte budget. On overflow or read error, reserved batch
+// memory is refunded while totalRead still reports the wire bytes consumed for
+// egress accounting.
+func readFetchBody(body io.Reader, perItemMax int64, budget *fetchByteBudget) (data []byte, totalRead int64, err error) {
+	var out []byte
+	var reserved int64
+	buf := make([]byte, 32<<10)
+	for {
+		n, rerr := body.Read(buf)
+		if n > 0 {
+			totalRead += int64(n)
+			if int64(len(out))+int64(n) > perItemMax {
+				budget.refund(reserved)
+				return nil, totalRead, fmt.Errorf("plugins: response larger than %d bytes", perItemMax)
+			}
+			if !budget.reserve(int64(n)) {
+				budget.refund(reserved)
+				return nil, totalRead, fmt.Errorf("plugins: fetchMany batch response larger than %d bytes", budget.limit)
+			}
+			reserved += int64(n)
+			out = append(out, buf[:n]...)
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return out, totalRead, nil
+			}
+			budget.refund(reserved)
+			return nil, totalRead, rerr
+		}
+	}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#scheduleFetchOrder
+
+``````
+// scheduleFetchOrder interleaves indices 0..len(reqs)-1 round-robin by
+// normalized origin so requests to one saturated host do not head-of-line
+// block requests to other origins in the same batch.
+func scheduleFetchOrder(reqs []FetchRequest) []int {
+	if len(reqs) <= 1 {
+		out := make([]int, len(reqs))
+		for i := range out {
+			out[i] = i
+		}
+		return out
+	}
+	var keys []string
+	buckets := make(map[string][]int)
+	for i, req := range reqs {
+		key := fetchHostKey(req.URL)
+		if _, seen := buckets[key]; !seen {
+			keys = append(keys, key)
+		}
+		buckets[key] = append(buckets[key], i)
+	}
+	order := make([]int, 0, len(reqs))
+	for len(order) < len(reqs) {
+		for _, k := range keys {
+			q := buckets[k]
+			if len(q) == 0 {
+				continue
+			}
+			order = append(order, q[0])
+			buckets[k] = q[1:]
+		}
+	}
+	return order
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#clampFetchManyConcurrency
+
+``````
+func clampFetchManyConcurrency(requested, count int) int {
+	c := requested
+	if c <= 0 {
+		c = DefaultFetchManyConcurrency
+	}
+	if c > MaxFetchManyConcurrency {
+		c = MaxFetchManyConcurrency
+	}
+	if count > 0 && c > count {
+		c = count
+	}
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#fetchManyErrorFrom
+
+``````
+func fetchManyErrorFrom(err error) *FetchManyError {
+	mapped := mapHostError(err)
+	if f, ok := mapped.(*wasm.Fault); ok {
+		return &FetchManyError{Code: f.Code, Message: f.Message}
+	}
+	return &FetchManyError{Code: "host_error", Message: mapped.Error()}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#validateFetchManyArgs
+
+``````
+func validateFetchManyArgs(reqs []FetchRequest, opts FetchManyOptions) error {
+	if len(reqs) > MaxFetchManyRequests {
+		return &ValidationError{Fields: []FieldError{{
+			Field:   "requests",
+			Message: fmt.Sprintf("http.fetchMany accepts at most %d requests per call", MaxFetchManyRequests),
+		}}}
+	}
+	if opts.Concurrency < 0 {
+		return &ValidationError{Fields: []FieldError{{
+			Field:   "concurrency",
+			Message: "concurrency must be a positive integer",
+		}}}
+	}
+	return nil
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#runFetchMany
+
+``````
+// runFetchMany executes reqs concurrently up to opts.Concurrency (clamped to
+// MaxFetchManyConcurrency), charging per-request governance units upfront,
+// enforcing MaxFetchManyBytes across the batch, preserving input order, and
+// stopping promptly when ctx is canceled or its deadline expires.
+func runFetchMany(
+	ctx context.Context,
+	reqs []FetchRequest,
+	opts FetchManyOptions,
+	doOne func(ctx context.Context, req FetchRequest, budget *fetchByteBudget) (FetchResponse, error),
+) ([]FetchManyResult, error) {
+	if err := validateFetchManyArgs(reqs, opts); err != nil {
+		return nil, err
+	}
+	if len(reqs) == 0 {
+		return []FetchManyResult{}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(reqs) > 1 {
+		if err := wasm.ChargeUnits(ctx, int64(len(reqs)-1)*wasm.FetchManyUnitsPerRequest); err != nil {
+			return nil, err
+		}
+	}
+
+	results := make([]FetchManyResult, len(reqs))
+	budget := newFetchByteBudget(MaxFetchManyBytes)
+	order := scheduleFetchOrder(reqs)
+	jobs := make(chan int, len(order))
+	for _, idx := range order {
+		jobs <- idx
+	}
+	close(jobs)
+
+	workers := clampFetchManyConcurrency(opts.Concurrency, len(reqs))
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				resp, err := doOne(ctx, reqs[idx], budget)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					results[idx] = FetchManyResult{Error: fetchManyErrorFrom(err)}
+					continue
+				}
+				results[idx] = FetchManyResult{Response: resp}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#fetchTrafficEntry.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_fetch_many.go#fetchTrafficEntry
+
+``````
+type fetchTrafficEntry struct {
+	host  string
+	bytes int64
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*host.noteBatchFetchTraffic
+
+``````
+func (h *host) noteBatchFetchTraffic(entries []fetchTrafficEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h.m.healthMu.Lock()
+	defer h.m.healthMu.Unlock()
+	if hh, err := h.m.store.health(ctx, h.plugin); err == nil {
+		for _, e := range entries {
+			if e.host != "" {
+				hh.Observed[e.host]++
+			}
+			hh.EgressBytes += e.bytes
+		}
+		_ = h.m.store.putHealth(ctx, h.plugin, hh)
+	}
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#clampHostHTTPFetchTimeout
+
+``````
+func clampHostHTTPFetchTimeout(timeoutMS int64) time.Duration {
+	if timeoutMS <= 0 {
+		return defaultHostHTTPFetchTimeout
+	}
+	if timeoutMS >= maxHostHTTPFetchTimeout.Milliseconds() {
+		return maxHostHTTPFetchTimeout
+	}
+	return time.Duration(timeoutMS) * time.Millisecond
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*host.fetchOne
+
+``````
+func (h *host) fetchOne(
+	ctx context.Context,
+	req FetchRequest,
+	budget *fetchByteBudget,
+	onTraffic func(req FetchRequest, respBytes int64),
+) (FetchResponse, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, clampHostHTTPFetchTimeout(req.TimeoutMS))
+	defer cancel()
+	resp, err := h.openFetchWithOptions(reqCtx, req, fetchOptions{applyHostLimit: true})
+	if err != nil {
+		return FetchResponse{}, err
+	}
+	hostName := ""
+	if u, perr := url.Parse(req.URL); perr == nil && u != nil {
+		hostName = u.Hostname()
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, totalRead, err := readFetchBody(resp.Body, MaxFetchBytes, budget)
+	if err != nil {
+		if totalRead > 0 && onTraffic != nil {
+			onTraffic(req, totalRead)
+		}
+		if strings.HasPrefix(err.Error(), "plugins:") {
+			return FetchResponse{}, err
+		}
+		return FetchResponse{}, fetchError(hostName, err)
+	}
+	if onTraffic != nil {
+		onTraffic(req, int64(len(body)))
+	}
+	out := FetchResponse{Status: resp.StatusCode, Headers: map[string]string{}, Body: body}
+	for k := range resp.Header {
+		out.Headers[k] = resp.Header.Get(k)
+	}
+	return out, nil
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#*host.HTTPFetchMany
+
+``````
+// HTTPFetchMany runs up to MaxFetchManyRequests outbound HTTP calls concurrently
+// on the host (bounded to MaxFetchManyConcurrency in-flight calls per batch and
+// DefaultMaxFetchPerHost concurrent fetches per origin across the manager).
+// Each request applies the plugin's live network grants, local/operator host
+// checks, redirect credential policy (#688), per-request timeout, and egress
+// accounting. Results are returned in input order, each carrying either a
+// response or a per-item error. Canceling ctx aborts in-flight requests and
+// returns ctx.Err().
+func (h *host) HTTPFetchMany(ctx context.Context, reqs []FetchRequest, opts FetchManyOptions) ([]FetchManyResult, error) {
+	var trafficMu sync.Mutex
+	var traffic []fetchTrafficEntry
+	recordTraffic := func(req FetchRequest, respBytes int64) {
+		hostName := ""
+		if u, err := url.Parse(req.URL); err == nil && u != nil {
+			hostName = u.Hostname()
+		}
+		trafficMu.Lock()
+		traffic = append(traffic, fetchTrafficEntry{
+			host:  hostName,
+			bytes: respBytes + int64(len(req.Body)),
+		})
+		trafficMu.Unlock()
+	}
+	results, err := runFetchMany(ctx, reqs, opts, func(itemCtx context.Context, req FetchRequest, budget *fetchByteBudget) (FetchResponse, error) {
+		return h.fetchOne(itemCtx, req, budget, recordTraffic)
+	})
+	trafficMu.Lock()
+	snapshot := traffic
+	trafficMu.Unlock()
+	h.noteBatchFetchTraffic(snapshot)
+	return results, err
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#FetchManyResultWire
+
+``````
+// FetchManyResultWire encodes FetchManyResult entries for the hosted JSON wire
+// shape: successful items match FetchResult ({status, headers, body,
+// bodyBase64?}) and failed items carry {error: {code, message}}.
+func FetchManyResultWire(results []FetchManyResult) []map[string]any {
+	out := make([]map[string]any, len(results))
+	for i, r := range results {
+		if r.Error != nil {
+			out[i] = map[string]any{"error": r.Error}
+			continue
+		}
+		out[i] = FetchResult(r.Response)
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#wireFetchRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `method` | `string` | emitted (validation may require a value) |  |
+| `url` | `string` | emitted (validation may require a value) |  |
+| `headers` | `map[string]string` | emitted (validation may require a value) |  |
+| `body` | `string` | emitted (validation may require a value) |  |
+| `bodyBase64` | `string` | emitted (validation may require a value) |  |
+| `timeoutMs` | `int64` | emitted (validation may require a value) |  |
+| `keepHeadersOnRedirect` | `[]string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/host_fetch_many.go#wireFetchRequest
+
+``````
+type wireFetchRequest struct {
+	Method                string            `json:"method"`
+	URL                   string            `json:"url"`
+	Headers               map[string]string `json:"headers"`
+	Body                  string            `json:"body"`
+	BodyBase64            string            `json:"bodyBase64"`
+	TimeoutMS             int64             `json:"timeoutMs"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect"`
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#wireFetchRequest.toFetchRequest
+
+``````
+func (w wireFetchRequest) toFetchRequest() (FetchRequest, *wasm.Fault) {
+	method := w.Method
+	if method == "" {
+		method = "GET"
+	}
+	body := []byte(w.Body)
+	if w.BodyBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(w.BodyBase64)
+		if err != nil {
+			return FetchRequest{}, &wasm.Fault{Code: "bad_arguments", Message: "bodyBase64 is not valid base64"}
+		}
+		body = decoded
+	}
+	return FetchRequest{
+		Method:                method,
+		URL:                   w.URL,
+		Headers:               w.Headers,
+		Body:                  body,
+		TimeoutMS:             w.TimeoutMS,
+		KeepHeadersOnRedirect: w.KeepHeadersOnRedirect,
+	}, nil
+}
+``````
+
+## Source: internal/plugins/host_fetch_many.go#ParseFetchManyArgs
+
+``````
+// ParseFetchManyArgs decodes the positional JSON arguments [requests, options?]
+// for the http.fetchMany host service.
+func ParseFetchManyArgs(args []json.RawMessage) ([]FetchRequest, FetchManyOptions, *wasm.Fault) {
+	var reqs []FetchRequest
+	if len(args) > 0 && len(args[0]) > 0 && strings.TrimSpace(string(args[0])) != "null" {
+		var wire []wireFetchRequest
+		if err := json.Unmarshal(args[0], &wire); err != nil {
+			return nil, FetchManyOptions{}, &wasm.Fault{Code: "bad_arguments", Message: "http.fetchMany takes (requests[], options?)"}
+		}
+		if len(wire) > MaxFetchManyRequests {
+			return nil, FetchManyOptions{}, &wasm.Fault{
+				Code:    string(wasm.StatusInvalidInput),
+				Message: fmt.Sprintf("http.fetchMany accepts at most %d requests per call", MaxFetchManyRequests),
+			}
+		}
+		reqs = make([]FetchRequest, len(wire))
+		for i, item := range wire {
+			req, fault := item.toFetchRequest()
+			if fault != nil {
+				return nil, FetchManyOptions{}, fault
+			}
+			reqs[i] = req
+		}
+	}
+	var opts FetchManyOptions
+	if len(args) > 1 && len(args[1]) > 0 && strings.TrimSpace(string(args[1])) != "null" {
+		var rawOpts struct {
+			Concurrency *float64 `json:"concurrency"`
+		}
+		if err := json.Unmarshal(args[1], &rawOpts); err != nil {
+			return nil, FetchManyOptions{}, &wasm.Fault{Code: "bad_arguments", Message: "http.fetchMany options must be {concurrency?}"}
+		}
+		if rawOpts.Concurrency != nil {
+			c := *rawOpts.Concurrency
+			if math.IsNaN(c) || math.IsInf(c, 0) || math.Trunc(c) != c || c < 0 || c > math.MaxInt32 {
+				return nil, FetchManyOptions{}, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: "http.fetchMany concurrency must be a non-negative integer"}
+			}
+			opts.Concurrency = int(c)
+		}
+	}
+	return reqs, opts, nil
+}
+``````
+
 ## Source: internal/plugins/host_flows.go#DefaultEventPublishPerMin
 
 ``````
@@ -15297,44 +16036,48 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "secret.delete":
 		return result(nil, b.h.SecretDelete(ctx, str(0)))
 	case "http.fetch":
-		var req struct {
-			Method  string            `json:"method"`
-			URL     string            `json:"url"`
-			Headers map[string]string `json:"headers"`
-			Body    string            `json:"body"`
-			// BodyBase64 carries a binary request body; it wins over Body.
-			BodyBase64            string   `json:"bodyBase64"`
-			TimeoutMS             int64    `json:"timeoutMs"`
-			KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect"`
-		}
+		var rawReq wireFetchRequest
 		if len(args) > 0 {
-			if err := json.Unmarshal(args[0], &req); err != nil {
+			if err := json.Unmarshal(args[0], &rawReq); err != nil {
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "http.fetch takes {method, url, headers, body}"}
 			}
 		}
-		if req.Method == "" {
-			req.Method = "GET"
+		req, fault := rawReq.toFetchRequest()
+		if fault != nil {
+			return nil, fault
 		}
-		body := []byte(req.Body)
-		if req.BodyBase64 != "" {
-			decoded, err := base64.StdEncoding.DecodeString(req.BodyBase64)
-			if err != nil {
-				return nil, &wasm.Fault{Code: "bad_arguments", Message: "bodyBase64 is not valid base64"}
-			}
-			body = decoded
-		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{
-			Method:                req.Method,
-			URL:                   req.URL,
-			Headers:               req.Headers,
-			Body:                  body,
-			TimeoutMS:             req.TimeoutMS,
-			KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
-		})
+		resp, err := b.h.HTTPFetch(ctx, req)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
 		return result(FetchResult(resp), nil)
+	case "http.fetchMany":
+		reqs, opts, fault := ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		var results []FetchManyResult
+		var err error
+		if mh, ok := b.h.(interface {
+			HTTPFetchMany(context.Context, []FetchRequest, FetchManyOptions) ([]FetchManyResult, error)
+		}); ok {
+			results, err = mh.HTTPFetchMany(ctx, reqs, opts)
+		} else {
+			results, err = runFetchMany(ctx, reqs, opts, func(itemCtx context.Context, req FetchRequest, budget *fetchByteBudget) (FetchResponse, error) {
+				resp, ferr := b.h.HTTPFetch(itemCtx, req)
+				if ferr != nil {
+					return FetchResponse{}, ferr
+				}
+				if !budget.reserve(int64(len(resp.Body))) {
+					return FetchResponse{}, fmt.Errorf("plugins: fetchMany batch response larger than %d bytes", budget.limit)
+				}
+				return resp, nil
+			})
+		}
+		if err != nil {
+			return nil, mapHostError(err)
+		}
+		return result(FetchManyResultWire(results), nil)
 	case "catalog.search":
 		v, err := b.h.CatalogSearch(ctx, str(0), int(num(1)), int(num(2)))
 		return result(v, err)
@@ -16432,6 +17175,40 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		// Stop at this boundary and leave an explicit live-test warning.
 		h.deferred++
 		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared network request needs a live test"}
+	case "http.fetchMany":
+		reqs, _, fault := plugins.ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		if len(reqs) == 0 {
+			return json.RawMessage("[]"), nil
+		}
+		if len(reqs) > 1 {
+			if err := wasm.ChargeUnits(ctx, int64(len(reqs)-1)*wasm.FetchManyUnitsPerRequest); err != nil {
+				return nil, err
+			}
+		}
+		var undeclared string
+		for _, req := range reqs {
+			u, err := url.Parse(req.URL)
+			if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return nil, wasm.Forbidden("invalid url in http.fetchMany: " + req.URL)
+			}
+			host := strings.ToLower(u.Hostname())
+			h.observed[host]++
+			if !hostMatches(h.man.Ether.Permissions.Network, host) &&
+				!(plugins.DeclaresOperatorHosts(h.man) && hostMatches(h.operatorDefaults, host)) {
+				h.undecl[host] = true
+				if undeclared == "" {
+					undeclared = host
+				}
+			}
+		}
+		if undeclared != "" {
+			return nil, wasm.Forbidden("undeclared network host " + undeclared)
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared network requests need a live test"}
 	case "catalog.search":
 		if h.man.Ether.Permissions.Catalog != "read" {
 			return nil, wasm.Forbidden("catalog permission not declared")
@@ -28099,7 +28876,10 @@ globalThis.ether = (() => {
     secret: { get: (n) => call("secret.get", [n]),
               set: (n, v, ttlSec) => call("secret.set", ttlSec === undefined ? [n, v] : [n, v, ttlSec]),
               delete: (n) => call("secret.delete", [n]) },
-    http: { hash: (req) => call("http.hash", [req]), fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
+    http: { hash: (req) => call("http.hash", [req]),
+            fetch: (req) => call("http.fetch", [req]),
+            fetchMany: (reqs, opts) => call("http.fetchMany", opts == null ? [reqs == null ? [] : reqs] : [reqs == null ? [] : reqs, opts]),
+            fetchToCache: (req) => call("http.fetchToCache", [req]) },
     catalog: { search: (q) => call("catalog.search", [q]), get: (id) => call("catalog.get", [id]) },
     addon: { get: (route) => call("addon.get", [route]) },
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
@@ -29375,7 +30155,7 @@ type Response struct {
 ``````
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
 // service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get, secret.set, secret.delete,
-// http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
+// http.fetch, http.fetchMany, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, cache.delete, frontend.streamURL,
 // folders.list, folders.stat, events.publish, notify.owner, log. Args is a JSON array of positional
@@ -29397,12 +30177,13 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 
 ``````
 // Default host-call unit costs, in the spirit of appkit-sandbox's priced
-// host functions. Wall time adds 1 unit per WallUnitInterval; archive.read
+// host functions. Wall time adds 1 unit per WallUnitInterval; http.fetchMany
+// adds FetchManyUnitsPerRequest for each request after the first; archive.read
 // adds ArchiveReadUnitsPerMember per requested member; archive.extract
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
 	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10, "kv.usage": 5, "badges.set": 20, "badges.clear": 10, "badges.usage": 5,
-	"secret.get": 5, "secret.set": 10, "secret.delete": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "secret.set": 10, "secret.delete": 5, "http.fetch": 100, "http.fetchMany": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
@@ -29423,6 +30204,10 @@ const (
 	WallUnitInterval = 100 * time.Microsecond
 	// BaseCallUnits is charged once per handle call.
 	BaseCallUnits = 10
+	// FetchManyUnitsPerRequest is charged for each request beyond the first in
+	// http.fetchMany on top of http.fetchMany's 100-unit base call cost, so a
+	// batch of N requests pays N * 100 units just like N http.fetch calls.
+	FetchManyUnitsPerRequest = 100
 	// ArchiveReadUnitsPerMember is charged per requested item in archive.read
 	// on top of archive.read's 50-unit base call cost, so large batches pay
 	// proportional governance units instead of dodging per-call budgets.
@@ -29584,6 +30369,8 @@ func hostCallTimeout(name string) time.Duration {
 	switch name {
 	case "http.fetch":
 		return 60 * time.Second
+	case "http.fetchMany":
+		return 2 * time.Minute
 	case "sources.resolve", "ai.complete":
 		return 35 * time.Second
 	case "http.fetchToCache", "http.hash",
@@ -30125,9 +30912,9 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 		}
 	}
 	limit := HostResultBytes(cs.lim.MemoryBytes)
-	// JSON can escape each text byte as six bytes. HTTPFetch bounds the raw
-	// body to 10 MiB; leave room for its headers and JSON envelope.
-	if name == "http.fetch" {
+	// JSON can escape each text byte as six bytes. HTTPFetch and HTTPFetchMany
+	// bound raw response bytes to 10 MiB; leave room for headers and JSON framing.
+	if name == "http.fetch" || name == "http.fetchMany" {
 		limit = max(limit, int64((6*MaxFetchBodyBytes)+(1<<20)))
 	}
 	if int64(len(out)) > limit {
@@ -34132,7 +34919,22 @@ remote request (including streaming into cache) by the remaining call deadline.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 
-Across all host HTTP paths (`http.fetch`, `http.fetchToCache`, `http.hash`, and
+`ether.http.fetchMany(requests, {concurrency?})` runs up to 64 outbound HTTP
+requests concurrently on the host while the hosted guest waits synchronously,
+overlapping independent provider or candidate-detail fetches instead of summing
+their latencies. Per-call concurrency defaults to and clamps at 8 (fixed host
+cap, no owner setting), per-origin politeness limits cap concurrent fetches to
+6 per origin across Ether (with origin-interleaved scheduling so one saturated
+host does not head-of-line block others), total buffered response bodies across
+the batch are bounded at 10 MiB (`MaxFetchManyBytes`), and governance charges
+100 units per request (identical to individual `http.fetch` calls). Answers
+return in input order: each item has either `{status, headers, body, bodyBase64?}`
+(including non-2xx HTTP status codes) or `{error: {code, message}}` on per-item
+timeout, permission, redirect, size, or transport failure. Canceling the parent
+request or exceeding its deadline aborts all in-flight batch fetches promptly
+without consuming extra WASM pool lanes.
+
+Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck
 live network permissions on every hop and keep credentials/caller headers only
 on the same origin, a strict same-site subdomain (verified via the Public Suffix
@@ -43504,6 +44306,21 @@ func (c *RemoteHostClient) Hash(ctx context.Context, r HashRequest) (HashResult,
 }
 ``````
 
+## Source: sdk/go/host.go#DefaultFetchManyConcurrency
+
+``````
+const (
+	// DefaultFetchManyConcurrency and MaxFetchManyConcurrency bound the
+	// per-call parallelism of Host.FetchMany.
+	DefaultFetchManyConcurrency = 8
+	MaxFetchManyConcurrency     = 8
+	// MaxFetchManyRequests caps the number of requests per FetchMany call.
+	MaxFetchManyRequests = 64
+	// DefaultMaxFetchPerHost bounds concurrent requests to any single origin.
+	DefaultMaxFetchPerHost = 6
+)
+``````
+
 ## Source: sdk/go/host.go#HostFetchRequest.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -43513,6 +44330,7 @@ func (c *RemoteHostClient) Hash(ctx context.Context, r HashRequest) (HashResult,
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `string` | may be omitted (see validation for conditions) |  |
+| `bodyBase64` | `string` | may be omitted (see validation for conditions) |  |
 | `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
@@ -43526,6 +44344,7 @@ type HostFetchRequest struct {
 	URL                   string            `json:"url"`
 	Headers               map[string]string `json:"headers,omitempty"`
 	Body                  string            `json:"body,omitempty"`
+	BodyBase64            string            `json:"bodyBase64,omitempty"`
 	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 ``````
@@ -43537,6 +44356,7 @@ type HostFetchRequest struct {
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | emitted (validation may require a value) |  |
 | `body` | `string` | emitted (validation may require a value) |  |
+| `bodyBase64` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/host.go#HostFetchResponse
@@ -43544,9 +44364,69 @@ type HostFetchRequest struct {
 ``````
 // HostFetchResponse is returned by Host.Fetch.
 type HostFetchResponse struct {
-	Status  int               `json:"status"`
-	Headers map[string]string `json:"headers"`
-	Body    string            `json:"body"`
+	Status     int               `json:"status"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
+}
+``````
+
+## Source: sdk/go/host.go#HostFetchManyOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `concurrency` | `int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/host.go#HostFetchManyOptions
+
+``````
+// HostFetchManyOptions configures a bounded concurrent FetchMany batch.
+type HostFetchManyOptions struct {
+	Concurrency int `json:"concurrency,omitempty"`
+}
+``````
+
+## Source: sdk/go/host.go#HostFetchError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `code` | `string` | emitted (validation may require a value) |  |
+| `message` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/host.go#HostFetchError
+
+``````
+// HostFetchError describes a per-item error returned by FetchMany.
+type HostFetchError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+``````
+
+## Source: sdk/go/host.go#HostFetchManyResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `status` | `int` | may be omitted (see validation for conditions) |  |
+| `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `body` | `string` | may be omitted (see validation for conditions) |  |
+| `bodyBase64` | `string` | may be omitted (see validation for conditions) |  |
+| `error` | `*HostFetchError` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/host.go#HostFetchManyResult
+
+``````
+// HostFetchManyResult is one ordered result from FetchMany. Either Error is
+// non-nil or Status/Headers/Body carry the HTTP response (including non-2xx).
+type HostFetchManyResult struct {
+	Status     int               `json:"status,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       string            `json:"body,omitempty"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
+	Error      *HostFetchError   `json:"error,omitempty"`
 }
 ``````
 
@@ -43742,6 +44622,18 @@ type KVUsage struct {
 // RemoteHostClient and MockHost implement it.
 type KVUsageHost interface {
 	KVUsage(ctx context.Context) (KVUsage, error)
+}
+``````
+
+## Source: sdk/go/host.go#FetchManyHost
+
+``````
+// FetchManyHost executes up to MaxFetchManyRequests outbound HTTP calls
+// concurrently with bounded per-call and per-origin concurrency, returning
+// ordered results with per-item error isolation (#703).
+// RemoteHostClient and MockHost implement it.
+type FetchManyHost interface {
+	FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error)
 }
 ``````
 
@@ -44366,6 +45258,171 @@ func (c *RemoteHostClient) Fetch(ctx context.Context, r HostFetchRequest) (HostF
 		Headers: hdrs,
 		Body:    string(raw),
 	}, nil
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.FetchMany
+
+``````
+// FetchMany runs up to MaxFetchManyRequests outbound HTTP calls concurrently
+// (bounded to MaxFetchManyConcurrency per batch and DefaultMaxFetchPerHost per
+// origin), returning ordered results with per-item error isolation.
+func (c *RemoteHostClient) FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error) {
+	var opt HostFetchManyOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	return runSDKFetchMany(ctx, reqs, opt, c.Fetch)
+}
+``````
+
+## Source: sdk/go/host.go#sdkFetchOriginKey
+
+``````
+func sdkFetchOriginKey(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+``````
+
+## Source: sdk/go/host.go#runSDKFetchMany
+
+``````
+func runSDKFetchMany(
+	ctx context.Context,
+	reqs []HostFetchRequest,
+	opts HostFetchManyOptions,
+	doOne func(context.Context, HostFetchRequest) (HostFetchResponse, error),
+) ([]HostFetchManyResult, error) {
+	if len(reqs) > MaxFetchManyRequests {
+		return nil, fmt.Errorf("http.fetchMany accepts at most %d requests per call", MaxFetchManyRequests)
+	}
+	if opts.Concurrency < 0 {
+		return nil, fmt.Errorf("http.fetchMany concurrency must be a non-negative integer")
+	}
+	if len(reqs) == 0 {
+		return []HostFetchManyResult{}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultFetchManyConcurrency
+	}
+	if concurrency > MaxFetchManyConcurrency {
+		concurrency = MaxFetchManyConcurrency
+	}
+	if concurrency > len(reqs) {
+		concurrency = len(reqs)
+	}
+
+	var keys []string
+	buckets := make(map[string][]int)
+	for i, req := range reqs {
+		k := sdkFetchOriginKey(req.URL)
+		if _, ok := buckets[k]; !ok {
+			keys = append(keys, k)
+		}
+		buckets[k] = append(buckets[k], i)
+	}
+	jobs := make(chan int, len(reqs))
+	emitted := 0
+	for emitted < len(reqs) {
+		for _, k := range keys {
+			q := buckets[k]
+			if len(q) == 0 {
+				continue
+			}
+			jobs <- q[0]
+			buckets[k] = q[1:]
+			emitted++
+		}
+	}
+	close(jobs)
+
+	var gateMu sync.Mutex
+	gates := make(map[string]chan struct{})
+	acquireOrigin := func(c context.Context, rawURL string) (func(), error) {
+		k := sdkFetchOriginKey(rawURL)
+		if k == "" {
+			return func() {}, nil
+		}
+		gateMu.Lock()
+		sem, ok := gates[k]
+		if !ok {
+			sem = make(chan struct{}, DefaultMaxFetchPerHost)
+			gates[k] = sem
+		}
+		gateMu.Unlock()
+		select {
+		case sem <- struct{}{}:
+			return func() { <-sem }, nil
+		case <-c.Done():
+			return nil, c.Err()
+		}
+	}
+
+	results := make([]HostFetchManyResult, len(reqs))
+	var wg sync.WaitGroup
+	for range concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				release, aerr := acquireOrigin(ctx, reqs[idx].URL)
+				if aerr != nil {
+					return
+				}
+				resp, err := doOne(ctx, reqs[idx])
+				release()
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					code := "host_error"
+					if errors.Is(err, context.DeadlineExceeded) {
+						code = "timeout"
+					}
+					results[idx] = HostFetchManyResult{Error: &HostFetchError{Code: code, Message: err.Error()}}
+					continue
+				}
+				results[idx] = HostFetchManyResult{
+					Status:     resp.Status,
+					Headers:    resp.Headers,
+					Body:       resp.Body,
+					BodyBase64: resp.BodyBase64,
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 ``````
 
@@ -53125,6 +54182,7 @@ Implements Ether Plugin Protocol v1 (EPP/1) for sidecar and remote plugins:
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import http.server
 import inspect
@@ -53762,6 +54820,95 @@ class _SecretClient:
         self._call("DELETE", f"/ether/plugin-host/secrets/{urllib.parse.quote(name, safe='')}")
 
 
+DEFAULT_FETCH_MANY_CONCURRENCY = 8
+MAX_FETCH_MANY_CONCURRENCY = 8
+MAX_FETCH_MANY_REQUESTS = 64
+DEFAULT_MAX_FETCH_PER_HOST = 6
+
+
+def _fetch_origin_key(raw_url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(str(raw_url).strip())
+    except Exception:
+        return ""
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return f"{scheme}://{host}:{port}"
+
+
+def _run_fetch_many(
+    requests_list: List[Dict[str, Any]],
+    opts: Optional[Dict[str, Any]],
+    run_one: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    reqs = list(requests_list or [])
+    if len(reqs) > MAX_FETCH_MANY_REQUESTS:
+        raise ValueError(f"http.fetchMany accepts at most {MAX_FETCH_MANY_REQUESTS} requests per call")
+    concurrency = DEFAULT_FETCH_MANY_CONCURRENCY
+    if opts is not None and opts.get("concurrency") is not None:
+        raw_c = opts["concurrency"]
+        if isinstance(raw_c, bool) or not isinstance(raw_c, int) or raw_c < 0:
+            raise ValueError("http.fetchMany concurrency must be a non-negative integer")
+        if raw_c > 0:
+            concurrency = min(raw_c, MAX_FETCH_MANY_CONCURRENCY)
+    if not reqs:
+        return []
+
+    origin_sems: Dict[str, threading.Semaphore] = {}
+    origin_lock = threading.Lock()
+
+    def _exec(req: Dict[str, Any]) -> Dict[str, Any]:
+        origin = _fetch_origin_key(str(req.get("url") or ""))
+        sem: Optional[threading.Semaphore] = None
+        if origin:
+            with origin_lock:
+                sem = origin_sems.get(origin)
+                if sem is None:
+                    sem = threading.Semaphore(DEFAULT_MAX_FETCH_PER_HOST)
+                    origin_sems[origin] = sem
+            sem.acquire()
+        try:
+            return run_one(req)
+        except (TimeoutError, socket.timeout) as exc:
+            return {"error": {"code": "timeout", "message": str(exc) or "host call timed out"}}
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if not isinstance(code, str) or not code:
+                code = "timeout" if isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)) else "host_error"
+            return {"error": {"code": code, "message": str(exc) or "request failed"}}
+        finally:
+            if sem is not None:
+                sem.release()
+
+    worker_count = min(concurrency, len(reqs))
+    keys: List[str] = []
+    buckets: Dict[str, List[int]] = {}
+    for idx, req in enumerate(reqs):
+        key = _fetch_origin_key(str(req.get("url") or ""))
+        if key not in buckets:
+            keys.append(key)
+            buckets[key] = []
+        buckets[key].append(idx)
+    order: List[int] = []
+    while len(order) < len(reqs):
+        for key in keys:
+            q = buckets[key]
+            if q:
+                order.append(q.pop(0))
+
+    results: List[Dict[str, Any]] = [{} for _ in reqs]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
+        future_map = {pool.submit(_exec, reqs[idx]): idx for idx in order}
+        for fut, idx in future_map.items():
+            results[idx] = fut.result()
+    return results
+
+
 class _HttpClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -53792,6 +54939,16 @@ class _HttpClient:
             raw = exc.read().decode("utf-8", errors="replace")
             out_headers = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
             return {"status": exc.code, "headers": out_headers, "body": raw}
+
+    def fetch_many(
+        self,
+        requests: List[Dict[str, Any]],
+        opts: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run up to 64 outbound HTTP requests concurrently (bounded to 8 per batch and 6 per origin)."""
+        return _run_fetch_many(requests, opts, self.fetch)
+
+    fetchMany = fetch_many
 
 
 class _CatalogClient:
@@ -56144,6 +57301,15 @@ class MockHostClient:
         def fetch(self, req: Dict[str, Any]) -> Dict[str, Any]:
             return self._p.http_handler(req)
 
+        def fetch_many(
+            self,
+            requests: List[Dict[str, Any]],
+            opts: Optional[Dict[str, Any]] = None,
+        ) -> List[Dict[str, Any]]:
+            return _run_fetch_many(requests, opts, self.fetch)
+
+        fetchMany = fetch_many
+
     class _Catalog:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
@@ -57522,6 +58688,36 @@ export interface HostFetchResponse {
   bodyBase64?: string;
 }
 
+export interface HostFetchManyOptions {
+  /** Maximum in-flight requests for this batch (default 8, clamped by host to 1..8). */
+  concurrency?: number;
+}
+
+export interface HostFetchError {
+  code: string;
+  message: string;
+}
+
+/**
+ * One ordered entry returned by `http.fetchMany`. Successful items carry the
+ * same `{ status, headers, body, bodyBase64? }` fields as `http.fetch`
+ * (including non-2xx HTTP status codes); failed items carry `error`.
+ */
+export type HostFetchManyResult =
+  | (HostFetchResponse & { error?: undefined })
+  | {
+      status?: undefined;
+      headers?: undefined;
+      body?: undefined;
+      bodyBase64?: undefined;
+      error: HostFetchError;
+    };
+
+export const DefaultFetchManyConcurrency = 8;
+export const MaxFetchManyConcurrency = 8;
+export const MaxFetchManyRequests = 64;
+export const DefaultMaxFetchPerHost = 6;
+
 export interface HashRequest {
   url: string;
   algo: "sha256" | "sha1" | "md5";
@@ -57944,6 +59140,15 @@ export interface EtherHost {
   };
   http: {
     fetch(req: HostFetchRequest): MaybePromise<HostFetchResponse>;
+    /**
+     * Run up to 64 outbound HTTP requests concurrently on the host (bounded to
+     * at most 8 in-flight per batch and 6 per origin across Ether), returning
+     * answers in input order where each entry has either a response or `error`.
+     */
+    fetchMany(
+      requests: HostFetchRequest[],
+      opts?: HostFetchManyOptions,
+    ): MaybePromise<HostFetchManyResult[]>;
     hash?(req: HashRequest): MaybePromise<HashResult>;
     fetchToCache?(req: FetchCacheRequest): MaybePromise<FetchCacheResult>;
   };
@@ -58068,6 +59273,10 @@ interface GlobalEtherBindings {
     };
     http: {
       fetch: (req: HostFetchRequest) => HostFetchResponse;
+      fetchMany?: (
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ) => HostFetchManyResult[];
     };
     catalog: {
       search: (q: string, limit?: number, offset?: number) => { titles: CatalogTitleSummary[] };
@@ -58276,16 +59485,24 @@ export function createHostedClient(): EtherHost {
       hash: (req) => callHost<HashResult>("http.hash", [req]),
       fetchToCache: (req) => callHost<FetchCacheResult>("http.fetchToCache", [req]),
       fetch(req: HostFetchRequest): HostFetchResponse {
-        const normalized = {
-          timeoutMs: req.timeoutMs,
-          method: req.method ?? "GET",
-          url: req.url,
-          headers: req.headers ?? {},
-          ...(req.keepHeadersOnRedirect !== undefined ? { keepHeadersOnRedirect: req.keepHeadersOnRedirect } : {}),
-          ...(req.bodyBase64 !== undefined ? { bodyBase64: req.bodyBase64 } : { body: req.body ?? "" }),
-        };
+        const normalized = normalizeFetchRequest(req);
         if (g.ether?.http) return g.ether.http.fetch(normalized);
         return callHost<HostFetchResponse>("http.fetch", [normalized]);
+      },
+      fetchMany(
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ): HostFetchManyResult[] {
+        const normalized = (requests ?? []).map(normalizeFetchRequest);
+        if (g.ether?.http?.fetchMany) {
+          return opts === undefined
+            ? g.ether.http.fetchMany(normalized)
+            : g.ether.http.fetchMany(normalized, opts);
+        }
+        return callHost<HostFetchManyResult[]>(
+          "http.fetchMany",
+          opts === undefined ? [normalized] : [normalized, opts],
+        );
       },
     },
     catalog: {
@@ -58624,23 +59841,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     http: {
       hash: async (req) => (await callJson<HashResult>("POST", "/ether/plugin-host/data/http.hash", [req]))!,
       fetchToCache: async (req) => (await callJson<FetchCacheResult>("POST", "/ether/plugin-host/data/http.fetchToCache", [req]))!,
-      async fetch(req: HostFetchRequest): Promise<HostFetchResponse> {
-        const resp = await doFetch(req.url, {
-          method: req.method ?? "GET",
-          headers: req.headers,
-          body: req.body,
-          signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : undefined,
-        });
-        const outHeaders: Record<string, string> = {};
-        resp.headers.forEach((v, k) => {
-          outHeaders[k] = v;
-        });
-        return {
-          status: resp.status,
-          headers: outHeaders,
-          body: await resp.text(),
-        };
-      },
+      fetch: (req: HostFetchRequest): Promise<HostFetchResponse> => doRemoteFetch(doFetch, req),
+      fetchMany: (
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ): Promise<HostFetchManyResult[]> =>
+        runRemoteFetchMany(requests, opts, (req) => doRemoteFetch(doFetch, req)),
     },
     catalog: {
       async search(
@@ -58840,6 +60046,165 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
   };
 }
 
+function normalizeFetchRequest(req: HostFetchRequest): HostFetchRequest {
+  return {
+    timeoutMs: req.timeoutMs,
+    method: req.method ?? "GET",
+    url: req.url,
+    headers: req.headers ?? {},
+    ...(req.keepHeadersOnRedirect !== undefined ? { keepHeadersOnRedirect: req.keepHeadersOnRedirect } : {}),
+    ...(req.bodyBase64 !== undefined ? { bodyBase64: req.bodyBase64 } : { body: req.body ?? "" }),
+  };
+}
+
+async function doRemoteFetch(
+  doFetch: typeof fetch,
+  req: HostFetchRequest,
+): Promise<HostFetchResponse> {
+  const resp = await doFetch(req.url, {
+    method: req.method ?? "GET",
+    headers: req.headers,
+    body: req.body,
+    signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : undefined,
+  });
+  const outHeaders: Record<string, string> = {};
+  resp.headers.forEach((v, k) => {
+    outHeaders[k] = v;
+  });
+  return {
+    status: resp.status,
+    headers: outHeaders,
+    body: await resp.text(),
+  };
+}
+
+function fetchOriginKey(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    const host = u.hostname.toLowerCase().replace(/\.$/, "");
+    if (!host) return "";
+    const port = u.port || (u.protocol === "https:" ? "443" : "80");
+    return `${u.protocol}//${host}:${port}`;
+  } catch {
+    return "";
+  }
+}
+
+function scheduleFetchManyOrder(requests: HostFetchRequest[]): number[] {
+  if (requests.length <= 1) return requests.map((_, i) => i);
+  const keys: string[] = [];
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < requests.length; i++) {
+    const key = fetchOriginKey(requests[i]!.url);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+      keys.push(key);
+    }
+    bucket.push(i);
+  }
+  const order: number[] = [];
+  while (order.length < requests.length) {
+    for (const key of keys) {
+      const bucket = buckets.get(key)!;
+      if (bucket.length > 0) order.push(bucket.shift()!);
+    }
+  }
+  return order;
+}
+
+function fetchErrorFromUnknown(err: unknown): HostFetchError {
+  if (err && typeof err === "object") {
+    const e = err as { name?: unknown; code?: unknown; message?: unknown };
+    if (typeof e.code === "string" && e.code) {
+      return { code: e.code, message: String(e.message ?? e.code) };
+    }
+    if (e.name === "TimeoutError" || e.name === "AbortError") {
+      return { code: "timeout", message: String(e.message ?? "host call timed out") };
+    }
+    if (typeof e.message === "string" && e.message) {
+      return { code: "host_error", message: e.message };
+    }
+  }
+  return { code: "host_error", message: String(err ?? "request failed") };
+}
+
+class OriginGate {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+  private readonly limit: number;
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+  async acquire(): Promise<() => void> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    this.active++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active--;
+      const next = this.waiters.shift();
+      if (next) next();
+    };
+  }
+}
+
+async function runRemoteFetchMany(
+  requests: HostFetchRequest[],
+  opts: HostFetchManyOptions | undefined,
+  runOne: (req: HostFetchRequest) => Promise<HostFetchResponse>,
+): Promise<HostFetchManyResult[]> {
+  const list = requests ?? [];
+  if (list.length > MaxFetchManyRequests) {
+    throw new Error(`http.fetchMany accepts at most ${MaxFetchManyRequests} requests per call`);
+  }
+  let concurrency = DefaultFetchManyConcurrency;
+  if (opts?.concurrency !== undefined) {
+    if (!Number.isInteger(opts.concurrency) || opts.concurrency < 0) {
+      throw new Error("http.fetchMany concurrency must be a non-negative integer");
+    }
+    if (opts.concurrency > 0) {
+      concurrency = Math.min(opts.concurrency, MaxFetchManyConcurrency);
+    }
+  }
+  if (list.length === 0) return [];
+  const results = new Array<HostFetchManyResult>(list.length);
+  const order = scheduleFetchManyOrder(list);
+  const originGates = new Map<string, OriginGate>();
+  let cursor = 0;
+  const workerCount = Math.min(concurrency, list.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < order.length) {
+      const idx = order[cursor++]!;
+      const req = list[idx]!;
+      const origin = fetchOriginKey(req.url);
+      let release = () => {};
+      if (origin) {
+        let gate = originGates.get(origin);
+        if (!gate) {
+          gate = new OriginGate(DefaultMaxFetchPerHost);
+          originGates.set(origin, gate);
+        }
+        release = await gate.acquire();
+      }
+      try {
+        results[idx] = await runOne(req);
+      } catch (err) {
+        results[idx] = { error: fetchErrorFromUnknown(err) };
+      } finally {
+        release();
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 ``````
 
 ## Source: sdk/typescript/src/i18n.ts
@@ -58984,6 +60349,10 @@ export {
   MinDataReadBytes,
   MaxDataReadBytes,
   MaxArchiveReadItems,
+  DefaultFetchManyConcurrency,
+  MaxFetchManyConcurrency,
+  MaxFetchManyRequests,
+  DefaultMaxFetchPerHost,
   MaxPosterBadgeSets,
   MaxBadgeEntriesPerCall,
   MaxBadgeLabelsPerTitle,
@@ -59029,6 +60398,9 @@ export {
   type FetchCacheResult,
   type HostFetchRequest,
   type HostFetchResponse,
+  type HostFetchManyOptions,
+  type HostFetchError,
+  type HostFetchManyResult,
   type KVUsage,
   type RemoteHostOptions,
   type ViewerWatchEntry,

@@ -729,6 +729,40 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		// Stop at this boundary and leave an explicit live-test warning.
 		h.deferred++
 		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared network request needs a live test"}
+	case "http.fetchMany":
+		reqs, _, fault := plugins.ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		if len(reqs) == 0 {
+			return json.RawMessage("[]"), nil
+		}
+		if len(reqs) > 1 {
+			if err := wasm.ChargeUnits(ctx, int64(len(reqs)-1)*wasm.FetchManyUnitsPerRequest); err != nil {
+				return nil, err
+			}
+		}
+		var undeclared string
+		for _, req := range reqs {
+			u, err := url.Parse(req.URL)
+			if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return nil, wasm.Forbidden("invalid url in http.fetchMany: " + req.URL)
+			}
+			host := strings.ToLower(u.Hostname())
+			h.observed[host]++
+			if !hostMatches(h.man.Ether.Permissions.Network, host) &&
+				!(plugins.DeclaresOperatorHosts(h.man) && hostMatches(h.operatorDefaults, host)) {
+				h.undecl[host] = true
+				if undeclared == "" {
+					undeclared = host
+				}
+			}
+		}
+		if undeclared != "" {
+			return nil, wasm.Forbidden("undeclared network host " + undeclared)
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared network requests need a live test"}
 	case "catalog.search":
 		if h.man.Ether.Permissions.Catalog != "read" {
 			return nil, wasm.Forbidden("catalog permission not declared")

@@ -527,7 +527,22 @@ remote request (including streaming into cache) by the remaining call deadline.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 
-Across all host HTTP paths (`http.fetch`, `http.fetchToCache`, `http.hash`, and
+`ether.http.fetchMany(requests, {concurrency?})` runs up to 64 outbound HTTP
+requests concurrently on the host while the hosted guest waits synchronously,
+overlapping independent provider or candidate-detail fetches instead of summing
+their latencies. Per-call concurrency defaults to and clamps at 8 (fixed host
+cap, no owner setting), per-origin politeness limits cap concurrent fetches to
+6 per origin across Ether (with origin-interleaved scheduling so one saturated
+host does not head-of-line block others), total buffered response bodies across
+the batch are bounded at 10 MiB (`MaxFetchManyBytes`), and governance charges
+100 units per request (identical to individual `http.fetch` calls). Answers
+return in input order: each item has either `{status, headers, body, bodyBase64?}`
+(including non-2xx HTTP status codes) or `{error: {code, message}}` on per-item
+timeout, permission, redirect, size, or transport failure. Canceling the parent
+request or exceeding its deadline aborts all in-flight batch fetches promptly
+without consuming extra WASM pool lanes.
+
+Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck
 live network permissions on every hop and keep credentials/caller headers only
 on the same origin, a strict same-site subdomain (verified via the Public Suffix

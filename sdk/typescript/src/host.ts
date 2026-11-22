@@ -31,6 +31,36 @@ export interface HostFetchResponse {
   bodyBase64?: string;
 }
 
+export interface HostFetchManyOptions {
+  /** Maximum in-flight requests for this batch (default 8, clamped by host to 1..8). */
+  concurrency?: number;
+}
+
+export interface HostFetchError {
+  code: string;
+  message: string;
+}
+
+/**
+ * One ordered entry returned by `http.fetchMany`. Successful items carry the
+ * same `{ status, headers, body, bodyBase64? }` fields as `http.fetch`
+ * (including non-2xx HTTP status codes); failed items carry `error`.
+ */
+export type HostFetchManyResult =
+  | (HostFetchResponse & { error?: undefined })
+  | {
+      status?: undefined;
+      headers?: undefined;
+      body?: undefined;
+      bodyBase64?: undefined;
+      error: HostFetchError;
+    };
+
+export const DefaultFetchManyConcurrency = 8;
+export const MaxFetchManyConcurrency = 8;
+export const MaxFetchManyRequests = 64;
+export const DefaultMaxFetchPerHost = 6;
+
 export interface HashRequest {
   url: string;
   algo: "sha256" | "sha1" | "md5";
@@ -453,6 +483,15 @@ export interface EtherHost {
   };
   http: {
     fetch(req: HostFetchRequest): MaybePromise<HostFetchResponse>;
+    /**
+     * Run up to 64 outbound HTTP requests concurrently on the host (bounded to
+     * at most 8 in-flight per batch and 6 per origin across Ether), returning
+     * answers in input order where each entry has either a response or `error`.
+     */
+    fetchMany(
+      requests: HostFetchRequest[],
+      opts?: HostFetchManyOptions,
+    ): MaybePromise<HostFetchManyResult[]>;
     hash?(req: HashRequest): MaybePromise<HashResult>;
     fetchToCache?(req: FetchCacheRequest): MaybePromise<FetchCacheResult>;
   };
@@ -577,6 +616,10 @@ interface GlobalEtherBindings {
     };
     http: {
       fetch: (req: HostFetchRequest) => HostFetchResponse;
+      fetchMany?: (
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ) => HostFetchManyResult[];
     };
     catalog: {
       search: (q: string, limit?: number, offset?: number) => { titles: CatalogTitleSummary[] };
@@ -785,16 +828,24 @@ export function createHostedClient(): EtherHost {
       hash: (req) => callHost<HashResult>("http.hash", [req]),
       fetchToCache: (req) => callHost<FetchCacheResult>("http.fetchToCache", [req]),
       fetch(req: HostFetchRequest): HostFetchResponse {
-        const normalized = {
-          timeoutMs: req.timeoutMs,
-          method: req.method ?? "GET",
-          url: req.url,
-          headers: req.headers ?? {},
-          ...(req.keepHeadersOnRedirect !== undefined ? { keepHeadersOnRedirect: req.keepHeadersOnRedirect } : {}),
-          ...(req.bodyBase64 !== undefined ? { bodyBase64: req.bodyBase64 } : { body: req.body ?? "" }),
-        };
+        const normalized = normalizeFetchRequest(req);
         if (g.ether?.http) return g.ether.http.fetch(normalized);
         return callHost<HostFetchResponse>("http.fetch", [normalized]);
+      },
+      fetchMany(
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ): HostFetchManyResult[] {
+        const normalized = (requests ?? []).map(normalizeFetchRequest);
+        if (g.ether?.http?.fetchMany) {
+          return opts === undefined
+            ? g.ether.http.fetchMany(normalized)
+            : g.ether.http.fetchMany(normalized, opts);
+        }
+        return callHost<HostFetchManyResult[]>(
+          "http.fetchMany",
+          opts === undefined ? [normalized] : [normalized, opts],
+        );
       },
     },
     catalog: {
@@ -1133,23 +1184,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     http: {
       hash: async (req) => (await callJson<HashResult>("POST", "/ether/plugin-host/data/http.hash", [req]))!,
       fetchToCache: async (req) => (await callJson<FetchCacheResult>("POST", "/ether/plugin-host/data/http.fetchToCache", [req]))!,
-      async fetch(req: HostFetchRequest): Promise<HostFetchResponse> {
-        const resp = await doFetch(req.url, {
-          method: req.method ?? "GET",
-          headers: req.headers,
-          body: req.body,
-          signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : undefined,
-        });
-        const outHeaders: Record<string, string> = {};
-        resp.headers.forEach((v, k) => {
-          outHeaders[k] = v;
-        });
-        return {
-          status: resp.status,
-          headers: outHeaders,
-          body: await resp.text(),
-        };
-      },
+      fetch: (req: HostFetchRequest): Promise<HostFetchResponse> => doRemoteFetch(doFetch, req),
+      fetchMany: (
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ): Promise<HostFetchManyResult[]> =>
+        runRemoteFetchMany(requests, opts, (req) => doRemoteFetch(doFetch, req)),
     },
     catalog: {
       async search(
@@ -1347,4 +1387,163 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       throw new Error(message);
     },
   };
+}
+
+function normalizeFetchRequest(req: HostFetchRequest): HostFetchRequest {
+  return {
+    timeoutMs: req.timeoutMs,
+    method: req.method ?? "GET",
+    url: req.url,
+    headers: req.headers ?? {},
+    ...(req.keepHeadersOnRedirect !== undefined ? { keepHeadersOnRedirect: req.keepHeadersOnRedirect } : {}),
+    ...(req.bodyBase64 !== undefined ? { bodyBase64: req.bodyBase64 } : { body: req.body ?? "" }),
+  };
+}
+
+async function doRemoteFetch(
+  doFetch: typeof fetch,
+  req: HostFetchRequest,
+): Promise<HostFetchResponse> {
+  const resp = await doFetch(req.url, {
+    method: req.method ?? "GET",
+    headers: req.headers,
+    body: req.body,
+    signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : undefined,
+  });
+  const outHeaders: Record<string, string> = {};
+  resp.headers.forEach((v, k) => {
+    outHeaders[k] = v;
+  });
+  return {
+    status: resp.status,
+    headers: outHeaders,
+    body: await resp.text(),
+  };
+}
+
+function fetchOriginKey(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    const host = u.hostname.toLowerCase().replace(/\.$/, "");
+    if (!host) return "";
+    const port = u.port || (u.protocol === "https:" ? "443" : "80");
+    return `${u.protocol}//${host}:${port}`;
+  } catch {
+    return "";
+  }
+}
+
+function scheduleFetchManyOrder(requests: HostFetchRequest[]): number[] {
+  if (requests.length <= 1) return requests.map((_, i) => i);
+  const keys: string[] = [];
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < requests.length; i++) {
+    const key = fetchOriginKey(requests[i]!.url);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+      keys.push(key);
+    }
+    bucket.push(i);
+  }
+  const order: number[] = [];
+  while (order.length < requests.length) {
+    for (const key of keys) {
+      const bucket = buckets.get(key)!;
+      if (bucket.length > 0) order.push(bucket.shift()!);
+    }
+  }
+  return order;
+}
+
+function fetchErrorFromUnknown(err: unknown): HostFetchError {
+  if (err && typeof err === "object") {
+    const e = err as { name?: unknown; code?: unknown; message?: unknown };
+    if (typeof e.code === "string" && e.code) {
+      return { code: e.code, message: String(e.message ?? e.code) };
+    }
+    if (e.name === "TimeoutError" || e.name === "AbortError") {
+      return { code: "timeout", message: String(e.message ?? "host call timed out") };
+    }
+    if (typeof e.message === "string" && e.message) {
+      return { code: "host_error", message: e.message };
+    }
+  }
+  return { code: "host_error", message: String(err ?? "request failed") };
+}
+
+class OriginGate {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+  private readonly limit: number;
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+  async acquire(): Promise<() => void> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    this.active++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active--;
+      const next = this.waiters.shift();
+      if (next) next();
+    };
+  }
+}
+
+async function runRemoteFetchMany(
+  requests: HostFetchRequest[],
+  opts: HostFetchManyOptions | undefined,
+  runOne: (req: HostFetchRequest) => Promise<HostFetchResponse>,
+): Promise<HostFetchManyResult[]> {
+  const list = requests ?? [];
+  if (list.length > MaxFetchManyRequests) {
+    throw new Error(`http.fetchMany accepts at most ${MaxFetchManyRequests} requests per call`);
+  }
+  let concurrency = DefaultFetchManyConcurrency;
+  if (opts?.concurrency !== undefined) {
+    if (!Number.isInteger(opts.concurrency) || opts.concurrency < 0) {
+      throw new Error("http.fetchMany concurrency must be a non-negative integer");
+    }
+    if (opts.concurrency > 0) {
+      concurrency = Math.min(opts.concurrency, MaxFetchManyConcurrency);
+    }
+  }
+  if (list.length === 0) return [];
+  const results = new Array<HostFetchManyResult>(list.length);
+  const order = scheduleFetchManyOrder(list);
+  const originGates = new Map<string, OriginGate>();
+  let cursor = 0;
+  const workerCount = Math.min(concurrency, list.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < order.length) {
+      const idx = order[cursor++]!;
+      const req = list[idx]!;
+      const origin = fetchOriginKey(req.url);
+      let release = () => {};
+      if (origin) {
+        let gate = originGates.get(origin);
+        if (!gate) {
+          gate = new OriginGate(DefaultMaxFetchPerHost);
+          originGates.set(origin, gate);
+        }
+        release = await gate.acquire();
+      }
+      try {
+        results[idx] = await runOne(req);
+      } catch (err) {
+        results[idx] = { error: fetchErrorFromUnknown(err) };
+      } finally {
+        release();
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

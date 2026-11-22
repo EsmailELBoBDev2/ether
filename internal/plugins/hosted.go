@@ -462,44 +462,48 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "secret.delete":
 		return result(nil, b.h.SecretDelete(ctx, str(0)))
 	case "http.fetch":
-		var req struct {
-			Method  string            `json:"method"`
-			URL     string            `json:"url"`
-			Headers map[string]string `json:"headers"`
-			Body    string            `json:"body"`
-			// BodyBase64 carries a binary request body; it wins over Body.
-			BodyBase64            string   `json:"bodyBase64"`
-			TimeoutMS             int64    `json:"timeoutMs"`
-			KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect"`
-		}
+		var rawReq wireFetchRequest
 		if len(args) > 0 {
-			if err := json.Unmarshal(args[0], &req); err != nil {
+			if err := json.Unmarshal(args[0], &rawReq); err != nil {
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "http.fetch takes {method, url, headers, body}"}
 			}
 		}
-		if req.Method == "" {
-			req.Method = "GET"
+		req, fault := rawReq.toFetchRequest()
+		if fault != nil {
+			return nil, fault
 		}
-		body := []byte(req.Body)
-		if req.BodyBase64 != "" {
-			decoded, err := base64.StdEncoding.DecodeString(req.BodyBase64)
-			if err != nil {
-				return nil, &wasm.Fault{Code: "bad_arguments", Message: "bodyBase64 is not valid base64"}
-			}
-			body = decoded
-		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{
-			Method:                req.Method,
-			URL:                   req.URL,
-			Headers:               req.Headers,
-			Body:                  body,
-			TimeoutMS:             req.TimeoutMS,
-			KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
-		})
+		resp, err := b.h.HTTPFetch(ctx, req)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
 		return result(FetchResult(resp), nil)
+	case "http.fetchMany":
+		reqs, opts, fault := ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		var results []FetchManyResult
+		var err error
+		if mh, ok := b.h.(interface {
+			HTTPFetchMany(context.Context, []FetchRequest, FetchManyOptions) ([]FetchManyResult, error)
+		}); ok {
+			results, err = mh.HTTPFetchMany(ctx, reqs, opts)
+		} else {
+			results, err = runFetchMany(ctx, reqs, opts, func(itemCtx context.Context, req FetchRequest, budget *fetchByteBudget) (FetchResponse, error) {
+				resp, ferr := b.h.HTTPFetch(itemCtx, req)
+				if ferr != nil {
+					return FetchResponse{}, ferr
+				}
+				if !budget.reserve(int64(len(resp.Body))) {
+					return FetchResponse{}, fmt.Errorf("plugins: fetchMany batch response larger than %d bytes", budget.limit)
+				}
+				return resp, nil
+			})
+		}
+		if err != nil {
+			return nil, mapHostError(err)
+		}
+		return result(FetchManyResultWire(results), nil)
 	case "catalog.search":
 		v, err := b.h.CatalogSearch(ctx, str(0), int(num(1)), int(num(2)))
 		return result(v, err)

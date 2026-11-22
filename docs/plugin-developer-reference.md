@@ -48,6 +48,14 @@ Python SDK clients: `runtime.limits`, `http.fetchToCache`, `cache.read`, `archiv
 See `plugin-kinds.md` for the wire shapes, grant rules, archive safety bounds, and
 why a 10 MiB direct fetch can still exceed a 32 MiB guest's available heap.
 
+Bounded concurrent HTTP batching (`http.fetchMany`) is generated from
+`host_fetch_many.go`, `contract.go`, `hosted.go`, `wasm/js.go`, `wasm/wasm.go`,
+and the SDK clients. Hosted plugins can run up to 64 outbound requests in
+parallel on the host (clamped to 8 in-flight per batch, 6 per origin across
+Ether, 10 MiB total response bodies, 100 units per request) with per-item
+allowlist, redirect credential confinement, timeout, egress accounting, and
+prompt cancellation when the parent request ends.
+
 The owner language model host service (`ai.complete`, `permissions.ai: "complete"`
 or `"complete+search"`) is generated from `host_ai.go`, `contract.go`,
 `remote/host.go`, and the SDK clients. It reuses the owner's configured language

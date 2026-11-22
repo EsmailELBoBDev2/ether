@@ -1375,6 +1375,29 @@ type FetchResponse struct {
 	Body    []byte            `json:"body,omitempty"`
 }
 
+// FetchManyOptions configures a bounded concurrent http.fetchMany batch call.
+// Concurrency defaults to DefaultFetchManyConcurrency (8) and clamps to
+// MaxFetchManyConcurrency (8); there is no owner setting.
+type FetchManyOptions struct {
+	Concurrency int `json:"concurrency,omitempty"`
+}
+
+// FetchManyError describes one failed request inside http.fetchMany. Code
+// matches the hosted fault code vocabulary ("timeout", "forbidden",
+// "invalid_input", "host_error", "bad_arguments").
+type FetchManyError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// FetchManyResult is one ordered answer from http.fetchMany. Either Error is
+// non-nil or Response carries the received HTTP response (including non-2xx
+// statuses, matching http.fetch).
+type FetchManyResult struct {
+	Response FetchResponse   `json:"-"`
+	Error    *FetchManyError `json:"error,omitempty"`
+}
+
 // FolderHashJob is a pollable background hash. Bytes is the progress so far.
 // Terminal states are done, canceled and error. Only done carries Result.
 type FolderHashJob struct {

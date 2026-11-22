@@ -1521,6 +1521,7 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 			Headers               map[string]string `json:"headers"`
 			Body                  string            `json:"body"`
 			BodyBase64            string            `json:"bodyBase64"`
+			TimeoutMS             int64             `json:"timeoutMs"`
 			KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect"`
 		}
 		if len(args) > 0 {
@@ -1537,12 +1538,37 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 			URL:                   req.URL,
 			Headers:               req.Headers,
 			Body:                  body,
+			TimeoutMS:             req.TimeoutMS,
 			KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
 		})
 		if err != nil {
 			return nil, wasm.Forbidden(err.Error())
 		}
 		return json.Marshal(plugins.FetchResult(resp))
+
+	case "http.fetchMany":
+		man, _ := plugins.ParseManifest([]byte(p.Files["manifest.json"]))
+		h.s.mu.Unlock()
+		if h.s.mgr == nil || man.Ether == nil {
+			return json.RawMessage("[]"), nil
+		}
+		reqs, opts, fault := plugins.ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		results, err := h.s.mgr.PreviewFetchMany(ctx, man.Ether.Permissions.Network, reqs, opts)
+		if err != nil {
+			var f *wasm.Fault
+			if errors.As(err, &f) {
+				return nil, f
+			}
+			var ve *plugins.ValidationError
+			if errors.As(err, &ve) {
+				return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: ve.Error()}
+			}
+			return nil, &wasm.Fault{Code: "host_error", Message: err.Error()}
+		}
+		return json.Marshal(plugins.FetchManyResultWire(results))
 
 	case "addon.get":
 		addonOf := p.AddonOf

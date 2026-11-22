@@ -15,6 +15,7 @@ Implements Ether Plugin Protocol v1 (EPP/1) for sidecar and remote plugins:
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import http.server
 import inspect
@@ -652,6 +653,95 @@ class _SecretClient:
         self._call("DELETE", f"/ether/plugin-host/secrets/{urllib.parse.quote(name, safe='')}")
 
 
+DEFAULT_FETCH_MANY_CONCURRENCY = 8
+MAX_FETCH_MANY_CONCURRENCY = 8
+MAX_FETCH_MANY_REQUESTS = 64
+DEFAULT_MAX_FETCH_PER_HOST = 6
+
+
+def _fetch_origin_key(raw_url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(str(raw_url).strip())
+    except Exception:
+        return ""
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return f"{scheme}://{host}:{port}"
+
+
+def _run_fetch_many(
+    requests_list: List[Dict[str, Any]],
+    opts: Optional[Dict[str, Any]],
+    run_one: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    reqs = list(requests_list or [])
+    if len(reqs) > MAX_FETCH_MANY_REQUESTS:
+        raise ValueError(f"http.fetchMany accepts at most {MAX_FETCH_MANY_REQUESTS} requests per call")
+    concurrency = DEFAULT_FETCH_MANY_CONCURRENCY
+    if opts is not None and opts.get("concurrency") is not None:
+        raw_c = opts["concurrency"]
+        if isinstance(raw_c, bool) or not isinstance(raw_c, int) or raw_c < 0:
+            raise ValueError("http.fetchMany concurrency must be a non-negative integer")
+        if raw_c > 0:
+            concurrency = min(raw_c, MAX_FETCH_MANY_CONCURRENCY)
+    if not reqs:
+        return []
+
+    origin_sems: Dict[str, threading.Semaphore] = {}
+    origin_lock = threading.Lock()
+
+    def _exec(req: Dict[str, Any]) -> Dict[str, Any]:
+        origin = _fetch_origin_key(str(req.get("url") or ""))
+        sem: Optional[threading.Semaphore] = None
+        if origin:
+            with origin_lock:
+                sem = origin_sems.get(origin)
+                if sem is None:
+                    sem = threading.Semaphore(DEFAULT_MAX_FETCH_PER_HOST)
+                    origin_sems[origin] = sem
+            sem.acquire()
+        try:
+            return run_one(req)
+        except (TimeoutError, socket.timeout) as exc:
+            return {"error": {"code": "timeout", "message": str(exc) or "host call timed out"}}
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if not isinstance(code, str) or not code:
+                code = "timeout" if isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)) else "host_error"
+            return {"error": {"code": code, "message": str(exc) or "request failed"}}
+        finally:
+            if sem is not None:
+                sem.release()
+
+    worker_count = min(concurrency, len(reqs))
+    keys: List[str] = []
+    buckets: Dict[str, List[int]] = {}
+    for idx, req in enumerate(reqs):
+        key = _fetch_origin_key(str(req.get("url") or ""))
+        if key not in buckets:
+            keys.append(key)
+            buckets[key] = []
+        buckets[key].append(idx)
+    order: List[int] = []
+    while len(order) < len(reqs):
+        for key in keys:
+            q = buckets[key]
+            if q:
+                order.append(q.pop(0))
+
+    results: List[Dict[str, Any]] = [{} for _ in reqs]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
+        future_map = {pool.submit(_exec, reqs[idx]): idx for idx in order}
+        for fut, idx in future_map.items():
+            results[idx] = fut.result()
+    return results
+
+
 class _HttpClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -682,6 +772,16 @@ class _HttpClient:
             raw = exc.read().decode("utf-8", errors="replace")
             out_headers = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
             return {"status": exc.code, "headers": out_headers, "body": raw}
+
+    def fetch_many(
+        self,
+        requests: List[Dict[str, Any]],
+        opts: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run up to 64 outbound HTTP requests concurrently (bounded to 8 per batch and 6 per origin)."""
+        return _run_fetch_many(requests, opts, self.fetch)
+
+    fetchMany = fetch_many
 
 
 class _CatalogClient:
@@ -3033,6 +3133,15 @@ class MockHostClient:
 
         def fetch(self, req: Dict[str, Any]) -> Dict[str, Any]:
             return self._p.http_handler(req)
+
+        def fetch_many(
+            self,
+            requests: List[Dict[str, Any]],
+            opts: Optional[Dict[str, Any]] = None,
+        ) -> List[Dict[str, Any]]:
+            return _run_fetch_many(requests, opts, self.fetch)
+
+        fetchMany = fetch_many
 
     class _Catalog:
         def __init__(self, parent: "MockHostClient") -> None:

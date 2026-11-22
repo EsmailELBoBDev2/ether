@@ -4,14 +4,28 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+const (
+	// DefaultFetchManyConcurrency and MaxFetchManyConcurrency bound the
+	// per-call parallelism of Host.FetchMany.
+	DefaultFetchManyConcurrency = 8
+	MaxFetchManyConcurrency     = 8
+	// MaxFetchManyRequests caps the number of requests per FetchMany call.
+	MaxFetchManyRequests = 64
+	// DefaultMaxFetchPerHost bounds concurrent requests to any single origin.
+	DefaultMaxFetchPerHost = 6
 )
 
 // HostFetchRequest describes an outbound HTTP call via the host service.
@@ -21,14 +35,37 @@ type HostFetchRequest struct {
 	URL                   string            `json:"url"`
 	Headers               map[string]string `json:"headers,omitempty"`
 	Body                  string            `json:"body,omitempty"`
+	BodyBase64            string            `json:"bodyBase64,omitempty"`
 	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 
 // HostFetchResponse is returned by Host.Fetch.
 type HostFetchResponse struct {
-	Status  int               `json:"status"`
-	Headers map[string]string `json:"headers"`
-	Body    string            `json:"body"`
+	Status     int               `json:"status"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
+}
+
+// HostFetchManyOptions configures a bounded concurrent FetchMany batch.
+type HostFetchManyOptions struct {
+	Concurrency int `json:"concurrency,omitempty"`
+}
+
+// HostFetchError describes a per-item error returned by FetchMany.
+type HostFetchError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// HostFetchManyResult is one ordered result from FetchMany. Either Error is
+// non-nil or Status/Headers/Body carry the HTTP response (including non-2xx).
+type HostFetchManyResult struct {
+	Status     int               `json:"status,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       string            `json:"body,omitempty"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
+	Error      *HostFetchError   `json:"error,omitempty"`
 }
 
 // FolderHashJob is a pollable background hash. Bytes is the progress so far.
@@ -127,6 +164,14 @@ type KVUsage struct {
 // RemoteHostClient and MockHost implement it.
 type KVUsageHost interface {
 	KVUsage(ctx context.Context) (KVUsage, error)
+}
+
+// FetchManyHost executes up to MaxFetchManyRequests outbound HTTP calls
+// concurrently with bounded per-call and per-origin concurrency, returning
+// ordered results with per-item error isolation (#703).
+// RemoteHostClient and MockHost implement it.
+type FetchManyHost interface {
+	FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error)
 }
 
 // SecretWriteHost stores and removes sealed derived secrets declared in
@@ -559,6 +604,159 @@ func (c *RemoteHostClient) Fetch(ctx context.Context, r HostFetchRequest) (HostF
 		Headers: hdrs,
 		Body:    string(raw),
 	}, nil
+}
+
+// FetchMany runs up to MaxFetchManyRequests outbound HTTP calls concurrently
+// (bounded to MaxFetchManyConcurrency per batch and DefaultMaxFetchPerHost per
+// origin), returning ordered results with per-item error isolation.
+func (c *RemoteHostClient) FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error) {
+	var opt HostFetchManyOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	return runSDKFetchMany(ctx, reqs, opt, c.Fetch)
+}
+
+func sdkFetchOriginKey(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+func runSDKFetchMany(
+	ctx context.Context,
+	reqs []HostFetchRequest,
+	opts HostFetchManyOptions,
+	doOne func(context.Context, HostFetchRequest) (HostFetchResponse, error),
+) ([]HostFetchManyResult, error) {
+	if len(reqs) > MaxFetchManyRequests {
+		return nil, fmt.Errorf("http.fetchMany accepts at most %d requests per call", MaxFetchManyRequests)
+	}
+	if opts.Concurrency < 0 {
+		return nil, fmt.Errorf("http.fetchMany concurrency must be a non-negative integer")
+	}
+	if len(reqs) == 0 {
+		return []HostFetchManyResult{}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultFetchManyConcurrency
+	}
+	if concurrency > MaxFetchManyConcurrency {
+		concurrency = MaxFetchManyConcurrency
+	}
+	if concurrency > len(reqs) {
+		concurrency = len(reqs)
+	}
+
+	var keys []string
+	buckets := make(map[string][]int)
+	for i, req := range reqs {
+		k := sdkFetchOriginKey(req.URL)
+		if _, ok := buckets[k]; !ok {
+			keys = append(keys, k)
+		}
+		buckets[k] = append(buckets[k], i)
+	}
+	jobs := make(chan int, len(reqs))
+	emitted := 0
+	for emitted < len(reqs) {
+		for _, k := range keys {
+			q := buckets[k]
+			if len(q) == 0 {
+				continue
+			}
+			jobs <- q[0]
+			buckets[k] = q[1:]
+			emitted++
+		}
+	}
+	close(jobs)
+
+	var gateMu sync.Mutex
+	gates := make(map[string]chan struct{})
+	acquireOrigin := func(c context.Context, rawURL string) (func(), error) {
+		k := sdkFetchOriginKey(rawURL)
+		if k == "" {
+			return func() {}, nil
+		}
+		gateMu.Lock()
+		sem, ok := gates[k]
+		if !ok {
+			sem = make(chan struct{}, DefaultMaxFetchPerHost)
+			gates[k] = sem
+		}
+		gateMu.Unlock()
+		select {
+		case sem <- struct{}{}:
+			return func() { <-sem }, nil
+		case <-c.Done():
+			return nil, c.Err()
+		}
+	}
+
+	results := make([]HostFetchManyResult, len(reqs))
+	var wg sync.WaitGroup
+	for range concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				release, aerr := acquireOrigin(ctx, reqs[idx].URL)
+				if aerr != nil {
+					return
+				}
+				resp, err := doOne(ctx, reqs[idx])
+				release()
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					code := "host_error"
+					if errors.Is(err, context.DeadlineExceeded) {
+						code = "timeout"
+					}
+					results[idx] = HostFetchManyResult{Error: &HostFetchError{Code: code, Message: err.Error()}}
+					continue
+				}
+				results[idx] = HostFetchManyResult{
+					Status:     resp.Status,
+					Headers:    resp.Headers,
+					Body:       resp.Body,
+					BodyBase64: resp.BodyBase64,
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // CatalogSearch searches the Ether catalog.

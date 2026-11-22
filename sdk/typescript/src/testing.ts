@@ -34,6 +34,7 @@ import {
   MaxBadgeEntriesPerCall,
   MaxBadgeLabelLen,
   MaxBadgeLabelsPerTitle,
+  MaxFetchManyRequests,
   normalizeStreamUrlOptions,
   PosterBadgeQuotaTitles,
   type CatalogTitleSummary,
@@ -41,6 +42,8 @@ import {
   type AICompleteRequest,
   type AICompleteResponse,
   type FolderEntry,
+  type HostFetchManyOptions,
+  type HostFetchManyResult,
   type HostFetchRequest,
   type HostFetchResponse,
   type KVUsage,
@@ -316,6 +319,49 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     },
     http: {
       fetch: (req: HostFetchRequest) => state.httpHandler(req),
+      fetchMany: (
+        requests: HostFetchRequest[],
+        opts?: HostFetchManyOptions,
+      ) => {
+        const list = requests ?? [];
+        if (list.length > MaxFetchManyRequests) {
+          throw new Error(`http.fetchMany accepts at most ${MaxFetchManyRequests} requests per call`);
+        }
+        if (opts?.concurrency !== undefined && (!Number.isInteger(opts.concurrency) || opts.concurrency < 0)) {
+          throw new Error("http.fetchMany concurrency must be a non-negative integer");
+        }
+        const toErr = (err: unknown): HostFetchManyResult => {
+          const e = err as { code?: unknown; name?: unknown; message?: unknown } | null;
+          const code =
+            typeof e?.code === "string" && e.code
+              ? e.code
+              : e?.name === "TimeoutError" || e?.name === "AbortError"
+                ? "timeout"
+                : "host_error";
+          return { error: { code, message: String(e?.message ?? err ?? "request failed") } };
+        };
+        const raw: Array<HostFetchManyResult | Promise<HostFetchManyResult>> = [];
+        let hasPromise = false;
+        for (const req of list) {
+          try {
+            const res = state.httpHandler(req);
+            if (res && typeof (res as Promise<HostFetchResponse>).then === "function") {
+              hasPromise = true;
+              raw.push(
+                (res as Promise<HostFetchResponse>).then(
+                  (ok) => ok,
+                  (err) => toErr(err),
+                ),
+              );
+            } else {
+              raw.push(res as HostFetchResponse);
+            }
+          } catch (err) {
+            raw.push(toErr(err));
+          }
+        }
+        return hasPromise ? Promise.all(raw) : (raw as HostFetchManyResult[]);
+      },
     },
     catalog: {
       search: (query: string, limit = 50, offset = 0) => {

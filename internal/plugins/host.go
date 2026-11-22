@@ -64,6 +64,8 @@ func (h *host) deny(r Record, g Grants, key, level string, allowed func(string) 
 func (h *host) noteDenied(key string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	h.m.healthMu.Lock()
+	defer h.m.healthMu.Unlock()
 	if hh, err := h.m.store.health(ctx, h.plugin); err == nil && hh.Status == "ok" {
 		hh.Status = "attention"
 		hh.Reason = "A permission it needs was taken back: " + key
@@ -343,6 +345,7 @@ func fetchError(host string, err error) error {
 type fetchOptions struct {
 	stripCrossOriginHeaders []string
 	stripAllCallerHeaders   bool
+	applyHostLimit          bool
 }
 
 func validateKeepHeadersOnRedirect(man Manifest, g Grants, raw []string) ([]safefetch.RedirectHeaderPattern, error) {
@@ -507,14 +510,26 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 		}
 		return nil
 	}
+	release := func() {}
+	if opts.applyHostLimit && h.m.fetchHosts != nil {
+		var aerr error
+		release, aerr = h.m.fetchHosts.Acquire(ctx, req.URL)
+		if aerr != nil {
+			return nil, fetchError(u.Hostname(), aerr)
+		}
+	}
 	resp, err := client.Do(hr)
 	if err != nil {
+		release()
 		if isNonPublicBlockError(err) {
 			blocked := urlHostPortDisplay(lastURL)
 			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
 			return nil, fetchError(blocked, err)
 		}
 		return nil, fetchError(u.Hostname(), err)
+	}
+	if opts.applyHostLimit {
+		resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
 	}
 	return resp, nil
 }
@@ -525,32 +540,9 @@ const (
 )
 
 func (h *host) HTTPFetch(ctx context.Context, req FetchRequest) (FetchResponse, error) {
-	timeout := defaultHostHTTPFetchTimeout
-	if req.TimeoutMS > 0 {
-		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostHTTPFetchTimeout)
-	}
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, timeout)
-	defer cancel()
-	resp, err := h.openFetch(ctx, req)
-	if err != nil {
-		return FetchResponse{}, err
-	}
-	u, _ := url.Parse(req.URL)
-	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxFetchBytes+1))
-	if err != nil {
-		return FetchResponse{}, fetchError(u.Hostname(), err)
-	}
-	if len(body) > MaxFetchBytes {
-		return FetchResponse{}, fmt.Errorf("plugins: response larger than %d bytes", MaxFetchBytes)
-	}
-	h.noteFetchTraffic(ctx, req, int64(len(body)))
-	out := FetchResponse{Status: resp.StatusCode, Headers: map[string]string{}, Body: body}
-	for k := range resp.Header {
-		out.Headers[k] = resp.Header.Get(k)
-	}
-	return out, nil
+	return h.fetchOne(ctx, req, nil, func(r FetchRequest, respBytes int64) {
+		h.noteFetchTraffic(ctx, r, respBytes)
+	})
 }
 
 func (h *host) catalogCheck(ctx context.Context) (Record, error) {

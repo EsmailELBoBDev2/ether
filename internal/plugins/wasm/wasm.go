@@ -113,7 +113,7 @@ type Response struct {
 
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
 // service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get, secret.set, secret.delete,
-// http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
+// http.fetch, http.fetchMany, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, cache.delete, frontend.streamURL,
 // folders.list, folders.stat, events.publish, notify.owner, log. Args is a JSON array of positional
@@ -127,12 +127,13 @@ type Host interface {
 type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
 
 // Default host-call unit costs, in the spirit of appkit-sandbox's priced
-// host functions. Wall time adds 1 unit per WallUnitInterval; archive.read
+// host functions. Wall time adds 1 unit per WallUnitInterval; http.fetchMany
+// adds FetchManyUnitsPerRequest for each request after the first; archive.read
 // adds ArchiveReadUnitsPerMember per requested member; archive.extract
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
 	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10, "kv.usage": 5, "badges.set": 20, "badges.clear": 10, "badges.usage": 5,
-	"secret.get": 5, "secret.set": 10, "secret.delete": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "secret.set": 10, "secret.delete": 5, "http.fetch": 100, "http.fetchMany": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
@@ -149,6 +150,10 @@ const (
 	WallUnitInterval = 100 * time.Microsecond
 	// BaseCallUnits is charged once per handle call.
 	BaseCallUnits = 10
+	// FetchManyUnitsPerRequest is charged for each request beyond the first in
+	// http.fetchMany on top of http.fetchMany's 100-unit base call cost, so a
+	// batch of N requests pays N * 100 units just like N http.fetch calls.
+	FetchManyUnitsPerRequest = 100
 	// ArchiveReadUnitsPerMember is charged per requested item in archive.read
 	// on top of archive.read's 50-unit base call cost, so large batches pay
 	// proportional governance units instead of dodging per-call budgets.
@@ -243,6 +248,8 @@ func hostCallTimeout(name string) time.Duration {
 	switch name {
 	case "http.fetch":
 		return 60 * time.Second
+	case "http.fetchMany":
+		return 2 * time.Minute
 	case "sources.resolve", "ai.complete":
 		return 35 * time.Second
 	case "http.fetchToCache", "http.hash",
@@ -651,9 +658,9 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 		}
 	}
 	limit := HostResultBytes(cs.lim.MemoryBytes)
-	// JSON can escape each text byte as six bytes. HTTPFetch bounds the raw
-	// body to 10 MiB; leave room for its headers and JSON envelope.
-	if name == "http.fetch" {
+	// JSON can escape each text byte as six bytes. HTTPFetch and HTTPFetchMany
+	// bound raw response bytes to 10 MiB; leave room for headers and JSON framing.
+	if name == "http.fetch" || name == "http.fetchMany" {
 		limit = max(limit, int64((6*MaxFetchBodyBytes)+(1<<20)))
 	}
 	if int64(len(out)) > limit {

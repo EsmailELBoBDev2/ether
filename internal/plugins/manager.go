@@ -124,6 +124,7 @@ type Manager struct {
 	log          *slog.Logger
 	now          func() time.Time
 	client       *http.Client
+	fetchHosts   *fetchHostLimiter
 	mu           sync.Mutex
 	sidecarState SidecarState
 	catalogue    Catalogue
@@ -234,7 +235,8 @@ func New(deps Deps) (*Manager, error) {
 		iconRaster: artwork.NewSVGRasterizer(),
 		store:      &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
 		log: log, now: now, client: client,
-		fatories: map[string]RuntimeFactory{}, runtimes: map[string]Runtime{}, warming: map[string]bool{}, shadow: map[string]bool{},
+		fetchHosts: newFetchHostLimiter(DefaultMaxFetchPerHost),
+		fatories:   map[string]RuntimeFactory{}, runtimes: map[string]Runtime{}, warming: map[string]bool{}, shadow: map[string]bool{},
 		eventSubs:         map[string]map[string]Record{},
 		nextRun:           map[string]time.Time{},
 		scheduleInFlight:  map[string]*scheduleFlight{},

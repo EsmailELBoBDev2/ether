@@ -348,6 +348,16 @@ func (m *MockHost) Fetch(ctx context.Context, req HostFetchRequest) (HostFetchRe
 	}, nil
 }
 
+// FetchMany executes reqs concurrently through Fetch with bounded concurrency
+// and per-item error isolation, returning results in input order.
+func (m *MockHost) FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error) {
+	var opt HostFetchManyOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	return runSDKFetchMany(ctx, reqs, opt, m.Fetch)
+}
+
 // CatalogSearch searches the in-memory catalog by case-insensitive substring.
 func (m *MockHost) CatalogSearch(_ context.Context, query string, limit, offset int) ([]CatalogTitleSummary, error) {
 	m.mu.RLock()

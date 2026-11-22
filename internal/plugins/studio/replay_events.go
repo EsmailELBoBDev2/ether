@@ -711,6 +711,51 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 			"body":    `{"ok":true,"dryRun":true}`,
 		})
 
+	case "http.fetchMany":
+		reqs, _, fault := plugins.ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		if len(reqs) > 1 {
+			if err := wasm.ChargeUnits(ctx, int64(len(reqs)-1)*wasm.FetchManyUnitsPerRequest); err != nil {
+				return nil, err
+			}
+		}
+		out := make([]map[string]any, len(reqs))
+		for i, req := range reqs {
+			u, err := url.Parse(req.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+				out[i] = map[string]any{"error": map[string]any{"code": "forbidden", "message": "invalid fetch url"}}
+				continue
+			}
+			if !h.networkAllowed(u.Hostname()) {
+				out[i] = map[string]any{"error": map[string]any{"code": "forbidden", "message": "network host not declared in manifest: " + u.Hostname()}}
+				continue
+			}
+			bodyStr := string(req.Body)
+			h.mu.Lock()
+			h.outbound = append(h.outbound, RecordedOutbound{
+				Method: req.Method,
+				URL:    req.URL,
+				Body:   bodyStr,
+			})
+			if req.Method != http.MethodGet && req.Method != http.MethodHead {
+				h.notifications = append(h.notifications, RecordedNotification{
+					Kind:    "webhook",
+					Target:  req.URL,
+					Text:    bodyStr,
+					Payload: json.RawMessage(bodyStr),
+				})
+			}
+			h.mu.Unlock()
+			out[i] = map[string]any{
+				"status":  200,
+				"headers": map[string]string{"Content-Type": "application/json"},
+				"body":    `{"ok":true,"dryRun":true}`,
+			}
+		}
+		return marshalResult(out)
+
 	case "catalog.search":
 		if !h.catalogAllowed() {
 			return nil, wasm.Forbidden("catalog permission not declared")

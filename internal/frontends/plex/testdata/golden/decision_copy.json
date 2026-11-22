@@ -22,6 +22,7 @@
         "audienceRating": 8.4,
         "audienceRatingImage": "themoviedb://image.rating",
         "contentRating": "R",
+        "contentRatingAge": 17,
         "duration": 8340000,
         "guid": "com.plexapp.agents.themoviedb://550?lang=en",
         "key": "/library/metadata/1000000000000550",

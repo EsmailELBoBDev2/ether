@@ -763,6 +763,68 @@ func (i *instance) browseRoutes() error {
 	return i.playlistRoutes()
 }
 
+// singleAlbumID reads AlbumIds when it names exactly one album.
+func singleAlbumID(r *http.Request) (frontend.RatingKey, bool) {
+	var found []string
+	for _, value := range route.Query(r.URL.Query(), "AlbumIds") {
+		found = append(found, splitCSV(value)...)
+	}
+	if len(found) != 1 {
+		return 0, false
+	}
+	key, err := ids.ParseRatingKeyGUID(found[0])
+	if err != nil {
+		return 0, false
+	}
+	return key, true
+}
+
+// viewForRequestedTypes names the one library that presents the item types a
+// parentless request asked for, when every requested type belongs to a single
+// plugin collection type (music, audiobooks, books) and the viewer has exactly
+// one such library.
+func (i *instance) viewForRequestedTypes(r *http.Request, viewer *frontend.Viewer, q frontend.ItemQuery) (string, bool) {
+	if len(q.Types) != 0 || len(q.UnservedTypes) == 0 || q.Filter.Query != "" {
+		return "", false
+	}
+	want := ""
+	for _, typ := range q.UnservedTypes {
+		collection := ""
+		switch typ {
+		case "musicalbum", "musicartist", "audio":
+			collection = "music"
+		case "audiobook":
+			collection = "audiobooks"
+		case "book":
+			collection = "books"
+		default:
+			return "", false
+		}
+		if want != "" && want != collection {
+			return "", false
+		}
+		want = collection
+	}
+	views, err := i.host.Experience.Views(r.Context(), viewer)
+	if err != nil {
+		return "", false
+	}
+	match := ""
+	for _, view := range views {
+		if view.PluginID == "" && view.KindKey == "" {
+			continue
+		}
+		if mediaBrowserCollectionType(view) != want {
+			continue
+		}
+		if match != "" {
+			return "", false
+		}
+		match = view.ID
+	}
+	return match, match != ""
+}
+
 // sortByRandom reports whether the app asked for Jellyfin's Random order as
 // its first sort key.
 func sortByRandom(r *http.Request) bool {
@@ -1303,7 +1365,11 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var page frontend.Page
-	if search := q.Filter.Query; search != "" && !q.FilterByProviderIDs && i.searchableParent(parent) {
+	// A search inside a plugin library (Music, Books, Audiobooks…) is that
+	// library's own search: it must not answer from the whole server's title
+	// index, which returned movies, episodes and TV channels alongside.
+	scopedSearch := len(parent) == 1 && q.Filter.Query != "" && i.pluginView(r, v, parent[0])
+	if search := q.Filter.Query; search != "" && !scopedSearch && !q.FilterByProviderIDs && i.searchableParent(parent) {
 		if q.Favorite == nil {
 			if only, excluded := personTypesOnly(q); only {
 				if excluded {
@@ -1351,6 +1417,13 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		artistQuery := q
 		artistQuery.Recursive = true
 		page, err = i.host.Experience.Children(r.Context(), v, device(r), artistKey, artistQuery)
+	} else if albumKey, ok := singleAlbumID(r); ok && (len(parent) == 0 || parent[0] == "") {
+		// AlbumIds=<album> with no parent is that album's tracks.
+		page, err = i.host.Experience.Children(r.Context(), v, device(r), albumKey, q)
+	} else if viewID, ok := i.viewForRequestedTypes(r, v, q); ok && (len(parent) == 0 || parent[0] == "") {
+		// IncludeItemTypes names only kinds one plugin library presents
+		// (MusicAlbum, AudioBook, Book…): list that library, not the server.
+		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), viewID, q)
 	} else if len(parent) == 0 || parent[0] == "" {
 		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil && ids.PersonalView(id) {

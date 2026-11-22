@@ -364,6 +364,7 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		}
 		if i.protocol == "jellyfin" {
 			i.jellyfinMediaSourceDTO(source, version.Media, false)
+			i.jellyfinViewerStreamDefaults(r, v, key, d.Title.Language, source, version.Media)
 			if name, _ := source["Name"].(string); name == "" {
 				if itemName, ok := dto["Name"].(string); ok && itemName != "" {
 					source["Name"] = itemName

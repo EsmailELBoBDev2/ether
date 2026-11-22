@@ -1,6 +1,10 @@
 package mediabrowser
 
-import "github.com/braedonsaunders/ether/internal/frontend"
+import (
+	"net/http"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
+)
 
 // jellyfinMediaSourceDTO adds MediaSourceInfo fields Jellyfin always serializes.
 // VideoType is withheld for estimates, audio-only sources and live streams.
@@ -13,6 +17,35 @@ func (i *instance) jellyfinMediaSourceDTO(source map[string]any, media frontend.
 		return
 	}
 	source["VideoType"] = "VideoFile"
+}
+
+// jellyfinViewerStreamDefaults replaces the container's default flags on an
+// item detail source with the tracks this viewer's language rules select.
+// Jellyfin computes DefaultAudioStreamIndex and DefaultSubtitleStreamIndex per
+// user; its web client copies the detail's values into the play request, so a
+// container-only -1 was sent back as an explicit "subtitles off" even when the
+// viewer's subtitle mode would have picked a track.
+func (i *instance) jellyfinViewerStreamDefaults(r *http.Request, v *frontend.Viewer, key frontend.RatingKey, original string, source map[string]any, media frontend.MediaInfo) {
+	if i.protocol != "jellyfin" || i.host.TrackPreferences == nil || r == nil || v == nil || media.Estimated || len(media.Streams) == 0 {
+		return
+	}
+	selection, err := i.host.TrackPreferences.Select(r.Context(), v.ID, key, media, original)
+	if err != nil {
+		return
+	}
+	if selection.Audio >= 0 && selection.Audio < len(media.Streams) && media.Streams[selection.Audio].Type == "audio" {
+		source["DefaultAudioStreamIndex"] = media.Streams[selection.Audio].Index
+	}
+	if selection.Subtitle >= 0 && selection.Subtitle < len(media.Streams) && media.Streams[selection.Subtitle].Type == "subtitle" {
+		source["DefaultSubtitleStreamIndex"] = media.Streams[selection.Subtitle].Index
+		return
+	}
+	for _, stream := range media.Streams {
+		if stream.Type == "subtitle" {
+			source["DefaultSubtitleStreamIndex"] = -1
+			return
+		}
+	}
 }
 
 // jellyfinDefaultStreamIndexes follows Jellyfin when the container does not

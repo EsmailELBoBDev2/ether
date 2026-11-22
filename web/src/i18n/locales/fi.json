@@ -2259,6 +2259,7 @@
   "m_06b7242dda92f4": "Segmentit {ranges} (+{more} muuta)",
   "m_06b7b5a4bb13c0": "Klusteri on tavoitettavissa ja liittymistoken on kelvollinen.",
   "m_06b7c98d690e23": "Suosituimmat elokuvat, joissa pääosassa on Tom Hanks.",
+  "m_06ba628af65bfe": "Hakee indeksoijistasi ja avaa lähteitä Debrid-tiliesi kautta",
   "m_06bad1fa6cc4f9": "{channel} lakkaa vastaanottamasta hälytyksiä. Sen toimitushistoria säilyy.",
   "m_06bbd358edc1b0": "Käytetään ensin QR-koodeissa ja jakolinkeissä",
   "m_06bbf60ee1e71a": "Animaatioelokuvat, joiden ikäluokitus on PG tai alempi",
@@ -5476,6 +5477,7 @@
   "m_10a557ed3fe993": "Merkintöjen kattavuus",
   "m_10a5fbb2ff3d29": "Mykistä",
   "m_10a62833806a88": "Tallennetaan ohjelmia · {saved}/{total}",
+  "m_10a6d7ad3329d1": "Tarkistaa Usenet-julkaisuja taustalla päiväkiintiön puitteissa",
   "m_10a9d25a852a3d": "Y-skaalaus",
   "m_10aa31270e92a6": "parametri",
   "m_10aea138220ce4": "ääniformaatti ({format})",
@@ -8011,6 +8013,7 @@
   "m_18425a1a04d7ff": "Toistolähteet: {kind}",
   "m_1842938476577b": "Viikoittaisen uutiskirjeen esikatselu",
   "m_1842bc939bfcba": "Määrä",
+  "m_1843953103996f": "Hakee lähteitä indeksoijistasi",
   "m_184412952a7847": "Lisätään…",
   "m_1845d47e574338": {
     "one": "{count} kuvakaappaus",
@@ -9292,6 +9295,7 @@
   "m_1c2f068b05621a": "Yhdistä MQTT 3.1.1 -välittäjä ilmoituksia sekä Home Assistant- tai valaistusautomaatioita varten Flowsissa.",
   "m_1c2fd1a4ae6958": "{count} nimikettä · synkronoitu {when}",
   "m_1c2ffbbe2b2e35": "Toistetaan ennen",
+  "m_1c300eda9cc753": "Päivittäiset Usenet-taustatarkistukset liitännäistä kohden",
   "m_1c303d18601052": "Kirjasto pysyy konsolissa mutta katoaa kaikista sovelluksista.",
   "m_1c30ff30a80656": "Väisty tämän palvelimen nimikkeiden tieltä",
   "m_1c313e71f089dc": "{label} alkaen",
@@ -9634,6 +9638,7 @@
   "m_1d2dbff43d7656": "Lisää katsoja. Hän näkyy tässä kirjauduttuaan.",
   "m_1d2eb94cc73e14": "Uudet elokuvat pysyvät piilossa katsojilta, kunnes digitaalinen tai levyjulkaisu on olemassa ja toistettava lähde löytyy.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Enimmäismäärä taustatarkistuksia, joita kukin liitännäinen voi suorittaa päivässä (0 poistaa käytöstä). Katsojien toisto ei koskaan kerrytä tätä rajaa.",
   "m_1d31cf9996623d": {
     "one": "{count} rivi sivulla",
     "other": "{count} riviä sivulla"

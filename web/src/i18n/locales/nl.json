@@ -2259,6 +2259,7 @@
   "m_06b7242dda92f4": "Segmenten {ranges} (+{more} meer)",
   "m_06b7b5a4bb13c0": "Het cluster is bereikbaar en het join-token is geldig.",
   "m_06b7c98d690e23": "De meest geliefde films met Tom Hanks in de hoofdrol.",
+  "m_06ba628af65bfe": "Doorzoekt je indexers en opent bronnen via je Debrid-accounts",
   "m_06bad1fa6cc4f9": "{channel} ontvangt geen meldingen meer. De bezorggeschiedenis blijft behouden.",
   "m_06bbd358edc1b0": "Wordt als eerste gebruikt voor QR-codes en deellinks",
   "m_06bbf60ee1e71a": "Animatiefilms met classificatie PG en lager",
@@ -5476,6 +5477,7 @@
   "m_10a557ed3fe993": "Markeringsdekking",
   "m_10a5fbb2ff3d29": "Dempen",
   "m_10a62833806a88": "Programma’s opslaan · {saved} van {total}",
+  "m_10a6d7ad3329d1": "Controleert Usenet-releases op de achtergrond binnen een dagelijks quotum",
   "m_10a9d25a852a3d": "Schaal Y",
   "m_10aa31270e92a6": "parameter",
   "m_10aea138220ce4": "het audioformaat ({format})",
@@ -8011,6 +8013,7 @@
   "m_18425a1a04d7ff": "Afspeelbronnen: {kind}",
   "m_1842938476577b": "Voorbeeld van wekelijkse nieuwsbrief",
   "m_1842bc939bfcba": "Aantal",
+  "m_1843953103996f": "Doorzoekt je indexers op bronnen",
   "m_184412952a7847": "Toevoegen…",
   "m_1845d47e574338": {
     "one": "{count} schermafbeelding",
@@ -9292,6 +9295,7 @@
   "m_1c2f068b05621a": "Verbind een MQTT 3.1.1-broker voor meldingen en Home Assistant- of verlichtingsautomatiseringen in Flows.",
   "m_1c2fd1a4ae6958": "{count} titels · gesynchroniseerd {when}",
   "m_1c2ffbbe2b2e35": "Speelt vóór",
+  "m_1c300eda9cc753": "Dagelijkse Usenet-achtergrondcontroles per plugin",
   "m_1c303d18601052": "De bibliotheek blijft in deze console maar verdwijnt uit elke app.",
   "m_1c30ff30a80656": "Ruimte maken voor titels op deze server",
   "m_1c313e71f089dc": "{label} vanaf",
@@ -9634,6 +9638,7 @@
   "m_1d2dbff43d7656": "Voeg een kijker toe. Na het aanmelden verschijnt die hier.",
   "m_1d2eb94cc73e14": "Nieuwe films blijven verborgen voor kijkers tot er een digitale of disc-release is en een afspeelbare bron is gevonden.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Maximumaantal achtergrondcontroles dat elke plugin per dag mag uitvoeren (0 schakelt uit). Afspelen door kijkers telt nooit mee voor deze limiet.",
   "m_1d31cf9996623d": {
     "one": "{count} rij op de pagina",
     "other": "{count} rijen op de pagina"

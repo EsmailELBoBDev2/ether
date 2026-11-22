@@ -2259,6 +2259,7 @@
   "m_06b7242dda92f4": "Segmenter {ranges} (+{more} til)",
   "m_06b7b5a4bb13c0": "Klyngen er tilgjengelig og bli-med-tokenet er gyldig.",
   "m_06b7c98d690e23": "De mest elskede filmene med Tom Hanks i hovedrollen.",
+  "m_06ba628af65bfe": "Søker i indeksererne dine og åpner kilder via Debrid-kontoene dine",
   "m_06bad1fa6cc4f9": "{channel} slutter å motta varsler. Leveringshistorikken beholdes.",
   "m_06bbd358edc1b0": "Brukes først for QR-koder og delingslenker",
   "m_06bbf60ee1e71a": "Animasjonsfilmer med PG eller lavere aldersgrense",
@@ -5476,6 +5477,7 @@
   "m_10a557ed3fe993": "Markørdekning",
   "m_10a5fbb2ff3d29": "Slå av lyden",
   "m_10a62833806a88": "Lagrer programmer · {saved} av {total}",
+  "m_10a6d7ad3329d1": "Sjekker Usenet-utgivelser i bakgrunnen innenfor en daglig kvote",
   "m_10a9d25a852a3d": "Skalering Y",
   "m_10aa31270e92a6": "parameter",
   "m_10aea138220ce4": "lydformatet ({format})",
@@ -8011,6 +8013,7 @@
   "m_18425a1a04d7ff": "Avspillingskilder: {kind}",
   "m_1842938476577b": "Forhåndsvisning av ukentlig nyhetsbrev",
   "m_1842bc939bfcba": "Antall",
+  "m_1843953103996f": "Søker etter kilder i indeksererne dine",
   "m_184412952a7847": "Legger til…",
   "m_1845d47e574338": {
     "one": "{count} skjermbilde",
@@ -9292,6 +9295,7 @@
   "m_1c2f068b05621a": "Koble til en MQTT 3.1.1-megler for varsler og Home Assistant- eller belysningsautomatiseringer i Flows.",
   "m_1c2fd1a4ae6958": "{count} titler · synkronisert {when}",
   "m_1c2ffbbe2b2e35": "Spilles før",
+  "m_1c300eda9cc753": "Daglige Usenet-bakgrunnssjekker per utvidelse",
   "m_1c303d18601052": "Biblioteket blir i konsollen men forsvinner fra alle apper.",
   "m_1c30ff30a80656": "Tre til side for titler på denne serveren",
   "m_1c313e71f089dc": "{label} fra",
@@ -9634,6 +9638,7 @@
   "m_1d2dbff43d7656": "Legg til en seer. De vises her etter at de logger inn.",
   "m_1d2eb94cc73e14": "Nye filmer forblir skjult for seerne til det finnes en digital utgivelse eller platenutgivelse og en avspillbar kilde er funnet.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Maksimalt antall bakgrunnssjekker hver utvidelse kan kjøre per dag (0 deaktiverer). Avspilling for seere teller aldri mot denne grensen.",
   "m_1d31cf9996623d": {
     "one": "{count} rad på siden",
     "other": "{count} rader på siden"

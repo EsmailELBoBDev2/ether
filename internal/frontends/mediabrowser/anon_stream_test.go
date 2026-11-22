@@ -272,3 +272,41 @@ func TestAnonymousStreamReopensSessionSupersededOnDevice(t *testing.T) {
 		t.Fatalf("stopped stream = %d, want 401", w.Code)
 	}
 }
+
+// While a credential-less stream is playing, a PlaybackInfo for another item
+// from the same device is a queue prefetch: nothing opens, the playing
+// session stays, and the queued item opens when its stream is requested.
+func TestAnonymousQueuePrefetchDefersOpen(t *testing.T) {
+	state := &anonState{}
+	device := frontend.Device{ID: "tv"}
+	broker := newAnonBroker(state, device)
+	opened := 0
+	broker.PlanFunc = func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+		return frontend.PlayPlan{ID: "plan-" + ids.RatingKeyGUID(req.Item), Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true, Estimated: req.Intent.Estimate}, nil
+	}
+	broker.OpenFunc = func(_ context.Context, req frontend.OpenRequest) (frontend.Session, error) {
+		opened++
+		item := frontend.RatingKey(5)
+		if req.PlanID == "plan-"+ids.RatingKeyGUID(6) {
+			item = 6
+		}
+		id := "session-" + string(rune('0'+opened))
+		state.live = []frontend.Session{{ID: id, Item: item, Protocol: "jellyfin", Device: device, MediaPath: "/sessions/media/" + id + "/scoped/file"}}
+		return state.live[0], nil
+	}
+	inst := mountAnonTest(t, "jellyfin", broker)
+	openSession(t, inst, "jellyfin", 5, "192.0.2.1")
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent {
+		t.Fatalf("playing stream = %d", w.Code)
+	}
+	openSession(t, inst, "jellyfin", 6, "192.0.2.1") // the queued next episode
+	if opened != 1 || state.live[0].ID != "session-1" {
+		t.Fatalf("queue prefetch opened a session: opens=%d live=%v", opened, state.live)
+	}
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent || state.served[len(state.served)-1] != "/sessions/media/session-1/scoped/file" {
+		t.Fatalf("playing stream after prefetch = %d %v", w.Code, state.served)
+	}
+	if w := anonymousStream(inst, "jellyfin", 6, "192.0.2.1", ""); w.Code != http.StatusPartialContent || opened != 2 || state.served[len(state.served)-1] != "/sessions/media/session-2/scoped/file" {
+		t.Fatalf("queued stream = %d opens=%d served=%v", w.Code, opened, state.served)
+	}
+}

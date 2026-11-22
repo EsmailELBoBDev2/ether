@@ -299,6 +299,12 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	if channel != "" && queryBool(r, "AutoOpenLiveStream", boolValue(body.AutoOpenLiveStream, false)) {
 		playback = true
 	}
+	// A queue prefetch from a device playing another title is answered from
+	// the plan alone; its stream opens the session when the player gets to it.
+	queued := false
+	if playback && channel == "" && i.deferQueuedPlayback(r, v, dev, key) {
+		playback, queued = false, true
+	}
 	opts := frontend.DecideOptions{DirectPlay: queryBool(r, "EnableDirectPlay", boolValue(body.EnableDirectPlay, true)), DirectStream: queryBool(r, "EnableDirectStream", boolValue(body.EnableDirectStream, true)), AudioStream: -1, SubtitleStream: -1}
 	if body.AudioStreamIndex != nil {
 		opts.AudioStream = *body.AudioStreamIndex
@@ -520,6 +526,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	playID := ""
+	if queued {
+		i.rememberQueuedPlayback(r, v, key, dev, version, detailSource, sourceID, planBase)
+	}
 	if !playback && channel == "" && (opts.DirectPlay || opts.DirectStream) {
 		if path := i.lazySourceURL(r, credential, planBase); path != "" {
 			source["Path"] = path

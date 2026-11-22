@@ -195,19 +195,10 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 		out[i].HiddenApps = groupIdx.effectiveHiddenAppsFor(out[i].SourceID, out[i].Group, out[i].ID, out[i].rawHiddenApps, out[i].ShownApps)
 	}
 
-	// Virtual channels lead, then natural channel number, source and ID.
+	// Natural channel number order, matching AllowedChannels across every
+	// frontend, then source and ID.
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		ar, br := 1, 1
-		if a.Kind == "virtual" {
-			ar = 0
-		}
-		if b.Kind == "virtual" {
-			br = 0
-		}
-		if ar != br {
-			return ar < br
-		}
 		if cmp := a.numberKey.compare(b.numberKey); cmp != 0 {
 			return cmp < 0
 		}

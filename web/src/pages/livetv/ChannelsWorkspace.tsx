@@ -1,6 +1,16 @@
 import { Badge, Button, Checkbox, Switch, cn, confirmDialog } from "@braedonsaunders/appkit-ui";
-import { ChevronDown, GripVertical, Pencil, Plus, Trash2, Tv } from "lucide-react";
+import {
+  ArrowRight,
+  ArrowUpDown,
+  ChevronDown,
+  GripVertical,
+  Pencil,
+  Plus,
+  Trash2,
+  Tv,
+} from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
@@ -12,6 +22,7 @@ import { useMediaQuery } from "../../lib/hooks";
 import { LIVE_APPS, type LiveApp, liveAppChipLabel, liveAppNote } from "./ChannelApps";
 import { ChannelBulkBar, type ChannelPatch, appStates } from "./ChannelBulkBar";
 import { ChannelLogo } from "./ChannelLogo";
+import { MoveChannelDialog } from "./MoveChannelDialog";
 import { OwnerGroupDrawer } from "./OwnerGroupDrawer";
 import {
   channelVisibleInApp,
@@ -24,6 +35,16 @@ import {
   type OwnerGroup,
   type Source,
 } from "./model";
+import {
+  compareChannelNumber,
+  compareParsedChannelNumber,
+  computeReorderPlan,
+  parseChannelNumber,
+  slotToTargetIndex,
+  targetIndexToSlot,
+  type ChannelNumberChange,
+  type ReorderPlan,
+} from "./reorder";
 
 export type ChannelFilter = "all" | "live" | "favorites" | "virtual" | "iptv" | "missing" | "off";
 
@@ -48,7 +69,22 @@ type TreeScope =
 
 type ScopeCount = { total: number; shown: number };
 
+type ChannelDragState = {
+  mode: "pointer" | "keyboard";
+  channelId: string;
+  fromIndex: number;
+  targetIndex: number;
+  activated: boolean;
+  pointerId?: number;
+  startY?: number;
+  clientY?: number;
+  ghostLeft?: number;
+  ghostWidth?: number;
+};
+
 const ROW_HEIGHT = 56;
+const DRAG_ACTIVATION_PX = 4;
+const AUTOSCROLL_EDGE_PX = 56;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const collator = new Intl.Collator();
 
@@ -84,6 +120,7 @@ export function ChannelsWorkspace({
   onSaveOwnerGroups,
   onSetChannelsApp,
   onUpdateChannels,
+  onRenumberChannels,
   onReorderSources,
 }: {
   channels: ChannelSummary[] | null;
@@ -102,6 +139,7 @@ export function ChannelsWorkspace({
   onSaveOwnerGroups: (groups: OwnerGroup[]) => Promise<boolean>;
   onSetChannelsApp: (change: ChannelAppChange) => Promise<boolean>;
   onUpdateChannels: (ids: string[], patch: ChannelPatch) => Promise<boolean>;
+  onRenumberChannels?: (plan: ReorderPlan) => Promise<boolean>;
   onReorderSources?: (ids: string[]) => Promise<void>;
 }) {
   const { locale } = useLocale();
@@ -121,11 +159,27 @@ export function ChannelsWorkspace({
   const dragIndex = useRef<number | null>(null);
   const sourceDragId = useRef<string | null>(null);
 
+  const [drag, setDrag] = useState<ChannelDragState | null>(null);
+  const dragRef = useRef<ChannelDragState | null>(null);
+  const [moveChannel, setMoveChannel] = useState<ChannelSummary | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
 
   const all = channels ?? [];
+
+  const fullLineup = useMemo(() => {
+    const keyed = all.map((c) => ({ c, k: parseChannelNumber(c.number) }));
+    keyed.sort(
+      (a, b) =>
+        compareParsedChannelNumber(a.k, b.k) ||
+        collator.compare(a.c.name, b.c.name) ||
+        (a.c.id < b.c.id ? -1 : a.c.id > b.c.id ? 1 : 0),
+    );
+    return keyed.map((k) => k.c);
+  }, [all]);
 
   useEffect(() => {
     if (!compactGroups) setGroupsOpen(false);
@@ -393,19 +447,387 @@ export function ChannelsWorkspace({
         (a, b) =>
           collator.compare(a.sourceId ?? "", b.sourceId ?? "") ||
           collator.compare(a.group ?? "", b.group ?? "") ||
-          (parseFloat(a.number) || 0) - (parseFloat(b.number) || 0) ||
+          compareChannelNumber(a.number, b.number) ||
           collator.compare(a.name, b.name),
       );
     }
-    const keyed = matched.map((c) => ({ c, n: parseFloat(c.number) || 0 }));
+    const keyed = matched.map((c) => ({ c, k: parseChannelNumber(c.number) }));
     keyed.sort(
       (a, b) =>
-        a.n - b.n ||
-        collator.compare(a.c.number, b.c.number) ||
-        collator.compare(a.c.name, b.c.name),
+        compareParsedChannelNumber(a.k, b.k) ||
+        collator.compare(a.c.name, b.c.name) ||
+        (a.c.id < b.c.id ? -1 : a.c.id > b.c.id ? 1 : 0),
     );
     return keyed.map((k) => k.c);
   }, [scoped, statusFilter, selectedApp, sort, index.memberGroupsByChannel]);
+
+  const isFiltered =
+    scope.kind !== "every" || query.trim() !== "" || filter !== "all" || statusFilter !== "all";
+  const canDragReorder =
+    Boolean(onRenumberChannels) && sort === "number" && !isFiltered && rows.length > 1 && !busy;
+  const dragDisabledReason = !onRenumberChannels
+    ? undefined
+    : sort !== "number"
+      ? t("Sort by Channel # to drag-reorder")
+      : isFiltered
+        ? t("Clear search and filters to drag-reorder")
+        : undefined;
+
+  const setDragState = useCallback((next: ChannelDragState | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  }, []);
+
+  // Cancel any in-progress drag if filtering, sorting, or busy state changes.
+  useEffect(() => {
+    if (!canDragReorder && dragRef.current) {
+      setDragState(null);
+    }
+  }, [canDragReorder, setDragState]);
+
+  const activePlan = useMemo(() => {
+    if (!drag?.activated) return null;
+    return computeReorderPlan(rows, drag.channelId, drag.targetIndex);
+  }, [drag, rows]);
+
+  const previewById = useMemo(() => {
+    if (!activePlan) return null;
+    const map = new Map<string, ChannelNumberChange>();
+    for (const ch of activePlan.changes) map.set(ch.id, ch);
+    return map;
+  }, [activePlan]);
+
+  const draggedChannel = useMemo(
+    () => (drag?.activated ? (rows.find((c) => c.id === drag.channelId) ?? null) : null),
+    [drag, rows],
+  );
+
+  const focusHandle = useCallback((channelId: string) => {
+    requestAnimationFrame(() => {
+      const btn = listRef.current?.querySelector<HTMLButtonElement>(
+        `[data-channel-drag-handle="${CSS.escape ? CSS.escape(channelId) : channelId}"]`,
+      );
+      btn?.focus();
+    });
+  }, []);
+
+  const ensureSlotVisible = useCallback((slotIndex: number) => {
+    const el = listRef.current;
+    if (!el) return;
+    const top = slotIndex * ROW_HEIGHT;
+    const bottom = top + ROW_HEIGHT;
+    if (top < el.scrollTop) {
+      el.scrollTop = Math.max(0, top - ROW_HEIGHT);
+      setScrollTop(el.scrollTop);
+    } else if (bottom > el.scrollTop + el.clientHeight) {
+      el.scrollTop = bottom - el.clientHeight + ROW_HEIGHT;
+      setScrollTop(el.scrollTop);
+    }
+  }, []);
+
+  const commitPlan = useCallback(
+    async (plan: ReorderPlan, restoreFocusId?: string): Promise<boolean> => {
+      if (!onRenumberChannels) return false;
+      const ok = await onRenumberChannels(plan);
+      if (ok) {
+        const msg =
+          plan.shifted.length > 0
+            ? tn(
+                plan.shifted.length,
+                "{name} moved to channel #{number}. {count} following channel shifted.",
+                "{name} moved to channel #{number}. {count} following channels shifted.",
+                { name: plan.channelName, number: plan.toNumber },
+              )
+            : t("{name} moved to channel #{number}.", {
+                name: plan.channelName,
+                number: plan.toNumber,
+              });
+        setAnnouncement(msg);
+        if (restoreFocusId) focusHandle(restoreFocusId);
+      }
+      return ok;
+    },
+    [onRenumberChannels, focusHandle],
+  );
+
+  const updatePointerTarget = useCallback(
+    (clientY: number) => {
+      const cur = dragRef.current;
+      const el = listRef.current;
+      if (!cur || cur.mode !== "pointer" || !el) return;
+      const rect = el.getBoundingClientRect();
+      const contentY = clientY - rect.top + el.scrollTop;
+      const rawSlot = Math.round(contentY / ROW_HEIGHT);
+      const nextTarget = slotToTargetIndex(rawSlot, cur.fromIndex, rows.length);
+      const movedEnough =
+        cur.activated || Math.abs(clientY - (cur.startY ?? clientY)) >= DRAG_ACTIVATION_PX;
+      if (
+        !movedEnough &&
+        nextTarget === cur.targetIndex &&
+        Math.abs(clientY - (cur.clientY ?? clientY)) < 1
+      ) {
+        return;
+      }
+      const updated: ChannelDragState = {
+        ...cur,
+        activated: movedEnough,
+        targetIndex: movedEnough ? nextTarget : cur.fromIndex,
+        clientY,
+        ghostLeft: rect.left + 8,
+        ghostWidth: Math.max(240, Math.min(rect.width - 16, 560)),
+      };
+      setDragState(updated);
+    },
+    [rows.length, setDragState],
+  );
+
+  // Window-level pointer listeners & edge auto-scroll so virtualized scrolling
+  // never drops a pointer or touch drag.
+  const pointerDragActive = drag?.mode === "pointer";
+  useEffect(() => {
+    if (!pointerDragActive) return;
+
+    let raf = 0;
+    const tick = () => {
+      const cur = dragRef.current;
+      const el = listRef.current;
+      if (!cur || cur.mode !== "pointer" || !el) return;
+      if (cur.activated && cur.clientY !== undefined) {
+        const rect = el.getBoundingClientRect();
+        let delta = 0;
+        if (cur.clientY < rect.top + AUTOSCROLL_EDGE_PX) {
+          const ratio = Math.min(
+            1,
+            Math.max(0.15, (rect.top + AUTOSCROLL_EDGE_PX - cur.clientY) / AUTOSCROLL_EDGE_PX),
+          );
+          delta = -Math.round(ratio * 14);
+        } else if (cur.clientY > rect.bottom - AUTOSCROLL_EDGE_PX) {
+          const ratio = Math.min(
+            1,
+            Math.max(0.15, (cur.clientY - (rect.bottom - AUTOSCROLL_EDGE_PX)) / AUTOSCROLL_EDGE_PX),
+          );
+          delta = Math.round(ratio * 14);
+        }
+        if (delta !== 0) {
+          const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+          const nextScroll = Math.max(0, Math.min(maxScroll, el.scrollTop + delta));
+          if (nextScroll !== el.scrollTop) {
+            el.scrollTop = nextScroll;
+            setScrollTop(nextScroll);
+            updatePointerTarget(cur.clientY);
+          }
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    const onMove = (e: PointerEvent) => {
+      const cur = dragRef.current;
+      if (!cur || cur.mode !== "pointer") return;
+      if (cur.pointerId !== undefined && e.pointerId !== cur.pointerId) return;
+      updatePointerTarget(e.clientY);
+    };
+
+    const finish = (commit: boolean) => {
+      const cur = dragRef.current;
+      if (!cur || cur.mode !== "pointer") return;
+      setDragState(null);
+      if (commit && cur.activated) {
+        const plan = computeReorderPlan(rows, cur.channelId, cur.targetIndex);
+        if (plan) void commitPlan(plan);
+      } else if (!commit && cur.activated) {
+        setAnnouncement(t("Reorder cancelled."));
+      }
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const cur = dragRef.current;
+      if (!cur || cur.mode !== "pointer") return;
+      if (cur.pointerId !== undefined && e.pointerId !== cur.pointerId) return;
+      finish(true);
+    };
+    const onCancel = () => finish(false);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKeyDown);
+    const prevSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "grabbing";
+    return () => {
+      cancelAnimationFrame(raf);
+      document.body.style.userSelect = prevSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [pointerDragActive, rows, setDragState, updatePointerTarget, commitPlan]);
+
+  // Keyboard grab-mode listeners on window so navigating past virtualized rows
+  // never drops focus or loses key events.
+  const keyboardDragActive = drag?.mode === "keyboard";
+  useEffect(() => {
+    if (!keyboardDragActive) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const cur = dragRef.current;
+      if (!cur || cur.mode !== "keyboard") return;
+      const moveTo = (nextIdx: number) => {
+        const clamped = Math.max(0, Math.min(rows.length - 1, nextIdx));
+        if (clamped === cur.targetIndex) return;
+        const next: ChannelDragState = { ...cur, targetIndex: clamped };
+        setDragState(next);
+        ensureSlotVisible(targetIndexToSlot(clamped, cur.fromIndex));
+        const preview = computeReorderPlan(rows, cur.channelId, clamped);
+        if (preview) {
+          setAnnouncement(
+            preview.shifted.length > 0
+              ? tn(
+                  preview.shifted.length,
+                  "Position {position}, channel #{number}; {count} following channel shifts.",
+                  "Position {position}, channel #{number}; {count} following channels shift.",
+                  {
+                    position: formatNumber(clamped + 1),
+                    number: preview.toNumber,
+                  },
+                )
+              : t("Position {position}, channel #{number}.", {
+                  position: formatNumber(clamped + 1),
+                  number: preview.toNumber,
+                }),
+          );
+        } else {
+          setAnnouncement(
+            t("Original position {position}.", { position: formatNumber(clamped + 1) }),
+          );
+        }
+      };
+
+      switch (e.key) {
+        case "ArrowUp":
+          e.preventDefault();
+          moveTo(cur.targetIndex - 1);
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          moveTo(cur.targetIndex + 1);
+          break;
+        case "PageUp":
+          e.preventDefault();
+          moveTo(cur.targetIndex - 10);
+          break;
+        case "PageDown":
+          e.preventDefault();
+          moveTo(cur.targetIndex + 10);
+          break;
+        case "Home":
+          e.preventDefault();
+          moveTo(0);
+          break;
+        case "End":
+          e.preventDefault();
+          moveTo(rows.length - 1);
+          break;
+        case "Enter":
+        case " ": {
+          e.preventDefault();
+          const plan = computeReorderPlan(rows, cur.channelId, cur.targetIndex);
+          const id = cur.channelId;
+          setDragState(null);
+          if (plan) void commitPlan(plan, id);
+          else focusHandle(id);
+          break;
+        }
+        case "Escape":
+          e.preventDefault();
+          setDragState(null);
+          setAnnouncement(t("Reorder cancelled."));
+          focusHandle(cur.channelId);
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [keyboardDragActive, rows, setDragState, ensureSlotVisible, commitPlan, focusHandle]);
+
+  const handleStartPointerDrag = useCallback(
+    (channelId: string, rowIndex: number, e: React.PointerEvent<HTMLButtonElement>) => {
+      if (!canDragReorder) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const rect = listRef.current?.getBoundingClientRect();
+      setDragState({
+        mode: "pointer",
+        channelId,
+        fromIndex: rowIndex,
+        targetIndex: rowIndex,
+        activated: false,
+        pointerId: e.pointerId,
+        startY: e.clientY,
+        clientY: e.clientY,
+        ghostLeft: rect ? rect.left + 8 : 16,
+        ghostWidth: rect ? Math.max(240, Math.min(rect.width - 16, 560)) : 480,
+      });
+    },
+    [canDragReorder, setDragState],
+  );
+
+  const handleHandleKeyDown = useCallback(
+    (channel: ChannelSummary, rowIndex: number, e: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (!canDragReorder) return;
+      if (dragRef.current?.mode === "keyboard") return;
+      if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = e.key === "ArrowUp" ? -1 : 1;
+        const plan = computeReorderPlan(rows, channel.id, rowIndex + delta);
+        if (plan) void commitPlan(plan, channel.id);
+        return;
+      }
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragState({
+          mode: "keyboard",
+          channelId: channel.id,
+          fromIndex: rowIndex,
+          targetIndex: rowIndex,
+          activated: true,
+        });
+        setAnnouncement(
+          t(
+            "Picked up {name}, channel #{number}. Use Up and Down arrows to choose a position, Enter to apply, or Escape to cancel.",
+            { name: channel.name, number: channel.number },
+          ),
+        );
+      }
+    },
+    [canDragReorder, rows, commitPlan, setDragState],
+  );
+
+  const handleRowKeyDown = useCallback(
+    (channel: ChannelSummary, rowIndex: number, e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!canDragReorder || dragRef.current) return;
+      if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        const delta = e.key === "ArrowUp" ? -1 : 1;
+        const plan = computeReorderPlan(rows, channel.id, rowIndex + delta);
+        if (plan) void commitPlan(plan, channel.id);
+      }
+    },
+    [canDragReorder, rows, commitPlan],
+  );
 
   const selectable = useMemo(() => new Set(rows.map((c) => c.id)), [rows]);
 
@@ -1214,6 +1636,61 @@ export function ChannelsWorkspace({
             </div>
           </div>
 
+          {/* Live drag / keyboard reorder preview banner */}
+          {drag?.activated && draggedChannel ? (
+            <div
+              role="status"
+              data-testid="channel-reorder-preview"
+              className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-primary/30 bg-primary-subtle/75 px-3 py-2 text-xs"
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="font-semibold text-fg">{draggedChannel.name}</span>
+                {activePlan ? (
+                  <>
+                    <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-surface px-1.5 py-0.5 font-mono tabular-nums">
+                      <span className="text-fg-subtle line-through">{activePlan.fromNumber}</span>
+                      <ArrowRight size={11} className="text-primary" aria-hidden />
+                      <span className="font-semibold text-primary">{activePlan.toNumber}</span>
+                    </span>
+                    {activePlan.shifted.length > 0 ? (
+                      <span className="text-fg-muted">
+                        {(() => {
+                          const first = activePlan.shifted[0];
+                          const last = activePlan.shifted[activePlan.shifted.length - 1];
+                          const range =
+                            first && last && first !== last
+                              ? `#${first.fromNumber}–#${last.fromNumber} → #${first.toNumber}–#${last.toNumber}`
+                              : first
+                                ? `#${first.fromNumber} → #${first.toNumber}`
+                                : "";
+                          return tn(
+                            activePlan.shifted.length,
+                            "{count} following channel shifts ({range})",
+                            "{count} following channels shift ({range})",
+                            { range },
+                          );
+                        })()}
+                      </span>
+                    ) : (
+                      <span className="text-fg-muted">
+                        {t("Fits in the gap — no other channels shift")}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-fg-muted">
+                    {t("Drag up or down to choose a new position")}
+                  </span>
+                )}
+              </div>
+              <span className="shrink-0 text-[11px] text-fg-muted">
+                {drag.mode === "keyboard"
+                  ? t("↑/↓ move · Enter apply · Esc cancel")
+                  : t("Release to apply · Esc to cancel")}
+              </span>
+            </div>
+          ) : null}
+
           {/* Virtualised rows */}
           <div
             ref={listRef}
@@ -1239,30 +1716,123 @@ export function ChannelsWorkspace({
                     right: 0,
                   }}
                 >
-                  {visibleRows.map((c) => {
+                  {visibleRows.map((c, offsetIdx) => {
+                    const rowIndex = startRow + offsetIdx;
                     const memberGroups = index.memberGroupsByChannel.get(c.id);
+                    const isDraggingSource = Boolean(drag?.activated && drag.channelId === c.id);
                     return (
                       <ChannelListRow
                         key={c.id}
                         channel={c}
+                        rowIndex={rowIndex}
                         memberGroups={memberGroups}
                         selectedApp={selectedApp}
                         checked={checked.has(c.id)}
                         active={selectedChannelId === c.id}
                         covered={hasCoverage(c)}
                         busy={busy}
+                        showReorderControls={Boolean(onRenumberChannels) && fullLineup.length > 1}
+                        canDragReorder={canDragReorder}
+                        dragDisabledReason={dragDisabledReason}
+                        isDraggingSource={isDraggingSource}
+                        isKeyboardGrabbed={isDraggingSource && drag?.mode === "keyboard"}
+                        previewChange={isDraggingSource ? undefined : previewById?.get(c.id)}
                         onToggleChecked={toggleRowChecked}
                         onOpen={onOpenChannel}
                         onToggleApp={toggleSingleChannelApp}
+                        onStartPointerDrag={handleStartPointerDrag}
+                        onHandleKeyDown={handleHandleKeyDown}
+                        onRowKeyDown={handleRowKeyDown}
+                        onMoveToPosition={setMoveChannel}
                       />
                     );
                   })}
                 </div>
+
+                {/* Drop insertion line with resulting number pill */}
+                {drag?.activated && drag.targetIndex !== drag.fromIndex && activePlan ? (
+                  <div
+                    aria-hidden
+                    data-testid="channel-drop-indicator"
+                    style={{
+                      position: "absolute",
+                      top: targetIndexToSlot(drag.targetIndex, drag.fromIndex) * ROW_HEIGHT - 1,
+                      left: 0,
+                      right: 0,
+                    }}
+                    className="pointer-events-none z-20 flex items-center"
+                  >
+                    <span className="-ml-0.5 size-2.5 shrink-0 rounded-full bg-primary ring-2 ring-surface" />
+                    <span className="h-0.5 flex-1 bg-primary shadow-[0_0_8px_color-mix(in_srgb,var(--color-primary)_50%,transparent)]" />
+                    <span className="mr-3 inline-flex shrink-0 items-center gap-1 rounded-full bg-primary px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-primary-fg shadow-sm">
+                      #{activePlan.toNumber} · {activePlan.channelName}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
         </section>
       </div>
+
+      {/* Screen-reader live region for drag & keyboard reorder announcements */}
+      <div className="sr-only" aria-live="assertive" aria-atomic="true">
+        {announcement}
+      </div>
+
+      {/* Floating pointer drag ghost */}
+      {drag?.mode === "pointer" &&
+      drag.activated &&
+      draggedChannel &&
+      drag.clientY !== undefined &&
+      typeof document !== "undefined"
+        ? createPortal(
+            <div
+              aria-hidden
+              data-testid="channel-drag-ghost"
+              style={{
+                position: "fixed",
+                top: Math.max(
+                  8,
+                  Math.min(window.innerHeight - ROW_HEIGHT - 8, drag.clientY - ROW_HEIGHT / 2),
+                ),
+                left: drag.ghostLeft ?? 16,
+                width: drag.ghostWidth ?? 480,
+                height: ROW_HEIGHT,
+              }}
+              className="pointer-events-none z-50 flex items-center gap-3 rounded-xl border border-primary/50 bg-elevated/95 px-3 shadow-xl backdrop-blur-sm"
+            >
+              <GripVertical size={15} className="shrink-0 text-primary" />
+              <ChannelLogo
+                name={draggedChannel.name}
+                logo={draggedChannel.logo}
+                seed={draggedChannel.id}
+                channelId={draggedChannel.id}
+                size={34}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-fg">
+                  {draggedChannel.name}
+                </span>
+                <span className="block truncate text-xs text-fg-muted">
+                  {draggedChannel.group || (draggedChannel.kind === "virtual" ? t("Virtual") : "")}
+                </span>
+              </span>
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/35 bg-primary-subtle px-2 py-0.5 font-mono text-xs tabular-nums">
+                {activePlan ? (
+                  <>
+                    <span className="text-fg-subtle line-through">{activePlan.fromNumber}</span>
+                    <ArrowRight size={11} className="text-primary" />
+                    <span className="font-semibold text-primary">{activePlan.toNumber}</span>
+                  </>
+                ) : (
+                  <span className="font-semibold text-primary">#{draggedChannel.number}</span>
+                )}
+              </span>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {compactGroups ? (
         <Drawer
@@ -1295,6 +1865,14 @@ export function ChannelsWorkspace({
         />
       ) : null}
 
+      <MoveChannelDialog
+        channel={moveChannel}
+        lineup={fullLineup}
+        busy={busy}
+        onClose={() => setMoveChannel(null)}
+        onApply={(plan) => commitPlan(plan, plan.channelId)}
+      />
+
       <OwnerGroupDrawer
         open={groupDrawer.open}
         group={groupDrawer.group}
@@ -1317,26 +1895,60 @@ export function ChannelsWorkspace({
 
 const ChannelListRow = memo(function ChannelListRow({
   channel: c,
+  rowIndex,
   memberGroups,
   selectedApp,
   checked,
   active,
   covered,
   busy,
+  showReorderControls,
+  canDragReorder,
+  dragDisabledReason,
+  isDraggingSource,
+  isKeyboardGrabbed,
+  previewChange,
   onToggleChecked,
   onOpen,
   onToggleApp,
+  onStartPointerDrag,
+  onHandleKeyDown,
+  onRowKeyDown,
+  onMoveToPosition,
 }: {
   channel: ChannelSummary;
+  rowIndex: number;
   memberGroups?: readonly OwnerGroup[];
   selectedApp: "all" | LiveApp;
   checked: boolean;
   active: boolean;
   covered: boolean;
   busy: boolean;
+  showReorderControls: boolean;
+  canDragReorder: boolean;
+  dragDisabledReason?: string;
+  isDraggingSource: boolean;
+  isKeyboardGrabbed: boolean;
+  previewChange?: ChannelNumberChange;
   onToggleChecked: (id: string, range?: boolean) => void;
   onOpen: (id: string) => void;
   onToggleApp: (id: string, show: boolean) => void;
+  onStartPointerDrag: (
+    channelId: string,
+    rowIndex: number,
+    e: React.PointerEvent<HTMLButtonElement>,
+  ) => void;
+  onHandleKeyDown: (
+    channel: ChannelSummary,
+    rowIndex: number,
+    e: React.KeyboardEvent<HTMLButtonElement>,
+  ) => void;
+  onRowKeyDown: (
+    channel: ChannelSummary,
+    rowIndex: number,
+    e: React.KeyboardEvent<HTMLDivElement>,
+  ) => void;
+  onMoveToPosition: (channel: ChannelSummary) => void;
 }) {
   const providerLabel = c.group || (c.kind === "virtual" ? t("Virtual") : "");
   const ownerGroupNames = memberGroups?.map((g) => g.name).join(", ") ?? "";
@@ -1346,11 +1958,49 @@ const ChannelListRow = memo(function ChannelListRow({
   return (
     <div
       style={{ height: ROW_HEIGHT }}
+      data-channel-row={c.id}
+      onKeyDown={(e) => onRowKeyDown(c, rowIndex, e)}
       className={cn(
-        "flex items-center gap-3 border-b border-border px-3 transition-colors",
-        active ? "bg-primary-subtle/60" : "hover:bg-surface-hover/60",
+        "group flex items-center gap-2.5 border-b border-border px-3 transition-colors",
+        isDraggingSource
+          ? "border-dashed bg-bg-subtle/60 opacity-45"
+          : previewChange
+            ? "bg-primary-subtle/30"
+            : active
+              ? "bg-primary-subtle/60"
+              : "hover:bg-surface-hover/60",
+        isKeyboardGrabbed && "ring-2 ring-inset ring-primary/70",
       )}
     >
+      {showReorderControls ? (
+        <button
+          type="button"
+          data-channel-drag-handle={c.id}
+          disabled={!canDragReorder}
+          aria-pressed={isKeyboardGrabbed || undefined}
+          title={
+            canDragReorder ? t("Drag to reorder (or Space + arrows / Alt+↑↓)") : dragDisabledReason
+          }
+          aria-label={
+            canDragReorder
+              ? t(
+                  "Reorder {name}, channel #{number}. Press Space to pick up, or Alt+Up and Alt+Down to move.",
+                  { name: c.name, number: c.number },
+                )
+              : (dragDisabledReason ?? t("Drag to reorder"))
+          }
+          onPointerDown={(e) => onStartPointerDrag(c.id, rowIndex, e)}
+          onKeyDown={(e) => onHandleKeyDown(c, rowIndex, e)}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+            canDragReorder
+              ? "touch-none select-none cursor-grab text-fg-subtle hover:bg-surface-hover hover:text-fg active:cursor-grabbing"
+              : "cursor-not-allowed text-fg-subtle/35",
+          )}
+        >
+          <GripVertical size={15} aria-hidden />
+        </button>
+      ) : null}
       <Checkbox
         checked={checked}
         disabled={busy}
@@ -1369,9 +2019,22 @@ const ChannelListRow = memo(function ChannelListRow({
         onClick={() => onOpen(c.id)}
         className="flex min-w-0 flex-1 items-center gap-3 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
-        <span className="w-11 shrink-0 truncate text-xs tabular-nums text-fg-muted">
-          {c.number}
-        </span>
+        {previewChange ? (
+          <span
+            data-testid={`channel-number-preview-${c.id}`}
+            className="inline-flex min-w-11 shrink-0 items-center gap-1 font-mono text-xs tabular-nums"
+          >
+            <span className="text-fg-subtle line-through">{previewChange.fromNumber}</span>
+            <ArrowRight size={10} className="text-primary" aria-hidden />
+            <span className="rounded bg-primary-subtle px-1.5 py-0.5 font-semibold text-primary">
+              {previewChange.toNumber}
+            </span>
+          </span>
+        ) : (
+          <span className="w-11 shrink-0 truncate text-xs tabular-nums text-fg-muted">
+            {c.number}
+          </span>
+        )}
         <ChannelLogo name={c.name} logo={c.logo} seed={c.id} channelId={c.id} size={34} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
@@ -1391,7 +2054,22 @@ const ChannelListRow = memo(function ChannelListRow({
           </span>
         </span>
       </button>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1.5">
+        {showReorderControls ? (
+          <button
+            type="button"
+            disabled={busy}
+            title={t("Move to position…")}
+            aria-label={t("Move {name} to position", { name: c.name })}
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveToPosition(c);
+            }}
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-fg-subtle opacity-60 transition-all hover:bg-surface-hover hover:text-fg hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-30 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+          >
+            <ArrowUpDown size={13} aria-hidden />
+          </button>
+        ) : null}
         {selectedApp === "all" ? (
           <div className="hidden flex-wrap items-center justify-end gap-1 sm:flex">
             {LIVE_APPS.map((app) => {

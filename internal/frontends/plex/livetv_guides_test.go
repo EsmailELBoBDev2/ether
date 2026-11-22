@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -353,8 +354,9 @@ func TestGuideTabsFivePercentThresholdAndEightGenreCap(t *testing.T) {
 }
 
 func TestGuideTabsStableAcrossCalendarDayAndChannelFiltering(t *testing.T) {
-	currentNow := time.Date(2026, 10, 18, 7, 0, 0, 0, time.UTC)
-	nowFn := func() time.Time { return currentNow }
+	var currentNow atomic.Int64 // read by the Live TV refresh loop's goroutine
+	currentNow.Store(time.Date(2026, 10, 18, 7, 0, 0, 0, time.UTC).UnixNano())
+	nowFn := func() time.Time { return time.Unix(0, currentNow.Load()).UTC() }
 
 	var playlist, guide strings.Builder
 	playlist.WriteString("#EXTM3U\n")
@@ -397,7 +399,7 @@ func TestGuideTabsStableAcrossCalendarDayAndChannelFiltering(t *testing.T) {
 		time.Date(2026, 10, 18, 12, 30, 0, 0, time.UTC),
 		time.Date(2026, 10, 18, 23, 15, 0, 0, time.UTC),
 	} {
-		currentNow = ts
+		currentNow.Store((ts).UnixNano())
 		// Force a cold rebuild at 23:15 to prove stability comes from the day window,
 		// not merely from a warm morning cache entry.
 		if ts.Hour() == 23 {
@@ -426,7 +428,7 @@ func TestGuideTabsStableAcrossCalendarDayAndChannelFiltering(t *testing.T) {
 	}
 
 	// Rolling into the next calendar day switches to that day's guide window.
-	currentNow = time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
+	currentNow.Store((time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)).UnixNano())
 	nextDayTitles := filterTitles(readProviderGuideFilters(t, f))
 	if !slices.Equal(nextDayTitles, []string{"Next Day Doc"}) {
 		t.Fatalf("next calendar day tabs = %v, want [Next Day Doc]", nextDayTitles)

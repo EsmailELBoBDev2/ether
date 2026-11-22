@@ -263,7 +263,6 @@ func (p *PlexDiscover) resolveCandidate(ctx context.Context, cand discoverCandid
 			// Fall back to directURL only if it actually matches this variant's bitrate.
 			if cand.directURL != "" && !bitrateMismatch && (!sharedURL || (hasURLBitrate && cand.bitrate > 0 && urlBitrate == cand.bitrate)) {
 				target = cand.directURL
-				err = nil
 			} else {
 				return Resolved{}, err
 			}

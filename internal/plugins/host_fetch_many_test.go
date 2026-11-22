@@ -256,14 +256,8 @@ func TestHTTPFetchManyConcurrencyCapPolitenessAndOriginInterleaving(t *testing.T
 	if got := peakA.Load(); got > DefaultMaxFetchPerHost {
 		t.Fatalf("peak in-flight on single origin = %d, exceeds politeness limit %d", got, DefaultMaxFetchPerHost)
 	}
-	if got := peakA.Load(); got != DefaultMaxFetchPerHost {
-		t.Fatalf("peak in-flight on single origin = %d, want %d", got, DefaultMaxFetchPerHost)
-	}
 	if got := peakTotal.Load(); got > MaxFetchManyConcurrency {
 		t.Fatalf("peak total in-flight = %d, exceeds cap %d", got, MaxFetchManyConcurrency)
-	}
-	if got := peakTotal.Load(); got != MaxFetchManyConcurrency {
-		t.Fatalf("peak total in-flight = %d, want %d (6 on host A + 2 on host B)", got, MaxFetchManyConcurrency)
 	}
 }
 

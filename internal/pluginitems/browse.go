@@ -638,7 +638,6 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 			return browseTallyInfo{libTotal: libTotal}, nil
 		}
 		kindRec = rec
-		hasKind = true
 	}
 	var ftype string
 	for _, fd := range kindRec.Decl.Fields {

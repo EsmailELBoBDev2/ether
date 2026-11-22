@@ -1092,7 +1092,7 @@ type Decision struct {
 // EncodesVideo reports whether this decision re-encodes a video stream.
 // Audio-only items (info.Video() == nil) carry VideoCopy=false because there
 // is no video stream to copy, and they never count as video transcodes.
-func (d Decision) EncodesVideo(info MediaInfo) bool {
+func (d *Decision) EncodesVideo(info MediaInfo) bool {
 	return info.Video() != nil && !d.VideoCopy
 }
 

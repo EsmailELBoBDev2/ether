@@ -3,6 +3,7 @@ package livetv
 import (
 	"context"
 	"errors"
+	"github.com/braedonsaunders/ether/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -176,7 +177,9 @@ func TestOnDemandSourceRefreshesOnlyWhileInUse(t *testing.T) {
 
 	// Idle: even 2 hours later, no background timer is armed and no scheduled refresh fires.
 	clock.Set(guideTestNow.Add(2 * time.Hour))
-	if _, armed := s.nextSourceRefreshWait(ctx); armed {
+	// A standalone server arms no timer at all; a clustered (PostgreSQL)
+	// server always keeps its periodic check, which must still refresh nothing.
+	if _, armed := s.nextSourceRefreshWait(ctx); armed && store.DialectOf(s.o.DB) == store.SQLite {
 		t.Fatal("idle on-demand source armed a background refresh timer")
 	}
 	if due := s.refreshDueSources(ctx); len(due) != 0 || hits.Load() != 1 {

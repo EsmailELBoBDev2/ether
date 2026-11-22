@@ -48,6 +48,7 @@ var plannerStatsTables = []string{
 	"plugin_items",
 	"plugin_item_fields",
 	"plugin_item_field_tally",
+	"plugin_item_parent_tally",
 	"plugin_item_tally",
 	"plugin_facet_expansions",
 	"plugin_kinds",

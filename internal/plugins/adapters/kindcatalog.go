@@ -1727,11 +1727,32 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 		refs[i] = it.Ref
 	}
 	partCounts, _ := c.items.CountPartsMany(ctx, refs)
+	var parentCounts map[core.ItemRef]pluginitems.ParentCounts
+	if len(rec.Decl.Levels) >= 2 {
+		leafLevel := rec.Decl.Levels[len(rec.Decl.Levels)-1].Key
+		containerRefs := make([]core.ItemRef, 0, len(items))
+		for _, it := range items {
+			if it.Level != leafLevel {
+				containerRefs = append(containerRefs, it.Ref)
+			}
+		}
+		if len(containerRefs) > 0 {
+			parentCounts, _ = c.items.ParentCountsMany(ctx, lib.ID, containerRefs)
+		}
+	}
 	out := make([]core.Title, len(items))
 	for i, it := range items {
 		t := pluginitems.ProjectWithText(it, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		t.LibraryID = lib.ID
 		scopeTitleMediaParents(&t, lib.ID)
+		if pc, ok := parentCounts[it.Ref]; ok {
+			if pc.ChildCount > t.ChildCount {
+				t.ChildCount = pc.ChildCount
+			}
+			if pc.LeafCount > t.LeafCount {
+				t.LeafCount = pc.LeafCount
+			}
+		}
 		if nParts := partCounts[it.Ref]; nParts > 1 && t.ChildCount == 0 {
 			t.ChildCount = nParts
 			if t.LeafCount == 0 {

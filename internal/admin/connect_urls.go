@@ -169,18 +169,29 @@ func publishedMainOrigin(cfg config.Config) (string, bool) {
 	return "", false
 }
 
-func (h *Handler) inviteURL(secret string) string {
-	path := "/ether/me#invite=" + secret
-	if h.deps.Config != nil {
-		cfg := h.deps.Config.Get()
-		if cfg.Server.ConsolePort > 0 && cfg.Server.DisableConsoleOnMainPort {
-			return path
-		}
-		if base, ok := publishedMainOrigin(cfg); ok {
-			return strings.TrimRight(base, "/") + path
-		}
+// publishedPortalURL returns the viewer portal URL (/ether/me) on the
+// server's external published main origin, using the same source and
+// dedicated-console-port rules as inviteURL. It returns "" when no published
+// main origin serves the viewer portal.
+func (h *Handler) publishedPortalURL() string {
+	if h.deps.Config == nil {
+		return ""
 	}
-	return path
+	cfg := h.deps.Config.Get()
+	if cfg.Server.ConsolePort > 0 && cfg.Server.DisableConsoleOnMainPort {
+		return ""
+	}
+	if base, ok := publishedMainOrigin(cfg); ok {
+		return strings.TrimRight(base, "/") + "/ether/me"
+	}
+	return ""
+}
+
+func (h *Handler) inviteURL(secret string) string {
+	if portal := h.publishedPortalURL(); portal != "" {
+		return portal + "#invite=" + secret
+	}
+	return "/ether/me#invite=" + secret
 }
 
 func localConsoleHost(host string) bool {

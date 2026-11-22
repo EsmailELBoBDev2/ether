@@ -244,6 +244,13 @@ func (s *Service) VerifyFeedCandidate(ctx context.Context, t *core.Title, r core
 	if s.health == nil {
 		return core.ErrSourceUnavailable
 	}
+	if protocolOf(r) == core.ProtocolUsenet && s.usenetVerdicts != nil {
+		if urlKey := s.usenetVerdictURLKey(r); urlKey != "" {
+			if verdict, ok := s.usenetVerdicts.Lookup(s.now(), urlKey, "", ""); ok && !verdict.Available {
+				return core.ErrSourceUnavailable
+			}
+		}
+	}
 	payload, err := s.indexer.FetchNZB(ctx, r)
 	if err != nil {
 		if permanentGrabFailure(err) {
@@ -254,20 +261,40 @@ func (s *Service) VerifyFeedCandidate(ctx context.Context, t *core.Title, r core
 	}
 	var extraKeys []string
 	r, extraKeys = s.learnReleaseContent(ctx, r, payload)
-	ok, err := core.CheckReleaseHealth(ctx, s.health, r.ID, payload)
-	if err != nil {
-		if permanentFailure(err) {
-			if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
-				s.noteFailedGrab(ctx, ckeys, err.Error())
+	var ok bool
+	reusedVerdict := false
+	if protocolOf(r) == core.ProtocolUsenet && s.usenetVerdicts != nil {
+		urlKey, nzbHash, contentID := s.usenetVerdictKeys(r, payload)
+		if verdict, found := s.usenetVerdicts.Lookup(s.now(), urlKey, nzbHash, contentID); found {
+			if !verdict.Available {
+				if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+					s.noteFailedGrab(ctx, ckeys, "health: unhealthy")
+				}
+				return core.ErrSourceUnavailable
 			}
+			ok = true
+			reusedVerdict = true
 		}
-		return err
 	}
-	if !ok {
-		if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
-			s.noteFailedGrab(ctx, ckeys, "health: unhealthy")
+	if !reusedVerdict {
+		ok, err = core.CheckReleaseHealth(ctx, s.health, r.ID, payload)
+		if err != nil {
+			if permanentFailure(err) {
+				s.recordUsenetVerdict(r, payload, false, err.Error())
+				if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+					s.noteFailedGrab(ctx, ckeys, err.Error())
+				}
+			}
+			return err
 		}
-		return core.ErrSourceUnavailable
+		if !ok {
+			s.recordUsenetVerdict(r, payload, false, "health_unhealthy")
+			if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+				s.noteFailedGrab(ctx, ckeys, "health: unhealthy")
+			}
+			return core.ErrSourceUnavailable
+		}
+		s.recordUsenetVerdict(r, payload, true, "")
 	}
 	s.markVerifiedKeys(ctx, s.allVerificationKeys(r, extraKeys...))
 	s.rememberReleases(t, []core.Release{r})

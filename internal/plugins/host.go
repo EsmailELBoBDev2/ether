@@ -886,6 +886,11 @@ func (h *host) FoldersStat(ctx context.Context, root, path string) (FolderEntry,
 }
 
 func (m *Manager) rateOK(bucket map[string][]time.Time, key string, limit int, window time.Duration) bool {
+	ok, _ := m.rateOKRetryAt(bucket, key, limit, window)
+	return ok
+}
+
+func (m *Manager) rateOKRetryAt(bucket map[string][]time.Time, key string, limit int, window time.Duration) (bool, time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -897,10 +902,31 @@ func (m *Manager) rateOK(bucket map[string][]time.Time, key string, limit int, w
 	}
 	if len(kept) >= limit {
 		bucket[key] = kept
-		return false
+		retryAt := now.Add(window)
+		if len(kept) > 0 {
+			retryAt = kept[0].Add(window)
+		}
+		return false, retryAt.UTC()
 	}
 	bucket[key] = append(kept, now)
-	return true
+	return true, time.Time{}
+}
+
+func (m *Manager) rateLimitError(message string, retryAt time.Time) error {
+	now := m.now()
+	var after time.Duration
+	if !retryAt.IsZero() {
+		retryAt = retryAt.UTC()
+		after = retryAt.Sub(now)
+		if after < time.Second {
+			after = time.Second
+		}
+	}
+	return &RateLimitError{
+		Message:    message,
+		RetryAt:    retryAt,
+		RetryAfter: after,
+	}
 }
 
 func (h *host) NotifyOwner(ctx context.Context, text string) error {

@@ -798,7 +798,15 @@ func mapHostError(err error) error {
 	case errors.Is(err, ErrQuotaExceeded):
 		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
 	case errors.Is(err, ErrRateLimited):
-		return &wasm.Fault{Code: "rate_limited", Message: err.Error()}
+		f := &wasm.Fault{Code: "rate_limited", Message: err.Error()}
+		var rl *RateLimitError
+		if errors.As(err, &rl) {
+			f.RetryAfterSec = rl.RetryAfterSeconds(time.Now())
+			if !rl.RetryAt.IsZero() {
+				f.RetryAt = rl.RetryAt.UTC().Format(time.RFC3339)
+			}
+		}
+		return f
 	case errors.Is(err, context.DeadlineExceeded):
 		return &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
 	default:

@@ -140,7 +140,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if a.MaxPages < 1 || a.MaxPages > 20 {
 		v.add("availability.maxPages", "must be between 1 and 20")
 	}
-	for key, n := range map[string]int{"feedRequests": a.FeedRequests, "checkRequests": a.CheckRequests, "grabs": a.Grabs, "checks": a.Checks} {
+	for key, n := range map[string]int{"feedRequests": a.FeedRequests, "checkRequests": a.CheckRequests, "grabs": a.Grabs, "checks": a.Checks, "pluginUsenetChecks": a.PluginUsenetChecks} {
 		if n < 0 || n > 100000 {
 			v.add("availability."+key, "must be between 0 and 100000 (0 disables this work)")
 		}

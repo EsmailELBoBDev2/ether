@@ -419,7 +419,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Source discovery
 
-Requires kind_resolver and sources: search or acquire. Search permits indexer discovery and debrid checks; acquire permits opening content. On indexer_search, optional firstResults (with settleMs, default 250 ms), minResults, skipIndexers, onlyIndexers, and timeoutMs (capped at 30000 ms) bound fan-out latency while slow indexers keep filling Ether's search cache in the background, and the response envelope includes per-indexer status in indexers: [{indexerId, indexer, status, results?, ms, error?}] (omitted for other source query kinds). Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler. Torrent releases follow the owner's debrid setting (queueing uncached downloads and answering preparing / 503 Retry-After when Cached torrents only is off); set release.cachedOnly: true to opt out.
+Requires kind_resolver and sources: search, search+check, acquire, or acquire+check. Search permits indexer discovery, debrid checks, release inspection, and on-demand usenet_check; acquire permits opening content; +check additionally permits background usenet_check in jobs and schedules within the owner's per-plugin daily allowance (default 20/UTC day, configurable under Sources › Indexers › Daily budgets, answering rate_limited with retryAfterSec/retryAt once spent; on-demand viewer calls never count against it and verdicts are shared with Ether's availability/Play cache for 15 min good / 30 min bad). On indexer_search, optional firstResults (with settleMs, default 250 ms), minResults, skipIndexers, onlyIndexers, and timeoutMs (capped at 30000 ms) bound fan-out latency while slow indexers keep filling Ether's search cache in the background, and the response envelope includes per-indexer status in indexers: [{indexerId, indexer, status, results?, ms, error?}] (omitted for other source query kinds). Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler. Torrent releases follow the owner's debrid setting (queueing uncached downloads and answering preparing / 503 Retry-After when Cached torrents only is off); set release.cachedOnly: true to opt out.
 
 ```ts
 const { candidates, indexers } = ether.sources.resolve({
@@ -1224,29 +1224,43 @@ to `source.size`, and setting `release.fileHint` to an exact member path from
 honoured on Usenet as on debrid.
 
 `ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
-NZB's article availability on demand before your resolver offers it, using the
-same `sources: "search"` permission as `debrid_check` and `release_files`. It
-returns a single candidate with `usenetCheck: {available, checked, missing,
-cached?, playbackFailed?, reason?, checkedAt?}`:
+NZB's article availability before your resolver offers it, returning a single
+candidate with `usenetCheck: {available, checked, missing, cached?,
+playbackFailed?, reason?, checkedAt?}`:
 
 - **Bounded & playback-safe:** runs Ether's sampled, bounded STAT/BODY check
   (capped at 32 articles per NZB, regardless of file or segment count) at
   background (`prefetch`) NNTP priority through the owner's shared provider
-  connection limits and live-reserve rules, so resolver checks never starve
-  active playback.
-- **Shared verdict & playback-failure cache:** verdicts are cached per NZB
-  (indexed by release NZB URL and raw NZB SHA-256 hash) for a bounded TTL
-  (15 min for available verdicts, 30 min for missing/failed verdicts). Real
+  connection limits and live-reserve rules, so checks never starve active
+  playback.
+- **Shared verdict & playback-failure cache:** background checks, on-demand
+  checks, Ether's own availability checks, and Play share the same bounded
+  per-NZB verdict cache (indexed by keyless NZB URL, raw NZB SHA-256 hash,
+  and cross-indexer NZB message-ID hash) for 15 min on available verdicts and
+  30 min on missing/failed verdicts. A check made ahead of time is reused at
+  Play, and a release Ether's own availability or playback already found bad
+  is answered from cache without hitting the indexer or NNTP again. Real
   playback-time article or release failures (`ErrArticleMissing`,
   `ErrArticleCorrupt`, `ErrReleaseRejected`, etc., at open time or mid-stream)
-  are recorded against the same cache entry with `playbackFailed: true` and
-  `available: false`, so subsequent `usenet_check` calls agree with real
-  playback without hitting the indexer or NNTP again. Transient provider or
-  indexer errors are not cached as unavailable.
-- **On-demand & rate-limited:** limited per plugin (`20` checks per minute;
-  excess calls fail with `rate_limited` / HTTP 429) and refused during
-  background/scheduled plugin tasks (`schedule`, catalog sync, container
-  expand) so it never runs as an eager background library sweep.
+  record `playbackFailed: true` and `available: false` and are never
+  overwritten by a sampled check while live. Transient provider or indexer
+  errors are not cached as unavailable.
+- **On-demand viewer calls (`permissions.sources: "search"` or `"acquire"`):**
+  never count against the daily background allowance; bounded only by the
+  per-plugin burst limit (`20` checks per minute; excess calls fail with
+  `rate_limited` / HTTP 429 carrying `retryAfterSec` / `retryAt` /
+  `Retry-After`).
+- **Background jobs and schedules (`permissions.sources: "search+check"` or
+  `"acquire+check"`):** jobs, scheduled routes, sync, and expand tasks may call
+  `usenet_check` when the plugin declares `"search+check"` or `"acquire+check"`
+  (independently revocable under the `sources.check` live grant). Each uncached
+  background check counts against the plugin's per-day allowance (default `20`
+  candidate checks per UTC day per plugin, configurable under
+  **Sources › Indexers › Daily budgets**; `0` disables background checks) using
+  Ether's `availability` admission machinery and foreground indexer reserve.
+  Cached verdict hits do not consume the daily allowance. Once spent, further
+  uncached background checks answer `rate_limited` (HTTP 429) with
+  `retryAfterSec`, `retryAt` (next UTC midnight), and `Retry-After`.
 
 ### Multi-file items (`hints.parts` and resolve-time `parts`)
 
@@ -4604,7 +4618,7 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 			payload["continuation"] = token
 		}
 		encoded, _ := json.Marshal(payload)
-		return r.m.Call(ctx, r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
+		return r.m.Call(WithBackgroundCall(ctx), r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
 	}, onStep)
 }
 ``````
@@ -4848,7 +4862,11 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				payload["continuation"] = token
 			}
 			encoded, _ := json.Marshal(payload)
-			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
+			callCtx := ctx
+			if !isResolver {
+				callCtx = WithBackgroundCall(ctx)
+			}
+			return m.Call(callCtx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
 		})
 		if err != nil {
 			state := "error"
@@ -7997,6 +8015,79 @@ var (
 )
 ``````
 
+## Source: internal/plugins/contract.go#RateLimitError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/contract.go#RateLimitError
+
+``````
+// RateLimitError reports a rate-limited host call together with when the
+// plugin may retry (for example, UTC midnight for a daily allowance). It wraps
+// ErrRateLimited so callers checking errors.Is(err, ErrRateLimited) match.
+type RateLimitError struct {
+	Message    string
+	RetryAt    time.Time
+	RetryAfter time.Duration
+}
+``````
+
+## Source: internal/plugins/contract.go#*RateLimitError.Error
+
+``````
+func (e *RateLimitError) Error() string {
+	if e == nil {
+		return ErrRateLimited.Error()
+	}
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		msg = ErrRateLimited.Error()
+	}
+	if !e.RetryAt.IsZero() {
+		return fmt.Sprintf("%s (retry after %s)", msg, e.RetryAt.UTC().Format(time.RFC3339))
+	}
+	if sec := e.RetryAfterSeconds(time.Now()); sec > 0 {
+		return fmt.Sprintf("%s (retry in %ds)", msg, sec)
+	}
+	return msg
+}
+``````
+
+## Source: internal/plugins/contract.go#*RateLimitError.Unwrap
+
+``````
+func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
+``````
+
+## Source: internal/plugins/contract.go#*RateLimitError.RetryAfterSeconds
+
+``````
+// RetryAfterSeconds returns the positive whole-second delay until the limit
+// resets (at least 1 second when a retry window is set).
+func (e *RateLimitError) RetryAfterSeconds(now time.Time) int64 {
+	if e == nil {
+		return 0
+	}
+	d := e.RetryAfter
+	if d <= 0 && !e.RetryAt.IsZero() {
+		d = e.RetryAt.Sub(now)
+	}
+	if d <= 0 {
+		if !e.RetryAt.IsZero() {
+			return 1
+		}
+		return 0
+	}
+	sec := int64((d + time.Second - 1) / time.Second)
+	if sec < 1 {
+		return 1
+	}
+	return sec
+}
+``````
+
 ## Source: internal/plugins/contract.go#FieldError.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -8474,11 +8565,13 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Reads folders you choose")
 		needsFolders = true
 	}
-	switch normLevel(p.Sources) {
-	case "search":
-		lines = append(lines, "Searches your indexers for sources")
-	case "acquire":
+	if SourcesPermissionAllowsAcquire(p.Sources) {
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
+	} else if SourcesPermissionAllowsSearch(p.Sources) {
+		lines = append(lines, "Searches your indexers for sources")
+	}
+	if SourcesPermissionAllowsBackgroundCheck(p.Sources) {
+		lines = append(lines, "Checks Usenet releases in the background within a daily allowance")
 	}
 	switch normLevel(p.AI) {
 	case "complete":
@@ -8602,13 +8695,25 @@ func PermissionDiff(cur, next Manifest) []string {
 			added = append(added, "Uses your language model while a viewer searches")
 		}
 	}
-	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
-	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {
-		if normLevel(b.Sources) == "acquire" {
+	sourcesBase := func(l string) int {
+		switch {
+		case SourcesPermissionAllowsAcquire(l):
+			return 2
+		case SourcesPermissionAllowsSearch(l):
+			return 1
+		default:
+			return 0
+		}
+	}
+	if sourcesBase(b.Sources) > sourcesBase(a.Sources) {
+		if SourcesPermissionAllowsAcquire(b.Sources) {
 			added = append(added, "Searches your indexers and opens sources through your debrid accounts")
 		} else {
 			added = append(added, "Searches your indexers for sources")
 		}
+	}
+	if !SourcesPermissionAllowsBackgroundCheck(a.Sources) && SourcesPermissionAllowsBackgroundCheck(b.Sources) {
+		added = append(added, "Checks Usenet releases in the background within a daily allowance")
 	}
 	haveKindLib := map[string]bool{}
 	for _, k := range cur.Ether.Contributes.MediaKinds {
@@ -10694,6 +10799,15 @@ func (h *host) FoldersStat(ctx context.Context, root, path string) (FolderEntry,
 
 ``````
 func (m *Manager) rateOK(bucket map[string][]time.Time, key string, limit int, window time.Duration) bool {
+	ok, _ := m.rateOKRetryAt(bucket, key, limit, window)
+	return ok
+}
+``````
+
+## Source: internal/plugins/host.go#*Manager.rateOKRetryAt
+
+``````
+func (m *Manager) rateOKRetryAt(bucket map[string][]time.Time, key string, limit int, window time.Duration) (bool, time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -10705,10 +10819,35 @@ func (m *Manager) rateOK(bucket map[string][]time.Time, key string, limit int, w
 	}
 	if len(kept) >= limit {
 		bucket[key] = kept
-		return false
+		retryAt := now.Add(window)
+		if len(kept) > 0 {
+			retryAt = kept[0].Add(window)
+		}
+		return false, retryAt.UTC()
 	}
 	bucket[key] = append(kept, now)
-	return true
+	return true, time.Time{}
+}
+``````
+
+## Source: internal/plugins/host.go#*Manager.rateLimitError
+
+``````
+func (m *Manager) rateLimitError(message string, retryAt time.Time) error {
+	now := m.now()
+	var after time.Duration
+	if !retryAt.IsZero() {
+		retryAt = retryAt.UTC()
+		after = retryAt.Sub(now)
+		if after < time.Second {
+			after = time.Second
+		}
+	}
+	return &RateLimitError{
+		Message:    message,
+		RetryAt:    retryAt,
+		RetryAfter: after,
+	}
 }
 ``````
 
@@ -16452,10 +16591,16 @@ type KindBackends struct {
 	// ResolveSourcesResult, when set, is preferred over ResolveSources and
 	// carries per-indexer search status alongside candidates (#733).
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
-	CachePut             func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
-	CacheOpen            func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
-	CacheDelete          func(ctx context.Context, pluginID, blobRef string) error
-	CachePartial         func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
+	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
+	// before admitting a background check against the plugin's daily allowance.
+	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)
+	// AdmitBackgroundUsenetCheck reserves one background usenet_check candidate
+	// check against the plugin's daily allowance in availability_budget.
+	AdmitBackgroundUsenetCheck func(ctx context.Context, pluginID string) (outCtx context.Context, refund func(), resetAt time.Time, err error)
+	CachePut                   func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen                  func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete                func(ctx context.Context, pluginID, blobRef string) error
+	CachePartial               func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
@@ -16484,6 +16629,8 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindBrowse = b.KindBrowse
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
+	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
+	m.deps.Backends.AdmitBackgroundUsenetCheck = b.AdmitBackgroundUsenetCheck
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
 	m.deps.Backends.CacheDelete = b.CacheDelete
@@ -16503,24 +16650,26 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:           m.deps.Backends.KindUpsert,
-		KindUpsertStats:      m.deps.Backends.KindUpsertStats,
-		KindDelete:           m.deps.Backends.KindDelete,
-		KindItems:            m.deps.Backends.KindItems,
-		KindItemsByID:        m.deps.Backends.KindItemsByID,
-		KindItemCount:        m.deps.Backends.KindItemCount,
-		KindVisible:          m.deps.Backends.KindVisible,
-		KindBrowse:           m.deps.Backends.KindBrowse,
-		ResolveSources:       m.deps.Backends.ResolveSources,
-		ResolveSourcesResult: m.deps.Backends.ResolveSourcesResult,
-		CachePut:             m.deps.Backends.CachePut,
-		CacheOpen:            m.deps.Backends.CacheOpen,
-		CacheDelete:          m.deps.Backends.CacheDelete,
-		CachePartial:         m.deps.Backends.CachePartial,
-		StreamURL:            m.deps.Backends.StreamURL,
-		StreamPartURL:        m.deps.Backends.StreamPartURL,
-		StreamURLOptions:     m.deps.Backends.StreamURLOptions,
-		MediaProbe:           m.deps.Backends.MediaProbe,
+		KindUpsert:                 m.deps.Backends.KindUpsert,
+		KindUpsertStats:            m.deps.Backends.KindUpsertStats,
+		KindDelete:                 m.deps.Backends.KindDelete,
+		KindItems:                  m.deps.Backends.KindItems,
+		KindItemsByID:              m.deps.Backends.KindItemsByID,
+		KindItemCount:              m.deps.Backends.KindItemCount,
+		KindVisible:                m.deps.Backends.KindVisible,
+		KindBrowse:                 m.deps.Backends.KindBrowse,
+		ResolveSources:             m.deps.Backends.ResolveSources,
+		ResolveSourcesResult:       m.deps.Backends.ResolveSourcesResult,
+		PeekUsenetCheck:            m.deps.Backends.PeekUsenetCheck,
+		AdmitBackgroundUsenetCheck: m.deps.Backends.AdmitBackgroundUsenetCheck,
+		CachePut:                   m.deps.Backends.CachePut,
+		CacheOpen:                  m.deps.Backends.CacheOpen,
+		CacheDelete:                m.deps.Backends.CacheDelete,
+		CachePartial:               m.deps.Backends.CachePartial,
+		StreamURL:                  m.deps.Backends.StreamURL,
+		StreamPartURL:              m.deps.Backends.StreamPartURL,
+		StreamURLOptions:           m.deps.Backends.StreamURLOptions,
+		MediaProbe:                 m.deps.Backends.MediaProbe,
 	}
 }
 ``````
@@ -16951,12 +17100,60 @@ const DefaultUsenetCheckPerMin = 20
 type backgroundCallKey struct{}
 ``````
 
+## Source: internal/plugins/host_kinds.go#SourcesPermissionAllowsSearch
+
+``````
+// SourcesPermissionAllowsSearch reports whether the declared permissions.sources
+// level permits indexer search, release inspection, debrid cache checks, and
+// on-demand Usenet checks.
+func SourcesPermissionAllowsSearch(level string) bool {
+	switch normLevel(level) {
+	case "search", "search+check", "acquire", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#SourcesPermissionAllowsAcquire
+
+``````
+// SourcesPermissionAllowsAcquire reports whether the declared permissions.sources
+// level permits debrid_acquire.
+func SourcesPermissionAllowsAcquire(level string) bool {
+	switch normLevel(level) {
+	case "acquire", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#SourcesPermissionAllowsBackgroundCheck
+
+``````
+// SourcesPermissionAllowsBackgroundCheck reports whether the declared
+// permissions.sources level permits background usenet_check calls within the
+// per-plugin daily allowance.
+func SourcesPermissionAllowsBackgroundCheck(level string) bool {
+	switch normLevel(level) {
+	case "search+check", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#WithBackgroundCall
 
 ``````
 // WithBackgroundCall marks a plugin invocation context as background work
-// (such as a scheduled job or catalog sync/expand). On-demand-only host
-// queries such as usenet_check refuse background contexts.
+// (such as a scheduled job or catalog sync/expand). Background usenet_check
+// calls require permissions.sources "search+check" or "acquire+check" and
+// count against the per-plugin daily allowance.
 func WithBackgroundCall(ctx context.Context) context.Context {
 	return context.WithValue(wasm.WithBackgroundCall(ctx), backgroundCallKey{}, true)
 }
@@ -16966,8 +17163,10 @@ func WithBackgroundCall(ctx context.Context) context.Context {
 
 ``````
 func isBackgroundCall(ctx context.Context) bool {
-	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
-	return bg
+	if bg, _ := ctx.Value(backgroundCallKey{}).(bool); bg {
+		return true
+	}
+	return wasm.IsBackgroundCall(ctx)
 }
 ``````
 
@@ -17075,10 +17274,6 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "usenet_check":
-		if isBackgroundCall(ctx) {
-			h.noteDenied("usenet_check_background")
-			return core.SourceResolveResult{}, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
-		}
 		nzbURL := strings.TrimSpace(q.NZBURL)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
@@ -17105,31 +17300,90 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
-		return l == "acquire" || (l == "search" && need == "search")
+		return SourcesPermissionAllowsAcquire(l) || (need == "search" && SourcesPermissionAllowsSearch(l))
 	}); err != nil {
 		return core.SourceResolveResult{}, err
+	}
+	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	if bgUsenetCheck {
+		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
+			return core.SourceResolveResult{}, err
+		}
 	}
 	backends := h.m.kindBackends()
 	if backends.ResolveSourcesResult == nil && backends.ResolveSources == nil {
 		return core.SourceResolveResult{}, ErrUnavailable
 	}
+	callCtx := ctx
+	var refundCheck func()
+	var resetAt time.Time
 	if q.Kind == "usenet_check" {
-		limit := h.m.usenetCheckLimit
-		if limit <= 0 {
-			limit = DefaultUsenetCheckPerMin
-		}
-		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
-			return core.SourceResolveResult{}, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+		if bgUsenetCheck {
+			// Reuse a live verdict from the shared cache before spending the
+			// plugin's daily background allowance.
+			if backends.PeekUsenetCheck != nil {
+				if cand, ok := backends.PeekUsenetCheck(q); ok {
+					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
+				}
+			}
+			if backends.AdmitBackgroundUsenetCheck == nil {
+				return core.SourceResolveResult{}, ErrUnavailable
+			}
+			var admitErr error
+			callCtx, refundCheck, resetAt, admitErr = backends.AdmitBackgroundUsenetCheck(ctx, h.plugin)
+			if admitErr != nil {
+				if errors.Is(admitErr, core.ErrBudgetExhausted) {
+					return core.SourceResolveResult{}, h.m.rateLimitError(
+						"background usenet_check daily allowance exhausted",
+						resetAt,
+					)
+				}
+				return core.SourceResolveResult{}, admitErr
+			}
+		} else {
+			// On-demand viewer calls never count against the daily background
+			// allowance; only the per-minute burst limit applies.
+			limit := h.m.usenetCheckLimit
+			if limit <= 0 {
+				limit = DefaultUsenetCheckPerMin
+			}
+			if ok, retryAt := h.m.rateOKRetryAt(h.m.usenetCheckTimes, h.plugin, limit, time.Minute); !ok {
+				return core.SourceResolveResult{}, h.m.rateLimitError(
+					fmt.Sprintf("usenet_check is limited to %d per minute", limit),
+					retryAt,
+				)
+			}
 		}
 	}
+	var (
+		res  core.SourceResolveResult
+		rerr error
+	)
 	if backends.ResolveSourcesResult != nil {
-		return backends.ResolveSourcesResult(ctx, h.plugin, q)
+		res, rerr = backends.ResolveSourcesResult(callCtx, h.plugin, q)
+	} else {
+		var cands []core.SourceCandidate
+		cands, rerr = backends.ResolveSources(callCtx, h.plugin, q)
+		res = core.SourceResolveResult{Candidates: cands}
 	}
-	cands, err := backends.ResolveSources(ctx, h.plugin, q)
-	if err != nil {
-		return core.SourceResolveResult{}, err
+	if rerr != nil {
+		if bgUsenetCheck {
+			if errors.Is(rerr, core.ErrNotAvailable) && refundCheck != nil {
+				refundCheck()
+			}
+			if errors.Is(rerr, core.ErrBudgetExhausted) {
+				if refundCheck != nil {
+					refundCheck()
+				}
+				return core.SourceResolveResult{}, h.m.rateLimitError(
+					"background usenet_check daily allowance exhausted",
+					resetAt,
+				)
+			}
+		}
+		return core.SourceResolveResult{}, rerr
 	}
-	return core.SourceResolveResult{Candidates: cands}, nil
+	return res, nil
 }
 ``````
 
@@ -18765,7 +19019,15 @@ func mapHostError(err error) error {
 	case errors.Is(err, ErrQuotaExceeded):
 		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
 	case errors.Is(err, ErrRateLimited):
-		return &wasm.Fault{Code: "rate_limited", Message: err.Error()}
+		f := &wasm.Fault{Code: "rate_limited", Message: err.Error()}
+		var rl *RateLimitError
+		if errors.As(err, &rl) {
+			f.RetryAfterSec = rl.RetryAfterSeconds(time.Now())
+			if !rl.RetryAt.IsZero() {
+				f.RetryAt = rl.RetryAt.UTC().Format(time.RFC3339)
+			}
+		}
+		return f
 	case errors.Is(err, context.DeadlineExceeded):
 		return &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
 	default:
@@ -23476,7 +23738,7 @@ func validatePermissions(p Permissions, add func(string, string)) {
 	level("ether.permissions.catalog", normLevel(p.Catalog), "none", "read")
 	level("ether.permissions.collections", normLevel(p.Collections), "none", "write")
 	level("ether.permissions.folders", normLevel(p.Folders), "none", "read")
-	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "acquire")
+	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "search+check", "acquire", "acquire+check")
 	level("ether.permissions.ai", normLevel(p.AI), "none", "complete", "complete+search")
 	level("ether.permissions.media", normLevel(p.Media), "none", "probe")
 	level("ether.permissions.viewers.identity", normLevel(p.Viewers.Identity), "none", "granted_viewers", "all")
@@ -26933,6 +27195,25 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, ErrInvalid):
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
 	case errors.Is(err, ErrRateLimited):
+		var rl *plugins.RateLimitError
+		if errors.As(err, &rl) {
+			sec := rl.RetryAfterSeconds(time.Now())
+			if sec > 0 {
+				w.Header().Set("Retry-After", strconv.FormatInt(sec, 10))
+			}
+			errObj := map[string]any{
+				"code":    "rate_limited",
+				"message": rl.Error(),
+			}
+			if sec > 0 {
+				errObj["retryAfterSec"] = sec
+			}
+			if !rl.RetryAt.IsZero() {
+				errObj["retryAt"] = rl.RetryAt.UTC().Format(time.RFC3339)
+			}
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": errObj})
+			return false
+		}
 		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
 	case errors.Is(err, ErrNotConfigured):
 		writeHostError(w, http.StatusNotImplemented, "not_configured", "Language model is not configured")
@@ -31146,7 +31427,7 @@ const faultPrefix = "__ETHER_FAULT__"
 
 ``````
 func encodeFault(f *Fault) string {
-	b, _ := json.Marshal(map[string]string{"code": f.Code, "message": f.Message})
+	b, _ := json.Marshal(f)
 	return faultPrefix + string(b)
 }
 ``````
@@ -31162,14 +31443,9 @@ func decodeFault(msg string) *Fault {
 	var f Fault
 	// The payload may be followed by a JS stack trace; decode one value.
 	dec := json.NewDecoder(strings.NewReader(msg[at+len(faultPrefix):]))
-	var raw struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	if dec.Decode(&raw) != nil || raw.Code == "" {
+	if dec.Decode(&f) != nil || f.Code == "" {
 		return nil
 	}
-	f.Code, f.Message = raw.Code, raw.Message
 	return &f
 }
 ``````
@@ -31396,7 +31672,12 @@ globalThis.ether = (() => {
       const message = String(e && e.message || e);
       const at = message.indexOf("__ETHER_FAULT__");
       if (at >= 0) {
-        try { const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)); e.code = fault.code || fault.Code; } catch (_) {}
+        try {
+          const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length));
+          e.code = fault.code || fault.Code;
+          if (typeof fault.retryAfterSec === "number") e.retryAfterSec = fault.retryAfterSec;
+          if (typeof fault.retryAt === "string") e.retryAt = fault.retryAt;
+        } catch (_) {}
       }
       throw e;
     }
@@ -32517,6 +32798,10 @@ const (
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `code` | `string` | emitted (validation may require a value) |  |
+| `message` | `string` | emitted (validation may require a value) |  |
+| `retryAfterSec` | `int64` | may be omitted (see validation for conditions) |  |
+| `retryAt` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/plugins/wasm/wasm.go#Fault
@@ -32526,8 +32811,10 @@ const (
 // the call end with that status; Code is one of the Status values other than
 // ok (usually forbidden), or an application code the plugin can catch.
 type Fault struct {
-	Code    string
-	Message string
+	Code          string `json:"code"`
+	Message       string `json:"message"`
+	RetryAfterSec int64  `json:"retryAfterSec,omitempty"`
+	RetryAt       string `json:"retryAt,omitempty"`
 }
 ``````
 
@@ -34897,7 +35184,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.permissions.media` | `any` | false | {"description":"Probe container metadata ({durationSec, container, width, height, sizeBytes}) for a PlayableSource via media.probe from jobs, actions, background sync, and other non-viewer routes (\"probe\"). Reuses Ether's durable release_probes cache, is rate-limited per plugin, and is bounded at 10 s per probe. Every viewer or client request path is refused.","enum":["none","probe"]} |
 | `ether.permissions.network` | `array` | false | {} |
 | `ether.permissions.secrets` | `array` | false | {} |
-| `ether.permissions.sources` | `any` | false | {"description":"Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.","enum":["none","search","acquire"]} |
+| `ether.permissions.sources` | `any` | false | {"description":"Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\", \"search+check\", \"acquire\", or \"acquire+check\"). The \"+check\" variants also permit background usenet_check calls in jobs and schedules within the owner's per-plugin daily allowance. Requires the kind_resolver capability.","enum":["none","search","search+check","acquire","acquire+check"]} |
 | `ether.permissions.viewers` | `object` | false | {} |
 | `ether.permissions.viewers.identity` | `any` | false | {"enum":["none","granted_viewers","all"]} |
 | `ether.permissions.viewers.watch_history` | `any` | false | {"enum":["none","granted_viewers","all"]} |
@@ -36737,11 +37024,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
               "type": "array"
             },
             "sources": {
-              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.",
+              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\", \"search+check\", \"acquire\", or \"acquire+check\"). The \"+check\" variants also permit background usenet_check calls in jobs and schedules within the owner's per-plugin daily allowance. Requires the kind_resolver capability.",
               "enum": [
                 "none",
                 "search",
-                "acquire"
+                "search+check",
+                "acquire",
+                "acquire+check"
               ]
             },
             "viewers": {
@@ -37873,9 +38162,11 @@ credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
 
 ## Indexer search controls, streaming, and listing (`sources.resolve`)
 
-With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`),
-`sources.resolve` (use `resolveSourcesWithResult` / `ResolveSourcesWithResult`
-/ `resolve_sources_with_result` to read the full response envelope) supports:
+With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`, plus
+`"+check"` — `"search+check"` / `"acquire+check"` — to allow background
+`usenet_check` in jobs and schedules), `sources.resolve` (use
+`resolveSourcesWithResult` / `ResolveSourcesWithResult` /
+`resolve_sources_with_result` to read the full response envelope) supports:
 
 - **Controlled fan-out (`kind: "indexer_search"`):** optional `firstResults`,
   `settleMs` (default 250 ms, `0` = immediate), `minResults`, `timeoutMs`
@@ -37895,6 +38186,17 @@ With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`),
   indexers in `indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`
   (`kind`: `newznab`, `torznab`, `builtin`, `stremio`, `zilean`, `addon`), with
   sanitized error codes and no API keys, URLs, or cookies.
+- **Usenet article availability (`kind: "usenet_check"`):** pass `candidate` or
+  `nzbUrl` for a bounded (32-article) background-priority NNTP check sharing
+  Ether's per-NZB verdict cache (good 15 min, bad 30 min; reused at Play and
+  populated by Ether's own availability/playback checks). On-demand viewer calls
+  require `"search"` or `"acquire"` and never consume the daily background
+  allowance (20/min burst limit). Background jobs, schedules, sync, and expand
+  calls require `"search+check"` or `"acquire+check"` (independently revocable
+  as `sources.check`) and count uncached checks against a per-plugin daily
+  allowance (default 20/UTC day, editable under Sources › Indexers › Daily
+  budgets); once spent, Ether returns `rate_limited` (HTTP 429) with
+  `retryAfterSec`, `retryAt`, and `Retry-After`.
 
 ## Poster badges
 
@@ -52494,11 +52796,14 @@ type AICompleteResponse struct {
 ``````
 // HostError is a structured error returned by Ether's plugin-host API,
 // preserving the EPP error code (for example "not_configured", "rate_limited",
-// "permission_denied", or "invalid_output") alongside the human message.
+// "permission_denied", or "invalid_output") alongside the human message and
+// optional retry window when rate limited.
 type HostError struct {
-	Status  int
-	Code    string
-	Message string
+	Status        int
+	Code          string
+	Message       string
+	RetryAfterSec int64
+	RetryAt       string
 }
 ``````
 
@@ -52787,24 +53092,38 @@ func (c *RemoteHostClient) callJSONWithHeaders(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errDoc struct {
 			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
+				Code          string `json:"code"`
+				Message       string `json:"message"`
+				RetryAfterSec int64  `json:"retryAfterSec"`
+				RetryAt       string `json:"retryAt"`
 			} `json:"error"`
+		}
+		retryAfterSec := int64(0)
+		if hdr := strings.TrimSpace(resp.Header.Get("Retry-After")); hdr != "" {
+			if n, perr := strconv.ParseInt(hdr, 10, 64); perr == nil && n > 0 {
+				retryAfterSec = n
+			}
 		}
 		if json.Unmarshal(raw, &errDoc) == nil && (errDoc.Error.Message != "" || errDoc.Error.Code != "") {
 			msg := errDoc.Error.Message
 			if msg == "" {
 				msg = fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode)
 			}
+			if errDoc.Error.RetryAfterSec > 0 {
+				retryAfterSec = errDoc.Error.RetryAfterSec
+			}
 			return false, &HostError{
-				Status:  resp.StatusCode,
-				Code:    errDoc.Error.Code,
-				Message: msg,
+				Status:        resp.StatusCode,
+				Code:          errDoc.Error.Code,
+				Message:       msg,
+				RetryAfterSec: retryAfterSec,
+				RetryAt:       errDoc.Error.RetryAt,
 			}
 		}
 		return false, &HostError{
-			Status:  resp.StatusCode,
-			Message: fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+			Status:        resp.StatusCode,
+			Message:       fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+			RetryAfterSec: retryAfterSec,
 		}
 	}
 	if out != nil && len(raw) > 0 {
@@ -60332,7 +60651,7 @@ type ScheduleEntry struct {
 | `collections` | `string` | may be omitted (see validation for conditions) |  |
 | `folders` | `string` | may be omitted (see validation for conditions) |  |
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
-| `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes: ""\|none\|search\|acquire. |
+| `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes: ""\|none\|search\|search+check\|acquire\|acquire+check. The "+check" variants also allow background usenet_check calls in jobs and schedules within the owner's per-plugin daily allowance. |
 | `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin call AIComplete on the owner's configured language model (""\|none\|complete\|complete+search; "complete" allows actions, jobs, sync, and other non-viewer routes, while "complete+search" also allows bounded 20 s cached calls on interactive search routes). |
 | `media` | `string` | may be omitted (see validation for conditions) | Media lets a plugin call MediaProbe (media.probe) from jobs, actions, and background sync (""\|none\|probe; refused on viewer/client paths). |
 
@@ -60348,7 +60667,10 @@ type Permissions struct {
 	Collections string             `json:"collections,omitempty"`
 	Folders     string             `json:"folders,omitempty"`
 	Secrets     []string           `json:"secrets,omitempty"`
-	// Sources lets a kind resolver ask Ether to find bytes: ""|none|search|acquire.
+	// Sources lets a kind resolver ask Ether to find bytes:
+	// ""|none|search|search+check|acquire|acquire+check. The "+check" variants
+	// also allow background usenet_check calls in jobs and schedules within the
+	// owner's per-plugin daily allowance.
 	Sources string `json:"sources,omitempty"`
 	// AI lets a plugin call AIComplete on the owner's configured language model
 	// (""|none|complete|complete+search; "complete" allows actions, jobs, sync,
@@ -64063,12 +64385,21 @@ class MediaProbeResult(TypedDict):
 
 
 class HostError(RuntimeError):
-    """Structured error returned by Ether's plugin-host API, carrying `.code` and `.status`."""
+    """Structured error returned by Ether's plugin-host API, carrying `.code`, `.status`, and optional retry metadata."""
 
-    def __init__(self, message: str, code: str = "", status: int = 0) -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str = "",
+        status: int = 0,
+        retry_after_sec: Optional[int] = None,
+        retry_at: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
+        self.retry_after_sec = retry_after_sec
+        self.retry_at = retry_at
 
 
 class _AIClient:
@@ -64318,17 +64649,29 @@ class RemoteHostClient:
                 return None
             raw = exc.read().decode("utf-8", errors="replace")
             code = ""
+            retry_after_sec: Optional[int] = None
+            retry_at: Optional[str] = None
+            hdr_ra = exc.headers.get("Retry-After") if exc.headers is not None else None
+            if hdr_ra and hdr_ra.strip().isdigit():
+                retry_after_sec = int(hdr_ra.strip())
             try:
                 parsed = json.loads(raw)
                 err_obj = parsed.get("error", {}) if isinstance(parsed, dict) else {}
                 msg = err_obj.get("message") if isinstance(err_obj, dict) else None
                 code = str(err_obj.get("code") or "") if isinstance(err_obj, dict) else ""
+                if isinstance(err_obj, dict):
+                    if isinstance(err_obj.get("retryAfterSec"), (int, float)) and err_obj["retryAfterSec"] > 0:
+                        retry_after_sec = int(err_obj["retryAfterSec"])
+                    if isinstance(err_obj.get("retryAt"), str) and err_obj["retryAt"]:
+                        retry_at = err_obj["retryAt"]
             except Exception:
                 msg = None
             raise HostError(
                 msg or f"Host call {method} {path} failed with HTTP {exc.code}",
                 code=code,
                 status=int(exc.code),
+                retry_after_sec=retry_after_sec,
+                retry_at=retry_at,
             ) from exc
 
     def settings_get(self) -> Dict[str, Any]:
@@ -67144,12 +67487,17 @@ class _KindsClient:
           keys (Ether re-attaches credentials at fetch time using ``indexerId``).
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
-        - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
-          for a Usenet ``candidate`` (or ``nzbUrl``). Returns one candidate
-          with ``usenetCheck`` (``{available, checked, missing, cached?,
-          playbackFailed?, reason?, checkedAt?}``), backed by Ether's bounded
-          per-NZB verdict and playback-failure cache at background NNTP
-          priority. Refused inside background/scheduled calls.
+        - ``usenet_check``: sampled NNTP article check for a Usenet
+          ``candidate`` (or ``nzbUrl``). Returns one candidate with
+          ``usenetCheck`` (``{available, checked, missing, cached?,
+          playbackFailed?, reason?, checkedAt?}``), sharing Ether's bounded
+          per-NZB verdict cache (good 15 min, bad 30 min) and playback-failure
+          memory at background NNTP priority. On-demand viewer calls require
+          ``permissions.sources: "search"`` (or ``"acquire"``) and never count
+          against the daily background allowance; background job/schedule calls
+          require ``"search+check"`` or ``"acquire+check"`` and count against
+          the per-plugin daily allowance (default 20/day), answering
+          ``rate_limited`` with ``retry_after_sec`` / ``retry_at`` once spent.
         """
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
@@ -68537,8 +68885,16 @@ export function createHostedClient(): EtherHost {
         const at = message.indexOf("__ETHER_FAULT__");
         if (at >= 0 && e && typeof e === "object") {
           try {
-            const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)) as { code?: string; Code?: string };
-            (e as { code?: string }).code = fault.code || fault.Code;
+            const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)) as {
+              code?: string;
+              Code?: string;
+              retryAfterSec?: number;
+              retryAt?: string;
+            };
+            const target = e as { code?: string; retryAfterSec?: number; retryAt?: string };
+            target.code = fault.code || fault.Code;
+            if (typeof fault.retryAfterSec === "number") target.retryAfterSec = fault.retryAfterSec;
+            if (typeof fault.retryAt === "string") target.retryAt = fault.retryAt;
           } catch {
             // ignore parse errors
           }
@@ -68957,11 +69313,20 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     const parsed = text ? (JSON.parse(text) as Record<string, unknown>) : null;
     if (!resp.ok) {
       const errObj =
-        parsed && typeof parsed.error === "object" ? (parsed.error as Record<string, string>) : null;
+        parsed && typeof parsed.error === "object" ? (parsed.error as Record<string, unknown>) : null;
       const err = new Error(
-        errObj?.message ?? `Host call ${method} ${path} failed with HTTP ${resp.status}`,
-      ) as Error & { code?: string; status?: number };
-      if (errObj?.code) err.code = errObj.code;
+        (typeof errObj?.message === "string" && errObj.message) ||
+          `Host call ${method} ${path} failed with HTTP ${resp.status}`,
+      ) as Error & { code?: string; status?: number; retryAfterSec?: number; retryAt?: string };
+      if (typeof errObj?.code === "string" && errObj.code) err.code = errObj.code;
+      if (typeof errObj?.retryAfterSec === "number") {
+        err.retryAfterSec = errObj.retryAfterSec;
+      } else {
+        const ra = resp.headers.get("Retry-After");
+        const parsedRa = ra ? Number(ra) : NaN;
+        if (Number.isFinite(parsedRa) && parsedRa > 0) err.retryAfterSec = Math.ceil(parsedRa);
+      }
+      if (typeof errObj?.retryAt === "string" && errObj.retryAt) err.retryAt = errObj.retryAt;
       err.status = resp.status;
       throw err;
     }
@@ -72628,8 +72993,8 @@ export interface Permissions {
   collections?: "none" | "write";
   folders?: "none" | "read";
   secrets?: string[];
-  /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open. */
-  sources?: "none" | "search" | "acquire";
+  /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open; add "+check" ("search+check" or "acquire+check") to also allow background usenet_check calls in jobs/schedules within the per-plugin daily allowance. */
+  sources?: "none" | "search" | "search+check" | "acquire" | "acquire+check";
   /** Lets a plugin call ether.ai.complete on the owner's configured language model ("complete" for actions/jobs/sync/non-viewer routes; "complete+search" also allows bounded 20 s cached calls on interactive search routes). */
   ai?: "none" | "complete" | "complete+search";
   /** Lets a plugin probe container metadata via ether.media.probe from jobs, actions, and background sync (refused on viewer/client request paths). */

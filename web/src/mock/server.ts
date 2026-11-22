@@ -194,6 +194,7 @@ function defaultConfig(): EtherConfig {
       checkRequests: 100,
       grabs: 20,
       checks: 20,
+      pluginUsenetChecks: 20,
       checkBytes: 536870912,
       reservePercent: 80,
     },

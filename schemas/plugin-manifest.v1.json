@@ -1802,11 +1802,13 @@
               "type": "array"
             },
             "sources": {
-              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.",
+              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\", \"search+check\", \"acquire\", or \"acquire+check\"). The \"+check\" variants also permit background usenet_check calls in jobs and schedules within the owner's per-plugin daily allowance. Requires the kind_resolver capability.",
               "enum": [
                 "none",
                 "search",
-                "acquire"
+                "search+check",
+                "acquire",
+                "acquire+check"
               ]
             },
             "viewers": {

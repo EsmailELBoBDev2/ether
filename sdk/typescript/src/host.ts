@@ -724,8 +724,16 @@ export function createHostedClient(): EtherHost {
         const at = message.indexOf("__ETHER_FAULT__");
         if (at >= 0 && e && typeof e === "object") {
           try {
-            const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)) as { code?: string; Code?: string };
-            (e as { code?: string }).code = fault.code || fault.Code;
+            const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)) as {
+              code?: string;
+              Code?: string;
+              retryAfterSec?: number;
+              retryAt?: string;
+            };
+            const target = e as { code?: string; retryAfterSec?: number; retryAt?: string };
+            target.code = fault.code || fault.Code;
+            if (typeof fault.retryAfterSec === "number") target.retryAfterSec = fault.retryAfterSec;
+            if (typeof fault.retryAt === "string") target.retryAt = fault.retryAt;
           } catch {
             // ignore parse errors
           }
@@ -1144,11 +1152,20 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     const parsed = text ? (JSON.parse(text) as Record<string, unknown>) : null;
     if (!resp.ok) {
       const errObj =
-        parsed && typeof parsed.error === "object" ? (parsed.error as Record<string, string>) : null;
+        parsed && typeof parsed.error === "object" ? (parsed.error as Record<string, unknown>) : null;
       const err = new Error(
-        errObj?.message ?? `Host call ${method} ${path} failed with HTTP ${resp.status}`,
-      ) as Error & { code?: string; status?: number };
-      if (errObj?.code) err.code = errObj.code;
+        (typeof errObj?.message === "string" && errObj.message) ||
+          `Host call ${method} ${path} failed with HTTP ${resp.status}`,
+      ) as Error & { code?: string; status?: number; retryAfterSec?: number; retryAt?: string };
+      if (typeof errObj?.code === "string" && errObj.code) err.code = errObj.code;
+      if (typeof errObj?.retryAfterSec === "number") {
+        err.retryAfterSec = errObj.retryAfterSec;
+      } else {
+        const ra = resp.headers.get("Retry-After");
+        const parsedRa = ra ? Number(ra) : NaN;
+        if (Number.isFinite(parsedRa) && parsedRa > 0) err.retryAfterSec = Math.ceil(parsedRa);
+      }
+      if (typeof errObj?.retryAt === "string" && errObj.retryAt) err.retryAt = errObj.retryAt;
       err.status = resp.status;
       throw err;
     }

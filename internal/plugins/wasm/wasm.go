@@ -31,8 +31,10 @@ const (
 // the call end with that status; Code is one of the Status values other than
 // ok (usually forbidden), or an application code the plugin can catch.
 type Fault struct {
-	Code    string
-	Message string
+	Code          string `json:"code"`
+	Message       string `json:"message"`
+	RetryAfterSec int64  `json:"retryAfterSec,omitempty"`
+	RetryAt       string `json:"retryAt,omitempty"`
 }
 
 func (f *Fault) Error() string { return f.Code + ": " + f.Message }

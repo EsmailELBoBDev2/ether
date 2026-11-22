@@ -509,25 +509,31 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
 	cachePartial := blobs.HostPartialBackend(kindCatalog.QuotaFor)
 	adapterTickets := frontendadapter.NewTicketIssuer()
+	var admitUsenetCheck func(ctx context.Context, pluginID string) (context.Context, func(), time.Time, error)
+	if a.availability != nil {
+		admitUsenetCheck = a.availability.AdmitPluginUsenetCheck
+	}
 	mgr.SetKindBackends(plugins.KindBackends{
-		KindUpsert:           itemsSvc.KindUpsert,
-		KindUpsertStats:      itemsSvc.KindUpsertWithStats,
-		KindDelete:           itemsSvc.KindDelete,
-		KindItems:            itemsSvc.KindItems,
-		KindItemsByID:        itemsSvc.KindItemsByID,
-		KindItemCount:        itemsSvc.PluginItemCount,
-		KindVisible:          a.adapterKindVisible(),
-		KindBrowse:           a.adapterKindBrowse(),
-		ResolveSources:       kindResolver.ResolveSources,
-		ResolveSourcesResult: kindResolver.ResolveSourcesWithResult,
-		CachePut:             cachePut,
-		CacheOpen:            cacheOpen,
-		CacheDelete:          cacheDelete,
-		CachePartial:         cachePartial,
-		StreamURL:            a.adapterStreamURL(adapterTickets),
-		StreamPartURL:        a.adapterStreamPartURL(adapterTickets),
-		StreamURLOptions:     a.adapterStreamURLOptions(adapterTickets),
-		MediaProbe:           kindResolver.ProbeMedia,
+		KindUpsert:                 itemsSvc.KindUpsert,
+		KindUpsertStats:            itemsSvc.KindUpsertWithStats,
+		KindDelete:                 itemsSvc.KindDelete,
+		KindItems:                  itemsSvc.KindItems,
+		KindItemsByID:              itemsSvc.KindItemsByID,
+		KindItemCount:              itemsSvc.PluginItemCount,
+		KindVisible:                a.adapterKindVisible(),
+		KindBrowse:                 a.adapterKindBrowse(),
+		ResolveSources:             kindResolver.ResolveSources,
+		ResolveSourcesResult:       kindResolver.ResolveSourcesWithResult,
+		PeekUsenetCheck:            kindResolver.PeekUsenetCheck,
+		AdmitBackgroundUsenetCheck: admitUsenetCheck,
+		CachePut:                   cachePut,
+		CacheOpen:                  cacheOpen,
+		CacheDelete:                cacheDelete,
+		CachePartial:               cachePartial,
+		StreamURL:                  a.adapterStreamURL(adapterTickets),
+		StreamPartURL:              a.adapterStreamPartURL(adapterTickets),
+		StreamURLOptions:           a.adapterStreamURLOptions(adapterTickets),
+		MediaProbe:                 kindResolver.ProbeMedia,
 	})
 
 	if err := mgr.Start(ctx); err != nil {

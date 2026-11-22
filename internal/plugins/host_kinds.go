@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -51,10 +52,16 @@ type KindBackends struct {
 	// ResolveSourcesResult, when set, is preferred over ResolveSources and
 	// carries per-indexer search status alongside candidates (#733).
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
-	CachePut             func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
-	CacheOpen            func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
-	CacheDelete          func(ctx context.Context, pluginID, blobRef string) error
-	CachePartial         func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
+	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
+	// before admitting a background check against the plugin's daily allowance.
+	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)
+	// AdmitBackgroundUsenetCheck reserves one background usenet_check candidate
+	// check against the plugin's daily allowance in availability_budget.
+	AdmitBackgroundUsenetCheck func(ctx context.Context, pluginID string) (outCtx context.Context, refund func(), resetAt time.Time, err error)
+	CachePut                   func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen                  func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete                func(ctx context.Context, pluginID, blobRef string) error
+	CachePartial               func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
@@ -79,6 +86,8 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindBrowse = b.KindBrowse
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
+	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
+	m.deps.Backends.AdmitBackgroundUsenetCheck = b.AdmitBackgroundUsenetCheck
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
 	m.deps.Backends.CacheDelete = b.CacheDelete
@@ -94,24 +103,26 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:           m.deps.Backends.KindUpsert,
-		KindUpsertStats:      m.deps.Backends.KindUpsertStats,
-		KindDelete:           m.deps.Backends.KindDelete,
-		KindItems:            m.deps.Backends.KindItems,
-		KindItemsByID:        m.deps.Backends.KindItemsByID,
-		KindItemCount:        m.deps.Backends.KindItemCount,
-		KindVisible:          m.deps.Backends.KindVisible,
-		KindBrowse:           m.deps.Backends.KindBrowse,
-		ResolveSources:       m.deps.Backends.ResolveSources,
-		ResolveSourcesResult: m.deps.Backends.ResolveSourcesResult,
-		CachePut:             m.deps.Backends.CachePut,
-		CacheOpen:            m.deps.Backends.CacheOpen,
-		CacheDelete:          m.deps.Backends.CacheDelete,
-		CachePartial:         m.deps.Backends.CachePartial,
-		StreamURL:            m.deps.Backends.StreamURL,
-		StreamPartURL:        m.deps.Backends.StreamPartURL,
-		StreamURLOptions:     m.deps.Backends.StreamURLOptions,
-		MediaProbe:           m.deps.Backends.MediaProbe,
+		KindUpsert:                 m.deps.Backends.KindUpsert,
+		KindUpsertStats:            m.deps.Backends.KindUpsertStats,
+		KindDelete:                 m.deps.Backends.KindDelete,
+		KindItems:                  m.deps.Backends.KindItems,
+		KindItemsByID:              m.deps.Backends.KindItemsByID,
+		KindItemCount:              m.deps.Backends.KindItemCount,
+		KindVisible:                m.deps.Backends.KindVisible,
+		KindBrowse:                 m.deps.Backends.KindBrowse,
+		ResolveSources:             m.deps.Backends.ResolveSources,
+		ResolveSourcesResult:       m.deps.Backends.ResolveSourcesResult,
+		PeekUsenetCheck:            m.deps.Backends.PeekUsenetCheck,
+		AdmitBackgroundUsenetCheck: m.deps.Backends.AdmitBackgroundUsenetCheck,
+		CachePut:                   m.deps.Backends.CachePut,
+		CacheOpen:                  m.deps.Backends.CacheOpen,
+		CacheDelete:                m.deps.Backends.CacheDelete,
+		CachePartial:               m.deps.Backends.CachePartial,
+		StreamURL:                  m.deps.Backends.StreamURL,
+		StreamPartURL:              m.deps.Backends.StreamPartURL,
+		StreamURLOptions:           m.deps.Backends.StreamURLOptions,
+		MediaProbe:                 m.deps.Backends.MediaProbe,
 	}
 }
 
@@ -465,16 +476,54 @@ const DefaultUsenetCheckPerMin = 20
 
 type backgroundCallKey struct{}
 
+// SourcesPermissionAllowsSearch reports whether the declared permissions.sources
+// level permits indexer search, release inspection, debrid cache checks, and
+// on-demand Usenet checks.
+func SourcesPermissionAllowsSearch(level string) bool {
+	switch normLevel(level) {
+	case "search", "search+check", "acquire", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+
+// SourcesPermissionAllowsAcquire reports whether the declared permissions.sources
+// level permits debrid_acquire.
+func SourcesPermissionAllowsAcquire(level string) bool {
+	switch normLevel(level) {
+	case "acquire", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+
+// SourcesPermissionAllowsBackgroundCheck reports whether the declared
+// permissions.sources level permits background usenet_check calls within the
+// per-plugin daily allowance.
+func SourcesPermissionAllowsBackgroundCheck(level string) bool {
+	switch normLevel(level) {
+	case "search+check", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+
 // WithBackgroundCall marks a plugin invocation context as background work
-// (such as a scheduled job or catalog sync/expand). On-demand-only host
-// queries such as usenet_check refuse background contexts.
+// (such as a scheduled job or catalog sync/expand). Background usenet_check
+// calls require permissions.sources "search+check" or "acquire+check" and
+// count against the per-plugin daily allowance.
 func WithBackgroundCall(ctx context.Context) context.Context {
 	return context.WithValue(wasm.WithBackgroundCall(ctx), backgroundCallKey{}, true)
 }
 
 func isBackgroundCall(ctx context.Context) bool {
-	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
-	return bg
+	if bg, _ := ctx.Value(backgroundCallKey{}).(bool); bg {
+		return true
+	}
+	return wasm.IsBackgroundCall(ctx)
 }
 
 func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
@@ -574,10 +623,6 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "usenet_check":
-		if isBackgroundCall(ctx) {
-			h.noteDenied("usenet_check_background")
-			return core.SourceResolveResult{}, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
-		}
 		nzbURL := strings.TrimSpace(q.NZBURL)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
@@ -604,31 +649,90 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
-		return l == "acquire" || (l == "search" && need == "search")
+		return SourcesPermissionAllowsAcquire(l) || (need == "search" && SourcesPermissionAllowsSearch(l))
 	}); err != nil {
 		return core.SourceResolveResult{}, err
+	}
+	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	if bgUsenetCheck {
+		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
+			return core.SourceResolveResult{}, err
+		}
 	}
 	backends := h.m.kindBackends()
 	if backends.ResolveSourcesResult == nil && backends.ResolveSources == nil {
 		return core.SourceResolveResult{}, ErrUnavailable
 	}
+	callCtx := ctx
+	var refundCheck func()
+	var resetAt time.Time
 	if q.Kind == "usenet_check" {
-		limit := h.m.usenetCheckLimit
-		if limit <= 0 {
-			limit = DefaultUsenetCheckPerMin
-		}
-		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
-			return core.SourceResolveResult{}, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+		if bgUsenetCheck {
+			// Reuse a live verdict from the shared cache before spending the
+			// plugin's daily background allowance.
+			if backends.PeekUsenetCheck != nil {
+				if cand, ok := backends.PeekUsenetCheck(q); ok {
+					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
+				}
+			}
+			if backends.AdmitBackgroundUsenetCheck == nil {
+				return core.SourceResolveResult{}, ErrUnavailable
+			}
+			var admitErr error
+			callCtx, refundCheck, resetAt, admitErr = backends.AdmitBackgroundUsenetCheck(ctx, h.plugin)
+			if admitErr != nil {
+				if errors.Is(admitErr, core.ErrBudgetExhausted) {
+					return core.SourceResolveResult{}, h.m.rateLimitError(
+						"background usenet_check daily allowance exhausted",
+						resetAt,
+					)
+				}
+				return core.SourceResolveResult{}, admitErr
+			}
+		} else {
+			// On-demand viewer calls never count against the daily background
+			// allowance; only the per-minute burst limit applies.
+			limit := h.m.usenetCheckLimit
+			if limit <= 0 {
+				limit = DefaultUsenetCheckPerMin
+			}
+			if ok, retryAt := h.m.rateOKRetryAt(h.m.usenetCheckTimes, h.plugin, limit, time.Minute); !ok {
+				return core.SourceResolveResult{}, h.m.rateLimitError(
+					fmt.Sprintf("usenet_check is limited to %d per minute", limit),
+					retryAt,
+				)
+			}
 		}
 	}
+	var (
+		res  core.SourceResolveResult
+		rerr error
+	)
 	if backends.ResolveSourcesResult != nil {
-		return backends.ResolveSourcesResult(ctx, h.plugin, q)
+		res, rerr = backends.ResolveSourcesResult(callCtx, h.plugin, q)
+	} else {
+		var cands []core.SourceCandidate
+		cands, rerr = backends.ResolveSources(callCtx, h.plugin, q)
+		res = core.SourceResolveResult{Candidates: cands}
 	}
-	cands, err := backends.ResolveSources(ctx, h.plugin, q)
-	if err != nil {
-		return core.SourceResolveResult{}, err
+	if rerr != nil {
+		if bgUsenetCheck {
+			if errors.Is(rerr, core.ErrNotAvailable) && refundCheck != nil {
+				refundCheck()
+			}
+			if errors.Is(rerr, core.ErrBudgetExhausted) {
+				if refundCheck != nil {
+					refundCheck()
+				}
+				return core.SourceResolveResult{}, h.m.rateLimitError(
+					"background usenet_check daily allowance exhausted",
+					resetAt,
+				)
+			}
+		}
+		return core.SourceResolveResult{}, rerr
 	}
-	return core.SourceResolveResult{Candidates: cands}, nil
+	return res, nil
 }
 
 func (h *host) CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (string, error) {

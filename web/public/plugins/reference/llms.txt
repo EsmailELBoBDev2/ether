@@ -279,9 +279,11 @@ credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
 
 ## Indexer search controls, streaming, and listing (`sources.resolve`)
 
-With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`),
-`sources.resolve` (use `resolveSourcesWithResult` / `ResolveSourcesWithResult`
-/ `resolve_sources_with_result` to read the full response envelope) supports:
+With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`, plus
+`"+check"` — `"search+check"` / `"acquire+check"` — to allow background
+`usenet_check` in jobs and schedules), `sources.resolve` (use
+`resolveSourcesWithResult` / `ResolveSourcesWithResult` /
+`resolve_sources_with_result` to read the full response envelope) supports:
 
 - **Controlled fan-out (`kind: "indexer_search"`):** optional `firstResults`,
   `settleMs` (default 250 ms, `0` = immediate), `minResults`, `timeoutMs`
@@ -301,6 +303,17 @@ With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`),
   indexers in `indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`
   (`kind`: `newznab`, `torznab`, `builtin`, `stremio`, `zilean`, `addon`), with
   sanitized error codes and no API keys, URLs, or cookies.
+- **Usenet article availability (`kind: "usenet_check"`):** pass `candidate` or
+  `nzbUrl` for a bounded (32-article) background-priority NNTP check sharing
+  Ether's per-NZB verdict cache (good 15 min, bad 30 min; reused at Play and
+  populated by Ether's own availability/playback checks). On-demand viewer calls
+  require `"search"` or `"acquire"` and never consume the daily background
+  allowance (20/min burst limit). Background jobs, schedules, sync, and expand
+  calls require `"search+check"` or `"acquire+check"` (independently revocable
+  as `sources.check`) and count uncached checks against a per-plugin daily
+  allowance (default 20/UTC day, editable under Sources › Indexers › Daily
+  budgets); once spent, Ether returns `rate_limited` (HTTP 429) with
+  `retryAfterSec`, `retryAt`, and `Retry-After`.
 
 ## Poster badges
 

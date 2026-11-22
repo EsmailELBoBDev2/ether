@@ -236,7 +236,7 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 			payload["continuation"] = token
 		}
 		encoded, _ := json.Marshal(payload)
-		return r.m.Call(ctx, r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
+		return r.m.Call(WithBackgroundCall(ctx), r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
 	}, onStep)
 }
 
@@ -464,7 +464,11 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				payload["continuation"] = token
 			}
 			encoded, _ := json.Marshal(payload)
-			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
+			callCtx := ctx
+			if !isResolver {
+				callCtx = WithBackgroundCall(ctx)
+			}
+			return m.Call(callCtx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
 		})
 		if err != nil {
 			state := "error"

@@ -310,7 +310,7 @@ func mapHostErr(err error) error {
 	case errors.Is(err, plugins.ErrQuotaExceeded):
 		return fmt.Errorf("%w: %w", ErrTooLarge, err)
 	case errors.Is(err, plugins.ErrRateLimited):
-		return fmt.Errorf("%w: %v", ErrRateLimited, err)
+		return fmt.Errorf("%w: %w", ErrRateLimited, err)
 	default:
 		var ve *plugins.ValidationError
 		var collectionInput *plugins.CollectionInputError

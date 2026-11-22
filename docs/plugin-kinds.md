@@ -474,29 +474,43 @@ to `source.size`, and setting `release.fileHint` to an exact member path from
 honoured on Usenet as on debrid.
 
 `ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
-NZB's article availability on demand before your resolver offers it, using the
-same `sources: "search"` permission as `debrid_check` and `release_files`. It
-returns a single candidate with `usenetCheck: {available, checked, missing,
-cached?, playbackFailed?, reason?, checkedAt?}`:
+NZB's article availability before your resolver offers it, returning a single
+candidate with `usenetCheck: {available, checked, missing, cached?,
+playbackFailed?, reason?, checkedAt?}`:
 
 - **Bounded & playback-safe:** runs Ether's sampled, bounded STAT/BODY check
   (capped at 32 articles per NZB, regardless of file or segment count) at
   background (`prefetch`) NNTP priority through the owner's shared provider
-  connection limits and live-reserve rules, so resolver checks never starve
-  active playback.
-- **Shared verdict & playback-failure cache:** verdicts are cached per NZB
-  (indexed by release NZB URL and raw NZB SHA-256 hash) for a bounded TTL
-  (15 min for available verdicts, 30 min for missing/failed verdicts). Real
+  connection limits and live-reserve rules, so checks never starve active
+  playback.
+- **Shared verdict & playback-failure cache:** background checks, on-demand
+  checks, Ether's own availability checks, and Play share the same bounded
+  per-NZB verdict cache (indexed by keyless NZB URL, raw NZB SHA-256 hash,
+  and cross-indexer NZB message-ID hash) for 15 min on available verdicts and
+  30 min on missing/failed verdicts. A check made ahead of time is reused at
+  Play, and a release Ether's own availability or playback already found bad
+  is answered from cache without hitting the indexer or NNTP again. Real
   playback-time article or release failures (`ErrArticleMissing`,
   `ErrArticleCorrupt`, `ErrReleaseRejected`, etc., at open time or mid-stream)
-  are recorded against the same cache entry with `playbackFailed: true` and
-  `available: false`, so subsequent `usenet_check` calls agree with real
-  playback without hitting the indexer or NNTP again. Transient provider or
-  indexer errors are not cached as unavailable.
-- **On-demand & rate-limited:** limited per plugin (`20` checks per minute;
-  excess calls fail with `rate_limited` / HTTP 429) and refused during
-  background/scheduled plugin tasks (`schedule`, catalog sync, container
-  expand) so it never runs as an eager background library sweep.
+  record `playbackFailed: true` and `available: false` and are never
+  overwritten by a sampled check while live. Transient provider or indexer
+  errors are not cached as unavailable.
+- **On-demand viewer calls (`permissions.sources: "search"` or `"acquire"`):**
+  never count against the daily background allowance; bounded only by the
+  per-plugin burst limit (`20` checks per minute; excess calls fail with
+  `rate_limited` / HTTP 429 carrying `retryAfterSec` / `retryAt` /
+  `Retry-After`).
+- **Background jobs and schedules (`permissions.sources: "search+check"` or
+  `"acquire+check"`):** jobs, scheduled routes, sync, and expand tasks may call
+  `usenet_check` when the plugin declares `"search+check"` or `"acquire+check"`
+  (independently revocable under the `sources.check` live grant). Each uncached
+  background check counts against the plugin's per-day allowance (default `20`
+  candidate checks per UTC day per plugin, configurable under
+  **Sources › Indexers › Daily budgets**; `0` disables background checks) using
+  Ether's `availability` admission machinery and foreground indexer reserve.
+  Cached verdict hits do not consume the daily allowance. Once spent, further
+  uncached background checks answer `rate_limited` (HTTP 429) with
+  `retryAfterSec`, `retryAt` (next UTC midnight), and `Retry-After`.
 
 ### Multi-file items (`hints.parts` and resolve-time `parts`)
 

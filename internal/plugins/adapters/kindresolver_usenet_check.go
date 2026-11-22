@@ -7,31 +7,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/stream"
 )
 
 const (
-	maxUsenetCheckCacheEntries = 1024
-	usenetCheckPositiveTTL     = 15 * time.Minute
-	usenetCheckNegativeTTL     = 30 * time.Minute
+	maxUsenetCheckCacheEntries = resolver.MaxUsenetVerdictEntries
+	usenetCheckPositiveTTL     = resolver.UsenetVerdictPositiveTTL
+	usenetCheckNegativeTTL     = resolver.UsenetVerdictNegativeTTL
 	usenetCheckTimeout         = 15 * time.Second
 )
 
 type usenetArticleChecker interface {
 	CheckArticles(ctx context.Context, releaseID string, nzbData []byte) (core.UsenetCheckResult, error)
-}
-
-type usenetCheckEntry struct {
-	result      core.UsenetCheckResult
-	releaseKeys []string
-	nzbHash     string
-	storedAt    time.Time
-	expiresAt   time.Time
 }
 
 func normalizeNZBKey(nzbURL string) string {
@@ -46,13 +39,49 @@ func hashNZBBytes(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func (r *KindResolver) verdicts() *resolver.UsenetVerdictCache {
+	if r == nil {
+		return nil
+	}
+	return r.usenetVerdicts
+}
+
+// PeekUsenetCheck returns a live shared verdict cached by keyless NZB URL
+// without fetching from an indexer or spending any background check allowance.
+func (r *KindResolver) PeekUsenetCheck(q core.SourceQuery) (core.SourceCandidate, bool) {
+	if r == nil {
+		return core.SourceCandidate{}, false
+	}
+	cand := core.SourceCandidate{
+		NZBURL: strings.TrimSpace(q.NZBURL),
+	}
+	if q.Candidate != nil {
+		cand = *q.Candidate
+		cand.NZBURL = strings.TrimSpace(cand.NZBURL)
+		if strings.TrimSpace(q.NZBURL) != "" {
+			cand.NZBURL = strings.TrimSpace(q.NZBURL)
+		}
+	}
+	cand = r.stripCandidateAuth(cand)
+	releaseKey := normalizeNZBKey(cand.NZBURL)
+	if releaseKey == "" {
+		return core.SourceCandidate{}, false
+	}
+	verdict, ok := r.lookupUsenetCheck(releaseKey, "", "")
+	if !ok {
+		return core.SourceCandidate{}, false
+	}
+	cand.UsenetCheck = &verdict
+	return cand, true
+}
+
 func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.SourceCandidate) (core.UsenetCheckResult, error) {
 	cand = r.stripCandidateAuth(cand)
 	releaseKey := normalizeNZBKey(cand.NZBURL)
 	if releaseKey == "" {
 		return core.UsenetCheckResult{}, fmt.Errorf("kindresolver: usenet_check requires an nzbUrl")
 	}
-	if cached, ok := r.lookupUsenetCheck(releaseKey, ""); ok {
+	if cached, ok := r.lookupUsenetCheck(releaseKey, "", ""); ok {
 		return cached, nil
 	}
 	if r.usenetServing != nil && !r.usenetServing() {
@@ -93,7 +122,8 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 		return core.UsenetCheckResult{}, err
 	}
 	nzbHash := hashNZBBytes(data)
-	if cached, ok := r.lookupUsenetCheck(releaseKey, nzbHash); ok {
+	contentID, _, _, _ := nzb.InspectContent(data)
+	if cached, ok := r.lookupUsenetCheck(releaseKey, nzbHash, contentID); ok {
 		return cached, nil
 	}
 
@@ -103,258 +133,23 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 	}
 	res.Cached = false
 	res.CheckedAt = r.now().Unix()
-	return r.storeUsenetCheck(releaseKey, nzbHash, res), nil
+	return r.storeUsenetCheck(releaseKey, nzbHash, contentID, res), nil
 }
 
-func (r *KindResolver) initUsenetCheckCacheLocked() {
-	if r.usenetByRelease == nil {
-		r.usenetByRelease = make(map[string]*usenetCheckEntry)
-	}
-	if r.usenetByHash == nil {
-		r.usenetByHash = make(map[string]*usenetCheckEntry)
-	}
-	if r.usenetEntries == nil {
-		r.usenetEntries = make(map[*usenetCheckEntry]struct{})
-	}
+func (r *KindResolver) lookupUsenetCheck(releaseKey, nzbHash, contentID string) (core.UsenetCheckResult, bool) {
+	return r.verdicts().Lookup(r.now(), releaseKey, nzbHash, contentID)
 }
 
-func (r *KindResolver) deleteUsenetEntryLocked(e *usenetCheckEntry) {
-	if e == nil {
-		return
-	}
-	for _, k := range e.releaseKeys {
-		if r.usenetByRelease[k] == e {
-			delete(r.usenetByRelease, k)
-		}
-	}
-	if e.nzbHash != "" && r.usenetByHash[e.nzbHash] == e {
-		delete(r.usenetByHash, e.nzbHash)
-	}
-	delete(r.usenetEntries, e)
+func (r *KindResolver) storeUsenetCheck(releaseKey, nzbHash, contentID string, res core.UsenetCheckResult) core.UsenetCheckResult {
+	return r.verdicts().Store(r.now(), releaseKey, nzbHash, contentID, res)
 }
 
-func (r *KindResolver) detachReleaseKeyLocked(e *usenetCheckEntry, releaseKey string) {
-	if e == nil {
-		return
-	}
-	e.releaseKeys = slices.DeleteFunc(e.releaseKeys, func(k string) bool { return k == releaseKey })
-	if len(e.releaseKeys) == 0 && (e.nzbHash == "" || r.usenetByHash[e.nzbHash] != e) {
-		delete(r.usenetEntries, e)
-	}
-}
-
-func (r *KindResolver) attachReleaseKeyLocked(e *usenetCheckEntry, releaseKey string) {
-	if e == nil || releaseKey == "" {
-		return
-	}
-	if old := r.usenetByRelease[releaseKey]; old != nil && old != e {
-		r.detachReleaseKeyLocked(old, releaseKey)
-	}
-	r.usenetByRelease[releaseKey] = e
-	if !slices.Contains(e.releaseKeys, releaseKey) {
-		e.releaseKeys = append(e.releaseKeys, releaseKey)
-	}
-}
-
-func (r *KindResolver) attachHashLocked(e *usenetCheckEntry, nzbHash string) {
-	if e == nil || nzbHash == "" {
-		return
-	}
-	if old := r.usenetByHash[nzbHash]; old != nil && old != e {
-		old.nzbHash = ""
-		if len(old.releaseKeys) == 0 {
-			delete(r.usenetEntries, old)
-		}
-	}
-	if e.nzbHash != "" && e.nzbHash != nzbHash && r.usenetByHash[e.nzbHash] == e {
-		delete(r.usenetByHash, e.nzbHash)
-	}
-	r.usenetByHash[nzbHash] = e
-	e.nzbHash = nzbHash
-}
-
-func (r *KindResolver) pruneUsenetCheckLocked(now time.Time) {
-	for e := range r.usenetEntries {
-		if now.After(e.expiresAt) {
-			r.deleteUsenetEntryLocked(e)
-		}
-	}
-	for len(r.usenetEntries) >= maxUsenetCheckCacheEntries {
-		var oldest *usenetCheckEntry
-		for e := range r.usenetEntries {
-			if oldest == nil || e.storedAt.Before(oldest.storedAt) {
-				oldest = e
-			}
-		}
-		if oldest == nil {
-			break
-		}
-		r.deleteUsenetEntryLocked(oldest)
-	}
-}
-
-func (r *KindResolver) lookupUsenetCheck(releaseKey, nzbHash string) (core.UsenetCheckResult, bool) {
-	r.usenetCheckMu.Lock()
-	defer r.usenetCheckMu.Unlock()
-	now := r.now()
-
-	if releaseKey != "" {
-		if e := r.usenetByRelease[releaseKey]; e != nil {
-			if now.After(e.expiresAt) {
-				r.deleteUsenetEntryLocked(e)
-			} else {
-				if nzbHash != "" && e.nzbHash == "" {
-					r.attachHashLocked(e, nzbHash)
-				}
-				res := e.result
-				res.Cached = true
-				return res, true
-			}
-		}
-	}
-	if nzbHash != "" {
-		if e := r.usenetByHash[nzbHash]; e != nil {
-			if now.After(e.expiresAt) {
-				r.deleteUsenetEntryLocked(e)
-			} else {
-				if releaseKey != "" {
-					r.attachReleaseKeyLocked(e, releaseKey)
-				}
-				res := e.result
-				res.Cached = true
-				return res, true
-			}
-		}
-	}
-	return core.UsenetCheckResult{}, false
-}
-
-func (r *KindResolver) storeUsenetCheck(releaseKey, nzbHash string, res core.UsenetCheckResult) core.UsenetCheckResult {
-	r.usenetCheckMu.Lock()
-	defer r.usenetCheckMu.Unlock()
-	r.initUsenetCheckCacheLocked()
-	now := r.now()
-
-	// Do not let a concurrent sampled check overwrite a recorded playback failure.
-	for _, existing := range []*usenetCheckEntry{r.usenetByRelease[releaseKey], r.usenetByHash[nzbHash]} {
-		if existing == nil {
-			continue
-		}
-		if now.After(existing.expiresAt) {
-			r.deleteUsenetEntryLocked(existing)
-			continue
-		}
-		if existing.result.PlaybackFailed && !res.PlaybackFailed {
-			r.attachReleaseKeyLocked(existing, releaseKey)
-			r.attachHashLocked(existing, nzbHash)
-			out := existing.result
-			out.Cached = true
-			return out
-		}
-	}
-
-	ttl := usenetCheckPositiveTTL
-	if !res.Available {
-		ttl = usenetCheckNegativeTTL
-	}
-	res.Cached = false
-	if res.CheckedAt == 0 {
-		res.CheckedAt = now.Unix()
-	}
-
-	r.pruneUsenetCheckLocked(now)
-	e := &usenetCheckEntry{
-		result:    res,
-		storedAt:  now,
-		expiresAt: now.Add(ttl),
-	}
-	r.usenetEntries[e] = struct{}{}
-	r.attachReleaseKeyLocked(e, releaseKey)
-	r.attachHashLocked(e, nzbHash)
-	return res
-}
-
-func (r *KindResolver) recordUsenetPlaybackFailure(releaseKey, nzbHash string, err error) {
+func (r *KindResolver) recordUsenetPlaybackFailure(releaseKey, nzbHash, contentID string, err error) {
 	reason, articleMissing, ok := classifyUsenetPlaybackFailure(err)
-	if !ok || (releaseKey == "" && nzbHash == "") {
+	if !ok || (releaseKey == "" && nzbHash == "" && contentID == "") {
 		return
 	}
-
-	r.usenetCheckMu.Lock()
-	defer r.usenetCheckMu.Unlock()
-	r.initUsenetCheckCacheLocked()
-	now := r.now()
-
-	var eRel, eHash *usenetCheckEntry
-	if releaseKey != "" {
-		if e := r.usenetByRelease[releaseKey]; e != nil {
-			if now.After(e.expiresAt) {
-				r.deleteUsenetEntryLocked(e)
-			} else {
-				eRel = e
-			}
-		}
-	}
-	if nzbHash != "" {
-		if e := r.usenetByHash[nzbHash]; e != nil {
-			if now.After(e.expiresAt) {
-				r.deleteUsenetEntryLocked(e)
-			} else {
-				eHash = e
-			}
-		}
-	}
-
-	e := eRel
-	if e == nil {
-		e = eHash
-	} else if eHash != nil && eHash != eRel {
-		// Merge any release keys from the hash-indexed entry so every alias
-		// sees the playback failure on the unified entry.
-		extraKeys := slices.Clone(eHash.releaseKeys)
-		r.deleteUsenetEntryLocked(eHash)
-		for _, k := range extraKeys {
-			r.attachReleaseKeyLocked(e, k)
-		}
-	}
-
-	var prevChecked, prevMissing int
-	if e != nil {
-		prevChecked = e.result.Checked
-		prevMissing = e.result.Missing
-	}
-	checked, missing := prevChecked, prevMissing
-	if articleMissing {
-		missing = max(prevMissing, 1)
-		checked = max(prevChecked, missing)
-	}
-	res := core.UsenetCheckResult{
-		Available:      false,
-		Checked:        checked,
-		Missing:        missing,
-		PlaybackFailed: true,
-		Reason:         reason,
-		CheckedAt:      now.Unix(),
-	}
-
-	if e != nil {
-		e.result = res
-		e.storedAt = now
-		e.expiresAt = now.Add(usenetCheckNegativeTTL)
-		r.attachReleaseKeyLocked(e, releaseKey)
-		r.attachHashLocked(e, nzbHash)
-		return
-	}
-
-	r.pruneUsenetCheckLocked(now)
-	e = &usenetCheckEntry{
-		result:    res,
-		storedAt:  now,
-		expiresAt: now.Add(usenetCheckNegativeTTL),
-	}
-	r.usenetEntries[e] = struct{}{}
-	r.attachReleaseKeyLocked(e, releaseKey)
-	r.attachHashLocked(e, nzbHash)
+	r.verdicts().RecordPlaybackFailure(r.now(), releaseKey, nzbHash, contentID, reason, articleMissing)
 }
 
 func classifyUsenetPlaybackFailure(err error) (reason string, articleMissing bool, ok bool) {
@@ -383,12 +178,12 @@ func classifyUsenetPlaybackFailure(err error) (reason string, articleMissing boo
 	}
 }
 
-func (r *KindResolver) wrapUsenetPlaybackSource(ms core.MediaSource, releaseKey, nzbHash string) core.MediaSource {
-	if ms == nil || (releaseKey == "" && nzbHash == "") {
+func (r *KindResolver) wrapUsenetPlaybackSource(ms core.MediaSource, releaseKey, nzbHash, contentID string) core.MediaSource {
+	if ms == nil || (releaseKey == "" && nzbHash == "" && contentID == "") {
 		return ms
 	}
 	record := func(err error) {
-		r.recordUsenetPlaybackFailure(releaseKey, nzbHash, err)
+		r.recordUsenetPlaybackFailure(releaseKey, nzbHash, contentID, err)
 	}
 	base := &usenetObservedSource{
 		MediaSource: ms,
@@ -528,12 +323,5 @@ func (r *KindResolver) usenetPlaybackFailed(src core.PlayableSource) bool {
 	if key == "" {
 		return false
 	}
-	r.usenetCheckMu.Lock()
-	defer r.usenetCheckMu.Unlock()
-	r.initUsenetCheckCacheLocked()
-	e := r.usenetByRelease[key]
-	if e == nil || r.now().After(e.expiresAt) {
-		return false
-	}
-	return e.result.PlaybackFailed
+	return r.verdicts().PlaybackFailed(r.now(), key, "", "")
 }

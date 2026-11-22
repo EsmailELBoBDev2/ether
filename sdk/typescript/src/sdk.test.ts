@@ -826,3 +826,69 @@ test("badges.set, badges.clear, and badges.usage enforce bounds in mock and host
     else g.__ether_host = prev;
   }
 });
+
+test("hosted and remote host clients preserve rate_limited retry metadata", async () => {
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  g.__ether_host = () => {
+    const err = new Error(
+      "__ETHER_FAULT__" +
+        JSON.stringify({
+          code: "rate_limited",
+          message: "daily allowance exhausted",
+          retryAfterSec: 3600,
+          retryAt: "2026-11-23T00:00:00Z",
+        }),
+    );
+    throw err;
+  };
+  try {
+    const hosted = createHostedHostClient();
+    let caught: (Error & { code?: string; retryAfterSec?: number; retryAt?: string }) | undefined;
+    try {
+      await hosted.kinds.resolveSources({ kind: "usenet_check", nzbUrl: "https://idx.example/a.nzb" });
+    } catch (e) {
+      caught = e as typeof caught;
+    }
+    assert.equal(caught?.code, "rate_limited");
+    assert.equal(caught?.retryAfterSec, 3600);
+    assert.equal(caught?.retryAt, "2026-11-23T00:00:00Z");
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "3600" });
+    res.end(
+      JSON.stringify({
+        error: {
+          code: "rate_limited",
+          message: "daily allowance exhausted",
+          retryAfterSec: 3600,
+          retryAt: "2026-11-23T00:00:00Z",
+        },
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+  const addr = srv.address() as { port: number };
+  try {
+    const remote = createRemoteHostClient({
+      baseUrl: `http://127.0.0.1:${addr.port}`,
+      credential: "cred",
+    });
+    let caught: (Error & { code?: string; status?: number; retryAfterSec?: number; retryAt?: string }) | undefined;
+    try {
+      await remote.kinds.resolveSources({ kind: "usenet_check", nzbUrl: "https://idx.example/a.nzb" });
+    } catch (e) {
+      caught = e as typeof caught;
+    }
+    assert.equal(caught?.code, "rate_limited");
+    assert.equal(caught?.status, 429);
+    assert.equal(caught?.retryAfterSec, 3600);
+    assert.equal(caught?.retryAt, "2026-11-23T00:00:00Z");
+  } finally {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  }
+});

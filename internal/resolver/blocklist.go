@@ -261,6 +261,9 @@ func (s *Service) Unblock(ctx context.Context, releaseID string) (BlockEntry, er
 	s.mu.Unlock()
 	s.forgetVerifiedWithContent(ctx, releaseID, contentKeys...)
 	s.forgetFailedGrabs(ctx, append(append([]string(nil), contentKeys...), releaseID))
+	if urlKey, nzbHash, contentID := s.usenetKeysForReleaseID(releaseID, contentKeys); urlKey != "" || nzbHash != "" || contentID != "" {
+		s.usenetVerdicts.Delete(urlKey, nzbHash, contentID)
+	}
 	if !inMem {
 		if !had {
 			return BlockEntry{}, core.ErrNotFound

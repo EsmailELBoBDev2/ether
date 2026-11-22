@@ -546,6 +546,26 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
       revocable: true,
     });
   }
+  if (d.sources === "acquire" || d.sources === "acquire+check") {
+    items.push({
+      key: "sources",
+      label: t("Searches your indexers and opens sources through your debrid accounts"),
+      revocable: true,
+    });
+  } else if (d.sources === "search" || d.sources === "search+check") {
+    items.push({
+      key: "sources",
+      label: t("Searches your indexers for sources"),
+      revocable: true,
+    });
+  }
+  if (d.sources === "search+check" || d.sources === "acquire+check") {
+    items.push({
+      key: "sources.check",
+      label: t("Checks Usenet releases in the background within a daily allowance"),
+      revocable: true,
+    });
+  }
   if (d.ai === "complete" || d.ai === "complete+search") {
     items.push({
       key: "ai",

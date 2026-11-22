@@ -2380,3 +2380,54 @@ func TestHostResolveSourcesStreamingAndIndexersEnvelope(t *testing.T) {
 		t.Fatalf("indexers[0] should omit status: %#v", entry)
 	}
 }
+
+func TestHostRateLimitRetryMetadata(t *testing.T) {
+	resetAt := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+	rlErr := fmt.Errorf("%w: %w", ErrRateLimited, &plugins.RateLimitError{
+		Message:    "background usenet_check daily allowance exhausted",
+		RetryAt:    resetAt,
+		RetryAfter: 3600 * time.Second,
+	})
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeSourcesResultHost{
+			fakeHost: newFakeHost(),
+			fn: func(_ context.Context, _ string, _ core.SourceQuery) (core.SourceResolveResult, error) {
+				return core.SourceResolveResult{}, rlErr
+			},
+		},
+		Auth: remotetest.Credentials{"cred-src": "plug.src"},
+	}))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/sources/resolve", strings.NewReader(`{"kind":"usenet_check","nzbUrl":"https://idx.example/a.nzb"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(HeaderCredential, "cred-src")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "3600" {
+		t.Fatalf("Retry-After = %q, want 3600", got)
+	}
+	var doc struct {
+		Error struct {
+			Code          string `json:"code"`
+			Message       string `json:"message"`
+			RetryAfterSec int64  `json:"retryAfterSec"`
+			RetryAt       string `json:"retryAt"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Error.Code != "rate_limited" || doc.Error.RetryAfterSec != 3600 || doc.Error.RetryAt != resetAt.Format(time.RFC3339) {
+		t.Fatalf("rate_limited error body = %+v", doc.Error)
+	}
+}

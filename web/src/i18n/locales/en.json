@@ -2262,6 +2262,7 @@
   "m_06b7242dda92f4": "Segments {ranges} (+{more} more)",
   "m_06b7b5a4bb13c0": "The cluster is reachable and the join token is valid.",
   "m_06b7c98d690e23": "The best-loved films starring Tom Hanks.",
+  "m_06ba628af65bfe": "Searches your indexers and opens sources through your debrid accounts",
   "m_06bad1fa6cc4f9": "{channel} stops receiving alerts. Its delivery history is kept.",
   "m_06bbd358edc1b0": "Used first for QR codes and share links",
   "m_06bbf60ee1e71a": "Animated movies rated PG and under",
@@ -5483,6 +5484,7 @@
   "m_10a557ed3fe993": "Marker coverage",
   "m_10a5fbb2ff3d29": "Mute",
   "m_10a62833806a88": "Saving listings · {saved} of {total}",
+  "m_10a6d7ad3329d1": "Checks Usenet releases in the background within a daily allowance",
   "m_10a9d25a852a3d": "Scale Y",
   "m_10aa31270e92a6": "parameter",
   "m_10aea138220ce4": "the audio format ({format})",
@@ -8021,6 +8023,7 @@
   "m_18425a1a04d7ff": "Playback sources: {kind}",
   "m_1842938476577b": "Weekly newsletter preview",
   "m_1842bc939bfcba": "Count",
+  "m_1843953103996f": "Searches your indexers for sources",
   "m_184412952a7847": "Adding…",
   "m_1845d47e574338": {
     "one": "{count} screenshot",
@@ -9307,6 +9310,7 @@
   "m_1c2f068b05621a": "Connect an MQTT 3.1.1 broker for notifications and Home Assistant or lighting automations in Flows.",
   "m_1c2fd1a4ae6958": "{count} titles · synced {when}",
   "m_1c2ffbbe2b2e35": "Plays before",
+  "m_1c300eda9cc753": "Daily background Usenet checks per plugin",
   "m_1c303d18601052": "The library stays in this console but disappears from every app.",
   "m_1c30ff30a80656": "Step aside for titles on this server",
   "m_1c313e71f089dc": "{label} from",
@@ -9652,6 +9656,7 @@
   "m_1d2dbff43d7656": "Add a viewer. They show up here after they sign in.",
   "m_1d2eb94cc73e14": "New movies stay hidden from viewers until a digital or disc release exists and a playable source is found.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Maximum background checks each plugin may run per day (0 disables). Viewer playback never counts toward this limit.",
   "m_1d31cf9996623d": {
     "one": "{count} row on the page",
     "other": "{count} rows on the page"

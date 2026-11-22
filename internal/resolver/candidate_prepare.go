@@ -266,6 +266,13 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 			return validation{err: err}
 		}
 	}
+	if protocolOf(rel) == core.ProtocolUsenet && s.usenetVerdicts != nil {
+		if urlKey := s.usenetVerdictURLKey(rel); urlKey != "" {
+			if verdict, ok := s.usenetVerdicts.Lookup(s.now(), urlKey, "", ""); ok && !verdict.Available {
+				return validation{rel: rel, err: core.ErrArticleMissing}
+			}
+		}
+	}
 	v := validation{rel: rel}
 	at := time.Now()
 	v.nzb, v.err = s.indexer.FetchNZB(ctx, rel)
@@ -304,13 +311,42 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 		if s.health != nil {
 			v.healthChecked = true
 			at = time.Now()
-			if s.usenetBackingOff() && protocolOf(rel) == core.ProtocolUsenet {
-				v.healthy, v.err = core.CheckReleaseHealth(ctx, s.health, rel.ID, v.nzb)
-				if v.healthy && v.err == nil && ctx.Value(speculativeHealthKey{}) == nil {
-					s.markVerifiedKeys(ctx, verifyKeys)
+			reusedVerdict := false
+			if protocolOf(rel) == core.ProtocolUsenet && s.usenetVerdicts != nil {
+				urlKey, nzbHash, contentID := s.usenetVerdictKeys(rel, v.nzb)
+				if verdict, ok := s.usenetVerdicts.Lookup(s.now(), urlKey, nzbHash, contentID); ok {
+					if !verdict.Available {
+						v.healthy = false
+						v.err = core.ErrArticleMissing
+						return v
+					}
+					if s.healthTTL > 0 && !s.usenetBackingOff() {
+						v.healthy = true
+						v.healthCached = true
+						reusedVerdict = true
+					}
 				}
-			} else {
-				v.healthy, v.healthCached, v.err = s.checkHealthCachedKeys(ctx, rel.ID, verifyKeys, v.nzb)
+			}
+			if !reusedVerdict {
+				if s.usenetBackingOff() && protocolOf(rel) == core.ProtocolUsenet {
+					v.healthy, v.err = core.CheckReleaseHealth(ctx, s.health, rel.ID, v.nzb)
+					if v.healthy && v.err == nil && ctx.Value(speculativeHealthKey{}) == nil {
+						s.markVerifiedKeys(ctx, verifyKeys)
+					}
+				} else {
+					v.healthy, v.healthCached, v.err = s.checkHealthCachedKeys(ctx, rel.ID, verifyKeys, v.nzb)
+				}
+				if !v.healthCached && ctx.Value(speculativeHealthKey{}) == nil {
+					if v.healthy && v.err == nil {
+						s.recordUsenetVerdict(rel, v.nzb, true, "")
+					} else if (!v.healthy && v.err == nil) || permanentFailure(v.err) {
+						reason := "health_unhealthy"
+						if v.err != nil {
+							reason = v.err.Error()
+						}
+						s.recordUsenetVerdict(rel, v.nzb, false, reason)
+					}
+				}
 			}
 			if v.healthy && v.err == nil && !v.healthCached && s.observed != nil && vault.KeyOf(rel) == "" {
 				if title, ok := ctx.Value(observationTitleKey{}).(*core.Title); ok {

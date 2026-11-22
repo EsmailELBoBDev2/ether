@@ -1577,6 +1577,57 @@ var (
 	ErrRevoked        = errors.New("plugins: plugin was revoked")
 )
 
+// RateLimitError reports a rate-limited host call together with when the
+// plugin may retry (for example, UTC midnight for a daily allowance). It wraps
+// ErrRateLimited so callers checking errors.Is(err, ErrRateLimited) match.
+type RateLimitError struct {
+	Message    string
+	RetryAt    time.Time
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	if e == nil {
+		return ErrRateLimited.Error()
+	}
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		msg = ErrRateLimited.Error()
+	}
+	if !e.RetryAt.IsZero() {
+		return fmt.Sprintf("%s (retry after %s)", msg, e.RetryAt.UTC().Format(time.RFC3339))
+	}
+	if sec := e.RetryAfterSeconds(time.Now()); sec > 0 {
+		return fmt.Sprintf("%s (retry in %ds)", msg, sec)
+	}
+	return msg
+}
+
+func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
+
+// RetryAfterSeconds returns the positive whole-second delay until the limit
+// resets (at least 1 second when a retry window is set).
+func (e *RateLimitError) RetryAfterSeconds(now time.Time) int64 {
+	if e == nil {
+		return 0
+	}
+	d := e.RetryAfter
+	if d <= 0 && !e.RetryAt.IsZero() {
+		d = e.RetryAt.Sub(now)
+	}
+	if d <= 0 {
+		if !e.RetryAt.IsZero() {
+			return 1
+		}
+		return 0
+	}
+	sec := int64((d + time.Second - 1) / time.Second)
+	if sec < 1 {
+		return 1
+	}
+	return sec
+}
+
 // FieldError is one validation problem, keyed by a dotted field path.
 type FieldError struct {
 	Field   string `json:"field"`

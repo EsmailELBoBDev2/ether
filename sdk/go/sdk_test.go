@@ -3,6 +3,7 @@ package etherplugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"go/parser"
 	"go/token"
 	"io"
@@ -667,6 +668,26 @@ func TestStarterTemplates(t *testing.T) {
 	condP := NewConditionTemplate(TemplateOptions{ID: "org.ether.tpl.cond", Name: "Condition template"})
 	if !condP.CondMatch(Fixtures.Candidate(), "eq", true) {
 		t.Fatal("expected condition match true")
+	}
+}
+
+func TestHostErrorDecodesRateLimitRetryMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"rate_limited","message":"daily allowance exhausted","retryAfterSec":3600,"retryAt":"2026-11-23T00:00:00Z"}}`))
+	}))
+	defer srv.Close()
+
+	client := NewRemoteHostClient(RemoteHostOptions{BaseURL: srv.URL, Credential: "cred"})
+	_, err := client.ResolveSources(context.Background(), SourceQuery{Kind: "usenet_check", NZBURL: "https://idx.example/a.nzb"})
+	var he *HostError
+	if !errors.As(err, &he) {
+		t.Fatalf("err = %v, want *HostError", err)
+	}
+	if he.Code != "rate_limited" || he.Status != http.StatusTooManyRequests || he.RetryAfterSec != 3600 || he.RetryAt != "2026-11-23T00:00:00Z" {
+		t.Fatalf("HostError = %+v", he)
 	}
 }
 

@@ -951,3 +951,51 @@ func TestManifestKindLibraryViewTabsAnd50TabCap(t *testing.T) {
 		})
 	}
 }
+
+func TestSourcesBackgroundCheckPermissionAndDiff(t *testing.T) {
+	for _, level := range []string{"search+check", "acquire+check"} {
+		m := contentManifest()
+		m.Ether.Permissions.Sources = level
+		if err := m.Validate(); err != nil {
+			t.Fatalf("permissions.sources=%q unexpectedly invalid: %v", level, err)
+		}
+		lines, _, _ := PermissionSheet(m)
+		wantCheck := "Checks Usenet releases in the background within a daily allowance"
+		found := false
+		for _, line := range lines {
+			if line == wantCheck {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("PermissionSheet(%q) missing %q in %v", level, wantCheck, lines)
+		}
+	}
+
+	// Upgrading search -> search+check reports only the background check addition.
+	mSearch := contentManifest()
+	mSearch.Ether.Permissions.Sources = "search"
+	mSearchCheck := contentManifest()
+	mSearchCheck.Ether.Permissions.Sources = "search+check"
+	diff := PermissionDiff(mSearch, mSearchCheck)
+	if len(diff) != 1 || diff[0] != "Checks Usenet releases in the background within a daily allowance" {
+		t.Fatalf("diff(search->search+check) = %v", diff)
+	}
+
+	// Upgrading search+check -> acquire reports only the acquire upgrade.
+	mAcquire := contentManifest()
+	mAcquire.Ether.Permissions.Sources = "acquire"
+	diff = PermissionDiff(mSearchCheck, mAcquire)
+	if len(diff) != 1 || diff[0] != "Searches your indexers and opens sources through your debrid accounts" {
+		t.Fatalf("diff(search+check->acquire) = %v", diff)
+	}
+
+	// Upgrading search -> acquire+check reports both acquire and background check.
+	mAcquireCheck := contentManifest()
+	mAcquireCheck.Ether.Permissions.Sources = "acquire+check"
+	diff = PermissionDiff(mSearch, mAcquireCheck)
+	if len(diff) != 2 {
+		t.Fatalf("diff(search->acquire+check) = %v, want 2 lines", diff)
+	}
+}

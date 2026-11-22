@@ -516,5 +516,5 @@ func (s *Service) cachedPrimaryLineup(ctx context.Context, src *Source, cause er
 	err = rows.Err()
 	rows.Close()
 	src.Groups = old.Groups
-	return Fetched{Channels: cs, Guide: guide, ProviderNumbers: true}, err
+	return Fetched{Channels: cs, Guide: guide, ProviderNumbers: true, cachedLineup: true}, err
 }

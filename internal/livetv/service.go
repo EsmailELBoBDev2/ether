@@ -1127,6 +1127,8 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 			old = prev
 			hasOld = true
 			c.ProviderAdult = old.ProviderAdult
+			c.ProviderNumber = old.ProviderNumber
+			c.ProviderGuideID = old.ProviderGuideID
 		}
 		if !hasOld || !old.LogoMatched || old.Logo != c.Logo {
 			c.LogoMatched = false
@@ -2448,6 +2450,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	encoded := make([][]byte, 0, len(cs))
 	{
 		for _, c := range cs {
+			if !fetched.cachedLineup {
+				c.ProviderGuideID = c.GuideID
+			}
 			if previous, ok := oldByID[c.ID]; ok {
 				if _, keep := keepNumber[c.ID]; keep {
 					c.Number = previous.Number
@@ -2458,8 +2463,10 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 				c.Favorite = previous.Favorite
 				c.Private = previous.Private
 				c.Rating = previous.Rating
-				c.GuideID = previous.GuideID
-				c.GuideSourceID = previous.GuideSourceID
+				if guidePinned(previous) {
+					c.GuideID = previous.GuideID
+					c.GuideSourceID = previous.GuideSourceID
+				}
 				c.Transcode = previous.Transcode
 				c.Stability = previous.Stability
 				c.Screens = previous.Screens
@@ -2603,6 +2610,18 @@ func numberPinned(previous Channel, providerNumbered bool) bool {
 	return previous.Number != previous.ProviderNumber
 }
 
+// guidePinned reports whether a stored channel's guide mapping is the owner's
+// rather than the provider's. A cross-source mapping or any edit (including an
+// explicit clear) makes GuideID differ from ProviderGuideID and sticks across
+// refreshes; channels stored before ProviderGuideID was recorded keep their
+// existing mapping until a matching refresh records the provider baseline.
+func guidePinned(previous Channel) bool {
+	if previous.GuideSourceID != "" && previous.GuideSourceID != previous.SourceID {
+		return true
+	}
+	return previous.GuideID != previous.ProviderGuideID
+}
+
 // guideAllow is the set of XMLTV channel ids a playlist source keeps.
 // Nil means every channel (a guide-only source). Stored guide ids are
 // included so an owner mapping survives the next refresh.
@@ -2617,7 +2636,9 @@ func (s *Service) guideAllow(ctx context.Context, src Source, playlist []Channel
 			ids[id] = struct{}{}
 		}
 	}
+	inPlaylist := make(map[string]bool, len(playlist))
 	for _, c := range playlist {
+		inPlaylist[c.ID] = true
 		add(c.GuideID)
 	}
 	stored, err := s.allChannels(ctx)
@@ -2625,7 +2646,10 @@ func (s *Service) guideAllow(ctx context.Context, src Source, playlist []Channel
 		return nil, err
 	}
 	for _, c := range stored {
-		if c.SourceID == src.ID || guideSource(c) == src.ID {
+		if c.SourceID == src.ID && inPlaylist[c.ID] && !guidePinned(c) {
+			continue
+		}
+		if guideSource(c) == src.ID {
 			add(c.GuideID)
 		}
 	}

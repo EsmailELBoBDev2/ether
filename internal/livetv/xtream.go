@@ -243,8 +243,9 @@ func xtreamChannels(sourceID, base string, a *SourceAuth, output string, cats []
 			id = stableID(sourceID, "xtream", sid)
 		}
 		streamURL := base + "/live/" + url.PathEscape(a.Username) + "/" + url.PathEscape(a.Password) + "/" + url.PathEscape(sid) + "." + output
+		epgID := strings.TrimSpace(st.EPGID)
 		c := Channel{
-			ID: id, Name: strings.TrimSpace(st.Name), Logo: strings.TrimSpace(st.Icon), GuideID: strings.TrimSpace(st.EPGID),
+			ID: id, Name: strings.TrimSpace(st.Name), Logo: strings.TrimSpace(st.Icon), GuideID: epgID, ProviderGuideID: epgID,
 			Group: names[string(st.CategoryID)], SourceID: sourceID, Kind: "iptv", Enabled: true, StreamURL: streamURL,
 			adult: st.Adult.truthy(),
 		}

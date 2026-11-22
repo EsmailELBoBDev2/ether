@@ -25,6 +25,9 @@ type Fetched struct {
 	// provider. Channels imported before provider numbers were recorded
 	// then take the provider's number instead of keeping a generated one.
 	ProviderNumbers bool
+	// cachedLineup marks a fallback lineup loaded from stored channels so
+	// importSource preserves their stored ProviderGuideID baseline.
+	cachedLineup bool
 }
 
 // SourceKind is one Live TV source kind: how the console describes it, how

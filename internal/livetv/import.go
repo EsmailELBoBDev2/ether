@@ -146,7 +146,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 			if comma >= 0 && strings.TrimSpace(line[comma+1:]) != "" {
 				name = strings.TrimSpace(line[comma+1:])
 			}
-			pending = &Channel{Name: name, TvgName: attrs["tvg-name"], Number: attrs["tvg-chno"], Logo: attrs["tvg-logo"], GuideID: attrs["tvg-id"], Group: attrs["group-title"], SourceID: sourceID, Kind: "iptv", Enabled: true}
+			pending = &Channel{Name: name, TvgName: attrs["tvg-name"], Number: attrs["tvg-chno"], Logo: attrs["tvg-logo"], GuideID: attrs["tvg-id"], ProviderGuideID: attrs["tvg-id"], Group: attrs["group-title"], SourceID: sourceID, Kind: "iptv", Enabled: true}
 			continue
 		}
 		if pending != nil && strings.HasPrefix(line, "#EXTVLCOPT:") {

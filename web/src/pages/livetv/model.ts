@@ -142,6 +142,8 @@ export type Channel = {
   customGroup?: boolean;
   /** The provider's channel number; differs from `number` when the owner renumbered it. */
   providerNumber?: string;
+  /** The provider's guide id; differs from `guideId` when the owner remapped or cleared it. */
+  providerGuideId?: string;
   epoch: string;
   seed: number;
   shuffle: boolean;

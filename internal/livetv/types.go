@@ -221,6 +221,13 @@ type Channel struct {
 	// provider's renumbering; an owner edit makes Number differ and sticks.
 	ProviderNumber string `json:"providerNumber,omitempty"`
 
+	// ProviderGuideID is the guide id the source gave this channel at the last
+	// import (Xtream epg_channel_id, M3U tvg-id, or a plugin's guideId). While
+	// GuideID still equals it and GuideSourceID is empty, the channel follows
+	// the provider's guide id changes; an owner mapping (or explicit clear)
+	// makes them differ and sticks.
+	ProviderGuideID string `json:"providerGuideId,omitempty"`
+
 	// adult is the provider's own adult flag (Xtream is_adult); import only.
 	adult bool
 }

@@ -192,18 +192,22 @@ func (f *pageFirstCollectionsFake) Items(_ context.Context, _ *core.User, k core
 type stubFranchiseStore struct {
 	franchises []core.Collection
 	visible    map[int]int
+	pageCalls  int
+	curCalls   int
 }
 
 func (f *stubFranchiseStore) FranchiseTotal(context.Context) (int, error) {
 	return len(f.franchises), nil
 }
 func (f *stubFranchiseStore) FranchisesPage(_ context.Context, offset, limit int) ([]core.Collection, error) {
+	f.pageCalls++
 	if offset >= len(f.franchises) {
 		return nil, nil
 	}
 	return f.franchises[offset:min(offset+limit, len(f.franchises))], nil
 }
 func (f *stubFranchiseStore) FranchisesCursor(_ context.Context, afterCount, afterID, limit int) ([]core.Collection, error) {
+	f.curCalls++
 	var out []core.Collection
 	for _, c := range f.franchises {
 		id := int(c.Key.TMDB())
@@ -308,5 +312,32 @@ func TestCollectionsPageFirstUsesOwnedAndFranchiseStore(t *testing.T) {
 	}
 	if len(boxsets.Items) != 2 || boxsets.Items[0].Key != core.CollectionKey(10) || boxsets.Items[1].Key != core.CollectionKey(30) {
 		t.Fatalf("unexpected boxsets page: %+v", boxsets.Items)
+	}
+
+	// With availability gating (GatePolicy + HiddenMovieSeq), page 1 stays on
+	// Fast Path 1 (FranchisesPage) and past-the-end offsets short-circuit in
+	// O(1) via FranchiseTotal without scanning pages or cursors.
+	s.d.PageExclusions = func(context.Context, *core.User, core.MediaType) LibraryPageExclusions {
+		return LibraryPageExclusions{
+			AvailabilityInSQL: true,
+			Availability:      core.Filter{GatePolicy: "release-delay", HiddenMovieSeq: 7},
+		}
+	}
+	frStore.pageCalls, frStore.curCalls = 0, 0
+	p1, err := s.Collections(ctx, viewer, core.Device{}, frontend.CollectionQuery{Offset: 1, Limit: 1})
+	if err != nil || len(p1.Items) != 1 || p1.Items[0].Key != core.CollectionKey(10) || frStore.pageCalls != 1 || frStore.curCalls != 0 {
+		t.Fatalf("gated page 1 did not stay on Fast Path 1: page=%+v pageCalls=%d curCalls=%d err=%v", p1, frStore.pageCalls, frStore.curCalls, err)
+	}
+	frStore.pageCalls, frStore.curCalls = 0, 0
+	deep, err := s.Collections(ctx, viewer, core.Device{}, frontend.CollectionQuery{Offset: 24000, Limit: 50})
+	if err != nil || len(deep.Items) != 0 || frStore.pageCalls != 0 || frStore.curCalls != 0 {
+		t.Fatalf("deep gated offset walked franchises: page=%+v pageCalls=%d curCalls=%d err=%v", deep, frStore.pageCalls, frStore.curCalls, err)
+	}
+	// Restricted viewer (Fast Path 3) also short-circuits past-the-end offsets.
+	restricted := &core.User{ID: 2, MaxContentRating: "PG-13"}
+	s.d.Active = func(context.Context, int64) (*core.User, error) { return restricted, nil }
+	deepRestricted, err := s.Collections(ctx, restricted, core.Device{}, frontend.CollectionQuery{Offset: 24000, Limit: 50})
+	if err != nil || len(deepRestricted.Items) != 0 || frStore.pageCalls != 0 || frStore.curCalls != 0 {
+		t.Fatalf("deep restricted offset walked franchises: page=%+v pageCalls=%d curCalls=%d err=%v", deepRestricted, frStore.pageCalls, frStore.curCalls, err)
 	}
 }

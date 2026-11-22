@@ -541,9 +541,6 @@ func (s *Service) franchiseFilterUnrestricted(v *core.User, f core.Filter, extra
 	if len(f.IncludeCollectionNames) > 0 || len(f.ExcludeCollectionNames) > 0 {
 		return false
 	}
-	if f.HiddenMovieSeq != 0 || f.GatePolicy != "" {
-		return false
-	}
 	if v != nil && s.d.Franchises.HasActiveViewerRules(v.ID) {
 		return false
 	}
@@ -591,14 +588,19 @@ func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core
 		return nil, 0, true, nil
 	}
 
-	// Fast path 1: unrestricted viewer and built-in movie library.
+	// Fast path 1: unrestricted viewer and built-in movie library (including
+	// availability gate/hidden sets, which FranchiseVisibleCounts enforces on
+	// every page just as browse_tally treats them as tally-backed shapes).
 	// Reads O(page_size) rows from catalog_franchises and an O(1) total.
 	if !existsOnly && s.franchiseFilterUnrestricted(v, base, extraLibs, query) {
 		var frTotal int
-		if !noTotal {
+		if !noTotal || offset > 0 {
 			frTotal, err = s.d.Franchises.FranchiseTotal(ctx)
 			if err != nil {
 				return nil, 0, true, err
+			}
+			if offset >= frTotal {
+				return nil, frTotal, true, nil
 			}
 		}
 		if limit <= 0 {
@@ -609,6 +611,9 @@ func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core
 			return nil, 0, true, err
 		}
 		if len(page) == 0 {
+			if noTotal {
+				frTotal = offset
+			}
 			return nil, frTotal, true, nil
 		}
 		ids := make([]int, 0, len(page))
@@ -633,8 +638,9 @@ func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core
 			c.ChildCount = n
 			kept = append(kept, c)
 		}
-		// Top up if any candidate on the page had only unreleased movies.
-		if len(kept) < limit && len(page) == limit {
+		// Top up if any candidate on the page had only unreleased or gated movies.
+		reachedEnd := len(page) < limit
+		if len(kept) < limit && !reachedEnd {
 			last := page[len(page)-1]
 			afterCount, afterID := last.ChildCount, int(last.Key.TMDB())
 			batchSize := min(max((limit-len(kept))*2, 64), 400)
@@ -644,6 +650,7 @@ func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core
 					return nil, 0, true, err
 				}
 				if len(batch) == 0 {
+					reachedEnd = true
 					break
 				}
 				last = batch[len(batch)-1]
@@ -673,11 +680,12 @@ func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core
 					}
 				}
 				if len(batch) < batchSize {
+					reachedEnd = true
 					break
 				}
 			}
 		}
-		if noTotal {
+		if noTotal || (reachedEnd && len(kept) < limit) {
 			frTotal = offset + len(kept)
 		}
 		return kept, frTotal, true, nil
@@ -737,6 +745,14 @@ func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core
 	// multiple filter libraries in O(page_size) batches.
 	if existsOnly {
 		offset, limit, noTotal = 0, 1, true
+	} else if offset > 0 {
+		// No filter can produce more franchises than catalog_franchises holds;
+		// short-circuit past-the-end offsets in O(1) without walking the table.
+		if frTotal, err := s.d.Franchises.FranchiseTotal(ctx); err != nil {
+			return nil, 0, true, err
+		} else if offset >= frTotal {
+			return nil, frTotal, true, nil
+		}
 	}
 	target := offset + limit
 	if !noTotal && !existsOnly {

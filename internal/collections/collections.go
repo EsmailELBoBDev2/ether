@@ -949,6 +949,11 @@ func (s *Service) ListPage(ctx context.Context, user *core.User, t core.MediaTyp
 	if level == contentrating.Unrated {
 		return out, ownedN, nil
 	}
+	if frOffset > 0 {
+		if frTotal, err := s.mirror.FranchiseTotal(ctx); err == nil && frOffset >= frTotal {
+			return out, ownedN + frTotal, nil
+		}
+	}
 	target := frOffset + frNeed + 1
 	batchSize := min(max(frNeed*2, 128), 400)
 	afterCount, afterID := 0, 0

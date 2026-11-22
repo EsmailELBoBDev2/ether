@@ -126,11 +126,19 @@ func diskUsage(t testing.TB, c *Cache) (int64, int) {
 	var used int64
 	n := 0
 	err := filepath.WalkDir(c.dataDir, func(p string, d fs.DirEntry, err error) error {
+		// A segment the cache removes while the walk lists its directory is
+		// already out of the index; it is not on disk either.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		if _, ok := parseSegName(d.Name()); ok && !d.IsDir() {
 			info, err := d.Info()
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}

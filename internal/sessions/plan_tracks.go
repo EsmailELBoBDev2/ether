@@ -94,7 +94,7 @@ func (b *Broker) decideTracks(ps *core.PlaySession, req *frontend.PlanRequest) (
 	if named || req.Intent.Options.SubtitleStream < 0 {
 		return dec, err
 	}
-	noEncode := (req.Channel == "" && b.videoTranscodingOff()) || (req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding)
+	noEncode := (req.Channel == "" && b.videoOff(req.Caps)) || (req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding)
 	var incompatible *frontend.NoCompatiblePathError
 	switch {
 	case err == nil && !(noEncode && dec.BurnSubtitles && decisionEncodesVideo(dec, ps.Info)):

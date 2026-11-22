@@ -847,7 +847,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	libProfile := s.libProfileForTitle(ctx, req.Title)
 	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
-	videoOff, _ := s.transcodeSettings()
+	videoOff, _ := s.transcodeSettingsFor(req.Client)
 	key := fmt.Sprintf("%s|pin:%s|vc:%s|vt:%t", flightKey(req, profile), s.PinnedReleaseID(req), s.viewerChoiceFlightKey(req), videoOff)
 	if channelAvailabilityCheck(ctx) {
 		key += "/channel-availability"
@@ -1351,7 +1351,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			}
 			s.mu.Unlock()
 		}
-		if videoOff, _ := s.transcodeSettings(); videoOff && traceHasRejectionReason(&trace, ReasonNeedsVideoTranscode) {
+		if videoOff, _ := s.transcodeSettingsFor(req.Client); videoOff && traceHasRejectionReason(&trace, ReasonNeedsVideoTranscode) {
 			trace.Err = "no release can play without a video transcode, and transcoding is off"
 			return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrVideoTranscodingDisabled))
 		}
@@ -2152,7 +2152,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		} else if pinned {
 			reason = s.pinRejectReason(rel, sreq, req.Client, exclude)
 			if reason == "" {
-				if videoOff, remoteCap := s.transcodeSettings(); videoOff && releaseNeedsVideoTranscode(rel, t, req.Client, remoteCap) {
+				if videoOff, remoteCap := s.transcodeSettingsFor(req.Client); videoOff && releaseNeedsVideoTranscode(rel, t, req.Client, remoteCap) {
 					reason = ReasonNeedsVideoTranscode
 				}
 			}
@@ -2162,7 +2162,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		} else if policyResult.Rejected {
 			reason = audioAbsentPolicyReason(policy, policyContext, langRel, policyResult)
 		} else {
-			videoOff, _ := s.transcodeSettings()
+			videoOff, _ := s.transcodeSettingsFor(req.Client)
 			reason = s.rejectReason(rel, t, sreq, profile, rcfg, req.Client, exclude, preferred)
 			if !videoOff && reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
 				// Only relax the codec gate for the explicitly selected source;
@@ -2587,7 +2587,7 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 	if reason := rejectIdentityMetadata(rel, t, sreq, s.catalogLanguage(), acceptYear, s.metadataTitleMatches(rel, sreq)); reason != "" {
 		return reason
 	}
-	videoOff, remoteCap := s.transcodeSettings()
+	videoOff, remoteCap := s.transcodeSettingsFor(caps)
 	return rejectPolicyWithTranscode(rel, t, profile, caps, preferred, preferred && s.resolverCfg().OfferHigherVersions, videoOff, remoteCap)
 }
 
@@ -2852,6 +2852,13 @@ func preferenceReason(result releasepolicy.Result) string {
 		}
 	}
 	return "release preference: rejected"
+}
+
+// transcodeSettingsFor is transcodeSettings for one client: video transcoding
+// is also off when the owner switched it off for this viewer.
+func (s *Service) transcodeSettingsFor(caps core.ClientCaps) (videoOff bool, remoteCap int) {
+	videoOff, remoteCap = s.transcodeSettings()
+	return videoOff || caps.NoVideoTranscode, remoteCap
 }
 
 func (s *Service) transcodeSettings() (videoOff bool, remoteCap int) {

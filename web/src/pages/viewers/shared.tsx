@@ -565,6 +565,7 @@ export type SafetyPolicy = {
   blockedKeywords: string[];
   remoteDisabled: boolean;
   maxBitrateKbps: number;
+  videoTranscodingDisabled?: boolean;
   allowedHours: number[];
   timezone: string;
 };

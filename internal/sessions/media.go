@@ -287,7 +287,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		var allowed bool
 		dec, allowed = b.httpOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
 		if !allowed {
-			if !s.live && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+			if !s.live && b.videoOff(s.caps) && decisionEncodesVideo(dec, ps.Info) {
 				return "", &frontend.NoCompatiblePathError{
 					RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
 					Cause:         core.ErrVideoTranscodingDisabled,
@@ -308,7 +308,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		var allowed bool
 		dec, allowed = b.hlsOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
 		if !allowed {
-			if !s.live && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+			if !s.live && b.videoOff(s.caps) && decisionEncodesVideo(dec, ps.Info) {
 				return "", &frontend.NoCompatiblePathError{
 					RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
 					Cause:         core.ErrVideoTranscodingDisabled,
@@ -317,7 +317,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 		}
 	}
-	if !s.live && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+	if !s.live && b.videoOff(s.caps) && decisionEncodesVideo(dec, ps.Info) {
 		return "", &frontend.NoCompatiblePathError{
 			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
 			Cause:         core.ErrVideoTranscodingDisabled,
@@ -366,9 +366,13 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		// A continuous playback client declares its decoder set. Optional
 		// encoded rungs must also respect its session's transcoding policy.
 		request.LadderVideoCodecs = []string{}
-		if (s.allowTranscoding == nil || *s.allowTranscoding) && (s.live || !b.videoTranscodingOff()) {
+		if (s.allowTranscoding == nil || *s.allowTranscoding) && (s.live || !b.videoOff(s.caps)) {
 			request.LadderVideoCodecs = append(request.LadderVideoCodecs, s.caps.VideoCodecs...)
 		}
+	}
+	if s.caps.NoVideoTranscode && !s.live && request.LadderVideoCodecs == nil {
+		// This viewer's video is never re-encoded: offer the primary rung only.
+		request.LadderVideoCodecs = []string{}
 	}
 	request.TextSubtitleStreams = textSubtitleStreams(string(s.public.Protocol), s.caps, ps.Info)
 	if len(request.TextSubtitleStreams) > 0 {
@@ -531,7 +535,7 @@ func (b *Broker) httpOutputDecision(ps *core.PlaySession, caps core.ClientCaps, 
 	if dec.Kind == core.DecisionDirectPlay || dec.Container != transcode.ContainerMatroska {
 		dec = b.deps.Transcoder.Decide(ps.Info, caps, opts)
 	}
-	if b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+	if b.videoOff(caps) && decisionEncodesVideo(dec, ps.Info) {
 		return dec, false
 	}
 	if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {
@@ -577,7 +581,7 @@ func (b *Broker) hlsOutputDecision(ps *core.PlaySession, caps core.ClientCaps, o
 		}
 		return d
 	})
-	if b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+	if b.videoOff(caps) && decisionEncodesVideo(dec, ps.Info) {
 		return dec, false
 	}
 	if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {

@@ -94,6 +94,8 @@ type BrokerDeps struct {
 	RemoteUploadCap     func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
 	RecordUploadCap     func(sessionID string, capKbps int, fromBudget bool)
 	VideoTranscodingOff func() bool
+	// ViewerVideoTranscodingOff is the per-viewer form of VideoTranscodingOff.
+	ViewerVideoTranscodingOff func(*core.Viewer) bool
 	OnTimeline          func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
 	Events              *EventBus
 	DomainEvents        *events.Bus
@@ -519,7 +521,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	budgetCapKbps := 0
 	if req.Caps.Remote && !req.Intent.Estimate && b.deps.RemoteUploadCap != nil {
-		allowTC := (req.Channel != "" || req.DirectLive != nil || !b.videoTranscodingOff()) &&
+		allowTC := (req.Channel != "" || req.DirectLive != nil || !b.videoOff(req.Caps)) &&
 			(req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding)
 		existing := req.Caps.MaxBitrateKbps
 		if req.Intent.Options.MaxBitrateKbps > 0 && (existing == 0 || req.Intent.Options.MaxBitrateKbps < existing) {
@@ -829,7 +831,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	if req.Channel == "" && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+	if req.Channel == "" && b.videoOff(req.Caps) && decisionEncodesVideo(dec, ps.Info) {
 		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
 			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
 			Cause:         core.ErrVideoTranscodingDisabled,
@@ -849,7 +851,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		}
 		if !hlsAllowed && !httpAllowed {
 			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
-			if req.Channel == "" && b.videoTranscodingOff() {
+			if req.Channel == "" && b.videoOff(req.Caps) {
 				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
 					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
 					outErr.Cause = core.ErrVideoTranscodingDisabled
@@ -897,7 +899,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
 }
 func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()

@@ -484,25 +484,31 @@ func (s *Service) maintain() {
 				steps("warmProgrammes", s.warmProgrammes)
 			}
 		}
-		timer.Reset(15 * time.Second)
-		select {
-		case <-s.serviceContext().Done():
-			return
-		case <-s.graphicsWake:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
+		lastSlow := s.o.Now()
+		for s.maintainActive() {
+			timer.Reset(5 * time.Second)
+			select {
+			case <-s.serviceContext().Done():
+				return
+			case <-s.graphicsWake:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
-			}
-			steps("refreshReels", s.refreshReels)
-		case <-timer.C:
-			steps("expireSessions", s.expireSessions)
-			steps("expireBroadcasts", func() { s.broadcasts.expire(s.o.Now()) })
-			steps("refreshReels", s.refreshReels)
-			steps("ensureGraphics", s.ensureGraphics)
-			if s.o.Warm != nil {
-				steps("warmProgrammes", s.warmProgrammes)
+				steps("refreshReels", s.refreshReels)
+			case <-timer.C:
+				steps("expireSessions", s.expireSessions)
+				steps("expireBroadcasts", func() { s.broadcasts.expire(s.o.Now()) })
+				if now := s.o.Now(); now.Sub(lastSlow) >= 15*time.Second {
+					lastSlow = now
+					steps("refreshReels", s.refreshReels)
+					steps("ensureGraphics", s.ensureGraphics)
+					if s.o.Warm != nil {
+						steps("warmProgrammes", s.warmProgrammes)
+					}
+				}
 			}
 		}
 	}

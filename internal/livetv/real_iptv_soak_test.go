@@ -183,9 +183,14 @@ func TestRealIPTVSoak(t *testing.T) {
 	if err != nil || len(channels) != 1 {
 		t.Fatalf("channels = %d, err = %v", len(channels), err)
 	}
+	ch := channels[0]
+	ch.Transcode = true
+	if _, err := s.SaveChannel(ctx, ch); err != nil {
+		t.Fatal(err)
+	}
 	user := &core.User{ID: 1, IsOwner: true}
 	started := time.Now()
-	info, err := s.Tune(ctx, user, channels[0].ID, core.ClientCaps{Protocol: "vela"})
+	info, err := s.Tune(ctx, user, ch.ID, core.ClientCaps{Protocol: "vela"})
 	if err != nil {
 		t.Fatalf("tune: %v", err)
 	}

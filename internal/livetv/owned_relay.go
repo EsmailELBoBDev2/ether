@@ -567,15 +567,17 @@ func (p *relayProducer) run(ctx context.Context) {
 		skewSlack := time.Duration(droppedSkewed) * max(cut, 2*time.Second)
 		starveLimit := lastDur + time.Second
 		if cold {
-			// The hedge normally settles a slow cold start first.
-			starveLimit = 6*time.Second + skewSlack
+			// The hedge normally settles a slow cold start first; scale the
+			// wait with the configured segment target so 4 s stable cuts do
+			// not trip a re-encode before the first keyframe arrives.
+			starveLimit = max(6*time.Second, 2*cut+2*time.Second) + skewSlack
 		} else if !started {
 			starveLimit = max(starveLimit, relayStartWait)
 		}
 		starving := copyMode && !cold && started && !escalated && starvedFor > lastDur+500*time.Millisecond
 		p.starving.Store(starving)
 		p.producing.Store(!cold && !flowing.IsZero() && !starving)
-		hedgeDelay := 2*time.Second + skewSlack
+		hedgeDelay := max(cut, 2*time.Second) + time.Second + skewSlack
 		if h := p.hedgeState(); h != nil {
 			switch {
 			case !cold || escalated:

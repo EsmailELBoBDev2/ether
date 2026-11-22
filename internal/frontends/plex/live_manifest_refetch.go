@@ -23,11 +23,12 @@ type liveManifestRefetches struct {
 }
 
 type liveManifestServed struct {
-	ip       netip.Addr
-	at       time.Time
-	userID   int64
-	clientID string
-	aliases  []string
+	ip           netip.Addr
+	at           time.Time
+	userID       int64
+	clientID     string
+	aliases      []string
+	allowRefetch bool
 }
 
 func (t *liveManifestRefetches) note(id string, e liveManifestServed, now time.Time) {
@@ -36,17 +37,48 @@ func (t *liveManifestRefetches) note(id string, e liveManifestServed, now time.T
 	if t.served == nil {
 		t.served, t.alias = map[string]liveManifestServed{}, map[string]string{}
 	}
+	const liveStopAliasTTL = 24 * time.Hour
 	for old, prev := range t.served {
-		if now.Sub(prev.at) > manifestRefetchWindow {
+		ttl := manifestRefetchWindow
+		if !prev.allowRefetch {
+			ttl = liveStopAliasTTL
+		}
+		if now.Sub(prev.at) > ttl {
 			t.drop(old, prev)
 		}
 	}
 	if prev, ok := t.served[id]; ok {
+		if !e.allowRefetch && prev.allowRefetch {
+			e.allowRefetch = true
+			if !e.ip.IsValid() {
+				e.ip = prev.ip
+			}
+		}
+		for _, a := range prev.aliases {
+			seen := false
+			for _, cur := range e.aliases {
+				if cur == a {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				e.aliases = append(e.aliases, a)
+			}
+		}
 		t.drop(id, prev)
 	}
 	t.served[id] = e
 	for _, a := range e.aliases {
 		t.alias[a] = id
+	}
+}
+
+func (t *liveManifestRefetches) dropByID(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if prev, ok := t.served[id]; ok {
+		t.drop(id, prev)
 	}
 }
 
@@ -118,6 +150,23 @@ func (s *Server) noteLiveManifestServed(r *http.Request, id string, pr *Request)
 			aliases = append(aliases, a)
 		}
 	}
+	s.liveManifests.note(id, liveManifestServed{ip: pr.RemoteIP, at: s.now(), userID: pr.User.ID, clientID: pr.ClientID, aliases: aliases, allowRefetch: true}, s.now())
+}
+
+// noteLiveSessionAlias records the client session id used on authenticated
+// universal Live TV requests (start.mpd, decision, HTTP start) so a subsequent
+// authenticated /video/:/transcode/universal/stop?session=... stops the live
+// session cleanly without admitting credential-less manifest refetches.
+func (s *Server) noteLiveSessionAlias(r *http.Request, id string, pr *Request) {
+	if pr == nil || pr.User == nil || pr.Capability || pr.Token == "" {
+		return
+	}
+	var aliases []string
+	for _, a := range []string{r.URL.Query().Get("session"), pr.SessionID} {
+		if a != "" && a != id {
+			aliases = append(aliases, a)
+		}
+	}
 	s.liveManifests.note(id, liveManifestServed{ip: pr.RemoteIP, at: s.now(), userID: pr.User.ID, clientID: pr.ClientID, aliases: aliases}, s.now())
 }
 
@@ -149,7 +198,7 @@ func (s *Server) authenticateLiveManifestRefetch(r *http.Request, pr *Request) (
 		return nil, false
 	}
 	id, e, ok := s.liveManifests.lookup(key)
-	if !ok || (fromPath && id != key) || e.ip != pr.RemoteIP {
+	if !ok || !e.allowRefetch || (fromPath && id != key) || e.ip != pr.RemoteIP {
 		return nil, false
 	}
 	if age := s.now().Sub(e.at); age < 0 || age > manifestRefetchWindow {

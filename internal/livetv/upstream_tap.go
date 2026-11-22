@@ -74,7 +74,7 @@ var (
 	// when the stream has no usable index, enough for ffmpeg to find a
 	// keyframe without waiting for one.
 	tapJoinBacklog = 2 << 20
-	tapIdle        = 20 * time.Second
+	tapIdle        = 5 * time.Second
 	// tapStallAfter is the floor data age that counts as a stalled provider:
 	// continuous raw TS arrives without silent gaps, so two seconds of silence
 	// is not jitter. Bursty providers (HLS segments restreamed as TS) raise a

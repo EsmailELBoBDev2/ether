@@ -112,6 +112,7 @@ func steadyShapeFor(info *core.MediaInfo) steadyShape {
 // them: a session refused only for capacity or strain may later be handed
 // off to Steady (steadyAllowed); the others never are.
 const (
+	steadyRefusedCopy         = "copy"
 	steadyRefusedCapacity     = "capacity"
 	steadyRefusedClean        = "clean-yields-last-slot"
 	steadyRefusedStrain       = "strain"
@@ -159,10 +160,29 @@ func (s *Service) steadyAllowed(ss *session) bool {
 		return false
 	}
 	switch refused {
-	case "", steadyRefusedCapacity, steadyRefusedClean, steadyRefusedStrain:
+	case "", steadyRefusedCopy, steadyRefusedCapacity, steadyRefusedClean, steadyRefusedStrain:
 		return true
 	}
 	return false
+}
+
+// canEscalateSteady reports whether an IPTV relay that requires video
+// transcoding can hand off to the shared Steady pipeline right now.
+func (s *Service) canEscalateSteady(info core.MediaInfo) bool {
+	if _, ok := s.transcoder().(transcode.ContinuousRunner); !ok {
+		return false
+	}
+	if _, ok := s.transcoder().(continuousBudget); !ok {
+		return false
+	}
+	if code, _ := steadyRefusal(&info); code != "" {
+		return false
+	}
+	if s.broadcasts.steadyStrained() {
+		return false
+	}
+	ok, _, _ := s.steadyCapacity(steadyShapeFor(&info).format)
+	return ok
 }
 
 // steadyLoad is the estimated CPU of every running continuous output.

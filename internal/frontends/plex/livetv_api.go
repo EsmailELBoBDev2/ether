@@ -965,16 +965,19 @@ func (s *Server) handleLiveTVPlayback(w http.ResponseWriter, r *http.Request) bo
 		return true
 	}
 	if strings.HasSuffix(r.URL.Path, "/decision") {
+		s.noteLiveSessionAlias(r, id, pr)
 		s.write(w, r, &model.MediaContainer{Size: 1, Identifier: frontend.LiveTVProvider, Extra: []model.Attr{model.A("generalDecisionCode", 1001), model.A("generalDecisionText", "Live TV stream available."), model.A("transcodeDecisionCode", 1001), model.A("transcodeDecisionText", "Live TV HLS streaming.")}, Metadata: []model.Metadata{s.liveSessionMetadata(info)}})
 		return true
 	}
 	if strings.HasSuffix(r.URL.Path, "/start.mpd") {
+		s.noteLiveSessionAlias(r, id, pr)
 		if err := s.svc().liveTV.ServeDASH(w, r, id, pr.User); err != nil {
 			s.writeLiveDASHError(w, r, info, err)
 		}
 		return true
 	}
 	if strings.HasSuffix(r.URL.Path, "/start") && r.URL.Query().Get("protocol") == frontend.ProtocolHTTP {
+		s.noteLiveSessionAlias(r, id, pr)
 		if err := s.svc().liveTV.ServeHTTP(w, r, id, pr.User); err != nil {
 			s.writeErr(w, r, err)
 		}
@@ -1228,6 +1231,12 @@ func (s *Server) handleLiveOperationStop(w http.ResponseWriter, r *http.Request)
 
 func liveTuneCaps(caps frontend.ClientCaps) frontend.ClientCaps {
 	caps.ProbeLiveWithoutCodecs = caps.ProbeLiveWithoutCodecs || frontend.HasQuirk(caps.Product, caps.Platform, caps.Device, "", caps.Version, "probe-hls-without-codecs")
+	// Plex Web plays Live TV via DASH (fMP4), not MPEG-TS HLS. Declaring fMP4
+	// at tune time lets direct IPTV copy into fMP4 once and serve start.mpd
+	// directly from that timeline without spawning a second ffmpeg process.
+	if len(caps.HLSContainers) == 0 && strings.EqualFold(caps.Product, "Plex Web") {
+		caps.HLSContainers = []string{"fmp4"}
+	}
 	return caps
 }
 

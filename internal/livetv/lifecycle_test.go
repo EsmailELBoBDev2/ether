@@ -218,13 +218,13 @@ func TestIPTVSlowProbeStartupBudget(t *testing.T) {
 					t.Fatalf("channels = %d, err = %v", len(channels), err)
 				}
 				c := channels[0]
+				c.Transcode = true
 				if !steady {
-					c.Transcode = true
 					c.Screens = &ChannelScreens{NoSignal: "error"}
-					if _, err := s.SaveChannel(ctx, c); err != nil {
-						s.Close()
-						t.Fatal(err)
-					}
+				}
+				if _, err := s.SaveChannel(ctx, c); err != nil {
+					s.Close()
+					t.Fatal(err)
 				}
 				u := &core.User{ID: 1}
 				info, err := s.Tune(ctx, u, c.ID, core.ClientCaps{})

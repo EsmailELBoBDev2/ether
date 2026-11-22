@@ -997,17 +997,18 @@ func runSoakScenario(t *testing.T, sc soakScript) soakMetrics {
 		if chStab == "" && sc.serverStability == "" {
 			chStab = sc.stability
 		}
+		ch.Transcode = true
 		if chStab != "" {
 			ch.Stability = chStab
-			ch, err = s.SaveChannel(ctx, ch)
-			if err != nil {
-				s.Close()
-				t.Fatal(err)
-			}
-			if _, _, err = s.channelSnapshot(ctx); err != nil {
-				s.Close()
-				t.Fatal(err)
-			}
+		}
+		ch, err = s.SaveChannel(ctx, ch)
+		if err != nil {
+			s.Close()
+			t.Fatal(err)
+		}
+		if _, _, err = s.channelSnapshot(ctx); err != nil {
+			s.Close()
+			t.Fatal(err)
 		}
 
 		user := &core.User{ID: 1, IsOwner: true}

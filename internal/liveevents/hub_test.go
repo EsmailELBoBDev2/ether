@@ -928,8 +928,11 @@ func TestHubClusterLeaderOnlyPollingAndFanout(t *testing.T) {
 		t.Fatal("node B did not enter RunAsLeader on failover")
 	}
 	waitCall(t, srcB.called)
-	if hubA.IsLeading() {
-		t.Fatal("expected A to stop leading after failover")
+	// A steps down asynchronously once its leader context ends.
+	for deadline := time.Now().Add(3 * time.Second); hubA.IsLeading(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("expected A to stop leading after failover")
+		}
 	}
 
 	// Closing B's subscription stops polling on the new leader B with zero idle timers!

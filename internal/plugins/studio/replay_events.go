@@ -611,7 +611,7 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 		return json.RawMessage("null"), nil
 
 	case "ai.complete":
-		if h.manifest.Ether == nil || !strings.EqualFold(strings.TrimSpace(h.manifest.Ether.Permissions.AI), "complete") {
+		if h.manifest.Ether == nil || !plugins.AIPermissionAllowsComplete(h.manifest.Ether.Permissions.AI) {
 			return nil, wasm.Forbidden("ai: complete permission not declared in manifest")
 		}
 		var req plugins.AICompleteRequest

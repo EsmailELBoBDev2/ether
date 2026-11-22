@@ -1463,16 +1463,22 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 		man, _ := plugins.ParseManifest([]byte(p.Files["manifest.json"]))
 		projectKey := p.ID
 		h.s.mu.Unlock()
-		if man.Ether == nil || !strings.EqualFold(strings.TrimSpace(man.Ether.Permissions.AI), "complete") {
+		if man.Ether == nil || !plugins.AIPermissionAllowsComplete(man.Ether.Permissions.AI) {
 			return nil, wasm.Forbidden("ai: complete permission is not declared in manifest")
 		}
-		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(man, callPath, wasm.IsBackgroundCall(ctx)) {
+		callPath := wasm.CallPath(ctx)
+		if callPath != "" && !plugins.AICompleteAllowedPath(man, callPath, wasm.IsBackgroundCall(ctx)) {
 			return nil, wasm.Forbidden("ai.complete cannot run on viewer or client request path " + callPath)
 		}
 		var req plugins.AICompleteRequest
 		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
 			if err := json.Unmarshal(args[0], &req); err != nil {
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if callPath != "" && plugins.AICompleteSearchPath(man, callPath) {
+			if req.TimeoutMS == 0 || time.Duration(req.TimeoutMS)*time.Millisecond > plugins.MaxAISearchTimeout {
+				req.TimeoutMS = plugins.MaxAISearchTimeout.Milliseconds()
 			}
 		}
 		if h.s.mgr == nil {

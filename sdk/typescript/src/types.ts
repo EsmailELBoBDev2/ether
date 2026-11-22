@@ -209,8 +209,8 @@ export interface Permissions {
   secrets?: string[];
   /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open. */
   sources?: "none" | "search" | "acquire";
-  /** Lets a plugin call ether.ai.complete on the owner's configured language model (actions, jobs, sync, and other non-viewer routes only). */
-  ai?: "none" | "complete";
+  /** Lets a plugin call ether.ai.complete on the owner's configured language model ("complete" for actions/jobs/sync/non-viewer routes; "complete+search" also allows bounded 20 s cached calls on interactive search routes). */
+  ai?: "none" | "complete" | "complete+search";
 }
 
 export type SettingFieldKind =
@@ -599,6 +599,9 @@ export interface FrontendAdapterMeta {
   defaultPort?: number;
   clients?: string[];
   auth?: "ether_token" | "basic" | "none_lan";
+  libraries?: string[];
+  /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
+  searchPaths?: string[];
 }
 
 export interface SetupStep {

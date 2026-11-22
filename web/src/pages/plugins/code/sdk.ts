@@ -109,8 +109,10 @@ interface EtherAICompleteRequest {
   maxTokens?: number;
   /** Optional sampling temperature in [0, 2]. */
   temperature?: number;
-  /** Optional tighter timeout in ms (clamped to 30000 and call deadline). */
+  /** Optional tighter timeout in ms (clamped to 30000 on background/action paths, 20000 on search routes, and call deadline). */
   timeoutMs?: number;
+  /** Viewer search text when calling ai.complete on a search route under permissions.ai: "complete+search" (required on adapter routes without a URL query param, and used for per-query caching). */
+  searchQuery?: string;
 }
 interface EtherAICompleteResponse<T = unknown> {
   text: string;
@@ -147,7 +149,7 @@ declare const ether: {
     list(root: string, path?: string): { name: string; path: string; dir: boolean; size?: number }[];
     stat(root: string, path: string): { name: string; path: string; dir: boolean; size?: number };
   };
-  /** Owner-configured language model completions. Requires permissions.ai: "complete"; blocked on viewer/client request paths. */
+  /** Owner-configured language model completions. Requires permissions.ai: "complete" (or "complete+search" to also allow bounded 20 s cached calls on interactive search routes). */
   ai: { complete<T = unknown>(req: EtherAICompleteRequest): EtherAICompleteResponse<T> };
   notify: { owner(text: string): void };
 };

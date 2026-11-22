@@ -171,9 +171,15 @@ type AICompleteRequest struct {
 	// Temperature optionally adjusts sampling in [0, 2]; ignored safely by
 	// providers/models that disallow explicit temperature.
 	Temperature *float64 `json:"temperature,omitempty"`
-	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms and
-	// the enclosing call deadline).
+	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms on
+	// background/action routes, 20000 ms on interactive search routes, and the
+	// enclosing call deadline).
 	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+	// SearchQuery identifies the viewer's search text when calling ai.complete
+	// on an interactive search route under permissions.ai: "complete+search".
+	// Required on adapter search routes without a URL query param (e.g. GraphQL)
+	// and used for normalized per-query caching.
+	SearchQuery string `json:"searchQuery,omitempty"`
 }
 
 // AICompleteResponse is the completion returned by AIHost.AIComplete.
@@ -197,9 +203,10 @@ type HostError struct {
 func (e *HostError) Error() string { return e.Message }
 
 // AIHost runs bounded completions on the owner's configured language model
-// (requires permissions.ai: "complete"; never call on viewer/client request
-// paths). RemoteHostClient and MockHost implement it; Context.AIComplete uses
-// it automatically.
+// (requires permissions.ai: "complete", or "complete+search" for opted-in
+// interactive search routes; every other viewer/client path stays refused).
+// RemoteHostClient and MockHost implement it; Context.AIComplete uses it
+// automatically.
 type AIHost interface {
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 }
@@ -666,11 +673,16 @@ func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload
 
 // AIComplete runs a bounded text or JSON-Schema-validated completion against
 // the owner's configured language model through POST /ether/plugin-host/ai/complete.
-// Requires permissions.ai: "complete"; never call on viewer/client request paths.
+// Requires permissions.ai: "complete" (or "complete+search" on interactive search
+// routes, forwarding X-Ether-Viewer-Token when present on ctx).
 // When no model is configured, returns a *HostError with Code == "not_configured".
 func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
 	var res AICompleteResponse
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", req, &res, false)
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", headers, req, &res, false)
 	return res, err
 }
 

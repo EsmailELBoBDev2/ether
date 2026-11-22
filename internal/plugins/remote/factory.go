@@ -276,6 +276,10 @@ type HostAdapter struct {
 	// active frontend adapter call for pluginID and returns its authenticated
 	// viewer ID (Manager.ResolveAdapterViewerToken).
 	ResolveAdapterViewerToken func(pluginID, token string) (int64, bool)
+	// ResolveAdapterCallToken verifies an X-Ether-Viewer-Token minted for an
+	// active frontend adapter call for pluginID and returns its viewer, route
+	// path, and extracted search query (Manager.ResolveAdapterCallToken).
+	ResolveAdapterCallToken func(pluginID, token string) (plugins.AdapterCallInfo, bool)
 }
 
 func (a HostAdapter) host(pluginID string) (plugins.Host, error) {
@@ -610,7 +614,20 @@ func (a HostAdapter) PublishEvent(ctx context.Context, pluginID, key string, pay
 	return mapHostErr(h.PublishEvent(ctx, key, payload, corr))
 }
 
-func (a HostAdapter) AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+func (a HostAdapter) AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	if viewerToken != "" {
+		if a.ResolveAdapterCallToken == nil {
+			return plugins.AICompleteResponse{}, ErrPermissionDenied
+		}
+		info, ok := a.ResolveAdapterCallToken(pluginID, viewerToken)
+		if !ok || info.Path == "" {
+			return plugins.AICompleteResponse{}, ErrPermissionDenied
+		}
+		ctx = plugins.WithCallContext(ctx, info.Path, info.SearchQuery)
+		if info.ViewerID > 0 {
+			ctx = plugins.WithViewer(ctx, info.ViewerID)
+		}
+	}
 	h, err := a.host(pluginID)
 	if err != nil {
 		return plugins.AICompleteResponse{}, err

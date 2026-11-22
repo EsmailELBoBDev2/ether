@@ -580,10 +580,21 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
+// AdapterCallInfo identifies the active /ether/v1/frontend/* call that minted
+// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer and
+// route policies as hosted plugins.
+type AdapterCallInfo struct {
+	ViewerID    int64
+	Path        string
+	SearchQuery string
+}
+
 type adapterViewerGrant struct {
-	pluginID string
-	viewerID int64
-	expires  time.Time
+	pluginID    string
+	viewerID    int64
+	path        string
+	searchQuery string
+	expires     time.Time
 }
 
 func isFrontendAdapterPath(path string) bool {
@@ -638,9 +649,11 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		}
 	}
 	m.adapterViewerTokens[token] = adapterViewerGrant{
-		pluginID: pluginID,
-		viewerID: id,
-		expires:  now.Add(ttl),
+		pluginID:    pluginID,
+		viewerID:    id,
+		path:        req.Path,
+		searchQuery: extractCallSearchQuery(*req),
+		expires:     now.Add(ttl),
 	}
 	m.adapterViewerMu.Unlock()
 	req.Headers[HeaderAdapterViewerToken] = token
@@ -656,12 +669,13 @@ func (m *Manager) revokeAdapterViewerToken(token string) {
 	m.adapterViewerMu.Unlock()
 }
 
-// ResolveAdapterViewerToken verifies that token belongs to an active
-// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
-func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+// ResolveAdapterCallToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer
+// and active route context.
+func (m *Manager) ResolveAdapterCallToken(pluginID, token string) (AdapterCallInfo, bool) {
 	token = strings.TrimSpace(token)
 	if pluginID == "" || token == "" {
-		return 0, false
+		return AdapterCallInfo{}, false
 	}
 	now := time.Now()
 	if m.now != nil {
@@ -671,16 +685,30 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 	defer m.adapterViewerMu.Unlock()
 	grant, ok := m.adapterViewerTokens[token]
 	if !ok {
-		return 0, false
+		return AdapterCallInfo{}, false
 	}
 	if !now.Before(grant.expires) {
 		delete(m.adapterViewerTokens, token)
-		return 0, false
+		return AdapterCallInfo{}, false
 	}
 	if grant.pluginID != pluginID || grant.viewerID <= 0 {
+		return AdapterCallInfo{}, false
+	}
+	return AdapterCallInfo{
+		ViewerID:    grant.viewerID,
+		Path:        grant.path,
+		SearchQuery: grant.searchQuery,
+	}, true
+}
+
+// ResolveAdapterViewerToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
+func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+	info, ok := m.ResolveAdapterCallToken(pluginID, token)
+	if !ok {
 		return 0, false
 	}
-	return grant.viewerID, true
+	return info.ViewerID, true
 }
 
 const maxStreamSourceIDLen = 1024

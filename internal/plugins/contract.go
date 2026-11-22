@@ -256,7 +256,7 @@ type Permissions struct {
 	Sources string `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
 	// AI lets a plugin send bounded completion requests to the owner's
 	// configured language model (actions/jobs/sync only, never viewer paths).
-	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete
+	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete|complete+search
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 
@@ -1034,6 +1034,12 @@ type FrontendAdapterMeta struct {
 	// viewer only to the libraries they may see; a viewer who sees none of
 	// them is answered 404. Empty means the adapter is not library-scoped.
 	Libraries []string `json:"libraries,omitempty"`
+	// SearchPaths optionally lists adapter subpaths (such as "/search",
+	// "/rest/search3", or "/graphql") that handle interactive viewer searches
+	// and may call ai.complete when permissions.ai is "complete+search" (#702).
+	// When omitted, conventional search subpaths (ending in /search, /search2,
+	// or /search3, with optional .json/.xml/.view suffix) are recognized.
+	SearchPaths []string `json:"searchPaths,omitempty"`
 }
 
 // SetupMeta declares guided setup for any plugin kind (spec §8).
@@ -1079,6 +1085,10 @@ type Request struct {
 	// Deadline carries the effective per-call deadline computed by the manager
 	// (including live overrides) for hosted runtimes. Host-side only.
 	Deadline time.Duration `json:"-"`
+	// AISearch marks a search route whose plugin has active permissions.ai:
+	// "complete+search" so hosted runtimes allow Deadline up to the AI search
+	// route bound. Host-side only.
+	AISearch bool `json:"-"`
 }
 
 // FrontendBlob asks the host to serve cached bytes without passing them through
@@ -1273,9 +1283,11 @@ type Host interface {
 
 	// AIComplete runs a bounded text or JSON-Schema-validated completion against
 	// the owner's configured language model (Settings -> Integrations -> Language
-	// model). Requires permissions.ai: "complete" and is refused on viewer/client
-	// request paths (actions, jobs, sync, tools, events, setup, and scheduled
-	// routes only). Returns ErrNotConfigured when no model is configured.
+	// model). Requires permissions.ai: "complete" (or "complete+search" to also
+	// allow bounded, cached calls on Stremio catalog search, kinds search, and
+	// declared frontend-adapter search routes; #702). Every other viewer/client
+	// request path stays refused. Returns ErrNotConfigured when no model is
+	// configured.
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 
 	// NotifyOwner posts a console notice (rate-limited).
@@ -1305,8 +1317,15 @@ type AICompleteRequest struct {
 	// that disallow explicit temperature ignore it safely.
 	Temperature *float64 `json:"temperature,omitempty"`
 	// TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout
-	// and the enclosing call deadline).
+	// on background/action paths, MaxAISearchTimeout on interactive search
+	// routes, and the enclosing call deadline).
 	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+	// SearchQuery identifies the viewer's search query when calling ai.complete
+	// on an interactive search route under permissions.ai: "complete+search"
+	// (#702). Required on frontend-adapter search routes that do not carry a
+	// query parameter in the URL (such as GraphQL POST endpoints) and used for
+	// normalized per-query caching so repeated searches do not re-ask the model.
+	SearchQuery string `json:"searchQuery,omitempty"`
 }
 
 // AICompleteResponse is the completion returned by Host.AIComplete.

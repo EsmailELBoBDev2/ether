@@ -47,11 +47,15 @@ func (c *Context) PublishEvent(key string, payload any, corr *EventCorrelation) 
 }
 
 // AIComplete runs a bounded completion against the owner's configured language
-// model. Requires permissions.ai: "complete" and must only be called from
-// actions, jobs, sync, or other non-viewer routes.
+// model. Requires permissions.ai: "complete" (or "complete+search" for opted-in
+// interactive search routes; every other viewer/client path stays refused).
 func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) {
 	if ah, ok := c.Ether.(AIHost); ok {
-		return ah.AIComplete(c.Context, req)
+		ctx := c.Context
+		if tok := c.viewerToken(); tok != "" {
+			ctx = WithViewerToken(ctx, tok)
+		}
+		return ah.AIComplete(ctx, req)
 	}
 	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
 }

@@ -86,7 +86,7 @@ export default hello;
 - `file` (`GET /ether/file/{path...}`)
 - `rankKey` and `condMatch` hot-path exports (`rank_key`, `cond_match`)
 - `poster_badges` (`ether.contributes.posterBadges` plus `ctx.ether.badges.set`, `clear`, and `usage`)
-- `ai.complete` (`ether.permissions.ai: "complete"`, `ctx.ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs? })` on non-viewer routes — actions, jobs, Flow actions, tools, events, sync, schedules)
+- `ai.complete` (`ether.permissions.ai: "complete"` for non-viewer routes — actions, jobs, Flow actions, tools, events, sync, schedules; or `"complete+search"` to also opt in to bounded 20 s cached search completions on Stremio catalog search, kinds search, and frontend adapter search routes via `ctx.ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs?, searchQuery? })`)
 
 ### Poster badges
 

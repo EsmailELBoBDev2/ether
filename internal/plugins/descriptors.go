@@ -342,8 +342,12 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	case "acquire":
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
 	}
-	if normLevel(p.AI) == "complete" {
+	switch normLevel(p.AI) {
+	case "complete":
 		lines = append(lines, "Uses your configured language model")
+	case "complete+search":
+		lines = append(lines, "Uses your configured language model")
+		lines = append(lines, "Uses your language model while a viewer searches")
 	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
@@ -431,8 +435,14 @@ func PermissionDiff(cur, next Manifest) []string {
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
 	}
-	if raised(a.AI, b.AI) {
-		added = append(added, "Uses your configured language model")
+	aiLevel := map[string]int{"none": 0, "complete": 1, "complete+search": 2}
+	if aiLevel[normLevel(b.AI)] > aiLevel[normLevel(a.AI)] {
+		if aiLevel[normLevel(a.AI)] == 0 {
+			added = append(added, "Uses your configured language model")
+		}
+		if normLevel(b.AI) == "complete+search" {
+			added = append(added, "Uses your language model while a viewer searches")
+		}
 	}
 	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
 	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {

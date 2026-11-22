@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
@@ -66,6 +67,272 @@ func TestAIManifestPermissionSheetAndDiff(t *testing.T) {
 	added := PermissionDiff(noneMan, aiMan)
 	if !slices.Contains(added, "Uses your configured language model") {
 		t.Fatalf("PermissionDiff missing AI addition: %v", added)
+	}
+
+	searchMan, err := ParseManifest(aiManifestJSON("complete+search", nil))
+	if err != nil || searchMan.Validate() != nil {
+		t.Fatalf("permissions.ai=complete+search failed: %v %v", err, searchMan.Validate())
+	}
+	searchLines, _, _ := PermissionSheet(searchMan)
+	if !slices.Contains(searchLines, "Uses your configured language model") ||
+		!slices.Contains(searchLines, "Uses your language model while a viewer searches") {
+		t.Fatalf("PermissionSheet missing complete+search lines: %v", searchLines)
+	}
+	upgradeAdded := PermissionDiff(aiMan, searchMan)
+	if len(upgradeAdded) != 1 || upgradeAdded[0] != "Uses your language model while a viewer searches" {
+		t.Fatalf("PermissionDiff(complete -> complete+search) = %v, want only search line", upgradeAdded)
+	}
+	fromNoneAdded := PermissionDiff(noneMan, searchMan)
+	if !slices.Contains(fromNoneAdded, "Uses your configured language model") ||
+		!slices.Contains(fromNoneAdded, "Uses your language model while a viewer searches") {
+		t.Fatalf("PermissionDiff(none -> complete+search) = %v, want both lines", fromNoneAdded)
+	}
+}
+
+func aiSearchAdapterManifestJSON(aiPerm string, searchPaths []string) []byte {
+	adapter := map[string]any{
+		"key":          "stash",
+		"label":        "Stash GraphQL",
+		"protocolHint": "custom",
+		"pathPrefix":   "/stash",
+	}
+	if len(searchPaths) > 0 {
+		adapter["searchPaths"] = searchPaths
+	}
+	opds := map[string]any{
+		"key":          "opds",
+		"label":        "OPDS Catalog",
+		"protocolHint": "opds",
+		"pathPrefix":   "/opds",
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"id":      "community.example.aisearch",
+		"version": "1.0.0",
+		"name":    "AI Search Adapter",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "extension",
+			"summary":      "Frontend adapter with opt-in AI search",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"frontend_adapter"},
+			"permissions":  map[string]any{"ai": aiPerm},
+			"contributes": map[string]any{
+				"frontendAdapters": []map[string]any{adapter, opds},
+			},
+		},
+	})
+	return raw
+}
+
+func TestHostAICompleteSearchOptInCacheBoundsAndIsolation(t *testing.T) {
+	// Validate FrontendAdapterMeta.SearchPaths rejects unsafe or duplicate paths.
+	for _, bad := range [][]string{{"search"}, {"/a/../b"}, {"/search?q=1"}, {"/graphql", "/graphql/"}} {
+		man, err := ParseManifest(aiSearchAdapterManifestJSON("complete+search", bad))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := man.Validate(); err == nil || !strings.Contains(err.Error(), "searchPaths") {
+			t.Fatalf("searchPaths=%v: expected validation error, got %v", bad, err)
+		}
+	}
+
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	var backendCalls int
+	var lastDeadline time.Duration
+	env.m.deps.Backends.AIComplete = func(callCtx context.Context, req AICompleteBackendRequest) (string, error) {
+		backendCalls++
+		if dl, ok := callCtx.Deadline(); ok {
+			lastDeadline = time.Until(dl)
+		}
+		return `{"tags":["noir"]}`, nil
+	}
+
+	// 1. Plugin with permissions.ai: "complete" (no +search) is refused on all search routes.
+	prevBase, err := env.m.PreviewInstall(ctx, Source{
+		Kind:     "studio",
+		Manifest: aiSearchAdapterManifestJSON("complete", []string{"/graphql"}),
+		Files:    map[string][]byte{"dist/plugin.js": []byte(`globalThis.handle = function(){ return { status: 200, body: "{}" }; };`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRec, err := env.m.Install(ctx, prevBase, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseHost := env.m.HostFor(baseRec.ID)
+	for _, tc := range []struct {
+		path  string
+		query string
+	}{
+		{"/catalog/movie/top/search=cozy+noir.json", ""},
+		{"/ether/v1/kinds/books/search", "cozy noir"},
+		{"/ether/v1/frontend/opds/search?q=cozy+noir", ""},
+		{"/ether/v1/frontend/stash/graphql", "cozy noir"},
+	} {
+		c := withCallPath(ctx, tc.path)
+		if _, err := baseHost.AIComplete(c, AICompleteRequest{
+			Messages:    []AIMessage{{Role: "user", Content: "cozy noir"}},
+			SearchQuery: tc.query,
+		}); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("permissions.ai=complete on %s: got %v, want ErrPermissionDenied", tc.path, err)
+		}
+	}
+
+	// 2. Plugin with permissions.ai: "complete+search" opens ONLY search routes with a query.
+	if err := env.m.Remove(ctx, baseRec.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := env.m.PreviewInstall(ctx, Source{
+		Kind:     "studio",
+		Manifest: aiSearchAdapterManifestJSON("complete+search", []string{"/graphql"}),
+		Files:    map[string][]byte{"dist/plugin.js": []byte(`globalThis.handle = function(){ return { status: 200, body: "{}" }; };`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := env.m.HostFor(rec.ID)
+
+	// Every non-search viewer/client path and query-less search route stays refused.
+	for _, tc := range []struct {
+		path  string
+		query string
+	}{
+		{"/catalog/movie/top.json", "cozy noir"},
+		{"/catalog/movie/top/skip=20.json", "cozy noir"},
+		{"/catalog/movie/top/search=.json", ""},
+		{"/stream/movie/tt0133093.json", "cozy noir"},
+		{"/meta/movie/tt0133093.json", "cozy noir"},
+		{"/ether/v1/kinds/books/resolve", "cozy noir"},
+		{"/ether/v1/kinds/books/match", "cozy noir"},
+		{"/ether/v1/kinds/books/items/123", "cozy noir"},
+		{"/ether/v1/kinds/books/live", "cozy noir"},
+		{"/ether/v1/kinds/books/search", ""},            // empty query refused
+		{"/ether/v1/frontend/stash/graphql", ""},        // GraphQL browse without searchQuery refused
+		{"/ether/v1/frontend/stash/cover", "noir"},      // non-search adapter subpath refused
+		{"/ether/v1/frontend/opds/getCoverArt", "noir"}, // non-search adapter subpath refused
+		{"/ether/v1/frontend/undeclared/search?q=noir", "noir"},
+		{"/ether/view/home", "cozy noir"},
+	} {
+		c := withCallPath(ctx, tc.path)
+		if _, err := h.AIComplete(c, AICompleteRequest{
+			Messages:    []AIMessage{{Role: "user", Content: "hi"}},
+			SearchQuery: tc.query,
+		}); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("blocked route %s (query=%q): got %v, want ErrPermissionDenied", tc.path, tc.query, err)
+		}
+	}
+
+	// Hard per-request timeout bound: timeoutMs=30000 is clamped to <= MaxAISearchTimeout (20 s).
+	schema := json.RawMessage(`{"type":"object","required":["tags"],"properties":{"tags":{"type":"array","items":{"type":"string"}}}}`)
+	resp, err := h.AIComplete(WithViewer(withCallPath(ctx, "/ether/v1/frontend/stash/graphql"), 7), AICompleteRequest{
+		Messages:    []AIMessage{{Role: "user", Content: "Cozy Noir"}},
+		Schema:      schema,
+		TimeoutMS:   30_000,
+		SearchQuery: "Cozy Noir",
+	})
+	if err != nil {
+		t.Fatalf("declared adapter searchPath failed: %v", err)
+	}
+	if !strings.Contains(resp.Text, `"noir"`) {
+		t.Fatalf("unexpected search response: %+v", resp)
+	}
+	if lastDeadline > MaxAISearchTimeout+100*time.Millisecond {
+		t.Fatalf("search backend deadline %v exceeded MaxAISearchTimeout (%v)", lastDeadline, MaxAISearchTimeout)
+	}
+	if backendCalls != 1 {
+		t.Fatalf("backendCalls = %d, want 1", backendCalls)
+	}
+
+	// Per-query caching: repeating same query (different case/spacing) across search routes does NOT re-ask.
+	for _, c := range []context.Context{
+		WithViewer(withCallPath(ctx, "/catalog/movie/top/search=cozy++noir.json"), 7),
+		WithViewer(withCallSearchQuery(withCallPath(ctx, "/ether/v1/kinds/books/search"), "  COZY noir "), 8),
+		WithViewer(withCallPath(ctx, "/ether/v1/frontend/opds/search?q=cozy+noir"), 9),
+	} {
+		cachedResp, err := h.AIComplete(c, AICompleteRequest{
+			Messages: []AIMessage{{Role: "user", Content: "cozy noir"}},
+			Schema:   schema,
+		})
+		if err != nil {
+			t.Fatalf("cached search call failed: %v", err)
+		}
+		if cachedResp.Text != resp.Text {
+			t.Fatalf("cached resp %q != %q", cachedResp.Text, resp.Text)
+		}
+	}
+	if backendCalls != 1 {
+		t.Fatalf("repeated normalized searches re-asked backend: calls=%d, want 1", backendCalls)
+	}
+
+	// Per-viewer search rate limit is isolated per viewer AND separate from background budget.
+	env.m.mu.Lock()
+	env.m.aiSearchLimit = 1
+	env.m.aiSearchTimes = map[string][]time.Time{}
+	env.m.mu.Unlock()
+	v1Ctx := WithViewer(withCallPath(ctx, "/ether/v1/frontend/stash/graphql"), 101)
+	v2Ctx := WithViewer(withCallPath(ctx, "/ether/v1/frontend/stash/graphql"), 202)
+	if _, err := h.AIComplete(v1Ctx, AICompleteRequest{
+		Messages:    []AIMessage{{Role: "user", Content: "query-alpha"}},
+		SearchQuery: "query-alpha",
+	}); err != nil {
+		t.Fatalf("viewer 1 first search: %v", err)
+	}
+	if _, err := h.AIComplete(v1Ctx, AICompleteRequest{
+		Messages:    []AIMessage{{Role: "user", Content: "query-beta"}},
+		SearchQuery: "query-beta",
+	}); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("viewer 1 second uncached search: got %v, want ErrRateLimited", err)
+	}
+	// Cached repeat for viewer 1 still succeeds even while rate-limited.
+	if _, err := h.AIComplete(v1Ctx, AICompleteRequest{
+		Messages:    []AIMessage{{Role: "user", Content: "query-alpha"}},
+		SearchQuery: "query-alpha",
+	}); err != nil {
+		t.Fatalf("viewer 1 cached repeat while rate-limited: %v", err)
+	}
+	// Viewer 2 has its own search budget.
+	if _, err := h.AIComplete(v2Ctx, AICompleteRequest{
+		Messages:    []AIMessage{{Role: "user", Content: "query-gamma"}},
+		SearchQuery: "query-gamma",
+	}); err != nil {
+		t.Fatalf("viewer 2 search blocked by viewer 1: %v", err)
+	}
+	// Background action budget is separate from search budget.
+	if _, err := h.AIComplete(withCallPath(ctx, "/ether/action/tag"), AICompleteRequest{
+		Messages: []AIMessage{{Role: "user", Content: "bg"}},
+	}); err != nil {
+		t.Fatalf("background action blocked by search rate limit: %v", err)
+	}
+
+	// Independent live revocation: revoking "ai.search" blocks search routes but keeps background actions working.
+	if err := env.m.SetGrants(ctx, rec.ID, Grants{Revoked: []string{"ai.search"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.AIComplete(v2Ctx, AICompleteRequest{
+		Messages:    []AIMessage{{Role: "user", Content: "after revoke"}},
+		SearchQuery: "after revoke",
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("revoked ai.search on search route: got %v, want ErrPermissionDenied", err)
+	}
+	if _, err := h.AIComplete(withCallPath(ctx, "/ether/action/tag"), AICompleteRequest{
+		Messages: []AIMessage{{Role: "user", Content: "bg after search revoke"}},
+	}); err != nil {
+		t.Fatalf("background action should still work when only ai.search is revoked: %v", err)
+	}
+	if err := env.m.SetGrants(ctx, rec.ID, Grants{Revoked: []string{"ai"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.AIComplete(withCallPath(ctx, "/ether/action/tag"), AICompleteRequest{
+		Messages: []AIMessage{{Role: "user", Content: "bg after ai revoke"}},
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("revoked ai on action route: got %v, want ErrPermissionDenied", err)
 	}
 }
 
@@ -313,5 +580,101 @@ globalThis.handle = function(req) {
 	got = callJSON("/ether/action/classify")
 	if got["ok"] != false || got["code"] != "not_configured" {
 		t.Fatalf("not configured = %+v, want not_configured", got)
+	}
+}
+
+func TestHostedWasmAICompleteSearchFallbackAndCache(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	eng := wasm.NewEngine(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { _ = eng.Close() })
+	env.m.RegisterRuntime("hosted", HostedRuntimeFactory(eng))
+
+	var backendCalls int
+	var failTimeout bool
+	env.m.deps.Backends.AIComplete = func(callCtx context.Context, _ AICompleteBackendRequest) (string, error) {
+		backendCalls++
+		if failTimeout {
+			return "", context.DeadlineExceeded
+		}
+		return `{"mood":"noir"}`, nil
+	}
+
+	script := `
+globalThis.handle = function(req) {
+  try {
+    var res = ether.ai.complete({
+      messages: [{ role: "user", content: req.path }],
+      searchQuery: (req.body && req.body.query) || "",
+      schema: {
+        type: "object",
+        required: ["mood"],
+        properties: { mood: { type: "string" } }
+      }
+    });
+    return { status: 200, body: JSON.stringify({ ai: true, mood: res.json.mood }) };
+  } catch (e) {
+    return { status: 200, body: JSON.stringify({ ai: false, code: e.code || "", fallback: true }) };
+  }
+};
+`
+	prev, err := env.m.PreviewInstall(ctx, Source{
+		Kind:     "studio",
+		Manifest: aiSearchAdapterManifestJSON("complete+search", []string{"/graphql"}),
+		Files:    map[string][]byte{"dist/plugin.js": []byte(script)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callJSON := func(req Request) map[string]any {
+		t.Helper()
+		resp, err := env.m.Call(ctx, rec.ID, req)
+		if err != nil || resp.Status != 200 {
+			t.Fatalf("%s: resp=%+v err=%v", req.Path, resp, err)
+		}
+		var bodyStr string
+		if err := json.Unmarshal(resp.Body, &bodyStr); err != nil {
+			bodyStr = string(resp.Body)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(bodyStr), &out); err != nil {
+			t.Fatalf("%s invalid body %q: %v", req.Path, bodyStr, err)
+		}
+		return out
+	}
+
+	// Non-search catalog browse stays refused.
+	got := callJSON(Request{Method: "GET", Path: "/catalog/movie/top.json"})
+	if got["ai"] != false || got["code"] != "forbidden" {
+		t.Fatalf("non-search catalog = %+v, want forbidden", got)
+	}
+
+	// Stremio catalog search succeeds and caches repeated calls.
+	got = callJSON(Request{Method: "GET", Path: "/catalog/movie/top/search=cozy+noir.json"})
+	if got["ai"] != true || got["mood"] != "noir" {
+		t.Fatalf("catalog search = %+v, want ai=true mood=noir", got)
+	}
+	got = callJSON(Request{Method: "GET", Path: "/catalog/movie/top/search=cozy+noir.json"})
+	if got["ai"] != true || backendCalls != 1 {
+		t.Fatalf("cached catalog search: got=%+v calls=%d, want calls=1", got, backendCalls)
+	}
+
+	// Kinds search with query succeeds.
+	got = callJSON(Request{Method: "POST", Path: "/ether/v1/kinds/books/search", Body: json.RawMessage(`{"query":"space opera"}`)})
+	if got["ai"] != true || got["mood"] != "noir" {
+		t.Fatalf("kinds search = %+v, want ai=true", got)
+	}
+
+	// Timeout returns "timeout" so the adapter answers with its non-AI fallback.
+	failTimeout = true
+	got = callJSON(Request{Method: "POST", Path: "/ether/v1/frontend/stash/graphql", Body: json.RawMessage(`{"query":"slow query"}`)})
+	if got["ai"] != false || got["code"] != "timeout" || got["fallback"] != true {
+		t.Fatalf("timeout fallback = %+v, want code=timeout fallback=true", got)
 	}
 }

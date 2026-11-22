@@ -818,6 +818,7 @@ class AICompleteRequest(TypedDict, total=False):
     maxTokens: int
     temperature: float
     timeoutMs: int
+    searchQuery: str
 
 
 class AICompleteResponse(TypedDict, total=False):
@@ -837,11 +838,31 @@ class HostError(RuntimeError):
 class _AIClient:
     """Client for Ether's owner-configured language model host service (`ai.complete`)."""
 
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
 
-    def complete(self, req: AICompleteRequest) -> AICompleteResponse:
-        res = self._call("POST", "/ether/plugin-host/ai/complete", dict(req))
+    def complete(
+        self,
+        req: AICompleteRequest,
+        viewer_token: Optional[str] = None,
+    ) -> AICompleteResponse:
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        extra_headers = {HEADER_VIEWER_TOKEN: tok} if tok else None
+        res = self._call(
+            "POST",
+            "/ether/plugin-host/ai/complete",
+            dict(req),
+            extra_headers=extra_headers,
+        )
         return res if isinstance(res, dict) else {"text": ""}  # type: ignore[return-value]
 
 
@@ -939,7 +960,7 @@ class RemoteHostClient:
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
         self.events = _EventsClient(self._call_json)
-        self.ai = _AIClient(self._call_json)
+        self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)

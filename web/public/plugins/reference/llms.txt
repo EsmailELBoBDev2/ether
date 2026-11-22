@@ -213,28 +213,48 @@ Host calls enforce permissions again on every request; revocation is immediate.
 
 A plugin that wants text or structured JSON completions from the owner's
 configured language model (Settings -> Integrations -> Language model) declares
-`ether.permissions.ai: "complete"` instead of asking the owner for a second API
-key. Call `ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs? })`
+`ether.permissions.ai: "complete"` (or `"complete+search"` to also opt in to
+interactive search) instead of asking the owner for a second API key. Call
+`ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs?, searchQuery? })`
 (hosted) or `POST /ether/plugin-host/ai/complete` (`ctx.ether.ai.complete` in TS/Python,
 `ctx.AIComplete` in Go). When `schema` (a JSON Schema object; external `$ref` URLs
 are rejected) is provided, Ether extracts JSON, validates it against `schema`,
 and returns `{ text, json }` (or throws `invalid_output` on mismatch).
 
 `ai.complete` is **blocked on viewer/client request paths** (`/stream/*`,
-`/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`,
-`/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|search|items|live`,
-`/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`,
-`/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot paths). Call it
-only from actions (`/ether/action/*`), jobs (`/ether/job/*`), Flow actions,
-tools, event handlers, setup/test routes, background kind/Live TV sync, or
-declared `ether.schedule` routes, and cache results in `ether.kv` for viewer paths.
+non-search `/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`,
+`/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|items|live`,
+non-search `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`,
+`/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot paths). With
+`"complete"`, call it only from actions (`/ether/action/*`), jobs (`/ether/job/*`),
+Flow actions, tools, event handlers, setup/test routes, background kind/Live TV
+sync, or declared `ether.schedule` routes, and cache results in `ether.kv` for
+viewer paths.
 
-Safe per-plugin bounds apply automatically: 20 calls/minute, 1..20 messages
-(<=32 KiB total, at least one `user`), <=32 KiB schema, `maxTokens` default 1024
-(max 4096), `temperature` in `[0, 2]`, `timeoutMs` <=30 s, <=64 KiB output. Always
-handle `err.code === "not_configured"` (`HostError.Code == "not_configured"` in
-Go) so the plugin falls back cleanly when no language model is configured. No
-provider credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
+With `ether.permissions.ai: "complete+search"` (shown on the install sheet with
+its own line and independently revocable as `ai.search`), Ether permits the same
+bounded descriptive-search exception it uses for its own AI search on three
+search routes only: Stremio catalog search with a non-empty `search` query
+(`/catalog/{type}/{id}/search=….json`), kinds search (`/ether/v1/kinds/{kind}/search`
+with a non-empty query), and frontend adapter search routes
+(`/ether/v1/frontend/{key}/…`, matching `frontendAdapters[].searchPaths` or
+conventional `/search`, `/search2`, `/search3` subpaths when `searchPaths` is
+omitted). Pass `searchQuery` on adapter endpoints that do not carry a query in
+the URL (such as GraphQL POST routes); remote SDKs forward `X-Ether-Viewer-Token`
+automatically so the host enforces the active route and live grant.
+
+Safe per-plugin bounds apply automatically: 1..20 messages (`<=32 KiB` total, at
+least one `user`), `<=32 KiB` schema, `maxTokens` default 1024 (max 4096),
+`temperature` in `[0, 2]`, `<=64 KiB` output. Background/action routes allow 20
+calls/minute per plugin and `timeoutMs <= 30 s`. Interactive search routes
+(`complete+search`) enforce a hard `timeoutMs <= 20 s` bound (matching Ether's
+descriptive search bound; always catch `timeout`/`deadline` and answer without
+AI), cache results per normalized query (10 min TTL, 256 entries/plugin, with
+in-flight dedup) so repeated searches do not re-ask, and enforce a separate
+per-viewer rate limit (10 uncached calls/minute per viewer). Always handle
+`err.code === "not_configured"` (`HostError.Code == "not_configured"` in Go) so
+the plugin falls back cleanly when no language model is configured. No provider
+credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
 
 ## Poster badges
 

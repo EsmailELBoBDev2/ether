@@ -56,6 +56,7 @@ export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
 export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
 export const DefaultAICompletePerMin = 20;
+export const DefaultAISearchCompletePerMin = 10;
 export const MaxAIMessages = 20;
 export const MaxAIInputBytes = 32 * 1024;
 export const MaxAISchemaBytes = 32 * 1024;
@@ -63,6 +64,9 @@ export const DefaultAIMaxTokens = 1024;
 export const MaxAIMaxTokens = 4096;
 export const DefaultAITimeoutMs = 30_000;
 export const MaxAITimeoutMs = 30_000;
+export const DefaultAISearchTimeoutMs = 20_000;
+export const MaxAISearchTimeoutMs = 20_000;
+export const MaxAISearchQueryBytes = 1000;
 export const MaxAIResponseBytes = 64 * 1024;
 
 export interface AIMessage {
@@ -78,8 +82,10 @@ export interface AICompleteRequest {
   maxTokens?: number;
   /** Optional sampling temperature in [0, 2]; ignored safely by providers/models that forbid it. */
   temperature?: number;
-  /** Optional tighter timeout in milliseconds (clamped to 30000 and the call deadline). */
+  /** Optional tighter timeout in milliseconds (clamped to 30000 on background/action routes, 20000 on search routes, and the call deadline). */
   timeoutMs?: number;
+  /** Viewer search text when calling ai.complete on a search route under permissions.ai: "complete+search". Required on adapter search routes without a URL query param (e.g. GraphQL) and used for normalized per-query caching. */
+  searchQuery?: string;
 }
 
 export interface AICompleteResponse<T = unknown> {
@@ -491,9 +497,10 @@ export interface EtherHost {
   };
   /**
    * Owner-configured language model completions (Settings -> Integrations -> Language model).
-   * Requires `permissions.ai: "complete"`. Refused on interactive viewer/client request paths
-   * (actions, jobs, sync, tools, events, setup, and scheduled routes only). Throws an Error
-   * with `code: "not_configured"` when no language model is configured.
+   * Requires `permissions.ai: "complete"` (or `"complete+search"` to also allow bounded 20 s
+   * cached calls on Stremio catalog search, kinds search, and declared frontend-adapter search
+   * routes). Every other viewer/client request path stays refused. Throws an Error with
+   * `code: "not_configured"` when no language model is configured.
    */
   ai?: {
     complete<T = unknown>(req: AICompleteRequest): MaybePromise<AICompleteResponse<T>>;
@@ -1321,7 +1328,16 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     },
     ai: {
       async complete<T = unknown>(req: AICompleteRequest): Promise<AICompleteResponse<T>> {
-        return (await callJson<AICompleteResponse<T>>("POST", "/ether/plugin-host/ai/complete", req)) ?? { text: "" };
+        const tok = (opts.viewerToken ?? "").trim();
+        return (
+          (await callJson<AICompleteResponse<T>>(
+            "POST",
+            "/ether/plugin-host/ai/complete",
+            req,
+            false,
+            tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
+          )) ?? { text: "" }
+        );
       },
     },
     async log(level: string, message: string, attrs?: Record<string, unknown>): Promise<void> {

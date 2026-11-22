@@ -68,6 +68,7 @@ type KindCatalog struct {
 	blobDir           string
 	log               *slog.Logger
 	liveSearchTimeout time.Duration
+	customLiveTimeout bool
 
 	quotaMu sync.RWMutex
 	quotas  map[string]blobcache.Quota
@@ -99,6 +100,7 @@ func AttachKindCatalog(syncCtx context.Context, deps KindCatalogDeps) *KindCatal
 	if log == nil {
 		log = slog.Default()
 	}
+	customLiveTimeout := deps.LiveSearchTimeout > 0
 	timeout := deps.LiveSearchTimeout
 	if timeout <= 0 {
 		timeout = defaultLiveSearchTimeout
@@ -113,6 +115,7 @@ func AttachKindCatalog(syncCtx context.Context, deps KindCatalogDeps) *KindCatal
 		blobDir:           deps.BlobDir,
 		log:               log.With("component", "kindcatalog"),
 		liveSearchTimeout: timeout,
+		customLiveTimeout: customLiveTimeout,
 		quotas:            make(map[string]blobcache.Quota),
 		liveCalls:         make(map[string]*liveSearchCall),
 		liveSems:          make(map[string]chan struct{}),
@@ -1531,6 +1534,8 @@ func (c *KindCatalog) MemberOf(ctx context.Context, lib core.Library, key core.R
 
 func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRecord, query string, limit int) []core.KindItem {
 	sfKey := rec.PluginID + "\x00" + rec.KindKey + "\x00" + strings.ToLower(strings.TrimSpace(query))
+	aiSearch := !c.customLiveTimeout && c.mgr != nil && c.mgr.AISearchGranted(ctx, rec.PluginID)
+	viewerID := core.CatalogViewerID(ctx)
 
 	c.liveMu.Lock()
 	call, inflight := c.liveCalls[sfKey]
@@ -1542,11 +1547,14 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 			sem = make(chan struct{}, maxLiveSearchPerPlugin)
 			c.liveSems[rec.PluginID] = sem
 		}
-		go c.execLiveSearch(sfKey, sem, rec, query, limit, call)
+		go c.execLiveSearch(sfKey, sem, rec, query, limit, viewerID, aiSearch, call)
 	}
 	c.liveMu.Unlock()
 
 	budget := c.liveSearchTimeout
+	if aiSearch {
+		budget = plugins.MaxAISearchTimeout
+	}
 	if dl, ok := ctx.Deadline(); ok {
 		if rem := time.Until(dl); rem > 0 && rem < budget {
 			budget = rem
@@ -1565,7 +1573,7 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 	}
 }
 
-func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec pluginitems.KindRecord, query string, limit int, call *liveSearchCall) {
+func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec pluginitems.KindRecord, query string, limit int, viewerID int64, aiSearch bool, call *liveSearchCall) {
 	defer func() {
 		close(call.done)
 		c.liveMu.Lock()
@@ -1573,8 +1581,15 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		c.liveMu.Unlock()
 	}()
 
-	bgCtx, cancel := context.WithTimeout(c.syncCtx, liveSearchBackgroundWait)
+	bgWait := liveSearchBackgroundWait
+	if aiSearch {
+		bgWait = plugins.AISearchRouteDeadline
+	}
+	bgCtx, cancel := context.WithTimeout(c.syncCtx, bgWait)
 	defer cancel()
+	if viewerID > 0 {
+		bgCtx = plugins.WithViewer(bgCtx, viewerID)
+	}
 
 	select {
 	case sem <- struct{}{}:

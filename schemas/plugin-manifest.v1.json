@@ -466,6 +466,12 @@
                   },
                   "protocolHint": {
                     "type": "string"
+                  },
+                  "searchPaths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "type": "object"
@@ -1607,10 +1613,11 @@
         "permissions": {
           "properties": {
             "ai": {
-              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).",
+              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (\"complete\"), or also on interactive search routes — Stremio catalog search, kinds search, and frontend adapter search routes — with a hard 20 s bound and per-query caching (\"complete+search\"). Every other viewer/client path stays refused.",
               "enum": [
                 "none",
-                "complete"
+                "complete",
+                "complete+search"
               ]
             },
             "catalog": {
@@ -1734,7 +1741,7 @@
                 },
                 "poolSize": {
                   "default": 2,
-                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize >= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize \u003e= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
                   "minimum": 0,
                   "type": "integer"
                 },

@@ -48,12 +48,16 @@ Python SDK clients: `runtime.limits`, `http.fetchToCache`, `cache.read`, `archiv
 See `plugin-kinds.md` for the wire shapes, grant rules, archive safety bounds, and
 why a 10 MiB direct fetch can still exceed a 32 MiB guest's available heap.
 
-The owner language model host service (`ai.complete`, `permissions.ai: "complete"`)
-is generated from `host_ai.go`, `contract.go`, `remote/host.go`, and the SDK
-clients. It reuses the owner's configured language model from Integrations,
-validates optional JSON Schemas on the host, applies fixed per-plugin rate/size/timeout
-bounds, hides provider credentials and raw upstream errors from plugins, and is
-refused on interactive viewer/client request paths.
+The owner language model host service (`ai.complete`, `permissions.ai: "complete"`
+or `"complete+search"`) is generated from `host_ai.go`, `contract.go`,
+`remote/host.go`, and the SDK clients. It reuses the owner's configured language
+model from Integrations, validates optional JSON Schemas on the host, applies
+fixed per-plugin rate/size/timeout bounds, and hides provider credentials and
+raw upstream errors from plugins. Viewer/client request paths remain refused
+except opted-in interactive search routes (Stremio catalog search with a query,
+kinds search, and declared frontend-adapter search routes) under
+`permissions.ai: "complete+search"`, which run within Ether's 20 s search wait
+bound with per-query caching and a separate per-viewer rate limit.
 
 Agents can read `/ether/plugins/reference/llms.txt` for the entry guide and topic
 index, or `llms-full.txt` for every authored chapter and generated declaration.

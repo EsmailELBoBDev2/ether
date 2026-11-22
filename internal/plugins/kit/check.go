@@ -779,7 +779,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 	case "notify.owner":
 		return json.RawMessage("null"), nil
 	case "ai.complete":
-		if h.man.Ether == nil || h.man.Ether.Permissions.AI != "complete" {
+		if h.man.Ether == nil || !plugins.AIPermissionAllowsComplete(h.man.Ether.Permissions.AI) {
 			return nil, wasm.Forbidden("ai: complete permission not declared")
 		}
 		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {

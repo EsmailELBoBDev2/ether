@@ -770,7 +770,7 @@ type fakeHost struct {
 	blobs       map[string][]byte
 	notices     []string
 	logs        []string
-	aiComplete  func(pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+	aiComplete  func(pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 }
 
 func newFakeHost() *fakeHost {
@@ -1070,9 +1070,9 @@ func (f *fakeHost) PublishEvent(_ context.Context, pluginID, key string, payload
 	return nil
 }
 
-func (f *fakeHost) AIComplete(_ context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+func (f *fakeHost) AIComplete(_ context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
 	if f.aiComplete != nil {
-		return f.aiComplete(pluginID, req)
+		return f.aiComplete(pluginID, viewerToken, req)
 	}
 	return plugins.AICompleteResponse{}, ErrNotConfigured
 }
@@ -1847,8 +1847,9 @@ func TestRemoteHostKindVisibleAndBrowse(t *testing.T) {
 
 type adapterTestHost struct {
 	plugins.Host
-	onVisible func(ctx context.Context, kindKey string, ids []string) ([]string, error)
-	onBrowse  func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	onVisible    func(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	onBrowse     func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	onAIComplete func(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 }
 
 func (a *adapterTestHost) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
@@ -1857,6 +1858,10 @@ func (a *adapterTestHost) KindVisible(ctx context.Context, kindKey string, ids [
 
 func (a *adapterTestHost) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
 	return a.onBrowse(ctx, kindKey, q)
+}
+
+func (a *adapterTestHost) AIComplete(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	return a.onAIComplete(ctx, req)
 }
 
 func TestHostHandlerDerivedSecrets(t *testing.T) {
@@ -1995,11 +2000,11 @@ func TestRemoteHostFrontendStreamURLSourceOption(t *testing.T) {
 
 type fakeAIHost struct {
 	*fakeHost
-	fn func(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+	fn func(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 }
 
-func (f *fakeAIHost) AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
-	return f.fn(ctx, pluginID, req)
+func (f *fakeAIHost) AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	return f.fn(ctx, pluginID, viewerToken, req)
 }
 
 func TestRemoteHostAIComplete(t *testing.T) {
@@ -2007,10 +2012,15 @@ func TestRemoteHostAIComplete(t *testing.T) {
 
 	var respErr error
 	var respVal plugins.AICompleteResponse
+	var lastViewerTok string
 	aiHost := &fakeAIHost{
 		fakeHost: newFakeHost(),
-		fn: func(_ context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+		fn: func(_ context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
 			if pluginID != "plug.ai" {
+				return plugins.AICompleteResponse{}, ErrPermissionDenied
+			}
+			lastViewerTok = viewerToken
+			if viewerToken == "vt-denied" {
 				return plugins.AICompleteResponse{}, ErrPermissionDenied
 			}
 			return respVal, respErr
@@ -2043,10 +2053,10 @@ func TestRemoteHostAIComplete(t *testing.T) {
 		return resp.StatusCode, out
 	}
 
-	// Viewer-token requests are rejected before invoking host.
-	status, body := post(`{"messages":[{"role":"user","content":"hi"}]}`, "vt-1")
-	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "permission_denied" {
-		t.Fatalf("viewer token: status=%d body=%+v", status, body)
+	// Disallowed viewer-token call returns 403 permission_denied.
+	status, body := post(`{"messages":[{"role":"user","content":"hi"}]}`, "vt-denied")
+	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "permission_denied" || lastViewerTok != "vt-denied" {
+		t.Fatalf("denied viewer token: status=%d tok=%q body=%+v", status, lastViewerTok, body)
 	}
 
 	// Unconfigured returns 501 not_configured.
@@ -2063,11 +2073,64 @@ func TestRemoteHostAIComplete(t *testing.T) {
 		t.Fatalf("invalid_output: status=%d body=%+v", status, body)
 	}
 
-	// Success returns text + json.
+	// Success returns text + json (and forwards X-Ether-Viewer-Token when present).
 	respErr = nil
 	respVal = plugins.AICompleteResponse{Text: `{"tag":"noir"}`, JSON: json.RawMessage(`{"tag":"noir"}`)}
-	status, body = post(`{"messages":[{"role":"user","content":"hi"}]}`, "")
-	if status != http.StatusOK || body["text"] != `{"tag":"noir"}` {
-		t.Fatalf("success: status=%d body=%+v", status, body)
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}],"searchQuery":"cozy noir"}`, "vt-search")
+	if status != http.StatusOK || body["text"] != `{"tag":"noir"}` || lastViewerTok != "vt-search" {
+		t.Fatalf("success: status=%d tok=%q body=%+v", status, lastViewerTok, body)
+	}
+}
+
+func TestRemoteHostAdapterAICompleteSearchToken(t *testing.T) {
+	t.Parallel()
+
+	var seenViewer int64
+	adapter := HostAdapter{
+		ResolveAdapterCallToken: func(pluginID, token string) (plugins.AdapterCallInfo, bool) {
+			if pluginID == "plug.ai" && token == "tok-search" {
+				return plugins.AdapterCallInfo{
+					ViewerID:    42,
+					Path:        "/ether/v1/frontend/stash/graphql",
+					SearchQuery: "",
+				}, true
+			}
+			return plugins.AdapterCallInfo{}, false
+		},
+		HostFor: func(pluginID string) plugins.Host {
+			if pluginID != "plug.ai" {
+				return nil
+			}
+			return &adapterTestHost{
+				onAIComplete: func(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+					v, ok := plugins.ViewerFromContext(ctx)
+					if !ok || v != 42 {
+						return plugins.AICompleteResponse{}, plugins.ErrPermissionDenied
+					}
+					seenViewer = v
+					return plugins.AICompleteResponse{Text: `{"q":"` + req.SearchQuery + `"}`}, nil
+				},
+			}
+		},
+	}
+
+	// Forged/unknown token is rejected before reaching plugins.Host.
+	if _, err := adapter.AIComplete(context.Background(), "plug.ai", "tok-bad", plugins.AICompleteRequest{
+		Messages:    []plugins.AIMessage{{Role: "user", Content: "noir"}},
+		SearchQuery: "noir",
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("invalid token: got %v, want ErrPermissionDenied", err)
+	}
+
+	// Valid active adapter token binds viewer + active route context.
+	resp, err := adapter.AIComplete(context.Background(), "plug.ai", "tok-search", plugins.AICompleteRequest{
+		Messages:    []plugins.AIMessage{{Role: "user", Content: "noir"}},
+		SearchQuery: "noir",
+	})
+	if err != nil {
+		t.Fatalf("valid search token: %v", err)
+	}
+	if seenViewer != 42 || resp.Text != `{"q":"noir"}` {
+		t.Fatalf("viewer=%d resp=%+v", seenViewer, resp)
 	}
 }

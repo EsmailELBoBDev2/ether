@@ -458,7 +458,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Language model (AI)
 
-Uses the owner's configured language model from Settings -> Integrations -> Language model (one AI, one connection place; never ask for a second API key). Requires `permissions.ai: "complete"`, shown on the install sheet and revocable live in plugin permissions. No model credentials, endpoint URLs, or raw provider errors ever reach the plugin.
+Uses the owner's configured language model from Settings -> Integrations -> Language model (one AI, one connection place; never ask for a second API key). Requires `permissions.ai: "complete"` (or `"complete+search"` to also opt in to bounded, cached interactive search calls), shown on the install sheet and revocable live in plugin permissions (`ai` and `ai.search`). No model credentials, endpoint URLs, or raw provider errors ever reach the plugin.
 
 ```ts
 try {
@@ -487,13 +487,22 @@ try {
 }
 ```
 
-## Route policy (never on viewer/client paths)
-`ai.complete` is refused on interactive viewer and client request paths (`/stream/*`, `/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`, `/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|search|items|live`, `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`, `/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot-path `rank_key`/`cond_match`). Call it only from owner actions (`/ether/action/*`), background jobs (`/ether/job/*`), Flow actions (`/ether/v1/flow-actions/*`), tools (`/ether/tool/*`), event handlers (`/ether/event`), setup/test routes (`/ether/v1/setup/*`, `/ether/test`), background kind/Live TV sync, or declared `ether.schedule` routes. Precompute or cache structured results in `ether.kv` so viewer requests never wait on the model. Remote plugins call `POST /ether/plugin-host/ai/complete` and must follow the same rule (requests carrying `X-Ether-Viewer-Token` are rejected).
+## Route policy & search opt-in
+With `permissions.ai: "complete"`, `ai.complete` is allowed only on owner actions (`/ether/action/*`), background jobs (`/ether/job/*`), Flow actions (`/ether/v1/flow-actions/*`), tools (`/ether/tool/*`), event handlers (`/ether/event`), setup/test routes (`/ether/v1/setup/*`, `/ether/test`), background kind/Live TV sync, or declared `ether.schedule` routes. Precompute or cache structured results in `ether.kv` for browse/playback paths.
 
-## Bounds & error codes
-Safe per-plugin defaults apply with no extra owner settings: at most 20 calls/minute per plugin, 1..20 messages (`system`, `user`, `assistant`, with at least one `user`), 32 KiB total prompt bytes, 32 KiB JSON Schema (external `$ref` URLs are rejected), `maxTokens` default 1024 / max 4096, `temperature` in `[0, 2]`, `timeoutMs` default/max 30 s, and 64 KiB response cap.
+To use `ai.complete` during interactive search (matching Ether's own descriptive search exception), declare `permissions.ai: "complete+search"`. This adds a separate install-sheet line ("Uses your language model while a viewer searches") and an independently revocable `ai.search` grant, and opens ONLY:
+- Stremio-style catalog search routes with a non-empty `search` query (`/catalog/{type}/{id}/search=….json`; non-search catalog browse and empty `search=` stay refused),
+- Media-kind search routes (`/ether/v1/kinds/{kind}/search` with a non-empty query; `/resolve`, `/match`, `/items`, and `/live` stay refused),
+- Declared frontend adapter search routes (`/ether/v1/frontend/{key}/…` matching `contributes.frontendAdapters[].searchPaths`, or conventional `/search`, `/search2`, `/search3` subpaths when `searchPaths` is omitted) with a non-empty query (`searchQuery` in the request body is required for routes without a URL query parameter such as GraphQL POST endpoints).
 
-Error codes (`err.code` in JS/TS/Python, `HostError.Code` in Go): `not_configured` (HTTP 501 — no language model configured; does not consume rate limit), `forbidden` (hosted) / `permission_denied` (HTTP 403 remote — missing/revoked grant or disallowed client route), `rate_limited` (HTTP 429), `invalid_input` (hosted) / `invalid` (HTTP 400 remote), `invalid_output` (HTTP 502 — reply was not valid JSON, oversized, or failed `schema`), `timeout` (hosted) / `deadline` (HTTP 504 remote), `unavailable` (HTTP 503 — provider call failed, sanitized).
+Every other viewer/client path (`/stream/*`, non-search `/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`, `/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|items|live`, non-search `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`, `/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot-path `rank_key`/`cond_match`) stays refused. Remote plugins forward `X-Ether-Viewer-Token` on frontend-adapter search calls (handled automatically by the SDKs) so the host enforces the active adapter route, viewer rate limit, and live grant.
+
+## Bounds, caching & error codes
+Safe per-plugin defaults apply with no extra owner settings: 1..20 messages (`system`, `user`, `assistant`, with at least one `user`), 32 KiB total prompt bytes, 32 KiB JSON Schema (external `$ref` URLs are rejected), `maxTokens` default 1024 / max 4096, `temperature` in `[0, 2]`, and 64 KiB response cap.
+- Background/action routes: 20 calls/minute per plugin, `timeoutMs` default/max 30 s.
+- Interactive search routes (`complete+search`): hard per-request ceiling `timeoutMs` <= 20 s (matching Ether's own descriptive search bound; always catch `timeout`/`deadline` and return non-AI results), per-query host caching (10 min TTL, 256 entries per plugin, normalized query + request fingerprint, concurrent in-flight dedup) so repeated searches do not re-ask the model, and a separate per-viewer rate limit (10 uncached calls/minute per viewer) that never spends the background budget.
+
+Error codes (`err.code` in JS/TS/Python, `HostError.Code` in Go): `not_configured` (HTTP 501 — no language model configured; does not consume rate limit), `forbidden` (hosted) / `permission_denied` (HTTP 403 remote — missing/revoked `ai` or `ai.search` grant, missing `searchQuery`, or disallowed client route), `rate_limited` (HTTP 429), `invalid_input` (hosted) / `invalid` (HTTP 400 remote), `invalid_output` (HTTP 502 — reply was not valid JSON, oversized, or failed `schema`), `timeout` (hosted) / `deadline` (HTTP 504 remote — return non-AI search results), `unavailable` (HTTP 503 — provider call failed, sanitized).
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
@@ -4021,7 +4030,7 @@ type ScheduleEntry struct {
 | `collections` | `string` | may be omitted (see validation for conditions) | ""\|none\|write |
 | `folders` | `string` | may be omitted (see validation for conditions) | ""\|none\|read |
 | `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes through the owner's indexers and debrid accounts (spec §4.5). ""\|none\|search\|acquire |
-| `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin send bounded completion requests to the owner's configured language model (actions/jobs/sync only, never viewer paths). ""\|none\|complete |
+| `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin send bounded completion requests to the owner's configured language model (actions/jobs/sync only, never viewer paths). ""\|none\|complete\|complete+search |
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
@@ -4041,7 +4050,7 @@ type Permissions struct {
 	Sources string `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
 	// AI lets a plugin send bounded completion requests to the owner's
 	// configured language model (actions/jobs/sync only, never viewer paths).
-	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete
+	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete|complete+search
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 ``````
@@ -5563,6 +5572,7 @@ type KindMatchDecl struct {
 | `clients` | `[]string` | may be omitted (see validation for conditions) |  |
 | `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan |
 | `libraries` | `[]string` | may be omitted (see validation for conditions) | Libraries lists the plugin's media-kind keys this adapter publishes. Ether resolves each key to the library the kind created and admits a viewer only to the libraries they may see; a viewer who sees none of them is answered 404. Empty means the adapter is not library-scoped. |
+| `searchPaths` | `[]string` | may be omitted (see validation for conditions) | SearchPaths optionally lists adapter subpaths (such as "/search", "/rest/search3", or "/graphql") that handle interactive viewer searches and may call ai.complete when permissions.ai is "complete+search" (#702). When omitted, conventional search subpaths (ending in /search, /search2, or /search3, with optional .json/.xml/.view suffix) are recognized. |
 
 
 ## Source: internal/plugins/contract.go#FrontendAdapterMeta
@@ -5583,6 +5593,12 @@ type FrontendAdapterMeta struct {
 	// viewer only to the libraries they may see; a viewer who sees none of
 	// them is answered 404. Empty means the adapter is not library-scoped.
 	Libraries []string `json:"libraries,omitempty"`
+	// SearchPaths optionally lists adapter subpaths (such as "/search",
+	// "/rest/search3", or "/graphql") that handle interactive viewer searches
+	// and may call ai.complete when permissions.ai is "complete+search" (#702).
+	// When omitted, conventional search subpaths (ending in /search, /search2,
+	// or /search3, with optional .json/.xml/.view suffix) are recognized.
+	SearchPaths []string `json:"searchPaths,omitempty"`
 }
 ``````
 
@@ -5676,6 +5692,10 @@ type Request struct {
 	// Deadline carries the effective per-call deadline computed by the manager
 	// (including live overrides) for hosted runtimes. Host-side only.
 	Deadline time.Duration `json:"-"`
+	// AISearch marks a search route whose plugin has active permissions.ai:
+	// "complete+search" so hosted runtimes allow Deadline up to the AI search
+	// route bound. Host-side only.
+	AISearch bool `json:"-"`
 }
 ``````
 
@@ -5974,9 +5994,11 @@ type Host interface {
 
 	// AIComplete runs a bounded text or JSON-Schema-validated completion against
 	// the owner's configured language model (Settings -> Integrations -> Language
-	// model). Requires permissions.ai: "complete" and is refused on viewer/client
-	// request paths (actions, jobs, sync, tools, events, setup, and scheduled
-	// routes only). Returns ErrNotConfigured when no model is configured.
+	// model). Requires permissions.ai: "complete" (or "complete+search" to also
+	// allow bounded, cached calls on Stremio catalog search, kinds search, and
+	// declared frontend-adapter search routes; #702). Every other viewer/client
+	// request path stays refused. Returns ErrNotConfigured when no model is
+	// configured.
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 
 	// NotifyOwner posts a console notice (rate-limited).
@@ -6012,7 +6034,8 @@ type AIMessage struct {
 | `schema` | `json.RawMessage` | may be omitted (see validation for conditions) | Schema is an optional JSON Schema object. When set, the host extracts JSON from the reply, validates it against Schema, and populates JSON (returning ErrInvalidOutput if validation fails). External $ref URLs are rejected. |
 | `maxTokens` | `int` | may be omitted (see validation for conditions) | MaxTokens bounds output tokens (default DefaultAIMaxTokens, max MaxAIMaxTokens). |
 | `temperature` | `*float64` | may be omitted (see validation for conditions) | Temperature optionally adjusts sampling in [0, 2]. Providers or models that disallow explicit temperature ignore it safely. |
-| `timeoutMs` | `int64` | may be omitted (see validation for conditions) | TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout and the enclosing call deadline). |
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) | TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout on background/action paths, MaxAISearchTimeout on interactive search routes, and the enclosing call deadline). |
+| `searchQuery` | `string` | may be omitted (see validation for conditions) | SearchQuery identifies the viewer's search query when calling ai.complete on an interactive search route under permissions.ai: "complete+search" (#702). Required on frontend-adapter search routes that do not carry a query parameter in the URL (such as GraphQL POST endpoints) and used for normalized per-query caching so repeated searches do not re-ask the model. |
 
 
 ## Source: internal/plugins/contract.go#AICompleteRequest
@@ -6033,8 +6056,15 @@ type AICompleteRequest struct {
 	// that disallow explicit temperature ignore it safely.
 	Temperature *float64 `json:"temperature,omitempty"`
 	// TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout
-	// and the enclosing call deadline).
+	// on background/action paths, MaxAISearchTimeout on interactive search
+	// routes, and the enclosing call deadline).
 	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+	// SearchQuery identifies the viewer's search query when calling ai.complete
+	// on an interactive search route under permissions.ai: "complete+search"
+	// (#702). Required on frontend-adapter search routes that do not carry a
+	// query parameter in the URL (such as GraphQL POST endpoints) and used for
+	// normalized per-query caching so repeated searches do not re-ask the model.
+	SearchQuery string `json:"searchQuery,omitempty"`
 }
 ``````
 
@@ -6894,8 +6924,12 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	case "acquire":
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
 	}
-	if normLevel(p.AI) == "complete" {
+	switch normLevel(p.AI) {
+	case "complete":
 		lines = append(lines, "Uses your configured language model")
+	case "complete+search":
+		lines = append(lines, "Uses your configured language model")
+		lines = append(lines, "Uses your language model while a viewer searches")
 	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
@@ -6987,8 +7021,14 @@ func PermissionDiff(cur, next Manifest) []string {
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
 	}
-	if raised(a.AI, b.AI) {
-		added = append(added, "Uses your configured language model")
+	aiLevel := map[string]int{"none": 0, "complete": 1, "complete+search": 2}
+	if aiLevel[normLevel(b.AI)] > aiLevel[normLevel(a.AI)] {
+		if aiLevel[normLevel(a.AI)] == 0 {
+			added = append(added, "Uses your configured language model")
+		}
+		if normLevel(b.AI) == "complete+search" {
+			added = append(added, "Uses your language model while a viewer searches")
+		}
 	}
 	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
 	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {
@@ -9289,12 +9329,16 @@ func (h *host) noteFetchTraffic(ctx context.Context, req FetchRequest, size int6
 ## Source: internal/plugins/host_ai.go#DefaultAICompletePerMin
 
 ``````
-// Safe per-plugin bounds for Host.AIComplete (#669). No owner settings are
+// Safe per-plugin bounds for Host.AIComplete (#669, #702). No owner settings are
 // exposed for these bounds; they protect the owner's configured language model
 // and memory budget with predictable defaults.
 const (
 	// DefaultAICompletePerMin caps completions per plugin in a sliding minute.
 	DefaultAICompletePerMin = 20
+	// DefaultAISearchCompletePerMin caps uncached interactive search completions
+	// per (plugin, viewer) in a sliding minute, separate from the plugin's
+	// background completion budget (#702).
+	DefaultAISearchCompletePerMin = 10
 	// MaxAIMessages caps the chat message count in a single completion request.
 	MaxAIMessages = 20
 	// MaxAIInputBytes caps total UTF-8 message content bytes per request.
@@ -9305,10 +9349,31 @@ const (
 	DefaultAIMaxTokens = 1024
 	// MaxAIMaxTokens is the hard ceiling on maxTokens per completion.
 	MaxAIMaxTokens = 4096
-	// DefaultAITimeout bounds one completion when timeoutMs is omitted.
+	// DefaultAITimeout bounds one background/action completion when timeoutMs is omitted.
 	DefaultAITimeout = 30 * time.Second
-	// MaxAITimeout is the hard ceiling on timeoutMs per completion.
+	// MaxAITimeout is the hard ceiling on timeoutMs for background/action completions.
 	MaxAITimeout = 30 * time.Second
+	// DefaultAISearchTimeout bounds one completion on an interactive search route
+	// when timeoutMs is omitted (#702). Matches Ether's own descriptive search
+	// wait bound (experience.DescriptiveSearchWaitBound).
+	DefaultAISearchTimeout = 20 * time.Second
+	// MaxAISearchTimeout is the hard per-request ceiling on timeoutMs for
+	// interactive search completions (#702), never exceeding Ether's 20 s
+	// descriptive search wait bound.
+	MaxAISearchTimeout = 20 * time.Second
+	// AISearchRouteDeadline gives an opted-in catalog/kind search route room
+	// for MaxAISearchTimeout plus fallback serialization after a timeout.
+	AISearchRouteDeadline = MaxAISearchTimeout + 2*time.Second
+	// MaxAISearchQueryBytes bounds the search query string used for interactive
+	// search completions and per-query caching (matches Ether's descriptive search).
+	MaxAISearchQueryBytes = 1000
+	// DefaultAISearchCacheTTL bounds how long a search completion stays cached
+	// per normalized query before re-asking the model (matches Ether's search cache).
+	DefaultAISearchCacheTTL = 10 * time.Minute
+	// MaxAISearchCacheEntries caps cached search completions per plugin.
+	MaxAISearchCacheEntries = 256
+	// MaxAdapterSearchPaths caps declared searchPaths entries per frontend adapter.
+	MaxAdapterSearchPaths = 16
 	// MaxAIResponseBytes caps the model reply text / validated JSON returned
 	// to the plugin.
 	MaxAIResponseBytes = 64 * 1024
@@ -9327,6 +9392,18 @@ const (
 type callPathKey struct{}
 ``````
 
+## Source: internal/plugins/host_ai.go#callSearchQueryKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_ai.go#callSearchQueryKey
+
+``````
+type callSearchQueryKey struct{}
+``````
+
 ## Source: internal/plugins/host_ai.go#withCallPath
 
 ``````
@@ -9338,6 +9415,30 @@ func withCallPath(ctx context.Context, path string) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, callPathKey{}, path)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#withCallSearchQuery
+
+``````
+func withCallSearchQuery(ctx context.Context, query string) context.Context {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, callSearchQueryKey{}, q)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#WithCallContext
+
+``````
+// WithCallContext attaches the active plugin route path and any host-extracted
+// search query to ctx (used by remote host callbacks authenticated with a
+// host-minted X-Ether-Viewer-Token).
+func WithCallContext(ctx context.Context, path, searchQuery string) context.Context {
+	ctx = withCallPath(ctx, path)
+	return withCallSearchQuery(ctx, searchQuery)
 }
 ``````
 
@@ -9355,13 +9456,85 @@ func callPathFromContext(ctx context.Context) string {
 }
 ``````
 
+## Source: internal/plugins/host_ai.go#callSearchQueryFromContext
+
+``````
+func callSearchQueryFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	q, _ := ctx.Value(callSearchQueryKey{}).(string)
+	return strings.TrimSpace(q)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#AIPermissionAllowsComplete
+
+``````
+// AIPermissionAllowsComplete reports whether an ether.permissions.ai level
+// grants base ai.complete access ("complete" or "complete+search").
+func AIPermissionAllowsComplete(level string) bool {
+	l := normLevel(strings.TrimSpace(level))
+	return l == "complete" || l == "complete+search"
+}
+``````
+
+## Source: internal/plugins/host_ai.go#AIPermissionAllowsSearch
+
+``````
+// AIPermissionAllowsSearch reports whether an ether.permissions.ai level
+// opts in to bounded, cached ai.complete on interactive search routes (#702).
+func AIPermissionAllowsSearch(level string) bool {
+	return normLevel(strings.TrimSpace(level)) == "complete+search"
+}
+``````
+
+## Source: internal/plugins/host_ai.go#NormalizeAISearchQuery
+
+``````
+// NormalizeAISearchQuery normalizes a viewer search query for per-query
+// caching (lowercased, runs of whitespace collapsed to a single space).
+func NormalizeAISearchQuery(q string) string {
+	return strings.ToLower(strings.Join(strings.Fields(q), " "))
+}
+``````
+
+## Source: internal/plugins/host_ai.go#normalizeAdapterSearchPath
+
+``````
+func normalizeAdapterSearchPath(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || !strings.HasPrefix(s, "/") {
+		return "", false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= 0x20 || c == 0x7f || c == '?' || c == '#' || c == '\\' {
+			return "", false
+		}
+	}
+	if strings.Contains(s, "..") || strings.Contains(s, "//") {
+		return "", false
+	}
+	if len(s) > 1 {
+		s = strings.TrimRight(s, "/")
+		if s == "" {
+			s = "/"
+		}
+	}
+	return s, true
+}
+``````
+
 ## Source: internal/plugins/host_ai.go#isClientRequestPath
 
 ``````
 // isClientRequestPath reports whether p is an interactive viewer, client
 // protocol adapter, or console UI/lifecycle path that must never wait on a
-// language model call.
+// language model call (except opted-in interactive search routes under
+// permissions.ai: "complete+search").
 func isClientRequestPath(p string) bool {
+	p, _, _ = strings.Cut(strings.TrimSpace(p), "?")
 	return wasm.ViewerRequestPath(p) ||
 		strings.HasPrefix(p, "/ether/stream/") ||
 		strings.HasPrefix(p, "/ether/v1/frontend/") ||
@@ -9374,21 +9547,253 @@ func isClientRequestPath(p string) bool {
 }
 ``````
 
+## Source: internal/plugins/host_ai.go#isStremioCatalogRoute
+
+``````
+func isStremioCatalogRoute(path string) bool {
+	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if !strings.HasPrefix(p, "/catalog/") || !strings.HasSuffix(p, ".json") {
+		return false
+	}
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(p, "/catalog/"), ".json")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 && len(parts) != 3 {
+		return false
+	}
+	for _, seg := range parts {
+		if seg == "" {
+			return false
+		}
+	}
+	return true
+}
+``````
+
+## Source: internal/plugins/host_ai.go#stremioCatalogSearchQuery
+
+``````
+// stremioCatalogSearchQuery extracts a non-empty Stremio catalog search query
+// from /catalog/{type}/{id}/{extra}.json (extra containing search=<q>) or
+// /catalog/{type}/{id}.json?search=<q>.
+func stremioCatalogSearchQuery(path string) (string, bool) {
+	p, rawQuery, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if !strings.HasPrefix(p, "/catalog/") || !strings.HasSuffix(p, ".json") {
+		return "", false
+	}
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(p, "/catalog/"), ".json")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
+		if vals, err := url.ParseQuery(parts[2]); err == nil {
+			if q := strings.TrimSpace(vals.Get("search")); q != "" {
+				return q, true
+			}
+		}
+	}
+	if (len(parts) == 2 || len(parts) == 3) && parts[0] != "" && parts[1] != "" && rawQuery != "" {
+		if vals, err := url.ParseQuery(rawQuery); err == nil {
+			if q := strings.TrimSpace(vals.Get("search")); q != "" {
+				return q, true
+			}
+		}
+	}
+	return "", false
+}
+``````
+
+## Source: internal/plugins/host_ai.go#isKindSearchPath
+
+``````
+func isKindSearchPath(path string) bool {
+	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if !strings.HasPrefix(p, "/ether/v1/kinds/") {
+		return false
+	}
+	rest := strings.TrimPrefix(p, "/ether/v1/kinds/")
+	kindKey, action, ok := strings.Cut(rest, "/")
+	return ok && kindKey != "" && action == "search"
+}
+``````
+
+## Source: internal/plugins/host_ai.go#isConventionalAdapterSearchSubpath
+
+``````
+func isConventionalAdapterSearchSubpath(subpath string) bool {
+	if subpath == "" || subpath == "/" {
+		return false
+	}
+	trimmed := strings.Trim(subpath, "/")
+	if trimmed == "" {
+		return false
+	}
+	last := trimmed
+	if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 {
+		last = trimmed[idx+1:]
+	}
+	last = strings.ToLower(last)
+	for _, ext := range []string{".json", ".xml", ".view"} {
+		last = strings.TrimSuffix(last, ext)
+	}
+	return last == "search" || last == "search2" || last == "search3"
+}
+``````
+
+## Source: internal/plugins/host_ai.go#isFrontendAdapterSearchPath
+
+``````
+func isFrontendAdapterSearchPath(man Manifest, path string) bool {
+	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if !strings.HasPrefix(p, "/ether/v1/frontend/") {
+		return false
+	}
+	if !man.HasCapability(CapFrontendAdapter) {
+		return false
+	}
+	e := man.EffectiveEther()
+	if e == nil {
+		return false
+	}
+	rest := strings.TrimPrefix(p, "/ether/v1/frontend/")
+	if rest == "" {
+		return false
+	}
+	adapterKey, tail, hasSlash := strings.Cut(rest, "/")
+	if adapterKey == "" {
+		return false
+	}
+	subpath := "/"
+	if hasSlash {
+		subpath = "/" + tail
+	}
+	normSub, ok := normalizeAdapterSearchPath(subpath)
+	if !ok {
+		return false
+	}
+	for _, a := range e.Contributes.FrontendAdapters {
+		if a.Key != adapterKey {
+			continue
+		}
+		if len(a.SearchPaths) > 0 {
+			for _, declared := range a.SearchPaths {
+				if normDecl, ok := normalizeAdapterSearchPath(declared); ok && normDecl == normSub {
+					return true
+				}
+			}
+			return false
+		}
+		return isConventionalAdapterSearchSubpath(normSub)
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/host_ai.go#AICompleteSearchPath
+
+``````
+// AICompleteSearchPath reports whether path is an interactive viewer search
+// route eligible for ai.complete when permissions.ai is "complete+search":
+//   - a Stremio-style catalog search with a non-empty query (/catalog/{type}/{id}/search=….json),
+//   - a media-kind live search (/ether/v1/kinds/{kind}/search), or
+//   - a declared frontend adapter's search route (/ether/v1/frontend/{key}/…).
+func AICompleteSearchPath(man Manifest, path string) bool {
+	if _, ok := stremioCatalogSearchQuery(path); ok {
+		return true
+	}
+	if isKindSearchPath(path) {
+		return true
+	}
+	return isFrontendAdapterSearchPath(man, path)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#isActiveSearchRoute
+
+``````
+func isActiveSearchRoute(man Manifest, path, callQuery string) bool {
+	if AICompleteSearchPath(man, path) {
+		return true
+	}
+	return isStremioCatalogRoute(path) && strings.TrimSpace(callQuery) != ""
+}
+``````
+
+## Source: internal/plugins/host_ai.go#extractCallSearchQuery
+
+``````
+// extractCallSearchQuery pulls a viewer search query from an inbound plugin
+// request when present (Stremio search extra, kinds search JSON body, or
+// frontend-adapter query string) for host enforcement and per-query caching.
+func extractCallSearchQuery(req Request) string {
+	if q, ok := stremioCatalogSearchQuery(req.Path); ok {
+		return q
+	}
+	if isStremioCatalogRoute(req.Path) && req.Query != nil {
+		if q := strings.TrimSpace(req.Query["search"]); q != "" {
+			return q
+		}
+	}
+	if isKindSearchPath(req.Path) {
+		if len(req.Body) > 0 {
+			var body struct {
+				Query string `json:"query"`
+			}
+			if json.Unmarshal(req.Body, &body) == nil {
+				if q := strings.TrimSpace(body.Query); q != "" {
+					return q
+				}
+			}
+		}
+		if q := queryParamFromRequest(req, "query", "q", "search"); q != "" {
+			return q
+		}
+		return ""
+	}
+	if isFrontendAdapterPath(req.Path) {
+		return queryParamFromRequest(req, "q", "query", "search")
+	}
+	return ""
+}
+``````
+
+## Source: internal/plugins/host_ai.go#queryParamFromRequest
+
+``````
+func queryParamFromRequest(req Request, keys ...string) string {
+	if _, rawQuery, ok := strings.Cut(req.Path, "?"); ok && rawQuery != "" {
+		if vals, err := url.ParseQuery(rawQuery); err == nil {
+			for _, k := range keys {
+				if q := strings.TrimSpace(vals.Get(k)); q != "" {
+					return q
+				}
+			}
+		}
+	}
+	for _, k := range keys {
+		if q := strings.TrimSpace(req.Query[k]); q != "" {
+			return q
+		}
+	}
+	return ""
+}
+``````
+
 ## Source: internal/plugins/host_ai.go#AICompleteAllowedPath
 
 ``````
 // AICompleteAllowedPath reports whether a plugin route may call ai.complete.
-// Interactive viewer/client request paths are always refused so playback,
-// browsing, metadata, frontend adapters, and console views never wait on an
-// LLM. Actions, jobs, Flow actions, tools, event deliveries, setup/test,
-// background sync, and declared scheduled routes are allowed.
+// Interactive viewer/client request paths are refused except opted-in search
+// routes (Stremio catalog search with a query, kinds search, and frontend
+// adapter search routes) when the manifest declares permissions.ai:
+// "complete+search" (#702). Actions, jobs, Flow actions, tools, event
+// deliveries, setup/test, background sync, and declared scheduled routes are
+// allowed under both "complete" and "complete+search".
 func AICompleteAllowedPath(man Manifest, path string, background bool) bool {
 	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
 	if p == "" {
 		return false
 	}
 	if isClientRequestPath(p) {
-		return false
+		e := man.EffectiveEther()
+		return e != nil && AIPermissionAllowsSearch(e.Permissions.AI) && AICompleteSearchPath(man, path)
 	}
 	if background {
 		return true
@@ -9464,6 +9869,7 @@ type compiledAIRequest struct {
 	schema          *jsonschema.Schema
 	canonicalSchema []byte
 	jsonObjectMode  bool
+	searchQuery     string
 }
 ``````
 
@@ -9537,6 +9943,11 @@ func ValidateAICompleteRequest(req AICompleteRequest) (*compiledAIRequest, error
 		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, MaxAITimeout)
 	}
 
+	searchQuery := strings.TrimSpace(req.SearchQuery)
+	if len(searchQuery) > MaxAISearchQueryBytes {
+		errs = append(errs, FieldError{Field: "searchQuery", Message: fmt.Sprintf("exceeds %d bytes", MaxAISearchQueryBytes)})
+	}
+
 	var compiled *jsonschema.Schema
 	var canonicalSchema []byte
 	var jsonObjectMode bool
@@ -9578,6 +9989,7 @@ func ValidateAICompleteRequest(req AICompleteRequest) (*compiledAIRequest, error
 		schema:          compiled,
 		canonicalSchema: canonicalSchema,
 		jsonObjectMode:  jsonObjectMode,
+		searchQuery:     searchQuery,
 	}, nil
 }
 ``````
@@ -9606,6 +10018,328 @@ func (m *Manager) aiCompletePerMin() int {
 		return DefaultAICompletePerMin
 	}
 	return limit
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.aiSearchPerMin
+
+``````
+func (m *Manager) aiSearchPerMin() int {
+	m.mu.Lock()
+	limit := m.aiSearchLimit
+	m.mu.Unlock()
+	if limit <= 0 {
+		return DefaultAISearchCompletePerMin
+	}
+	return limit
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.aiSearchCacheTTL
+
+``````
+func (m *Manager) aiSearchCacheTTL() time.Duration {
+	m.aiSearchCacheMu.Lock()
+	ttl := m.aiSearchTTL
+	m.aiSearchCacheMu.Unlock()
+	if ttl <= 0 {
+		return DefaultAISearchCacheTTL
+	}
+	return ttl
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.AISearchGranted
+
+``````
+// AISearchGranted reports whether pluginID is enabled, declares
+// permissions.ai: "complete+search", and has neither "ai" nor "ai.search"
+// revoked in its live grants.
+func (m *Manager) AISearchGranted(ctx context.Context, pluginID string) bool {
+	if m == nil || m.store == nil || pluginID == "" {
+		return false
+	}
+	r, err := m.store.record(ctx, pluginID)
+	if err != nil || !r.Enabled {
+		return false
+	}
+	return m.aiSearchGrantedRecord(ctx, r)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.aiSearchGrantedRecord
+
+``````
+func (m *Manager) aiSearchGrantedRecord(ctx context.Context, r Record) bool {
+	e := r.Manifest.EffectiveEther()
+	if e == nil || !AIPermissionAllowsSearch(e.Permissions.AI) {
+		return false
+	}
+	g, err := m.store.grants(ctx, r.ID)
+	if err != nil {
+		return false
+	}
+	return !g.revoked("ai") && !g.revoked("ai.search")
+}
+``````
+
+## Source: internal/plugins/host_ai.go#aiSearchCacheEntry.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_ai.go#aiSearchCacheEntry
+
+``````
+type aiSearchCacheEntry struct {
+	resp AICompleteResponse
+	at   time.Time
+}
+``````
+
+## Source: internal/plugins/host_ai.go#aiSearchFlight.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_ai.go#aiSearchFlight
+
+``````
+type aiSearchFlight struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	resp    AICompleteResponse
+	err     error
+}
+``````
+
+## Source: internal/plugins/host_ai.go#cloneAICompleteResponse
+
+``````
+func cloneAICompleteResponse(resp AICompleteResponse) AICompleteResponse {
+	if len(resp.JSON) == 0 {
+		return resp
+	}
+	cp := make([]byte, len(resp.JSON))
+	copy(cp, resp.JSON)
+	resp.JSON = cp
+	return resp
+}
+``````
+
+## Source: internal/plugins/host_ai.go#aiSearchCacheKey
+
+``````
+func aiSearchCacheKey(rawQuery string, compiled *compiledAIRequest) string {
+	normQ := NormalizeAISearchQuery(rawQuery)
+	trimmedRaw := strings.TrimSpace(rawQuery)
+	h := sha256.New()
+	h.Write([]byte("q:"))
+	h.Write([]byte(normQ))
+	h.Write([]byte{0})
+	for _, msg := range compiled.messages {
+		content := msg.Content
+		if trimmedRaw != "" && trimmedRaw != normQ {
+			content = strings.ReplaceAll(content, trimmedRaw, normQ)
+		}
+		h.Write([]byte(msg.Role))
+		h.Write([]byte{0})
+		h.Write([]byte(content))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte("s:"))
+	h.Write(compiled.canonicalSchema)
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.Itoa(compiled.maxTokens)))
+	h.Write([]byte{0})
+	if compiled.temperature != nil {
+		h.Write([]byte(strconv.FormatFloat(*compiled.temperature, 'f', 6, 64)))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.lookupAISearchCacheLocked
+
+``````
+func (m *Manager) lookupAISearchCacheLocked(pluginID, key string, now time.Time, ttl time.Duration) (AICompleteResponse, bool) {
+	byPlugin := m.aiSearchCache[pluginID]
+	if byPlugin == nil {
+		return AICompleteResponse{}, false
+	}
+	entry, ok := byPlugin[key]
+	if !ok {
+		return AICompleteResponse{}, false
+	}
+	if now.Sub(entry.at) >= ttl {
+		delete(byPlugin, key)
+		return AICompleteResponse{}, false
+	}
+	return cloneAICompleteResponse(entry.resp), true
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.storeAISearchCache
+
+``````
+func (m *Manager) storeAISearchCache(pluginID, key string, resp AICompleteResponse) {
+	now := m.now()
+	ttl := m.aiSearchCacheTTL()
+	m.aiSearchCacheMu.Lock()
+	defer m.aiSearchCacheMu.Unlock()
+	if m.aiSearchCache == nil {
+		m.aiSearchCache = map[string]map[string]aiSearchCacheEntry{}
+	}
+	byPlugin := m.aiSearchCache[pluginID]
+	if byPlugin == nil {
+		byPlugin = map[string]aiSearchCacheEntry{}
+		m.aiSearchCache[pluginID] = byPlugin
+	}
+	if len(byPlugin) >= MaxAISearchCacheEntries {
+		for k, v := range byPlugin {
+			if now.Sub(v.at) >= ttl {
+				delete(byPlugin, k)
+			}
+		}
+		if len(byPlugin) >= MaxAISearchCacheEntries {
+			var oldestKey string
+			var oldestAt time.Time
+			for k, v := range byPlugin {
+				if oldestKey == "" || v.at.Before(oldestAt) {
+					oldestKey = k
+					oldestAt = v.at
+				}
+			}
+			if oldestKey != "" {
+				delete(byPlugin, oldestKey)
+			}
+		}
+	}
+	byPlugin[key] = aiSearchCacheEntry{
+		resp: cloneAICompleteResponse(resp),
+		at:   now,
+	}
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.clearAISearchCache
+
+``````
+func (m *Manager) clearAISearchCache(pluginID string) {
+	m.aiSearchCacheMu.Lock()
+	delete(m.aiSearchCache, pluginID)
+	m.aiSearchCacheMu.Unlock()
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.executeAISearchCached
+
+``````
+func (m *Manager) executeAISearchCached(
+	ctx context.Context,
+	pluginID string,
+	viewerID int64,
+	rawQuery string,
+	compiled *compiledAIRequest,
+	backend func(context.Context, AICompleteBackendRequest) (string, error),
+) (AICompleteResponse, error) {
+	cacheKey := aiSearchCacheKey(rawQuery, compiled)
+	flightKey := pluginID + "\x00" + cacheKey
+	ttl := m.aiSearchCacheTTL()
+	now := m.now()
+
+	waitForFlight := func(f *aiSearchFlight) (AICompleteResponse, error) {
+		timer := time.NewTimer(compiled.timeout)
+		defer timer.Stop()
+		select {
+		case <-f.done:
+			m.aiSearchCacheMu.Lock()
+			f.waiters--
+			resp, err := cloneAICompleteResponse(f.resp), f.err
+			m.aiSearchCacheMu.Unlock()
+			return resp, err
+		case <-timer.C:
+			m.aiSearchCacheMu.Lock()
+			f.waiters--
+			if f.waiters <= 0 && f.cancel != nil {
+				f.cancel()
+			}
+			m.aiSearchCacheMu.Unlock()
+			return AICompleteResponse{}, context.DeadlineExceeded
+		case <-ctx.Done():
+			m.aiSearchCacheMu.Lock()
+			f.waiters--
+			if f.waiters <= 0 && f.cancel != nil {
+				f.cancel()
+			}
+			m.aiSearchCacheMu.Unlock()
+			return AICompleteResponse{}, ctx.Err()
+		}
+	}
+
+	m.aiSearchCacheMu.Lock()
+	if resp, ok := m.lookupAISearchCacheLocked(pluginID, cacheKey, now, ttl); ok {
+		m.aiSearchCacheMu.Unlock()
+		return resp, nil
+	}
+	if existing := m.aiSearchInflight[flightKey]; existing != nil {
+		existing.waiters++
+		m.aiSearchCacheMu.Unlock()
+		return waitForFlight(existing)
+	}
+	m.aiSearchCacheMu.Unlock()
+
+	rateKey := fmt.Sprintf("%s\x00%d", pluginID, viewerID)
+	limit := m.aiSearchPerMin()
+	if !m.rateOK(m.aiSearchTimes, rateKey, limit, time.Minute) {
+		return AICompleteResponse{}, fmt.Errorf("%w: ai.complete search is limited to %d calls per minute per viewer", ErrRateLimited, limit)
+	}
+
+	m.aiSearchCacheMu.Lock()
+	if resp, ok := m.lookupAISearchCacheLocked(pluginID, cacheKey, m.now(), ttl); ok {
+		m.aiSearchCacheMu.Unlock()
+		m.rateRefund(m.aiSearchTimes, rateKey)
+		return resp, nil
+	}
+	if existing := m.aiSearchInflight[flightKey]; existing != nil {
+		existing.waiters++
+		m.aiSearchCacheMu.Unlock()
+		m.rateRefund(m.aiSearchTimes, rateKey)
+		return waitForFlight(existing)
+	}
+	if m.aiSearchInflight == nil {
+		m.aiSearchInflight = map[string]*aiSearchFlight{}
+	}
+	flightCtx, flightCancel := context.WithTimeout(context.Background(), compiled.timeout)
+	f := &aiSearchFlight{
+		done:    make(chan struct{}),
+		cancel:  flightCancel,
+		waiters: 1,
+	}
+	m.aiSearchInflight[flightKey] = f
+	m.aiSearchCacheMu.Unlock()
+
+	go func() {
+		defer flightCancel()
+		flightCompiled := *compiled
+		resp, err := executeAIComplete(flightCtx, m.log, pluginID, backend, &flightCompiled)
+		if err == nil {
+			m.storeAISearchCache(pluginID, cacheKey, resp)
+		} else if errors.Is(err, ErrNotConfigured) {
+			m.rateRefund(m.aiSearchTimes, rateKey)
+		}
+		m.aiSearchCacheMu.Lock()
+		f.resp = resp
+		f.err = err
+		delete(m.aiSearchInflight, flightKey)
+		close(f.done)
+		m.aiSearchCacheMu.Unlock()
+	}()
+
+	return waitForFlight(f)
 }
 ``````
 
@@ -9735,20 +10469,35 @@ func (m *Manager) rateRefund(bucket map[string][]time.Time, key string) {
 
 ``````
 // AIComplete runs one bounded completion on the owner's configured language
-// model. Requires permissions.ai: "complete" (checked live against grants),
-// refuses interactive viewer/client request paths, enforces input/schema/rate
-// bounds, and never leaks provider secrets or raw upstream errors.
+// model. Requires permissions.ai: "complete" (or "complete+search" for opted-in
+// interactive search routes; #702), checked live against grants. Every
+// non-search viewer/client request path is refused. Interactive search calls are
+// hard-bounded at MaxAISearchTimeout (20 s), cached per normalized query, and
+// rate-limited per viewer separately from the plugin's background budget.
 func (h *host) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
 		return AICompleteResponse{}, err
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.AI)
-	if err := h.deny(r, g, "ai", level, func(l string) bool { return l == "complete" }); err != nil {
+	if err := h.deny(r, g, "ai", level, AIPermissionAllowsComplete); err != nil {
 		return AICompleteResponse{}, err
 	}
-	if path := callPathFromContext(ctx); path != "" {
-		if !AICompleteAllowedPath(r.Manifest, path, isBackgroundCall(ctx) || wasm.IsBackgroundCall(ctx)) {
+
+	path := callPathFromContext(ctx)
+	callQuery := callSearchQueryFromContext(ctx)
+	isSearchPath := false
+	if path != "" {
+		if isClientRequestPath(path) {
+			if !isActiveSearchRoute(r.Manifest, path, callQuery) {
+				h.noteDenied("ai_client_path")
+				return AICompleteResponse{}, fmt.Errorf("%w: ai.complete cannot run on viewer or client request path %s", ErrPermissionDenied, path)
+			}
+			if err := h.deny(r, g, "ai.search", level, AIPermissionAllowsSearch); err != nil {
+				return AICompleteResponse{}, err
+			}
+			isSearchPath = true
+		} else if !AICompleteAllowedPath(r.Manifest, path, isBackgroundCall(ctx) || wasm.IsBackgroundCall(ctx)) {
 			h.noteDenied("ai_client_path")
 			return AICompleteResponse{}, fmt.Errorf("%w: ai.complete cannot run on viewer or client request path %s", ErrPermissionDenied, path)
 		}
@@ -9759,9 +10508,50 @@ func (h *host) AIComplete(ctx context.Context, req AICompleteRequest) (AIComplet
 		return AICompleteResponse{}, err
 	}
 
+	var searchQuery string
+	if isSearchPath {
+		searchQuery = compiled.searchQuery
+		if searchQuery == "" {
+			searchQuery = callQuery
+		}
+		if searchQuery == "" {
+			if q, ok := stremioCatalogSearchQuery(path); ok {
+				searchQuery = q
+			} else if isFrontendAdapterPath(path) {
+				searchQuery = queryParamFromRequest(Request{Path: path}, "q", "query", "search")
+			}
+		}
+		if searchQuery == "" {
+			return AICompleteResponse{}, fmt.Errorf("%w: ai.complete on a search route requires a non-empty searchQuery", ErrPermissionDenied)
+		}
+		if len(searchQuery) > MaxAISearchQueryBytes {
+			return AICompleteResponse{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchQuery",
+				Message: fmt.Sprintf("exceeds %d bytes", MaxAISearchQueryBytes),
+			}}}
+		}
+		if req.TimeoutMS == 0 || compiled.timeout > MaxAISearchTimeout {
+			compiled.timeout = MaxAISearchTimeout
+		}
+	} else if path == "" && compiled.searchQuery != "" && AIPermissionAllowsSearch(level) && !g.revoked("ai.search") {
+		// Remote plugin calling /ether/plugin-host/ai/complete for a search
+		// without a frontend-adapter viewer token (e.g. Stremio catalog search
+		// or kinds search) still gets the hard search bound and per-query cache.
+		isSearchPath = true
+		searchQuery = compiled.searchQuery
+		if req.TimeoutMS == 0 || compiled.timeout > MaxAISearchTimeout {
+			compiled.timeout = MaxAISearchTimeout
+		}
+	}
+
 	backend := h.m.deps.Backends.AIComplete
 	if backend == nil {
 		return AICompleteResponse{}, ErrNotConfigured
+	}
+
+	if isSearchPath {
+		viewerID, _ := ViewerFromContext(ctx)
+		return h.m.executeAISearchCached(ctx, h.plugin, viewerID, searchQuery, compiled, backend)
 	}
 
 	limit := h.m.aiCompletePerMin()
@@ -13489,6 +14279,25 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#AdapterCallInfo.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_kinds.go#AdapterCallInfo
+
+``````
+// AdapterCallInfo identifies the active /ether/v1/frontend/* call that minted
+// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer and
+// route policies as hosted plugins.
+type AdapterCallInfo struct {
+	ViewerID    int64
+	Path        string
+	SearchQuery string
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#adapterViewerGrant.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -13499,9 +14308,11 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 
 ``````
 type adapterViewerGrant struct {
-	pluginID string
-	viewerID int64
-	expires  time.Time
+	pluginID    string
+	viewerID    int64
+	path        string
+	searchQuery string
+	expires     time.Time
 }
 ``````
 
@@ -13564,9 +14375,11 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		}
 	}
 	m.adapterViewerTokens[token] = adapterViewerGrant{
-		pluginID: pluginID,
-		viewerID: id,
-		expires:  now.Add(ttl),
+		pluginID:    pluginID,
+		viewerID:    id,
+		path:        req.Path,
+		searchQuery: extractCallSearchQuery(*req),
+		expires:     now.Add(ttl),
 	}
 	m.adapterViewerMu.Unlock()
 	req.Headers[HeaderAdapterViewerToken] = token
@@ -13587,15 +14400,16 @@ func (m *Manager) revokeAdapterViewerToken(token string) {
 }
 ``````
 
-## Source: internal/plugins/host_kinds.go#*Manager.ResolveAdapterViewerToken
+## Source: internal/plugins/host_kinds.go#*Manager.ResolveAdapterCallToken
 
 ``````
-// ResolveAdapterViewerToken verifies that token belongs to an active
-// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
-func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+// ResolveAdapterCallToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer
+// and active route context.
+func (m *Manager) ResolveAdapterCallToken(pluginID, token string) (AdapterCallInfo, bool) {
 	token = strings.TrimSpace(token)
 	if pluginID == "" || token == "" {
-		return 0, false
+		return AdapterCallInfo{}, false
 	}
 	now := time.Now()
 	if m.now != nil {
@@ -13605,16 +14419,34 @@ func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool
 	defer m.adapterViewerMu.Unlock()
 	grant, ok := m.adapterViewerTokens[token]
 	if !ok {
-		return 0, false
+		return AdapterCallInfo{}, false
 	}
 	if !now.Before(grant.expires) {
 		delete(m.adapterViewerTokens, token)
-		return 0, false
+		return AdapterCallInfo{}, false
 	}
 	if grant.pluginID != pluginID || grant.viewerID <= 0 {
+		return AdapterCallInfo{}, false
+	}
+	return AdapterCallInfo{
+		ViewerID:    grant.viewerID,
+		Path:        grant.path,
+		SearchQuery: grant.searchQuery,
+	}, true
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*Manager.ResolveAdapterViewerToken
+
+``````
+// ResolveAdapterViewerToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
+func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+	info, ok := m.ResolveAdapterCallToken(pluginID, token)
+	if !ok {
 		return 0, false
 	}
-	return grant.viewerID, true
+	return info.ViewerID, true
 }
 ``````
 
@@ -14151,7 +14983,7 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 		headers = cloneHeaders(headers)
 		headers["X-Ether-Locale"] = req.Locale
 	}
-	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground, Deadline: req.Deadline})
+	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground, Deadline: req.Deadline, AISearch: req.AISearch})
 	if err != nil {
 		return Response{}, err
 	}
@@ -15650,7 +16482,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 	case "notify.owner":
 		return json.RawMessage("null"), nil
 	case "ai.complete":
-		if h.man.Ether == nil || h.man.Ether.Permissions.AI != "complete" {
+		if h.man.Ether == nil || !plugins.AIPermissionAllowsComplete(h.man.Ether.Permissions.AI) {
 			return nil, wasm.Forbidden("ai: complete permission not declared")
 		}
 		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
@@ -19411,7 +20243,7 @@ func validatePermissions(p Permissions, add func(string, string)) {
 	level("ether.permissions.collections", normLevel(p.Collections), "none", "write")
 	level("ether.permissions.folders", normLevel(p.Folders), "none", "read")
 	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "acquire")
-	level("ether.permissions.ai", normLevel(p.AI), "none", "complete")
+	level("ether.permissions.ai", normLevel(p.AI), "none", "complete", "complete+search")
 	level("ether.permissions.viewers.identity", normLevel(p.Viewers.Identity), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.watch_history", normLevel(p.Viewers.WatchHistory), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.write_watch_state", normLevel(p.Viewers.WriteWatchState), "none", "granted_viewers")
@@ -20873,6 +21705,22 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 				add(fmt.Sprintf("%s.libraries[%d]", base, j), "must name a media kind declared by this plugin")
 			}
 		}
+		if len(a.SearchPaths) > MaxAdapterSearchPaths {
+			add(base+".searchPaths", fmt.Sprintf("must declare at most %d search paths", MaxAdapterSearchPaths))
+		}
+		seenSearch := map[string]bool{}
+		for j, sp := range a.SearchPaths {
+			norm, ok := normalizeAdapterSearchPath(sp)
+			if !ok {
+				add(fmt.Sprintf("%s.searchPaths[%d]", base, j), "must be a clean subpath starting with /, without ?, #, whitespace, or ..")
+				continue
+			}
+			if seenSearch[norm] {
+				add(fmt.Sprintf("%s.searchPaths[%d]", base, j), "must not repeat a search path")
+				continue
+			}
+			seenSearch[norm] = true
+		}
 	}
 }
 ``````
@@ -21824,9 +22672,9 @@ type Host interface {
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
 	// AIComplete runs a bounded completion against the owner's configured
-	// language model (requires permissions.ai: "complete"; never call from a
-	// viewer/client request path).
-	AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+	// language model (requires permissions.ai: "complete", or "complete+search"
+	// when viewerToken identifies an active frontend-adapter search call; #702).
+	AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
@@ -22648,15 +23496,12 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 
 ``````
 func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(r.Header.Get(HeaderViewerToken)) != "" {
-		writeHostError(w, http.StatusForbidden, "permission_denied", "ai.complete cannot run on viewer or client request paths")
-		return
-	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
 	var req plugins.AICompleteRequest
 	if !h.decode(w, r, maxAIBodyBytes, &req) {
 		return
 	}
-	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), req)
+	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), viewerToken, req)
 	if !h.finishErr(w, err) {
 		return
 	}
@@ -28490,10 +29335,15 @@ type Request struct {
 	// Foreground keeps an /ether/job/ call off the background throttle
 	// because a viewer is waiting on it. Host-side only.
 	Foreground bool `json:"-"`
-	// Deadline optionally tightens the call deadline for this invocation
-	// (e.g. a live per-plugin override). Zero uses the plugin's Limits.
-	// Host-side only.
+	// Deadline optionally overrides the call deadline for this invocation
+	// (e.g. a live per-plugin override, or an opted-in AI search route).
+	// Zero uses the plugin's Limits. Host-side only.
 	Deadline time.Duration `json:"-"`
+	// AISearch marks a search route whose plugin has active permissions.ai:
+	// "complete+search" so Deadline may extend the baseline search route
+	// deadline up to the AI search bound (still capped by the plugin's
+	// granted deadline). Host-side only.
+	AISearch bool `json:"-"`
 }
 ``````
 
@@ -30165,10 +31015,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 		return Response{}, out, &Error{Status: StatusError, Message: err.Error(), Err: ErrRequestEncode}
 	}
 	lim := limitsForRequest(p.lim, req.Path)
-	if req.Deadline > 0 && req.Deadline < lim.Deadline {
-		lim.Deadline = req.Deadline
-		if ViewerRequestPath(req.Path) {
-			lim.UnitBudget = min(lim.UnitBudget, UnitsForDeadline(lim.Deadline))
+	if req.Deadline > 0 {
+		if req.Deadline < lim.Deadline || (req.AISearch && req.Deadline <= p.lim.Deadline) {
+			lim.Deadline = req.Deadline
+			if ViewerRequestPath(req.Path) {
+				lim.UnitBudget = min(p.lim.UnitBudget, UnitsForDeadline(lim.Deadline))
+			}
 		}
 	}
 
@@ -30423,6 +31275,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.frontendAdapters[].libraries` | `array` | false | {} |
 | `ether.contributes.frontendAdapters[].pathPrefix` | `string` | false | {} |
 | `ether.contributes.frontendAdapters[].protocolHint` | `string` | false | {} |
+| `ether.contributes.frontendAdapters[].searchPaths` | `array` | false | {} |
 | `ether.contributes.integration` | `object` | false | {"required":["category","adds","connect"]} |
 | `ether.contributes.integration.adds` | `array` | true | {"maxItems":4,"minItems":1} |
 | `ether.contributes.integration.category` | `string` | true | {} |
@@ -30610,7 +31463,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.kind` | `any` | true | {"enum":["source","integration","notification_channel","livetv_source","extension","content"]} |
 | `ether.license` | `string` | false | {} |
 | `ether.permissions` | `object` | false | {} |
-| `ether.permissions.ai` | `any` | false | {"description":"Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).","enum":["none","complete"]} |
+| `ether.permissions.ai` | `any` | false | {"description":"Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (\"complete\"), or also on interactive search routes — Stremio catalog search, kinds search, and frontend adapter search routes — with a hard 20 s bound and per-query caching (\"complete+search\"). Every other viewer/client path stays refused.","enum":["none","complete","complete+search"]} |
 | `ether.permissions.catalog` | `any` | false | {"enum":["none","read"]} |
 | `ether.permissions.collections` | `any` | false | {"enum":["none","write"]} |
 | `ether.permissions.folders` | `any` | false | {"enum":["none","read"]} |
@@ -31119,6 +31972,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                   },
                   "protocolHint": {
                     "type": "string"
+                  },
+                  "searchPaths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "type": "object"
@@ -32260,10 +33119,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "permissions": {
           "properties": {
             "ai": {
-              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).",
+              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (\"complete\"), or also on interactive search routes — Stremio catalog search, kinds search, and frontend adapter search routes — with a hard 20 s bound and per-query caching (\"complete+search\"). Every other viewer/client path stays refused.",
               "enum": [
                 "none",
-                "complete"
+                "complete",
+                "complete+search"
               ]
             },
             "catalog": {
@@ -32387,7 +33247,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                 },
                 "poolSize": {
                   "default": 2,
-                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize >= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize \u003e= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -32958,28 +33818,48 @@ Host calls enforce permissions again on every request; revocation is immediate.
 
 A plugin that wants text or structured JSON completions from the owner's
 configured language model (Settings -> Integrations -> Language model) declares
-`ether.permissions.ai: "complete"` instead of asking the owner for a second API
-key. Call `ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs? })`
+`ether.permissions.ai: "complete"` (or `"complete+search"` to also opt in to
+interactive search) instead of asking the owner for a second API key. Call
+`ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs?, searchQuery? })`
 (hosted) or `POST /ether/plugin-host/ai/complete` (`ctx.ether.ai.complete` in TS/Python,
 `ctx.AIComplete` in Go). When `schema` (a JSON Schema object; external `$ref` URLs
 are rejected) is provided, Ether extracts JSON, validates it against `schema`,
 and returns `{ text, json }` (or throws `invalid_output` on mismatch).
 
 `ai.complete` is **blocked on viewer/client request paths** (`/stream/*`,
-`/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`,
-`/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|search|items|live`,
-`/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`,
-`/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot paths). Call it
-only from actions (`/ether/action/*`), jobs (`/ether/job/*`), Flow actions,
-tools, event handlers, setup/test routes, background kind/Live TV sync, or
-declared `ether.schedule` routes, and cache results in `ether.kv` for viewer paths.
+non-search `/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`,
+`/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|items|live`,
+non-search `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`,
+`/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot paths). With
+`"complete"`, call it only from actions (`/ether/action/*`), jobs (`/ether/job/*`),
+Flow actions, tools, event handlers, setup/test routes, background kind/Live TV
+sync, or declared `ether.schedule` routes, and cache results in `ether.kv` for
+viewer paths.
 
-Safe per-plugin bounds apply automatically: 20 calls/minute, 1..20 messages
-(<=32 KiB total, at least one `user`), <=32 KiB schema, `maxTokens` default 1024
-(max 4096), `temperature` in `[0, 2]`, `timeoutMs` <=30 s, <=64 KiB output. Always
-handle `err.code === "not_configured"` (`HostError.Code == "not_configured"` in
-Go) so the plugin falls back cleanly when no language model is configured. No
-provider credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
+With `ether.permissions.ai: "complete+search"` (shown on the install sheet with
+its own line and independently revocable as `ai.search`), Ether permits the same
+bounded descriptive-search exception it uses for its own AI search on three
+search routes only: Stremio catalog search with a non-empty `search` query
+(`/catalog/{type}/{id}/search=….json`), kinds search (`/ether/v1/kinds/{kind}/search`
+with a non-empty query), and frontend adapter search routes
+(`/ether/v1/frontend/{key}/…`, matching `frontendAdapters[].searchPaths` or
+conventional `/search`, `/search2`, `/search3` subpaths when `searchPaths` is
+omitted). Pass `searchQuery` on adapter endpoints that do not carry a query in
+the URL (such as GraphQL POST routes); remote SDKs forward `X-Ether-Viewer-Token`
+automatically so the host enforces the active route and live grant.
+
+Safe per-plugin bounds apply automatically: 1..20 messages (`<=32 KiB` total, at
+least one `user`), `<=32 KiB` schema, `maxTokens` default 1024 (max 4096),
+`temperature` in `[0, 2]`, `<=64 KiB` output. Background/action routes allow 20
+calls/minute per plugin and `timeoutMs <= 30 s`. Interactive search routes
+(`complete+search`) enforce a hard `timeoutMs <= 20 s` bound (matching Ether's
+descriptive search bound; always catch `timeout`/`deadline` and answer without
+AI), cache results per normalized query (10 min TTL, 256 entries/plugin, with
+in-flight dedup) so repeated searches do not re-ask, and enforce a separate
+per-viewer rate limit (10 uncached calls/minute per viewer). Always handle
+`err.code === "not_configured"` (`HostError.Code == "not_configured"` in Go) so
+the plugin falls back cleanly when no language model is configured. No provider
+credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
 
 ## Poster badges
 
@@ -42925,7 +43805,8 @@ type AIMessage struct {
 | `schema` | `json.RawMessage` | may be omitted (see validation for conditions) | Schema is an optional JSON Schema object (raw JSON or map[string]any marshalled to JSON). When set, Ether extracts JSON from the model reply and validates it against Schema before returning. External $ref URLs are rejected. |
 | `maxTokens` | `int` | may be omitted (see validation for conditions) | MaxTokens bounds output tokens (default 1024, max 4096). |
 | `temperature` | `*float64` | may be omitted (see validation for conditions) | Temperature optionally adjusts sampling in [0, 2]; ignored safely by providers/models that disallow explicit temperature. |
-| `timeoutMs` | `int64` | may be omitted (see validation for conditions) | TimeoutMS optionally tightens the call timeout (clamped to 30000 ms and the enclosing call deadline). |
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) | TimeoutMS optionally tightens the call timeout (clamped to 30000 ms on background/action routes, 20000 ms on interactive search routes, and the enclosing call deadline). |
+| `searchQuery` | `string` | may be omitted (see validation for conditions) | SearchQuery identifies the viewer's search text when calling ai.complete on an interactive search route under permissions.ai: "complete+search". Required on adapter search routes without a URL query param (e.g. GraphQL) and used for normalized per-query caching. |
 
 
 ## Source: sdk/go/host.go#AICompleteRequest
@@ -42945,9 +43826,15 @@ type AICompleteRequest struct {
 	// Temperature optionally adjusts sampling in [0, 2]; ignored safely by
 	// providers/models that disallow explicit temperature.
 	Temperature *float64 `json:"temperature,omitempty"`
-	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms and
-	// the enclosing call deadline).
+	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms on
+	// background/action routes, 20000 ms on interactive search routes, and the
+	// enclosing call deadline).
 	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+	// SearchQuery identifies the viewer's search text when calling ai.complete
+	// on an interactive search route under permissions.ai: "complete+search".
+	// Required on adapter search routes without a URL query param (e.g. GraphQL)
+	// and used for normalized per-query caching.
+	SearchQuery string `json:"searchQuery,omitempty"`
 }
 ``````
 
@@ -43001,9 +43888,10 @@ func (e *HostError) Error() string { return e.Message }
 
 ``````
 // AIHost runs bounded completions on the owner's configured language model
-// (requires permissions.ai: "complete"; never call on viewer/client request
-// paths). RemoteHostClient and MockHost implement it; Context.AIComplete uses
-// it automatically.
+// (requires permissions.ai: "complete", or "complete+search" for opted-in
+// interactive search routes; every other viewer/client path stays refused).
+// RemoteHostClient and MockHost implement it; Context.AIComplete uses it
+// automatically.
 type AIHost interface {
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 }
@@ -43632,11 +44520,16 @@ func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload
 ``````
 // AIComplete runs a bounded text or JSON-Schema-validated completion against
 // the owner's configured language model through POST /ether/plugin-host/ai/complete.
-// Requires permissions.ai: "complete"; never call on viewer/client request paths.
+// Requires permissions.ai: "complete" (or "complete+search" on interactive search
+// routes, forwarding X-Ether-Viewer-Token when present on ctx).
 // When no model is configured, returns a *HostError with Code == "not_configured".
 func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
 	var res AICompleteResponse
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", req, &res, false)
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", headers, req, &res, false)
 	return res, err
 }
 ``````
@@ -47077,11 +47970,15 @@ func (c *Context) PublishEvent(key string, payload any, corr *EventCorrelation) 
 
 ``````
 // AIComplete runs a bounded completion against the owner's configured language
-// model. Requires permissions.ai: "complete" and must only be called from
-// actions, jobs, sync, or other non-viewer routes.
+// model. Requires permissions.ai: "complete" (or "complete+search" for opted-in
+// interactive search routes; every other viewer/client path stays refused).
 func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) {
 	if ah, ok := c.Ether.(AIHost); ok {
-		return ah.AIComplete(c.Context, req)
+		ctx := c.Context
+		if tok := c.viewerToken(); tok != "" {
+			ctx = WithViewerToken(ctx, tok)
+		}
+		return ah.AIComplete(ctx, req)
 	}
 	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
 }
@@ -49563,7 +50460,7 @@ type ScheduleEntry struct {
 | `folders` | `string` | may be omitted (see validation for conditions) |  |
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
 | `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes: ""\|none\|search\|acquire. |
-| `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin call AIComplete on the owner's configured language model (""\|none\|complete; actions, jobs, sync, and other non-viewer routes only). |
+| `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin call AIComplete on the owner's configured language model (""\|none\|complete\|complete+search; "complete" allows actions, jobs, sync, and other non-viewer routes, while "complete+search" also allows bounded 20 s cached calls on interactive search routes). |
 
 
 ## Source: sdk/go/types.go#Permissions
@@ -49580,7 +50477,9 @@ type Permissions struct {
 	// Sources lets a kind resolver ask Ether to find bytes: ""|none|search|acquire.
 	Sources string `json:"sources,omitempty"`
 	// AI lets a plugin call AIComplete on the owner's configured language model
-	// (""|none|complete; actions, jobs, sync, and other non-viewer routes only).
+	// (""|none|complete|complete+search; "complete" allows actions, jobs, sync,
+	// and other non-viewer routes, while "complete+search" also allows bounded
+	// 20 s cached calls on interactive search routes).
 	AI string `json:"ai,omitempty"`
 }
 ``````
@@ -50315,6 +51214,8 @@ type KindMatchDecl struct {
 | `defaultPort` | `int` | may be omitted (see validation for conditions) |  |
 | `clients` | `[]string` | may be omitted (see validation for conditions) |  |
 | `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan |
+| `libraries` | `[]string` | may be omitted (see validation for conditions) |  |
+| `searchPaths` | `[]string` | may be omitted (see validation for conditions) | SearchPaths optionally lists adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". |
 
 
 ## Source: sdk/go/types.go#FrontendAdapterMeta
@@ -50329,6 +51230,11 @@ type FrontendAdapterMeta struct {
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
 	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Libraries    []string `json:"libraries,omitempty"`
+	// SearchPaths optionally lists adapter subpaths (such as "/search",
+	// "/rest/search3", or "/graphql") allowed to call ai.complete when
+	// permissions.ai is "complete+search".
+	SearchPaths []string `json:"searchPaths,omitempty"`
 }
 ``````
 
@@ -53022,6 +53928,7 @@ class AICompleteRequest(TypedDict, total=False):
     maxTokens: int
     temperature: float
     timeoutMs: int
+    searchQuery: str
 
 
 class AICompleteResponse(TypedDict, total=False):
@@ -53041,11 +53948,31 @@ class HostError(RuntimeError):
 class _AIClient:
     """Client for Ether's owner-configured language model host service (`ai.complete`)."""
 
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
 
-    def complete(self, req: AICompleteRequest) -> AICompleteResponse:
-        res = self._call("POST", "/ether/plugin-host/ai/complete", dict(req))
+    def complete(
+        self,
+        req: AICompleteRequest,
+        viewer_token: Optional[str] = None,
+    ) -> AICompleteResponse:
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        extra_headers = {HEADER_VIEWER_TOKEN: tok} if tok else None
+        res = self._call(
+            "POST",
+            "/ether/plugin-host/ai/complete",
+            dict(req),
+            extra_headers=extra_headers,
+        )
         return res if isinstance(res, dict) else {"text": ""}  # type: ignore[return-value]
 
 
@@ -53143,7 +54070,7 @@ class RemoteHostClient:
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
         self.events = _EventsClient(self._call_json)
-        self.ai = _AIClient(self._call_json)
+        self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -56386,7 +57313,7 @@ export default hello;
 - `file` (`GET /ether/file/{path...}`)
 - `rankKey` and `condMatch` hot-path exports (`rank_key`, `cond_match`)
 - `poster_badges` (`ether.contributes.posterBadges` plus `ctx.ether.badges.set`, `clear`, and `usage`)
-- `ai.complete` (`ether.permissions.ai: "complete"`, `ctx.ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs? })` on non-viewer routes — actions, jobs, Flow actions, tools, events, sync, schedules)
+- `ai.complete` (`ether.permissions.ai: "complete"` for non-viewer routes — actions, jobs, Flow actions, tools, events, sync, schedules; or `"complete+search"` to also opt in to bounded 20 s cached search completions on Stremio catalog search, kinds search, and frontend adapter search routes via `ctx.ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs?, searchQuery? })`)
 
 ### Poster badges
 
@@ -56620,6 +57547,7 @@ export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
 export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
 export const DefaultAICompletePerMin = 20;
+export const DefaultAISearchCompletePerMin = 10;
 export const MaxAIMessages = 20;
 export const MaxAIInputBytes = 32 * 1024;
 export const MaxAISchemaBytes = 32 * 1024;
@@ -56627,6 +57555,9 @@ export const DefaultAIMaxTokens = 1024;
 export const MaxAIMaxTokens = 4096;
 export const DefaultAITimeoutMs = 30_000;
 export const MaxAITimeoutMs = 30_000;
+export const DefaultAISearchTimeoutMs = 20_000;
+export const MaxAISearchTimeoutMs = 20_000;
+export const MaxAISearchQueryBytes = 1000;
 export const MaxAIResponseBytes = 64 * 1024;
 
 export interface AIMessage {
@@ -56642,8 +57573,10 @@ export interface AICompleteRequest {
   maxTokens?: number;
   /** Optional sampling temperature in [0, 2]; ignored safely by providers/models that forbid it. */
   temperature?: number;
-  /** Optional tighter timeout in milliseconds (clamped to 30000 and the call deadline). */
+  /** Optional tighter timeout in milliseconds (clamped to 30000 on background/action routes, 20000 on search routes, and the call deadline). */
   timeoutMs?: number;
+  /** Viewer search text when calling ai.complete on a search route under permissions.ai: "complete+search". Required on adapter search routes without a URL query param (e.g. GraphQL) and used for normalized per-query caching. */
+  searchQuery?: string;
 }
 
 export interface AICompleteResponse<T = unknown> {
@@ -57055,9 +57988,10 @@ export interface EtherHost {
   };
   /**
    * Owner-configured language model completions (Settings -> Integrations -> Language model).
-   * Requires `permissions.ai: "complete"`. Refused on interactive viewer/client request paths
-   * (actions, jobs, sync, tools, events, setup, and scheduled routes only). Throws an Error
-   * with `code: "not_configured"` when no language model is configured.
+   * Requires `permissions.ai: "complete"` (or `"complete+search"` to also allow bounded 20 s
+   * cached calls on Stremio catalog search, kinds search, and declared frontend-adapter search
+   * routes). Every other viewer/client request path stays refused. Throws an Error with
+   * `code: "not_configured"` when no language model is configured.
    */
   ai?: {
     complete<T = unknown>(req: AICompleteRequest): MaybePromise<AICompleteResponse<T>>;
@@ -57885,7 +58819,16 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     },
     ai: {
       async complete<T = unknown>(req: AICompleteRequest): Promise<AICompleteResponse<T>> {
-        return (await callJson<AICompleteResponse<T>>("POST", "/ether/plugin-host/ai/complete", req)) ?? { text: "" };
+        const tok = (opts.viewerToken ?? "").trim();
+        return (
+          (await callJson<AICompleteResponse<T>>(
+            "POST",
+            "/ether/plugin-host/ai/complete",
+            req,
+            false,
+            tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
+          )) ?? { text: "" }
+        );
       },
     },
     async log(level: string, message: string, attrs?: Record<string, unknown>): Promise<void> {
@@ -58050,6 +58993,7 @@ export {
   HEADER_VIEWER_TOKEN,
   HEADER_IDEMPOTENCY_KEY,
   DefaultAICompletePerMin,
+  DefaultAISearchCompletePerMin,
   MaxAIMessages,
   MaxAIInputBytes,
   MaxAISchemaBytes,
@@ -58057,6 +59001,9 @@ export {
   MaxAIMaxTokens,
   DefaultAITimeoutMs,
   MaxAITimeoutMs,
+  DefaultAISearchTimeoutMs,
+  MaxAISearchTimeoutMs,
+  MaxAISearchQueryBytes,
   MaxAIResponseBytes,
   type AIMessage,
   type AICompleteRequest,
@@ -61006,8 +61953,8 @@ export interface Permissions {
   secrets?: string[];
   /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open. */
   sources?: "none" | "search" | "acquire";
-  /** Lets a plugin call ether.ai.complete on the owner's configured language model (actions, jobs, sync, and other non-viewer routes only). */
-  ai?: "none" | "complete";
+  /** Lets a plugin call ether.ai.complete on the owner's configured language model ("complete" for actions/jobs/sync/non-viewer routes; "complete+search" also allows bounded 20 s cached calls on interactive search routes). */
+  ai?: "none" | "complete" | "complete+search";
 }
 
 export type SettingFieldKind =
@@ -61396,6 +62343,9 @@ export interface FrontendAdapterMeta {
   defaultPort?: number;
   clients?: string[];
   auth?: "ether_token" | "basic" | "none_lan";
+  libraries?: string[];
+  /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
+  searchPaths?: string[];
 }
 
 export interface SetupStep {

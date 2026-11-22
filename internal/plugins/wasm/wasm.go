@@ -91,10 +91,15 @@ type Request struct {
 	// Foreground keeps an /ether/job/ call off the background throttle
 	// because a viewer is waiting on it. Host-side only.
 	Foreground bool `json:"-"`
-	// Deadline optionally tightens the call deadline for this invocation
-	// (e.g. a live per-plugin override). Zero uses the plugin's Limits.
-	// Host-side only.
+	// Deadline optionally overrides the call deadline for this invocation
+	// (e.g. a live per-plugin override, or an opted-in AI search route).
+	// Zero uses the plugin's Limits. Host-side only.
 	Deadline time.Duration `json:"-"`
+	// AISearch marks a search route whose plugin has active permissions.ai:
+	// "complete+search" so Deadline may extend the baseline search route
+	// deadline up to the AI search bound (still capped by the plugin's
+	// granted deadline). Host-side only.
+	AISearch bool `json:"-"`
 }
 
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
@@ -1302,10 +1307,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 		return Response{}, out, &Error{Status: StatusError, Message: err.Error(), Err: ErrRequestEncode}
 	}
 	lim := limitsForRequest(p.lim, req.Path)
-	if req.Deadline > 0 && req.Deadline < lim.Deadline {
-		lim.Deadline = req.Deadline
-		if ViewerRequestPath(req.Path) {
-			lim.UnitBudget = min(lim.UnitBudget, UnitsForDeadline(lim.Deadline))
+	if req.Deadline > 0 {
+		if req.Deadline < lim.Deadline || (req.AISearch && req.Deadline <= p.lim.Deadline) {
+			lim.Deadline = req.Deadline
+			if ViewerRequestPath(req.Path) {
+				lim.UnitBudget = min(p.lim.UnitBudget, UnitsForDeadline(lim.Deadline))
+			}
 		}
 	}
 

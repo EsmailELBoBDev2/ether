@@ -421,10 +421,17 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
       revocable: true,
     });
   }
-  if (d.ai === "complete") {
+  if (d.ai === "complete" || d.ai === "complete+search") {
     items.push({
       key: "ai",
       label: t("Uses your configured language model"),
+      revocable: true,
+    });
+  }
+  if (d.ai === "complete+search") {
+    items.push({
+      key: "ai.search",
+      label: t("Uses your language model while a viewer searches"),
       revocable: true,
     });
   }

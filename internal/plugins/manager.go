@@ -150,6 +150,12 @@ type Manager struct {
 	usenetCheckLimit  int
 	aiCompleteTimes   map[string][]time.Time
 	aiCompleteLimit   int
+	aiSearchTimes     map[string][]time.Time
+	aiSearchLimit     int
+	aiSearchCacheMu   sync.Mutex
+	aiSearchCache     map[string]map[string]aiSearchCacheEntry
+	aiSearchInflight  map[string]*aiSearchFlight
+	aiSearchTTL       time.Duration
 	// eventBridgeMu guards the single events.Bus bridge subscription for plugins.
 	eventBridgeMu  sync.Mutex
 	eventBridgeSub *events.Subscription
@@ -238,6 +244,9 @@ func New(deps Deps) (*Manager, error) {
 		eventPublishTimes: map[string][]time.Time{},
 		usenetCheckTimes:  map[string][]time.Time{},
 		aiCompleteTimes:   map[string][]time.Time{},
+		aiSearchTimes:     map[string][]time.Time{},
+		aiSearchCache:     map[string]map[string]aiSearchCacheEntry{},
+		aiSearchInflight:  map[string]*aiSearchFlight{},
 	}
 	return m, nil
 }
@@ -436,6 +445,7 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 	m.pruneBlockedOperatorHosts(id, g.OperatorHosts)
 	m.syncPosterBadgeSets(ctx, r)
 	m.syncFlowsPlugin(ctx, r)
+	m.clearAISearchCache(id)
 	m.closeRuntime(id)
 	m.broadcast(ctx)
 	return nil
@@ -590,6 +600,7 @@ func (m *Manager) CallStream(ctx context.Context, pluginID string, req Request) 
 
 	deadline := DeadlineFor(req.Path)
 	vctx, releaseViewer := m.bindAdapterViewer(ctx, pluginID, &req, deadline)
+	vctx = withCallSearchQuery(withCallPath(vctx, req.Path), extractCallSearchQuery(req))
 	ctx, cancel := context.WithTimeout(vctx, deadline)
 	cleanup := func() {
 		releaseViewer()
@@ -712,6 +723,17 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		}
 	}
 	deadline := wasm.EffectiveDeadline(req.Path, grantedDeadline, r.Manifest.SpeaksStremio())
+	searchQuery := extractCallSearchQuery(req)
+	if isClientRequestPath(req.Path) && isActiveSearchRoute(r.Manifest, req.Path, searchQuery) && m.aiSearchGrantedRecord(ctx, r) {
+		target := AISearchRouteDeadline
+		if grantedDeadline > 0 && grantedDeadline < target {
+			target = grantedDeadline
+		}
+		if target > deadline {
+			deadline = target
+			req.AISearch = true
+		}
+	}
 	req.Deadline = deadline
 	req.Headers = cloneHeaders(req.Headers)
 	vctx, releaseViewer := m.bindAdapterViewer(ctx, pluginID, &req, deadline)
@@ -738,7 +760,7 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 	if _, hosted := rt.(*hostedRuntime); hosted && wasm.ResolvePoolPath(req.Path) {
 		callTimeout = 2 * deadline
 	}
-	cctx, cancel := context.WithTimeout(withCallPath(vctx, req.Path), callTimeout)
+	cctx, cancel := context.WithTimeout(withCallSearchQuery(withCallPath(vctx, req.Path), searchQuery), callTimeout)
 	defer cancel()
 	resp, err := rt.Call(cctx, req)
 	ms := m.now().Sub(start).Milliseconds()
@@ -1427,10 +1449,16 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	}
 	m.clearBlockedLocalHosts(id)
 	m.clearBlockedOperatorHosts(id)
+	m.clearAISearchCache(id)
 	m.mu.Lock()
 	delete(m.eventPublishTimes, id)
 	delete(m.usenetCheckTimes, id)
 	delete(m.aiCompleteTimes, id)
+	for key := range m.aiSearchTimes {
+		if strings.HasPrefix(key, id+"\x00") {
+			delete(m.aiSearchTimes, key)
+		}
+	}
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {
 			delete(m.nextRun, key)

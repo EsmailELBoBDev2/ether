@@ -691,6 +691,22 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 				add(fmt.Sprintf("%s.libraries[%d]", base, j), "must name a media kind declared by this plugin")
 			}
 		}
+		if len(a.SearchPaths) > MaxAdapterSearchPaths {
+			add(base+".searchPaths", fmt.Sprintf("must declare at most %d search paths", MaxAdapterSearchPaths))
+		}
+		seenSearch := map[string]bool{}
+		for j, sp := range a.SearchPaths {
+			norm, ok := normalizeAdapterSearchPath(sp)
+			if !ok {
+				add(fmt.Sprintf("%s.searchPaths[%d]", base, j), "must be a clean subpath starting with /, without ?, #, whitespace, or ..")
+				continue
+			}
+			if seenSearch[norm] {
+				add(fmt.Sprintf("%s.searchPaths[%d]", base, j), "must not repeat a search path")
+				continue
+			}
+			seenSearch[norm] = true
+		}
 	}
 }
 

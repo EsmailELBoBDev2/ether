@@ -154,7 +154,9 @@ type Permissions struct {
 	// Sources lets a kind resolver ask Ether to find bytes: ""|none|search|acquire.
 	Sources string `json:"sources,omitempty"`
 	// AI lets a plugin call AIComplete on the owner's configured language model
-	// (""|none|complete; actions, jobs, sync, and other non-viewer routes only).
+	// (""|none|complete|complete+search; "complete" allows actions, jobs, sync,
+	// and other non-viewer routes, while "complete+search" also allows bounded
+	// 20 s cached calls on interactive search routes).
 	AI string `json:"ai,omitempty"`
 }
 
@@ -461,6 +463,11 @@ type FrontendAdapterMeta struct {
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
 	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Libraries    []string `json:"libraries,omitempty"`
+	// SearchPaths optionally lists adapter subpaths (such as "/search",
+	// "/rest/search3", or "/graphql") allowed to call ai.complete when
+	// permissions.ai is "complete+search".
+	SearchPaths []string `json:"searchPaths,omitempty"`
 }
 
 // SetupMeta declares guided setup for any plugin kind.

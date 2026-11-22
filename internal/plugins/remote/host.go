@@ -70,9 +70,9 @@ type Host interface {
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
 	// AIComplete runs a bounded completion against the owner's configured
-	// language model (requires permissions.ai: "complete"; never call from a
-	// viewer/client request path).
-	AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+	// language model (requires permissions.ai: "complete", or "complete+search"
+	// when viewerToken identifies an active frontend-adapter search call; #702).
+	AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
@@ -728,15 +728,12 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(r.Header.Get(HeaderViewerToken)) != "" {
-		writeHostError(w, http.StatusForbidden, "permission_denied", "ai.complete cannot run on viewer or client request paths")
-		return
-	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
 	var req plugins.AICompleteRequest
 	if !h.decode(w, r, maxAIBodyBytes, &req) {
 		return
 	}
-	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), req)
+	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), viewerToken, req)
 	if !h.finishErr(w, err) {
 		return
 	}

@@ -131,8 +131,8 @@ func TestPublishedManifestSchema(t *testing.T) {
 	expected["capabilities"] = map[string]any{"type": "array", "uniqueItems": true, "items": map[string]any{"enum": enums["Capability"]}}
 	perms := ether["permissions"].(map[string]any)["properties"].(map[string]any)
 	wantAI := map[string]any{
-		"description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).",
-		"enum":        []string{"none", "complete"},
+		"description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (\"complete\"), or also on interactive search routes — Stremio catalog search, kinds search, and frontend adapter search routes — with a hard 20 s bound and per-query caching (\"complete+search\"). Every other viewer/client path stays refused.",
+		"enum":        []string{"none", "complete", "complete+search"},
 	}
 	contrib := ether["contributes"].(map[string]any)["properties"].(map[string]any)
 	kind := schemaType(reflect.TypeFor[plugins.MediaKindMeta]())

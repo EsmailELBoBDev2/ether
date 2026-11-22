@@ -250,7 +250,7 @@ func TestPlaybackUsesScopedBroker(t *testing.T) {
 		if planErr != nil {
 			return frontend.PlayPlan{}, planErr
 		}
-		return frontend.PlayPlan{ID: "plan", Media: frontend.MediaInfo{Container: "mp4", Duration: time.Hour, Streams: []frontend.StreamInfo{{Type: "video", ColorTransfer: "bt709", HDR10Plus: &hdr10Plus}}}, Decision: frontend.Decision{Kind: "transcode", VideoCopy: true}}, nil
+		return frontend.PlayPlan{ID: "plan", Media: frontend.MediaInfo{Container: "mp4", Duration: time.Hour, Streams: []frontend.StreamInfo{{Type: "video", ColorTransfer: "bt709", HDR10Plus: &hdr10Plus}, {Type: "audio", Index: 1, Codec: "aac"}, {Type: "audio", Index: 2, Codec: "ac3"}}}, Decision: frontend.Decision{Kind: "transcode", VideoCopy: true, AudioStream: 1}}, nil
 	}, OpenFunc: func(_ context.Context, r frontend.OpenRequest) (frontend.Session, error) {
 		if openErr != nil {
 			return frontend.Session{}, openErr
@@ -376,11 +376,12 @@ func TestPlaybackUsesScopedBroker(t *testing.T) {
 		t.Fatalf("replan %d %s", replan.Code, replan.Body.String())
 	}
 	// Silo Android sends every track pick as a track_change intent with no
-	// attempt history. It plans the selection; no subtitle means off.
-	planned = frontend.PlanRequest{}
+	// attempt history. The playing session takes the selection (its server
+	// stream restarts on the new audio); no subtitle means off.
+	streamed = frontend.StreamRequest{}
 	pick := call("POST", "/api/v2/playback/"+sessionID+"/replan", `{"installation_id":"install","protocol_version":3,"operation":"track_change","playback_attempt_id":"attempt","replan_request_id":"android-pick-1","failed_plan_id":"failedplan","plan_attempt_id":"planattempt","plan_attempt_key":"plankey123","attempted_plan_keys":[],"attempt_count":1,"quality_preference":"auto","position_seconds":40,"selected_tracks":{"audio":{"id":"file:101:audio:1","index":1}},"client_capabilities":{"codecs_video":["h264"]},"client_playback_context":{}}`)
-	if pick.Code != 200 || planned.Intent.AudioOrdinal == nil || *planned.Intent.AudioOrdinal != 1 || planned.Intent.SubtitleOrdinal == nil || *planned.Intent.SubtitleOrdinal != -1 || planned.Intent.Position != 40*time.Second {
-		t.Fatalf("track pick %d %s %+v", pick.Code, pick.Body.String(), planned.Intent)
+	if pick.Code != 200 || streamed.AudioStream == nil || *streamed.AudioStream != 2 || streamed.Position != 40*time.Second || !strings.Contains(pick.Body.String(), `"session_id":"`+sessionID+`"`) || !strings.Contains(pick.Body.String(), `"audio":{"id":"file:101:audio:1","index":1}`) || !strings.Contains(pick.Body.String(), `"mode":"off"`) {
+		t.Fatalf("track pick %d %s %+v", pick.Code, pick.Body.String(), streamed)
 	}
 	missing := call("POST", "/api/v2/playback/missing-session/replan", `{"installation_id":"install","protocol_version":3,"playback_attempt_id":"attempt","replan_request_id":"apple-replan-2","failed_plan_id":"failedplan","plan_attempt_id":"planattempt","plan_attempt_key":"plankey123","attempted_plan_keys":["plankey123"],"attempt_count":1,"quality_preference":"auto","position_seconds":1,"selected_tracks":{},"client_capabilities":{},"client_playback_context":{}}`)
 	if missing.Code != 404 || missing.Header().Get("Content-Type") != "application/problem+json" || !strings.Contains(missing.Body.String(), `"status":404`) {
@@ -1078,7 +1079,7 @@ func TestEmbeddedSubtitleNeedsNoWholeFileArtifact(t *testing.T) {
 	media := frontend.MediaInfo{Container: "mkv", Duration: time.Hour, Streams: []frontend.StreamInfo{
 		{Type: "video", Index: 0, Codec: "h264"},
 		{Type: "audio", Index: 1, Codec: "aac", Language: "eng"},
-		{Type: "subtitle", Index: 4, Codec: "subrip", Language: "eng"},
+		{Type: "subtitle", Index: 4, ContainerTrackID: 5, Codec: "subrip", Language: "eng"},
 	}}
 	kind := core.DecisionDirectPlay
 	session := frontendtest.Sessions{
@@ -1139,7 +1140,7 @@ func TestEmbeddedSubtitleNeedsNoWholeFileArtifact(t *testing.T) {
 	}
 	direct := start()
 	embedded, _ := direct["embedded"].(map[string]any)
-	if direct["mode"] != "render" || direct["artifact"] != nil || embedded == nil || embedded["stream_index"] != float64(4) {
+	if direct["mode"] != "render" || direct["artifact"] != nil || embedded == nil || embedded["stream_index"] != float64(4) || embedded["container_track_id"] != "5" {
 		t.Fatalf("direct play subtitle: %+v", direct)
 	}
 	if row := direct["inventory"].([]any)[0].(map[string]any); !strings.Contains(row["url"].(string), "embedded_stream_index=4") {

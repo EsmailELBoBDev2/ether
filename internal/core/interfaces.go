@@ -888,16 +888,19 @@ type StreamInfo struct {
 	Interlaced        bool `json:"interlaced,omitempty"`
 	VariableFrameRate bool `json:"variableFrameRate,omitempty"`
 
-	Index         int    `json:"index"`
-	Type          string `json:"type"` // video, audio, subtitle
-	Codec         string `json:"codec"`
-	Profile       string `json:"profile,omitempty"`
-	Level         int    `json:"level,omitempty"`
-	Language      string `json:"language,omitempty"`
-	Title         string `json:"title,omitempty"`
-	CodecLongName string `json:"codecLongName,omitempty"`
-	Default       bool   `json:"default,omitempty"`
-	Forced        bool   `json:"forced,omitempty"`
+	Index int `json:"index"`
+	// ContainerTrackID is the Matroska TrackNumber when the probe read it:
+	// the id a player's own demuxer gives the track. Zero is unknown.
+	ContainerTrackID int    `json:"containerTrackId,omitempty"`
+	Type             string `json:"type"` // video, audio, subtitle
+	Codec            string `json:"codec"`
+	Profile          string `json:"profile,omitempty"`
+	Level            int    `json:"level,omitempty"`
+	Language         string `json:"language,omitempty"`
+	Title            string `json:"title,omitempty"`
+	CodecLongName    string `json:"codecLongName,omitempty"`
+	Default          bool   `json:"default,omitempty"`
+	Forced           bool   `json:"forced,omitempty"`
 	// Nil means the source did not report this ffprobe disposition.
 	DefaultDisposition *bool   `json:"defaultDisposition,omitempty"`
 	ForcedDisposition  *bool   `json:"forcedDisposition,omitempty"`

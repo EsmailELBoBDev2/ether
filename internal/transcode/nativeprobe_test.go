@@ -226,6 +226,10 @@ func boxAncestors(b []byte, point int) []int {
 // to later enrichment: frame-header audio bitrates and the DTS/TrueHD/E-AC-3
 // profiles that need audio packets, plus ffprobe's "unknown" transfer.
 func normalizeForNative(want, got *core.MediaInfo) {
+	// ffprobe does not report the Matroska TrackNumber the native probe reads.
+	for i := range got.Streams {
+		got.Streams[i].ContainerTrackID = 0
+	}
 	for i := range want.Streams {
 		w := &want.Streams[i]
 		// Native probing does not yet report these ffprobe dispositions. Keep

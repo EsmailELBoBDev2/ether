@@ -146,12 +146,12 @@ describe("Viewer Actions menu", () => {
     expect(screen.getByRole("menuitem", { name: "Approve a TV code" })).toBeInTheDocument();
   });
 
-  it("sends Plex Home viewers to plex.tv instead of managing them", async () => {
+  it("lets the owner pause and resume Plex viewers while keeping remove and merge on plex.tv", async () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
-    renderApp("/viewers/3/overview");
+    const { fake } = renderApp("/viewers/3/overview");
     expect(await screen.findByText("Managed on plex.tv", {}, WAIT)).toBeInTheDocument();
     await openActions();
-    expect(screen.queryByRole("menuitem", { name: "Pause access" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Pause access" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Remove viewer" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Merge into another viewer" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Send invite link" })).toBeNull();
@@ -165,5 +165,28 @@ describe("Viewer Actions menu", () => {
       "noopener,noreferrer",
     );
     open.mockRestore();
+
+    // Pause explains the plex.tv share stays intact, then shows "Paused by owner".
+    await openActions();
+    await pick("Pause access");
+    expect(await screen.findByText(/stays shared on plex\.tv/, {}, WAIT)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pause access" }));
+    await waitFor(() => expect(calls(fake, "POST", "/users/3/pause")).toHaveLength(1), WAIT);
+    expect(
+      await screen.findByRole("heading", { name: /The Kids.*Paused by owner/ }, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Managed on plex.tv")).toBeInTheDocument();
+
+    // Resume restores access.
+    await openActions();
+    await pick("Resume access");
+    await waitFor(() => expect(calls(fake, "POST", "/users/3/resume")).toHaveLength(1), WAIT);
+    await waitFor(
+      () =>
+        expect(screen.getByRole("heading", { name: /The Kids/ })).not.toHaveTextContent(
+          "Paused by owner",
+        ),
+      WAIT,
+    );
   });
 });

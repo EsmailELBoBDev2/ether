@@ -560,7 +560,7 @@ const VIEWERS: Viewer[] = [
       plexShared: true,
       canRemove: false,
       canMerge: false,
-      canPause: false,
+      canPause: true,
       managedBy: "plex",
     },
   },
@@ -579,13 +579,13 @@ const VIEWERS: Viewer[] = [
       plexShared: true,
       canRemove: false,
       canMerge: false,
-      canPause: false,
+      canPause: true,
       managedBy: "plex",
     },
   },
 ];
 
-/** Lifecycle as the real API reports it: Plex accounts are managed on plex.tv. */
+/** Lifecycle as the real API reports it: Plex accounts can be paused, while remove/merge stay on plex.tv. */
 function mockLifecycle(
   v: Pick<Viewer, "isOwner" | "plexId" | "title" | "username" | "accessStatus" | "lifecycle">,
 ) {
@@ -616,7 +616,7 @@ function mockLifecycle(
       paused: false,
       plexShared: v.accessStatus !== "inactive",
       managedBy: "plex" as const,
-      canPause: false,
+      canPause: true,
       canRemove: false,
       canMerge: false,
     };
@@ -6143,12 +6143,22 @@ export function createFakeServer(opts: FakeOptions = {}) {
           viewers: [...VIEWERS, ...state.dlnaGuests, ...state.addedViewers]
             .filter((v) => !state.removedViewers.has(v.id))
             .map((v, i) => {
-              const lifecycle = v.lifecycle ?? mockLifecycle(v);
+              const lifecycle = {
+                ...(v.lifecycle ?? mockLifecycle(v)),
+                paused: state.pausedViewers.has(v.id),
+              };
+              const accessStatus = v.isOwner
+                ? "owner"
+                : lifecycle.paused ||
+                    (lifecycle.managedBy === "plex" && lifecycle.plexShared === false)
+                  ? "inactive"
+                  : (v.accessStatus ?? "active");
               return {
                 ...v,
+                accessStatus,
                 thumb: avatarFor(v.title),
                 lastActive: new Date(Date.now() - (i * 7 + 1) * 3600_000).toISOString(),
-                lifecycle: { ...lifecycle, paused: state.pausedViewers.has(v.id) },
+                lifecycle,
               };
             }),
         });
@@ -6484,11 +6494,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
           completed: i % 3 !== 1,
           progress: i % 3 === 1 ? 0.35 + (i % 4) * 0.1 : 1,
         }));
+        const lifecycle = {
+          ...(v.lifecycle ?? mockLifecycle(v)),
+          paused: state.pausedViewers.has(id),
+        };
+        const accessStatus = v.isOwner
+          ? "owner"
+          : lifecycle.paused || (lifecycle.managedBy === "plex" && lifecycle.plexShared === false)
+            ? "inactive"
+            : (v.accessStatus ?? "active");
         return json({
           ...v,
+          accessStatus,
           thumb: avatarFor(v.title),
           lastActive: new Date(Date.now() - 3600_000).toISOString(),
-          lifecycle: { ...(v.lifecycle ?? mockLifecycle(v)), paused: state.pausedViewers.has(id) },
+          lifecycle,
           recent,
         });
       }
@@ -6688,14 +6708,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (seg[2] === "pause" && method === "POST") {
         if (!target || state.removedViewers.has(id)) return err(404, "not_found", "no such viewer");
         if (target.isOwner) return err(403, "forbidden", "The owner cannot be paused.");
-        if (managed) return plexManaged();
         state.pausedViewers.add(id);
         return json({ paused: true });
       }
       if (seg[2] === "resume" && method === "POST") {
         if (!target || state.removedViewers.has(id)) return err(404, "not_found", "no such viewer");
         if (target.isOwner) return err(403, "forbidden", "The owner cannot be paused.");
-        if (managed) return plexManaged();
         state.pausedViewers.delete(id);
         return json({ paused: false });
       }

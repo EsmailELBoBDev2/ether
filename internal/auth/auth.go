@@ -675,9 +675,12 @@ func (s *Service) reload(ctx context.Context) error {
 		return fmt.Errorf("auth: load plex defaults: %w", err)
 	}
 	s.mu.Lock()
+	oldUsers := s.users
 	oldTokens := s.tokens
 	for h, id := range oldTokens {
-		if tokens[h] != id {
+		oldActive := oldUsers[id] != nil && oldUsers[id].Active
+		newActive := users[id] != nil && users[id].Active
+		if tokens[h] != id || (oldActive && !newActive) {
 			s.retireHashLocked(h)
 			s.tokenGen[h]++
 		}
@@ -693,7 +696,7 @@ func (s *Service) reload(ctx context.Context) error {
 			s.tokenGen[h]++
 		}
 	}
-	changed := !plexDefaultsEqual(s.plexDefaults, defaults) || userThumbsChanged(s.users, users)
+	changed := !plexDefaultsEqual(s.plexDefaults, defaults) || userThumbsChanged(oldUsers, users) || userActiveChanged(oldUsers, users)
 	s.users, s.byPlex, s.tokens, s.serverTokens, s.ownerPlexID, s.plexDefaults = users, byPlex, tokens, serverTokens, owner, defaults
 	if changed {
 		s.gen.Add(1)
@@ -729,6 +732,30 @@ func userThumbsChanged(prev, next map[int64]*row) bool {
 			continue
 		}
 		if old.Thumb != cur.Thumb {
+			return true
+		}
+	}
+	return false
+}
+
+func userActiveChanged(prev, next map[int64]*row) bool {
+	if len(prev) == 0 {
+		return false
+	}
+	for id, cur := range next {
+		old := prev[id]
+		if old == nil {
+			if cur.Active {
+				return true
+			}
+			continue
+		}
+		if old.Active != cur.Active {
+			return true
+		}
+	}
+	for id, old := range prev {
+		if old.Active && next[id] == nil {
 			return true
 		}
 	}
@@ -1076,19 +1103,20 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 	}
 	expires := s.o.Now().Add(s.o.CacheTTL)
 	s.mu.Lock()
-	s.evictLocked()
-	s.entrySeq++
-	seq := s.entrySeq
-	s.retireCacheLocked(h)
-	s.pos[h] = cacheEntry{userID: localID, expires: expires, seq: seq}
-	delete(s.neg, h)
 	u := s.activePlexUser(localID)
 	var acc Acceptance
 	if u != nil {
+		s.evictLocked()
+		s.entrySeq++
+		seq := s.entrySeq
+		s.retireCacheLocked(h)
+		s.pos[h] = cacheEntry{userID: localID, expires: expires, seq: seq}
+		delete(s.neg, h)
 		acc = s.mintLocked(h, originFresh, u.ID, seq, expires)
 	}
 	s.mu.Unlock()
 	if u == nil {
+		s.rejectNotShared(h, acct.ID)
 		return validation{plexID: acct.ID, notShared: true}, core.ErrUnauthorized
 	}
 	s.touch(u.ID, s.o.Now())

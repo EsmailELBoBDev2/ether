@@ -122,7 +122,7 @@ function People() {
   const users = useAsync(() => api.users().catch(() => [] as EtherUser[]), []);
   const byId = new Map((users.data ?? []).map((u) => [u.id, u]));
   const viewers = state.data ?? [];
-  const isPaused = (v: Viewer) => lifecycleOf(v).paused && !isPlexSource(lifecycleOf(v).source);
+  const isPaused = (v: Viewer) => lifecycleOf(v).paused;
   const fromPlex = (v: Viewer) => isPlexSource(lifecycleOf(v).source);
   const filtered = viewers.filter((v) =>
     status === "all"

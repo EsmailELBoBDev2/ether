@@ -304,7 +304,7 @@ export interface ViewerLifecycle {
   canRemove: boolean;
   canMerge: boolean;
   canPause: boolean;
-  /** "plex" when the account is managed on plex.tv, never in Ether. */
+  /** "plex" when the account is managed on plex.tv (remove and merge are refused in Ether). */
   managedBy: "plex" | "";
 }
 

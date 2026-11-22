@@ -14,6 +14,7 @@ import {
 import { ArrowLeft, CheckCircle2, Gauge, History } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useAppOptional } from "../../app-context";
 import { PageSubtabs } from "../../components/layout";
 import { Artwork } from "../../components/Artwork";
 import { Meter } from "../../components/charts";
@@ -150,9 +151,14 @@ export default function ViewerProfile() {
     );
   const name = viewerName(v);
   const life = viewerLifecycle(v);
+  const plexConnected = useAppOptional()?.boot.plexEnabled !== false;
   // Watchlist, alerts and connected apps need server access; a viewer kept
-  // for imported history (or whose access ended) has none of them.
-  const serverAccess = v.isOwner || viewerStatus(v) === "active";
+  // for imported history (or paused / unshared) has none of them.
+  const serverAccess =
+    v.isOwner ||
+    (!life.paused &&
+      !(life.managedBy === "plex" && life.plexShared === false) &&
+      viewerStatus(v) === "active");
 
   return (
     <DetailPageLayout
@@ -164,12 +170,23 @@ export default function ViewerProfile() {
             <div className="min-w-0 flex-1">
               <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold text-fg">
                 {name}
-                {life.paused ? (
+                {life.managedBy === "plex" && plexConnected ? (
+                  <>
+                    {life.paused ? <Badge variant="warning">{t("Paused by owner")}</Badge> : null}
+                    {life.plexShared === false ? (
+                      <Badge variant="outline">{t("Not shared on plex.tv")}</Badge>
+                    ) : (
+                      <>
+                        {!life.paused ? <ViewerStatus viewer={v} /> : null}
+                        <Badge variant="secondary">{t("Managed on plex.tv")}</Badge>
+                      </>
+                    )}
+                  </>
+                ) : life.paused ? (
                   <Badge variant="warning">{t("Paused")}</Badge>
                 ) : (
                   <ViewerStatus viewer={v} />
                 )}
-                {life.managedBy === "plex" ? <Badge>{t("Managed on plex.tv")}</Badge> : null}
               </h1>
               <p className="text-sm text-fg-muted">
                 {v.username} · {t("Active {time}", { time: relativeTime(v.lastActive) })}

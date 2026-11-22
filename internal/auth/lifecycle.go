@@ -10,9 +10,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// Viewer lifecycle refusals. Plex viewers are managed on plex.tv, full
-// stop: Ether never pauses, removes or merges them. The owner can never
-// be paused, removed or merged either.
+// Viewer lifecycle refusals. The owner can never be paused, removed or
+// merged. Plex viewers are managed on plex.tv for removal and merging,
+// though the owner can still pause and resume their access on this server.
 var (
 	ErrViewerIsOwner     = errors.New("auth: viewer is the owner")
 	ErrViewerPlexManaged = errors.New("auth: viewer is managed on plex.tv")
@@ -52,20 +52,21 @@ func (s *Service) PauseViewer(ctx context.Context, viewerID int64) error {
 	if err != nil {
 		return err
 	}
-	if err := checkLifecycleAllowed(r); err != nil {
-		return err
+	if r.IsOwner {
+		return ErrViewerIsOwner
 	}
 	return s.SetOwnerEnabled(ctx, viewerID, false)
 }
 
-// ResumeViewer ends a pause.
+// ResumeViewer ends a pause. For Plex viewers, access returns to whatever
+// plex.tv currently shares (active = owner_enabled AND plex_shared).
 func (s *Service) ResumeViewer(ctx context.Context, viewerID int64) error {
 	r, err := loadRow(ctx, s.db, viewerID)
 	if err != nil {
 		return err
 	}
-	if err := checkLifecycleAllowed(r); err != nil {
-		return err
+	if r.IsOwner {
+		return ErrViewerIsOwner
 	}
 	return s.SetOwnerEnabled(ctx, viewerID, true)
 }

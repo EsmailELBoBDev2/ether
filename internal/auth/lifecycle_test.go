@@ -48,7 +48,14 @@ func TestViewerLifecycleRefusalsAndRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The owner and any Plex viewer refuse pause, resume, remove, merge.
+	// The owner refuses pause, resume, remove and merge. Plex viewers allow
+	// pause and resume, while still refusing remove and merge.
+	if err := s.PauseViewer(ctx, owner); !errors.Is(err, ErrViewerIsOwner) {
+		t.Fatalf("pause owner: %v, want %v", err, ErrViewerIsOwner)
+	}
+	if err := s.ResumeViewer(ctx, owner); !errors.Is(err, ErrViewerIsOwner) {
+		t.Fatalf("resume owner: %v, want %v", err, ErrViewerIsOwner)
+	}
 	for _, tc := range []struct {
 		name string
 		id   int64
@@ -58,12 +65,6 @@ func TestViewerLifecycleRefusalsAndRemoval(t *testing.T) {
 		{"plex", plex, ErrViewerPlexManaged},
 		{"plexHome", plexHome, ErrViewerPlexManaged},
 	} {
-		if err := s.PauseViewer(ctx, tc.id); !errors.Is(err, tc.want) {
-			t.Fatalf("pause %s: %v, want %v", tc.name, err, tc.want)
-		}
-		if err := s.ResumeViewer(ctx, tc.id); !errors.Is(err, tc.want) {
-			t.Fatalf("resume %s: %v, want %v", tc.name, err, tc.want)
-		}
 		if err := s.RemoveViewer(ctx, tc.id); !errors.Is(err, tc.want) {
 			t.Fatalf("remove %s: %v, want %v", tc.name, err, tc.want)
 		}
@@ -85,6 +86,9 @@ func TestViewerLifecycleRefusalsAndRemoval(t *testing.T) {
 	}
 	if err := s.PauseViewer(ctx, 99999); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("pause missing: %v", err)
+	}
+	if err := s.ResumeViewer(ctx, 99999); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("resume missing: %v", err)
 	}
 
 	// Pause flips owner_enabled and blocks the user; resume restores it.
@@ -253,5 +257,180 @@ func TestEnsurePlexFriend(t *testing.T) {
 	}
 	if title != "Kids Profile" || isHome != 1 || restricted != 1 {
 		t.Fatalf("expected FriendlyName title and preserved home/restricted flags, got title=%q is_home=%d restricted=%d", title, isHome, restricted)
+	}
+}
+
+func TestPlexPauseResumeSyncTokenRefreshAndHome(t *testing.T) {
+	s, v, _ := setup(t)
+	ctx := context.Background()
+	v.mu.Lock()
+	v.access["alice-device"] = true
+	v.mu.Unlock()
+
+	// Add a Plex Home member via SyncFriends so both friend and Home share paths are tested.
+	if err := s.SyncFriends(ctx, []plextv.Friend{
+		{Owned: true, Token: "owner-access", PlexID: 42},
+		{PlexID: 100, Username: "alice", Title: "Alice", Token: "alice-access", Sections: []string{"1"}},
+		{PlexID: 300, Username: "kid", Title: "Kid", Token: "kid-access", Home: true, Restricted: true, AllLibs: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	aliceID := userByName(t, s, "alice")
+	kidID := userByName(t, s, "kid")
+
+	// Mint durable + fresh acceptance receipts before pausing.
+	_, aliceDurable, err := s.Accept(ctx, "alice-access")
+	if err != nil {
+		t.Fatalf("accept alice synced token: %v", err)
+	}
+	_, aliceFresh, err := s.Accept(ctx, "alice-device")
+	if err != nil {
+		t.Fatalf("accept alice personal token: %v", err)
+	}
+	_, kidFresh, err := s.Accept(ctx, "home-user")
+	if err != nil {
+		t.Fatalf("accept kid home token: %v", err)
+	}
+	if !s.HomeMember(kidID) {
+		t.Fatal("expected kid to be an active home member before pause")
+	}
+
+	// Pause both the shared Plex friend and the Plex Home user.
+	genBefore := s.Generation()
+	if err := s.PauseViewer(ctx, aliceID); err != nil {
+		t.Fatalf("pause alice: %v", err)
+	}
+	if s.Generation() == genBefore {
+		t.Fatal("pausing a viewer must bump auth generation")
+	}
+	if err := s.PauseViewer(ctx, kidID); err != nil {
+		t.Fatalf("pause kid: %v", err)
+	}
+
+	// Receipts, synced tokens, personal tokens, Home membership and plex.tv sign-in all fail immediately.
+	if err := s.ReceiptCurrent(ctx, aliceDurable); err == nil {
+		t.Fatal("pre-pause durable receipt survived pause")
+	}
+	if err := s.ReceiptCurrent(ctx, aliceFresh); err == nil {
+		t.Fatal("pre-pause fresh receipt survived pause")
+	}
+	if err := s.ReceiptCurrent(ctx, kidFresh); err == nil {
+		t.Fatal("pre-pause home receipt survived pause")
+	}
+	if err := s.DurableTokenCurrent(ctx, "alice-access", aliceID); err == nil {
+		t.Fatal("DurableTokenCurrent succeeded for paused Plex viewer")
+	}
+	for _, tok := range []string{"alice-access", "alice-device", "kid-access", "home-user"} {
+		if _, _, err := s.Accept(ctx, tok); !errors.Is(err, core.ErrUnauthorized) {
+			t.Fatalf("Accept(%q) while paused = %v, want ErrUnauthorized", tok, err)
+		}
+		if _, _, err := s.AuthenticatePlexAccount(ctx, tok); !errors.Is(err, ErrPlexNotShared) {
+			t.Fatalf("AuthenticatePlexAccount(%q) while paused = %v, want ErrPlexNotShared", tok, err)
+		}
+	}
+	if s.ActivePlexUserByPlexID(100) != nil || s.ActivePlexUserByPlexID(300) != nil {
+		t.Fatal("ActivePlexUserByPlexID returned a paused Plex viewer")
+	}
+	if s.HomeMember(kidID) {
+		t.Fatal("HomeMember returned true for paused Plex Home viewer")
+	}
+
+	// Even during a plex.tv outage, stale fallback must never admit a paused viewer.
+	v.setDown(true)
+	if _, _, err := s.Accept(ctx, "alice-device"); err == nil {
+		t.Fatal("stale fallback admitted paused Plex viewer during outage")
+	}
+	v.setDown(false)
+
+	// Friends sync (including rotated tokens) and unknown-token refresh must never re-enable paused viewers.
+	remoteFriends := []plextv.Friend{
+		{Owned: true, Token: "owner-access", PlexID: 42},
+		{PlexID: 100, Username: "alice", Title: "Alice", Token: "alice-access-rotated", Sections: []string{"1"}},
+		{PlexID: 300, Username: "kid", Title: "Kid", Token: "kid-access-rotated", Home: true, Restricted: true, AllLibs: true},
+	}
+	s.SetUnknownTokenRefresher(func(ctx context.Context) error {
+		return s.SyncFriends(ctx, remoteFriends)
+	})
+	if err := s.SyncFriends(ctx, remoteFriends); err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range []string{"alice-access-rotated", "alice-device", "kid-access-rotated", "home-user"} {
+		if _, _, err := s.Accept(ctx, tok); !errors.Is(err, core.ErrUnauthorized) {
+			t.Fatalf("Accept(%q) after sync while paused = %v, want ErrUnauthorized", tok, err)
+		}
+	}
+	if s.HomeMember(kidID) {
+		t.Fatal("SyncFriends re-enabled paused Plex Home viewer")
+	}
+
+	// Resuming a still-shared viewer restores access, while pre-pause durable receipts stay retired.
+	if err := s.ResumeViewer(ctx, aliceID); err != nil {
+		t.Fatalf("resume alice: %v", err)
+	}
+	if err := s.ResumeViewer(ctx, kidID); err != nil {
+		t.Fatalf("resume kid: %v", err)
+	}
+	if err := s.ReceiptCurrent(ctx, aliceDurable); err == nil {
+		t.Fatal("pre-pause durable receipt resurrected after resume")
+	}
+	if _, _, err := s.Accept(ctx, "alice-access-rotated"); err != nil {
+		t.Fatalf("alice synced token after resume: %v", err)
+	}
+	if _, _, err := s.Accept(ctx, "alice-device"); err != nil {
+		t.Fatalf("alice personal token after resume: %v", err)
+	}
+	if !s.HomeMember(kidID) {
+		t.Fatal("kid HomeMember not restored after resume")
+	}
+
+	// Unsharing on plex.tv while paused leaves resume inactive until plex.tv shares again.
+	if err := s.PauseViewer(ctx, aliceID); err != nil {
+		t.Fatal(err)
+	}
+	remoteFriends = []plextv.Friend{
+		{Owned: true, Token: "owner-access", PlexID: 42},
+		{PlexID: 300, Username: "kid", Title: "Kid", Token: "kid-access-rotated", Home: true, Restricted: true, AllLibs: true},
+	}
+	if err := s.SyncFriends(ctx, remoteFriends); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResumeViewer(ctx, aliceID); err != nil {
+		t.Fatal(err)
+	}
+	infos, err := s.AllUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aliceInfo UserInfo
+	for _, info := range infos {
+		if info.ID == aliceID {
+			aliceInfo = info
+		}
+	}
+	if !aliceInfo.OwnerEnabled || aliceInfo.PlexShared || aliceInfo.Active {
+		t.Fatalf("resumed unshared viewer state = %+v, want ownerEnabled=true plexShared=false active=false", aliceInfo)
+	}
+	if _, _, err := s.Accept(ctx, "alice-device"); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("resumed unshared viewer admitted: %v", err)
+	}
+
+	// Pausing an unshared Plex viewer prevents a later plex.tv re-share from re-enabling them until resumed.
+	if err := s.PauseViewer(ctx, aliceID); err != nil {
+		t.Fatal(err)
+	}
+	remoteFriends = append(remoteFriends, plextv.Friend{
+		PlexID: 100, Username: "alice", Title: "Alice", Token: "alice-access-reshared", Sections: []string{"1"},
+	})
+	if err := s.SyncFriends(ctx, remoteFriends); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Accept(ctx, "alice-access-reshared"); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("re-shared paused viewer admitted: %v", err)
+	}
+	if err := s.ResumeViewer(ctx, aliceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Accept(ctx, "alice-access-reshared"); err != nil {
+		t.Fatalf("resumed re-shared viewer rejected: %v", err)
 	}
 }

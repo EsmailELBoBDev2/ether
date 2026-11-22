@@ -407,7 +407,7 @@ it("puts the owner first as You and filters by lifecycle", async () => {
         paused: false,
         plexShared: false,
         managedBy: "plex",
-        canPause: false,
+        canPause: true,
         canRemove: false,
         canMerge: false,
       },
@@ -428,9 +428,9 @@ it("puts the owner first as You and filters by lifecycle", async () => {
   // Status and source badges from the lifecycle.
   expect(screen.getByText("Paused", { selector: "span" })).toBeInTheDocument();
   expect(screen.getByText("Local", { selector: "span" })).toBeInTheDocument();
-  expect(screen.getByText("No longer shared", { selector: "span" })).toBeInTheDocument();
+  expect(screen.getByText("Not shared on plex.tv", { selector: "span" })).toBeInTheDocument();
   expect(screen.getAllByText("Managed on plex.tv", { selector: "span" }).length).toBeGreaterThan(0);
-  // Paused chip keeps only the paused local viewer.
+  // Paused chip keeps only the paused viewer, not the unshared Plex viewer.
   fireEvent.click(screen.getByRole("button", { name: /^Paused \(/ }));
   expect(screen.getByText("Sam Rivera")).toBeInTheDocument();
   expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
@@ -440,6 +440,54 @@ it("puts the owner first as You and filters by lifecycle", async () => {
   expect(screen.getByText("Jordan Lee")).toBeInTheDocument();
   expect(screen.getByText("The Kids")).toBeInTheDocument();
   expect(screen.queryByText("Sam Rivera")).not.toBeInTheDocument();
+});
+
+it("shows Paused by owner distinctly from Not shared on plex.tv for Plex viewers", async () => {
+  renderApp(
+    "/viewers",
+    {},
+    withLifecycles({
+      3: {
+        source: "plexHome",
+        paused: true,
+        plexShared: true,
+        managedBy: "plex",
+        canPause: true,
+        canRemove: false,
+        canMerge: false,
+      },
+      4: {
+        source: "plex",
+        paused: false,
+        plexShared: false,
+        managedBy: "plex",
+        canPause: true,
+        canRemove: false,
+        canMerge: false,
+      },
+    }),
+  );
+  // Both paused and unshared Plex viewers are excluded from Active.
+  await screen.findByText("You", {}, WAIT);
+  expect(screen.queryByText("The Kids")).not.toBeInTheDocument();
+  expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
+
+  // Under All, their badges distinguish owner pause from plex.tv share state.
+  fireEvent.click(screen.getByRole("button", { name: /^All \(/ }));
+  const kidsRow = (await screen.findByText("The Kids", {}, WAIT)).closest("tr")!;
+  const jordanRow = screen.getByText("Jordan Lee").closest("tr")!;
+  expect(within(kidsRow).getByText("Paused by owner", { selector: "span" })).toBeInTheDocument();
+  expect(within(kidsRow).getByText("Managed on plex.tv", { selector: "span" })).toBeInTheDocument();
+  expect(within(kidsRow).queryByText("Not shared on plex.tv")).toBeNull();
+  expect(
+    within(jordanRow).getByText("Not shared on plex.tv", { selector: "span" }),
+  ).toBeInTheDocument();
+  expect(within(jordanRow).queryByText("Paused by owner")).toBeNull();
+
+  // Paused chip includes the paused Plex viewer, not the unshared-only Plex viewer.
+  fireEvent.click(screen.getByRole("button", { name: /^Paused \(/ }));
+  expect(screen.getByText("The Kids")).toBeInTheDocument();
+  expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
 });
 
 it("shows nothing Plex-related when Plex is off", async () => {

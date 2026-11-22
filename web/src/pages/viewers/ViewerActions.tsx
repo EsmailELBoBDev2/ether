@@ -41,8 +41,8 @@ type Panel = "invite" | "password" | "tvcode" | "merge" | "remove" | null;
 
 /**
  * The viewer page's one Actions menu: Home, sign-in help, access and removal.
- * What shows follows the viewer's lifecycle — Plex viewers are managed on
- * plex.tv, so Ether offers no pause, remove or merge for them.
+ * What shows follows the viewer's lifecycle — Plex viewers can be paused and
+ * resumed in Ether, while removal and merging remain managed on plex.tv.
  */
 export function ViewerActions({
   viewer,
@@ -93,10 +93,15 @@ export function ViewerActions({
     if (paused) {
       const ok = await confirmDialog({
         title: t("Pause access?"),
-        message: t(
-          "{name} keeps everything — history, Home and settings — but can't sign in anywhere until you resume access.",
-          { name },
-        ),
+        message: plexManaged
+          ? t(
+              "{name} keeps everything — history, Home and settings — and stays shared on plex.tv, but is signed out everywhere and can't watch until you resume access.",
+              { name },
+            )
+          : t(
+              "{name} keeps everything — history, Home and settings — but can't sign in anywhere until you resume access.",
+              { name },
+            ),
         confirmLabel: t("Pause access"),
       });
       if (!ok) return;
@@ -106,7 +111,18 @@ export function ViewerActions({
         method: "POST",
         body: JSON.stringify({}),
       });
-      toast.success(paused ? t("Access paused") : t("Access resumed"));
+      if (paused) {
+        toast.success(t("Access paused"));
+      } else if (plexManaged && life.plexShared === false) {
+        toast.success(t("Owner pause removed"), {
+          description: t(
+            "{name} is still not shared on plex.tv, so they won't have access until you share the server with them there.",
+            { name },
+          ),
+        });
+      } else {
+        toast.success(t("Access resumed"));
+      }
       onChange();
     } catch (e) {
       toast.error(paused ? t("Couldn't pause access") : t("Couldn't resume access"), {
@@ -162,6 +178,24 @@ export function ViewerActions({
       icon: LogOut,
       onSelect: () => void signOutEverywhere(),
     },
+    ...(life.canPause
+      ? [
+          { key: "sep-access", separator: true } satisfies ContextMenuEntry,
+          life.paused
+            ? ({
+                key: "resume",
+                label: t("Resume access"),
+                icon: PlayCircle,
+                onSelect: () => void setPaused(false),
+              } satisfies ContextMenuEntry)
+            : ({
+                key: "pause",
+                label: t("Pause access"),
+                icon: PauseCircle,
+                onSelect: () => void setPaused(true),
+              } satisfies ContextMenuEntry),
+        ]
+      : []),
     ...(plexManaged
       ? [
           { key: "sep-plex", separator: true } satisfies ContextMenuEntry,
@@ -173,24 +207,6 @@ export function ViewerActions({
           } satisfies ContextMenuEntry,
         ]
       : [
-          ...(life.canPause
-            ? [
-                { key: "sep-access", separator: true } satisfies ContextMenuEntry,
-                life.paused
-                  ? {
-                      key: "resume",
-                      label: t("Resume access"),
-                      icon: PlayCircle,
-                      onSelect: () => void setPaused(false),
-                    }
-                  : {
-                      key: "pause",
-                      label: t("Pause access"),
-                      icon: PauseCircle,
-                      onSelect: () => void setPaused(true),
-                    },
-              ]
-            : []),
           ...(life.canMerge || life.canRemove
             ? [{ key: "sep-remove", separator: true } satisfies ContextMenuEntry]
             : []),

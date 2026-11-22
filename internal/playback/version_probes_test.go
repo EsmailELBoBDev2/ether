@@ -3,6 +3,7 @@ package playback
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -688,5 +689,181 @@ func TestCachedProbeByKeysPersistenceAndPackFileIsolation(t *testing.T) {
 	}
 	if got0.Duration != 90*time.Second || got1.Duration != 2400*time.Second {
 		t.Fatalf("reloaded durations = %v / %v, want 90s / 2400s", got0.Duration, got1.Duration)
+	}
+}
+
+func TestPerEpisodePackProbeAndVaultTrackIsolation(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	dir := t.TempDir()
+	vs, err := vault.Open(ctx, vault.Options{Dir: t.TempDir(), DB: db})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const packHash = "285f4b2600c4702b546ef71f9747862ecbcf96a7"
+	const movieHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// Pre-seed legacy shared bare bt:<packHash> rows (as written pre-#714) alongside
+	// a valid single-file movie probe under bare bt:<movieHash>.
+	legacyPackInfo := core.MediaInfo{
+		Container: "mkv", Duration: 51 * time.Minute, Size: 7370527522,
+		Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
+	}
+	movieInfo := core.MediaInfo{
+		Container: "mkv", Duration: 120 * time.Minute, Size: 18 << 30,
+		Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
+	}
+	packRec, _ := json.Marshal(probeFactsRecord{FactsVersion: core.ProbeFactsVersion, Info: legacyPackInfo})
+	movieRec, _ := json.Marshal(probeFactsRecord{FactsVersion: core.ProbeFactsVersion, Info: movieInfo})
+	if _, err := db.ExecContext(ctx, `INSERT INTO release_probes(content_key, info_json, updated_at) VALUES(?, ?, ?), (?, ?, ?)`,
+		"bt:"+packHash, string(packRec), time.Now().UnixMilli(),
+		"bt:"+movieHash, string(movieRec), time.Now().UnixMilli(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.(vault.TrackStore).SetTracks(ctx, vault.TorrentKey(packHash), 0, 0, legacyPackInfo); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHarness(t, nil, nil)
+	cfg := config.Defaults(dir)
+	deps := Deps{
+		Resolver:   h.resolver,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB:    db,
+		Vault: vs,
+	}
+	m1, err := New(deps, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// AIOStreams-style per-episode pack releases (no FullSeason, shared InfoHash).
+	ep4 := core.Release{
+		ID:       "aio-ep4",
+		GUID:     "btih:" + packHash + "/s1e4",
+		Protocol: core.ProtocolTorrent,
+		InfoHash: packHash,
+		Info:     core.ReleaseInfo{Episodes: []int{4}},
+		Target:   &core.ReleaseTarget{Season: 1, Episode: 4},
+	}
+	ep5 := core.Release{
+		ID:       "aio-ep5",
+		GUID:     "btih:" + packHash + "/s1e5",
+		Protocol: core.ProtocolTorrent,
+		InfoHash: packHash,
+		Info:     core.ReleaseInfo{Episodes: []int{5}},
+		Target:   &core.ReleaseTarget{Season: 1, Episode: 5},
+	}
+	movie := core.Release{
+		ID:       "movie-1",
+		GUID:     "btih:" + movieHash,
+		Protocol: core.ProtocolTorrent,
+		InfoHash: movieHash,
+		Target:   &core.ReleaseTarget{MovieTitles: []string{"Movie"}, MovieYear: 2026},
+	}
+
+	// Old poisoned bare bt:<packHash> and vault_tracks(bt:<packHash>, 0, 0) must be ignored
+	// for per-episode pack releases, while valid single-file movie probes still hit.
+	if info, ok := m1.CachedReleaseProbe(ep4); ok {
+		t.Fatalf("ep4 hit legacy bare pack probe: %+v", info)
+	}
+	if info, ok := m1.CachedReleaseProbe(ep5); ok {
+		t.Fatalf("ep5 hit legacy bare pack probe: %+v", info)
+	}
+	if info, ok := m1.CachedReleaseProbe(movie); !ok || info.Duration != 120*time.Minute {
+		t.Fatalf("valid single-file movie probe lost: ok=%v info=%+v", ok, info)
+	}
+
+	// Recording E04's probe must populate E04 only (release_probes + vault_tracks(vk, 1, 4))
+	// and never bleed into E05 (including a vaulted pack copy sharing ID "vault-bt:<hash>").
+	ep4Info := core.MediaInfo{
+		Container: "mkv", Duration: 51 * time.Minute, Size: 7370527522,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Language: "eng", Default: true},
+		},
+	}
+	vaultEp4 := core.Release{
+		ID: "vault-bt:" + packHash, GUID: "vault:bt:" + packHash,
+		IndexerID: vault.IndexerID, Protocol: core.ProtocolTorrent, InfoHash: packHash,
+		Info:   core.ReleaseInfo{Seasons: []int{1}, Episodes: []int{4}},
+		Target: &core.ReleaseTarget{Season: 1, Episode: 4},
+	}
+	vaultEp5 := core.Release{
+		ID: "vault-bt:" + packHash, GUID: "vault:bt:" + packHash,
+		IndexerID: vault.IndexerID, Protocol: core.ProtocolTorrent, InfoHash: packHash,
+		Info:   core.ReleaseInfo{Seasons: []int{1}, Episodes: []int{4}},
+		Target: &core.ReleaseTarget{Season: 1, Episode: 5},
+	}
+	m1.RecordReleaseProbe(ctx, vaultEp4, nil, ep4Info)
+
+	if info, ok := m1.CachedReleaseProbe(ep4); !ok || info.Size != ep4Info.Size {
+		t.Fatalf("ep4 missed its own probe: ok=%v info=%+v", ok, info)
+	}
+	if info, ok := m1.CachedReleaseProbe(ep5); ok {
+		t.Fatalf("ep5 leaked ep4 probe: %+v", info)
+	}
+	if info, ok := m1.CachedReleaseProbe(vaultEp5); ok {
+		t.Fatalf("vaulted ep5 sharing rel.ID leaked ep4 probe via releaseProbeKeys/vault_tracks: %+v", info)
+	}
+
+	// Explicit file-selector releases sharing rel.ID must also stay isolated in releaseProbeKeys.
+	idx0, idx1 := 0, 1
+	file0 := core.Release{ID: "pack-rel", Protocol: core.ProtocolTorrent, InfoHash: packHash, Target: &core.ReleaseTarget{FileIndex: &idx0}}
+	file1 := core.Release{ID: "pack-rel", Protocol: core.ProtocolTorrent, InfoHash: packHash, Target: &core.ReleaseTarget{FileIndex: &idx1}}
+	m1.RecordReleaseProbe(ctx, file0, nil, ep4Info)
+	if info, ok := m1.CachedReleaseProbe(file1); ok {
+		t.Fatalf("pack file1 sharing rel.ID leaked file0 probe via releaseProbeKeys: %+v", info)
+	}
+	if vk, _, _ := vaultTrackTarget(file0, nil, nil); vk != "" {
+		t.Fatalf("explicit file target should not share vault_tracks(vk, 0, 0), got %q", vk)
+	}
+
+	// Already-scoped ContentIDOf (hex TargetReleaseID from resolver.ContentIDForRelease)
+	// must not be double-hashed by releaseProbeContentKeys.
+	scopedFromResolver := core.TargetReleaseID("nzb:packhash", core.ReleaseTarget{Season: 1, Episode: 4})
+	nzbEp4 := core.Release{
+		ID:       "nzb-pack-ep4",
+		Protocol: core.ProtocolUsenet,
+		Target:   &core.ReleaseTarget{Season: 1, Episode: 4},
+	}
+	nzbKeys := releaseProbeContentKeys(nzbEp4, nil, func(string) string { return scopedFromResolver })
+	if len(nzbKeys) == 0 || nzbKeys[0] != scopedFromResolver {
+		t.Fatalf("releaseProbeContentKeys double-scoped ContentIDOf: got %v want leading %q", nzbKeys, scopedFromResolver)
+	}
+
+	m1.Close()
+
+	// After restart: E04 still hits from DB + vault_tracks, E05 stays cleanly estimated
+	// in WithCachedVariantInfo (used by Plex/Plezy, Jellyfin/Emby, Silo, Vela).
+	m2, err := New(deps, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+
+	ep5Title := &core.Title{Key: core.EpisodeKey(99, 1, 5), Type: core.TypeEpisode, Season: 1, Episode: 5}
+	ep5Variants := m2.WithCachedVariantInfo(ctx, nil, ep5Title, []core.ReleaseVariant{
+		{ID: ep5.ID, Release: ep5, Info: core.MediaInfo{Estimated: true, Size: 6800000000}},
+		// Even an untargeted torrent variant on an episode page must not read legacy bare bt:<hash>.
+		{ID: "untargeted-torrent", Release: core.Release{ID: "untargeted-torrent", Protocol: core.ProtocolTorrent, InfoHash: packHash}, Info: core.MediaInfo{Estimated: true, Size: 6800000000}},
+	})
+	for i, v := range ep5Variants {
+		if !v.Info.Estimated || v.Info.Size != 6800000000 {
+			t.Fatalf("ep5 variant[%d] leaked legacy/ep4 probe: %+v", i, v.Info)
+		}
+	}
+	if _, hit, err := vs.(vault.TrackStore).Tracks(ctx, vault.TorrentKey(packHash), 1, 4); err != nil || !hit {
+		t.Fatalf("vault_tracks missing ep4 (1,4) row: hit=%v err=%v", hit, err)
+	}
+	if _, hit, err := vs.(vault.TrackStore).Tracks(ctx, vault.TorrentKey(packHash), 1, 5); err != nil || hit {
+		t.Fatalf("vault_tracks unexpectedly hit ep5 (1,5): hit=%v err=%v", hit, err)
 	}
 }

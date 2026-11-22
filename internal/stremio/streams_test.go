@@ -420,3 +420,32 @@ func TestAddonFixtureQueriesCanonicalAndAliasNumbering(t *testing.T) {
 		t.Fatalf("alias-only requests=%v rels=%+v", got, relsOnly)
 	}
 }
+
+func TestConvertPerEpisodeUsenetSeasonPackTargetsEpisode(t *testing.T) {
+	packStream := stream{
+		Name:   "AIO Usenet",
+		Title:  "Ride.or.Die.S01.2160p.WEB-DL\nRide.or.Die.S01E04.2160p.WEB-DL.mkv\n💾 7.3 GB",
+		NZBURL: "https://addon.example/nzb/season1.nzb",
+	}
+	req4 := core.SearchRequest{Type: core.TypeEpisode, Title: "Ride or Die", Season: 1, Episode: 4}
+	req5 := core.SearchRequest{Type: core.TypeEpisode, Title: "Ride or Die", Season: 1, Episode: 5}
+	packStream5 := packStream
+	packStream5.Title = "Ride.or.Die.S01.2160p.WEB-DL\nRide.or.Die.S01E05.2160p.WEB-DL.mkv\n💾 6.8 GB"
+
+	rels4, _, _ := convertWith([]stream{packStream}, req4, false, convertOptions{instance: "aio"})
+	rels5, _, _ := convertWith([]stream{packStream5}, req5, false, convertOptions{instance: "aio"})
+	if len(rels4) != 1 || len(rels5) != 1 {
+		t.Fatalf("got rels4=%d rels5=%d, want 1 each", len(rels4), len(rels5))
+	}
+	if rels4[0].Target == nil || rels4[0].Target.Season != 1 || rels4[0].Target.Episode != 4 {
+		t.Fatalf("ep4 Usenet pack target = %+v, want S01E04", rels4[0].Target)
+	}
+	if rels5[0].Target == nil || rels5[0].Target.Season != 1 || rels5[0].Target.Episode != 5 {
+		t.Fatalf("ep5 Usenet pack target = %+v, want S01E05", rels5[0].Target)
+	}
+	k4 := rels4[0].ScopedContentID("nzb:samepack")
+	k5 := rels5[0].ScopedContentID("nzb:samepack")
+	if k4 == "nzb:samepack" || k5 == "nzb:samepack" || k4 == k5 {
+		t.Fatalf("Usenet pack episodes did not get distinct scoped keys: k4=%q k5=%q", k4, k5)
+	}
+}

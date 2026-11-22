@@ -42,6 +42,9 @@ type versionProbeState struct {
 }
 
 func releaseProbeContentKeys(rel core.Release, rawPayload []byte, contentIDOf func(string) string) []string {
+	if rel.Info.FullSeason && !rel.HasFileOrEpisodeScope() {
+		return nil
+	}
 	var out []string
 	add := func(k string) {
 		if k == "" {
@@ -64,7 +67,14 @@ func releaseProbeContentKeys(rel core.Release, rawPayload []byte, contentIDOf fu
 	}
 	if contentIDOf != nil && rel.ID != "" {
 		if cid := contentIDOf(rel.ID); cid != "" {
-			add(rel.ScopedContentID(cid))
+			// resolver.ContentIDForRelease already returns a scoped key for
+			// episode-targeted packs (hex TargetReleaseID); only scope raw
+			// unscoped nzb:/pre: keys so episode keys are never double-hashed.
+			if strings.HasPrefix(cid, nzb.ContentIDPrefix) || strings.HasPrefix(cid, core.PreFetchContentIDPrefix) {
+				add(rel.ScopedContentID(cid))
+			} else {
+				add(cid)
+			}
 		}
 	}
 	for _, k := range rel.ProbeContentKeys() {
@@ -74,6 +84,9 @@ func releaseProbeContentKeys(rel core.Release, rawPayload []byte, contentIDOf fu
 }
 
 func vaultTrackTarget(rel core.Release, rawPayload []byte, contentIDOf func(string) string) (vault.Key, int, int) {
+	if rel.HasExplicitFileTarget() || (rel.Info.FullSeason && !rel.HasFileOrEpisodeScope()) {
+		return "", 0, 0
+	}
 	var vk vault.Key
 	switch {
 	case vault.KeyOf(rel) != "":
@@ -84,8 +97,8 @@ func vaultTrackTarget(rel core.Release, rawPayload []byte, contentIDOf func(stri
 		if cid := nzb.ContentID(rawPayload); cid != "" {
 			vk = vault.Key(cid)
 		}
-	case rel.Protocol == core.ProtocolTorrent && strings.TrimSpace(rel.InfoHash) != "":
-		vk = vault.TorrentKey(rel.InfoHash)
+	case strings.TrimSpace(rel.InfoHash) != "":
+		vk = vault.TorrentKey(strings.ToLower(strings.TrimSpace(rel.InfoHash)))
 	case contentIDOf != nil && rel.ID != "":
 		if cid := contentIDOf(rel.ID); strings.HasPrefix(cid, nzb.ContentIDPrefix) {
 			vk = vault.Key(cid)
@@ -94,8 +107,8 @@ func vaultTrackTarget(rel core.Release, rawPayload []byte, contentIDOf func(stri
 	if vk == "" {
 		return "", 0, 0
 	}
-	if rel.Info.FullSeason && rel.Target != nil && rel.Target.Episode > 0 {
-		return vk, rel.Target.Season, rel.Target.Episode
+	if season, episode, ok := rel.EpisodeScope(); ok {
+		return vk, season, episode
 	}
 	return vk, 0, 0
 }
@@ -164,7 +177,9 @@ func (m *Manager) noteReleaseProbeMemory(rel core.Release, rawPayload []byte, in
 		m.releaseProbes[k] = core.CloneMediaInfo(facts)
 	}
 	if rel.ID != "" && len(m.releaseProbeKeys) < maxReleaseProbeCache {
-		m.releaseProbeKeys[rel.ID] = keys[0]
+		if aliasID := rel.ScopedContentID(rel.ID); aliasID != "" {
+			m.releaseProbeKeys[aliasID] = keys[0]
+		}
 	}
 	m.releaseProbeMu.Unlock()
 	return facts, keys, true
@@ -428,8 +443,8 @@ func (m *Manager) CachedReleaseProbe(rel core.Release) (core.MediaInfo, bool) {
 			return core.CloneMediaInfo(info), true
 		}
 	}
-	if rel.ID != "" {
-		if aliasKey := m.releaseProbeKeys[rel.ID]; aliasKey != "" {
+	if rel.ID != "" && !(rel.Info.FullSeason && !rel.HasFileOrEpisodeScope()) {
+		if aliasKey := m.releaseProbeKeys[rel.ScopedContentID(rel.ID)]; aliasKey != "" {
 			if info, ok := m.releaseProbes[aliasKey]; ok {
 				m.releaseProbeMu.RUnlock()
 				return core.CloneMediaInfo(info), true
@@ -730,11 +745,12 @@ func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key 
 	var todo []core.Release
 	seen := make(map[string]bool, len(variants))
 	for _, v := range variants {
-		rel := v.Release
-		if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) || seen[rel.ID] {
+		rel := probeReleaseForTitle(v.Release, title)
+		seenID := rel.ScopedContentID(rel.ID)
+		if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) || seen[seenID] {
 			continue
 		}
-		seen[rel.ID] = true
+		seen[seenID] = true
 		if _, hit := m.CachedReleaseProbe(rel); hit {
 			continue
 		}
@@ -833,7 +849,7 @@ func (m *Manager) runVersionProbes(user *core.User, key core.RatingKey, caps cor
 		if runCtx.Err() != nil || m.isBackgroundBusy() {
 			return false
 		}
-		rel := v.Release
+		rel := probeReleaseForTitle(v.Release, title)
 		if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) {
 			continue
 		}

@@ -24,11 +24,11 @@ func payloadMetaHashKey(hash string, target *core.ReleaseTarget) string {
 	if hash == "" {
 		return ""
 	}
-	base := "bt:" + hash
-	if target != nil && target.Episode > 0 {
-		return core.TargetReleaseID(base, *target)
-	}
-	return base
+	return (core.Release{
+		Protocol: core.ProtocolTorrent,
+		InfoHash: hash,
+		Target:   target,
+	}).ScopedContentID("bt:" + hash)
 }
 
 func (s *Service) rememberPayloadMeta(p Payload) {
@@ -102,9 +102,11 @@ func (s *Service) CachedFileMetadata(rel core.Release) (CachedFileMeta, bool) {
 			return m, true
 		}
 	}
-	if hk := payloadMetaHashKey(rel.InfoHash, rel.Target); hk != "" {
-		if m, ok := s.payloadMeta[hk]; ok {
-			return m, true
+	if hash := strings.ToLower(strings.TrimSpace(rel.InfoHash)); hash != "" && !(rel.Info.FullSeason && !rel.HasFileOrEpisodeScope()) {
+		if hk := rel.ScopedContentID("bt:" + hash); hk != "" {
+			if m, ok := s.payloadMeta[hk]; ok {
+				return m, true
+			}
 		}
 	}
 	return CachedFileMeta{}, false

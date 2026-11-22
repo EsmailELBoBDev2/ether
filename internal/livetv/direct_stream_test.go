@@ -25,7 +25,6 @@ func makeValidTSPacket() []byte {
 }
 
 func TestDirectStreamSingleUseMasterMuxedTS(t *testing.T) {
-	skipSingleUseMasterRace(t)
 	var masterHits atomic.Int32
 	var variantHits atomic.Int32
 	var sawHeader atomic.Bool
@@ -226,7 +225,6 @@ func (h *cmafRelayHLS) ServeSegment(w http.ResponseWriter, _ *http.Request, _ in
 }
 
 func TestDirectStreamSingleUseMasterDemuxedCMAF(t *testing.T) {
-	skipSingleUseMasterRace(t)
 	var masterHits atomic.Int32
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +313,6 @@ func firstManifestURI(body string) string {
 }
 
 func TestDirectStreamSingleUseMasterReusedAcrossProducerSwitchAndRecover(t *testing.T) {
-	skipSingleUseMasterRace(t)
 	var masterHits atomic.Int32
 	var variantHits atomic.Int32
 
@@ -424,7 +421,6 @@ func TestDirectStreamSingleUseMasterReusedAcrossProducerSwitchAndRecover(t *test
 }
 
 func TestDirectStreamSingleUseMasterReusedAcrossSteadyHandoffAndReopen(t *testing.T) {
-	skipSingleUseMasterRace(t)
 	var masterHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -589,7 +585,6 @@ func TestLiveTVChannelSteadyAdmissionReusesSingleUseMaster(t *testing.T) {
 }
 
 func TestDirectStreamReResolvesOnVariantExpiryAndDeduplicates(t *testing.T) {
-	skipSingleUseMasterRace(t)
 	for _, expStatus := range []int{http.StatusForbidden, http.StatusGone} {
 		name := "403"
 		if expStatus == http.StatusGone {
@@ -1070,11 +1065,53 @@ func TestClassifySegmentDamageStderr(t *testing.T) {
 	}
 }
 
-// skipSingleUseMasterRace parks the single-use master tune tests: under CI
-// load the tune path sometimes fetches the master a second time and the
-// spent token answers 403. The race is tracked for 0.3.18; when it loses,
-// a single-use channel behaves as it did before 0.3.17.
-func skipSingleUseMasterRace(t *testing.T) {
-	t.Helper()
-	t.Skip("single-use master is sometimes refetched during tune under load (0.3.18)")
+func TestTapRegistryAcquireOrManifestReturnsCachedAfterTapCloses(t *testing.T) {
+	const raw = "http://provider.example/master.m3u8?token=once"
+	masterBody := []byte("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2500000\nvariant.m3u8\n")
+	cm := newCachedManifest(raw, masterBody, nil, true)
+
+	// 1. After a manifest tap caches its master and closes (forgetting itself
+	//    from r.byKey), a racing reader entering acquireOrManifest must get the
+	//    cached manifest instead of creating a second tap (or tripping a full
+	//    provider connection limit).
+	var reg tapRegistry
+	direct := newDirectStreamState(context.Background(), raw, nil, nil)
+	g := &inputGrant{direct: direct}
+	t1, gotCM, created, err := reg.acquireOrManifest("k1", "src", 1, g, func() *cachedManifest {
+		return g.consumeManifest(raw)
+	})
+	if err != nil || !created || t1 == nil || gotCM != nil {
+		t.Fatalf("first acquire: t=%v cm=%v created=%v err=%v", t1, gotCM, created, err)
+	}
+	g.setManifest(cm)
+	t1.close(nil)
+
+	// Exhaust the provider's connection limit to prove the cached manifest
+	// short-circuits before creating a tap or checking capacity.
+	if _, _, err := reg.acquire("other", "src", 1, &inputGrant{}); err != nil {
+		t.Fatalf("occupy provider slot: %v", err)
+	}
+	t2, gotCM, created, err := reg.acquireOrManifest("k1", "src", 1, g, func() *cachedManifest {
+		return g.consumeManifest(raw)
+	})
+	if err != nil || created || t2 != nil || gotCM == nil || gotCM.raw != raw {
+		t.Fatalf("post-close acquire: t=%v cm=%v created=%v err=%v", t2, gotCM, created, err)
+	}
+
+	// 2. While a closed tap is still present in r.byKey (the window between
+	//    t.closed = true and r.forget(t)), acquireOrManifest must likewise
+	//    return the cached manifest rather than allocating a replacement tap.
+	var reg2 tapRegistry
+	g2 := &inputGrant{direct: newDirectStreamState(context.Background(), raw, nil, nil)}
+	stale := &upstreamTap{key: "k2", reg: &reg2, closed: true, refs: map[*inputGrant]struct{}{}}
+	reg2.byKey = map[string]*upstreamTap{"k2": stale}
+	reg2.bySource = map[string]map[*upstreamTap]struct{}{}
+	g2.setManifest(cm)
+
+	t3, gotCM, created, err := reg2.acquireOrManifest("k2", "", 0, g2, func() *cachedManifest {
+		return g2.peekManifest(raw)
+	})
+	if err != nil || created || t3 != nil || gotCM == nil || gotCM.raw != raw {
+		t.Fatalf("stale-tap acquire: t=%v cm=%v created=%v err=%v", t3, gotCM, created, err)
+	}
 }

@@ -1007,6 +1007,10 @@ type StreamRequest struct {
 	// ReencodeVideo replaces a copied video stream with an encoded one: the
 	// client could not play the copy (a transcode rung of a replan ladder).
 	ReencodeVideo bool
+	// MaxHeight is a viewer's quality pick for a segmented stream: the video
+	// is encoded no taller than it. A pick of 0 lifts an earlier cap. Nil
+	// leaves the session's quality as it is.
+	MaxHeight *int
 	// LazyStart leaves the encoder idle until a rendition is requested.
 	LazyStart bool
 	// Continuous uses one uniform segment clock, without adaptive discontinuities.

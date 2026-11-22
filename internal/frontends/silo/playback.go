@@ -1344,18 +1344,71 @@ func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, b rep
 	}
 	access := frontend.SessionAccess{Viewer: viewer, Device: device(r), Protocol: "silo"}
 	pos := time.Duration(b.Position * float64(time.Second))
-	restart := snap.format == frontend.StreamHLS && (audio != currentAudio || burn || wasBurned)
+	// A quality pick caps the encoded height; Auto (or a rung at least the
+	// source's height) lifts the cap. The original file cannot be made
+	// smaller, so a cap moves it to a server encode.
+	current, _ := plan["active_quality"].(string)
+	wantQuality := b.Quality
+	if wantQuality == "auto" {
+		wantQuality = ""
+	}
+	qualityChanged := b.Operation == "quality_change" && wantQuality != current
+	height := 0
+	if qualityChanged && wantQuality != "" {
+		if rows, _ := plan["available_qualities"].([]any); rows != nil {
+			for _, raw := range rows {
+				row, _ := raw.(map[string]any)
+				if label, _ := row["label"].(string); label == wantQuality {
+					if h, ok := row["height"].(float64); ok {
+						height = int(h)
+					}
+				}
+			}
+		}
+		if height == 0 {
+			siloAdaptationUnavailable(w, id)
+			return
+		}
+	}
+	format := snap.format
+	if qualityChanged && height > 0 && format == frontend.StreamDirect {
+		format = frontend.StreamHLS
+	}
+	restart := format == frontend.StreamHLS && (audio != currentAudio || burn || wasBurned || qualityChanged || format != snap.format)
 	if restart {
 		req := frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, AudioStream: &audio}
 		if burn {
 			req.SubtitleStream, req.BurnImageSubtitles = &subtitle, true
+		}
+		if qualityChanged {
+			req.MaxHeight = &height
 		}
 		if _, err := i.host.Sessions.StartStream(r.Context(), access, id, req); err != nil {
 			playbackError(w, err)
 			return
 		}
 	}
-	selected, sub, fidelityPolicy, _, assStyling := i.siloTracks(siloTrackInputs{r: r, viewer: viewer, access: access, sessionID: id, start: start, media: snap.media, format: snap.format, delivery: snap.delivery, live: snap.live, hlsRenditions: snap.hlsRenditions, audioStream: audio, subtitleStream: subtitle, burn: burn})
+	if format != snap.format {
+		snap.format, snap.delivery, snap.audioCopy = format, "server_transcode_hls", false
+		plan["delivery"] = snap.delivery
+		withoutNativeSubtitles(plan)
+		if stream, _ := plan["stream"].(map[string]any); stream != nil {
+			stream["protocol"], stream["container"], stream["mime_type"] = "hls", "hls", "application/vnd.apple.mpegurl"
+		}
+	}
+	if qualityChanged {
+		if wantQuality == "" {
+			delete(plan, "active_quality")
+		} else {
+			plan["active_quality"] = wantQuality
+		}
+		if recipe, _ := plan["effective_recipe"].(map[string]any); recipe != nil && height > 0 {
+			if v := snap.media.Video(); v != nil && v.Height > height && v.Width > 0 {
+				recipe["height"], recipe["width"] = height, v.Width*height/v.Height
+			}
+		}
+	}
+	selected, sub, fidelityPolicy, _, assStyling := i.siloTracks(siloTrackInputs{r: r, viewer: viewer, access: access, sessionID: id, start: start, media: snap.media, format: format, delivery: snap.delivery, live: snap.live, hlsRenditions: snap.hlsRenditions, audioStream: audio, subtitleStream: subtitle, burn: burn})
 	if b.Selected.Subtitle != nil && subtitle >= 0 && selected["subtitle"] == nil {
 		problem(w, http.StatusServiceUnavailable, "urn:ether:problem:track-source-unavailable", "Subtitle unavailable", "The selected subtitle cannot be delivered for this stream.")
 		return
@@ -1387,7 +1440,7 @@ func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, b rep
 	if base == "" {
 		base = snap.baseID
 	}
-	key := fmt.Sprintf("%s:tracks:a%d:s%d", base, audio, subtitle)
+	key := fmt.Sprintf("%s:tracks:a%d:s%d:q%d", base, audio, subtitle, height)
 	plan["plan_attempt_key"] = key
 	if restart {
 		if stream, _ := plan["stream"].(map[string]any); stream != nil {

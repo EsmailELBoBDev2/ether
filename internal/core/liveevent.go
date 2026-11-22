@@ -38,6 +38,7 @@ type LiveEvent struct {
 	Venue       string                `json:"venue,omitempty"`
 	Broadcasts  []LiveEventBroadcast  `json:"broadcasts,omitempty"`
 	MatchHints  LiveEventMatchHints   `json:"matchHints,omitempty"`
+	Watch       []WatchTarget         `json:"watch,omitempty"`
 	Spoiler     bool                  `json:"spoiler,omitempty"`
 	UpdatedAt   time.Time             `json:"updatedAt"`
 }
@@ -123,8 +124,9 @@ type LiveEventPlay struct {
 }
 
 // LiveEventProbPoint is a single point along a probability curve.
+// T is either a 0..1 game fraction (number, preferred) or an RFC3339 timestamp string.
 type LiveEventProbPoint struct {
-	T     float64 `json:"t"`
+	T     any     `json:"t"`
 	Value float64 `json:"value"`
 }
 

@@ -71,8 +71,8 @@ func TestLiveEventDetailJSONAndClone(t *testing.T) {
 			{Clock: "2:14", Period: 4, Text: "Goal scored", Emphasis: LiveEventPlayEmphasisScore, CompetitorID: "b"},
 		},
 		ProbabilitySeries: []LiveEventProbabilityPoint{
-			{T: "2026-11-22T18:00:00Z", Value: 0.5},
-			{T: "2026-11-22T20:15:00Z", Value: 0.64},
+			{T: ProbFraction(0.25), Value: 0.5},
+			{T: ProbTimestamp("2026-11-22T20:15:00Z"), Value: 0.64},
 		},
 		Links: []LiveEventLink{{Label: "Summary", URL: "https://example.invalid/101"}},
 	}
@@ -99,12 +99,57 @@ func TestLiveEventDetailJSONAndClone(t *testing.T) {
 		t.Fatal("Clone aliased mutable fields")
 	}
 
-	// Numeric t normalises cleanly to a string.
+	// Numeric 0..1 game fraction preserves JSON number type on round-trip.
 	var pt LiveEventProbabilityPoint
 	if err := json.Unmarshal([]byte(`{"t":0.75,"value":0.62}`), &pt); err != nil {
 		t.Fatal(err)
 	}
-	if pt.T != "0.75" || pt.Value != 0.62 {
+	if pt.T.Fraction == nil || *pt.T.Fraction != 0.75 || pt.T.Time != "" || pt.Value != 0.62 {
 		t.Fatalf("numeric t unmarshal: got %+v", pt)
+	}
+	ptRaw, err := json.Marshal(pt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ptRaw) != `{"t":0.75,"value":0.62}` {
+		t.Fatalf("numeric t marshal: got %s, want {\"t\":0.75,\"value\":0.62}", ptRaw)
+	}
+
+	// RFC3339 timestamp preserves JSON string type on round-trip.
+	var tsPt LiveEventProbabilityPoint
+	if err := json.Unmarshal([]byte(`{"t":"2026-11-22T20:15:00Z","value":0.64}`), &tsPt); err != nil {
+		t.Fatal(err)
+	}
+	if tsPt.T.Fraction != nil || tsPt.T.Time != "2026-11-22T20:15:00Z" {
+		t.Fatalf("timestamp t unmarshal: got %+v", tsPt)
+	}
+	tsRaw, err := json.Marshal(tsPt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(tsRaw) != `{"t":"2026-11-22T20:15:00Z","value":0.64}` {
+		t.Fatalf("timestamp t marshal: got %s", tsRaw)
+	}
+
+	// LiveEventEntity encodes key and explicit favorite bool.
+	entRaw, err := json.Marshal(LiveEventEntity{
+		ID:       "t1",
+		Kind:     "team",
+		Name:     "Alpha",
+		Key:      NamespaceLiveEntityKey("community.acme.feed", "scores", "team", "t1"),
+		Favorite: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entMap map[string]any
+	if err := json.Unmarshal(entRaw, &entMap); err != nil {
+		t.Fatal(err)
+	}
+	if entMap["key"] != "community.acme.feed:scores:team:t1" {
+		t.Fatalf("entity key = %v", entMap["key"])
+	}
+	if fav, ok := entMap["favorite"].(bool); !ok || fav {
+		t.Fatalf("entity favorite = %#v (ok=%v), want explicit false", entMap["favorite"], ok)
 	}
 }

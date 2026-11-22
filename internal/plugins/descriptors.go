@@ -177,6 +177,7 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncLiveFeeds(ctx, r)
 	m.syncFlowsPlugin(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor

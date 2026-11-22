@@ -1,6 +1,8 @@
 package plugins
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -75,5 +77,93 @@ func TestManifestLiveFeedsValidation(t *testing.T) {
 	diff := PermissionDiff(without, valid)
 	if !slices.Contains(diff, "Provides live event feeds") {
 		t.Fatalf("PermissionDiff missing live events line: %v", diff)
+	}
+}
+
+func TestManagerActiveLiveFeedsLifecycle(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	raw, err := json.Marshal(map[string]any{
+		"id":      "community.acme.live",
+		"version": "1.0.0",
+		"name":    "Acme Live",
+		"ether": map[string]any{
+			"protocol":     Protocol,
+			"kind":         KindExtension,
+			"summary":      "Provides live event feeds",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{string(CapLiveEvents)},
+			"contributes": map[string]any{
+				"liveFeeds": []map[string]any{
+					{"id": "scores", "title": "Live scores", "minIntervalSec": 15, "entityKinds": []string{"team"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"dist/plugin.js": []byte("globalThis.handle = () => ({ status: 200, body: '{}' });"),
+	}
+
+	prev, err := env.m.PreviewInstall(ctx, Source{Kind: "studio", Manifest: raw, Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true}); err != nil {
+		t.Fatal(err)
+	}
+	feeds := env.m.ActiveLiveFeeds(ctx)
+	if len(feeds) != 1 || feeds[0].PluginID != "community.acme.live" || feeds[0].FeedID != "scores" || feeds[0].MinIntervalSec != 15 {
+		t.Fatalf("ActiveLiveFeeds after install = %+v", feeds)
+	}
+
+	// Revoking live_events grant hides the feed.
+	if err := env.m.SetGrants(ctx, "community.acme.live", Grants{Revoked: []string{string(CapLiveEvents)}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.m.ActiveLiveFeeds(ctx); len(got) != 0 {
+		t.Fatalf("revoked plugin still in ActiveLiveFeeds: %+v", got)
+	}
+	if err := env.m.SetGrants(ctx, "community.acme.live", Grants{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.m.ActiveLiveFeeds(ctx); len(got) != 1 {
+		t.Fatalf("restored grant missing from ActiveLiveFeeds: %+v", got)
+	}
+
+	// Disabling hides the feed; re-enabling restores it.
+	if err := env.m.SetEnabled(ctx, "community.acme.live", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.m.ActiveLiveFeeds(ctx); len(got) != 0 {
+		t.Fatalf("disabled plugin still in ActiveLiveFeeds: %+v", got)
+	}
+	if err := env.m.SetEnabled(ctx, "community.acme.live", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.m.ActiveLiveFeeds(ctx); len(got) != 1 {
+		t.Fatalf("re-enabled plugin missing from ActiveLiveFeeds: %+v", got)
+	}
+
+	// Shadowing hides the feed.
+	if err := env.m.SetShadow(ctx, "community.acme.live", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.m.ActiveLiveFeeds(ctx); len(got) != 0 {
+		t.Fatalf("shadowed plugin still in ActiveLiveFeeds: %+v", got)
+	}
+	if err := env.m.SetShadow(ctx, "community.acme.live", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Removing deletes the feed.
+	if err := env.m.Remove(ctx, "community.acme.live", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.m.ActiveLiveFeeds(ctx); len(got) != 0 {
+		t.Fatalf("removed plugin still in ActiveLiveFeeds: %+v", got)
 	}
 }

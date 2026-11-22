@@ -118,8 +118,10 @@ type LiveEventPlay struct {
 }
 
 // LiveEventProbabilityPoint is one sample along an event's probability series.
+// T is either a 0..1 game fraction (float64, preferred when known) or an
+// RFC3339 timestamp string.
 type LiveEventProbabilityPoint struct {
-	T     string  `json:"t"`
+	T     any     `json:"t"`
 	Value float64 `json:"value"`
 }
 

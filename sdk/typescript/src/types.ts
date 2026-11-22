@@ -537,8 +537,8 @@ export interface LiveEventPlay {
 }
 
 export interface LiveEventProbabilityPoint {
-  /** Timestamp or axis label (e.g. RFC3339 or game clock). */
-  t: string;
+  /** Either a 0..1 game fraction (preferred when known) or an RFC3339 timestamp. */
+  t: number | string;
   value: number;
 }
 

@@ -3338,7 +3338,7 @@ type LiveEventMatchHints struct {
 | `name` | `string` | emitted (validation may require a value) |  |
 | `number` | `string` | may be omitted (see validation for conditions) |  |
 | `logo` | `string` | may be omitted (see validation for conditions) |  |
-| `live` | `bool` | may be omitted (see validation for conditions) |  |
+| `live` | `bool` | emitted (validation may require a value) |  |
 | `confidence` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 
@@ -3354,7 +3354,7 @@ type LiveEventWatchTarget struct {
 	Name       string  `json:"name"`
 	Number     string  `json:"number,omitempty"`
 	Logo       string  `json:"logo,omitempty"`
-	Live       bool    `json:"live,omitempty"`
+	Live       bool    `json:"live"`
 	Confidence float64 `json:"confidence,omitempty"`
 	URL        string  `json:"url,omitempty"`
 }
@@ -3379,7 +3379,7 @@ type LiveEventWatchTarget struct {
 | `broadcasts` | `[]LiveEventBroadcast` | may be omitted (see validation for conditions) |  |
 | `matchHints` | `*LiveEventMatchHints` | may be omitted (see validation for conditions) |  |
 | `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
-| `spoiler` | `bool` | may be omitted (see validation for conditions) | set by Ether, never by plugins |
+| `spoiler` | `bool` | emitted (validation may require a value) | set by Ether, never by plugins |
 | `updatedAt` | `string` | may be omitted (see validation for conditions) | RFC3339 |
 
 
@@ -3404,7 +3404,7 @@ type LiveEvent struct {
 	Broadcasts  []LiveEventBroadcast   `json:"broadcasts,omitempty"`
 	MatchHints  *LiveEventMatchHints   `json:"matchHints,omitempty"`
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
-	Spoiler     bool                   `json:"spoiler,omitempty"`   // set by Ether, never by plugins
+	Spoiler     bool                   `json:"spoiler"`             // set by Ether, never by plugins
 	UpdatedAt   string                 `json:"updatedAt,omitempty"` // RFC3339
 }
 ``````
@@ -3518,11 +3518,101 @@ type LiveEventPlay struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEventProbabilityTime.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/core/liveevent.go#LiveEventProbabilityTime
+
+``````
+// LiveEventProbabilityTime holds the x-axis value of a probability sample:
+// either a 0..1 game fraction (encoded as a JSON number, preferred when the
+// plugin knows it) or an RFC3339 timestamp (encoded as a JSON string).
+type LiveEventProbabilityTime struct {
+	Fraction *float64
+	Time     string
+}
+``````
+
+## Source: internal/core/liveevent.go#ProbFraction
+
+``````
+// ProbFraction builds a numeric 0..1 game-fraction probability axis value.
+func ProbFraction(f float64) LiveEventProbabilityTime {
+	v := f
+	return LiveEventProbabilityTime{Fraction: &v}
+}
+``````
+
+## Source: internal/core/liveevent.go#ProbTimestamp
+
+``````
+// ProbTimestamp builds an RFC3339 timestamp probability axis value.
+func ProbTimestamp(ts string) LiveEventProbabilityTime {
+	return LiveEventProbabilityTime{Time: ts}
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventProbabilityTime.Clone
+
+``````
+// Clone returns an independent copy of t.
+func (t LiveEventProbabilityTime) Clone() LiveEventProbabilityTime {
+	out := LiveEventProbabilityTime{Time: t.Time}
+	if t.Fraction != nil {
+		v := *t.Fraction
+		out.Fraction = &v
+	}
+	return out
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventProbabilityTime.MarshalJSON
+
+``````
+// MarshalJSON encodes Fraction as a JSON number when set, otherwise Time as a JSON string.
+func (t LiveEventProbabilityTime) MarshalJSON() ([]byte, error) {
+	if t.Fraction != nil {
+		return json.Marshal(*t.Fraction)
+	}
+	return json.Marshal(t.Time)
+}
+``````
+
+## Source: internal/core/liveevent.go#*LiveEventProbabilityTime.UnmarshalJSON
+
+``````
+// UnmarshalJSON accepts either a JSON number (0..1 game fraction) or a JSON string (RFC3339 timestamp).
+func (t *LiveEventProbabilityTime) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*t = LiveEventProbabilityTime{}
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*t = LiveEventProbabilityTime{Time: s}
+		return nil
+	}
+	var num float64
+	if err := json.Unmarshal(trimmed, &num); err != nil {
+		return fmt.Errorf("probability point t must be a 0..1 number or RFC3339 string: %w", err)
+	}
+	*t = LiveEventProbabilityTime{Fraction: &num}
+	return nil
+}
+``````
+
 ## Source: internal/core/liveevent.go#LiveEventProbabilityPoint.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `t` | `string` | emitted (validation may require a value) |  |
+| `t` | `LiveEventProbabilityTime` | emitted (validation may require a value) |  |
 | `value` | `float64` | emitted (validation may require a value) | 0..1 |
 
 
@@ -3530,42 +3620,10 @@ type LiveEventPlay struct {
 
 ``````
 // LiveEventProbabilityPoint is one sample along an event's probability series.
-// T is a timestamp or axis label (such as RFC3339 or game clock); numeric JSON
-// inputs are normalised to strings on unmarshal.
+// T is either a 0..1 game fraction (JSON number) or an RFC3339 timestamp (JSON string).
 type LiveEventProbabilityPoint struct {
-	T     string  `json:"t"`
-	Value float64 `json:"value"` // 0..1
-}
-``````
-
-## Source: internal/core/liveevent.go#*LiveEventProbabilityPoint.UnmarshalJSON
-
-``````
-// UnmarshalJSON accepts both string and numeric JSON values for t so wire
-// output from Ether is always a canonical string.
-func (p *LiveEventProbabilityPoint) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		T     json.RawMessage `json:"t"`
-		Value float64         `json:"value"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	p.Value = raw.Value
-	trimmed := bytes.TrimSpace(raw.T)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		p.T = ""
-		return nil
-	}
-	if trimmed[0] == '"' {
-		return json.Unmarshal(trimmed, &p.T)
-	}
-	var num float64
-	if err := json.Unmarshal(trimmed, &num); err != nil {
-		return fmt.Errorf("probability point t must be a string or number: %w", err)
-	}
-	p.T = strconv.FormatFloat(num, 'f', -1, 64)
-	return nil
+	T     LiveEventProbabilityTime `json:"t"`
+	Value float64                  `json:"value"` // 0..1
 }
 ``````
 
@@ -3629,7 +3687,10 @@ func (d LiveEventDetail) Clone() LiveEventDetail {
 		out.Plays = append([]LiveEventPlay(nil), d.Plays...)
 	}
 	if d.ProbabilitySeries != nil {
-		out.ProbabilitySeries = append([]LiveEventProbabilityPoint(nil), d.ProbabilitySeries...)
+		out.ProbabilitySeries = make([]LiveEventProbabilityPoint, len(d.ProbabilitySeries))
+		for i, pt := range d.ProbabilitySeries {
+			out.ProbabilitySeries[i] = LiveEventProbabilityPoint{T: pt.T.Clone(), Value: pt.Value}
+		}
 	}
 	if d.Links != nil {
 		out.Links = append([]LiveEventLink(nil), d.Links...)
@@ -3667,6 +3728,8 @@ type LiveEventsResponse struct {
 | `logo` | `string` | may be omitted (see validation for conditions) |  |
 | `league` | `string` | may be omitted (see validation for conditions) |  |
 | `color` | `string` | may be omitted (see validation for conditions) |  |
+| `key` | `string` | may be omitted (see validation for conditions) |  |
+| `favorite` | `bool` | emitted (validation may require a value) |  |
 
 
 ## Source: internal/core/liveevent.go#LiveEventEntity
@@ -3674,14 +3737,18 @@ type LiveEventsResponse struct {
 ``````
 // LiveEventEntity describes a followable entity (such as a team, driver, or
 // player) returned by GET /ether/v1/live/{feed}/entities.
+// Key (pluginID:feed:entityKind:id) and Favorite are populated by Ether for
+// viewer-facing responses; plugins return the remaining identity fields.
 type LiveEventEntity struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Name   string `json:"name"`
-	Abbr   string `json:"abbr,omitempty"`
-	Logo   string `json:"logo,omitempty"`
-	League string `json:"league,omitempty"`
-	Color  string `json:"color,omitempty"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Abbr     string `json:"abbr,omitempty"`
+	Logo     string `json:"logo,omitempty"`
+	League   string `json:"league,omitempty"`
+	Color    string `json:"color,omitempty"`
+	Key      string `json:"key,omitempty"`
+	Favorite bool   `json:"favorite"`
 }
 ``````
 
@@ -7758,6 +7825,7 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncLiveFeeds(ctx, r)
 	m.syncFlowsPlugin(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor
@@ -50623,7 +50691,7 @@ type LiveEventPlay struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `t` | `string` | emitted (validation may require a value) |  |
+| `t` | `any` | emitted (validation may require a value) |  |
 | `value` | `float64` | emitted (validation may require a value) |  |
 
 
@@ -50631,8 +50699,10 @@ type LiveEventPlay struct {
 
 ``````
 // LiveEventProbabilityPoint is one sample along an event's probability series.
+// T is either a 0..1 game fraction (float64, preferred when known) or an
+// RFC3339 timestamp string.
 type LiveEventProbabilityPoint struct {
-	T     string  `json:"t"`
+	T     any     `json:"t"`
 	Value float64 `json:"value"`
 }
 ``````
@@ -66206,8 +66276,8 @@ export interface LiveEventPlay {
 }
 
 export interface LiveEventProbabilityPoint {
-  /** Timestamp or axis label (e.g. RFC3339 or game clock). */
-  t: string;
+  /** Either a 0..1 game fraction (preferred when known) or an RFC3339 timestamp. */
+  t: number | string;
   value: number;
 }
 

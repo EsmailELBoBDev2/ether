@@ -167,7 +167,8 @@ export function extractBroadcasts(
   const seen = new Set<string>();
 
   const push = (name: string, kind: "tv" | "stream" | "radio", region?: string) => {
-    const clean = name.trim();
+    // Show the network's full name ("Golf Channel", not ESPN's "Golf Chnl").
+    const clean = (CALLSIGN_EXPANSIONS[name.trim().toLowerCase()]?.[0] || name).trim();
     if (!clean) return;
     const normRegion = region ? region.trim().toLowerCase() : undefined;
     const key = `${clean.toLowerCase()}|${kind}|${normRegion || ""}`;

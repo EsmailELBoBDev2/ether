@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/viewspec"
@@ -830,6 +831,24 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		h.deferred++
 		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared ai.complete request needs a live test"}
+	case "media.probe":
+		if h.man.Ether == nil || !plugins.MediaPermissionAllowsProbe(h.man.Ether.Permissions.Media) {
+			return nil, wasm.Forbidden("media: probe permission not declared")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.MediaProbeAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("media.probe cannot run on viewer or client request path " + callPath)
+		}
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		if err := plugins.ValidateMediaProbeSource(src); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared media.probe request needs a live test"}
 	default:
 		return nil, wasm.Forbidden("unknown host service " + name)
 	}

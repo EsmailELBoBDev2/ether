@@ -515,6 +515,27 @@ Error codes (`err.code` in JS/TS/Python, `HostError.Code` in Go): `not_configure
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
+## Media container probing
+
+Reads container metadata (`{durationSec, container, width, height, sizeBytes}`) for any `PlayableSource` in the same shape `/resolve` returns, reusing Ether's durable `release_probes` cache. Requires `permissions.media: "probe"` (shown on the install sheet as "Probes media container metadata" and revocable live as `media`).
+
+```ts
+const probe = ether.media.probe({
+  id: "ep-01",
+  pattern: "release",
+  mime: "video/x-matroska",
+  release: { infoHash, fileIndex: 1 },
+});
+// probe => { durationSec: 2280.4, container: "mkv", width: 1920, height: 1080, sizeBytes: 1234567890 }
+```
+
+## Route policy & bounds
+`media.probe` is allowed only on jobs (`/ether/job/*`), actions (`/ether/action/*`), Flow actions, tools, event handlers, setup/test routes, feed routes, background kind/Live TV sync, or declared `ether.schedule` routes. Every interactive viewer or client request path (`/resolve`, `/search`, `/catalog/*`, `/stream/*`, `/meta/*`, `/subtitles/*`, `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`, `/ether/configure`, and remote calls carrying `X-Ether-Viewer-Token`) is refused. Each call is bounded at 10 s and per-plugin rate-limited (60 calls/minute). Release probes run strictly cached-only without queuing uncached debrid downloads; URL, folder, secret, and blob permissions still apply per source pattern.
+
+For playback-time verification without calling `media.probe`, set both `durationSec` and `durationToleranceSec` (> 0) on a `PlayableSource` returned by `/resolve`: Ether probes the container header on open (reusing `release_probes`) and rejects mismatches beyond `durationToleranceSec` as wrong content so the next candidate is tried.
+
+The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
+
 ## Owner notices
 
 Posts a console notice, limited to five per hour. It does not send through a notification-channel plugin. Read errors and avoid repeated notices on a playback or progress path.
@@ -1016,8 +1037,35 @@ the next candidate source is tried. When several sources are returned and
 an earlier one fails, Ether logs the failure (plugin, library, item,
 source id, pattern, error) even though a later source plays; if the
 failure contradicts your answer itself (a missing archive member, an
-out-of-range index, a digest or size mismatch), the fallback that played
-is not saved as the item's resolution, so the next play resolves again.
+out-of-range index, a digest, size, or duration mismatch), the fallback
+that played is not saved as the item's resolution, so the next play
+resolves again.
+
+To verify a file's running time on open (for example when picking one
+file out of a multi-file pack by name where a trailer or bonus clip
+could share tokens with the episode), set both `durationSec` and
+`durationToleranceSec` (a positive number of seconds) on the
+`PlayableSource`. Ether consults the durable `release_probes` cache
+first (scoped per selected file/member so entries in a pack never
+collide), otherwise reads the container headers within a 10 s bound
+using its native prober (and ffprobe fallback when configured), and
+refuses the source as wrong content (`core.ErrWrongContent` /
+`ErrPluginAnswer`) when `|observedDurationSec - durationSec| >
+durationToleranceSec`, advancing to the next candidate. Leaving
+`durationToleranceSec` omitted or zero keeps `durationSec` as estimated
+metadata only.
+
+Background jobs, actions, and sync routes can also inspect container
+metadata ahead of time via `ether.media.probe(source)` (hosted) or
+`POST /ether/plugin-host/media/probe` (remote). It accepts the same
+`PlayableSource` shape `/resolve` returns, returns
+`{durationSec, container, width, height, sizeBytes}`, reuses
+`release_probes`, is hard-bounded at 10 s per probe and rate-limited per
+plugin (60/min), requires `permissions.media: "probe"`, and is refused
+on every viewer/client request path (including `/resolve` and search).
+Release probes run strictly cached-only without queuing uncached debrid
+downloads; pattern-specific network, folder, secret, and blob grants
+still apply.
 
 `ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
@@ -2711,6 +2759,7 @@ func libraryKeySlug(s string) string {
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count: kindstream applies a tolerance band instead of failing on exact byte inequality, while exact sizes (false/omitted) remain strict. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+| `durationToleranceSec` | `float64` | may be omitted (see validation for conditions) | DurationToleranceSec opts into open-time container duration verification: when both DurationSec and DurationToleranceSec are positive, Ether reads the container duration (reusing the durable release_probes cache when available) and refuses the source as wrong content (core.ErrWrongContent / kindstream.ErrPluginAnswer) when the observed duration differs from DurationSec by more than DurationToleranceSec seconds, so the next candidate is tried. Omitted or zero leaves DurationSec as estimated metadata only. |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) | KeepHeadersOnRedirect lists optional host or wildcard (*.example.org) patterns (within permissions.network / granted hosts) that may keep credentials and caller headers across redirects when the target is not already the same origin or a strict same-site subdomain. Never applies across HTTPS -> HTTP downgrades. |
@@ -2741,10 +2790,19 @@ type PlayableSource struct {
 	// Usenet release_files estimate) rather than an exact byte count:
 	// kindstream applies a tolerance band instead of failing on exact byte
 	// inequality, while exact sizes (false/omitted) remain strict.
-	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
-	DurationSec     float64           `json:"durationSec,omitempty"`
-	URL             string            `json:"url,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
+	SizeApproximate bool    `json:"sizeApproximate,omitempty"`
+	DurationSec     float64 `json:"durationSec,omitempty"`
+	// DurationToleranceSec opts into open-time container duration verification:
+	// when both DurationSec and DurationToleranceSec are positive, Ether reads
+	// the container duration (reusing the durable release_probes cache when
+	// available) and refuses the source as wrong content (core.ErrWrongContent
+	// / kindstream.ErrPluginAnswer) when the observed duration differs from
+	// DurationSec by more than DurationToleranceSec seconds, so the next
+	// candidate is tried. Omitted or zero leaves DurationSec as estimated
+	// metadata only.
+	DurationToleranceSec float64           `json:"durationToleranceSec,omitempty"`
+	URL                  string            `json:"url,omitempty"`
+	Headers              map[string]string `json:"headers,omitempty"`
 	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
 	// patterns (within permissions.network / granted hosts) that may keep
 	// credentials and caller headers across redirects when the target is not
@@ -2939,6 +2997,31 @@ type KindResolveResponse struct {
 	Sources   []PlayableSource `json:"sources"`
 	Parts     []KindItemPart   `json:"parts,omitempty"`
 	TTLSec    int              `json:"ttlSec,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#MediaProbeResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `durationSec` | `float64` | emitted (validation may require a value) |  |
+| `container` | `string` | emitted (validation may require a value) |  |
+| `width` | `int` | emitted (validation may require a value) |  |
+| `height` | `int` | emitted (validation may require a value) |  |
+| `sizeBytes` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/kinditem.go#MediaProbeResult
+
+``````
+// MediaProbeResult is the container metadata summary returned by the plugin
+// host's media.probe service.
+type MediaProbeResult struct {
+	DurationSec float64 `json:"durationSec"`
+	Container   string  `json:"container"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	SizeBytes   int64   `json:"sizeBytes"`
 }
 ``````
 
@@ -4114,6 +4197,7 @@ type ScheduleEntry struct {
 | `folders` | `string` | may be omitted (see validation for conditions) | ""\|none\|read |
 | `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes through the owner's indexers and debrid accounts (spec §4.5). ""\|none\|search\|acquire |
 | `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin send bounded completion requests to the owner's configured language model (actions/jobs/sync only, never viewer paths). ""\|none\|complete\|complete+search |
+| `media` | `string` | may be omitted (see validation for conditions) | Media lets a plugin probe container metadata via media.probe from jobs, actions, and background sync (never viewer or client request paths). ""\|none\|probe |
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
@@ -4133,7 +4217,10 @@ type Permissions struct {
 	Sources string `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
 	// AI lets a plugin send bounded completion requests to the owner's
 	// configured language model (actions/jobs/sync only, never viewer paths).
-	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete|complete+search
+	AI string `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete|complete+search
+	// Media lets a plugin probe container metadata via media.probe from jobs,
+	// actions, and background sync (never viewer or client request paths).
+	Media   string   `json:"media,omitempty" yaml:"media,omitempty"` // ""|none|probe
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 ``````
@@ -6084,6 +6171,14 @@ type Host interface {
 	// configured.
 	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 
+	// MediaProbe reads container metadata ({durationSec, container, width,
+	// height, sizeBytes}) for a PlayableSource in the same shape /resolve
+	// returns, reusing Ether's durable release_probes cache. Requires
+	// permissions.media: "probe", is restricted to jobs, actions, and
+	// background routes (never viewer or client request paths), is rate-limited
+	// per plugin, and is bounded at 10 s per probe.
+	MediaProbe(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error)
+
 	// NotifyOwner posts a console notice (rate-limited).
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
@@ -7071,6 +7166,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Uses your configured language model")
 		lines = append(lines, "Uses your language model while a viewer searches")
 	}
+	if normLevel(p.Media) == "probe" {
+		lines = append(lines, "Probes media container metadata")
+	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
 			continue
@@ -7141,7 +7239,7 @@ func PermissionDiff(cur, next Manifest) []string {
 	if len(addedLocal) > 0 {
 		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
 	}
-	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "all": 2}
+	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "probe": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }
 	if raised(a.Catalog, b.Catalog) {
 		added = append(added, "Reads your catalogue")
@@ -7160,6 +7258,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
+	}
+	if raised(a.Media, b.Media) {
+		added = append(added, "Probes media container metadata")
 	}
 	aiLevel := map[string]int{"none": 0, "complete": 1, "complete+search": 2}
 	if aiLevel[normLevel(b.AI)] > aiLevel[normLevel(a.AI)] {
@@ -14448,6 +14549,8 @@ type KindBackends struct {
 	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
 	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+	// MediaProbe reads container metadata for a PlayableSource (#712).
+	MediaProbe func(ctx context.Context, pluginID string, src core.PlayableSource) (core.MediaProbeResult, error)
 }
 ``````
 
@@ -14473,6 +14576,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
+	m.deps.Backends.MediaProbe = b.MediaProbe
 	m.mu.Unlock()
 }
 ``````
@@ -14499,6 +14603,7 @@ func (m *Manager) kindBackends() KindBackends {
 		StreamURL:        m.deps.Backends.StreamURL,
 		StreamPartURL:    m.deps.Backends.StreamPartURL,
 		StreamURLOptions: m.deps.Backends.StreamURLOptions,
+		MediaProbe:       m.deps.Backends.MediaProbe,
 	}
 }
 ``````
@@ -15520,6 +15625,225 @@ func (h *host) resolveExtractTarget(ctx context.Context, explicitLibraryKey, sou
 }
 ``````
 
+## Source: internal/plugins/host_media.go#MediaProbeTimeout
+
+``````
+const (
+	// MediaProbeTimeout is the hard per-call timeout enforced on every
+	// media.probe host call.
+	MediaProbeTimeout = 10 * time.Second
+	// DefaultMediaProbePerMin is the per-plugin sliding-window rate limit for
+	// media.probe host calls.
+	DefaultMediaProbePerMin = 60
+)
+``````
+
+## Source: internal/plugins/host_media.go#MediaPermissionAllowsProbe
+
+``````
+// MediaPermissionAllowsProbe reports whether a normalized permissions.media
+// level permits media.probe host calls.
+func MediaPermissionAllowsProbe(level string) bool {
+	return normLevel(level) == "probe"
+}
+``````
+
+## Source: internal/plugins/host_media.go#MediaProbeAllowedPath
+
+``````
+// MediaProbeAllowedPath reports whether a plugin call to path may invoke
+// media.probe. Only jobs, actions, Flow actions, tools, event deliveries,
+// setup/test, feed, background kind sync, Live TV sync, declared scheduled
+// calls, and background calls are permitted; every interactive viewer or
+// client request path (including /resolve, /search, /catalog, /stream, /meta,
+// /subtitles, /view, /options, /health, /configure, and frontend adapter
+// routes) is refused.
+func MediaProbeAllowedPath(man Manifest, path string, background bool) bool {
+	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if p == "" {
+		return false
+	}
+	if isClientRequestPath(p) {
+		return false
+	}
+	if background {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(p, "/ether/action/"),
+		strings.HasPrefix(p, "/ether/job/"),
+		strings.HasPrefix(p, "/ether/v1/flow-actions/"),
+		p == "/ether/event",
+		strings.HasPrefix(p, "/ether/tool/"),
+		strings.HasPrefix(p, "/ether/v1/setup/"),
+		p == "/ether/test",
+		strings.HasPrefix(p, "/ether/feed/"),
+		wasm.KindSyncPath(p),
+		wasm.LiveTVSyncPath(p):
+		return true
+	}
+	man.Ether = man.EffectiveEther()
+	if man.Ether != nil {
+		for _, s := range man.Ether.Schedule {
+			callPath, _, _ := strings.Cut(strings.TrimSpace(s.Call), "?")
+			if callPath == p {
+				return true
+			}
+		}
+		for _, fa := range man.Ether.Contributes.FlowActions {
+			route, _, _ := strings.Cut(strings.TrimSpace(fa.Route), "?")
+			if route == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/host_media.go#ValidateMediaProbeSource
+
+``````
+// ValidateMediaProbeSource validates the PlayableSource argument passed to
+// media.probe. It accepts the same source shape /resolve returns.
+func ValidateMediaProbeSource(src core.PlayableSource) error {
+	pattern := strings.ToLower(strings.TrimSpace(src.Pattern))
+	hasBlob := strings.TrimSpace(src.BlobRef) != ""
+	if pattern == "" {
+		switch {
+		case src.Container != nil:
+			pattern = "container"
+		case src.Release != nil:
+			pattern = "release"
+		case strings.TrimSpace(src.Path) != "" && strings.TrimSpace(src.URL) == "" && !hasBlob:
+			pattern = "file"
+		default:
+			pattern = "range"
+		}
+	}
+	switch pattern {
+	case "file":
+		if strings.TrimSpace(src.Path) == "" {
+			return &ValidationError{Fields: []FieldError{{Field: "path", Message: "file source requires path"}}}
+		}
+	case "release":
+		if src.Release == nil {
+			return &ValidationError{Fields: []FieldError{{Field: "release", Message: "release source requires release"}}}
+		}
+		r := src.Release
+		hasTarget := strings.TrimSpace(r.InfoHash) != "" ||
+			strings.TrimSpace(r.Magnet) != "" ||
+			strings.TrimSpace(r.TorrentURL) != "" ||
+			strings.TrimSpace(r.NZBURL) != ""
+		if !hasTarget && r.Candidate != nil {
+			c := r.Candidate
+			hasTarget = strings.TrimSpace(c.InfoHash) != "" ||
+				strings.TrimSpace(c.Magnet) != "" ||
+				strings.TrimSpace(c.TorrentURL) != "" ||
+				strings.TrimSpace(c.NZBURL) != ""
+		}
+		if !hasTarget {
+			return &ValidationError{Fields: []FieldError{{Field: "release", Message: "release source requires infoHash, magnet, torrentUrl, nzbUrl, or candidate"}}}
+		}
+	case "container":
+		if src.Container == nil {
+			return &ValidationError{Fields: []FieldError{{Field: "container", Message: "container source requires container"}}}
+		}
+		if len(src.Container.Volumes) == 0 {
+			return &ValidationError{Fields: []FieldError{{Field: "container.volumes", Message: "container source requires at least one volume"}}}
+		}
+		for i, v := range src.Container.Volumes {
+			if strings.TrimSpace(v.URL) == "" && strings.TrimSpace(v.BlobRef) == "" {
+				return &ValidationError{Fields: []FieldError{{Field: fmt.Sprintf("container.volumes[%d]", i), Message: "container volume requires url or blobRef"}}}
+			}
+		}
+	case "range", "download", "direct":
+		if strings.TrimSpace(src.URL) == "" && !hasBlob {
+			return &ValidationError{Fields: []FieldError{{Field: "url", Message: pattern + " source requires url or blobRef"}}}
+		}
+	default:
+		return &ValidationError{Fields: []FieldError{{Field: "pattern", Message: fmt.Sprintf("unknown source pattern %q", src.Pattern)}}}
+	}
+	return nil
+}
+``````
+
+## Source: internal/plugins/host_media.go#*Manager.SetMediaProbeRateLimit
+
+``````
+// SetMediaProbeRateLimit overrides the per-plugin media.probe requests-per-minute
+// limit. Passing <= 0 restores DefaultMediaProbePerMin. Intended for tests.
+func (m *Manager) SetMediaProbeRateLimit(limit int) {
+	m.mu.Lock()
+	m.mediaProbeLimit = limit
+	m.mu.Unlock()
+}
+``````
+
+## Source: internal/plugins/host_media.go#*Manager.mediaProbePerMin
+
+``````
+func (m *Manager) mediaProbePerMin() int {
+	m.mu.Lock()
+	limit := m.mediaProbeLimit
+	m.mu.Unlock()
+	if limit <= 0 {
+		return DefaultMediaProbePerMin
+	}
+	return limit
+}
+``````
+
+## Source: internal/plugins/host_media.go#*host.MediaProbe
+
+``````
+// MediaProbe reads container metadata ({durationSec, container, width, height,
+// sizeBytes}) for a PlayableSource, reusing the durable release_probes cache
+// when available. Requires permissions.media: "probe" (checked live against
+// grants), is restricted to jobs, actions, sync, and other non-viewer routes,
+// is rate-limited per plugin, and is hard-bounded at MediaProbeTimeout (10 s).
+func (h *host) MediaProbe(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error) {
+	r, g, err := h.record(ctx)
+	if err != nil {
+		return core.MediaProbeResult{}, err
+	}
+	var level string
+	if r.Manifest.Ether != nil {
+		level = normLevel(r.Manifest.Ether.Permissions.Media)
+	}
+	if err := h.deny(r, g, "media", level, MediaPermissionAllowsProbe); err != nil {
+		return core.MediaProbeResult{}, err
+	}
+
+	if path := callPathFromContext(ctx); path != "" {
+		if !MediaProbeAllowedPath(r.Manifest, path, isBackgroundCall(ctx) || wasm.IsBackgroundCall(ctx)) {
+			h.noteDenied("media_client_path")
+			return core.MediaProbeResult{}, fmt.Errorf("%w: media.probe cannot run on viewer or client request path %s", ErrPermissionDenied, path)
+		}
+	}
+
+	if err := ValidateMediaProbeSource(src); err != nil {
+		return core.MediaProbeResult{}, err
+	}
+
+	h.m.mu.Lock()
+	backend := h.m.deps.Backends.MediaProbe
+	h.m.mu.Unlock()
+	if backend == nil {
+		return core.MediaProbeResult{}, ErrUnavailable
+	}
+
+	limit := h.m.mediaProbePerMin()
+	if !h.m.rateOK(h.m.mediaProbeTimes, h.plugin, limit, time.Minute) {
+		return core.MediaProbeResult{}, fmt.Errorf("%w: media.probe exceeds %d requests/minute", ErrRateLimited, limit)
+	}
+
+	pctx, cancel := context.WithTimeout(ctx, MediaProbeTimeout)
+	defer cancel()
+	return backend(pctx, h.plugin, src)
+}
+``````
+
 ## Source: internal/plugins/hosted.go#HotRuntime
 
 ``````
@@ -16379,6 +16703,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		v, err := b.h.AIComplete(ctx, req)
+		return result(v, err)
+	case "media.probe":
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		v, err := b.h.MediaProbe(ctx, src)
 		return result(v, err)
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
@@ -17350,6 +17683,24 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		h.deferred++
 		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared ai.complete request needs a live test"}
+	case "media.probe":
+		if h.man.Ether == nil || !plugins.MediaPermissionAllowsProbe(h.man.Ether.Permissions.Media) {
+			return nil, wasm.Forbidden("media: probe permission not declared")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.MediaProbeAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("media.probe cannot run on viewer or client request path " + callPath)
+		}
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		if err := plugins.ValidateMediaProbeSource(src); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared media.probe request needs a live test"}
 	default:
 		return nil, wasm.Forbidden("unknown host service " + name)
 	}
@@ -21095,6 +21446,7 @@ func validatePermissions(p Permissions, add func(string, string)) {
 	level("ether.permissions.folders", normLevel(p.Folders), "none", "read")
 	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "acquire")
 	level("ether.permissions.ai", normLevel(p.AI), "none", "complete", "complete+search")
+	level("ether.permissions.media", normLevel(p.Media), "none", "probe")
 	level("ether.permissions.viewers.identity", normLevel(p.Viewers.Identity), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.watch_history", normLevel(p.Viewers.WatchHistory), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.write_watch_state", normLevel(p.Viewers.WriteWatchState), "none", "granted_viewers")
@@ -23527,6 +23879,12 @@ type Host interface {
 	// when viewerToken identifies an active frontend-adapter search call; #702).
 	AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 
+	// MediaProbe reads container metadata ({durationSec, container, width,
+	// height, sizeBytes}) for a PlayableSource in the same shape /resolve
+	// returns, reusing release_probes (requires permissions.media: "probe";
+	// refused when viewerToken is set; #712).
+	MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error)
+
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
 }
@@ -23634,6 +23992,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
 	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
 	mux.HandleFunc("POST /ether/plugin-host/ai/complete", h.aiComplete)
+	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -24353,6 +24712,23 @@ func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), viewerToken, req)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.mediaProbe
+
+``````
+func (h *HostHandler) mediaProbe(w http.ResponseWriter, r *http.Request) {
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	var src core.PlayableSource
+	if !h.decode(w, r, maxHostBodyBytes, &src) {
+		return
+	}
+	resp, err := h.host.MediaProbe(r.Context(), pluginIDOf(r), viewerToken, src)
 	if !h.finishErr(w, err) {
 		return
 	}
@@ -28979,6 +29355,7 @@ globalThis.ether = (() => {
                stat: (root, path) => call("folders.stat", [root, path]) },
     events: { publish: (key, payload, correlation) => call("events.publish", correlation == null ? [key, payload == null ? {} : payload] : [key, payload == null ? {} : payload, correlation]) },
     ai: { complete: (req) => call("ai.complete", [req == null ? {} : req]) },
+    media: { probe: (source) => call("media.probe", [source == null ? {} : source]) },
     notify: { owner: (text) => call("notify.owner", [text]) },
   };
   return ether;
@@ -30262,7 +30639,7 @@ var DefaultCosts = map[string]int64{
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
-	"ai.complete": 200,
+	"ai.complete": 200, "media.probe": 100,
 }
 ``````
 
@@ -30447,6 +30824,8 @@ func hostCallTimeout(name string) time.Duration {
 		return 2 * time.Minute
 	case "sources.resolve", "ai.complete":
 		return 35 * time.Second
+	case "media.probe":
+		return 15 * time.Second
 	case "http.fetchToCache", "http.hash",
 		"archive.list", "archive.open", "archive.read", "archive.extract",
 		"folders.hash", "folders.hashStart", "folders.hashPoll", "folders.hashCancel",
@@ -32328,8 +32707,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.permissions.catalog` | `any` | false | {"enum":["none","read"]} |
 | `ether.permissions.collections` | `any` | false | {"enum":["none","write"]} |
 | `ether.permissions.folders` | `any` | false | {"enum":["none","read"]} |
+| `ether.permissions.media` | `any` | false | {"description":"Probe container metadata ({durationSec, container, width, height, sizeBytes}) for a PlayableSource via media.probe from jobs, actions, background sync, and other non-viewer routes (\"probe\"). Reuses Ether's durable release_probes cache, is rate-limited per plugin, and is bounded at 10 s per probe. Every viewer or client request path is refused.","enum":["none","probe"]} |
 | `ether.permissions.network` | `array` | false | {} |
 | `ether.permissions.secrets` | `array` | false | {} |
+| `ether.permissions.sources` | `any` | false | {"description":"Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.","enum":["none","search","acquire"]} |
 | `ether.permissions.viewers` | `object` | false | {} |
 | `ether.permissions.viewers.identity` | `any` | false | {"enum":["none","granted_viewers","all"]} |
 | `ether.permissions.viewers.watch_history` | `any` | false | {"enum":["none","granted_viewers","all"]} |
@@ -34005,6 +34386,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                 "read"
               ]
             },
+            "media": {
+              "description": "Probe container metadata ({durationSec, container, width, height, sizeBytes}) for a PlayableSource via media.probe from jobs, actions, background sync, and other non-viewer routes (\"probe\"). Reuses Ether's durable release_probes cache, is rate-limited per plugin, and is bounded at 10 s per probe. Every viewer or client request path is refused.",
+              "enum": [
+                "none",
+                "probe"
+              ]
+            },
             "network": {
               "items": {
                 "pattern": "^(\\*\\.)?([a-z0-9-]+\\.)*[a-z0-9-]+$",
@@ -34017,6 +34405,14 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                 "type": "string"
               },
               "type": "array"
+            },
+            "sources": {
+              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.",
+              "enum": [
+                "none",
+                "search",
+                "acquire"
+              ]
             },
             "viewers": {
               "properties": {
@@ -34551,6 +34947,190 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
         }
       }
+    },
+    "volumeRef": {
+      "type": "object",
+      "required": [
+        "size"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "keepHeadersOnRedirect": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blobRef": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "containerRef": {
+      "type": "object",
+      "required": [
+        "volumes"
+      ],
+      "properties": {
+        "format": {
+          "enum": [
+            "",
+            "rar",
+            "7z",
+            "zip"
+          ]
+        },
+        "volumes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/volumeRef"
+          }
+        },
+        "member": {
+          "type": "string"
+        },
+        "memberIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passwordSecret": {
+          "type": "string"
+        }
+      }
+    },
+    "playableSource": {
+      "type": "object",
+      "description": "One candidate way to acquire bytes for a content-kind item (returned by /resolve and accepted by media.probe).",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "pattern": {
+          "enum": [
+            "range",
+            "download",
+            "direct",
+            "container",
+            "release",
+            "file"
+          ]
+        },
+        "mime": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is an approximate decoded estimate rather than an exact byte count."
+        },
+        "durationSec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Expected running time in seconds. Estimated metadata only unless durationToleranceSec is also positive."
+        },
+        "durationToleranceSec": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Opts into open-time container duration verification when durationSec > 0. Ether probes the container (reusing the durable release_probes cache) and refuses the source as wrong content (trying the next candidate and flagging the plugin answer) if the observed duration differs from durationSec by more than this many seconds."
+        },
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "keepHeadersOnRedirect": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blobRef": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "crc32": {
+          "type": "string"
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiresAt": {
+          "type": "integer"
+        },
+        "container": {
+          "$ref": "#/$defs/containerRef"
+        },
+        "release": {
+          "$ref": "#/$defs/releaseHint"
+        }
+      }
+    },
+    "mediaProbeResult": {
+      "type": "object",
+      "description": "Container metadata returned by the media.probe(source) host service (jobs/actions/sync only; requires permissions.media: \"probe\").",
+      "required": [
+        "durationSec",
+        "container",
+        "width",
+        "height",
+        "sizeBytes"
+      ],
+      "properties": {
+        "durationSec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "container": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     }
   }
 }
@@ -34764,6 +35344,26 @@ per-viewer rate limit (10 uncached calls/minute per viewer). Always handle
 `err.code === "not_configured"` (`HostError.Code == "not_configured"` in Go) so
 the plugin falls back cleanly when no language model is configured. No provider
 credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
+
+## Container duration verification & `ether.media.probe`
+
+- **Verify on open:** set both `durationSec` and `durationToleranceSec` (> 0)
+  on any `PlayableSource` returned by `/resolve` to verify the container's
+  observed running time on open (reusing Ether's durable `release_probes`
+  cache, bounded at 10 s). If the observed duration differs from `durationSec`
+  by more than `durationToleranceSec`, Ether rejects the source as wrong
+  content (`core.ErrWrongContent` / `ErrPluginAnswer`), tries the next
+  candidate, and declines to cache the fallback resolution. Without
+  `durationToleranceSec`, `durationSec` remains estimated metadata only.
+- **Probe in jobs/actions (`media.probe`):** declare `ether.permissions.media:
+  "probe"` and call `ether.media.probe(source)` (hosted), `ctx.ether.media.probe`
+  (TS/Python), or `ctx.MediaProbe` (Go; `POST /ether/plugin-host/media/probe`).
+  Takes the same `PlayableSource` shape `/resolve` returns, returns
+  `{ durationSec, container, width, height, sizeBytes }`, reuses
+  `release_probes`, enforces a 10 s per-probe bound and 60/min per-plugin rate
+  limit, runs release sources cached-only, and is **blocked on all viewer and
+  client request paths** (including `/resolve`, `/search`, `/catalog/*`,
+  `/stream/*`, `/meta/*`, and remote requests carrying `X-Ether-Viewer-Token`).
 
 ## Poster badges
 
@@ -44906,6 +45506,19 @@ type AIHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#MediaHost
+
+``````
+// MediaHost probes container metadata for a PlayableSource in the same shape
+// /resolve returns, reusing Ether's durable release_probes cache (requires
+// permissions.media: "probe"; jobs, actions, and background routes only).
+// RemoteHostClient and MockHost implement it; Context.MediaProbe uses it
+// automatically.
+type MediaHost interface {
+	MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error)
+}
+``````
+
 ## Source: sdk/go/host.go#PartStreamHost
 
 ``````
@@ -45704,6 +46317,24 @@ func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest
 		headers = map[string]string{HeaderViewerToken: tok}
 	}
 	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", headers, req, &res, false)
+	return res, err
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.MediaProbe
+
+``````
+// MediaProbe probes container metadata for a PlayableSource through
+// POST /ether/plugin-host/media/probe. Requires permissions.media: "probe" and
+// may only be called from jobs, actions, and background routes (never viewer
+// requests; forwarding X-Ether-Viewer-Token is refused by the host).
+func (c *RemoteHostClient) MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error) {
+	var res MediaProbeResult
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/media/probe", headers, src, &res, false)
 	return res, err
 }
 ``````
@@ -46789,6 +47420,7 @@ type KindMatchResponse struct {
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `sizeApproximate` | `bool` | may be omitted (see validation for conditions) | SizeApproximate marks Size as an approximate hint (for example from a Usenet release_files estimate) rather than an exact byte count. |
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+| `durationToleranceSec` | `float64` | may be omitted (see validation for conditions) | DurationToleranceSec opts into open-time container duration verification when DurationSec > 0: Ether reads the container duration (reusing the durable release_probes cache) and refuses the source as wrong content when the observed duration differs from DurationSec by more than this tolerance, trying the next candidate and flagging the plugin answer. |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
@@ -46818,8 +47450,14 @@ type PlayableSource struct {
 	Size    int64  `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count.
-	SizeApproximate       bool              `json:"sizeApproximate,omitempty"`
-	DurationSec           float64           `json:"durationSec,omitempty"`
+	SizeApproximate bool    `json:"sizeApproximate,omitempty"`
+	DurationSec     float64 `json:"durationSec,omitempty"`
+	// DurationToleranceSec opts into open-time container duration verification
+	// when DurationSec > 0: Ether reads the container duration (reusing the
+	// durable release_probes cache) and refuses the source as wrong content
+	// when the observed duration differs from DurationSec by more than this
+	// tolerance, trying the next candidate and flagging the plugin answer.
+	DurationToleranceSec  float64           `json:"durationToleranceSec,omitempty"`
 	URL                   string            `json:"url,omitempty"`
 	Headers               map[string]string `json:"headers,omitempty"`
 	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
@@ -46834,6 +47472,30 @@ type PlayableSource struct {
 	Container *ContainerRef  `json:"container,omitempty"`
 	Release   *ReleaseHint   `json:"release,omitempty"`
 	Parts     []KindItemPart `json:"parts,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#MediaProbeResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `durationSec` | `float64` | emitted (validation may require a value) |  |
+| `container` | `string` | emitted (validation may require a value) |  |
+| `width` | `int` | emitted (validation may require a value) |  |
+| `height` | `int` | emitted (validation may require a value) |  |
+| `sizeBytes` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#MediaProbeResult
+
+``````
+// MediaProbeResult is the container metadata summary returned by media.probe.
+type MediaProbeResult struct {
+	DurationSec float64 `json:"durationSec"`
+	Container   string  `json:"container"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	SizeBytes   int64   `json:"sizeBytes"`
 }
 ``````
 
@@ -49197,6 +49859,24 @@ func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) 
 		return ah.AIComplete(ctx, req)
 	}
 	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
+}
+``````
+
+## Source: sdk/go/plugin.go#*Context.MediaProbe
+
+``````
+// MediaProbe probes container metadata for a PlayableSource in the same shape
+// /resolve returns. Requires permissions.media: "probe" and is restricted to
+// jobs, actions, and background routes (refused on viewer/client paths).
+func (c *Context) MediaProbe(src PlayableSource) (MediaProbeResult, error) {
+	if mh, ok := c.Ether.(MediaHost); ok {
+		ctx := c.Context
+		if tok := c.viewerToken(); tok != "" {
+			ctx = WithViewerToken(ctx, tok)
+		}
+		return mh.MediaProbe(ctx, src)
+	}
+	return MediaProbeResult{}, fmt.Errorf("media.probe is not supported by this host")
 }
 ``````
 
@@ -51677,6 +52357,7 @@ type ScheduleEntry struct {
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
 | `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes: ""\|none\|search\|acquire. |
 | `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin call AIComplete on the owner's configured language model (""\|none\|complete\|complete+search; "complete" allows actions, jobs, sync, and other non-viewer routes, while "complete+search" also allows bounded 20 s cached calls on interactive search routes). |
+| `media` | `string` | may be omitted (see validation for conditions) | Media lets a plugin call MediaProbe (media.probe) from jobs, actions, and background sync (""\|none\|probe; refused on viewer/client paths). |
 
 
 ## Source: sdk/go/types.go#Permissions
@@ -51697,6 +52378,9 @@ type Permissions struct {
 	// and other non-viewer routes, while "complete+search" also allows bounded
 	// 20 s cached calls on interactive search routes).
 	AI string `json:"ai,omitempty"`
+	// Media lets a plugin call MediaProbe (media.probe) from jobs, actions,
+	// and background sync (""|none|probe; refused on viewer/client paths).
+	Media string `json:"media,omitempty"`
 }
 ``````
 
@@ -55252,6 +55936,16 @@ class AICompleteResponse(TypedDict, total=False):
     json: Any
 
 
+class MediaProbeResult(TypedDict):
+    """Container metadata returned by Ether's `media.probe` host service."""
+
+    durationSec: float
+    container: str
+    width: int
+    height: int
+    sizeBytes: int
+
+
 class HostError(RuntimeError):
     """Structured error returned by Ether's plugin-host API, carrying `.code` and `.status`."""
 
@@ -55290,6 +55984,41 @@ class _AIClient:
             extra_headers=extra_headers,
         )
         return res if isinstance(res, dict) else {"text": ""}  # type: ignore[return-value]
+
+
+class _MediaClient:
+    """Client for Ether's container metadata probing host service (`media.probe`)."""
+
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
+        self._call = call_json
+        self._default_viewer_token = default_viewer_token
+
+    def probe(
+        self,
+        source: Dict[str, Any],
+        viewer_token: Optional[str] = None,
+    ) -> MediaProbeResult:
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        extra_headers = {HEADER_VIEWER_TOKEN: tok} if tok else None
+        res = self._call(
+            "POST",
+            "/ether/plugin-host/media/probe",
+            dict(source),
+            extra_headers=extra_headers,
+        )
+        return (
+            res
+            if isinstance(res, dict)
+            else {"durationSec": 0.0, "container": "", "width": 0, "height": 0, "sizeBytes": 0}
+        )  # type: ignore[return-value]
 
 
 class _EventsClient:
@@ -55387,6 +56116,7 @@ class RemoteHostClient:
         self.collections = _CollectionsClient(self._call_json)
         self.events = _EventsClient(self._call_json)
         self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
+        self.media = _MediaClient(self._call_json, lambda: self.viewer_token)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -57026,6 +57756,7 @@ class MockHostClient:
             "body": "{}",
         }
         self.ai_handler: Optional[Callable[[AICompleteRequest], AICompleteResponse]] = None
+        self.media_probe_handler: Optional[Callable[[Dict[str, Any]], MediaProbeResult]] = None
 
         self.kv = self._KV(self)
         self.badges = self._Badges(self)
@@ -57053,6 +57784,7 @@ class MockHostClient:
         self.collections = self._Collections(self)
         self.events = self._Events(self)
         self.ai = self._AI(self)
+        self.media = self._Media(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
@@ -57531,6 +58263,15 @@ class MockHostClient:
             if self._p.ai_handler is None:
                 raise HostError("Language model is not configured", code="not_configured", status=501)
             return self._p.ai_handler(req)
+
+    class _Media:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def probe(self, source: Dict[str, Any]) -> MediaProbeResult:
+            if self._p.media_probe_handler is None:
+                raise HostError("media.probe is not configured in mock host", code="unavailable", status=503)
+            return self._p.media_probe_handler(source)
 
     class _Notify:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -58951,6 +59692,18 @@ export interface AICompleteResponse<T = unknown> {
   json?: T;
 }
 
+export const DefaultMediaProbePerMin = 60;
+export const MediaProbeTimeoutMs = 10_000;
+
+/** Container metadata summary returned by `media.probe(source)`. */
+export interface MediaProbeResult {
+  durationSec: number;
+  container: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+}
+
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
 export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
@@ -59370,6 +60123,16 @@ export interface EtherHost {
   ai?: {
     complete<T = unknown>(req: AICompleteRequest): MaybePromise<AICompleteResponse<T>>;
   };
+  /**
+   * Container metadata probing (`media.probe`). Accepts the same `PlayableSource` shape
+   * `/resolve` returns, reuses Ether's durable `release_probes` cache, is rate-limited per
+   * plugin (60/min), and is bounded at 10 s per probe. Requires `permissions.media: "probe"`
+   * and is restricted to jobs, actions, background sync, and other non-viewer routes (refused
+   * on viewer/client request paths).
+   */
+  media?: {
+    probe(source: import("./types.ts").PlayableSource): MaybePromise<MediaProbeResult>;
+  };
   notify: {
     owner(text: string): MaybePromise<void>;
   };
@@ -59483,6 +60246,9 @@ interface GlobalEtherBindings {
     };
     ai?: {
       complete: <T = unknown>(req: AICompleteRequest) => AICompleteResponse<T>;
+    };
+    media?: {
+      probe: (source: import("./types.ts").PlayableSource) => MediaProbeResult;
     };
     kinds?: {
       upsert: (kind: string, items: import("./types.ts").KindItem[]) => { accepted: number } | number;
@@ -59765,6 +60531,14 @@ export function createHostedClient(): EtherHost {
           return g.ether.ai.complete<T>(req);
         }
         return callHost<AICompleteResponse<T>>("ai.complete", [req]);
+      },
+    },
+    media: {
+      probe(source: import("./types.ts").PlayableSource): MediaProbeResult {
+        if (g.ether?.media?.probe) {
+          return g.ether.media.probe(source);
+        }
+        return callHost<MediaProbeResult>("media.probe", [source]);
       },
     },
     notify: {
@@ -60206,6 +60980,20 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         );
       },
     },
+    media: {
+      async probe(source: import("./types.ts").PlayableSource): Promise<MediaProbeResult> {
+        const tok = (opts.viewerToken ?? "").trim();
+        return (
+          (await callJson<MediaProbeResult>(
+            "POST",
+            "/ether/plugin-host/media/probe",
+            source,
+            false,
+            tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
+          )) ?? { durationSec: 0, container: "", width: 0, height: 0, sizeBytes: 0 }
+        );
+      },
+    },
     async log(level: string, message: string, attrs?: Record<string, unknown>): Promise<void> {
       await callJson("POST", "/ether/plugin-host/log", { level, message, attrs });
     },
@@ -60532,6 +61320,8 @@ export {
   HEADER_IDEMPOTENCY_KEY,
   DefaultAICompletePerMin,
   DefaultAISearchCompletePerMin,
+  DefaultMediaProbePerMin,
+  MediaProbeTimeoutMs,
   MaxAIMessages,
   MaxAIInputBytes,
   MaxAISchemaBytes,
@@ -60546,6 +61336,7 @@ export {
   type AIMessage,
   type AICompleteRequest,
   type AICompleteResponse,
+  type MediaProbeResult,
   type BadgeEntry,
   type BadgeTitleRef,
   type BadgeUsage,
@@ -63496,6 +64287,8 @@ export interface Permissions {
   sources?: "none" | "search" | "acquire";
   /** Lets a plugin call ether.ai.complete on the owner's configured language model ("complete" for actions/jobs/sync/non-viewer routes; "complete+search" also allows bounded 20 s cached calls on interactive search routes). */
   ai?: "none" | "complete" | "complete+search";
+  /** Lets a plugin probe container metadata via ether.media.probe from jobs, actions, and background sync (refused on viewer/client request paths). */
+  media?: "none" | "probe";
 }
 
 export type SettingFieldKind =
@@ -64114,6 +64907,14 @@ export interface PlayableSource {
   /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
   sizeApproximate?: boolean;
   durationSec?: number;
+  /**
+   * Opts into open-time container duration verification when `durationSec > 0`:
+   * Ether reads the container duration (reusing the durable `release_probes`
+   * cache) and refuses the source as wrong content (trying the next candidate
+   * and flagging the plugin answer) if the observed running time differs from
+   * `durationSec` by more than this many seconds.
+   */
+  durationToleranceSec?: number;
   url?: string;
   headers?: Record<string, string>;
   /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */

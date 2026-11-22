@@ -72,6 +72,8 @@ type Backends struct {
 	// AIComplete runs one completion on the owner's configured language model (#669).
 	// Returns ErrNotConfigured when no model is enabled/configured.
 	AIComplete func(ctx context.Context, req AICompleteBackendRequest) (string, error)
+	// MediaProbe probes container metadata for a PlayableSource (#712).
+	MediaProbe func(ctx context.Context, pluginID string, src core.PlayableSource) (core.MediaProbeResult, error)
 }
 
 // Deps are the plugin host's explicit dependencies.
@@ -151,6 +153,8 @@ type Manager struct {
 	usenetCheckLimit  int
 	aiCompleteTimes   map[string][]time.Time
 	aiCompleteLimit   int
+	mediaProbeTimes   map[string][]time.Time
+	mediaProbeLimit   int
 	aiSearchTimes     map[string][]time.Time
 	aiSearchLimit     int
 	aiSearchCacheMu   sync.Mutex
@@ -246,6 +250,7 @@ func New(deps Deps) (*Manager, error) {
 		eventPublishTimes: map[string][]time.Time{},
 		usenetCheckTimes:  map[string][]time.Time{},
 		aiCompleteTimes:   map[string][]time.Time{},
+		mediaProbeTimes:   map[string][]time.Time{},
 		aiSearchTimes:     map[string][]time.Time{},
 		aiSearchCache:     map[string]map[string]aiSearchCacheEntry{},
 		aiSearchInflight:  map[string]*aiSearchFlight{},
@@ -1456,6 +1461,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	delete(m.eventPublishTimes, id)
 	delete(m.usenetCheckTimes, id)
 	delete(m.aiCompleteTimes, id)
+	delete(m.mediaProbeTimes, id)
 	for key := range m.aiSearchTimes {
 		if strings.HasPrefix(key, id+"\x00") {
 			delete(m.aiSearchTimes, key)

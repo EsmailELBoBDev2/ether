@@ -205,6 +205,98 @@ func (m *Manager) RecordReleaseProbe(ctx context.Context, rel core.Release, rawP
 	}
 }
 
+// CachedProbeByKeys returns probed MediaInfo for the first matching durable
+// release_probes content key, consulting the preloaded in-memory cache first
+// and falling back to SQLite only when the table exceeded maxReleaseProbeCache.
+func (m *Manager) CachedProbeByKeys(keys []string) (core.MediaInfo, bool) {
+	if m == nil || len(keys) == 0 {
+		return core.MediaInfo{}, false
+	}
+	m.releaseProbeMu.RLock()
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		if info, ok := m.releaseProbes[k]; ok {
+			m.releaseProbeMu.RUnlock()
+			return core.CloneMediaInfo(info), true
+		}
+	}
+	complete := m.releaseProbesLoaded
+	m.releaseProbeMu.RUnlock()
+	if !complete && m.deps.DB != nil {
+		for _, k := range keys {
+			if k == "" {
+				continue
+			}
+			var raw string
+			if err := m.deps.DB.QueryRow(`SELECT info_json FROM release_probes WHERE content_key=?`, k).Scan(&raw); err == nil && len(raw) <= maxPersistedProbeBytes {
+				if info, ok := decodePersistedProbe(raw); ok {
+					if facts, ok := persistedProbeFacts(info); ok {
+						return facts, true
+					}
+				}
+			}
+		}
+	}
+	return core.MediaInfo{}, false
+}
+
+// RecordProbeByKeys caches probed container facts in memory and durably in
+// release_probes under each non-empty key in keys.
+func (m *Manager) RecordProbeByKeys(ctx context.Context, keys []string, info core.MediaInfo) {
+	if m == nil || len(keys) == 0 {
+		return
+	}
+	facts, ok := persistedProbeFacts(info)
+	if !ok {
+		return
+	}
+	var uniq []string
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		dup := false
+		for _, existing := range uniq {
+			if existing == k {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			uniq = append(uniq, k)
+		}
+	}
+	if len(uniq) == 0 {
+		return
+	}
+	m.releaseProbeMu.Lock()
+	if m.releaseProbes == nil {
+		m.releaseProbes = make(map[string]core.MediaInfo)
+	}
+	for _, k := range uniq {
+		if _, exists := m.releaseProbes[k]; !exists && len(m.releaseProbes) >= maxReleaseProbeCache {
+			m.releaseProbesLoaded = false
+			continue
+		}
+		m.releaseProbes[k] = core.CloneMediaInfo(facts)
+	}
+	m.releaseProbeMu.Unlock()
+	if m.deps.DB != nil {
+		b, err := json.Marshal(probeFactsRecord{FactsVersion: core.ProbeFactsVersion, Info: facts})
+		if err == nil && len(b) <= maxPersistedProbeBytes {
+			now := m.now().UnixMilli()
+			dbCtx := context.WithoutCancel(ctx)
+			for _, k := range uniq {
+				_, _ = m.deps.DB.ExecContext(dbCtx, `INSERT INTO release_probes(content_key, info_json, updated_at) VALUES(?, ?, ?)
+ON CONFLICT(content_key) DO UPDATE SET info_json=excluded.info_json, updated_at=excluded.updated_at`,
+					k, string(b), now)
+			}
+		}
+	}
+}
+
 func itemProbeContentKey(key core.RatingKey) string {
 	if key == 0 {
 		return ""

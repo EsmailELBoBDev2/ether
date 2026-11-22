@@ -479,6 +479,12 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 			return a.fetcher == nil || a.fetcher.HasServingProvider()
 		}
 	}
+	var probeStream func(context.Context, string) (*core.MediaInfo, error)
+	if tc := a.activeTranscoder(); tc != nil {
+		probeStream = tc.Probe
+	} else if a.sourceProber != nil {
+		probeStream = a.sourceProber.Probe
+	}
 	kindResolver := adapters.NewKindResolver(adapters.KindResolverDeps{
 		Manager:       mgr,
 		Libraries:     a.libraries,
@@ -494,7 +500,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 			_, err := a.pluginPlayableTitle(ctx, kindCatalog, viewer, key)
 			return err
 		},
-		Logger: a.log,
+		ProbeCache:  a.playback,
+		ProbeStream: probeStream,
+		Logger:      a.log,
 	})
 	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
 	adapterTickets := frontendadapter.NewTicketIssuer()
@@ -514,6 +522,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		StreamURL:        a.adapterStreamURL(adapterTickets),
 		StreamPartURL:    a.adapterStreamPartURL(adapterTickets),
 		StreamURLOptions: a.adapterStreamURLOptions(adapterTickets),
+		MediaProbe:       kindResolver.ProbeMedia,
 	})
 
 	if err := mgr.Start(ctx); err != nil {

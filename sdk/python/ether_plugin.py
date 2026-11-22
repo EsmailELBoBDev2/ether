@@ -926,6 +926,16 @@ class AICompleteResponse(TypedDict, total=False):
     json: Any
 
 
+class MediaProbeResult(TypedDict):
+    """Container metadata returned by Ether's `media.probe` host service."""
+
+    durationSec: float
+    container: str
+    width: int
+    height: int
+    sizeBytes: int
+
+
 class HostError(RuntimeError):
     """Structured error returned by Ether's plugin-host API, carrying `.code` and `.status`."""
 
@@ -964,6 +974,41 @@ class _AIClient:
             extra_headers=extra_headers,
         )
         return res if isinstance(res, dict) else {"text": ""}  # type: ignore[return-value]
+
+
+class _MediaClient:
+    """Client for Ether's container metadata probing host service (`media.probe`)."""
+
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
+        self._call = call_json
+        self._default_viewer_token = default_viewer_token
+
+    def probe(
+        self,
+        source: Dict[str, Any],
+        viewer_token: Optional[str] = None,
+    ) -> MediaProbeResult:
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        extra_headers = {HEADER_VIEWER_TOKEN: tok} if tok else None
+        res = self._call(
+            "POST",
+            "/ether/plugin-host/media/probe",
+            dict(source),
+            extra_headers=extra_headers,
+        )
+        return (
+            res
+            if isinstance(res, dict)
+            else {"durationSec": 0.0, "container": "", "width": 0, "height": 0, "sizeBytes": 0}
+        )  # type: ignore[return-value]
 
 
 class _EventsClient:
@@ -1061,6 +1106,7 @@ class RemoteHostClient:
         self.collections = _CollectionsClient(self._call_json)
         self.events = _EventsClient(self._call_json)
         self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
+        self.media = _MediaClient(self._call_json, lambda: self.viewer_token)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -2700,6 +2746,7 @@ class MockHostClient:
             "body": "{}",
         }
         self.ai_handler: Optional[Callable[[AICompleteRequest], AICompleteResponse]] = None
+        self.media_probe_handler: Optional[Callable[[Dict[str, Any]], MediaProbeResult]] = None
 
         self.kv = self._KV(self)
         self.badges = self._Badges(self)
@@ -2727,6 +2774,7 @@ class MockHostClient:
         self.collections = self._Collections(self)
         self.events = self._Events(self)
         self.ai = self._AI(self)
+        self.media = self._Media(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
@@ -3205,6 +3253,15 @@ class MockHostClient:
             if self._p.ai_handler is None:
                 raise HostError("Language model is not configured", code="not_configured", status=501)
             return self._p.ai_handler(req)
+
+    class _Media:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def probe(self, source: Dict[str, Any]) -> MediaProbeResult:
+            if self._p.media_probe_handler is None:
+                raise HostError("media.probe is not configured in mock host", code="unavailable", status=503)
+            return self._p.media_probe_handler(source)
 
     class _Notify:
         def __init__(self, parent: "MockHostClient") -> None:

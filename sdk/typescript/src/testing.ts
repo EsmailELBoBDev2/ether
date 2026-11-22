@@ -41,6 +41,7 @@ import {
   type EtherHost,
   type AICompleteRequest,
   type AICompleteResponse,
+  type MediaProbeResult,
   type FolderEntry,
   type HostFetchManyOptions,
   type HostFetchManyResult,
@@ -171,6 +172,10 @@ export interface MockHostState {
   httpHandler: (req: HostFetchRequest) => HostFetchResponse | Promise<HostFetchResponse>;
   /** Optional handler for mock ai.complete calls; when omitted, throws an Error with code "not_configured". */
   aiHandler?: (req: AICompleteRequest) => AICompleteResponse | Promise<AICompleteResponse>;
+  /** Optional handler for mock media.probe calls; when omitted, throws an Error with code "unavailable". */
+  mediaProbeHandler?: (
+    source: import("./types.ts").PlayableSource,
+  ) => MediaProbeResult | Promise<MediaProbeResult>;
   /** The most recent frontend.streamUrl call: [viewerId, itemRef]. */
   lastStreamUrl?: [number, string];
   /** Zero-based part index of the most recent part-scoped frontend.streamUrl call. */
@@ -220,6 +225,7 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         body: "{}",
       })),
     aiHandler: initial?.aiHandler,
+    mediaProbeHandler: initial?.mediaProbeHandler,
   };
 
   return {
@@ -570,6 +576,18 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
           throw err;
         }
         return state.aiHandler(req) as MaybePromise<AICompleteResponse<T>>;
+      },
+    },
+    media: {
+      probe: (source: import("./types.ts").PlayableSource) => {
+        if (!state.mediaProbeHandler) {
+          const err = new Error("media.probe is not configured in mock host") as Error & {
+            code?: string;
+          };
+          err.code = "unavailable";
+          throw err;
+        }
+        return state.mediaProbeHandler(source);
       },
     },
     log: (level: string, message: string, attrs?: Record<string, unknown>) => {

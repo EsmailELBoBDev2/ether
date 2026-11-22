@@ -303,6 +303,7 @@ globalThis.ether = (() => {
                stat: (root, path) => call("folders.stat", [root, path]) },
     events: { publish: (key, payload, correlation) => call("events.publish", correlation == null ? [key, payload == null ? {} : payload] : [key, payload == null ? {} : payload, correlation]) },
     ai: { complete: (req) => call("ai.complete", [req == null ? {} : req]) },
+    media: { probe: (source) => call("media.probe", [source == null ? {} : source]) },
     notify: { owner: (text) => call("notify.owner", [text]) },
   };
   return ether;

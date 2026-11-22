@@ -202,15 +202,21 @@ func PreFetchContentIDFor(size int64, poster string, uploadDate time.Time) strin
 	return fmt.Sprintf("%s%d|%s|%s", PreFetchContentIDPrefix, bucket, normPoster, uploadDate.UTC().Format("2006-01-02"))
 }
 
-// ScopedContentID narrows base to the targeted episode when r is a season pack,
-// so episode-level health and blocklist state do not bleed across other episodes
-// of the same pack.
+// ScopedContentID narrows base to the targeted file or episode when r selects
+// one entry inside a multi-file release (an explicit file/member/track target
+// or a season pack episode), so health, blocklist, and probe cache state do
+// not bleed across other files of the same pack.
 func (r Release) ScopedContentID(base string) string {
 	if base == "" {
 		return ""
 	}
-	if r.Info.FullSeason && r.Target != nil && r.Target.Episode > 0 {
-		return TargetReleaseID(base, *r.Target)
+	if r.Target != nil {
+		if sel := r.Target.fileSelectionKey(); sel != "" {
+			return base + "|file:" + sel
+		}
+		if r.Info.FullSeason && r.Target.Episode > 0 {
+			return TargetReleaseID(base, *r.Target)
+		}
 	}
 	return base
 }

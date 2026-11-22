@@ -204,6 +204,26 @@ per-viewer rate limit (10 uncached calls/minute per viewer). Always handle
 the plugin falls back cleanly when no language model is configured. No provider
 credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
 
+## Container duration verification & `ether.media.probe`
+
+- **Verify on open:** set both `durationSec` and `durationToleranceSec` (> 0)
+  on any `PlayableSource` returned by `/resolve` to verify the container's
+  observed running time on open (reusing Ether's durable `release_probes`
+  cache, bounded at 10 s). If the observed duration differs from `durationSec`
+  by more than `durationToleranceSec`, Ether rejects the source as wrong
+  content (`core.ErrWrongContent` / `ErrPluginAnswer`), tries the next
+  candidate, and declines to cache the fallback resolution. Without
+  `durationToleranceSec`, `durationSec` remains estimated metadata only.
+- **Probe in jobs/actions (`media.probe`):** declare `ether.permissions.media:
+  "probe"` and call `ether.media.probe(source)` (hosted), `ctx.ether.media.probe`
+  (TS/Python), or `ctx.MediaProbe` (Go; `POST /ether/plugin-host/media/probe`).
+  Takes the same `PlayableSource` shape `/resolve` returns, returns
+  `{ durationSec, container, width, height, sizeBytes }`, reuses
+  `release_probes`, enforces a 10 s per-probe bound and 60/min per-plugin rate
+  limit, runs release sources cached-only, and is **blocked on all viewer and
+  client request paths** (including `/resolve`, `/search`, `/catalog/*`,
+  `/stream/*`, `/meta/*`, and remote requests carrying `X-Ether-Viewer-Token`).
+
 ## Poster badges
 
 A plugin with capability `poster_badges` declares up to 4 badge sets in

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"io"
 	"log/slog"
 	"strconv"
@@ -83,6 +84,9 @@ func (h *memHost) PublishEvent(context.Context, string, json.RawMessage, events.
 }
 func (h *memHost) AIComplete(context.Context, AICompleteRequest) (AICompleteResponse, error) {
 	return AICompleteResponse{}, ErrNotConfigured
+}
+func (h *memHost) MediaProbe(context.Context, core.PlayableSource) (core.MediaProbeResult, error) {
+	return core.MediaProbeResult{}, ErrPermissionDenied
 }
 func (h *memHost) NotifyOwner(context.Context, string) error { return nil }
 func (h *memHost) Settings(context.Context) (map[string]any, error) {

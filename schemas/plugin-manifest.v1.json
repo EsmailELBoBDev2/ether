@@ -1638,6 +1638,13 @@
                 "read"
               ]
             },
+            "media": {
+              "description": "Probe container metadata ({durationSec, container, width, height, sizeBytes}) for a PlayableSource via media.probe from jobs, actions, background sync, and other non-viewer routes (\"probe\"). Reuses Ether's durable release_probes cache, is rate-limited per plugin, and is bounded at 10 s per probe. Every viewer or client request path is refused.",
+              "enum": [
+                "none",
+                "probe"
+              ]
+            },
             "network": {
               "items": {
                 "pattern": "^(\\*\\.)?([a-z0-9-]+\\.)*[a-z0-9-]+$",
@@ -1650,6 +1657,14 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "sources": {
+              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.",
+              "enum": [
+                "none",
+                "search",
+                "acquire"
+              ]
             },
             "viewers": {
               "properties": {

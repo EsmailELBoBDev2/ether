@@ -732,6 +732,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		}
 		v, err := b.h.AIComplete(ctx, req)
 		return result(v, err)
+	case "media.probe":
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		v, err := b.h.MediaProbe(ctx, src)
+		return result(v, err)
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
 	case "log":

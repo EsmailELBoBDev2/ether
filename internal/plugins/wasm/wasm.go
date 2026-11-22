@@ -138,7 +138,7 @@ var DefaultCosts = map[string]int64{
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
-	"ai.complete": 200,
+	"ai.complete": 200, "media.probe": 100,
 }
 
 const (
@@ -252,6 +252,8 @@ func hostCallTimeout(name string) time.Duration {
 		return 2 * time.Minute
 	case "sources.resolve", "ai.complete":
 		return 35 * time.Second
+	case "media.probe":
+		return 15 * time.Second
 	case "http.fetchToCache", "http.hash",
 		"archive.list", "archive.open", "archive.read", "archive.extract",
 		"folders.hash", "folders.hashStart", "folders.hashPoll", "folders.hashCancel",

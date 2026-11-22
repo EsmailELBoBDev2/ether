@@ -623,10 +623,19 @@ type PlayableSource struct {
 	// Usenet release_files estimate) rather than an exact byte count:
 	// kindstream applies a tolerance band instead of failing on exact byte
 	// inequality, while exact sizes (false/omitted) remain strict.
-	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
-	DurationSec     float64           `json:"durationSec,omitempty"`
-	URL             string            `json:"url,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
+	SizeApproximate bool    `json:"sizeApproximate,omitempty"`
+	DurationSec     float64 `json:"durationSec,omitempty"`
+	// DurationToleranceSec opts into open-time container duration verification:
+	// when both DurationSec and DurationToleranceSec are positive, Ether reads
+	// the container duration (reusing the durable release_probes cache when
+	// available) and refuses the source as wrong content (core.ErrWrongContent
+	// / kindstream.ErrPluginAnswer) when the observed duration differs from
+	// DurationSec by more than DurationToleranceSec seconds, so the next
+	// candidate is tried. Omitted or zero leaves DurationSec as estimated
+	// metadata only.
+	DurationToleranceSec float64           `json:"durationToleranceSec,omitempty"`
+	URL                  string            `json:"url,omitempty"`
+	Headers              map[string]string `json:"headers,omitempty"`
 	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
 	// patterns (within permissions.network / granted hosts) that may keep
 	// credentials and caller headers across redirects when the target is not
@@ -725,4 +734,14 @@ type KindResolveResponse struct {
 	Sources   []PlayableSource `json:"sources"`
 	Parts     []KindItemPart   `json:"parts,omitempty"`
 	TTLSec    int              `json:"ttlSec,omitempty"`
+}
+
+// MediaProbeResult is the container metadata summary returned by the plugin
+// host's media.probe service.
+type MediaProbeResult struct {
+	DurationSec float64 `json:"durationSec"`
+	Container   string  `json:"container"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	SizeBytes   int64   `json:"sizeBytes"`
 }

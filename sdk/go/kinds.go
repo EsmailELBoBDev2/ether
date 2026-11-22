@@ -310,8 +310,14 @@ type PlayableSource struct {
 	Size    int64  `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count.
-	SizeApproximate       bool              `json:"sizeApproximate,omitempty"`
-	DurationSec           float64           `json:"durationSec,omitempty"`
+	SizeApproximate bool    `json:"sizeApproximate,omitempty"`
+	DurationSec     float64 `json:"durationSec,omitempty"`
+	// DurationToleranceSec opts into open-time container duration verification
+	// when DurationSec > 0: Ether reads the container duration (reusing the
+	// durable release_probes cache) and refuses the source as wrong content
+	// when the observed duration differs from DurationSec by more than this
+	// tolerance, trying the next candidate and flagging the plugin answer.
+	DurationToleranceSec  float64           `json:"durationToleranceSec,omitempty"`
 	URL                   string            `json:"url,omitempty"`
 	Headers               map[string]string `json:"headers,omitempty"`
 	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
@@ -326,6 +332,15 @@ type PlayableSource struct {
 	Container *ContainerRef  `json:"container,omitempty"`
 	Release   *ReleaseHint   `json:"release,omitempty"`
 	Parts     []KindItemPart `json:"parts,omitempty"`
+}
+
+// MediaProbeResult is the container metadata summary returned by media.probe.
+type MediaProbeResult struct {
+	DurationSec float64 `json:"durationSec"`
+	Container   string  `json:"container"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	SizeBytes   int64   `json:"sizeBytes"`
 }
 
 // ContainerRef describes an archive member inside ordered volumes.

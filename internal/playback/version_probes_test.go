@@ -622,3 +622,71 @@ func TestProbeVersionHeadersProbesFreeSourceNonAutoVersions(t *testing.T) {
 		t.Fatalf("4K probed streams missing subtitle track: %+v", enriched[1].Info.Streams)
 	}
 }
+
+func TestCachedProbeByKeysPersistenceAndPackFileIsolation(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	dir := t.TempDir()
+	h := newHarness(t, nil, nil)
+	cfg := config.Defaults(dir)
+
+	// Two releases sharing the same pack InfoHash but targeting different
+	// FileIndex values must produce distinct ScopedContentID keys.
+	idx0, idx1 := 0, 1
+	rel0 := core.Release{
+		ID: "pack-rel", Protocol: core.ProtocolTorrent,
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+		Target:   &core.ReleaseTarget{FileIndex: &idx0},
+	}
+	rel1 := core.Release{
+		ID: "pack-rel", Protocol: core.ProtocolTorrent,
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+		Target:   &core.ReleaseTarget{FileIndex: &idx1},
+	}
+	keys0 := releaseProbeContentKeys(rel0, nil, nil)
+	keys1 := releaseProbeContentKeys(rel1, nil, nil)
+	if len(keys0) == 0 || len(keys1) == 0 || keys0[0] == keys1[0] {
+		t.Fatalf("pack file releaseProbeContentKeys collided: keys0=%v keys1=%v", keys0, keys1)
+	}
+	k0, k1 := keys0[0], keys1[0]
+
+	deps := Deps{
+		Resolver:   h.resolver,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB: db,
+	}
+	m1, err := New(deps, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1.RecordProbeByKeys(ctx, []string{k0}, core.MediaInfo{
+		Container: "mkv", Size: 1000, Duration: 90 * time.Second,
+		Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "av1", Width: 1280, Height: 720}},
+	})
+	m1.RecordProbeByKeys(ctx, []string{k1}, core.MediaInfo{
+		Container: "mkv", Size: 2000, Duration: 2400 * time.Second,
+		Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "av1", Width: 1920, Height: 1080}},
+	})
+	m1.Close()
+
+	// Fresh Manager backed by the same SQLite DB must reload both entries cleanly.
+	m2, err := New(deps, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+
+	got0, ok0 := m2.CachedProbeByKeys([]string{k0})
+	got1, ok1 := m2.CachedProbeByKeys([]string{k1})
+	if !ok0 || !ok1 {
+		t.Fatalf("reload failed: ok0=%v ok1=%v", ok0, ok1)
+	}
+	if got0.Duration != 90*time.Second || got1.Duration != 2400*time.Second {
+		t.Fatalf("reloaded durations = %v / %v, want 90s / 2400s", got0.Duration, got1.Duration)
+	}
+}

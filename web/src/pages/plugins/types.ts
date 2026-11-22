@@ -73,6 +73,7 @@ export interface DeclaredPermissions {
   folders?: string;
   sources?: string;
   ai?: string;
+  media?: string;
   secrets?: string[];
 }
 
@@ -432,6 +433,13 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
     items.push({
       key: "ai.search",
       label: t("Uses your language model while a viewer searches"),
+      revocable: true,
+    });
+  }
+  if (d.media === "probe") {
+    items.push({
+      key: "media",
+      label: t("Probes media container metadata"),
       revocable: true,
     });
   }

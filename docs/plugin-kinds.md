@@ -772,7 +772,7 @@ const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.i
 // {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
-`http.fetchToCache({url, headers?, keepHeadersOnRedirect?, libraryKey, name})` performs a GET, streams
+`http.fetchToCache({url, headers?, keepHeadersOnRedirect?, libraryKey, name, timeoutMs?, resume?})` performs a GET, streams
 up to the owner download ceiling (8 GiB by default), further bounded by the library cache quota, into the plugin's own library cache, and returns
 `{blob, size, crc32, md5, sha1, status}`. SHA-256 is the blob reference.
 Digests cover the stored response bytes in one pass. Compare the digest with
@@ -783,8 +783,16 @@ existing SSRF policy, and follow the same redirect credential policy as
 `http.fetch` (keep credentials/headers on same origin, strict same-site
 subdomains, or explicit `keepHeadersOnRedirect` hosts within granted network
 permissions; never across HTTPS→HTTP downgrades). The existing content capability, network host declaration
-and library cache quota apply; no new permission is needed. The operation is
-synchronous and bounded by the current call's deadline; there is no background
+and library cache quota apply; no new permission is needed. `timeoutMs` defaults
+to 10 minutes (also the ceiling on viewer and interactive request paths); in a
+job (`/ether/job/*`), schedule, or background context, `timeoutMs` may extend up
+to the calling job's remaining deadline. Pass `resume: true` to continue an
+incomplete partial blob with `Range: bytes=<cached>-` when the server supports
+ranges and strong `ETag` / `Last-Modified` validators match (restarting cleanly
+from byte 0 when validators mismatch or the server ignores ranges); partial
+blobs obey per-library cache quotas, the shared cap, and the disk free-space
+floor, and become readable via `cache.open` / `cache.read` / `archive.*` only
+when complete. The operation is synchronous; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
 The per-call byte ceiling `readBytes` for `cache.read`, `archive.open`, and `archive.read`

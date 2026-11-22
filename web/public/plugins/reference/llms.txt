@@ -543,8 +543,17 @@ resolver jobs (up to 4) have separate limits per plugin; if all four resolver
 slots are busy, Ether returns `503` with `code: "jobs_busy"` and `Retry-After`.
 
 `ether.http.fetch({url,timeoutMs:1200})` and
-`ether.http.fetchToCache({url,libraryKey,name,timeoutMs:1200})` bound a slow
+`ether.http.fetchToCache({url,libraryKey,name,timeoutMs:1200,resume:true})` bound a slow
 remote request (including streaming into cache) by the remaining call deadline.
+`http.fetchToCache` defaults to 10 minutes (also the ceiling on viewer and
+interactive request paths); inside a job (`/ether/job/*`), schedule, or
+background context (`kind` / Live TV sync, `/ether/event`), `timeoutMs` may
+extend up to the calling job's remaining deadline. Pass `resume: true` to
+continue an incomplete partial blob with `Range: bytes=<cached>-` when the
+server supports ranges and strong `ETag` or `Last-Modified` validators still
+match (restarting cleanly from byte 0 if they do not or the server returns
+`200`/`416`); partial bytes count against the library cache quota and disk
+safety floor and only become a readable cache blob once complete.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 

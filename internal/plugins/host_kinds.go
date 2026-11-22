@@ -13,7 +13,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
 // KindUpsertResult is what one kinds.upsert batch did (#646): Accepted
@@ -49,6 +51,7 @@ type KindBackends struct {
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
 	CacheDelete    func(ctx context.Context, pluginID, blobRef string) error
+	CachePartial   func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
@@ -75,6 +78,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
 	m.deps.Backends.CacheDelete = b.CacheDelete
+	m.deps.Backends.CachePartial = b.CachePartial
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
@@ -98,6 +102,7 @@ func (m *Manager) kindBackends() KindBackends {
 		CachePut:         m.deps.Backends.CachePut,
 		CacheOpen:        m.deps.Backends.CacheOpen,
 		CacheDelete:      m.deps.Backends.CacheDelete,
+		CachePartial:     m.deps.Backends.CachePartial,
 		StreamURL:        m.deps.Backends.StreamURL,
 		StreamPartURL:    m.deps.Backends.StreamPartURL,
 		StreamURLOptions: m.deps.Backends.StreamURLOptions,
@@ -458,7 +463,7 @@ type backgroundCallKey struct{}
 // (such as a scheduled job or catalog sync/expand). On-demand-only host
 // queries such as usenet_check refuse background contexts.
 func WithBackgroundCall(ctx context.Context) context.Context {
-	return context.WithValue(ctx, backgroundCallKey{}, true)
+	return context.WithValue(wasm.WithBackgroundCall(ctx), backgroundCallKey{}, true)
 }
 
 func isBackgroundCall(ctx context.Context) bool {

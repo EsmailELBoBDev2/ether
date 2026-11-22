@@ -16,6 +16,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/agent/tools"
 	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -62,6 +63,7 @@ type Backends struct {
 	CachePut        func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen       func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
 	CacheDelete     func(ctx context.Context, pluginID, blobRef string) error
+	CachePartial    func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
 	// StreamURL mints a scoped stream ticket for one of a plugin's own kind
 	// items for one viewer and returns the Ether stream URL (spec §6.5).
 	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)

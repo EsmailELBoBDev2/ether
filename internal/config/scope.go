@@ -162,6 +162,7 @@ var mixedSections = map[string]map[string]Scope{
 		"abrLadderUnderCopy":     Shared,
 		"vbvReservoir":           Shared,
 		"vbvBufferSeconds":       Shared,
+		"throttleSeconds":        Shared,
 		"spikeGovernor":          Shared,
 		"spikeMarginPercent":     Shared,
 	},

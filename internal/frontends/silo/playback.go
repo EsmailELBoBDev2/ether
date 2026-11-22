@@ -1,12 +1,15 @@
 package silo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,8 +79,13 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
 	var b startRequest
-	if decode(r, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) || b.Position > float64((1<<63-1)/int64(time.Second)) {
+	if json.Unmarshal(raw, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) || b.Position > float64((1<<63-1)/int64(time.Second)) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
@@ -154,7 +162,9 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		// The live edge is the only start. A file position would seek a tuner.
 		pos = 0
 	} else {
-		pos = i.skipIntroAtStart(r, v, scope, key, versionHandle, pos)
+		if _, replanning := r.Context().Value(selectionReplanKey{}).(bool); !replanning {
+			pos = i.skipIntroAtStart(r, v, scope, key, versionHandle, pos)
+		}
 		b.Position = float64(pos) / float64(time.Second)
 	}
 	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(b.Capabilities.Video) > 0}})
@@ -505,7 +515,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		output["livePolicy"] = live.LatencyPolicy()
 	}
 	document := map[string]any{"outcome": "playable", "protocol_version": 3, "server_features": siloServerFeatures, "session_id": session.ID, "playback_plan": output}
-	i.rememberPlan(session.ID, playbackPlan{format: format, live: liveFile, baseID: plan.ID, delivery: delivery, requireAuthored: requireAuthoredFidelity, body: document})
+	i.rememberPlan(session.ID, playbackPlan{format: format, live: liveFile, baseID: plan.ID, delivery: delivery, requireAuthored: requireAuthoredFidelity, body: document, start: raw})
 	reply(w, 201, document)
 }
 
@@ -615,6 +625,9 @@ type playbackPlan struct {
 	delivery        string
 	requireAuthored bool
 	body            map[string]any
+	// start is the start request the session was admitted with. A track or
+	// quality change is planned again from it with the new selection.
+	start []byte
 }
 
 func (i *instance) rememberPlan(id string, plan playbackPlan) {
@@ -929,6 +942,21 @@ type replanRequest struct {
 	Quality        string   `json:"quality_preference"`
 	Position       float64  `json:"position_seconds"`
 	Attempted      []string `json:"attempted_plan_keys"`
+	Selected       struct {
+		Audio    *replanTrack `json:"audio"`
+		Subtitle *replanTrack `json:"subtitle"`
+	} `json:"selected_tracks"`
+}
+
+type replanTrack struct {
+	ID    string `json:"id"`
+	Index *int   `json:"index"`
+}
+
+// intentReplan reports a user's choice (a track or quality pick), not a route
+// failure. It carries no attempt history: the playing route stays valid.
+func intentReplan(operation string) bool {
+	return operation == "track_change" || operation == "quality_change"
 }
 
 type replanRoute struct {
@@ -948,8 +976,16 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<20))
+	if err != nil {
+		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is not readable.")
+		return
+	}
 	var b replanRequest
-	if decode(r, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.ReplanID == "" || b.FailedPlan == "" || b.PlanAttempt == "" || b.PlanKey == "" || b.Quality == "" || b.AttemptCount < 1 || len(b.Attempted) == 0 || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) {
+	if b.Quality == "" {
+		b.Quality = "auto"
+	}
+	if json.Unmarshal(raw, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.ReplanID == "" || b.FailedPlan == "" || b.PlanAttempt == "" || b.PlanKey == "" || b.Quality == "" || b.AttemptCount < 1 || (len(b.Attempted) == 0 && !intentReplan(b.Operation)) || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) {
 		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is missing a required field.")
 		return
 	}
@@ -967,7 +1003,11 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "urn:ether:problem:playback-session-not-found", "Playback session not found", "This server has no plan to revise for the session.")
 		return
 	}
-	raw, err := json.Marshal(snap.body)
+	if intentReplan(b.Operation) && !snap.live && len(snap.start) > 0 {
+		i.replanSelection(w, r, raw, b, snap)
+		return
+	}
+	raw, err = json.Marshal(snap.body)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
@@ -1119,7 +1159,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	document["session_id"] = id
-	i.rememberPlan(id, playbackPlan{format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document})
+	i.rememberPlan(id, playbackPlan{format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document, start: snap.start})
 	reply(w, http.StatusOK, document)
 }
 
@@ -1350,3 +1390,63 @@ func withoutNativeSubtitles(plan map[string]any) {
 // The subtitle rendition features tell the player that a server HLS stream
 // can carry its embedded text track (transcode and copy remux alike).
 var siloServerFeatures = []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1", "hls_subtitle_renditions_v1", "hls_remux_subtitle_renditions_v1"}
+
+type selectionReplanKey struct{}
+
+// replanSelection answers a track or quality change by planning the title
+// again from the session's start request with the viewer's new selection, as
+// a fresh start would. The candidate is a new session; the app commits it and
+// retires the old one, or discards it. Silo Android sends every audio and
+// subtitle pick this way, including subtitles off.
+func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, replan []byte, b replanRequest, snap playbackPlan) {
+	var start, body map[string]json.RawMessage
+	if json.Unmarshal(snap.start, &start) != nil || json.Unmarshal(replan, &body) != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	for _, field := range []string{"client_capabilities", "client_playback_context", "client_features", "bandwidth_cap_kbps", "bandwidth_estimate_kbps", "bandwidth_estimate_source", "observed_throughput_kbps", "learned_limit"} {
+		if value, ok := body[field]; ok {
+			start[field] = value
+		}
+	}
+	set := func(field string, value any) {
+		encoded, _ := json.Marshal(value)
+		start[field] = encoded
+	}
+	set("start_position", b.Position)
+	set("quality_preference", b.Quality)
+	if b.Selected.Audio != nil && b.Selected.Audio.Index != nil && *b.Selected.Audio.Index >= 0 {
+		set("audio_track_index", *b.Selected.Audio.Index)
+	}
+	// No subtitle in the selection means subtitles off, never the default.
+	subtitle := -1
+	if b.Selected.Subtitle != nil && b.Selected.Subtitle.Index != nil && *b.Selected.Subtitle.Index >= 0 {
+		subtitle = *b.Selected.Subtitle.Index
+	}
+	set("subtitle_track_index", subtitle)
+	encoded, err := json.Marshal(start)
+	if err != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	// A replan keeps the viewer where they are: no intro or recap skip.
+	req := r.Clone(context.WithValue(r.Context(), selectionReplanKey{}, true))
+	req.Body = io.NopCloser(bytes.NewReader(encoded))
+	req.ContentLength = int64(len(encoded))
+	rec := httptest.NewRecorder()
+	i.playbackStart(rec, req)
+	if rec.Code != http.StatusCreated {
+		for key, values := range rec.Header() {
+			w.Header()[key] = values
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+		return
+	}
+	var document map[string]any
+	if json.Unmarshal(rec.Body.Bytes(), &document) != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	reply(w, http.StatusOK, document)
+}

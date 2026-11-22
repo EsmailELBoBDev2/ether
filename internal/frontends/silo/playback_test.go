@@ -375,6 +375,13 @@ func TestPlaybackUsesScopedBroker(t *testing.T) {
 	if replan.Code != 200 || !strings.Contains(replan.Body.String(), wantMedia) || !strings.Contains(replan.Header().Get("Content-Type"), "application/json") {
 		t.Fatalf("replan %d %s", replan.Code, replan.Body.String())
 	}
+	// Silo Android sends every track pick as a track_change intent with no
+	// attempt history. It plans the selection; no subtitle means off.
+	planned = frontend.PlanRequest{}
+	pick := call("POST", "/api/v2/playback/"+sessionID+"/replan", `{"installation_id":"install","protocol_version":3,"operation":"track_change","playback_attempt_id":"attempt","replan_request_id":"android-pick-1","failed_plan_id":"failedplan","plan_attempt_id":"planattempt","plan_attempt_key":"plankey123","attempted_plan_keys":[],"attempt_count":1,"quality_preference":"auto","position_seconds":40,"selected_tracks":{"audio":{"id":"file:101:audio:1","index":1}},"client_capabilities":{"codecs_video":["h264"]},"client_playback_context":{}}`)
+	if pick.Code != 200 || planned.Intent.AudioOrdinal == nil || *planned.Intent.AudioOrdinal != 1 || planned.Intent.SubtitleOrdinal == nil || *planned.Intent.SubtitleOrdinal != -1 || planned.Intent.Position != 40*time.Second {
+		t.Fatalf("track pick %d %s %+v", pick.Code, pick.Body.String(), planned.Intent)
+	}
 	missing := call("POST", "/api/v2/playback/missing-session/replan", `{"installation_id":"install","protocol_version":3,"playback_attempt_id":"attempt","replan_request_id":"apple-replan-2","failed_plan_id":"failedplan","plan_attempt_id":"planattempt","plan_attempt_key":"plankey123","attempted_plan_keys":["plankey123"],"attempt_count":1,"quality_preference":"auto","position_seconds":1,"selected_tracks":{},"client_capabilities":{},"client_playback_context":{}}`)
 	if missing.Code != 404 || missing.Header().Get("Content-Type") != "application/problem+json" || !strings.Contains(missing.Body.String(), `"status":404`) {
 		t.Fatalf("missing replan %d %s", missing.Code, missing.Body.String())

@@ -811,10 +811,11 @@ func (s *Session) serveCounted(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 	cw := &countingWriter{ResponseWriter: w, ctx: r.Context()}
+	cw.beginTCP()
 	start := s.goodput.now()
 	http.ServeContent(cw, r, name, mod, content)
 	dur := s.goodput.now().Sub(start)
-	cw.sampleBacklog()
+	backlog, stall := cw.finishTCP()
 	if cw.status != http.StatusOK || cw.err != nil || cw.bytes != size || size == 0 || r.Context().Err() != nil {
 		return
 	}
@@ -839,6 +840,8 @@ func (s *Session) serveCounted(w http.ResponseWriter, r *http.Request, name stri
 			if mediaKbps <= 0 && segDur > 0 {
 				mediaKbps = int(float64(cw.bytes*8) / segDur.Seconds() / 1000)
 			}
+			isAudio := s.isDASH() && t == s.audioTrackLocked()
+			bufferFilling := !isAudio && (s.deliveredCount < 3 || (s.deliveredTrack == t && n != s.deliveredSeg+1))
 			s.mu.Unlock()
 			s.m.notifyRemoteDelivery(RemoteDeliveryEvent{
 				SessionID:        s.id,
@@ -847,7 +850,9 @@ func (s *Session) serveCounted(w http.ResponseWriter, r *http.Request, name stri
 				Duration:         dur,
 				SegDuration:      segDur,
 				MediaBitrateKbps: mediaKbps,
-				TCPBacklogBytes:  cw.maxBacklog,
+				TCPBacklogBytes:  backlog,
+				TCPStall:         stall,
+				BufferFilling:    bufferFilling,
 			})
 		}
 	}

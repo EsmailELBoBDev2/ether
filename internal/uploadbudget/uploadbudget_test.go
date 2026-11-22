@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/sockerr"
 )
 
 func remoteTranscodeSession(id string, bitrateKbps int) *core.PlaySession {
@@ -342,5 +343,281 @@ func TestPMSPollerOnlyPollsDuringRemoteStreamsAndCountsWANOnly(t *testing.T) {
 	}
 	if st := mgr.Status(); st.OtherPMSKbps != 0 {
 		t.Fatalf("expected external kbps cleared when idle, got %d", st.OtherPMSKbps)
+	}
+}
+
+// Regression test for #721 (reporter's exact test sketch): a client pacing a
+// direct play near the media bitrate makes Write block with a full kernel send
+// queue because the client stopped reading (TCP rwnd closed). That is client
+// pacing, never server upload capacity, so the estimator must ignore it and the
+// next play of the same file must still be allowed to direct play.
+func TestClientPacedDirectPlayIsNotCapacity(t *testing.T) {
+	now := time.Date(2026, 11, 22, 16, 42, 0, 0, time.UTC)
+	e := NewEstimator(func() time.Time { return now })
+	for i := 0; i < 360; i++ { // 12 min of 2 s meter windows
+		e.Observe(Observation{
+			At: now, Bytes: 5_400_000, Duration: 2 * time.Second, // ~21.6 Mbps, client-paced
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 4 << 20, // send queue full: client not reading
+		})
+		now = now.Add(2 * time.Second)
+	}
+	kbps, n := e.Estimate()
+	if kbps != 0 || n != 0 {
+		t.Fatalf("client-paced direct play must not be learned as capacity: got kbps=%d samples=%d (usable=%d)", kbps, n, UsableBudgetKbps(kbps))
+	}
+
+	// Receiver-window-limited (TCPStallRwnd) windows — even during a quiet VBR
+	// scene below average media bitrate or while BufferFilling is still armed —
+	// and application-limited (source/encoder) stalls must never count either.
+	for i := 0; i < 10; i++ {
+		now = now.Add(2 * time.Second)
+		if e.Observe(Observation{
+			At: now, Bytes: 2_500_000, Duration: 2 * time.Second, // 10 Mbps VBR quiet scene
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 4 << 20,
+			TCPStall: sockerr.TCPStallRwnd, BufferFilling: true,
+		}) {
+			t.Fatalf("TCPStallRwnd window must never be recorded as capacity evidence")
+		}
+		if e.Observe(Observation{
+			At: now, Bytes: 2_500_000, Duration: 2 * time.Second,
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 256 << 10,
+			TCPStall: sockerr.TCPStallAppLimited, BufferFilling: true,
+		}) {
+			t.Fatalf("TCPStallAppLimited window must never be recorded as capacity evidence")
+		}
+	}
+	if kbps, n := e.Estimate(); kbps != 0 || n != 0 {
+		t.Fatalf("rwnd/app-limited windows must leave estimator in learning state: got (%d, %d)", kbps, n)
+	}
+
+	// End-to-end through Manager: after 12 minutes of client-paced direct play,
+	// the next play of the same 19,168 kbps file must NOT be refused direct play.
+	mgrNow := time.Date(2026, 11, 22, 16, 42, 0, 0, time.UTC)
+	mgr := NewManager(Options{
+		Now: func() time.Time { return mgrNow },
+	})
+	for i := 0; i < 360; i++ {
+		mgr.ObserveDelivery("dp-4k", Observation{
+			At: mgrNow, Bytes: 5_400_000, Duration: 2 * time.Second,
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 4 << 20,
+		})
+		mgrNow = mgrNow.Add(2 * time.Second)
+	}
+	if capKbps, fromBudget := mgr.RemoteCapForNewStream(context.Background(), "dp-4k-next", true, true, 0, 19168); fromBudget || capKbps != 0 {
+		t.Fatalf("next play of 19168 kbps file after client-paced play must not be capped: got (%d, %v)", capKbps, fromBudget)
+	}
+}
+
+func TestRealBottleneckLearnsCapacity(t *testing.T) {
+	t.Run("buffer fill with TCP congestion learns real uplink and ignores later pacing", func(t *testing.T) {
+		now := time.Date(2026, 11, 22, 17, 0, 0, 0, time.UTC)
+		e := NewEstimator(func() time.Time { return now })
+
+		// Real 35 Mbps uplink during initial buffer fill (6 x 2s = 12s, 8.75 MB/2s).
+		for i := 0; i < 6; i++ {
+			if !e.Observe(Observation{
+				At: now, SessionID: "s1",
+				Bytes: 8_750_000, Duration: 2 * time.Second, // 35 Mbps
+				MediaBitrateKbps: 19168, TCPBacklogBytes: 512 << 10,
+				TCPStall: sockerr.TCPStallCongestion, BufferFilling: true,
+			}) {
+				t.Fatalf("buffer-fill congestion window %d should be recorded", i)
+			}
+			now = now.Add(2 * time.Second)
+		}
+
+		// Subsequent 10 minutes of client-paced steady state at ~21.6 Mbps must
+		// NOT overwrite or drag down the 35 Mbps estimate.
+		for i := 0; i < 300; i++ {
+			if e.Observe(Observation{
+				At: now, SessionID: "s1",
+				Bytes: 5_400_000, Duration: 2 * time.Second, // 21.6 Mbps client-paced
+				MediaBitrateKbps: 19168, TCPBacklogBytes: 4 << 20,
+				TCPStall: sockerr.TCPStallRwnd,
+			}) {
+				t.Fatalf("steady-state rwnd-limited window %d must be rejected", i)
+			}
+			now = now.Add(2 * time.Second)
+		}
+
+		kbps, n := e.Estimate()
+		// 35,000 * 95% = 33,250 -> rounded 33,300 kbps; usable = 28,305 kbps (> 19,168).
+		if n != 6 || kbps < 32_000 || kbps > 35_000 {
+			t.Fatalf("estimate = (%d kbps, %d samples), want ~33300 kbps from 6 fill samples", kbps, n)
+		}
+		if usable := UsableBudgetKbps(kbps); usable < 19168 {
+			t.Fatalf("usable budget %d must allow 19168 kbps direct play on 35 Mbps uplink", usable)
+		}
+	})
+
+	t.Run("delivery clearly below consumption with send-queue saturation learns bottleneck", func(t *testing.T) {
+		now := time.Date(2026, 11, 22, 17, 15, 0, 0, time.UTC)
+		e := NewEstimator(func() time.Time { return now })
+
+		// 14 Mbps uplink trying to direct-play a 19,168 kbps file (73% <= 85%).
+		for i := 0; i < 6; i++ {
+			if !e.Observe(Observation{
+				At: now, SessionID: "s-slow",
+				Bytes: 3_500_000, Duration: 2 * time.Second, // 14 Mbps
+				MediaBitrateKbps: 19168, TCPBacklogBytes: 256 << 10,
+			}) {
+				t.Fatalf("below-consumption saturated window %d should be recorded", i)
+			}
+			now = now.Add(2 * time.Second)
+		}
+		kbps, n := e.Estimate()
+		// 14,000 * 95% = 13,300 kbps.
+		if n != 6 || kbps < 12_500 || kbps > 14_000 {
+			t.Fatalf("estimate = (%d kbps, %d samples), want ~13300 kbps", kbps, n)
+		}
+	})
+
+	t.Run("HLS segment slower than real time learns bottleneck while healthy segments do not", func(t *testing.T) {
+		now := time.Date(2026, 11, 22, 17, 30, 0, 0, time.UTC)
+		e := NewEstimator(func() time.Time { return now })
+
+		// Healthy 4s segments transferring in 3s (1.33x real time) must NOT be
+		// classified as starved (previously >= 0.7 * SegDuration falsely was).
+		for i := 0; i < 6; i++ {
+			if e.Observe(Observation{
+				At: now, SessionID: "hls-ok",
+				Bytes: 4_000_000, Duration: 3 * time.Second, SegDuration: 4 * time.Second,
+				MediaBitrateKbps: 8000, TCPBacklogBytes: 64 << 10,
+			}) {
+				t.Fatalf("healthy 3s transfer of 4s segment must not count as bottleneck")
+			}
+			now = now.Add(4 * time.Second)
+		}
+		if kbps, n := e.Estimate(); kbps != 0 || n != 0 {
+			t.Fatalf("healthy HLS segments should stay learning, got (%d, %d)", kbps, n)
+		}
+
+		// After hls-ok ends, a later stream hitting a real bottleneck (4s
+		// segments taking 5s = 1.25x media duration -> 6.4 Mbps) learns it.
+		now = now.Add(2 * time.Minute)
+		for i := 0; i < 4; i++ {
+			if !e.Observe(Observation{
+				At: now, SessionID: "hls-slow",
+				Bytes: 4_000_000, Duration: 5 * time.Second, SegDuration: 4 * time.Second,
+				MediaBitrateKbps: 8000,
+			}) {
+				t.Fatalf("slower-than-realtime segment %d should be recorded", i)
+			}
+			now = now.Add(5 * time.Second)
+		}
+		kbps, n := e.Estimate()
+		if n != 4 || kbps < 5_800 || kbps > 6_500 {
+			t.Fatalf("slow HLS estimate = (%d kbps, %d samples), want ~6100 kbps", kbps, n)
+		}
+	})
+}
+
+func TestSmoothPlaybackFloorNeverLowersBudgetBelowSmoothStream(t *testing.T) {
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	e := NewEstimator(func() time.Time { return now })
+
+	// 1. An earlier viewer on a slow mobile connection teaches a 14,300 kbps
+	//    estimate (usable = 12,155 kbps).
+	for i := 0; i < 5; i++ {
+		e.Observe(Observation{
+			At: now, SessionID: "mobile",
+			Bytes: 3_750_000, Duration: 2 * time.Second, // 15 Mbps
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 256 << 10,
+			Starved: true,
+		})
+		now = now.Add(2 * time.Second)
+	}
+	lowEst, _ := e.Estimate()
+	if UsableBudgetKbps(lowEst) >= 19168 {
+		t.Fatalf("setup expected low estimate below 19168 usable, got %d (usable=%d)", lowEst, UsableBudgetKbps(lowEst))
+	}
+
+	// 2. Now a remote viewer plays a 19,168 kbps direct play smoothly for 20s
+	//    (client-paced, no buffering). The learned budget must not stay below
+	//    19,168 kbps usable.
+	for i := 0; i < 10; i++ {
+		e.Observe(Observation{
+			At: now, SessionID: "smooth-tv",
+			Bytes: 5_400_000, Duration: 2 * time.Second, // ~21.6 Mbps client-paced
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 4 << 20,
+			TCPStall: sockerr.TCPStallRwnd,
+		})
+		now = now.Add(2 * time.Second)
+	}
+	floored, _ := e.Estimate()
+	if usable := UsableBudgetKbps(floored); usable < 19168 {
+		t.Fatalf("smooth playback floor failed: est=%d usable=%d < 19168", floored, usable)
+	}
+
+	// 3. Multi-stream starvation at a lower aggregate rate (genuine ISP
+	//    slowdown) still retires the stale smooth floor so the budget adapts.
+	now = now.Add(12 * time.Minute)
+	for i := 0; i < 4; i++ {
+		e.Observe(Observation{
+			At: now, SessionID: "isp-slow",
+			Bytes: 2_500_000, Duration: 2 * time.Second, // 10 Mbps
+			AggregateKbps: 12_000, MediaBitrateKbps: 19168,
+			TCPBacklogBytes: 256 << 10, Starved: true, ConcurrentStreams: 2,
+		})
+		now = now.Add(2 * time.Second)
+	}
+	adapted, _ := e.Estimate()
+	if adapted > 14_000 {
+		t.Fatalf("multi-stream ISP slowdown should retire stale smooth floor, got %d kbps", adapted)
+	}
+
+	// 4. Manager also protects a currently playing smooth PlaySession (via live
+	//    telemetry even without prior smooth delivery samples), while an
+	//    explicit manual override still always wins.
+	override := 0
+	live := []*core.PlaySession{{
+		ID:       "live-smooth",
+		Liveness: core.SessionLivenessPlaying,
+		Client:   core.ClientCaps{Remote: true},
+		Decision: core.DecisionDirectPlay,
+		Info:     core.MediaInfo{BitrateKbps: 19168},
+		Experience: &core.PlayExperience{
+			Requested:  true,
+			Pictured:   true,
+			PicturedAt: now.Add(-30 * time.Second),
+		},
+	}}
+	mgr := NewManager(Options{
+		Now:            func() time.Time { return now },
+		OverrideKbps:   func() int { return override },
+		ActiveSessions: func() []*core.PlaySession { return live },
+	})
+	for i := 0; i < 4; i++ {
+		mgr.ObserveDelivery("mobile-2", Observation{
+			At: now, Bytes: 3_000_000, Duration: 2 * time.Second, // 12 Mbps
+			MediaBitrateKbps: 19168, TCPBacklogBytes: 256 << 10, Starved: true,
+		})
+		now = now.Add(2 * time.Second)
+	}
+	eff, src, _, _, _ := mgr.EffectiveCapacity()
+	if src != "measured" || UsableBudgetKbps(eff) < 19168 {
+		t.Fatalf("manager must never lower learned budget below active smooth stream: src=%q eff=%d usable=%d", src, eff, UsableBudgetKbps(eff))
+	}
+
+	override = 10_000
+	eff, src, _, _, _ = mgr.EffectiveCapacity()
+	if src != "override" || eff != 10_000 {
+		t.Fatalf("manual override must still win over smooth floor: src=%q eff=%d", src, eff)
+	}
+}
+
+func TestNoteBufferEventsOnlyFiresOnIncrease(t *testing.T) {
+	mgr := NewManager(Options{})
+	if mgr.NoteBufferEvents("s1", 0) {
+		t.Fatalf("zero buffer events must not report starvation")
+	}
+	if !mgr.NoteBufferEvents("s1", 1) {
+		t.Fatalf("first buffer event (0->1) must report starvation")
+	}
+	if mgr.NoteBufferEvents("s1", 1) {
+		t.Fatalf("unchanged buffer event count (1->1) must not re-report starvation")
+	}
+	if !mgr.NoteBufferEvents("s1", 2) {
+		t.Fatalf("new buffer event (1->2) must report starvation")
 	}
 }

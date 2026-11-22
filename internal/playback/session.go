@@ -249,13 +249,14 @@ type session struct {
 
 	// stopCtx cancels background recovery when playback ends. Unlike a
 	// generation context, it survives retiring an input during a healthy swap.
-	stopCtx     context.Context
-	stopCancel  context.CancelFunc
-	failSem     chan struct{} // serialises failovers
-	bytes       atomic.Int64
-	mediaBytes  atomic.Int64 // client-facing media bytes delivered (excludes ffmpeg loopback / background probes)
-	activeReads atomic.Int32
-	rate        rateMeter
+	stopCtx        context.Context
+	stopCancel     context.CancelFunc
+	failSem        chan struct{} // serialises failovers
+	bytes          atomic.Int64
+	mediaBytes     atomic.Int64 // client-facing media bytes delivered (excludes ffmpeg loopback / background probes)
+	directRangeEnd atomic.Int64 // highest delivered byte offset on direct-play media ranges (-1 = none yet)
+	activeReads    atomic.Int32
+	rate           rateMeter
 
 	// claimed (guarded by Manager.mu): a caller took the session over
 	// after its flight completed (see abandonFlightLocked).
@@ -296,6 +297,7 @@ type session struct {
 	lastActive       time.Time
 	lastRead         time.Time
 	lastMediaAt      time.Time // last client-facing media bytes / segment / direct redirect served (zero until media delivered)
+	directFillUntil  time.Time // active initial/post-seek buffer-fill window for direct-play upload-budget metering
 	openedAt         time.Time // last Prepare/MarkSurfaceOpened time for StartupGrace
 	pausedAt         time.Time // set when viewerState enters "paused"
 	stopAt           time.Time // set by a "stopped" timeline; expiry after a grace
@@ -338,7 +340,7 @@ type session struct {
 
 func newSession(id string, ident identity, user *core.User, caps core.ClientCaps, title *core.Title, profileKey string, now time.Time) *session {
 	stopCtx, stopCancel := context.WithCancel(context.Background())
-	return &session{
+	s := &session{
 		id:               id,
 		sources:          newSourceLifetime(user.ID, string(caps.Protocol), caps.ClientID),
 		stopCtx:          stopCtx,
@@ -359,6 +361,8 @@ func newSession(id string, ident identity, user *core.User, caps core.ClientCaps
 		graceUntil:       now,
 		expectPos:        -1,
 	}
+	s.directRangeEnd.Store(-1)
+	return s
 }
 
 func (s *session) isKind() bool {

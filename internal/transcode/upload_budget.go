@@ -5,11 +5,12 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/sockerr"
 )
 
 // RemoteDeliveryEvent reports one completed media-segment delivery write phase
 // so the upload budget estimator can passively measure link upload throughput
-// and TCP send backpressure from real remote streams.
+// and TCP send congestion from real remote streams.
 type RemoteDeliveryEvent struct {
 	SessionID        string
 	RemoteAddr       string
@@ -18,6 +19,8 @@ type RemoteDeliveryEvent struct {
 	SegDuration      time.Duration
 	MediaBitrateKbps int
 	TCPBacklogBytes  int
+	TCPStall         sockerr.TCPStallKind
+	BufferFilling    bool
 }
 
 // SetRemoteDeliveryObserver installs an optional callback invoked after

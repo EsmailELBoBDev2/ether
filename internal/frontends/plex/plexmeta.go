@@ -180,11 +180,13 @@ func applyPlexMetaDates(t *frontend.Title, m *model.Metadata, o frontend.Metadat
 }
 
 // Slugs are Plex catalogue identities, not a formatting of a title. Only use
-// the provider's slug when its cached overlay still matches the verified GUID.
+// the provider's slug when its cached record still matches the verified GUID.
 func (s *Server) verifiedPlexSlug(ctx context.Context, key frontend.RatingKey) string {
-	row, ok := s.plexMetaCached(ctx, key)
-	if !ok {
-		return ""
+	if row, ok := s.plexMetaCached(ctx, key); ok && row.Slug != "" {
+		return row.Slug
 	}
-	return row.Slug
+	if credits, ok := s.plexCreditsCached(ctx, key); ok && credits.Slug != "" {
+		return credits.Slug
+	}
+	return ""
 }

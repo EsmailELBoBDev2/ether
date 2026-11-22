@@ -326,6 +326,8 @@ func (s *Server) servePersonImageSized(w http.ResponseWriter, r *http.Request, k
 		people = t.Directors
 	case "writer":
 		people = t.Writers
+	case "producer":
+		people = t.Crew
 	default:
 		writeHTTPError(w, http.StatusNotFound)
 		return
@@ -357,6 +359,11 @@ func (s *Server) servePersonImageSized(w http.ResponseWriter, r *http.Request, k
 		}
 	}
 	if imagePath == "" {
+		if credits, ok := s.plexCreditsCached(r.Context(), key); ok && credits.HasThumb(string(raw)) {
+			imagePath = string(raw)
+		}
+	}
+	if imagePath == "" {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
@@ -383,7 +390,7 @@ func (s *Server) handlePersonImage(w http.ResponseWriter, r *http.Request) {
 	s.servePersonImageSized(w, r, key, chi.URLParam(r, "kind"), chi.URLParam(r, "identity"), width, height)
 }
 
-var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|director|writer)/([A-Za-z0-9_-]+)$`)
+var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|director|writer|producer)/([A-Za-z0-9_-]+)$`)
 
 var metadataImageRe = regexp.MustCompile(`^/library/(?:metadata|collections)/(\d+)/(thumb|art|poster|banner|clearLogo|logo|background|composite|squareArt)(?:/([A-Za-z0-9_-]+))?$`)
 var playlistImageRe = regexp.MustCompile(`^/playlists/(\d+)/(composite|thumb|art)(?:/\d+)?$`)

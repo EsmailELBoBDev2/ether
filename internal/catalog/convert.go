@@ -128,6 +128,8 @@ func creditsToPeople(cr *tmdb.Credits) (cast, directors, writers, crew []core.Pe
 		seenCrew[[2]any{id, role}] = true
 		crew = append(crew, core.Person{TMDB: id, Name: name, Role: role, ThumbPath: thumb})
 	}
+	var producers []core.Person
+	seenProducer := map[int64]bool{}
 	for _, m := range cr.Crew {
 		job := m.Job
 		if job == "" && len(m.Jobs) > 0 {
@@ -145,8 +147,14 @@ func creditsToPeople(cr *tmdb.Credits) (cast, directors, writers, crew []core.Pe
 			addCrew(m.ID, m.Name, "Composer", m.ProfilePath)
 		case "creator", "series composition", "showrunner":
 			addCrew(m.ID, m.Name, "Creator", m.ProfilePath)
+		case "producer":
+			if m.ID != 0 && m.Name != "" && !seenProducer[m.ID] && len(producers) < 12 {
+				seenProducer[m.ID] = true
+				producers = append(producers, core.Person{TMDB: m.ID, Name: m.Name, Role: "Producer", ThumbPath: m.ProfilePath})
+			}
 		}
 	}
+	crew = append(crew, producers...)
 	return cast, directors, writers, crew
 }
 

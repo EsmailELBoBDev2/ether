@@ -569,10 +569,11 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 
 	// Per-viewer decision header (#31); detail pages only, never lists.
 	s.decorateDetail(ctx, pr, t, &md)
+	_, hadCredits := s.plexCreditsCached(ctx, t.Key)
 	start := time.Now()
 	s.projectDetailBlocks(ctx, pr, t, &md, memo, children, onDeck, related, extras, extraTypes)
-	if extras {
-		s.refreshDetailGUID(ctx, t, &md, start)
+	if extras || related {
+		s.refreshDetailGUID(ctx, t, &md, start, extras, hadCredits)
 	}
 	return md
 }
@@ -584,11 +585,12 @@ type boundedGUIDResolver interface {
 }
 
 // refreshDetailGUID updates a detail response's primary guid (and hierarchy
-// guids) when a verified plex:// identity became available during the request
-// (for example via Plex Discover extras) or within the remaining first-open
-// budget. Only called for detail page opens (includeExtras=1), never for bare
+// guids) and provider credits (real 24-hex person tagKeys, fallback thumbs,
+// slug and age rating) when a verified plex:// identity became available
+// during the request or within the remaining first-open budget. Only called
+// for detail page opens (includeExtras=1 or includeRelated=1), never for bare
 // metadata/Play requests or batches.
-func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *model.Metadata, start time.Time) {
+func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *model.Metadata, start time.Time, extras, hadCredits bool) {
 	guidSrc := s.libraryGUIDs()
 	if guidSrc == nil || t == nil || md == nil {
 		return
@@ -596,13 +598,25 @@ func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *m
 	if !strings.HasPrefix(md.GUID, "plex://") && !(t.Type == frontend.TypeSeason && t.Season >= 9000) {
 		if g := guidSrc.Cached(ctx, t.Key); g != "" {
 			md.GUID = g
-		} else if frontend.ColdDetail(ctx, t.Key) && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
+		} else if extras && frontend.ColdDetail(ctx, t.Key) && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
 			if resolver, ok := guidSrc.(boundedGUIDResolver); ok {
 				if rem := detailFirstOpenWait - time.Since(start); rem > 0 {
 					if g := resolver.ResolveBounded(ctx, t.Key, rem); g != "" {
 						md.GUID = g
 					}
 				}
+			}
+		}
+	}
+	if !hadCredits && strings.HasPrefix(md.GUID, "plex://") && t.Type != frontend.TypeSeason {
+		if credSrc := s.libraryCredits(); credSrc != nil {
+			credits, ok := credSrc.CachedCredits(ctx, t.Key, md.GUID)
+			if !ok {
+				rem := detailFirstOpenWait - time.Since(start)
+				credits, ok = credSrc.ResolveCreditsBounded(ctx, t.Key, md.GUID, rem)
+			}
+			if ok {
+				s.applyDetailCredits(ctx, t, md, credits)
 			}
 		}
 	}

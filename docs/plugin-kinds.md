@@ -225,8 +225,31 @@ only when someone actually opens that slice, declare `browse.expand`:
 
 ## Resolving bytes
 
-`resolve` returns ordered `PlayableSource`s; Ether tries them in
-order. Patterns:
+`resolve` returns ordered `PlayableSource`s. Ether opens them with the
+same ranked sliding window it uses for movies and TV: two opens stay in
+flight in rank order, failing opens advance immediately, a ready
+equivalent backup may overtake a stalled lead after the 2 s grace
+period, two confirmed permanent failures widen the window to four for
+equivalent candidates, and sources that spend an indexer grab (`nzbUrl`,
+or `torrentUrl` without an `infoHash`/`magnet`) join a single healthy
+in-flight open only as a hedge after the learned health-hedge delay
+(default 1.5 s) so a healthy open normally costs one grab. Losing opens
+are cancelled and their readers closed before playback starts.
+
+When a resolver returns multiple interchangeable releases of the same
+quality (for example a Usenet release and a cached debrid release of the
+same 1080p encode or lossless album), tag them with the same optional
+integer `tier` (`*int` in Go). Within each contiguous tier, Ether
+reorders candidates using its source router — honoring the owner's
+routing setting (`auto`, `usenet`, `debrid`), measured protocol startup
+times (fed by both core and plugin release opens), known-cached debrid
+copies, Usenet backoff, and stall-backed delivery demotion — and lets
+candidates in the same tier overtake each other after the grace period
+or take widened slots. Sources in different tiers always keep the
+plugin's tier order (Ether never swaps a lower tier ahead of a higher
+tier), and omitting `tier` keeps the plugin's exact order.
+
+Patterns:
 
 - **file** — a hosted resolver path inside an owner-picked folder; requires
   `folders: read` and live containment checks when resolving and opening.

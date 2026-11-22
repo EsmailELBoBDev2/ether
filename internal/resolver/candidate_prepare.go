@@ -51,210 +51,210 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if !claimHealthAttempt(workCtx) {
-			results <- validation{index: i, err: errHealthBudget, budgetExhausted: true}
-			return
+		results <- s.runValidation(workCtx, cand, i, finalWave)
+	}()
+}
+
+func (s *Service) runValidation(workCtx context.Context, cand candidate, i int, finalWave bool) validation {
+	if !claimHealthAttempt(workCtx) {
+		return validation{index: i, err: errHealthBudget, budgetExhausted: true}
+	}
+	runMemberCtx := func(parent context.Context, m candidate, final bool) validation {
+		checkCtx, cancel := context.WithTimeout(parent, checkBudgetFor(parent, m.rel, final))
+		defer cancel()
+		var mv validation
+		if m.prepared != nil {
+			mv = m.prepared.wait(checkCtx)
+		} else {
+			mv = s.validateOne(checkCtx, m.rel)
 		}
-		runMemberCtx := func(parent context.Context, m candidate, final bool) validation {
-			checkCtx, cancel := context.WithTimeout(parent, checkBudgetFor(parent, m.rel, final))
-			defer cancel()
-			var mv validation
-			if m.prepared != nil {
-				mv = m.prepared.wait(checkCtx)
-			} else {
-				mv = s.validateOne(checkCtx, m.rel)
+		// Retire the losing open before publishing its result: a timeout must
+		// not let the next on-demand candidate start beside it.
+		cancel()
+		return mv
+	}
+
+	var v validation
+	var tried []fallbackValidation
+	budgetExhausted := false
+	hedgedIdx := -1
+
+	allowHedge, _ := workCtx.Value(singleGroupHedgeKey{}).(bool)
+	hedgeCandidateIdx := -1
+	if allowHedge && len(cand.fallbacks) > 0 && spendsGrab(cand.rel) {
+		leadCID := cand.rel.EffectiveContentID()
+		for idx, fb := range cand.fallbacks {
+			if fb.rel.OpensOnDemand() || s.isBadRelease(fb.rel) || s.recentlyFailedRelease(fb.rel) {
+				continue
 			}
-			// Retire the losing open before publishing its result: a timeout must
-			// not let the next on-demand candidate start beside it.
-			cancel()
-			return mv
+			if leadCID != "" && fb.rel.EffectiveContentID() == leadCID {
+				continue
+			}
+			hedgeCandidateIdx = idx
+			break
+		}
+	}
+
+	if hedgeCandidateIdx >= 0 {
+		leadCtx, cancelLead := context.WithCancel(workCtx)
+		hedgeCtx, cancelHedge := context.WithCancel(workCtx)
+		var subWG sync.WaitGroup
+		leadCh := make(chan validation, 1)
+		var hedgeCh chan validation
+		hedgeTimer := time.NewTimer(s.healthHedgeDelay(cand.rel))
+		graceTimer := time.NewTimer(rankedSourceGrace)
+		cleanup := func() {
+			hedgeTimer.Stop()
+			graceTimer.Stop()
+			cancelLead()
+			cancelHedge()
+			subWG.Wait()
 		}
 
-		var v validation
-		var tried []fallbackValidation
-		budgetExhausted := false
-		hedgedIdx := -1
+		subWG.Add(1)
+		go func() {
+			defer subWG.Done()
+			leadCh <- runMemberCtx(leadCtx, cand, false)
+		}()
 
-		allowHedge, _ := workCtx.Value(singleGroupHedgeKey{}).(bool)
-		hedgeCandidateIdx := -1
-		if allowHedge && len(cand.fallbacks) > 0 && spendsGrab(cand.rel) {
-			leadCID := cand.rel.EffectiveContentID()
-			for idx, fb := range cand.fallbacks {
-				if fb.rel.OpensOnDemand() || s.isBadRelease(fb.rel) || s.recentlyFailedRelease(fb.rel) {
-					continue
+		select {
+		case lv := <-leadCh:
+			v = lv
+		case <-workCtx.Done():
+			cleanup()
+			return validation{index: i, err: workCtx.Err()}
+		case <-hedgeTimer.C:
+			if workCtx.Err() == nil && claimHealthAttempt(workCtx) {
+				hedgedIdx = hedgeCandidateIdx
+				fb := cand.fallbacks[hedgedIdx]
+				hedgeCh = make(chan validation, 1)
+				subWG.Add(1)
+				go func() {
+					defer subWG.Done()
+					hedgeCh <- runMemberCtx(hedgeCtx, fb, finalWave && hedgedIdx == len(cand.fallbacks)-1)
+				}()
+			} else if workCtx.Err() == nil {
+				budgetExhausted = true
+			}
+			var leadVal, hedgeVal *validation
+			graceExpired := false
+			graceTick := graceTimer.C
+			for {
+				if leadVal != nil && leadVal.healthy && leadVal.err == nil {
+					v = *leadVal
+					break
 				}
-				if leadCID != "" && fb.rel.EffectiveContentID() == leadCID {
-					continue
-				}
-				hedgeCandidateIdx = idx
-				break
-			}
-		}
-
-		if hedgeCandidateIdx >= 0 {
-			leadCtx, cancelLead := context.WithCancel(workCtx)
-			hedgeCtx, cancelHedge := context.WithCancel(workCtx)
-			var subWG sync.WaitGroup
-			leadCh := make(chan validation, 1)
-			var hedgeCh chan validation
-			hedgeTimer := time.NewTimer(s.healthHedgeDelay(cand.rel))
-			graceTimer := time.NewTimer(rankedSourceGrace)
-			cleanup := func() {
-				hedgeTimer.Stop()
-				graceTimer.Stop()
-				cancelLead()
-				cancelHedge()
-				subWG.Wait()
-			}
-
-			subWG.Add(1)
-			go func() {
-				defer subWG.Done()
-				leadCh <- runMemberCtx(leadCtx, cand, false)
-			}()
-
-			select {
-			case lv := <-leadCh:
-				v = lv
-			case <-workCtx.Done():
-				cleanup()
-				v = validation{index: i, err: workCtx.Err()}
-				results <- v
-				return
-			case <-hedgeTimer.C:
-				if workCtx.Err() == nil && claimHealthAttempt(workCtx) {
-					hedgedIdx = hedgeCandidateIdx
+				if hedgeVal != nil && hedgeVal.healthy && hedgeVal.err == nil && (leadVal != nil || graceExpired) {
 					fb := cand.fallbacks[hedgedIdx]
-					hedgeCh = make(chan validation, 1)
-					subWG.Add(1)
-					go func() {
-						defer subWG.Done()
-						hedgeCh <- runMemberCtx(hedgeCtx, fb, finalWave && hedgedIdx == len(cand.fallbacks)-1)
-					}()
-				} else if workCtx.Err() == nil {
-					budgetExhausted = true
-				}
-				var leadVal, hedgeVal *validation
-				graceExpired := false
-				graceTick := graceTimer.C
-				for {
-					if leadVal != nil && leadVal.healthy && leadVal.err == nil {
-						v = *leadVal
-						break
+					fbRel := fb.rel
+					if hedgeVal.rel.ID != "" {
+						fbRel = hedgeVal.rel
 					}
-					if hedgeVal != nil && hedgeVal.healthy && hedgeVal.err == nil && (leadVal != nil || graceExpired) {
+					tried = append(tried, fallbackValidation{trace: fb.trace, rel: fbRel, val: *hedgeVal})
+					promoted := fb
+					promoted.rel = fbRel
+					fv := *hedgeVal
+					fv.promoted = &promoted
+					fv.fallbacks = tried
+					v = fv
+					break
+				}
+				if leadVal != nil && (hedgeVal != nil || hedgeCh == nil) {
+					v = *leadVal
+					if hedgeVal != nil {
 						fb := cand.fallbacks[hedgedIdx]
 						fbRel := fb.rel
 						if hedgeVal.rel.ID != "" {
 							fbRel = hedgeVal.rel
 						}
-						tried = append(tried, fallbackValidation{trace: fb.trace, rel: fbRel, val: *hedgeVal})
-						promoted := fb
-						promoted.rel = fbRel
-						fv := *hedgeVal
-						fv.promoted = &promoted
-						fv.fallbacks = tried
-						v = fv
-						break
-					}
-					if leadVal != nil && (hedgeVal != nil || hedgeCh == nil) {
-						v = *leadVal
-						if hedgeVal != nil {
-							fb := cand.fallbacks[hedgedIdx]
-							fbRel := fb.rel
-							if hedgeVal.rel.ID != "" {
-								fbRel = hedgeVal.rel
-							}
-							if errors.Is(hedgeVal.err, errHealthBudget) {
-								budgetExhausted = true
-							} else {
-								tried = append(tried, fallbackValidation{trace: fb.trace, rel: fbRel, val: *hedgeVal})
-								if workCtx.Value(speculativeHealthKey{}) == nil && (hedgeVal.err == nil || permanentFailure(hedgeVal.err) || (!hedgeVal.healthChecked && permanentGrabFailure(hedgeVal.err))) {
-									s.recordFailedValidation(workCtx, fbRel, *hedgeVal)
-								}
+						if errors.Is(hedgeVal.err, errHealthBudget) {
+							budgetExhausted = true
+						} else {
+							tried = append(tried, fallbackValidation{trace: fb.trace, rel: fbRel, val: *hedgeVal})
+							if workCtx.Value(speculativeHealthKey{}) == nil && (hedgeVal.err == nil || permanentFailure(hedgeVal.err) || (!hedgeVal.healthChecked && permanentGrabFailure(hedgeVal.err))) {
+								s.recordFailedValidation(workCtx, fbRel, *hedgeVal)
 							}
 						}
-						break
 					}
-					select {
-					case lv := <-leadCh:
-						leadVal = &lv
-						leadCh = nil
-					case hv := <-hedgeCh:
-						hedgeVal = &hv
-						hedgeCh = nil
-					case <-graceTick:
-						graceExpired = true
-						graceTick = nil
-					case <-workCtx.Done():
-						cleanup()
-						results <- validation{index: i, err: workCtx.Err()}
-						return
-					}
+					break
+				}
+				select {
+				case lv := <-leadCh:
+					leadVal = &lv
+					leadCh = nil
+				case hv := <-hedgeCh:
+					hedgeVal = &hv
+					hedgeCh = nil
+				case <-graceTick:
+					graceExpired = true
+					graceTick = nil
+				case <-workCtx.Done():
+					cleanup()
+					return validation{index: i, err: workCtx.Err()}
 				}
 			}
-			cleanup()
-		} else {
-			v = runMemberCtx(workCtx, cand, finalWave && len(cand.fallbacks) == 0)
 		}
+		cleanup()
+	} else {
+		v = runMemberCtx(workCtx, cand, finalWave && len(cand.fallbacks) == 0)
+	}
 
-		if v.promoted == nil && (!v.healthy || v.err != nil) && len(cand.fallbacks) > 0 && workCtx.Err() == nil {
-			if workCtx.Value(speculativeHealthKey{}) == nil && (v.err == nil || permanentFailure(v.err) || (!v.healthChecked && permanentGrabFailure(v.err))) {
-				s.recordFailedValidation(workCtx, cand.rel, v)
+	if v.promoted == nil && (!v.healthy || v.err != nil) && len(cand.fallbacks) > 0 && workCtx.Err() == nil {
+		if workCtx.Value(speculativeHealthKey{}) == nil && (v.err == nil || permanentFailure(v.err) || (!v.healthChecked && permanentGrabFailure(v.err))) {
+			s.recordFailedValidation(workCtx, cand.rel, v)
+		}
+		if errors.Is(v.err, errHealthBudget) {
+			budgetExhausted = true
+		}
+		for fbi, fb := range cand.fallbacks {
+			if fbi == hedgedIdx || budgetExhausted {
+				continue
 			}
-			if errors.Is(v.err, errHealthBudget) {
+			if workCtx.Err() != nil {
+				break
+			}
+			if fb.rel.OpensOnDemand() && !core.OnDemandAllowedAt(workCtx, fb.rel, i) {
+				continue
+			}
+			// Skip quiet fallbacks whose cross-indexer content identity is
+			// already known dead (e.g. the leader's failed grab/check).
+			if s.isBadRelease(fb.rel) || s.recentlyFailedRelease(fb.rel) {
+				continue
+			}
+			if !claimHealthAttempt(workCtx) {
 				budgetExhausted = true
+				break
 			}
-			for fbi, fb := range cand.fallbacks {
-				if fbi == hedgedIdx || budgetExhausted {
-					continue
-				}
-				if workCtx.Err() != nil {
-					break
-				}
-				if fb.rel.OpensOnDemand() && !core.OnDemandAllowedAt(workCtx, fb.rel, i) {
-					continue
-				}
-				// Skip quiet fallbacks whose cross-indexer content identity is
-				// already known dead (e.g. the leader's failed grab/check).
-				if s.isBadRelease(fb.rel) || s.recentlyFailedRelease(fb.rel) {
-					continue
-				}
-				if !claimHealthAttempt(workCtx) {
-					budgetExhausted = true
-					break
-				}
-				fv := runMemberCtx(workCtx, fb, finalWave && fbi == len(cand.fallbacks)-1)
-				if errors.Is(fv.err, errHealthBudget) {
-					budgetExhausted = true
-					break
-				}
-				fbRel := fb.rel
-				if fv.rel.ID != "" {
-					fbRel = fv.rel
-				}
-				tried = append(tried, fallbackValidation{trace: fb.trace, rel: fbRel, val: fv})
-				if fv.healthy && fv.err == nil {
-					promoted := fb
-					promoted.rel = fbRel
-					fv.promoted = &promoted
-					fv.fallbacks = tried
-					v = fv
-					budgetExhausted = false
-					break
-				}
-				if workCtx.Value(speculativeHealthKey{}) == nil && (fv.err == nil || permanentFailure(fv.err) || (!fv.healthChecked && permanentGrabFailure(fv.err))) {
-					s.recordFailedValidation(workCtx, fbRel, fv)
-				}
+			fv := runMemberCtx(workCtx, fb, finalWave && fbi == len(cand.fallbacks)-1)
+			if errors.Is(fv.err, errHealthBudget) {
+				budgetExhausted = true
+				break
 			}
-			if v.promoted == nil {
-				v.fallbacks = tried
-				v.budgetExhausted = budgetExhausted
+			fbRel := fb.rel
+			if fv.rel.ID != "" {
+				fbRel = fv.rel
+			}
+			tried = append(tried, fallbackValidation{trace: fb.trace, rel: fbRel, val: fv})
+			if fv.healthy && fv.err == nil {
+				promoted := fb
+				promoted.rel = fbRel
+				fv.promoted = &promoted
+				fv.fallbacks = tried
+				v = fv
+				budgetExhausted = false
+				break
+			}
+			if workCtx.Value(speculativeHealthKey{}) == nil && (fv.err == nil || permanentFailure(fv.err) || (!fv.healthChecked && permanentGrabFailure(fv.err))) {
+				s.recordFailedValidation(workCtx, fbRel, fv)
 			}
 		}
-		v.index = i
-		results <- v
-	}()
+		if v.promoted == nil {
+			v.fallbacks = tried
+			v.budgetExhausted = budgetExhausted
+		}
+	}
+	v.index = i
+	return v
 }
 
 func (s *Service) validateOne(ctx context.Context, rel core.Release) validation {

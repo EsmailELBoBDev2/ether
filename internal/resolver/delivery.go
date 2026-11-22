@@ -105,6 +105,17 @@ func (s *Service) deliveryFit(r core.Release, caps core.ClientCaps, title *core.
 	return fit
 }
 
+// hasRecentStall reports whether r's delivery key recorded a playback stall
+// within the 2-minute delivery window. Used as a fallback when a plugin source
+// lacks size or runtime metadata so deliveryFitReason cannot compute bitrate.
+func (s *Service) hasRecentStall(r core.Release) bool {
+	now := s.now()
+	s.delivery.mu.Lock()
+	e := s.delivery.samples[deliveryKey(r)]
+	s.delivery.mu.Unlock()
+	return e.stallRate > 0 && !e.stallAt.IsZero() && now.Sub(e.stallAt) <= 2*time.Minute
+}
+
 // deliveryFitReason returns the hard bandwidth gate (bandwidth), the soft
 // tie-break signal for unverified throughput estimates (delivery), and the
 // honest source-history reason when a hard limit demotes the release: the

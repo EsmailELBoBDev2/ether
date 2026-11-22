@@ -24,7 +24,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/resolver"
 )
 
 // Retrieval pattern constants (spec §4.1, §4.3).
@@ -123,6 +125,28 @@ type Deps struct {
 	// using ProbeByteSource. When nil, Open falls back directly to
 	// ProbeByteSource without a cache or ffprobe fallback.
 	ProbeMedia func(ctx context.Context, src core.PlayableSource, bs ByteSource) (*core.MediaInfo, error)
+	// SourceRouter, when set, applies Ether's tier source routing (auto/usenet/
+	// debrid, measured startup, stall demotion), grab hedge delay, and startup
+	// stat recording in OpenSources. *resolver.Service implements this
+	// interface directly.
+	SourceRouter SourceRouter
+	// SourceRelease, when set, maps a PlayableSource to the core.Release used
+	// for routing, debrid-cache checks, grab detection, startup stats, and
+	// delivery/stall keys (matching the Release later passed to
+	// ObserveSourceStall during playback). When nil, ReleaseForSource is used.
+	SourceRelease func(core.PlayableSource) core.Release
+	// Title optionally supplies title metadata (runtime, popularity, votes)
+	// for tier routing and delivery bitrate checks.
+	Title *core.Title
+}
+
+// SourceRouter plugs Ether's resolver tier routing, grab-hedge timing, and
+// startup statistics into OpenSources. *resolver.Service satisfies this
+// interface directly.
+type SourceRouter interface {
+	RoutePlayableTier(items []resolver.PlayableRouteCandidate, title *core.Title) []int
+	HealthHedgeDelay(rel core.Release) time.Duration
+	ObserveSourceStartup(rel core.Release, took time.Duration)
 }
 
 // Open resolves a single core.PlayableSource into a random-access ByteSource
@@ -262,14 +286,217 @@ func classifyNonVideoRelease(cand core.PlayableSource, defaultMIME string) (nonV
 	}, isUsenet
 }
 
-// OpenSources tries each candidate core.PlayableSource in order, returning the first
-// ByteSource that opens and validates cleanly. When every candidate fails with
-// core.ErrArchiveUnstreamable, that error is preserved rather than masked as
-// core.ErrSourceUnavailable; when every candidate fails with a permanent
-// rejection (e.g. core.ErrReleaseRejected, archive.ErrMissingVolume,
-// core.ErrNoUsableFile, core.ErrArticleMissing), the returned error wraps
-// core.ErrReleaseRejected rather than core.ErrSourceUnavailable; otherwise
-// all-failed candidates wrap core.ErrSourceUnavailable (spec §4.5).
+func effectivePattern(src core.PlayableSource) string {
+	pattern := strings.ToLower(strings.TrimSpace(src.Pattern))
+	if pattern == "" {
+		if src.Container != nil {
+			return PatternContainer
+		}
+		if src.Release != nil {
+			return PatternRelease
+		}
+		return PatternRange
+	}
+	return pattern
+}
+
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// ReleaseForSource builds the default core.Release metadata for a
+// PlayableSource (protocol, ID, infohash, magnet, NZB URL, size, seeders) used
+// by OpenSources for grab detection, tier routing, startup stats, and delivery
+// keys when Deps.SourceRelease is not supplied.
+func ReleaseForSource(src core.PlayableSource) core.Release {
+	rel := core.Release{
+		ID:   strings.TrimSpace(src.ID),
+		Name: strings.TrimSpace(src.Label),
+		Size: src.Size,
+	}
+	if effectivePattern(src) != PatternRelease || src.Release == nil || strings.TrimSpace(src.BlobRef) != "" {
+		rel.Protocol = core.ProtocolHTTP
+		if rel.ID == "" {
+			rel.ID = firstNonEmptyStr(src.URL, src.Path, src.BlobRef)
+		}
+		return rel
+	}
+	r := src.Release
+	var torrentURL string
+	if r.Candidate != nil {
+		rel.InfoHash = strings.ToLower(strings.TrimSpace(r.Candidate.InfoHash))
+		rel.MagnetURL = strings.TrimSpace(r.Candidate.Magnet)
+		torrentURL = strings.TrimSpace(r.Candidate.TorrentURL)
+		rel.NZBURL = strings.TrimSpace(r.Candidate.NZBURL)
+		if rel.Name == "" {
+			rel.Name = strings.TrimSpace(r.Candidate.Title)
+		}
+		if rel.Size <= 0 {
+			rel.Size = r.Candidate.Size
+		}
+		rel.Seeders = r.Candidate.Seeders
+		rel.Indexer = r.Candidate.Indexer
+		rel.IndexerID = r.Candidate.IndexerID
+	}
+	if h := strings.ToLower(strings.TrimSpace(r.InfoHash)); h != "" {
+		rel.InfoHash = h
+	}
+	if m := strings.TrimSpace(r.Magnet); m != "" {
+		rel.MagnetURL = m
+	}
+	if t := strings.TrimSpace(r.TorrentURL); t != "" {
+		torrentURL = t
+	}
+	if u := strings.TrimSpace(r.NZBURL); u != "" {
+		rel.NZBURL = u
+	}
+	if strings.HasPrefix(strings.ToLower(torrentURL), "magnet:") {
+		if rel.MagnetURL == "" {
+			rel.MagnetURL = torrentURL
+		}
+		torrentURL = ""
+	}
+	if rel.InfoHash == "" && rel.MagnetURL != "" {
+		if h := newznab.InfoHashFromMagnet(rel.MagnetURL); h != "" {
+			rel.InfoHash = h
+		}
+	}
+	switch {
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
+		rel.Protocol = core.ProtocolTorrent
+		if torrentURL != "" {
+			rel.NZBURL = torrentURL
+		} else {
+			rel.NZBURL = ""
+		}
+	case rel.NZBURL != "":
+		rel.Protocol = core.ProtocolUsenet
+	default:
+		rel.Protocol = core.ProtocolHTTP
+	}
+	if rel.ID == "" {
+		rel.ID = firstNonEmptyStr(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+	}
+	return rel
+}
+
+func isSourceKnownCached(src core.PlayableSource) bool {
+	return src.Release != nil && src.Release.Candidate != nil &&
+		(src.Release.Candidate.Cached || len(src.Release.Candidate.CachedBy) > 0)
+}
+
+func sourceSpendsGrab(src core.PlayableSource, rel core.Release) bool {
+	if effectivePattern(src) != PatternRelease || src.Release == nil || strings.TrimSpace(src.BlobRef) != "" {
+		return false
+	}
+	return resolver.SpendsGrab(rel)
+}
+
+func isReleaseStartupCandidate(src core.PlayableSource, rel core.Release) bool {
+	return effectivePattern(src) == PatternRelease &&
+		src.Release != nil &&
+		strings.TrimSpace(src.BlobRef) == "" &&
+		(rel.Protocol == core.ProtocolUsenet || rel.Protocol == core.ProtocolTorrent)
+}
+
+func sourcesEquivalent(a, b core.PlayableSource) bool {
+	if a.Tier != nil && b.Tier != nil {
+		return *a.Tier == *b.Tier
+	}
+	return a.Tier == nil && b.Tier == nil
+}
+
+// routeTieredSources reorders contiguous runs of sources sharing a non-nil
+// Tier using Ether's resolver routing (auto/usenet/debrid, measured startup,
+// and stall demotion). Untiered sources (Tier == nil) keep exact plugin order,
+// and distinct tiers never cross boundaries.
+func routeTieredSources(sources []core.PlayableSource, router SourceRouter, relFor func(core.PlayableSource) core.Release, title *core.Title) []core.PlayableSource {
+	if len(sources) < 2 || router == nil {
+		return sources
+	}
+	var out []core.PlayableSource
+	for i := 0; i < len(sources); {
+		if sources[i].Tier == nil {
+			if out != nil {
+				out = append(out, sources[i])
+			}
+			i++
+			continue
+		}
+		tier := *sources[i].Tier
+		j := i + 1
+		for j < len(sources) && sources[j].Tier != nil && *sources[j].Tier == tier {
+			j++
+		}
+		if j-i < 2 {
+			if out != nil {
+				out = append(out, sources[i])
+			}
+			i = j
+			continue
+		}
+		if out == nil {
+			out = make([]core.PlayableSource, 0, len(sources))
+			out = append(out, sources[:i]...)
+		}
+		run := sources[i:j]
+		cands := make([]resolver.PlayableRouteCandidate, len(run))
+		tierTitle := title
+		for k, src := range run {
+			cands[k] = resolver.PlayableRouteCandidate{
+				Release:     relFor(src),
+				KnownCached: isSourceKnownCached(src),
+			}
+			if (tierTitle == nil || tierTitle.Runtime <= 0) && src.DurationSec > 0 {
+				var t core.Title
+				if tierTitle != nil {
+					t = *tierTitle
+				}
+				t.Runtime = time.Duration(src.DurationSec * float64(time.Second))
+				tierTitle = &t
+			}
+		}
+		order := router.RoutePlayableTier(cands, tierTitle)
+		if len(order) != len(run) {
+			out = append(out, run...)
+		} else {
+			for _, idx := range order {
+				out = append(out, run[idx])
+			}
+		}
+		i = j
+	}
+	if out == nil {
+		return sources
+	}
+	return out
+}
+
+// OpenSources opens candidate core.PlayableSources using Ether's ranked
+// sliding window (resolver.RunRankedWindow): two opens stay in flight in rank
+// order, failing opens advance immediately, equivalent later sources may win
+// after resolver.RankedSourceGrace, two confirmed failures widen to four for
+// equivalent candidates, and grab-spending opens join a single healthy-sofar
+// in-flight open only as a hedge after the resolver's health hedge delay.
+// Losing opens are cancelled and their ByteSources closed before returning.
+//
+// When Deps.SourceRouter is set, contiguous sources sharing a non-nil Tier are
+// reordered with Ether's source routing (auto/usenet/debrid, measured startup,
+// stall demotion), and winning release open durations feed back into the shared
+// startup statistics. Sources without a Tier keep exact plugin order.
+//
+// When every candidate fails with core.ErrArchiveUnstreamable, that error is
+// preserved rather than masked as core.ErrSourceUnavailable; when every
+// candidate fails with a permanent rejection (e.g. core.ErrReleaseRejected,
+// archive.ErrMissingVolume, core.ErrNoUsableFile, core.ErrArticleMissing), the
+// returned error wraps core.ErrReleaseRejected rather than
+// core.ErrSourceUnavailable; otherwise all-failed candidates wrap
+// core.ErrSourceUnavailable (spec §4.5).
 //
 // For non-video release candidates (#659), OpenSources caps Usenet release
 // grabs per play (DefaultMaxNonVideoReleaseGrabs) and stops trying further
@@ -279,80 +506,176 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	if len(sources) == 0 {
 		return nil, core.PlayableSource{}, core.ErrSourceUnavailable
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, core.PlayableSource{}, err
+	}
+	relFor := deps.SourceRelease
+	if relFor == nil {
+		relFor = ReleaseForSource
+	}
+	ordered := routeTieredSources(sources, deps.SourceRouter, relFor, deps.Title)
+
 	maxUsenetGrabs := deps.MaxNonVideoReleaseGrabs
 	if maxUsenetGrabs == 0 {
 		maxUsenetGrabs = DefaultMaxNonVideoReleaseGrabs
 	}
+
+	type nonVideoInfo struct {
+		nonVideo bool
+		shape    releaseCandidateShape
+		isUsenet bool
+	}
+	rels := make([]core.Release, len(ordered))
+	grabs := make([]bool, len(ordered))
+	nv := make([]nonVideoInfo, len(ordered))
+	for i, cand := range ordered {
+		rels[i] = relFor(cand)
+		grabs[i] = sourceSpendsGrab(cand, rels[i])
+		isNV, shape, isUsenet := classifyNonVideoRelease(cand, deps.DefaultReleaseMIME)
+		nv[i] = nonVideoInfo{nonVideo: isNV, shape: shape, isUsenet: isUsenet}
+	}
+
+	type sourceAttempt struct {
+		bs   ByteSource
+		err  error
+		took time.Duration
+	}
+	attempts := make([]*sourceAttempt, len(ordered))
+	skipErrs := make([]error, len(ordered))
+	skipPrev := make([]error, len(ordered))
 	usenetNonVideoGrabs := 0
 	structuralFailed := make(map[releaseCandidateShape]error)
 
+	outcome := resolver.RunRankedWindow(ctx, resolver.RankedWindowConfig[sourceAttempt]{
+		Count:     len(ordered),
+		Width:     2,
+		WideWidth: 4,
+		Grace:     resolver.RankedSourceGrace,
+		Run: func(workCtx context.Context, i int, _ bool) sourceAttempt {
+			candCtx := workCtx
+			var candCancel context.CancelFunc
+			if deps.CandidateOpenTimeout > 0 {
+				candCtx, candCancel = context.WithTimeout(workCtx, deps.CandidateOpenTimeout)
+			}
+			attemptStart := time.Now()
+			bs, err := Open(candCtx, ordered[i], deps)
+			took := time.Since(attemptStart)
+			if candCancel != nil {
+				candCancel()
+			}
+			return sourceAttempt{bs: bs, err: err, took: took}
+		},
+		Succeeded: func(a sourceAttempt) bool {
+			return a.err == nil && a.bs != nil
+		},
+		ConfirmedFailure: func(a sourceAttempt) bool {
+			return isConfirmedSourceFailure(a.err)
+		},
+		Equivalent: func(lead, other int) bool {
+			return sourcesEquivalent(ordered[lead], ordered[other])
+		},
+		SpendsGrab: func(i int) bool {
+			return grabs[i]
+		},
+		HedgeDelay: func(i int) time.Duration {
+			if deps.SourceRouter != nil {
+				return deps.SourceRouter.HealthHedgeDelay(rels[i])
+			}
+			return resolver.DefaultHealthHedgeDelay
+		},
+		BeforeLaunch: func(_, next, _ int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
+			if nv[next].nonVideo {
+				if prev, failed := structuralFailed[nv[next].shape]; failed {
+					skipErrs[next] = fmt.Errorf("source %q (%s): skipped after same-shape structural failure: %w", ordered[next].ID, ordered[next].Pattern, prev)
+					skipPrev[next] = prev
+					return resolver.LaunchSkip, time.Time{}
+				}
+				if nv[next].isUsenet && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
+					skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", ordered[next].ID, ordered[next].Pattern, maxUsenetGrabs)
+					return resolver.LaunchSkip, time.Time{}
+				}
+			}
+			return resolver.LaunchAllow, time.Time{}
+		},
+		OnLaunch: func(i int) {
+			if nv[i].nonVideo && nv[i].isUsenet {
+				usenetNonVideoGrabs++
+			}
+		},
+		OnResult: func(i int, a sourceAttempt) {
+			attempts[i] = &a
+			if a.err != nil && nv[i].nonVideo && errors.Is(a.err, core.ErrNoUsableFile) {
+				if _, exists := structuralFailed[nv[i].shape]; !exists {
+					structuralFailed[nv[i].shape] = a.err
+				}
+			}
+		},
+		OnDrop: func(_ int, a sourceAttempt, _ bool) {
+			if a.bs != nil {
+				_ = a.bs.Close()
+			}
+		},
+	})
+
+	if outcome.Err != nil {
+		return nil, core.PlayableSource{}, outcome.Err
+	}
+	if outcome.Winner >= 0 {
+		winIdx := outcome.Winner
+		winning := ordered[winIdx]
+		if deps.SourceRouter != nil && isReleaseStartupCandidate(winning, rels[winIdx]) {
+			deps.SourceRouter.ObserveSourceStartup(rels[winIdx], max(outcome.Result.took, time.Microsecond))
+		}
+		var failures []SourceFailure
+		for i := 0; i < winIdx; i++ {
+			a := attempts[i]
+			if a == nil || a.err == nil {
+				continue
+			}
+			if deps.OnSourceFailed != nil {
+				deps.OnSourceFailed(i+1, len(ordered), ordered[i], a.took, a.err)
+			}
+			failures = append(failures, SourceFailure{Source: ordered[i], Err: a.err})
+		}
+		if len(failures) > 0 && deps.OnSourceSkipped != nil {
+			deps.OnSourceSkipped(failures, winning)
+		}
+		return outcome.Result.bs, winning, nil
+	}
+
 	var errs []error
-	var failures []SourceFailure
 	allUnstreamable := true
 	allRejected := true
 	allWrongContent := true
-	for i, cand := range sources {
-		if err := ctx.Err(); err != nil {
-			return nil, core.PlayableSource{}, err
-		}
-		nonVideo, shape, isUsenet := classifyNonVideoRelease(cand, deps.DefaultReleaseMIME)
-		if nonVideo {
-			if prev, failed := structuralFailed[shape]; failed {
-				errs = append(errs, fmt.Errorf("source %q (%s): skipped after same-shape structural failure: %w", cand.ID, cand.Pattern, prev))
-				allUnstreamable = false
-				if !isPermanentRejection(prev) {
-					allRejected = false
-				}
-				if !errors.Is(prev, core.ErrWrongContent) {
-					allWrongContent = false
-				}
-				continue
-			}
-			if isUsenet && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
-				errs = append(errs, fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", cand.ID, cand.Pattern, maxUsenetGrabs))
-				allUnstreamable = false
+	for i, cand := range ordered {
+		if skipErrs[i] != nil {
+			errs = append(errs, skipErrs[i])
+			allUnstreamable = false
+			if prev := skipPrev[i]; prev == nil || !isPermanentRejection(prev) {
 				allRejected = false
+			}
+			if prev := skipPrev[i]; prev == nil || !errors.Is(prev, core.ErrWrongContent) {
 				allWrongContent = false
-				continue
 			}
-			if isUsenet {
-				usenetNonVideoGrabs++
-			}
+			continue
 		}
-
-		candCtx := ctx
-		var candCancel context.CancelFunc
-		if deps.CandidateOpenTimeout > 0 {
-			candCtx, candCancel = context.WithTimeout(ctx, deps.CandidateOpenTimeout)
-		}
-		attemptStart := time.Now()
-		bs, err := Open(candCtx, cand, deps)
-		if candCancel != nil {
-			candCancel()
-		}
-		if err == nil {
-			if len(failures) > 0 && deps.OnSourceSkipped != nil {
-				deps.OnSourceSkipped(failures, cand)
-			}
-			return bs, cand, nil
+		a := attempts[i]
+		if a == nil || a.err == nil {
+			continue
 		}
 		if deps.OnSourceFailed != nil {
-			deps.OnSourceFailed(i+1, len(sources), cand, time.Since(attemptStart), err)
+			deps.OnSourceFailed(i+1, len(ordered), cand, a.took, a.err)
 		}
-		if nonVideo && errors.Is(err, core.ErrNoUsableFile) {
-			structuralFailed[shape] = err
-		}
-		if !errors.Is(err, core.ErrArchiveUnstreamable) {
+		if !errors.Is(a.err, core.ErrArchiveUnstreamable) {
 			allUnstreamable = false
 		}
-		if !isPermanentRejection(err) {
+		if !isPermanentRejection(a.err) {
 			allRejected = false
 		}
-		if !errors.Is(err, core.ErrWrongContent) {
+		if !errors.Is(a.err, core.ErrWrongContent) {
 			allWrongContent = false
 		}
-		failures = append(failures, SourceFailure{Source: cand, Err: err})
-		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, err))
+		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, a.err))
 	}
 	if allUnstreamable && len(errs) > 0 {
 		return nil, core.PlayableSource{}, errors.Join(errs...)
@@ -368,6 +691,22 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		return nil, core.PlayableSource{}, errors.Join(errs...)
 	}
 	return nil, core.PlayableSource{}, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, errors.Join(errs...))
+}
+
+// isConfirmedSourceFailure reports whether a candidate open failure is a
+// definitive per-source rejection (not a timeout, cancellation, or transient
+// provider error) that counts toward widening the ranked window from 2 to 4.
+func isConfirmedSourceFailure(err error) bool {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	return isPermanentRejection(err) ||
+		errors.Is(err, core.ErrWrongContent) ||
+		errors.Is(err, ErrPluginAnswer) ||
+		errors.Is(err, ErrDigestMismatch) ||
+		errors.Is(err, ErrMIMEMismatch) ||
+		errors.Is(err, ErrSizeLimitExceeded) ||
+		errors.Is(err, core.ErrNotCached)
 }
 
 func isPermanentRejection(err error) bool {

@@ -1136,6 +1136,14 @@ export interface PlayableSource {
   label?: string;
   pattern: "range" | "download" | "direct" | "container" | "release" | "file";
   mime: string;
+  /**
+   * Optional quality-tier marker for interchangeable sources. Sources sharing
+   * the same `tier` may be reordered by Ether's source routing (auto/usenet/
+   * debrid, measured startup, and stall demotion) and may overtake each other
+   * after the ranked open grace period. Distinct tiers keep the plugin's tier
+   * order; omitting `tier` keeps the plugin's exact order.
+   */
+  tier?: number;
   size?: number;
   /** True when size is an approximate hint (e.g. from Usenet release_files) rather than an exact byte count. */
   sizeApproximate?: boolean;

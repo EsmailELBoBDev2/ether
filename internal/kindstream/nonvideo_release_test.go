@@ -334,8 +334,8 @@ func TestOpenSourcesNonVideoFailFastAndGrabCap(t *testing.T) {
 	mkvSample := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, bytes.Repeat([]byte{0x22}, 512)...)
 	bsVid, winVid, err := OpenSources(ctx, makeUsenetSources(5, "video/x-matroska"), Deps{
 		OpenReleaseSource: func(_ context.Context, src core.PlayableSource) (core.MediaSource, error) {
-			n := videoGrabs.Add(1)
-			if n < 5 {
+			videoGrabs.Add(1)
+			if src.ID != "usenet-5" {
 				return nil, fmt.Errorf("%w: %w", core.ErrReleaseRejected, stream.ErrNoPlayableFile)
 			}
 			return &fakeMediaSource{id: src.ID, name: "Movie.2024.mkv", data: mkvSample}, nil

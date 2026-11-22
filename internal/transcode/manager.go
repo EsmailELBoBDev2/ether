@@ -1020,13 +1020,35 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	var plan *Timeline
 	if proto == core.ProtocolDASH {
 		base = 0
-		startSeg = int(offset / segDur)
-		total = dashSegmentCount(req.Info.Duration, segDur)
+		// Copy DASH cuts video only at source keyframes; build the shared
+		// keyframe-snapped Timeline when the container keyframe index is
+		// already available so both the MPD SegmentTimeline and segment
+		// slotting reflect the real per-segment durations.
+		if !req.LiveInput && req.Info.Duration > 0 && v != nil && d.VideoCopy && len(req.Info.Keyframes) > 0 {
+			if p := buildTimeline(req.Info.Duration, segDur, timelineOptions{
+				steadyMode: ModeCopy,
+				keyframes:  req.Info.Keyframes,
+				base:       0,
+				snap:       true,
+			}); p.Keyframed() {
+				plan = p
+			}
+		}
+		if plan != nil {
+			total = plan.Total()
+			startSeg = plan.IndexAt(offset)
+		} else {
+			startSeg = int(offset / segDur)
+			total = dashSegmentCount(req.Info.Duration, segDur)
+		}
 		if total > 0 && startSeg >= total {
 			startSeg = total - 1
 		}
 		if !req.LiveInput && req.FirstSegmentAt > 0 && req.StartOffset == 0 && segDur > 0 && req.FirstSegmentAt < req.Info.Duration {
 			at := int(req.FirstSegmentAt / segDur)
+			if plan != nil {
+				at = plan.IndexAt(req.FirstSegmentAt)
+			}
 			if total > 1 && at >= total-1 {
 				at = total - 2
 			}

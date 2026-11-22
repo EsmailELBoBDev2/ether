@@ -543,7 +543,7 @@ func (s *Session) trackSegPath(t, n int) string {
 }
 
 func (s *Session) segStart(n int) time.Duration {
-	if s.plan != nil && !s.isDASH() {
+	if s.plan != nil {
 		return s.base + s.plan.Start(n)
 	}
 	return s.base + time.Duration(n)*s.segDur

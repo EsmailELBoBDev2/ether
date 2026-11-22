@@ -1469,6 +1469,125 @@
               },
               "type": "array"
             },
+            "screens": {
+              "items": {
+                "properties": {
+                  "feed": {
+                    "type": "string"
+                  },
+                  "frontends": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "sections": {
+                    "items": {
+                      "properties": {
+                        "entityKind": {
+                          "type": "string"
+                        },
+                        "feed": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "league": {
+                          "type": "string"
+                        },
+                        "leagues": {
+                          "items": {
+                            "properties": {
+                              "abbr": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "logo": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "query": {
+                          "properties": {
+                            "category": {
+                              "type": "string"
+                            },
+                            "favorites": {
+                              "type": "boolean"
+                            },
+                            "feed": {
+                              "type": "string"
+                            },
+                            "league": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "items": {
+                                "enum": [
+                                  "pre",
+                                  "in",
+                                  "post",
+                                  "delayed",
+                                  "postponed",
+                                  "canceled"
+                                ]
+                              },
+                              "type": "array"
+                            },
+                            "window": {
+                              "enum": [
+                                "today",
+                                "week",
+                                "recent"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "hero",
+                            "events",
+                            "table",
+                            "schedule",
+                            "leagues",
+                            "entities"
+                          ]
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
             "slots": {
               "items": {
                 "allOf": [

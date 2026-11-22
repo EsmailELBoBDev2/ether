@@ -310,6 +310,9 @@ type Contributes struct {
 	LiveFeeds []LiveFeedMeta `json:"liveFeeds,omitempty"`
 	// Setup declares guided setup steps for any plugin kind (§8).
 	Setup *SetupMeta `json:"setup,omitempty"`
+	// Screens declares generic top-level screens rendered natively by frontends
+	// such as Vela (spec A3).
+	Screens []ScreenMeta `json:"screens,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the lowest polling interval (in seconds) a plugin

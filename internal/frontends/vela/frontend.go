@@ -390,7 +390,7 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 	case errors.Is(err, frontend.ErrArchiveUnstreamable):
 		logFailure(err, requests...)
 		send(w, http.StatusUnprocessableEntity, object{"error": object{"class": "source", "code": "archive_unstreamable", "message": frontend.ErrArchiveUnstreamable.Error(), "retry": object{"allowed": false}}})
-	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit):
+	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit), errors.Is(err, frontend.ErrInvalidScreenDate), errors.Is(err, frontend.ErrInvalidEntityKey):
 		problem(w, 400, "request", "invalid_request")
 	case errors.Is(err, frontend.ErrPreferencesLimit), errors.Is(err, frontend.ErrDownloadBudget):
 		problem(w, 429, "capacity", "resource_capacity")
@@ -477,6 +477,8 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		problem(w, 409, "source", "not_available")
 	case errors.Is(err, frontend.ErrNotFound):
 		problem(w, 404, "not-found", "not_found")
+	case errors.Is(err, frontend.ErrForbidden):
+		problem(w, 403, "policy", "forbidden")
 	case errors.Is(err, frontend.ErrUnauthorized):
 		problem(w, 401, "auth", "unauthorized")
 	case errors.Is(err, frontend.ErrRateLimited):
@@ -621,7 +623,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	// and unsupported methods dispatch straight to ServeMux so they answer 404
 	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
-	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") {
+	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") || (r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/vela/v0/favorites/entities/")) {
 		i.mux.ServeHTTP(w, r)
 		return
 	}
@@ -847,6 +849,10 @@ func (i *instance) routes() {
 	i.route("GET", "/live/preferences", i.liveEventsPreferencesGet)
 	i.route("PUT", "/live/preferences", i.liveEventsPreferencesSet)
 	i.route("PATCH", "/live/preferences", i.liveEventsPreferencesSet)
+	i.route("GET", "/live/entities", i.liveEntities)
+	i.route("GET", "/screens/{id}", i.screen)
+	i.route("PUT", "/favorites/entities/{key}", i.favoriteEntity)
+	i.route("DELETE", "/favorites/entities/{key}", i.favoriteEntity)
 	i.route("POST", "/titles/{id}/watch", i.watch)
 	i.route("POST", "/titles/{id}/read", i.read)
 	i.route("GET", "/read/{ticket}", i.readFile)

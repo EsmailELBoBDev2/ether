@@ -54,7 +54,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	// Credentials scope the image grants and cursor scope includes the complete
 	// viewer policy. Do not reuse wire responses between refresh families/devices
 	// or certificate-region preferences.
-	scope := hashJSON([]any{v, dev, token, avatar, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r)})
+	scope := hashJSON([]any{v, dev, token, avatar, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration()})
 	if local, ok := i.host.Experience.(interface {
 		NoProviderWait(context.Context) context.Context
 	}); ok {
@@ -178,5 +178,5 @@ func (i *instance) bootstrapFreshness() frontend.PageFreshness {
 		return frontend.PageFreshness{}
 	}
 	f := i.host.PageFreshness()
-	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, Images: f.Images, KindSync: f.KindSync}
+	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, Images: f.Images, KindSync: f.KindSync, Screens: f.Screens}
 }

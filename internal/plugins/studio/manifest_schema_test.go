@@ -70,6 +70,11 @@ func schemaType(typ reflect.Type) map[string]any {
 		case reflect.TypeFor[plugins.KindLibraryShelf]():
 			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index", "lastViewed"}}
 			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}
+		case reflect.TypeFor[plugins.ScreenSection]():
+			props["type"] = map[string]any{"enum": []string{"hero", "events", "table", "schedule", "leagues", "entities"}}
+		case reflect.TypeFor[plugins.ScreenEventQuery]():
+			props["state"] = map[string]any{"type": "array", "items": map[string]any{"enum": []string{"pre", "in", "post", "delayed", "postponed", "canceled"}}}
+			props["window"] = map[string]any{"enum": []string{"today", "week", "recent"}}
 		}
 		return map[string]any{"type": "object", "properties": props}
 	case reflect.Slice, reflect.Array:
@@ -146,11 +151,13 @@ func TestPublishedManifestSchema(t *testing.T) {
 	kind := schemaType(reflect.TypeFor[plugins.MediaKindMeta]())
 	adapter := schemaType(reflect.TypeFor[plugins.FrontendAdapterMeta]())
 	liveFeed := schemaType(reflect.TypeFor[plugins.LiveFeedMeta]())
+	screen := schemaType(reflect.TypeFor[plugins.ScreenMeta]())
 	wantKinds := map[string]any{"type": "array", "items": kind}
 	wantAdapters := map[string]any{"type": "array", "items": adapter}
 	wantLiveFeeds := map[string]any{"type": "array", "items": liveFeed}
+	wantScreens := map[string]any{"type": "array", "items": screen}
 	equal := func(a, b any) bool { x, _ := json.Marshal(a); y, _ := json.Marshal(b); return string(x) == string(y) }
-	changed := !equal(ether["kind"], expected["kind"]) || !equal(ether["capabilities"], expected["capabilities"]) || !equal(perms["ai"], wantAI) || !equal(perms["media"], wantMedia) || !equal(perms["sources"], wantSources) || !equal(contrib["mediaKinds"], wantKinds) || !equal(contrib["frontendAdapters"], wantAdapters) || !equal(contrib["liveFeeds"], wantLiveFeeds)
+	changed := !equal(ether["kind"], expected["kind"]) || !equal(ether["capabilities"], expected["capabilities"]) || !equal(perms["ai"], wantAI) || !equal(perms["media"], wantMedia) || !equal(perms["sources"], wantSources) || !equal(contrib["mediaKinds"], wantKinds) || !equal(contrib["frontendAdapters"], wantAdapters) || !equal(contrib["liveFeeds"], wantLiveFeeds) || !equal(contrib["screens"], wantScreens)
 	if changed {
 		if os.Getenv("UPDATE_MANIFEST_SCHEMA") != "1" {
 			t.Fatal("manifest schema drift: run UPDATE_MANIFEST_SCHEMA=1 go test ./internal/plugins/studio -run TestPublishedManifestSchema")
@@ -163,6 +170,7 @@ func TestPublishedManifestSchema(t *testing.T) {
 		contrib["mediaKinds"] = wantKinds
 		contrib["frontendAdapters"] = wantAdapters
 		contrib["liveFeeds"] = wantLiveFeeds
+		contrib["screens"] = wantScreens
 		raw, err = json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			t.Fatal(err)

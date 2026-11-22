@@ -734,9 +734,14 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 		return nil, err
 	}
 	appDoc := i.appearanceDocument()
+	navigation, err := i.screenNavigation(r, v)
+	if err != nil {
+		return nil, err
+	}
 	out := object{
 		"viewer":        viewer,
 		"capabilities":  i.requestCapabilitiesFor(r, v),
+		"navigation":    navigation,
 		"defaultSkinId": appDoc.skinID,
 		"branding":      appDoc.branding,
 		"force":         appDoc.force,

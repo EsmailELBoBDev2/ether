@@ -5081,6 +5081,7 @@ type PackStyle struct {
 | `frontendAdapters` | `[]FrontendAdapterMeta` | may be omitted (see validation for conditions) | FrontendAdapters declares protocol surfaces this plugin serves through Ether's generic adapter frontend (spec §6.5). |
 | `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) | LiveFeeds declares live event feeds this plugin serves under /ether/v1/live/{feed}/* when it declares the live_events capability. |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) | Setup declares guided setup steps for any plugin kind (§8). |
+| `screens` | `[]ScreenMeta` | may be omitted (see validation for conditions) | Screens declares generic top-level screens rendered natively by frontends such as Vela (spec A3). |
 
 
 ## Source: internal/plugins/contract.go#Contributes
@@ -5119,6 +5120,9 @@ type Contributes struct {
 	LiveFeeds []LiveFeedMeta `json:"liveFeeds,omitempty"`
 	// Setup declares guided setup steps for any plugin kind (§8).
 	Setup *SetupMeta `json:"setup,omitempty"`
+	// Screens declares generic top-level screens rendered natively by frontends
+	// such as Vela (spec A3).
+	Screens []ScreenMeta `json:"screens,omitempty"`
 }
 ``````
 
@@ -8018,6 +8022,13 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 			name = k.Key
 		}
 		lines = append(lines, "Adds a library: "+name)
+	}
+	for _, sc := range man.Ether.Contributes.Screens {
+		title := sc.Title
+		if strings.HasPrefix(title, "$t:") {
+			title = sc.ID
+		}
+		lines = append(lines, "Adds a screen: "+title)
 	}
 	for range p.Secrets {
 		lines = append(lines, "Stores an access token")
@@ -22535,6 +22546,12 @@ func contributesUseT(c Contributes) bool {
 			check(s.Hint)
 		}
 	}
+	for _, sc := range c.Screens {
+		check(sc.Title)
+		for _, sec := range sc.Sections {
+			check(sec.Title)
+		}
+	}
 	return any
 }
 ``````
@@ -22909,6 +22926,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	validateFrontendAdapters(m, add, label)
 	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
+	validateScreens(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")
@@ -33598,6 +33616,32 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.ruleConditions[].key` | `string` | true | {} |
 | `ether.contributes.ruleConditions[].label` | `string` | true | {"maxLength":40} |
 | `ether.contributes.ruleConditions[].operators` | `array` | false | {} |
+| `ether.contributes.screens` | `array` | false | {} |
+| `ether.contributes.screens[].feed` | `string` | false | {} |
+| `ether.contributes.screens[].frontends` | `array` | false | {} |
+| `ether.contributes.screens[].icon` | `string` | false | {} |
+| `ether.contributes.screens[].id` | `string` | false | {} |
+| `ether.contributes.screens[].sections` | `array` | false | {} |
+| `ether.contributes.screens[].sections[].entityKind` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].feed` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].id` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].league` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].leagues` | `array` | false | {} |
+| `ether.contributes.screens[].sections[].leagues[].abbr` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].leagues[].id` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].leagues[].logo` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].leagues[].name` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].limit` | `integer` | false | {} |
+| `ether.contributes.screens[].sections[].query` | `object` | false | {} |
+| `ether.contributes.screens[].sections[].query.category` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].query.favorites` | `boolean` | false | {} |
+| `ether.contributes.screens[].sections[].query.feed` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].query.league` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].query.state` | `array` | false | {} |
+| `ether.contributes.screens[].sections[].query.window` | `any` | false | {"enum":["today","week","recent"]} |
+| `ether.contributes.screens[].sections[].title` | `string` | false | {} |
+| `ether.contributes.screens[].sections[].type` | `any` | false | {"enum":["hero","events","table","schedule","leagues","entities"]} |
+| `ether.contributes.screens[].title` | `string` | false | {} |
 | `ether.contributes.slots` | `array` | false | {} |
 | `ether.contributes.slots[].action` | `string` | false | {"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"} |
 | `ether.contributes.slots[].key` | `string` | true | {} |
@@ -35133,6 +35177,125 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                   "key",
                   "label"
                 ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "screens": {
+              "items": {
+                "properties": {
+                  "feed": {
+                    "type": "string"
+                  },
+                  "frontends": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "sections": {
+                    "items": {
+                      "properties": {
+                        "entityKind": {
+                          "type": "string"
+                        },
+                        "feed": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "league": {
+                          "type": "string"
+                        },
+                        "leagues": {
+                          "items": {
+                            "properties": {
+                              "abbr": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "logo": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "query": {
+                          "properties": {
+                            "category": {
+                              "type": "string"
+                            },
+                            "favorites": {
+                              "type": "boolean"
+                            },
+                            "feed": {
+                              "type": "string"
+                            },
+                            "league": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "items": {
+                                "enum": [
+                                  "pre",
+                                  "in",
+                                  "post",
+                                  "delayed",
+                                  "postponed",
+                                  "canceled"
+                                ]
+                              },
+                              "type": "array"
+                            },
+                            "window": {
+                              "enum": [
+                                "today",
+                                "week",
+                                "recent"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "hero",
+                            "events",
+                            "table",
+                            "schedule",
+                            "leagues",
+                            "entities"
+                          ]
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
                 "type": "object"
               },
               "type": "array"
@@ -54084,6 +54247,7 @@ type FieldOption struct {
 | `frontendAdapters` | `[]FrontendAdapterMeta` | may be omitted (see validation for conditions) |  |
 | `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) |  |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) |  |
+| `screens` | `[]ScreenMeta` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#Contributes
@@ -54111,6 +54275,113 @@ type Contributes struct {
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
 	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
+	Screens          []ScreenMeta          `json:"screens,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#ScreenMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `title` | `string` | emitted (validation may require a value) |  |
+| `icon` | `string` | may be omitted (see validation for conditions) |  |
+| `feed` | `string` | may be omitted (see validation for conditions) |  |
+| `sections` | `[]ScreenSection` | emitted (validation may require a value) |  |
+| `frontends` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#ScreenMeta
+
+``````
+// ScreenMeta declares one generic top-level screen contributed by a plugin.
+type ScreenMeta struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	Icon      string          `json:"icon,omitempty"`
+	Feed      string          `json:"feed,omitempty"`
+	Sections  []ScreenSection `json:"sections"`
+	Frontends []string        `json:"frontends,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#ScreenSection.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | may be omitted (see validation for conditions) |  |
+| `type` | `string` | emitted (validation may require a value) | hero\|events\|table\|schedule\|leagues\|entities |
+| `title` | `string` | may be omitted (see validation for conditions) |  |
+| `feed` | `string` | may be omitted (see validation for conditions) |  |
+| `league` | `string` | may be omitted (see validation for conditions) |  |
+| `entityKind` | `string` | may be omitted (see validation for conditions) |  |
+| `limit` | `int` | may be omitted (see validation for conditions) |  |
+| `query` | `*ScreenEventQuery` | may be omitted (see validation for conditions) |  |
+| `leagues` | `[]ScreenLeague` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#ScreenSection
+
+``````
+// ScreenSection declares one generic section inside a contributed screen.
+type ScreenSection struct {
+	ID         string            `json:"id,omitempty"`
+	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
+	Title      string            `json:"title,omitempty"`
+	Feed       string            `json:"feed,omitempty"`
+	League     string            `json:"league,omitempty"`
+	EntityKind string            `json:"entityKind,omitempty"`
+	Limit      int               `json:"limit,omitempty"`
+	Query      *ScreenEventQuery `json:"query,omitempty"`
+	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#ScreenEventQuery.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `feed` | `string` | may be omitted (see validation for conditions) |  |
+| `state` | `[]string` | may be omitted (see validation for conditions) | pre\|in\|post\|delayed\|postponed\|canceled |
+| `league` | `string` | may be omitted (see validation for conditions) |  |
+| `favorites` | `bool` | may be omitted (see validation for conditions) |  |
+| `window` | `string` | may be omitted (see validation for conditions) | today\|week\|recent |
+| `category` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#ScreenEventQuery
+
+``````
+// ScreenEventQuery filters live events for an events, hero, or schedule section.
+type ScreenEventQuery struct {
+	Feed      string   `json:"feed,omitempty"`
+	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
+	League    string   `json:"league,omitempty"`
+	Favorites bool     `json:"favorites,omitempty"`
+	Window    string   `json:"window,omitempty"` // today|week|recent
+	Category  string   `json:"category,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#ScreenLeague.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#ScreenLeague
+
+``````
+// ScreenLeague optionally declares one static league filter chip on a leagues section.
+type ScreenLeague struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Abbr string `json:"abbr,omitempty"`
+	Logo string `json:"logo,omitempty"`
 }
 ``````
 
@@ -60241,6 +60512,51 @@ class KindLibraryDecl(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class ScreenEventQuery(TypedDict, total=False):
+    """Live event filter query for a screen section."""
+
+    feed: str
+    state: List[Literal["pre", "in", "post", "delayed", "postponed", "canceled"]]
+    league: str
+    favorites: bool
+    window: Literal["today", "week", "recent"]
+    category: str
+
+
+class ScreenLeague(TypedDict, total=False):
+    """Optional static league filter chip on a leagues section."""
+
+    id: str
+    name: str
+    abbr: str
+    logo: str
+
+
+class ScreenSection(TypedDict, total=False):
+    """One section declared inside a plugin screen."""
+
+    id: str
+    type: Literal["hero", "events", "table", "schedule", "leagues", "entities"]
+    title: str
+    feed: str
+    league: str
+    entityKind: str
+    limit: int
+    query: ScreenEventQuery
+    leagues: List[ScreenLeague]
+
+
+class ScreenMeta(TypedDict, total=False):
+    """One generic top-level screen contributed under contributes.screens."""
+
+    id: str
+    title: str
+    icon: str
+    feed: str
+    sections: List[ScreenSection]
+    frontends: List[str]
+
+
 class UsenetCheckResult(TypedDict, total=False):
     """Sampled Usenet article availability verdict for one NZB (usenet_check)."""
 
@@ -66165,6 +66481,50 @@ export interface Contributes {
   frontendAdapters?: FrontendAdapterMeta[];
   liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
+  screens?: ScreenMeta[];
+}
+
+export type ScreenSectionType = "hero" | "events" | "table" | "schedule" | "leagues" | "entities";
+
+export type ScreenEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
+
+export type ScreenEventWindow = "today" | "week" | "recent";
+
+export interface ScreenEventQuery {
+  feed?: string;
+  state?: ScreenEventState[];
+  league?: string;
+  favorites?: boolean;
+  window?: ScreenEventWindow;
+  category?: string;
+}
+
+export interface ScreenLeagueMeta {
+  id: string;
+  name: string;
+  abbr?: string;
+  logo?: string;
+}
+
+export interface ScreenSectionMeta {
+  id?: string;
+  type: ScreenSectionType;
+  title?: string;
+  feed?: string;
+  league?: string;
+  entityKind?: string;
+  limit?: number;
+  query?: ScreenEventQuery;
+  leagues?: ScreenLeagueMeta[];
+}
+
+export interface ScreenMeta {
+  id: string;
+  title: string;
+  icon?: string;
+  feed?: string;
+  sections: ScreenSectionMeta[];
+  frontends?: string[];
 }
 
 export interface LiveFeedMeta {

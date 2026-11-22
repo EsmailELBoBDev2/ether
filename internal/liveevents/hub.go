@@ -1362,6 +1362,33 @@ func (h *Hub) clearViewerSentHashes(viewerID int64) {
 	}
 }
 
+// ApplySpoilers returns viewer-scoped, spoiler-filtered clones of events
+// without invoking the watch enricher (callers that attach watch targets
+// separately, such as screens, use this to avoid duplicate watch matching).
+func (h *Hub) ApplySpoilers(ctx context.Context, viewer *core.Viewer, events []core.LiveEvent) []core.LiveEvent {
+	if len(events) == 0 {
+		return []core.LiveEvent{}
+	}
+	out := make([]core.LiveEvent, len(events))
+	for i, ev := range events {
+		out[i] = ev.Clone()
+	}
+	if h == nil || viewer == nil || viewer.ID <= 0 {
+		return out
+	}
+	spoilerFree, err := h.spoilers.SpoilerFree(ctx, viewer.ID)
+	if err != nil || !spoilerFree {
+		return out
+	}
+	for i := range out {
+		revealed, _ := h.spoilers.IsRevealed(ctx, viewer.ID, out[i].ID)
+		if !revealed {
+			out[i] = MaskEvent(out[i])
+		}
+	}
+	return out
+}
+
 func (h *Hub) prepareEventsForViewer(ctx context.Context, viewer *core.Viewer, events []core.LiveEvent) []core.LiveEvent {
 	if len(events) == 0 {
 		return []core.LiveEvent{}

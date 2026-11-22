@@ -53,6 +53,37 @@ func (a *App) buildLiveEvents() {
 		hub.SyncFeeds(ctx)
 	})
 	a.liveEvents = hub
+	if a.pluginsRT.screens != nil {
+		a.pluginsRT.screens.SetHub(liveEventsScreenHub{hub: hub})
+		reg := a.pluginsRT.screens.Registry()
+		hub.SetScreenFeedResolver(func(ctx context.Context, viewer *core.Viewer, screenID string) ([]liveevents.FeedRef, error) {
+			if reg == nil || viewer == nil {
+				return nil, nil
+			}
+			sc, ok, err := reg.FindScreen(ctx, viewer, "vela", screenID)
+			if err != nil || !ok {
+				return nil, err
+			}
+			seen := map[string]bool{}
+			var refs []liveevents.FeedRef
+			addFeed := func(feed string) {
+				if feed == "" || seen[feed] {
+					return
+				}
+				seen[feed] = true
+				refs = append(refs, liveevents.FeedRef{PluginID: sc.PluginID, FeedID: feed})
+			}
+			addFeed(sc.DefaultFeed)
+			for _, sec := range sc.Sections {
+				if sec.Feed != "" {
+					addFeed(sec.Feed)
+				} else if sec.Query != nil && sec.Query.Feed != "" {
+					addFeed(sec.Query.Feed)
+				}
+			}
+			return refs, nil
+		})
+	}
 	a.closers = append(a.closers, hub.Close)
 }
 

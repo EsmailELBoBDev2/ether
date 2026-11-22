@@ -363,6 +363,13 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		}
 		lines = append(lines, "Adds a library: "+name)
 	}
+	for _, sc := range man.Ether.Contributes.Screens {
+		title := sc.Title
+		if strings.HasPrefix(title, "$t:") {
+			title = sc.ID
+		}
+		lines = append(lines, "Adds a screen: "+title)
+	}
 	for range p.Secrets {
 		lines = append(lines, "Stores an access token")
 	}

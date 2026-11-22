@@ -120,6 +120,102 @@ func (c *reviewCollections) ListComplete(ctx context.Context, u *core.User, typ 
 	return c.withReviews(ctx, u, typ, out), nil
 }
 
+// ListOwnedComplete forwards the engine's non-franchise listing plus Year in
+// Review collections and reports whether TMDB franchises belong to typ, so
+// page-first collection endpoints never materialize every TMDB franchise.
+func (c *reviewCollections) ListOwnedComplete(ctx context.Context, u *core.User, typ core.MediaType) ([]core.Collection, bool, error) {
+	var out []core.Collection
+	var includeFranchises bool
+	if c.base != nil {
+		owned, ok := c.base.(interface {
+			ListOwnedComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, bool, error)
+		})
+		if !ok {
+			return nil, false, core.ErrNotAvailable
+		}
+		var err error
+		out, includeFranchises, err = owned.ListOwnedComplete(ctx, u, typ)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return c.withReviews(ctx, u, typ, out), includeFranchises, nil
+}
+
+// ListPage forwards page-first collection paging (Plex /collections,
+// /collection, /all?type=18) and appends the viewer's Year in Review
+// collections after the base listing without materializing every franchise.
+func (c *reviewCollections) ListPage(ctx context.Context, u *core.User, typ core.MediaType, offset, limit int) ([]core.Collection, int, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 0 {
+		limit = 500
+	}
+	reviews := c.withReviews(ctx, u, typ, nil)
+	if c.base == nil {
+		if limit == 0 || offset >= len(reviews) {
+			return nil, len(reviews), nil
+		}
+		end := min(offset+limit, len(reviews))
+		return reviews[offset:end], len(reviews), nil
+	}
+	if pager, ok := c.base.(interface {
+		ListPage(context.Context, *core.User, core.MediaType, int, int) ([]core.Collection, int, error)
+	}); ok {
+		page, baseTotal, err := pager.ListPage(ctx, u, typ, offset, limit)
+		if err != nil {
+			return nil, 0, err
+		}
+		total := baseTotal + len(reviews)
+		if limit > 0 && len(page) < limit && len(reviews) > 0 {
+			start := max(0, offset-baseTotal)
+			if start < len(reviews) {
+				rem := limit - len(page)
+				end := min(start+rem, len(reviews))
+				page = append(page, reviews[start:end]...)
+			}
+		}
+		return page, total, nil
+	}
+	out, err := c.base.List(ctx, u, typ)
+	if err != nil {
+		return nil, 0, err
+	}
+	out = append(out, reviews...)
+	total := len(out)
+	if limit == 0 || offset >= total {
+		return nil, total, nil
+	}
+	end := min(offset+limit, total)
+	return out[offset:end], total, nil
+}
+
+// FindVisible forwards existence probes to the underlying engine before
+// checking Year in Review collections, avoiding full franchise materialization.
+func (c *reviewCollections) FindVisible(ctx context.Context, u *core.User, typ core.MediaType, accept func(core.Collection) (bool, error)) (bool, error) {
+	if c.base != nil {
+		if finder, ok := c.base.(interface {
+			FindVisible(context.Context, *core.User, core.MediaType, func(core.Collection) (bool, error)) (bool, error)
+		}); ok {
+			found, err := finder.FindVisible(ctx, u, typ, accept)
+			if err != nil || found {
+				return found, err
+			}
+		}
+	}
+	for _, rev := range c.withReviews(ctx, u, typ, nil) {
+		if accept == nil {
+			return true, nil
+		}
+		yes, err := accept(rev)
+		if err != nil || yes {
+			return yes, err
+		}
+	}
+	return false, nil
+}
+
 func (c *reviewCollections) withReviews(ctx context.Context, u *core.User, typ core.MediaType, out []core.Collection) []core.Collection {
 	year := c.d.now().Year()
 	if c.d.now().Month() < time.December {

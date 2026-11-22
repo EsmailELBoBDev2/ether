@@ -360,7 +360,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		return a.catalog.RecentAirFiltered(ctx, typ, f, offset, limit)
-	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Franchises: a.catalog, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
 		return a.catalog.ResolveShowParents(ctx, keys)
 	}, Get: func(ctx context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
 		if a.episodeorder != nil {
@@ -645,6 +645,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		deps.PluginLibraries = adapters.AttachKindCatalog(context.Background(), adapters.KindCatalogDeps{
 			TitleInLibrary: func(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error) {
 				return a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
+			},
+			TitlesInLibrary: func(ctx context.Context, lib core.Library, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+				return a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
 			},
 			Libraries: a.libraries,
 			Logger:    a.log,
@@ -1054,10 +1057,17 @@ func (s *surfaceExperience) startCollage(viewID string, gen uint64, typ core.Med
 func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Viewer, device core.Device, keys []core.RatingKey) (map[core.RatingKey][]frontend.Image, error) {
 	out := make(map[core.RatingKey][]frontend.Image, len(keys))
 	var titleKeys []core.RatingKey
+	var franchiseKeys []core.RatingKey
 	seenDirect := map[core.RatingKey]bool{}
 	for _, k := range keys {
 		switch k.Kind() {
-		case core.KindCollection, core.KindSmart, core.KindPlaylist:
+		case core.KindCollection:
+			if seenDirect[k] {
+				continue
+			}
+			seenDirect[k] = true
+			franchiseKeys = append(franchiseKeys, k)
+		case core.KindSmart, core.KindPlaylist:
 			if seenDirect[k] {
 				continue
 			}
@@ -1074,6 +1084,47 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			}
 		default:
 			titleKeys = append(titleKeys, k)
+		}
+	}
+	if len(franchiseKeys) > 0 && s.artwork != nil {
+		cols, handled, err := s.PageArtworkCollections(ctx, viewer, franchiseKeys)
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+			handled = true
+			cols = nil
+			err = nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			for _, k := range franchiseKeys {
+				col, ok := cols[k]
+				if !ok {
+					continue
+				}
+				c := col
+				imgs, _, err := s.artwork.List(frontend.WithArtworkCollection(ctx, &c), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
+				if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				out[k] = imgs
+			}
+		} else {
+			for _, k := range franchiseKeys {
+				imgs, ok, err := s.ItemArtwork(ctx, viewer, device, k)
+				if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					out[k] = imgs
+				}
+			}
 		}
 	}
 	if len(titleKeys) == 0 {

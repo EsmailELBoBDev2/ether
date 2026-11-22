@@ -733,7 +733,10 @@ type ExternalRequest struct {
 // Limit defaults to 50; larger requests are capped at 500.
 type CollectionQuery struct {
 	// ExistsOnly stops after the first visible collection; Total is then 0 or 1.
-	ExistsOnly    bool
+	ExistsOnly bool
+	// NoTotal skips computing an exact total when the caller pages by cursor
+	// or limit+1 (e.g. Vela's continuation token).
+	NoTotal       bool
 	ViewID        string
 	Query         string
 	Types         []core.MediaType

@@ -39,7 +39,7 @@ const PerfGatePGEnv = "ETHER_PERF_GATE_PG"
 // Plex Web replays its own short sequence (gateSequence). Clients run in
 // perfharness.Clients() order, so Apple TV's playback writes follow the
 // second device that measures the first device's cached Home.
-var gateClients = []string{"plex-appletv", "plex-appletv second device", "plex-web", "infuse-jellyfin", "swiftfin", "emby-sdk", "silo-appletv", "stremio", "xtream", "console", "mcp", "plex-appletv playback"}
+var gateClients = []string{"plex-appletv", "plex-appletv second device", "plex-web", "infuse-jellyfin", "swiftfin", "emby-sdk", "silo-appletv", "vela", "stremio", "xtream", "console", "mcp", "plex-appletv playback"}
 
 // TestPerformanceGate fails when a request path scales with the library.
 // It builds the same synthetic household over a library of SmallScale and
@@ -368,7 +368,7 @@ func runPerfScale(t *testing.T, name string, scale perfharness.Scale) []*perfhar
 	ports := freePorts(t, 3)
 	if err = cfg.Update(func(c *config.Config) error {
 		c.SetupComplete = true
-		c.Frontends = map[string]config.Frontend{"plex": {Enabled: true}, "jellyfin": {Enabled: true}, "emby": {Enabled: true}, "silo": {Enabled: true}, "stremio": {Enabled: true}, "xtream": {Enabled: true}}
+		c.Frontends = map[string]config.Frontend{"plex": {Enabled: true}, "jellyfin": {Enabled: true}, "emby": {Enabled: true}, "silo": {Enabled: true}, "vela": {Enabled: true}, "stremio": {Enabled: true}, "xtream": {Enabled: true}}
 		c.FrontendPorts = map[string]int{"jellyfin": ports[0], "emby": ports[1], "silo": ports[2]}
 		c.Transcode.FFmpegPath = "/not-installed/ffmpeg"
 		c.Server.BindAddress = "127.0.0.1"

@@ -163,6 +163,28 @@ func ArtworkTitle(ctx context.Context, key core.RatingKey) (*core.Title, bool) {
 	return nil, false
 }
 
+type artworkCollectionKey struct{}
+
+// WithArtworkCollection carries a collection the caller already loaded,
+// authorized, and resolved fallback artwork for. Artwork listing must not
+// reload the collection or its members.
+func WithArtworkCollection(ctx context.Context, collection *core.Collection) context.Context {
+	if collection == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, artworkCollectionKey{}, collection)
+}
+
+// ArtworkCollection returns the preloaded collection stored by
+// WithArtworkCollection when it matches key.
+func ArtworkCollection(ctx context.Context, key core.RatingKey) (*core.Collection, bool) {
+	col, _ := ctx.Value(artworkCollectionKey{}).(*core.Collection)
+	if col != nil && col.Key == key {
+		return col, true
+	}
+	return nil, false
+}
+
 // ArtworkRows holds the titles an artwork request read as visibility rows:
 // the row, with the facts the viewer's policy reads, and no credits. Only a
 // request that never lists credited people's portraits (a grant of a

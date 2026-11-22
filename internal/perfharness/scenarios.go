@@ -119,7 +119,7 @@ const infuseFields = "DateCreated%2CEtag%2CGenres%2CMediaSources%2CAlternateMedi
 // Clients is every replayed client, in report order.
 func Clients() []Client {
 	return []Client{plexClient("plex-appletv", "Plex for Apple TV", "tvOS", "Apple TV"), plexSecondDevice(), plexClient("plex-android", "Plex for Android (TV)", "Android", "BRAVIA 4K VH21"), plexClient("plex-web", "Plex Web", "Chrome", "Windows"), plexPlayback(),
-		infuseJellyfin(), swiftfin(), embySDK(), infuseEmby(), moonfin(), siloAppleTV(), stremio(), console(), xtream(), mcpClient()}
+		infuseJellyfin(), swiftfin(), embySDK(), infuseEmby(), moonfin(), siloAppleTV(), vela(), stremio(), console(), xtream(), mcpClient()}
 }
 
 func plexHeaders(product, platform, device string) func(*session) http.Header {
@@ -597,6 +597,81 @@ func siloAppleTV() Client {
 			{Name: "series season 1 episodes", Class: classDetail, Path: "/api/v2/catalog/series/{seriesId}/seasons/1/episodes?still_width=720"},
 			{Name: "search people", Class: classSearch, Path: "/api/v2/catalog/people?limit=20&media_scope=video_with_episodes&q=star"},
 		}, siloLibrarySteps()...)}
+}
+
+func velaHeaders(s *session) http.Header {
+	h := http.Header{}
+	h.Set("Accept", "application/json")
+	h.Set("X-Vela-Device-Id", "etherperf-vela-"+s.Viewer.Username)
+	h.Set("X-Vela-Device-Name", "etherperf")
+	h.Set("X-Vela-Platform", "web")
+	if tok := s.vars["token"]; tok != "" {
+		h.Set("Authorization", "Bearer "+tok)
+	}
+	return h
+}
+
+func discoverVelaLibraries(vars map[string]string, body []byte) {
+	var r struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Kind string `json:"kind"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return
+	}
+	for _, it := range r.Items {
+		switch it.Kind {
+		case "movies":
+			if vars["movieLibrary"] == "" {
+				vars["movieLibrary"] = it.ID
+			}
+		case "shows":
+			if vars["seriesLibrary"] == "" {
+				vars["seriesLibrary"] = it.ID
+			}
+		}
+	}
+}
+
+func discoverVelaCollectionsCursor(vars map[string]string, body []byte) {
+	var r struct {
+		NextCursor string `json:"nextCursor"`
+	}
+	if json.Unmarshal(body, &r) == nil && r.NextCursor != "" {
+		vars["collectionsCursor"] = url.QueryEscape(r.NextCursor)
+	}
+}
+
+func vela() Client {
+	return Client{
+		Name:    "vela",
+		Surface: "vela",
+		Prefix:  "/vela/v0",
+		Headers: velaHeaders,
+		SignIn: &Step{
+			Name:   "auth/sign-in",
+			Class:  classSignIn,
+			Method: http.MethodPost,
+			Path:   "/auth/sign-in",
+			Body:   `{"idempotencyKey":"etherperf-vela-{username}","username":"{username}","password":"{password}","device":{"id":"etherperf-vela-{username}","name":"etherperf","platform":"web"}}`,
+			Discover: func(vars map[string]string, body []byte) {
+				var r struct {
+					AccessToken string `json:"accessToken"`
+				}
+				if json.Unmarshal(body, &r) == nil {
+					vars["token"] = r.AccessToken
+				}
+			},
+		},
+		Steps: []Step{
+			{Name: "libraries", Class: classHome, Path: "/libraries", Discover: discoverVelaLibraries},
+			{Name: "library movies collections", Class: classBrowse, Path: "/libraries/{movieLibrary}/collections?limit=100", Discover: discoverVelaCollectionsCursor},
+			{Name: "library movies collections p2", Class: classBrowse, Path: "/libraries/{movieLibrary}/collections?limit=100&cursor={collectionsCursor}"},
+			{Name: "library shows collections", Class: classBrowse, Path: "/libraries/{seriesLibrary}/collections?limit=100"},
+		},
+	}
 }
 
 var stremioMetaID = regexp.MustCompile(`"id"\s*:\s*"((?:tmdb:|tt)[^"]+)"`)

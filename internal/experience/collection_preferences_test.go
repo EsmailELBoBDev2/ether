@@ -165,3 +165,148 @@ func TestCollectionsExistenceStopsEarly(t *testing.T) {
 		t.Fatalf("page %+v err %v visits %d reads %d", page, err, visits, reads)
 	}
 }
+
+type pageFirstCollectionsFake struct {
+	core.Collections
+	owned  map[core.MediaType][]core.Collection
+	items  map[core.RatingKey][]core.Title
+	hasFr  bool
+	called string
+}
+
+func (f *pageFirstCollectionsFake) ListComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, error) {
+	f.called = "ListComplete"
+	return nil, errors.New("page-first collection listing must not call ListComplete")
+}
+func (f *pageFirstCollectionsFake) ListOwnedComplete(_ context.Context, _ *core.User, typ core.MediaType) ([]core.Collection, bool, error) {
+	return f.owned[typ], f.hasFr && typ == core.TypeMovie, nil
+}
+func (f *pageFirstCollectionsFake) Items(_ context.Context, _ *core.User, k core.RatingKey, offset, limit int) (core.Page, error) {
+	items := f.items[k]
+	if offset >= len(items) {
+		return core.Page{Total: len(items)}, nil
+	}
+	return core.Page{Items: items[offset:min(offset+limit, len(items))], Total: len(items)}, nil
+}
+
+type stubFranchiseStore struct {
+	franchises []core.Collection
+	visible    map[int]int
+}
+
+func (f *stubFranchiseStore) FranchiseTotal(context.Context) (int, error) {
+	return len(f.franchises), nil
+}
+func (f *stubFranchiseStore) FranchisesPage(_ context.Context, offset, limit int) ([]core.Collection, error) {
+	if offset >= len(f.franchises) {
+		return nil, nil
+	}
+	return f.franchises[offset:min(offset+limit, len(f.franchises))], nil
+}
+func (f *stubFranchiseStore) FranchisesCursor(_ context.Context, afterCount, afterID, limit int) ([]core.Collection, error) {
+	var out []core.Collection
+	for _, c := range f.franchises {
+		id := int(c.Key.TMDB())
+		if afterCount > 0 && (c.ChildCount > afterCount || (c.ChildCount == afterCount && id <= afterID)) {
+			continue
+		}
+		out = append(out, c)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+func (f *stubFranchiseStore) FranchisesSearch(ctx context.Context, _ string, afterCount, afterID, limit int) ([]core.Collection, error) {
+	return f.FranchisesCursor(ctx, afterCount, afterID, limit)
+}
+func (f *stubFranchiseStore) FranchiseVisibleCounts(_ context.Context, _ core.Filter, ids []int) (map[int]int, error) {
+	out := make(map[int]int, len(ids))
+	for _, id := range ids {
+		if n := f.visible[id]; n > 0 {
+			out[id] = n
+		}
+	}
+	return out, nil
+}
+func (f *stubFranchiseStore) FranchiseVisibleKeys(_ context.Context, _ core.Filter, ids []int) (map[int][]core.RatingKey, error) {
+	out := make(map[int][]core.RatingKey, len(ids))
+	for _, id := range ids {
+		for n := 0; n < f.visible[id]; n++ {
+			out[id] = append(out[id], core.MovieKey(int64(id*100+n)))
+		}
+	}
+	return out, nil
+}
+func (f *stubFranchiseStore) FranchisesInSmallFilter(context.Context, core.Filter, string, int, int) ([]core.Collection, bool, bool, error) {
+	return nil, false, false, nil
+}
+func (f *stubFranchiseStore) FranchiseSummaryBatch(_ context.Context, ids []int) (map[int]core.Collection, error) {
+	out := make(map[int]core.Collection, len(ids))
+	for _, c := range f.franchises {
+		out[int(c.Key.TMDB())] = c
+	}
+	return out, nil
+}
+func (f *stubFranchiseStore) FranchiseFallbackArt(context.Context, core.Filter, []int) (map[int][2]string, error) {
+	return nil, nil
+}
+func (f *stubFranchiseStore) HasActiveViewerRules(int64) bool { return false }
+
+func TestCollectionsPageFirstUsesOwnedAndFranchiseStore(t *testing.T) {
+	ctx := context.Background()
+	viewer := &core.User{ID: 1, IsOwner: true}
+	ownedKey := core.SmartKey(1)
+	cols := &pageFirstCollectionsFake{
+		owned: map[core.MediaType][]core.Collection{
+			core.TypeMovie: {{Key: ownedKey, Title: "Spotlight", Type: core.TypeMovie}},
+		},
+		items: map[core.RatingKey][]core.Title{
+			ownedKey: {{Key: core.MovieKey(1), Type: core.TypeMovie}},
+		},
+		hasFr: true,
+	}
+	frStore := &stubFranchiseStore{
+		franchises: []core.Collection{
+			{Key: core.CollectionKey(10), Title: "Franchise A", Type: core.TypeMovie, ChildCount: 4},
+			{Key: core.CollectionKey(20), Title: "Franchise B", Type: core.TypeMovie, ChildCount: 3},
+			{Key: core.CollectionKey(30), Title: "Franchise C", Type: core.TypeMovie, ChildCount: 2},
+		},
+		visible: map[int]int{10: 4, 20: 0, 30: 2}, // Franchise 20 has no visible released titles
+	}
+	s := &Service{d: ServiceDeps{
+		Active:      func(context.Context, int64) (*core.User, error) { return viewer, nil },
+		Libraries:   []Library{{ID: 1, Type: core.TypeMovie}},
+		Visibility:  Visibility{SectionFor: func(core.MediaType) (int, bool) { return 1, true }},
+		Collections: cols,
+		Franchises:  frStore,
+	}}
+
+	// Vela library collections path (ViewID set, NoTotal=true): owned comes first,
+	// Franchise 20 (0 visible) is skipped, Franchise 30 fills the page.
+	page, err := s.Collections(ctx, viewer, core.Device{}, frontend.CollectionQuery{
+		ViewID:  "1",
+		NoTotal: true,
+		Types:   []frontend.MediaType{core.TypeMovie},
+		Offset:  0,
+		Limit:   3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cols.called != "" {
+		t.Fatalf("unexpected fallback call %q", cols.called)
+	}
+	if len(page.Items) != 3 || page.Items[0].Key != ownedKey || page.Items[1].Key != core.CollectionKey(10) || page.Items[2].Key != core.CollectionKey(30) {
+		t.Fatalf("unexpected page items: %+v", page.Items)
+	}
+
+	// Jellyfin BoxSets path (no ViewID): offset 1 skips owned and returns franchises.
+	boxsets, err := s.Collections(ctx, viewer, core.Device{}, frontend.CollectionQuery{Offset: 1, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(boxsets.Items) != 2 || boxsets.Items[0].Key != core.CollectionKey(10) || boxsets.Items[1].Key != core.CollectionKey(30) {
+		t.Fatalf("unexpected boxsets page: %+v", boxsets.Items)
+	}
+}

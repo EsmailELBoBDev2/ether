@@ -16,13 +16,39 @@ const (
 	maxListLimit     = 500
 )
 
-func sliceBounds(total, offset, limit int) (int, int) {
+// FranchiseStore answers page-first TMDB franchise listing, set-based
+// visibility counting, metadata loading and fallback artwork from the indexed
+// catalog_franchises summary table so collection listings never walk every
+// franchise or hydrate titles and credits per candidate.
+type FranchiseStore interface {
+	FranchiseTotal(ctx context.Context) (int, error)
+	FranchisesPage(ctx context.Context, offset, limit int) ([]core.Collection, error)
+	FranchisesCursor(ctx context.Context, afterCount, afterID, limit int) ([]core.Collection, error)
+	FranchisesSearch(ctx context.Context, query string, afterCount, afterID, limit int) ([]core.Collection, error)
+	FranchiseVisibleCounts(ctx context.Context, f core.Filter, collectionIDs []int) (map[int]int, error)
+	FranchiseVisibleKeys(ctx context.Context, f core.Filter, collectionIDs []int) (map[int][]core.RatingKey, error)
+	FranchisesInSmallFilter(ctx context.Context, f core.Filter, query string, offset, limit int) (items []core.Collection, hasMore, usedDirect bool, err error)
+	FranchiseSummaryBatch(ctx context.Context, collectionIDs []int) (map[int]core.Collection, error)
+	FranchiseFallbackArt(ctx context.Context, f core.Filter, collectionIDs []int) (map[int][2]string, error)
+	HasActiveViewerRules(viewerID int64) bool
+}
+
+type ownedCompleteLister interface {
+	ListOwnedComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, bool, error)
+}
+
+func normalizeListLimit(limit int) int {
 	if limit <= 0 {
-		limit = defaultListLimit
+		return defaultListLimit
 	}
 	if limit > maxListLimit {
-		limit = maxListLimit
+		return maxListLimit
 	}
+	return limit
+}
+
+func sliceBounds(total, offset, limit int) (int, int) {
+	limit = normalizeListLimit(limit)
 	start := min(max(offset, 0), total)
 	end := total
 	if limit > 0 && limit < total-start {
@@ -51,12 +77,6 @@ func (s *Service) Collections(ctx context.Context, viewer *core.Viewer, _ core.D
 		}
 		requested[typ] = true
 	}
-	complete, ok := s.d.Collections.(interface {
-		ListComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, error)
-	})
-	if !ok {
-		return frontend.CollectionPage{}, core.ErrNotAvailable
-	}
 	published := map[core.MediaType]bool{}
 	if s.d.PluginLibraries != nil {
 		views, e := s.storedViews(ctx, v)
@@ -70,15 +90,32 @@ func (s *Service) Collections(ctx context.Context, viewer *core.Viewer, _ core.D
 		}
 	}
 
+	var allowedTypes []core.MediaType
 	seenTypes := map[core.MediaType]bool{}
-	seenKeys := map[core.RatingKey]bool{}
-	var visible []core.Collection
 	for _, lib := range s.libraries() {
 		typ := lib.Type
 		if (s.d.PluginLibraries != nil && !published[typ]) || (typ != core.TypeMovie && typ != core.TypeShow) || !SectionAllowed(v, lib.ID) || (len(requested) > 0 && !requested[typ]) || seenTypes[typ] {
 			continue
 		}
 		seenTypes[typ] = true
+		allowedTypes = append(allowedTypes, typ)
+	}
+
+	if page, ok, err := s.collectionsPageFirst(ctx, v, allowedTypes, q); err != nil {
+		return frontend.CollectionPage{}, err
+	} else if ok {
+		return page, nil
+	}
+
+	complete, ok := s.d.Collections.(interface {
+		ListComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, error)
+	})
+	if !ok {
+		return frontend.CollectionPage{}, core.ErrNotAvailable
+	}
+	seenKeys := map[core.RatingKey]bool{}
+	var visible []core.Collection
+	for _, typ := range allowedTypes {
 		if q.ExistsOnly {
 			finder, ok := s.d.Collections.(interface {
 				FindVisible(context.Context, *core.User, core.MediaType, func(core.Collection) (bool, error)) (bool, error)
@@ -108,7 +145,7 @@ func (s *Service) Collections(ctx context.Context, viewer *core.Viewer, _ core.D
 			if (q.Query != "" && !strings.Contains(strings.ToLower(c.Title), strings.ToLower(q.Query))) || c.Type != typ || seenKeys[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
 				continue
 			}
-			members, e := s.collectionItems(ctx, v, c.Key)
+			members, e := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
 			if e != nil {
 				return frontend.CollectionPage{}, e
 			}
@@ -187,6 +224,13 @@ func (s *Service) viewCollections(ctx context.Context, v *core.User, q frontend.
 			return frontend.CollectionPage{Items: []core.Collection{}, Total: 0}, nil
 		}
 	}
+
+	if page, ok, err := s.viewCollectionsPageFirst(ctx, v, typ, stored, q); err != nil {
+		return frontend.CollectionPage{}, err
+	} else if ok {
+		return page, nil
+	}
+
 	complete, ok := s.d.Collections.(interface {
 		ListComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, error)
 	})
@@ -209,7 +253,7 @@ func (s *Service) viewCollections(ctx context.Context, v *core.User, q frontend.
 		if (q.Query != "" && !strings.Contains(strings.ToLower(c.Title), strings.ToLower(q.Query))) || c.Type != typ || seenColKey[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
 			continue
 		}
-		members, err := s.collectionItems(ctx, v, c.Key)
+		members, err := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
 		if err != nil {
 			return frontend.CollectionPage{}, err
 		}
@@ -264,6 +308,631 @@ func (s *Service) viewCollections(ctx context.Context, v *core.User, q frontend.
 	}
 	start, end := sliceBounds(len(visible), q.Offset, q.Limit)
 	return frontend.CollectionPage{Items: visible[start:end], Total: len(visible)}, nil
+}
+
+// collectionsPageFirst serves Collections without ViewID by evaluating only
+// the small set of owner/built-in/ephemeral collections and paging TMDB
+// franchises directly from catalog_franchises with set-based visibility checks.
+func (s *Service) collectionsPageFirst(ctx context.Context, v *core.User, allowedTypes []core.MediaType, q frontend.CollectionQuery) (frontend.CollectionPage, bool, error) {
+	ownedLister, ok := s.d.Collections.(ownedCompleteLister)
+	if !ok || s.d.Franchises == nil {
+		return frontend.CollectionPage{}, false, nil
+	}
+	lowerQuery := strings.ToLower(strings.TrimSpace(q.Query))
+	seenKeys := map[core.RatingKey]bool{}
+	var ownedVisible []core.Collection
+	includeFranchises := false
+	for _, typ := range allowedTypes {
+		owned, hasFr, err := ownedLister.ListOwnedComplete(ctx, v, typ)
+		if errors.Is(err, core.ErrNotAvailable) {
+			return frontend.CollectionPage{}, false, nil
+		}
+		if err != nil {
+			return frontend.CollectionPage{}, true, err
+		}
+		if hasFr && typ == core.TypeMovie {
+			includeFranchises = true
+		}
+		for _, c := range owned {
+			if (lowerQuery != "" && !strings.Contains(strings.ToLower(c.Title), lowerQuery)) || c.Type != typ || seenKeys[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
+				continue
+			}
+			if q.ExistsOnly {
+				has, err := s.collectionHasVisibleMember(ctx, v, c)
+				if err != nil {
+					return frontend.CollectionPage{}, true, err
+				}
+				if has {
+					return frontend.CollectionPage{Total: 1}, true, nil
+				}
+				continue
+			}
+			members, err := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
+			if err != nil {
+				return frontend.CollectionPage{}, true, err
+			}
+			if len(members) == 0 {
+				continue
+			}
+			c.ChildCount = len(members)
+			seenKeys[c.Key] = true
+			ownedVisible = append(ownedVisible, c)
+		}
+	}
+	if !includeFranchises {
+		if q.ExistsOnly {
+			return frontend.CollectionPage{Total: 0}, true, nil
+		}
+		start, end := sliceBounds(len(ownedVisible), q.Offset, q.Limit)
+		return frontend.CollectionPage{Items: ownedVisible[start:end], Total: len(ownedVisible)}, true, nil
+	}
+	return s.combineOwnedAndFranchises(ctx, v, nil, ownedVisible, q)
+}
+
+// viewCollectionsPageFirst serves Collections scoped to a single library view
+// (e.g. Vela GET /vela/v0/libraries/:id/collections?limit=100) without walking
+// every franchise or hydrating titles and credits per candidate.
+func (s *Service) viewCollectionsPageFirst(ctx context.Context, v *core.User, typ core.MediaType, stored *core.Library, q frontend.CollectionQuery) (frontend.CollectionPage, bool, error) {
+	ownedLister, ok := s.d.Collections.(ownedCompleteLister)
+	if !ok || s.d.Franchises == nil {
+		return frontend.CollectionPage{}, false, nil
+	}
+	owned, includeFranchises, err := ownedLister.ListOwnedComplete(ctx, v, typ)
+	if errors.Is(err, core.ErrNotAvailable) {
+		return frontend.CollectionPage{}, false, nil
+	}
+	if err != nil {
+		return frontend.CollectionPage{}, true, err
+	}
+	lowerQuery := strings.ToLower(strings.TrimSpace(q.Query))
+	type candidate struct {
+		col     core.Collection
+		members []core.Title
+	}
+	var candidates []candidate
+	var allKeys []core.RatingKey
+	seenMemberKey := map[core.RatingKey]bool{}
+	seenColKey := map[core.RatingKey]bool{}
+	for _, c := range owned {
+		if (lowerQuery != "" && !strings.Contains(strings.ToLower(c.Title), lowerQuery)) || c.Type != typ || seenColKey[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
+			continue
+		}
+		members, err := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
+		if err != nil {
+			return frontend.CollectionPage{}, true, err
+		}
+		if len(members) == 0 {
+			continue
+		}
+		seenColKey[c.Key] = true
+		candidates = append(candidates, candidate{col: c, members: members})
+		for _, m := range members {
+			if !seenMemberKey[m.Key] {
+				seenMemberKey[m.Key] = true
+				allKeys = append(allKeys, m.Key)
+			}
+		}
+	}
+	var allowedInLib map[core.RatingKey]bool
+	scopedToLib := false
+	if stored != nil && stored.ID != core.LibraryMovies && stored.ID != core.LibraryShows && len(allKeys) > 0 && s.d.LibraryMembers != nil {
+		var ok bool
+		allowedInLib, _, ok, err = s.d.LibraryMembers(ctx, stored.ID, allKeys)
+		if err != nil {
+			return frontend.CollectionPage{}, true, err
+		}
+		scopedToLib = ok
+	}
+	var ownedVisible []core.Collection
+	for _, cand := range candidates {
+		count := 0
+		for _, m := range cand.members {
+			if m.Type != typ {
+				continue
+			}
+			if scopedToLib && !allowedInLib[m.Key] {
+				continue
+			}
+			count++
+		}
+		if count == 0 {
+			continue
+		}
+		c := cand.col
+		c.ChildCount = count
+		ownedVisible = append(ownedVisible, c)
+		if q.ExistsOnly {
+			return frontend.CollectionPage{Total: 1}, true, nil
+		}
+	}
+	if !includeFranchises || typ != core.TypeMovie {
+		if q.ExistsOnly {
+			return frontend.CollectionPage{Total: 0}, true, nil
+		}
+		start, end := sliceBounds(len(ownedVisible), q.Offset, q.Limit)
+		return frontend.CollectionPage{Items: ownedVisible[start:end], Total: len(ownedVisible)}, true, nil
+	}
+	return s.combineOwnedAndFranchises(ctx, v, stored, ownedVisible, q)
+}
+
+func (s *Service) combineOwnedAndFranchises(ctx context.Context, v *core.User, stored *core.Library, ownedVisible []core.Collection, q frontend.CollectionQuery) (frontend.CollectionPage, bool, error) {
+	offset := max(q.Offset, 0)
+	limit := normalizeListLimit(q.Limit)
+	ownedN := len(ownedVisible)
+	var out []core.Collection
+	if !q.ExistsOnly && offset < ownedN {
+		end := min(offset+limit, ownedN)
+		out = append(out, ownedVisible[offset:end]...)
+	}
+	frOffset := max(0, offset-ownedN)
+	frNeed := limit - len(out)
+	if q.ExistsOnly {
+		frOffset, frNeed = 0, 1
+	}
+	frItems, frTotal, fits, err := s.pageFranchises(ctx, v, stored, q.Query, frOffset, frNeed, q.ExistsOnly, q.NoTotal)
+	if err != nil {
+		return frontend.CollectionPage{}, true, err
+	}
+	if !fits {
+		return frontend.CollectionPage{}, false, nil
+	}
+	if q.ExistsOnly {
+		if frTotal > 0 {
+			return frontend.CollectionPage{Total: 1}, true, nil
+		}
+		return frontend.CollectionPage{Total: 0}, true, nil
+	}
+	out = append(out, frItems...)
+	return frontend.CollectionPage{Items: out, Total: ownedN + frTotal}, true, nil
+}
+
+// franchiseScope builds the SQL filter and optional union of movie filter
+// libraries governing which franchise movies v may see in stored (or across
+// all allowed movie libraries when stored is nil).
+func (s *Service) franchiseScope(ctx context.Context, v *core.User, stored *core.Library) (base core.Filter, extraLibs []core.Library, anyAllowed, fits bool, err error) {
+	base = core.Filter{Type: core.TypeMovie, LocalOnly: true}
+	if stored != nil {
+		if stored.ID != core.LibraryMovies && stored.ID != core.LibraryShows {
+			base = s.libraryBrowseFilter(ctx, v, *stored, base)
+		}
+	} else {
+		unrestricted, libs := s.movieSectionLibraries(ctx, v)
+		if !unrestricted {
+			if len(libs) == 0 {
+				return core.Filter{}, nil, false, true, nil
+			}
+			if len(libs) == 1 {
+				base = s.libraryBrowseFilter(ctx, v, libs[0], base)
+			} else {
+				extraLibs = libs
+			}
+		}
+	}
+	var ex LibraryPageExclusions
+	if s.d.PageExclusions != nil {
+		ex = s.d.PageExclusions(ctx, v, core.TypeMovie)
+		if ex.Err != nil {
+			return core.Filter{}, nil, false, false, ex.Err
+		}
+	}
+	f, ok, none := viewerBrowseFilter(base, v, ex, core.TypeMovie)
+	if !ok {
+		return core.Filter{}, nil, false, false, nil
+	}
+	if none {
+		return core.Filter{}, nil, false, true, nil
+	}
+	return f, extraLibs, true, true, nil
+}
+
+func (s *Service) franchiseFilterUnrestricted(v *core.User, f core.Filter, extraLibs []core.Library, query string) bool {
+	if len(extraLibs) > 0 || strings.TrimSpace(query) != "" {
+		return false
+	}
+	if f.CollectionMembers != 0 || len(f.ExtraRules) > 0 || f.ExtraFallback != "" || len(f.CatalogueSources) > 0 {
+		return false
+	}
+	if f.MaxContentRating != "" || f.MinContentRating != "" || len(f.ContentRatings) > 0 || len(f.ExcludeContentRatings) > 0 {
+		return false
+	}
+	if len(f.ExcludeGenres) > 0 || len(f.ExcludeKeywords) > 0 || len(f.ExcludeKeys) > 0 {
+		return false
+	}
+	if len(f.IncludeCollectionNames) > 0 || len(f.ExcludeCollectionNames) > 0 {
+		return false
+	}
+	if f.HiddenMovieSeq != 0 || f.GatePolicy != "" {
+		return false
+	}
+	if v != nil && s.d.Franchises.HasActiveViewerRules(v.ID) {
+		return false
+	}
+	return true
+}
+
+func (s *Service) franchiseVisibleCounts(ctx context.Context, v *core.User, base core.Filter, extraLibs []core.Library, ids []int) (map[int]int, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(extraLibs) == 0 {
+		return s.d.Franchises.FranchiseVisibleCounts(ctx, base, ids)
+	}
+	seen := make(map[int]map[core.RatingKey]struct{}, len(ids))
+	for _, lib := range extraLibs {
+		lf := s.libraryBrowseFilter(ctx, v, lib, base)
+		byFr, err := s.d.Franchises.FranchiseVisibleKeys(ctx, lf, ids)
+		if err != nil {
+			return nil, err
+		}
+		for cid, keys := range byFr {
+			set := seen[cid]
+			if set == nil {
+				set = make(map[core.RatingKey]struct{}, len(keys))
+				seen[cid] = set
+			}
+			for _, k := range keys {
+				set[k] = struct{}{}
+			}
+		}
+	}
+	counts := make(map[int]int, len(seen))
+	for cid, set := range seen {
+		counts[cid] = len(set)
+	}
+	return counts, nil
+}
+
+func (s *Service) pageFranchises(ctx context.Context, v *core.User, stored *core.Library, query string, offset, limit int, existsOnly, noTotal bool) (items []core.Collection, total int, fits bool, err error) {
+	base, extraLibs, anyAllowed, ok, err := s.franchiseScope(ctx, v, stored)
+	if err != nil || !ok {
+		return nil, 0, ok, err
+	}
+	if !anyAllowed {
+		return nil, 0, true, nil
+	}
+
+	// Fast path 1: unrestricted viewer and built-in movie library.
+	// Reads O(page_size) rows from catalog_franchises and an O(1) total.
+	if !existsOnly && s.franchiseFilterUnrestricted(v, base, extraLibs, query) {
+		var frTotal int
+		if !noTotal {
+			frTotal, err = s.d.Franchises.FranchiseTotal(ctx)
+			if err != nil {
+				return nil, 0, true, err
+			}
+		}
+		if limit <= 0 {
+			return nil, frTotal, true, nil
+		}
+		page, err := s.d.Franchises.FranchisesPage(ctx, offset, limit)
+		if err != nil {
+			return nil, 0, true, err
+		}
+		if len(page) == 0 {
+			return nil, frTotal, true, nil
+		}
+		ids := make([]int, 0, len(page))
+		for _, c := range page {
+			if s.d.Visibility.CollectionAllowed(v, &c) {
+				ids = append(ids, int(c.Key.TMDB()))
+			}
+		}
+		counts, err := s.d.Franchises.FranchiseVisibleCounts(ctx, base, ids)
+		if err != nil {
+			return nil, 0, true, err
+		}
+		kept := make([]core.Collection, 0, len(page))
+		for _, c := range page {
+			if !s.d.Visibility.CollectionAllowed(v, &c) {
+				continue
+			}
+			n := counts[int(c.Key.TMDB())]
+			if n <= 0 {
+				continue
+			}
+			c.ChildCount = n
+			kept = append(kept, c)
+		}
+		// Top up if any candidate on the page had only unreleased movies.
+		if len(kept) < limit && len(page) == limit {
+			last := page[len(page)-1]
+			afterCount, afterID := last.ChildCount, int(last.Key.TMDB())
+			batchSize := min(max((limit-len(kept))*2, 64), 400)
+			for len(kept) < limit {
+				batch, err := s.d.Franchises.FranchisesCursor(ctx, afterCount, afterID, batchSize)
+				if err != nil {
+					return nil, 0, true, err
+				}
+				if len(batch) == 0 {
+					break
+				}
+				last = batch[len(batch)-1]
+				afterCount, afterID = last.ChildCount, int(last.Key.TMDB())
+				bIDs := make([]int, 0, len(batch))
+				for _, c := range batch {
+					if s.d.Visibility.CollectionAllowed(v, &c) {
+						bIDs = append(bIDs, int(c.Key.TMDB()))
+					}
+				}
+				bCounts, err := s.d.Franchises.FranchiseVisibleCounts(ctx, base, bIDs)
+				if err != nil {
+					return nil, 0, true, err
+				}
+				for _, c := range batch {
+					if !s.d.Visibility.CollectionAllowed(v, &c) {
+						continue
+					}
+					n := bCounts[int(c.Key.TMDB())]
+					if n <= 0 {
+						continue
+					}
+					c.ChildCount = n
+					kept = append(kept, c)
+					if len(kept) >= limit {
+						break
+					}
+				}
+				if len(batch) < batchSize {
+					break
+				}
+			}
+		}
+		if noTotal {
+			frTotal = offset + len(kept)
+		}
+		return kept, frTotal, true, nil
+	}
+
+	// Fast path 2: collection-backed library (CollectionMembers != 0).
+	// collections_members(spec_id) is directly indexed and bounded by the
+	// collection's own size, so one grouped query answers the page without
+	// walking catalog_franchises.
+	canSmallFilter := len(extraLibs) == 0 && len(base.IncludeCollectionNames) == 0 && len(base.ExcludeCollectionNames) == 0 &&
+		(base.CollectionMembers != 0 || len(base.ExtraRules) > 0 || base.ExtraFallback != "" || len(base.CatalogueSources) > 0)
+	trySmallFilter := func() ([]core.Collection, int, bool, error) {
+		reqLimit := limit
+		if existsOnly || reqLimit <= 0 {
+			reqLimit = 1
+		}
+		reqOffset := offset
+		if existsOnly {
+			reqOffset = 0
+		}
+		direct, hasMore, usedDirect, err := s.d.Franchises.FranchisesInSmallFilter(ctx, base, query, reqOffset, reqLimit)
+		if err != nil || !usedDirect {
+			return nil, 0, false, err
+		}
+		kept := make([]core.Collection, 0, len(direct))
+		for _, c := range direct {
+			if s.d.Visibility.CollectionAllowed(v, &c) {
+				kept = append(kept, c)
+			}
+		}
+		if existsOnly {
+			if len(kept) > 0 {
+				return nil, 1, true, nil
+			}
+			return nil, 0, true, nil
+		}
+		tot := reqOffset + len(kept)
+		if hasMore {
+			tot = reqOffset + len(kept) + 1
+		}
+		if limit <= 0 {
+			kept = nil
+		}
+		return kept, tot, true, nil
+	}
+	if canSmallFilter && base.CollectionMembers != 0 {
+		if direct, tot, used, err := trySmallFilter(); err != nil {
+			return nil, 0, true, err
+		} else if used {
+			return direct, tot, true, nil
+		}
+	}
+
+	// Fast path 3: keyset cursor walk over catalog_franchises with one
+	// set-based visibility query per candidate batch. Handles large filtered
+	// libraries (such as country exclusions), rating caps, search queries and
+	// multiple filter libraries in O(page_size) batches.
+	if existsOnly {
+		offset, limit, noTotal = 0, 1, true
+	}
+	target := offset + limit
+	if !noTotal && !existsOnly {
+		target = offset + limit + 1
+	}
+	batchSize := min(max(limit*2, 128), 400)
+	if existsOnly {
+		batchSize = 64
+	}
+	trimmedQuery := strings.TrimSpace(query)
+	afterCount, afterID := 0, 0
+	matched, checked, batches := 0, 0, 0
+	triedSmallFilter := base.CollectionMembers != 0
+	var kept []core.Collection
+	if !existsOnly && limit > 0 {
+		kept = make([]core.Collection, 0, limit)
+	}
+	for {
+		var batch []core.Collection
+		if trimmedQuery != "" {
+			batch, err = s.d.Franchises.FranchisesSearch(ctx, trimmedQuery, afterCount, afterID, batchSize)
+		} else {
+			batch, err = s.d.Franchises.FranchisesCursor(ctx, afterCount, afterID, batchSize)
+		}
+		if err != nil {
+			return nil, 0, true, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		batches++
+		checked += len(batch)
+		last := batch[len(batch)-1]
+		afterCount, afterID = last.ChildCount, int(last.Key.TMDB())
+		ids := make([]int, 0, len(batch))
+		for _, c := range batch {
+			if s.d.Visibility.CollectionAllowed(v, &c) && (c.OwnerUserID == 0 || c.OwnerUserID == v.ID) {
+				ids = append(ids, int(c.Key.TMDB()))
+			}
+		}
+		if len(ids) > 0 {
+			counts, err := s.franchiseVisibleCounts(ctx, v, base, extraLibs, ids)
+			if err != nil {
+				return nil, 0, true, err
+			}
+			for _, c := range batch {
+				if !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
+					continue
+				}
+				n := counts[int(c.Key.TMDB())]
+				if n <= 0 {
+					continue
+				}
+				c.ChildCount = n
+				if !existsOnly && matched >= offset && len(kept) < limit {
+					kept = append(kept, c)
+				}
+				matched++
+				if matched >= target {
+					break
+				}
+			}
+		}
+		if matched >= target || len(batch) < batchSize {
+			break
+		}
+		// If two cursor batches had low hit rate on a filtered catalogue
+		// library, try grouping the filter's matching movies directly so an
+		// ultra-sparse filter does not walk every franchise.
+		if canSmallFilter && !triedSmallFilter && batches == 2 && matched*4 < checked {
+			triedSmallFilter = true
+			if direct, tot, used, err := trySmallFilter(); err != nil {
+				return nil, 0, true, err
+			} else if used {
+				return direct, tot, true, nil
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, 0, true, err
+		}
+	}
+	if existsOnly {
+		if matched > 0 {
+			return nil, 1, true, nil
+		}
+		return nil, 0, true, nil
+	}
+	tot := matched
+	if noTotal {
+		tot = offset + len(kept)
+	} else if matched >= target {
+		tot = offset + len(kept) + 1
+	}
+	return kept, tot, true, nil
+}
+
+// PageArtworkCollections authorizes and loads a page of TMDB franchise keys
+// (KindCollection) with fallback artwork in bounded set-based queries,
+// avoiding per-collection Get + member hydration on Vela's SignPage path.
+// handled is false when the host has no FranchiseStore or exclusions exceed
+// SQL bounds, signaling the caller to fall back per key.
+func (s *Service) PageArtworkCollections(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) (collections map[core.RatingKey]core.Collection, handled bool, err error) {
+	if s.d.Franchises == nil || len(keys) == 0 {
+		return nil, false, nil
+	}
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, true, err
+	}
+	ids := make([]int, 0, len(keys))
+	seen := make(map[int]bool, len(keys))
+	for _, k := range keys {
+		if k.Kind() != core.KindCollection {
+			continue
+		}
+		id := int(k.TMDB())
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return map[core.RatingKey]core.Collection{}, true, nil
+	}
+	base, extraLibs, anyAllowed, fits, err := s.franchiseScope(ctx, v, nil)
+	if err != nil || !fits {
+		return nil, false, err
+	}
+	if !anyAllowed {
+		return map[core.RatingKey]core.Collection{}, true, nil
+	}
+	summaries, err := s.d.Franchises.FranchiseSummaryBatch(ctx, ids)
+	if err != nil {
+		return nil, false, err
+	}
+	checkIDs := make([]int, 0, len(summaries))
+	for _, id := range ids {
+		col, ok := summaries[id]
+		if !ok || !s.d.Visibility.CollectionAllowed(v, &col) {
+			continue
+		}
+		checkIDs = append(checkIDs, id)
+	}
+	if len(checkIDs) == 0 {
+		return map[core.RatingKey]core.Collection{}, true, nil
+	}
+	counts, err := s.franchiseVisibleCounts(ctx, v, base, extraLibs, checkIDs)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make(map[core.RatingKey]core.Collection, len(counts))
+	var needArt []int
+	for _, id := range checkIDs {
+		n := counts[id]
+		if n <= 0 {
+			continue
+		}
+		col := summaries[id]
+		col.ChildCount = n
+		if col.PosterPath == "" || col.BackdropPath == "" {
+			needArt = append(needArt, id)
+		}
+		out[col.Key] = col
+	}
+	if len(needArt) > 0 {
+		applyFallback := func(art map[int][2]string) {
+			for id, paths := range art {
+				k := core.CollectionKey(int64(id))
+				col, ok := out[k]
+				if !ok {
+					continue
+				}
+				if col.PosterPath == "" && paths[0] != "" {
+					col.PosterPath = paths[0]
+				}
+				if col.BackdropPath == "" && paths[1] != "" {
+					col.BackdropPath = paths[1]
+				}
+				out[k] = col
+			}
+		}
+		if len(extraLibs) == 0 {
+			if art, err := s.d.Franchises.FranchiseFallbackArt(ctx, base, needArt); err == nil {
+				applyFallback(art)
+			}
+		} else {
+			for _, lib := range extraLibs {
+				lf := s.libraryBrowseFilter(ctx, v, lib, base)
+				if art, err := s.d.Franchises.FranchiseFallbackArt(ctx, lf, needArt); err == nil {
+					applyFallback(art)
+				}
+			}
+		}
+	}
+	return out, true, nil
 }
 
 func (s *Service) libraryCollectionItems(ctx context.Context, v *core.User, device core.Device, library *Library, stored *core.Library, q frontend.ItemQuery) (core.Page, error) {

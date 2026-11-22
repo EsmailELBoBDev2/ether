@@ -104,6 +104,7 @@ type plan struct {
 	resolvedMember bool   // archive member already resolved by stream.Engine
 	archiveFormat  string // kindArchiveRaw: "rar", "7z", or "zip"
 	archiveConcat  bool   // kindArchiveRaw: vols are byte-split pieces of one stream
+	shiftedOffsets bool   // volumes address non-zero yEnc offsets (skip vault head cache)
 
 	// Encrypted plans use verified ciphertext extents, plus a plaintext layout
 	// for scheduling. Keys exist only in this bounded, in-memory release plan.
@@ -338,6 +339,9 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 		}
 		if len(vol.Files) == 0 {
 			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s) has no file header: %w", k+1, pf.Name(), ErrCorrupt)
+		}
+		if (k == 0 && rarVolumeIsContinuation(vol)) || (k > 0 && rarVolumeClaimsFirst(vol)) || (vol.Number >= 0 && vol.Number != k) {
+			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s) has unexpected volume number %d: %w", k+1, pf.Name(), vol.Number, errArchivePartsOutOfOrder)
 		}
 		f := vol.Files[0]
 		if f.Name != p.member || (k > 0 && !f.SplitBefore) {

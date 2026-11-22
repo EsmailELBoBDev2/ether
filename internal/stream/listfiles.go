@@ -141,6 +141,7 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 		return nil // best-effort per file; never cancel siblings on one miss
 	})
 
+	snap := snapshotArchiveOrder(rel)
 	for j, idx := range toProbe {
 		pf := rel.files[idx]
 		seg := heads[j]
@@ -174,13 +175,21 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 				}
 			}
 		}
-		if obf && seg != nil {
+		if obf && seg != nil && seg.begin == 0 {
 			if yn := path.Base(strings.ReplaceAll(seg.name, `\`, "/")); yn != "" && yn != "." {
 				if info := nzb.Classify(yn); info.Kind != nzb.KindUnknown && !nzb.IsObfuscated(yn) {
 					rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = yn, info, false })
 					pf.setName(yn)
 					out[idx].Path = rel.stableFileName(pf)
 				}
+			}
+		}
+	}
+	if reverted := b.guardArchiveRename(probeCtx, snap); len(reverted) > 0 {
+		for _, idx := range toProbe {
+			pf := rel.files[idx]
+			if reverted[pf] {
+				out[idx].Path = rel.stableFileName(pf)
 			}
 		}
 	}

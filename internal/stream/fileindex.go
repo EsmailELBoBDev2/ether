@@ -32,6 +32,7 @@ type postedFile struct {
 	size         int64 // exact decoded size, valid if known
 	known        bool  // size learned from a consistent yEnc header
 	distrustSize bool  // per-article =ybegin sizes contradicted extents or each other
+	fixedSlots   bool  // slot count is fixed to listed NZB segments (byte-split chunk)
 	assumed      int64 // size assumed by a volume layout until known
 	name         string
 }
@@ -96,6 +97,39 @@ func (pf *postedFile) setAssumed(n int64) {
 	pf.mu.Lock()
 	pf.assumed = n
 	pf.mu.Unlock()
+}
+
+// trimUnlistedTail drops phantom empty tail slots appended when a byte-split
+// archive chunk's =ybegin header reported the whole archive's part count and
+// pins the slot count to the segments actually listed in the NZB.
+func (pf *postedFile) trimUnlistedTail(end int64) {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	listed := pf.file.SegmentCount()
+	if listed > 0 && len(pf.slots) > listed {
+		pf.slots = pf.slots[:listed]
+		n := 0
+		for _, a := range pf.anchors {
+			if a < listed {
+				pf.anchors[n] = a
+				n++
+			}
+		}
+		pf.anchors = pf.anchors[:n]
+	}
+	pf.fixedSlots = true
+	pf.distrustSize = true
+	pf.known = false
+	pf.size = 0
+	if end > 0 {
+		pf.assumed = end
+	}
+}
+
+func (pf *postedFile) hasFixedSlots() bool {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	return pf.fixedSlots
 }
 
 // partLocked is the uniform part size to estimate with.
@@ -311,11 +345,13 @@ func (pf *postedFile) learn(i int, begin, end, fileSize int64, total int) (chang
 	if !pf.validFileMetaLocked(i, begin, end, fileSize, 0, total) {
 		fileSize, total = 0, 0
 	}
-	if listed := pf.file.SegmentCount(); total > len(pf.slots) && total <= listed*2+maxTailGrowth {
-		// The post has more parts than the NZB lists: the tail is missing.
-		// The total comes from an untrusted yEnc header; an absurd one must
-		// not allocate an enormous slot table.
-		pf.slots = append(pf.slots, make([]slot, total-len(pf.slots))...)
+	if !pf.fixedSlots {
+		if listed := pf.file.SegmentCount(); total > len(pf.slots) && total <= listed*2+maxTailGrowth {
+			// The post has more parts than the NZB lists: the tail is missing.
+			// The total comes from an untrusted yEnc header; an absurd one must
+			// not allocate an enormous slot table.
+			pf.slots = append(pf.slots, make([]slot, total-len(pf.slots))...)
+		}
 	}
 	if fileSize > 0 && pf.known && pf.size != fileSize {
 		pf.size, pf.known, pf.distrustSize = 0, false, true

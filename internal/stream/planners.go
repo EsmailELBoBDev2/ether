@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"path"
 	"sort"
@@ -151,29 +152,41 @@ func (b *builder) planPlainRaw(ctx context.Context, pf *postedFile) (*plan, erro
 // volumes with verified sizes so kindstream.openContainerOverVolumes can
 // extract a compressed or solid non-video member using the shared archive stack.
 func (b *builder) planRawArchiveVolumes(ctx context.Context, vols []*postedFile, format, memberName string, concat bool) (*plan, error) {
-	if err := b.heads(ctx, vols); err != nil {
-		return nil, err
+	return b.planRawArchiveVolumesOffsets(ctx, vols, nil, nil, format, memberName, concat)
+}
+
+func (b *builder) planRawArchiveVolumesOffsets(ctx context.Context, vols []*postedFile, baseOff, chunkLen []int64, format, memberName string, concat bool) (*plan, error) {
+	if baseOff == nil {
+		if err := b.heads(ctx, vols); err != nil {
+			return nil, err
+		}
 	}
 	info := make([]volInfo, len(vols))
 	verified := make([]bool, len(vols))
 	var total int64
 	for k, pf := range vols {
-		if !pf.SizeKnown() {
-			last := pf.numSlots() - 1
-			ls, err := b.e.segment(ctx, b.rel, pf, last, b.prio, b.fo)
-			if err != nil {
-				return nil, err
+		var base, s int64
+		if baseOff != nil {
+			base = baseOff[k]
+			s = chunkLen[k]
+		} else {
+			if !pf.SizeKnown() {
+				last := pf.numSlots() - 1
+				ls, err := b.e.segment(ctx, b.rel, pf, last, b.prio, b.fo)
+				if err != nil {
+					return nil, err
+				}
+				pf.learn(last, ls.begin, ls.end(), ls.end(), 0)
 			}
-			pf.learn(last, ls.begin, ls.end(), ls.end(), 0)
+			s = pf.Size()
 		}
-		s := pf.Size()
 		if s <= 0 {
 			return nil, fmt.Errorf("stream: %s archive volume %s is empty: %w", format, pf.Name(), ErrCorrupt)
 		}
 		if s > math.MaxInt64-total {
 			return nil, fmt.Errorf("stream: %s archive volume sizes overflow: %w", format, ErrCorrupt)
 		}
-		info[k] = volInfo{size: s, dataSize: s}
+		info[k] = volInfo{size: base + s, dataOff: base, dataSize: s}
 		verified[k] = true
 		total += s
 	}
@@ -182,6 +195,7 @@ func (b *builder) planRawArchiveVolumes(ctx context.Context, vols []*postedFile,
 	p.rawNonVideo = true
 	p.archiveFormat = format
 	p.archiveConcat = concat
+	p.shiftedOffsets = baseOff != nil
 	return p, p.init()
 }
 
@@ -234,6 +248,30 @@ func (b *builder) planPlain(ctx context.Context, pf *postedFile) (*plan, error) 
 // planSplit maps a plain split (.001, .002 ...) of a video. Split sets are
 // rare and carry no internal totals, so every volume's size is learned.
 func (b *builder) planSplit(ctx context.Context, vols []*postedFile) (*plan, error) {
+	seg0, err := b.e.segment(ctx, b.rel, vols[0], 0, b.prio, b.fo)
+	if err != nil {
+		return nil, err
+	}
+	if seg0.begin != 0 || isRARFormat(archive.Detect(seg0.data)) {
+		_, nv := b.nonVideoArchiveHint()
+		ord, err := b.orderRARVolumes(ctx, vols, orderRAROpts{
+			splitSet:        true,
+			checkLast:       true,
+			checkStreamable: !nv,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if ord.kind == volumeOrderConcat {
+			return b.planConcatRAROffsets(ctx, ord.vols, ord.baseOff, ord.chunkLen)
+		}
+		if ord.v0 != nil {
+			if ord.baseOff != nil {
+				return b.planRARShifted(ctx, ord.vols, ord.baseOff, ord.chunkLen)
+			}
+			return b.planRAROrdered(ctx, ord.vols)
+		}
+	}
 	if err := b.heads(ctx, vols); err != nil {
 		return nil, err
 	}
@@ -299,21 +337,38 @@ func (b *builder) planSplit(ctx context.Context, vols []*postedFile) (*plan, err
 // that was byte-split into plain numbered volumes (.rar.001/.rar.002 or
 // .001/.002 where only the first volume carries a RAR header).
 func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan, error) {
-	if err := b.heads(ctx, vols); err != nil {
-		return nil, err
+	return b.planConcatRAROffsets(ctx, vols, nil, nil)
+}
+
+func (b *builder) planConcatRAROffsets(ctx context.Context, vols []*postedFile, baseOff, chunkLen []int64) (*plan, error) {
+	if baseOff == nil {
+		if err := b.heads(ctx, vols); err != nil {
+			return nil, err
+		}
 	}
 	av := make([]archive.Volume, len(vols))
 	info := make([]volInfo, len(vols))
 	verified := make([]bool, len(vols))
+	sizes := make([]int64, len(vols))
 	var total int64
 	for k, pf := range vols {
-		s := pf.Size()
+		var base, s int64
+		var r io.ReaderAt
+		if baseOff != nil {
+			base = baseOff[k]
+			s = chunkLen[k]
+			r = offsetReaderAt{r: b.reader(ctx, pf), base: base, size: s}
+		} else {
+			s = pf.Size()
+			r = b.reader(ctx, pf)
+		}
 		if s < 0 || s > math.MaxInt64-total {
 			return nil, fmt.Errorf("stream: split rar size overflows: %w", ErrCorrupt)
 		}
-		av[k] = archive.Volume{R: b.reader(ctx, pf), Size: s}
-		info[k] = volInfo{size: s}
+		av[k] = archive.Volume{R: r, Size: s}
+		info[k] = volInfo{size: base + s}
 		verified[k] = true
+		sizes[k] = s
 		total += s
 	}
 	v, err := archive.ReadRARVolume(archive.NewMultiReader(av), total, b.rarOptionsFor(ctx, vols[0], 0))
@@ -337,10 +392,12 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 		}
 	} else {
 		m = b.chooseMember(members)
-		if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
-			return nil, err
-		} else if p != nil {
-			return p, nil
+		if baseOff == nil {
+			if p, err := b.tryNested(ctx, vols, members, m, true); err != nil {
+				return nil, err
+			} else if p != nil {
+				return p, nil
+			}
 		}
 		if m == nil {
 			return nil, fmt.Errorf("%w: rar %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
@@ -352,21 +409,29 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 		}
 		if err := m.Streamable(); err != nil {
 			if nv && canHandOffRawArchive(m, err) {
-				return b.planRawArchiveVolumes(ctx, vols, "rar", m.Name, true)
+				return b.planRawArchiveVolumesOffsets(ctx, vols, baseOff, chunkLen, "rar", m.Name, true)
 			}
 			return nil, fmt.Errorf("stream: split rar %s: %s: %w", vols[0].Name(), m.Name, err)
 		}
-		resolved, err := resolveConcat([]archive.Member{*m}, vols)
+		resolved, err := resolveConcatSizes([]archive.Member{*m}, sizes)
 		if err != nil {
 			return nil, err
 		}
 		rm := resolved[0]
+		if baseOff != nil {
+			for i := range rm.Extents {
+				rm.Extents[i].Offset += baseOff[rm.Extents[i].Volume]
+			}
+		}
 		volInfos := append([]volInfo(nil), info...)
 		if rm.Encryption != nil {
 			p, err := b.encryptedPlan(ctx, kindRAR, &rm, vols, volInfos)
-			if err == nil && nv {
-				p.rawNonVideo = true
-				p.resolvedMember = true
+			if err == nil {
+				p.shiftedOffsets = baseOff != nil
+				if nv {
+					p.rawNonVideo = true
+					p.resolvedMember = true
+				}
 			}
 			return p, err
 		}
@@ -388,6 +453,7 @@ func (b *builder) planConcatRAR(ctx context.Context, vols []*postedFile) (*plan,
 		p.member = m.Name
 		p.rawNonVideo = nv
 		p.resolvedMember = nv
+		p.shiftedOffsets = baseOff != nil
 		if singlePerVol {
 			return p, p.init()
 		}
@@ -618,6 +684,49 @@ func trailingRARNumber(name string) int {
 
 // planRAR maps the main video (or non-video member) inside a RAR set.
 func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error) {
+	_, nv := b.nonVideoArchiveHint()
+	if !nv {
+		if err := b.checkCachedRAR(ctx, candidate{kind: nzb.KindRAR, files: vols}); err != nil {
+			return nil, err
+		}
+	}
+	ord, err := b.orderRARVolumes(ctx, vols, orderRAROpts{
+		checkLast:       true,
+		checkStreamable: !nv,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if ord.kind == volumeOrderConcat {
+		return b.planConcatRAROffsets(ctx, ord.vols, ord.baseOff, ord.chunkLen)
+	}
+	if ord.baseOff != nil {
+		return b.planRARShifted(ctx, ord.vols, ord.baseOff, ord.chunkLen)
+	}
+	return b.planRAROrdered(ctx, ord.vols)
+}
+
+func (b *builder) planRARShifted(ctx context.Context, vols []*postedFile, baseOff, chunkLen []int64) (*plan, error) {
+	parsed := make([]*archive.RARVolume, len(vols))
+	err := b.parallel(ctx, len(vols), func(ctx context.Context, k int) error {
+		r := offsetReaderAt{r: b.reader(ctx, vols[k]), base: baseOff[k], size: chunkLen[k]}
+		v, err := archive.ReadRARVolume(r, chunkLen[k], b.rarOptionsFor(ctx, vols[k], 0))
+		if err != nil {
+			return fmt.Errorf("stream: rar volume %d (%s): %w", k+1, vols[k].Name(), err)
+		}
+		if err := b.checkRARVolume(v); err != nil {
+			return err
+		}
+		parsed[k] = v
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return b.rarFromVolumesOffsets(ctx, vols, parsed, baseOff, chunkLen)
+}
+
+func (b *builder) planRAROrdered(ctx context.Context, vols []*postedFile) (*plan, error) {
 	if _, nv := b.nonVideoArchiveHint(); nv {
 		if len(vols) == 1 {
 			if err := b.heads(ctx, vols[:1]); err != nil {
@@ -630,9 +739,6 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 			return b.rarFromVolumes(ctx, vols, []*archive.RARVolume{v0})
 		}
 		return b.rarFullScan(ctx, vols)
-	}
-	if err := b.checkCachedRAR(ctx, candidate{kind: nzb.KindRAR, files: vols}); err != nil {
-		return nil, err
 	}
 	n := len(vols)
 	if _, ok := b.rel.doc.EpisodeHint(); ok && n > 1 {
@@ -745,6 +851,9 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 			return nil, err
 		}
 		if hasMovieHint && rarVideoFileCount(v.Files) > 1 {
+			return nil, nil
+		}
+		if (k > 0 && rarVolumeClaimsFirst(v)) || (v.Number >= 0 && v.Number != k) {
 			return nil, nil
 		}
 		if len(v.Files) == 0 || v.Files[0].Name != main.Name || !v.Files[0].SplitBefore {
@@ -863,10 +972,18 @@ func (b *builder) rarFullScan(ctx context.Context, vols []*postedFile) (*plan, e
 	if err != nil {
 		return nil, err
 	}
+	vols, parsed, err = reorderParsedRARVolumes(vols, parsed)
+	if err != nil {
+		return nil, err
+	}
 	return b.rarFromVolumes(ctx, vols, parsed)
 }
 
 func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed []*archive.RARVolume) (*plan, error) {
+	return b.rarFromVolumesOffsets(ctx, vols, parsed, nil, nil)
+}
+
+func (b *builder) rarFromVolumesOffsets(ctx context.Context, vols []*postedFile, parsed []*archive.RARVolume, baseOff, chunkLen []int64) (*plan, error) {
 	members, err := archive.ComposeRAR(parsed)
 	if err != nil {
 		return nil, fmt.Errorf("stream: rar %s: %w", vols[0].Name(), err)
@@ -881,10 +998,12 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 		}
 	} else {
 		m = b.chooseMember(members)
-		if p, err := b.tryNested(ctx, vols, members, m, false); err != nil {
-			return nil, err
-		} else if p != nil {
-			return p, nil
+		if baseOff == nil {
+			if p, err := b.tryNested(ctx, vols, members, m, false); err != nil {
+				return nil, err
+			} else if p != nil {
+				return p, nil
+			}
 		}
 		if m == nil {
 			return nil, fmt.Errorf("%w: rar %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
@@ -896,26 +1015,44 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 		}
 		if err := m.Streamable(); err != nil {
 			if nv && canHandOffRawArchive(m, err) {
-				return b.planRawArchiveVolumes(ctx, vols, "rar", m.Name, false)
+				return b.planRawArchiveVolumesOffsets(ctx, vols, baseOff, chunkLen, "rar", m.Name, false)
 			}
 			return nil, fmt.Errorf("stream: rar %s: %s: %w", vols[0].Name(), m.Name, err)
 		}
 		info := make([]volInfo, len(vols))
 		verified := make([]bool, len(vols))
 		for k := range vols {
-			info[k] = volInfo{size: vols[k].Size()}
+			if baseOff != nil {
+				info[k] = volInfo{size: baseOff[k] + chunkLen[k]}
+			} else {
+				info[k] = volInfo{size: vols[k].Size()}
+			}
 			verified[k] = true
 		}
 		if m.Encryption != nil {
-			for _, x := range m.Extents {
-				if x.Volume >= 0 && x.Volume < len(vols) {
-					info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
+			encMember := *m
+			if baseOff != nil {
+				encMember.Extents = append([]archive.Extent(nil), m.Extents...)
+				for i := range encMember.Extents {
+					x := &encMember.Extents[i]
+					if x.Volume >= 0 && x.Volume < len(vols) {
+						x.Offset += baseOff[x.Volume]
+					}
+				}
+			} else {
+				for _, x := range m.Extents {
+					if x.Volume >= 0 && x.Volume < len(vols) {
+						info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
+					}
 				}
 			}
-			p, err := b.encryptedPlan(ctx, kindRAR, m, vols, info)
-			if err == nil && nv {
-				p.rawNonVideo = true
-				p.resolvedMember = true
+			p, err := b.encryptedPlan(ctx, kindRAR, &encMember, vols, info)
+			if err == nil {
+				p.shiftedOffsets = baseOff != nil
+				if nv {
+					p.rawNonVideo = true
+					p.resolvedMember = true
+				}
 			}
 			return p, err
 		}
@@ -926,13 +1063,20 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 			if info[x.Volume].dataSize != 0 {
 				return nil, fmt.Errorf("stream: rar member %s has two extents in volume %d: %w", m.Name, x.Volume, ErrUnsupported)
 			}
-			info[x.Volume].dataOff, info[x.Volume].dataSize = x.Offset, x.Size
-			info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
+			off := x.Offset
+			if baseOff != nil {
+				off += baseOff[x.Volume]
+			}
+			info[x.Volume].dataOff, info[x.Volume].dataSize = off, x.Size
+			if baseOff == nil {
+				info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
+			}
 		}
 		p := newPlan(b.rel, kindRAR, path.Base(m.Name), m.Size, vols, info, verified)
 		p.member = m.Name
 		p.rawNonVideo = nv
 		p.resolvedMember = nv
+		p.shiftedOffsets = baseOff != nil
 		return p, p.init()
 	}
 	p, err := plan(m)
@@ -1781,6 +1925,7 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 			set = b.rel.loadPar2(ctx, b.prio, b.fo, idx)
 		}
 	}
+	snap := snapshotArchiveOrder(b.rel)
 	named := map[*postedFile]bool{}
 	type rarVol struct {
 		pf     *postedFile
@@ -1788,8 +1933,10 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 		number int // -1 unknown
 	}
 	var rars []rarVol
+	probeByPF := make(map[*postedFile]probe, len(unknown))
 	for i, pf := range unknown {
 		pr := probes[i]
+		probeByPF[pf] = pr
 		if pr.err != nil || pr.seg == nil {
 			continue
 		}
@@ -1804,11 +1951,13 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 			named[pf] = true
 			continue
 		}
-		if yn := path.Base(strings.ReplaceAll(pr.seg.name, `\`, "/")); yn != "" && yn != "." {
-			if info := nzb.Classify(yn); info.Kind != nzb.KindUnknown && !nzb.IsObfuscated(yn) {
-				b.rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = yn, info, false })
-				pf.setName(yn)
-				continue
+		if pr.seg.begin == 0 {
+			if yn := path.Base(strings.ReplaceAll(pr.seg.name, `\`, "/")); yn != "" && yn != "." {
+				if info := nzb.Classify(yn); info.Kind != nzb.KindUnknown && !nzb.IsObfuscated(yn) {
+					b.rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = yn, info, false })
+					pf.setName(yn)
+					continue
+				}
 			}
 		}
 		if pr.seg.begin != 0 {
@@ -1857,6 +2006,32 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 					pf.setName(base)
 					named[pf] = true
 				}
+			}
+		}
+	}
+	if reverted := b.guardArchiveRename(ctx, snap); len(reverted) > 0 {
+		for pf := range reverted {
+			delete(named, pf)
+			b.rel.infoMu.RLock()
+			isUnknown := nzb.Classify(pf.file.Name).Kind == nzb.KindUnknown
+			b.rel.infoMu.RUnlock()
+			if !isUnknown {
+				continue
+			}
+			pr := probeByPF[pf]
+			if pr.err != nil || pr.seg == nil || pr.seg.begin != 0 {
+				continue
+			}
+			if f := archive.Detect(pr.seg.data); isRARFormat(f) {
+				num := -1
+				if v, err := b.readCachedRARVolume(ctx, pf, pr.seg.data); err == nil {
+					if v.Number >= 0 {
+						num = v.Number
+					} else if v.First {
+						num = 0
+					}
+				}
+				rars = append(rars, rarVol{pf: pf, format: f, number: num})
 			}
 		}
 	}

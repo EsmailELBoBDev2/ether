@@ -27,6 +27,9 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	// search_tsv exists only on PostgreSQL (SQLite searches plugin_item_fts),
+	// so a cluster's dump restored on a standalone server skips it.
+	store.RegisterLocalColumn("plugin_items", "search_tsv")
 	// Migration 9: persist each item's content-rating enforcement level
 	// (contentrating.Level, 0 = unrated) so a viewer's MaxContentRating is
 	// applied in SQL by Browse instead of by walking the library in memory.

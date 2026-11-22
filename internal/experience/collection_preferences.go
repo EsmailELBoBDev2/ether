@@ -366,14 +366,14 @@ func (s *Service) collectionsPageFirst(ctx context.Context, v *core.User, allowe
 				}
 				continue
 			}
-			members, err := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
+			has, total, err := s.collectionVisibleProbe(ctx, v, c)
 			if err != nil {
 				return frontend.CollectionPage{}, true, err
 			}
-			if len(members) == 0 {
+			if !has {
 				continue
 			}
-			c.ChildCount = len(members)
+			c.ChildCount = total
 			seenKeys[c.Key] = true
 			ownedVisible = append(ownedVisible, c)
 		}
@@ -435,6 +435,19 @@ func (s *Service) viewCollectionsPageFirst(ctx context.Context, v *core.User, ty
 				candidates = append(candidates, candidate{col: c, counted: true})
 				continue
 			}
+		}
+		if stored == nil || stored.ID == core.LibraryMovies || stored.ID == core.LibraryShows {
+			has, total, err := s.collectionVisibleProbe(ctx, v, c)
+			if err != nil {
+				return frontend.CollectionPage{}, true, err
+			}
+			if !has {
+				continue
+			}
+			seenColKey[c.Key] = true
+			c.ChildCount = total
+			candidates = append(candidates, candidate{col: c, counted: true})
+			continue
 		}
 		members, err := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
 		if err != nil {
@@ -1110,6 +1123,41 @@ func (s *Service) libraryCollectionItems(ctx context.Context, v *core.User, devi
 
 // collectionHasVisibleMember reads bounded pages and stops at the first member
 // the viewer can see, without calculating a child count.
+// collectionVisibleProbe reports whether c has a member v may see, reading
+// only until the first one, and the collection's member total. It never loads
+// every member, so a listing can show large collections cheaply.
+func (s *Service) collectionVisibleProbe(ctx context.Context, v *core.User, c core.Collection) (bool, int, error) {
+	total := -1
+	for offset := 0; ; {
+		page, err := s.d.Collections.Items(ctx, v, c.Key, offset, 32)
+		if err != nil {
+			return false, 0, err
+		}
+		if total < 0 {
+			total = page.Total
+		}
+		var batch []core.Title
+		if c.Upcoming {
+			batch = s.d.Visibility.UpcomingItems(ctx, v, page.Items, time.Now)
+		} else {
+			batch, err = s.allowTitles(ctx, v, page.Items)
+			if err != nil {
+				return false, 0, err
+			}
+		}
+		if len(batch) > 0 {
+			return true, total, nil
+		}
+		offset += len(page.Items)
+		if offset >= page.Total || len(page.Items) == 0 {
+			return false, total, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return false, 0, err
+		}
+	}
+}
+
 func (s *Service) collectionHasVisibleMember(ctx context.Context, v *core.User, c core.Collection) (bool, error) {
 	for offset := 0; ; {
 		page, err := s.d.Collections.Items(ctx, v, c.Key, offset, 32)

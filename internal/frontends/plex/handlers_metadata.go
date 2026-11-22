@@ -1391,9 +1391,7 @@ func (s *Server) sectionCollections(w http.ResponseWriter, r *http.Request, sec 
 	// Catalogue collections are typed by movie or show and belong to the
 	// built-in libraries. A plugin library has none of them.
 	if !hasFilter && s.collections() != nil && sec.PluginID == "" {
-		if pager, ok := s.collections().(interface {
-			ListPage(context.Context, *frontend.User, frontend.MediaType, int, int) ([]frontend.Collection, int, error)
-		}); ok {
+		if pager, ok := s.collections().(frontend.CollectionPager); ok {
 			page, total, err := pager.ListPage(ctx, pr.User, sec.Type, offset, size)
 			if err != nil {
 				s.writeErr(w, r, err)
@@ -1438,9 +1436,7 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 	pr := FromContext(ctx)
 	mc := libraryContainer()
 	if s.collections() != nil {
-		pager, hasPager := s.collections().(interface {
-			ListPage(context.Context, *frontend.User, frontend.MediaType, int, int) ([]frontend.Collection, int, error)
-		})
+		pager, hasPager := s.collections().(frontend.CollectionPager)
 		remaining := defaultUnpagedLimit
 		if pr.HasPage {
 			remaining = pr.Size

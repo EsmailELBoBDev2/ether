@@ -203,6 +203,12 @@ type LibraryFacetCollections interface {
 	LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field, order string, page PageQuery) (FacetCollectionPage, error)
 }
 
+// CollectionPager is an optional Collections capability returning one page
+// of a library type's collections plus the total, without listing them all.
+type CollectionPager interface {
+	ListPage(ctx context.Context, user *User, typ MediaType, offset, limit int) ([]Collection, int, error)
+}
+
 // PluginLibraryRowsReader is an optional Experience capability returning the
 // Recommended tab shelves for a plugin library.
 type PluginLibraryRowsReader interface {

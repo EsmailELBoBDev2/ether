@@ -2,7 +2,11 @@ package liveevents
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -757,5 +761,240 @@ func TestLiveEventForChannelGuideFreeFallbackAndFavoriteTieBreak(t *testing.T) {
 	_, refNBC, err := matcher.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-nbc")
 	if err != nil || refNBC != nil {
 		t.Fatalf("ch-nbc = (%+v, %v), want nil", refNBC, err)
+	}
+}
+
+func TestWatchMatcherExcludesUnhealthyAndFallsBackToUnavailable(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+
+	ev := core.LiveEvent{
+		ID:     "demo:sports:game-1",
+		Feed:   "sports",
+		Start:  now.UTC().Format(time.RFC3339),
+		Status: core.LiveEventStatus{State: core.LiveEventStateIn},
+		Competitors: []core.LiveEventCompetitor{
+			{ID: "a", Name: "Metro Lions", Abbr: "MLI"},
+			{ID: "b", Name: "Bay Tigers", Abbr: "BTI"},
+		},
+		Broadcasts: []core.LiveEventBroadcast{{Name: "ESPN", Kind: "tv"}},
+	}
+
+	// 1. Healthy + unhealthy match (even when unhealthy has higher confidence):
+	//    unhealthy channel is excluded and only healthy target is returned with available omitted.
+	targets := matchEventToCandidates(ev, []GuideCandidate{
+		{
+			ChannelID: "ch-dead-hq", ChannelName: "ESPN",
+			Title: "Metro Lions vs Bay Tigers", Genres: []string{"Sports"}, Live: true, Unhealthy: true,
+		},
+		{
+			ChannelID: "ch-live-ok", ChannelName: "Sports Backup",
+			Title: "Metro Lions vs Bay Tigers", Genres: []string{"Sports"}, Live: true, Unhealthy: false,
+		},
+	})
+	if len(targets) != 1 || targets[0].ChannelID != "ch-live-ok" {
+		t.Fatalf("healthy+unhealthy = %+v, want only ch-live-ok", targets)
+	}
+	if targets[0].Available != nil || !targets[0].IsAvailable() {
+		t.Fatalf("healthy target should omit Available: %+v", targets[0])
+	}
+
+	// 2. Only unhealthy matches exist -> returned with available=false on wire.
+	unavail := matchEventToCandidates(ev, []GuideCandidate{
+		{
+			ChannelID: "ch-dead-1", ChannelName: "ESPN",
+			Title: "Metro Lions vs Bay Tigers", Genres: []string{"Sports"}, Live: true, Unhealthy: true,
+		},
+		{
+			ChannelID: "ch-dead-2", ChannelName: "Sports Alt",
+			Title: "Metro Lions vs Bay Tigers", Genres: []string{"Sports"}, Live: true, Unhealthy: true,
+		},
+	})
+	if len(unavail) != 2 {
+		t.Fatalf("only-unhealthy len = %d, want 2: %+v", len(unavail), unavail)
+	}
+	for _, tgt := range unavail {
+		if tgt.Available == nil || *tgt.Available || tgt.IsAvailable() {
+			t.Fatalf("unavailable fallback target must set Available=false: %+v", tgt)
+		}
+	}
+	raw, err := json.Marshal(unavail[0])
+	if err != nil {
+		t.Fatalf("marshal unavailable target: %v", err)
+	}
+	if !strings.Contains(string(raw), `"available":false`) {
+		t.Fatalf("expected wire field \"available\":false, got %s", raw)
+	}
+
+	// 3. Unhealthy Live TV channel + playable plugin stream -> excludes unhealthy channel.
+	evWithStream := ev
+	evWithStream.Broadcasts = append(evWithStream.Broadcasts, core.LiveEventBroadcast{
+		Name: "Direct Feed", Kind: "stream", URL: "plugin://sports/stream/game-1",
+	})
+	streamTargets := matchEventToCandidates(evWithStream, []GuideCandidate{
+		{
+			ChannelID: "ch-dead-1", ChannelName: "ESPN",
+			Title: "Metro Lions vs Bay Tigers", Genres: []string{"Sports"}, Live: true, Unhealthy: true,
+		},
+	})
+	if len(streamTargets) != 1 || streamTargets[0].Kind != core.WatchTargetKindPlugin || !streamTargets[0].IsAvailable() {
+		t.Fatalf("unhealthy channel + playable plugin stream = %+v, want only plugin stream", streamTargets)
+	}
+
+	// 4. sortWatchTargets always orders healthy targets before unavailable targets regardless of confidence.
+	mixed := []core.WatchTarget{
+		{Kind: core.WatchTargetKindChannel, ChannelID: "ch-unavail", Name: "A", Confidence: 0.99, Live: true, Available: boolPtr(false)},
+		{Kind: core.WatchTargetKindChannel, ChannelID: "ch-avail", Name: "Z", Confidence: 0.50, Live: false},
+	}
+	sortWatchTargets(mixed)
+	if mixed[0].ChannelID != "ch-avail" || mixed[1].ChannelID != "ch-unavail" {
+		t.Fatalf("sortWatchTargets order = %+v, want healthy first", mixed)
+	}
+
+	// 5. A6 LiveEventForChannel ignores an unhealthy channel candidate.
+	guide := &fakeGuideSource{
+		rev: "g1:h1",
+		currentByChan: map[string]*GuideCandidate{
+			"ch-dead": {
+				ChannelID: "ch-dead", ChannelName: "ESPN",
+				Title: "Metro Lions vs Bay Tigers", Genres: []string{"Sports"}, Live: true, Unhealthy: true,
+			},
+		},
+		progKeyByChan: map[string]string{"ch-dead": "ch-dead|1|2|Lions"},
+	}
+	m := NewWatchMatcher(WatchMatcherOptions{
+		Guide:        guide,
+		ActiveEvents: &fakeActiveEvents{events: []core.LiveEvent{ev}, rev: "ev1"},
+		Now:          func() time.Time { return now },
+	})
+	if _, ref, err := m.LiveEventForChannel(ctx, &core.User{ID: 1}, "ch-dead"); err != nil || ref != nil {
+		t.Fatalf("LiveEventForChannel on unhealthy candidate = (%+v, %v), want nil", ref, err)
+	}
+}
+
+func TestWatchMatcherHealthRevisionInvalidationAndCacheBound(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	baseNow := time.Date(2026, 11, 22, 19, 0, 0, 0, time.UTC)
+	var clockNano atomic.Int64
+	clockNano.Store(baseNow.UnixNano())
+	nowFn := func() time.Time { return time.Unix(0, clockNano.Load()).UTC() }
+
+	// Seed a channel and an active cooldown in livetv_source_history before livetv.New loads it.
+	ch := livetv.Channel{
+		ID: "ch-espn", Number: "40", Name: "ESPN HD",
+		Kind: "iptv", Enabled: true, SourceID: "s1", GuideID: "espn.1",
+		StreamURL: "https://example.invalid/espn.m3u8",
+	}
+	cb, _ := json.Marshal(ch)
+	if _, err := db.ExecContext(ctx, `INSERT INTO livetv_channels(id, data) VALUES(?, ?)`, ch.ID, string(cb)); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+	prog := livetv.Programme{
+		ID:        "espn.1-live",
+		ChannelID: "espn.1",
+		Start:     baseNow.Add(-10 * time.Minute),
+		End:       baseNow.Add(2 * time.Hour),
+		Item:      livetv.Item{Title: "Metro Sharks vs Harbor Seals", Genres: []string{"Sports"}},
+	}
+	pb, _ := json.Marshal(prog)
+	if _, err := db.ExecContext(ctx, `INSERT INTO livetv_programmes(source_id, channel_id, start_ms, end_ms, data) VALUES(?,?,?,?,?)`,
+		"s1", "espn.1", prog.Start.UnixMilli(), prog.End.UnixMilli(), string(pb)); err != nil {
+		t.Fatalf("insert programme: %v", err)
+	}
+	// Seed a persisted 1-failure cooldown ending at baseNow+15s for ch-espn's playlist input.
+	ltvSeed, err := livetv.New(livetv.Options{DB: db, Now: nowFn})
+	if err != nil {
+		t.Fatalf("livetv.New seed: %v", err)
+	}
+	statuses, err := ltvSeed.StreamSourceStatuses(ctx, ch.ID)
+	if err != nil || len(statuses) != 1 {
+		t.Fatalf("StreamSourceStatuses = (%+v, %v)", statuses, err)
+	}
+	srcID := statuses[0].ID
+	ltvSeed.Close()
+
+	// Derive the exact sourceHistory key format (stableID(channelID, src.ID, src.URL)) via a second open after writing history.
+	histKeySum := sha256.Sum256([]byte(ch.ID + "\x00" + srcID + "\x00" + ch.StreamURL))
+	histKey := hex.EncodeToString(histKeySum[:10])
+	hist := livetv.SourceHistory{
+		Key:          histKey,
+		ChannelID:    ch.ID,
+		SourceID:     srcID,
+		Updated:      baseNow,
+		Failures:     1,
+		OpenFailures: 1,
+		RetryAfter:   baseNow.Add(15 * time.Second),
+		LastError:    "unavailable",
+		LastErrorAt:  baseNow,
+	}
+	hb, _ := json.Marshal(hist)
+	if _, err := db.ExecContext(ctx, `INSERT INTO livetv_source_history(key, updated_ms, data) VALUES(?, ?, ?)`, hist.Key, baseNow.UnixMilli(), string(hb)); err != nil {
+		t.Fatalf("insert source history: %v", err)
+	}
+
+	ltv, err := livetv.New(livetv.Options{DB: db, Now: nowFn})
+	if err != nil {
+		t.Fatalf("livetv.New: %v", err)
+	}
+	defer ltv.Close()
+
+	ev := core.LiveEvent{
+		ID:     "demo:feed:m1",
+		Feed:   "feed",
+		Start:  baseNow.UTC().Format(time.RFC3339),
+		Status: core.LiveEventStatus{State: core.LiveEventStateIn},
+		Competitors: []core.LiveEventCompetitor{
+			{ID: "a", Name: "Metro Sharks", Abbr: "MSH"},
+			{ID: "b", Name: "Harbor Seals", Abbr: "HSE"},
+		},
+		Broadcasts: []core.LiveEventBroadcast{{Name: "ESPN", Kind: "tv"}},
+	}
+	matcher := NewWatchMatcher(WatchMatcherOptions{
+		Guide:        NewLiveTVGuideSource(ltv),
+		ActiveEvents: &fakeActiveEvents{events: []core.LiveEvent{ev}, rev: "r1"},
+		Now:          nowFn,
+		CacheCap:     2,
+	})
+	viewer := &core.User{ID: 5}
+
+	// 1. While cooldown is active, WatchTargets returns ch-espn with available=false (cached),
+	//    and A6 LiveEventForChannel returns nil.
+	t1, err := matcher.WatchTargets(ctx, ev, viewer)
+	if err != nil || len(t1) != 1 || t1[0].ChannelID != ch.ID || t1[0].IsAvailable() {
+		t.Fatalf("WatchTargets during cooldown = (%+v, %v), want unavailable ch-espn", t1, err)
+	}
+	if _, ref, err := matcher.LiveEventForChannel(ctx, viewer, ch.ID); err != nil || ref != nil {
+		t.Fatalf("LiveEventForChannel during cooldown = (%+v, %v), want nil", ref, err)
+	}
+
+	// 2. Advance past cooldown -> GuideRevision advances -> cached unavailable entry invalidates -> playable!
+	clockNano.Store(baseNow.Add(20 * time.Second).UnixNano())
+	t2, err := matcher.WatchTargets(ctx, ev, viewer)
+	if err != nil || len(t2) != 1 || t2[0].ChannelID != ch.ID || !t2[0].IsAvailable() {
+		t.Fatalf("WatchTargets after cooldown expiry = (%+v, %v), want playable ch-espn", t2, err)
+	}
+	if _, ref, err := matcher.LiveEventForChannel(ctx, viewer, ch.ID); err != nil || ref == nil || ref.ID != ev.ID {
+		t.Fatalf("LiveEventForChannel after recovery = (%+v, %v), want %s", ref, err, ev.ID)
+	}
+
+	// 3. Cache stays strictly bounded by CacheCap across multiple health revisions.
+	for i := 0; i < 6; i++ {
+		e := ev
+		e.ID = fmt.Sprintf("demo:feed:m-%d", i)
+		if _, err := matcher.WatchTargets(ctx, e, viewer); err != nil {
+			t.Fatalf("WatchTargets %d: %v", i, err)
+		}
+	}
+	matcher.mu.Lock()
+	cacheLen := len(matcher.watchCache)
+	matcher.mu.Unlock()
+	if cacheLen > 2 {
+		t.Fatalf("watchCache grew to %d, want <= 2", cacheLen)
 	}
 }

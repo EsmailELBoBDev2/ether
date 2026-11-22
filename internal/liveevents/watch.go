@@ -91,6 +91,7 @@ func guideCandidateFromLiveTV(e livetv.WatchGuideEntry) GuideCandidate {
 		GuideID:       e.GuideID,
 		IsEventAddon:  e.IsEventAddon,
 		ChannelOnly:   e.ChannelOnly,
+		Unhealthy:     e.Unhealthy,
 		Title:         e.Programme.Item.Title,
 		EpisodeTitle:  e.Programme.Item.EpisodeTitle,
 		Summary:       e.Programme.Item.Summary,
@@ -212,7 +213,7 @@ func (m *WatchMatcher) WatchTargets(ctx context.Context, ev core.LiveEvent, view
 
 	targets := matchEventToCandidates(ev, candidates)
 	m.putWatchCached(cacheKey, targets)
-	return slices.Clone(targets), nil
+	return cloneWatchTargets(targets), nil
 }
 
 // WatchTargetsBatch resolves playable watch targets for many events with one
@@ -271,7 +272,7 @@ func (m *WatchMatcher) WatchTargetsBatch(ctx context.Context, events []core.Live
 		for _, p := range missed {
 			targets := matchEventToCandidates(p.ev, nil)
 			m.putWatchCached(p.cacheKey, targets)
-			out[p.ev.ID] = slices.Clone(targets)
+			out[p.ev.ID] = cloneWatchTargets(targets)
 		}
 		return out, nil
 	}
@@ -353,7 +354,7 @@ func (m *WatchMatcher) WatchTargetsBatch(ctx context.Context, events []core.Live
 		}
 		targets := matchEventToCandidates(p.ev, cands)
 		m.putWatchCached(ck, targets)
-		out[p.ev.ID] = slices.Clone(targets)
+		out[p.ev.ID] = cloneWatchTargets(targets)
 	}
 	return out, nil
 }
@@ -389,7 +390,7 @@ func (m *WatchMatcher) LiveEventForChannel(ctx context.Context, viewer *core.Use
 	}
 	now := m.now()
 	cand, progKey, err := m.guide.CurrentProgramme(ctx, viewer, channelID, now)
-	if err != nil || cand == nil || progKey == "" {
+	if err != nil || cand == nil || progKey == "" || cand.Unhealthy {
 		return progKey, nil, err
 	}
 
@@ -437,7 +438,7 @@ func (m *WatchMatcher) getWatchCached(key string) ([]core.WatchTarget, bool) {
 	if !ok {
 		return nil, false
 	}
-	return slices.Clone(v), true
+	return cloneWatchTargets(v), true
 }
 
 func (m *WatchMatcher) putWatchCached(key string, targets []core.WatchTarget) {
@@ -451,7 +452,22 @@ func (m *WatchMatcher) putWatchCached(key string, targets []core.WatchTarget) {
 		}
 		m.watchOrder = append(m.watchOrder, key)
 	}
-	m.watchCache[key] = slices.Clone(targets)
+	m.watchCache[key] = cloneWatchTargets(targets)
+}
+
+func cloneWatchTargets(in []core.WatchTarget) []core.WatchTarget {
+	if in == nil {
+		return nil
+	}
+	out := make([]core.WatchTarget, len(in))
+	for i, t := range in {
+		if t.Available != nil {
+			av := *t.Available
+			t.Available = &av
+		}
+		out[i] = t
+	}
+	return out
 }
 
 func (m *WatchMatcher) getReverseCached(key string) (*core.LiveEventRef, bool) {

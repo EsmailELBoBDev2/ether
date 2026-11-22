@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -27,6 +28,21 @@ const (
 	watchCarryoverWindowLimit = 500
 	watchCarryoverLookback    = 6 * time.Hour
 	watchTargetedChannelCap   = 128
+
+	// watchConsecutiveOpenFailures is the consecutive failed-open threshold at
+	// which a stream input is treated as failing for Sports watch targets even
+	// after its short tune cooldown elapses, until an open succeeds or the
+	// failure ages out of watchRecentFailureWindow.
+	watchConsecutiveOpenFailures = 2
+	watchRecentFailureWindow     = 30 * time.Minute
+)
+
+type watchChannelState int
+
+const (
+	watchChannelHealthy watchChannelState = iota
+	watchChannelUnhealthy
+	watchChannelPaused
 )
 
 // WatchGuideEntry is one viewer-visible channel + overlapping guide programme
@@ -41,12 +57,304 @@ type WatchGuideEntry struct {
 	GuideID       string
 	IsEventAddon  bool
 	ChannelOnly   bool
+	Unhealthy     bool
 	Programme     Programme
 	Live          bool
 }
 
+func (s *Service) bumpHealthRevision() {
+	if s == nil {
+		return
+	}
+	s.healthRev.Add(1)
+}
+
+func (s *Service) noteHealthExpiry(at time.Time) {
+	if s == nil || at.IsZero() {
+		return
+	}
+	target := at.UnixNano()
+	if target <= 0 {
+		return
+	}
+	for {
+		cur := s.nextHealthExpiry.Load()
+		if cur > 0 && cur <= target {
+			return
+		}
+		if s.nextHealthExpiry.CompareAndSwap(cur, target) {
+			return
+		}
+	}
+}
+
+func (s *Service) healthRevision() uint64 {
+	if s == nil {
+		return 0
+	}
+	nowNano := s.o.Now().UnixNano()
+	if exp := s.nextHealthExpiry.Load(); exp > 0 && nowNano >= exp {
+		if s.nextHealthExpiry.CompareAndSwap(exp, 0) {
+			s.healthRev.Add(1)
+		}
+	}
+	return s.healthRev.Load()
+}
+
+func sourceHistoryAvailabilityChanged(a, b SourceHistory) bool {
+	return a.Failures != b.Failures ||
+		!a.RetryAfter.Equal(b.RetryAfter) ||
+		a.LastError != b.LastError ||
+		!a.LastErrorAt.Equal(b.LastErrorAt) ||
+		!a.LastPlayed.Equal(b.LastPlayed)
+}
+
+func (s *Service) noteSourceHistoryExpiry(h SourceHistory, now time.Time) {
+	if s == nil {
+		return
+	}
+	if now.IsZero() {
+		now = s.o.Now()
+	}
+	var expiry time.Time
+	if h.RetryAfter.After(now) {
+		expiry = h.RetryAfter
+	}
+	if h.Failures >= watchConsecutiveOpenFailures {
+		lastErr := h.LastErrorAt
+		if lastErr.IsZero() {
+			lastErr = h.Updated
+		}
+		if !lastErr.IsZero() && !h.LastPlayed.After(lastErr) {
+			if winEnd := lastErr.Add(watchRecentFailureWindow); winEnd.After(now) && winEnd.After(expiry) {
+				expiry = winEnd
+			}
+		}
+	}
+	if !expiry.IsZero() {
+		s.noteHealthExpiry(expiry)
+	}
+}
+
+func sameAccountHealth(a, b *ProviderAccount) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if !strings.EqualFold(a.Status, b.Status) {
+		return false
+	}
+	if a.ExpiresAt == nil && b.ExpiresAt == nil {
+		return true
+	}
+	if a.ExpiresAt == nil || b.ExpiresAt == nil {
+		return false
+	}
+	return a.ExpiresAt.Equal(*b.ExpiresAt)
+}
+
+func accountUsableAt(a *ProviderAccount, now time.Time) bool {
+	if a == nil {
+		return true
+	}
+	if a.Status != "" && !strings.EqualFold(a.Status, "active") {
+		return false
+	}
+	if a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+func (s *Service) sourceAccountHealthy(sourceID string, entry authEntry, now time.Time) bool {
+	if entry.pool != nil {
+		src := entry.pool
+		candidates := append([]ProviderLogin{{ID: "primary", Account: src.Account}}, src.Logins...)
+		p := &s.loginPool
+		p.mu.Lock()
+		var earliestRetry time.Time
+		usable := false
+		for _, cand := range candidates {
+			if cand.Error != "" {
+				continue
+			}
+			if until := p.failed[sourceID+"\x00"+cand.ID]; now.Before(until) {
+				if earliestRetry.IsZero() || until.Before(earliestRetry) {
+					earliestRetry = until
+				}
+				continue
+			}
+			if !accountUsableAt(cand.Account, now) {
+				continue
+			}
+			usable = true
+			break
+		}
+		p.mu.Unlock()
+		if !usable {
+			if !earliestRetry.IsZero() {
+				s.noteHealthExpiry(earliestRetry)
+			}
+			return false
+		}
+		return true
+	}
+	if entry.account != nil {
+		if !accountUsableAt(entry.account, now) {
+			return false
+		}
+		if entry.account.ExpiresAt != nil && now.Before(*entry.account.ExpiresAt) {
+			s.noteHealthExpiry(*entry.account.ExpiresAt)
+		}
+	}
+	return true
+}
+
+func (s *Service) sourceInputHealthy(channelID string, src StreamSource, now time.Time) bool {
+	st := s.sourceStatus(channelID, src)
+	hist, hasHist := s.sourceHistory(channelID, src)
+
+	var (
+		failures   int
+		retryAfter time.Time
+		lastErrAt  time.Time
+		lastPlayed time.Time
+	)
+	switch {
+	case hasHist && hist.Updated.After(st.LastChecked):
+		failures = hist.Failures
+		retryAfter = hist.RetryAfter
+		lastErrAt = hist.LastErrorAt
+		if lastErrAt.IsZero() && failures > 0 {
+			lastErrAt = hist.Updated
+		}
+		lastPlayed = hist.LastPlayed
+	case !st.LastChecked.IsZero():
+		failures = st.Failures
+		retryAfter = st.RetryAfter
+		if st.LastError != "" || failures > 0 {
+			lastErrAt = st.LastChecked
+			if hasHist && !hist.LastErrorAt.IsZero() && hist.LastErrorAt.After(lastErrAt) {
+				lastErrAt = hist.LastErrorAt
+			}
+		}
+		lastPlayed = st.LastPlayed
+	case hasHist:
+		failures = hist.Failures
+		retryAfter = hist.RetryAfter
+		lastErrAt = hist.LastErrorAt
+		if lastErrAt.IsZero() && failures > 0 {
+			lastErrAt = hist.Updated
+		}
+		lastPlayed = hist.LastPlayed
+	default:
+		return true
+	}
+
+	var expiry time.Time
+	unhealthy := false
+	if retryAfter.After(now) {
+		unhealthy = true
+		expiry = retryAfter
+	}
+	if failures >= watchConsecutiveOpenFailures && !lastErrAt.IsZero() && !lastPlayed.After(lastErrAt) {
+		winEnd := lastErrAt.Add(watchRecentFailureWindow)
+		if winEnd.After(now) {
+			unhealthy = true
+			if winEnd.After(expiry) {
+				expiry = winEnd
+			}
+		}
+	}
+	if unhealthy {
+		if !expiry.IsZero() {
+			s.noteHealthExpiry(expiry)
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Service) channelWatchHealth(ctx context.Context, c Channel, now time.Time) watchChannelState {
+	if s.sourcePaused(ctx, c) {
+		return watchChannelPaused
+	}
+	if c.Kind != "iptv" {
+		return watchChannelHealthy
+	}
+
+	var single [1]StreamSource
+	inputs := c.StreamSources
+	if len(inputs) == 0 {
+		rawURL := strings.TrimSpace(c.StreamURL)
+		if !validStreamURL(rawURL) {
+			return watchChannelUnhealthy
+		}
+		id := stableID(c.ID, "primary")
+		if c.SourceID != "" {
+			id = stableID(c.ID, "playlist")
+		}
+		single[0] = StreamSource{ID: id, URL: rawURL, Enabled: true}
+		inputs = single[:]
+	}
+
+	activeCount := 0
+	unpausedCount := 0
+	healthyCount := 0
+	sweptUnavailable := s.sweepState(c) == "unavailable"
+
+	for _, src := range inputs {
+		if !src.Enabled || !s.autoDonorActive(src.AutoFrom) {
+			continue
+		}
+		rawURL := strings.TrimSpace(src.URL)
+		if !validStreamURL(rawURL) {
+			continue
+		}
+		activeCount++
+		effSourceID := src.AuthSourceID
+		if effSourceID == "" {
+			effSourceID = c.SourceID
+		}
+		var entry authEntry
+		if effSourceID != "" {
+			var err error
+			entry, err = s.sourceEntry(ctx, effSourceID)
+			if errors.Is(err, core.ErrNotAvailable) {
+				continue // this input's source is paused
+			}
+		}
+		unpausedCount++
+		if sweptUnavailable {
+			continue // keep scanning only to see whether all active inputs are paused
+		}
+		if effSourceID != "" && !s.sourceAccountHealthy(effSourceID, entry, now) {
+			continue
+		}
+		checkSrc := src
+		checkSrc.URL = rawURL
+		if checkSrc.ID == "" {
+			checkSrc.ID = stableID(c.ID, rawURL)
+		}
+		if s.sourceInputHealthy(c.ID, checkSrc, now) {
+			healthyCount++
+		}
+	}
+
+	if activeCount > 0 && unpausedCount == 0 {
+		return watchChannelPaused
+	}
+	if sweptUnavailable || activeCount == 0 || healthyCount == 0 {
+		return watchChannelUnhealthy
+	}
+	return watchChannelHealthy
+}
+
 // GuideRevision returns a compact, cluster-safe revision token covering the
-// guide/channel epoch and the viewer's effective Live TV access policy.
+// guide/channel epoch, channel health revision, and the viewer's effective
+// Live TV access policy.
 func (s *Service) GuideRevision(ctx context.Context, u *core.User) (string, error) {
 	if s == nil || s.o.DB == nil {
 		return "none", nil
@@ -63,10 +371,11 @@ func (s *Service) GuideRevision(ctx context.Context, u *core.User) (string, erro
 	if err != nil {
 		return "", err
 	}
+	healthRev := s.healthRevision()
 	sum := sha256.New()
-	_, _ = fmt.Fprintf(sum, "g=%d|u=%d|owner=%t|rat=%s|pol=%s",
-		gen, u.ID, u.IsOwner, u.MaxContentRating, rawPol)
-	return fmt.Sprintf("g%d:%s", gen, hex.EncodeToString(sum.Sum(nil)[:8])), nil
+	_, _ = fmt.Fprintf(sum, "g=%d|h=%d|u=%d|owner=%t|rat=%s|pol=%s",
+		gen, healthRev, u.ID, u.IsOwner, u.MaxContentRating, rawPol)
+	return fmt.Sprintf("g%d:h%d:%s", gen, healthRev, hex.EncodeToString(sum.Sum(nil)[:8])), nil
 }
 
 // WatchCandidates returns a bounded set of viewer-visible channel+programme
@@ -109,35 +418,94 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 		return nil, "", err
 	}
 
+	now := s.o.Now()
+	app := core.LiveApp(ctx)
 	normCallsigns := normalizeCallsignHints(callsigns)
 	byGuideKey := make(map[guideKey][]Channel)
-	targeted := make(map[guideKey][]Channel)
-	var callsignMatched []Channel
-	targetedCount := 0
+	unhealthyByID := make(map[string]bool)
+
+	var healthyCallsign, unhealthyCallsign []Channel
+	var healthyTargetedKeys, unhealthyTargetedKeys []guideKey
+	targetedHealthy := make(map[guideKey][]Channel)
+	targetedUnhealthy := make(map[guideKey][]Channel)
 
 	for _, c := range all {
 		if c.Kind == "virtual" {
 			continue
 		}
-		if !s.audienceAllowed(ctx, u, c) {
+		if app != "" && slices.Contains(c.HiddenApps, app) {
 			continue
 		}
+		if !s.audiencePolicyAllowed(ctx, u, c) {
+			continue
+		}
+		health := s.channelWatchHealth(ctx, c, now)
+		if health == watchChannelPaused {
+			continue
+		}
+		unhealthy := health == watchChannelUnhealthy
+		if unhealthy {
+			unhealthyByID[c.ID] = true
+		}
 		matchesCallsign := channelMatchesAnyCallsignHint(c, normCallsigns)
-		if matchesCallsign && len(callsignMatched) < watchTargetedChannelCap {
-			callsignMatched = append(callsignMatched, c)
+		if matchesCallsign {
+			if !unhealthy {
+				if len(healthyCallsign) < watchTargetedChannelCap {
+					healthyCallsign = append(healthyCallsign, c)
+				}
+			} else if len(unhealthyCallsign) < watchTargetedChannelCap {
+				unhealthyCallsign = append(unhealthyCallsign, c)
+			}
 		}
 		if c.GuideID == "" {
 			continue
 		}
 		gk := guideKey{source: guideSource(c), guide: c.GuideID}
 		byGuideKey[gk] = append(byGuideKey[gk], c)
-		if targetedCount < watchTargetedChannelCap && (isStremioEventChannel(c) || matchesCallsign) {
-			if _, exists := targeted[gk]; !exists {
-				targetedCount++
+		if isStremioEventChannel(c) || matchesCallsign {
+			if !unhealthy {
+				if _, exists := targetedHealthy[gk]; !exists {
+					if len(healthyTargetedKeys) < watchTargetedChannelCap {
+						healthyTargetedKeys = append(healthyTargetedKeys, gk)
+						targetedHealthy[gk] = append(targetedHealthy[gk], c)
+					}
+				} else {
+					targetedHealthy[gk] = append(targetedHealthy[gk], c)
+				}
+			} else {
+				if _, exists := targetedUnhealthy[gk]; !exists {
+					if len(unhealthyTargetedKeys) < watchTargetedChannelCap {
+						unhealthyTargetedKeys = append(unhealthyTargetedKeys, gk)
+						targetedUnhealthy[gk] = append(targetedUnhealthy[gk], c)
+					}
+				} else {
+					targetedUnhealthy[gk] = append(targetedUnhealthy[gk], c)
+				}
 			}
-			targeted[gk] = append(targeted[gk], c)
 		}
 	}
+
+	callsignMatched := make([]Channel, 0, min(len(healthyCallsign)+len(unhealthyCallsign), watchTargetedChannelCap))
+	callsignMatched = append(callsignMatched, healthyCallsign...)
+	if rem := watchTargetedChannelCap - len(callsignMatched); rem > 0 && len(unhealthyCallsign) > 0 {
+		callsignMatched = append(callsignMatched, unhealthyCallsign[:min(rem, len(unhealthyCallsign))]...)
+	}
+
+	targeted := make(map[guideKey][]Channel, min(len(healthyTargetedKeys)+len(unhealthyTargetedKeys), watchTargetedChannelCap))
+	for _, gk := range healthyTargetedKeys {
+		targeted[gk] = append(targeted[gk], targetedHealthy[gk]...)
+	}
+	for _, gk := range unhealthyTargetedKeys {
+		if _, exists := targeted[gk]; exists {
+			targeted[gk] = append(targeted[gk], targetedUnhealthy[gk]...)
+			continue
+		}
+		if len(targeted) >= watchTargetedChannelCap {
+			break
+		}
+		targeted[gk] = append(targeted[gk], targetedUnhealthy[gk]...)
+	}
+
 	if len(byGuideKey) == 0 && len(callsignMatched) == 0 {
 		return nil, rev, nil
 	}
@@ -150,7 +518,6 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 	seen := make(map[progDedupKey]struct{})
 	channelsWithProg := make(map[string]bool)
 	var out []WatchGuideEntry
-	now := s.o.Now()
 
 	appendCandidate := func(gk guideKey, p Programme) {
 		dk := progDedupKey{source: gk.source, guide: gk.guide, startMS: p.Start.UnixMilli()}
@@ -173,7 +540,7 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 			if cp.ID == "" {
 				cp.ID = fmt.Sprintf("%s-%d", c.ID, cp.Start.UnixMilli())
 			}
-			if !s.allowedProgramme(ctx, u, c, &cp) {
+			if !s.allowedProgrammeForWatch(ctx, u, c, &cp) {
 				continue
 			}
 			out = append(out, WatchGuideEntry{
@@ -184,6 +551,7 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 				TvgName:       c.TvgName,
 				GuideID:       c.GuideID,
 				IsEventAddon:  len(cp.EventStreams) > 0 || isStremioEventChannel(c),
+				Unhealthy:     unhealthyByID[c.ID],
 				Programme:     cp,
 				Live:          live,
 			})
@@ -245,6 +613,7 @@ func (s *Service) WatchCandidates(ctx context.Context, u *core.User, from, until
 			GuideID:       c.GuideID,
 			IsEventAddon:  isStremioEventChannel(c),
 			ChannelOnly:   true,
+			Unhealthy:     unhealthyByID[c.ID],
 		})
 	}
 
@@ -310,7 +679,10 @@ func (s *Service) CurrentProgrammeForWatch(ctx context.Context, u *core.User, ch
 		return nil, "", nil
 	}
 	c := all[idx]
-	if !s.audienceAllowed(ctx, u, c) {
+	if app := core.LiveApp(ctx); app != "" && slices.Contains(c.HiddenApps, app) {
+		return nil, "", nil
+	}
+	if !s.audienceAllowed(ctx, u, c) || s.channelWatchHealth(ctx, c, at) != watchChannelHealthy {
 		return nil, "", nil
 	}
 	p, found, err := s.programmeAt(ctx, c, at)

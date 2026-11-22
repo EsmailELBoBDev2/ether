@@ -170,6 +170,8 @@ type LiveEventMatchHints struct {
 
 // LiveEventWatchTarget links a live event to a playable channel, add-on, or
 // plugin-provided stream target. Ether attaches this; plugins do not emit it.
+// Available is omitted when playable and set to false when the only matching
+// channels are currently unhealthy so clients can show "Unavailable right now".
 type LiveEventWatchTarget struct {
 	Kind       string  `json:"kind"` // channel|addon|plugin
 	ChannelID  string  `json:"channelId,omitempty"`
@@ -179,6 +181,13 @@ type LiveEventWatchTarget struct {
 	Live       bool    `json:"live"`
 	Confidence float64 `json:"confidence,omitempty"`
 	URL        string  `json:"url,omitempty"`
+	Available  *bool   `json:"available,omitempty"`
+}
+
+// IsAvailable reports whether the watch target is currently playable
+// (Available omitted or true).
+func (t LiveEventWatchTarget) IsAvailable() bool {
+	return t.Available == nil || *t.Available
 }
 
 // LiveEvent is Ether's JSON-stable, generic live event model suitable for
@@ -250,7 +259,14 @@ func (e LiveEvent) Clone() LiveEvent {
 		out.MatchHints = h
 	}
 	if e.Watch != nil {
-		out.Watch = append([]LiveEventWatchTarget(nil), e.Watch...)
+		out.Watch = make([]LiveEventWatchTarget, len(e.Watch))
+		for i, w := range e.Watch {
+			if w.Available != nil {
+				av := *w.Available
+				w.Available = &av
+			}
+			out.Watch[i] = w
+		}
 	}
 	return out
 }

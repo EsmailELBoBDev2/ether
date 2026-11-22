@@ -72,6 +72,17 @@ func splitCSV(value string) []string {
 	return out
 }
 
+// firstListValue returns the first non-empty entry of a query list that may
+// be comma-joined, repeated, or both.
+func firstListValue(values []string) string {
+	for _, value := range values {
+		if parts := splitCSV(value); len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
 // guidLike reports whether id parses as a UUID the way the Jellyfin
 // Kotlin SDK does: 32 hex digits, optionally dashed 8-4-4-4-12.
 func guidLike(id string) bool {
@@ -823,6 +834,11 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		season := t.Key.Parent()
 		if season == 0 && show.Kind() == frontend.KindShow && (seasonNumber > 0 || t.SeasonTitle != "") {
 			season = frontend.SeasonKey(show.TMDB(), seasonNumber)
+		}
+		// A plugin library published as TV shows keeps its own item tree:
+		// the season is the episode's parent container item.
+		if season == 0 && t.Key.IsPluginKey() && t.ParentKey != 0 && t.ParentKey != show {
+			season = t.ParentKey
 		}
 		if season != 0 {
 			id := ids.RatingKeyGUID(season)

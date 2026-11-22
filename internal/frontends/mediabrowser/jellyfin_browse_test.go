@@ -334,6 +334,31 @@ func TestJellyfinBrowseFiltersReachTheLibrary(t *testing.T) {
 	}
 }
 
+// Jellyfin Web repeats sortBy (sortBy=CommunityRating&sortBy=SortName) where
+// other apps comma-join it. Both spellings sort by the first key Ether knows.
+func TestJellyfinBrowseSortByRepeatedOrCommaJoined(t *testing.T) {
+	for _, query := range []string{
+		"sortBy=CommunityRating&sortBy=SortName&sortOrder=Descending",
+		"SortBy=CommunityRating,SortName&SortOrder=Descending",
+		"SortBy=CommunityRating&SortOrder=Descending,Ascending",
+		"sortBy=Unknown&sortBy=CommunityRating&sortOrder=Descending",
+	} {
+		var got frontend.ItemQuery
+		exp := frontendtest.Experience{LibraryItemsFunc: func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, _ string, q frontend.ItemQuery) (frontend.Page, error) {
+			got = q
+			return frontend.Page{}, nil
+		}}
+		inst := mountJellyfin(t, exp)
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/Items?Recursive=true&IncludeItemTypes=Movie&"+query, nil)
+		r.Header.Set("X-Emby-Token", "grant")
+		inst.Handler().ServeHTTP(w, r)
+		if w.Code != 200 || got.Sort != core.SortRating || !got.Desc {
+			t.Fatalf("%s: code %d sort %v desc %v", query, w.Code, got.Sort, got.Desc)
+		}
+	}
+}
+
 // /Items?searchTerm= is a search: it goes to the title index with the
 // request's other filters, sort and paging, never to a filtered library walk.
 func TestJellyfinItemsSearchTermUsesSearch(t *testing.T) {

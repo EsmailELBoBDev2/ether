@@ -319,7 +319,8 @@ func discoverViews(vars map[string]string, body []byte) {
 		// Libraries beyond the builtins 1 and 2 are plugin (or filter)
 		// libraries; record the first so a browse step covers it when one
 		// is installed.
-		if err == nil && n > 2 {
+		// The Collections (boxsets) folder has its own steps.
+		if err == nil && n > 2 && it.CollectionType != "boxsets" {
 			setOnce(vars, "pluginView", it.ID)
 		}
 		switch it.CollectionType {

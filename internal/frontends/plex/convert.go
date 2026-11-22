@@ -212,11 +212,18 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		t = s.enrich(t)
 	}
 	added := t.DateAdded(s.now())
+	detail := o.detail || (o.detailEpisodes && t.Type == frontend.TypeEpisode)
 	ov, hasPlex := s.plexMetaOverlay(ctx, t.Key)
-	credits, hasCredits := s.plexCreditsCached(ctx, t.Key)
-	var creditsPtr *frontend.LibraryTitleCredits
-	if hasCredits {
-		creditsPtr = &credits
+	var (
+		credits    frontend.LibraryTitleCredits
+		hasCredits bool
+		creditsPtr *frontend.LibraryTitleCredits
+	)
+	if detail {
+		credits, hasCredits = s.plexCreditsCached(ctx, t.Key)
+		if hasCredits {
+			creditsPtr = &credits
+		}
 	}
 	tmdbRating := t.Rating
 	if hasPlex {
@@ -314,7 +321,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.ParentGUID = showGUID(showKey)
 		m.ParentKey = "/library/metadata/" + showKey.String()
 		m.ParentTitle = t.ShowTitle
-		m.ParentSlug = s.verifiedPlexSlug(ctx, showKey)
+		m.ParentSlug = s.verifiedPlexSlug(ctx, showKey, detail)
 		m.ParentIndex = model.Ptr(1)
 		m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
 		if m.Art == "" {
@@ -372,7 +379,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 				m.ContentRating = show.ContentRating
 			}
 		}
-		m.GrandparentSlug = s.verifiedPlexSlug(ctx, showKey)
+		m.GrandparentSlug = s.verifiedPlexSlug(ctx, showKey, detail)
 		m.Year, m.TitleSort, m.Studio = 0, "", ""
 	}
 	if hasPlex {
@@ -401,7 +408,6 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 
 	// Tags. Detail episodes inside hubs retain full tags. Light rows cap
 	// genre/country/writer at two and director/cast at three.
-	detail := o.detail || (o.detailEpisodes && t.Type == frontend.TypeEpisode)
 	maxTags := 2
 	maxPeople := 3
 	if detail {
@@ -434,12 +440,11 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		}
 		m.Country = append(m.Country, tag)
 	}
-	var mappedPeople []frontend.LibraryPersonMapping
-	m.Director = s.personTags(t.Key, t.Directors, "director", maxPeople, detail, false, creditsPtr, &mappedPeople)
-	m.Writer = s.personTags(t.Key, t.Writers, "writer", maxTags, detail, false, creditsPtr, &mappedPeople)
-	m.Role = s.personTags(t.Key, t.Cast, "actor", maxPeople, detail, true, creditsPtr, &mappedPeople)
+	m.Director = s.personTags(t.Key, t.Directors, "director", maxPeople, detail, false, creditsPtr, nil)
+	m.Writer = s.personTags(t.Key, t.Writers, "writer", maxTags, detail, false, creditsPtr, nil)
+	m.Role = s.personTags(t.Key, t.Cast, "actor", maxPeople, detail, true, creditsPtr, nil)
 	if detail && t.Type != frontend.TypeSeason {
-		m.Producer = s.personTags(t.Key, detailProducers(t, creditsPtr), "producer", maxTags, detail, false, creditsPtr, &mappedPeople)
+		m.Producer = s.personTags(t.Key, detailProducers(t, creditsPtr), "producer", maxTags, detail, false, creditsPtr, nil)
 	}
 	if t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow {
 		if hasCredits && credits.ContentRatingAge > 0 {
@@ -447,9 +452,6 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		} else if age := contentRatingAge(m.ContentRating); age > 0 {
 			m.ContentRatingAge = age
 		}
-	}
-	if len(mappedPeople) > 0 {
-		s.recordLibraryPersonMappings(ctx, mappedPeople)
 	}
 	if t.CollectionID > 0 && t.CollectionName != "" {
 		tag := model.Tag{Tag: t.CollectionName}

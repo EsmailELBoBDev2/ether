@@ -297,3 +297,105 @@ func TestLibraryPersonRoutesWithRealPlexTagKey(t *testing.T) {
 		t.Fatalf("/hubs/search leaked fabricated tagKey: %s", body)
 	}
 }
+
+// TestSectionListingNeverQueriesOrWritesCredits locks the invariant that
+// section listings (/library/sections/{id}/all) remain read-only and batched
+// with respect to provider credits and person mappings on both cold (no
+// verified GUIDs) and warm (verified GUIDs + cached credits) libraries:
+//   - zero per-item plexguid_mappings lookups
+//   - zero reads or writes against plexguid_title_credits or plexguid_person_map
+//   - zero upstream credit fetches
+//   - no Producer tags or tagKey projection on list items
+func TestSectionListingNeverQueriesOrWritesCredits(t *testing.T) {
+	const (
+		burbsHex  = "5d7768374de0ee001fccc04a"
+		burbsGUID = "plex://movie/" + burbsHex
+		hanksKey  = "5d77682654f42c001f8c2650"
+	)
+	db := store.OpenTest(t)
+
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		http.Error(w, "list path must not call metadata provider", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	pg := plexguid.New(db, plexguid.Options{BaseURL: upstream.URL, Token: func() string { return "tok" }})
+	defer pg.Close()
+
+	f := newFixture()
+	defer f.srv.Close()
+	f.setDB(db)
+	f.srv.setPlexGUID(pg)
+
+	// Seed 5 movies so any per-item query scales visibly with page size.
+	for i := int64(1); i <= 5; i++ {
+		m := burbs
+		m.Key = core.MovieKey(11974 + i)
+		m.IDs = core.IDs{TMDB: 11974 + i}
+		m.Title = "List Movie " + string(rune('A'+i-1))
+		f.catalog.titles[m.Key] = m
+		if _, err := db.Exec(`INSERT OR IGNORE INTO catalog_titles(key,type,tmdb_id,title,year,detail,detail_at,fetched_at) VALUES(?,'movie',?,?,1989,1,1000,1000)`, int64(m.Key), m.IDs.TMDB, m.Title); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	assertListBudget := func(phase string) {
+		t.Helper()
+		ctx, stats := store.WithQueryStats(context.Background())
+		req := httptest.NewRequest(http.MethodGet, "/library/sections/1/all?X-Plex-Container-Size=50&X-Plex-Container-Start=0", nil).WithContext(ctx)
+		req.Header.Set("X-Plex-Token", ownerToken)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		f.srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", phase, rec.Code, rec.Body.String())
+		}
+		if stats.Writes() != 0 {
+			t.Fatalf("%s: unexpected SQL writes=%d stmts=%+v", phase, stats.Writes(), stats.Statements())
+		}
+		for _, st := range stats.Statements() {
+			q := strings.ToLower(st.SQL)
+			if strings.Contains(q, "plexguid_title_credits") || strings.Contains(q, "plexguid_person_map") {
+				t.Errorf("%s: list path touched credits/person-map table (%dx): %s", phase, st.Count, st.SQL)
+			}
+			if strings.Contains(q, "plexguid_mappings") && strings.Contains(q, "rating_key=?") {
+				t.Errorf("%s: list path ran per-item plexguid_mappings query (%dx): %s", phase, st.Count, st.SQL)
+			}
+		}
+		if upstreamCalls.Load() != 0 {
+			t.Fatalf("%s: list path made %d upstream provider calls", phase, upstreamCalls.Load())
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, `"Producer"`) || strings.Contains(body, `"tagKey"`) {
+			t.Fatalf("%s: list response leaked Producer or tagKey: %s", phase, body)
+		}
+	}
+
+	// 1. Cold library: no verified plex:// GUIDs in plexguid_mappings.
+	assertListBudget("cold")
+
+	// 2. Warm library: verified plex:// GUIDs + cached credits in DB.
+	firstKey := core.MovieKey(11975)
+	if err := storeVerifiedGUID(db, firstKey, burbsGUID, 11975, "List Movie A", 1989); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.StoreCredits(context.Background(), firstKey, burbsGUID, plexguid.TitleCredits{
+		Slug:             "list-movie-a",
+		ContentRatingAge: 13,
+		Role:             []plexguid.Credit{{TagKey: hanksKey, Name: "Tom Hanks", Role: "Ray Peterson"}},
+		Producer:         []plexguid.Credit{{TagKey: "5d7768284de0ee001fcc8dc8", Name: "Larry Brezner"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertListBudget("warm")
+
+	var personRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM plexguid_person_map`).Scan(&personRows); err != nil {
+		t.Fatal(err)
+	}
+	if personRows != 0 {
+		t.Fatalf("section listing wrote %d plexguid_person_map rows, want 0", personRows)
+	}
+}

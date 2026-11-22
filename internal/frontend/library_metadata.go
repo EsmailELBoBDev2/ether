@@ -31,7 +31,6 @@ type LibraryCredits interface {
 	CachedCredits(context.Context, RatingKey, string) (LibraryTitleCredits, bool)
 	CachedCreditsMany(context.Context, []RatingKey, map[RatingKey]string) map[RatingKey]LibraryTitleCredits
 	ResolveCreditsBounded(context.Context, RatingKey, string, time.Duration) (LibraryTitleCredits, bool)
-	ScheduleCredits(RatingKey, string)
 	RecordPersonMappings(context.Context, []LibraryPersonMapping)
 	PersonByTagKey(context.Context, string) (LibraryPersonMapping, bool)
 	PersonByTMDB(context.Context, int64) (LibraryPersonMapping, bool)

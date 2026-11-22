@@ -255,3 +255,39 @@ func TestPersonMapRoundTrip(t *testing.T) {
 		t.Fatalf("PeopleByTMDB = %+v", batch)
 	}
 }
+
+func TestVerifyTitleDoesNotPersistCredits(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	key := core.MovieKey(11974)
+	const (
+		hex  = "5d7768374de0ee001fccc04a"
+		guid = "plex://movie/" + hex
+	)
+	seedCatalogTitle(t, db, key, "movie", "The 'Burbs", 1989)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"MediaContainer":{"Metadata":[{"guid":"`+guid+`","type":"movie","title":"The 'Burbs","year":1989,"slug":"the-burbs","Guid":[{"id":"tmdb://11974"}],"Role":[{"id":"5d77682654f42c001f8c2650","tag":"Tom Hanks","role":"Ray Peterson"}]}]}}`)
+	}))
+	defer srv.Close()
+
+	s := New(db, Options{BaseURL: srv.URL, Token: func() string { return "tok" }})
+	defer s.Close()
+
+	id, ok, err := s.verifyTitle(ctx, key, "movie", guid, localIdentity{title: "The 'Burbs", year: 1989})
+	if err != nil || !ok || id.GUID != guid {
+		t.Fatalf("verifyTitle = (%+v, %v, %v)", id, ok, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM plexguid_title_credits`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("verifyTitle persisted %d plexguid_title_credits rows as a side effect, want 0", count)
+	}
+}

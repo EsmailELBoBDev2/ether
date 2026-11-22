@@ -1149,6 +1149,7 @@ function AssetDrawer({
         open
         onClose={onClose}
         title={a.name}
+        documentTitle={a.name}
         size="lg"
         footer={
           <div className="flex w-full flex-wrap items-center justify-end gap-2">
@@ -1199,7 +1200,7 @@ function AssetDrawer({
     );
   }
   return (
-    <Drawer open onClose={onClose} title={a.name} size="lg">
+    <Drawer open onClose={onClose} title={a.name} documentTitle={a.name} size="lg">
       <div className="space-y-6">
         <SubtabNav
           ariaLabel={t("Asset sections")}

@@ -856,6 +856,7 @@ export function SourceDrawer({
       onClose={onClose}
       size="lg"
       title={row?.name ?? t("Source")}
+      documentTitle={row?.name ?? t("Source")}
       description={
         row
           ? row.detail && row.detail !== row.name

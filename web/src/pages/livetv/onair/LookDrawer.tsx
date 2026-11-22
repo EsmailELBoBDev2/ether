@@ -361,6 +361,7 @@ export function LookDrawer({
       size="2xl"
       initialFullscreen
       onClose={() => void close()}
+      documentTitle={draft.name || t("Untitled style")}
       title={
         <div className="flex min-w-0 items-center gap-3">
           <Input

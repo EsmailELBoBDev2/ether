@@ -395,6 +395,7 @@ export function CacheReleaseDrawer({
       onClose={onClose}
       size="md"
       title={title}
+      documentTitle={title}
       description={release ? friendlySubtitle : undefined}
       footer={
         release ? (

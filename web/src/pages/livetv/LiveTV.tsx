@@ -1018,6 +1018,9 @@ export default function LiveTV() {
         open={guideOpen}
         onClose={() => void go({ kind: "guide" })}
         title={guideChannel ? t("Guide for {channel}", { channel: guideChannel.name }) : t("Guide")}
+        documentTitle={
+          guideChannel ? t("Guide for {channel}", { channel: guideChannel.name }) : t("Guide")
+        }
         description={t(
           "Pick the guide channel its listings come from. Nothing changes until you choose Use this guide.",
         )}
@@ -1067,6 +1070,7 @@ export default function LiveTV() {
         open={channelOpen}
         onClose={() => void go({ kind: "guide" })}
         title={channelTitle}
+        documentTitle={draft?.channel.name || channelTitle}
         bodyClassName={draft ? "overflow-y-auto p-0" : undefined}
         description={
           draft?.channel.kind === "iptv"

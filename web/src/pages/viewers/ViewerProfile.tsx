@@ -2,6 +2,7 @@ import { useSlots, PluginActionMenu } from "../../viewspec/slots/Slots";
 import { PluginView } from "../../viewspec/PluginView";
 import { SlotAnchor } from "../../components/SlotXray";
 import { textOf } from "../../lib/extend";
+import { usePageTitle } from "../../lib/document-title";
 import { SubtabNav } from "../../components/layout";
 import {
   Avatar,
@@ -123,6 +124,33 @@ export default function ViewerProfile() {
   );
 
   const v = viewer.data;
+  const activeViewer = v && v.id === id ? v : null;
+  const tabTitle = pluginTab
+    ? textOf(pluginTab.label) || pluginTab.meta?.key || null
+    : tab === "home"
+      ? t("Home")
+      : tab === "taste"
+        ? t("Taste")
+        : tab === "activity"
+          ? t("Recent activity")
+          : tab === "playback"
+            ? t("Audio & subtitles")
+            : tab === "limits"
+              ? t("Limits")
+              : tab === "sign-in"
+                ? t("Sign-in & devices")
+                : tab === "lists"
+                  ? t("Lists & alerts")
+                  : null;
+  const subTitle =
+    tab === "sign-in" && signInTab === "sync"
+      ? t("Connected accounts")
+      : tab === "lists" && listTab === "alerts"
+        ? t("Alerts")
+        : tab === "lists" && listTab === "hidden"
+          ? t("Not interested")
+          : null;
+  usePageTitle(activeViewer ? [t("Viewers"), viewerName(activeViewer), tabTitle, subTitle] : null);
   const setTab = (next: string) => navigate(`/viewers/${id}/${next}`);
 
   const refresh = async () => {

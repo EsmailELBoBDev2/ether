@@ -544,7 +544,13 @@ export function LookSurfaces({ looks, reload }: { looks: Style[]; reload(): void
   return (
     <>
       {params.get("look") === "new" ? (
-        <Drawer open size="2xl" title={t("New style")} onClose={close}>
+        <Drawer
+          open
+          size="2xl"
+          title={t("New style")}
+          documentTitle={t("New style")}
+          onClose={close}
+        >
           <LooksGallery
             inDrawer
             looks={looks}

@@ -328,6 +328,7 @@ export function InstalledPluginDrawer({
       onClose={onClose}
       size="xl"
       title={detail?.name ?? t("Plugin")}
+      documentTitle={detail?.id === pluginId ? detail.name : t("Plugin")}
       description={detail ? <HeaderLine detail={detail} liveFeeds={liveFeeds} /> : undefined}
       headerActions={
         detail ? (

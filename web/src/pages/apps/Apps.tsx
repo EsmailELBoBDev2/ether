@@ -20,6 +20,7 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { t } from "../../i18n";
 import { useOwnerViewerPath } from "../../components/pickers";
 import { api, apiBlob, apiFetch, imageNeedsFetch } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { isPlainObject } from "../../lib/format";
 import { useAsync, useInterval } from "../../lib/hooks";
 import { viewerStatus } from "../viewers/ViewerStatus";
@@ -1289,6 +1290,17 @@ export default function Apps() {
     routeTab && routeTab !== "overview"
       ? apps.find((info) => pathFor(info.descriptor.id) === routeTab)
       : undefined;
+  const plexSection =
+    matchedApp?.descriptor.id === "plex"
+      ? routeSection === "remote"
+        ? t("Remote access")
+        : routeSection === "downloads"
+          ? t("Downloads")
+          : routeSection === "account"
+            ? t("Account")
+            : null
+      : null;
+  usePageTitle(matchedApp ? [t("Apps"), nameFor(matchedApp), plexSection] : null);
   const tabs = [
     { key: "overview", label: t("Overview") },
     ...apps

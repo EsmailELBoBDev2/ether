@@ -35,6 +35,7 @@ import { ErrorPanel, PosterSkeletons } from "../../components/feedback";
 import { Segmented } from "../../components/fields";
 import { PosterGrid } from "../../components/Poster";
 import { api, ApiError, errorMessage, isAbort } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { t, tn } from "../../i18n";
 import type { CollectionPreview, CollectionSpec, Source } from "../../lib/contract";
 import { formatNumber, relativeTime } from "../../lib/format";
@@ -152,6 +153,8 @@ export default function CollectionEditor() {
 
   const history = useHistory<CollectionSpec>(blankSpec());
   const spec = history.value;
+  const loadedMatches = !id || source.data?.id === id;
+  usePageTitle(loadedMatches && spec.name.trim() ? [t("Collections"), spec.name.trim()] : null);
   const [baseline, setBaseline] = useState<CollectionSpec | null>(null);
   const [restored, setRestored] = useState<StoredDraft<CollectionSpec> | null>(null);
   const [savedLocallyAt, setSavedLocallyAt] = useState<string | null>(null);

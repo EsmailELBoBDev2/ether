@@ -1,5 +1,6 @@
 import { cn } from "@braedonsaunders/appkit-ui";
 import { createContext, useState, type ReactNode } from "react";
+import { useFallbackDocumentTitle } from "../lib/document-title";
 
 export const WorkspaceOverlayContext = createContext<HTMLDivElement | null>(null);
 
@@ -36,6 +37,7 @@ export function Workspace({
   children?: ReactNode;
 }) {
   const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
+  useFallbackDocumentTitle([title]);
   return (
     <WorkspaceOverlayContext.Provider value={overlay}>
       <div className="relative flex min-h-0 flex-1 flex-col overflow-x-hidden">

@@ -105,6 +105,7 @@ export function TitleInspector({
       open
       onClose={onClose}
       title={title?.title ?? t("Title details")}
+      documentTitle={(title?.key === titleKey ? title.title : null) ?? t("Title details")}
       size="lg"
       bodyClassName="overflow-y-auto p-0"
       subtabs={

@@ -12,6 +12,7 @@ import {
 } from "../../components/agent/agentApi";
 import { approvalRequestLabels } from "../../components/agent/approvalLabels";
 import { apiFetch, apiStream, errorMessage } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { PluginView } from "../../viewspec/PluginView";
 import { formatDateTime } from "../../lib/format";
 import { invalidateRegistry } from "../../lib/extend";
@@ -404,6 +405,7 @@ function LiveWorkspace({
     sessionStorage.getItem("ether-studio-thread") || undefined,
   );
   const [project, setProject] = useState<StudioProject | null>(null);
+  usePageTitle(project?.name ? [t("Plugins"), t("Studio"), project.name] : null);
   const [file, setFile] = useState("src/plugin.ts");
   const [source, setSource] = useState("");
   const [edits, setEdits] = useState<Record<string, string>>({});

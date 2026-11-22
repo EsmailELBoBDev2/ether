@@ -36,6 +36,7 @@ import {
 } from "../components/fields";
 import { loadLocale, localized, rememberLocale, t, tn, tx } from "../i18n";
 import { api, apiFetch, newId, setToken } from "../lib/api";
+import { usePageTitle } from "../lib/document-title";
 import { formatBytes } from "../lib/format";
 import type { DebridProvider, DiskInfo, EtherConfig, Indexer, UsenetProvider } from "../lib/types";
 import { appInstalled, appLabel, appPurpose, appRank } from "./apps/catalog";
@@ -578,6 +579,9 @@ export default function Setup() {
   const showLocalOwner = !plexSelected || plexLater;
   const steps = wizardSteps(plexSelected && !plexLater);
   const stepId = steps[step]?.id ?? "apps";
+  const activeStepTitle =
+    !cfg || cacheRestartRequired || finished || finishReview ? null : steps[step]?.title;
+  usePageTitle([t("Setup"), activeStepTitle]);
   useEffect(() => {
     sessionStorage.setItem("ether.setup.skipped", JSON.stringify(skipped));
   }, [skipped]);

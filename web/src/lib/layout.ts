@@ -871,6 +871,8 @@ export function describeHiddenRow(
       return t("Hidden for {who}: collection is not shared with this viewer", { who });
     case "collection_empty":
       return t("Hidden for {who}: collection has no titles", { who });
+    case "collection_building":
+      return t("Hidden for {who}: collection is still building", { who });
     case "filtered_by_restrictions":
       return t("Hidden for {who}: no titles after restrictions", { who });
     case "filtered_by_availability":

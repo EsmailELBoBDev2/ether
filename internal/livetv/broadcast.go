@@ -203,6 +203,8 @@ type broadcast struct {
 	dvr                  time.Duration
 	black                []byte
 	viewers              int
+	attaching            int
+	hadViewer            bool
 	startMu              sync.Mutex
 	ctx                  context.Context
 	cancel               context.CancelFunc
@@ -210,6 +212,9 @@ type broadcast struct {
 	planner              broadcastPlanner
 	runner               transcode.ContinuousRunner
 	origin               time.Time
+	anchorOrigin         time.Time
+	lastSeq              int64
+	haveSeq              bool
 	mu                   sync.Mutex
 	renditions           map[string]*broadcastRendition
 	lastViewer           time.Time
@@ -352,6 +357,15 @@ func (b *broadcast) close() {
 	b.startMu.Unlock()
 	b.wg.Wait()
 }
+func (b *broadcast) hasIdleRenditionLocked() bool {
+	for _, r := range b.renditions {
+		if r.viewers <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *broadcast) dropIdleRenditions() bool {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
@@ -363,6 +377,7 @@ func (b *broadcast) dropIdleRenditions() bool {
 	var idle []*broadcastRendition
 	for id, r := range b.renditions {
 		if r.viewers <= 0 {
+			b.noteRenditionSeqLocked(r)
 			delete(b.renditions, id)
 			r.cancel()
 			idle = append(idle, r)
@@ -373,6 +388,55 @@ func (b *broadcast) dropIdleRenditions() bool {
 		_ = r.encoder.Close()
 	}
 	return len(idle) > 0
+}
+
+func (b *broadcast) noteRenditionSeqLocked(r *broadcastRendition) {
+	if r == nil || r.encoder == nil {
+		return
+	}
+	if latest, ok := r.encoder.Segments().Latest(); ok && (!b.haveSeq || latest.Seq > b.lastSeq) {
+		b.lastSeq = latest.Seq
+		b.haveSeq = true
+	}
+}
+
+func (b *broadcast) nextStartSeqLocked() int64 {
+	have := b.haveSeq
+	maxSeq := b.lastSeq
+	for _, r := range b.renditions {
+		if latest, ok := r.encoder.Segments().Latest(); ok && (!have || latest.Seq > maxSeq) {
+			maxSeq = latest.Seq
+			have = true
+		}
+	}
+	if !have {
+		return 0
+	}
+	// Start joining renditions in steady state (>= max startup ladder length 5)
+	// so every new segment has full target duration and continues monotonically.
+	return max(maxSeq+1, 5)
+}
+
+func (b *broadcast) openingHoldBudget() time.Duration {
+	return max(5*time.Second, b.segment*3/4)
+}
+
+func (b *broadcast) awaitRenditionOrigin(ctx context.Context, id string) {
+	b.mu.Lock()
+	r := b.renditions[id]
+	var done <-chan struct{}
+	if r != nil {
+		done = r.originDone
+	}
+	b.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-b.ctx.Done():
+	}
 }
 
 func (b *broadcast) addRendition(ctx context.Context, id string, decision core.Decision, caps ...core.ClientCaps) (transcode.SegmentIndex, error) {
@@ -391,6 +455,7 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		wasIdle := r.viewers <= 0
 		r.viewers++
 		b.viewers++
+		b.hadViewer = true
 		b.lastViewer = time.Now()
 		enc := r.encoder
 		b.mu.Unlock()
@@ -401,9 +466,11 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		}
 		return enc.Segments(), nil
 	}
+	startSeq := b.nextStartSeqLocked()
 	var idle []*broadcastRendition
 	for rid, r := range b.renditions {
 		if r.viewers <= 0 {
+			b.noteRenditionSeqLocked(r)
 			delete(b.renditions, rid)
 			r.cancel()
 			idle = append(idle, r)
@@ -422,10 +489,13 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		b.mu.Unlock()
 		return nil, fmt.Errorf("channel rendition limit reached: %w", transcode.ErrTooManyTranscodes)
 	}
+	if next := b.nextStartSeqLocked(); next > startSeq {
+		startSeq = next
+	}
 	b.mu.Unlock()
 	lifetime, cancel := context.WithCancel(b.ctx)
 	stop := context.AfterFunc(ctx, cancel)
-	encoder, err := b.runner.StartEncoder(lifetime, transcode.EncoderRequest{SessionID: id, Source: b.format, Decision: decision, ClientCaps: clientCaps, SegmentDuration: b.segment, DVRWindow: b.dvr, LiveSource: b.burstNoWait})
+	encoder, err := b.runner.StartEncoder(lifetime, transcode.EncoderRequest{SessionID: id, Source: b.format, Decision: decision, ClientCaps: clientCaps, SegmentDuration: b.segment, DVRWindow: b.dvr, LiveSource: b.burstNoWait, StartSeq: startSeq})
 	stop()
 	if err != nil {
 		cancel()
@@ -452,6 +522,7 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 	}
 	b.renditions[id] = r
 	b.viewers++
+	b.hadViewer = true
 	b.lastViewer = time.Now()
 	b.wg.Add(2)
 	b.mu.Unlock()
@@ -496,12 +567,21 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		} else {
 			first, err = index.Wait(lifetime, -1)
 		}
-		if err == nil && first.Seq != 0 {
+		if err == nil && first.Seq != startSeq && first.Seq != 0 {
 			err = fmt.Errorf("continuous encoder did not expose its first segment")
 		}
 		b.mu.Lock()
 		r.origin = first.Start
 		r.originErr = err
+		if err == nil {
+			if b.anchorOrigin.IsZero() || first.Start.Before(b.anchorOrigin) {
+				b.anchorOrigin = first.Start
+			}
+			if !b.haveSeq || first.Seq > b.lastSeq {
+				b.lastSeq = first.Seq
+				b.haveSeq = true
+			}
+		}
 		close(r.originDone)
 		b.mu.Unlock()
 		if err != nil {
@@ -509,13 +589,13 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		}
 		last := first
 		for _, count := range []int64{1, 3, 6} {
-			for last.Seq < count-1 {
+			for last.Seq-first.Seq < count-1 {
 				last, err = index.Wait(lifetime, last.Seq)
 				if err != nil {
 					return
 				}
 			}
-			b.logger.Debug("broadcast startup media published", "rendition", id, "segments", last.Seq+1,
+			b.logger.Debug("broadcast startup media published", "rendition", id, "segments", last.Seq-first.Seq+1,
 				"elapsed", time.Since(b.created), "mediaDuration", last.Start.Add(last.Duration).Sub(first.Start),
 				"publishedLead", time.Until(last.Start.Add(last.Duration)))
 		}
@@ -525,6 +605,7 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 func (b *broadcast) dropRendition(id string, r *broadcastRendition) {
 	b.mu.Lock()
 	if b.renditions[id] == r {
+		b.noteRenditionSeqLocked(r)
 		delete(b.renditions, id)
 		r.cancel()
 		b.lastViewer = time.Now()
@@ -542,6 +623,7 @@ func (b *broadcast) releaseRendition(id string) {
 		r.viewers--
 		b.lastViewer = time.Now()
 		if r.viewers <= 0 && len(b.renditions) > 1 {
+			b.noteRenditionSeqLocked(r)
 			delete(b.renditions, id)
 			r.cancel()
 		}
@@ -550,7 +632,7 @@ func (b *broadcast) releaseRendition(id string) {
 func (b *broadcast) idle(now time.Time) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.viewers == 0 && now.Sub(b.lastViewer) >= broadcastIdle
+	return b.viewers == 0 && b.attaching == 0 && now.Sub(b.lastViewer) >= broadcastIdle
 }
 func (b *broadcast) open(plan broadcastPlan, now time.Time) {
 	if b.current != nil && !b.current.stalledNoted && !b.current.lastFrameAt.IsZero() && resumesBroadcastInput(b.current.plan, plan) {
@@ -1295,14 +1377,10 @@ func (b *broadcast) step(now time.Time) bool {
 		return false
 	}
 	// Scheduled off-air owns the opening picture just like a scheduled title.
-	// Its decoder opens asynchronously: do not publish the generic signal
-	// screen while waiting for that first frame. Keep the original clock so
-	// preparation cannot extend the scheduled end, and bound cold admission
-	// by the same first-segment deadline used for opening graphics.
-	if frame.Video == nil && b.tick == 0 && !introActive && current.element == offAirSlate && !current.end.IsZero() {
-		if time.Since(b.created) >= b.segment*3/4 {
-			b.cancel()
-		}
+	// Its decoder opens asynchronously: hold tick 0 briefly for that first
+	// frame, then fall through to the fallback screen rather than cancelling
+	// an active broadcast.
+	if frame.Video == nil && b.tick == 0 && !introActive && current.element == offAirSlate && !current.end.IsZero() && time.Since(b.created) < b.openingHoldBudget() {
 		return false
 	}
 	// A live input cannot be read ahead of its provider. Its startup burst
@@ -1481,12 +1559,10 @@ func (b *broadcast) step(now time.Time) bool {
 		if frame.Video == nil && b.momentCardFrame != nil {
 			frame = transcode.RawFrame{Video: b.momentCardFrame}
 		}
-		if frame.Video == nil && b.tick == 0 {
-			// No generic screen or black tick may precede the prepared title.
-			// Reserve the last quarter of TARGETDURATION for encoding/playlist.
-			if time.Since(b.created) >= b.segment*3/4 {
-				b.cancel()
-			}
+		if frame.Video == nil && b.tick == 0 && time.Since(b.created) < b.openingHoldBudget() {
+			// Wait for the prepared opening title while inside the bounded
+			// opening hold; fall through to the signal screen if it never arrives
+			// rather than cancelling the broadcast out from under active viewers.
 			return false
 		}
 		if frame.Video != nil {
@@ -1510,10 +1586,7 @@ func (b *broadcast) step(now time.Time) bool {
 			}
 		}
 		if frame.Video == nil {
-			if b.tick == 0 {
-				if time.Since(b.created) >= b.segment*3/4 {
-					b.cancel()
-				}
+			if b.tick == 0 && time.Since(b.created) < b.openingHoldBudget() {
 				return false
 			}
 			frame.Video = b.black
@@ -1522,11 +1595,9 @@ func (b *broadcast) step(now time.Time) bool {
 	}
 	if frame.Video == nil {
 		// Give an already cached welcome a bounded chance to decode its first
-		// picture. Its preparation never replaces the normal live signal input.
-		if b.tick == 0 && introActive && !b.introFallback {
-			if time.Since(b.created) >= b.segment*3/4 {
-				b.cancel()
-			}
+		// picture. If it misses the hold window, fall through to the signal
+		// screen rather than cancelling the broadcast.
+		if b.tick == 0 && introActive && !b.introFallback && time.Since(b.created) < b.openingHoldBudget() {
 			return false
 		}
 		if b.fallback == nil {

@@ -52,7 +52,7 @@ func (s *Service) preemptIdleProvider(account, exceptChannel string) bool {
 		b.mu.Lock()
 		// A new output is awaiting its first viewer. Only previously attached
 		// outputs qualify for preemption, even immediately after detachment.
-		if b.viewers == 0 && !b.lastViewer.IsZero() {
+		if b.viewers == 0 && b.attaching == 0 && b.hadViewer && !b.closed {
 			b.closed = true
 			b.cancel()
 			delete(r.outputs, key)

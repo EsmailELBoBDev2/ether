@@ -31,7 +31,17 @@ func (a *App) buildLiveTV() error {
 	if a.transcoder != nil {
 		ffmpeg = a.transcoder.FFmpegPath()
 	}
-	svc, err := livetv.New(livetv.Options{ActivityChanged: a.onair.SetEnabled, SessionsChanged: a.notifySessionsChanged, RemoteUploadCap: a.remoteUploadCap, SourcesChanged: a.publishDashboard, VODChanged: func() {
+	svc, err := livetv.New(livetv.Options{ActivityChanged: a.onair.SetEnabled, SessionsChanged: a.notifySessionsChanged, SessionExpired: func(playID string) {
+		if playID == "" || a.frontends == nil || a.frontends.broker == nil {
+			return
+		}
+		broker := a.frontends.broker
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			broker.CleanupStoppedLive(ctx, playID)
+		}()
+	}, RemoteUploadCap: a.remoteUploadCap, SourcesChanged: a.publishDashboard, VODChanged: func() {
 		if a.resolver != nil {
 			a.resolver.SourcesChanged(context.Background())
 		}

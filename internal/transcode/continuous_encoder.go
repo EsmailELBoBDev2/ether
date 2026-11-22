@@ -117,7 +117,9 @@ func (e *continuousEncoder) recoverFromEncoderFailure(child **continuousChild, t
 	e.index.refresh()
 
 	resumeSeq := e.index.nextSeq()
-	tsOffsetTick, _ := continuousSegmentFrames(e.req.Source, e.req.SegmentDuration, e.req.LiveSource, resumeSeq)
+	baseStart, _ := continuousSegmentFrames(e.req.Source, e.req.SegmentDuration, e.req.LiveSource, e.req.StartSeq)
+	resumeStart, _ := continuousSegmentFrames(e.req.Source, e.req.SegmentDuration, e.req.LiveSource, resumeSeq)
+	tsOffsetTick := resumeStart - baseStart
 	replacement, startErr := e.startOrdinaryChild(resumeSeq, tick, tsOffsetTick)
 	if startErr != nil {
 		return startErr
@@ -167,6 +169,9 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 			os.RemoveAll(dir)
 		}
 	}()
+	if r.StartSeq < 0 {
+		r.StartSeq = 0
+	}
 	if r.SessionID == "" {
 		r.SessionID = randomHex(12)
 	}
@@ -197,7 +202,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 		}
 	}()
 
-	child, e := enc.startGeneration(0, 0, 0)
+	child, e := enc.startGeneration(r.StartSeq, 0, 0)
 	if e != nil {
 		return nil, e
 	}
@@ -212,6 +217,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 	go enc.index.watch()
 
 	g, startup, steady := continuousLadder(r.Source, r.SegmentDuration, r.LiveSource)
+	baseStart, _ := continuousSegmentFrames(r.Source, r.SegmentDuration, r.LiveSource, r.StartSeq)
 	enc.workers.Add(1)
 	go func() {
 		defer enc.workers.Done()
@@ -279,8 +285,9 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 				}
 			}
 
-			if tick >= steady && (tick-steady)%g == 0 && enc.wantBoundarySwap(child) {
-				seq := int64(len(startup)) + (tick-steady)/g
+			absTick := baseStart + tick
+			if tick > 0 && absTick >= steady && (absTick-steady)%g == 0 && enc.wantBoundarySwap(child) {
+				seq := int64(len(startup)) + (absTick-steady)/g
 				child.drainInputsAndWait(enc, seq)
 				next, swapErr := enc.startGeneration(seq, tick, tick)
 				if swapErr != nil {

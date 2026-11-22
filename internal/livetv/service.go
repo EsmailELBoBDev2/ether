@@ -411,6 +411,9 @@ func (s *Service) invalidate(channelID, sourceID string) {
 	for _, ss := range stale {
 		s.sessionLog(ss).Info("live session expired")
 		ss.close(s)
+		if s.o.SessionExpired != nil {
+			s.o.SessionExpired(ss.info.ID)
+		}
 	}
 	if len(stale) > 0 {
 		s.notifySessionsChanged()
@@ -615,6 +618,9 @@ func (s *Service) expireSessions() {
 	for _, ss := range stale {
 		s.sessionLog(ss).Info("live session expired")
 		ss.close(s)
+		if s.o.SessionExpired != nil {
+			s.o.SessionExpired(ss.info.ID)
+		}
 	}
 	if len(stale) > 0 {
 		s.notifySessionsChanged()

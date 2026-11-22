@@ -16,7 +16,6 @@ type multiviewPlaybackRequest struct {
 	TileCount  int    `json:"tileCount,omitempty"`
 	TileHeight int    `json:"tileHeight,omitempty"`
 	MaxHeight  int    `json:"maxHeight,omitempty"`
-	Focused    bool   `json:"focused,omitempty"`
 }
 
 func roundMultiviewTileHeight(h int) int {
@@ -57,7 +56,6 @@ func parseMultiviewPlayback(req *multiviewPlaybackRequest) (*frontend.MultiviewT
 		Tile:      tile,
 		TileCount: req.TileCount,
 		MaxHeight: height,
-		Focused:   req.Focused,
 	}, true
 }
 
@@ -201,35 +199,12 @@ func (i *instance) endMultiviewSessions(viewerID int64, deviceID, groupID string
 	}
 }
 
-func (i *instance) activeMultiviewTileCount(viewerID int64, deviceID, groupID string) int {
-	if groupID == "" {
-		return 1
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	count := 0
-	for _, s := range i.sessions {
-		if s.viewer == viewerID && s.device == deviceID && s.multiviewGroup == groupID {
-			s.mu.Lock()
-			alive := s.ended.IsZero()
-			s.mu.Unlock()
-			if alive {
-				count++
-			}
-		}
-	}
-	if count < 1 {
-		return 1
-	}
-	return count
-}
-
 // replanLiveSession replans an active live session (for example upgrading a
-// focused multiview tile to full device quality or stepping it back down to a
-// tile ceiling) through the shared StartStream replan path. It reports whether
+// multiview tile's height or restoring full device height when maxHeight is
+// omitted/zero) through the shared StartStream replan path. It reports whether
 // the command succeeded and whether the plan changed. Caller holds s.mu and
 // s.commandMu.
-func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, s *playSession, id string, maxHeight *int, focused *bool) (ok bool, changed bool) {
+func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, s *playSession, id string, maxHeight *int) (ok bool, changed bool) {
 	if _, live := s.plan["live"]; !live {
 		i.unavailable(w, r)
 		return false, false
@@ -239,34 +214,8 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 		return false, false
 	}
 	targetHeight := 0
-	isFocused := true
-	switch {
-	case maxHeight != nil:
+	if maxHeight != nil {
 		targetHeight = *maxHeight
-		isFocused = targetHeight == 0
-		if focused != nil {
-			isFocused = *focused
-		}
-	case focused != nil && !*focused:
-		isFocused = false
-		if s.multiviewTileHeight > 0 {
-			targetHeight = s.multiviewTileHeight
-		} else {
-			tiles := 1
-			groupID := s.multiviewGroup
-			viewerID, deviceID := s.viewer, s.device
-			if !s.port(w, func() { tiles = i.activeMultiviewTileCount(viewerID, deviceID, groupID) }) {
-				return false, false
-			}
-			if tiles >= 3 {
-				targetHeight = 720
-			} else {
-				targetHeight = 1080
-			}
-		}
-	default:
-		targetHeight = 0
-		isFocused = true
 	}
 
 	var url string
@@ -310,7 +259,7 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 		} else {
 			delete(mvDoc, "maxHeight")
 		}
-		mvDoc["focused"] = isFocused
+		delete(mvDoc, "focused")
 	}
 	s.retainDiagnostics()
 	s.source++

@@ -864,6 +864,11 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		return
 	}
 	if s.live && len(tail) >= 2 && tail[0] == "live" && b.deps.Live != nil {
+		if s.multiviewGroup != "" {
+			b.mu.Lock()
+			b.touchMultiviewLocked(s.multiviewGroup, b.deps.Now())
+			b.mu.Unlock()
+		}
 		if liveBase == "" {
 			liveBase = "/sessions/media/" + s.public.ID + "/" + s.grant + "/live/"
 		}

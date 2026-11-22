@@ -485,6 +485,11 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 		if admitted != nil && admitted.startBudget > 0 {
 			budget = admitted.startBudget
 		}
+		if core.LiveHandover(ctx) {
+			if running := s.broadcasts.running(key); running != nil {
+				budget = max(budget, 3*running.segment+3*time.Second)
+			}
+		}
 		var cancel context.CancelFunc
 		startCtx, cancel = context.WithTimeout(ctx, budget)
 		defer cancel()
@@ -504,12 +509,26 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 	ss.mu.Unlock()
 	if provider, ok := lease.broadcast.planner.(*providerBroadcastPlanner); ok && !s.coldFallbackAllowed(c) {
 		if err := provider.awaitFirstPicture(startCtx); err != nil {
+			ss.mu.Lock()
+			if ss.broadcast == lease {
+				ss.broadcast = nil
+			}
+			ss.mu.Unlock()
 			lease.close()
 			s.broadcasts.discardCold(lease.broadcast)
 			return err
 		}
 	}
-	awaitBroadcastCushion(startCtx, lease, c.Kind == "iptv")
+	if err := awaitBroadcastCushion(startCtx, lease, c.Kind == "iptv"); err != nil {
+		ss.mu.Lock()
+		if ss.broadcast == lease {
+			ss.broadcast = nil
+		}
+		ss.mu.Unlock()
+		lease.close()
+		s.broadcasts.discardCold(lease.broadcast)
+		return err
+	}
 	return nil
 }
 

@@ -110,6 +110,7 @@ type continuousSegmentIndex struct {
 	enc                      *continuousEncoder
 	mu                       sync.Mutex
 	segments                 []Segment
+	startSeq                 int64
 	next                     int64
 	start                    time.Time
 	duration                 time.Duration
@@ -133,7 +134,8 @@ func newContinuousSegmentIndex(e *continuousEncoder) *continuousSegmentIndex {
 	if bandwidth <= 0 {
 		bandwidth = videoBitrate(core.MediaInfo{}, d) + max(d.AudioBitrateKbps, 128)
 	}
-	return &continuousSegmentIndex{enc: e, duration: time.Second * time.Duration(g*f.FPSDen) / time.Duration(f.FPSNum), changed: make(chan struct{}), kicks: make(chan struct{}, 1), width: w, height: h, bandwidth: bandwidth * 1000}
+	startSeq := max(e.req.StartSeq, 0)
+	return &continuousSegmentIndex{enc: e, startSeq: startSeq, next: startSeq, policySeq: startSeq, duration: time.Second * time.Duration(g*f.FPSDen) / time.Duration(f.FPSNum), changed: make(chan struct{}), kicks: make(chan struct{}, 1), width: w, height: h, bandwidth: bandwidth * 1000}
 }
 
 // kick refreshes the index as soon as the store receives a file.
@@ -293,6 +295,11 @@ func (s *continuousSegmentIndex) Wait(ctx context.Context, after int64) (Segment
 		s.mu.Lock()
 		if len(s.segments) > 0 {
 			first := s.segments[0].Seq
+			if after == -1 && first == s.startSeq {
+				out := s.segments[0]
+				s.mu.Unlock()
+				return out, nil
+			}
 			if after+1 < first {
 				s.mu.Unlock()
 				return Segment{}, core.ErrNotFound
@@ -433,8 +440,9 @@ func continuousWindow(window, duration time.Duration) int {
 func (s *continuousSegmentIndex) recordPolicy(tick int64, tags []any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	baseStart, _ := continuousSegmentFrames(s.enc.req.Source, s.enc.req.SegmentDuration, s.enc.req.LiveSource, s.startSeq)
 	start, frames := continuousSegmentFrames(s.enc.req.Source, s.enc.req.SegmentDuration, s.enc.req.LiveSource, s.policySeq)
-	if tick >= start+frames {
+	if tick >= (start-baseStart)+frames {
 		s.policySeq++
 	}
 	if s.policyTags == nil {

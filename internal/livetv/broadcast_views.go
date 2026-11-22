@@ -16,44 +16,69 @@ import (
 )
 
 // awaitBroadcastCushion prefers three target durations for virtual
-// channels and one target duration for providers. Only tune waits, with a
-// bounded budget; the first playlist never waits for this cushion.
-func awaitBroadcastCushion(ctx context.Context, lease *broadcastLease, provider bool) {
+// channels (and live handovers such as multiview tile replans) and one target
+// duration for cold providers. Only tune waits, with a bounded budget; the
+// first playlist never waits for this cushion. Returns an error if no segment
+// is published before the budget expires or the broadcast stops, so callers
+// never report ready before a manifest can be served.
+func awaitBroadcastCushion(ctx context.Context, lease *broadcastLease, provider bool) error {
 	index, err := lease.output()
 	if err != nil {
-		return
+		return err
 	}
 	segment := broadcastSegment(lease)
-	limit := 3 * time.Second
 	targets := 1
-	if !provider {
-		// Prefer AVPlayer's three-target startup buffer at tune time.
-		// Playlist handlers never wait for this cushion.
-		limit = 3 * time.Second
+	if !provider || core.LiveHandover(ctx) {
+		// Prefer AVPlayer's three-target startup buffer at tune time, and
+		// gather a full cushion during a live handover while the previous
+		// rendition keeps playing on screen.
 		targets = 3
 	}
+	firstLimit := max(12*time.Second, segment*4)
+	cushionLimit := max(3*time.Second, segment*time.Duration(targets)+2*time.Second)
 	if deadline, ok := ctx.Deadline(); ok {
-		limit = min(limit, time.Until(deadline)-500*time.Millisecond)
+		avail := time.Until(deadline) - 500*time.Millisecond
+		firstLimit = min(firstLimit, avail)
+		cushionLimit = min(cushionLimit, avail)
 	}
-	if limit <= 0 {
-		return
-	}
-	wait, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
 	latest, ok := index.Latest()
 	if !ok {
-		if latest, err = index.Wait(wait, -1); err != nil {
-			return
+		if firstLimit <= 0 {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return core.ErrNotAvailable
+		}
+		firstWait, cancel := context.WithTimeout(ctx, firstLimit)
+		latest, err = index.Wait(firstWait, -1)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return core.ErrNotAvailable
 		}
 	}
-	// Return the first playable provider segment immediately. The frame clock
-	// continues building the cushion while the client fetches its playlist.
-	first := index.Since(-1, 1)
-	for len(first) > 0 && latest.Start.Add(latest.Duration).Sub(first[0].Start) < segment*time.Duration(targets) {
-		if latest, err = index.Wait(wait, latest.Seq); err != nil {
-			return
+	if cushionLimit > 0 {
+		wait, cancel := context.WithTimeout(ctx, cushionLimit)
+		// Return the first playable cold provider segment immediately. The
+		// frame clock continues building the cushion while the client fetches
+		// its playlist.
+		first := index.Since(-1, 1)
+		for len(first) > 0 && latest.Start.Add(latest.Duration).Sub(first[0].Start) < segment*time.Duration(targets) {
+			if latest, err = index.Wait(wait, latest.Seq); err != nil {
+				break
+			}
 		}
+		cancel()
 	}
+	originWait, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	lease.broadcast.awaitRenditionOrigin(originWait, lease.rendition)
+	cancel()
+	if lease.broadcast.ctx.Err() != nil {
+		return core.ErrNotAvailable
+	}
+	return nil
 }
 
 // broadcastSegment is the target duration of the output a lease reads.
@@ -76,38 +101,127 @@ func (s *Service) broadcastSegments(ctx context.Context, ss *session) (transcode
 		return index, nil
 	}
 	// A retained session URL can outlive its output (for example after a
-	// lineup invalidation). Rejoin a running output or acquire a fresh one,
-	// serialized against another playlist request doing the same recovery.
-	ss.prepareMu.Lock()
-	defer ss.prepareMu.Unlock()
+	// lineup invalidation). Run rejoin under the session's lifetime so a
+	// short playlist request timeout or abort never cancels a cold start.
+	waitBudget := broadcastSegment(lease) / 2
+	done := s.ensureBroadcastRejoin(ss, lease)
+	if done == nil {
+		ss.mu.Lock()
+		closed := ss.closed
+		lease = ss.broadcast
+		ss.mu.Unlock()
+		if closed {
+			return nil, core.ErrNotFound
+		}
+		if lease == nil {
+			return nil, core.ErrNotAvailable
+		}
+		return lease.output()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, waitBudget)
+	defer cancel()
+	select {
+	case <-done:
+		ss.mu.Lock()
+		closed := ss.closed
+		lease = ss.broadcast
+		rejoinErr := ss.rejoinErr
+		ss.mu.Unlock()
+		if closed {
+			return nil, core.ErrNotFound
+		}
+		if lease != nil {
+			if index, err := lease.output(); err == nil {
+				return index, nil
+			}
+		}
+		if rejoinErr != nil {
+			return nil, rejoinErr
+		}
+		return nil, core.ErrNotAvailable
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, core.ErrNotAvailable
+	}
+}
+
+func (s *Service) ensureBroadcastRejoin(ss *session, stale *broadcastLease) <-chan struct{} {
 	ss.mu.Lock()
 	if ss.closed {
 		ss.mu.Unlock()
-		return nil, core.ErrNotFound
+		return nil
 	}
-	lease = ss.broadcast
+	if ss.broadcast != nil && ss.broadcast != stale {
+		current := ss.broadcast
+		ss.mu.Unlock()
+		if _, err := current.output(); err == nil {
+			return nil
+		}
+		ss.mu.Lock()
+		if ss.closed {
+			ss.mu.Unlock()
+			return nil
+		}
+	}
+	if ss.rejoinDone != nil {
+		done := ss.rejoinDone
+		ss.mu.Unlock()
+		return done
+	}
+	done := make(chan struct{})
+	ss.rejoinDone = done
+	ss.rejoinErr = nil
+	base := ss.ctx
+	if base == nil {
+		base = s.serviceContext()
+	}
+	if base == nil {
+		base = context.Background()
+	}
 	ss.mu.Unlock()
-	if lease == nil {
-		return nil, core.ErrNotAvailable
-	}
-	if index, err = lease.output(); err == nil {
-		return index, nil
-	}
-	lease.close()
-	// Recovery shares the playlist's bounded first-response budget.
-	recoverCtx, cancel := context.WithTimeout(ctx, broadcastSegment(lease)/4)
-	defer cancel()
-	if err := s.startBroadcast(recoverCtx, ss); err != nil {
-		return nil, err
-	}
-	ss.mu.Lock()
-	lease = ss.broadcast
-	ss.mu.Unlock()
-	if lease == nil {
-		return nil, core.ErrNotAvailable
-	}
-	s.sessionLog(ss).Info("live retained session rejoined broadcast")
-	return lease.output()
+
+	go func() {
+		defer close(done)
+		defer func() {
+			ss.mu.Lock()
+			if ss.rejoinDone == done {
+				ss.rejoinDone = nil
+			}
+			ss.mu.Unlock()
+		}()
+		ss.prepareMu.Lock()
+		defer ss.prepareMu.Unlock()
+		ss.mu.Lock()
+		if ss.closed {
+			ss.rejoinErr = core.ErrNotFound
+			ss.mu.Unlock()
+			return
+		}
+		lease := ss.broadcast
+		ss.mu.Unlock()
+		if lease == nil {
+			ss.mu.Lock()
+			ss.rejoinErr = core.ErrNotAvailable
+			ss.mu.Unlock()
+			return
+		}
+		if _, err := lease.output(); err == nil {
+			return
+		}
+		lease.close()
+		rejoinCtx, cancel := context.WithTimeout(base, 15*time.Second)
+		defer cancel()
+		err := s.startBroadcast(rejoinCtx, ss)
+		ss.mu.Lock()
+		ss.rejoinErr = err
+		ss.mu.Unlock()
+		if err == nil {
+			s.sessionLog(ss).Info("live retained session rejoined broadcast")
+		}
+	}()
+	return done
 }
 func (s *Service) broadcastWindow(ctx context.Context, ss *session, r *http.Request) (transcode.SegmentIndex, []transcode.Segment, error) {
 	index, err := s.broadcastSegments(ctx, ss)

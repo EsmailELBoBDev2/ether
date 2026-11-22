@@ -1783,6 +1783,40 @@ func (b *Broker) CleanupStoppedPlayback(ctx context.Context, playID string) bool
 	return true
 }
 
+// CleanupStoppedLive retires local broker live sessions (including multiview
+// tiles) whose underlying live session has already expired or stopped, freeing
+// broker state, cluster ownership, and frontend watchers independently of any
+// multiview group TTL.
+func (b *Broker) CleanupStoppedLive(ctx context.Context, playID string) bool {
+	if b == nil || playID == "" {
+		return false
+	}
+	b.mu.Lock()
+	var entries []brokerSession
+	for _, s := range b.sessions {
+		if s.live && s.playID == playID {
+			entries = append(entries, *s)
+		}
+	}
+	b.mu.Unlock()
+	if len(entries) == 0 {
+		return false
+	}
+	for i := range entries {
+		s := &entries[i]
+		gateKey := ownerGateKey(s.public.ViewerID, s.clientID)
+		if s.multiviewGroup != "" {
+			gateKey = tileGateKey(s.public.ViewerID, s.clientID, s.multiviewGroup, s.multiviewTile)
+		}
+		unlock, err := b.gates.Acquire(ctx, gateKey)
+		if err == nil {
+			_ = b.stopLocked(ctx, s)
+			unlock()
+		}
+	}
+	return true
+}
+
 // StopPlayback stops every local broker session fed by a source ID.
 func (b *Broker) StopPlayback(ctx context.Context, playID string) bool {
 	b.mu.Lock()

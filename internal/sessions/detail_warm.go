@@ -41,6 +41,7 @@ func (b *Broker) playCaps(v *core.Viewer, protocol frontend.Protocol, device cor
 			caps.MaxBitrateKbps = limit
 		}
 	}
+	b.stampViewerTranscoding(v, &caps)
 	return caps
 }
 

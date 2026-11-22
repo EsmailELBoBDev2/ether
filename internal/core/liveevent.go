@@ -171,14 +171,27 @@ type LiveEventMatchHints struct {
 // LiveEventWatchTarget links a live event to a playable channel, add-on, or
 // plugin-provided stream target. Ether attaches this; plugins do not emit it.
 type LiveEventWatchTarget struct {
-	Kind       string  `json:"kind"` // channel|addon|plugin
-	ChannelID  string  `json:"channelId,omitempty"`
-	Name       string  `json:"name"`
-	Number     string  `json:"number,omitempty"`
-	Logo       string  `json:"logo,omitempty"`
-	Live       bool    `json:"live"`
-	Confidence float64 `json:"confidence,omitempty"`
-	URL        string  `json:"url,omitempty"`
+	Kind       string                 `json:"kind"` // channel|addon|plugin
+	ChannelID  string                 `json:"channelId,omitempty"`
+	Name       string                 `json:"name"`
+	Number     string                 `json:"number,omitempty"`
+	Logo       string                 `json:"logo,omitempty"`
+	Live       bool                   `json:"live"`
+	Confidence float64                `json:"confidence,omitempty"`
+	URL        string                 `json:"url,omitempty"`
+	Alternates []LiveEventWatchTarget `json:"alternates,omitempty"`
+}
+
+// Clone returns a deep copy of t including any collapsed alternate feeds.
+func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
+	out := t
+	if len(t.Alternates) > 0 {
+		out.Alternates = make([]LiveEventWatchTarget, len(t.Alternates))
+		for i, alt := range t.Alternates {
+			out.Alternates[i] = alt.Clone()
+		}
+	}
+	return out
 }
 
 // LiveEvent is Ether's JSON-stable, generic live event model suitable for
@@ -250,7 +263,10 @@ func (e LiveEvent) Clone() LiveEvent {
 		out.MatchHints = h
 	}
 	if e.Watch != nil {
-		out.Watch = append([]LiveEventWatchTarget(nil), e.Watch...)
+		out.Watch = make([]LiveEventWatchTarget, len(e.Watch))
+		for i, w := range e.Watch {
+			out.Watch[i] = w.Clone()
+		}
 	}
 	return out
 }

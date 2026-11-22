@@ -84,6 +84,26 @@ func (f appFavoriteEntities) ListEntityKeys(ctx context.Context, viewer *core.Us
 	return keys, nil
 }
 
+func (f appFavoriteEntities) ListChannelIDs(ctx context.Context, viewer *core.User) ([]string, error) {
+	if f.app == nil || f.app.favorites == nil || viewer == nil {
+		return nil, nil
+	}
+	entries, err := f.app.favorites.List(ctx, viewer, favorites.KindChannel, 0)
+	if errors.Is(err, favorites.ErrForbidden) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Subject.ID != "" {
+			ids = append(ids, entry.Subject.ID)
+		}
+	}
+	return ids, nil
+}
+
 // pluginLiveFeedBridge is a zero-background-work fallback LiveFeedHub that calls
 // plugin live-feed routes on demand via plugins.Manager.Call until W255's
 // liveevents.Hub attaches via screens.Service.SetHub.

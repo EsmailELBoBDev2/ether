@@ -333,9 +333,28 @@ func (s *Service) collectionsPageFirst(ctx context.Context, v *core.User, allowe
 		if hasFr && typ == core.TypeMovie {
 			includeFranchises = true
 		}
+		counter, err := s.ownedMemberCounter(ctx, v, nil, typ)
+		if err != nil {
+			return frontend.CollectionPage{}, true, err
+		}
 		for _, c := range owned {
 			if (lowerQuery != "" && !strings.Contains(strings.ToLower(c.Title), lowerQuery)) || c.Type != typ || seenKeys[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
 				continue
+			}
+			if counter != nil {
+				n, err := counter(c)
+				if err != nil {
+					return frontend.CollectionPage{}, true, err
+				}
+				if n > 0 {
+					if q.ExistsOnly {
+						return frontend.CollectionPage{Total: 1}, true, nil
+					}
+					c.ChildCount = n
+					seenKeys[c.Key] = true
+					ownedVisible = append(ownedVisible, c)
+					continue
+				}
 			}
 			if q.ExistsOnly {
 				has, err := s.collectionHasVisibleMember(ctx, v, c)
@@ -388,14 +407,34 @@ func (s *Service) viewCollectionsPageFirst(ctx context.Context, v *core.User, ty
 	type candidate struct {
 		col     core.Collection
 		members []core.Title
+		counted bool // ChildCount already holds the visible member count
 	}
 	var candidates []candidate
 	var allKeys []core.RatingKey
 	seenMemberKey := map[core.RatingKey]bool{}
 	seenColKey := map[core.RatingKey]bool{}
+	counter, err := s.ownedMemberCounter(ctx, v, stored, typ)
+	if err != nil {
+		return frontend.CollectionPage{}, true, err
+	}
 	for _, c := range owned {
 		if (lowerQuery != "" && !strings.Contains(strings.ToLower(c.Title), lowerQuery)) || c.Type != typ || seenColKey[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
 			continue
+		}
+		// Counting shared members in SQL avoids loading every member title
+		// (a genre collection holds thousands). Anything it cannot answer, or
+		// a zero that per-viewer members could explain, takes the exact path.
+		if counter != nil {
+			n, err := counter(c)
+			if err != nil {
+				return frontend.CollectionPage{}, true, err
+			}
+			if n > 0 {
+				seenColKey[c.Key] = true
+				c.ChildCount = n
+				candidates = append(candidates, candidate{col: c, counted: true})
+				continue
+			}
 		}
 		members, err := s.collectionItemsFor(ctx, v, c.Key, c.Upcoming)
 		if err != nil {
@@ -425,6 +464,13 @@ func (s *Service) viewCollectionsPageFirst(ctx context.Context, v *core.User, ty
 	}
 	var ownedVisible []core.Collection
 	for _, cand := range candidates {
+		if cand.counted {
+			ownedVisible = append(ownedVisible, cand.col)
+			if q.ExistsOnly {
+				return frontend.CollectionPage{Total: 1}, true, nil
+			}
+			continue
+		}
 		count := 0
 		for _, m := range cand.members {
 			if m.Type != typ {
@@ -453,6 +499,48 @@ func (s *Service) viewCollectionsPageFirst(ctx context.Context, v *core.User, ty
 		return frontend.CollectionPage{Items: ownedVisible[start:end], Total: len(ownedVisible)}, true, nil
 	}
 	return s.combineOwnedAndFranchises(ctx, v, stored, ownedVisible, q)
+}
+
+// ownedMemberCounter returns a function counting a smart collection's shared
+// members that v may see in stored (or the built-in library of typ), as one
+// indexed statement on collections_members. It returns nil when the viewer's
+// exclusions cannot be expressed in SQL; the counter answers 0 for anything it
+// cannot count (ephemeral, upcoming or non-smart collections).
+func (s *Service) ownedMemberCounter(ctx context.Context, v *core.User, stored *core.Library, typ core.MediaType) (func(core.Collection) (int, error), error) {
+	if s.d.Browse == nil {
+		return nil, nil
+	}
+	base := core.Filter{Type: typ, LocalOnly: true}
+	if stored != nil && stored.ID != core.LibraryMovies && stored.ID != core.LibraryShows {
+		base = s.libraryBrowseFilter(ctx, v, *stored, base)
+		if base.CollectionMembers != 0 {
+			return nil, nil // a collection library keeps the exact path
+		}
+	}
+	var ex LibraryPageExclusions
+	if s.d.PageExclusions != nil {
+		ex = s.d.PageExclusions(ctx, v, typ)
+		if ex.Err != nil {
+			return nil, ex.Err
+		}
+	}
+	f, fits, none := viewerBrowseFilter(base, v, ex, typ)
+	if !fits || none {
+		return nil, nil
+	}
+	return func(c core.Collection) (int, error) {
+		key, section := c.Key.CollectionSection()
+		if c.Upcoming || c.Key.IsEphemeral() || key.Kind() != core.KindSmart || section != "" {
+			return 0, nil
+		}
+		q := f
+		q.CollectionMembers = key.TMDB()
+		page, err := s.d.Browse(ctx, core.BrowseQuery{Filter: q, Limit: 1})
+		if err != nil {
+			return 0, err
+		}
+		return page.Total, nil
+	}, nil
 }
 
 func (s *Service) combineOwnedAndFranchises(ctx context.Context, v *core.User, stored *core.Library, ownedVisible []core.Collection, q frontend.CollectionQuery) (frontend.CollectionPage, bool, error) {

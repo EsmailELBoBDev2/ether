@@ -49,8 +49,10 @@ type anonEntry struct {
 	// episode before it reads the one it plays; the broker keeps one session
 	// per device, so those later opens retire the playing title's session.
 	superseded bool
-	expires    time.Time
-	seq        uint64
+	// served is when a stream was last served from this entry.
+	served  time.Time
+	expires time.Time
+	seq     uint64
 }
 
 // anonIndex is a bounded, per-instance map from (peer, item) to the most
@@ -88,7 +90,8 @@ func (x *anonIndex) remember(e anonEntry) {
 	e.expires = now.Add(anonSessionTTL)
 	key := anonKey{peer: e.peerAddr, item: e.item}
 	for other, list := range x.entries {
-		if other.peer != e.peerAddr || other.item == e.item {
+		// A deferred queue entry opened nothing, so it retired nothing.
+		if e.sessionID == "" || other.peer != e.peerAddr || other.item == e.item {
 			continue
 		}
 		for idx := range list {
@@ -144,8 +147,35 @@ func (x *anonIndex) touch(peer netip.Addr, item frontend.RatingKey, seq uint64) 
 	for idx, e := range x.entries[anonKey{peer: peer, item: item}] {
 		if e.seq == seq && e.expires.After(now) {
 			x.entries[anonKey{peer: peer, item: item}][idx].expires = now.Add(anonSessionTTL)
+			x.entries[anonKey{peer: peer, item: item}][idx].served = now
 		}
 	}
+}
+
+// anonStreamingWindow is how recently a credential-less stream must have been
+// served for its device to count as playing it.
+const anonStreamingWindow = 30 * time.Second
+
+// streamingOther reports whether the viewer's device on this peer is playing
+// another item through a credential-less stream right now.
+func (x *anonIndex) streamingOther(peer netip.Addr, viewerID int64, deviceID string, item frontend.RatingKey) bool {
+	if !peer.IsValid() || deviceID == "" {
+		return false
+	}
+	now := time.Now()
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for key, list := range x.entries {
+		if key.peer != peer || key.item == item {
+			continue
+		}
+		for _, e := range list {
+			if e.viewer.ID == viewerID && e.device.ID == deviceID && !e.superseded && e.sessionID != "" && now.Sub(e.served) < anonStreamingWindow {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // forget drops a peer's windows for an item its viewer stopped, so a stopped
@@ -274,6 +304,36 @@ func (i *instance) rememberAnonymousSession(r *http.Request, viewer *frontend.Vi
 	})
 }
 
+// deferQueuedPlayback reports whether a PlaybackInfo is a queue prefetch from
+// a device that is playing another item through a credential-less stream
+// (Findroid asks for the previous and next episode as it starts one). Opening
+// it would retire the session that device is reading; it is answered from the
+// plan alone, and its stream opens a session when the player reaches it.
+func (i *instance) deferQueuedPlayback(r *http.Request, viewer *frontend.Viewer, device frontend.Device, item frontend.RatingKey) bool {
+	if i.anon == nil || viewer == nil || item == 0 {
+		return false
+	}
+	return i.anon.streamingOther(i.peerAddr(r), viewer.ID, device.ID, item)
+}
+
+// rememberQueuedPlayback records a deferred queue entry: no session yet, and
+// the plan request its stream opens one from.
+func (i *instance) rememberQueuedPlayback(r *http.Request, viewer *frontend.Viewer, item frontend.RatingKey, device frontend.Device, version, detailSrc, sourceID string, plan frontend.PlanRequest) {
+	if i.anon == nil || viewer == nil || item == 0 {
+		return
+	}
+	peer := i.peerAddr(r)
+	if !peer.IsValid() {
+		return
+	}
+	plan.Viewer = nil
+	plan.Intent.Estimate = false
+	i.anon.remember(anonEntry{
+		peerAddr: peer, item: item, version: version, detailSrc: detailSrc, sourceID: sourceID,
+		viewer: *viewer, device: device, plan: &plan, superseded: true,
+	})
+}
+
 // noteAnonymousTimeline keeps a device's credential-less windows in step
 // with its authenticated progress reports: reports extend them, and a stop
 // ends the stopped item's window.
@@ -335,6 +395,13 @@ func (i *instance) reopenAnonymous(r *http.Request, peer netip.Addr, key fronten
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: i.protocol, PlanID: plan.ID, Viewer: &viewer, Device: entry.device})
 	if err != nil {
+		return anonEntry{}, frontend.SessionAccess{}, nil, false
+	}
+	// As PlaybackInfo does: the direct file is served, and the session
+	// listed, only once its stream has started.
+	access := frontend.SessionAccess{Viewer: &viewer, Device: entry.device, Protocol: i.protocol}
+	if _, err := i.host.Sessions.StartStream(r.Context(), access, session.ID, frontend.StreamRequest{Format: frontend.StreamDirect, Position: request.Intent.Position}); err != nil {
+		_ = i.host.Sessions.Stop(r.Context(), access, session.ID)
 		return anonEntry{}, frontend.SessionAccess{}, nil, false
 	}
 	if i.host.Log != nil {

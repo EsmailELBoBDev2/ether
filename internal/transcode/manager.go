@@ -266,6 +266,9 @@ type Manager struct {
 
 	mu              sync.Mutex
 	cfg             config.Transcode
+	// throttleSeconds mirrors cfg.ThrottleSeconds for sessions, which read it
+	// under their own lock and must not take the manager's.
+	throttleSeconds atomic.Int64
 	sessions        map[string]*Session
 	httpSessions    map[string]*httpSession
 	downloadEncodes int
@@ -300,6 +303,7 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 		stop:         make(chan struct{}),
 		reaperDone:   make(chan struct{}),
 	}
+	m.throttleSeconds.Store(int64(cfg.ThrottleSeconds))
 	f := defaultFinder()
 	if o.finder != nil {
 		f = *o.finder
@@ -617,6 +621,7 @@ func (m *Manager) HWAccel() core.HWAccel {
 // RemoteMaxBitrateKbps) and schedules optional RTX runtime setup. FFmpeg paths
 // and the ordinary hardware encoder choice still need a restart.
 func (m *Manager) UpdateConfig(cfg config.Transcode) {
+	m.throttleSeconds.Store(int64(cfg.ThrottleSeconds))
 	m.mu.Lock()
 	previous := m.cfg.RTXVideo
 	m.cfg = cfg

@@ -494,6 +494,7 @@ export interface EtherConfig {
     vaapiDevice: string;
     tempDir: string;
     maxTranscodes: number;
+    throttleSeconds?: number;
     remoteMaxBitrateKbps: number;
     remoteUploadBudgetKbps?: number;
     rtxVideo?: {

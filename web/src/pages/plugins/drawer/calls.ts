@@ -101,6 +101,22 @@ export function describeCall(
         return t("Plugin directory");
     }
   }
+  const liveRoute = /^\/ether\/v1\/live\/([^/]+)\/(events(?:\/[^/]+)?|entities|standings)$/.exec(
+    path,
+  );
+  if (liveRoute) {
+    const [, rawFeed, rest] = liveRoute;
+    const decodedFeed = decodeURIComponent(rawFeed ?? "");
+    const feedMeta = detail.manifest.ether?.contributes?.liveFeeds?.find(
+      (f) => f.id === decodedFeed,
+    );
+    const feedLabel =
+      feedMeta?.title && !feedMeta.title.startsWith("$t:") ? feedMeta.title : decodedFeed;
+    if (rest === "events") return t("Live events: {feed}", { feed: feedLabel });
+    if (rest?.startsWith("events/")) return t("Live event details: {feed}", { feed: feedLabel });
+    if (rest === "entities") return t("Live entities: {feed}", { feed: feedLabel });
+    if (rest === "standings") return t("Live tables: {feed}", { feed: feedLabel });
+  }
   const kindRoute =
     /^\/ether\/v1\/kinds\/([^/]+)\/(browse|changes|search|expand|resolve|match)$/.exec(path);
   if (kindRoute) {

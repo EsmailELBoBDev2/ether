@@ -1013,29 +1013,59 @@ func (m *Manager) ResolveTextFunc(ctx context.Context, id, locale string) func(s
 	}
 }
 
-// localizedKindLibraries returns man with its media kinds' library names
+// localizedKindLibraries returns man with owner-visible contributed labels
+// (media kind library names/labels, live feed titles, and screen/section titles)
 // resolved from the plugin's strings, so the console never shows "$t:" keys.
 // The stored manifest is left untouched.
 func (m *Manager) localizedKindLibraries(ctx context.Context, id string, man Manifest) Manifest {
-	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 {
+	if man.Ether == nil {
+		return man
+	}
+	c := man.Ether.Contributes
+	if len(c.MediaKinds) == 0 && len(c.LiveFeeds) == 0 && len(c.Screens) == 0 {
 		return man
 	}
 	resolve := m.ResolveTextFunc(ctx, id, "")
 	if resolve == nil {
 		return man
 	}
-	ether := *man.Ether
-	kinds := append([]MediaKindMeta(nil), ether.Contributes.MediaKinds...)
-	for i := range kinds {
-		for _, field := range []*string{&kinds[i].Library.Name, &kinds[i].Label} {
-			if key, ok := strings.CutPrefix(*field, "$t:"); ok {
-				if text, found := resolve(key); found {
-					*field = text
-				}
+	resolveField := func(field *string) {
+		if key, ok := strings.CutPrefix(*field, "$t:"); ok {
+			if text, found := resolve(key); found {
+				*field = text
 			}
 		}
 	}
-	ether.Contributes.MediaKinds = kinds
+	ether := *man.Ether
+	if len(c.MediaKinds) > 0 {
+		kinds := append([]MediaKindMeta(nil), c.MediaKinds...)
+		for i := range kinds {
+			resolveField(&kinds[i].Library.Name)
+			resolveField(&kinds[i].Label)
+		}
+		ether.Contributes.MediaKinds = kinds
+	}
+	if len(c.LiveFeeds) > 0 {
+		feeds := append([]LiveFeedMeta(nil), c.LiveFeeds...)
+		for i := range feeds {
+			resolveField(&feeds[i].Title)
+		}
+		ether.Contributes.LiveFeeds = feeds
+	}
+	if len(c.Screens) > 0 {
+		screens := append([]ScreenMeta(nil), c.Screens...)
+		for i := range screens {
+			resolveField(&screens[i].Title)
+			if len(screens[i].Sections) > 0 {
+				secs := append([]ScreenSection(nil), screens[i].Sections...)
+				for j := range secs {
+					resolveField(&secs[j].Title)
+				}
+				screens[i].Sections = secs
+			}
+		}
+		ether.Contributes.Screens = screens
+	}
 	man.Ether = &ether
 	return man
 }

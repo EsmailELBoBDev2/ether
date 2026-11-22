@@ -19,6 +19,9 @@ import (
 
 func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
 	reg := screens.NewRegistry(screens.RegistryOptions{
+		IsPublished: func(_ context.Context, _, _, frontendID string) bool {
+			return a.screenFrontendPublished(frontendID)
+		},
 		IsViewerAllowed: func(ctx context.Context, viewer *core.User, pluginID, _ string) bool {
 			return a.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID)
 		},
@@ -39,6 +42,43 @@ func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
 		reg.Remove(id)
 	})
 	return svc
+}
+
+func (a *App) screenFrontendPublished(frontendID string) bool {
+	if frontendID == "" {
+		return true
+	}
+	if a == nil || a.cfg == nil {
+		return frontendID == "vela"
+	}
+	return frontendDesired(a.cfg.Get(), frontend.Protocol(frontendID))
+}
+
+func (a *App) screenPublishStatus(ctx context.Context, mgr *plugins.Manager, rec plugins.Record, frontendID string) (bool, string) {
+	if !rec.Enabled {
+		return false, "plugin_disabled"
+	}
+	if rec.Shadow {
+		return false, "shadow"
+	}
+	for _, role := range rec.RolesOff {
+		if role == plugins.CapLiveEvents {
+			return false, "capability_off"
+		}
+	}
+	if mgr != nil {
+		if grants, err := mgr.GrantsOf(ctx, rec.ID); err == nil {
+			for _, r := range grants.Revoked {
+				if r == string(plugins.CapLiveEvents) {
+					return false, "capability_off"
+				}
+			}
+		}
+	}
+	if !a.screenFrontendPublished(frontendID) {
+		return false, "frontend_disabled"
+	}
+	return true, "published"
 }
 
 func (a *App) screenPluginViewerAllowed(ctx context.Context, mgr *plugins.Manager, viewer *core.User, pluginID string) bool {

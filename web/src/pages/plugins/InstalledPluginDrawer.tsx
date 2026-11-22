@@ -48,6 +48,7 @@ import {
   translatePermissionLine,
   type JournalEntry,
   type PluginDetail,
+  type PluginFeedOverview,
   type PluginSummary,
 } from "./types";
 
@@ -87,10 +88,14 @@ export function InstalledPluginDrawer({
   const [menu, setMenu] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [undoFirst, setUndoFirst] = useState(true);
+  const [liveFeeds, setLiveFeeds] = useState<PluginFeedOverview[] | undefined>(undefined);
   const { calls, reload: reloadCalls } = usePluginCalls(pluginId, logRevision);
 
   useEffect(() => setTab(params.get("tab") === "setup" ? "setup" : "overview"), [pluginId, params]);
-  useEffect(() => setBusy(null), [pluginId]);
+  useEffect(() => {
+    setBusy(null);
+    setLiveFeeds(undefined);
+  }, [pluginId]);
 
   const loadDetail = useCallback(async (id: string, quiet = false) => {
     if (!quiet) setLoading(true);
@@ -323,7 +328,7 @@ export function InstalledPluginDrawer({
       onClose={onClose}
       size="xl"
       title={detail?.name ?? t("Plugin")}
-      description={detail ? <HeaderLine detail={detail} /> : undefined}
+      description={detail ? <HeaderLine detail={detail} liveFeeds={liveFeeds} /> : undefined}
       headerActions={
         detail ? (
           <div className="flex items-center gap-2">
@@ -556,6 +561,7 @@ export function InstalledPluginDrawer({
               calls={calls}
               onClose={onClose}
               onRetry={retry}
+              onLiveFeeds={setLiveFeeds}
               onFresh={() => {
                 void loadDetail(detail.id, true);
                 void reloadCalls();
@@ -590,6 +596,7 @@ export function InstalledPluginDrawer({
             <PluginActivity
               detail={detail}
               calls={calls}
+              liveFeeds={liveFeeds}
               onReloadCalls={reloadCalls}
               journal={journal}
               onReloadJournal={async () => {
@@ -654,8 +661,14 @@ export function InstalledPluginDrawer({
 }
 
 /** Type, version and author, then health in one word, then About behind ⓘ. */
-function HeaderLine({ detail }: { detail: PluginDetail }) {
-  const health = healthSummary(detail);
+function HeaderLine({
+  detail,
+  liveFeeds,
+}: {
+  detail: PluginDetail;
+  liveFeeds?: PluginFeedOverview[];
+}) {
+  const health = healthSummary(detail, liveFeeds);
   const ether = detail.manifest.ether;
   const author = ether?.author?.name;
   const edited = detail.sourceKind === "studio";

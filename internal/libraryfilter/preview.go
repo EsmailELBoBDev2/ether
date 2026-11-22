@@ -95,7 +95,7 @@ func ruleEnvelopeValid(s core.LibraryExclusion) bool {
 	}
 	switch s.Scope {
 	case "", core.VisibilityEverywhere:
-	case core.VisibilityDiscovery:
+	case core.VisibilityDiscovery, core.VisibilityLibrary:
 		if s.Action != "" && s.Action != "hide" {
 			return false
 		}

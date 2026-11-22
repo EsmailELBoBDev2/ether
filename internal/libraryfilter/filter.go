@@ -41,6 +41,7 @@ type rule struct {
 	name               string
 	action, typ, match string
 	discovery          bool // hide from discovery only; search ignores it
+	libraryOnly        bool // hide only in the built-in library that owns the rule
 	rules              []condition
 }
 type Filter struct {
@@ -100,8 +101,13 @@ func compilePolicy(specs []core.LibraryExclusion, fallback string, browse Browse
 				return nil, fmt.Errorf("group %d: only hide rules can be limited to browsing", i+1)
 			}
 			g.discovery = true
+		case core.VisibilityLibrary:
+			if action != "hide" {
+				return nil, fmt.Errorf("group %d: only hide rules can be limited to this library", i+1)
+			}
+			g.libraryOnly = true
 		default:
-			return nil, fmt.Errorf("group %d: scope must be everywhere or discovery", i+1)
+			return nil, fmt.Errorf("group %d: scope must be everywhere, discovery or library", i+1)
 		}
 		for _, r := range s.Rules {
 			c, err := compileConditionDepth(r, 0, browse)
@@ -139,13 +145,27 @@ func CompileLibraryPolicies(movies []core.LibraryExclusion, movieFallback string
 	if err != nil {
 		return nil, fmt.Errorf("shows rules: %w", err)
 	}
+	keepCanonical := func(rules []rule, fallback string) []rule {
+		out := make([]rule, 0, len(rules))
+		for _, g := range rules {
+			if !g.libraryOnly {
+				out = append(out, g)
+			}
+		}
+		if fallback != "hide" {
+			for len(out) > 0 && out[len(out)-1].action == "show" {
+				out = out[:len(out)-1]
+			}
+		}
+		return out
+	}
 	f := &Filter{
 		movieFallback: mf.movieFallback,
 		showFallback:  sf.showFallback,
 		rules:         make([]rule, 0, len(mf.rules)+len(sf.rules)),
 	}
-	f.rules = append(f.rules, mf.rules...)
-	f.rules = append(f.rules, sf.rules...)
+	f.rules = append(f.rules, keepCanonical(mf.rules, mf.movieFallback)...)
+	f.rules = append(f.rules, keepCanonical(sf.rules, sf.showFallback)...)
 	return f, nil
 }
 
@@ -1249,6 +1269,139 @@ func (f *Filter) SQLShown() (string, []any) {
 	}
 	q, a := f.SQLHidden()
 	return "NOT (" + q + ")", a
+}
+
+// SQLHiddenKeys returns an index-driven key subquery that is a superset of
+// every title of typ that f can hide, when f's fallback is "show" and every
+// applicable hide rule has a selective indexed driver (title key, keyword or
+// country). When ok is true and query is empty, f hides no titles of typ.
+// Callers still AND the result with SQLHidden() for exact first-match semantics.
+func (f *Filter) SQLHiddenKeys(typ core.MediaType) (string, []any, bool) {
+	if f == nil || f.Passive() {
+		return "", nil, true
+	}
+	if typ != "" {
+		if f.FallbackForType(typ) == "hide" {
+			return "", nil, false
+		}
+	} else if f.movieFallback == "hide" || f.showFallback == "hide" {
+		return "", nil, false
+	}
+	var parts []string
+	var args []any
+	for _, g := range f.rules {
+		if g.action != "hide" {
+			continue
+		}
+		if typ != "" && g.typ != "mixed" && g.typ != string(typ) {
+			continue
+		}
+		q, a, ok := g.hiddenKeysSQL()
+		if !ok {
+			return "", nil, false
+		}
+		if q == "" {
+			continue
+		}
+		parts = append(parts, q)
+		args = append(args, a...)
+	}
+	if len(parts) == 0 {
+		return "", nil, true
+	}
+	return strings.Join(parts, " UNION "), args, true
+}
+
+func (g rule) hiddenKeysSQL() (string, []any, bool) {
+	if len(g.rules) == 0 {
+		return "", nil, false
+	}
+	if g.match == "any" {
+		var parts []string
+		var args []any
+		for _, c := range g.rules {
+			q, a, ok := c.indexedKeysSQL()
+			if !ok {
+				return "", nil, false
+			}
+			if q != "" {
+				parts = append(parts, q)
+				args = append(args, a...)
+			}
+		}
+		return strings.Join(parts, " UNION "), args, true
+	}
+	for _, c := range g.rules {
+		if q, a, ok := c.indexedKeysSQL(); ok {
+			return q, a, true
+		}
+	}
+	return "", nil, false
+}
+
+func (c condition) indexedKeysSQL() (string, []any, bool) {
+	if c.predicate != nil || c.op == "unknown" || c.op == "known" {
+		return "", nil, false
+	}
+	switch c.field {
+	case "group":
+		if c.op == "isNot" || len(c.children) == 0 {
+			return "", nil, false
+		}
+		if c.op == "in" {
+			var parts []string
+			var args []any
+			for _, child := range c.children {
+				q, a, ok := child.indexedKeysSQL()
+				if !ok {
+					return "", nil, false
+				}
+				if q != "" {
+					parts = append(parts, q)
+					args = append(args, a...)
+				}
+			}
+			return strings.Join(parts, " UNION "), args, true
+		}
+		for _, child := range c.children {
+			if q, a, ok := child.indexedKeysSQL(); ok {
+				return q, a, true
+			}
+		}
+		return "", nil, false
+	case "title":
+		if c.op != "in" && c.op != "is" {
+			return "", nil, false
+		}
+		if len(c.keys) == 0 {
+			return "", nil, true
+		}
+		args := make([]any, len(c.keys))
+		for i, k := range c.keys {
+			args[i] = int64(k)
+		}
+		return "SELECT key FROM catalog_titles WHERE key IN (" + store.Placeholders(len(c.keys)) + ")", args, true
+	case "keyword":
+		if (c.op != "in" && c.op != "is") || len(c.values) == 0 {
+			return "", nil, false
+		}
+		args := make([]any, len(c.values))
+		for i, v := range c.values {
+			args[i] = v
+		}
+		return "SELECT key FROM catalog_keywords WHERE LOWER(keyword) IN (" + store.Placeholders(len(c.values)) + ")", args, true
+	case "country":
+		if (c.op != "in" && c.op != "is") || len(c.values) == 0 {
+			return "", nil, false
+		}
+		args := make([]any, len(c.values))
+		for i, v := range c.values {
+			args[i] = v
+		}
+		return "SELECT key FROM catalog_countries WHERE LOWER(country) IN (" + store.Placeholders(len(c.values)) + ")", args, true
+	default:
+		return "", nil, false
+	}
 }
 
 func viewerGroupHasCondition(g *core.FilterGroup) bool {

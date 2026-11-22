@@ -42,7 +42,7 @@ export type VisibilityRule = {
   mediaType: string;
   match: string;
   rules: Rule[];
-  /** "discovery" hides from browsing only; empty or "everywhere" hides everywhere. */
+  /** "discovery" hides from browsing only; "library" hides from this library only; empty or "everywhere" hides everywhere. */
   scope?: string;
 };
 
@@ -140,8 +140,11 @@ export function isShowOnlyRules(rules: VisibilityRule[]): boolean {
   return rules.length > 0 && rules.every((rule) => actionOf(rule) === "show");
 }
 
-function browsingOnly(rule: VisibilityRule) {
-  return actionOf(rule) === "hide" && rule.scope === "discovery";
+function hideScopeOf(rule: VisibilityRule): "everywhere" | "discovery" | "library" {
+  if (actionOf(rule) !== "hide") return "everywhere";
+  if (rule.scope === "discovery") return "discovery";
+  if (rule.scope === "library") return "library";
+  return "everywhere";
 }
 
 function conditionLine(rule: Rule, kind?: MediaKind): string {
@@ -185,7 +188,13 @@ export function ruleLabel(
         : rule.mediaType === "show"
           ? t("TV")
           : "";
-  const scope = browsingOnly(rule) ? t("Browsing only") : "";
+  const hideScope = hideScopeOf(rule);
+  const scope =
+    hideScope === "discovery"
+      ? t("Browsing only")
+      : hideScope === "library"
+        ? t("Only this library")
+        : "";
   return [action, body, media, scope].filter(Boolean).join(" · ");
 }
 
@@ -383,12 +392,18 @@ export function RulesPanel({
         onRemove={remove}
       />
     );
+  const inheritedRules = useMemo(
+    () => (inheritedPolicy?.rules ?? []).filter((r) => hideScopeOf(r) !== "library"),
+    [inheritedPolicy],
+  );
+  const allowLibraryScope =
+    libraryId === 1 || libraryId === 2 || (editing ? hideScopeOf(editing) === "library" : false);
   return (
     <div className="@container">
       <div className="grid grid-cols-1 gap-6 @3xl:grid-cols-[minmax(0,1fr)_300px]">
         <div className="space-y-4">
           {inheritedPolicy &&
-          (inheritedPolicy.rules?.length || inheritedPolicy.visibilityDefault === "hide") ? (
+          (inheritedRules.length > 0 || inheritedPolicy.visibilityDefault === "hide") ? (
             <section className="space-y-2 rounded-xl border border-border bg-surface p-4">
               <div className="flex items-center justify-between">
                 <p className="font-medium">
@@ -397,7 +412,7 @@ export function RulesPanel({
                 <Link to={`/libraries/${canonicalId}/rules`}>{t("Edit")}</Link>
               </div>
               <ul className="space-y-1 text-sm">
-                {inheritedPolicy.rules?.map((rule, i) => (
+                {inheritedRules.map((rule, i) => (
                   <li key={i}>{ruleLabel(rule, mediaType, pluginLibrary?.kind)}</li>
                 ))}
               </ul>
@@ -753,24 +768,34 @@ export function RulesPanel({
                   <Select
                     aria-label={t("Where to hide")}
                     className="max-w-xs"
-                    value={browsingOnly(editing) ? "discovery" : "everywhere"}
+                    value={hideScopeOf(editing)}
                     onChange={(e) =>
                       update(open, {
-                        scope: e.target.value === "discovery" ? "discovery" : undefined,
+                        scope:
+                          e.target.value === "discovery" || e.target.value === "library"
+                            ? e.target.value
+                            : undefined,
                       })
                     }
                   >
                     <option value="everywhere">{t("Hide everywhere")}</option>
                     <option value="discovery">{t("Hide from browsing only")}</option>
+                    {allowLibraryScope ? (
+                      <option value="library">{t("Only this library")}</option>
+                    ) : null}
                   </Select>
                   <p className="text-xs text-fg-muted">
-                    {browsingOnly(editing)
+                    {hideScopeOf(editing) === "discovery"
                       ? t(
                           "Browsing only keeps these titles out of Home, rows, recommendations, New Releases and Trending. Anyone can still search for them and play them.",
                         )
-                      : t(
-                          "Hides matching titles everywhere, including Home, library browsing, recommendations and search.",
-                        )}
+                      : hideScopeOf(editing) === "library"
+                        ? t(
+                            "Hides matching titles from this library only. They remain visible in custom libraries, collections, search and playback.",
+                          )
+                        : t(
+                            "Hides matching titles everywhere, including Home, library browsing, recommendations and search.",
+                          )}
                   </p>
                 </div>
               ) : null}

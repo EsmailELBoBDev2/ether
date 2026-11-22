@@ -74,6 +74,9 @@ func compileViewerRulesDocument(p ViewerRules, pol LibraryPolicies) (*libraryfil
 	case "", "inherit":
 		return libraryfilter.CompileLibraryPolicies(pol.MovieRules, pol.MovieDefault, pol.ShowRules, pol.ShowDefault)
 	case "custom":
+		if core.HasLibraryScopedRules(p.Exclusions) {
+			return nil, fmt.Errorf("only library rules can use library scope")
+		}
 		return libraryfilter.CompilePolicy(p.Exclusions, p.VisibilityDefault)
 	case "exempt":
 		skip := map[string]bool{}

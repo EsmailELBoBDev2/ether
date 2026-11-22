@@ -428,7 +428,11 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 		kind = core.TypeShow
 	}
 	for _, lib := range filterLibs {
-		if lib.Source != core.LibraryCatalog || filterMediaType(lib) != kind || lib.RulesBroken || len(lib.Rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
+		rules := lib.Rules
+		if core.IsBuiltinLibrary(lib.ID) {
+			rules = core.WithoutLibraryScopedRules(rules)
+		}
+		if lib.Source != core.LibraryCatalog || filterMediaType(lib) != kind || lib.RulesBroken || len(rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
 			continue
 		}
 		if len(lib.Sources) == 0 {
@@ -528,7 +532,11 @@ func (s *Service) sectionOrFilterAllowedBatch(ctx context.Context, v *core.User,
 	}
 	unrestrictedKind := map[core.MediaType]bool{}
 	for _, lib := range filterLibs {
-		if lib.Source != core.LibraryCatalog || lib.RulesBroken || len(lib.Rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
+		rules := lib.Rules
+		if core.IsBuiltinLibrary(lib.ID) {
+			rules = core.WithoutLibraryScopedRules(rules)
+		}
+		if lib.Source != core.LibraryCatalog || lib.RulesBroken || len(rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
 			continue
 		}
 		kind := filterMediaType(lib)
@@ -628,7 +636,7 @@ func (s *Service) sectionOrFilterAllowedBatch(ctx context.Context, v *core.User,
 			if m, err := batcher.MembersOf(ctx, lib, unchecked); err == nil {
 				members = m
 			}
-		} else if s.d.LibraryMembers != nil {
+		} else if !core.IsBuiltinLibrary(lib.ID) && s.d.LibraryMembers != nil {
 			if m, _, ok, err := s.d.LibraryMembers(ctx, lib.ID, unchecked); err == nil && ok {
 				members = m
 			}
@@ -671,7 +679,11 @@ func (s *Service) movieSectionLibraries(ctx context.Context, v *core.User) (unre
 		if filterMediaType(lib) != core.TypeMovie {
 			continue
 		}
-		if lib.Source == core.LibraryCatalog && !lib.RulesBroken && len(lib.Rules) == 0 && (lib.VisibilityDefault == "" || lib.VisibilityDefault == "show") {
+		rules := lib.Rules
+		if core.IsBuiltinLibrary(lib.ID) {
+			rules = core.WithoutLibraryScopedRules(rules)
+		}
+		if lib.Source == core.LibraryCatalog && !lib.RulesBroken && len(rules) == 0 && (lib.VisibilityDefault == "" || lib.VisibilityDefault == "show") {
 			if len(lib.Sources) == 0 {
 				return true, nil
 			}

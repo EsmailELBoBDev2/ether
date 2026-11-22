@@ -442,10 +442,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 
 	kindCatalog := adapters.AttachKindCatalog(runCtx, adapters.KindCatalogDeps{
 		TitleInLibrary: func(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error) {
-			return a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
+			return a.catalog.TitleInFilter(ctx, libraryAccessFilter(lib), key)
 		},
 		TitlesInLibrary: func(ctx context.Context, lib core.Library, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
-			return a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
+			return a.catalog.TitlesInFilter(ctx, libraryAccessFilter(lib), keys)
 		},
 		Manager:   mgr,
 		Libraries: a.libraries,

@@ -138,6 +138,14 @@ type LibraryLive interface {
 	ResolveLive(ctx context.Context, viewer *core.Viewer, viewID string, tab string, itemID string) (LibraryLiveStream, error)
 }
 
+// LibraryScopeReader exposes a library view's browse-scope filter and indexed
+// membership check for frontends that query the catalogue directly for built-in
+// sections or filter search/hub results inside one library view.
+type LibraryScopeReader interface {
+	LibraryBrowseFilter(ctx context.Context, viewer *core.Viewer, viewID string, req core.Filter) (core.Filter, bool, error)
+	LibraryMembers(ctx context.Context, libraryID core.LibraryID, keys []core.RatingKey) (map[core.RatingKey]bool, bool, error)
+}
+
 // DirectLiveTarget identifies an ephemeral direct-URL live stream tuned through
 // the session broker without registering a Live TV channel.
 type DirectLiveTarget struct {

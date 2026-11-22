@@ -631,4 +631,43 @@ describe("Library visibility", () => {
     expect(saved.rules[0]?.rules[0]?.value).toHaveLength(1);
     expect(saved.rules[0]?.rules[0]?.labels).toEqual([firstTitle]);
   });
+
+  it("lets built-in library hide rules scope to only this library", async () => {
+    const { fake } = renderApp("/libraries/2/rules", {}, (server) => {
+      (server.state.config.catalog as { exclusions?: unknown }).exclusions = [
+        {
+          name: "No anime",
+          action: "hide",
+          mediaType: "show",
+          match: "all",
+          rules: [{ field: "keyword", op: "in", value: ["anime"] }],
+        },
+      ];
+    });
+    await settleUi(() => {
+      expect(screen.getByRole("button", { name: "Edit rule 1" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit rule 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Where to hide" }));
+    const option = screen.getByRole("option", { name: "Only this library" });
+    expect(option).toBeInTheDocument();
+    fireEvent.click(option);
+    expect(
+      screen.getByText(
+        "Hides matching titles from this library only. They remain visible in custom libraries, collections, search and playback.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(
+      screen.getAllByText(/Hide · Keyword is anime · Only this library/).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      expect(calls(fake, "PATCH", "/libraries/2")).toHaveLength(1);
+    });
+    const saved = calls(fake, "PATCH", "/libraries/2")[0]?.body as {
+      rules: { scope?: string }[];
+    };
+    expect(saved.rules[0]?.scope).toBe("library");
+  });
 });

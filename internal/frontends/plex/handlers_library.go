@@ -1344,6 +1344,7 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 		return
 	}
 	br := s.parseBrowse(ctx, sec, t, pr.User, q, r.URL.RawQuery)
+	br.q.Filter, _ = s.sectionBrowseScope(ctx, sec, pr.User, br.q.Filter)
 	switch sub {
 	case "unwatched":
 		br.q.Sort, br.q.Desc = frontend.SortTitle, false
@@ -1410,6 +1411,70 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 	s.write(w, r, mc)
 }
 
+func sectionLibraryID(sec Section) frontend.LibraryID {
+	if sec.LibraryID != 0 {
+		return sec.LibraryID
+	}
+	return frontend.LibraryID(sec.ID)
+}
+
+func (s *Server) sectionBrowseScope(ctx context.Context, sec Section, u *frontend.User, f frontend.Filter) (frontend.Filter, bool) {
+	if sec.PluginID != "" || s.exp() == nil {
+		return f, false
+	}
+	sr, ok := s.exp().(frontend.LibraryScopeReader)
+	if !ok {
+		return f, false
+	}
+	out, scoped, err := sr.LibraryBrowseFilter(ctx, u, sec.IDString(), f)
+	if err != nil {
+		return f, false
+	}
+	return out, scoped
+}
+
+func (s *Server) sectionHasLibraryScope(ctx context.Context, sec Section, u *frontend.User) bool {
+	_, scoped := s.sectionBrowseScope(ctx, sec, u, frontend.Filter{})
+	return scoped
+}
+
+func (s *Server) filterSectionMembers(ctx context.Context, sec Section, items []frontend.Title) []frontend.Title {
+	if len(items) == 0 || sec.PluginID != "" || s.exp() == nil {
+		return items
+	}
+	sr, ok := s.exp().(frontend.LibraryScopeReader)
+	if !ok {
+		return items
+	}
+	libID := sectionLibraryID(sec)
+	if libID == 0 {
+		return items
+	}
+	keys := make([]frontend.RatingKey, len(items))
+	for i := range items {
+		k := items[i].Key
+		if (items[i].Type == frontend.TypeSeason || items[i].Type == frontend.TypeEpisode) && items[i].ShowKey != 0 {
+			k = items[i].ShowKey
+		}
+		keys[i] = k
+	}
+	members, scoped, err := sr.LibraryMembers(ctx, libID, keys)
+	if err != nil || !scoped {
+		return items
+	}
+	out := make([]frontend.Title, 0, len(items))
+	for i := range items {
+		k := items[i].Key
+		if (items[i].Type == frontend.TypeSeason || items[i].Type == frontend.TypeEpisode) && items[i].ShowKey != 0 {
+			k = items[i].ShowKey
+		}
+		if members[k] {
+			out = append(out, items[i])
+		}
+	}
+	return out
+}
+
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {
 	r = r.WithContext(s.searchRequestContext(r.Context()))
 	pr := FromContext(r.Context())
@@ -1420,11 +1485,22 @@ func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Secti
 		if n, _ := strconv.Atoi(r.URL.Query().Get("limit")); n > 0 {
 			limit = min(n, 200)
 		}
+		fetch := limit
+		scoped := s.sectionHasLibraryScope(ctx, sec, pr.User)
+		if scoped {
+			fetch = min(max(limit*4, 50), 200)
+		}
 		search := s.searchExperience()
-		res, err := search.Keyword(ctx, pr.User, query, []frontend.MediaType{t}, limit)
+		res, err := search.Keyword(ctx, pr.User, query, []frontend.MediaType{t}, fetch)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
+		}
+		if scoped {
+			res = s.filterSectionMembers(ctx, sec, res)
+			if len(res) > limit {
+				res = res[:limit]
+			}
 		}
 		items = res
 	}
@@ -1478,9 +1554,19 @@ func (s *Server) sectionFacet(w http.ResponseWriter, r *http.Request, sec Sectio
 	} else if sub == "firstCharacter" {
 		pr := FromContext(ctx)
 		br := s.parseBrowse(ctx, sec, t, pr.User, r.URL.Query())
+		br.q.Filter, _ = s.sectionBrowseScope(ctx, sec, pr.User, br.q.Filter)
 		vals, err = s.firstCharacter(ctx, br.q.Filter)
 	} else {
-		vals, err = s.facet(ctx, t, facet)
+		pr := FromContext(ctx)
+		if sf, scoped := s.sectionBrowseScope(ctx, sec, pr.User, frontend.Filter{Type: t}); scoped {
+			if fc, ok := s.catalog().(frontend.FacetFilterCatalog); ok {
+				vals, err = fc.FacetFilter(ctx, sf, facet)
+			} else {
+				vals, err = s.facet(ctx, t, facet)
+			}
+		} else {
+			vals, err = s.facet(ctx, t, facet)
+		}
 	}
 	if err != nil {
 		// Catalogues may not support every facet (e.g. firstCharacter);
@@ -1592,6 +1678,7 @@ func (s *Server) sectionOnDeck(w http.ResponseWriter, r *http.Request, sec Secti
 	pr := FromContext(ctx)
 	_, size := pr.pageOf(0)
 	items, state := s.inProgressTitles(ctx, pr, sec.Type, s.saferFetchCount(pr.User, min(size, 50)))
+	items = s.filterSectionMembers(ctx, sec, items)
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := state[items[i].Key].UpdatedAt, state[items[j].Key].UpdatedAt
 		if a.Equal(b) {
@@ -1789,6 +1876,7 @@ func (s *Server) sectionRecentlyViewed(w http.ResponseWriter, r *http.Request, s
 			return section.ID, ok
 		})
 		if err == nil {
+			items = s.filterSectionMembers(ctx, sec, items)
 			mc.Metadata = s.renderTitles(ctx, pr, items, renderOpts{media: true})
 		}
 	}
@@ -1850,7 +1938,7 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 			hasKind = true
 		}
 	}
-	if len(selected) == 1 && hasKind && s.exp() != nil {
+	if len(selected) == 1 && (hasKind || s.sectionHasLibraryScope(ctx, selected[0], pr.User)) && s.exp() != nil {
 		sec := selected[0]
 		_, pageSize := pr.pageOf(0)
 		if r.URL.Path != "/library/recentlyAdded" {

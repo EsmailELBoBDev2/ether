@@ -249,10 +249,11 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			}
 			if isPlayable(t.Type) {
 				s.recentClients.recordTitle(r, pr, t.Key, s.now())
-				// Android TV builds its subtitle picker from this refresh after
-				// a manual pick. Join only an already pending download for this
-				// exact Part and client session; browsing never starts one.
-				if pr.User != nil && plexMobileOrTVBedrockClient(pr) {
+				// Android TV and smart-TV HTML apps build their subtitle picker
+				// from this refresh after a manual pick. Join only an already
+				// pending download for this exact Part and client session;
+				// browsing never starts one.
+				if pr.User != nil && (plexMobileOrTVBedrockClient(pr) || plexSmartTVClient(pr)) {
 					partID := s.playIDs.selectedPart(s.playIdentityFor(pr, t.Key))
 					s.subtitlePicks.waitForPart(ctx, subtitlePickKey{
 						user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,

@@ -26,14 +26,18 @@ const (
 	bedrockSelectedJoinWindow = 30 * time.Second
 )
 
-// bedrockPlayProbeClient identifies official Plex mobile and TV Bedrock
-// players that populate direct-play track selection and pickers from the
-// pre-play /playQueues or /library/metadata response rather than /decision.
+// bedrockPlayProbeClient identifies official Plex mobile, Bedrock TV, and
+// smart-TV HTML players that populate direct-play track selection and pickers
+// from the pre-play /playQueues or /library/metadata response rather than
+// re-fetching metadata after /decision.
 func bedrockPlayProbeClient(pr *Request) bool {
 	if pr == nil {
 		return false
 	}
-	return plexMobileOrTVBedrockClient(pr) || strings.EqualFold(strings.TrimSpace(pr.Product), "Plex for Amazon FireTV")
+	product := strings.TrimSpace(pr.Product)
+	return plexMobileOrTVBedrockClient(pr) || plexSmartTVClient(pr) ||
+		strings.EqualFold(product, "Plex for Amazon FireTV") ||
+		strings.EqualFold(product, "Plex for Fire TV")
 }
 
 // probeBedrockPlay runs or joins the shared foreground resolve+probe flight

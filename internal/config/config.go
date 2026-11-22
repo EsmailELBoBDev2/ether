@@ -1104,6 +1104,22 @@ func keepStoredAutoUpdate(file map[string]any) {
 	}
 }
 
+// migrateExtrasDefaultOn switches stored pre-v0.3.19 configs from the old
+// off-by-default extras setting to on-by-default once, recording
+// defaultOnMigrated so a later deliberate off stays off.
+func migrateExtrasDefaultOn(file map[string]any) bool {
+	extras, ok := file["extras"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if migrated, _ := extras["defaultOnMigrated"].(bool); migrated {
+		return false
+	}
+	extras["enabled"] = true
+	extras["defaultOnMigrated"] = true
+	return true
+}
+
 // decodeStartupConfig decodes the stored config over defaults. The
 // merge happens on the JSON documents (objects recursively, see mergeDoc)
 // and the result is decoded into a fresh Config: json.Unmarshal
@@ -1143,6 +1159,9 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 		dropped = true
 	}
 	if upgradeFrontendPublishedAddresses(file) {
+		dropped = true
+	}
+	if migrateExtrasDefaultOn(file) {
 		dropped = true
 	}
 	doc := toDoc(defaults)

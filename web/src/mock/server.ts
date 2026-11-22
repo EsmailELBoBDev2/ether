@@ -500,7 +500,7 @@ function defaultConfig(): EtherConfig {
       sessionIntent: true,
       clockFormat: "",
     },
-    extras: { enabled: false, resolverTimeout: "20s", prewarmBytes: 48 * 1024 ** 2 },
+    extras: { themeMusic: true, enabled: true, resolverTimeout: "20s", prewarmBytes: 48 * 1024 ** 2 },
     markers: { theIntroDb: true, apiKey: "" },
     setupComplete: true,
   };

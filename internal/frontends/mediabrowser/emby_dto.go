@@ -73,13 +73,19 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 	m["SupportsSync"] = false
 	trailers := 0
 	for _, extra := range d.Extras {
-		if strings.EqualFold(extra.Kind, "trailer") {
+		if extra.Key != 0 && isTrailerExtra(extra) {
 			trailers++
 		}
 	}
 	m["LocalTrailerCount"] = trailers
 	if remote := jellyfinRemoteTrailers(d); len(remote) > 0 {
 		m["RemoteTrailers"] = remote
+	} else if d.Title.RemoteTrailerURL != "" {
+		name := d.Title.RemoteTrailerName
+		if name == "" {
+			name = "Trailer"
+		}
+		m["RemoteTrailers"] = []any{map[string]string{"Name": name, "Url": d.Title.RemoteTrailerURL}}
 	}
 	for _, key := range []string{"RemoteTrailers", "People", "Studios", "TagItems", "Taglines", "GenreItems"} {
 		if _, ok := m[key]; !ok {

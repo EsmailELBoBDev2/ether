@@ -226,7 +226,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		if includePrefs {
 			// PMS repeats the section's /prefs settings here; Roku crashes
 			// opening a library whose entry has none (#652).
-			dir.Preferences = &model.TrackPreferences{Setting: sectionPrefs(sec)}
+			dir.Preferences = &model.TrackPreferences{Setting: s.sectionPrefs(sec)}
 		}
 		dirs = append(dirs, dir)
 	}

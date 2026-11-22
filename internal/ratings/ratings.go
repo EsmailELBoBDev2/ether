@@ -113,6 +113,9 @@ type Service struct {
 	retryAt map[core.RatingKey]time.Time
 	// retryGeneration prevents a pre-save lookup from restoring an obsolete delay.
 	retryGeneration uint64
+	// pausedUntil stops all lookups after the provider refuses the key or
+	// reports its quota spent, so a large library does not keep asking.
+	pausedUntil time.Time
 	// backfillAfter is Backfill's position in the catalogue (by key).
 	backfillAfter core.RatingKey
 }
@@ -314,6 +317,7 @@ func (s *Service) SaveSettings(ctx context.Context, v Settings) error {
 	if e == nil {
 		s.qmu.Lock()
 		s.retryGeneration++
+		s.pausedUntil = time.Time{}
 		s.retryAt = map[core.RatingKey]time.Time{}
 		s.qmu.Unlock()
 	}
@@ -630,7 +634,7 @@ func (s *Service) Backfill(ctx context.Context) {
 func (s *Service) Queue(t core.Title) {
 	s.qmu.Lock()
 	defer s.qmu.Unlock()
-	if s.queued[t.Key] || s.o.Now().Before(s.retryAt[t.Key]) {
+	if s.queued[t.Key] || s.o.Now().Before(s.retryAt[t.Key]) || s.o.Now().Before(s.pausedUntil) {
 		return
 	}
 	select {
@@ -651,12 +655,22 @@ func (s *Service) Run(ctx context.Context) {
 		case t := <-s.queue:
 			s.qmu.Lock()
 			generation := s.retryGeneration
+			paused := s.o.Now().Before(s.pausedUntil)
+			if paused {
+				delete(s.queued, t.Key)
+			}
 			s.qmu.Unlock()
+			if paused {
+				continue
+			}
 			job, cancel := context.WithTimeout(ctx, 20*time.Second)
 			_, err := s.Refresh(job, &t)
 			cancel()
 			s.qmu.Lock()
 			delete(s.queued, t.Key)
+			if errors.Is(err, errProviderRefused) && generation == s.retryGeneration {
+				s.pausedUntil = s.o.Now().Add(time.Hour)
+			}
 			if err != nil && generation == s.retryGeneration {
 				if len(s.retryAt) > 2048 {
 					s.retryAt = map[core.RatingKey]time.Time{}
@@ -669,6 +683,10 @@ func (s *Service) Run(ctx context.Context) {
 		}
 	}
 }
+
+// errProviderRefused is a rejected key or a spent quota: asking again for
+// another title gets the same answer.
+var errProviderRefused = errors.New("rating provider refused the request")
 
 func (s *Service) fetchProvider(ctx context.Context, t *core.Title, provider, apiKey string) ([]Badge, string, error) {
 	base := s.o.OMDbBaseURL
@@ -711,6 +729,9 @@ func (s *Service) fetchProvider(ctx context.Context, t *core.Title, provider, ap
 	case resp.StatusCode == http.StatusNotFound && provider == "mdblist":
 		// MDBList does not know the title: a definite answer, cached like
 		// one so the owner's quota is not spent asking again every retry.
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests:
+		// OMDb answers 401 once the daily limit is spent, MDBList 429.
+		return nil, "", fmt.Errorf("%w: HTTP %d", errProviderRefused, resp.StatusCode)
 	case resp.StatusCode != 200:
 		return nil, "", fmt.Errorf("rating provider: HTTP %d", resp.StatusCode)
 	default:

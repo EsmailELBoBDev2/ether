@@ -211,6 +211,10 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 		base := fmt.Sprintf("ether.contributes.commands[%d]", i)
 		recordRef(base+".label", cm.Label, 40, false)
 	}
+	for i, lf := range c.LiveFeeds {
+		base := fmt.Sprintf("ether.contributes.liveFeeds[%d]", i)
+		recordRef(base+".title", lf.Title, 60, false)
+	}
 	if c.Integration != nil {
 		for i, a := range c.Integration.Adds {
 			recordRef(fmt.Sprintf("ether.contributes.integration.adds[%d]", i), a, 80, false)
@@ -984,7 +988,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 		man.HasCapability(plugins.CapMarkers) ||
 		man.HasCapability(plugins.CapNotify) ||
 		man.HasCapability(plugins.CapEvents) ||
-		man.HasCapability(plugins.CapFlowActions)
+		man.HasCapability(plugins.CapFlowActions) ||
+		man.HasCapability(plugins.CapLiveEvents)
 
 	if !plug.HasHandle() {
 		if needsHandle {
@@ -1328,6 +1333,29 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 				return ""
 			},
 		})
+	}
+
+	// Live event feeds.
+	if man.HasCapability(plugins.CapLiveEvents) {
+		for _, lf := range man.Ether.Contributes.LiveFeeds {
+			feedPath := "/ether/v1/live/" + lf.ID + "/events"
+			fixtures = append(fixtures, routeFixture{
+				method: "GET",
+				path:   feedPath,
+				validate: func(resp wasm.Response) string {
+					var doc struct {
+						Events []map[string]any `json:"events"`
+					}
+					if err := decodeResponseBody(resp.Body, &doc); err != nil {
+						return "live events response must be a JSON object with events[]: " + err.Error()
+					}
+					if doc.Events == nil {
+						return "live events response must contain an events array"
+					}
+					return ""
+				},
+			})
+		}
 	}
 
 	// Scheduled jobs.

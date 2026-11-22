@@ -31,7 +31,8 @@ export type Capability =
   | "kind_resolver"
   | "frontend_adapter"
   | "matcher"
-  | "poster_badges";
+  | "poster_badges"
+  | "live_events";
 
 export type LegacyEtherEventName =
   | "playback.started"
@@ -423,7 +424,182 @@ export interface Contributes {
   commands?: CommandMeta[];
   mediaKinds?: MediaKindMeta[];
   frontendAdapters?: FrontendAdapterMeta[];
+  liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
+}
+
+export interface LiveFeedMeta {
+  id: string;
+  title: string;
+  /** Minimum polling interval in seconds (>= 10). */
+  minIntervalSec: number;
+  entityKinds?: string[];
+}
+
+export type LiveEventState =
+  | "pre"
+  | "in"
+  | "post"
+  | "delayed"
+  | "postponed"
+  | "canceled";
+
+export interface LiveEventLeague {
+  id: string;
+  name: string;
+  abbr?: string;
+  logo?: string;
+}
+
+export interface LiveEventStatus {
+  state: LiveEventState;
+  detail?: string;
+  period?: number;
+  clock?: string;
+  close?: boolean;
+}
+
+export interface LiveEventCompetitor {
+  id: string;
+  name: string;
+  short?: string;
+  abbr?: string;
+  logo?: string;
+  color?: string;
+  altColor?: string;
+  score?: string;
+  record?: string;
+  rank?: number;
+  home?: boolean;
+  winner?: boolean;
+  entityId?: string;
+}
+
+export interface LiveEventRankRow {
+  pos: number;
+  name: string;
+  abbr?: string;
+  detail?: string;
+  entityId?: string;
+}
+
+export interface LiveEventProbability {
+  label?: string;
+  value: number;
+  competitorId?: string;
+}
+
+export interface LiveEventBroadcast {
+  name: string;
+  kind?: "tv" | "stream" | "radio";
+  region?: string;
+}
+
+export interface LiveEventMatchHints {
+  terms?: string[];
+  callsigns?: string[];
+}
+
+export interface LiveEvent {
+  id: string;
+  feed: string;
+  category?: string;
+  league: LiveEventLeague;
+  title?: string;
+  /** RFC3339 timestamp. */
+  start: string;
+  status: LiveEventStatus;
+  competitors?: LiveEventCompetitor[];
+  ranking?: LiveEventRankRow[];
+  situation?: Record<string, string>;
+  probability?: LiveEventProbability;
+  venue?: string;
+  broadcasts?: LiveEventBroadcast[];
+  matchHints?: LiveEventMatchHints;
+  /** Set by Ether; plugins leave omitted. */
+  spoiler?: boolean;
+  /** RFC3339 timestamp. */
+  updatedAt?: string;
+}
+
+export interface LiveEventTable {
+  title: string;
+  columns: string[];
+  rows: string[][];
+}
+
+export interface LiveEventPlay {
+  clock?: string;
+  period?: number;
+  text: string;
+  emphasis?: "score" | "key" | "normal";
+  competitorId?: string;
+}
+
+export interface LiveEventProbabilityPoint {
+  /** Timestamp or axis label (e.g. RFC3339 or game clock). */
+  t: string;
+  value: number;
+}
+
+export interface LiveEventLink {
+  label: string;
+  url: string;
+}
+
+export interface LiveEventDetail extends LiveEvent {
+  tables?: LiveEventTable[];
+  plays?: LiveEventPlay[];
+  probabilitySeries?: LiveEventProbabilityPoint[];
+  links?: LiveEventLink[];
+}
+
+export interface LiveEventsResponse {
+  events: LiveEvent[];
+  nextPollSec?: number;
+}
+
+export interface LiveEventEntity {
+  id: string;
+  kind: string;
+  name: string;
+  abbr?: string;
+  logo?: string;
+  league?: string;
+  color?: string;
+}
+
+export interface LiveEventEntitiesResponse {
+  entities: LiveEventEntity[];
+}
+
+export interface LiveEventStandingsResponse {
+  tables: LiveEventTable[];
+}
+
+export interface LiveEventsRequest {
+  feed: string;
+  from?: string;
+  to?: string;
+  league?: string;
+  ids?: string[];
+}
+
+export interface LiveEventDetailRequest {
+  feed: string;
+  id: string;
+}
+
+export interface LiveEntitiesRequest {
+  feed: string;
+  kind?: string;
+  league?: string;
+  q?: string;
+}
+
+export interface LiveStandingsRequest {
+  feed: string;
+  league?: string;
 }
 
 /** A Jellyfin/Emby item type a level can present as. */

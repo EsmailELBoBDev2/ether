@@ -138,6 +138,7 @@ export {
   type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
+  type LiveFeedProvider,
   type Matcher,
   type SetupTester,
 } from "./kinds.ts";

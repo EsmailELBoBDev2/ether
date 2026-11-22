@@ -18,6 +18,14 @@ import type {
   KindLiveRequest,
   KindLiveResolveRequest,
   KindLiveResolveResponse,
+  LiveEntitiesRequest,
+  LiveEventDetail,
+  LiveEventDetailRequest,
+  LiveEventEntitiesResponse,
+  LiveEventsRequest,
+  LiveEventsResponse,
+  LiveEventStandingsResponse,
+  LiveStandingsRequest,
   PendingReply,
   KindMatchRequest,
   KindMatchScore,
@@ -60,6 +68,13 @@ export type Matcher<S = Record<string, unknown>> = KindMatcher<S>;
 export interface KindLiveProvider<S = Record<string, unknown>> {
   live(req: KindLiveRequest, ctx: PluginContext<S>): MaybePromise<KindLivePage>;
   resolveLive(req: KindLiveResolveRequest, ctx: PluginContext<S>): MaybePromise<KindLiveResolveResponse>;
+}
+
+export interface LiveFeedProvider<S = Record<string, unknown>> {
+  events(req: LiveEventsRequest, ctx: PluginContext<S>): MaybePromise<LiveEventsResponse>;
+  eventDetail(req: LiveEventDetailRequest, ctx: PluginContext<S>): MaybePromise<LiveEventDetail>;
+  entities?(req: LiveEntitiesRequest, ctx: PluginContext<S>): MaybePromise<LiveEventEntitiesResponse>;
+  standings?(req: LiveStandingsRequest, ctx: PluginContext<S>): MaybePromise<LiveEventStandingsResponse>;
 }
 
 export interface FrontendAdapter<S = Record<string, unknown>> {
@@ -171,12 +186,13 @@ export interface KindHandlers<S = Record<string, unknown>> {
   resolve: Map<string, KindResolver<S>>;
   match: Map<string, KindMatcher<S>>;
   live: Map<string, KindLiveProvider<S>>;
+  liveFeeds: Map<string, LiveFeedProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
   setup?: SetupTester<S>;
 }
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
-  return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), frontend: new Map() };
+  return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
 }
 
 function ok(body: unknown): RawResponse {
@@ -295,6 +311,62 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length >= 3 && parts[0] === "live") {
+    if (method !== "GET") {
+      return err(405, "method_not_allowed", "Live feed routes use GET.");
+    }
+    const feed = parts[1] ?? "";
+    const provider = handlers.liveFeeds.get(feed);
+    if (!provider) {
+      return err(404, "not_found", `No live feed provider is registered for feed "${feed}".`);
+    }
+    const tail = parts.slice(2);
+    const q = ctx.query ?? {};
+    if (tail.length === 1 && tail[0] === "events") {
+      const ids = q.ids
+        ? q.ids
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+      const res = {
+        ...(await provider.events(
+          { feed, from: q.from || undefined, to: q.to || undefined, league: q.league || undefined, ids },
+          ctx,
+        )),
+      };
+      res.events = res.events ?? [];
+      return ok(res);
+    }
+    if (tail.length === 2 && tail[0] === "events" && tail[1]) {
+      return ok(await provider.eventDetail({ feed, id: tail[1] }, ctx));
+    }
+    if (tail.length === 1 && tail[0] === "entities") {
+      if (!provider.entities) {
+        return err(501, "not_implemented", "This live feed does not list entities.");
+      }
+      const res = {
+        ...(await provider.entities(
+          { feed, kind: q.kind || undefined, league: q.league || undefined, q: q.q || undefined },
+          ctx,
+        )),
+      };
+      res.entities = res.entities ?? [];
+      return ok(res);
+    }
+    if (tail.length === 1 && tail[0] === "standings") {
+      if (!provider.standings) {
+        return err(501, "not_implemented", "This live feed does not serve standings.");
+      }
+      const res = {
+        ...(await provider.standings({ feed, league: q.league || undefined }, ctx)),
+      };
+      res.tables = res.tables ?? [];
+      return ok(res);
+    }
+    return err(404, "not_found", "No live feed route matched.");
   }
 
   if (parts.length < 3 || parts[0] !== "kinds") return null;

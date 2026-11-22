@@ -545,12 +545,13 @@ type SetupTester interface {
 }
 
 type kindHandlers struct {
-	catalog  map[string]CatalogProvider
-	resolve  map[string]KindResolver
-	match    map[string]KindMatcher
-	live     map[string]KindLiveProvider
-	frontend map[string]FrontendAdapter
-	setup    SetupTester
+	catalog   map[string]CatalogProvider
+	resolve   map[string]KindResolver
+	match     map[string]KindMatcher
+	live      map[string]KindLiveProvider
+	liveFeeds map[string]LiveFeedProvider
+	frontend  map[string]FrontendAdapter
+	setup     SetupTester
 }
 
 func (p *Plugin) kinds() *kindHandlers {
@@ -558,7 +559,7 @@ func (p *Plugin) kinds() *kindHandlers {
 		p.kindHandlers = &kindHandlers{
 			catalog: map[string]CatalogProvider{}, resolve: map[string]KindResolver{},
 			match: map[string]KindMatcher{}, live: map[string]KindLiveProvider{},
-			frontend: map[string]FrontendAdapter{},
+			liveFeeds: map[string]LiveFeedProvider{}, frontend: map[string]FrontendAdapter{},
 		}
 	}
 	return p.kindHandlers
@@ -721,6 +722,9 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 2 && parts[0] == "kinds":
 		kind, _ := url.PathUnescape(parts[1])
 		return p.dispatchKind(pctx, kind, parts[2:], req), true
+	case len(parts) >= 3 && parts[0] == "live":
+		feed, _ := url.PathUnescape(parts[1])
+		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true

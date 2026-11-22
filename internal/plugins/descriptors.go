@@ -380,6 +380,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapPosterBadges) {
 		lines = append(lines, "Adds badges to library posters")
 	}
+	if man.HasCapability(CapLiveEvents) {
+		lines = append(lines, "Provides live event feeds")
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
 	}
@@ -502,6 +505,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
 		added = append(added, "Adds badges to library posters")
+	}
+	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
+		added = append(added, "Provides live event feeds")
 	}
 	return added
 }

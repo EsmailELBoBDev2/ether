@@ -70,7 +70,8 @@
               "catalog_provider",
               "kind_resolver",
               "frontend_adapter",
-              "matcher"
+              "matcher",
+              "live_events"
             ]
           },
           "type": "array",
@@ -544,6 +545,29 @@
                   "label",
                   "catalog"
                 ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "liveFeeds": {
+              "items": {
+                "properties": {
+                  "entityKinds": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "minIntervalSec": {
+                    "type": "integer"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
                 "type": "object"
               },
               "type": "array"

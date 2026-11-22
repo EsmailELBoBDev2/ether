@@ -3025,6 +3025,727 @@ type MediaProbeResult struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEventStatePre
+
+``````
+// LiveEvent state values (A2 live event contract).
+const (
+	LiveEventStatePre       = "pre"
+	LiveEventStateIn        = "in"
+	LiveEventStatePost      = "post"
+	LiveEventStateDelayed   = "delayed"
+	LiveEventStatePostponed = "postponed"
+	LiveEventStateCanceled  = "canceled"
+)
+``````
+
+## Source: internal/core/liveevent.go#ValidLiveEventState
+
+``````
+// ValidLiveEventState reports whether s is a defined LiveEventStatus.State value.
+func ValidLiveEventState(s string) bool {
+	switch s {
+	case LiveEventStatePre, LiveEventStateIn, LiveEventStatePost,
+		LiveEventStateDelayed, LiveEventStatePostponed, LiveEventStateCanceled:
+		return true
+	default:
+		return false
+	}
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventBroadcastTV
+
+``````
+// LiveEvent broadcast kind values.
+const (
+	LiveEventBroadcastTV     = "tv"
+	LiveEventBroadcastStream = "stream"
+	LiveEventBroadcastRadio  = "radio"
+)
+``````
+
+## Source: internal/core/liveevent.go#LiveEventPlayEmphasisScore
+
+``````
+// LiveEvent play emphasis values.
+const (
+	LiveEventPlayEmphasisScore  = "score"
+	LiveEventPlayEmphasisKey    = "key"
+	LiveEventPlayEmphasisNormal = "normal"
+)
+``````
+
+## Source: internal/core/liveevent.go#LiveEventWatchChannel
+
+``````
+// LiveEvent watch target kind values (A5).
+const (
+	LiveEventWatchChannel = "channel"
+	LiveEventWatchAddon   = "addon"
+	LiveEventWatchPlugin  = "plugin"
+)
+``````
+
+## Source: internal/core/liveevent.go#LiveEventAlertStarted
+
+``````
+// LiveEvent alert kind values emitted on the Vela live stream (A7).
+const (
+	LiveEventAlertStarted = "started"
+	LiveEventAlertClose   = "close"
+	LiveEventAlertFinal   = "final"
+)
+``````
+
+## Source: internal/core/liveevent.go#NamespaceLiveEventID
+
+``````
+// NamespaceLiveEventID constructs Ether's globally unique event ID:
+// "pluginID:feedID:eventID". Plugins always use their own feed-scoped ID;
+// Ether namespaces it at the hub boundary.
+func NamespaceLiveEventID(pluginID, feedID, eventID string) string {
+	return pluginID + ":" + feedID + ":" + eventID
+}
+``````
+
+## Source: internal/core/liveevent.go#ParseLiveEventID
+
+``````
+// ParseLiveEventID splits a namespaced event ID ("pluginID:feedID:eventID")
+// into its plugin ID, feed ID, and plugin-scoped event ID.
+func ParseLiveEventID(namespaced string) (pluginID, feedID, eventID string, ok bool) {
+	p, rest, ok1 := strings.Cut(namespaced, ":")
+	if !ok1 || p == "" || strings.ContainsAny(p, "/ \t\r\n") {
+		return "", "", "", false
+	}
+	f, id, ok2 := strings.Cut(rest, ":")
+	if !ok2 || f == "" || id == "" || strings.ContainsAny(f, "/ \t\r\n") {
+		return "", "", "", false
+	}
+	return p, f, id, true
+}
+``````
+
+## Source: internal/core/liveevent.go#NamespaceLiveEntityKey
+
+``````
+// NamespaceLiveEntityKey constructs Ether's globally unique entity key:
+// "pluginID:feedID:entityKind:entityID".
+func NamespaceLiveEntityKey(pluginID, feedID, entityKind, entityID string) string {
+	return pluginID + ":" + feedID + ":" + entityKind + ":" + entityID
+}
+``````
+
+## Source: internal/core/liveevent.go#ParseLiveEntityKey
+
+``````
+// ParseLiveEntityKey splits a namespaced entity key
+// ("pluginID:feedID:entityKind:entityID") into its four components.
+func ParseLiveEntityKey(key string) (pluginID, feedID, entityKind, entityID string, ok bool) {
+	p, rest1, ok1 := strings.Cut(key, ":")
+	if !ok1 || p == "" || strings.ContainsAny(p, "/ \t\r\n") {
+		return "", "", "", "", false
+	}
+	f, rest2, ok2 := strings.Cut(rest1, ":")
+	if !ok2 || f == "" || strings.ContainsAny(f, "/ \t\r\n") {
+		return "", "", "", "", false
+	}
+	kind, id, ok3 := strings.Cut(rest2, ":")
+	if !ok3 || kind == "" || id == "" || strings.ContainsAny(kind, "/ \t\r\n") {
+		return "", "", "", "", false
+	}
+	return p, f, kind, id, true
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventLeague.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventLeague
+
+``````
+// LiveEventLeague identifies the competition or circuit an event belongs to.
+type LiveEventLeague struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Abbr string `json:"abbr,omitempty"`
+	Logo string `json:"logo,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventStatus.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `state` | `string` | emitted (validation may require a value) | pre\|in\|post\|delayed\|postponed\|canceled |
+| `detail` | `string` | may be omitted (see validation for conditions) | human-readable period/clock summary |
+| `period` | `int` | may be omitted (see validation for conditions) |  |
+| `clock` | `string` | may be omitted (see validation for conditions) |  |
+| `close` | `bool` | may be omitted (see validation for conditions) | plugin-determined close-contest indicator |
+
+
+## Source: internal/core/liveevent.go#LiveEventStatus
+
+``````
+// LiveEventStatus describes the current lifecycle and clock state of a live event.
+type LiveEventStatus struct {
+	State  string `json:"state"`            // pre|in|post|delayed|postponed|canceled
+	Detail string `json:"detail,omitempty"` // human-readable period/clock summary
+	Period int    `json:"period,omitempty"`
+	Clock  string `json:"clock,omitempty"`
+	Close  bool   `json:"close,omitempty"` // plugin-determined close-contest indicator
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventCompetitor.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `short` | `string` | may be omitted (see validation for conditions) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `color` | `string` | may be omitted (see validation for conditions) |  |
+| `altColor` | `string` | may be omitted (see validation for conditions) |  |
+| `score` | `string` | may be omitted (see validation for conditions) |  |
+| `record` | `string` | may be omitted (see validation for conditions) |  |
+| `rank` | `int` | may be omitted (see validation for conditions) |  |
+| `home` | `bool` | may be omitted (see validation for conditions) |  |
+| `winner` | `bool` | may be omitted (see validation for conditions) |  |
+| `entityId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventCompetitor
+
+``````
+// LiveEventCompetitor describes one participant in a head-to-head or multi-side event.
+type LiveEventCompetitor struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Short    string `json:"short,omitempty"`
+	Abbr     string `json:"abbr,omitempty"`
+	Logo     string `json:"logo,omitempty"`
+	Color    string `json:"color,omitempty"`
+	AltColor string `json:"altColor,omitempty"`
+	Score    string `json:"score,omitempty"`
+	Record   string `json:"record,omitempty"`
+	Rank     int    `json:"rank,omitempty"`
+	Home     bool   `json:"home,omitempty"`
+	Winner   bool   `json:"winner,omitempty"`
+	EntityID string `json:"entityId,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventRankRow.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `pos` | `int` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `detail` | `string` | may be omitted (see validation for conditions) |  |
+| `entityId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventRankRow
+
+``````
+// LiveEventRankRow describes one leaderboard row for N-competitor events
+// (such as motorsport or tournament leaderboards).
+type LiveEventRankRow struct {
+	Pos      int    `json:"pos"`
+	Name     string `json:"name"`
+	Abbr     string `json:"abbr,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	EntityID string `json:"entityId,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventProbability.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `label` | `string` | may be omitted (see validation for conditions) |  |
+| `value` | `float64` | emitted (validation may require a value) | 0..1 |
+| `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventProbability
+
+``````
+// LiveEventProbability holds an optional live win or outcome probability (0..1).
+type LiveEventProbability struct {
+	Label        string  `json:"label,omitempty"`
+	Value        float64 `json:"value"` // 0..1
+	CompetitorID string  `json:"competitorId,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventBroadcast.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `name` | `string` | emitted (validation may require a value) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) | tv\|stream\|radio |
+| `region` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventBroadcast
+
+``````
+// LiveEventBroadcast describes one network, stream, or radio carriage for an event.
+type LiveEventBroadcast struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind,omitempty"` // tv|stream|radio
+	Region string `json:"region,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventMatchHints.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `terms` | `[]string` | may be omitted (see validation for conditions) |  |
+| `callsigns` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventMatchHints
+
+``````
+// LiveEventMatchHints supplies normalised terms and broadcast callsigns used by
+// Ether to match a live event against Live TV guide programmes and channels.
+type LiveEventMatchHints struct {
+	Terms     []string `json:"terms,omitempty"`
+	Callsigns []string `json:"callsigns,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventWatchTarget.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `kind` | `string` | emitted (validation may require a value) | channel\|addon\|plugin |
+| `channelId` | `string` | may be omitted (see validation for conditions) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `number` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `live` | `bool` | may be omitted (see validation for conditions) |  |
+| `confidence` | `float64` | may be omitted (see validation for conditions) |  |
+| `url` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventWatchTarget
+
+``````
+// LiveEventWatchTarget links a live event to a playable channel, add-on, or
+// plugin-provided stream target. Ether attaches this; plugins do not emit it.
+type LiveEventWatchTarget struct {
+	Kind       string  `json:"kind"` // channel|addon|plugin
+	ChannelID  string  `json:"channelId,omitempty"`
+	Name       string  `json:"name"`
+	Number     string  `json:"number,omitempty"`
+	Logo       string  `json:"logo,omitempty"`
+	Live       bool    `json:"live,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+	URL        string  `json:"url,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEvent.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `feed` | `string` | emitted (validation may require a value) |  |
+| `category` | `string` | may be omitted (see validation for conditions) |  |
+| `league` | `LiveEventLeague` | emitted (validation may require a value) |  |
+| `title` | `string` | may be omitted (see validation for conditions) |  |
+| `start` | `string` | emitted (validation may require a value) | RFC3339 |
+| `status` | `LiveEventStatus` | emitted (validation may require a value) |  |
+| `competitors` | `[]LiveEventCompetitor` | may be omitted (see validation for conditions) |  |
+| `ranking` | `[]LiveEventRankRow` | may be omitted (see validation for conditions) |  |
+| `situation` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `probability` | `*LiveEventProbability` | may be omitted (see validation for conditions) |  |
+| `venue` | `string` | may be omitted (see validation for conditions) |  |
+| `broadcasts` | `[]LiveEventBroadcast` | may be omitted (see validation for conditions) |  |
+| `matchHints` | `*LiveEventMatchHints` | may be omitted (see validation for conditions) |  |
+| `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
+| `spoiler` | `bool` | may be omitted (see validation for conditions) | set by Ether, never by plugins |
+| `updatedAt` | `string` | may be omitted (see validation for conditions) | RFC3339 |
+
+
+## Source: internal/core/liveevent.go#LiveEvent
+
+``````
+// LiveEvent is Ether's JSON-stable, generic live event model suitable for
+// head-to-head matches, tournaments, motorsport, and esports.
+type LiveEvent struct {
+	ID          string                 `json:"id"`
+	Feed        string                 `json:"feed"`
+	Category    string                 `json:"category,omitempty"`
+	League      LiveEventLeague        `json:"league"`
+	Title       string                 `json:"title,omitempty"`
+	Start       string                 `json:"start"` // RFC3339
+	Status      LiveEventStatus        `json:"status"`
+	Competitors []LiveEventCompetitor  `json:"competitors,omitempty"`
+	Ranking     []LiveEventRankRow     `json:"ranking,omitempty"`
+	Situation   map[string]string      `json:"situation,omitempty"`
+	Probability *LiveEventProbability  `json:"probability,omitempty"`
+	Venue       string                 `json:"venue,omitempty"`
+	Broadcasts  []LiveEventBroadcast   `json:"broadcasts,omitempty"`
+	MatchHints  *LiveEventMatchHints   `json:"matchHints,omitempty"`
+	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
+	Spoiler     bool                   `json:"spoiler,omitempty"`   // set by Ether, never by plugins
+	UpdatedAt   string                 `json:"updatedAt,omitempty"` // RFC3339
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEvent.Clone
+
+``````
+// Clone returns a deep copy of e so callers may apply viewer-specific filters
+// without mutating shared cached state.
+func (e LiveEvent) Clone() LiveEvent {
+	out := e
+	if e.Competitors != nil {
+		out.Competitors = append([]LiveEventCompetitor(nil), e.Competitors...)
+	}
+	if e.Ranking != nil {
+		out.Ranking = append([]LiveEventRankRow(nil), e.Ranking...)
+	}
+	if e.Situation != nil {
+		out.Situation = make(map[string]string, len(e.Situation))
+		for k, v := range e.Situation {
+			out.Situation[k] = v
+		}
+	}
+	if e.Probability != nil {
+		p := *e.Probability
+		out.Probability = &p
+	}
+	if e.Broadcasts != nil {
+		out.Broadcasts = append([]LiveEventBroadcast(nil), e.Broadcasts...)
+	}
+	if e.MatchHints != nil {
+		h := &LiveEventMatchHints{}
+		if e.MatchHints.Terms != nil {
+			h.Terms = append([]string(nil), e.MatchHints.Terms...)
+		}
+		if e.MatchHints.Callsigns != nil {
+			h.Callsigns = append([]string(nil), e.MatchHints.Callsigns...)
+		}
+		out.MatchHints = h
+	}
+	if e.Watch != nil {
+		out.Watch = append([]LiveEventWatchTarget(nil), e.Watch...)
+	}
+	return out
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventTable.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `title` | `string` | emitted (validation may require a value) |  |
+| `columns` | `[]string` | emitted (validation may require a value) |  |
+| `rows` | `[][]string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventTable
+
+``````
+// LiveEventTable is a generic tabular dataset used for box scores, line scores,
+// and league standings.
+type LiveEventTable struct {
+	Title   string     `json:"title"`
+	Columns []string   `json:"columns"`
+	Rows    [][]string `json:"rows"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventTable.Clone
+
+``````
+// Clone returns a deep copy of t.
+func (t LiveEventTable) Clone() LiveEventTable {
+	out := LiveEventTable{Title: t.Title}
+	if t.Columns != nil {
+		out.Columns = append([]string(nil), t.Columns...)
+	}
+	if t.Rows != nil {
+		out.Rows = make([][]string, len(t.Rows))
+		for i, row := range t.Rows {
+			if row != nil {
+				out.Rows[i] = append([]string(nil), row...)
+			}
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventPlay.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `clock` | `string` | may be omitted (see validation for conditions) |  |
+| `period` | `int` | may be omitted (see validation for conditions) |  |
+| `text` | `string` | emitted (validation may require a value) |  |
+| `emphasis` | `string` | may be omitted (see validation for conditions) | score\|key\|normal |
+| `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventPlay
+
+``````
+// LiveEventPlay is one entry in an event's play-by-play or race timeline.
+type LiveEventPlay struct {
+	Clock        string `json:"clock,omitempty"`
+	Period       int    `json:"period,omitempty"`
+	Text         string `json:"text"`
+	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
+	CompetitorID string `json:"competitorId,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventProbabilityPoint.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `t` | `string` | emitted (validation may require a value) |  |
+| `value` | `float64` | emitted (validation may require a value) | 0..1 |
+
+
+## Source: internal/core/liveevent.go#LiveEventProbabilityPoint
+
+``````
+// LiveEventProbabilityPoint is one sample along an event's probability series.
+// T is a timestamp or axis label (such as RFC3339 or game clock); numeric JSON
+// inputs are normalised to strings on unmarshal.
+type LiveEventProbabilityPoint struct {
+	T     string  `json:"t"`
+	Value float64 `json:"value"` // 0..1
+}
+``````
+
+## Source: internal/core/liveevent.go#*LiveEventProbabilityPoint.UnmarshalJSON
+
+``````
+// UnmarshalJSON accepts both string and numeric JSON values for t so wire
+// output from Ether is always a canonical string.
+func (p *LiveEventProbabilityPoint) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		T     json.RawMessage `json:"t"`
+		Value float64         `json:"value"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	p.Value = raw.Value
+	trimmed := bytes.TrimSpace(raw.T)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		p.T = ""
+		return nil
+	}
+	if trimmed[0] == '"' {
+		return json.Unmarshal(trimmed, &p.T)
+	}
+	var num float64
+	if err := json.Unmarshal(trimmed, &num); err != nil {
+		return fmt.Errorf("probability point t must be a string or number: %w", err)
+	}
+	p.T = strconv.FormatFloat(num, 'f', -1, 64)
+	return nil
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventLink.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `label` | `string` | emitted (validation may require a value) |  |
+| `url` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventLink
+
+``````
+// LiveEventLink is an external reference link attached to an event detail view.
+type LiveEventLink struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventDetail.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `tables` | `[]LiveEventTable` | may be omitted (see validation for conditions) |  |
+| `plays` | `[]LiveEventPlay` | may be omitted (see validation for conditions) |  |
+| `probabilitySeries` | `[]LiveEventProbabilityPoint` | may be omitted (see validation for conditions) |  |
+| `links` | `[]LiveEventLink` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventDetail
+
+``````
+// LiveEventDetail extends LiveEvent with detail-view tables, play-by-play,
+// probability series, and links.
+type LiveEventDetail struct {
+	LiveEvent
+	Tables            []LiveEventTable            `json:"tables,omitempty"`
+	Plays             []LiveEventPlay             `json:"plays,omitempty"`
+	ProbabilitySeries []LiveEventProbabilityPoint `json:"probabilitySeries,omitempty"`
+	Links             []LiveEventLink             `json:"links,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventDetail.Clone
+
+``````
+// Clone returns a deep copy of d.
+func (d LiveEventDetail) Clone() LiveEventDetail {
+	out := LiveEventDetail{
+		LiveEvent: d.LiveEvent.Clone(),
+	}
+	if d.Tables != nil {
+		out.Tables = make([]LiveEventTable, len(d.Tables))
+		for i, tbl := range d.Tables {
+			out.Tables[i] = tbl.Clone()
+		}
+	}
+	if d.Plays != nil {
+		out.Plays = append([]LiveEventPlay(nil), d.Plays...)
+	}
+	if d.ProbabilitySeries != nil {
+		out.ProbabilitySeries = append([]LiveEventProbabilityPoint(nil), d.ProbabilitySeries...)
+	}
+	if d.Links != nil {
+		out.Links = append([]LiveEventLink(nil), d.Links...)
+	}
+	return out
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventsResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `events` | `[]LiveEvent` | emitted (validation may require a value) |  |
+| `nextPollSec` | `int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventsResponse
+
+``````
+// LiveEventsResponse is returned by GET /ether/v1/live/{feed}/events.
+type LiveEventsResponse struct {
+	Events      []LiveEvent `json:"events"`
+	NextPollSec int         `json:"nextPollSec,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventEntity.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `kind` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `league` | `string` | may be omitted (see validation for conditions) |  |
+| `color` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventEntity
+
+``````
+// LiveEventEntity describes a followable entity (such as a team, driver, or
+// player) returned by GET /ether/v1/live/{feed}/entities.
+type LiveEventEntity struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Abbr   string `json:"abbr,omitempty"`
+	Logo   string `json:"logo,omitempty"`
+	League string `json:"league,omitempty"`
+	Color  string `json:"color,omitempty"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventEntitiesResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `entities` | `[]LiveEventEntity` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventEntitiesResponse
+
+``````
+// LiveEventEntitiesResponse is returned by GET /ether/v1/live/{feed}/entities.
+type LiveEventEntitiesResponse struct {
+	Entities []LiveEventEntity `json:"entities"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventStandingsResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `tables` | `[]LiveEventTable` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventStandingsResponse
+
+``````
+// LiveEventStandingsResponse is returned by GET /ether/v1/live/{feed}/standings.
+type LiveEventStandingsResponse struct {
+	Tables []LiveEventTable `json:"tables"`
+}
+``````
+
+## Source: internal/core/liveevent.go#LiveEventAlert.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `kind` | `string` | emitted (validation may require a value) | started\|close\|final |
+| `eventId` | `string` | emitted (validation may require a value) |  |
+| `entityKey` | `string` | emitted (validation may require a value) |  |
+| `title` | `string` | emitted (validation may require a value) |  |
+| `body` | `string` | emitted (validation may require a value) |  |
+| `at` | `string` | emitted (validation may require a value) | RFC3339 |
+
+
+## Source: internal/core/liveevent.go#LiveEventAlert
+
+``````
+// LiveEventAlert is an in-app alert emitted on /vela/v0/live/stream?alerts=1
+// as `event: alert`.
+type LiveEventAlert struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // started|close|final
+	EventID   string `json:"eventId"`
+	EntityKey string `json:"entityKey"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	At        string `json:"at"` // RFC3339
+}
+``````
+
 ## Source: internal/plugins/action_jobs.go#ActionJobTotal
 
 ``````
@@ -3845,6 +4566,7 @@ const (
 	CapKindResolver    Capability = "kind_resolver"
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
+	CapLiveEvents      Capability = "live_events"
 )
 ``````
 
@@ -4290,6 +5012,7 @@ type PackStyle struct {
 | `commands` | `[]CommandMeta` | may be omitted (see validation for conditions) |  |
 | `mediaKinds` | `[]MediaKindMeta` | may be omitted (see validation for conditions) | MediaKinds declares the content kinds this plugin serves; each entry that declares a library block becomes its own library (spec §2.1). |
 | `frontendAdapters` | `[]FrontendAdapterMeta` | may be omitted (see validation for conditions) | FrontendAdapters declares protocol surfaces this plugin serves through Ether's generic adapter frontend (spec §6.5). |
+| `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) | LiveFeeds declares live event feeds this plugin serves under /ether/v1/live/{feed}/* when it declares the live_events capability. |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) | Setup declares guided setup steps for any plugin kind (§8). |
 
 
@@ -4324,8 +5047,57 @@ type Contributes struct {
 	// FrontendAdapters declares protocol surfaces this plugin serves
 	// through Ether's generic adapter frontend (spec §6.5).
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
+	// LiveFeeds declares live event feeds this plugin serves under
+	// /ether/v1/live/{feed}/* when it declares the live_events capability.
+	LiveFeeds []LiveFeedMeta `json:"liveFeeds,omitempty"`
 	// Setup declares guided setup steps for any plugin kind (§8).
 	Setup *SetupMeta `json:"setup,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#MinLiveFeedIntervalSec
+
+``````
+// MinLiveFeedIntervalSec is the lowest polling interval (in seconds) a plugin
+// live feed may declare.
+const MinLiveFeedIntervalSec = 10
+``````
+
+## Source: internal/plugins/contract.go#LiveFeedMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `title` | `string` | emitted (validation may require a value) |  |
+| `minIntervalSec` | `int` | emitted (validation may require a value) |  |
+| `entityKinds` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#LiveFeedMeta
+
+``````
+// LiveFeedMeta declares one live events feed contributed by a plugin.
+type LiveFeedMeta struct {
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	MinIntervalSec int      `json:"minIntervalSec"`
+	EntityKinds    []string `json:"entityKinds,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#Manifest.LiveFeedByID
+
+``````
+// LiveFeedByID returns the declared live feed with this id, if any.
+func (m Manifest) LiveFeedByID(id string) (LiveFeedMeta, bool) {
+	if e := m.EffectiveEther(); e != nil {
+		for _, lf := range e.Contributes.LiveFeeds {
+			if lf.ID == id {
+				return lf, true
+			}
+		}
+	}
+	return LiveFeedMeta{}, false
 }
 ``````
 
@@ -7197,6 +7969,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapPosterBadges) {
 		lines = append(lines, "Adds badges to library posters")
 	}
+	if man.HasCapability(CapLiveEvents) {
+		lines = append(lines, "Provides live event feeds")
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
 	}
@@ -7323,6 +8098,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
 		added = append(added, "Adds badges to library posters")
+	}
+	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
+		added = append(added, "Provides live event feeds")
 	}
 	return added
 }
@@ -17009,6 +17787,10 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 		base := fmt.Sprintf("ether.contributes.commands[%d]", i)
 		recordRef(base+".label", cm.Label, 40, false)
 	}
+	for i, lf := range c.LiveFeeds {
+		base := fmt.Sprintf("ether.contributes.liveFeeds[%d]", i)
+		recordRef(base+".title", lf.Title, 60, false)
+	}
 	if c.Integration != nil {
 		for i, a := range c.Integration.Adds {
 			recordRef(fmt.Sprintf("ether.contributes.integration.adds[%d]", i), a, 80, false)
@@ -17862,7 +18644,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 		man.HasCapability(plugins.CapMarkers) ||
 		man.HasCapability(plugins.CapNotify) ||
 		man.HasCapability(plugins.CapEvents) ||
-		man.HasCapability(plugins.CapFlowActions)
+		man.HasCapability(plugins.CapFlowActions) ||
+		man.HasCapability(plugins.CapLiveEvents)
 
 	if !plug.HasHandle() {
 		if needsHandle {
@@ -18206,6 +18989,29 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 				return ""
 			},
 		})
+	}
+
+	// Live event feeds.
+	if man.HasCapability(plugins.CapLiveEvents) {
+		for _, lf := range man.Ether.Contributes.LiveFeeds {
+			feedPath := "/ether/v1/live/" + lf.ID + "/events"
+			fixtures = append(fixtures, routeFixture{
+				method: "GET",
+				path:   feedPath,
+				validate: func(resp wasm.Response) string {
+					var doc struct {
+						Events []map[string]any `json:"events"`
+					}
+					if err := decodeResponseBody(resp.Body, &doc); err != nil {
+						return "live events response must be a JSON object with events[]: " + err.Error()
+					}
+					if doc.Events == nil {
+						return "live events response must contain an events array"
+					}
+					return ""
+				},
+			})
+		}
 	}
 
 	// Scheduled jobs.
@@ -21050,6 +21856,7 @@ var (
 	idRe             = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
 	keyRe            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	posterBadgeKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	liveFeedIDRe     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	pluginEventKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,2}$`)
 	flowActionKeyRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	eventFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
@@ -21132,7 +21939,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
 }
 ``````
 
@@ -21368,7 +22175,7 @@ func (m Manifest) Validate() error {
 
 ``````
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
 }
 ``````
 
@@ -21650,6 +22457,9 @@ func contributesUseT(c Contributes) bool {
 	}
 	for _, a := range c.FrontendAdapters {
 		check(a.Label)
+	}
+	for _, lf := range c.LiveFeeds {
+		check(lf.Title)
 	}
 	if c.Setup != nil {
 		for _, s := range c.Setup.Steps {
@@ -22029,6 +22839,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	}
 	validateMediaKinds(m, add, label)
 	validateFrontendAdapters(m, add, label)
+	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
@@ -22059,6 +22870,39 @@ var knownSlots = map[string]bool{
 	"dashboard.panel": true, "actionMenu.title": true,
 	"actionMenu.viewer": true, "actionMenu.collection": true,
 	"actionMenu.release": true, "command": true,
+}
+``````
+
+## Source: internal/plugins/manifest.go#validateLiveFeeds
+
+``````
+func validateLiveFeeds(m Manifest, add func(string, string), label func(string, string, int)) {
+	feeds := m.Ether.Contributes.LiveFeeds
+	if m.HasCapability(CapLiveEvents) && len(feeds) == 0 {
+		add("ether.contributes.liveFeeds", "is required for live_events")
+	}
+	if !m.HasCapability(CapLiveEvents) && len(feeds) > 0 {
+		add("ether.capabilities", "live_events is required for liveFeeds")
+	}
+	seenID := map[string]bool{}
+	for i, lf := range feeds {
+		base := fmt.Sprintf("ether.contributes.liveFeeds[%d]", i)
+		if !liveFeedIDRe.MatchString(lf.ID) || seenID[lf.ID] {
+			add(base+".id", "must be a unique lower case key matching ^[a-z][a-z0-9_-]{0,31}$")
+		}
+		seenID[lf.ID] = true
+		label(base+".title", lf.Title, 60)
+		if lf.MinIntervalSec < MinLiveFeedIntervalSec {
+			add(base+".minIntervalSec", fmt.Sprintf("must be at least %d", MinLiveFeedIntervalSec))
+		}
+		seenKind := map[string]bool{}
+		for j, ek := range lf.EntityKinds {
+			if !liveFeedIDRe.MatchString(ek) || seenKind[ek] {
+				add(fmt.Sprintf("%s.entityKinds[%d]", base, j), "must be a unique lower case key matching ^[a-z][a-z0-9_-]{0,31}$")
+			}
+			seenKind[ek] = true
+		}
+	}
 }
 ``````
 
@@ -28827,7 +29671,8 @@ func ViewerRequestPath(path string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)
+	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
+		strings.HasPrefix(path, "/ether/v1/live/")
 }
 ``````
 
@@ -28986,6 +29831,8 @@ func DeadlineFor(path string) time.Duration {
 			return 5 * time.Second
 		}
 		return 10 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/live/"):
+		return 15 * time.Second
 	default:
 		return 30 * time.Second
 	}
@@ -32529,6 +33376,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.listSources[].label` | `string` | true | {"maxLength":40} |
 | `ether.contributes.listSources[].maxItems` | `integer` | false | {"maximum":2000,"minimum":0} |
 | `ether.contributes.listSources[].refresh` | `string` | false | {} |
+| `ether.contributes.liveFeeds` | `array` | false | {} |
+| `ether.contributes.liveFeeds[].entityKinds` | `array` | false | {} |
+| `ether.contributes.liveFeeds[].id` | `string` | false | {} |
+| `ether.contributes.liveFeeds[].minIntervalSec` | `integer` | false | {} |
+| `ether.contributes.liveFeeds[].title` | `string` | false | {} |
 | `ether.contributes.markers` | `object` | false | {"required":["kinds"]} |
 | `ether.contributes.markers.kinds` | `array` | true | {} |
 | `ether.contributes.mediaKinds` | `array` | false | {} |
@@ -32818,7 +33670,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
               "catalog_provider",
               "kind_resolver",
               "frontend_adapter",
-              "matcher"
+              "matcher",
+              "live_events"
             ]
           },
           "type": "array",
@@ -33292,6 +34145,29 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                   "label",
                   "catalog"
                 ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "liveFeeds": {
+              "items": {
+                "properties": {
+                  "entityKinds": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "minIntervalSec": {
+                    "type": "integer"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
                 "type": "object"
               },
               "type": "array"
@@ -47966,12 +48842,13 @@ type SetupTester interface {
 
 ``````
 type kindHandlers struct {
-	catalog  map[string]CatalogProvider
-	resolve  map[string]KindResolver
-	match    map[string]KindMatcher
-	live     map[string]KindLiveProvider
-	frontend map[string]FrontendAdapter
-	setup    SetupTester
+	catalog   map[string]CatalogProvider
+	resolve   map[string]KindResolver
+	match     map[string]KindMatcher
+	live      map[string]KindLiveProvider
+	liveFeeds map[string]LiveFeedProvider
+	frontend  map[string]FrontendAdapter
+	setup     SetupTester
 }
 ``````
 
@@ -47983,7 +48860,7 @@ func (p *Plugin) kinds() *kindHandlers {
 		p.kindHandlers = &kindHandlers{
 			catalog: map[string]CatalogProvider{}, resolve: map[string]KindResolver{},
 			match: map[string]KindMatcher{}, live: map[string]KindLiveProvider{},
-			frontend: map[string]FrontendAdapter{},
+			liveFeeds: map[string]LiveFeedProvider{}, frontend: map[string]FrontendAdapter{},
 		}
 	}
 	return p.kindHandlers
@@ -48198,6 +49075,9 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 2 && parts[0] == "kinds":
 		kind, _ := url.PathUnescape(parts[1])
 		return p.dispatchKind(pctx, kind, parts[2:], req), true
+	case len(parts) >= 3 && parts[0] == "live":
+		feed, _ := url.PathUnescape(parts[1])
+		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true
@@ -49463,6 +50343,611 @@ func Links(pageHTML, base string) []Link {
 // escape hatch for listing pages with regular shapes.
 func Matches(page string, re *regexp.Regexp) [][]string {
 	return re.FindAllStringSubmatch(page, -1)
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventStatePre
+
+``````
+// Live event state values (A2 live event contract).
+const (
+	LiveEventStatePre       = "pre"
+	LiveEventStateIn        = "in"
+	LiveEventStatePost      = "post"
+	LiveEventStateDelayed   = "delayed"
+	LiveEventStatePostponed = "postponed"
+	LiveEventStateCanceled  = "canceled"
+)
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventLeague.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventLeague
+
+``````
+// LiveEventLeague identifies the competition or circuit an event belongs to.
+type LiveEventLeague struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Abbr string `json:"abbr,omitempty"`
+	Logo string `json:"logo,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventStatus.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `state` | `string` | emitted (validation may require a value) |  |
+| `detail` | `string` | may be omitted (see validation for conditions) |  |
+| `period` | `int` | may be omitted (see validation for conditions) |  |
+| `clock` | `string` | may be omitted (see validation for conditions) |  |
+| `close` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventStatus
+
+``````
+// LiveEventStatus describes the current lifecycle and clock state of a live event.
+type LiveEventStatus struct {
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+	Period int    `json:"period,omitempty"`
+	Clock  string `json:"clock,omitempty"`
+	Close  bool   `json:"close,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventCompetitor.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `short` | `string` | may be omitted (see validation for conditions) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `color` | `string` | may be omitted (see validation for conditions) |  |
+| `altColor` | `string` | may be omitted (see validation for conditions) |  |
+| `score` | `string` | may be omitted (see validation for conditions) |  |
+| `record` | `string` | may be omitted (see validation for conditions) |  |
+| `rank` | `int` | may be omitted (see validation for conditions) |  |
+| `home` | `bool` | may be omitted (see validation for conditions) |  |
+| `winner` | `bool` | may be omitted (see validation for conditions) |  |
+| `entityId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventCompetitor
+
+``````
+// LiveEventCompetitor describes one participant in a head-to-head or multi-side event.
+type LiveEventCompetitor struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Short    string `json:"short,omitempty"`
+	Abbr     string `json:"abbr,omitempty"`
+	Logo     string `json:"logo,omitempty"`
+	Color    string `json:"color,omitempty"`
+	AltColor string `json:"altColor,omitempty"`
+	Score    string `json:"score,omitempty"`
+	Record   string `json:"record,omitempty"`
+	Rank     int    `json:"rank,omitempty"`
+	Home     bool   `json:"home,omitempty"`
+	Winner   bool   `json:"winner,omitempty"`
+	EntityID string `json:"entityId,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventRankRow.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `pos` | `int` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `detail` | `string` | may be omitted (see validation for conditions) |  |
+| `entityId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventRankRow
+
+``````
+// LiveEventRankRow describes one leaderboard row for N-competitor events.
+type LiveEventRankRow struct {
+	Pos      int    `json:"pos"`
+	Name     string `json:"name"`
+	Abbr     string `json:"abbr,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	EntityID string `json:"entityId,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventProbability.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `label` | `string` | may be omitted (see validation for conditions) |  |
+| `value` | `float64` | emitted (validation may require a value) |  |
+| `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventProbability
+
+``````
+// LiveEventProbability holds an optional live outcome probability (0..1).
+type LiveEventProbability struct {
+	Label        string  `json:"label,omitempty"`
+	Value        float64 `json:"value"`
+	CompetitorID string  `json:"competitorId,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventBroadcast.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `name` | `string` | emitted (validation may require a value) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) | tv\|stream\|radio |
+| `region` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventBroadcast
+
+``````
+// LiveEventBroadcast describes one network, stream, or radio carriage for an event.
+type LiveEventBroadcast struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind,omitempty"` // tv|stream|radio
+	Region string `json:"region,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventMatchHints.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `terms` | `[]string` | may be omitted (see validation for conditions) |  |
+| `callsigns` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventMatchHints
+
+``````
+// LiveEventMatchHints supplies terms and broadcast callsigns for matching
+// events against Live TV guide programmes and channels.
+type LiveEventMatchHints struct {
+	Terms     []string `json:"terms,omitempty"`
+	Callsigns []string `json:"callsigns,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEvent.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `feed` | `string` | emitted (validation may require a value) |  |
+| `category` | `string` | may be omitted (see validation for conditions) |  |
+| `league` | `LiveEventLeague` | emitted (validation may require a value) |  |
+| `title` | `string` | may be omitted (see validation for conditions) |  |
+| `start` | `string` | emitted (validation may require a value) |  |
+| `status` | `LiveEventStatus` | emitted (validation may require a value) |  |
+| `competitors` | `[]LiveEventCompetitor` | may be omitted (see validation for conditions) |  |
+| `ranking` | `[]LiveEventRankRow` | may be omitted (see validation for conditions) |  |
+| `situation` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `probability` | `*LiveEventProbability` | may be omitted (see validation for conditions) |  |
+| `venue` | `string` | may be omitted (see validation for conditions) |  |
+| `broadcasts` | `[]LiveEventBroadcast` | may be omitted (see validation for conditions) |  |
+| `matchHints` | `*LiveEventMatchHints` | may be omitted (see validation for conditions) |  |
+| `spoiler` | `bool` | may be omitted (see validation for conditions) |  |
+| `updatedAt` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEvent
+
+``````
+// LiveEvent is the generic live event payload returned by a plugin live feed.
+type LiveEvent struct {
+	ID          string                `json:"id"`
+	Feed        string                `json:"feed"`
+	Category    string                `json:"category,omitempty"`
+	League      LiveEventLeague       `json:"league"`
+	Title       string                `json:"title,omitempty"`
+	Start       string                `json:"start"`
+	Status      LiveEventStatus       `json:"status"`
+	Competitors []LiveEventCompetitor `json:"competitors,omitempty"`
+	Ranking     []LiveEventRankRow    `json:"ranking,omitempty"`
+	Situation   map[string]string     `json:"situation,omitempty"`
+	Probability *LiveEventProbability `json:"probability,omitempty"`
+	Venue       string                `json:"venue,omitempty"`
+	Broadcasts  []LiveEventBroadcast  `json:"broadcasts,omitempty"`
+	MatchHints  *LiveEventMatchHints  `json:"matchHints,omitempty"`
+	Spoiler     bool                  `json:"spoiler,omitempty"`
+	UpdatedAt   string                `json:"updatedAt,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventTable.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `title` | `string` | emitted (validation may require a value) |  |
+| `columns` | `[]string` | emitted (validation may require a value) |  |
+| `rows` | `[][]string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventTable
+
+``````
+// LiveEventTable is a generic table for box scores, line scores, or standings.
+type LiveEventTable struct {
+	Title   string     `json:"title"`
+	Columns []string   `json:"columns"`
+	Rows    [][]string `json:"rows"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventPlay.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `clock` | `string` | may be omitted (see validation for conditions) |  |
+| `period` | `int` | may be omitted (see validation for conditions) |  |
+| `text` | `string` | emitted (validation may require a value) |  |
+| `emphasis` | `string` | may be omitted (see validation for conditions) | score\|key\|normal |
+| `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventPlay
+
+``````
+// LiveEventPlay is one entry in an event's play-by-play or race timeline.
+type LiveEventPlay struct {
+	Clock        string `json:"clock,omitempty"`
+	Period       int    `json:"period,omitempty"`
+	Text         string `json:"text"`
+	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
+	CompetitorID string `json:"competitorId,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventProbabilityPoint.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `t` | `string` | emitted (validation may require a value) |  |
+| `value` | `float64` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventProbabilityPoint
+
+``````
+// LiveEventProbabilityPoint is one sample along an event's probability series.
+type LiveEventProbabilityPoint struct {
+	T     string  `json:"t"`
+	Value float64 `json:"value"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventLink.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `label` | `string` | emitted (validation may require a value) |  |
+| `url` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventLink
+
+``````
+// LiveEventLink is an external link attached to an event detail view.
+type LiveEventLink struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventDetail.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `tables` | `[]LiveEventTable` | may be omitted (see validation for conditions) |  |
+| `plays` | `[]LiveEventPlay` | may be omitted (see validation for conditions) |  |
+| `probabilitySeries` | `[]LiveEventProbabilityPoint` | may be omitted (see validation for conditions) |  |
+| `links` | `[]LiveEventLink` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventDetail
+
+``````
+// LiveEventDetail extends LiveEvent with tables, plays, probability series, and links.
+type LiveEventDetail struct {
+	LiveEvent
+	Tables            []LiveEventTable            `json:"tables,omitempty"`
+	Plays             []LiveEventPlay             `json:"plays,omitempty"`
+	ProbabilitySeries []LiveEventProbabilityPoint `json:"probabilitySeries,omitempty"`
+	Links             []LiveEventLink             `json:"links,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventsResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `events` | `[]LiveEvent` | emitted (validation may require a value) |  |
+| `nextPollSec` | `int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventsResponse
+
+``````
+// LiveEventsResponse is returned by GET /ether/v1/live/{feed}/events.
+type LiveEventsResponse struct {
+	Events      []LiveEvent `json:"events"`
+	NextPollSec int         `json:"nextPollSec,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventEntity.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `kind` | `string` | emitted (validation may require a value) |  |
+| `name` | `string` | emitted (validation may require a value) |  |
+| `abbr` | `string` | may be omitted (see validation for conditions) |  |
+| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `league` | `string` | may be omitted (see validation for conditions) |  |
+| `color` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventEntity
+
+``````
+// LiveEventEntity describes one followable entity returned by /entities.
+type LiveEventEntity struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Abbr   string `json:"abbr,omitempty"`
+	Logo   string `json:"logo,omitempty"`
+	League string `json:"league,omitempty"`
+	Color  string `json:"color,omitempty"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventEntitiesResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `entities` | `[]LiveEventEntity` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventEntitiesResponse
+
+``````
+// LiveEventEntitiesResponse is returned by GET /ether/v1/live/{feed}/entities.
+type LiveEventEntitiesResponse struct {
+	Entities []LiveEventEntity `json:"entities"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventStandingsResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `tables` | `[]LiveEventTable` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/liveevents.go#LiveEventStandingsResponse
+
+``````
+// LiveEventStandingsResponse is returned by GET /ether/v1/live/{feed}/standings.
+type LiveEventStandingsResponse struct {
+	Tables []LiveEventTable `json:"tables"`
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventsRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/liveevents.go#LiveEventsRequest
+
+``````
+// LiveEventsRequest is passed to LiveFeedProvider.Events.
+type LiveEventsRequest struct {
+	Feed   string
+	From   string
+	To     string
+	League string
+	IDs    []string
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEventDetailRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/liveevents.go#LiveEventDetailRequest
+
+``````
+// LiveEventDetailRequest is passed to LiveFeedProvider.EventDetail.
+type LiveEventDetailRequest struct {
+	Feed string
+	ID   string
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEntitiesRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/liveevents.go#LiveEntitiesRequest
+
+``````
+// LiveEntitiesRequest is passed to LiveEntitiesProvider.Entities.
+type LiveEntitiesRequest struct {
+	Feed   string
+	Kind   string
+	League string
+	Q      string
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveStandingsRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/liveevents.go#LiveStandingsRequest
+
+``````
+// LiveStandingsRequest is passed to LiveStandingsProvider.Standings.
+type LiveStandingsRequest struct {
+	Feed   string
+	League string
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveFeedProvider
+
+``````
+// LiveFeedProvider answers GET /ether/v1/live/{feed}/events and /events/{id}.
+// Optionally implement LiveEntitiesProvider and LiveStandingsProvider too.
+type LiveFeedProvider interface {
+	Events(ctx *Context, req LiveEventsRequest) (LiveEventsResponse, error)
+	EventDetail(ctx *Context, req LiveEventDetailRequest) (LiveEventDetail, error)
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveEntitiesProvider
+
+``````
+// LiveEntitiesProvider answers GET /ether/v1/live/{feed}/entities.
+type LiveEntitiesProvider interface {
+	Entities(ctx *Context, req LiveEntitiesRequest) (LiveEventEntitiesResponse, error)
+}
+``````
+
+## Source: sdk/go/liveevents.go#LiveStandingsProvider
+
+``````
+// LiveStandingsProvider answers GET /ether/v1/live/{feed}/standings.
+type LiveStandingsProvider interface {
+	Standings(ctx *Context, req LiveStandingsRequest) (LiveEventStandingsResponse, error)
+}
+``````
+
+## Source: sdk/go/liveevents.go#*Plugin.OnLiveFeed
+
+``````
+// OnLiveFeed registers the live events feed provider for one declared feed ID.
+func (p *Plugin) OnLiveFeed(feed string, provider LiveFeedProvider) {
+	p.kinds().liveFeeds[feed] = provider
+}
+``````
+
+## Source: sdk/go/liveevents.go#*Plugin.dispatchLiveFeed
+
+``````
+func (p *Plugin) dispatchLiveFeed(pctx *Context, method, feed string, tail []string) RawResponse {
+	if method != http.MethodGet {
+		return errorJSON(http.StatusMethodNotAllowed, "method_not_allowed", "Live feed routes use GET.")
+	}
+	var prov LiveFeedProvider
+	if p.kindHandlers != nil {
+		prov = p.kindHandlers.liveFeeds[feed]
+	}
+	if prov == nil {
+		return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No live feed provider is registered for feed %q.", feed))
+	}
+	q := pctx.Query
+	switch {
+	case len(tail) == 1 && tail[0] == "events":
+		var ids []string
+		if raw := strings.TrimSpace(q["ids"]); raw != "" {
+			for _, part := range strings.Split(raw, ",") {
+				if id := strings.TrimSpace(part); id != "" {
+					ids = append(ids, id)
+				}
+			}
+		}
+		res, err := prov.Events(pctx, LiveEventsRequest{
+			Feed:   feed,
+			From:   q["from"],
+			To:     q["to"],
+			League: q["league"],
+			IDs:    ids,
+		})
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Events == nil {
+			res.Events = []LiveEvent{}
+		}
+		return okJSON(res, http.StatusOK)
+
+	case len(tail) == 2 && tail[0] == "events" && tail[1] != "":
+		id, _ := url.PathUnescape(tail[1])
+		res, err := prov.EventDetail(pctx, LiveEventDetailRequest{Feed: feed, ID: id})
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		return okJSON(res, http.StatusOK)
+
+	case len(tail) == 1 && tail[0] == "entities":
+		ep, ok := prov.(LiveEntitiesProvider)
+		if !ok {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This live feed does not list entities.")
+		}
+		res, err := ep.Entities(pctx, LiveEntitiesRequest{
+			Feed:   feed,
+			Kind:   q["kind"],
+			League: q["league"],
+			Q:      q["q"],
+		})
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Entities == nil {
+			res.Entities = []LiveEventEntity{}
+		}
+		return okJSON(res, http.StatusOK)
+
+	case len(tail) == 1 && tail[0] == "standings":
+		sp, ok := prov.(LiveStandingsProvider)
+		if !ok {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This live feed does not serve standings.")
+		}
+		res, err := sp.Standings(pctx, LiveStandingsRequest{
+			Feed:   feed,
+			League: q["league"],
+		})
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Tables == nil {
+			res.Tables = []LiveEventTable{}
+		}
+		return okJSON(res, http.StatusOK)
+	}
+	return errorJSON(http.StatusNotFound, "not_found", "No live feed route matched.")
 }
 ``````
 
@@ -52081,6 +53566,7 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapPosterBadges    Capability = "poster_badges"
+	CapLiveEvents      Capability = "live_events"
 )
 ``````
 
@@ -52526,6 +54012,7 @@ type FieldOption struct {
 | `commands` | `[]CommandMeta` | may be omitted (see validation for conditions) |  |
 | `mediaKinds` | `[]MediaKindMeta` | may be omitted (see validation for conditions) |  |
 | `frontendAdapters` | `[]FrontendAdapterMeta` | may be omitted (see validation for conditions) |  |
+| `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) |  |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) |  |
 
 
@@ -52552,7 +54039,37 @@ type Contributes struct {
 	Commands         []CommandMeta         `json:"commands,omitempty"`
 	MediaKinds       []MediaKindMeta       `json:"mediaKinds,omitempty"`
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
+	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#MinLiveFeedIntervalSec
+
+``````
+// MinLiveFeedIntervalSec is the minimum polling interval a live feed may declare.
+const MinLiveFeedIntervalSec = 10
+``````
+
+## Source: sdk/go/types.go#LiveFeedMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `title` | `string` | emitted (validation may require a value) |  |
+| `minIntervalSec` | `int` | emitted (validation may require a value) |  |
+| `entityKinds` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#LiveFeedMeta
+
+``````
+// LiveFeedMeta declares one live events feed contributed by a plugin.
+type LiveFeedMeta struct {
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	MinIntervalSec int      `json:"minIntervalSec"`
+	EntityKinds    []string `json:"entityKinds,omitempty"`
 }
 ``````
 
@@ -61423,6 +62940,7 @@ export {
   type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
+  type LiveFeedProvider,
   type Matcher,
   type SetupTester,
 } from "./kinds.ts";
@@ -61462,6 +62980,14 @@ import type {
   KindLiveRequest,
   KindLiveResolveRequest,
   KindLiveResolveResponse,
+  LiveEntitiesRequest,
+  LiveEventDetail,
+  LiveEventDetailRequest,
+  LiveEventEntitiesResponse,
+  LiveEventsRequest,
+  LiveEventsResponse,
+  LiveEventStandingsResponse,
+  LiveStandingsRequest,
   PendingReply,
   KindMatchRequest,
   KindMatchScore,
@@ -61504,6 +63030,13 @@ export type Matcher<S = Record<string, unknown>> = KindMatcher<S>;
 export interface KindLiveProvider<S = Record<string, unknown>> {
   live(req: KindLiveRequest, ctx: PluginContext<S>): MaybePromise<KindLivePage>;
   resolveLive(req: KindLiveResolveRequest, ctx: PluginContext<S>): MaybePromise<KindLiveResolveResponse>;
+}
+
+export interface LiveFeedProvider<S = Record<string, unknown>> {
+  events(req: LiveEventsRequest, ctx: PluginContext<S>): MaybePromise<LiveEventsResponse>;
+  eventDetail(req: LiveEventDetailRequest, ctx: PluginContext<S>): MaybePromise<LiveEventDetail>;
+  entities?(req: LiveEntitiesRequest, ctx: PluginContext<S>): MaybePromise<LiveEventEntitiesResponse>;
+  standings?(req: LiveStandingsRequest, ctx: PluginContext<S>): MaybePromise<LiveEventStandingsResponse>;
 }
 
 export interface FrontendAdapter<S = Record<string, unknown>> {
@@ -61615,12 +63148,13 @@ export interface KindHandlers<S = Record<string, unknown>> {
   resolve: Map<string, KindResolver<S>>;
   match: Map<string, KindMatcher<S>>;
   live: Map<string, KindLiveProvider<S>>;
+  liveFeeds: Map<string, LiveFeedProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
   setup?: SetupTester<S>;
 }
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
-  return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), frontend: new Map() };
+  return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
 }
 
 function ok(body: unknown): RawResponse {
@@ -61739,6 +63273,62 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length >= 3 && parts[0] === "live") {
+    if (method !== "GET") {
+      return err(405, "method_not_allowed", "Live feed routes use GET.");
+    }
+    const feed = parts[1] ?? "";
+    const provider = handlers.liveFeeds.get(feed);
+    if (!provider) {
+      return err(404, "not_found", `No live feed provider is registered for feed "${feed}".`);
+    }
+    const tail = parts.slice(2);
+    const q = ctx.query ?? {};
+    if (tail.length === 1 && tail[0] === "events") {
+      const ids = q.ids
+        ? q.ids
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+      const res = {
+        ...(await provider.events(
+          { feed, from: q.from || undefined, to: q.to || undefined, league: q.league || undefined, ids },
+          ctx,
+        )),
+      };
+      res.events = res.events ?? [];
+      return ok(res);
+    }
+    if (tail.length === 2 && tail[0] === "events" && tail[1]) {
+      return ok(await provider.eventDetail({ feed, id: tail[1] }, ctx));
+    }
+    if (tail.length === 1 && tail[0] === "entities") {
+      if (!provider.entities) {
+        return err(501, "not_implemented", "This live feed does not list entities.");
+      }
+      const res = {
+        ...(await provider.entities(
+          { feed, kind: q.kind || undefined, league: q.league || undefined, q: q.q || undefined },
+          ctx,
+        )),
+      };
+      res.entities = res.entities ?? [];
+      return ok(res);
+    }
+    if (tail.length === 1 && tail[0] === "standings") {
+      if (!provider.standings) {
+        return err(501, "not_implemented", "This live feed does not serve standings.");
+      }
+      const res = {
+        ...(await provider.standings({ feed, league: q.league || undefined }, ctx)),
+      };
+      res.tables = res.tables ?? [];
+      return ok(res);
+    }
+    return err(404, "not_found", "No live feed route matched.");
   }
 
   if (parts.length < 3 || parts[0] !== "kinds") return null;
@@ -62199,6 +63789,7 @@ import {
   type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
+  type LiveFeedProvider,
   type SetupTester,
 } from "./kinds.ts";
 import {
@@ -62295,6 +63886,7 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onResolve(kind: string, resolver: KindResolver<S>): void;
   onMatch(kind: string, matcher: KindMatcher<S>): void;
   onLive(kind: string, provider: KindLiveProvider<S>): void;
+  onLiveFeed(feed: string, provider: LiveFeedProvider<S>): void;
   onFrontend(key: string, adapter: FrontendAdapter<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
@@ -62982,6 +64574,7 @@ export function plugin<S = Record<string, unknown>>(
     onResolve: (kind, resolver) => { kindHandlers.resolve.set(kind, resolver); },
     onMatch: (kind, matcher) => { kindHandlers.match.set(kind, matcher); },
     onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
+    onLiveFeed: (feed, provider) => { kindHandlers.liveFeeds.set(feed, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };
@@ -64107,7 +65700,8 @@ export type Capability =
   | "kind_resolver"
   | "frontend_adapter"
   | "matcher"
-  | "poster_badges";
+  | "poster_badges"
+  | "live_events";
 
 export type LegacyEtherEventName =
   | "playback.started"
@@ -64499,7 +66093,182 @@ export interface Contributes {
   commands?: CommandMeta[];
   mediaKinds?: MediaKindMeta[];
   frontendAdapters?: FrontendAdapterMeta[];
+  liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
+}
+
+export interface LiveFeedMeta {
+  id: string;
+  title: string;
+  /** Minimum polling interval in seconds (>= 10). */
+  minIntervalSec: number;
+  entityKinds?: string[];
+}
+
+export type LiveEventState =
+  | "pre"
+  | "in"
+  | "post"
+  | "delayed"
+  | "postponed"
+  | "canceled";
+
+export interface LiveEventLeague {
+  id: string;
+  name: string;
+  abbr?: string;
+  logo?: string;
+}
+
+export interface LiveEventStatus {
+  state: LiveEventState;
+  detail?: string;
+  period?: number;
+  clock?: string;
+  close?: boolean;
+}
+
+export interface LiveEventCompetitor {
+  id: string;
+  name: string;
+  short?: string;
+  abbr?: string;
+  logo?: string;
+  color?: string;
+  altColor?: string;
+  score?: string;
+  record?: string;
+  rank?: number;
+  home?: boolean;
+  winner?: boolean;
+  entityId?: string;
+}
+
+export interface LiveEventRankRow {
+  pos: number;
+  name: string;
+  abbr?: string;
+  detail?: string;
+  entityId?: string;
+}
+
+export interface LiveEventProbability {
+  label?: string;
+  value: number;
+  competitorId?: string;
+}
+
+export interface LiveEventBroadcast {
+  name: string;
+  kind?: "tv" | "stream" | "radio";
+  region?: string;
+}
+
+export interface LiveEventMatchHints {
+  terms?: string[];
+  callsigns?: string[];
+}
+
+export interface LiveEvent {
+  id: string;
+  feed: string;
+  category?: string;
+  league: LiveEventLeague;
+  title?: string;
+  /** RFC3339 timestamp. */
+  start: string;
+  status: LiveEventStatus;
+  competitors?: LiveEventCompetitor[];
+  ranking?: LiveEventRankRow[];
+  situation?: Record<string, string>;
+  probability?: LiveEventProbability;
+  venue?: string;
+  broadcasts?: LiveEventBroadcast[];
+  matchHints?: LiveEventMatchHints;
+  /** Set by Ether; plugins leave omitted. */
+  spoiler?: boolean;
+  /** RFC3339 timestamp. */
+  updatedAt?: string;
+}
+
+export interface LiveEventTable {
+  title: string;
+  columns: string[];
+  rows: string[][];
+}
+
+export interface LiveEventPlay {
+  clock?: string;
+  period?: number;
+  text: string;
+  emphasis?: "score" | "key" | "normal";
+  competitorId?: string;
+}
+
+export interface LiveEventProbabilityPoint {
+  /** Timestamp or axis label (e.g. RFC3339 or game clock). */
+  t: string;
+  value: number;
+}
+
+export interface LiveEventLink {
+  label: string;
+  url: string;
+}
+
+export interface LiveEventDetail extends LiveEvent {
+  tables?: LiveEventTable[];
+  plays?: LiveEventPlay[];
+  probabilitySeries?: LiveEventProbabilityPoint[];
+  links?: LiveEventLink[];
+}
+
+export interface LiveEventsResponse {
+  events: LiveEvent[];
+  nextPollSec?: number;
+}
+
+export interface LiveEventEntity {
+  id: string;
+  kind: string;
+  name: string;
+  abbr?: string;
+  logo?: string;
+  league?: string;
+  color?: string;
+}
+
+export interface LiveEventEntitiesResponse {
+  entities: LiveEventEntity[];
+}
+
+export interface LiveEventStandingsResponse {
+  tables: LiveEventTable[];
+}
+
+export interface LiveEventsRequest {
+  feed: string;
+  from?: string;
+  to?: string;
+  league?: string;
+  ids?: string[];
+}
+
+export interface LiveEventDetailRequest {
+  feed: string;
+  id: string;
+}
+
+export interface LiveEntitiesRequest {
+  feed: string;
+  kind?: string;
+  league?: string;
+  q?: string;
+}
+
+export interface LiveStandingsRequest {
+  feed: string;
+  league?: string;
 }
 
 /** A Jellyfin/Emby item type a level can present as. */

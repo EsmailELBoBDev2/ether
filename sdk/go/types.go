@@ -39,6 +39,7 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapPosterBadges    Capability = "poster_badges"
+	CapLiveEvents      Capability = "live_events"
 )
 
 // Manifest is the EPP/1 manifest document served at GET /manifest.json.
@@ -228,7 +229,19 @@ type Contributes struct {
 	Commands         []CommandMeta         `json:"commands,omitempty"`
 	MediaKinds       []MediaKindMeta       `json:"mediaKinds,omitempty"`
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
+	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
+}
+
+// MinLiveFeedIntervalSec is the minimum polling interval a live feed may declare.
+const MinLiveFeedIntervalSec = 10
+
+// LiveFeedMeta declares one live events feed contributed by a plugin.
+type LiveFeedMeta struct {
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	MinIntervalSec int      `json:"minIntervalSec"`
+	EntityKinds    []string `json:"entityKinds,omitempty"`
 }
 
 // Poster badge bounds (#594).

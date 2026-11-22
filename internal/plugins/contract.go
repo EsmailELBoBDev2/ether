@@ -73,6 +73,7 @@ const (
 	CapKindResolver    Capability = "kind_resolver"
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
+	CapLiveEvents      Capability = "live_events"
 )
 
 // Reserved capabilities are known names a manifest may not claim in v1.
@@ -304,8 +305,35 @@ type Contributes struct {
 	// FrontendAdapters declares protocol surfaces this plugin serves
 	// through Ether's generic adapter frontend (spec §6.5).
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
+	// LiveFeeds declares live event feeds this plugin serves under
+	// /ether/v1/live/{feed}/* when it declares the live_events capability.
+	LiveFeeds []LiveFeedMeta `json:"liveFeeds,omitempty"`
 	// Setup declares guided setup steps for any plugin kind (§8).
 	Setup *SetupMeta `json:"setup,omitempty"`
+}
+
+// MinLiveFeedIntervalSec is the lowest polling interval (in seconds) a plugin
+// live feed may declare.
+const MinLiveFeedIntervalSec = 10
+
+// LiveFeedMeta declares one live events feed contributed by a plugin.
+type LiveFeedMeta struct {
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	MinIntervalSec int      `json:"minIntervalSec"`
+	EntityKinds    []string `json:"entityKinds,omitempty"`
+}
+
+// LiveFeedByID returns the declared live feed with this id, if any.
+func (m Manifest) LiveFeedByID(id string) (LiveFeedMeta, bool) {
+	if e := m.EffectiveEther(); e != nil {
+		for _, lf := range e.Contributes.LiveFeeds {
+			if lf.ID == id {
+				return lf, true
+			}
+		}
+	}
+	return LiveFeedMeta{}, false
 }
 
 // PosterBadgeSetMeta declares one poster overlay badge set contributed by a plugin (#594).

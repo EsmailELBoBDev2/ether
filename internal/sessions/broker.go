@@ -131,6 +131,9 @@ type brokerPlan struct {
 	budgetCapKbps int
 }
 type brokerSession struct {
+	// qualityCapped records that a quality pick turned off copying, so a
+	// later Auto pick turns it back on.
+	qualityCapped          bool
 	observedSourceRevision string
 	audio                  *audioRendition
 	audioGeneration        uint64

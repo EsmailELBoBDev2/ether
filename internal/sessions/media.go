@@ -174,7 +174,8 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if b.deps.Transcoder == nil {
 		return "", core.ErrNotAvailable
 	}
-	tracksChanged := req.AudioStream != nil || req.SubtitleStream != nil
+	qualityChanged := req.MaxHeight != nil && *req.MaxHeight >= 0 && (req.Format == frontend.StreamHLS || req.Format == frontend.StreamDASH)
+	tracksChanged := req.AudioStream != nil || req.SubtitleStream != nil || qualityChanged
 	reencode := req.ReencodeVideo && s.opts.DirectStream
 	if !tracksChanged && !reencode && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect && req.Format == frontend.StreamHLS)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
 		if hs, ok := b.transcodeSession(id); ok && hs != nil {
@@ -219,6 +220,24 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			// No copy: the client refused the copied video. Later restarts
 			// (seeks) keep encoding.
 			options.DirectStream = false
+		}
+		if qualityChanged {
+			cap := *req.MaxHeight
+			options.MaxHeight = cap
+			source := 0
+			if v := ps.Info.Video(); v != nil {
+				source = v.Height
+			}
+			if cap > 0 && source > cap {
+				// A copy cannot be smaller: encode to the picked height.
+				if options.DirectStream {
+					s.qualityCapped = true
+				}
+				options.DirectStream = false
+			} else if s.qualityCapped {
+				options.DirectStream = true
+				s.qualityCapped = false
+			}
 		}
 		if req.AudioStream != nil {
 			if !validObservedTrack(ps.Info, "audio", *req.AudioStream) {
@@ -431,6 +450,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		if tracksChanged {
 			live.opts = s.opts
 			live.decision = dec
+			live.qualityCapped = s.qualityCapped
 		}
 	}
 	b.mu.Unlock()

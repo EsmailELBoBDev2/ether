@@ -33,7 +33,11 @@ type startRequest struct {
 		Deliveries map[string]struct {
 			Enabled   bool `json:"enabled"`
 			Supported bool `json:"supported_on_device"`
-			Subtitles struct {
+			// AudioPassthrough lists codecs the device bitstreams to its
+			// audio output (TrueHD, DTS-HD to an AV receiver) without decoding
+			// them; codecs_audio lists only what it decodes.
+			AudioPassthrough []string `json:"audio_passthrough_codecs"`
+			Subtitles        struct {
 				ASSStyling      bool `json:"ass_styling"`
 				FontAttachments bool `json:"font_attachments"`
 				SidecarText     bool `json:"sidecar_text"`
@@ -100,7 +104,17 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	if h, e := strconv.Atoi(strings.TrimSuffix(b.Quality, "p")); e == nil && h > 0 && (height == 0 || h < height) {
 		height = h
 	}
-	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: b.Capabilities.Video, AudioCodecs: b.Capabilities.Audio, Containers: b.Capabilities.Containers, MaxHeight: height, HDR10: b.Capabilities.HDR}, UserAgent: r.UserAgent()})
+	// The original file plays any codec the device can pass through, as well
+	// as those it decodes: a TrueHD track goes to the receiver untouched.
+	audioCodecs := slices.Clone(b.Capabilities.Audio)
+	if original, ok := b.Context.Deliveries["original_http"]; ok && original.Enabled && original.Supported {
+		for _, codec := range original.AudioPassthrough {
+			if codec = strings.ToLower(strings.TrimSpace(codec)); codec != "" && !slices.Contains(audioCodecs, codec) {
+				audioCodecs = append(audioCodecs, codec)
+			}
+		}
+	}
+	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: b.Capabilities.Video, AudioCodecs: audioCodecs, Containers: b.Capabilities.Containers, MaxHeight: height, HDR10: b.Capabilities.HDR}, UserAgent: r.UserAgent()})
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return

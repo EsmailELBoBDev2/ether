@@ -3619,10 +3619,23 @@ def create_test_harness(
 MAX_KIND_LIBRARY_SHELVES = 40
 
 
-class KindLibraryShelf(TypedDict, total=False):
-    """One default Recommended shelf declared under ``library.shelves`` (max 40).
+class KindLevel(TypedDict, total=False):
+    """One hierarchy level of a contributed media kind."""
 
-    Each shelf gets the stable row ID ``plugin:<viewID>:shelf:<key>``.
+    key: str
+    label: str
+    parent: str
+    media: Literal["video", "music", "audiobook", "book", "podcast", "photo"]
+    role: str
+    playable: bool
+    container: bool
+
+
+class KindLibraryShelf(TypedDict, total=False):
+    """One default Recommended shelf declared under ``library.shelves`` or a recommended tab's ``shelves`` (max 40).
+
+    Each shelf gets the stable row ID ``plugin:<viewID>:shelf:<key>`` (or
+    ``plugin:<viewID>:tab:<tabId>:shelf:<key>`` on per-tab shelves).
     """
 
     key: str
@@ -3652,6 +3665,7 @@ class KindLibraryTab(TypedDict, total=False):
     sort: Literal["title", "added", "released", "year", "rating", "index", "lastViewed"]
     direction: Literal["asc", "desc"]
     filters: Dict[str, Any]
+    shelves: List[KindLibraryShelf]
 
 
 class KindLibraryDecl(TypedDict, total=False):

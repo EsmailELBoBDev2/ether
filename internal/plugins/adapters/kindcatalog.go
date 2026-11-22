@@ -284,6 +284,8 @@ func kindPresentationInput(k plugins.MediaKindMeta) libraries.KindPresentationIn
 	for i, lv := range k.Levels {
 		levels[i] = libraries.KindPresentationLevel{
 			Key:       lv.Key,
+			Parent:    lv.Parent,
+			Media:     lv.Media,
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
@@ -935,7 +937,81 @@ func flatAudioQuery(decl plugins.MediaKindMeta, present core.Presentations, q fr
 }
 
 // Children implements experience.PluginLibraries.
+func hasGrandchildLevels(decl plugins.MediaKindMeta, parentLevel string) bool {
+	for _, child := range decl.ChildLevels(parentLevel) {
+		if decl.HasChildLevels(child.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveFilteredChildLevels(decl plugins.MediaKindMeta, _ core.Presentations, parentLevel string, recursive bool, reqLevel, reqRole string) []string {
+	reqLevel = strings.TrimSpace(reqLevel)
+	reqRole = strings.TrimSpace(reqRole)
+	var candidates []plugins.KindLevel
+	if !recursive {
+		candidates = decl.ChildLevels(parentLevel)
+	} else {
+		queue := []string{parentLevel}
+		seen := map[string]bool{parentLevel: true}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, ch := range decl.ChildLevels(cur) {
+				if seen[ch.Key] {
+					continue
+				}
+				seen[ch.Key] = true
+				candidates = append(candidates, ch)
+				queue = append(queue, ch.Key)
+			}
+		}
+	}
+	if reqLevel != "" {
+		filtered := candidates[:0]
+		for _, lv := range candidates {
+			if strings.EqualFold(lv.Key, reqLevel) {
+				filtered = append(filtered, lv)
+			}
+		}
+		candidates = filtered
+	}
+	if reqRole == "" {
+		out := make([]string, 0, len(candidates))
+		for _, lv := range candidates {
+			out = append(out, lv.Key)
+		}
+		return out
+	}
+	// Spec: match a child level's declared role first, then a role-less child
+	// level by its level key so every media.childCounts key works with ?role=.
+	var byRole []string
+	for _, lv := range candidates {
+		if declRole := strings.TrimSpace(lv.Role); declRole != "" && strings.EqualFold(declRole, reqRole) {
+			byRole = append(byRole, lv.Key)
+		}
+	}
+	if len(byRole) > 0 {
+		return byRole
+	}
+	var byKey []string
+	for _, lv := range candidates {
+		if strings.TrimSpace(lv.Role) == "" && strings.EqualFold(lv.Key, reqRole) {
+			byKey = append(byKey, lv.Key)
+		}
+	}
+	return byKey
+}
+
 func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recursive bool, cursor string, limit int) (experience.PluginBrowsePage, error) {
+	return c.ChildrenFiltered(ctx, parent, recursive, "", "", cursor, limit)
+}
+
+// ChildrenFiltered implements experience.PluginFilteredChildrenLibraries,
+// pushing optional child level and semantic role filters directly into SQL so
+// filtered child paging stays O(page).
+func (c *KindCatalog) ChildrenFiltered(ctx context.Context, parent core.RatingKey, recursive bool, reqLevel, reqRole, cursor string, limit int) (experience.PluginBrowsePage, error) {
 	if c == nil || c.items == nil || c.libs == nil || !parent.IsPluginKey() {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
@@ -962,7 +1038,24 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 	if cursor == "" {
 		c.maybeHydrateContainer(ctx, rec, lib, parentItem, levelIdx)
 	}
-	if !recursive && parentRole == core.MediaRoleArtist {
+
+	reqLevel = strings.TrimSpace(reqLevel)
+	reqRole = strings.TrimSpace(reqRole)
+	filtering := reqLevel != "" || reqRole != ""
+	var targetLevels []string
+	var targetLevelSet map[string]bool
+	if filtering {
+		targetLevels = resolveFilteredChildLevels(rec.Decl, lib.Present, parentItem.Level, recursive, reqLevel, reqRole)
+		if len(targetLevels) == 0 {
+			return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+		}
+		targetLevelSet = make(map[string]bool, len(targetLevels))
+		for _, lv := range targetLevels {
+			targetLevelSet[lv] = true
+		}
+	}
+
+	if !recursive && !filtering && parentRole == core.MediaRoleArtist {
 		policy, e := c.items.LibraryPolicy(ctx, lib)
 		if e != nil {
 			return experience.PluginBrowsePage{}, e
@@ -1007,8 +1100,8 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 			NextCursor: next,
 		}, nil
 	}
-	if !recursive || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels)-2 {
-		if strings.HasPrefix(cursor, "part:") {
+	if !recursive || !hasGrandchildLevels(rec.Decl, parentItem.Level) {
+		if strings.HasPrefix(cursor, "part:") && !filtering {
 			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
 			if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
 				return paginateSyntheticParts(self[0], parts, cursor, limit), nil
@@ -1019,11 +1112,11 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		if e != nil {
 			return experience.PluginBrowsePage{}, e
 		}
-		page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Cursor: cursor, Limit: limit, Policy: policy, Sort: "index"})
+		page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Levels: targetLevels, Cursor: cursor, Limit: limit, Policy: policy, Sort: "index"})
 		if err != nil {
 			return experience.PluginBrowsePage{}, err
 		}
-		if len(page.Items) == 0 && page.Total == 0 {
+		if len(page.Items) == 0 && page.Total == 0 && !filtering {
 			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
 			if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
 				return paginateSyntheticParts(self[0], parts, cursor, limit), nil
@@ -1077,10 +1170,16 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 				return experience.PluginBrowsePage{}, err
 			}
 			for _, it := range page.Items {
-				_, idx, _ := rec.Decl.Level(it.Level)
-				if idx >= 0 && idx < len(rec.Decl.Levels)-1 && !it.Playable {
+				if filtering && targetLevelSet[it.Level] {
+					leaves = append(leaves, it)
+					if len(leaves) >= maxExpanded {
+						break
+					}
+					continue
+				}
+				if rec.Decl.HasChildLevels(it.Level) && !it.Playable {
 					queue = append(queue, it.Ref)
-				} else {
+				} else if !filtering {
 					leaves = append(leaves, it)
 					if len(leaves) >= maxExpanded {
 						break
@@ -1093,7 +1192,7 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 			childCursor = page.NextCursor
 		}
 	}
-	if len(leaves) == 0 {
+	if len(leaves) == 0 && !filtering {
 		self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
 		if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
 			return paginateSyntheticParts(self[0], parts, cursor, limit), nil
@@ -1729,10 +1828,9 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	partCounts, _ := c.items.CountPartsMany(ctx, refs)
 	var parentCounts map[core.ItemRef]pluginitems.ParentCounts
 	if len(rec.Decl.Levels) >= 2 {
-		leafLevel := rec.Decl.Levels[len(rec.Decl.Levels)-1].Key
 		containerRefs := make([]core.ItemRef, 0, len(items))
 		for _, it := range items {
-			if it.Level != leafLevel {
+			if rec.Decl.HasChildLevels(it.Level) {
 				containerRefs = append(containerRefs, it.Ref)
 			}
 		}
@@ -1751,6 +1849,22 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 			}
 			if pc.LeafCount > t.LeafCount {
 				t.LeafCount = pc.LeafCount
+			}
+			if len(pc.ByLevel) > 0 {
+				counts := make(map[string]int, len(pc.ByLevel))
+				for childLevel, n := range pc.ByLevel {
+					if n <= 0 {
+						continue
+					}
+					key := childLevel
+					if clv, _, ok := rec.Decl.Level(childLevel); ok && strings.TrimSpace(clv.Role) != "" {
+						key = strings.TrimSpace(clv.Role)
+					}
+					counts[key] += n
+				}
+				if len(counts) > 0 {
+					t.ChildCounts = counts
+				}
 			}
 		}
 		if nParts := partCounts[it.Ref]; nParts > 1 && t.ChildCount == 0 {
@@ -2211,10 +2325,11 @@ func ResolveKindMediaClass(decl plugins.MediaKindMeta, present core.Presentation
 }
 
 func shouldSkipItemContinue(decl plugins.MediaKindMeta, present core.Presentations, levelKey string) bool {
-	if ResolveKindMediaClass(decl, present) == core.MediaClassMusic {
+	levelClass, levelRole := pluginitems.ResolveMediaClassAndRole(levelKey, decl, present)
+	if levelClass == core.MediaClassMusic {
 		return true
 	}
-	if lv, _, ok := decl.Level(levelKey); ok && core.MediaRole(lv.Role) == core.MediaRoleTrack {
+	if levelRole == core.MediaRoleTrack {
 		return true
 	}
 	return false
@@ -2269,6 +2384,17 @@ func levelMatchesTypeName(lv plugins.KindLevel, idx int, decl plugins.MediaKindM
 	if lv.Role != "" && strings.EqualFold(name, lv.Role) {
 		return true
 	}
+	isVideoBranch := decl.IsVideoTitleLevel(lv.Key)
+	depth := decl.LevelDepth(lv.Key)
+	maxNonVideoDepth := 0
+	for _, candidate := range decl.Levels {
+		if decl.IsVideoTitleLevel(candidate.Key) {
+			continue
+		}
+		if d := decl.LevelDepth(candidate.Key); d > maxNonVideoDepth {
+			maxNonVideoDepth = d
+		}
+	}
 	switch strings.ToLower(name) {
 	case "series":
 		return projected.Type == core.TypeShow
@@ -2278,28 +2404,42 @@ func levelMatchesTypeName(lv plugins.KindLevel, idx int, decl plugins.MediaKindM
 		return projected.MBItemType == "" && core.MediaRole(lv.Role) == core.MediaRoleAlbum
 	case "audio":
 		return projected.MBItemType == "" && core.MediaRole(lv.Role) == core.MediaRoleTrack
+	case "clip":
+		return isVideoBranch
 	case "artist":
+		if isVideoBranch {
+			return false
+		}
 		if strings.EqualFold(projected.MBItemType, "MusicArtist") || core.MediaRole(lv.Role) == core.MediaRoleArtist {
 			return true
 		}
-		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") && idx == 0 && len(decl.Levels) >= 3
+		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") && depth == 0 && maxNonVideoDepth >= 2
 	case "album":
+		if isVideoBranch {
+			return false
+		}
 		if strings.EqualFold(projected.MBItemType, "MusicAlbum") || core.MediaRole(lv.Role) == core.MediaRoleAlbum {
 			return true
 		}
 		if present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") {
-			return (len(decl.Levels) <= 2 && idx == 0) || (len(decl.Levels) >= 3 && idx == 1)
+			return (maxNonVideoDepth <= 1 && depth == 0) || (maxNonVideoDepth >= 2 && depth == 1)
 		}
 	case "track":
+		if isVideoBranch {
+			return false
+		}
 		if strings.EqualFold(projected.MBItemType, "Audio") || core.MediaRole(lv.Role) == core.MediaRoleTrack {
 			return true
 		}
-		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") && len(decl.Levels) >= 2 && idx == len(decl.Levels)-1
+		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") && maxNonVideoDepth >= 1 && decl.IsLeafLevel(lv.Key)
 	case "photo":
+		if isVideoBranch {
+			return false
+		}
 		if strings.EqualFold(projected.MBItemType, "Photo") {
 			return true
 		}
-		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "photo") && idx == len(decl.Levels)-1
+		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "photo") && decl.IsLeafLevel(lv.Key)
 	}
 	return false
 }
@@ -2866,12 +3006,14 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		}
 	}
 
-	var shelves []experience.PluginShelf
-	if len(decl.Library.Shelves) > 0 {
-		shelves = make([]experience.PluginShelf, 0, len(decl.Library.Shelves))
-		for _, sh := range decl.Library.Shelves {
+	convertShelves := func(raw []plugins.KindLibraryShelf) []experience.PluginShelf {
+		if len(raw) == 0 {
+			return nil
+		}
+		out := make([]experience.PluginShelf, 0, len(raw))
+		for _, sh := range raw {
 			lbl := plugins.ResolveTextValue(sh.Label, sh.Key, resolveText)
-			shelves = append(shelves, experience.PluginShelf{
+			out = append(out, experience.PluginShelf{
 				Key:       sh.Key,
 				Label:     lbl,
 				Level:     sh.Level,
@@ -2881,16 +3023,48 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				TabFilter: sh.EffectiveTabFilter(),
 			})
 		}
+		return out
+	}
+
+	shelves := convertShelves(decl.Library.Shelves)
+	var tabShelves map[string][]experience.PluginShelf
+	for _, tab := range decl.Library.Tabs {
+		if tab.Kind == "recommended" && len(tab.Shelves) > 0 {
+			if tabShelves == nil {
+				tabShelves = make(map[string][]experience.PluginShelf)
+			}
+			tabShelves[tab.Key] = convertShelves(tab.Shelves)
+		}
+	}
+
+	kindMedia := ResolveKindMediaClass(decl, lib.Present)
+	var rootLevel string
+	var levelMedia map[string]core.MediaClass
+	var levelParents map[string]string
+	if len(decl.Levels) > 0 {
+		rootLevel = decl.Levels[0].Key
+		levelMedia = make(map[string]core.MediaClass, len(decl.Levels))
+		levelParents = make(map[string]string, len(decl.Levels))
+		for _, lv := range decl.Levels {
+			levelMedia[lv.Key] = decl.EffectiveLevelMedia(lv.Key, kindMedia)
+			if p := decl.LevelParent(lv.Key); p != "" {
+				levelParents[lv.Key] = p
+			}
+		}
 	}
 
 	return experience.PluginPresentation{
-		Media:       ResolveKindMediaClass(decl, lib.Present),
-		Card:        lib.EffectiveCardShape(decl.Library.EffectiveCard()),
-		DateDisplay: decl.Library.EffectiveDateDisplay(),
-		Tabs:        tabs,
-		Sorts:       sorts,
-		Facets:      facets,
-		Shelves:     shelves,
+		Media:        kindMedia,
+		Card:         lib.EffectiveCardShape(decl.Library.EffectiveCard()),
+		DateDisplay:  decl.Library.EffectiveDateDisplay(),
+		Tabs:         tabs,
+		Sorts:        sorts,
+		Facets:       facets,
+		Shelves:      shelves,
+		TabShelves:   tabShelves,
+		RootLevel:    rootLevel,
+		LevelMedia:   levelMedia,
+		LevelParents: levelParents,
 	}, true
 }
 

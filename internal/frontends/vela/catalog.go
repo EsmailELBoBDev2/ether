@@ -896,6 +896,12 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		i.facetSeriesChildren(w, r, v, t, rawID)
 		return
 	}
+	role := strings.TrimSpace(r.URL.Query().Get("role"))
+	level := strings.TrimSpace(r.URL.Query().Get("level"))
+	if len(role) > 64 || len(level) > 64 {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
 	lim := limit(r)
 	var cur liveCursor
 	if i.seal != nil {
@@ -904,7 +910,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
-		cur, err = i.readLiveCursor(r, scope, hashJSON([]any{"children", rawID, lim}))
+		cur, err = i.readLiveCursor(r, scope, hashJSON([]any{"children", rawID, role, level, lim}))
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -919,7 +925,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
 	r = r.WithContext(ctx)
-	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Offset: cur.Offset, Limit: lim + 1, NoTotal: true})
+	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Offset: cur.Offset, Limit: lim + 1, Level: level, Role: role, NoTotal: true})
 	if e != nil {
 		fail(w, e, r)
 		return

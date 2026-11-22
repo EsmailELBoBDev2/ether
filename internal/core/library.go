@@ -240,7 +240,7 @@ type LibraryTab struct {
 	Order             string     `json:"order,omitempty"`             // count|name (collections or people)
 	Sort              string     `json:"sort,omitempty"`              // default sort (library, view, facet collections)
 	Direction         string     `json:"direction,omitempty"`         // asc|desc
-	Card              string     `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Card              string     `json:"card,omitempty"`              // landscape (default)|poster|square (live or recommended tabs)
 	Layout            string     `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
 	Search            *bool      `json:"search,omitempty"`            // defaults true for library/collections/people/view/live, false for recommended
 	SearchPlaceholder string     `json:"searchPlaceholder,omitempty"` // optional custom search placeholder
@@ -263,17 +263,23 @@ func (t LibraryTab) EffectiveLayout() string {
 }
 
 // EffectiveCard returns the tab's card shape ("landscape" by default for live
-// tabs, empty for other tab kinds).
+// tabs, explicit card when set on recommended tabs, empty otherwise).
 func (t LibraryTab) EffectiveCard() string {
-	if t.Kind != TabLive {
-		return ""
+	switch t.Kind {
+	case TabLive:
+		switch t.Card {
+		case CardPoster, CardLandscape, CardSquare:
+			return t.Card
+		default:
+			return CardLandscape
+		}
+	case TabRecommended:
+		switch t.Card {
+		case CardPoster, CardLandscape, CardSquare:
+			return t.Card
+		}
 	}
-	switch t.Card {
-	case CardPoster, CardLandscape, CardSquare:
-		return t.Card
-	default:
-		return CardLandscape
-	}
+	return ""
 }
 
 // EffectiveSearch reports whether in-tab search is enabled on t.
@@ -570,7 +576,7 @@ type PlexPresentation struct {
 // MediaBrowserPresentation describes how Jellyfin and Emby see a library.
 type MediaBrowserPresentation struct {
 	CollectionType string            `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
-	ItemTypes      map[string]string `json:"itemTypes,omitempty"`      // level -> Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|AudioBook|Book|PhotoAlbum|Photo
+	ItemTypes      map[string]string `json:"itemTypes,omitempty"`      // level -> Movie|Series|Season|Episode|Video|MusicArtist|MusicAlbum|Audio|AudioBook|Book|PhotoAlbum|Photo
 	Default        *bool             `json:"default,omitempty"`        // optional manifest default hint (true when omitted)
 }
 

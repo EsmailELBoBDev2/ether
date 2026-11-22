@@ -682,7 +682,7 @@ export type MediaRole =
   | "collection";
 
 export type MediaBrowserItemType =
-  | "Movie" | "Series" | "Season" | "Episode"
+  | "Movie" | "Series" | "Season" | "Episode" | "Video"
   | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
   | "Book" | "PhotoAlbum" | "Photo";
 
@@ -713,7 +713,12 @@ export interface Presentations {
 export interface KindLevel {
   key: string;
   label: string;
-  role?: MediaRole;
+  /** Optional earlier level key; defaults to the previous level. */
+  parent?: string;
+  /** Optional media class override (defaults to the kind's media class). */
+  media?: MediaClass;
+  /** Free-text semantic role (e.g. "artist", "album", "track", "concert"). */
+  role?: MediaRole | (string & {});
   playable?: boolean;
   container?: boolean;
 }
@@ -753,7 +758,7 @@ export interface KindLibraryTab {
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
-  /** Card aspect ratio on "live" tabs (default "landscape"). */
+  /** Card aspect ratio on "live" (default "landscape") or "recommended" tabs. */
   card?: "poster" | "landscape" | "square";
   /** Presentation layout on "view" tabs: "grid" (default), "list", or "timeline". */
   layout?: "grid" | "list" | "timeline";
@@ -765,6 +770,8 @@ export interface KindLibraryTab {
   direction?: "asc" | "desc";
   /** Saved filter rules on "view" tabs (indexed fields and/or viewer-state rules). */
   filters?: KindLibraryTabFilter;
+  /** Per-tab shelves on "recommended" tabs (overrides library.shelves when set). */
+  shelves?: KindLibraryShelf[];
 }
 
 export interface KindLibraryShelf {

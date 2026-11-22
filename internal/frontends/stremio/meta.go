@@ -135,6 +135,9 @@ func (i *instance) metaPluginItem(w http.ResponseWriter, r *http.Request, creden
 			}
 			childRefs, _ := refs.RefsForKeys(r.Context(), viewer, keys)
 			for _, child := range page.Items {
+				if title.MediaClass != "" && child.MediaClass != "" && child.MediaClass != title.MediaClass {
+					continue
+				}
 				childRef := childRefs[child.Key]
 				if childRef == "" {
 					continue

@@ -6211,11 +6211,12 @@ type KindLibraryDecl struct {
 | `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts or lastViewed (facet collections or view) |
 | `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections or view) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (facet collections or people) |
-| `card` | `string` | may be omitted (see validation for conditions) | landscape (default)\|poster\|square (live tabs only) |
+| `card` | `string` | may be omitted (see validation for conditions) | landscape\|poster\|square (live or recommended tabs; defaults to landscape on live) |
 | `layout` | `string` | may be omitted (see validation for conditions) | grid (default)\|list\|timeline (view tabs only) |
 | `search` | `*bool` | may be omitted (see validation for conditions) | collections, people, view or live (default true) |
 | `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder, <= 60 chars |
 | `filters` | `*core.TabFilter` | may be omitted (see validation for conditions) | saved filter rules (view tabs only) |
+| `shelves` | `[]KindLibraryShelf` | may be omitted (see validation for conditions) | recommended tabs only; overrides library.shelves for that tab |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryTab
@@ -6223,19 +6224,20 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key               string          `json:"key"`
-	Label             string          `json:"label"`
-	Kind              string          `json:"kind"`                        // recommended|library|collections|people|view|live
-	Level             string          `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
-	Facet             string          `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
-	Sort              string          `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
-	Direction         string          `json:"direction,omitempty"`         // asc|desc (facet collections or view)
-	Order             string          `json:"order,omitempty"`             // count|name (facet collections or people)
-	Card              string          `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
-	Layout            string          `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
-	Search            *bool           `json:"search,omitempty"`            // collections, people, view or live (default true)
-	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
-	Filters           *core.TabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
+	Key               string             `json:"key"`
+	Label             string             `json:"label"`
+	Kind              string             `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string             `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
+	Facet             string             `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
+	Sort              string             `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
+	Direction         string             `json:"direction,omitempty"`         // asc|desc (facet collections or view)
+	Order             string             `json:"order,omitempty"`             // count|name (facet collections or people)
+	Card              string             `json:"card,omitempty"`              // landscape|poster|square (live or recommended tabs; defaults to landscape on live)
+	Layout            string             `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
+	Search            *bool              `json:"search,omitempty"`            // collections, people, view or live (default true)
+	SearchPlaceholder string             `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+	Filters           *core.TabFilter    `json:"filters,omitempty"`           // saved filter rules (view tabs only)
+	Shelves           []KindLibraryShelf `json:"shelves,omitempty"`           // recommended tabs only; overrides library.shelves for that tab
 }
 ``````
 
@@ -6278,17 +6280,23 @@ func (t KindLibraryTab) EffectiveLayout() string {
 
 ``````
 // EffectiveCard returns the tab's card shape ("landscape" by default for live
-// tabs, empty for other tab kinds).
+// tabs, explicit card when set on recommended tabs, empty otherwise).
 func (t KindLibraryTab) EffectiveCard() string {
-	if t.Kind != "live" {
-		return ""
+	switch t.Kind {
+	case "live":
+		switch t.Card {
+		case "poster", "landscape", "square":
+			return t.Card
+		default:
+			return "landscape"
+		}
+	case "recommended":
+		switch t.Card {
+		case "poster", "landscape", "square":
+			return t.Card
+		}
 	}
-	switch t.Card {
-	case "poster", "landscape", "square":
-		return t.Card
-	default:
-		return "landscape"
-	}
+	return ""
 }
 ``````
 
@@ -6819,7 +6827,9 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
-| `role` | `string` | may be omitted (see validation for conditions) | item\|artist\|album\|track\|series\|book\|audiobook\|part\|show\|episode\|collection |
+| `parent` | `string` | may be omitted (see validation for conditions) | optional earlier level key; defaults to the previous level |
+| `media` | `string` | may be omitted (see validation for conditions) | optional media class override: video\|music\|audiobook\|book\|podcast\|photo |
+| `role` | `string` | may be omitted (see validation for conditions) | free-text semantic role (e.g. artist, album, track, concert) |
 | `playable` | `bool` | may be omitted (see validation for conditions) | leaves the resolver can open; at least one level |
 | `container` | `bool` | may be omitted (see validation for conditions) | item is a container other leaves are extracted from |
 
@@ -6831,7 +6841,9 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
-	Role      string `json:"role,omitempty"`      // item|artist|album|track|series|book|audiobook|part|show|episode|collection
+	Parent    string `json:"parent,omitempty"`    // optional earlier level key; defaults to the previous level
+	Media     string `json:"media,omitempty"`     // optional media class override: video|music|audiobook|book|podcast|photo
+	Role      string `json:"role,omitempty"`      // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
 }
@@ -24366,7 +24378,7 @@ var mediaBrowserCollectionTypes = map[string]bool{
 
 ``````
 var mediaBrowserItemTypes = map[string]bool{
-	"Movie": true, "Series": true, "Season": true, "Episode": true,
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "Video": true,
 	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
 	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
@@ -24376,7 +24388,7 @@ var mediaBrowserItemTypes = map[string]bool{
 
 ``````
 // mediaBrowserItemTypeList names the closed itemTypes set for error messages.
-const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
+const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, Video, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
 ``````
 
 ## Source: internal/plugins/manifest_kinds.go#validateMediaKinds
@@ -24463,10 +24475,23 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if levelKeys[lv.Key] {
 			add(lbase+".key", "is listed twice")
 		}
+		if lv.Parent != "" {
+			switch {
+			case j == 0:
+				add(lbase+".parent", "the root level cannot set parent")
+			case lv.Parent == lv.Key:
+				add(lbase+".parent", "cannot reference itself (cycle)")
+			case !levelKeys[lv.Parent]:
+				add(lbase+".parent", "must name an earlier level")
+			}
+		}
 		levelKeys[lv.Key] = true
 		label(lbase+".label", lv.Label, 40)
-		if lv.Role != "" && !core.ValidMediaRole(lv.Role) {
-			add(lbase+".role", "must be item, artist, album, track, series, book, audiobook, part, show, episode or collection")
+		if lv.Media != "" && !core.ValidMediaClass(lv.Media) {
+			add(lbase+".media", "must be video, music, audiobook, book, podcast or photo")
+		}
+		if lv.Role != "" && !validKindLevelRole(lv.Role) {
+			add(lbase+".role", "must be trimmed printable text of at most 40 characters")
 		}
 		if lv.Playable {
 			playable = true
@@ -24625,13 +24650,16 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					}
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" {
 					add(tbase+".layout", "only view tabs may set layout")
 				}
 				if tab.Filters != nil && !tab.Filters.IsEmpty() {
 					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
 				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
@@ -24655,13 +24683,16 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					}
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" {
 					add(tbase+".layout", "only view tabs may set layout")
 				}
 				if tab.Filters != nil && !tab.Filters.IsEmpty() {
 					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
 				}
 			case "view":
 				if tab.Facet != "" {
@@ -24671,7 +24702,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" && !kindLibraryTabLayouts[tab.Layout] {
 					add(tbase+".layout", "must be grid, list or timeline")
@@ -24702,6 +24733,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						}
 					}
 				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
 			case "live":
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -24730,6 +24764,38 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						add(tbase+".searchPlaceholder", "requires search to be enabled")
 					}
 				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			case "recommended":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections or view tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections or view tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" && !kindLibraryCards[tab.Card] {
+					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if tab.Search != nil {
+					add(tbase+".search", "only collections, people, view or live tabs may set search")
+				}
+				if tab.SearchPlaceholder != "" {
+					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
+				}
+				validateKindLibraryShelves(tbase+".shelves", tab.Shelves, levelKeys, fields, add, label)
 			default:
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -24744,7 +24810,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" {
 					add(tbase+".layout", "only view tabs may set layout")
@@ -24758,10 +24824,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.SearchPlaceholder != "" {
 					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
 				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
 			}
 		}
 	}
-	validateKindLibraryShelves(base, k.Library.Shelves, levelKeys, fields, add, label)
+	validateKindLibraryShelves(base+".library.shelves", k.Library.Shelves, levelKeys, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -25045,6 +25114,159 @@ func (k MediaKindMeta) Level(key string) (KindLevel, int, bool) {
 }
 ``````
 
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.LevelParent
+
+``````
+// LevelParent returns the effective parent level key for key: the declared
+// KindLevel.Parent when set, or the preceding level's key by default. The root
+// level (index 0) and unknown keys return "".
+func (k MediaKindMeta) LevelParent(key string) string {
+	lv, idx, ok := k.Level(key)
+	if !ok || idx == 0 {
+		return ""
+	}
+	if lv.Parent != "" {
+		return lv.Parent
+	}
+	return k.Levels[idx-1].Key
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.ChildLevels
+
+``````
+// ChildLevels returns all declared levels whose effective parent is parentKey,
+// in manifest declaration order.
+func (k MediaKindMeta) ChildLevels(parentKey string) []KindLevel {
+	if parentKey == "" {
+		return nil
+	}
+	var out []KindLevel
+	for _, lv := range k.Levels {
+		if k.LevelParent(lv.Key) == parentKey {
+			out = append(out, lv)
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.HasChildLevels
+
+``````
+// HasChildLevels reports whether any declared level has key as its effective parent.
+func (k MediaKindMeta) HasChildLevels(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, lv := range k.Levels {
+		if k.LevelParent(lv.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.IsLeafLevel
+
+``````
+// IsLeafLevel reports whether key is a declared level with no child levels.
+func (k MediaKindMeta) IsLeafLevel(key string) bool {
+	_, _, ok := k.Level(key)
+	return ok && !k.HasChildLevels(key)
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.LeafLevels
+
+``````
+// LeafLevels returns the set of all declared level keys that have no child levels.
+func (k MediaKindMeta) LeafLevels() map[string]bool {
+	out := make(map[string]bool, len(k.Levels))
+	for _, lv := range k.Levels {
+		if !k.HasChildLevels(lv.Key) {
+			out[lv.Key] = true
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.LevelDepth
+
+``````
+// LevelDepth returns the zero-based tree depth of key (0 for the root level,
+// 1 for direct children of root, etc.), or -1 if key is not declared.
+func (k MediaKindMeta) LevelDepth(key string) int {
+	if _, _, ok := k.Level(key); !ok {
+		return -1
+	}
+	depth := 0
+	cur := key
+	for step := 0; step < len(k.Levels); step++ {
+		p := k.LevelParent(cur)
+		if p == "" {
+			return depth
+		}
+		depth++
+		cur = p
+	}
+	return depth
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.EffectiveLevelMedia
+
+``````
+// EffectiveLevelMedia returns the effective media class for level key: the
+// level's explicit Media override when declared, else the kind's Media, else
+// fallback (or core.MediaClassVideo when fallback is empty).
+func (k MediaKindMeta) EffectiveLevelMedia(key string, fallback core.MediaClass) core.MediaClass {
+	if lv, _, ok := k.Level(key); ok && lv.Media != "" && core.ValidMediaClass(lv.Media) {
+		return core.MediaClass(lv.Media)
+	}
+	if k.Media != "" && core.ValidMediaClass(k.Media) {
+		return core.MediaClass(k.Media)
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return core.MediaClassVideo
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.IsVideoTitleLevel
+
+``````
+// IsVideoTitleLevel reports whether key is a playable level that explicitly
+// declares media: "video", projecting as a video title (kind: "movie") inside
+// any library regardless of the library's own media class.
+func (k MediaKindMeta) IsVideoTitleLevel(key string) bool {
+	lv, _, ok := k.Level(key)
+	return ok && lv.Playable && lv.Media == string(core.MediaClassVideo)
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#validKindLevelRole
+
+``````
+func validKindLevelRole(role string) bool {
+	if role == "" || strings.TrimSpace(role) != role {
+		return false
+	}
+	if utf8.RuneCountInString(role) > 40 {
+		return false
+	}
+	for _, r := range role {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+``````
+
 ## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.DeclHash
 
 ``````
@@ -25096,6 +25318,9 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 			if nl.Playable != lv.Playable || nl.Container != lv.Container {
 				add(lbase, "level "+lv.Key+" changed its playable or container flag")
 			}
+			if old.LevelParent(lv.Key) != nk.LevelParent(nl.Key) {
+				add(lbase+".parent", "level "+lv.Key+" changed its parent")
+			}
 		}
 		nextFields := map[string]KindField{}
 		for _, nf := range nk.Fields {
@@ -25137,12 +25362,12 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 ## Source: internal/plugins/manifest_kinds.go#validateKindLibraryShelves
 
 ``````
-func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
 	if len(shelves) == 0 {
 		return
 	}
 	if len(shelves) > MaxKindLibraryShelves {
-		add(base+".library.shelves", fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
+		add(shelvesPath, fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
 	}
 	declaredIndexed := make(map[string]string, len(fields))
 	fieldList := make([]KindField, 0, len(fields))
@@ -25166,7 +25391,7 @@ func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, levelKe
 	}
 	seenKey := map[string]bool{}
 	for j, sh := range shelves {
-		sbase := fmt.Sprintf("%s.library.shelves[%d]", base, j)
+		sbase := fmt.Sprintf("%s[%d]", shelvesPath, j)
 		if !kindShelfKeyRe.MatchString(sh.Key) {
 			add(sbase+".key", "must match ^[a-z][a-z0-9-]{0,39}$")
 		} else if seenKey[sh.Key] {
@@ -34721,8 +34946,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].levels[].container` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].levels[].media` | `any` | false | {"enum":["video","music","audiobook","book","podcast","photo"]} |
+| `ether.contributes.mediaKinds[].levels[].parent` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].playable` | `boolean` | false | {} |
-| `ether.contributes.mediaKinds[].levels[].role` | `any` | false | {"enum":["item","artist","album","track","series","book","audiobook","part","show","episode","collection"]} |
+| `ether.contributes.mediaKinds[].levels[].role` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].library.card` | `any` | false | {"enum":["poster","landscape","square"]} |
 | `ether.contributes.mediaKinds[].library.dateDisplay` | `any` | false | {"enum":["year","date"]} |
@@ -34777,6 +35004,16 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].library.tabs[].order` | `any` | false | {"enum":["count","name"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].search` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].searchPlaceholder` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].direction` | `any` | false | {"enum":["asc","desc"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].facet` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].filters` | `any` | false | {"anyOf":[{"additionalProperties":{"items":{"type":"string"},"type":"array"},"type":"object"},{"properties":{"exclude":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"groups":{"items":{"properties":{"action":{"type":"string"},"match":{"type":"string"},"mediaType":{"type":"string"},"name":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"scope":{"type":"string"}},"type":"object"},"type":"array"},"match":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"visibilityDefault":{"type":"string"}},"type":"object"},{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"}]} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].key` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].level` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].value` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].values` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
@@ -35654,23 +35891,24 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                         "label": {
                           "type": "string"
                         },
+                        "media": {
+                          "enum": [
+                            "video",
+                            "music",
+                            "audiobook",
+                            "book",
+                            "podcast",
+                            "photo"
+                          ]
+                        },
+                        "parent": {
+                          "type": "string"
+                        },
                         "playable": {
                           "type": "boolean"
                         },
                         "role": {
-                          "enum": [
-                            "item",
-                            "artist",
-                            "album",
-                            "track",
-                            "series",
-                            "book",
-                            "audiobook",
-                            "part",
-                            "show",
-                            "episode",
-                            "collection"
-                          ]
+                          "type": "string"
                         }
                       },
                       "type": "object"
@@ -36070,6 +36308,216 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                             },
                             "searchPlaceholder": {
                               "type": "string"
+                            },
+                            "shelves": {
+                              "items": {
+                                "properties": {
+                                  "direction": {
+                                    "enum": [
+                                      "asc",
+                                      "desc"
+                                    ]
+                                  },
+                                  "facet": {
+                                    "type": "string"
+                                  },
+                                  "filters": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "type": "object"
+                                      },
+                                      {
+                                        "properties": {
+                                          "exclude": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "groups": {
+                                            "items": {
+                                              "properties": {
+                                                "action": {
+                                                  "type": "string"
+                                                },
+                                                "match": {
+                                                  "type": "string"
+                                                },
+                                                "mediaType": {
+                                                  "type": "string"
+                                                },
+                                                "name": {
+                                                  "type": "string"
+                                                },
+                                                "rules": {
+                                                  "items": {
+                                                    "properties": {
+                                                      "field": {
+                                                        "type": "string"
+                                                      },
+                                                      "label": {
+                                                        "type": "string"
+                                                      },
+                                                      "labels": {
+                                                        "items": {
+                                                          "type": "string"
+                                                        },
+                                                        "type": "array"
+                                                      },
+                                                      "op": {
+                                                        "type": "string"
+                                                      },
+                                                      "value": {}
+                                                    },
+                                                    "type": "object"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "scope": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "match": {
+                                            "type": "string"
+                                          },
+                                          "rules": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "visibilityDefault": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "type": "object"
+                                      },
+                                      {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      {
+                                        "items": {
+                                          "properties": {
+                                            "field": {
+                                              "type": "string"
+                                            },
+                                            "label": {
+                                              "type": "string"
+                                            },
+                                            "labels": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "op": {
+                                              "type": "string"
+                                            },
+                                            "value": {}
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      }
+                                    ]
+                                  },
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "level": {
+                                    "type": "string"
+                                  },
+                                  "sort": {
+                                    "enum": [
+                                      "title",
+                                      "added",
+                                      "released",
+                                      "year",
+                                      "rating",
+                                      "index",
+                                      "lastViewed"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string"
+                                  },
+                                  "values": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "type": "array"
                             },
                             "sort": {
                               "enum": [
@@ -60777,7 +61225,7 @@ type BadgeUsage struct {
 | `mediaBrowser` | `*struct {
 		CollectionType string `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
 		// ItemTypes maps each level key to its Jellyfin/Emby item type:
-		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// Movie|Series|Season|Episode|Video|MusicArtist|MusicAlbum|Audio|
 		// AudioBook|Book|PhotoAlbum|Photo. Unmapped levels are inferred from
 		// the kind's media class, level roles, and hierarchy shape.
 		ItemTypes map[string]string `json:"itemTypes,omitempty"`
@@ -60818,7 +61266,7 @@ type Presentations struct {
 	MediaBrowser *struct {
 		CollectionType string `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
 		// ItemTypes maps each level key to its Jellyfin/Emby item type:
-		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// Movie|Series|Season|Episode|Video|MusicArtist|MusicAlbum|Audio|
 		// AudioBook|Book|PhotoAlbum|Photo. Unmapped levels are inferred from
 		// the kind's media class, level roles, and hierarchy shape.
 		ItemTypes map[string]string `json:"itemTypes,omitempty"`
@@ -60964,13 +61412,14 @@ type KindLibraryTabRule struct {
 | `level` | `string` | may be omitted (see validation for conditions) | optional declared hierarchy level (library, view, collections or people) |
 | `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (optional on collections; required people-type facet on people) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (default count on collections, name on people) |
-| `card` | `string` | may be omitted (see validation for conditions) | landscape (default)\|poster\|square (live tabs only) |
+| `card` | `string` | may be omitted (see validation for conditions) | landscape\|poster\|square (live or recommended tabs; defaults to landscape on live) |
 | `layout` | `string` | may be omitted (see validation for conditions) | grid (default)\|list\|timeline (view tabs only) |
 | `search` | `*bool` | may be omitted (see validation for conditions) | collections/people/view/live only; default true |
 | `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder (<=60 chars; collections/people/view/live when search is enabled) |
 | `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts or lastViewed (facet collections or view) |
 | `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections or view) |
 | `filters` | `*KindLibraryTabFilter` | may be omitted (see validation for conditions) | saved filter rules (view tabs only) |
+| `shelves` | `[]KindLibraryShelf` | may be omitted (see validation for conditions) | recommended tabs only; overrides library.shelves for that tab |
 
 
 ## Source: sdk/go/types.go#KindLibraryTab
@@ -60984,13 +61433,14 @@ type KindLibraryTab struct {
 	Level             string                `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
 	Facet             string                `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
 	Order             string                `json:"order,omitempty"`             // count|name (default count on collections, name on people)
-	Card              string                `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Card              string                `json:"card,omitempty"`              // landscape|poster|square (live or recommended tabs; defaults to landscape on live)
 	Layout            string                `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
 	Search            *bool                 `json:"search,omitempty"`            // collections/people/view/live only; default true
 	SearchPlaceholder string                `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/view/live when search is enabled)
 	Sort              string                `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
 	Direction         string                `json:"direction,omitempty"`         // asc|desc (facet collections or view)
 	Filters           *KindLibraryTabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
+	Shelves           []KindLibraryShelf    `json:"shelves,omitempty"`           // recommended tabs only; overrides library.shelves for that tab
 }
 ``````
 
@@ -61020,7 +61470,8 @@ const MaxKindLibraryShelves = 40
 
 ``````
 // KindLibraryShelf declares one default Recommended shelf for a plugin library.
-// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>".
+// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>" (or
+// "plugin:<viewID>:tab:<tabId>:shelf:<key>" on per-tab shelves).
 // Filters accepts a map[string][]string (facet map), *KindLibraryTabFilter,
 // KindLibraryTabRule, or []KindLibraryTabRule.
 type KindLibraryShelf struct {
@@ -61042,7 +61493,9 @@ type KindLibraryShelf struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
-| `role` | `string` | may be omitted (see validation for conditions) | item\|artist\|album\|track\|series\|book\|audiobook\|part\|show\|episode\|collection |
+| `parent` | `string` | may be omitted (see validation for conditions) | optional earlier level key; defaults to the previous level |
+| `media` | `string` | may be omitted (see validation for conditions) | optional media class override: video\|music\|audiobook\|book\|podcast\|photo |
+| `role` | `string` | may be omitted (see validation for conditions) | free-text semantic role (e.g. artist, album, track, concert) |
 | `playable` | `bool` | may be omitted (see validation for conditions) |  |
 | `container` | `bool` | may be omitted (see validation for conditions) |  |
 
@@ -61054,7 +61507,9 @@ type KindLibraryShelf struct {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
-	Role      string `json:"role,omitempty"` // item|artist|album|track|series|book|audiobook|part|show|episode|collection
+	Parent    string `json:"parent,omitempty"` // optional earlier level key; defaults to the previous level
+	Media     string `json:"media,omitempty"`  // optional media class override: video|music|audiobook|book|podcast|photo
+	Role      string `json:"role,omitempty"`   // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
 }
@@ -66745,10 +67200,23 @@ def create_test_harness(
 MAX_KIND_LIBRARY_SHELVES = 40
 
 
-class KindLibraryShelf(TypedDict, total=False):
-    """One default Recommended shelf declared under ``library.shelves`` (max 40).
+class KindLevel(TypedDict, total=False):
+    """One hierarchy level of a contributed media kind."""
 
-    Each shelf gets the stable row ID ``plugin:<viewID>:shelf:<key>``.
+    key: str
+    label: str
+    parent: str
+    media: Literal["video", "music", "audiobook", "book", "podcast", "photo"]
+    role: str
+    playable: bool
+    container: bool
+
+
+class KindLibraryShelf(TypedDict, total=False):
+    """One default Recommended shelf declared under ``library.shelves`` or a recommended tab's ``shelves`` (max 40).
+
+    Each shelf gets the stable row ID ``plugin:<viewID>:shelf:<key>`` (or
+    ``plugin:<viewID>:tab:<tabId>:shelf:<key>`` on per-tab shelves).
     """
 
     key: str
@@ -66778,6 +67246,7 @@ class KindLibraryTab(TypedDict, total=False):
     sort: Literal["title", "added", "released", "year", "rating", "index", "lastViewed"]
     direction: Literal["asc", "desc"]
     filters: Dict[str, Any]
+    shelves: List[KindLibraryShelf]
 
 
 class KindLibraryDecl(TypedDict, total=False):
@@ -73102,7 +73571,7 @@ export type MediaRole =
   | "collection";
 
 export type MediaBrowserItemType =
-  | "Movie" | "Series" | "Season" | "Episode"
+  | "Movie" | "Series" | "Season" | "Episode" | "Video"
   | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
   | "Book" | "PhotoAlbum" | "Photo";
 
@@ -73133,7 +73602,12 @@ export interface Presentations {
 export interface KindLevel {
   key: string;
   label: string;
-  role?: MediaRole;
+  /** Optional earlier level key; defaults to the previous level. */
+  parent?: string;
+  /** Optional media class override (defaults to the kind's media class). */
+  media?: MediaClass;
+  /** Free-text semantic role (e.g. "artist", "album", "track", "concert"). */
+  role?: MediaRole | (string & {});
   playable?: boolean;
   container?: boolean;
 }
@@ -73173,7 +73647,7 @@ export interface KindLibraryTab {
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
-  /** Card aspect ratio on "live" tabs (default "landscape"). */
+  /** Card aspect ratio on "live" (default "landscape") or "recommended" tabs. */
   card?: "poster" | "landscape" | "square";
   /** Presentation layout on "view" tabs: "grid" (default), "list", or "timeline". */
   layout?: "grid" | "list" | "timeline";
@@ -73185,6 +73659,8 @@ export interface KindLibraryTab {
   direction?: "asc" | "desc";
   /** Saved filter rules on "view" tabs (indexed fields and/or viewer-state rules). */
   filters?: KindLibraryTabFilter;
+  /** Per-tab shelves on "recommended" tabs (overrides library.shelves when set). */
+  shelves?: KindLibraryShelf[];
 }
 
 export interface KindLibraryShelf {

@@ -339,7 +339,7 @@ type Presentations struct {
 	MediaBrowser *struct {
 		CollectionType string `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
 		// ItemTypes maps each level key to its Jellyfin/Emby item type:
-		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// Movie|Series|Season|Episode|Video|MusicArtist|MusicAlbum|Audio|
 		// AudioBook|Book|PhotoAlbum|Photo. Unmapped levels are inferred from
 		// the kind's media class, level roles, and hierarchy shape.
 		ItemTypes map[string]string `json:"itemTypes,omitempty"`
@@ -414,20 +414,22 @@ type KindLibraryTab struct {
 	Level             string                `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
 	Facet             string                `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
 	Order             string                `json:"order,omitempty"`             // count|name (default count on collections, name on people)
-	Card              string                `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Card              string                `json:"card,omitempty"`              // landscape|poster|square (live or recommended tabs; defaults to landscape on live)
 	Layout            string                `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
 	Search            *bool                 `json:"search,omitempty"`            // collections/people/view/live only; default true
 	SearchPlaceholder string                `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/view/live when search is enabled)
 	Sort              string                `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
 	Direction         string                `json:"direction,omitempty"`         // asc|desc (facet collections or view)
 	Filters           *KindLibraryTabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
+	Shelves           []KindLibraryShelf    `json:"shelves,omitempty"`           // recommended tabs only; overrides library.shelves for that tab
 }
 
 // MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.
 const MaxKindLibraryShelves = 40
 
 // KindLibraryShelf declares one default Recommended shelf for a plugin library.
-// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>".
+// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>" (or
+// "plugin:<viewID>:tab:<tabId>:shelf:<key>" on per-tab shelves).
 // Filters accepts a map[string][]string (facet map), *KindLibraryTabFilter,
 // KindLibraryTabRule, or []KindLibraryTabRule.
 type KindLibraryShelf struct {
@@ -446,7 +448,9 @@ type KindLibraryShelf struct {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
-	Role      string `json:"role,omitempty"` // item|artist|album|track|series|book|audiobook|part|show|episode|collection
+	Parent    string `json:"parent,omitempty"` // optional earlier level key; defaults to the previous level
+	Media     string `json:"media,omitempty"`  // optional media class override: video|music|audiobook|book|podcast|photo
+	Role      string `json:"role,omitempty"`   // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
 }

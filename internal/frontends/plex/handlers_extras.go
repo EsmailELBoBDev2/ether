@@ -295,7 +295,7 @@ func (s *Server) handleExtras(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parent, err := s.metadataTitle(ctx, pr, k)
-	if err == nil && !s.visibleTitle(ctx, pr.User, parent) {
+	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
 	}
 	if err != nil {
@@ -305,6 +305,9 @@ func (s *Server) handleExtras(w http.ResponseWriter, r *http.Request) {
 	mc := s.itemContainer(parent.Type)
 	for _, e := range s.extrasFor(ctx, pr, parent, r.URL.Query().Get("extraTypes")) {
 		mc.Metadata = append(mc.Metadata, s.extraMetadata(e, parent, true))
+	}
+	if pluginExtras := s.pluginVideoExtras(ctx, pr, parent); len(pluginExtras) > 0 {
+		mc.Metadata = append(mc.Metadata, pluginExtras...)
 	}
 	mc.Size = len(mc.Metadata)
 	s.write(w, r, mc)

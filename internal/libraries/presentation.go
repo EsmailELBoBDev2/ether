@@ -12,7 +12,9 @@ import (
 // needed to infer per-app library presentations.
 type KindPresentationLevel struct {
 	Key       string
-	Role      string // optional core.MediaRole
+	Parent    string // optional earlier level key; empty defaults to previous level
+	Media     string // optional core.MediaClass override for this level
+	Role      string // optional free-text semantic role
 	Playable  bool
 	Container bool
 }
@@ -549,6 +551,54 @@ func mediaClassFromMBItemTypes(itemTypes map[string]string) core.MediaClass {
 	return ""
 }
 
+func levelTreeShape(levels []KindPresentationLevel) (depths []int, isLeaf []bool, maxDepth int) {
+	n := len(levels)
+	depths = make([]int, n)
+	isLeaf = make([]bool, n)
+	if n == 0 {
+		return depths, isLeaf, 0
+	}
+	idxByKey := make(map[string]int, n)
+	for i, lv := range levels {
+		idxByKey[lv.Key] = i
+		isLeaf[i] = true
+	}
+	parentIdx := make([]int, n)
+	for i, lv := range levels {
+		if i == 0 {
+			parentIdx[i] = -1
+			continue
+		}
+		if lv.Parent != "" {
+			if p, ok := idxByKey[lv.Parent]; ok && p < i {
+				parentIdx[i] = p
+				isLeaf[p] = false
+				continue
+			}
+		}
+		parentIdx[i] = i - 1
+		isLeaf[i-1] = false
+	}
+	for i := range levels {
+		d := 0
+		for cur := parentIdx[i]; cur >= 0 && d <= n; cur = parentIdx[cur] {
+			d++
+		}
+		depths[i] = d
+		if d > maxDepth {
+			maxDepth = d
+		}
+	}
+	return depths, isLeaf, maxDepth
+}
+
+func effectiveLevelClass(lv KindPresentationLevel, kindClass core.MediaClass) core.MediaClass {
+	if core.ValidMediaClass(lv.Media) {
+		return core.MediaClass(lv.Media)
+	}
+	return kindClass
+}
+
 func inferLevelRoles(class core.MediaClass, in KindPresentationInput) []core.MediaRole {
 	n := len(in.Levels)
 	roles := make([]core.MediaRole, n)
@@ -556,33 +606,42 @@ func inferLevelRoles(class core.MediaClass, in KindPresentationInput) []core.Med
 	if in.Present.MediaBrowser != nil {
 		mbTypes = in.Present.MediaBrowser.ItemTypes
 	}
+	depths, isLeaf, maxDepth := levelTreeShape(in.Levels)
+	treeHeight := maxDepth + 1
 
 	for i, lv := range in.Levels {
-		// 1. Explicit level role.
-		if r := strings.TrimSpace(lv.Role); core.ValidMediaRole(r) {
+		effClass := effectiveLevelClass(lv, class)
+		// 1. Explicit level role (free text, e.g. "concert").
+		if r := strings.TrimSpace(lv.Role); r != "" {
 			roles[i] = core.MediaRole(r)
 			continue
 		}
-		// 2. Declared MediaBrowser itemTypes hint.
+		// 2. Explicit video title level defaults to item role.
+		if lv.Playable && lv.Media == string(core.MediaClassVideo) {
+			roles[i] = core.MediaRoleItem
+			continue
+		}
+		// 3. Declared MediaBrowser itemTypes hint.
 		if mbTypes != nil {
 			if r := roleFromMBItemType(mbTypes[lv.Key]); r != "" {
 				roles[i] = r
 				continue
 			}
 		}
-		// 3. Level key heuristic.
-		if r := roleFromLevelKey(lv.Key, class); r != "" {
+		// 4. Level key heuristic.
+		if r := roleFromLevelKey(lv.Key, effClass); r != "" {
 			roles[i] = r
 			continue
 		}
 	}
 
-	// 4. Fill remaining gaps by class + hierarchy depth.
-	for i := range roles {
+	// 5. Fill remaining gaps by class + hierarchy depth.
+	for i, lv := range in.Levels {
 		if roles[i] != "" {
 			continue
 		}
-		roles[i] = defaultRoleForPosition(class, i, n)
+		effClass := effectiveLevelClass(lv, class)
+		roles[i] = defaultRoleForNode(effClass, depths[i], isLeaf[i], treeHeight)
 	}
 	return roles
 }
@@ -605,7 +664,7 @@ func roleFromMBItemType(mb string) core.MediaRole {
 		return core.MediaRoleShow
 	case "Episode":
 		return core.MediaRoleEpisode
-	case "Movie", "Photo":
+	case "Movie", "Video", "Photo":
 		return core.MediaRoleItem
 	default:
 		return ""
@@ -643,43 +702,43 @@ func roleFromLevelKey(key string, class core.MediaClass) core.MediaRole {
 	return ""
 }
 
-func defaultRoleForPosition(class core.MediaClass, idx, total int) core.MediaRole {
+func defaultRoleForNode(class core.MediaClass, depth int, isLeaf bool, total int) core.MediaRole {
 	switch class {
 	case core.MediaClassMusic:
 		switch {
 		case total <= 1:
 			return core.MediaRoleAlbum
 		case total == 2:
-			if idx == 0 {
+			if depth == 0 {
 				return core.MediaRoleAlbum
 			}
 			return core.MediaRoleTrack
 		default:
-			if idx == 0 {
+			if depth == 0 {
 				return core.MediaRoleArtist
 			}
-			if idx == total-1 {
+			if isLeaf {
 				return core.MediaRoleTrack
 			}
 			return core.MediaRoleAlbum
 		}
 	case core.MediaClassAudiobook:
-		if total <= 1 || idx == 0 {
+		if total <= 1 || depth == 0 {
 			return core.MediaRoleAudiobook
 		}
 		return core.MediaRolePart
 	case core.MediaClassBook:
-		if total <= 1 || idx == total-1 {
+		if total <= 1 || isLeaf {
 			return core.MediaRoleBook
 		}
 		return core.MediaRoleSeries
 	case core.MediaClassPodcast:
-		if total <= 1 || idx == total-1 {
+		if total <= 1 || isLeaf {
 			return core.MediaRoleEpisode
 		}
 		return core.MediaRoleShow
 	case core.MediaClassPhoto:
-		if total <= 1 || idx == total-1 {
+		if total <= 1 || isLeaf {
 			return core.MediaRoleItem
 		}
 		return core.MediaRoleCollection
@@ -688,15 +747,15 @@ func defaultRoleForPosition(class core.MediaClass, idx, total int) core.MediaRol
 		case total <= 1:
 			return core.MediaRoleItem
 		case total == 2:
-			if idx == 0 {
+			if depth == 0 {
 				return core.MediaRoleShow
 			}
 			return core.MediaRoleEpisode
 		default:
-			if idx == 0 {
+			if depth == 0 {
 				return core.MediaRoleShow
 			}
-			if idx == total-1 {
+			if isLeaf {
 				return core.MediaRoleEpisode
 			}
 			return core.MediaRoleCollection
@@ -774,7 +833,8 @@ func inferMediaBrowserItemTypes(class core.MediaClass, levels []KindPresentation
 	}
 	out := make(map[string]string, len(levels)+len(existing))
 	maps.Copy(out, existing)
-	n := len(levels)
+	depths, isLeaf, maxDepth := levelTreeShape(levels)
+	treeHeight := maxDepth + 1
 	for i, lv := range levels {
 		if lv.Key == "" || out[lv.Key] != "" {
 			continue
@@ -783,7 +843,16 @@ func inferMediaBrowserItemTypes(class core.MediaClass, levels []KindPresentation
 		if i < len(roles) {
 			role = roles[i]
 		}
-		out[lv.Key] = inferMBItemTypeForLevel(class, role, i, n)
+		if lv.Playable && lv.Media == string(core.MediaClassVideo) {
+			if class != core.MediaClassVideo || depths[i] > 0 {
+				out[lv.Key] = "Video"
+			} else {
+				out[lv.Key] = "Movie"
+			}
+			continue
+		}
+		effClass := effectiveLevelClass(lv, class)
+		out[lv.Key] = inferMBItemTypeForLevel(effClass, role, depths[i], isLeaf[i], treeHeight)
 	}
 	if len(out) == 0 {
 		return nil
@@ -791,7 +860,7 @@ func inferMediaBrowserItemTypes(class core.MediaClass, levels []KindPresentation
 	return out
 }
 
-func inferMBItemTypeForLevel(class core.MediaClass, role core.MediaRole, idx, total int) string {
+func inferMBItemTypeForLevel(class core.MediaClass, role core.MediaRole, depth int, isLeaf bool, total int) string {
 	switch class {
 	case core.MediaClassMusic:
 		switch role {
@@ -805,15 +874,15 @@ func inferMBItemTypeForLevel(class core.MediaClass, role core.MediaRole, idx, to
 		if total <= 1 {
 			return "MusicAlbum"
 		}
-		if idx == total-1 {
+		if isLeaf {
 			return "Audio"
 		}
-		if idx == 0 && total >= 3 {
+		if depth == 0 && total >= 3 {
 			return "MusicArtist"
 		}
 		return "MusicAlbum"
 	case core.MediaClassAudiobook:
-		if total > 1 && idx < total-1 {
+		if total > 1 && !isLeaf {
 			return "MusicAlbum"
 		}
 		if role == core.MediaRolePart {
@@ -821,18 +890,18 @@ func inferMBItemTypeForLevel(class core.MediaClass, role core.MediaRole, idx, to
 		}
 		return "AudioBook"
 	case core.MediaClassBook:
-		if total > 1 && idx < total-1 {
+		if total > 1 && !isLeaf {
 			return "Series"
 		}
 		return "Book"
 	case core.MediaClassPhoto:
-		if total > 1 && idx < total-1 {
+		if total > 1 && !isLeaf {
 			return "PhotoAlbum"
 		}
 		return "Photo"
 	case core.MediaClassPodcast:
-		if total > 1 && idx < total-1 {
-			if idx == 0 && total >= 3 {
+		if total > 1 && !isLeaf {
+			if depth == 0 && total >= 3 {
 				return "MusicArtist"
 			}
 			return "MusicAlbum"
@@ -843,15 +912,15 @@ func inferMBItemTypeForLevel(class core.MediaClass, role core.MediaRole, idx, to
 		case total <= 1:
 			return "Movie"
 		case total == 2:
-			if idx == 0 {
+			if depth == 0 {
 				return "Series"
 			}
 			return "Episode"
 		default:
-			if idx == 0 {
+			if depth == 0 {
 				return "Series"
 			}
-			if idx == total-1 {
+			if isLeaf {
 				return "Episode"
 			}
 			return "Season"

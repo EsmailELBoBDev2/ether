@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
@@ -93,13 +95,13 @@ var mediaBrowserCollectionTypes = map[string]bool{
 }
 
 var mediaBrowserItemTypes = map[string]bool{
-	"Movie": true, "Series": true, "Season": true, "Episode": true,
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "Video": true,
 	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
 	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
 
 // mediaBrowserItemTypeList names the closed itemTypes set for error messages.
-const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
+const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, Video, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
 
 func validateMediaKinds(m Manifest, add func(string, string), label func(string, string, int)) {
 	e := m.Ether
@@ -178,10 +180,23 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if levelKeys[lv.Key] {
 			add(lbase+".key", "is listed twice")
 		}
+		if lv.Parent != "" {
+			switch {
+			case j == 0:
+				add(lbase+".parent", "the root level cannot set parent")
+			case lv.Parent == lv.Key:
+				add(lbase+".parent", "cannot reference itself (cycle)")
+			case !levelKeys[lv.Parent]:
+				add(lbase+".parent", "must name an earlier level")
+			}
+		}
 		levelKeys[lv.Key] = true
 		label(lbase+".label", lv.Label, 40)
-		if lv.Role != "" && !core.ValidMediaRole(lv.Role) {
-			add(lbase+".role", "must be item, artist, album, track, series, book, audiobook, part, show, episode or collection")
+		if lv.Media != "" && !core.ValidMediaClass(lv.Media) {
+			add(lbase+".media", "must be video, music, audiobook, book, podcast or photo")
+		}
+		if lv.Role != "" && !validKindLevelRole(lv.Role) {
+			add(lbase+".role", "must be trimmed printable text of at most 40 characters")
 		}
 		if lv.Playable {
 			playable = true
@@ -340,13 +355,16 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					}
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" {
 					add(tbase+".layout", "only view tabs may set layout")
 				}
 				if tab.Filters != nil && !tab.Filters.IsEmpty() {
 					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
 				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
@@ -370,13 +388,16 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					}
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" {
 					add(tbase+".layout", "only view tabs may set layout")
 				}
 				if tab.Filters != nil && !tab.Filters.IsEmpty() {
 					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
 				}
 			case "view":
 				if tab.Facet != "" {
@@ -386,7 +407,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" && !kindLibraryTabLayouts[tab.Layout] {
 					add(tbase+".layout", "must be grid, list or timeline")
@@ -417,6 +438,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						}
 					}
 				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
 			case "live":
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -445,6 +469,38 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						add(tbase+".searchPlaceholder", "requires search to be enabled")
 					}
 				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			case "recommended":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections or view tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections or view tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" && !kindLibraryCards[tab.Card] {
+					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if tab.Search != nil {
+					add(tbase+".search", "only collections, people, view or live tabs may set search")
+				}
+				if tab.SearchPlaceholder != "" {
+					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
+				}
+				validateKindLibraryShelves(tbase+".shelves", tab.Shelves, levelKeys, fields, add, label)
 			default:
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -459,7 +515,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
 				if tab.Card != "" {
-					add(tbase+".card", "only live tabs may set card")
+					add(tbase+".card", "only live or recommended tabs may set card")
 				}
 				if tab.Layout != "" {
 					add(tbase+".layout", "only view tabs may set layout")
@@ -473,10 +529,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.SearchPlaceholder != "" {
 					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
 				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
 			}
 		}
 	}
-	validateKindLibraryShelves(base, k.Library.Shelves, levelKeys, fields, add, label)
+	validateKindLibraryShelves(base+".library.shelves", k.Library.Shelves, levelKeys, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -739,6 +798,123 @@ func (k MediaKindMeta) Level(key string) (KindLevel, int, bool) {
 	return KindLevel{}, -1, false
 }
 
+// LevelParent returns the effective parent level key for key: the declared
+// KindLevel.Parent when set, or the preceding level's key by default. The root
+// level (index 0) and unknown keys return "".
+func (k MediaKindMeta) LevelParent(key string) string {
+	lv, idx, ok := k.Level(key)
+	if !ok || idx == 0 {
+		return ""
+	}
+	if lv.Parent != "" {
+		return lv.Parent
+	}
+	return k.Levels[idx-1].Key
+}
+
+// ChildLevels returns all declared levels whose effective parent is parentKey,
+// in manifest declaration order.
+func (k MediaKindMeta) ChildLevels(parentKey string) []KindLevel {
+	if parentKey == "" {
+		return nil
+	}
+	var out []KindLevel
+	for _, lv := range k.Levels {
+		if k.LevelParent(lv.Key) == parentKey {
+			out = append(out, lv)
+		}
+	}
+	return out
+}
+
+// HasChildLevels reports whether any declared level has key as its effective parent.
+func (k MediaKindMeta) HasChildLevels(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, lv := range k.Levels {
+		if k.LevelParent(lv.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// IsLeafLevel reports whether key is a declared level with no child levels.
+func (k MediaKindMeta) IsLeafLevel(key string) bool {
+	_, _, ok := k.Level(key)
+	return ok && !k.HasChildLevels(key)
+}
+
+// LeafLevels returns the set of all declared level keys that have no child levels.
+func (k MediaKindMeta) LeafLevels() map[string]bool {
+	out := make(map[string]bool, len(k.Levels))
+	for _, lv := range k.Levels {
+		if !k.HasChildLevels(lv.Key) {
+			out[lv.Key] = true
+		}
+	}
+	return out
+}
+
+// LevelDepth returns the zero-based tree depth of key (0 for the root level,
+// 1 for direct children of root, etc.), or -1 if key is not declared.
+func (k MediaKindMeta) LevelDepth(key string) int {
+	if _, _, ok := k.Level(key); !ok {
+		return -1
+	}
+	depth := 0
+	cur := key
+	for step := 0; step < len(k.Levels); step++ {
+		p := k.LevelParent(cur)
+		if p == "" {
+			return depth
+		}
+		depth++
+		cur = p
+	}
+	return depth
+}
+
+// EffectiveLevelMedia returns the effective media class for level key: the
+// level's explicit Media override when declared, else the kind's Media, else
+// fallback (or core.MediaClassVideo when fallback is empty).
+func (k MediaKindMeta) EffectiveLevelMedia(key string, fallback core.MediaClass) core.MediaClass {
+	if lv, _, ok := k.Level(key); ok && lv.Media != "" && core.ValidMediaClass(lv.Media) {
+		return core.MediaClass(lv.Media)
+	}
+	if k.Media != "" && core.ValidMediaClass(k.Media) {
+		return core.MediaClass(k.Media)
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return core.MediaClassVideo
+}
+
+// IsVideoTitleLevel reports whether key is a playable level that explicitly
+// declares media: "video", projecting as a video title (kind: "movie") inside
+// any library regardless of the library's own media class.
+func (k MediaKindMeta) IsVideoTitleLevel(key string) bool {
+	lv, _, ok := k.Level(key)
+	return ok && lv.Playable && lv.Media == string(core.MediaClassVideo)
+}
+
+func validKindLevelRole(role string) bool {
+	if role == "" || strings.TrimSpace(role) != role {
+		return false
+	}
+	if utf8.RuneCountInString(role) > 40 {
+		return false
+	}
+	for _, r := range role {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
 // DeclHash is the upgrade gate for an installed kind (spec §2.3/§2.5):
 // the SHA-256 of the declaration's canonical JSON. Go marshals struct
 // fields in declaration order and map keys sorted, so equal
@@ -783,6 +959,9 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 			if nl.Playable != lv.Playable || nl.Container != lv.Container {
 				add(lbase, "level "+lv.Key+" changed its playable or container flag")
 			}
+			if old.LevelParent(lv.Key) != nk.LevelParent(nl.Key) {
+				add(lbase+".parent", "level "+lv.Key+" changed its parent")
+			}
 		}
 		nextFields := map[string]KindField{}
 		for _, nf := range nk.Fields {
@@ -820,12 +999,12 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 	return nil
 }
 
-func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
 	if len(shelves) == 0 {
 		return
 	}
 	if len(shelves) > MaxKindLibraryShelves {
-		add(base+".library.shelves", fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
+		add(shelvesPath, fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
 	}
 	declaredIndexed := make(map[string]string, len(fields))
 	fieldList := make([]KindField, 0, len(fields))
@@ -849,7 +1028,7 @@ func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, levelKe
 	}
 	seenKey := map[string]bool{}
 	for j, sh := range shelves {
-		sbase := fmt.Sprintf("%s.library.shelves[%d]", base, j)
+		sbase := fmt.Sprintf("%s[%d]", shelvesPath, j)
 		if !kindShelfKeyRe.MatchString(sh.Key) {
 			add(sbase+".key", "must match ^[a-z][a-z0-9-]{0,39}$")
 		} else if seenKey[sh.Key] {

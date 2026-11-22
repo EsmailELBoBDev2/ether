@@ -1062,16 +1062,20 @@ func (s *Service) walkBrowseTreeStream(ctx context.Context, caller Caller, rec K
 	if concurrency <= 0 {
 		concurrency = MaxSyncConcurrency
 	}
-	childLevelOf := make(map[string]string, len(rec.Decl.Levels))
+	childLevelsOf := make(map[string][]string, len(rec.Decl.Levels))
 	rootLevel := "item"
 	if len(rec.Decl.Levels) > 0 {
 		rootLevel = rec.Decl.Levels[0].Key
-		for i := 0; i+1 < len(rec.Decl.Levels); i++ {
-			childLevelOf[rec.Decl.Levels[i].Key] = rec.Decl.Levels[i+1].Key
+		for i := 1; i < len(rec.Decl.Levels); i++ {
+			lv := rec.Decl.Levels[i]
+			parent := rec.Decl.LevelParent(lv.Key)
+			if parent != "" {
+				childLevelsOf[parent] = append(childLevelsOf[parent], lv.Key)
+			}
 		}
 	}
 
-	_, rootHasChildren := childLevelOf[rootLevel]
+	rootHasChildren := len(childLevelsOf[rootLevel]) > 0
 	keepRoot := collectAll || rootHasChildren
 	rootItems, maxRetry, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, rootLevel, "", keepRoot, onPage)
 	if err != nil {
@@ -1084,90 +1088,100 @@ func (s *Service) walkBrowseTreeStream(ctx context.Context, caller Caller, rec K
 		allItems = append(allItems, rootItems...)
 	}
 
-	currentWave := rootItems
-	currentLevel := rootLevel
+	type levelWave struct {
+		level string
+		items []core.KindItem
+	}
+	queue := []levelWave{{level: rootLevel, items: rootItems}}
 
-	for {
-		nextLevel, hasChildren := childLevelOf[currentLevel]
-		if !hasChildren || len(currentWave) == 0 {
-			break
-		}
-		_, nextHasChildren := childLevelOf[nextLevel]
-		keepNext := collectAll || nextHasChildren
+	for len(queue) > 0 {
+		wave := queue[0]
+		queue = queue[1:]
 
-		type parentTask struct {
-			parentExtID string
+		nextLevels := childLevelsOf[wave.level]
+		if len(nextLevels) == 0 || len(wave.items) == 0 {
+			continue
 		}
-		tasks := make([]parentTask, 0, len(currentWave))
-		for _, p := range currentWave {
-			if p.ID != "" {
-				tasks = append(tasks, parentTask{parentExtID: p.ID})
+
+		for _, nextLevel := range nextLevels {
+			nextHasChildren := len(childLevelsOf[nextLevel]) > 0
+			keepNext := collectAll || nextHasChildren
+
+			type parentTask struct {
+				parentExtID string
 			}
-		}
-		if len(tasks) == 0 {
-			break
-		}
-
-		type taskResult struct {
-			idx        int
-			items      []core.KindItem
-			retryAfter time.Duration
-			err        error
-		}
-		results := make([]taskResult, len(tasks))
-		sem := make(chan struct{}, concurrency)
-		var wg sync.WaitGroup
-
-		for i, t := range tasks {
-			i, t := i, t
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				select {
-				case sem <- struct{}{}:
-				case <-ctx.Done():
-					results[i] = taskResult{idx: i, err: ctx.Err()}
-					return
-				}
-				defer func() { <-sem }()
-
-				children, ra, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, nextLevel, t.parentExtID, keepNext, onPage)
-				results[i] = taskResult{
-					idx:        i,
-					items:      children,
-					retryAfter: ra,
-					err:        err,
-				}
-			}()
-		}
-		wg.Wait()
-
-		var nextWave []core.KindItem
-		for _, r := range results {
-			if r.retryAfter > maxRetry {
-				maxRetry = r.retryAfter
-			}
-			if r.err != nil {
-				return nil, maxRetry, r.err
-			}
-			for j := range r.items {
-				if r.items[j].ParentID == "" {
-					r.items[j].ParentID = tasks[r.idx].parentExtID
-				}
-				if r.items[j].Level == "" {
-					r.items[j].Level = nextLevel
+			tasks := make([]parentTask, 0, len(wave.items))
+			for _, p := range wave.items {
+				if p.ID != "" {
+					tasks = append(tasks, parentTask{parentExtID: p.ID})
 				}
 			}
-			if collectAll {
-				allItems = append(allItems, r.items...)
+			if len(tasks) == 0 {
+				continue
 			}
-			if nextHasChildren {
-				nextWave = append(nextWave, r.items...)
+
+			type taskResult struct {
+				idx        int
+				items      []core.KindItem
+				retryAfter time.Duration
+				err        error
+			}
+			results := make([]taskResult, len(tasks))
+			sem := make(chan struct{}, concurrency)
+			var wg sync.WaitGroup
+
+			for i, t := range tasks {
+				i, t := i, t
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					select {
+					case sem <- struct{}{}:
+					case <-ctx.Done():
+						results[i] = taskResult{idx: i, err: ctx.Err()}
+						return
+					}
+					defer func() { <-sem }()
+
+					children, ra, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, nextLevel, t.parentExtID, keepNext, onPage)
+					results[i] = taskResult{
+						idx:        i,
+						items:      children,
+						retryAfter: ra,
+						err:        err,
+					}
+				}()
+			}
+			wg.Wait()
+
+			var nextWave []core.KindItem
+			for _, r := range results {
+				if r.retryAfter > maxRetry {
+					maxRetry = r.retryAfter
+				}
+				if r.err != nil {
+					return nil, maxRetry, r.err
+				}
+				for j := range r.items {
+					if r.items[j].ParentID == "" {
+						r.items[j].ParentID = tasks[r.idx].parentExtID
+					}
+					if r.items[j].Level == "" {
+						r.items[j].Level = nextLevel
+					}
+				}
+				if collectAll {
+					allItems = append(allItems, r.items...)
+				}
+				if nextHasChildren {
+					nextWave = append(nextWave, r.items...)
+				}
+			}
+
+			if nextHasChildren && len(nextWave) > 0 {
+				queue = append(queue, levelWave{level: nextLevel, items: nextWave})
 			}
 		}
-
-		currentWave = nextWave
-		currentLevel = nextLevel
 	}
 
 	return allItems, maxRetry, nil

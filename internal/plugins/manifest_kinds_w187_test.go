@@ -74,7 +74,7 @@ func TestMediaKindMediaClassRoleAndLevelValidation(t *testing.T) {
 		},
 		{
 			name:   "invalid level role",
-			mutate: func(k *MediaKindMeta) { k.Levels[0].Role = "band" },
+			mutate: func(k *MediaKindMeta) { k.Levels[0].Role = "bad\nrole" },
 			want:   ".levels[0].role",
 		},
 		{

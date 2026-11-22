@@ -81,6 +81,9 @@ func titleMediaWire(t frontend.Title) object {
 	if t.ChildCount > 0 {
 		media["childCount"] = t.ChildCount
 	}
+	if len(t.ChildCounts) > 0 {
+		media["childCounts"] = t.ChildCounts
+	}
 	if len(t.MediaCredits) > 0 {
 		credits := make([]object, 0, len(t.MediaCredits))
 		for _, c := range t.MediaCredits {

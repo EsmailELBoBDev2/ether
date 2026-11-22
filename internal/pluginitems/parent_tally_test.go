@@ -2,6 +2,7 @@ package pluginitems
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -48,7 +49,7 @@ func TestParentTallyInvariants(t *testing.T) {
 		}
 		for id, w := range want {
 			g := got[ref(id)]
-			if g != w {
+			if g.ChildCount != w.ChildCount || g.LeafCount != w.LeafCount || (w.ByLevel != nil && !maps.Equal(g.ByLevel, w.ByLevel)) {
 				t.Fatalf("%s: %s got %+v, want %+v", label, id, g, w)
 			}
 		}
@@ -129,17 +130,17 @@ func TestParentTallyInvariants(t *testing.T) {
 		"lg-2":   {ChildCount: 1, LeafCount: 3},
 	})
 
-	// Migration 15 backfill: drop the tally table + migration record, re-run
-	// migrations, and confirm exact counts are rebuilt from plugin_items.
-	if _, err := db.ExecContext(ctx, `DROP TABLE plugin_item_parent_tally; DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version = 15`); err != nil {
+	// Migration 16 backfill: drop the tally table + migration record, re-run
+	// migrations, and confirm exact per-level counts are rebuilt from plugin_items.
+	if _, err := db.ExecContext(ctx, `DROP TABLE plugin_item_parent_tally; DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version = 16`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatalf("re-run migration 15: %v", err)
+		t.Fatalf("re-run migration 16: %v", err)
 	}
-	assertCounts("after migration 15 backfill", map[string]ParentCounts{
-		"s-2025": {ChildCount: 3, LeafCount: 3},
-		"lg-2":   {ChildCount: 1, LeafCount: 3},
+	assertCounts("after migration 16 backfill", map[string]ParentCounts{
+		"s-2025": {ChildCount: 3, LeafCount: 3, ByLevel: map[string]int{"event": 3}},
+		"lg-2":   {ChildCount: 1, LeafCount: 3, ByLevel: map[string]int{"season": 1}},
 		"lg-1":   {},
 	})
 

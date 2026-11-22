@@ -134,8 +134,8 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 
 	var parentTally *parentTallyTracker
 	if len(kind.Decl.Levels) >= 2 && kind.LibraryID > 0 {
-		leafLevel := kind.Decl.Levels[len(kind.Decl.Levels)-1].Key
-		parentTally = newParentTallyTracker(tx, kind.LibraryID, leafLevel, existing)
+		leafLevels := kind.Decl.LeafLevels()
+		parentTally = newParentTallyTracker(tx, kind.LibraryID, leafLevels, existing)
 		primeParentRefs := make([]core.ItemRef, 0, len(chunk))
 		primeLeafRefs := make([]core.ItemRef, 0, len(chunk))
 		for i := range chunk {
@@ -157,7 +157,7 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 				primeParentRefs = append(primeParentRefs, newParent)
 				primeLeafRefs = append(primeLeafRefs, newParent)
 			}
-			if it.Level != leafLevel || (isExisting && ex.level != leafLevel) {
+			if !leafLevels[it.Level] || (isExisting && !leafLevels[ex.level]) {
 				primeLeafRefs = append(primeLeafRefs, it.Ref)
 			}
 		}

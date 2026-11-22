@@ -688,13 +688,17 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 	}
 	if extras {
 		list := s.extrasFor(ctx, pr, t, extraTypes)
-		ex := &model.Extras{Size: len(list)}
+		ex := &model.Extras{}
 		for _, e := range list {
 			ex.Metadata = append(ex.Metadata, s.extraMetadata(e, t, true))
 		}
+		if pluginExtras := s.pluginVideoExtras(ctx, pr, t); len(pluginExtras) > 0 {
+			ex.Metadata = append(ex.Metadata, pluginExtras...)
+		}
+		ex.Size = len(ex.Metadata)
 		md.Extras = ex
-		if len(list) > 0 {
-			md.PrimaryExtraKey = "/library/metadata/" + list[0].Key.String()
+		if len(ex.Metadata) > 0 {
+			md.PrimaryExtraKey = "/library/metadata/" + ex.Metadata[0].RatingKey
 		}
 	}
 }

@@ -19,6 +19,21 @@ type multiviewPlaybackRequest struct {
 	Focused    bool   `json:"focused,omitempty"`
 }
 
+func roundMultiviewTileHeight(h int) int {
+	switch {
+	case h <= 0:
+		return 0
+	case h <= 480:
+		return 480
+	case h <= 720:
+		return 720
+	case h <= 1080:
+		return 1080
+	default:
+		return 2160
+	}
+}
+
 func parseMultiviewPlayback(req *multiviewPlaybackRequest) (*frontend.MultiviewTarget, bool) {
 	if req == nil || req.GroupID == "" || req.Tile == nil {
 		return nil, false
@@ -96,7 +111,7 @@ func (i *instance) createMultiviewGroup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mv, ok := i.host.Sessions.(frontend.MultiviewSessions)
-	if !ok || !mv.MultiviewAvailable() {
+	if !ok || !i.multiviewAvailable() {
 		i.unavailable(w, r)
 		return
 	}
@@ -140,7 +155,7 @@ func (i *instance) deleteMultiviewGroup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mv, ok := i.host.Sessions.(frontend.MultiviewSessions)
-	if !ok || !mv.MultiviewAvailable() {
+	if !ok || !i.multiviewAvailable() {
 		i.unavailable(w, r)
 		return
 	}
@@ -279,8 +294,11 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 		effective := targetHeight
 		if effective == 0 {
 			effective = s.declaredCaps.MaxHeight
-		} else if s.declaredCaps.MaxHeight > 0 && s.declaredCaps.MaxHeight < effective {
-			effective = s.declaredCaps.MaxHeight
+		} else {
+			effective = roundMultiviewTileHeight(effective)
+			if s.declaredCaps.MaxHeight > 0 && s.declaredCaps.MaxHeight < effective {
+				effective = s.declaredCaps.MaxHeight
+			}
 		}
 		if effective > 0 {
 			mvDoc["maxHeight"] = effective

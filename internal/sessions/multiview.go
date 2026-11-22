@@ -199,15 +199,32 @@ func (b *Broker) validateMultiviewLocked(viewerID int64, protocol frontend.Proto
 	return g, tiles, nil
 }
 
+// roundMultiviewHeight rounds a positive on-screen tile pixel height up to
+// the nearest standard rung (480, 720, 1080, 2160).
+func roundMultiviewHeight(h int) int {
+	switch {
+	case h <= 0:
+		return 0
+	case h <= 480:
+		return 480
+	case h <= 720:
+		return 720
+	case h <= 1080:
+		return 1080
+	default:
+		return 2160
+	}
+}
+
 // multiviewTileMaxHeight returns the height hint for a multiview tile:
-// 2 tiles (or fewer) -> 1080p, 3-4 tiles -> 720p, overridden by the client's
-// declared tile height (or full device height when focused), never exceeding
-// the device's own declared MaxHeight.
+// when declaredTileHeight > 0, it rounds up to 480/720/1080/2160; when absent,
+// 2 tiles (or fewer) get 1080p and 3-4 tiles get 720p (or full device height
+// when focused). Never exceeds the device's own declared MaxHeight.
 func multiviewTileMaxHeight(deviceMaxHeight, tileCount, declaredTileHeight int, focused bool) int {
 	var hint int
 	switch {
 	case declaredTileHeight > 0:
-		hint = declaredTileHeight
+		hint = roundMultiviewHeight(declaredTileHeight)
 	case focused:
 		hint = deviceMaxHeight
 	case tileCount >= 3:
@@ -234,8 +251,13 @@ func (b *Broker) replanLive(ctx context.Context, viewer *core.Viewer, snap *brok
 	nextHeight := requestedMaxHeight
 	if nextHeight == 0 {
 		nextHeight = snap.baseMaxHeight
-	} else if snap.baseMaxHeight > 0 && snap.baseMaxHeight < nextHeight {
-		nextHeight = snap.baseMaxHeight
+	} else {
+		if snap.multiviewGroup != "" {
+			nextHeight = roundMultiviewHeight(nextHeight)
+		}
+		if snap.baseMaxHeight > 0 && snap.baseMaxHeight < nextHeight {
+			nextHeight = snap.baseMaxHeight
+		}
 	}
 	if nextHeight == snap.caps.MaxHeight {
 		b.mu.Lock()

@@ -30,7 +30,7 @@ func TestDeliveredMainMigrationBoundary(t *testing.T) {
 		"sessions_source_offers": 2,
 		"handle_reservations":    2,
 		"viewer_alerts":          2,
-		"viewer_push":            2,
+		"viewer_push":            3,
 		"watchlist_episodes":     1,
 		"notify_once":            1,
 		"plexwatch":              7,

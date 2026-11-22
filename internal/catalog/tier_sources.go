@@ -206,6 +206,8 @@ var tierUntouchedTables = []string{
 	"vela_replays", "vela_skins",
 	// Accounts, identity, sessions and devices.
 	"auth_", "identity_", "invites_", "mcp_oauth_", "capability_", "credentials_format", "safety_policies",
+	// Live sports events are keyed by plugin event ids, never catalogue titles.
+	"live_event_reveals", "viewer_push_liveevent_claims",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",
 	"sessions_xtream_connections", "viewer_alert_preferences", "viewer_episode_scan", "viewer_policy_",
 	"viewer_push_subscriptions", "favorites_mirror", "notinterested_revisions", "state_playlist_markers",

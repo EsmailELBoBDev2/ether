@@ -228,6 +228,7 @@ func (b *Broker) detailDecision(ctx context.Context, req frontend.PlanRequest, v
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
+	p.SelectedSubtitle = sideSubtitleStream(source, req, p.Decision)
 	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(p.Decision, source.Info) {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}

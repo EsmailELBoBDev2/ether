@@ -248,7 +248,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
-		if body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate {
+		if n > 0 && (body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate) {
 			body.DeviceProfile.MaxStreamingBitrate = n
 		}
 	}
@@ -415,8 +415,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// when the client did not pick a version and this is a single playable
 	// item, never a live channel or a plugin kind.
 	var variants []frontend.ReleaseVariant
+	titleLanguage := ""
 	if i.host.Editions != nil && !versionRequested && channel == "" && !key.IsPluginKey() {
 		if title, ok := i.playbackTitle(r, v, key); ok {
+			titleLanguage = title.Language
 			variants = i.releaseVariants(r, scope, title)
 		}
 	}
@@ -733,16 +735,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if (i.protocol == "emby" || i.protocol == "jellyfin") && channel == "" {
-		applyPlannedStreamIndexes(source, media, plan.Decision)
-		if i.protocol == "jellyfin" {
-			i.jellyfinSideSubtitleDefault(r, v, key, source, media, opts.SubtitleStream, subtitleSet)
-		}
+		applyPlannedStreamIndexes(source, media, plan.Decision, plan.SubtitleStream())
 	}
 	// With no explicit version pick, list Auto then the ranked release
 	// variants so the app's version picker offers them; a pick resolves to
 	// the exact release through the returned MediaSource Id.
 	if listVersions && !versionRequested && autoSwitchedRelease == "" {
-		if sources := i.releaseVersionSourcesFor(r, scope, key, variants, source); sources != nil {
+		if sources := i.releaseVersionSourcesFor(r, scope, key, titleLanguage, variants, source); sources != nil {
 			jsonReply(w, map[string]any{"MediaSources": sources, "PlaySessionId": playID})
 			return
 		}
@@ -804,7 +803,7 @@ func (i *instance) liveStreamsOpen(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
-		if body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate {
+		if n > 0 && (body.DeviceProfile.MaxStreamingBitrate == 0 || n < body.DeviceProfile.MaxStreamingBitrate) {
 			body.DeviceProfile.MaxStreamingBitrate = n
 		}
 	}

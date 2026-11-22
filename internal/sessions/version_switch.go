@@ -360,6 +360,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		ID:                  sessionID,
 		Media:               publicMedia(ps.Info),
 		Decision:            dec,
+		SelectedSubtitle:    sideSubtitleStream(ps, planReq, dec),
 		DirectPlay:          direct,
 		DirectStream:        remux,
 		Transcoding:         transcoding,

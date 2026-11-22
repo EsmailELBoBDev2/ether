@@ -911,7 +911,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
 }
 func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()

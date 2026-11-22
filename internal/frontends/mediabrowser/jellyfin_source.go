@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -29,7 +30,17 @@ func (i *instance) jellyfinViewerStreamDefaults(r *http.Request, v *frontend.Vie
 	if i.protocol != "jellyfin" || i.host.TrackPreferences == nil || r == nil || v == nil || media.Estimated || len(media.Streams) == 0 {
 		return
 	}
-	selection, err := i.host.TrackPreferences.Select(r.Context(), v.ID, key, media, original)
+	var selection frontend.PlaybackPreferenceSelection
+	var err error
+	type scopedSelector interface {
+		SelectScoped(context.Context, int64, frontend.RatingKey, frontend.MediaInfo, string, frontend.PlaybackPreferenceScope) (frontend.PlaybackPreferenceSelection, bool, error)
+	}
+	if scoped, ok := i.host.TrackPreferences.(scopedSelector); ok {
+		dev := device(r)
+		selection, _, err = scoped.SelectScoped(r.Context(), v.ID, key, media, original, frontend.PlaybackPreferenceScope{Device: dev.ID})
+	} else {
+		selection, err = i.host.TrackPreferences.Select(r.Context(), v.ID, key, media, original)
+	}
 	if err != nil {
 		return
 	}
@@ -91,49 +102,19 @@ func jellyfinDefaultStreamIndexes(source map[string]any, media frontend.MediaInf
 // applyPlannedStreamIndexes publishes the stream playback actually selected.
 // The container default flag is not that choice: a default-flagged dub must
 // not stay selected after the language chain picked another track.
-func applyPlannedStreamIndexes(source map[string]any, media frontend.MediaInfo, decision frontend.Decision) {
+// subtitleStream is plan.SubtitleStream(), which preserves a side-rendered text
+// track even when decision.SubtitleStream was cleared to avoid burning it in.
+func applyPlannedStreamIndexes(source map[string]any, media frontend.MediaInfo, decision frontend.Decision, subtitleStream int) {
 	if decision.AudioStream >= 0 {
 		source["DefaultAudioStreamIndex"] = decision.AudioStream
 	}
-	if decision.SubtitleStream >= 0 {
-		source["DefaultSubtitleStreamIndex"] = decision.SubtitleStream
+	if subtitleStream >= 0 {
+		source["DefaultSubtitleStreamIndex"] = subtitleStream
 		return
 	}
 	for _, stream := range media.Streams {
 		if stream.Type == "subtitle" {
 			source["DefaultSubtitleStreamIndex"] = -1
-			return
-		}
-	}
-}
-
-// jellyfinSideSubtitleDefault restores the subtitle choice on a PlaybackInfo
-// source when the track is rendered beside the video. The plan clears a text
-// track the client fetches itself (the progressive web reader, an HLS
-// rendition) so the video is never asked to burn it in; publishing that -1
-// told Jellyfin Web the viewer wanted subtitles off. An explicit -1 from the
-// client stays off; with no choice in the request the viewer's rules pick.
-func (i *instance) jellyfinSideSubtitleDefault(r *http.Request, v *frontend.Viewer, key frontend.RatingKey, source map[string]any, media frontend.MediaInfo, asked int, askedSet bool) {
-	if current, ok := source["DefaultSubtitleStreamIndex"].(int); ok && current >= 0 {
-		return
-	}
-	if media.Estimated || (askedSet && asked < 0) {
-		return
-	}
-	want := -1
-	if askedSet {
-		want = asked
-	} else if i.host.TrackPreferences != nil && r != nil && v != nil {
-		if selection, err := i.host.TrackPreferences.Select(r.Context(), v.ID, key, media, ""); err == nil && selection.Subtitle >= 0 && selection.Subtitle < len(media.Streams) {
-			want = media.Streams[selection.Subtitle].Index
-		}
-	}
-	if want < 0 {
-		return
-	}
-	for _, stream := range media.Streams {
-		if stream.Type == "subtitle" && stream.Index == want && frontend.IsTextSubtitle(stream.Codec) {
-			source["DefaultSubtitleStreamIndex"] = want
 			return
 		}
 	}

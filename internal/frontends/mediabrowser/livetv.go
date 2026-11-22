@@ -305,12 +305,20 @@ func (i *instance) writeLiveChannelItems(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	q := itemQuery(r)
-	sort.SliceStable(channels, func(a, b int) bool {
-		if q.Desc {
-			return channels[a].Name > channels[b].Name
+	if q.Sort == frontend.SortTitle {
+		channels = append([]frontend.LiveChannel(nil), channels...)
+		sort.SliceStable(channels, func(a, b int) bool {
+			if q.Desc {
+				return channels[a].Name > channels[b].Name
+			}
+			return channels[a].Name < channels[b].Name
+		})
+	} else if q.Desc {
+		channels = append([]frontend.LiveChannel(nil), channels...)
+		for l, h := 0, len(channels)-1; l < h; l, h = l+1, h-1 {
+			channels[l], channels[h] = channels[h], channels[l]
 		}
-		return channels[a].Name < channels[b].Name
-	})
+	}
 	token := authhdr.MediaBrowserToken(r)
 	offset := q.Offset
 	limit := q.Limit

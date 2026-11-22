@@ -2,6 +2,7 @@ import { scheduleFixture } from "./schedule-timeline";
 import {
   compileOwnerGroupMatcher,
   compileOwnerGroupRegExp,
+  sortByNumber,
   streamQualityTier,
   type ChannelInputMerge,
   type OwnerGroup,
@@ -855,7 +856,8 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       }
       return { body: { ok: true } };
     }
-    if (route === "GET /channels/summary") return { body: channels.filter((c) => !c.mergedInto) };
+    if (route === "GET /channels/summary")
+      return { body: sortByNumber(channels.filter((c) => !c.mergedInto)) };
     if (route === "GET /channels/page") {
       const needle = (q.get("q") || "").toLowerCase();
       const filter = q.get("filter") || "all";
@@ -1224,21 +1226,39 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     }
     if (route === "PATCH /channels/bulk") {
       const change = body as {
-        ids: string[];
+        ids?: string[];
         enabled?: boolean;
         favorite?: boolean;
         group?: string;
+        numbers?: Record<string, string>;
         showApps?: string[];
         hideApps?: string[];
       };
-      const ids = new Set(change.ids);
+      const rawIds =
+        change.ids && change.ids.length > 0 ? change.ids : Object.keys(change.numbers ?? {});
+      const ids = new Set(rawIds);
       const selected = channels.filter((c) => ids.has(c.id));
       if (selected.length !== ids.size)
         return { status: 404, body: { error: { code: "livetv", message: "not found" } } };
+      if (change.numbers) {
+        for (const [id, raw] of Object.entries(change.numbers)) {
+          const trimmed = String(raw).trim();
+          if (!ids.has(id) || !trimmed || trimmed.length > 32) {
+            return {
+              status: 400,
+              body: { error: { code: "livetv", message: "invalid channel number" } },
+            };
+          }
+        }
+      }
       for (const c of selected) {
         if (change.enabled !== undefined) c.enabled = change.enabled;
         if (change.favorite !== undefined) c.favorite = change.favorite;
         if (change.group !== undefined) c.group = change.group;
+        if (change.numbers && Object.prototype.hasOwnProperty.call(change.numbers, c.id)) {
+          const nextNum = change.numbers[c.id];
+          if (nextNum !== undefined) c.number = nextNum.trim();
+        }
         if (change.showApps || change.hideApps) {
           const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
           for (const app of change.showApps ?? []) hidden.delete(app);

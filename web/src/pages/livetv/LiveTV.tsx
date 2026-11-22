@@ -46,6 +46,7 @@ import { GuideMatchPanel } from "./GuideData";
 import { type ChannelPatch, patchChannel } from "./ChannelBulkBar";
 import { ChannelDrawerBody } from "./ChannelDrawerBody";
 import { ChannelsWorkspace, type ChannelFilter, type ChannelSort } from "./ChannelsWorkspace";
+import type { ReorderPlan } from "./reorder";
 import { GuidePage } from "./GuidePage";
 import { LivePreview } from "./LivePreview";
 import { ProgrammeInspector, type InspectedProgramme } from "./ProgrammeInspector";
@@ -561,6 +562,81 @@ export default function LiveTV() {
     },
   );
 
+  const applyChannelNumbers = useCurrentCallback(
+    async (numbers: Record<string, string>): Promise<boolean> => {
+      const ids = Object.keys(numbers);
+      if (bulkLock.current || !ids.length) return false;
+      bulkLock.current = true;
+      setBulkBusy(true);
+      try {
+        await tv.updateChannels(ids, { numbers });
+        setAllChannels((cs) =>
+          (cs ?? []).map((c) => {
+            const nextNum = Object.prototype.hasOwnProperty.call(numbers, c.id)
+              ? numbers[c.id]
+              : undefined;
+            return nextNum !== undefined ? { ...c, number: nextNum } : c;
+          }),
+        );
+        const selectedNext =
+          selectedChannel && Object.prototype.hasOwnProperty.call(numbers, selectedChannel.id)
+            ? numbers[selectedChannel.id]
+            : undefined;
+        if (selectedChannel && selectedNext !== undefined) {
+          const updated = { ...selectedChannel, number: selectedNext };
+          setSelectedChannel(updated);
+          if (draft && !dirty && draft.channel.id === selectedChannel.id) {
+            const nextDraft = studioDraft(updated);
+            setDraft(nextDraft);
+            setBaseline(JSON.stringify(nextDraft));
+          }
+        }
+        await reloadAll();
+        return true;
+      } catch (e) {
+        toast.error(t("Couldn't reorder channels"), { description: errorMessage(e) });
+        return false;
+      } finally {
+        bulkLock.current = false;
+        setBulkBusy(false);
+      }
+    },
+  );
+
+  const handleRenumberChannels = useCurrentCallback(async (plan: ReorderPlan): Promise<boolean> => {
+    const ok = await applyChannelNumbers(plan.nextNumbers);
+    if (!ok) return false;
+    let undone = false;
+    const shiftedCount = plan.shifted.length;
+    const title = t("{name} moved to #{number}", {
+      name: plan.channelName,
+      number: plan.toNumber,
+    });
+    const description =
+      shiftedCount > 0
+        ? tn(
+            shiftedCount,
+            "{count} following channel shifted.",
+            "{count} following channels shifted.",
+          )
+        : t("Was #{previous}.", { previous: plan.fromNumber });
+    toast.success(title, {
+      description,
+      duration: 10000,
+      action: {
+        label: t("Undo"),
+        onClick: () => {
+          if (undone) return;
+          undone = true;
+          void applyChannelNumbers(plan.prevNumbers).then((restored) => {
+            if (restored) toast.success(t("Channel order restored"));
+          });
+        },
+      },
+    });
+    return true;
+  });
+
   const handleSetChannelsApp = useCurrentCallback(
     async (change: ChannelAppChange): Promise<boolean> => {
       if (bulkLock.current) return false;
@@ -920,6 +996,7 @@ export default function LiveTV() {
                 onSaveOwnerGroups={handleSaveOwnerGroups}
                 onSetChannelsApp={handleSetChannelsApp}
                 onUpdateChannels={handleUpdateChannels}
+                onRenumberChannels={handleRenumberChannels}
                 onReorderSources={async (ids) => {
                   try {
                     const next = await tv.saveSourceOrder(ids);

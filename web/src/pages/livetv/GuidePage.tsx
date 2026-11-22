@@ -14,6 +14,7 @@ import {
   MINUTE,
   compileOwnerGroupMatcher,
   groupBy,
+  sortByNumber,
   tv,
   type Channel,
   type ChannelSummary,
@@ -333,7 +334,7 @@ function TVGuide({
 
   const needle = query.trim().toLowerCase();
   const rows = useMemo(() => {
-    const filtered = filterGuideChannels(channels, { app, group });
+    const filtered = sortByNumber(filterGuideChannels(channels, { app, group }));
     return needle
       ? filtered.filter((c) =>
           `${c.number} ${c.name} ${c.group ?? ""}`.toLowerCase().includes(needle),

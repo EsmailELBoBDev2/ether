@@ -2,6 +2,7 @@ import type { ScreenStyle } from "./onair/ScreenPicker";
 import { personalRecipe } from "./onair/defaults";
 import type { PersonalRecipe, ChannelLook, ClockSlot } from "./onair/model";
 import type { LiveApp } from "./ChannelApps";
+import { compareChannelNumber, compareParsedChannelNumber, parseChannelNumber } from "./reorder";
 import { getLocale, localized, t, tn } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { unit } from "../../lib/format";
@@ -824,6 +825,7 @@ export const tv = {
       enabled?: boolean;
       favorite?: boolean;
       group?: string;
+      numbers?: Record<string, string>;
       showApps?: string[];
       hideApps?: string[];
     },
@@ -1135,11 +1137,7 @@ export function progress(p: Programme, at = Date.now()): number {
 const collator = new Intl.Collator();
 
 export function byNumber(a: Channel, b: Channel): number {
-  return (
-    (parseFloat(a.number) || 0) - (parseFloat(b.number) || 0) ||
-    collator.compare(a.number, b.number) ||
-    collator.compare(a.name, b.name)
-  );
+  return compareChannelNumber(a.number, b.number) || collator.compare(a.name, b.name);
 }
 
 /**
@@ -1147,10 +1145,9 @@ export function byNumber(a: Channel, b: Channel): number {
  * than per comparison, which matters for provider lineups of 16,000.
  */
 export function sortByNumber<C extends Pick<Channel, "number" | "name">>(channels: C[]): C[] {
-  const keyed = channels.map((c) => ({ c, n: parseFloat(c.number) || 0 }));
+  const keyed = channels.map((c) => ({ c, k: parseChannelNumber(c.number) }));
   keyed.sort(
-    (a, b) =>
-      a.n - b.n || collator.compare(a.c.number, b.c.number) || collator.compare(a.c.name, b.c.name),
+    (a, b) => compareParsedChannelNumber(a.k, b.k) || collator.compare(a.c.name, b.c.name),
   );
   return keyed.map((k) => k.c);
 }

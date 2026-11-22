@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -213,28 +214,67 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 			return nil, err
 		}
 	}
-	type candidate struct{ scope, payload string }
-	var allRefs []core.NeutralEntryRef
-	candidates := make([]candidate, 0, len(rows))
+	// One broken row must never take down the whole Home or library page:
+	// a row that fails validation or no longer resolves is dropped (and
+	// logged), and repeated entries inside a row are collapsed.
+	valid := make([]RowViewSnapshot, 0, len(rows))
 	seen := map[string]bool{}
 	for _, snap := range rows {
-		if snap.Row.ID == "" || snap.Row.Kind == "" || len(snap.Entries) == 0 || len(snap.Entries) > 1000 || snap.Placement != req.Placement || snap.ViewID != req.ViewID || snap.Item != req.Item || seen[snap.Row.ID] || !s.o.ValidRow(policyCtx, u, req.Device, req.Protocol, snap) {
-			return nil, ErrRowViewNotFound
+		if snap.Row.ID == "" || snap.Row.Kind == "" || seen[snap.Row.ID] {
+			slog.Warn("experience: dropping row view", "row", snap.Row.ID, "kind", snap.Row.Kind, "reason", "missing or repeated id")
+			continue
 		}
 		seen[snap.Row.ID] = true
+		if snap.Placement != req.Placement || snap.ViewID != req.ViewID || snap.Item != req.Item {
+			slog.Warn("experience: dropping row view", "row", snap.Row.ID, "kind", snap.Row.Kind, "reason", "placement mismatch")
+			continue
+		}
+		entries := make([]core.NeutralEntryRef, 0, len(snap.Entries))
 		seenEntries := map[core.NeutralEntryRef]bool{}
 		for _, ref := range snap.Entries {
 			if ref.ID == "" || seenEntries[ref] {
-				return nil, ErrRowViewNotFound
+				continue
 			}
 			seenEntries[ref] = true
+			entries = append(entries, ref)
 		}
+		snap.Entries = entries[:min(len(entries), 1000)]
+		if len(snap.Entries) == 0 {
+			continue
+		}
+		if !s.o.ValidRow(policyCtx, u, req.Device, req.Protocol, snap) {
+			slog.Warn("experience: dropping row view", "row", snap.Row.ID, "kind", snap.Row.Kind, "reason", "row no longer valid")
+			continue
+		}
+		valid = append(valid, snap)
+	}
+	var allRefs []core.NeutralEntryRef
+	for _, snap := range valid {
 		allRefs = append(allRefs, snap.Entries...)
+	}
+	if len(allRefs) > 0 {
+		if _, err = s.resolveAll(policyCtx, u, req.Device, req.Protocol, allRefs); err != nil {
+			// Find the rows that no longer resolve and keep the rest.
+			kept := valid[:0]
+			for _, snap := range valid {
+				if _, e := s.resolveAll(policyCtx, u, req.Device, req.Protocol, snap.Entries); e != nil {
+					slog.Warn("experience: dropping row view", "row", snap.Row.ID, "kind", snap.Row.Kind, "reason", "entries no longer resolve")
+					continue
+				}
+				kept = append(kept, snap)
+			}
+			valid = kept
+		}
+	}
+	type candidate struct{ scope, payload string }
+	candidates := make([]candidate, 0, len(valid))
+	for _, snap := range valid {
 		snap.Row.Entries, snap.Row.Items = nil, nil
 		snap.Row.Handle, snap.Row.ImpressionID = "", ""
 		payload, err := json.Marshal(snap)
 		if err != nil || len(payload) > 65536 {
-			return nil, errors.New("experience: invalid row snapshot")
+			slog.Warn("experience: dropping row view", "row", snap.Row.ID, "kind", snap.Row.Kind, "reason", "snapshot too large")
+			continue
 		}
 		scope, err := json.Marshal([]any{u.ID, req.Device.ID, req.Protocol, req.Placement, req.ViewID, req.Item, snap.Row.ID})
 		if err != nil {
@@ -243,11 +283,6 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 		hash := sha256.Sum256(scope)
 		scopeID := hex.EncodeToString(hash[:])
 		candidates = append(candidates, candidate{scope: scopeID, payload: string(payload)})
-	}
-	if len(allRefs) > 0 {
-		if _, err = s.resolveAll(policyCtx, u, req.Device, req.Protocol, allRefs); err != nil {
-			return nil, ErrRowViewNotFound
-		}
 	}
 	tx, err := s.o.DB.BeginTx(ctx, nil)
 	if err != nil {

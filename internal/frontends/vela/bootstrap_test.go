@@ -170,8 +170,9 @@ func TestVelaIdleBootstrap(t *testing.T) {
 	req.Header.Set("X-Vela-Device-Id", "device")
 	denied := httptest.NewRecorder()
 	mounted.Handler().ServeHTTP(denied, req)
-	if denied.Code == 200 || strings.Contains(denied.Body.String(), `"heroes"`) {
-		t.Fatal("cached Home survived a policy revocation")
+	// A revoked row is dropped from Home; nothing it carried may be served.
+	if body := denied.Body.String(); strings.Contains(body, `"heroes"`) || (denied.Code == 200 && !strings.Contains(body, `"rows":[]`)) {
+		t.Fatal("cached Home survived a policy revocation", denied.Code, body)
 	}
 
 	// A moving revision is retried locally; continuous churn has a bounded,

@@ -256,8 +256,19 @@ func TestManagerSearchWithOptionsMinResultsDeduplicated(t *testing.T) {
 	if byID["c"].Status != core.IndexerStatusAnswered || byID["d"].Status != core.IndexerStatusPending {
 		t.Fatalf("statuses c=%+v d=%+v, want c=answered d=pending", byID["c"], byID["d"])
 	}
-	if len(res.Pending) != 1 || res.Pending[0].IndexerID != "d" || res.Pending[0].Indexer != "D" {
-		t.Fatalf("pending = %+v, want [{d D}]", res.Pending)
+	// A and B's servers have answered, but the manager may not have read their
+	// replies yet, so either can still be pending. D always is; C never is.
+	var pendingD bool
+	for _, p := range res.Pending {
+		switch p.IndexerID {
+		case "d":
+			pendingD = p.Indexer == "D"
+		case "c":
+			t.Fatalf("pending = %+v, C answered", res.Pending)
+		}
+	}
+	if !pendingD {
+		t.Fatalf("pending = %+v, want it to include {d D}", res.Pending)
 	}
 }
 

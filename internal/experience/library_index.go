@@ -319,17 +319,13 @@ func (s *Service) indexedPageHolds(ctx context.Context, v *core.User, items []co
 // each (the watch state includes writes not yet stored, so a page the SQL
 // predicate admitted can still fail and fall back to the scan).
 func (s *Service) pageStateHolds(ctx context.Context, v *core.User, items []core.Title, q frontend.ItemQuery) bool {
-	keys := make([]core.RatingKey, len(items))
-	for i := range items {
-		keys[i] = items[i].Key
-	}
 	if q.Watched != nil {
-		watched, err := s.d.State.GetMany(ctx, v.ID, keys)
+		watched, err := s.titlesWatched(ctx, v, items)
 		if err != nil {
 			return false
 		}
-		for _, k := range keys {
-			if (watched[k].ViewCount > 0) != *q.Watched {
+		for _, item := range items {
+			if watched[item.Key] != *q.Watched {
 				return false
 			}
 		}
@@ -337,6 +333,10 @@ func (s *Service) pageStateHolds(ctx context.Context, v *core.User, items []core
 	if q.Favorite != nil {
 		if s.d.IsFavoriteMany == nil {
 			return false
+		}
+		keys := make([]core.RatingKey, len(items))
+		for i := range items {
+			keys[i] = items[i].Key
 		}
 		favorites, err := s.d.IsFavoriteMany(ctx, v, keys)
 		if err != nil {

@@ -304,7 +304,7 @@ func (c *Catalog) storedEpisodesWhere(f core.Filter) (string, []any, error) {
 	conds = append(conds, where)
 	outArgs = append(outArgs, args...)
 	if f.Group != nil {
-		clause, a, err := c.compileBrowseGroup(f.Group, "e", core.KindEpisode)
+		clause, a, err := c.compileBrowseGroup(f.Group, "e", core.KindEpisode, core.TypeShow)
 		if err != nil {
 			return "", nil, err
 		}
@@ -343,7 +343,7 @@ func (c *Catalog) storedEpisodesProbeWhere(f core.Filter) (string, []any, error)
 		probeArgs = append(probeArgs, visibilityArgs...)
 	}
 	if f.Group != nil {
-		clause, a, err := c.compileBrowseGroup(f.Group, "e", core.KindEpisode)
+		clause, a, err := c.compileBrowseGroup(f.Group, "e", core.KindEpisode, core.TypeShow)
 		if err != nil {
 			return "", nil, err
 		}
@@ -744,7 +744,7 @@ func (c *Catalog) storedSeasonsWhere(f core.Filter, requireKnownRelease bool) (s
 	conds = append(conds, where)
 	outArgs = append(outArgs, args...)
 	if f.Group != nil {
-		clause, a, err := c.compileBrowseGroup(f.Group, "s", core.KindSeason)
+		clause, a, err := c.compileBrowseGroup(f.Group, "s", core.KindSeason, core.TypeShow)
 		if err != nil {
 			return "", nil, err
 		}
@@ -902,13 +902,14 @@ func (c *Catalog) countPlayedSeasons(ctx context.Context, show core.Filter, user
 	if err != nil {
 		return 0, err
 	}
-	a := append([]any{userID}, args...)
+	wSQL, wArgs := c.watchedSeasonKeysSQL(userID)
+	a := append(append([]any{}, wArgs...), args...)
 	var total int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM state_watch w CROSS JOIN catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE w.user_id=? AND w.view_count>0 AND s.key=w.rating_key AND `+where, a...).Scan(&total); err != nil {
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE s.key IN (`+wSQL+`) AND `+where, a...).Scan(&total); err != nil {
 		return 0, err
 	}
 	if total > 0 && total <= 500 {
-		rows, err := c.queryTitles(ctx, `SELECT `+prefixedCols("s")+` FROM state_watch w CROSS JOIN catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE w.user_id=? AND w.view_count>0 AND s.key=w.rating_key AND `+where+` ORDER BY s.key ASC`, a...)
+		rows, err := c.queryTitles(ctx, `SELECT `+prefixedCols("s")+` FROM catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE s.key IN (`+wSQL+`) AND `+where+` ORDER BY s.key ASC`, a...)
 		if err == nil {
 			now := c.now()
 			kept := 0
@@ -1021,8 +1022,9 @@ func (c *Catalog) BrowseStoredSeasons(ctx context.Context, q core.BrowseQuery) (
 		if !keyOrder {
 			order = storedChildOrder("s", q) + ", s.key ASC"
 		}
-		sqlQ := `SELECT ` + prefixedCols("s") + ` FROM state_watch w CROSS JOIN catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE w.user_id=? AND w.view_count>0 AND s.key=w.rating_key AND ` + where + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
-		a := append([]any{q.Filter.Group.UserID}, args...)
+		wSQL, wArgs := c.watchedSeasonKeysSQL(q.Filter.Group.UserID)
+		sqlQ := `SELECT ` + prefixedCols("s") + ` FROM catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE s.key IN (` + wSQL + `) AND ` + where + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+		a := append(append([]any{}, wArgs...), args...)
 		a = append(a, limit, offset)
 		raw, qerr := c.queryTitles(ctx, sqlQ, a...)
 		if qerr != nil {

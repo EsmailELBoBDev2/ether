@@ -325,10 +325,8 @@ func (s *Service) latestFromBrowseScan(ctx context.Context, v *core.User, filter
 		if err != nil {
 			return nil, err
 		}
-		keys := make([]core.RatingKey, len(page.Items))
 		var missingTimes []core.RatingKey
 		for i := range page.Items {
-			keys[i] = page.Items[i].Key
 			if page.Items[i].AddedAt.IsZero() {
 				missingTimes = append(missingTimes, page.Items[i].Key)
 			}
@@ -343,12 +341,12 @@ func (s *Service) latestFromBrowseScan(ctx context.Context, v *core.User, filter
 				return nil, err
 			}
 		}
-		var states map[core.RatingKey]core.WatchStatus
+		var watched map[core.RatingKey]bool
 		if filterPlayed {
 			if s.d.State == nil {
 				return nil, core.ErrNotAvailable
 			}
-			states, err = s.d.State.GetMany(ctx, v.ID, keys)
+			watched, err = s.titlesWatched(ctx, v, page.Items)
 			if err != nil {
 				return nil, err
 			}
@@ -370,7 +368,7 @@ func (s *Service) latestFromBrowseScan(ctx context.Context, v *core.User, filter
 			if !allowed {
 				continue
 			}
-			if filterPlayed && (states[page.Items[i].Key].ViewCount > 0) != playedOnly {
+			if filterPlayed && watched[page.Items[i].Key] != playedOnly {
 				continue
 			}
 			value := at
@@ -497,17 +495,13 @@ func (s *Service) latestFromRecent(ctx context.Context, v *core.User, library Li
 		if len(titles) == 0 {
 			break
 		}
-		keys := make([]core.RatingKey, len(titles))
-		for i := range titles {
-			keys[i] = titles[i].Key
-		}
-		var states map[core.RatingKey]core.WatchStatus
+		var watched map[core.RatingKey]bool
 		playedOnly, filterPlayed := frontend.LatestPlayedFilter(ctx)
 		if filterPlayed {
 			if s.d.State == nil {
 				return nil, core.ErrNotAvailable
 			}
-			states, err = s.d.State.GetMany(ctx, v.ID, keys)
+			watched, err = s.titlesWatched(ctx, v, titles)
 			if err != nil {
 				return nil, err
 			}
@@ -516,7 +510,7 @@ func (s *Service) latestFromRecent(ctx context.Context, v *core.User, library Li
 			if titles[i].AddedAt.IsZero() || !s.visible(ctx, v, &titles[i]) {
 				continue
 			}
-			if filterPlayed && (states[titles[i].Key].ViewCount > 0) != playedOnly {
+			if filterPlayed && watched[titles[i].Key] != playedOnly {
 				continue
 			}
 			value := titles[i].AddedAt

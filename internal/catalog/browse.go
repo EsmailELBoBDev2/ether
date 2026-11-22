@@ -1328,7 +1328,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		args = append(args, nowTS)
 	}
 	if f.Group != nil {
-		clause, values, err := c.compileBrowseGroup(f.Group, "t", 0)
+		clause, values, err := c.compileBrowseGroup(f.Group, "t", 0, f.Type)
 		if err != nil {
 			return "", nil, err
 		}

@@ -87,7 +87,7 @@ func (c *Catalog) countStoredEpisodesBySeries(ctx context.Context, f core.Filter
 		return 0, false, err
 	}
 	if f.Group != nil {
-		clause, vals, err := c.compileBrowseGroup(f.Group, "t", 0)
+		clause, vals, err := c.compileBrowseGroup(f.Group, "t", 0, core.TypeShow)
 		if err != nil {
 			return 0, false, err
 		}

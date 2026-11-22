@@ -306,6 +306,9 @@ type Contributes struct {
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
 	// Setup declares guided setup steps for any plugin kind (§8).
 	Setup *SetupMeta `json:"setup,omitempty"`
+	// Screens declares generic top-level screens rendered natively by frontends
+	// such as Vela (spec A3).
+	Screens []ScreenMeta `json:"screens,omitempty"`
 }
 
 // PosterBadgeSetMeta declares one poster overlay badge set contributed by a plugin (#594).

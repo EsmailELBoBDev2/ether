@@ -3644,6 +3644,51 @@ class KindLibraryDecl(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class ScreenEventQuery(TypedDict, total=False):
+    """Live event filter query for a screen section."""
+
+    feed: str
+    state: List[Literal["pre", "in", "post", "delayed", "postponed", "canceled"]]
+    league: str
+    favorites: bool
+    window: Literal["today", "week", "recent"]
+    category: str
+
+
+class ScreenLeague(TypedDict, total=False):
+    """Optional static league filter chip on a leagues section."""
+
+    id: str
+    name: str
+    abbr: str
+    logo: str
+
+
+class ScreenSection(TypedDict, total=False):
+    """One section declared inside a plugin screen."""
+
+    id: str
+    type: Literal["hero", "events", "table", "schedule", "leagues", "entities"]
+    title: str
+    feed: str
+    league: str
+    entityKind: str
+    limit: int
+    query: ScreenEventQuery
+    leagues: List[ScreenLeague]
+
+
+class ScreenMeta(TypedDict, total=False):
+    """One generic top-level screen contributed under contributes.screens."""
+
+    id: str
+    title: str
+    icon: str
+    feed: str
+    sections: List[ScreenSection]
+    frontends: List[str]
+
+
 class UsenetCheckResult(TypedDict, total=False):
     """Sampled Usenet article availability verdict for one NZB (usenet_check)."""
 

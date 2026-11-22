@@ -581,6 +581,12 @@ func contributesUseT(c Contributes) bool {
 			check(s.Hint)
 		}
 	}
+	for _, sc := range c.Screens {
+		check(sc.Title)
+		for _, sec := range sc.Sections {
+			check(sec.Title)
+		}
+	}
 	return any
 }
 
@@ -950,6 +956,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	validateMediaKinds(m, add, label)
 	validateFrontendAdapters(m, add, label)
 	validateSetup(e, add, label)
+	validateScreens(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")

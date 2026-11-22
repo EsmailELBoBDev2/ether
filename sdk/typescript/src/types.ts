@@ -424,6 +424,50 @@ export interface Contributes {
   mediaKinds?: MediaKindMeta[];
   frontendAdapters?: FrontendAdapterMeta[];
   setup?: SetupMeta;
+  screens?: ScreenMeta[];
+}
+
+export type ScreenSectionType = "hero" | "events" | "table" | "schedule" | "leagues" | "entities";
+
+export type ScreenEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
+
+export type ScreenEventWindow = "today" | "week" | "recent";
+
+export interface ScreenEventQuery {
+  feed?: string;
+  state?: ScreenEventState[];
+  league?: string;
+  favorites?: boolean;
+  window?: ScreenEventWindow;
+  category?: string;
+}
+
+export interface ScreenLeagueMeta {
+  id: string;
+  name: string;
+  abbr?: string;
+  logo?: string;
+}
+
+export interface ScreenSectionMeta {
+  id?: string;
+  type: ScreenSectionType;
+  title?: string;
+  feed?: string;
+  league?: string;
+  entityKind?: string;
+  limit?: number;
+  query?: ScreenEventQuery;
+  leagues?: ScreenLeagueMeta[];
+}
+
+export interface ScreenMeta {
+  id: string;
+  title: string;
+  icon?: string;
+  feed?: string;
+  sections: ScreenSectionMeta[];
+  frontends?: string[];
 }
 
 /** A Jellyfin/Emby item type a level can present as. */

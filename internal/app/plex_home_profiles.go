@@ -123,7 +123,7 @@ func eligibleHouseholdProfiles(users plexHomeUsers, members []plextv.HomeUser) [
 
 // authenticatePlexAccountForHome mirrors SignInWithPlex's admission gates
 // (client IP, login limiter, server-token refusal) without issuing a grant.
-func (s surfaceIdentity) authenticatePlexAccountForHome(ctx context.Context, plexToken string) (*frontend.User, int64, error) {
+func (s surfaceIdentity) authenticatePlexAccountForHome(ctx context.Context, plexToken, appName string) (*frontend.User, int64, error) {
 	if s.policy.ExternalIdentity || s.grants == nil || s.login == nil || s.users == nil {
 		return nil, 0, core.ErrUnauthorized
 	}
@@ -136,17 +136,17 @@ func (s surfaceIdentity) authenticatePlexAccountForHome(ctx context.Context, ple
 		return nil, 0, err
 	}
 	if exceeded {
-		return nil, 0, s.allow(ctx, s.login, ip.String())
+		return nil, 0, s.allowApp(ctx, s.login, ip.String(), appName)
 	}
 	if cfgTok := s.retainedPlexToken(); cfgTok != "" && subtle.ConstantTimeCompare([]byte(strings.TrimSpace(plexToken)), []byte(cfgTok)) == 1 {
-		if err := s.allow(ctx, s.login, ip.String()); err != nil {
+		if err := s.allowApp(ctx, s.login, ip.String(), appName); err != nil {
 			return nil, 0, err
 		}
 		return nil, 0, core.ErrUnauthorized
 	}
 	plexAuth, ok := s.users.(plexAccountAuthenticator)
 	if !ok {
-		if err := s.allow(ctx, s.login, ip.String()); err != nil {
+		if err := s.allowApp(ctx, s.login, ip.String(), appName); err != nil {
 			return nil, 0, err
 		}
 		return nil, 0, core.ErrUnauthorized
@@ -156,7 +156,7 @@ func (s surfaceIdentity) authenticatePlexAccountForHome(ctx context.Context, ple
 	if plexID != 0 {
 		key = "plex:" + strconv.FormatInt(plexID, 10)
 	}
-	if err := s.allow(ctx, s.login, key); err != nil {
+	if err := s.allowApp(ctx, s.login, key, appName); err != nil {
 		return nil, plexID, err
 	}
 	if authErr != nil {
@@ -187,7 +187,7 @@ func (s surfaceIdentity) HouseholdProfiles(ctx context.Context, plexToken string
 	if !ok {
 		return nil, frontend.ErrIdentityUnavailable
 	}
-	initiator, plexID, err := s.authenticatePlexAccountForHome(ctx, plexToken)
+	initiator, plexID, err := s.authenticatePlexAccountForHome(ctx, plexToken, "")
 	if err != nil {
 		return nil, err
 	}
@@ -283,10 +283,11 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 		return "", frontend.ErrHouseholdProfileIneligible
 	}
 
+	appName := s.surfaceAppName(req.Device)
 	var switchToken string
 	var initiatorPlexID int64
 	if strings.TrimSpace(req.PlexToken) != "" {
-		initiator, plexID, err := s.authenticatePlexAccountForHome(ctx, req.PlexToken)
+		initiator, plexID, err := s.authenticatePlexAccountForHome(ctx, req.PlexToken, appName)
 		if err != nil {
 			return "", err
 		}
@@ -310,7 +311,7 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 		if req.ViewerID <= 0 {
 			return "", core.ErrUnauthorized
 		}
-		if err := s.allow(ctx, s.login, "plex-home-switch"); err != nil {
+		if err := s.allowApp(ctx, s.login, "plex-home-switch", appName); err != nil {
 			return "", err
 		}
 		current, err := s.ActiveUser(ctx, req.ViewerID)
@@ -372,6 +373,9 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 	tok, err := s.grants.Issue(ctx, target.ID, linkID, string(s.surface), req.Device)
 	if err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(req.PlexToken) != "" && initiatorPlexID != 0 {
+		s.resetIdentity(ctx, "plex:"+strconv.FormatInt(initiatorPlexID, 10))
 	}
 	if s.app != nil {
 		remoteIP := ""

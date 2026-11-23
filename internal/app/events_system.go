@@ -751,21 +751,45 @@ func (a *App) wireIdentityLimiter(limiter *identity.LoginLimiter, scope string) 
 	if a == nil || limiter == nil {
 		return
 	}
-	limiter.SetOnLimited(func(s, remoteIP string, attempts, windowSec int) {
+	limiter.SetOnLimited(func(ev identity.RateLimitEvent) {
+		ns := ev.Namespace
+		if ns == "" {
+			ns = scope
+		}
+		if ns == "" {
+			ns = "login"
+		}
+		if ev.FirstInWin && a.log != nil {
+			app := ev.App
+			if app == "" {
+				app = "unknown"
+			}
+			rem := ev.Remaining
+			if rem >= time.Second {
+				rem = rem.Round(time.Second)
+			} else if rem > 0 {
+				rem = rem.Round(time.Millisecond)
+			}
+			attrs := []any{
+				"app", app,
+				"namespace", ns,
+				"scope", ev.BucketKind,
+				"remote_ip", ev.RemoteIP,
+				"remaining", rem.String(),
+			}
+			if ev.Identity != "" {
+				attrs = append(attrs, "identity", ev.Identity)
+			}
+			a.log.Warn("sign-in locked out", attrs...)
+		}
 		if a.eventBus == nil {
 			return
 		}
-		if s == "" {
-			s = scope
-		}
-		if s == "" {
-			s = "login"
-		}
 		a.publishEvent(events.EventAuthRateLimited, events.AuthRateLimitedPayload{
-			Scope:     s,
-			RemoteIP:  remoteIP,
-			Attempts:  attempts,
-			WindowSec: windowSec,
+			Scope:     ns,
+			RemoteIP:  ev.RemoteIP,
+			Attempts:  ev.Attempts,
+			WindowSec: ev.WindowSec,
 		}, events.WithSource("identity"))
 	})
 }

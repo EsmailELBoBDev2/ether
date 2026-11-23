@@ -994,3 +994,48 @@ it("keeps filtered-out notice visible when all accounts on a connected Plex serv
   ).toBeInTheDocument();
   expect(within(drawer).queryByText(/No connected Plex Media Servers found/i)).toBeNull();
 });
+
+it("lists active sign-in lockouts and supports Clear and Clear all", async () => {
+  const { fake } = renderApp("/viewers");
+  const heading = await screen.findByText("Sign-in lockouts", {}, WAIT);
+  const section = heading.closest("section")!;
+  expect(await within(section).findByText("jordan", {}, WAIT)).toBeInTheDocument();
+  expect(within(section).getByText("203.0.113.19")).toBeInTheDocument();
+  expect(within(section).getByText("Polling")).toBeInTheDocument();
+
+  const clearButtons = within(section).getAllByRole("button", { name: "Clear" });
+  expect(clearButtons).toHaveLength(3);
+  fireEvent.click(clearButtons[0]!);
+  await waitFor(() => {
+    expect(within(section).queryByText("jordan")).toBeNull();
+  }, WAIT);
+  expect(calls(fake, "DELETE", "/auth/lockouts/lock-firetv-jordan")).toHaveLength(1);
+
+  fireEvent.click(within(section).getByRole("button", { name: "Clear all" }));
+  expect(
+    await within(section).findByText("No active sign-in lockouts.", {}, WAIT),
+  ).toBeInTheDocument();
+  expect(
+    calls(fake, "DELETE", "/auth/lockouts").filter((c) => c.path === "/auth/lockouts"),
+  ).toHaveLength(1);
+});
+
+it("hides Sign-in lockouts when the server rejects non-owner access", async () => {
+  renderApp("/viewers", {}, (fake) => {
+    const base = fake.fetch;
+    fake.fetch = async (input, init) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/ether/api/auth/lockouts") {
+        return new Response(
+          JSON.stringify({ error: { code: "forbidden", message: "owner required" } }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return base(input, init);
+    };
+  });
+  await screen.findByText("Sam Rivera", {}, WAIT);
+  await waitFor(() => {
+    expect(screen.queryByText("Sign-in lockouts")).toBeNull();
+  }, WAIT);
+});

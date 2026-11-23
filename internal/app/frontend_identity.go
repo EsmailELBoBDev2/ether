@@ -162,12 +162,49 @@ func (s surfaceIdentity) ResolveGrantDevice(ctx context.Context, credential, cla
 	return s.grants.ResolveGrantDevice(ctx, string(s.surface), credential, claim)
 }
 
-func (s surfaceIdentity) allow(ctx context.Context, limiter *identity.LoginLimiter, key string) error {
+func (s surfaceIdentity) surfaceAppName(device core.Device) string {
+	if device.Product != "" {
+		return device.Product
+	}
+	if device.Client != "" {
+		return device.Client
+	}
+	if device.DeviceName != "" {
+		return device.DeviceName
+	}
+	return surfaceDisplayName(string(s.surface))
+}
+
+func surfaceDisplayName(surface string) string {
+	switch surface {
+	case "jellyfin":
+		return "Jellyfin"
+	case "emby":
+		return "Emby"
+	case "silo":
+		return "Silo"
+	case "vela":
+		return "Vela"
+	case "xtream":
+		return "Xtream"
+	case "plex":
+		return "Plex"
+	case "stremio":
+		return "Stremio"
+	default:
+		return surface
+	}
+}
+
+func (s surfaceIdentity) allowApp(ctx context.Context, limiter *identity.LoginLimiter, key, app string) error {
 	ip, ok := frontend.ClientIP(ctx)
 	if !ok || ip.IsUnspecified() || ip.IsMulticast() {
 		return core.ErrUnauthorized
 	}
-	allowed, retry, err := limiter.AllowWithRetry(ctx, key, ip)
+	if app == "" {
+		app = surfaceDisplayName(string(s.surface))
+	}
+	allowed, retry, err := limiter.AllowWithRetry(identity.WithRateLimitApp(ctx, app), key, ip)
 	if err != nil {
 		return err
 	}
@@ -175,6 +212,19 @@ func (s surfaceIdentity) allow(ctx context.Context, limiter *identity.LoginLimit
 		return &frontend.IdentityRateLimitError{RetryAfter: retry}
 	}
 	return nil
+}
+
+func (s surfaceIdentity) allow(ctx context.Context, limiter *identity.LoginLimiter, key string) error {
+	return s.allowApp(ctx, limiter, key, "")
+}
+
+func (s surfaceIdentity) resetIdentity(ctx context.Context, key string) {
+	if s.login == nil || key == "" {
+		return
+	}
+	if ip, ok := frontend.ClientIP(ctx); ok && ip.IsValid() && !ip.IsUnspecified() && !ip.IsMulticast() {
+		_ = s.login.ResetIdentity(ctx, key, ip)
+	}
 }
 
 // PublicViewers returns only active local sign-in names when the owner enables the picker.
@@ -206,7 +256,9 @@ func (s surfaceIdentity) SignIn(ctx context.Context, username, password string, 
 			clientName = device.DeviceName
 		}
 	}
-	if err := s.allow(ctx, s.login, username); err != nil {
+	appName := s.surfaceAppName(device)
+	origUsername := username
+	if err := s.allowApp(ctx, s.login, origUsername, appName); err != nil {
 		s.app.emitLoginFailed(username, "password", "rate_limited", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
@@ -220,6 +272,7 @@ func (s surfaceIdentity) SignIn(ctx context.Context, username, password string, 
 			s.app.emitLoginFailed(username, "grant", "invalid_credentials", clientName, string(s.surface), remoteIP)
 			return "", err
 		}
+		s.resetIdentity(ctx, origUsername)
 		var viewerID int64
 		if v, rerr := s.Resolve(ctx, tok); rerr == nil && v != nil {
 			viewerID = v.ID
@@ -242,6 +295,7 @@ func (s surfaceIdentity) SignIn(ctx context.Context, username, password string, 
 		s.app.emitLoginFailed(username, "password", "grant_issue_failed", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
+	s.resetIdentity(ctx, origUsername)
 	s.app.emitLoginSucceeded(viewer, username, "password", clientName, string(s.surface), remoteIP)
 	return tok, nil
 }
@@ -261,17 +315,18 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 			clientName = device.DeviceName
 		}
 	}
+	appName := s.surfaceAppName(device)
 	exceeded, err := s.login.IPExceeded(ctx, ip)
 	if err != nil {
 		return "", err
 	}
 	if exceeded {
 		s.app.emitLoginFailed("", "plex", "rate_limited", clientName, string(s.surface), remoteIP)
-		return "", s.allow(ctx, s.login, ip.String())
+		return "", s.allowApp(ctx, s.login, ip.String(), appName)
 	}
 	if s.hostConfig != nil {
 		if cfgTok := strings.TrimSpace(s.hostConfig().Plex.Token); cfgTok != "" && subtle.ConstantTimeCompare([]byte(strings.TrimSpace(plexToken)), []byte(cfgTok)) == 1 {
-			if err := s.allow(ctx, s.login, ip.String()); err != nil {
+			if err := s.allowApp(ctx, s.login, ip.String(), appName); err != nil {
 				s.app.emitLoginFailed("", "plex", "rate_limited", clientName, string(s.surface), remoteIP)
 				return "", err
 			}
@@ -281,7 +336,7 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 	}
 	plexAuth, ok := s.users.(plexAccountAuthenticator)
 	if !ok {
-		if err := s.allow(ctx, s.login, ip.String()); err != nil {
+		if err := s.allowApp(ctx, s.login, ip.String(), appName); err != nil {
 			return "", err
 		}
 		s.app.emitLoginFailed("", "plex", "unavailable", clientName, string(s.surface), remoteIP)
@@ -292,7 +347,7 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 	if plexID != 0 {
 		key = "plex:" + strconv.FormatInt(plexID, 10)
 	}
-	if err := s.allow(ctx, s.login, key); err != nil {
+	if err := s.allowApp(ctx, s.login, key, appName); err != nil {
 		s.app.emitLoginFailed("", "plex", "rate_limited", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
@@ -326,6 +381,9 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 		s.app.emitLoginFailed(user.Username, "plex", "grant_issue_failed", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
+	if plexID != 0 {
+		s.resetIdentity(ctx, key)
+	}
 	s.app.emitLoginSucceeded(user.ID, user.Username, "plex", clientName, string(s.surface), remoteIP)
 	return tok, nil
 }
@@ -333,7 +391,7 @@ func (s surfaceIdentity) IssueRefresh(ctx context.Context, access string, device
 	return s.grants.IssueRefresh(ctx, string(s.surface), access, device)
 }
 func (s surfaceIdentity) Refresh(ctx context.Context, token string, device core.Device) (string, string, error) {
-	if err := s.allow(ctx, s.poll, "refresh"); err != nil {
+	if err := s.allowApp(ctx, s.poll, "refresh", s.surfaceAppName(device)); err != nil {
 		return "", "", err
 	}
 	access, refresh, err := s.grants.Refresh(ctx, string(s.surface), token, device)
@@ -346,7 +404,7 @@ func (s surfaceIdentity) QuickConnectInitiate(ctx context.Context, device core.D
 	if s.policy.ExternalIdentity {
 		return "", "", core.ErrUnauthorized
 	}
-	if err := s.allow(ctx, s.login, "quickconnect-init"); err != nil {
+	if err := s.allowApp(ctx, s.login, "quickconnect-init", s.surfaceAppName(device)); err != nil {
 		return "", "", err
 	}
 	return s.quick.Initiate(ctx, string(s.surface), device)
@@ -370,7 +428,7 @@ func (s surfaceIdentity) QuickConnectPollDevice(ctx context.Context, secret stri
 	if s.policy.ExternalIdentity {
 		return "", core.ErrUnauthorized
 	}
-	if err := s.allow(ctx, s.poll, secret); err != nil {
+	if err := s.allowApp(ctx, s.poll, secret, s.surfaceAppName(device)); err != nil {
 		return "", err
 	}
 	grant, err := s.quick.PollSurfaceDevice(ctx, string(s.surface), secret, device)
@@ -480,7 +538,7 @@ func (s surfaceIdentity) RedeemWebCode(ctx context.Context, code, browser, exist
 	if s.surface != "jellyfin" || s.grants == nil || s.login == nil {
 		return "", 0, core.ErrUnauthorized
 	}
-	if err := s.allow(ctx, s.login, "ether-web"); err != nil {
+	if err := s.allowApp(ctx, s.login, "ether-web", browser); err != nil {
 		return "", 0, err
 	}
 	return s.grants.RedeemWebCode(ctx, code, browser, existing)
@@ -491,7 +549,7 @@ func (s surfaceIdentity) RedeemDeviceWebCode(ctx context.Context, code string, d
 	if s.grants == nil || s.policy.ExternalIdentity {
 		return "", core.ErrUnauthorized
 	}
-	if err := s.allow(ctx, s.login, "ether-web"); err != nil {
+	if err := s.allowApp(ctx, s.login, "ether-web", s.surfaceAppName(device)); err != nil {
 		return "", err
 	}
 	token, _, err := s.grants.RedeemDeviceWebCode(ctx, code, string(s.surface), device, "")
@@ -541,7 +599,7 @@ func (s surfaceIdentity) IssueOriginWebCode(ctx context.Context, access string, 
 	if s.surface != "vela" || s.grants == nil || s.policy.ExternalIdentity {
 		return "", core.ErrUnauthorized
 	}
-	if err := s.allow(ctx, s.login, "ether-web"); err != nil {
+	if err := s.allowApp(ctx, s.login, "ether-web", s.surfaceAppName(device)); err != nil {
 		return "", err
 	}
 	v, _, err := s.grants.ResolveDevice(ctx, string(s.surface), access, device)
@@ -554,7 +612,7 @@ func (s surfaceIdentity) RedeemOriginWebCode(ctx context.Context, code string, d
 	if s.surface != "vela" || s.grants == nil || s.policy.ExternalIdentity {
 		return "", core.ErrUnauthorized
 	}
-	if err := s.allow(ctx, s.login, "ether-web"); err != nil {
+	if err := s.allowApp(ctx, s.login, "ether-web", s.surfaceAppName(device)); err != nil {
 		return "", err
 	}
 	token, _, err := s.grants.RedeemOriginWebCode(ctx, code, string(s.surface), device, origin)

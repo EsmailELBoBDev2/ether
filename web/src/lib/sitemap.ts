@@ -78,7 +78,7 @@ const PAGES = localized<PageDef[]>(() => [
     sections: [],
     keywords: searchTerms(
       msg(
-        "users friends accounts people overview home taste recent activity audio subtitles limits sign-in devices lists alerts watchlist monitoring",
+        "users friends accounts people overview home taste recent activity audio subtitles limits sign-in lockouts devices lists alerts watchlist monitoring",
       ),
     ),
   },

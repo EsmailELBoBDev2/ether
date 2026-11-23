@@ -191,3 +191,34 @@ func TestQuickConnectApprovalNamesTheDevice(t *testing.T) {
 		t.Fatalf("target: %+v %v", target, err)
 	}
 }
+
+func TestQuickConnectJellyfinCodesAreSixDigits(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Unix(3000, 0)
+	q, err := identity.NewQuickConnect(db, time.Minute, time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 32; i++ {
+		code, _, err := q.Initiate(ctx, "jellyfin", core.Device{ID: "firetv"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(code) != 6 || code[0] < '1' || code[0] > '9' {
+			t.Fatalf("jellyfin code %q outside [100000, 999999]", code)
+		}
+		for _, ch := range code {
+			if ch < '0' || ch > '9' {
+				t.Fatalf("jellyfin code %q contains non-digit %q", code, ch)
+			}
+		}
+	}
+	code, _, err := q.Initiate(ctx, "emby", core.Device{ID: "appletv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(code) != 6 {
+		t.Fatalf("emby code length: %q", code)
+	}
+}

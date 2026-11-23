@@ -472,6 +472,9 @@ func (h *Handler) routes() *http.ServeMux {
 	// started the PIN, and only if the account owns the server.
 	mux.HandleFunc("POST /api/auth/pin", h.limitAuth(h.handleSignInStart))
 	mux.HandleFunc("GET /api/auth/pin/{handle}", h.limitAuth(h.handleSignInPoll))
+	api("GET /api/auth/lockouts", h.handleListLockouts)
+	api("DELETE /api/auth/lockouts", h.handleClearAllLockouts)
+	api("DELETE /api/auth/lockouts/{key}", h.handleClearLockout)
 	mux.HandleFunc("POST /api/auth/session", h.limitAuth(h.handleSessionCreate))
 	mux.HandleFunc("DELETE /api/auth/session", h.limitAuth(h.handleSessionDelete))
 

@@ -273,7 +273,13 @@ func TestPickedSlotStaleMemoryKeyedPerReleaseAndStepDownPreservesAuto(t *testing
 	// - openInitial must fail over off broken resumed HD2, mark HD2 stale, and step down to SD1
 	// - live repeat request for slot1080 reuses the stepped-down session
 	// - neither saveResume nor ObserveViewerChoice binds SD1 to slot1080 or overwrites Auto
+	// Break HD2 for new opens AND for any handle the stopped session left
+	// open (a reused handle would otherwise keep serving it). OpenErr is
+	// written under the engine lock that Open reads it under.
+	h.engine.mu.Lock()
 	hdGood.OpenErr = core.ErrArticleMissing
+	h.engine.mu.Unlock()
+	hdGood.setFail(0, hdGood.Size, core.ErrArticleMissing)
 	res.mu.Lock()
 	res.slotOrder = nil
 	res.stepDown = "SD1"

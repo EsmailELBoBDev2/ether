@@ -1116,6 +1116,13 @@ func (s *Service) getOwnerGroupCacheState() (int64, *ownerGroupIndex) {
 
 func (s *Service) setOwnerGroupCacheState(rev int64, idx *ownerGroupIndex) {
 	s.ownerGroupsMu.Lock()
+	// Never go backwards: a slower reader that compiled an older generation
+	// must not replace a newer index, or a channel that just joined a group
+	// would briefly escape that group's app hides and rating.
+	if s.ownerGroupsIndex != nil && rev < s.ownerGroupsIndexRev {
+		s.ownerGroupsMu.Unlock()
+		return
+	}
 	s.ownerGroupsIndexRev = rev
 	s.ownerGroupsIndex = idx
 	s.ownerGroupsMu.Unlock()

@@ -450,11 +450,13 @@ func containerExpandDedupKey(pluginID, kindKey string, itemRef core.ItemRef) str
 // POST /ether/v1/kinds/{kind}/expand ({parentId, level, cursor?}).
 //
 // It triggers only when no fresh expansion exists within ttlHours OR the
-// container currently has 0 stored direct children. Concurrent opens of the
-// same (plugin, kind, itemRef) share one single-flight expand job via
-// Manager.StartExpandJob. The caller waits bounded by firstOpenWait (clamped
-// by ctx.Deadline()) for page 1 to upsert, while later pages continue in the
-// background through the expand job.
+// container currently has 0 stored direct children, unless a recent failure
+// recorded on plugin_facet_expansions is still within expansionErrorCooldown.
+// Concurrent opens of the same (plugin, kind, itemRef) share one single-flight
+// expand job via Manager.StartExpandJob. Callers wait at most the remaining
+// firstOpenWait window from the job's start (clamped by ctx.Deadline()) for
+// page 1 to upsert, while later pages continue in the background through the
+// expand job.
 //
 // Returns (didExpand, timedOut): didExpand is true if an expand job was
 // launched or joined (so Item callers should re-read the container for any
@@ -472,28 +474,42 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 	}
 
 	ttl := time.Duration(rec.Decl.Browse.Expand.EffectiveTTLHours()) * time.Hour
-	now := c.items.Now()
+	errCooldown := expansionErrorCooldown
+	if ttl > 0 && ttl < errCooldown {
+		errCooldown = ttl
+	}
 	routePath := "/ether/v1/kinds/" + rec.KindKey + "/expand"
 	dedupKey := containerExpandDedupKey(rec.PluginID, rec.KindKey, container.Ref)
 
 	expandLaunchMu.Lock()
 	if c.mgr.IsExpandJobRunning(rec.PluginID, dedupKey) {
-		var waitCh chan struct{}
-		if ch, ok := expandReady.Load(dedupKey); ok {
-			waitCh = ch.(chan struct{})
+		var ws *expandWaitState
+		if v, ok := expandReady.Load(dedupKey); ok {
+			ws, _ = v.(*expandWaitState)
 		}
 		expandLaunchMu.Unlock()
-		if waitCh != nil {
-			return true, c.waitFirstOpen(ctx, waitCh)
+		if ws != nil {
+			return true, c.waitFirstOpen(ctx, ws)
 		}
 		return true, false
 	}
+	if ctx.Err() != nil {
+		expandLaunchMu.Unlock()
+		return false, false
+	}
+	now := c.items.Now()
 	exp, hasExp, expErr := c.items.GetFacetExpansion(ctx, rec.PluginID, rec.KindKey, containerExpandFacet, container.ID)
-	if expErr == nil && hasExp && exp.IsFresh(now, ttl) {
-		hasChildren, _, childErr := c.items.ChildrenFreshness(ctx, lib.ID, container.Ref)
-		if childErr == nil && hasChildren {
+	if expErr == nil && hasExp {
+		if exp.IsInErrorCooldown(now, errCooldown) {
 			expandLaunchMu.Unlock()
 			return false, false
+		}
+		if exp.IsFresh(now, ttl) {
+			hasChildren, _, childErr := c.items.ChildrenFreshness(ctx, lib.ID, container.Ref)
+			if childErr == nil && hasChildren {
+				expandLaunchMu.Unlock()
+				return false, false
+			}
 		}
 	}
 
@@ -511,14 +527,14 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 		return c.runContainerExpansion(jobCtx, run, rec, lib.ID, routePath, container, signal)
 	})
 	if startErr == nil && !started {
-		var waitCh chan struct{}
-		if ch, ok := expandReady.Load(dedupKey); ok {
-			waitCh = ch.(chan struct{})
+		var ws *expandWaitState
+		if v, ok := expandReady.Load(dedupKey); ok {
+			ws, _ = v.(*expandWaitState)
 		}
 		close(ready)
 		expandLaunchMu.Unlock()
-		if waitCh != nil {
-			return true, c.waitFirstOpen(ctx, waitCh)
+		if ws != nil {
+			return true, c.waitFirstOpen(ctx, ws)
 		}
 		return true, false
 	}
@@ -531,16 +547,20 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 	markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = c.items.MarkFacetExpansionRunning(markCtx, rec.PluginID, rec.KindKey, lib.ID, containerExpandFacet, container.ID)
 	cancel()
-	expandReady.Store(dedupKey, firstPage)
+	ws := &expandWaitState{firstPage: firstPage, startedAt: time.Now()}
+	expandReady.Store(dedupKey, ws)
 	close(ready)
 	expandLaunchMu.Unlock()
 
-	return true, c.waitFirstOpen(ctx, firstPage)
+	return true, c.waitFirstOpen(ctx, ws)
 }
 
-func (c *KindCatalog) waitFirstOpen(ctx context.Context, ch <-chan struct{}) bool {
+func (c *KindCatalog) waitFirstOpen(ctx context.Context, ws *expandWaitState) bool {
+	if ws == nil || ws.firstPage == nil {
+		return false
+	}
 	select {
-	case <-ch:
+	case <-ws.firstPage:
 		return false
 	default:
 	}
@@ -548,6 +568,12 @@ func (c *KindCatalog) waitFirstOpen(ctx context.Context, ch <-chan struct{}) boo
 		return true
 	}
 	wait := firstOpenWait
+	if !ws.startedAt.IsZero() {
+		wait -= time.Since(ws.startedAt)
+		if wait <= 0 {
+			return true
+		}
+	}
 	if dl, ok := ctx.Deadline(); ok {
 		if rem := time.Until(dl); rem <= 0 {
 			return true
@@ -558,7 +584,7 @@ func (c *KindCatalog) waitFirstOpen(ctx context.Context, ch <-chan struct{}) boo
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case <-ch:
+	case <-ws.firstPage:
 		return false
 	case <-timer.C:
 		return true
@@ -568,6 +594,7 @@ func (c *KindCatalog) waitFirstOpen(ctx context.Context, ch <-chan struct{}) boo
 }
 
 func (c *KindCatalog) validateContainerExpandItems(ctx context.Context, rec pluginitems.KindRecord, container core.KindItem, knownAncestors map[string]string, items []core.KindItem) ([]core.KindItem, error) {
+	_, containerAt, _ := rec.Decl.Level(container.Level)
 	out := make([]core.KindItem, len(items))
 	batchItems := make(map[string]core.KindItem, len(items))
 	for i, it := range items {
@@ -579,12 +606,18 @@ func (c *KindCatalog) validateContainerExpandItems(ctx context.Context, rec plug
 				return nil, fmt.Errorf("%w: container self-refresh %q: expected level %q, got %q",
 					pluginitems.ErrInvalidItem, it.ID, container.Level, it.Level)
 			}
-			if it.ParentID == "" && container.ParentID != "" {
+			// Refresh the container's own fields in place while keeping its
+			// stored parent: a collaboration album stored under a featured
+			// artist may return its primary artist as parentId (which might
+			// not even be stored). Never reparent out of the opened parent or
+			// fail the expansion and drop its children.
+			if it.ParentID != container.ParentID && (container.ParentID != "" || containerAt == 0) {
+				if it.ParentID != "" {
+					c.log.Debug("container self-refresh kept stored parent",
+						"plugin", rec.PluginID, "kind", rec.KindKey, "container", container.ID,
+						"stored_parent", container.ParentID, "incoming_parent", it.ParentID)
+				}
 				it.ParentID = container.ParentID
-			}
-			if it.ParentID != container.ParentID {
-				return nil, fmt.Errorf("%w: container self-refresh %q: parentId %q does not match stored parent %q",
-					pluginitems.ErrInvalidItem, it.ID, it.ParentID, container.ParentID)
 			}
 			out[i] = it
 			continue

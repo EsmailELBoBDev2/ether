@@ -1155,7 +1155,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		q.Limit = showChildPageMax
 	}
 	if key.IsPluginKey() && q.Level == "" && q.Role == "" && len(q.Types) == 0 && len(q.UnservedTypes) == 0 {
-		if detail, derr := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}); derr == nil && detail.Title.PrimaryChildLevel != "" {
+		if detail, derr := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}); derr == nil && detail.Title.PrimaryChildLevel != "" {
 			q.Level = detail.Title.PrimaryChildLevel
 		}
 	}

@@ -147,11 +147,13 @@ func (m *Manager) kindBackends() KindBackends {
 
 // Per-call caps for kind host services (spec §3.3 sizes, host side).
 const (
-	MaxKindUpsertItems      = 1000
-	MaxKindVisibleIDs       = 500
-	MaxKindHintsBytes       = 16 << 10
-	MaxKindArtRoles         = 16
-	MaxSourceIndexerFilters = 256
+	MaxKindUpsertItems       = 1000
+	MaxKindVisibleIDs        = 500
+	MaxKindHintsBytes        = 16 << 10
+	MaxKindArtRoles          = 16
+	MaxSourceIndexerFilters  = 256
+	MaxKindBrowseFacetValues = 256
+	MaxKindBrowseAnyGroups   = 32
 	// HeaderAdapterViewerToken carries a host-minted, request-scoped token on
 	// frontend adapter calls so remote plugins can prove the authenticated
 	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
@@ -509,6 +511,31 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
 			Field:   "total",
 			Message: `total must be "cheap", "none", or "exact"`,
+		}}}
+	}
+	if len(q.AnyGroups) > MaxKindBrowseAnyGroups {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "anyGroups",
+			Message: fmt.Sprintf("anyGroups accepts at most %d groups per query", MaxKindBrowseAnyGroups),
+		}}}
+	}
+	facetValues := 0
+	for _, m := range []map[string][]string{q.Facets, q.AllFacets, q.ExcludeFacets} {
+		for _, vals := range m {
+			facetValues += len(vals)
+		}
+	}
+	for _, g := range q.AnyGroups {
+		facetValues += len(g.Values)
+	}
+	if facetValues > MaxKindBrowseFacetValues {
+		field := "facets"
+		if len(q.AnyGroups) > 0 && len(q.Facets) == 0 && len(q.AllFacets) == 0 && len(q.ExcludeFacets) == 0 {
+			field = "anyGroups"
+		}
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   field,
+			Message: fmt.Sprintf("facet values exceed %d per query", MaxKindBrowseFacetValues),
 		}}}
 	}
 	if q.Limit <= 0 {

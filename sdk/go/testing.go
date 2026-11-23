@@ -667,6 +667,9 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 		if len(query.ExcludeFacets) > 0 && mockItemMatchesAnyFacet(it, query.ExcludeFacets) {
 			continue
 		}
+		if len(query.AnyGroups) > 0 && !mockItemMatchesAnyGroups(it, query.AnyGroups) {
+			continue
+		}
 		matched = append(matched, it)
 	}
 	if query.Desc {
@@ -760,6 +763,27 @@ func mockItemMatchesAllFacets(item KindItem, facets map[string][]string) bool {
 			if !mockItemMatchesFacets(item, map[string][]string{k: {w}}) {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+func mockItemMatchesAnyGroups(item KindItem, groups []KindBrowseFacetGroup) bool {
+	for _, g := range groups {
+		if strings.TrimSpace(g.Field) == "" {
+			continue
+		}
+		var want []string
+		for _, v := range g.Values {
+			if s := strings.TrimSpace(v); s != "" {
+				want = append(want, s)
+			}
+		}
+		if len(want) == 0 {
+			continue
+		}
+		if !mockItemMatchesFacets(item, map[string][]string{g.Field: want}) {
+			return false
 		}
 	}
 	return true

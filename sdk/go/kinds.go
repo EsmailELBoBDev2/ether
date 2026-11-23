@@ -77,6 +77,15 @@ type KindPage struct {
 	Total      *int       `json:"total,omitempty"`
 }
 
+// KindBrowseFacetGroup is one OR-list of values on a single field for
+// KindBrowseRequest.AnyGroups (#767). Multiple groups — including repeated
+// groups on the same field — combine with AND alongside Facets, AllFacets,
+// and ExcludeFacets.
+type KindBrowseFacetGroup struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+
 // KindBrowseRequest is Ether's browse/search request for one kind level.
 type KindBrowseRequest struct {
 	Kind     string `json:"-"` // filled from the route, never on the wire
@@ -87,12 +96,15 @@ type KindBrowseRequest struct {
 	Sort     string `json:"sort,omitempty"`
 	Desc     bool   `json:"desc,omitempty"`
 	// Facets requires any of the listed values per field; AllFacets
-	// requires every listed value and ExcludeFacets drops items having
-	// any listed value. All three combine with AND.
-	Facets        map[string][]string `json:"facets,omitempty"`
-	AllFacets     map[string][]string `json:"allFacets,omitempty"`
-	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
-	Query         string              `json:"query,omitempty"`
+	// requires every listed value, ExcludeFacets drops items having any
+	// listed value, and AnyGroups adds one OR-list per group so the same
+	// field can carry several any-of lists ANDed together (#767). All
+	// four combine with AND.
+	Facets        map[string][]string    `json:"facets,omitempty"`
+	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
+	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
+	Query         string                 `json:"query,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total:
 	// "" or "cheap" (default) returns Total only when O(1), "none" omits it,
 	// and "exact" computes an exact Total (cached per library generation).

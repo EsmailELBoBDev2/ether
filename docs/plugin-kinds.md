@@ -774,20 +774,24 @@ Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
-A `kinds.browse` query filters with three facet maps that combine with
-AND: `facets` (any of the listed values per field), `allFacets` (every
-listed value per field, for "tagged both X and Y"), and `excludeFacets`
-(none of the listed values, for "without X"). All three accept the same
-per-type values as `facets`, including `lo..hi` ranges for numbers and
-dates and people names, and are evaluated inside the browse query so
-paging and `total` stay correct. The total number of facet values
-across the three maps is bounded (256 per query). Pass `total` to
-control whether `KindPage.total` is computed: `"cheap"` (the default)
-returns `total` only when it is O(1) (item or single-facet field
-tallies, an already-cached exact count, or a single-page result) and
-omits `total` otherwise rather than scanning the library; `"none"` never
-computes or returns `total`; `"exact"` computes and caches an exact
-count for the current library generation.
+A `kinds.browse` query filters with three facet maps and optional
+any-of groups that all combine with AND: `facets` (any of the listed
+values per field), `allFacets` (every listed value per field, for
+"tagged both X and Y"), `excludeFacets` (none of the listed values, for
+"without X"), and `anyGroups` (an array of `{field, values}` OR-lists,
+so the same multi-valued field can carry several any-of groups ANDed
+together — for example `(Rock OR Hard Rock) AND (Live OR Live
+Recording)` on `genres`). All four accept the same per-type values as
+`facets`, including `lo..hi` ranges for numbers and dates and people
+names, and are evaluated inside the browse query so paging and `total`
+stay correct. A query may carry at most 32 `anyGroups` and at most 256
+total facet values across `facets`, `allFacets`, `excludeFacets`, and
+`anyGroups`. Pass `total` to control whether `KindPage.total` is
+computed: `"cheap"` (the default) returns `total` only when it is O(1)
+(item or single-facet field tallies, an already-cached exact count, or a
+single-page result) and omits `total` otherwise rather than scanning the
+library; `"none"` never computes or returns `total`; `"exact"` computes
+and caches an exact count for the current library generation.
 
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already

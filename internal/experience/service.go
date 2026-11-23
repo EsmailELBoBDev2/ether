@@ -1952,16 +1952,25 @@ func (s *Service) rootWindow(ctx context.Context, v *core.User, device core.Devi
 const searchWindowMin = 100
 
 func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery) (frontend.SearchPage, error) {
+	page, _, err := s.search(ctx, viewer, device, query, q, false)
+	return page, err
+}
+
+// search is Search; unified leaves descriptive (AI) results to the caller
+// (UnifiedSearch) and reports whether the results hold a confident match:
+// a title, franchise or person the query names, in the catalogue or a
+// plugin library.
+func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery, unified bool) (frontend.SearchPage, bool, error) {
 	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
 	if core.SearchClientFrom(ctx) == "" && device.ID != "" {
 		ctx = core.WithSearchClient(ctx, device.ID)
 	}
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
-		return frontend.SearchPage{}, err
+		return frontend.SearchPage{}, false, err
 	}
 	if !s.requestedTypesServable(ctx, v, q) {
-		return frontend.SearchPage{}, nil
+		return frontend.SearchPage{}, false, nil
 	}
 
 	var types []core.MediaType
@@ -1970,7 +1979,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	if s.d.PluginLibraries != nil {
 		views, err := s.storedViews(ctx, v)
 		if err != nil {
-			return frontend.SearchPage{}, err
+			return frontend.SearchPage{}, false, err
 		}
 		for _, view := range views {
 			if view.KindKey != "" {
@@ -2016,7 +2025,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		limit = 50
 	}
 	if offset >= 1000 {
-		return frontend.SearchPage{Continuation: frontend.ContinuationUnknown}, nil
+		return frontend.SearchPage{Continuation: frontend.ContinuationUnknown}, false, nil
 	}
 	end := min(offset+limit, 1000)
 	// The candidate window grows with the page asked for, so a first page
@@ -2024,15 +2033,33 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	window := min(max(2*end, searchWindowMin), 1000)
 	// The window is ranked and filtered here, so the catalogue returns it
 	// as rows with the facts the filters read; only the page is read in full.
+	ctx, pending := core.WithSearchPending(ctx)
 	findCtx, cand := ctx, s.searchCandidates(ctx, v, q)
 	if cand != nil {
 		findCtx = core.WithSearchCandidates(ctx, cand)
 	}
+	// Title search answers from the catalogue Ether holds: a provider's
+	// live search (TMDB) still runs, detached, and answers the next search.
+	findCtx = s.NoProviderWait(findCtx)
+	// Plugin libraries are searched alongside the catalogue, never after
+	// it, and never wait on a plugin's remote catalogue: what a plugin is
+	// still fetching arrives on the next ask (SearchPage.Pending).
+	var (
+		pluginHits []core.Title
+		pluginBest float64
+		pluginErr  error
+		pluginDone = make(chan struct{})
+	)
+	go func() {
+		defer close(pluginDone)
+		pluginHits, pluginBest, pluginErr = s.pluginSearchItems(ctx, v, query, q, window)
+	}()
 	var items []core.Title
 	if len(types) > 0 {
 		candidates, err := s.d.Search.Find(findCtx, v, query, types, window)
 		if err != nil {
-			return frontend.SearchPage{}, err
+			<-pluginDone
+			return frontend.SearchPage{}, false, err
 		}
 		items = make([]core.Title, 0, len(candidates))
 		for _, title := range candidates {
@@ -2041,20 +2068,22 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			}
 			ok, e := s.matchesUserQuery(ctx, v, title, q)
 			if e != nil {
-				return frontend.SearchPage{}, e
+				<-pluginDone
+				return frontend.SearchPage{}, false, e
 			}
 			if ok {
 				items = append(items, title)
 			}
 		}
 	}
-	pluginHits, err := s.pluginSearchItems(ctx, v, query, q, window)
-	if err != nil {
-		return frontend.SearchPage{}, err
+	<-pluginDone
+	if pluginErr != nil {
+		return frontend.SearchPage{}, false, pluginErr
 	}
+	confident := pluginBest >= pluginNamedScore || namesTitle(items)
 	aiMerged := false
-	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" {
-		if !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || HasTitleMatch(pluginHits) || len(types) == 0 {
+	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" && !unified {
+		if confident || !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || len(types) == 0 {
 			if prev, superseded := s.ensureSearchGate().supersede(v, core.SearchClientFrom(ctx), query); superseded {
 				if ctrl, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearchController); ok {
 					ctrl.CancelDescribeSearch(v, prev)
@@ -2065,7 +2094,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			search.gate = s.ensureSearchGate()
 			_, aiRaw, handled, err := search.resolveDescriptive(ctx, v, query, types, false)
 			if err != nil {
-				return frontend.SearchPage{}, err
+				return frontend.SearchPage{}, false, err
 			}
 			if handled && len(aiRaw) > 0 {
 				aiItems := make([]core.Title, 0, len(aiRaw))
@@ -2075,7 +2104,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 					}
 					ok, e := s.matchesUserQuery(ctx, v, title, q)
 					if e != nil {
-						return frontend.SearchPage{}, e
+						return frontend.SearchPage{}, false, e
 					}
 					if ok {
 						aiItems = append(aiItems, title)
@@ -2085,10 +2114,12 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 				aiMerged = true
 			}
 		}
-	} else if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+	} else if !unified && s.d.Protocol != "vela" && len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+		// Vela asks for description matches itself (mode "descriptive", or
+		// one list with mode "auto"): its title search never returns them.
 		items, err = s.vibeMembers(ctx, v, query, q)
 		if err != nil {
-			return frontend.SearchPage{}, err
+			return frontend.SearchPage{}, false, err
 		}
 	}
 	if len(pluginHits) > 0 {
@@ -2105,7 +2136,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 	}
 	if err = s.sortTitles(ctx, items, q); err != nil {
-		return frontend.SearchPage{}, err
+		return frontend.SearchPage{}, false, err
 	}
 	start := min(offset, len(items))
 	stop := min(end, len(items))
@@ -2128,13 +2159,13 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		if !hasPlugin {
 			full, err := s.d.Search.Details(findCtx, page)
 			if err != nil {
-				return frontend.SearchPage{}, err
+				return frontend.SearchPage{}, false, err
 			}
 			page = full
 		} else if len(tmdbSub) > 0 {
 			fullSub, err := s.d.Search.Details(findCtx, tmdbSub)
 			if err != nil {
-				return frontend.SearchPage{}, err
+				return frontend.SearchPage{}, false, err
 			}
 			byKey := make(map[core.RatingKey]core.Title, len(fullSub))
 			for _, t := range fullSub {
@@ -2151,7 +2182,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			page = merged
 		}
 	}
-	return frontend.SearchPage{Page: core.Page{Items: page, Total: len(items)}, TotalExact: false, Continuation: continuation}, nil
+	return frontend.SearchPage{Page: core.Page{Items: page, Total: len(items)}, TotalExact: false, Continuation: continuation, Pending: pending.Pending()}, confident, nil
 }
 
 // searchCandidates is the candidate window a search asks the catalogue for

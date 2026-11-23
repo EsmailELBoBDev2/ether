@@ -33,6 +33,11 @@ const (
 	defaultLiveSearchTimeout = 2 * time.Second
 	maxLiveSearchPerPlugin   = 2
 	liveSearchBackgroundWait = 10 * time.Second
+	// liveSearchMemoTTL is how long a finished live search answers the same
+	// query again without calling the plugin; liveSearchMemoMax bounds the
+	// memo.
+	liveSearchMemoTTL = 10 * time.Minute
+	liveSearchMemoMax = 512
 )
 
 // KindCatalogDeps configures a KindCatalog adapter.
@@ -52,6 +57,12 @@ type KindCatalogDeps struct {
 type liveSearchCall struct {
 	done  chan struct{}
 	items []core.KindItem
+	ok    bool // the plugin answered (possibly with no items)
+}
+
+type liveSearchMemo struct {
+	items []core.KindItem
+	at    time.Time
 }
 
 // KindCatalog bridges plugin media-kind declarations and lifecycle events to
@@ -78,6 +89,7 @@ type KindCatalog struct {
 	liveMu    sync.Mutex
 	liveCalls map[string]*liveSearchCall
 	liveSems  map[string]chan struct{}
+	liveMemo  map[string]liveSearchMemo
 
 	hydrateMu       sync.Mutex
 	hydrateInflight map[string]*containerHydrateCall
@@ -90,6 +102,7 @@ var (
 	_ experience.PluginPresentationLibraries = (*KindCatalog)(nil)
 	_ experience.PluginLevelFacetLibraries   = (*KindCatalog)(nil)
 	_ experience.PluginBatchBrowseLibraries  = (*KindCatalog)(nil)
+	_ experience.PluginOptInLibraries        = (*KindCatalog)(nil)
 )
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
@@ -123,6 +136,7 @@ func AttachKindCatalog(syncCtx context.Context, deps KindCatalogDeps) *KindCatal
 		quotas:            make(map[string]blobcache.Quota),
 		liveCalls:         make(map[string]*liveSearchCall),
 		liveSems:          make(map[string]chan struct{}),
+		liveMemo:          make(map[string]liveSearchMemo),
 		hydrateInflight:   make(map[string]*containerHydrateCall),
 		hydrateSems:       make(map[string]chan struct{}),
 	}
@@ -457,6 +471,52 @@ func (c *KindCatalog) RootMediaType(ctx context.Context, lib core.Library) core.
 		return core.TypeMovie
 	}
 	return proj.Type
+}
+
+// OptInLibrary implements experience.PluginOptInLibraries: the library's
+// kind starts unpublished in protocol's app (manifest presentation
+// default:false), so it is private content an owner opted that app into.
+// Search reaches it only when the viewer scopes a search to it.
+func (c *KindCatalog) OptInLibrary(ctx context.Context, lib core.Library, protocol core.Protocol) bool {
+	if c == nil || c.items == nil {
+		return false
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return false
+	}
+	return presentationOptIn(rec.Decl.Present, protocol)
+}
+
+func presentationOptIn(p core.Presentations, protocol core.Protocol) bool {
+	var d *bool
+	switch protocol {
+	case "vela":
+		if p.Vela != nil {
+			d = p.Vela.Default
+		}
+	case "plex", "dlna", "webdav", "m3u":
+		if p.Plex != nil {
+			d = p.Plex.Default
+		}
+	case "jellyfin", "emby":
+		if p.MediaBrowser != nil {
+			d = p.MediaBrowser.Default
+		}
+	case "stremio":
+		if p.Stremio != nil {
+			d = p.Stremio.Default
+		}
+	case "xtream":
+		if p.Xtream != nil {
+			d = p.Xtream.Default
+		}
+	case "silo":
+		if p.Silo != nil {
+			d = p.Silo.Default
+		}
+	}
+	return d != nil && !*d
 }
 
 // Count implements experience.PluginLibraries.
@@ -1948,6 +2008,13 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 	viewerID := core.CatalogViewerID(ctx)
 
 	c.liveMu.Lock()
+	if m, ok := c.liveMemo[sfKey]; ok {
+		if time.Since(m.at) < liveSearchMemoTTL {
+			c.liveMu.Unlock()
+			return m.items
+		}
+		delete(c.liveMemo, sfKey)
+	}
 	call, inflight := c.liveCalls[sfKey]
 	if !inflight {
 		call = &liveSearchCall{done: make(chan struct{})}
@@ -1960,6 +2027,19 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 		go c.execLiveSearch(sfKey, sem, rec, query, limit, viewerID, aiSearch, call)
 	}
 	c.liveMu.Unlock()
+
+	// A search that must not wait (core.WithSearchPending) answers from the
+	// local store; the call finishes in the background, stores what it found
+	// and memoizes it, so asking again returns it at once.
+	if pending := core.SearchPendingFrom(ctx); pending != nil {
+		select {
+		case <-call.done:
+			return call.items
+		default:
+			pending.Mark()
+			return nil
+		}
+	}
 
 	budget := c.liveSearchTimeout
 	if aiSearch {
@@ -1988,6 +2068,9 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		close(call.done)
 		c.liveMu.Lock()
 		delete(c.liveCalls, sfKey)
+		if call.ok {
+			c.rememberLiveSearch(sfKey, call.items)
+		}
 		c.liveMu.Unlock()
 	}()
 
@@ -2021,7 +2104,11 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		return
 	}
 	var page core.KindPage
-	if err := json.Unmarshal(resp.Body, &page); err != nil || len(page.Items) == 0 {
+	if err := json.Unmarshal(resp.Body, &page); err != nil {
+		return
+	}
+	if len(page.Items) == 0 {
+		call.ok = true
 		return
 	}
 	if _, err := c.items.UpsertPinnedItems(bgCtx, rec.PluginID, rec.KindKey, page.Items); err != nil {
@@ -2035,6 +2122,28 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		}
 	}
 	call.items = stored
+	call.ok = true
+}
+
+// rememberLiveSearch memoizes a finished live search; c.liveMu is held.
+func (c *KindCatalog) rememberLiveSearch(sfKey string, items []core.KindItem) {
+	now := time.Now()
+	if len(c.liveMemo) >= liveSearchMemoMax {
+		oldestKey, oldest := "", now
+		for k, m := range c.liveMemo {
+			if now.Sub(m.at) >= liveSearchMemoTTL {
+				delete(c.liveMemo, k)
+				continue
+			}
+			if m.at.Before(oldest) {
+				oldestKey, oldest = k, m.at
+			}
+		}
+		if len(c.liveMemo) >= liveSearchMemoMax && oldestKey != "" {
+			delete(c.liveMemo, oldestKey)
+		}
+	}
+	c.liveMemo[sfKey] = liveSearchMemo{items: items, at: now}
 }
 
 func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, items []core.KindItem) []core.Title {

@@ -630,6 +630,14 @@ func TestMatroskaLanguageMatchesLibavformat(t *testing.T) {
 		want  string
 	}{
 		{mkvTrack{language: "eng", hasLanguage: true, bcp47: "en-US"}, "eng"},
+		// mkvmerge writes both legacy Language="por" and LanguageBCP47="pt-BR":
+		// keep the regional tag when its primary matches so pt-BR vs pt-PT works.
+		{mkvTrack{language: "por", hasLanguage: true, bcp47: "pt-BR"}, "pt-br"},
+		{mkvTrack{language: "por", hasLanguage: true, bcp47: "pt-PT"}, "pt-pt"},
+		{mkvTrack{language: "chi", hasLanguage: true, bcp47: "zh-Hant-TW"}, "zh-tw"},
+		{mkvTrack{language: "und", hasLanguage: true, bcp47: "pt-BR"}, "pt-br"},
+		// Contradictory primary still yields to legacy Language (matching libavformat).
+		{mkvTrack{language: "eng", hasLanguage: true, bcp47: "pt-BR"}, "eng"},
 		// BCP47-only pt-BR keeps its region via langtag ("pt-br", not the
 		// generic legacy "por"): regional preferences depend on it.
 		{mkvTrack{language: "eng", bcp47: "pt-BR"}, "pt-br"},
@@ -643,6 +651,11 @@ func TestMatroskaLanguageMatchesLibavformat(t *testing.T) {
 		si, ok, err := c.track.stream(1)
 		if err != nil || !ok || si.Language != c.want {
 			t.Errorf("%+v: language %q (ok %v, err %v), want %q", c.track, si.Language, ok, err, c.want)
+		}
+	}
+	for in, want := range map[string]string{"pt-br": "por", "zh-tw": "chi", "eng": "eng", "": ""} {
+		if got := mp4Language(in); got != want {
+			t.Errorf("mp4Language(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -84,7 +84,12 @@ var languages = []struct{ token, name string }{
 	{"SWE", "swedish"}, {"DAN", "danish"}, {"THA", "thai"}, {"VIE", "vietnamese"}, {"CHI", "chinese"},
 	// Explicit regional language tags are used by WEB release groups.
 	// Do not treat bare country codes (BR/US/GB) as audio languages.
-	{"PT-BR", LanguagePortugueseBrazil}, {"BRAZILIAN", LanguagePortugueseBrazil}, {"DUBLADO", LanguagePortugueseBrazil}, {"NACIONAL", LanguagePortugueseBrazil}, {"PT-PT", LanguagePortuguesePortugal},
+	{"PT-BR", LanguagePortugueseBrazil}, {"PT BR", LanguagePortugueseBrazil}, {"PTBR", LanguagePortugueseBrazil},
+	{"BRAZILIAN", LanguagePortugueseBrazil},
+	{"DUBLADO", LanguagePortugueseBrazil}, {"DUBLADA", LanguagePortugueseBrazil}, {"DUBLADOS", LanguagePortugueseBrazil}, {"DUBLADAS", LanguagePortugueseBrazil},
+	{"NACIONAL", LanguagePortugueseBrazil},
+	{"PT-PT", LanguagePortuguesePortugal}, {"PT PT", LanguagePortuguesePortugal}, {"PTPT", LanguagePortuguesePortugal},
+	{"DUAL ÁUDIO", "portuguese"}, {"DUAL-ÁUDIO", "portuguese"},
 	{"ES-ES", LanguageSpanishSpain}, {"ES-MX", LanguageSpanishLatino}, {"ES-419", LanguageSpanishLatino},
 	{"EN-US", "english"}, {"EN-GB", "english"},
 	// Regional releases spell out languages as English names or endonyms.
@@ -331,7 +336,7 @@ func parseSubbedAfter(spaced string, floor int) bool {
 }
 
 func parseDubbedAfter(spaced string, floor int) bool {
-	for _, tag := range []string{"DUB", "DUBBED", "DUBLADO"} {
+	for _, tag := range []string{"DUB", "DUBBED", "DUBLADO", "DUBLADA", "DUBLADOS", "DUBLADAS"} {
 		if languageTagAfter(spaced, tag, floor) {
 			return true
 		}
@@ -455,7 +460,9 @@ func isMetadataBracket(rawInner, spacedInner string) bool {
 }
 
 func hasAudioOrLanguageTag(seg string) bool {
-	for _, w := range strings.Fields(seg) {
+	for _, w := range strings.FieldsFunc(seg, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '/' || r == '+' || r == ',' || r == '|'
+	}) {
 		u := strings.ToUpper(strings.Trim(w, "-"))
 		switch u {
 		case "AAC", "AC3", "EAC3", "DDP", "DDP5", "DTS", "DTS-HD", "TRUEHD", "MP3", "FLAC", "OPUS",
@@ -463,9 +470,19 @@ func hasAudioOrLanguageTag(seg string) bool {
 			return true
 		}
 		for _, l := range languages {
-			if u == l.token {
+			if strings.EqualFold(u, l.token) {
 				return true
 			}
+		}
+		for _, l := range subtitleTags {
+			if strings.EqualFold(u, l.token) {
+				return true
+			}
+		}
+	}
+	for _, l := range languages {
+		if strings.ContainsRune(l.token, ' ') && tokenIndex(seg, l.token) >= 0 {
+			return true
 		}
 	}
 	return false
@@ -1290,49 +1307,50 @@ func namesPack(rest string) bool {
 	return loc != nil && loc[0] == 0
 }
 
-// languageTagAfter reports whether the ASCII tag occurs in spaced after
-// offset floor, preceded by the start or a space and followed by the end, a
-// space or a hyphen.
+func isLangSep(b byte) bool {
+	return b == ' ' || b == '/' || b == '+' || b == ',' || b == '|'
+}
+
+// languageTagAfter reports whether the tag occurs in spaced after offset floor,
+// preceded by the start or a language separator and followed by the end, a
+// language separator or a hyphen.
 func languageTagAfter(spaced, tag string, floor int) bool {
-	for i := max(floor+1, 0); i+len(tag) <= len(spaced); i++ {
-		if i > 0 && spaced[i-1] != ' ' {
-			continue
-		}
-		end := i + len(tag)
-		if end < len(spaced) && spaced[end] != ' ' && spaced[end] != '-' {
-			continue
-		}
-		if strings.EqualFold(spaced[i:end], tag) {
-			return true
-		}
-	}
-	return false
+	audio, _ := languageTagRole(spaced, tag, floor, nil)
+	return audio
 }
 
 // subtitlePositions marks the offsets in spaced (after floor) of language
 // tags that declare subtitles rather than audio: a tag right before a SUB,
-// SUBS or SUBTITLES token ("ENG.SUBS"), and each tag in the run of tags
-// right after one ("Sub.ITA.ENG").
+// SUBS or SUBTITLES token ("ENG.SUBS", "PT.BR.SUBS", "PT-BR/ENG.SUBS"), and
+// each tag in the run of tags right after one ("Sub.ITA.ENG").
 func subtitlePositions(spaced string, floor int) map[int]bool {
 	type token struct {
-		at   int
-		text string
+		at         int
+		text       string
+		joinedPrev bool // preceded directly by '/', '+', ',', '|' without space
 	}
 	var toks []token
 	for i := max(floor+1, 0); i < len(spaced); {
-		if spaced[i] == ' ' {
+		joined := false
+		for i < len(spaced) && isLangSep(spaced[i]) {
+			if spaced[i] != ' ' {
+				joined = true
+			}
 			i++
-			continue
+		}
+		if i >= len(spaced) {
+			break
 		}
 		j := i
-		for j < len(spaced) && spaced[j] != ' ' {
+		for j < len(spaced) && !isLangSep(spaced[j]) {
 			j++
 		}
-		toks = append(toks, token{i, spaced[i:j]})
+		toks = append(toks, token{at: i, text: spaced[i:j], joinedPrev: joined && len(toks) > 0})
 		i = j
 	}
 	isSub := func(s string) bool {
-		switch strings.ToUpper(s) {
+		head, _, _ := strings.Cut(s, "-") // "SUBS-GRP": group follows the tag
+		switch strings.ToUpper(head) {
 		case "SUB", "SUBS", "SUBTITLE", "SUBTITLES", "SUBBED":
 			return true
 		}
@@ -1350,15 +1368,35 @@ func subtitlePositions(spaced string, floor int) map[int]bool {
 		}
 		return false
 	}
+	isTwoWordPT := func(a, b string) bool {
+		bHead, _, _ := strings.Cut(b, "-")
+		return strings.EqualFold(a, "PT") && (strings.EqualFold(bHead, "BR") || strings.EqualFold(bHead, "PT"))
+	}
 	out := map[int]bool{}
 	for k, t := range toks {
 		if !isSub(t.text) {
 			continue
 		}
-		if k > 0 && isTag(toks[k-1].text) {
-			out[toks[k-1].at] = true
+		if k > 0 {
+			switch {
+			case k >= 2 && isTwoWordPT(toks[k-2].text, toks[k-1].text):
+				out[toks[k-2].at] = true
+			case isTag(toks[k-1].text):
+				out[toks[k-1].at] = true
+				for p := k - 1; p > 0 && toks[p].joinedPrev && isTag(toks[p-1].text); p-- {
+					out[toks[p-1].at] = true
+				}
+			}
 		}
-		for n := k + 1; n < len(toks) && isTag(toks[n].text); n++ {
+		for n := k + 1; n < len(toks); n++ {
+			if n+1 < len(toks) && isTwoWordPT(toks[n].text, toks[n+1].text) {
+				out[toks[n].at] = true
+				n++
+				continue
+			}
+			if !isTag(toks[n].text) {
+				break
+			}
 			out[toks[n].at] = true
 		}
 	}
@@ -1369,11 +1407,11 @@ func subtitlePositions(spaced string, floor int) map[int]bool {
 // declaration, and whether it occurs in a subtitle position (subs).
 func languageTagRole(spaced, tag string, floor int, subs map[int]bool) (audio, sub bool) {
 	for i := max(floor+1, 0); i+len(tag) <= len(spaced); i++ {
-		if i > 0 && spaced[i-1] != ' ' {
+		if i > 0 && !isLangSep(spaced[i-1]) {
 			continue
 		}
 		end := i + len(tag)
-		if end < len(spaced) && spaced[end] != ' ' && spaced[end] != '-' {
+		if end < len(spaced) && !isLangSep(spaced[end]) && spaced[end] != '-' {
 			continue
 		}
 		if !strings.EqualFold(spaced[i:end], tag) {

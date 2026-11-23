@@ -1157,12 +1157,16 @@ func (t mkvTrack) stream(index int) (core.StreamInfo, bool, error) {
 		si.ContainerTrackID = int(t.number)
 	}
 	// libavformat reports the legacy ISO 639-2 Language element, which
-	// mkvmerge writes next to LanguageBCP47. A BCP 47 tag alone is mapped
-	// to the same three-letter form.
+	// mkvmerge writes next to LanguageBCP47. Keep a regional BCP 47 tag
+	// (pt-br, pt-pt, zh-tw, zh-cn) when it refines the legacy language so
+	// regional audio/subtitle preferences match; non-regional tags still
+	// follow legacy Language to match libavformat.
 	si.Language = normalizeLanguage(t.language)
-	if !t.hasLanguage && t.bcp47 != "" {
+	if t.bcp47 != "" {
 		if norm := normalizeBCP47Language(t.bcp47); norm != "" {
-			si.Language = norm
+			if !t.hasLanguage || (strings.Contains(norm, "-") && (si.Language == "" || sameLanguagePrimary(si.Language, norm))) {
+				si.Language = norm
+			}
 		}
 	}
 	var err error

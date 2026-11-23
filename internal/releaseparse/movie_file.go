@@ -102,7 +102,7 @@ func stripTrailingMovieAudioWord(title string) (string, bool) {
 		}
 	}
 	switch strings.ToUpper(tail) {
-	case "MULTI", "DUAL", "AUDIO", "DUB", "DUBBED", "DUBLADO", "SUB", "SUBBED", "VO", "OV", "ORIG", "ORIGINAL", "DL", "ML":
+	case "MULTI", "DUAL", "AUDIO", "DUB", "DUBBED", "DUBLADO", "DUBLADA", "DUBLADOS", "DUBLADAS", "SUB", "SUBBED", "VO", "OV", "ORIG", "ORIGINAL", "DL", "ML":
 		return rest, true
 	}
 	return title, false

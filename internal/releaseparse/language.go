@@ -25,7 +25,7 @@ const (
 var subtitleTags = []struct{ token, name string }{
 	{"VOSTFR", "french"}, {"VOST", "french"}, {"SUBFRENCH", "french"}, {"STFR", "french"},
 	{"VOSE", "spanish"}, {"SUBESP", "spanish"},
-	{"LEGENDADO", LanguagePortugueseBrazil},
+	{"LEGENDADO", LanguagePortugueseBrazil}, {"LEGENDADA", LanguagePortugueseBrazil}, {"LEGENDADOS", LanguagePortugueseBrazil}, {"LEGENDADAS", LanguagePortugueseBrazil},
 	{"SUBITA", "italian"},
 	{"ENGSUB", "english"}, {"ENGSUBS", "english"},
 }
@@ -77,6 +77,12 @@ func shortLanguageTags(spaced string, floor int, subs map[int]bool) (audio, subt
 		legacy := false
 		for _, tag := range languages {
 			if strings.EqualFold(code, tag.token) {
+				legacy = true
+				break
+			}
+			if strings.ContainsRune(tag.token, ' ') && at+len(tag.token) <= len(spaced) &&
+				strings.EqualFold(spaced[at:at+len(tag.token)], tag.token) &&
+				(at+len(tag.token) == len(spaced) || isLangSep(spaced[at+len(tag.token)]) || spaced[at+len(tag.token)] == '-') {
 				legacy = true
 				break
 			}

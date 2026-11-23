@@ -17,10 +17,10 @@ func (s *Service) DiscoveryCandidate(t *core.Title, r core.Release) string {
 }
 
 func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, explicit bool) string {
-	return sourceSuitabilityWithLanguages(r, t, p, explicit, nil)
+	return sourceSuitabilityWithLanguages(r, t, p, explicit, nil, nil)
 }
 
-func sourceSuitabilityWithLanguages(r core.Release, t *core.Title, p core.QualityProfile, explicit bool, probedLangs []string) string {
+func sourceSuitabilityWithLanguages(r core.Release, t *core.Title, p core.QualityProfile, explicit bool, probedLangs []string, viewerLangs []string) string {
 	if nonVideoRelease(r, t, core.SearchRequest{}) {
 		return ReasonNotAVideoFile
 	}
@@ -51,8 +51,9 @@ func sourceSuitabilityWithLanguages(r core.Release, t *core.Title, p core.Qualit
 		return ""
 	}
 	want := append([]string(nil), p.PreferredLanguages...)
-	// A dub into the profile's own language or required/preferred release
-	// rules is what the profile asks for, not a mismatch.
+	// A dub into the viewer's own preferred audio languages, the profile's
+	// language, or required/preferred release rules is wanted, not a mismatch.
+	want = append(want, viewerLangs...)
 	if lang, _ := profileLanguageMode(p); lang != "" {
 		want = append(want, lang)
 	}

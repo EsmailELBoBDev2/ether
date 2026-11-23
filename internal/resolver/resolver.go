@@ -2219,13 +2219,13 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			reason = audioAbsentPolicyReason(policy, policyContext, langRel, policyResult)
 		} else {
 			videoOff, _ := s.transcodeSettingsFor(req.Client)
-			reason = s.rejectReason(rel, t, sreq, profile, rcfg, req.Client, exclude, preferred)
+			reason = s.rejectReasonFor(rel, t, sreq, profile, rcfg, req.Client, exclude, preferred, req.User)
 			if !videoOff && reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
 				// Only relax the codec gate for the explicitly selected source;
 				// every other policy and the final probed output decision still apply.
 				caps := req.Client
 				caps.VideoCodecs = append(slices.Clone(caps.VideoCodecs), rel.Info.VideoCodec)
-				reason = s.rejectReason(rel, t, sreq, profile, rcfg, caps, exclude, preferred)
+				reason = s.rejectReasonFor(rel, t, sreq, profile, rcfg, caps, exclude, preferred, req.User)
 			}
 			if strings.HasPrefix(reason, "audio is not in the profile's language (") {
 				clientRejected = true
@@ -2247,6 +2247,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			ct.Rejected = true
 			switch reason {
 			case ReasonAboveProfileMaxResolution, ReasonAboveClientMaxResolution, ReasonBelowProfileMinResolution, ReasonNeedsVideoTranscode, "dolby vision not allowed for client", "video codec unsupported by client", "quality excluded by imported profile", "source recently failed health check; retrying later",
+				"dub audio does not match the original or preferred languages",
 				// Size ranges are per profile: a remux too large for a
 				// download or mobile profile still plays for others.
 				"size too small for runtime", "size too large for runtime":
@@ -2609,6 +2610,11 @@ func (s *Service) scoreRelease(rel core.Release, profile core.QualityProfile, ca
 // Hard client gates and the identity/absolute-size checks always apply.
 func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.SearchRequest,
 	profile core.QualityProfile, rcfg config.Resolver, caps core.ClientCaps, exclude map[string]bool, preferred bool) string {
+	return s.rejectReasonFor(rel, t, sreq, profile, rcfg, caps, exclude, preferred, nil)
+}
+
+func (s *Service) rejectReasonFor(rel core.Release, t *core.Title, sreq core.SearchRequest,
+	profile core.QualityProfile, rcfg config.Resolver, caps core.ClientCaps, exclude map[string]bool, preferred bool, user *core.User) string {
 	// Usenet passwords are supplied by NZB metadata and validated by the engine.
 	if rel.Password && rel.Protocol == core.ProtocolTorrent {
 		return "passworded"
@@ -2639,7 +2645,11 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 	if nonVideoRelease(rel, t, sreq) {
 		return ReasonNotAVideoFile
 	}
-	if reason := sourceSuitabilityWithLanguages(rel, t, profile, preferred, s.probedAudioLanguagesFor(rel)); reason != "" {
+	var viewerLangs []string
+	if user != nil {
+		viewerLangs = user.AudioLanguages
+	}
+	if reason := sourceSuitabilityWithLanguages(rel, t, profile, preferred, s.probedAudioLanguagesFor(rel), viewerLangs); reason != "" {
 		return reason
 	}
 	// Samples ("...Sample.mkv", "-sample" parts).

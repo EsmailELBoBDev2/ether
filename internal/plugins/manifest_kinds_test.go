@@ -375,6 +375,12 @@ func TestContentManifestRules(t *testing.T) {
 		{"push refresh", func(m *Manifest) {
 			kind(m).Sync = KindSyncDecl{Mode: KindSyncPush, Refresh: "1h"}
 		}, "sync.refresh"},
+		{"pull sync undo", func(m *Manifest) {
+			kind(m).Sync = KindSyncDecl{Mode: KindSyncPull, Undo: KindSyncUndoIDs}
+		}, "sync.undo"},
+		{"bad sync undo", func(m *Manifest) {
+			kind(m).Sync = KindSyncDecl{Mode: KindSyncPush, Undo: "none"}
+		}, "sync.undo"},
 		{"sync without provider", func(m *Manifest) {
 			m.Ether.Capabilities = []Capability{CapKindResolver}
 		}, "sync.mode"},

@@ -1043,12 +1043,23 @@ const (
 	KindSyncPush = "push"
 )
 
+// Kind sync undo modes for push-synced kinds (#766).
+//   - "snapshots" (default when omitted): journal previous copies of modified
+//     items so undo restores them; unchanged items are never snapshotted.
+//   - "ids": journal only created and touched item IDs without reading item
+//     snapshots; undo deletes only items the batch created.
+const (
+	KindSyncUndoSnapshots = "snapshots"
+	KindSyncUndoIDs       = "ids"
+)
+
 // KindSyncDecl is how a kind's items reach Ether's store. Mode is empty
 // only for a resolver-only kind, which owns no item sync; a catalog
 // provider must pick pull or push.
 type KindSyncDecl struct {
 	Mode    string `json:"mode"`              // pull|push
 	Refresh string `json:"refresh,omitempty"` // at least 15m, pull only
+	Undo    string `json:"undo,omitempty"`    // snapshots|ids, push only
 }
 
 // KindCacheDecl is the per-library blob cache budget (§5.4).

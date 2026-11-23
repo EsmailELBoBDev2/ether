@@ -519,6 +519,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	mgr.SetKindBackends(plugins.KindBackends{
 		KindUpsert:                 itemsSvc.KindUpsert,
 		KindUpsertStats:            itemsSvc.KindUpsertWithStats,
+		KindUpsertUndo:             itemsSvc.KindUpsertWithUndo,
 		KindDelete:                 itemsSvc.KindDelete,
 		KindItems:                  itemsSvc.KindItems,
 		KindItemsByID:              itemsSvc.KindItemsByID,

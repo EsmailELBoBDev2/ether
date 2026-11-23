@@ -505,10 +505,17 @@ const (
 	KindSyncPush = "push"
 )
 
+// Kind sync undo modes for push-synced kinds.
+const (
+	KindSyncUndoSnapshots = "snapshots"
+	KindSyncUndoIDs       = "ids"
+)
+
 // KindSyncDecl is how a kind's items reach Ether's store.
 type KindSyncDecl struct {
 	Mode    string `json:"mode"` // pull|push
 	Refresh string `json:"refresh,omitempty"`
+	Undo    string `json:"undo,omitempty"` // snapshots|ids, push only
 }
 
 // KindCacheDecl is the per-library blob cache budget; 0 means server default.

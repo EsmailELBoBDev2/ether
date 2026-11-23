@@ -548,6 +548,26 @@ func (s *Service) KindUpsertWithStats(ctx context.Context, pluginID, kindKey str
 	}, err
 }
 
+// KindUpsertWithUndo is KindUpsertWithStats plus the committed undo journal
+// payload (#766): newly added IDs, content-changed existing IDs, and (only
+// when snapshotPrevious is true) pre-write copies of modified items. Unchanged
+// items with matching content hashes are never snapshotted.
+func (s *Service) KindUpsertWithUndo(ctx context.Context, pluginID, kindKey string, items []core.KindItem, snapshotPrevious bool) (plugins.KindUpsertUndo, error) {
+	mu := s.kindLock(pluginID, kindKey)
+	mu.Lock()
+	defer mu.Unlock()
+	stats, undo, err := s.upsertItemsWithUndoLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true, true, false, true, snapshotPrevious)
+	return plugins.KindUpsertUndo{
+		Result: plugins.KindUpsertResult{
+			Accepted: stats.Accepted, Added: stats.Added,
+			Updated: stats.Updated, Unchanged: stats.Unchanged,
+		},
+		AddedIDs:   undo.addedIDs,
+		UpdatedIDs: undo.updatedIDs,
+		Previous:   undo.previous,
+	}, err
+}
+
 // UpsertItems validates and writes a batch of KindItems for (pluginID,
 // kindKey), maintaining tallies, typed EAV fields, art and FTS. The batch
 // commits in bounded chunks under the per-kind lock (#646).
@@ -607,13 +627,24 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 	return stats.Accepted, err
 }
 
+type upsertUndoCapture struct {
+	addedIDs   []string
+	updatedIDs []string
+	previous   []core.KindItem
+}
+
 func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, markOK, notifyStats, pin bool) (UpsertStats, error) {
+	stats, _, err := s.upsertItemsWithUndoLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen, markOK, notifyStats, pin, false, false)
+	return stats, err
+}
+
+func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, markOK, notifyStats, pin, captureUndo, snapshotPrevious bool) (UpsertStats, upsertUndoCapture, error) {
 	kind, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
-		return UpsertStats{}, err
+		return UpsertStats{}, upsertUndoCapture{}, err
 	}
 	if len(items) == 0 {
-		return UpsertStats{}, nil
+		return UpsertStats{}, upsertUndoCapture{}, nil
 	}
 
 	// Track levels in the incoming batch so parent levels within the same
@@ -638,7 +669,7 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 	}
 	dbParentLevels, err := s.lookupLevelsByExternalIDs(ctx, pluginID, kindKey, parentIDs)
 	if err != nil {
-		return UpsertStats{}, err
+		return UpsertStats{}, upsertUndoCapture{}, err
 	}
 
 	// Validate every item and deduplicate by ID (last occurrence in batch wins).
@@ -656,7 +687,7 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 		}
 		v, err := ValidateItem(kind.Decl, it, parentLevel)
 		if err != nil {
-			return UpsertStats{}, err
+			return UpsertStats{}, upsertUndoCapture{}, err
 		}
 		v.Item.Ref = core.NewItemRef(pluginID, kindKey, v.Item.ID)
 		totalDroppedFields += v.DroppedFields
@@ -680,7 +711,7 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 	for i, v := range validated {
 		p, err := prepareUpsertItem(pluginID, kindKey, kind.DeclHash, v)
 		if err != nil {
-			return UpsertStats{}, err
+			return UpsertStats{}, upsertUndoCapture{}, err
 		}
 		prepared[i] = p
 	}
@@ -690,26 +721,32 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 		seenAt = nowUnix
 	}
 	stats := UpsertStats{Accepted: len(items)}
+	var undo upsertUndoCapture
 	var totalItems int64
 	for start := 0; start < len(prepared); start += upsertChunkSize {
 		if err := ctx.Err(); err != nil {
-			return stats, err
+			return stats, undo, err
 		}
 		if start > 0 {
 			if err := store.WaitWALBudget(ctx, s.db); err != nil {
-				return stats, err
+				return stats, undo, err
 			}
 		}
 		end := min(start+upsertChunkSize, len(prepared))
-		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK, pin)
+		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK, pin, captureUndo, snapshotPrevious)
 		if err != nil {
 			// The failed chunk rolled back; only earlier committed
 			// chunks are counted.
-			return stats, err
+			return stats, undo, err
 		}
 		stats.Added += res.added
 		stats.Updated += res.updated
 		stats.Unchanged += res.unchanged
+		if captureUndo {
+			undo.addedIDs = append(undo.addedIDs, res.addedIDs...)
+			undo.updatedIDs = append(undo.updatedIDs, res.updatedIDs...)
+			undo.previous = append(undo.previous, res.previous...)
+		}
 		if res.totalItems > 0 {
 			totalItems = res.totalItems
 		}
@@ -717,7 +754,7 @@ func (s *Service) upsertItemsWithStatsLocked(ctx context.Context, pluginID, kind
 	if notifyStats && totalItems > 0 {
 		s.noteLibraryItems(kind.LibraryID, totalItems, false)
 	}
-	return stats, nil
+	return stats, undo, nil
 }
 
 func applyMigration3SQLite(ctx context.Context, tx *sql.Tx) error {

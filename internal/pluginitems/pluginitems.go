@@ -849,6 +849,7 @@ func (s *Service) KindBackends() plugins.KindBackends {
 	return plugins.KindBackends{
 		KindUpsert:      s.KindUpsert,
 		KindUpsertStats: s.KindUpsertWithStats,
+		KindUpsertUndo:  s.KindUpsertWithUndo,
 		KindDelete:      s.KindDelete,
 		KindItems:       s.KindItems,
 		KindItemsByID:   s.KindItemsByID,

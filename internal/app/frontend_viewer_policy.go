@@ -57,6 +57,17 @@ func (s surfaceViewerPolicy) ConfirmPlayback(ctx context.Context, u *core.User, 
 	return s.app.safety.ConfirmPlayback(ctx, u, remote, now)
 }
 
+func (s surfaceViewerPolicy) DownloadTranscodingDisabled(u *core.User) bool {
+	return s.app != nil && s.app.safety != nil && s.app.safety.DownloadTranscodingDisabled(u)
+}
+
+func (s surfaceViewerPolicy) DownloadsPerDay(u *core.User) int {
+	if s.app == nil || s.app.safety == nil {
+		return 0
+	}
+	return s.app.safety.DownloadsPerDay(u)
+}
+
 func (s surfaceViewerPolicy) VideoTranscodingDisabled(u *core.User) bool {
 	return s.app != nil && s.app.safety != nil && s.app.safety.VideoTranscodingDisabled(u)
 }

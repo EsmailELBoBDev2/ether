@@ -1358,6 +1358,11 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, 
 		i.host.Log.Warn("PlaybackInfo failed", "protocol", i.protocol, "stage", stage, "err", err)
 	}
 	if i.protocol != "jellyfin" || errors.Is(err, frontend.ErrSessionBusy) || errors.Is(err, frontend.ErrTranscodeCapacity) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
+		if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+			// Emby and the pass-through cases get the viewer's own wording too.
+			http.Error(w, frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v), http.StatusUnprocessableEntity)
+			return
+		}
 		streamError(i.protocol, w, err)
 		return
 	}

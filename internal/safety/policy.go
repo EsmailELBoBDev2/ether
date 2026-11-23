@@ -40,6 +40,13 @@ type Policy struct {
 	// VideoTranscodingDisabled plays this viewer's video only as it is
 	// (direct play or remux); the server-wide switch still applies when set.
 	VideoTranscodingDisabled bool `json:"videoTranscodingDisabled,omitempty"`
+	// DownloadTranscodingDisabled is the same rule for offline downloads only:
+	// a download is made from a release that needs no video re-encode, or not
+	// at all. It is independent of VideoTranscodingDisabled.
+	DownloadTranscodingDisabled bool `json:"downloadTranscodingDisabled,omitempty"`
+	// DownloadsPerDay caps how many titles this viewer may queue for download
+	// in one UTC day. 0 is no limit.
+	DownloadsPerDay int `json:"downloadsPerDay,omitempty"`
 	// AllowedHours is empty for any time, otherwise hours 0..23 in Timezone.
 	AllowedHours []int  `json:"allowedHours"`
 	Timezone     string `json:"timezone"`
@@ -168,6 +175,9 @@ func (p Policy) Validate() error {
 	}
 	if p.MaxBitrateKbps < 0 {
 		return fmt.Errorf("invalid viewer or bitrate")
+	}
+	if p.DownloadsPerDay < 0 || p.DownloadsPerDay > 1000 {
+		return fmt.Errorf("downloads per day must be 0..1000")
 	}
 	for _, h := range p.AllowedHours {
 		if h < 0 || h > 23 {
@@ -508,6 +518,21 @@ func (s *Service) UserPolicy(u *core.User) *core.User {
 	return &out
 }
 func (s *Service) BitrateLimit(u *core.User) int { return s.ForUser(u).MaxBitrateKbps }
+
+// DownloadTranscodingDisabled reports the owner's per-viewer switch for
+// offline downloads.
+func (s *Service) DownloadTranscodingDisabled(u *core.User) bool {
+	return u != nil && s.ForUser(u).DownloadTranscodingDisabled
+}
+
+// DownloadsPerDay is the owner's daily download cap for u; 0 is no limit and
+// the owner is never limited.
+func (s *Service) DownloadsPerDay(u *core.User) int {
+	if u == nil || u.IsOwner {
+		return 0
+	}
+	return s.ForUser(u).DownloadsPerDay
+}
 
 // VideoTranscodingDisabled reports the owner's per-viewer switch.
 func (s *Service) VideoTranscodingDisabled(u *core.User) bool {

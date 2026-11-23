@@ -55,6 +55,12 @@ const (
 	MsgViewerVideoTranscodingOff = "This title would need converting to play on this device, and converting video is turned off for your account. Try another version or device, or ask the server owner."
 )
 
+// Wordings for a viewer's own download limits.
+const (
+	MsgViewerDownloadTranscodingOff = "This title would need converting to download at this quality, and converting downloads is turned off for your account. Try another quality, or ask the server owner."
+	MsgViewerDownloadLimit          = "You have reached your download limit for today. Try again tomorrow, or ask the server owner."
+)
+
 // VideoTranscodingOffMessage picks the wording for viewer. policy is the
 // host's viewer policy; one that cannot answer gets the server-wide wording.
 func VideoTranscodingOffMessage(policy any, viewer *core.User) string {

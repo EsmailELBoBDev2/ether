@@ -124,6 +124,12 @@ type Server struct {
 	titlesPtr     atomic.Pointer[titleCache]
 	homePtr       atomic.Pointer[homeCache]
 
+	// downloadTally counts the titles each viewer queued for download today
+	// (UTC), for the owner's per-viewer daily cap.
+	downloadTallyMu  sync.Mutex
+	downloadTallyDay string
+	downloadTally    map[int64]map[frontend.RatingKey]bool
+
 	activityMu       sync.Mutex
 	activities       map[string]model.Activity
 	emittedHubMu     sync.Mutex

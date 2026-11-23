@@ -36,6 +36,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
 	"github.com/braedonsaunders/ether/internal/httpclient"
+	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
@@ -167,6 +168,8 @@ type App struct {
 	proxyMu          sync.Mutex
 	pluginLiveTVMu   sync.Mutex
 	prowlarrMu       sync.Mutex
+	apiKeysMu        sync.Mutex
+	apiKeys          *identity.APIKeys
 	prowlarrState    string
 	prowlarrKept     bool
 	proxyGen         uint64

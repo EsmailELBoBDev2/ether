@@ -98,6 +98,8 @@ CREATE UNIQUE INDEX auth_users_one_owner ON auth_users(is_owner) WHERE is_owner=
 	// COLUMN has the same syntax on SQLite and PostgreSQL, and the
 	// logical-restore history reads it from this SQL.
 	store.Register("auth", 9, `ALTER TABLE auth_users RENAME COLUMN allowed_sections TO allowed_libraries;`)
+	// v0.3.19: MediaBrowser IsHidden policy persists on the viewer row.
+	store.Register("auth", 10, `ALTER TABLE auth_users ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;`)
 
 }
 
@@ -518,20 +520,20 @@ func HashToken(token string) string {
 }
 
 const userCols = `id, COALESCE(plex_id, 0), uuid, username, title, email, thumb, is_owner, is_home, restricted, active, origin,
-	plex_sections, stream_limit, max_content_rating, subtitle_languages, audio_languages, allowed_libraries, last_seen_at, CASE WHEN created_at>0 THEN created_at ELSE COALESCE((SELECT MIN(event_time) FROM (SELECT verified_at AS event_time FROM identity_links WHERE viewer_id=auth_users.id AND verified_at>0 UNION ALL SELECT created_at AS event_time FROM auth_tokens WHERE user_id=auth_users.id AND created_at>0 UNION ALL SELECT last_seen_at AS event_time WHERE last_seen_at>0) AS known_times),0) END, updated_at, COALESCE(owner_enabled, 1), COALESCE(plex_shared, 1), plex_id`
+	plex_sections, stream_limit, max_content_rating, subtitle_languages, audio_languages, allowed_libraries, last_seen_at, CASE WHEN created_at>0 THEN created_at ELSE COALESCE((SELECT MIN(event_time) FROM (SELECT verified_at AS event_time FROM identity_links WHERE viewer_id=auth_users.id AND verified_at>0 UNION ALL SELECT created_at AS event_time FROM auth_tokens WHERE user_id=auth_users.id AND created_at>0 UNION ALL SELECT last_seen_at AS event_time WHERE last_seen_at>0) AS known_times),0) END, updated_at, COALESCE(owner_enabled, 1), COALESCE(plex_shared, 1), plex_id, COALESCE(hidden, 0)`
 
 func scanRow(sc interface{ Scan(...any) error }) (*row, error) {
 	var r row
-	var isOwner, home, restricted, active, ownerEnabled, plexShared int
+	var isOwner, home, restricted, active, ownerEnabled, plexShared, hidden int
 	var plexSecs, subs, auds, secs string
 	var lastSeen, created, updated int64
 	var rawPlexID sql.NullInt64
 	if err := sc.Scan(&r.ID, &r.PlexID, &r.UUID, &r.Username, &r.Title, &r.Email, &r.Thumb, &isOwner, &home,
-		&restricted, &active, &r.Origin, &plexSecs, &r.StreamLimit, &r.MaxContentRating, &subs, &auds, &secs, &lastSeen, &created, &updated, &ownerEnabled, &plexShared, &rawPlexID); err != nil {
+		&restricted, &active, &r.Origin, &plexSecs, &r.StreamLimit, &r.MaxContentRating, &subs, &auds, &secs, &lastSeen, &created, &updated, &ownerEnabled, &plexShared, &rawPlexID, &hidden); err != nil {
 		return nil, err
 	}
 	r.IsOwner, r.Home, r.Restricted, r.Active = isOwner == 1, home == 1, restricted == 1, active == 1
-	r.OwnerEnabled, r.PlexShared, r.HasPlex = ownerEnabled == 1, plexShared == 1, rawPlexID.Valid
+	r.OwnerEnabled, r.PlexShared, r.HasPlex, r.Hidden = ownerEnabled == 1, plexShared == 1, rawPlexID.Valid, hidden == 1
 	_ = json.Unmarshal([]byte(plexSecs), &r.PlexSections)
 	_ = json.Unmarshal([]byte(subs), &r.SubtitleLanguages)
 	_ = json.Unmarshal([]byte(auds), &r.AudioLanguages)
@@ -838,7 +840,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*core.User, e
 // request does not establish which branch accepted it.
 func (s *Service) Accept(ctx context.Context, token string) (*core.User, Acceptance, error) {
 	token = strings.TrimSpace(token)
-	if token == "" || core.IsGrantCredential(token) {
+	if token == "" || core.IsGrantCredential(token) || core.IsAPIKeyCredential(token) {
 		return nil, Acceptance{}, core.ErrUnauthorized
 	}
 	if strings.HasPrefix(token, delegationPrefix) {

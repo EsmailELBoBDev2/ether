@@ -133,6 +133,7 @@ type Deps struct {
 	UploadVelaWordmark func(context.Context, io.Reader) (VelaWordmark, error)
 	UploadVelaIcon     func(context.Context, io.Reader) (VelaAppIcon, error)
 	Frontends          FrontendAdmin
+	FrontendAPIKeys    FrontendAPIKeys
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal
 	ViewerAlerts       ViewerAlertPreferences
@@ -490,6 +491,8 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/frontends/{id}/settings", h.frontendSettings)
 	api("PUT /api/frontends/{id}/settings", h.frontendSettings)
 	api("PUT /api/frontends/{id}/enabled", h.frontendToggle)
+	api("GET /api/frontends/{id}/api-keys", h.frontendAPIKeys)
+	api("DELETE /api/frontends/{id}/api-keys/{keyId}", h.frontendAPIKeyRevoke)
 	api("GET /api/poster-folders", h.posterFolders)
 	api("GET /api/posters/status", h.posterStatus)
 	api("POST /api/posters/clear", h.clearPosters)

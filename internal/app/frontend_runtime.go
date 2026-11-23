@@ -85,6 +85,10 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	apiKeys, err := a.apiKeyStore()
+	if err != nil {
+		return nil, err
+	}
 	login, err := identity.NewLoginLimiter(a.db, 15*time.Minute, 30, 8, nil)
 	if err != nil {
 		return nil, err
@@ -371,6 +375,10 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		if a.pluginsRT != nil && a.pluginsRT.kindResolver != nil {
 			kindStreams = a.pluginsRT.kindResolver
 		}
+		var viewerAdmin frontend.ViewerAdmin
+		if id == "jellyfin" || id == "emby" {
+			viewerAdmin = a.viewerAdmin(local, grants)
+		}
 		return frontend.Host{Support: a.support, IDs: ids.Codecs{Allocator: compact}, DirectProxy: egress.ProxyFunc(egress.CapExtras), MetadataHTTP: metadataHTTP, Experience: experience, KindStreams: kindStreams, LastPlayedSource: surfaceLastPlayedSource{experience: experience, state: a.state}, VersionHandles: versionHandles, SourceOffers: sourceOffers, Editions: surfaceEditions{app: a}, VirtualPaths: surfaceVirtualPaths{experience: experience, index: &pathIndex{}, stamp: func(v *core.Viewer) string {
 			if v == nil || a.catalog == nil || a.cfg == nil {
 				return ""
@@ -383,7 +391,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 				kindGen = a.pluginsRT.pluginitems.Generation()
 			}
 			return fmt.Sprintf("%d|%d|%d|%d|%d|%s|%v", a.catalog.WriteGeneration(), a.cfg.Generation(), libGen, kindGen, v.ID, v.MaxContentRating, v.AllowedLibraries)
-		}, enabled: func() bool { _, ok := r.registry.Instance("webdav"); return ok }, base: func(ctx context.Context, req *http.Request) (string, error) { return r.surfaceURL(ctx, "webdav", req) }}, ViewerCapabilities: a.viewerCapabilities(local, experience), ViewerPolicy: surfaceViewerPolicy{app: a}, ImageGrants: imageGrants, Artwork: artwork, ExtraStreams: extraPlay, Themes: a.extras, ThemeTitle: a.themeTitle, Cinema: cinema, Prerolls: prerollIntros, Subtitles: subtitleCatalog, Preferences: identity.NewPreferences(a.db, id), TrackPreferences: surfaceTrackPreferences{app: a}, LiveTV: surfaceLiveTV{app: a, surface: string(id), channelArtwork: channelArtwork, programmeArtwork: programmeArtwork, artwork: artwork}, LibraryLive: surfaceLibraryLive{app: a, surface: string(id)}, LiveEvents: surfaceLiveEvents{app: a}, LiveEventLink: surfaceLiveEventLink{app: a}, LiveEventTicker: surfaceLiveEventTicker{app: a}, Screens: surfaceScreens{app: a, surface: string(id)}, Sessions: scorecardSessions(a, sessions.BindSurface(r.broker, id, sessionPolicy(id))), LazyStreams: lazy, LANStreams: lanStreams, Capabilities: surfaceCapabilities{app: a, surface: id, policy: frontendHostPolicy(id)}, Identity: surfaceIdentity{app: a, policy: frontendHostPolicy(id), settings: settings, hostConfig: hostConfig, surface: id, users: a.users, resolver: resolver, local: local, grants: grants, quick: quick, login: login, poll: poll, times: times}, Events: sessions.BindEvents(r.events, id), WatchRefresh: watchRefresh, HomeInvalidation: homeInvalidation, Tickets: tickets, WatchParty: parties, Images: frontendImages{source: a.images}, RemoteUploadCap: a.remoteUploadCap, Log: a.log.With("frontend", id), ClientSeen: func(deviceID string) { a.frontendClients.observe(id, deviceID) }, RemoteClientSeen: func(address string) {
+		}, enabled: func() bool { _, ok := r.registry.Instance("webdav"); return ok }, base: func(ctx context.Context, req *http.Request) (string, error) { return r.surfaceURL(ctx, "webdav", req) }}, ViewerCapabilities: a.viewerCapabilities(local, experience), ViewerPolicy: surfaceViewerPolicy{app: a}, ViewerAdmin: viewerAdmin, ImageGrants: imageGrants, Artwork: artwork, ExtraStreams: extraPlay, Themes: a.extras, ThemeTitle: a.themeTitle, Cinema: cinema, Prerolls: prerollIntros, Subtitles: subtitleCatalog, Preferences: identity.NewPreferences(a.db, id), TrackPreferences: surfaceTrackPreferences{app: a}, LiveTV: surfaceLiveTV{app: a, surface: string(id), channelArtwork: channelArtwork, programmeArtwork: programmeArtwork, artwork: artwork}, LibraryLive: surfaceLibraryLive{app: a, surface: string(id)}, LiveEvents: surfaceLiveEvents{app: a}, LiveEventLink: surfaceLiveEventLink{app: a}, LiveEventTicker: surfaceLiveEventTicker{app: a}, Screens: surfaceScreens{app: a, surface: string(id)}, Sessions: scorecardSessions(a, sessions.BindSurface(r.broker, id, sessionPolicy(id))), LazyStreams: lazy, LANStreams: lanStreams, Capabilities: surfaceCapabilities{app: a, surface: id, policy: frontendHostPolicy(id)}, Identity: surfaceIdentity{app: a, policy: frontendHostPolicy(id), settings: settings, hostConfig: hostConfig, surface: id, users: a.users, resolver: resolver, local: local, grants: grants, apiKeys: apiKeys, quick: quick, login: login, poll: poll, times: times}, Events: sessions.BindEvents(r.events, id), WatchRefresh: watchRefresh, HomeInvalidation: homeInvalidation, Tickets: tickets, WatchParty: parties, Images: frontendImages{source: a.images}, RemoteUploadCap: a.remoteUploadCap, Log: a.log.With("frontend", id), ClientSeen: func(deviceID string) { a.frontendClients.observe(id, deviceID) }, RemoteClientSeen: func(address string) {
 			if a.registrar != nil {
 				a.registrar.ObserveRemoteClient(address)
 			}
@@ -400,6 +408,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 			}
 			if grants != nil {
 				f.Grants = grants.Generation()
+			}
+			if apiKeys != nil {
+				f.Grants ^= apiKeys.Generation()
 			}
 			return f
 		}, Config: settings, HostConfig: hostConfig, Now: parityClock(), MetadataLanguage: func() string {

@@ -774,6 +774,22 @@ export function createFakeServer(opts: FakeOptions = {}) {
     favoritesMirror: new Map<number, boolean>(),
     dlnaGuests: [] as Viewer[],
     addedViewers: [] as Viewer[],
+    frontendApiKeys: {
+      jellyfin: [
+        {
+          id: 1,
+          appName: "Wizarr",
+          createdAt: "2026-11-18T14:20:00Z",
+          lastUsed: "2026-11-22T17:45:00Z",
+        },
+        {
+          id: 2,
+          appName: "Jellyseerr",
+          createdAt: "2026-11-20T09:10:00Z",
+        },
+      ],
+      emby: [],
+    } as Record<string, { id: number; appName: string; createdAt: string; lastUsed?: string }[]>,
     collections: [] as CollectionSpec[],
     overrides: new Map<number, TasteOverride[]>(),
     layout: {
@@ -4751,6 +4767,23 @@ export function createFakeServer(opts: FakeOptions = {}) {
         entry.enabled = (body as { enabled: boolean }).enabled;
         return json({ ok: true });
       }
+      if (action === "api-keys" && method === "GET" && (id === "jellyfin" || id === "emby")) {
+        return json(state.frontendApiKeys[id] ?? []);
+      }
+    }
+    if (
+      seg[0] === "frontends" &&
+      seg.length === 4 &&
+      seg[2] === "api-keys" &&
+      method === "DELETE" &&
+      (seg[1] === "jellyfin" || seg[1] === "emby")
+    ) {
+      const keyId = Number(seg[3]);
+      const list = state.frontendApiKeys[seg[1]] ?? [];
+      const idx = list.findIndex((k) => k.id === keyId);
+      if (idx < 0) return err(404, "not_found", "API key not found");
+      list.splice(idx, 1);
+      return json({ ok: true });
     }
 
     // Static routes

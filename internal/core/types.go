@@ -457,15 +457,17 @@ type User struct {
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
 	// Delegated marks short-lived server credentials; these never grant owner access.
-	Delegated bool   `json:"-"`
-	ID        int64  `json:"id"` // local id
-	PlexID    int64  `json:"plexId"`
-	UUID      string `json:"uuid,omitempty"`
-	Username  string `json:"username"`
-	Title     string `json:"title"` // display name
-	Email     string `json:"email,omitempty"`
-	Thumb     string `json:"thumb,omitempty"`
-	IsOwner   bool   `json:"isOwner"`
+	Delegated bool `json:"-"`
+	// Hidden hides the viewer from public sign-in user pickers (Jellyfin/Emby IsHidden).
+	Hidden   bool   `json:"-"`
+	ID       int64  `json:"id"` // local id
+	PlexID   int64  `json:"plexId"`
+	UUID     string `json:"uuid,omitempty"`
+	Username string `json:"username"`
+	Title    string `json:"title"` // display name
+	Email    string `json:"email,omitempty"`
+	Thumb    string `json:"thumb,omitempty"`
+	IsOwner  bool   `json:"isOwner"`
 
 	StreamLimit       int         `json:"streamLimit"`       // 0 = server default
 	MaxContentRating  string      `json:"maxContentRating"`  // "" = unrestricted, e.g. "PG-13", "TV-14"

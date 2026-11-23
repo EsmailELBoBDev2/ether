@@ -1,3 +1,4 @@
+import { ConfirmRoot } from "@braedonsaunders/appkit-ui";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1019,5 +1020,48 @@ describe("Apps connection hub", () => {
         "Listening on dedicated port 8098. /vela is turned off on Ether's main port.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("lists and revokes Jellyfin API keys on Apps › Jellyfin", async () => {
+    const keys = [
+      {
+        id: 7,
+        appName: "Wizarr",
+        createdAt: "2026-11-18T14:20:00Z",
+        lastUsed: "2026-11-22T17:45:00Z",
+      },
+      {
+        id: 8,
+        appName: "Jellyseerr",
+        createdAt: "2026-11-20T09:10:00Z",
+      },
+    ];
+    let revokedId: number | undefined;
+    vi.mocked(apiFetch).mockImplementation(async (path, options) => {
+      if (path === "/frontends") return [row("jellyfin", "Jellyfin", true)];
+      if (path === "/config") return { server: { port: 32400 } };
+      if (path === "/frontends/jellyfin/settings") return { port: 8096 };
+      if (path === "/frontends/jellyfin/api-keys") return [...keys];
+      if (path === "/frontends/jellyfin/api-keys/7" && options?.method === "DELETE") {
+        revokedId = 7;
+        return { ok: true };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderApps("/apps/jellyfin");
+    render(<ConfirmRoot />);
+    expect(await screen.findByText("Wizarr")).toBeInTheDocument();
+    expect(screen.getByText("Jellyseerr")).toBeInTheDocument();
+    expect(screen.getByText(/Last used Never/)).toBeInTheDocument();
+
+    const revokeButtons = screen.getAllByRole("button", { name: "Revoke" });
+    fireEvent.click(revokeButtons[0]!);
+    const dialog = await screen.findByRole("dialog", { name: "Revoke this API key?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+
+    await waitFor(() => expect(revokedId).toBe(7));
+    await waitFor(() => expect(screen.queryByText("Wizarr")).not.toBeInTheDocument());
+    expect(screen.getByText("Jellyseerr")).toBeInTheDocument();
   });
 });

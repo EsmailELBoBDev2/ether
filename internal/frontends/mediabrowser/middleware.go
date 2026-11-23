@@ -113,12 +113,22 @@ func (i *instance) routeMiddleware(rt route.Route, next http.Handler) http.Handl
 	return i.requestLog(rt, i.authenticatedRoute(rt, next))
 }
 
+func isSensitiveAuthRoute(pattern string) bool {
+	switch pattern {
+	case "/Auth/Keys", "/Auth/Keys/{key}", "/Auth/Keys/{key}/Delete",
+		"/Users/New", "/Users/{userId}/Password", "/Users/Password":
+		return true
+	}
+	return false
+}
+
 func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Handler {
 	// Never sample hand-off request or response secrets in support recordings.
 	if rt.Pattern == "/Ether/WebSignIn" {
 		return next
 	}
-	if i.pages != nil && i.host.PageFreshness != nil {
+	sensitive := isSensitiveAuthRoute(rt.Pattern)
+	if !sensitive && i.pages != nil && i.host.PageFreshness != nil {
 		original := next
 		cached := i.pages.wrap(next, i.host.PageFreshness)
 		next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,16 +141,18 @@ func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Ha
 			cached.ServeHTTP(w, r)
 		})
 	}
-	next = support.Wrap(i.host.Support, string(i.protocol), func(r *http.Request) (*frontend.Viewer, frontend.Device) {
-		if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); !ok {
-			return nil, frontend.Device{}
-		}
-		v, _, err := i.viewer(r)
-		if err != nil {
-			return nil, frontend.Device{}
-		}
-		return v, device(r)
-	}, func(path string) string { return path }, next)
+	if !sensitive {
+		next = support.Wrap(i.host.Support, string(i.protocol), func(r *http.Request) (*frontend.Viewer, frontend.Device) {
+			if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); !ok {
+				return nil, frontend.Device{}
+			}
+			v, _, err := i.viewer(r)
+			if err != nil {
+				return nil, frontend.Device{}
+			}
+			return v, device(r)
+		}, func(path string) string { return path }, next)
+	}
 	if publicRoutesAllowlist[rt] {
 		return next
 	}
@@ -172,13 +184,15 @@ func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Ha
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token}))
+		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token, apiKey: frontend.IsAPIKeyCredential(token)}))
 		if _, _, err := i.viewer(r); err == nil {
 			if i.host.ClientSeen != nil {
 				i.host.ClientSeen(device(r).ID)
 			}
-			if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); ok {
-				support.Seen(r, i.host.Support, string(i.protocol), v, device(r))
+			if !sensitive {
+				if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); ok {
+					support.Seen(r, i.host.Support, string(i.protocol), v, device(r))
+				}
 			}
 		}
 		next.ServeHTTP(w, r)

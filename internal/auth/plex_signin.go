@@ -35,7 +35,7 @@ func (s *Service) AuthenticatePlexAccount(ctx context.Context, token string) (*c
 		return nil, 0, core.ErrUnauthorized
 	}
 	token = strings.TrimSpace(token)
-	if token == "" || core.IsGrantCredential(token) || strings.HasPrefix(token, delegationPrefix) || IsOwnerSession(token) {
+	if token == "" || core.IsGrantCredential(token) || core.IsAPIKeyCredential(token) || strings.HasPrefix(token, delegationPrefix) || IsOwnerSession(token) {
 		return nil, 0, core.ErrUnauthorized
 	}
 	h := HashToken(token)

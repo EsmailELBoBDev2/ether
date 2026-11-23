@@ -835,8 +835,10 @@ func (w flushWriter) Write(p []byte) (int, error) {
 	// not consume the next write's budget or poison a reused connection.
 	rc := http.NewResponseController(w.ResponseWriter)
 	timeout := w.timeout
-	if timeout <= 0 {
-		timeout = core.PausedSessionRetention
+	// The manager's default write timeout is the built-in pause retention;
+	// follow the owner's setting when that default is what was passed.
+	if timeout <= 0 || timeout == core.PausedSessionRetention {
+		timeout = core.PausedRetention()
 	}
 	arm := func() error {
 		err := rc.SetWriteDeadline(time.Now().Add(timeout))

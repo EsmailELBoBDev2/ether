@@ -708,6 +708,7 @@ func (a *App) applyConfig(c config.Config) {
 		a.transcoder.UpdateConfig(c.Transcode)
 	}
 	state.SetResumeAfter(c.Server.ResumeAfterSeconds)
+	core.SetPausedSessionRetention(time.Duration(c.Server.PausedStreamMinutes) * time.Minute)
 	if a.uploadBudget != nil {
 		a.uploadBudget.OnSessionsChanged()
 	}

@@ -196,6 +196,9 @@ type Server struct {
 	// their position is kept as a resume point. 0 keeps the default, 5% of
 	// the title.
 	ResumeAfterSeconds int `json:"resumeAfterSeconds,omitempty"`
+	// PausedStreamMinutes is how long a paused stream is kept before Ether
+	// closes it. 0 keeps the default, 30 minutes.
+	PausedStreamMinutes int `json:"pausedStreamMinutes,omitempty"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.

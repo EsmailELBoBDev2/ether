@@ -2621,6 +2621,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 
 	var pageBuckets []FacetBucket
 	var pagePersonIDs []int64
+	var pageRepRefs []string
 	more := false
 
 	switch {
@@ -2639,7 +2640,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			}
 			tallyArgs = append(tallyArgs, limit+1, offset)
 			rows, err := s.db.QueryContext(ctx,
-				`SELECT v_int, label, cnt
+				`SELECT v_int, label, cnt, rep_ref
 				 FROM plugin_item_person_tally
 				 WHERE `+tallyWhere.String()+`
 				 ORDER BY `+orderClause+`
@@ -2649,9 +2650,9 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			}
 			for rows.Next() {
 				var pid int64
-				var label string
+				var label, repRef string
 				var cnt int
-				if err := rows.Scan(&pid, &label, &cnt); err != nil {
+				if err := rows.Scan(&pid, &label, &cnt, &repRef); err != nil {
 					rows.Close()
 					return FacetCollectionsPage{}, err
 				}
@@ -2659,6 +2660,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 				if label != "" && cnt > 0 {
 					pageBuckets = append(pageBuckets, FacetBucket{ID: label, Label: label, Count: cnt})
 					pagePersonIDs = append(pagePersonIDs, pid)
+					pageRepRefs = append(pageRepRefs, repRef)
 				}
 			}
 			if err := rows.Err(); err != nil {
@@ -2669,6 +2671,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			if len(pageBuckets) > limit {
 				pageBuckets = pageBuckets[:limit]
 				pagePersonIDs = pagePersonIDs[:limit]
+				pageRepRefs = pageRepRefs[:limit]
 				more = true
 			}
 			break
@@ -2779,7 +2782,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			}
 			tallyArgs = append(tallyArgs, limit+1, offset)
 			rows, err := s.db.QueryContext(ctx,
-				`SELECT v_text, cnt
+				`SELECT v_text, cnt, rep_ref
 				 FROM plugin_item_field_tally
 				 WHERE `+tallyWhere.String()+`
 				 ORDER BY `+orderClause+`
@@ -2788,14 +2791,15 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 				return FacetCollectionsPage{}, err
 			}
 			for rows.Next() {
-				var val string
+				var val, repRef string
 				var cnt int
-				if err := rows.Scan(&val, &cnt); err != nil {
+				if err := rows.Scan(&val, &cnt, &repRef); err != nil {
 					rows.Close()
 					return FacetCollectionsPage{}, err
 				}
 				if val != "" && cnt > 0 {
 					pageBuckets = append(pageBuckets, FacetBucket{ID: val, Label: val, Count: cnt})
+					pageRepRefs = append(pageRepRefs, repRef)
 				}
 			}
 			if err := rows.Err(); err != nil {
@@ -2805,6 +2809,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			rows.Close()
 			if len(pageBuckets) > limit {
 				pageBuckets = pageBuckets[:limit]
+				pageRepRefs = pageRepRefs[:limit]
 				more = true
 			}
 			break
@@ -3039,20 +3044,61 @@ SELECT idx, (
 	}
 
 	var newest []*core.KindItem
-	switch {
-	case !isEnv && !isDateDecade && fieldType == "people":
-		newest, err = s.resolveNewestByPersonIDs(ctx, q.LibraryID, fieldKey, pagePersonIDs, pageBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
-	case !isEnv && !isDateDecade && (fieldType == "string" || fieldType == "strings" || fieldType == "enum" || fieldType == "bool"):
-		newest, err = s.resolveNewestByTextBuckets(ctx, q.LibraryID, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
-	case !isEnv && !isDateDecade && fieldType == "int":
-		newest, err = s.resolveNewestByIntBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
-	case !isEnv && !isDateDecade && fieldType == "float":
-		newest, err = s.resolveNewestByFloatBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
-	default:
-		newest, err = s.resolveNewestByPredicateBuckets(ctx, fieldKey, fieldTypes, pageBuckets, itemWhere, itemArgs)
-	}
-	if err != nil {
-		return FacetCollectionsPage{}, err
+	if len(pageRepRefs) == len(pageBuckets) {
+		byRef, err := s.resolveItemsByRefs(ctx, pageRepRefs, true)
+		if err != nil {
+			return FacetCollectionsPage{}, err
+		}
+		newest = make([]*core.KindItem, len(pageBuckets))
+		var missingIdxs []int
+		for i, ref := range pageRepRefs {
+			if it, ok := byRef[ref]; ok {
+				cp := it
+				newest[i] = &cp
+			} else {
+				missingIdxs = append(missingIdxs, i)
+			}
+		}
+		if len(missingIdxs) > 0 {
+			missBuckets := make([]FacetBucket, len(missingIdxs))
+			var missPIDs []int64
+			for j, idx := range missingIdxs {
+				missBuckets[j] = pageBuckets[idx]
+				if len(pagePersonIDs) == len(pageBuckets) {
+					missPIDs = append(missPIDs, pagePersonIDs[idx])
+				}
+			}
+			var filled []*core.KindItem
+			if !isEnv && !isDateDecade && fieldType == "people" {
+				filled, err = s.resolveNewestByPersonIDs(ctx, q.LibraryID, fieldKey, missPIDs, missBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
+			} else {
+				filled, err = s.resolveNewestByTextBuckets(ctx, q.LibraryID, fieldKey, missBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
+			}
+			if err != nil {
+				return FacetCollectionsPage{}, err
+			}
+			for j, idx := range missingIdxs {
+				if j < len(filled) && filled[j] != nil {
+					newest[idx] = filled[j]
+				}
+			}
+		}
+	} else {
+		switch {
+		case !isEnv && !isDateDecade && fieldType == "people":
+			newest, err = s.resolveNewestByPersonIDs(ctx, q.LibraryID, fieldKey, pagePersonIDs, pageBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
+		case !isEnv && !isDateDecade && (fieldType == "string" || fieldType == "strings" || fieldType == "enum" || fieldType == "bool"):
+			newest, err = s.resolveNewestByTextBuckets(ctx, q.LibraryID, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
+		case !isEnv && !isDateDecade && fieldType == "int":
+			newest, err = s.resolveNewestByIntBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
+		case !isEnv && !isDateDecade && fieldType == "float":
+			newest, err = s.resolveNewestByFloatBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
+		default:
+			newest, err = s.resolveNewestByPredicateBuckets(ctx, fieldKey, fieldTypes, pageBuckets, itemWhere, itemArgs)
+		}
+		if err != nil {
+			return FacetCollectionsPage{}, err
+		}
 	}
 
 	out := make([]FacetCollection, len(pageBuckets))

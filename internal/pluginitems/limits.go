@@ -128,12 +128,15 @@ func ParseDeleteGuardError(raw string) *SyncDeleteGuard {
 }
 
 // IndexedFieldValue is one typed EAV row for plugin_item_fields (spec §2.3).
+// HasThumb is in-memory only and records whether a people-field credit carried
+// a validated portrait thumb URL, used to maintain plugin_item_person_tally.thumb_ref.
 type IndexedFieldValue struct {
-	Field string
-	Text  string
-	Fold  string
-	Int   int64
-	Real  float64
+	Field    string
+	Text     string
+	Fold     string
+	Int      int64
+	Real     float64
+	HasThumb bool
 }
 
 // ValidatedItem holds a cleaned KindItem plus its extracted indexed field rows
@@ -429,7 +432,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 		if len(objArr) > 256 {
 			return nil, nil, errors.New("people array has more than 256 entries")
 		}
-		seen := make(map[int64]bool, len(objArr))
+		seenIdx := make(map[int64]int, len(objArr))
 		out := make([]IndexedFieldValue, 0, len(objArr))
 		texts := make([]string, 0, len(objArr))
 		for _, p := range objArr {
@@ -437,14 +440,25 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 			if cleanName == "" || utf8.RuneCountInString(p.Name) > MaxFieldRunes || utf8.RuneCountInString(p.Role) > MaxFieldRunes {
 				return nil, nil, errors.New("person name must be non-empty and within 4000 runes")
 			}
-			if _, err := validatePersonThumb(p.Thumb); err != nil {
+			thumb, err := validatePersonThumb(p.Thumb)
+			if err != nil {
 				return nil, nil, err
 			}
 			texts = append(texts, cleanName)
 			pid := core.PluginPersonID(cleanName)
-			if pid > 0 && !seen[pid] {
-				seen[pid] = true
-				out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Fold: FoldFieldText(cleanName), Int: pid})
+			if pid > 0 {
+				if idx, ok := seenIdx[pid]; !ok {
+					seenIdx[pid] = len(out)
+					out = append(out, IndexedFieldValue{
+						Field:    f.Key,
+						Text:     cleanName,
+						Fold:     FoldFieldText(cleanName),
+						Int:      pid,
+						HasThumb: thumb != "",
+					})
+				} else if thumb != "" {
+					out[idx].HasThumb = true
+				}
 			}
 		}
 		return out, texts, nil

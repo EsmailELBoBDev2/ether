@@ -609,3 +609,145 @@ func TestKindCatalogMaybeExpandBoundsSlowFirstOpenAndContinuesInBackground(t *te
 		t.Fatalf("warm LibraryItems took %v, expected fast local read", time.Since(warmStart))
 	}
 }
+
+func TestKindCatalogMaybeExpandDoesNotReblockInFlightAndCoolsDownErrors(t *testing.T) {
+	h := newKindTestHarness(t, 0, nil)
+	ctx := context.Background()
+	const pluginID = "community.example.expandcooldown"
+
+	var calls atomic.Int32
+	var shouldFail atomic.Bool
+	shouldFail.Store(true)
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+
+	h.rt.mu.Lock()
+	h.rt.routes["/ether/v1/kinds/games/expand"] = func(_ plugins.Request) (plugins.Response, error) {
+		n := calls.Add(1)
+		started <- struct{}{}
+		if n == 1 {
+			<-release
+		}
+		if shouldFail.Load() {
+			return plugins.Response{Status: http.StatusInternalServerError}, nil
+		}
+		body, _ := json.Marshal(core.KindExpandResponse{
+			Items: []core.KindItem{{
+				ID:       "g-recovered",
+				Level:    "game",
+				Title:    "Recovered Game",
+				Playable: true,
+				Fields: map[string]json.RawMessage{
+					"voiceCast": json.RawMessage(`["Jordan Lee"]`),
+				},
+			}},
+		})
+		return plugins.Response{Status: http.StatusOK, Body: body}, nil
+	}
+	h.rt.mu.Unlock()
+
+	installStudioManifest(t, h.mgr, gamesExpandManifest(pluginID, map[string]any{
+		"facets":   []string{"voiceCast"},
+		"ttlHours": 24,
+	}), gamesExpandLocaleFiles())
+
+	var gameLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			gameLib = lib
+		}
+	}
+	if _, err := h.mgr.HostFor(pluginID).KindUpsert(ctx, "games", []core.KindItem{{
+		ID:       "g1",
+		Level:    "game",
+		Title:    "Original Game",
+		Playable: true,
+		Fields: map[string]json.RawMessage{
+			"voiceCast": json.RawMessage(`["Jordan Lee"]`),
+		},
+	}}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+	fp, err := h.catalog.FacetPeople(ctx, gameLib, "voiceCast", "name", "", 0, 10)
+	if err != nil || len(fp.Items) != 1 {
+		t.Fatalf("FacetPeople = %+v, err=%v", fp, err)
+	}
+	personID := fp.Items[0].PersonID
+	viewID := strconv.FormatInt(int64(gameLib.ID), 10)
+	exp := h.experienceFor(t, "vela")
+	viewer := h.users[1]
+
+	// 1. First open waits once (10ms) while the failing /expand job stays blocked.
+	restoreWait := adapters.SetFirstOpenWait(10 * time.Millisecond)
+	defer restoreWait()
+	restoreCooldown := adapters.SetExpansionErrorCooldown(15 * time.Minute)
+	defer restoreCooldown()
+
+	p1, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
+		Filter: core.Filter{Person: personID},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if !p1.Expanding || len(p1.Items) != 1 {
+		t.Fatalf("first open = %+v, want Expanding=true and 1 item", p1)
+	}
+	<-started
+
+	// 2. While the same job is still running past firstOpenWait, a subsequent
+	// open must return Expanding=true immediately without launching a second
+	// job or waiting for another firstOpenWait window.
+	p2, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
+		Filter: core.Filter{Person: personID},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("in-flight second open: %v", err)
+	}
+	if !p2.Expanding || calls.Load() != 1 {
+		t.Fatalf("in-flight second open: Expanding=%v calls=%d, want true and 1", p2.Expanding, calls.Load())
+	}
+
+	// 3. Release the failing job and wait for state='error' to persist.
+	close(release)
+	dedupKey := "games\x00voiceCast\x00" + strconv.FormatInt(personID, 10)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok, _ := h.items.GetFacetExpansion(ctx, pluginID, "games", "voiceCast", strconv.FormatInt(personID, 10))
+		if ok && rec.State == pluginitems.ExpansionStateError && !h.mgr.IsExpandJobRunning(pluginID, dedupKey) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 4. Within error cooldown, re-opening the same person must NOT re-launch
+	// /expand or stall even with a long firstOpenWait.
+	restoreWait()
+	defer adapters.SetFirstOpenWait(time.Minute)()
+	pCooldown, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
+		Filter: core.Filter{Person: personID},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("cooldown open: %v", err)
+	}
+	if pCooldown.Expanding || calls.Load() != 1 || len(pCooldown.Items) != 1 {
+		t.Fatalf("cooldown open: Expanding=%v calls=%d items=%d, want false, 1, 1", pCooldown.Expanding, calls.Load(), len(pCooldown.Items))
+	}
+
+	// 5. Once error cooldown has elapsed, the next open retries /expand,
+	// succeeds, and returns both items.
+	shouldFail.Store(false)
+	defer adapters.SetExpansionErrorCooldown(0)()
+	pRetry, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
+		Filter: core.Filter{Person: personID},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("post-cooldown retry: %v", err)
+	}
+	if pRetry.Expanding || calls.Load() != 2 || len(pRetry.Items) != 2 {
+		t.Fatalf("post-cooldown retry: Expanding=%v calls=%d items=%d, want false, 2, 2", pRetry.Expanding, calls.Load(), len(pRetry.Items))
+	}
+}

@@ -14,3 +14,11 @@ func SetFirstOpenWait(d time.Duration) (restore func()) {
 	firstOpenWait = d
 	return func() { firstOpenWait = prev }
 }
+
+// SetExpansionErrorCooldown overrides the failed-expansion cooldown for tests
+// and returns a function that restores the previous value.
+func SetExpansionErrorCooldown(d time.Duration) (restore func()) {
+	prev := expansionErrorCooldown
+	expansionErrorCooldown = d
+	return func() { expansionErrorCooldown = prev }
+}

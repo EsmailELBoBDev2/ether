@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 const (
@@ -37,6 +38,16 @@ func (e FacetExpansion) IsFresh(now time.Time, ttl time.Duration) bool {
 		return false
 	}
 	return now.Sub(e.FinishedAt) < ttl
+}
+
+// IsInErrorCooldown reports whether e recorded a failure within cooldown of
+// now, suppressing immediate re-launch and repeated first-open stalls for a
+// slice whose upstream expand route is failing.
+func (e FacetExpansion) IsInErrorCooldown(now time.Time, cooldown time.Duration) bool {
+	if e.State != ExpansionStateError || e.FinishedAt.IsZero() || cooldown <= 0 {
+		return false
+	}
+	return now.Sub(e.FinishedAt) < cooldown
 }
 
 // PersonFacetMatch identifies one (field, display name) credit for a synthetic
@@ -141,12 +152,50 @@ func (s *Service) LookupPersonFacetByName(ctx context.Context, libraryID core.Li
 		return 0, "", false, nil
 	}
 	trimmed := strings.TrimSpace(name)
+	if libTally, tErr := s.libraryTally(ctx, libraryID); tErr == nil && libTally.active {
+		if libTally.libTotal == 0 {
+			return 0, "", false, nil
+		}
+		if candPID := core.PluginPersonID(trimmed); core.IsPluginPersonID(candPID) {
+			err = s.db.QueryRowContext(ctx, `
+SELECT v_int, label
+FROM plugin_item_person_tally
+WHERE library_id = ? AND level = '' AND field = ? AND v_int = ?`,
+				int64(libraryID), field, candPID).Scan(&personID, &canonicalName)
+			if err == nil && core.IsPluginPersonID(personID) && canonicalName != "" {
+				return personID, canonicalName, true, nil
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, "", false, err
+			}
+		}
+		if folded := FoldFieldText(trimmed); folded != "" {
+			err = s.db.QueryRowContext(ctx, `
+SELECT v_int, label
+FROM plugin_item_person_tally
+WHERE library_id = ? AND level = '' AND field = ? AND label_fold = ?
+ORDER BY label_lower ASC, label ASC, v_int ASC
+LIMIT 1`, int64(libraryID), field, folded).Scan(&personID, &canonicalName)
+			if err == nil && core.IsPluginPersonID(personID) && canonicalName != "" {
+				return personID, canonicalName, true, nil
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, "", false, err
+			}
+		}
+		return 0, "", false, nil
+	}
+
+	libCheck := `i.library_id + 0 = ?`
+	if store.DialectOf(s.db) == store.Postgres {
+		libCheck = `i.library_id = ?`
+	}
 	err = s.db.QueryRowContext(ctx, `
 SELECT f.v_int, f.v_text
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id = ? AND f.field = ? AND f.v_text = ? AND f.v_int > 0
-LIMIT 1`, int64(libraryID), field, trimmed).Scan(&personID, &canonicalName)
+WHERE f.field = ? AND f.v_text = ? AND f.v_int > 0 AND `+libCheck+`
+LIMIT 1`, field, trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
 	if err == nil && core.IsPluginPersonID(personID) {
 		return personID, canonicalName, true, nil
 	}
@@ -161,8 +210,8 @@ LIMIT 1`, int64(libraryID), field, trimmed).Scan(&personID, &canonicalName)
 SELECT f.v_int, f.v_text
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id = ? AND f.field = ? AND f.v_fold = ? AND f.v_int > 0
-LIMIT 1`, int64(libraryID), field, folded).Scan(&personID, &canonicalName)
+WHERE f.field = ? AND f.v_fold = ? AND f.v_int > 0 AND `+libCheck+`
+LIMIT 1`, field, folded, int64(libraryID)).Scan(&personID, &canonicalName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", false, nil
 	}
@@ -182,6 +231,43 @@ func (s *Service) LookupPersonFacetsByID(ctx context.Context, libraryID core.Lib
 		return nil, nil
 	}
 	placeholders := make([]string, len(fields))
+	if libTally, tErr := s.libraryTally(ctx, libraryID); tErr == nil && libTally.active {
+		if libTally.libTotal == 0 {
+			return nil, nil
+		}
+		args := make([]any, 0, 2+len(fields))
+		args = append(args, int64(libraryID), personID)
+		for i, fk := range fields {
+			placeholders[i] = "?"
+			args = append(args, fk)
+		}
+		rows, err := s.db.QueryContext(ctx, `
+SELECT field, label
+FROM plugin_item_person_tally
+WHERE library_id = ? AND level = '' AND v_int = ? AND field IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY field ASC`, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []PersonFacetMatch
+		for rows.Next() {
+			var m PersonFacetMatch
+			if err := rows.Scan(&m.Field, &m.Name); err != nil {
+				return nil, err
+			}
+			m.Name = strings.TrimSpace(m.Name)
+			if m.Field != "" && m.Name != "" {
+				out = append(out, m)
+			}
+		}
+		return out, rows.Err()
+	}
+
+	libCheck := `i.library_id + 0 = ?`
+	if store.DialectOf(s.db) == store.Postgres {
+		libCheck = `i.library_id = ?`
+	}
 	args := make([]any, 0, 2+len(fields))
 	args = append(args, int64(libraryID), personID)
 	for i, fk := range fields {
@@ -192,7 +278,7 @@ func (s *Service) LookupPersonFacetsByID(ctx context.Context, libraryID core.Lib
 SELECT f.field, MIN(f.v_text)
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+strings.Join(placeholders, ",")+`) AND f.v_text <> ''
+WHERE `+libCheck+` AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+strings.Join(placeholders, ",")+`) AND f.v_text <> ''
 GROUP BY f.field
 ORDER BY f.field ASC`, args...)
 	if err != nil {

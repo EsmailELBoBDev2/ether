@@ -1662,7 +1662,7 @@ func (s *Service) reindexKindOneChunkLocked(ctx context.Context, isPG, hasFieldT
 	// transaction so the SQLite write gate is never held during reads, JSON
 	// unmarshaling, or diff computation — and unchanged chunks open no write tx.
 	rows, err := s.db.QueryContext(ctx, `
-SELECT item_ref, seq, library_id, level, title, fields
+SELECT item_ref, seq, library_id, level, title, fields, released, added_at, year
 FROM plugin_items
 WHERE plugin_id = ? AND kind_key = ? AND item_ref > ?
 ORDER BY item_ref ASC
@@ -1674,7 +1674,7 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	for rows.Next() {
 		var r reindexItemRow
 		var libID int64
-		if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.level, &r.title, &r.fieldsJSON); err != nil {
+		if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.level, &r.title, &r.fieldsJSON, &r.released, &r.addedAt, &r.year); err != nil {
 			rows.Close()
 			return 0, cursor, false, false, err
 		}
@@ -1711,16 +1711,16 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 		fieldInserts    []reindexFieldUpsert
 		fieldUpdates    []reindexFieldUpsert
 		ftsWrites       []reindexFTSWrite
-		fieldTallyLibs  map[core.LibraryID]map[fieldTallyKey]int64
+		fieldTallyLibs  map[core.LibraryID]map[fieldTallyKey]*fieldTallyChange
 		personTallyLibs map[core.LibraryID]map[personTallyKey]*personTallyChange
 	)
-	deltaFor := func(libID core.LibraryID) map[fieldTallyKey]int64 {
+	deltaFor := func(libID core.LibraryID) map[fieldTallyKey]*fieldTallyChange {
 		if fieldTallyLibs == nil {
-			fieldTallyLibs = map[core.LibraryID]map[fieldTallyKey]int64{}
+			fieldTallyLibs = map[core.LibraryID]map[fieldTallyKey]*fieldTallyChange{}
 		}
 		d := fieldTallyLibs[libID]
 		if d == nil {
-			d = map[fieldTallyKey]int64{}
+			d = map[fieldTallyKey]*fieldTallyChange{}
 			fieldTallyLibs[libID] = d
 		}
 		return d
@@ -1740,17 +1740,25 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	for _, r := range batch {
 		indexed, searchFields, searchPeople := extractIndexData(decl, r.fieldsJSON)
 		newMap := make(map[indexedFieldPK]indexedFieldExtra, len(indexed))
+		var itemPersonHasThumb map[int64]bool
 		for _, fv := range indexed {
 			newMap[indexedFieldPK{field: fv.Field, text: fv.Text, intV: fv.Int}] = indexedFieldExtra{realV: fv.Real, fold: fv.Fold}
+			if fv.HasThumb && core.IsPluginPersonID(fv.Int) {
+				if itemPersonHasThumb == nil {
+					itemPersonHasThumb = map[int64]bool{}
+				}
+				itemPersonHasThumb[fv.Int] = true
+			}
 		}
+		rank := tallyItemRank{ref: r.itemRef, released: r.released, addedAt: r.addedAt, year: r.year}
 		oldMap := oldFieldsByRef[r.itemRef]
 		for pk := range oldMap {
 			if _, keep := newMap[pk]; !keep {
 				fieldDeletes = append(fieldDeletes, reindexFieldDelete{itemRef: r.itemRef, pk: pk})
 				if hasFieldTally && pk.text != "" && r.level != "" {
-					addFieldTallyDelta(deltaFor(r.libraryID), r.level, pk.field, pk.text, -1)
+					addFieldTallyChange(deltaFor(r.libraryID), r.level, pk.field, pk.text, -1, tallyItemRank{}, r.itemRef)
 					if core.IsPluginPersonID(pk.intV) {
-						addPersonTallyDelta(personDeltaFor(r.libraryID), r.level, pk.field, pk.text, pk.intV, -1)
+						addPersonTallyChange(personDeltaFor(r.libraryID), r.level, pk.field, pk.intV, -1, "", pk.text, tallyItemRank{}, r.itemRef, tallyItemRank{}, r.itemRef)
 					}
 				}
 			}
@@ -1760,9 +1768,13 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 			if !existed {
 				fieldInserts = append(fieldInserts, reindexFieldUpsert{itemRef: r.itemRef, pk: pk, extra: nv})
 				if hasFieldTally && pk.text != "" && r.level != "" {
-					addFieldTallyDelta(deltaFor(r.libraryID), r.level, pk.field, pk.text, 1)
+					addFieldTallyChange(deltaFor(r.libraryID), r.level, pk.field, pk.text, 1, rank, "")
 					if core.IsPluginPersonID(pk.intV) {
-						addPersonTallyDelta(personDeltaFor(r.libraryID), r.level, pk.field, pk.text, pk.intV, 1)
+						var th tallyItemRank
+						if itemPersonHasThumb[pk.intV] {
+							th = rank
+						}
+						addPersonTallyChange(personDeltaFor(r.libraryID), r.level, pk.field, pk.intV, 1, pk.text, "", rank, "", th, "")
 					}
 				}
 			} else if ov != nv {
@@ -1873,12 +1885,12 @@ WHERE item_ref = ?
 		}
 		hasPersonTally := len(personTallyLibs) > 0 && hasTableTx(ctx, tx, dialect, "plugin_item_person_tally")
 		for _, libID := range libs {
-			emptied, err := applyFieldTallyDeltaTx(ctx, tx, libID, fieldTallyLibs[libID])
+			emptied, err := applyFieldTallyDeltaTx(ctx, tx, isPG, libID, fieldTallyLibs[libID])
 			if err != nil {
 				return 0, cursor, false, false, err
 			}
 			if hasPersonTally && len(personTallyLibs[libID]) > 0 {
-				if err := applyPersonTallyDeltaTx(ctx, tx, isPG, libID, personTallyLibs[libID], emptied); err != nil {
+				if err := applyPersonTallyDeltaTx(ctx, tx, isPG, libID, decl, personTallyLibs[libID], emptied); err != nil {
 					return 0, cursor, false, false, err
 				}
 			}
@@ -1998,6 +2010,9 @@ type reindexItemRow struct {
 	level      string
 	title      string
 	fieldsJSON string
+	released   int64
+	addedAt    int64
+	year       int64
 }
 
 func reindexKindTx(ctx context.Context, tx *sql.Tx, isPG, hasFold bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
@@ -2162,6 +2177,7 @@ func rebuildKindFieldTallyTx(ctx context.Context, tx *sql.Tx, isPG bool, pluginI
 		dialect = store.Postgres
 	}
 	hasPersonTally := hasTableTx(ctx, tx, dialect, "plugin_item_person_tally")
+	hasRepCols := hasColumnTx(ctx, tx, dialect, "plugin_item_field_tally", "rep_ref")
 
 	libs := make([]int64, 0, len(libSet))
 	for id := range libSet {
@@ -2197,6 +2213,11 @@ GROUP BY library_id, field, v_text`, libID); err != nil {
 				return err
 			}
 			if err := backfillPersonTallyTx(ctx, tx, isPG, libID); err != nil {
+				return err
+			}
+		}
+		if hasRepCols {
+			if err := backfillTallyRepsTx(ctx, tx, isPG, libID); err != nil {
 				return err
 			}
 		}
@@ -2266,6 +2287,8 @@ type existingItemMeta struct {
 	level     string
 	parentRef core.ItemRef
 	addedAt   int64
+	released  int64
+	year      int64
 	hash      string
 }
 
@@ -2282,19 +2305,27 @@ func lookupExistingItemsTx(ctx context.Context, tx *sql.Tx, items []preparedItem
 			args[i] = string(v.validated.Item.Ref)
 		}
 		rows, err := tx.QueryContext(ctx,
-			`SELECT item_ref, seq, level, parent_ref, added_at, content_hash FROM plugin_items WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
+			`SELECT item_ref, seq, level, parent_ref, added_at, released, year, content_hash FROM plugin_items WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
 			args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
 			var refStr, lv, parentStr, hash string
-			var seq, added int64
-			if err := rows.Scan(&refStr, &seq, &lv, &parentStr, &added, &hash); err != nil {
+			var seq, added, released, yr int64
+			if err := rows.Scan(&refStr, &seq, &lv, &parentStr, &added, &released, &yr, &hash); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			out[core.ItemRef(refStr)] = existingItemMeta{seq: seq, level: lv, parentRef: core.ItemRef(parentStr), addedAt: added, hash: hash}
+			out[core.ItemRef(refStr)] = existingItemMeta{
+				seq:       seq,
+				level:     lv,
+				parentRef: core.ItemRef(parentStr),
+				addedAt:   added,
+				released:  released,
+				year:      yr,
+				hash:      hash,
+			}
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -2392,14 +2423,6 @@ type existingTextField struct {
 	intV  int64
 }
 
-func addFieldTallyDelta(delta map[fieldTallyKey]int64, level, field, text string, d int64) {
-	if level == "" || field == "" || text == "" || d == 0 {
-		return
-	}
-	delta[fieldTallyKey{level: level, field: field, text: text}] += d
-	delta[fieldTallyKey{level: "", field: field, text: text}] += d
-}
-
 func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.ItemRef) ([]existingTextField, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -2437,67 +2460,6 @@ func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.Ite
 		rows.Close()
 	}
 	return out, nil
-}
-
-func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, delta map[fieldTallyKey]int64) (map[fieldTallyKey]bool, error) {
-	if len(delta) == 0 || libraryID <= 0 {
-		return nil, nil
-	}
-	keys := make([]fieldTallyKey, 0, len(delta))
-	for k, d := range delta {
-		if d != 0 {
-			keys = append(keys, k)
-		}
-	}
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	slices.SortFunc(keys, func(a, b fieldTallyKey) int {
-		if c := strings.Compare(a.level, b.level); c != 0 {
-			return c
-		}
-		if c := strings.Compare(a.field, b.field); c != 0 {
-			return c
-		}
-		return strings.Compare(a.text, b.text)
-	})
-	libID := int64(libraryID)
-	var emptied map[fieldTallyKey]bool
-	for _, k := range keys {
-		d := delta[k]
-		if d > 0 {
-			if _, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, v_lower, v_fold, cnt)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(library_id, level, field, v_text) DO UPDATE SET
-	cnt = plugin_item_field_tally.cnt + excluded.cnt`,
-				libID, k.level, k.field, k.text, strings.ToLower(k.text), FoldFieldText(k.text), d); err != nil {
-				return nil, err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, `
-UPDATE plugin_item_field_tally
-SET cnt = cnt + ?
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
-				d, libID, k.level, k.field, k.text); err != nil {
-				return nil, err
-			}
-			res, err := tx.ExecContext(ctx, `
-DELETE FROM plugin_item_field_tally
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
-				libID, k.level, k.field, k.text)
-			if err != nil {
-				return nil, err
-			}
-			if n, _ := res.RowsAffected(); n > 0 {
-				if emptied == nil {
-					emptied = map[fieldTallyKey]bool{}
-				}
-				emptied[k] = true
-			}
-		}
-	}
-	return emptied, nil
 }
 
 // bumpKindSyncStateTx records a new generation and the kind's item
@@ -2574,7 +2536,7 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	defer tx.Rollback()
 
 	leafLevels := kind.Decl.LeafLevels()
-	if err := s.deleteRefsAndDescendantsTx(ctx, tx, kind.LibraryID, refs, len(kind.Decl.Levels), leafLevels); err != nil {
+	if err := s.deleteRefsAndDescendantsTx(ctx, tx, kind.LibraryID, kind.Decl, refs, len(kind.Decl.Levels), leafLevels); err != nil {
 		return err
 	}
 	if bumpGen {
@@ -2590,7 +2552,7 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	return nil
 }
 
-func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, rootRefs []core.ItemRef, levelCount int, leafLevels map[string]bool) error {
+func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, decl plugins.MediaKindMeta, rootRefs []core.ItemRef, levelCount int, leafLevels map[string]bool) error {
 	if len(rootRefs) == 0 {
 		return nil
 	}
@@ -2767,13 +2729,14 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 	if err != nil {
 		return err
 	}
-	fieldTallyDelta := map[fieldTallyKey]int64{}
+	fieldTallyDelta := map[fieldTallyKey]*fieldTallyChange{}
 	personTallyDelta := map[personTallyKey]*personTallyChange{}
 	for _, of := range oldFields {
 		if t, ok := allTargets[of.ref]; ok {
-			addFieldTallyDelta(fieldTallyDelta, t.level, of.field, of.text, -1)
+			refStr := string(of.ref)
+			addFieldTallyChange(fieldTallyDelta, t.level, of.field, of.text, -1, tallyItemRank{}, refStr)
 			if core.IsPluginPersonID(of.intV) {
-				addPersonTallyDelta(personTallyDelta, t.level, of.field, of.text, of.intV, -1)
+				addPersonTallyChange(personTallyDelta, t.level, of.field, of.intV, -1, "", of.text, tallyItemRank{}, refStr, tallyItemRank{}, refStr)
 			}
 		}
 	}
@@ -2810,11 +2773,11 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 	if err := applyTallyDeltaTx(ctx, tx, libraryID, tallyDelta); err != nil {
 		return err
 	}
-	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, libraryID, fieldTallyDelta)
+	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, !isSQLite, libraryID, fieldTallyDelta)
 	if err != nil {
 		return err
 	}
-	if err := applyPersonTallyDeltaTx(ctx, tx, !isSQLite, libraryID, personTallyDelta, emptiedText); err != nil {
+	if err := applyPersonTallyDeltaTx(ctx, tx, !isSQLite, libraryID, decl, personTallyDelta, emptiedText); err != nil {
 		return err
 	}
 	if levelCount > 1 && libraryID > 0 {
@@ -3274,6 +3237,20 @@ func hasTableTx(ctx context.Context, tx *sql.Tx, d store.Dialect, table string) 
 	_ = tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`,
 		table).Scan(&n)
+	return n > 0
+}
+
+func hasColumnTx(ctx context.Context, tx *sql.Tx, d store.Dialect, table, column string) bool {
+	var n int
+	if d == store.Postgres {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
+			table, column).Scan(&n)
+		return n > 0
+	}
+	_ = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`,
+		table, column).Scan(&n)
 	return n > 0
 }
 

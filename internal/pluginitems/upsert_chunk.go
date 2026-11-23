@@ -107,7 +107,7 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 		pinInt = 1
 	}
 
-	fieldTallyDelta := map[fieldTallyKey]int64{}
+	fieldTallyDelta := map[fieldTallyKey]*fieldTallyChange{}
 	personTallyDelta := map[personTallyKey]*personTallyChange{}
 	changedExisting := make([]core.ItemRef, 0, len(chunk))
 	for i := range chunk {
@@ -118,18 +118,15 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 			changedExisting = append(changedExisting, chunk[i].validated.Item.Ref)
 		}
 	}
+	var oldFieldsByRef map[core.ItemRef][]existingTextField
 	if len(changedExisting) > 0 {
 		oldFields, err := lookupExistingTextFieldsTx(ctx, tx, changedExisting)
 		if err != nil {
 			return res, err
 		}
+		oldFieldsByRef = make(map[core.ItemRef][]existingTextField, len(changedExisting))
 		for _, of := range oldFields {
-			if ex, ok := existing[of.ref]; ok {
-				addFieldTallyDelta(fieldTallyDelta, ex.level, of.field, of.text, -1)
-				if core.IsPluginPersonID(of.intV) {
-					addPersonTallyDelta(personTallyDelta, ex.level, of.field, of.text, of.intV, -1)
-				}
-			}
+			oldFieldsByRef[of.ref] = append(oldFieldsByRef[of.ref], of)
 		}
 	}
 
@@ -299,6 +296,7 @@ INSERT INTO plugin_items(
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, string(it.Ref)); err != nil {
 			return res, err
 		}
+		var itemPersonHasThumb map[int64]bool
 		for _, fv := range v.IndexedFields {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
@@ -306,11 +304,119 @@ INSERT INTO plugin_items(
 				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
 				return res, err
 			}
-			if fv.Text != "" {
-				addFieldTallyDelta(fieldTallyDelta, it.Level, fv.Field, fv.Text, 1)
-				if core.IsPluginPersonID(fv.Int) {
-					addPersonTallyDelta(personTallyDelta, it.Level, fv.Field, fv.Text, fv.Int, 1)
+			if fv.HasThumb && core.IsPluginPersonID(fv.Int) {
+				if itemPersonHasThumb == nil {
+					itemPersonHasThumb = map[int64]bool{}
 				}
+				itemPersonHasThumb[fv.Int] = true
+			}
+		}
+
+		refStr := string(it.Ref)
+		newRank := tallyItemRank{ref: refStr, released: it.Released, addedAt: addedAt, year: int64(it.Year)}
+		if !isExisting {
+			for _, fv := range v.IndexedFields {
+				if fv.Text == "" {
+					continue
+				}
+				addFieldTallyChange(fieldTallyDelta, it.Level, fv.Field, fv.Text, 1, newRank, "")
+				if core.IsPluginPersonID(fv.Int) {
+					var th tallyItemRank
+					if itemPersonHasThumb[fv.Int] {
+						th = newRank
+					}
+					addPersonTallyChange(personTallyDelta, it.Level, fv.Field, fv.Int, 1, fv.Text, "", newRank, "", th, "")
+				}
+			}
+		} else {
+			oldRank := tallyItemRank{ref: refStr, released: ex.released, addedAt: ex.addedAt, year: ex.year}
+			rankUp := newRank.beats(oldRank)
+			rankDown := oldRank.beats(newRank)
+
+			oldTextSet := make(map[fieldTallyKey]struct{}, len(oldFieldsByRef[it.Ref]))
+			oldPersonMap := map[personTallyKey]string{}
+			for _, of := range oldFieldsByRef[it.Ref] {
+				if of.text == "" {
+					continue
+				}
+				oldTextSet[fieldTallyKey{level: ex.level, field: of.field, text: of.text}] = struct{}{}
+				if core.IsPluginPersonID(of.intV) {
+					oldPersonMap[personTallyKey{level: ex.level, field: of.field, vInt: of.intV}] = of.text
+				}
+			}
+
+			type newPersonVal struct {
+				text     string
+				hasThumb bool
+			}
+			newTextSet := make(map[fieldTallyKey]struct{}, len(v.IndexedFields))
+			newPersonMap := map[personTallyKey]newPersonVal{}
+			for _, fv := range v.IndexedFields {
+				if fv.Text == "" {
+					continue
+				}
+				newTextSet[fieldTallyKey{level: it.Level, field: fv.Field, text: fv.Text}] = struct{}{}
+				if core.IsPluginPersonID(fv.Int) {
+					newPersonMap[personTallyKey{level: it.Level, field: fv.Field, vInt: fv.Int}] = newPersonVal{
+						text:     fv.Text,
+						hasThumb: itemPersonHasThumb[fv.Int],
+					}
+				}
+			}
+
+			for k := range oldTextSet {
+				if _, keep := newTextSet[k]; !keep {
+					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, -1, tallyItemRank{}, refStr)
+				}
+			}
+			for k := range newTextSet {
+				if _, existed := oldTextSet[k]; !existed {
+					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, 1, newRank, "")
+				} else if rankUp {
+					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, 0, newRank, "")
+				} else if rankDown {
+					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, 0, tallyItemRank{}, refStr)
+				}
+			}
+
+			for k, oldText := range oldPersonMap {
+				if _, keep := newPersonMap[k]; !keep {
+					addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, -1, "", oldText, tallyItemRank{}, refStr, tallyItemRank{}, refStr)
+				}
+			}
+			for k, nv := range newPersonMap {
+				oldText, existed := oldPersonMap[k]
+				if !existed {
+					var th tallyItemRank
+					if nv.hasThumb {
+						th = newRank
+					}
+					addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, 1, nv.text, "", newRank, "", th, "")
+					continue
+				}
+				var addTxt, remTxt string
+				if oldText != nv.text {
+					addTxt = nv.text
+					remTxt = oldText
+				}
+				var addRep tallyItemRank
+				var remRep string
+				if rankUp {
+					addRep = newRank
+				} else if rankDown {
+					remRep = refStr
+				}
+				var addTh tallyItemRank
+				var remTh string
+				if nv.hasThumb {
+					addTh = newRank
+					if rankDown {
+						remTh = refStr
+					}
+				} else {
+					remTh = refStr
+				}
+				addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, 0, addTxt, remTxt, addRep, remRep, addTh, remTh)
 			}
 		}
 
@@ -330,11 +436,11 @@ INSERT INTO plugin_items(
 	if err := applyTallyDeltaTx(ctx, tx, kind.LibraryID, tallyDelta); err != nil {
 		return res, err
 	}
-	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, kind.LibraryID, fieldTallyDelta)
+	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, fieldTallyDelta)
 	if err != nil {
 		return res, err
 	}
-	if err := applyPersonTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, personTallyDelta, emptiedText); err != nil {
+	if err := applyPersonTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, kind.Decl, personTallyDelta, emptiedText); err != nil {
 		return res, err
 	}
 	if parentTally != nil {

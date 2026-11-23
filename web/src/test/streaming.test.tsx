@@ -377,7 +377,7 @@ describe("Playback devices", () => {
     expect(toggle).not.toBeChecked();
     expect(
       within(drawer).getByText(
-        "Encode video instead of copying it when streaming. Direct play of the original file is unaffected.",
+        /^Encode video instead of copying it when streaming\. Direct play of the original file is unaffected\./,
       ),
     ).toBeInTheDocument();
 

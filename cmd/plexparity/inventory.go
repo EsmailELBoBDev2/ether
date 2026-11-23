@@ -65,6 +65,10 @@ func missingRoutes() []string {
 // unprobedRoutes are GET routes the offline parity world cannot compare
 // byte for byte, each with the reason. They are not counted as covered.
 var unprobedRoutes = map[string]string{
+	// New in 0.3.19, so the v0.3.18 parity baseline has no such route to
+	// compare. internal/frontends/plex/account_id_consistency_test.go checks
+	// the canonical owner id 1 and plex.tv ids for friends and Home users.
+	"/accounts/{id}": "new in 0.3.19; no baseline route to compare yet",
 	// v0.3.12 TV discovery depends on the owner's imported guides and the
 	// current programme window. The offline parity corpus has no matching
 	// PMS guide; livetv_discovery_test.go exercises bounded projections.

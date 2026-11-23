@@ -32,6 +32,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/favorites"
 	"github.com/braedonsaunders/ether/internal/flows"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
@@ -720,6 +721,7 @@ func (a *App) applyConfig(c config.Config) {
 	if a.state != nil {
 		a.state.SetResumeAfter(c.Server.ResumeAfterSeconds)
 	}
+	timeline.SetResumeAfter(c.Server.ResumeAfterSeconds)
 	if a.uploadBudget != nil {
 		a.uploadBudget.OnSessionsChanged()
 	}

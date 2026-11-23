@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/mdblist"
 	"github.com/braedonsaunders/ether/internal/notinterested"
@@ -38,6 +39,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		PendingSQLite:      store.DialectOf(a.db) == store.SQLite,
 		ResumeAfterSeconds: cfg.Server.ResumeAfterSeconds,
 	})
+	timeline.SetResumeAfter(cfg.Server.ResumeAfterSeconds)
 	a.state.SetJournalGate(func(context.Context, *sql.Tx, int64) (int64, bool, error) { return 0, false, nil })
 	basePlaylists := a.state.Playlists()
 	marked, ok := basePlaylists.(core.TransactionalMarkedPlaylists)

@@ -11,7 +11,7 @@ import (
 
 type noPlayableFileError struct{}
 
-func (noPlayableFileError) Error() string { return "stream: no playable video file in release" }
+func (noPlayableFileError) Error() string { return "stream: no playable file in release" }
 func (noPlayableFileError) Unwrap() error { return core.ErrNoUsableFile }
 
 // Typed errors returned by Open, Prefetch and Check. They are re-exported

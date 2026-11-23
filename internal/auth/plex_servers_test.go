@@ -84,14 +84,11 @@ func TestExtraPlexServerMembership(t *testing.T) {
 func TestLocalSignInSurvivesUnshareButPlexAccessEnds(t *testing.T) {
 	s, _, _ := setup(t)
 	ctx := context.Background()
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS identity_links (viewer_id INTEGER, provider TEXT, password_hash TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	alice, err := s.Authenticate(ctx, "alice-access")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO identity_links (viewer_id, provider, password_hash) VALUES (?, 'local', 'x')`, alice.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO identity_links (viewer_id, provider, subject, display, verified_at, password_hash) VALUES (?, 'local', 'alice', 'alice', 1, 'x')`, alice.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncFriends(ctx, []plextv.Friend{

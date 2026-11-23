@@ -843,6 +843,10 @@ func sourceKindOf(s Source) string {
 	return "url"
 }
 
+// ErrNoUpdateSource reports a plugin with nowhere to fetch updates from: a
+// Studio build, or a package file the marketplace does not list.
+var ErrNoUpdateSource = errors.New("this plugin was installed from a file and the marketplace does not list it, so Ether cannot check it for updates")
+
 // PermissionIncreaseError reports an update that asks for more access.
 type PermissionIncreaseError struct{ Added []string }
 
@@ -858,13 +862,27 @@ func (m *Manager) CheckUpdate(ctx context.Context, id string) (*Preview, bool, e
 	if err != nil {
 		return nil, false, err
 	}
-	if (r.SourceURL == "" && r.SourceKind != "catalogue") || r.SourceKind == "studio" {
+	if r.SourceKind == "studio" {
 		// A Studio build's link (an edited add-on's) is not an update source.
-		return nil, false, fmt.Errorf("plugins: %s has no update source", id)
+		return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+	}
+	sourceKind := r.SourceKind
+	if r.SourceURL == "" && sourceKind != "catalogue" {
+		// Installed from a package file: the signed marketplace is the update
+		// source when it lists this plugin. The catalogue review still gates
+		// the update, and added permissions still need the owner's consent.
+		cat := m.getCatalogue()
+		if cat == nil {
+			return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+		}
+		if _, err := cat.Resolve(ctx, id, ""); err != nil {
+			return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+		}
+		sourceKind = "catalogue"
 	}
 	g, _ := m.store.grants(ctx, id)
-	src := Source{Kind: r.SourceKind, URL: r.SourceURL, LAN: g.LAN, Verified: r.Verified}
-	if r.SourceKind == "catalogue" {
+	src := Source{Kind: sourceKind, URL: r.SourceURL, LAN: g.LAN, Verified: r.Verified}
+	if sourceKind == "catalogue" {
 		src.ID = r.ID
 	}
 	p, err := m.PreviewInstall(ctx, src)

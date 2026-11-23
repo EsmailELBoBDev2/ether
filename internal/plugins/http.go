@@ -286,6 +286,8 @@ func (m *Manager) fail(w http.ResponseWriter, err error) {
 			fields[i] = FieldError{"permissions", a}
 		}
 		writeErr(w, http.StatusConflict, "permission_increase", "This update asks for more access. Review it, then confirm.", fields)
+	case errors.Is(err, ErrNoUpdateSource):
+		writeErr(w, http.StatusConflict, "no_update_source", "This plugin was installed from a file and the marketplace doesn't list it, so there's nothing to check for updates. Install a newer package file to update it.", nil)
 	case errors.Is(err, ErrDigestMismatch):
 		writeErr(w, http.StatusBadRequest, "digest_mismatch", "The downloaded package did not match its expected digest.", nil)
 	case errors.Is(err, ErrRevoked):

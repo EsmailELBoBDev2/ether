@@ -30,6 +30,7 @@ import { pagedTableLabels } from "../../i18n/appkit-labels";
 import { isActiveViewer, isPlexSource, LifecycleBadges, lifecycleOf } from "./lifecycle";
 import { AddViewerDrawer } from "./ManageViewers";
 import { ImportPlexViewersDrawer } from "./ImportPlexViewersDrawer";
+import { SignInLockouts } from "./sections/SignInLockouts";
 import { WatchlistAlerts } from "./sections/WatchlistDefaults";
 import { PlexAccessNote } from "./ViewerStatus";
 
@@ -80,6 +81,7 @@ export default function ViewersList() {
       <div className="space-y-6">
         <People key={version} />
         <WatchlistAlerts />
+        <SignInLockouts />
       </div>
       <AddViewerDrawer
         open={adding}

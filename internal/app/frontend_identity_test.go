@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http/httptest"
 	"net/netip"
 	"strings"
@@ -568,5 +570,77 @@ func TestXtreamAppPasswordRateLimitAndRevocation(t *testing.T) {
 	wrong.surface = "jellyfin"
 	if _, err := wrong.AuthenticateAppPassword(ctx, username, password); !errors.Is(err, core.ErrUnauthorized) {
 		t.Fatal("cross-surface grant accepted")
+	}
+}
+
+func TestSignInSuccessResetsIdentityBucketAndLockoutLogsOnceAtWarn(t *testing.T) {
+	a := setupTestApp(t, true)
+	var logBuf bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	ctx := context.Background()
+	if err := a.users.SetOwner(ctx, plextv.Account{ID: 77, Username: "owner"}, "owner-token"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := a.users.Owner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := identity.NewLocal(a.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := local.Create(ctx, owner.ID, "alice", "correct-password-12"); err != nil {
+		t.Fatal(err)
+	}
+	grants, _ := identity.NewGrants(a.db, a.users, time.Hour, nil)
+	now := time.Unix(5000, 0)
+	login, err := identity.NewLoginLimiter(a.db, 15*time.Minute, 5, 2, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wireIdentityLimiter(login, "login")
+	jf := surfaceIdentity{app: a, surface: "jellyfin", local: local, grants: grants, login: login}
+	ctx = frontend.WithClientIP(ctx, netip.MustParseAddr("198.51.100.44"))
+	dev := core.Device{ID: "firetv-1", Product: "Jellyfin Android TV"}
+
+	// One failure then one success resets (alice, IP) while leaving the IP bucket at 2/5.
+	if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("expected unauthorized, got %v", err)
+	}
+	if _, err := jf.SignIn(ctx, "alice", "correct-password-12", dev); err != nil {
+		t.Fatalf("valid sign-in failed: %v", err)
+	}
+	// Two more failures for alice succeed admission (IP=4/5, alice=2/2) because alice's bucket was reset.
+	for i := 0; i < 2; i++ {
+		if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, core.ErrUnauthorized) {
+			t.Fatalf("failure %d after reset: got %v", i, err)
+		}
+	}
+	// Next attempt hits alice+IP limit (IP=5/5, alice=3/2) and logs WARN once.
+	if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, frontend.ErrRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	// Another failed attempt for bob from the same IP hits the IP-wide limit (IP=6/5),
+	// proving alice's earlier success did not reset the IP-wide bucket.
+	if _, err := jf.SignIn(ctx, "bob", "wrong-password-12", dev); !errors.Is(err, frontend.ErrRateLimited) {
+		t.Fatalf("expected IP-wide rate limit for bob, got %v", err)
+	}
+	// Repeated retries during lockout must not emit duplicate WARN lines.
+	for i := 0; i < 3; i++ {
+		if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, frontend.ErrRateLimited) {
+			t.Fatalf("repeat %d: got %v", i, err)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	// Exactly two WARN lines: one when alice+IP locked out, one when the IP-wide bucket locked out.
+	if len(lines) != 2 {
+		t.Fatalf("got %d WARN lines, want 2:\n%s", len(lines), logBuf.String())
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, `app="Jellyfin Android TV"`) || !strings.Contains(line, "remaining=15m0s") {
+			t.Fatalf("unexpected WARN log line: %s", line)
+		}
 	}
 }

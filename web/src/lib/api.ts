@@ -329,6 +329,19 @@ function qs(params: Record<string, string | number | undefined | null>): string 
   return s ? `?${s}` : "";
 }
 
+export interface SignInLockout {
+  key: string;
+  namespace: string;
+  scope: string;
+  remoteIp?: string;
+  identity?: string;
+  app?: string;
+  attempts: number;
+  limit: number;
+  remainingMs: number;
+  expiresAt: string;
+}
+
 export type TestFn = () => Promise<TestResult>;
 
 export const api = {
@@ -349,6 +362,14 @@ export const api = {
     }),
   /** Ends this console's session on the server. */
   signOut: () => apiFetch<{ ok: boolean }>("/auth/session", { method: "DELETE" }),
+  listLockouts: async () =>
+    (await apiFetch<{ lockouts: SignInLockout[] }>("/auth/lockouts")).lockouts ?? [],
+  clearLockout: (key: string) =>
+    apiFetch<{ ok: boolean; cleared: boolean }>(`/auth/lockouts/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+    }),
+  clearAllLockouts: () =>
+    apiFetch<{ ok: boolean; cleared: number }>("/auth/lockouts", { method: "DELETE" }),
   setupStatus: () => apiFetch<SetupStatus>("/setup/status"),
   setupComplete: (force = false) => post<SetupStatus>("/setup/complete", { force }),
   setupReopen: () => post<SetupStatus>("/setup/reopen"),

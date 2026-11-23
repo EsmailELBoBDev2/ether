@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,7 +54,11 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request, surface str
 	}
 	_ = controller.SetReadDeadline(time.Time{})
 	ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-	allowed, err := h.deps.IdentityLimiter.Allow(r.Context(), body.Username, ip)
+	appName := "Ether viewer portal"
+	if surface == "owner" {
+		appName = "Ether console"
+	}
+	allowed, err := h.deps.IdentityLimiter.Allow(identity.WithRateLimitApp(r.Context(), appName), body.Username, ip)
 	if err != nil || !allowed {
 		writeError(w, 429, "rate_limit", "try again later")
 		return
@@ -85,6 +90,7 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request, surface str
 		}
 		h.ownerCredentialChanged(r)
 	}
+	_ = h.deps.IdentityLimiter.ResetIdentity(r.Context(), body.Username, ip)
 	h.emitLoginSucceeded(viewerID, body.Username, "password", "Ether browser", "Web", ip.String())
 	writeJSON(w, 200, map[string]any{"token": token})
 }
@@ -200,7 +206,7 @@ func (h *Handler) handleApproveQuickConnect(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-	ok, err := h.deps.IdentityLimiter.Allow(r.Context(), "quickconnect", ip)
+	ok, err := h.deps.IdentityLimiter.Allow(identity.WithRateLimitApp(r.Context(), "Ether viewer portal"), "quickconnect", ip)
 	if err != nil || !ok {
 		writeError(w, 429, "rate_limit", "try again later")
 		return
@@ -399,7 +405,7 @@ func (h *Handler) handleOwnerQuickConnect(w http.ResponseWriter, r *http.Request
 		return
 	}
 	ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-	ok, err := h.deps.IdentityLimiter.Allow(r.Context(), "quickconnect", ip)
+	ok, err := h.deps.IdentityLimiter.Allow(identity.WithRateLimitApp(r.Context(), "Ether console"), "quickconnect", ip)
 	if err != nil || !ok {
 		writeError(w, 429, "rate_limit", "try again later")
 		return
@@ -438,7 +444,7 @@ func (h *Handler) handleInviteRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-	ok, err := h.deps.IdentityLimiter.Allow(r.Context(), "invite", ip)
+	ok, err := h.deps.IdentityLimiter.Allow(identity.WithRateLimitApp(r.Context(), "Ether viewer portal"), "invite", ip)
 	if err != nil || !ok {
 		writeError(w, 429, "rate_limit", "try again later")
 		return
@@ -532,7 +538,7 @@ func (h *Handler) limitIdentityAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-		ok, err := h.deps.IdentityLimiter.Allow(r.Context(), "plex-pin", ip)
+		ok, err := h.deps.IdentityLimiter.Allow(identity.WithRateLimitApp(r.Context(), "Ether viewer portal"), "plex-pin", ip)
 		if err != nil || !ok {
 			writeError(w, 429, "rate_limit", "try again later")
 			return
@@ -652,11 +658,94 @@ func (h *Handler) limitIdentityPoll(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-		ok, err := h.deps.PollLimiter.Allow(r.Context(), r.PathValue("handle"), ip)
+		ok, err := h.deps.PollLimiter.Allow(identity.WithRateLimitApp(r.Context(), "Ether viewer portal"), r.PathValue("handle"), ip)
 		if err != nil || !ok {
 			writeError(w, 429, "rate_limit", "try again later")
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (h *Handler) handleListLockouts(w http.ResponseWriter, r *http.Request) {
+	access, _ := RequestAccess(r.Context())
+	if !access.Owner {
+		writeError(w, http.StatusForbidden, "forbidden", "owner required")
+		return
+	}
+	lockouts := []identity.RateLockout{}
+	for _, limiter := range []*identity.LoginLimiter{h.deps.IdentityLimiter, h.deps.PollLimiter} {
+		if limiter == nil {
+			continue
+		}
+		items, err := limiter.ListLockouts(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "unavailable", "unavailable")
+			return
+		}
+		lockouts = append(lockouts, items...)
+	}
+	sort.Slice(lockouts, func(i, j int) bool {
+		if lockouts[i].RemainingMs != lockouts[j].RemainingMs {
+			return lockouts[i].RemainingMs > lockouts[j].RemainingMs
+		}
+		if lockouts[i].Namespace != lockouts[j].Namespace {
+			return lockouts[i].Namespace < lockouts[j].Namespace
+		}
+		if lockouts[i].RemoteIP != lockouts[j].RemoteIP {
+			return lockouts[i].RemoteIP < lockouts[j].RemoteIP
+		}
+		return lockouts[i].Key < lockouts[j].Key
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"lockouts": lockouts})
+}
+
+func (h *Handler) handleClearLockout(w http.ResponseWriter, r *http.Request) {
+	access, _ := RequestAccess(r.Context())
+	if !access.Owner {
+		writeError(w, http.StatusForbidden, "forbidden", "owner required")
+		return
+	}
+	key := strings.TrimSpace(r.PathValue("key"))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "invalid", "invalid lockout key")
+		return
+	}
+	cleared := false
+	for _, limiter := range []*identity.LoginLimiter{h.deps.IdentityLimiter, h.deps.PollLimiter} {
+		if limiter == nil {
+			continue
+		}
+		ok, err := limiter.ClearLockout(r.Context(), key)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "unavailable", "unavailable")
+			return
+		}
+		if ok {
+			cleared = true
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
+}
+
+func (h *Handler) handleClearAllLockouts(w http.ResponseWriter, r *http.Request) {
+	access, _ := RequestAccess(r.Context())
+	if !access.Owner {
+		writeError(w, http.StatusForbidden, "forbidden", "owner required")
+		return
+	}
+	var total int64
+	for _, limiter := range []*identity.LoginLimiter{h.deps.IdentityLimiter, h.deps.PollLimiter} {
+		if limiter == nil {
+			continue
+		}
+		n, err := limiter.ClearAll(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "unavailable", "unavailable")
+			return
+		}
+		total += n
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": total})
 }

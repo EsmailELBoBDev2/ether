@@ -801,6 +801,53 @@ export function createFakeServer(opts: FakeOptions = {}) {
       ],
       emby: [],
     } as Record<string, { id: number; appName: string; createdAt: string; lastUsed?: string }[]>,
+    lockouts: [
+      {
+        key: "lock-firetv-jordan",
+        namespace: "login",
+        scope: "identity-ip",
+        remoteIp: "192.168.1.48",
+        identity: "jordan",
+        app: "Jellyfin Android TV",
+        attempts: 9,
+        limit: 8,
+        remainingMs: 742000,
+        expiresAt: new Date(Date.now() + 742000).toISOString(),
+      },
+      {
+        key: "lock-ip-203",
+        namespace: "login",
+        scope: "ip",
+        remoteIp: "203.0.113.19",
+        app: "Ether viewer portal",
+        attempts: 31,
+        limit: 30,
+        remainingMs: 265000,
+        expiresAt: new Date(Date.now() + 265000).toISOString(),
+      },
+      {
+        key: "lock-poll-192",
+        namespace: "poll",
+        scope: "identity-ip",
+        remoteIp: "192.168.1.48",
+        app: "Jellyfin Android TV",
+        attempts: 61,
+        limit: 60,
+        remainingMs: 38000,
+        expiresAt: new Date(Date.now() + 38000).toISOString(),
+      },
+    ] as {
+      key: string;
+      namespace: string;
+      scope: string;
+      remoteIp?: string;
+      identity?: string;
+      app?: string;
+      attempts: number;
+      limit: number;
+      remainingMs: number;
+      expiresAt: string;
+    }[],
     collections: [] as CollectionSpec[],
     overrides: new Map<number, TasteOverride[]>(),
     layout: {
@@ -4956,6 +5003,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({ done: true, token: "ether-admin-mock", expiresAt: 0 });
       case "DELETE /auth/session":
         return json({ ok: true });
+      case "GET /auth/lockouts":
+        return json({ lockouts: state.lockouts });
+      case "DELETE /auth/lockouts": {
+        const cleared = state.lockouts.length;
+        state.lockouts = [];
+        return json({ ok: true, cleared });
+      }
       case "GET /llm/providers":
         return json({ providers: MOCK_LLM_PROVIDERS });
       case "POST /llm/models": {
@@ -7246,6 +7300,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
       method === "GET"
     )
       return json({ devices: xtreamGrants.get(seg[1]!) ?? [] });
+    if (seg[0] === "auth" && seg[1] === "lockouts" && seg[2] && method === "DELETE") {
+      const key = decodeURIComponent(seg[2]);
+      const before = state.lockouts.length;
+      state.lockouts = state.lockouts.filter((item) => item.key !== key);
+      return json({ ok: true, cleared: state.lockouts.length < before });
+    }
     if (seg[0] === "users" && seg[2] === "devices" && seg[3] === "xtream" && method === "POST") {
       if (seg[4] === "reveal")
         return json({ available: true, username: "alice42", password: "k7m2-9qxr-4t" });

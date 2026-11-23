@@ -44,22 +44,22 @@ type Config struct {
 	ClientIdentity ClientIdentity `json:"clientIdentity"`
 	// Prowlarr is the saved connection for indexer sync. Empty means the
 	// owner has not saved one. The API key is a secret, redacted like indexer keys.
-	Prowlarr      Prowlarr      `json:"prowlarr,omitempty"`
-	Cache         Cache         `json:"cache"`
-	Catalog       Catalog       `json:"catalog"`
-	Resolver      Resolver      `json:"resolver"`
-	Quality       Quality       `json:"quality"`
-	Transcode     Transcode     `json:"transcode"`
-	Trakt         Trakt         `json:"trakt"`
-	Simkl         Simkl         `json:"simkl"`
-	MDBList       MDBList       `json:"mdblist"`
-	PlexServers   PlexServers   `json:"plexServers"`
+	Prowlarr    Prowlarr    `json:"prowlarr,omitempty"`
+	Cache       Cache       `json:"cache"`
+	Catalog     Catalog     `json:"catalog"`
+	Resolver    Resolver    `json:"resolver"`
+	Quality     Quality     `json:"quality"`
+	Transcode   Transcode   `json:"transcode"`
+	Trakt       Trakt       `json:"trakt"`
+	Simkl       Simkl       `json:"simkl"`
+	MDBList     MDBList     `json:"mdblist"`
+	PlexServers PlexServers `json:"plexServers"`
 	// PlexExtraServers are extra Plex servers, each claimed by a different
 	// plex.tv account, served on the same port (plex_extra_servers.go).
 	PlexExtraServers []PlexExtraServer `json:"plexExtraServers,omitempty"`
-	OpenSubtitles OpenSubtitles `json:"openSubtitles"`
-	SubDL         SubDL         `json:"subdl"`
-	SubSource     SubSource     `json:"subsource"`
+	OpenSubtitles    OpenSubtitles     `json:"openSubtitles"`
+	SubDL            SubDL             `json:"subdl"`
+	SubSource        SubSource         `json:"subsource"`
 	// Subtitles is the ordered subtitle provider list (OpenSubtitles and
 	// Stremio subtitle add-ons). Empty means OpenSubtitles alone, as before.
 	Subtitles Subtitles `json:"subtitles,omitempty"`
@@ -629,9 +629,9 @@ type Transcode struct {
 	// ThrottleSeconds is how far ahead of the player ffmpeg may run before it
 	// is paused, for every app. 0 keeps the built-in distances: 16 seconds
 	// when the video is re-encoded, two minutes when it is copied.
-	ThrottleSeconds int `json:"throttleSeconds"`
-	SpikeGovernor      bool     `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
-	SpikeMarginPercent int      `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
+	ThrottleSeconds    int  `json:"throttleSeconds"`
+	SpikeGovernor      bool `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
+	SpikeMarginPercent int  `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
 }
 
 // VideoTranscodingOff reports whether video re-encoding is disabled for movies

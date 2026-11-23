@@ -97,7 +97,7 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 		Config: a.cfg,
 		Client: a.plextv,
 		// Counts the main server's seats for the extra Plex servers.
-		Users: plexSeatCounter{ps: a.plexExtras, id: ""},
+		Users:  plexSeatCounter{ps: a.plexExtras, id: ""},
 		Certs:  a.certs,
 		Logger: log.With("component", "registrar"),
 		OnChange: func() {

@@ -96,10 +96,10 @@ type BrokerDeps struct {
 	VideoTranscodingOff func() bool
 	// ViewerVideoTranscodingOff is the per-viewer form of VideoTranscodingOff.
 	ViewerVideoTranscodingOff func(*core.Viewer) bool
-	OnTimeline          func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
-	Events              *EventBus
-	DomainEvents        *events.Bus
-	OnEventError        func(error)
+	OnTimeline                func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
+	Events                    *EventBus
+	DomainEvents              *events.Bus
+	OnEventError              func(error)
 	// OnProfileDiagnostic is an optional fixture hook. Values are closed enums
 	// only; the callback receives no media, identity or client-supplied data.
 	OnProfileDiagnostic func(ProfileDiagnostic)

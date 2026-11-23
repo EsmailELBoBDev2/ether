@@ -46,18 +46,18 @@ var sectionScopes = map[string]Scope{
 	// Extra Plex servers on the same port (plex_extra_servers.go).
 	"plexExtraServers": Shared,
 
-	"openSubtitles":  Shared,
-	"subdl":          Shared,
-	"subsource":      Shared,
-	"llm":            Shared,
-	"updates":        Shared, // incl. maxDrain: every node drains the same way
-	"markers":        Shared,
-	"personalize":    Shared,
-	"clients":        Shared,
-	"setupComplete":  Shared,
-	"subtitles":      Shared,
-	"liveTV":         Shared,
-	"plugins":        Shared,
+	"openSubtitles": Shared,
+	"subdl":         Shared,
+	"subsource":     Shared,
+	"llm":           Shared,
+	"updates":       Shared, // incl. maxDrain: every node drains the same way
+	"markers":       Shared,
+	"personalize":   Shared,
+	"clients":       Shared,
+	"setupComplete": Shared,
+	"subtitles":     Shared,
+	"liveTV":        Shared,
+	"plugins":       Shared,
 	// Spike serves files from this node's disk.
 	"spike": Local,
 	// Each node holds its own connection settings; the URL is sealed.

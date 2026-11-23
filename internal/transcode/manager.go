@@ -98,14 +98,14 @@ func defaultOptions() options {
 		stallTimeout:      30 * time.Second,
 		// 0 follows the paused-stream retention, including the owner's setting.
 		httpWriteTimeout: 0,
-		restartAhead:      24 * time.Second,
-		maxAhead:          2 * time.Minute,
-		keepBehind:        3 * time.Minute,
-		pollInterval:      150 * time.Millisecond,
-		segmentURI:        SegmentName,
-		dashURLs:          PlexDASHURLs,
-		manifestWait:      15 * time.Second,
-		rungDwell:         8 * time.Second,
+		restartAhead:     24 * time.Second,
+		maxAhead:         2 * time.Minute,
+		keepBehind:       3 * time.Minute,
+		pollInterval:     150 * time.Millisecond,
+		segmentURI:       SegmentName,
+		dashURLs:         PlexDASHURLs,
+		manifestWait:     15 * time.Second,
+		rungDwell:        8 * time.Second,
 
 		audioMatchBudget: defaultAudioMatchBudget,
 		retryBackoffBase: retryBackoffBase,
@@ -265,8 +265,8 @@ type Manager struct {
 	// graphErr is the latest owner-visible reason a graph could not be built.
 	graphErr string
 
-	mu              sync.Mutex
-	cfg             config.Transcode
+	mu  sync.Mutex
+	cfg config.Transcode
 	// throttleSeconds mirrors cfg.ThrottleSeconds for sessions, which read it
 	// under their own lock and must not take the manager's.
 	throttleSeconds atomic.Int64

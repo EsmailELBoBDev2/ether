@@ -87,7 +87,7 @@ func (a *App) buildAdmin() http.Handler {
 		Version:          a.opts.Version,
 		PlexAuth:         &plexAuth{app: a, pins: map[string]*plextv.PIN{}},
 		PlexExtras:       newPlexExtrasAdmin(a),
-		PlexExtrasStatus:  a.plexExtrasStatus,
+		PlexExtrasStatus: a.plexExtrasStatus,
 		SignIn:           &plexSignIn{app: a, pins: map[string]*plextv.PIN{}},
 		IsOwnerToken: func(ctx context.Context) func(context.Context, string) bool {
 			return func(ctx context.Context, token string) bool {

@@ -32,6 +32,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/favorites"
 	"github.com/braedonsaunders/ether/internal/flows"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
@@ -69,7 +70,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/simkl"
 	"github.com/braedonsaunders/ether/internal/spike"
 	"github.com/braedonsaunders/ether/internal/startup"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/stats"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -182,10 +182,10 @@ type App struct {
 
 	// cluster is Solo on SQLite and Postgres on a shared database; peers
 	// caches the other nodes' URIs for the plex.tv publisher.
-	cluster      cluster.Cluster
-	peers        *peerSet
+	cluster cluster.Cluster
+	peers   *peerSet
 	// plexExtras runs the extra Plex servers (plex_servers.go).
-	plexExtras *plexExtras
+	plexExtras   *plexExtras
 	egress       *egressIP // this node's public address, heartbeated when clustered
 	outboundDial string    // last Usenet dial identity; a change drops warm connections
 	// clusterFatal receives the error that ended this node's cluster

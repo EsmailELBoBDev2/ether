@@ -45,8 +45,8 @@ func TestExtraPlexServerMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if members[""] != 3 || members["p2"] != 2 {
-		t.Fatalf("members = %v, want main 3 (alice, bob, dave) and p2 2", members)
+	if members[""] != 2 || members["p2"] != 2 {
+		t.Fatalf("members = %v, want main 2 (alice, bob; dave is still pending) and p2 2", members)
 	}
 
 	// The main server stops sharing with alice: p2 still does, so she stays.

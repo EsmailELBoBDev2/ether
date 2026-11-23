@@ -39,9 +39,9 @@ type PlexExtraServer struct {
 	Name string `json:"name,omitempty"`
 	// MachineIdentifier and ClientIdentifier are generated when the server
 	// is added and never change.
-	MachineIdentifier string `json:"machineIdentifier"`
-	ClientIdentifier  string `json:"clientIdentifier"`
-	State             string `json:"state"`
+	MachineIdentifier string            `json:"machineIdentifier"`
+	ClientIdentifier  string            `json:"clientIdentifier"`
+	State             string            `json:"state"`
 	Account           PlexServerAccount `json:"account"`
 	// Token is the server's own plex.tv token once claimed.
 	Token         string `json:"token,omitempty"`

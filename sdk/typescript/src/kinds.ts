@@ -8,6 +8,9 @@
 import type { PluginContext } from "./router.ts";
 import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText, normalizeStreamUrlOptions } from "./host.ts";
 import type {
+  FrontendArt,
+  FrontendBlob,
+  FrontendMedia,
   KindBrowseQuery,
   KindBrowseRequest,
   KindChangePage,
@@ -84,7 +87,15 @@ export interface FrontendAdapter<S = Record<string, unknown>> {
     headers: Record<string, string>,
     body: string,
     ctx?: PluginContext<S>,
-  ): MaybePromise<{ status: number; headers?: Record<string, string>; body: string }>;
+  ): MaybePromise<{
+    status: number;
+    headers?: Record<string, string>;
+    body: string;
+    /** Ether serves cached bytes, an item's media, or an item's artwork instead of body. */
+    blob?: FrontendBlob;
+    media?: FrontendMedia;
+    art?: FrontendArt;
+  }>;
 }
 
 export interface SetupTester<S = Record<string, unknown>> {
@@ -293,7 +304,11 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const res = await adapter.handle(method, subPath, headers, frontendBodyString(req), ctx);
     if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
     // A HEAD reply carries headers only, exactly as a real server would.
-    return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
+    const out: RawResponse = { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
+    if (res.blob) out.blob = res.blob;
+    if (res.media) out.media = res.media;
+    if (res.art) out.art = res.art;
+    return out;
   }
 
   if (method !== "GET" && method !== "POST") {

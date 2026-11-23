@@ -159,7 +159,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -755,6 +755,47 @@ unless the plugin explicitly declares a custom mapping.
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.
 
+### Frontend adapter authentication
+
+`contributes.frontendAdapters[].auth` picks how Ether authenticates the
+viewer before your adapter sees a request:
+
+| Mode | Client sends | Notes |
+|---|---|---|
+| `ether_token` (default) | `Authorization: Bearer <token>` (or the token as a Basic password) | Connect apps hands the viewer a token. |
+| `basic` | HTTP Basic, username + an Ether-issued app password | |
+| `none_lan` | nothing | Trusted LAN only, with an owner-picked viewer (DLNA rule). |
+| `query_credentials` | `u` plus `p` (plain or `enc:<hex>`) or `t` + `s` (`t` = md5(password + `s`), lowercase hex) on every request | Subsonic's scheme. Ether issues each viewer dedicated, revocable **app logins** (a generated username and a 15-character app password, like Xtream logins) from Connect apps and the adapter's page under Apps. The household password is never accepted, failed attempts share Ether's per-address sign-in limiter, and `p`, `t` and `s` are removed before the request reaches you (`u` stays). |
+
+In `query_credentials` mode a request without valid credentials is not
+answered with a bare 401: Ether relays it to
+`/ether/v1/frontend/{key}/.unauthenticated/<original path>` with **no**
+viewer headers or token, so you can answer in your protocol's own error
+shape (Subsonic error 40) or serve a document the protocol defines as
+public (OpenSubsonic's `getOpenSubsonicExtensions`). Anything you do not
+handle there (404) falls back to 401.
+
+### Host-served media and artwork
+
+An adapter response may name bytes for Ether to serve at the adapter URL
+itself, instead of a body or a redirect:
+
+- `{"media": {"itemRef", "partIndex"?, "source"?}}` — one of your playable
+  items, opened for the authenticated viewer through the same path as a
+  stream ticket (resolver, Range requests, read-ahead). Every Range request
+  re-authenticates with the client's own credentials, so players that seek
+  long after a 2-minute ticket would have expired keep working, and clients
+  that do not follow redirects are fine.
+- `{"art": {"itemRef", "role"?}}` — the stored artwork of one of your items
+  (`poster`, `thumb`, `backdrop`, `logo`; empty picks the first). Ether
+  fetches and caches the image; the URL comes from the stored item, never
+  from your response.
+
+Both are hosted-runtime fields (like `blob`), checked for item ownership
+and library visibility before anything is written. A hosted adapter's
+string `body` is the document itself (XML, HTML, text) and is written
+unquoted; object and array bodies are JSON.
+
 ## Matching
 
 Matching is yours; persistence and the console are Ether's. A manual
@@ -792,6 +833,26 @@ computed: `"cheap"` (the default) returns `total` only when it is O(1)
 single-page result) and omits `total` otherwise rather than scanning the
 library; `"none"` never computes or returns `total`; `"exact"` computes
 and caches an exact count for the current library generation.
+
+Frontend adapters also read and write the authenticated viewer's own
+state for your items, in the same stores every Ether app uses (likes are
+the viewer's favourites, plays and ratings their watch state, playlists
+their Ether playlists), so a star in a Subsonic app is a like in Vela.
+Hosted JS, all scoped to the adapter viewer and your own items of one kind:
+
+| Call | Returns |
+|---|---|
+| `ether.kinds.get(kind, ids)` | stored items the viewer may see (≤500 ids), in request order |
+| `ether.kinds.state(kind, ids)` | `[{id, playCount, lastPlayedAt?, favorite, rating?}]` (≤500) |
+| `ether.kinds.favorite(kind, ids, on)` | likes or unlikes (≤500) |
+| `ether.kinds.played(kind, id)` | records a completed play |
+| `ether.kinds.rate(kind, id, rating)` | 0–10, `0` clears |
+| `ether.kinds.favorites(kind, {level?, limit?})` | `[{id, level, addedAt}]`, newest first (≤1000) |
+| `ether.kinds.playlists(kind)` | the viewer's playlists that are empty or hold your items: `[{id, title, summary?, createdAt, updatedAt, total, items, indexes}]` (`items` lists only your items; `indexes` are their positions in the whole playlist) |
+| `ether.kinds.playlist(kind, id)` | one playlist |
+| `ether.kinds.playlistCreate(kind, title, ids)` | the new playlist |
+| `ether.kinds.playlistUpdate(kind, id, {title?, summary?, remove?, add?})` | `remove` takes whole-playlist positions and runs before `add` |
+| `ether.kinds.playlistDelete(kind, id)` | |
 
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already

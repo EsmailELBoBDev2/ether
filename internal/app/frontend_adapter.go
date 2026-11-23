@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -170,49 +172,12 @@ func (a *App) adapterStreamPartURL(issuer *frontendadapter.TicketIssuer) func(ct
 
 func (a *App) adapterStreamURLOptions(issuer *frontendadapter.TicketIssuer) func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
 	return func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
-		if issuer == nil || a.pluginsRT == nil || a.pluginsRT.pluginitems == nil || a.libraries == nil {
+		if issuer == nil {
 			return "", plugins.ErrUnavailable
 		}
-		if opts.PartIndex != nil && *opts.PartIndex < 0 {
-			return "", core.ErrNotFound
-		}
-		ref, err := core.ParseItemRef(itemRef)
+		ref, _, _, err := a.adapterItemAccess(ctx, pluginID, viewerID, itemRef, opts.PartIndex)
 		if err != nil {
-			return "", core.ErrNotFound
-		}
-		if ref.Plugin() != pluginID {
-			return "", plugins.ErrPermissionDenied
-		}
-		if viewerID <= 0 || a.users == nil {
-			return "", plugins.ErrPermissionDenied
-		}
-		viewer, err := a.users.PolicyUser(ctx, viewerID)
-		if err != nil || viewer == nil {
-			return "", plugins.ErrPermissionDenied
-		}
-		item, libID, err := a.pluginsRT.pluginitems.GetByRef(ctx, ref)
-		if err != nil {
-			return "", core.ErrNotFound
-		}
-		lib, err := a.libraries.Get(ctx, libID)
-		if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
-			return "", core.ErrNotFound
-		}
-		if opts.PartIndex != nil {
-			rec, kerr := a.pluginsRT.pluginitems.GetKindByLibrary(ctx, libID)
-			if kerr != nil {
-				return "", core.ErrNotFound
-			}
-			lv, _, ok := rec.Decl.Level(item.Level)
-			if !ok {
-				return "", core.ErrNotFound
-			}
-			if lv.Playable && item.Playable {
-				parts := core.ExtractKindItemPartsFromItem(item)
-				if len(parts) == 0 || *opts.PartIndex >= len(parts) {
-					return "", core.ErrNotFound
-				}
-			}
+			return "", err
 		}
 		return issuer.StreamURL(frontendadapter.StreamGrant{
 			ViewerID:  viewerID,
@@ -222,6 +187,59 @@ func (a *App) adapterStreamURLOptions(issuer *frontendadapter.TicketIssuer) func
 			Source:    opts.Source,
 		})
 	}
+}
+
+// adapterItemAccess is the shared authorization behind stream tickets and
+// host-served adapter media: the item must belong to the calling plugin, the
+// viewer must be an active policy user, and the item's library must be
+// visible to them. A part index must name an existing part of a playable
+// item.
+func (a *App) adapterItemAccess(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (core.ItemRef, core.KindItem, core.LibraryID, error) {
+	if a.pluginsRT == nil || a.pluginsRT.pluginitems == nil || a.libraries == nil {
+		return "", core.KindItem{}, 0, plugins.ErrUnavailable
+	}
+	if partIndex != nil && *partIndex < 0 {
+		return "", core.KindItem{}, 0, core.ErrNotFound
+	}
+	ref, err := core.ParseItemRef(itemRef)
+	if err != nil {
+		return "", core.KindItem{}, 0, core.ErrNotFound
+	}
+	if ref.Plugin() != pluginID {
+		return "", core.KindItem{}, 0, plugins.ErrPermissionDenied
+	}
+	if viewerID <= 0 || a.users == nil {
+		return "", core.KindItem{}, 0, plugins.ErrPermissionDenied
+	}
+	viewer, err := a.users.PolicyUser(ctx, viewerID)
+	if err != nil || viewer == nil {
+		return "", core.KindItem{}, 0, plugins.ErrPermissionDenied
+	}
+	item, libID, err := a.pluginsRT.pluginitems.GetByRef(ctx, ref)
+	if err != nil {
+		return "", core.KindItem{}, 0, core.ErrNotFound
+	}
+	lib, err := a.libraries.Get(ctx, libID)
+	if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
+		return "", core.KindItem{}, 0, core.ErrNotFound
+	}
+	if partIndex != nil {
+		rec, kerr := a.pluginsRT.pluginitems.GetKindByLibrary(ctx, libID)
+		if kerr != nil {
+			return "", core.KindItem{}, 0, core.ErrNotFound
+		}
+		lv, _, ok := rec.Decl.Level(item.Level)
+		if !ok {
+			return "", core.KindItem{}, 0, core.ErrNotFound
+		}
+		if lv.Playable && item.Playable {
+			parts := core.ExtractKindItemPartsFromItem(item)
+			if len(parts) == 0 || *partIndex >= len(parts) {
+				return "", core.KindItem{}, 0, core.ErrNotFound
+			}
+		}
+	}
+	return ref, item, libID, nil
 }
 
 func (a *App) viewerHasPluginContentFilter(viewer *core.User) bool {
@@ -659,4 +677,85 @@ func (r *adapterBlobReader) Close() error {
 	err := r.source.Close()
 	r.cancel()
 	return err
+}
+
+// ServeFrontendMedia serves a FrontendMedia descriptor: one of the plugin's
+// own playable items, opened for the authenticated adapter viewer through the
+// same KindStreams path as a redeemed stream ticket, with Range support.
+func (m adapterManager) ServeFrontendMedia(ctx context.Context, w http.ResponseWriter, r *http.Request, pluginID string, viewerID int64, allowed []core.LibraryID, spec plugins.FrontendMedia) {
+	ref, _, libID, err := m.app.adapterItemAccess(ctx, pluginID, viewerID, spec.ItemRef, spec.PartIndex)
+	if err != nil || !slices.Contains(allowed, libID) || frontendadapter.ValidateSource(spec.Source) != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	h := m.app.adapterMediaHandler()
+	if h == nil {
+		http.Error(w, "media unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h.ServeGrant(w, r, frontendadapter.StreamGrant{
+		ViewerID:  viewerID,
+		ItemID:    ref.String(),
+		Adapter:   pluginID,
+		PartIndex: spec.PartIndex,
+		Source:    spec.Source,
+	})
+}
+
+// ServeFrontendArt serves a FrontendArt descriptor: the stored artwork of one
+// of the plugin's own items, fetched through the guarded, cached remote image
+// fetcher. The URL comes from the stored item, never from the response, so a
+// plugin cannot use this to proxy arbitrary addresses.
+func (m adapterManager) ServeFrontendArt(ctx context.Context, w http.ResponseWriter, r *http.Request, pluginID string, viewerID int64, allowed []core.LibraryID, spec plugins.FrontendArt) {
+	_, item, libID, err := m.app.adapterItemAccess(ctx, pluginID, viewerID, spec.ItemRef, nil)
+	if err != nil || !slices.Contains(allowed, libID) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	rawURL := ""
+	for _, art := range item.Art {
+		if strings.TrimSpace(art.URL) == "" {
+			continue
+		}
+		if spec.Role == "" || strings.EqualFold(art.Role, spec.Role) {
+			rawURL = art.URL
+			break
+		}
+	}
+	if rawURL == "" && spec.Role != "" {
+		for _, art := range item.Art {
+			if strings.TrimSpace(art.URL) != "" {
+				rawURL = art.URL
+				break
+			}
+		}
+	}
+	fetch := m.app.opts.urlImages
+	if fetch == nil && m.app.images != nil {
+		fetch = m.app.images
+	}
+	if rawURL == "" || fetch == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	data, ct, err := fetch.GetUntrustedURL(ctx, rawURL)
+	if err != nil || len(data) == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if !strings.HasPrefix(ct, "image/") {
+		ct = http.DetectContentType(data)
+		if !strings.HasPrefix(ct, "image/") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
 }

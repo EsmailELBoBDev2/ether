@@ -772,8 +772,8 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 		if a.DefaultPort < 0 || a.DefaultPort > 65535 {
 			add(base+".defaultPort", "must be a port number")
 		}
-		if a.Auth != "" && !map[string]bool{"ether_token": true, "basic": true, "none_lan": true}[a.Auth] {
-			add(base+".auth", "must be ether_token, basic or none_lan")
+		if a.Auth != "" && !map[string]bool{"ether_token": true, "basic": true, "none_lan": true, "query_credentials": true}[a.Auth] {
+			add(base+".auth", "must be ether_token, basic, none_lan or query_credentials")
 		}
 		seenLib := map[string]bool{}
 		for j, key := range a.Libraries {

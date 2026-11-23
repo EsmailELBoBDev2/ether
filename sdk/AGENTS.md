@@ -692,9 +692,22 @@ built-in protocol projectors:
   and dropping unknown or hidden IDs. Use this when your adapter builds a custom
   list or keeps its own index and needs to prune hidden items before returning them.
 
+- `kinds.get(kind, ids)` — the stored items (up to **500**) the viewer may see, in
+  request order (hosted JS).
+- Viewer state for your own items, stored in Ether's shared favourites, watch
+  state and playlists (a like here is a like in every Ether app), hosted JS:
+  `kinds.state`, `kinds.favorite`, `kinds.played`, `kinds.rate`,
+  `kinds.favorites`, `kinds.playlists`, `kinds.playlist`, `kinds.playlistCreate`,
+  `kinds.playlistUpdate`, `kinds.playlistDelete`. See docs/plugin-kinds.md › Host services.
+- Adapter auth `query_credentials` (Subsonic `u` + `p`/`t`+`s`) authenticates
+  Ether-issued per-viewer app logins; failed requests are relayed to
+  `/ether/v1/frontend/{key}/.unauthenticated/…` without a viewer so you can answer
+  your protocol's own error. Answer `{media: {itemRef}}` or `{art: {itemRef, role}}`
+  to have Ether serve an item's bytes (with ranges) or artwork at the adapter URL.
+
 **Security guard:** Only viewer-authenticated frontend adapter requests
 (`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
-`kinds.visible` or `kinds.browse`. Any other route (catalogue browse, jobs,
+`kinds.visible`, `kinds.browse` or the viewer-state calls above. Any other route (catalogue browse, jobs,
 views, actions, unauthenticated requests) receives a permission error. The
 viewer identity always comes from Ether's authenticated request context (and the
 host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin

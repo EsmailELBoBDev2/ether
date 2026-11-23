@@ -35,7 +35,7 @@ func isConnectablePluginAdapter(d frontend.Descriptor) bool {
 		return false
 	}
 	switch d.Auth {
-	case "", "ether_token", "basic":
+	case "", "ether_token", "basic", "query_credentials":
 		return true
 	default:
 		return false
@@ -182,8 +182,9 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	}
 	device := core.Device{ID: surface + "-" + hex.EncodeToString(id[:]), Client: clientName, Product: clientName}
 	var secret, xtreamUsername, xtreamPassword string
-	if surface == "xtream" {
-		xtreamUsername, xtreamPassword, secret, err = h.deps.IdentityGrants.IssueXtream(r.Context(), viewer.ID, device)
+	appLogin := surface == "xtream" || isPlugin && pluginDesc.Auth == "query_credentials"
+	if appLogin {
+		xtreamUsername, xtreamPassword, secret, err = h.deps.IdentityGrants.IssueAppLogin(r.Context(), viewer.ID, surface, device)
 	} else {
 		secret, err = h.deps.IdentityGrants.Issue(r.Context(), viewer.ID, nil, surface, device)
 	}
@@ -219,7 +220,10 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	case isPlugin:
 		u.Path = basePath
 		result["url"] = strings.TrimRight(u.String(), "/")
-		if pluginDesc.Auth == "basic" {
+		if appLogin {
+			result["username"] = xtreamUsername
+			result["password"] = xtreamPassword
+		} else if pluginDesc.Auth == "basic" {
 			result["username"] = connectAppUsername(viewer)
 			result["password"] = secret
 		} else {
@@ -304,6 +308,29 @@ func (h *Handler) xtreamServerURL(r *http.Request) string {
 	return strings.TrimRight(u.String(), "/")
 }
 
+// adapterServerURL is the address a plugin adapter's clients sign in to, or ""
+// when the adapter is not enabled or the server has no reachable address.
+func (h *Handler) adapterServerURL(r *http.Request, surface string) string {
+	if h.deps.Frontends == nil {
+		return ""
+	}
+	infos, err := h.deps.Frontends.List(r.Context())
+	if err != nil {
+		return ""
+	}
+	for _, info := range infos {
+		if string(info.Descriptor.ID) != surface || !info.Enabled || !isConnectablePluginAdapter(info.Descriptor) {
+			continue
+		}
+		u, err := h.resolveAppAddress(r.Context(), r, surface, info.Descriptor.PathPrefix, false)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimRight(u.String(), "/")
+	}
+	return ""
+}
+
 func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	access, ok := RequestAccess(r.Context())
@@ -321,12 +348,23 @@ func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Hash  string `json:"hash"`
-		Limit int    `json:"limit"`
+		Hash    string `json:"hash"`
+		Limit   int    `json:"limit"`
+		Surface string `json:"surface"`
 	}
 	if decodeJSON(r, &body) != nil {
 		writeError(w, 400, "invalid", "invalid request")
 		return
+	}
+	// Reveal also serves plugin adapters' app logins (query credentials);
+	// the stream limit stays Xtream-only.
+	surface := "xtream"
+	if body.Surface != "" && !strings.HasSuffix(r.URL.Path, "/limit") {
+		if !strings.HasPrefix(body.Surface, "plugin:") {
+			writeError(w, 400, "invalid", "invalid request")
+			return
+		}
+		surface = body.Surface
 	}
 	if strings.HasSuffix(r.URL.Path, "/limit") {
 		if h.deps.IdentityGrants.SetXtreamStreamLimit(r.Context(), id, body.Hash, body.Limit) != nil {
@@ -336,10 +374,14 @@ func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 		return
 	}
-	username, password, available, err := h.deps.IdentityGrants.RevealXtream(r.Context(), id, body.Hash)
+	username, password, available, err := h.deps.IdentityGrants.RevealAppLogin(r.Context(), id, surface, body.Hash)
 	if err != nil {
 		writeError(w, 404, "not_found", "login unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"available": available, "url": h.xtreamServerURL(r), "username": username, "password": password})
+	serverURL := h.xtreamServerURL(r)
+	if surface != "xtream" {
+		serverURL = h.adapterServerURL(r, surface)
+	}
+	writeJSON(w, 200, map[string]any{"available": available, "url": serverURL, "username": username, "password": password})
 }

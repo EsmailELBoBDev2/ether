@@ -539,6 +539,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		StreamURLOptions:           a.adapterStreamURLOptions(adapterTickets),
 		MediaProbe:                 kindResolver.ProbeMedia,
 	})
+	mgr.SetKindViewerState(adapterViewerState{app: a})
 
 	if err := mgr.Start(ctx); err != nil {
 		cancelRun()

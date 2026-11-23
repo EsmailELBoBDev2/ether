@@ -247,11 +247,13 @@ const (
 	discoveryWindow      = 500 * time.Millisecond
 	criticalPathDeadline = 4 * time.Second
 	// playStartDeadline bounds how long a viewer's Play waits on indexers that
-	// have not answered. After it, Play validates what has arrived (foreground
+	// have not answered and on inconclusive Usenet health checks once an NZB
+	// is already in hand. After it, Play validates what has arrived (foreground
 	// checks may add a torrent to the debrid account) while the stragglers
-	// finish into the search cache. Without it one slow indexer held Play to
-	// its 30 s timeout, past the client's own decision budget.
-	playStartDeadline = 6 * time.Second
+	// finish into the search cache. Without it one slow indexer or congested
+	// Usenet health wave held Play to a 25–30 s timeout, past the client's
+	// decision budget.
+	playStartDeadline = 5 * time.Second
 )
 
 func (p *searchPreparation) readyResults() []core.Release {

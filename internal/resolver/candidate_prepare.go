@@ -213,6 +213,9 @@ func (s *Service) runValidation(workCtx context.Context, cand candidate, i int, 
 			if workCtx.Err() != nil {
 				break
 			}
+			if pastPlayDeadline(workCtx) && (inconclusiveCheck(v) || hasUnverified(workCtx)) {
+				break
+			}
 			if fb.rel.OpensOnDemand() && !core.OnDemandAllowedAt(workCtx, fb.rel, i) {
 				continue
 			}
@@ -246,6 +249,9 @@ func (s *Service) runValidation(workCtx context.Context, cand candidate, i int, 
 			}
 			if workCtx.Value(speculativeHealthKey{}) == nil && (fv.err == nil || permanentFailure(fv.err) || (!fv.healthChecked && permanentGrabFailure(fv.err))) {
 				s.recordFailedValidation(workCtx, fbRel, fv)
+			}
+			if pastPlayDeadline(workCtx) && (inconclusiveCheck(fv) || hasUnverified(workCtx)) {
+				break
 			}
 		}
 		if v.promoted == nil {
@@ -328,14 +334,16 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 				}
 			}
 			if !reusedVerdict {
+				healthCtx, cancelHealth := withForegroundHealthDeadline(ctx)
 				if s.usenetBackingOff() && protocolOf(rel) == core.ProtocolUsenet {
-					v.healthy, v.err = core.CheckReleaseHealth(ctx, s.health, rel.ID, v.nzb)
+					v.healthy, v.err = core.CheckReleaseHealth(healthCtx, s.health, rel.ID, v.nzb)
 					if v.healthy && v.err == nil && ctx.Value(speculativeHealthKey{}) == nil {
 						s.markVerifiedKeys(ctx, verifyKeys)
 					}
 				} else {
-					v.healthy, v.healthCached, v.err = s.checkHealthCachedKeys(ctx, rel.ID, verifyKeys, v.nzb)
+					v.healthy, v.healthCached, v.err = s.checkHealthCachedKeys(healthCtx, rel.ID, verifyKeys, v.nzb)
 				}
+				cancelHealth()
 				if !v.healthCached && ctx.Value(speculativeHealthKey{}) == nil {
 					if v.healthy && v.err == nil {
 						s.recordUsenetVerdict(rel, v.nzb, true, "")

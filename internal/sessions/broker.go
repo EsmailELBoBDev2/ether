@@ -1453,7 +1453,7 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		}
 		return nil
 	}
-	if err := b.observeSubtitleSelection(ctx, s, t); err != nil {
+	if err := b.observeSubtitleSelection(ctx, s, t); err != nil && !errors.Is(err, core.ErrSourceChanged) {
 		rollbackSequence()
 		return err
 	}

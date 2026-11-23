@@ -520,6 +520,9 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 				budgetHit = true
 				return LaunchHold, time.Time{}
 			}
+			if pastPlayDeadlineWithUnverified(ctx) {
+				return LaunchHold, time.Time{}
+			}
 			if attempts.Load() >= int64(maxHealthAttempts) {
 				budgetHit = true
 				return LaunchHold, time.Time{}

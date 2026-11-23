@@ -59,6 +59,9 @@ func (i *instance) extraItem(parent frontend.ItemDetail, clip frontend.Extra) ma
 	item := map[string]any{
 		"Id": id, "Name": name, "Type": "Trailer", "MediaType": "Video", "IsFolder": false,
 		"ServerId": i.info.ID, "ParentId": ids.RatingKeyGUID(parentKey),
+		"UserData":          i.userDataDTO(id, frontend.WatchStatus{}),
+		"ImageTags":         map[string]string{},
+		"BackdropImageTags": []string{},
 	}
 	if clip.Duration > 0 {
 		item["RunTimeTicks"] = clip.Duration.Nanoseconds() / 100

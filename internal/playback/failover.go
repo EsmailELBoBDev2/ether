@@ -1460,7 +1460,11 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	if err := lock(ctx, s.failSem); err != nil {
 		return nil, err
 	}
-	defer unlock(s.failSem)
+	s.failingOver.Store(true)
+	defer func() {
+		s.failingOver.Store(false)
+		unlock(s.failSem)
+	}()
 	// lock's select is random when the semaphore frees as ctx is cancelled
 	// (a stopped Live TV session): a cancelled caller opens no provider.
 	if err := ctx.Err(); err != nil {

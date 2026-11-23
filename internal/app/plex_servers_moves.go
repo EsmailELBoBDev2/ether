@@ -226,6 +226,7 @@ func (ps *plexExtras) move(ctx context.Context, userIDs []int64, to string, remo
 			out = append(out, res)
 			continue
 		}
+		ps.noteInvited(ctx, target)
 		if removeOld {
 			for _, id := range from {
 				if id == target {
@@ -299,6 +300,9 @@ func (ps *plexExtras) invite(ctx context.Context, handle string, plexID int64) (
 		return res, err
 	}
 	res.InviteURL, err = client.ShareServerInvite(ctx, token, handle, plexID, nil)
+	if err == nil {
+		ps.noteInvited(ctx, target)
+	}
 	return res, err
 }
 

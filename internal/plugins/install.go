@@ -701,8 +701,11 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
 				return Record{}, err
 			}
-		} else if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
-			// The library sync after this install rebuilds the changed kinds.
+		} else {
+			// The library sync after this install rebuilds the kinds whose
+			// stored shape no longer matches (only those). Marked on every
+			// such install, so reinstalling with the option repairs a
+			// rebuild that a restart interrupted.
 			m.markReplaceLibraries(man.ID)
 		}
 		added := PermissionDiff(cur.Manifest, man)

@@ -131,3 +131,34 @@ func TestLocalSignInSurvivesUnshareButPlexAccessEnds(t *testing.T) {
 		t.Fatalf("after a second sync: active=%v plexShared=%v", a, shared)
 	}
 }
+
+// A move: the viewer is accepted on the main server and invited (pending) on
+// p2. p2's sync must not switch them off while main still shares with them.
+func TestPendingInviteOnAnotherServerKeepsAccess(t *testing.T) {
+	s, _, _ := setup(t)
+	ctx := context.Background()
+	if err := s.SyncServerFriends(ctx, "p2", []plextv.Friend{
+		{PlexID: 100, Username: "alice", Pending: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := s.Authenticate(ctx, "alice-access"); err != nil || u.Username != "alice" {
+		t.Fatalf("alice lost main-server access to a pending invite on p2: %+v %v", u, err)
+	}
+	// A brand-new viewer only invited (pending) is still not active.
+	if err := s.SyncServerFriends(ctx, "p2", []plextv.Friend{
+		{PlexID: 100, Username: "alice", Pending: true},
+		{PlexID: 555, Username: "newcomer", Pending: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.AllUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range all {
+		if u.PlexID == 555 && u.Active {
+			t.Fatal("a pending-only viewer became active")
+		}
+	}
+}

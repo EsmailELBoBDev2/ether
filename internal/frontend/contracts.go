@@ -1403,3 +1403,10 @@ type QualitySessions interface {
 	QualityRungs(context.Context, SessionAccess, string) ([]HLSRung, error)
 	PrepareQuality(context.Context, SessionAccess, string, string, time.Duration) (string, time.Duration, error)
 }
+
+// VideoTranscodingPolicy reports the owner's per-viewer "No video
+// transcoding" switch, so a frontend can offer only rungs and releases that
+// play without re-encoding video for that viewer.
+type VideoTranscodingPolicy interface {
+	VideoTranscodingDisabled(*User) bool
+}

@@ -16,8 +16,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/listcache"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
-	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 type Frontend struct{}

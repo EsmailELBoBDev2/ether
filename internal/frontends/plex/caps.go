@@ -260,9 +260,7 @@ func (s *Server) stampViewerTranscoding(u *frontend.User, caps *frontend.ClientC
 	if s == nil || u == nil || caps == nil {
 		return
 	}
-	if policy, ok := s.policy().(interface {
-		VideoTranscodingDisabled(*frontend.User) bool
-	}); ok && policy.VideoTranscodingDisabled(u) {
+	if policy, ok := s.policy().(frontend.VideoTranscodingPolicy); ok && policy.VideoTranscodingDisabled(u) {
 		caps.NoVideoTranscode = true
 	}
 }

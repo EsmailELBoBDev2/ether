@@ -13,9 +13,9 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/conformance"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/support"
-	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // Frontend is the independent Silo surface.

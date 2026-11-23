@@ -227,7 +227,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 
 	v.port("plex.publicPort", cfg.Plex.PublicPort, true)
 	if cfg.Plex.MaxExtraServers < 0 || cfg.Plex.MaxExtraServers > config.MaxExtraPlexServersLimit {
-		v.add("plex.maxExtraServers", fmt.Sprintf("must be between 0 and %d", config.MaxExtraPlexServersLimit))
+		v.add("plex.maxExtraServers", "must be between 0 and %d", config.MaxExtraPlexServersLimit)
 	}
 	if cfg.Plex.SeatsPerServer < 0 || cfg.Plex.SeatsPerServer > 1000 {
 		v.add("plex.seatsPerServer", "must be between 0 and 1000")

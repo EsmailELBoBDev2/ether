@@ -29,6 +29,18 @@ type KindUpsertResult struct {
 	Unchanged int
 }
 
+// KindUpsertUndo is the upsert result plus the exact change set committed for
+// the undo journal (#766): AddedIDs were newly inserted, UpdatedIDs had a
+// different content hash from the stored row, and Previous carries pre-write
+// copies of UpdatedIDs only when requested (omitted for unchanged items and for
+// kinds declaring sync.undo: "ids").
+type KindUpsertUndo struct {
+	Result     KindUpsertResult
+	AddedIDs   []string
+	UpdatedIDs []string
+	Previous   []core.KindItem
+}
+
 // KindBackends are the Ether services the kind host calls end in: the
 // plugin-item store, the source resolver and the blob cache. Any field
 // may be nil, in which case the matching host call returns
@@ -40,10 +52,15 @@ type KindBackends struct {
 	// KindUpsertStats, when set, is preferred over KindUpsert and its
 	// counts ride the host reply.
 	KindUpsertStats func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
-	KindDelete      func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems       func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
-	KindItemsByID   func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
-	KindItemCount   func(ctx context.Context, pluginID string) (int, error)
+	// KindUpsertUndo, when set, is preferred over KindUpsertStats and
+	// KindUpsert: it reports the committed added/updated IDs from the store's
+	// content-hash check and reads previous copies only for modified items when
+	// snapshotPrevious is true (#766).
+	KindUpsertUndo func(ctx context.Context, pluginID, kindKey string, items []core.KindItem, snapshotPrevious bool) (KindUpsertUndo, error)
+	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
 	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
@@ -78,6 +95,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.mu.Lock()
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindUpsertStats = b.KindUpsertStats
+	m.deps.Backends.KindUpsertUndo = b.KindUpsertUndo
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
 	m.deps.Backends.KindItemsByID = b.KindItemsByID
@@ -105,6 +123,7 @@ func (m *Manager) kindBackends() KindBackends {
 	return KindBackends{
 		KindUpsert:                 m.deps.Backends.KindUpsert,
 		KindUpsertStats:            m.deps.Backends.KindUpsertStats,
+		KindUpsertUndo:             m.deps.Backends.KindUpsertUndo,
 		KindDelete:                 m.deps.Backends.KindDelete,
 		KindItems:                  m.deps.Backends.KindItems,
 		KindItemsByID:              m.deps.Backends.KindItemsByID,
@@ -232,24 +251,33 @@ func (h *host) kindCheck(ctx context.Context, kindKey string, caps ...Capability
 type kindInverse struct {
 	Op       string          `json:"op"`
 	Kind     string          `json:"kind"`
-	Items    []string        `json:"items,omitempty"`    // external ids touched (or created on upsert)
+	Items    []string        `json:"items,omitempty"`    // external ids created on upsert (or targeted on delete/shadow)
+	Touched  []string        `json:"touched,omitempty"`  // existing external ids modified under sync.undo: "ids"
 	Previous []core.KindItem `json:"previous,omitempty"` // previous items before upsert or delete
+}
+
+func uniqueIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	return unique
 }
 
 // snapshotKindItems looks up any existing items for kindKey whose IDs
 // are in ids so a live KindUpsert or KindDelete can record a real
 // inverse in the journal.
 func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []string) (existing []core.KindItem, missing []string) {
-	if len(ids) == 0 {
+	unique := uniqueIDs(ids)
+	if len(unique) == 0 {
 		return nil, nil
-	}
-	unique := make([]string, 0, len(ids))
-	seenID := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		if !seenID[id] {
-			seenID[id] = true
-			unique = append(unique, id)
-		}
 	}
 	readFn := h.m.kindBackends().KindItemsByID
 	if readFn == nil {
@@ -307,10 +335,40 @@ func (h *host) KindUpsertWithResult(ctx context.Context, kindKey string, items [
 		return KindUpsertResult{Accepted: len(items)}, h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
 	}
 	backends := h.m.kindBackends()
-	if backends.KindUpsert == nil && backends.KindUpsertStats == nil {
+	if backends.KindUpsert == nil && backends.KindUpsertStats == nil && backends.KindUpsertUndo == nil {
 		return KindUpsertResult{}, ErrUnavailable
 	}
-	prev, created := h.snapshotKindItems(ctx, kindKey, ids)
+	idsOnly := decl.Sync.Undo == KindSyncUndoIDs
+	if backends.KindUpsertUndo != nil {
+		u, err := backends.KindUpsertUndo(ctx, h.plugin, kindKey, items, !idsOnly)
+		if err != nil {
+			return KindUpsertResult{}, err
+		}
+		inv := kindInverse{
+			Op:    "kinds.upsert",
+			Kind:  kindKey,
+			Items: u.AddedIDs,
+		}
+		if idsOnly {
+			inv.Touched = u.UpdatedIDs
+		} else {
+			inv.Previous = u.Previous
+		}
+		if len(inv.Items) == 0 && len(inv.Touched) == 0 && len(inv.Previous) == 0 {
+			return u.Result, nil
+		}
+		if err := h.journal(ctx, r, "kinds.upsert", kindKey, inv); err != nil {
+			return KindUpsertResult{}, err
+		}
+		return u.Result, nil
+	}
+	var prev []core.KindItem
+	var created []string
+	if idsOnly {
+		created = uniqueIDs(ids)
+	} else {
+		prev, created = h.snapshotKindItems(ctx, kindKey, ids)
+	}
 	var result KindUpsertResult
 	if backends.KindUpsertStats != nil {
 		result, err = backends.KindUpsertStats(ctx, h.plugin, kindKey, items)
@@ -359,7 +417,10 @@ func (h *host) KindDelete(ctx context.Context, kindKey string, externalIDs []str
 	if backend == nil {
 		return ErrUnavailable
 	}
-	prev, _ := h.snapshotKindItems(ctx, kindKey, externalIDs)
+	var prev []core.KindItem
+	if decl.Sync.Undo != KindSyncUndoIDs {
+		prev, _ = h.snapshotKindItems(ctx, kindKey, externalIDs)
+	}
 	if err := backend(ctx, h.plugin, kindKey, externalIDs); err != nil {
 		return err
 	}

@@ -102,7 +102,19 @@ const (
 	// JournalSettledMaxAge is how long an undone or shadow journal entry
 	// (one undo can no longer act on) stays in the activity history.
 	JournalSettledMaxAge = 90 * 24 * time.Hour
-	MaxFetchBytes        = wasm.MaxFetchBodyBytes
+	// JournalLiveMaxEntries is the maximum number of live (applied, non-shadow,
+	// non-undone) journal entries kept per plugin and read by UndoSince (#766).
+	JournalLiveMaxEntries = 10000
+	// JournalLiveMaxAge is the maximum age of live journal entries kept per plugin.
+	JournalLiveMaxAge = 30 * 24 * time.Hour
+	// JournalLiveMaxBytes is the per-plugin byte budget for live journal
+	// inverse payloads (UTF-8 byte length of plugins_journal.inverse).
+	JournalLiveMaxBytes int64 = 256 << 20
+	// journalLivePruneBatch caps one live-journal delete transaction so large
+	// journals shrink incrementally without long write locks or WAL spikes.
+	journalLivePruneBatch = 200
+	journalPruneYield     = 5 * time.Millisecond
+	MaxFetchBytes         = wasm.MaxFetchBodyBytes
 )
 
 // Grants is what the owner has granted one plugin on top of its manifest
@@ -785,12 +797,166 @@ func (s *storage) markUndone(ctx context.Context, id int64) error {
 }
 
 // pruneJournal deletes settled journal entries older than
-// JournalSettledMaxAge. Live entries (applied, not shadow, not undone) are
-// what "Undo everything" and undo-to-here replay, so they are never pruned.
+// JournalSettledMaxAge, then trims each plugin's live (applied, non-shadow,
+// non-undone) journal to what undo can reach: at most JournalLiveMaxEntries
+// entries, no older than JournalLiveMaxAge, and within JournalLiveMaxBytes of
+// inverse payload data. Live entries are removed oldest-first in bounded
+// batches so existing large journals shrink incrementally without leaving gaps
+// in the remaining undo history (#766).
 func (s *storage) pruneJournal(ctx context.Context) (int64, error) {
-	return store.PruneBatched(ctx, s.db,
+	return s.pruneJournalWithLimits(ctx, JournalLiveMaxEntries, JournalLiveMaxAge, JournalLiveMaxBytes, journalLivePruneBatch)
+}
+
+func (s *storage) pruneJournalWithLimits(ctx context.Context, maxEntries int, maxAge time.Duration, maxBytes int64, batchSize int) (int64, error) {
+	settled, err := store.PruneBatched(ctx, s.db,
 		`DELETE FROM plugins_journal WHERE id IN (SELECT id FROM plugins_journal WHERE (undone=1 OR shadow=1) AND created<? ORDER BY created LIMIT ?)`,
 		s.now().Add(-JournalSettledMaxAge).Unix())
+	if err != nil {
+		return settled, err
+	}
+	if batchSize <= 0 {
+		batchSize = journalLivePruneBatch
+	}
+	pluginIDs, err := s.journalPlugins(ctx)
+	if err != nil {
+		return settled, err
+	}
+	minCreated := s.now().Add(-maxAge).Unix()
+	total := settled
+	for _, pluginID := range pluginIDs {
+		cutoffID, err := s.liveJournalCutoff(ctx, pluginID, maxEntries, minCreated, maxBytes)
+		if err != nil {
+			return total, err
+		}
+		if cutoffID == 0 {
+			continue
+		}
+		n, err := s.deleteLiveJournalUpTo(ctx, pluginID, cutoffID, batchSize)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+func (s *storage) journalPlugins(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT plugin FROM plugins_journal`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// liveJournalCutoff scans pluginID's newest live entries (at most maxEntries+1
+// rows) and returns the highest entry id that exceeds any retention bound
+// (age, count, or cumulative inverse byte budget). Returning 0 means every live
+// entry for pluginID is within bounds.
+func (s *storage) liveJournalCutoff(ctx context.Context, pluginID string, maxEntries int, minCreated, maxBytes int64) (int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, created, octet_length(inverse) FROM plugins_journal WHERE plugin=? AND undone=0 AND shadow=0 ORDER BY id DESC LIMIT ?`,
+		pluginID, maxEntries+1)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var (
+		kept      int
+		keptBytes int64
+		cutoffID  int64
+	)
+	for rows.Next() {
+		var id, created, invBytes int64
+		if err := rows.Scan(&id, &created, &invBytes); err != nil {
+			return 0, err
+		}
+		if created < minCreated || kept >= maxEntries || keptBytes+invBytes > maxBytes {
+			cutoffID = id
+			break
+		}
+		kept++
+		keptBytes += invBytes
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return cutoffID, nil
+}
+
+func (s *storage) deleteLiveJournalUpTo(ctx context.Context, pluginID string, cutoffID int64, batchSize int) (int64, error) {
+	var (
+		total   int64
+		afterID int64
+	)
+	for {
+		ids, err := s.nextLiveJournalBatch(ctx, pluginID, afterID, cutoffID, batchSize)
+		if err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		afterID = ids[len(ids)-1]
+		placeholders := make([]string, len(ids))
+		args := make([]any, len(ids))
+		for i, id := range ids {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		res, err := s.db.ExecContext(ctx,
+			`DELETE FROM plugins_journal WHERE undone=0 AND shadow=0 AND id IN (`+strings.Join(placeholders, ",")+`)`,
+			args...)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if len(ids) < batchSize || afterID >= cutoffID {
+			return total, nil
+		}
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		case <-time.After(journalPruneYield):
+		}
+		if err := store.WaitWALBudget(ctx, s.db); err != nil {
+			return total, err
+		}
+	}
+}
+
+func (s *storage) nextLiveJournalBatch(ctx context.Context, pluginID string, afterID, cutoffID int64, limit int) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM plugins_journal WHERE plugin=? AND undone=0 AND shadow=0 AND id>? AND id<=? ORDER BY id ASC LIMIT ?`,
+		pluginID, afterID, cutoffID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func capRing(ctx context.Context, db *sql.DB, table, plugin string, cap int) {

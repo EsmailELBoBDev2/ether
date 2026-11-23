@@ -53,6 +53,7 @@ type Backends struct {
 	// source resolver and per-library blob cache.
 	KindUpsert           func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindUpsertStats      func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
+	KindUpsertUndo       func(ctx context.Context, pluginID, kindKey string, items []core.KindItem, snapshotPrevious bool) (KindUpsertUndo, error)
 	KindDelete           func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems            func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
 	KindItemsByID        func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
@@ -1535,7 +1536,8 @@ func (m *Manager) OnRemove(fn func(ctx context.Context, id string)) {
 }
 
 // Prune applies the plugin retention that is not bounded at write time:
-// settled journal entries past JournalSettledMaxAge.
+// settled journal entries past JournalSettledMaxAge and live journal entries
+// past the per-plugin entry, age, or byte bounds.
 func (m *Manager) Prune(ctx context.Context) (int64, error) {
 	if m == nil || m.store == nil || m.store.db == nil {
 		return 0, nil

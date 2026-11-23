@@ -282,9 +282,12 @@ export function InstalledPluginDrawer({
     if (!detail) return;
     const ok = await confirmDialog({
       title: t("Undo everything this plugin did?"),
-      message: t("This reverses every collection and watch-state change recorded for {name}.", {
-        name: detail.name,
-      }),
+      message: t(
+        "Reverses recorded changes for {name} (kept for up to 30 days, 10,000 changes, or 256 MiB).",
+        {
+          name: detail.name,
+        },
+      ),
       confirmLabel: t("Undo changes"),
       tone: "danger",
     });

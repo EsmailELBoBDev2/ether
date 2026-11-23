@@ -691,10 +691,10 @@ func (m *Manager) UndoAll(ctx context.Context, pluginID string) (int, error) {
 }
 
 // UndoSince reverses the plugin's changes back to and including entry
-// since (0 means all of them), newest first, so an older change is never
-// reversed underneath a later one.
+// since (0 means all of them within the retained live journal window),
+// newest first, so an older change is never reversed underneath a later one.
 func (m *Manager) UndoSince(ctx context.Context, pluginID string, since int64) (int, error) {
-	entries, err := m.store.journalList(ctx, pluginID, 10000, true)
+	entries, err := m.store.journalList(ctx, pluginID, JournalLiveMaxEntries, true)
 	if err != nil {
 		return 0, err
 	}
@@ -770,11 +770,11 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 		if err := json.Unmarshal(e.Inverse, &inv); err != nil {
 			return err
 		}
-		b := m.kindBackends()
-		if b.KindUpsert == nil {
-			return ErrUnavailable
-		}
 		if len(inv.Previous) > 0 {
+			b := m.kindBackends()
+			if b.KindUpsert == nil {
+				return ErrUnavailable
+			}
 			_, err := b.KindUpsert(ctx, e.Plugin, inv.Kind, inv.Previous)
 			return err
 		}

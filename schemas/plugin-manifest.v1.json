@@ -1483,6 +1483,12 @@
                       },
                       "refresh": {
                         "type": "string"
+                      },
+                      "undo": {
+                        "enum": [
+                          "snapshots",
+                          "ids"
+                        ]
                       }
                     },
                     "type": "object"

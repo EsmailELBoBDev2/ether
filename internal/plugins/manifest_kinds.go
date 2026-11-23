@@ -600,6 +600,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			add(base+".sync.refresh", "must be a duration of at least 15m")
 		}
 	}
+	if k.Sync.Undo != "" {
+		if k.Sync.Mode != KindSyncPush {
+			add(base+".sync.undo", "only push kinds configure sync.undo")
+		} else if k.Sync.Undo != KindSyncUndoSnapshots && k.Sync.Undo != KindSyncUndoIDs {
+			add(base+".sync.undo", "must be snapshots or ids")
+		}
+	}
 	if k.Cache.MaxBytes < 0 {
 		add(base+".cache.maxBytes", "must not be negative")
 	}

@@ -2,6 +2,7 @@ package pluginitems
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -21,14 +22,19 @@ type upsertChunkResult struct {
 	updated    int
 	unchanged  int
 	totalItems int64
+	addedIDs   []string
+	updatedIDs []string
+	previous   []core.KindItem
 }
 
 // writeUpsertChunk writes one chunk of prepared items in a single
 // transaction. Existing items whose content hash matches are not
 // rewritten — no plugin_items index churn, no FTS replace, no field or
 // art delete/reinsert — only their seen bookkeeping is refreshed, in one
-// statement, and only when it would change.
-func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen, markOK, pin bool) (upsertChunkResult, error) {
+// statement, and only when it would change. When captureUndo is true, the
+// committed added/updated IDs are returned, and when snapshotPrevious is also
+// true, pre-write copies are loaded only for items whose content hash changed.
+func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen, markOK, pin, captureUndo, snapshotPrevious bool) (upsertChunkResult, error) {
 	var res upsertChunkResult
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -50,12 +56,18 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 		case !ok:
 			changed[i] = true
 			res.added++
+			if captureUndo {
+				res.addedIDs = append(res.addedIDs, chunk[i].validated.Item.ID)
+			}
 		case ex.hash != "" && ex.hash == chunk[i].hash:
 			unchangedRefs = append(unchangedRefs, ref)
 			res.unchanged++
 		default:
 			changed[i] = true
 			res.updated++
+			if captureUndo {
+				res.updatedIDs = append(res.updatedIDs, chunk[i].validated.Item.ID)
+			}
 		}
 	}
 
@@ -120,6 +132,13 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 	}
 	var oldFieldsByRef map[core.ItemRef][]existingTextField
 	if len(changedExisting) > 0 {
+		if captureUndo && snapshotPrevious {
+			prev, err := queryItemsByRefTx(ctx, tx, changedExisting)
+			if err != nil {
+				return res, err
+			}
+			res.previous = prev
+		}
 		oldFields, err := lookupExistingTextFieldsTx(ctx, tx, changedExisting)
 		if err != nil {
 			return res, err
@@ -462,4 +481,80 @@ INSERT INTO plugin_items(
 		s.noteWrite()
 	}
 	return res, nil
+}
+
+// queryItemsByRefTx loads full KindItems (including art) for refs inside tx,
+// ordered to match refs. It closes the plugin_items cursor before querying
+// plugin_item_art so PostgreSQL pgx connections never see two open cursors on
+// the same transaction.
+func queryItemsByRefTx(ctx context.Context, tx *sql.Tx, refs []core.ItemRef) ([]core.KindItem, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(refs))
+	args := make([]any, len(refs))
+	for i, r := range refs {
+		placeholders[i] = "?"
+		args[i] = string(r)
+	}
+	inClause := strings.Join(placeholders, ",")
+	rows, err := tx.QueryContext(ctx, `SELECT `+itemCols+` FROM plugin_items WHERE item_ref IN (`+inClause+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]core.KindItem, 0, len(refs))
+	for rows.Next() {
+		it, _, _, err := scanItemRow(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	byRefIdx := make(map[core.ItemRef][]int, len(items))
+	for i := range items {
+		byRefIdx[items[i].Ref] = append(byRefIdx[items[i].Ref], i)
+	}
+	artRows, err := tx.QueryContext(ctx,
+		`SELECT item_ref, role, url, width, height FROM plugin_item_art WHERE item_ref IN (`+inClause+`) ORDER BY item_ref, role`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer artRows.Close()
+	for artRows.Next() {
+		var refStr, role, url string
+		var w, h int64
+		if err := artRows.Scan(&refStr, &role, &url, &w, &h); err != nil {
+			return nil, err
+		}
+		art := core.KindArtRef{Role: role, URL: url, Width: int(w), Height: int(h)}
+		for _, idx := range byRefIdx[core.ItemRef(refStr)] {
+			items[idx].Art = append(items[idx].Art, art)
+		}
+	}
+	if err := artRows.Err(); err != nil {
+		return nil, err
+	}
+	byRef := make(map[core.ItemRef]core.KindItem, len(items))
+	for _, it := range items {
+		byRef[it.Ref] = it
+	}
+	ordered := make([]core.KindItem, 0, len(items))
+	for _, ref := range refs {
+		if it, ok := byRef[ref]; ok {
+			ordered = append(ordered, it)
+		}
+	}
+	return ordered, nil
 }

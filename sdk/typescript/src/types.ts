@@ -838,7 +838,7 @@ export interface MediaKindMeta {
     /** On-demand background slice expansion when a viewer opens a bucket or person. */
     expand?: KindBrowseExpand;
   };
-  sync: { mode: "pull" | "push"; refresh?: string };
+  sync: { mode: "pull" | "push"; refresh?: string; undo?: "snapshots" | "ids" };
   cache?: { maxBytes?: number; ttl?: string };
   match?: { thresholdDefault?: number };
 }

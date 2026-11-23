@@ -171,6 +171,14 @@ host service; refused for pull kinds — one writer per kind). A pull
 walk that would delete more than half the library aborts and raises
 owner attention instead of wiping it.
 
+Push writes are journalled for undo, which keeps up to 30 days, 10,000
+entries, or 256 MiB of inverse data per plugin. By default (`sync.undo:
+"snapshots"`), unchanged items with the same content hash are skipped
+and only modified items are snapshotted. Large push catalogues can
+declare `sync.undo: "ids"` to record only created and touched IDs
+without reading snapshots; undo then removes only items the batch
+created.
+
 ### Live search
 
 With `browse.liveSearch: true`, a client search on your library also

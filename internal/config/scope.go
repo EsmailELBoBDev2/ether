@@ -75,6 +75,7 @@ var mixedSections = map[string]map[string]Scope{
 		"logLevel":                 Local,
 		"friendlyName":             Shared,
 		"resumeAfterSeconds":       Shared,
+		"pausedStreamMinutes":      Shared,
 		"webFrameOrigins":          Shared,
 		"allowRemoteConsole":       Shared,
 		"startupAnimation":         Shared, // console preference, the same on every node

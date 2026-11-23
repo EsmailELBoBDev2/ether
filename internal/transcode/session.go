@@ -326,8 +326,9 @@ func (s *Session) PlaybackState(state string) {
 	switch state {
 	case "paused":
 		s.stoppedAt.Store(0)
-		if s.pauseUntil.Swap(time.Now().Add(core.PausedSessionRetention).UnixNano()) == 0 {
-			s.log.Info("player paused; retaining output", "retention", core.PausedSessionRetention)
+		retention := core.PausedRetention()
+		if s.pauseUntil.Swap(time.Now().Add(retention).UnixNano()) == 0 {
+			s.log.Info("player paused; retaining output", "retention", retention)
 		}
 		s.Touch()
 	case "playing":

@@ -414,3 +414,32 @@ func (i *instance) servePreroll(w http.ResponseWriter, r *http.Request, viewer *
 	w.Header().Set("Content-Type", "video/mp4")
 	rangefile.ServeSeeker(w, r, "", "preroll:"+key.String(), modified, file)
 }
+
+// writeExtraDetail answers an item request for a trailer or pre-roll. Jellyfin
+// Web reads each intro's item before playing it; the detail route answered 404
+// for these keys, which made the player give up on the feature too ("Unable to
+// find a valid media source").
+func (i *instance) writeExtraDetail(w http.ResponseWriter, r *http.Request, viewer *frontend.Viewer, key frontend.RatingKey) bool {
+	var clip frontend.Extra
+	var ok bool
+	switch {
+	case key.IsPreroll() && i.host.Prerolls != nil:
+		clip, ok = i.host.Prerolls.Lookup(r.Context(), key)
+	case key.Kind() == frontend.KindExtra && i.host.ExtraStreams != nil:
+		clip, ok = i.host.ExtraStreams.Lookup(key)
+	default:
+		return false
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return true
+	}
+	if clip.ParentKey != 0 && i.host.Experience != nil {
+		if _, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: clip.ParentKey}); err != nil {
+			http.NotFound(w, r)
+			return true
+		}
+	}
+	jsonReply(w, i.extraItem(frontend.ItemDetail{Title: frontend.Title{Key: clip.ParentKey}}, clip))
+	return true
+}

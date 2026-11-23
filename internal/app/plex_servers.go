@@ -66,7 +66,6 @@ type plexExtras struct {
 	// the main server): accepted and pending shares, not Plex Home members.
 	seats     map[string]int
 	seatsAt   map[string]time.Time
-	starting  bool
 	finishing bool
 	// toggleMu orders the stops and starts that follow the on/off setting;
 	// toggleOn is the value last applied (toggleSeen once one was).

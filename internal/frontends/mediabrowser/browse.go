@@ -1154,6 +1154,11 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	if len(route.Query(r.URL.Query(), "Limit")) == 0 {
 		q.Limit = showChildPageMax
 	}
+	if key.IsPluginKey() && q.Level == "" && q.Role == "" && len(q.Types) == 0 && len(q.UnservedTypes) == 0 {
+		if detail, derr := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}); derr == nil && detail.Title.PrimaryChildLevel != "" {
+			q.Level = detail.Title.PrimaryChildLevel
+		}
+	}
 	page, err := i.host.Experience.Children(frontend.WithColdDetail(r.Context(), key), v, device(r), key, q)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)

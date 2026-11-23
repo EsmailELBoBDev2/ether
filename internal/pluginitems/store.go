@@ -259,6 +259,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		return KindRecord{}, err
 	default:
 		needReindex := false
+		needParentTallyRebuild := false
 		if oldHash != declHash {
 			var oldDecl plugins.MediaKindMeta
 			if err := json.Unmarshal([]byte(oldDeclJSON), &oldDecl); err != nil {
@@ -277,6 +278,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 				// per-item index. A change to tabs, shelves, card shape or
 				// labels must not rewrite every item under the writer lock.
 				needReindex = indexShapeChanged(oldDecl, decl)
+				needParentTallyRebuild = parentTallyShapeChanged(oldDecl, decl)
 			}
 			schemaVer++
 		}
@@ -295,6 +297,11 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 			`UPDATE plugin_kinds SET library_id = ?, decl = ?, decl_hash = ?, schema_version = ?, fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
 			int64(libraryID), string(declJSON), declHash, schemaVer, ftsVer, pluginID, decl.Key); err != nil {
 			return KindRecord{}, err
+		}
+		if needParentTallyRebuild && !purged && !scheduleReindex && hasTableTx(ctx, tx, store.DialectOf(s.db), "plugin_item_parent_tally") {
+			if err := rebuildKindParentTallyForKindTx(ctx, tx, pluginID, decl.Key, libraryID, decl); err != nil {
+				return KindRecord{}, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO plugin_sync_state(plugin_id, kind_key) VALUES(?, ?) ON CONFLICT(plugin_id, kind_key) DO NOTHING`,
@@ -343,6 +350,27 @@ func indexShapeChanged(oldDecl, newDecl plugins.MediaKindMeta) bool {
 		S any
 	}{newDecl.Fields, newDecl.Browse.SearchFields})
 	return err1 != nil || err2 != nil || string(o) != string(n)
+}
+
+// parentTallyShapeChanged reports whether the declared level tree (level keys
+// and effective parent edges) changed in a way that affects
+// plugin_item_parent_tally (e.g. adding a branching level or upgrading from a
+// single-level kind to a multi-level hierarchy).
+func parentTallyShapeChanged(oldDecl, newDecl plugins.MediaKindMeta) bool {
+	if len(newDecl.Levels) < 2 && len(oldDecl.Levels) < 2 {
+		return false
+	}
+	if len(oldDecl.Levels) != len(newDecl.Levels) {
+		return true
+	}
+	for i := range oldDecl.Levels {
+		ok := oldDecl.Levels[i].Key
+		nk := newDecl.Levels[i].Key
+		if ok != nk || oldDecl.LevelParent(ok) != newDecl.LevelParent(nk) {
+			return true
+		}
+	}
+	return false
 }
 
 func kindCacheKey(pluginID, kindKey string) string {
@@ -1467,6 +1495,71 @@ func (s *Service) scheduleStaleArtistReindexes(ctx context.Context) {
 	}
 }
 
+// ensureParentTallies verifies at startup that every multi-level plugin kind's
+// plugin_item_parent_tally child_count total matches its non-root item count
+// in plugin_item_tally (O(1) tally check per kind). Any drift (e.g. from a
+// pre-fix chunked reindex, backup restore, or level-hierarchy upgrade) is
+// rebuilt immediately so list projections never omit media.childCounts for
+// containers with stored children.
+func (s *Service) ensureParentTallies(ctx context.Context) {
+	if s == nil || s.db == nil {
+		return
+	}
+	dialect := store.DialectOf(s.db)
+	if !s.hasTable(ctx, dialect, "plugin_item_parent_tally") || !s.hasTable(ctx, dialect, "plugin_item_tally") {
+		return
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT plugin_id, kind_key, library_id, decl FROM plugin_kinds WHERE library_id > 0 ORDER BY plugin_id, kind_key`)
+	if err != nil {
+		return
+	}
+	var all []pendingKindRow
+	for rows.Next() {
+		var r pendingKindRow
+		var libID int64
+		if err := rows.Scan(&r.pluginID, &r.kindKey, &libID, &r.declJSON); err != nil {
+			rows.Close()
+			return
+		}
+		r.libraryID = core.LibraryID(libID)
+		all = append(all, r)
+	}
+	rows.Close()
+	for _, k := range all {
+		var decl plugins.MediaKindMeta
+		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil || len(decl.Levels) < 2 {
+			continue
+		}
+		rootLevel := decl.Levels[0].Key
+		var nonRootCount, talliedChildren int64
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ? AND level <> ?`,
+			int64(k.libraryID), rootLevel).Scan(&nonRootCount); err != nil {
+			continue
+		}
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COALESCE(SUM(child_count), 0) FROM plugin_item_parent_tally WHERE library_id = ?`,
+			int64(k.libraryID)).Scan(&talliedChildren); err != nil {
+			continue
+		}
+		if nonRootCount == talliedChildren {
+			continue
+		}
+		mu := s.kindLock(k.pluginID, k.kindKey)
+		mu.Lock()
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err == nil {
+			if rErr := rebuildKindParentTallyForKindTx(ctx, tx, k.pluginID, k.kindKey, k.libraryID, decl); rErr == nil {
+				_ = tx.Commit()
+			} else {
+				_ = tx.Rollback()
+			}
+		}
+		mu.Unlock()
+	}
+}
+
 func (s *Service) kindHasUnindexedArtistStrings(ctx context.Context, libraryID core.LibraryID, decl plugins.MediaKindMeta) bool {
 	if s == nil || s.db == nil || libraryID <= 0 {
 		return false
@@ -1606,6 +1699,11 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 		return err
 	}
 	defer tx.Rollback()
+	if hasTableTx(ctx, tx, dialect, "plugin_item_parent_tally") {
+		if err := rebuildKindParentTallyForKindTx(ctx, tx, pluginID, kindKey, fallbackLibID, decl); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
 		currentFTSVersion, pluginID, kindKey); err != nil {

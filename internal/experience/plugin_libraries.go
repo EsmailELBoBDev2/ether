@@ -102,6 +102,15 @@ type PluginFilteredChildrenLibraries interface {
 	ChildrenFiltered(ctx context.Context, parent core.RatingKey, recursive bool, level, role, cursor string, limit int) (PluginBrowsePage, error)
 }
 
+// PluginQueryChildrenLibraries is an optional extension of PluginLibraries
+// that pushes child level, role, and type filtering (Types, UnservedTypes,
+// ExcludedTypes) directly into the store query so typed child listings (such
+// as MusicArtist -> MusicAlbum or Video with Recursive=true) stay O(page)
+// without walking or mixing unrelated branches.
+type PluginQueryChildrenLibraries interface {
+	ChildrenQuery(ctx context.Context, parent core.RatingKey, q frontend.ItemQuery, cursor string, limit int) (PluginBrowsePage, error)
+}
+
 // PluginFacetPerson is one distinct person entry for a plugin library's people tab.
 type PluginFacetPerson struct {
 	PersonID    int64
@@ -1159,14 +1168,18 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 
 	// Children carries no ItemQuery to the store, so its SQL page can only
 	// be trusted when no viewer predicate or type/level filter would filter it in process.
+	queryReader, hasQueryChildren := s.d.PluginLibraries.(PluginQueryChildrenLibraries)
 	filteredReader, hasFilteredChildren := s.d.PluginLibraries.(PluginFilteredChildrenLibraries)
 	fetchChildren := func(cur string, lim int) (PluginBrowsePage, error) {
+		if hasQueryChildren {
+			return queryReader.ChildrenQuery(ctx, parent, q, cur, lim)
+		}
 		if hasFilteredChildren && (q.Level != "" || q.Role != "") {
 			return filteredReader.ChildrenFiltered(ctx, parent, q.Recursive, q.Level, q.Role, cur, lim)
 		}
 		return s.d.PluginLibraries.Children(ctx, parent, q.Recursive, cur, lim)
 	}
-	levelRoleSQLReady := (q.Level == "" && q.Role == "") || hasFilteredChildren
+	levelRoleSQLReady := (q.Level == "" && q.Role == "") || hasQueryChildren || hasFilteredChildren
 	if v != nil && pluginQuerySQLReady(q) && levelRoleSQLReady && len(q.Types) == 0 && len(q.UnservedTypes) == 0 && len(q.ExcludedTypes) == 0 &&
 		q.Watched == nil && v.MaxContentRating == "" && q.Filter.MaxContentRating == "" &&
 		len(q.Filter.ExcludeKeys) == 0 && len(q.Filter.ExcludeGenres) == 0 && s.pluginPolicyPassive(v) && q.Sort == "" && q.Limit > 0 {
@@ -1210,7 +1223,7 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 	var all []core.Title
 	cursor := ""
 	filterQ := q
-	if hasFilteredChildren && (q.Level != "" || q.Role != "") {
+	if (hasQueryChildren || hasFilteredChildren) && (q.Level != "" || q.Role != "") {
 		// Already filtered in SQL using the manifest's exact level/role mapping.
 		filterQ.Level = ""
 		filterQ.Role = ""

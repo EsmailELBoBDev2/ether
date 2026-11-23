@@ -169,7 +169,7 @@ func (s *Server) episodeOrderList(ctx context.Context, pr *Request, ts []fronten
 // GUIDs and the resolver retain canonical identity while Plex sees the chosen
 // group tree and display numbering.
 func (s *Server) applyEpisodeOrder(ctx context.Context, pr *Request, t *frontend.Title, m *model.Metadata, v episodeOrderView) {
-	if s.episodeOrder() == nil {
+	if s.episodeOrder() == nil || t.Key.IsPluginKey() {
 		return
 	}
 	if t.Type == frontend.TypeShow {

@@ -119,6 +119,9 @@ func crewPeople(t frontend.Title) []frontend.Person {
 
 // Detail children are bounded first pages in the neutral service's order.
 // Subsequent selections use /titles/:id/children; no episode is inferred.
+// For a branching container (e.g. artist -> album + concert), the season-like
+// list is the primary child level only; secondary branches are queried via
+// /titles/:id/children?role=.
 func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token string, d frontend.ItemDetail, out object) error {
 	key := d.Title.Key
 	isShow := key.Kind() == frontend.KindShow || d.Title.Type == frontend.TypeShow
@@ -126,11 +129,19 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 	if !isShow && !isSeason {
 		return nil
 	}
-	page, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), key, frontend.ItemQuery{Limit: 50, NoTotal: true})
+	childQuery := frontend.ItemQuery{Limit: 50, NoTotal: true}
+	if isShow && d.Title.PrimaryChildLevel != "" {
+		childQuery.Level = d.Title.PrimaryChildLevel
+	}
+	page, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), key, childQuery)
 	if err != nil {
 		return err
 	}
-	converted, err := i.titles(r, v, token, page.Items)
+	items := page.Items
+	if isShow && d.Title.PrimaryChildLevel == "" {
+		items = filterPrimaryBranchItems(d.Title, items)
+	}
+	converted, err := i.titles(r, v, token, items)
 	if err != nil {
 		return err
 	}
@@ -139,7 +150,7 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 		return nil
 	}
 	out["seasons"] = converted
-	for _, season := range page.Items {
+	for _, season := range items {
 		if season.Key.Kind() != frontend.KindSeason && season.Type != frontend.TypeSeason {
 			continue
 		}
@@ -155,6 +166,67 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 		break
 	}
 	return nil
+}
+
+// filterPrimaryBranchItems narrows a mixed-branch child slice to the parent's
+// primary child level when PrimaryChildLevel was not pre-populated by the
+// catalog (preferring items sharing the parent's media class, else the first
+// observed child level).
+func filterPrimaryBranchItems(parent frontend.Title, items []frontend.Title) []frontend.Title {
+	if len(items) <= 1 {
+		return items
+	}
+	var levels []string
+	seenLevel := make(map[string]bool, 2)
+	var matchingLevel string
+	for _, it := range items {
+		if it.KindLevel == "" {
+			continue
+		}
+		if !seenLevel[it.KindLevel] {
+			seenLevel[it.KindLevel] = true
+			levels = append(levels, it.KindLevel)
+		}
+		if matchingLevel == "" && parent.MediaClass != "" && it.MediaClass == parent.MediaClass {
+			matchingLevel = it.KindLevel
+		}
+	}
+	if len(levels) > 1 {
+		keep := matchingLevel
+		if keep == "" {
+			keep = levels[0]
+		}
+		out := make([]frontend.Title, 0, len(items))
+		for _, it := range items {
+			if it.KindLevel == keep {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	if parent.MediaClass != "" {
+		hasMatch, hasOther := false, false
+		for _, it := range items {
+			if it.MediaClass == "" {
+				continue
+			}
+			if it.MediaClass == parent.MediaClass {
+				hasMatch = true
+			} else {
+				hasOther = true
+			}
+		}
+		if hasMatch && hasOther {
+			out := make([]frontend.Title, 0, len(items))
+			for _, it := range items {
+				if it.MediaClass == parent.MediaClass {
+					out = append(out, it)
+				}
+			}
+			return out
+		}
+	}
+	return items
 }
 
 func (i *instance) creditIDs(r *http.Request, v *frontend.Viewer, d frontend.ItemDetail) map[int64]string {

@@ -193,3 +193,98 @@ func TestBranchingSyncWalkParentTallyProjectionAndFilteredBrowse(t *testing.T) {
 		t.Fatalf("after backfill art-1 counts = %+v, want ChildCount=4 LeafCount=5 album=2 concert=2", g)
 	}
 }
+
+func TestBranchingParentTallyRebuiltOnChunkedReindexUpgradeAndStartup(t *testing.T) {
+	ctx := context.Background()
+	s, db := openTestService(t, Options{})
+	defer s.Close()
+
+	const (
+		pluginID = "test.music.tally"
+		kindKey  = "music"
+		libID    = core.LibraryID(92)
+	)
+	ref := func(id string) core.ItemRef { return core.NewItemRef(pluginID, kindKey, id) }
+
+	// Start with a 3-level kind (artist -> album -> track), before the concert branch exists.
+	baseDecl := branchingMusicDecl()
+	baseDecl.Levels = baseDecl.Levels[:3]
+	if _, err := s.UpsertKind(ctx, pluginID, libID, baseDecl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.KindUpsert(ctx, pluginID, kindKey, []core.KindItem{
+		{ID: "art-1", Level: "artist", Title: "AC/DC"},
+		{ID: "alb-1", Level: "album", ParentID: "art-1", Index: 1, Title: "Back in Black"},
+		{ID: "trk-1", Level: "track", ParentID: "alb-1", Index: 1, Title: "Hells Bells", Playable: true},
+		{ID: "trk-2", Level: "track", ParentID: "alb-1", Index: 2, Title: "Shoot to Thrill", Playable: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate missing parent tally before an additive level-tree upgrade (adding concert branch).
+	if _, err := db.ExecContext(ctx, `DELETE FROM plugin_item_parent_tally WHERE library_id = ?`, int64(libID)); err != nil {
+		t.Fatal(err)
+	}
+	fullDecl := branchingMusicDecl()
+	if _, err := s.UpsertKind(ctx, pluginID, libID, fullDecl, false); err != nil {
+		t.Fatalf("UpsertKind adding concert branch: %v", err)
+	}
+	counts, err := s.ParentCountsMany(ctx, libID, []core.ItemRef{ref("art-1"), ref("alb-1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := counts[ref("art-1")]; g.ChildCount != 1 || g.LeafCount != 2 || g.ByLevel["album"] != 1 {
+		t.Fatalf("after level-upgrade UpsertKind art-1 = %+v, want ChildCount=1 LeafCount=2 album=1", g)
+	}
+
+	// Add a concert child so art-1 has both branches.
+	if _, err := s.KindUpsert(ctx, pluginID, kindKey, []core.KindItem{
+		{ID: "con-1", Level: "concert", ParentID: "art-1", Index: 1, Title: "Live at Donington", Playable: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// PrimaryChildLevel is set to the primary branch ("album") on branching artist, empty on non-branching album.
+	artItem, _, err := s.GetByRef(ctx, ref("art-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artTitle := Project(artItem, fullDecl, fullDecl.Present); artTitle.PrimaryChildLevel != "album" {
+		t.Fatalf("artist PrimaryChildLevel = %q, want album", artTitle.PrimaryChildLevel)
+	}
+	albItem, _, err := s.GetByRef(ctx, ref("alb-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if albTitle := Project(albItem, fullDecl, fullDecl.Present); albTitle.PrimaryChildLevel != "" {
+		t.Fatalf("album PrimaryChildLevel = %q, want empty", albTitle.PrimaryChildLevel)
+	}
+
+	// 1. Chunked reindex must rebuild plugin_item_parent_tally.
+	if _, err := db.ExecContext(ctx, `DELETE FROM plugin_item_parent_tally WHERE library_id = ?`, int64(libID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reindexKindChunked(ctx, false, pluginID, kindKey, libID, fullDecl); err != nil {
+		t.Fatalf("reindexKindChunked: %v", err)
+	}
+	afterReindex, err := s.ParentCountsMany(ctx, libID, []core.ItemRef{ref("art-1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := afterReindex[ref("art-1")]; g.ChildCount != 2 || g.LeafCount != 3 || g.ByLevel["album"] != 1 || g.ByLevel["concert"] != 1 {
+		t.Fatalf("after chunked reindex art-1 = %+v, want ChildCount=2 LeafCount=3 album=1 concert=1", g)
+	}
+
+	// 2. Startup ensureParentTallies must detect and heal partial/missing parent tallies.
+	if _, err := db.ExecContext(ctx, `DELETE FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref = ?`, int64(libID), string(ref("art-1"))); err != nil {
+		t.Fatal(err)
+	}
+	s.ensureParentTallies(ctx)
+	afterStartup, err := s.ParentCountsMany(ctx, libID, []core.ItemRef{ref("art-1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := afterStartup[ref("art-1")]; g.ChildCount != 2 || g.LeafCount != 3 || g.ByLevel["album"] != 1 || g.ByLevel["concert"] != 1 {
+		t.Fatalf("after ensureParentTallies art-1 = %+v, want ChildCount=2 LeafCount=3 album=1 concert=1", g)
+	}
+}

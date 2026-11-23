@@ -881,6 +881,17 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
+	// If detailChildren hydrated a previously unhydrated plugin container,
+	// refresh its media counts (childCount / childCounts) in one O(1) read.
+	if d.Title.Key.IsPluginKey() && len(d.Title.ChildCounts) == 0 &&
+		(d.Title.Type == frontend.TypeShow || d.Title.Type == frontend.TypeSeason) &&
+		(d.Title.ChildCount > 0 || out["seasons"] != nil || out["episodes"] != nil) {
+		if refreshed, rErr := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k}); rErr == nil {
+			if media := titleMediaWire(refreshed.Title); media != nil {
+				ts[0]["media"] = media
+			}
+		}
+	}
 	i.warmDetail(r, v, d)
 	varyLanguage(w)
 	cacheDetail(w, r, out, pending)

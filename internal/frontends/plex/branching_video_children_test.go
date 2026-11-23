@@ -13,7 +13,8 @@ import (
 
 type plexBranchingConcertExperience struct {
 	*kindExperience
-	concert core.Title
+	concert        core.Title
+	artistOverride *core.Title
 }
 
 func newPlexBranchingConcertExperience() *plexBranchingConcertExperience {
@@ -38,6 +39,9 @@ func newPlexBranchingConcertExperience() *plexBranchingConcertExperience {
 func (e *plexBranchingConcertExperience) Item(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
 	if req.Key == e.concert.Key {
 		return frontend.ItemDetail{Title: e.concert}, nil
+	}
+	if e.artistOverride != nil && req.Key == e.artistOverride.Key {
+		return frontend.ItemDetail{Title: *e.artistOverride}, nil
 	}
 	return e.kindExperience.Item(context.Background(), req)
 }
@@ -141,5 +145,44 @@ func TestPlexBranchingVideoChildUnderMusicArtist(t *testing.T) {
 	}
 	if len(conResp.MediaContainer.Metadata) != 1 || conResp.MediaContainer.Metadata[0]["type"] != "clip" {
 		t.Fatalf("concert metadata = %+v, want type=clip", conResp.MediaContainer.Metadata)
+	}
+
+	// 5. /library/metadata/{artist}?includeChildren=1 embeds primary-level albums ONLY (type="album",
+	//    video concert omitted) and preserves direct childCount vs recursive leafCount.
+	artistWithCounts := kindMusicArtist()
+	artistWithCounts.PrimaryChildLevel = "album"
+	artistWithCounts.ChildCount = 7
+	artistWithCounts.LeafCount = 27
+	exp.artistOverride = &artistWithCounts
+
+	rec = serveKindRoute(t, srv, srv.handleMetadata, "/library/metadata/"+artistKeyStr+"?includeChildren=1", map[string]string{"key": artistKeyStr}, &ownerUser)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artist ?includeChildren=1 status = %d %s", rec.Code, rec.Body.String())
+	}
+	var incResp struct {
+		MediaContainer struct {
+			Metadata []struct {
+				Type       string `json:"type"`
+				ChildCount *int   `json:"childCount"`
+				LeafCount  *int   `json:"leafCount"`
+				Children   *struct {
+					Size     int              `json:"size"`
+					Metadata []map[string]any `json:"Metadata"`
+				} `json:"Children"`
+			} `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &incResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(incResp.MediaContainer.Metadata) != 1 {
+		t.Fatalf("artist ?includeChildren=1 len = %d", len(incResp.MediaContainer.Metadata))
+	}
+	artMD := incResp.MediaContainer.Metadata[0]
+	if artMD.ChildCount == nil || *artMD.ChildCount != 7 || artMD.LeafCount == nil || *artMD.LeafCount != 27 {
+		t.Fatalf("artist counts = childCount:%v leafCount:%v, want 7 / 27", artMD.ChildCount, artMD.LeafCount)
+	}
+	if artMD.Children == nil || len(artMD.Children.Metadata) != 1 || artMD.Children.Metadata[0]["type"] != "album" {
+		t.Fatalf("artist ?includeChildren=1 Children = %+v, want single album (video concert omitted)", artMD.Children)
 	}
 }

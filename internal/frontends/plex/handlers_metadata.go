@@ -648,7 +648,16 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 		memo = showEpisodes{}
 	}
 	if children && t.Type == frontend.TypeShow {
-		if kids, err := s.metadataChildren(ctx, pr, t.Key); err == nil {
+		if t.Key.IsPluginKey() {
+			if kids, err := s.kindChildrenForParent(ctx, pr, t); err == nil {
+				base, _ := s.kindSectionBaseForTitle(t)
+				rendered := s.renderTitles(ctx, pr, kids, renderOpts{media: true, inSection: true, storedOnly: true, skipLeafCounts: true})
+				for i := range rendered {
+					rendered[i].Type = kindTypeForBase(base, rendered[i].Type, &kids[i])
+				}
+				md.Children = &model.Children{Size: len(rendered), Metadata: rendered}
+			}
+		} else if kids, err := s.metadataChildren(ctx, pr, t.Key); err == nil {
 			rendered := s.renderTitles(ctx, pr, kids, renderOpts{media: true, inSection: true, skipLeafCounts: t.Type == frontend.TypeShow})
 			if t.Type == frontend.TypeShow {
 				s.applyLeafCounts(ctx, pr, rendered, kids, memo)
@@ -880,13 +889,18 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rememberTitle(parent) // seasons render the show's studio/year/logo
+	if k.IsPluginKey() {
+		kids, err := s.kindChildrenForParent(ctx, pr, parent)
+		if err != nil && !errors.Is(err, frontend.ErrNotFound) {
+			s.writeErr(w, r, err)
+			return
+		}
+		s.writeKindChildren(w, r, pr, parent, kids)
+		return
+	}
 	kids, err := s.metadataChildren(ctx, pr, k)
 	if err != nil && !errors.Is(err, frontend.ErrNotFound) {
 		s.writeErr(w, r, err)
-		return
-	}
-	if k.IsPluginKey() {
-		s.writeKindChildren(w, r, pr, parent, kids)
 		return
 	}
 	s.revealDetail(pr, parent)

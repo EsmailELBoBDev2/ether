@@ -290,12 +290,16 @@ func playProbeMetadataWait(ctx context.Context) time.Duration {
 var _ core.PlayMetadataProber = (*Manager)(nil)
 
 // ProbePlayMetadata joins or starts the shared resolve+probe flight for a
-// play-time metadata re-ask (e.g. Plezy's first play) and waits bounded by
-// ctx (capped at maxPlayProbeMetadataWait) until probed tracks are ready.
+// play-time metadata read (POST /playQueues, pre-play /library/metadata, or
+// Plezy's first play) and waits bounded by ctx (capped at
+// maxPlayProbeMetadataWait) until probed tracks are ready.
 //
 // Unlike browsing ProbeMetadata, this carries explicit play intent:
 //   - LocalResponse, speculation/detail-warmup settings, DetailBurst, and a
 //     prior speculative warmMiss never short-circuit it.
+//   - An already in-flight foreground Prepare is joined without affecting its
+//     waiters or cancellation, so metadata reads arriving during playback
+//     startup receive the probed streams once Prepare registers the session.
 //   - An already in-flight speculative warm-up is promoted and joined; if that
 //     speculative attempt finishes without a probe while wait budget remains,
 //     one foreground play-intent flight is started in its place.
@@ -311,23 +315,12 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 	if user == nil || caps.ClientID == "" {
 		return core.ErrPrepareSlow
 	}
-	if ps, ok := m.SessionFor(user.ID, caps.ClientID, key); ok && ps != nil && !ps.Info.Estimated && len(ps.Info.Streams) > 0 {
-		return nil
-	}
-	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
-		return nil
-	}
-	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
-		m.mu.Lock()
-		if e := m.findWarmEntryLocked(user, caps, key, m.now()); e != nil {
-			e.markPromoted()
-		}
-		m.mu.Unlock()
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
+	if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 		return nil
 	}
 	budget := playProbeMetadataWait(ctx)
 	deadline := time.Now().Add(budget)
-	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
 
 	for attempt := 0; attempt < 2; attempt++ {
 		now := m.now()
@@ -335,6 +328,10 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 		if m.closed {
 			m.mu.Unlock()
 			return core.ErrPrepareSlow
+		}
+		if pf := m.activeFlightLocked(id); pf != nil {
+			m.mu.Unlock()
+			return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
 		}
 		e := m.warm[id]
 		if e != nil && !now.Before(e.expires) {
@@ -358,7 +355,7 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 		m.mu.Unlock()
 
 		if e != nil && !inFlight {
-			if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+			if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 				return nil
 			}
 			return core.ErrPrepareSlow
@@ -372,9 +369,16 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 			if e != nil && !now.Before(e.expires) {
 				e = nil
 			}
+			var pf *flight
+			if e == nil {
+				pf = m.activeFlightLocked(id)
+			}
 			m.mu.Unlock()
 			if e == nil {
-				if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+				if pf != nil {
+					return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+				}
+				if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 					return nil
 				}
 				return core.ErrPrepareSlow
@@ -386,35 +390,101 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 			e.markPromoted()
 		}
 
-		wait := time.Until(deadline)
-		if wait <= 0 {
-			if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+		if err := waitFlightDone(ctx, e.done, deadline); err != nil {
+			if errors.Is(err, core.ErrPrepareSlow) && m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 				return nil
 			}
-			return core.ErrPrepareSlow
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-e.done:
-			timer.Stop()
-		case <-ctx.Done():
-			timer.Stop()
-			if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-				return err
-			}
-			return core.ErrPrepareSlow
-		case <-timer.C:
-			return core.ErrPrepareSlow
+			return err
 		}
 
-		if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+		if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 			return nil
+		}
+		m.mu.Lock()
+		pf := m.activeFlightLocked(id)
+		m.mu.Unlock()
+		if pf != nil {
+			return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
 		}
 		if !wasSpeculative {
 			return core.ErrPrepareSlow
 		}
 	}
 	return core.ErrPrepareSlow
+}
+
+// HasActivePrepare reports whether a foreground Prepare flight is currently
+// running for this viewer, client, title, and surface.
+func (m *Manager) HasActivePrepare(user *core.User, key core.RatingKey, caps core.ClientCaps) bool {
+	if user == nil || caps.ClientID == "" {
+		return false
+	}
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed && m.activeFlightLocked(id) != nil
+}
+
+func (m *Manager) waitActivePrepare(ctx context.Context, pf *flight, deadline time.Time, id identity, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
+	if err := waitFlightDone(ctx, pf.done, deadline); err != nil {
+		if errors.Is(err, core.ErrPrepareSlow) && m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+			return nil
+		}
+		return err
+	}
+	if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+		return nil
+	}
+	return core.ErrPrepareSlow
+}
+
+func (m *Manager) hasExactPlayMetadata(ctx context.Context, id identity, user *core.User, key core.RatingKey, caps core.ClientCaps) bool {
+	m.mu.Lock()
+	s := m.byIdent[id]
+	m.mu.Unlock()
+	if s != nil {
+		if ps := s.snapshot(m.now()); ps != nil && !ps.Info.Estimated && len(ps.Info.Streams) > 0 {
+			return true
+		}
+	}
+	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
+		return true
+	}
+	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+		m.mu.Lock()
+		if e := m.findWarmEntryLocked(user, caps, key, m.now()); e != nil {
+			e.markPromoted()
+		}
+		m.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+func waitFlightDone(ctx context.Context, done <-chan struct{}, deadline time.Time) error {
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return core.ErrPrepareSlow
+	}
+	timer := time.NewTimer(wait)
+	select {
+	case <-done:
+		timer.Stop()
+		return nil
+	case <-ctx.Done():
+		timer.Stop()
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return core.ErrPrepareSlow
+	case <-timer.C:
+		return core.ErrPrepareSlow
+	}
 }
 
 func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata, playProbe bool) bool {

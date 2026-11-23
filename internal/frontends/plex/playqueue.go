@@ -578,7 +578,7 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	// A plugin item is prepared by its own resolver when the client asks for
 	// the playback decision; the catalogue warm-up below does not apply to it.
 	if targetTitle, ok := byKey[targetItem.Key]; ok && !targetItem.Key.IsPluginKey() {
-		if !(playIntent && bedrockPlayProbeClient(pr) && s.probeBedrockPlay(ctx, pr, targetTitle)) {
+		if !(playIntent && s.probePlayIntent(ctx, pr, targetTitle)) {
 			if pr != nil && pr.detailWaitUntil.IsZero() {
 				startDetailPageWait(pr)
 			}

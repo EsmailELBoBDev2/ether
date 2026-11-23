@@ -376,14 +376,19 @@ type warmBudgetKey struct {
 	reason string
 }
 
-// hasFlightLocked reports whether any Prepare for id is in flight.
-func (m *Manager) hasFlightLocked(id identity) bool {
-	for k := range m.flights {
+// activeFlightLocked returns an in-flight Prepare for id, if any.
+func (m *Manager) activeFlightLocked(id identity) *flight {
+	for k, f := range m.flights {
 		if k.id == id {
-			return true
+			return f
 		}
 	}
-	return false
+	return nil
+}
+
+// hasFlightLocked reports whether any Prepare for id is in flight.
+func (m *Manager) hasFlightLocked(id identity) bool {
+	return m.activeFlightLocked(id) != nil
 }
 
 // flight is one in-progress Prepare shared by concurrent callers.

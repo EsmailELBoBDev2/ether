@@ -389,7 +389,13 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		served[mh.HubIdentifier] = hs.Hub
 	}
 	if !promotedOnly && !metadataOptionOn(r.URL.Query().Get("excludeContinueWatching")) && (!isKindSection(sec) || isCustomTVSection(sec)) {
-		add(s.continueHub(ctx, pr, cwSection, sec, visibleCount))
+		cw := s.continueHub(ctx, pr, cwSection, sec, visibleCount)
+		if !isCustomTVSection(sec) {
+			// Built-in Movies/TV keep their hide rules (#719); custom TV
+			// libraries are scoped inside continueHub.
+			cw.Hub.Items = s.filterSectionMembers(ctx, sec, cw.Hub.Items)
+		}
+		add(cw)
 	}
 	if !isKindSection(sec) {
 		if ra, err := s.recentlyAddedHub(ctx, pr, sec, count); err == nil {

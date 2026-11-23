@@ -212,7 +212,6 @@ type broadcast struct {
 	planner              broadcastPlanner
 	runner               transcode.ContinuousRunner
 	origin               time.Time
-	anchorOrigin         time.Time
 	lastSeq              int64
 	haveSeq              bool
 	mu                   sync.Mutex
@@ -574,9 +573,6 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		r.origin = first.Start
 		r.originErr = err
 		if err == nil {
-			if b.anchorOrigin.IsZero() || first.Start.Before(b.anchorOrigin) {
-				b.anchorOrigin = first.Start
-			}
 			if !b.haveSeq || first.Seq > b.lastSeq {
 				b.lastSeq = first.Seq
 				b.haveSeq = true

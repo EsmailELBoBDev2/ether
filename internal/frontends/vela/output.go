@@ -3,6 +3,7 @@ package vela
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"time"
 
@@ -101,4 +102,67 @@ func (i *instance) refreshLiveWindow(ctx context.Context, id string, s *playSess
 	}
 	after, _ := json.Marshal(live)
 	return string(before) != string(after)
+}
+
+func liveWindowBounds(v any) (start, edge float64, ok bool) {
+	live, ok := v.(object)
+	if !ok {
+		return 0, 0, false
+	}
+	start, okStart := live["windowStartSeconds"].(float64)
+	edge, okEdge := live["liveEdgeSeconds"].(float64)
+	if !okStart || !okEdge || math.IsNaN(start) || math.IsInf(start, 0) || math.IsNaN(edge) || math.IsInf(edge, 0) || start < 0 || edge < start {
+		return 0, 0, false
+	}
+	return start, edge, true
+}
+
+func durationFromSeconds(sec float64) time.Duration {
+	if sec <= 0 || math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return 0
+	}
+	return time.Duration(math.Round(sec * float64(time.Second)))
+}
+
+// rebaseLivePosition maps a live session's playback position onto the new
+// rendition's live window so positionSeconds, windowStartSeconds and
+// liveEdgeSeconds stay on one timeline across a replan (whether the new lease
+// starts fresh at 0 or joins an already-running rendition).
+func rebaseLivePosition(live any, prevPos time.Duration, oldStart, oldEdge float64, carryBehind bool) time.Duration {
+	newStart, newEdge, hasNew := liveWindowBounds(live)
+	if !hasNew {
+		return 0
+	}
+	posSec := newEdge
+	if carryBehind {
+		prevSec := prevPos.Seconds()
+		if prevSec >= oldStart {
+			behind := oldEdge - prevSec
+			if behind < 0 {
+				behind = 0
+			}
+			posSec = newEdge - behind
+			if posSec < newStart {
+				posSec = newStart
+			}
+		}
+	}
+	return durationFromSeconds(posSec)
+}
+
+// alignUnobservedLivePosition keeps an un-observed live session's position
+// inside its current live window (for example when joining an already-running
+// rendition whose windowStartSeconds > 0).
+func alignUnobservedLivePosition(s *playSession) {
+	if s.observedSource == s.source {
+		return
+	}
+	start, edge, ok := liveWindowBounds(s.plan["live"])
+	if !ok {
+		return
+	}
+	if sec := s.position.Seconds(); sec < start || sec > edge {
+		s.position = durationFromSeconds(edge)
+		s.plan["positionSeconds"] = s.position.Seconds()
+	}
 }

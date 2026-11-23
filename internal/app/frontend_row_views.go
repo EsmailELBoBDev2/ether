@@ -52,3 +52,11 @@ func (l liveForApp) AllowedChannels(ctx context.Context, u *core.User) ([]livetv
 func (l liveForApp) Guide(ctx context.Context, u *core.User, from, until time.Time) ([]livetv.Programme, error) {
 	return l.svc.Guide(core.WithLiveApp(ctx, l.app), u, from, until)
 }
+
+func (l liveForApp) OnNow(ctx context.Context, u *core.User, now, until time.Time) ([]livetv.Channel, []livetv.Programme, error) {
+	return l.svc.OnNow(core.WithLiveApp(ctx, l.app), u, now, until)
+}
+
+func (l liveForApp) OnNowN(ctx context.Context, u *core.User, now, until time.Time, limit int) ([]livetv.Channel, []livetv.Programme, error) {
+	return l.svc.OnNowN(core.WithLiveApp(ctx, l.app), u, now, until, limit)
+}

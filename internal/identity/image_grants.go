@@ -153,7 +153,7 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		if s.artwork == nil {
 			return core.ErrNotAvailable
 		}
-		images, complete, err := s.artwork.List(core.WithLiveApp(ctx, string(s.surface)), channelImageRequest(viewer, device, channel, image))
+		images, complete, err := s.artwork.List(frontend.WithoutArtworkMetadata(core.WithLiveApp(ctx, string(s.surface))), channelImageRequest(viewer, device, channel, image))
 		if err != nil {
 			return err
 		}
@@ -179,14 +179,18 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		return people.AuthorizePersonImage(ctx, viewer, device, item, image, nil)
 	}
 
+	authCtx := frontend.WithoutArtworkMetadata(ctx)
+	if image.Kind != "" {
+		authCtx = frontend.WithArtworkKinds(authCtx, map[string]bool{image.Kind: true})
+	}
 	var images []frontend.Image
 	var complete bool
 	var err error
 	if scoped, ok := experience.(frontend.ItemArtwork); ok {
-		images, complete, err = scoped.ItemArtwork(ctx, viewer, device, item)
+		images, complete, err = scoped.ItemArtwork(authCtx, viewer, device, item)
 	} else {
 		var detail frontend.ItemDetail
-		detail, err = experience.Item(ctx, frontend.ItemRequest{Viewer: viewer, Device: device, Key: item})
+		detail, err = experience.Item(authCtx, frontend.ItemRequest{Viewer: viewer, Device: device, Key: item})
 		images, complete = detail.Images, detail.ImagesAuthoritative
 	}
 	if err != nil {
@@ -288,14 +292,18 @@ func (s *ImageGrantService) ServePublic(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
-	r = artworkRowsRequest(r, img)
-	images, reader, visible, err := public.PublicArtwork(r.Context(), device, item)
-	if err != nil || !visible || reader == nil {
+	base, _, _, rankErr := frontend.UnrankArtwork(img)
+	if rankErr != nil {
 		http.NotFound(w, r)
 		return
 	}
-	base, _, _, rankErr := frontend.UnrankArtwork(img)
-	if rankErr != nil {
+	r = artworkRowsRequest(r, img)
+	pubCtx := frontend.WithoutArtworkMetadata(r.Context())
+	if base.Kind != "" {
+		pubCtx = frontend.WithArtworkKinds(pubCtx, map[string]bool{base.Kind: true})
+	}
+	images, reader, visible, err := public.PublicArtwork(pubCtx, device, item)
+	if err != nil || !visible || reader == nil {
 		http.NotFound(w, r)
 		return
 	}

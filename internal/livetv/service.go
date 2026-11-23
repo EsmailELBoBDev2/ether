@@ -2161,7 +2161,7 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 	if _, idx := s.getOwnerGroupCacheState(); idx != nil {
 		ctx = contextWithOwnerGroupIndex(ctx, idx)
 	}
-	ctx, err = s.withVirtualGuide(ctx, cs)
+	ctx, readyVirtual, err := s.withOnNowVirtual(ctx, cs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2171,8 +2171,14 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 		if !c.Enabled {
 			continue
 		}
+		if c.Kind == "virtual" && c.Personal == nil && !readyVirtual[c.ID] {
+			continue
+		}
 		ps, err := s.programmesLimit(ctx, c, now, until, 2)
 		if err != nil {
+			if errors.Is(err, core.ErrPreparing) {
+				continue
+			}
 			return nil, nil, err
 		}
 		var current *Programme
@@ -2198,6 +2204,7 @@ func (s *Service) programmesLimit(ctx context.Context, c Channel, from, until ti
 		if v, ok := ctx.Value(loadedPolicyKey{}).(loadedPolicy); ok {
 			c = s.personalChannel(ctx, c, v.user)
 		}
+		s.demandPersonalReadiness(c, c.personalViewer)
 		ps, err := s.personalProgrammesLimit(ctx, c, c.personalViewer, from, until, limit)
 		if limit > 0 && len(ps) > limit {
 			ps = ps[:limit]

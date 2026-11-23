@@ -103,6 +103,21 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 			return a.catalog.PersistsArtwork(ctx, key)
 		}
 		metadata.PersistFor(persists)
+		metadata.PersistBatchFor(func(ctx context.Context, keys []core.RatingKey) map[core.RatingKey]bool {
+			out := make(map[core.RatingKey]bool, len(keys))
+			nonPlugin := make([]core.RatingKey, 0, len(keys))
+			for _, k := range keys {
+				if k.IsPluginKey() {
+					out[k] = false
+				} else {
+					nonPlugin = append(nonPlugin, k)
+				}
+			}
+			for k, v := range a.catalog.PersistsArtworkMany(ctx, nonPlugin) {
+				out[k] = v
+			}
+			return out
+		})
 		palettes.PersistFor(persists)
 	}
 	source.Metadata = metadata.Get

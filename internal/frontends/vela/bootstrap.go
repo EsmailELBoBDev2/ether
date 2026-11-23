@@ -84,7 +84,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		if hasRevision {
 			before, cacheable, err = source.HomeRevision(r.Context(), v)
 			if err != nil {
-				fail(w, err, r)
+				fail(w, bootstrapTransientError(err), r)
 				return
 			}
 		}
@@ -179,7 +179,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 				}
 				buildErr = &bootstrapChangedError{}
 			}
-			fail(w, buildErr, r)
+			fail(w, bootstrapTransientError(buildErr), r)
 			return
 		}
 		varyLanguage(w)
@@ -187,6 +187,16 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fail(w, &bootstrapChangedError{}, r)
+}
+
+// bootstrapTransientError prevents transient unavailability during bootstrap
+// assembly from answering 409 not_available with retry.allowed: false; clients
+// receive 503 + Retry-After so they wait and recover automatically.
+func bootstrapTransientError(err error) error {
+	if errors.Is(err, frontend.ErrNotAvailable) && !errors.Is(err, frontend.ErrPreparing) {
+		return &frontend.PreparingError{RetryAfter: 2 * time.Second, Err: err}
+	}
+	return err
 }
 
 // Catalogue enrichment is a soft refresh (bounded by TTL). Policy revocations

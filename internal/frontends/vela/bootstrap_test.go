@@ -217,3 +217,59 @@ func TestVelaIdleBootstrap(t *testing.T) {
 		t.Fatalf("unsafe warning: %s", line)
 	}
 }
+
+func TestVelaBootstrapMapsTransientNotAvailableTo503Retryable(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "bare_not_available", err: frontend.ErrNotAvailable},
+		{name: "preparing", err: &frontend.PreparingError{RetryAfter: 3 * time.Second, Err: frontend.ErrNotAvailable}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exp := frontendtest.Experience{
+				RowsFunc: func(context.Context, frontend.RowRequest) ([]frontend.Row, error) {
+					return nil, tc.err
+				},
+			}
+			mounted, err := (Frontend{DB: db, ReplayKey: make([]byte, 32)}).Mount(ctx, frontend.Host{
+				Identity:    identityFake{},
+				Experience:  exp,
+				Sessions:    frontendtest.Sessions{},
+				ImageGrants: idleBootstrapImages{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = mounted.Close(ctx) })
+			req := httptest.NewRequest(http.MethodGet, "/vela/v0/bootstrap", nil)
+			req.Header.Set("Authorization", "Bearer token")
+			req.Header.Set("X-Vela-Device-Id", "device")
+			rec := httptest.NewRecorder()
+			mounted.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+			}
+			if rec.Header().Get("Retry-After") == "" {
+				t.Fatalf("missing Retry-After header; body=%s", rec.Body.String())
+			}
+			var payload struct {
+				Error struct {
+					Code  string `json:"code"`
+					Retry struct {
+						Allowed      bool `json:"allowed"`
+						AfterSeconds int  `json:"afterSeconds"`
+					} `json:"retry"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode error payload: %v (%s)", err, rec.Body.String())
+			}
+			if !payload.Error.Retry.Allowed || payload.Error.Retry.AfterSeconds <= 0 {
+				t.Fatalf("expected retryable error payload, got %+v (%s)", payload.Error, rec.Body.String())
+			}
+		})
+	}
+}

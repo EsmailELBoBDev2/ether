@@ -235,7 +235,7 @@ func (i *instance) titleArtworkBatch(r *http.Request, v *frontend.Viewer, token 
 				continue
 			}
 			seen[title.Key] = true
-			imgs, ok, err := artReader.ItemArtwork(frontend.WithArtworkKinds(r.Context(), wanted), v, requestDevice(r), title.Key)
+			imgs, ok, err := artReader.ItemArtwork(frontend.WithPrimaryArtworkOnly(frontend.WithArtworkKinds(r.Context(), wanted)), v, requestDevice(r), title.Key)
 			if err != nil || !ok {
 				continue
 			}

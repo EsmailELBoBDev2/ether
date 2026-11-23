@@ -77,7 +77,9 @@ type frontendRuntime struct {
 }
 
 func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
-	grants, err := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil)
+	// The sealer opens app-login passwords for clients that prove them with
+	// a salted hash token (query-credential frontend adapters).
+	grants, err := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil, a.cfg)
 	if err != nil {
 		return nil, err
 	}

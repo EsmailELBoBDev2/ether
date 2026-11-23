@@ -69,13 +69,23 @@ func TestListArchiveMembersAndTrackHintSceneRARZIPAnd7z(t *testing.T) {
 			t.Fatalf("cached ListArchiveMembers performed %d extra NNTP fetches, want 0", got-fetchesBefore)
 		}
 
-		// 3. Exact fileHint semantics remain unchanged: fuzzy "05 You Must Burn!" fails with archive holds no member.
-		badHintNZB := annotateNonVideoNZB(t, rawNZB, nzb.NonVideoHint{
+		// 3. A track-style fileHint that names no member exactly ("05 You Must
+		// Burn!") falls back to track matching (#753); an unmatched real path
+		// still fails with archive holds no member.
+		fuzzyHintNZB := annotateNonVideoNZB(t, rawNZB, nzb.NonVideoHint{
 			Member: "05 You Must Burn!",
 			MIME:   "audio/flac",
 		})
+		fuzzySrc := openSource(t, e, "rar-fuzzy-hint", fuzzyHintNZB)
+		if fuzzySrc.Name() != "05-metallica-you_must_burn-moonblood.flac" {
+			t.Fatalf("track-style fileHint opened %q", fuzzySrc.Name())
+		}
+		badHintNZB := annotateNonVideoNZB(t, rawNZB, nzb.NonVideoHint{
+			Member: "Other Album/05-someone-else.flac",
+			MIME:   "audio/flac",
+		})
 		if _, err := e.Open(context.Background(), "rar-bad-hint", badHintNZB); !errors.Is(err, core.ErrNoUsableFile) || !strings.Contains(err.Error(), "archive holds no member") {
-			t.Fatalf("fuzzy fileHint err = %v, want 'archive holds no member'", err)
+			t.Fatalf("unmatched path fileHint err = %v, want 'archive holds no member'", err)
 		}
 
 		// 4. Exact member name discovered from ListArchiveMembers succeeds.

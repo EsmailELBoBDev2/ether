@@ -226,3 +226,90 @@ func TestLivenessPausedVisibleButExcludedFromLimitsAndExpiresAfterRetention(t *t
 		t.Fatal("paused session survived past PausedSessionRetention")
 	}
 }
+
+func TestLivenessDirectPlayPausedRetention(t *testing.T) {
+	cases := []struct {
+		name      string
+		minutes   int
+		stillOpen time.Duration
+		expireAt  time.Duration
+	}{
+		{"default-zero-30m", 0, 29 * time.Minute, 30*time.Minute + time.Second},
+		{"short-5m", 5, 4 * time.Minute, 5*time.Minute + time.Second},
+		{"above-30m-60m", 60, 35 * time.Minute, 60*time.Minute + time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, []*fakeRelease{mkv("A", 100_000, time.Hour)}, []string{"A"}, func(h *harness, o *Options) {
+				h.cfg.Server.PausedStreamMinutes = tc.minutes
+				o.IdleTimeout = 2 * time.Minute
+			})
+			// Direct play only: no transcoder session.
+			h.m.deps.HLSLookup = func(string) (core.HLSSession, bool) { return nil, false }
+
+			ps := h.prepare(owner, movieKey, "direct-client")
+			srv := directPlayServer(t, h.m, ps.ID)
+			resp, _, err := get(t, srv.URL, map[string]string{"Range": "bytes=0-1023"})
+			if err != nil || resp.StatusCode != 206 {
+				t.Fatalf("direct range read: %d %v", resp.StatusCode, err)
+			}
+			if snap, ok := h.m.Session(ps.ID); !ok || snap.Decision != core.DecisionDirectPlay {
+				t.Fatalf("expected direct-play session, got ok=%v decision=%v", ok, snap)
+			}
+
+			h.m.PlaybackProgress(owner.ID, "direct-client", movieKey, 5*time.Minute, "paused")
+
+			h.clock.Advance(tc.stillOpen)
+			h.m.expire()
+			if snap, ok := h.m.Session(ps.ID); !ok || snap.Liveness != core.SessionLivenessPaused {
+				t.Fatalf("direct-play paused session expired too early at %v: ok=%v snap=%v", tc.stillOpen, ok, snap)
+			}
+
+			h.clock.Advance(tc.expireAt - tc.stillOpen)
+			h.m.expire()
+			if _, ok := h.m.Session(ps.ID); ok {
+				t.Fatalf("direct-play paused session survived past %v", tc.expireAt)
+			}
+		})
+	}
+
+	t.Run("instance-scoped-and-live-reload", func(t *testing.T) {
+		hShort := newHarness(t, []*fakeRelease{mkv("A", 100_000, time.Hour)}, []string{"A"}, func(h *harness, o *Options) {
+			h.cfg.Server.PausedStreamMinutes = 5
+			o.IdleTimeout = 2 * time.Minute
+		})
+		hLong := newHarness(t, []*fakeRelease{mkv("A", 100_000, time.Hour)}, []string{"A"}, func(h *harness, o *Options) {
+			h.cfg.Server.PausedStreamMinutes = 60
+			o.IdleTimeout = 2 * time.Minute
+		})
+		noHLS := func(string) (core.HLSSession, bool) { return nil, false }
+		hShort.m.deps.HLSLookup = noHLS
+		hLong.m.deps.HLSLookup = noHLS
+
+		psShort := hShort.prepare(owner, movieKey, "direct-short")
+		psLong := hLong.prepare(owner, movieKey, "direct-long")
+		hShort.m.PlaybackProgress(owner.ID, "direct-short", movieKey, time.Minute, "paused")
+		hLong.m.PlaybackProgress(owner.ID, "direct-long", movieKey, time.Minute, "paused")
+
+		// Advance both past 5m: only hShort expires.
+		hShort.clock.Advance(5*time.Minute + time.Second)
+		hLong.clock.Advance(35 * time.Minute)
+		hShort.m.expire()
+		hLong.m.expire()
+		if _, ok := hShort.m.Session(psShort.ID); ok {
+			t.Fatal("hShort session survived past 5m")
+		}
+		if snap, ok := hLong.m.Session(psLong.ID); !ok || snap.Liveness != core.SessionLivenessPaused {
+			t.Fatalf("hLong session affected by hShort: ok=%v snap=%v", ok, snap)
+		}
+
+		// Live config reload back to 0 restores 30m default on hLong, expiring the 35m-paused session.
+		cfg := hLong.cfg
+		cfg.Server.PausedStreamMinutes = 0
+		hLong.m.SetConfig(cfg)
+		hLong.m.expire()
+		if _, ok := hLong.m.Session(psLong.ID); ok {
+			t.Fatal("hLong session survived after live reload back to 30m default")
+		}
+	})
+}

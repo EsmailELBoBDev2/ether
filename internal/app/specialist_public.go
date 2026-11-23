@@ -166,6 +166,9 @@ func (a *App) applyServerConfig(c config.Config) {
 	a.subtitles.UpdateSubSource(c.SubSource)
 	a.subtitles.UpdateProviders(c.Subtitles.Providers)
 	a.publishLibrarySections()
+	if remote, ok := a.brokerPlayback.(interface{ SetPauseRetention(time.Duration) }); ok {
+		remote.SetPauseRetention(c.Server.PausedStreamRetention())
+	}
 	a.registrar.Trigger()
 	if a.frontends != nil {
 		a.frontends.reconcile(c)

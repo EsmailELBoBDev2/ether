@@ -1,9 +1,6 @@
 package core
 
-import (
-	"sync/atomic"
-	"time"
-)
+import "time"
 
 // Shared session liveness thresholds across playback, broker, live TV,
 // Activity/Overview, restart/update gating, upload budget, and stream limits.
@@ -35,28 +32,6 @@ const (
 	// consumed live media bytes/segments to count as playing.
 	PlayingEvidenceWindowLive = 30 * time.Second
 )
-
-// pausedRetention is the owner's setting for how long a paused stream is
-// kept, in nanoseconds. 0 means PausedSessionRetention.
-var pausedRetention atomic.Int64
-
-// SetPausedSessionRetention sets how long a paused stream is kept before it
-// is closed. 0 or less restores the default, PausedSessionRetention.
-func SetPausedSessionRetention(d time.Duration) {
-	if d < 0 {
-		d = 0
-	}
-	pausedRetention.Store(int64(d))
-}
-
-// PausedRetention is how long a paused stream is kept: the owner's setting,
-// or PausedSessionRetention.
-func PausedRetention() time.Duration {
-	if d := time.Duration(pausedRetention.Load()); d > 0 {
-		return d
-	}
-	return PausedSessionRetention
-}
 
 // SessionActivity is an optional output-session extension. Only authenticated,
 // ownership-checked player timelines may renew it; playlist polls may not.
@@ -187,7 +162,7 @@ func EvaluateSessionLiveness(in SessionLivenessInput, now time.Time) SessionLive
 	}
 	pauseRetention := in.PauseRetention
 	if pauseRetention <= 0 {
-		pauseRetention = PausedRetention()
+		pauseRetention = PausedSessionRetention
 	}
 	if idleTimeout > pauseRetention {
 		pauseRetention = idleTimeout

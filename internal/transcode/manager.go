@@ -59,21 +59,26 @@ type options struct {
 	// bound therefore matches the paused-session retention Ether
 	// already promises, and only retires truly dead sockets.
 	httpWriteTimeout time.Duration
-	restartAhead     time.Duration
-	maxAhead         time.Duration
-	keepBehind       time.Duration
-	pollInterval     time.Duration
-	segmentURI       func(n int, container string) string
-	dashURLs         DASHURLs
-	manifestWait     time.Duration
-	onFailure        func(sessionID string, at time.Duration, err error)
-	onInputFailure   func(sessionID, inputURL string, at time.Duration, err error)
-	onRunStart       func(inputURL string, from, to time.Duration)
-	onEncoder        func(sessionID string, started bool, excerpt string)
-	onChange         func()
-	events           *events.Bus
-	openSubtitle     func(id, format, source string) (io.ReadCloser, string, error)
-	tracePlayback    bool
+	// pauseRetention bounds how long a paused session is kept and is the
+	// fallback write deadline for progressive HTTP streams when
+	// httpWriteTimeout is 0. Zero uses core.PausedSessionRetention.
+	pauseRetention time.Duration
+	now            func() time.Time
+	restartAhead   time.Duration
+	maxAhead       time.Duration
+	keepBehind     time.Duration
+	pollInterval   time.Duration
+	segmentURI     func(n int, container string) string
+	dashURLs       DASHURLs
+	manifestWait   time.Duration
+	onFailure      func(sessionID string, at time.Duration, err error)
+	onInputFailure func(sessionID, inputURL string, at time.Duration, err error)
+	onRunStart     func(inputURL string, from, to time.Duration)
+	onEncoder      func(sessionID string, started bool, excerpt string)
+	onChange       func()
+	events         *events.Bus
+	openSubtitle   func(id, format, source string) (io.ReadCloser, string, error)
+	tracePlayback  bool
 	// rungDwell is how long a run keeps producing its rung before a
 	// request on another rung may replace it (see Session.rungDwellLocked).
 	rungDwell time.Duration
@@ -100,14 +105,14 @@ func defaultOptions() options {
 		stallTimeout:      30 * time.Second,
 		// 0 follows the paused-stream retention, including the owner's setting.
 		httpWriteTimeout: 0,
-		restartAhead:      24 * time.Second,
-		maxAhead:          2 * time.Minute,
-		keepBehind:        3 * time.Minute,
-		pollInterval:      150 * time.Millisecond,
-		segmentURI:        SegmentName,
-		dashURLs:          PlexDASHURLs,
-		manifestWait:      15 * time.Second,
-		rungDwell:         8 * time.Second,
+		restartAhead:     24 * time.Second,
+		maxAhead:         2 * time.Minute,
+		keepBehind:       3 * time.Minute,
+		pollInterval:     150 * time.Millisecond,
+		segmentURI:       SegmentName,
+		dashURLs:         PlexDASHURLs,
+		manifestWait:     15 * time.Second,
+		rungDwell:        8 * time.Second,
 
 		audioMatchBudget: defaultAudioMatchBudget,
 		retryBackoffBase: retryBackoffBase,
@@ -138,6 +143,22 @@ func WithoutHWDetection() Option { return func(o *options) { o.detectHW = false 
 
 // WithIdleTimeout sets how long an unrequested session lives (default 2m).
 func WithIdleTimeout(d time.Duration) Option { return func(o *options) { o.idleTimeout = d } }
+
+// WithPauseRetention sets how long a paused session is kept before closing
+// and the fallback write timeout for progressive HTTP streams. Zero uses
+// core.PausedSessionRetention (30 minutes).
+func WithPauseRetention(d time.Duration) Option {
+	return func(o *options) {
+		if d < 0 {
+			d = 0
+		}
+		o.pauseRetention = d
+	}
+}
+
+func withNow(fn func() time.Time) Option {
+	return func(o *options) { o.now = fn }
+}
 
 // WithSegmentTimeout bounds how long ServeSegment waits for ffmpeg
 // (default 45s).
@@ -272,6 +293,10 @@ type Manager struct {
 	// throttleSeconds mirrors cfg.ThrottleSeconds for sessions, which read it
 	// under their own lock and must not take the manager's.
 	throttleSeconds atomic.Int64
+	// pauseRetention mirrors server.pausedStreamMinutes (as a duration) for
+	// sessions and progressive HTTP writers without taking m.mu. Zero uses
+	// core.PausedSessionRetention.
+	pauseRetention  atomic.Int64
 	sessions        map[string]*Session
 	httpSessions    map[string]*httpSession
 	downloadEncodes int
@@ -296,6 +321,9 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 	for _, fn := range opts {
 		fn(&o)
 	}
+	if o.now == nil {
+		o.now = time.Now
+	}
 	m := &Manager{
 		log:          logger.With("component", "transcode"),
 		opts:         o,
@@ -307,6 +335,7 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 		reaperDone:   make(chan struct{}),
 	}
 	m.throttleSeconds.Store(int64(cfg.ThrottleSeconds))
+	m.pauseRetention.Store(int64(o.pauseRetention))
 	f := defaultFinder()
 	if o.finder != nil {
 		f = *o.finder
@@ -632,6 +661,35 @@ func (m *Manager) UpdateConfig(cfg config.Transcode) {
 		m.rtxSetup.changedLocked()
 	}
 	m.mu.Unlock()
+}
+
+// SetPauseRetention updates how long a paused session is kept before closing
+// and the fallback write timeout for progressive HTTP streams. Zero or
+// negative restores core.PausedSessionRetention.
+func (m *Manager) SetPauseRetention(d time.Duration) {
+	if m == nil {
+		return
+	}
+	if d < 0 {
+		d = 0
+	}
+	m.pauseRetention.Store(int64(d))
+}
+
+func (m *Manager) effectivePauseRetention() time.Duration {
+	if m != nil {
+		if d := time.Duration(m.pauseRetention.Load()); d > 0 {
+			return d
+		}
+	}
+	return core.PausedSessionRetention
+}
+
+func (m *Manager) now() time.Time {
+	if m != nil && m.opts.now != nil {
+		return m.opts.now()
+	}
+	return time.Now()
 }
 
 // Policy is the server-side decision input derived from config and
@@ -1504,7 +1562,7 @@ func (m *Manager) reaper() {
 		case <-m.stop:
 			return
 		case <-t.C:
-			m.reapIdle(time.Now())
+			m.reapIdle(m.now())
 		}
 	}
 }
@@ -1524,7 +1582,7 @@ func (m *Manager) reapIdle(now time.Time) {
 			_ = s.Close()
 			continue
 		}
-		if idle := now.Sub(s.LastAccess()); idle > m.opts.idleTimeout && now.UnixNano() >= s.pauseUntil.Load() {
+		if idle := now.Sub(s.LastAccess()); idle > m.opts.idleTimeout && now.UnixNano() >= s.pauseDeadline() {
 			s.log.Info("closing idle session", "idle", idle.Round(time.Second))
 			_ = s.Close()
 		}

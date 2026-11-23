@@ -38,9 +38,6 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		PendingSQLite:      store.DialectOf(a.db) == store.SQLite,
 		ResumeAfterSeconds: cfg.Server.ResumeAfterSeconds,
 	})
-	if a.cfg != nil {
-		core.SetPausedSessionRetention(time.Duration(a.cfg.Get().Server.PausedStreamMinutes) * time.Minute)
-	}
 	a.state.SetJournalGate(func(context.Context, *sql.Tx, int64) (int64, bool, error) { return 0, false, nil })
 	basePlaylists := a.state.Playlists()
 	marked, ok := basePlaylists.(core.TransactionalMarkedPlaylists)

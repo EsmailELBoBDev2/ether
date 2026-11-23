@@ -114,6 +114,39 @@ func TestEvaluateSessionLiveness(t *testing.T) {
 		}
 	})
 
+	t.Run("custom pause retention (default 0, short, long, sub-idle floor)", func(t *testing.T) {
+		base := SessionLivenessInput{
+			StartedAt:      t0,
+			OpenedAt:       t0,
+			ViewerState:    "paused",
+			PausedAt:       t0,
+			LastProgressAt: t0,
+			HasPosition:    true,
+			IdleTimeout:    2 * time.Minute,
+		}
+		cases := []struct {
+			name       string
+			retention  time.Duration
+			stillAlive time.Duration
+			mustExpire time.Duration
+		}{
+			{"default-zero-keeps-30m", 0, 30 * time.Minute, 30*time.Minute + time.Second},
+			{"short-5m", 5 * time.Minute, 5 * time.Minute, 5*time.Minute + time.Second},
+			{"above-30m-60m", 60 * time.Minute, 35 * time.Minute, 60*time.Minute + time.Second},
+			{"below-idle-floored-to-2m", time.Minute, 2 * time.Minute, 2*time.Minute + time.Second},
+		}
+		for _, tc := range cases {
+			in := base
+			in.PauseRetention = tc.retention
+			if got := EvaluateSessionLiveness(in, t0.Add(tc.stillAlive)); got.Expired || got.State != SessionLivenessPaused {
+				t.Fatalf("%s at %v: got %+v, want paused & alive", tc.name, tc.stillAlive, got)
+			}
+			if got := EvaluateSessionLiveness(in, t0.Add(tc.mustExpire)); !got.Expired {
+				t.Fatalf("%s at %v: got %+v, want expired", tc.name, tc.mustExpire, got)
+			}
+		}
+	})
+
 	t.Run("playing timeline keeps session playing without reads", func(t *testing.T) {
 		in := SessionLivenessInput{
 			StartedAt:      t0,

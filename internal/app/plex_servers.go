@@ -1,7 +1,6 @@
 package app
 
 import (
-	"sync/atomic"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/auth"

@@ -473,6 +473,171 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 	return homeBuild{mc: mc, served: served, section: sec.ID, provisional: provisional}
 }
 
+const defaultHomeRowBudget = 20
+
+func (s *Server) homeRowBudget(ctx context.Context, pr *Request, hc frontend.HubContext) int {
+	if src, ok := s.recommender().(frontend.HomeRowBudgetSource); ok {
+		if n := src.HomeRowBudget(ctx, pr.User, hc); n > 0 {
+			return n
+		}
+	}
+	return defaultHomeRowBudget
+}
+
+func isCrossLibraryHub(id string) bool {
+	switch id {
+	case "home.continue", "home.ondeck", "home.playlists":
+		return true
+	default:
+		return false
+	}
+}
+
+func sectionSubsetParents(secs []Section) map[int]int {
+	if len(secs) < 2 {
+		return nil
+	}
+	views := make([]frontend.View, len(secs))
+	for i, sec := range secs {
+		views[i] = frontend.View{
+			ID:        strconv.Itoa(sec.ID),
+			LibraryID: sectionLibraryID(sec),
+			Name:      sec.Title,
+			Type:      sec.Type,
+			PluginID:  sec.PluginID,
+			KindKey:   sec.KindKey,
+			Subset:    sec.Subset,
+		}
+	}
+	raw := frontend.SubsetParents(views)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[int]int, len(raw))
+	for childStr, parentStr := range raw {
+		c, err1 := strconv.Atoi(childStr)
+		p, err2 := strconv.Atoi(parentStr)
+		if err1 == nil && err2 == nil {
+			out[c] = p
+		}
+	}
+	return out
+}
+
+func hubRowStem(hubID string, secID int) string {
+	out := hubID
+	if secID > 0 {
+		out = strings.TrimSuffix(out, "."+strconv.Itoa(secID))
+	}
+	for _, prefix := range []string{"movie.", "tv.", "home.", "music.", "photo."} {
+		if trimmed, ok := strings.CutPrefix(out, prefix); ok {
+			out = trimmed
+			break
+		}
+	}
+	return out
+}
+
+func hubItemKeys(h model.Hub) []string {
+	if len(h.Metadata) > 0 {
+		keys := make([]string, 0, len(h.Metadata))
+		for _, m := range h.Metadata {
+			k := m.RatingKey
+			if m.GrandparentRatingKey != "" {
+				k = m.GrandparentRatingKey
+			} else if m.Type == "season" && m.ParentRatingKey != "" {
+				k = m.ParentRatingKey
+			}
+			if k != "" {
+				keys = append(keys, k)
+			}
+		}
+		return keys
+	}
+	if len(h.Directory) > 0 {
+		keys := make([]string, 0, len(h.Directory))
+		for _, d := range h.Directory {
+			k := d.Key
+			if k == "" {
+				k = d.ID
+			}
+			if k != "" {
+				keys = append(keys, k)
+			}
+		}
+		return keys
+	}
+	return nil
+}
+
+type parentHubIndex struct {
+	all   map[string]bool
+	byRow map[string]map[string]bool
+}
+
+func indexParentHubRows(rows []model.Hub, secID int, maxRows int) parentHubIndex {
+	idx := parentHubIndex{
+		all:   map[string]bool{},
+		byRow: map[string]map[string]bool{},
+	}
+	counted := 0
+	for _, mh := range rows {
+		if isCrossLibraryHub(mh.HubIdentifier) {
+			continue
+		}
+		if maxRows > 0 && counted >= maxRows {
+			break
+		}
+		counted++
+		stem := hubRowStem(mh.HubIdentifier, secID)
+		rowSet := idx.byRow[stem]
+		if rowSet == nil {
+			rowSet = map[string]bool{}
+			idx.byRow[stem] = rowSet
+		}
+		for _, k := range hubItemKeys(mh) {
+			idx.all[k] = true
+			rowSet[k] = true
+		}
+	}
+	return idx
+}
+
+func nonEmptyUniqueHubs(rows []model.Hub) []model.Hub {
+	seen := make(map[string]bool, len(rows))
+	out := make([]model.Hub, 0, len(rows))
+	for _, h := range rows {
+		if len(h.Metadata) == 0 && len(h.Directory) == 0 {
+			continue
+		}
+		if h.HubIdentifier != "" {
+			if seen[h.HubIdentifier] {
+				continue
+			}
+			seen[h.HubIdentifier] = true
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+func trimSectionLibraryRows(rows []model.Hub, cap int) []model.Hub {
+	out := make([]model.Hub, 0, len(rows))
+	used := 0
+	for _, mh := range rows {
+		if isCrossLibraryHub(mh.HubIdentifier) {
+			out = append(out, mh)
+			continue
+		}
+		if used >= cap {
+			continue
+		}
+		out = append(out, mh)
+		used++
+	}
+	return out
+}
+
 // buildScopedHomeHubs builds PMS-shaped Home responses when contentDirectoryID
 // scopes /hubs or /hubs/promoted to one or more pinned directories. Each
 // library contributes only its own rows and titles of its own media type and
@@ -491,8 +656,11 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 	}
 	perDirectory := !strings.Contains(rawDir, ",")
 	shelves := promotedOnly && perDirectory && len(allowedSecs) == 1 && isVideoSection(allowedSecs[0]) && !wantPlaylists && s.wantsCollectionShelves(pr)
-	pinned := q.Get("pinnedContentDirectoryID")
-	if shelves && strings.TrimSpace(pinned) == "" {
+	rawPinned := strings.TrimSpace(q.Get("pinnedContentDirectoryID"))
+	pinnedIDs, _ := parseContentDirectories(rawPinned)
+	explicitPinnedSecs := s.allowedContentSections(pr.User, pinnedIDs)
+	pinned := rawPinned
+	if shelves && pinned == "" {
 		pinned = s.defaultPinnedDirectories(pr.User)
 	}
 	var selected map[string]bool
@@ -519,11 +687,29 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 			includeContinue = false
 		}
 	}
+	var parentPool []Section
+	if len(allowedSecs) > 1 {
+		parentPool = allowedSecs
+	} else if len(allowedSecs) == 1 && len(explicitPinnedSecs) > 1 {
+		parentPool = explicitPinnedSecs
+	}
+	parentOf := sectionSubsetParents(parentPool)
+
 	needDiscovery := false
 	for _, sec := range allowedSecs {
 		if !isKindSection(sec) {
 			needDiscovery = true
 			break
+		}
+	}
+	if !needDiscovery && selected == nil && len(parentOf) > 0 {
+		for _, sec := range allowedSecs {
+			if parentID := parentOf[sec.ID]; parentID != 0 {
+				if pSec, ok := s.sectionByID(parentID); ok && !isKindSection(pSec) {
+					needDiscovery = true
+					break
+				}
+			}
 		}
 	}
 	var sharedDisc []frontend.Hub
@@ -538,30 +724,29 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 		sharedDisc = disc
 	}
 
-	served := map[string]frontend.Hub{}
-	var allRows []model.Hub
-	provisional := false
-	for _, sec := range allowedSecs {
+	buildOneSection := func(sec Section, withContinue bool, sel map[string]bool) ([]model.Hub, map[string]frontend.Hub, bool) {
+		secServed := map[string]frontend.Hub{}
 		if isKindMusicSection(sec) {
 			if mh, ok := s.kindMusicArtistsHub(ctx, pr, sec, count); ok {
-				if selected == nil || selected[mh.HubIdentifier] {
-					allRows = append(allRows, mh)
+				if sel == nil || sel[mh.HubIdentifier] {
+					return nonEmptyUniqueHubs([]model.Hub{mh}), secServed, false
 				}
 			}
-			continue
+			return nil, secServed, false
 		}
 		if isPluginKindSection(sec) {
 			kindHubs, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
+			var out []model.Hub
 			for _, mh := range kindHubs {
-				if selected != nil && !selected[mh.HubIdentifier] {
+				if sel != nil && !sel[mh.HubIdentifier] {
 					continue
 				}
 				if src, ok := kindServed[mh.HubIdentifier]; ok {
-					served[mh.HubIdentifier] = src
+					secServed[mh.HubIdentifier] = src
 				}
-				allRows = append(allRows, mh)
+				out = append(out, mh)
 			}
-			continue
+			return nonEmptyUniqueHubs(out), secServed, false
 		}
 		secCopy := sec
 		renderHC := hubCtx{visible: count, renderSec: &secCopy}
@@ -572,9 +757,10 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 		var layoutHubs []frontend.Hub
 		var layoutNeutral []frontend.NeutralHomeRow
 		origByID := map[string]frontend.Hub{}
+		secProv := false
 		appendRow := func(mh model.Hub, src frontend.Hub, record bool) {
 			scoped := sectionHubID(mh.HubIdentifier, sec)
-			if selected != nil && !selected[mh.HubIdentifier] && !selected[scoped] {
+			if sel != nil && !sel[mh.HubIdentifier] && !sel[scoped] {
 				return
 			}
 			secRows = append(secRows, mh)
@@ -585,8 +771,8 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				origByID[mh.HubIdentifier] = src
 			}
 		}
-		if includeContinue && sec.ID == firstSec {
-			_, ondeckHub, cwSpec, cwRendered := s.prepareHomeContinueAndOnDeck(ctx, pr, pc, nil, selected, true, count)
+		if withContinue && sec.ID == firstSec {
+			_, ondeckHub, cwSpec, cwRendered := s.prepareHomeContinueAndOnDeck(ctx, pr, pc, nil, sel, true, count)
 			appendRow(cwRendered, cwSpec.Hub, true)
 			if ondeckHub != nil {
 				appendRow(*ondeckHub, frontend.Hub{ID: "home.ondeck", Title: ondeckHub.Title, Type: frontend.TypeEpisode, Promoted: true}, true)
@@ -604,7 +790,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				s.log.Warn("section home hubs", "section", sec.ID, "err", err)
 			}
 			if !hasRecommendedRows(sectionHubs) {
-				provisional = true
+				secProv = true
 			}
 			for _, h := range sectionHubs {
 				view, ok := frontend.SectionView(h, sec.Type)
@@ -646,6 +832,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 			}
 		}
 		secRows = s.arrangeHomeRows(ctx, pr, pc, "home", secRows, layoutHubs, layoutNeutral)
+		out := make([]model.Hub, 0, len(secRows))
 		for _, mh := range secRows {
 			oldID := mh.HubIdentifier
 			mh.HubIdentifier = sectionHubID(oldID, sec)
@@ -653,11 +840,108 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				mh.Style = "shelf"
 			}
 			if src, ok := origByID[oldID]; ok {
-				served[mh.HubIdentifier] = src
+				secServed[mh.HubIdentifier] = src
 			}
-			allRows = append(allRows, mh)
+			out = append(out, mh)
+		}
+		return nonEmptyUniqueHubs(out), secServed, secProv
+	}
+
+	homeBudget := s.homeRowBudget(ctx, pr, s.hubContext(pr, 0))
+	numParents := 0
+	for _, sec := range parentPool {
+		if parentOf[sec.ID] == 0 {
+			numParents++
 		}
 	}
+	parentRefCap := homeBudget
+	if len(parentPool) > 1 && numParents > 0 {
+		parentRefCap = max(homeBudget/numParents, 1)
+	}
+
+	neededParents := map[int]bool{}
+	if selected == nil {
+		for _, sec := range allowedSecs {
+			if pID := parentOf[sec.ID]; pID != 0 {
+				neededParents[pID] = true
+			}
+		}
+	}
+
+	served := map[string]frontend.Hub{}
+	secBuilt := make(map[int][]model.Hub, len(allowedSecs))
+	parentIdx := map[int]parentHubIndex{}
+	provisional := false
+
+	// Build non-subset sections first so subset sections can compare against their
+	// parent library's rows regardless of ordering in contentDirectoryID.
+	for _, sec := range allowedSecs {
+		if selected == nil && parentOf[sec.ID] != 0 {
+			continue
+		}
+		rows, secServed, secProv := buildOneSection(sec, includeContinue, selected)
+		secBuilt[sec.ID] = rows
+		for id, h := range secServed {
+			served[id] = h
+		}
+		if secProv {
+			provisional = true
+		}
+		if neededParents[sec.ID] {
+			parentIdx[sec.ID] = indexParentHubRows(rows, sec.ID, parentRefCap)
+		}
+	}
+
+	// For per-directory requests naming a subset library whose parent is pinned,
+	// build the parent's reference rows from the memoised recommender.
+	if selected == nil {
+		for pID := range neededParents {
+			if _, ok := parentIdx[pID]; ok {
+				continue
+			}
+			for _, pSec := range explicitPinnedSecs {
+				if pSec.ID == pID {
+					pRows, _, _ := buildOneSection(pSec, false, nil)
+					parentIdx[pID] = indexParentHubRows(pRows, pID, parentRefCap)
+					break
+				}
+			}
+		}
+	}
+
+	// Build subset sections and suppress rows that do not differ meaningfully from
+	// their parent library's Home rows.
+	for _, sec := range allowedSecs {
+		if selected != nil || parentOf[sec.ID] == 0 {
+			continue
+		}
+		rows, secServed, secProv := buildOneSection(sec, includeContinue, selected)
+		if secProv {
+			provisional = true
+		}
+		if idx, ok := parentIdx[parentOf[sec.ID]]; ok {
+			filtered := make([]model.Hub, 0, len(rows))
+			for _, mh := range rows {
+				if isCrossLibraryHub(mh.HubIdentifier) {
+					filtered = append(filtered, mh)
+					continue
+				}
+				stem := hubRowStem(mh.HubIdentifier, sec.ID)
+				if frontend.SubsetRowDistinct(hubItemKeys(mh), idx.byRow[stem], idx.all) {
+					filtered = append(filtered, mh)
+				}
+			}
+			rows = filtered
+		}
+		secBuilt[sec.ID] = rows
+		for _, mh := range rows {
+			if src, ok := secServed[mh.HubIdentifier]; ok {
+				served[mh.HubIdentifier] = src
+			}
+		}
+	}
+
+	var playlistRows []model.Hub
 	if wantPlaylists {
 		if plHub, _, ok := s.playlistsHubProjection(ctx, pr, count); ok && (selected == nil || selected[plHub.HubIdentifier]) {
 			hFact, nFact := homeLayoutFacts(plHub)
@@ -666,10 +950,50 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				if strings.EqualFold(mh.Style, "hero") {
 					mh.Style = "shelf"
 				}
-				allRows = append(allRows, mh)
+				playlistRows = append(playlistRows, mh)
 			}
+			playlistRows = nonEmptyUniqueHubs(playlistRows)
 		}
 	}
+
+	// Keep the combined Home screen within the effective Home row budget while
+	// allocating rows fairly across pinned libraries.
+	if selected == nil {
+		if len(allowedSecs) > 1 {
+			crossCount := len(playlistRows)
+			libLengths := make([]int, len(allowedSecs))
+			for i, sec := range allowedSecs {
+				for _, mh := range secBuilt[sec.ID] {
+					if isCrossLibraryHub(mh.HubIdentifier) {
+						crossCount++
+					} else {
+						libLengths[i]++
+					}
+				}
+			}
+			caps := frontend.AllocateRowBudget(libLengths, max(homeBudget-crossCount, 0))
+			for i, sec := range allowedSecs {
+				secBuilt[sec.ID] = trimSectionLibraryRows(secBuilt[sec.ID], caps[i])
+			}
+		} else if len(allowedSecs) == 1 && len(explicitPinnedSecs) > 1 {
+			perDirCap := max(homeBudget/len(explicitPinnedSecs), 1)
+			sec := allowedSecs[0]
+			secBuilt[sec.ID] = trimSectionLibraryRows(secBuilt[sec.ID], perDirCap)
+		}
+	}
+
+	var allRows []model.Hub
+	for i, sec := range allowedSecs {
+		qualify := (len(allowedSecs) > 1 && i > 0) ||
+			(len(allowedSecs) == 1 && len(explicitPinnedSecs) > 1 && sec.ID != explicitPinnedSecs[0].ID)
+		for _, mh := range secBuilt[sec.ID] {
+			if qualify && !isCrossLibraryHub(mh.HubIdentifier) {
+				mh.Title = frontend.QualifyLibraryRowTitle(mh.Title, sec.Title)
+			}
+			allRows = append(allRows, mh)
+		}
+	}
+	allRows = append(allRows, playlistRows...)
 
 	mc := hubContainer()
 	mc.Hub = stableHomeHubs(allRows)
@@ -683,6 +1007,13 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				served[id] = h
 			}
 		}
+	}
+	if pr.HasPage {
+		total := len(mc.Hub)
+		lo, hi := pr.window(total)
+		mc.TotalSize = model.Ptr(total)
+		mc.Offset = model.Ptr(lo)
+		mc.Hub = mc.Hub[lo:hi]
 	}
 	mc.Size = len(mc.Hub)
 	buildSec := 0

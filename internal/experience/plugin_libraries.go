@@ -362,6 +362,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 			KindKey:   lib.KindKey,
 			PluginID:  lib.PluginID,
 			Native:    native,
+			Subset:    libraryIsRuleSubset(lib),
 		}
 		if lib.Source == core.LibraryPlugin {
 			if pres, hasPres := s.d.PluginLibraries.(PluginPresentationLibraries); hasPres {
@@ -391,6 +392,33 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 		out = append(out, view)
 	}
 	return out, nil
+}
+
+// libraryIsRuleSubset reports whether lib narrows a broader canonical catalogue
+// with rules, a hide default, narrower sources, or a collection.
+func libraryIsRuleSubset(lib core.Library) bool {
+	if core.IsBuiltinLibrary(lib.ID) || lib.Source == core.LibraryPlugin {
+		return false
+	}
+	if lib.Source == core.LibraryCollection {
+		return true
+	}
+	if lib.Source != core.LibraryCatalog {
+		return false
+	}
+	if len(lib.Rules) > 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
+		return true
+	}
+	if len(lib.Sources) == 0 {
+		return false
+	}
+	kind := filterMediaType(lib)
+	for _, src := range lib.Sources {
+		if (kind == core.TypeMovie && src == "tmdb-movies") || (kind == core.TypeShow && src == "tmdb-tv") {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) allowedFilterLibraries(ctx context.Context, v *core.User) []core.Library {

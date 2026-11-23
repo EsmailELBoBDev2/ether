@@ -131,6 +131,11 @@ type HomeRowLayoutGate interface {
 	HomeRowEnabled(context.Context, *User, HubContext, string) bool
 }
 
+// HomeRowBudgetSource reports the effective Home row budget for a viewer and context.
+type HomeRowBudgetSource interface {
+	HomeRowBudget(context.Context, *User, HubContext) int
+}
+
 // PlaylistHeaderLister lists playlist headers without loading item membership.
 type PlaylistHeaderLister interface {
 	ListHeaders(context.Context, int64) ([]Playlist, error)

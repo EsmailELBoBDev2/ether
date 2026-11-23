@@ -348,6 +348,28 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, section)
 	}
+	var latestExcludedGUIDs map[string]bool
+	var redundant map[string]bool
+	if stored, ok := i.storedUserConfig(r, v); ok {
+		if raw, exists := stored["LatestItemsExcludes"]; exists {
+			if list, ok := raw.([]any); ok {
+				latestExcludedGUIDs = make(map[string]bool, len(list))
+				for _, item := range list {
+					if s, ok := item.(string); ok && s != "" {
+						latestExcludedGUIDs[strings.ToLower(strings.ReplaceAll(s, "-", ""))] = true
+					}
+				}
+			}
+		} else {
+			hidePlayed := true
+			if hp, ok := stored["HidePlayedInLatest"].(bool); ok {
+				hidePlayed = hp
+			}
+			redundant = i.redundantSubsetViews(r, v, views, hidePlayed)
+		}
+	} else {
+		redundant = i.redundantSubsetViews(r, v, views, true)
+	}
 	add("SmallLibraryTiles", "")
 	add("Resume", "")
 	add("NextUp", "")
@@ -362,8 +384,14 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 		if view.Type != "movie" && view.Type != "show" && view.KindKey == "" {
 			continue
 		}
+		if redundant[view.ID] {
+			continue
+		}
 		id, err := ids.GUID(ids.View, n)
 		if err != nil {
+			continue
+		}
+		if latestExcludedGUIDs[strings.ToLower(strings.ReplaceAll(id, "-", ""))] {
 			continue
 		}
 		add("LatestMedia", id)

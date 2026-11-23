@@ -580,8 +580,8 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Downloads.LimitPeriod != "" {
 		v.oneOf("downloads.limitPeriod", cfg.Downloads.LimitPeriod, "day", "month")
 	}
-	if cfg.Downloads.LimitAmount < 0 {
-		v.add("downloads.limitAmount", "must be >= 0")
+	if cfg.Downloads.LimitAmount < 0 || cfg.Downloads.LimitAmount > 100000 {
+		v.add("downloads.limitAmount", "must be between 0 and 100000")
 	}
 	if n := cfg.Server.ResumeAfterSeconds; n < 0 || n > 3600 {
 		v.add("server.resumeAfterSeconds", "must be between 0 and 3600")

@@ -34,6 +34,8 @@ type VariantResolver = core.VariantResolver
 type BitrateAccessPolicy = core.BitrateAccessPolicy
 
 // DownloadLimitPolicy is the optional per-viewer download limit capability.
+type DownloadAllowance = core.DownloadAllowance
+type DownloadLimitDecision = core.DownloadLimitDecision
 type DownloadLimitPolicy = core.DownloadLimitPolicy
 type DownloadAccessPolicy = core.DownloadAccessPolicy
 

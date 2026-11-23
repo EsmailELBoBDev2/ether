@@ -31,10 +31,13 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	// Watch state and recommendations. Default the account-sync journal gate
 	// closed until buildPlexWatch installs per-viewer consent checks, so a
 	// server without Plex never accumulates undeliverable journal rows.
-	a.state = state.New(a.db, state.Options{Now: parityClock(), Logger: log.With("component", "state"), Availability: a.dbAvail, PendingSQLite: store.DialectOf(a.db) == store.SQLite})
-	if a.cfg != nil {
-		state.SetResumeAfter(a.cfg.Get().Server.ResumeAfterSeconds)
-	}
+	a.state = state.New(a.db, state.Options{
+		Now:                parityClock(),
+		Logger:             log.With("component", "state"),
+		Availability:       a.dbAvail,
+		PendingSQLite:      store.DialectOf(a.db) == store.SQLite,
+		ResumeAfterSeconds: cfg.Server.ResumeAfterSeconds,
+	})
 	a.state.SetJournalGate(func(context.Context, *sql.Tx, int64) (int64, bool, error) { return 0, false, nil })
 	basePlaylists := a.state.Playlists()
 	marked, ok := basePlaylists.(core.TransactionalMarkedPlaylists)

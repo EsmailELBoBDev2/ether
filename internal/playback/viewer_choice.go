@@ -67,6 +67,7 @@ func (m *Manager) observeViewerVersionChoice(s *session, position time.Duration,
 	if s.prefer == "" || isAutoVersionSelector(s.prefer) {
 		return
 	}
+	resumeAfter := time.Duration(m.config().Server.ResumeAfterSeconds) * time.Second
 	s.mu.Lock()
 	if s.choiceRecorded || s.cur == nil || s.cur.res == nil || s.cur.res.Release.ID == "" {
 		s.mu.Unlock()
@@ -97,7 +98,9 @@ func (m *Manager) observeViewerVersionChoice(s *session, position time.Duration,
 		dur = s.title.Runtime
 	}
 	threshold := viewerChoiceFallbackDuration
-	if dur > 0 {
+	if resumeAfter > 0 {
+		threshold = resumeAfter
+	} else if dur > 0 {
 		threshold = time.Duration(float64(dur) * viewerChoiceStartFraction)
 	}
 	completed := dur > 0 && float64(position)/float64(dur) >= viewerChoiceCompleteFraction && s.choicePlayed > 0

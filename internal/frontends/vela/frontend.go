@@ -361,6 +361,18 @@ func problemMessage(w http.ResponseWriter, status int, class, code, message stri
 	send(w, status, object{"error": object{"class": class, "code": code, "message": message, "retry": object{"allowed": false}}})
 }
 func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
+	failWithPolicy(w, nil, nil, err, requests...)
+}
+
+func (i *instance) failFor(w http.ResponseWriter, v *frontend.Viewer, err error, requests ...*http.Request) {
+	var policy any
+	if i != nil {
+		policy = i.host.ViewerPolicy
+	}
+	failWithPolicy(w, policy, v, err, requests...)
+}
+
+func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error, requests ...*http.Request) {
 	var capErr *frontend.ProviderConnectionCapError
 	if errors.As(err, &capErr) {
 		sendProviderConnectionCap(w, capErr)
@@ -378,11 +390,11 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 	case errors.As(err, &incompatible):
 		message := "no compatible playback path"
 		if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
-			message = "This title needs a video transcode to play on this device, and video transcoding is turned off."
+			message = frontend.VideoTranscodingOffMessage(policy, viewer)
 		}
 		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": message, "rejectedPaths": incompatible.RejectedPaths, "retry": object{"allowed": false}}})
 	case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
-		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": "This title needs a video transcode to play on this device, and video transcoding is turned off.", "rejectedPaths": []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{frontend.ErrVideoTranscodingDisabled.Error()}}}, "retry": object{"allowed": false}}})
+		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": frontend.VideoTranscodingOffMessage(policy, viewer), "rejectedPaths": []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{frontend.ErrVideoTranscodingDisabled.Error()}}}, "retry": object{"allowed": false}}})
 	case errors.As(err, &changed):
 		w.Header().Set("Retry-After", "1")
 		send(w, 409, object{"error": object{"class": "conflict", "code": "bootstrap_changed", "message": "home changed while loading", "retry": object{"allowed": true, "afterSeconds": 1, "maxAttempts": 3}}})

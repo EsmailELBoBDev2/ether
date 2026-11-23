@@ -76,13 +76,31 @@ type DownloadAllowance struct {
 	NoTranscode bool // downloads come only from a release needing no video re-encode
 }
 
+// DownloadLimitDecision reports whether a viewer's download is admitted and,
+// when refused, which limit was reached and when it resets (UTC).
+// Reserved is true when AdmitDownload inserted a fresh usage row for this
+// attempt so the caller should release it if the download fails or is canceled
+// before completing.
+type DownloadLimitDecision struct {
+	Allowed  bool
+	Reserved bool
+	Unit     string
+	Period   string
+	ResetAt  time.Time
+}
+
 // DownloadLimitPolicy exposes the optional per-viewer download limits.
-// AdmitDownload records key against the viewer's usage and reports whether it
-// is within the limit; a refused download returns the limit's unit.
+// AdmitDownload reserves estimatedBytes against the viewer's usage; callers
+// reconcile with ReconcileDownloadBytes once the download size is known, update
+// to the finished size with RecordDownloadBytes, and call
+// ReleaseDownloadReservation if a newly reserved download fails or is canceled
+// before completing.
 type DownloadLimitPolicy interface {
 	DownloadAllowance(*User) DownloadAllowance
-	AdmitDownload(context.Context, *User, RatingKey) (ok bool, unit string)
-	RecordDownloadBytes(context.Context, *User, RatingKey, int64)
+	AdmitDownload(ctx context.Context, u *User, key RatingKey, estimatedBytes int64) DownloadLimitDecision
+	ReconcileDownloadBytes(ctx context.Context, u *User, key RatingKey, actualBytes int64) DownloadLimitDecision
+	RecordDownloadBytes(ctx context.Context, u *User, key RatingKey, bytes int64)
+	ReleaseDownloadReservation(ctx context.Context, u *User, key RatingKey)
 }
 
 // DownloadAccessPolicy exposes the optional AllowDownloads capability.

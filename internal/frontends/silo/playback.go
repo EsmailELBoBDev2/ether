@@ -237,7 +237,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 			i.versionUnavailable(w, err, "plan")
 			return
 		}
-		playbackError(w, err)
+		i.playbackError(w, v, err)
 		return
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: "silo", PlanID: plan.ID, Viewer: v, Device: d})
@@ -246,7 +246,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 			i.versionUnavailable(w, err, "open")
 			return
 		}
-		playbackError(w, err)
+		i.playbackError(w, v, err)
 		return
 	}
 	if liveFile {
@@ -291,7 +291,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	media, err := i.host.Sessions.StartStream(r.Context(), access, session.ID, frontend.StreamRequest{Format: format, Position: pos})
 	if err != nil {
 		i.stopFailedAdmission(r.Context(), access, session.ID)
-		playbackError(w, err)
+		i.playbackError(w, v, err)
 		return
 	}
 	// Admission finishes only after stream preparation and one last exact
@@ -768,8 +768,20 @@ func (i *instance) progress(w http.ResponseWriter, r *http.Request) {
 }
 
 func playbackError(w http.ResponseWriter, err error) {
+	playbackErrorFor(w, nil, nil, err)
+}
+
+func (i *instance) playbackError(w http.ResponseWriter, v *frontend.Viewer, err error) {
+	var policy any
+	if i != nil {
+		policy = i.host.ViewerPolicy
+	}
+	playbackErrorFor(w, policy, v, err)
+}
+
+func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error) {
 	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
-		http.Error(w, "This title needs a video transcode to play on this device, and video transcoding is turned off.", http.StatusUnprocessableEntity)
+		http.Error(w, frontend.VideoTranscodingOffMessage(policy, viewer), http.StatusUnprocessableEntity)
 		return
 	}
 	if errors.Is(err, frontend.ErrArchiveUnstreamable) {
@@ -1042,7 +1054,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 				siloAdaptationUnavailable(w, id)
 				return
 			}
-			playbackError(w, err)
+			i.playbackError(w, access.Viewer, err)
 			return
 		}
 		nextFormat = chosen.format
@@ -1051,7 +1063,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		nextReason = chosen.reason
 	} else {
 		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: nextFormat, Position: pos}); err != nil {
-			playbackError(w, err)
+			i.playbackError(w, access.Viewer, err)
 			return
 		}
 		if !nonFailureReplan(b.Operation) && attempted[nextKey] {
@@ -1477,7 +1489,7 @@ func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, b rep
 			req.MaxHeight = &height
 		}
 		if _, err := i.host.Sessions.StartStream(r.Context(), access, id, req); err != nil {
-			playbackError(w, err)
+			i.playbackError(w, access.Viewer, err)
 			return
 		}
 	}

@@ -599,7 +599,7 @@ func (s *State) ApplyRemoteResume(ctx context.Context, userID int64, key core.Ra
 	}
 	dur := cur.ws.Duration
 	complete := offset > 0 && dur > 0 && float64(offset) >= WatchedThreshold*float64(dur)
-	if (resumeAfterSeconds.Load() == 0 && offset <= time.Minute) || notStarted(offset, dur) {
+	if (s.ResumeAfter() == 0 && offset <= time.Minute) || s.notStarted(offset, dur) {
 		offset = 0
 	}
 	if complete {

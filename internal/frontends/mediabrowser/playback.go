@@ -471,7 +471,11 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		if i.protocol == "jellyfin" {
 			i.playbackInfoError(w, v, "plan", err)
 		} else if playback && noCompatibleStream(err) {
-			i.writeNoCompatibleStream(w)
+			if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+				i.writeNoCompatibleStreamMessage(w, frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v))
+			} else {
+				i.writeNoCompatibleStream(w)
+			}
 		} else if errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
 			streamError(i.protocol, w, err)
 		} else {
@@ -1446,6 +1450,14 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, 
 
 func (i *instance) writeNoCompatibleStream(w http.ResponseWriter) {
 	jsonReply(w, map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": "NoCompatibleStream"})
+}
+
+func (i *instance) writeNoCompatibleStreamMessage(w http.ResponseWriter, msg string) {
+	body := map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": "NoCompatibleStream"}
+	if msg != "" {
+		body["Message"] = msg
+	}
+	jsonReply(w, body)
 }
 
 func directFilePath(path string) bool {

@@ -20,10 +20,11 @@ export const SERVER: FieldGroup[] = localized(() => [
         label: t("Keep a resume point after"),
         kind: "number",
         min: 0,
+        max: 3600,
         step: 1,
         unit: "s",
         help: t(
-          "How many seconds into a title a viewer must be before Ether remembers where they stopped, in every app. 0 uses the default: 5% of the title, about 6 minutes of a two-hour film.",
+          "How many seconds into a title a viewer must be before Ether keeps a resume point, in every app. 0 keeps the default: 5% of the title.",
         ),
       },
     ],
@@ -901,6 +902,7 @@ export const DOWNLOADS: FieldGroup[] = localized(() => [
         label: t("Download limit amount"),
         kind: "number",
         min: 0,
+        max: 100000,
         step: 1,
         help: t("How many titles or GB. 0 is no limit."),
       },
@@ -908,6 +910,7 @@ export const DOWNLOADS: FieldGroup[] = localized(() => [
         key: "limitPeriod",
         label: t("Download limit period"),
         kind: "select",
+        defaultValue: "day",
         options: [
           { value: "day", label: t("Per day") },
           { value: "month", label: t("Per month") },

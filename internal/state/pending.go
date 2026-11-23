@@ -209,13 +209,13 @@ func (p *pendingWrites) close(ctx context.Context) error {
 		p.remove(k, w.seq)
 	}
 }
-func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt time.Time) core.WatchStatus {
+func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt time.Time, resumeAfter time.Duration) core.WatchStatus {
 	// A read racing a just-committed entry must not apply it twice.
 	if !watchAt.Before(w.progress.at) {
 		return ws
 	}
 	if w.progress.before != nil {
-		ws = overlayPending(ws, pendingWrite{kind: "progress", progress: *w.progress.before}, counted, watchAt)
+		ws = overlayPending(ws, pendingWrite{kind: "progress", progress: *w.progress.before}, counted, watchAt, resumeAfter)
 	}
 	switch w.kind {
 	case "scrobble":
@@ -252,7 +252,7 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 			return ws
 		}
 		if w.progress.state == "progress" {
-			if w.progress.offset <= time.Minute {
+			if (resumeAfter > 0 && w.progress.offset < resumeAfter) || (resumeAfter == 0 && w.progress.offset <= time.Minute) {
 				return ws
 			}
 			if w.progress.skipResume {
@@ -271,7 +271,7 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 				ws.ViewCount++
 			}
 			ws.ViewOffset = 0
-		} else if w.progress.skipResume || notStarted(offset, ws.Duration) {
+		} else if w.progress.skipResume || notStartedWith(offset, ws.Duration, resumeAfter) {
 			ws.ViewOffset = 0
 		} else {
 			ws.ViewOffset = offset

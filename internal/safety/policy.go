@@ -75,6 +75,8 @@ type Service struct {
 	plexShare        func(*core.User) PlexShare
 	friendsDownloads func() bool
 	downloadDefaults func() core.DownloadAllowance
+	downloadMu       sync.Mutex
+	now              func() time.Time
 	shareCache       map[int64]cachedShare
 
 	playbackMu    sync.Mutex

@@ -1054,7 +1054,18 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 	mc.Title1 = parent.Title
 	mc.Title2 = "All Episodes"
 	mc.ViewGroup = "episode"
-	if parent.Type == frontend.TypeMovie {
+	if k.IsPluginKey() {
+		if base, ok := s.kindSectionBaseForTitle(parent); ok {
+			switch base {
+			case plexBaseArtist:
+				mc.Title2 = "All Tracks"
+				mc.ViewGroup = plexBaseTrack
+			case plexBasePhoto:
+				mc.Title2 = "All Photos"
+				mc.ViewGroup = plexBasePhoto
+			}
+		}
+	} else if parent.Type == frontend.TypeMovie {
 		mc.ViewGroup = "movie"
 	}
 	mc.ViewMode = viewModeList

@@ -48,6 +48,31 @@ func (s *Server) metadataChildren(ctx context.Context, pr *Request, k frontend.R
 	return out, nil
 }
 func (s *Server) metadataGrandchildren(ctx context.Context, pr *Request, k frontend.RatingKey) ([]frontend.Title, error) {
+	if k.IsPluginKey() {
+		children, err := s.kindChildren(ctx, pr, k)
+		if err != nil {
+			return nil, err
+		}
+		var out []frontend.Title
+		for _, ch := range children {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if ch.Type != frontend.TypeShow && ch.Type != frontend.TypeSeason {
+				out = append(out, ch)
+			} else {
+				sub, serr := s.kindChildren(ctx, pr, ch.Key)
+				if serr == nil && len(sub) > 0 {
+					out = append(out, sub...)
+				}
+			}
+			if len(out) >= maxExpand {
+				out = out[:maxExpand]
+				break
+			}
+		}
+		return out, nil
+	}
 	if s.episodeOrder() != nil {
 		return s.episodeOrder().Grandchildren(ctx, pr.User, k)
 	}

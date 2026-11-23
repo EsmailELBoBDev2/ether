@@ -317,6 +317,9 @@ func (s *Service) viewer(ctx context.Context, v *core.User) (*core.User, error) 
 	}
 	// A surface without a request memo still resolves the viewer once per
 	// read request, not once per listed item.
+	if s.d.Active == nil {
+		return nil, core.ErrNotFound
+	}
 	active, err := reqmemo.Do(ctx, "experience:active:"+strconv.FormatInt(v.ID, 10), func() (*core.User, error) {
 		return s.d.Active(ctx, v.ID)
 	})

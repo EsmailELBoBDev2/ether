@@ -64,7 +64,7 @@ func metadataKey(k frontend.RatingKey, t frontend.MediaType) string {
 }
 
 func isPlayable(t frontend.MediaType) bool {
-	return t == frontend.TypeMovie || t == frontend.TypeEpisode
+	return t == frontend.TypeMovie || t == frontend.TypeEpisode || t == "track"
 }
 
 func unixOrZero(t time.Time) int64 {
@@ -293,21 +293,35 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		}
 		showKey := t.ShowKey
 		if showKey == 0 {
+			showKey = t.ParentKey
+		}
+		if showKey == 0 {
 			showKey = t.Key.Parent()
 		}
-		m.ParentRatingKey = showKey.String()
-		m.ParentGUID = showGUID(showKey)
-		m.ParentKey = "/library/metadata/" + showKey.String()
+		if showKey != 0 {
+			m.ParentRatingKey = showKey.String()
+			if t.Key.IsPluginKey() {
+				m.ParentGUID = "com.plexapp.agents.none://" + showKey.String() + "?lang=xn"
+			} else {
+				m.ParentGUID = showGUID(showKey)
+			}
+			m.ParentKey = "/library/metadata/" + showKey.String()
+			m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
+			if m.Art == "" {
+				m.Art = "/library/metadata/" + showKey.String() + "/art/" + imageStamp(t)
+			}
+			if m.Thumb == "" {
+				m.Thumb = m.ParentThumb
+			}
+		}
 		m.ParentTitle = t.ShowTitle
-		m.ParentSlug = s.verifiedPlexSlug(ctx, showKey)
+		if m.ParentTitle == "" {
+			m.ParentTitle = t.ParentTitle
+		}
+		if showKey != 0 {
+			m.ParentSlug = s.verifiedPlexSlug(ctx, showKey)
+		}
 		m.ParentIndex = model.Ptr(1)
-		m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
-		if m.Art == "" {
-			m.Art = "/library/metadata/" + showKey.String() + "/art/" + imageStamp(t)
-		}
-		if m.Thumb == "" {
-			m.Thumb = m.ParentThumb
-		}
 		if show != nil {
 			if len(show.Studios) > 0 {
 				m.ParentStudio = show.Studios[0]
@@ -322,32 +336,63 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		}
 		m.LeafCount = model.Ptr(t.ChildCount)
 		m.ViewedLeafCount = model.Ptr(0)
-		m.Year, m.OriginallyAvailableAt, m.TitleSort = 0, "", ""
-		m.ContentRating, m.AudienceRating, m.AudienceRatingImage = "", 0, ""
-		m.Studio = ""
+		if !t.Key.IsPluginKey() {
+			m.Year, m.OriginallyAvailableAt, m.TitleSort = 0, "", ""
+			m.ContentRating, m.AudienceRating, m.AudienceRatingImage = "", 0, ""
+			m.Studio = ""
+		}
 	case frontend.TypeEpisode:
 		// PMS episodes have no year, sort title or genre/country tags; the
 		// show's slug and content rating are carried over.
 		m.Index = model.Ptr(t.Episode)
-		m.ParentIndex = model.Ptr(t.Season)
-		season := t.Key.Parent()
+		parentIdx := t.Season
+		if t.Key.IsPluginKey() && parentIdx == 0 && t.Disc > 0 {
+			parentIdx = t.Disc
+		}
+		m.ParentIndex = model.Ptr(parentIdx)
+		season := t.ParentKey
+		if season == 0 {
+			season = t.Key.Parent()
+		}
 		showKey := t.ShowKey
 		if showKey == 0 {
 			showKey = season.Parent()
 		}
-		m.ParentRatingKey = season.String()
-		m.ParentGUID = fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d?lang=en", showKey.TMDB(), t.Season)
-		m.GrandparentGUID = showGUID(showKey)
-		m.ParentKey = "/library/metadata/" + season.String()
-		m.ParentTitle = seasonTitle(t)
-		m.ParentThumb = "/library/metadata/" + season.String() + "/thumb/" + imageStamp(t)
-		m.GrandparentRatingKey = showKey.String()
-		m.GrandparentKey = "/library/metadata/" + showKey.String()
-		m.GrandparentTitle = t.ShowTitle
-		m.GrandparentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
-		m.GrandparentArt = "/library/metadata/" + showKey.String() + "/art/" + imageStamp(t)
-		if m.Art == "" {
-			m.Art = m.GrandparentArt
+		if season != 0 {
+			m.ParentRatingKey = season.String()
+			if t.Key.IsPluginKey() {
+				m.ParentGUID = "com.plexapp.agents.none://" + season.String() + "?lang=xn"
+			} else {
+				m.ParentGUID = fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d?lang=en", showKey.TMDB(), t.Season)
+			}
+			m.ParentKey = "/library/metadata/" + season.String()
+			m.ParentThumb = "/library/metadata/" + season.String() + "/thumb/" + imageStamp(t)
+			if t.Key.IsPluginKey() && m.Thumb == "" {
+				m.Thumb = m.ParentThumb
+			}
+		}
+		if t.Key.IsPluginKey() {
+			m.ParentTitle = t.ParentTitle
+			if m.ParentTitle == "" {
+				m.ParentTitle = t.SeasonTitle
+			}
+		} else {
+			m.ParentTitle = seasonTitle(t)
+		}
+		if showKey != 0 {
+			m.GrandparentRatingKey = showKey.String()
+			if t.Key.IsPluginKey() {
+				m.GrandparentGUID = "com.plexapp.agents.none://" + showKey.String() + "?lang=xn"
+			} else {
+				m.GrandparentGUID = showGUID(showKey)
+			}
+			m.GrandparentKey = "/library/metadata/" + showKey.String()
+			m.GrandparentTitle = t.ShowTitle
+			m.GrandparentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
+			m.GrandparentArt = "/library/metadata/" + showKey.String() + "/art/" + imageStamp(t)
+			if m.Art == "" {
+				m.Art = m.GrandparentArt
+			}
 		}
 		if show != nil {
 			if m.GrandparentTitle == "" {
@@ -357,8 +402,14 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 				m.ContentRating = show.ContentRating
 			}
 		}
-		m.GrandparentSlug = s.verifiedPlexSlug(ctx, showKey)
-		m.Year, m.TitleSort, m.Studio = 0, "", ""
+		if showKey != 0 {
+			m.GrandparentSlug = s.verifiedPlexSlug(ctx, showKey)
+		}
+		if t.Key.IsPluginKey() {
+			m.TitleSort, m.Studio = "", ""
+		} else {
+			m.Year, m.TitleSort, m.Studio = 0, "", ""
+		}
 	}
 	if hasPlex {
 		applyPlexMetaDates(t, &m, ov.Overlay)

@@ -49,7 +49,7 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
-	if t := q.Get("type"); t != "video" {
+	if t := q.Get("type"); t != "video" && t != "audio" {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
@@ -188,8 +188,13 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 				}
 				kind := "item"
 				sourceKey := keyFromPath(path)
-				if strings.Contains(path, ",") || strings.Contains(path, "/sections/") || strings.HasSuffix(path, "/children") || strings.HasSuffix(path, "/allLeaves") || strings.HasSuffix(path, "/grandchildren") || sourceKey.Kind() == frontend.KindShow || sourceKey.Kind() == frontend.KindSeason || sourceKey.Kind() == frontend.KindCollection {
+				cleanPath, _, _ := strings.Cut(path, "?")
+				if strings.Contains(cleanPath, ",") || strings.Contains(cleanPath, "/sections/") || strings.HasSuffix(cleanPath, "/children") || strings.HasSuffix(cleanPath, "/allLeaves") || strings.HasSuffix(cleanPath, "/grandchildren") || sourceKey.Kind() == frontend.KindShow || sourceKey.Kind() == frontend.KindSeason || sourceKey.Kind() == frontend.KindCollection {
 					kind = "directory"
+				} else if sourceKey.IsPluginKey() {
+					if t, err := s.metadataTitle(ctx, pr, sourceKey); err == nil && t != nil && (t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason) {
+						kind = "directory"
+					}
 				}
 				p.SourceURI = "library://" + authority + "/" + kind + "/" + url.QueryEscape(path)
 			}

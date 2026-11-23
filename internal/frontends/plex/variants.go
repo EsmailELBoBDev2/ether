@@ -677,7 +677,7 @@ func plexAudioPhrase(info frontend.ReleaseInfo) string {
 func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playRequest) (*frontend.PlaySession, error) {
 	configured := false
 	if source, ok := s.svc().variants.(frontend.VersionSlots); ok {
-		if titles := s.getTitles(ctx, []frontend.RatingKey{p.key}); len(titles) == 1 {
+		if titles := s.getTitles(withRequest(ctx, pr), []frontend.RatingKey{p.key}); len(titles) == 1 {
 			// Plugin items populate their version menu on detail/play intent
 			// (labels=true), never on cold list renders. Tag explicit Play so
 			// playback resolves are never gated by discovery shares.

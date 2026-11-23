@@ -56,9 +56,7 @@ export function AddonCatalogDrawer({
   const choices: AddonCatalogChoice[] = [...added];
   for (const d of registry.descriptors) {
     if (!installed.has(d.owner) || choices.some((c) => c.kind === d.id)) continue;
-    const reqParams = (d.meta?.params ?? [])
-      .filter((p) => p.required)
-      .map((p) => p.name);
+    const reqParams = (d.meta?.params ?? []).filter((p) => p.required).map((p) => p.name);
     choices.push({
       kind: d.id,
       addon: d.group || d.owner,

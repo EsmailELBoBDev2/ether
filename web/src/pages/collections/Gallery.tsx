@@ -302,11 +302,7 @@ export default function CollectionsGallery({
                 </Button>
               </div>
             ) : null}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setImportDrawer({ open: true })}
-            >
+            <Button variant="outline" size="sm" onClick={() => setImportDrawer({ open: true })}>
               <Puzzle size={14} /> {t("Import from Stremio")}
             </Button>
             <Button variant="outline" size="sm" onClick={() => setDescribe(true)}>

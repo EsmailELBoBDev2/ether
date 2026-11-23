@@ -104,7 +104,8 @@ export function StremioImportDrawer({
   const { viewers } = useViewers();
 
   const imports = useAsync(
-    () => (open ? api.addonCatalogImports() : Promise.resolve({ imports: [], availableAddons: [] })),
+    () =>
+      open ? api.addonCatalogImports() : Promise.resolve({ imports: [], availableAddons: [] }),
     [open],
   );
 
@@ -567,11 +568,7 @@ export function StremioImportDrawer({
                                   ) : null}
                                   {sub.removedCount > 0 ? (
                                     <Badge variant="warning">
-                                      {tn(
-                                        sub.removedCount,
-                                        "{count} removed",
-                                        "{count} removed",
-                                      )}
+                                      {tn(sub.removedCount, "{count} removed", "{count} removed")}
                                     </Badge>
                                   ) : null}
                                 </div>
@@ -679,9 +676,7 @@ export function StremioImportDrawer({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="truncate text-sm font-semibold text-fg">{preview.addonName}</p>
-                  {preview.installed ? (
-                    <Badge variant="secondary">{t("Installed")}</Badge>
-                  ) : null}
+                  {preview.installed ? <Badge variant="secondary">{t("Installed")}</Badge> : null}
                 </div>
                 <p className="truncate text-xs text-fg-muted">
                   {preview.host}
@@ -933,9 +928,7 @@ export function StremioImportDrawer({
                       {targets.users !== "all" ? (
                         <MultiSelect
                           value={targets.users.map(String)}
-                          onChange={(v) =>
-                            setTargets((cur) => ({ ...cur, users: v.map(Number) }))
-                          }
+                          onChange={(v) => setTargets((cur) => ({ ...cur, users: v.map(Number) }))}
                           ariaLabel={t("Viewers")}
                           placeholder={viewers ? t("Choose viewers…") : t("Loading viewers…")}
                           searchPlaceholder={t("Search…")}
@@ -1113,11 +1106,7 @@ export function StremioImportDrawer({
                                         placeholder={t("Pin {extra}…", { extra: extra.name })}
                                         className="h-8 text-xs"
                                         onChange={(e) =>
-                                          setExtraParam(
-                                            cat.key,
-                                            extra.name,
-                                            e.currentTarget.value,
-                                          )
+                                          setExtraParam(cat.key, extra.name, e.currentTarget.value)
                                         }
                                       />
                                     )}

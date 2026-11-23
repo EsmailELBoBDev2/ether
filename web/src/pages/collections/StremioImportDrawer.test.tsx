@@ -11,8 +11,24 @@ import { StremioImportDrawer } from "./StremioImportDrawer";
 vi.mock("../../components/pickers", () => ({
   useViewers: () => ({
     viewers: [
-      { id: 1, plexId: 1, username: "owner", title: "Owner", isOwner: true, plays30d: 0, hoursWatched30d: 0 },
-      { id: 2, plexId: 2, username: "kids", title: "Kids", isOwner: false, plays30d: 0, hoursWatched30d: 0 },
+      {
+        id: 1,
+        plexId: 1,
+        username: "owner",
+        title: "Owner",
+        isOwner: true,
+        plays30d: 0,
+        hoursWatched30d: 0,
+      },
+      {
+        id: 2,
+        plexId: 2,
+        username: "kids",
+        title: "Kids",
+        isOwner: false,
+        plays30d: 0,
+        hoursWatched30d: 0,
+      },
     ],
     error: null,
   }),

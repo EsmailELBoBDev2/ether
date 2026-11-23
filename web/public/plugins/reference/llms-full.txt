@@ -984,13 +984,20 @@ opens it, declare `browse.expand`:
   - `items` holds the container's direct children at any declared child level
     (each with `parentId` set to the container and its own `level`), may
     include grandchildren, and may include the container itself (same
-    external ID and level) to refresh its metadata in place.
+    external ID and level) to refresh its metadata in place while preserving
+    its stored `parentId` (if the self-refresh names a different `parentId`,
+    such as a collaboration album naming its primary artist, Ether keeps the
+    stored parent rather than reparenting or failing the expansion).
   - Concurrent opens of the same container (such as detail + children) share
     one single-flight call per `(plugin, kind, itemRef)`. Page 1 waits at most
     ~1.8 s, upserts additively (never deleting omitted children; `parentId` and
     `level` are validated against the declared level tree), then answers with
     accurate tallied `childCount` / `childCounts`. Further pages continue in
     the background through the expand job.
+  - Failed expansions record `state = "error"` with their completion time in
+    `plugin_facet_expansions` and enter an error cooldown (default 15 minutes,
+    clamped by `ttlHours`) so repeated opens do not retry in a storm even when
+    the container still has 0 stored children.
   - Child counts (`childCount`, `childCounts`, `leafCount`) for tallied parent
     levels come strictly from stored parent tallies — plugin-supplied
     `childCount` values on container items are ignored for tallied levels.

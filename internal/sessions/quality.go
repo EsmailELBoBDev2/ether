@@ -17,14 +17,32 @@ func (b *Broker) ProactiveFallbackAvailable() bool {
 	return ok && provider.ProactiveFallbackAvailable()
 }
 
+// ProactiveFallbackAvailableFor reports whether proactive quality fallback
+// (transcoded lower-bitrate rungs) is available for viewer v.
+func (b *Broker) ProactiveFallbackAvailableFor(v *core.Viewer) bool {
+	if !b.ProactiveFallbackAvailable() {
+		return false
+	}
+	if v != nil {
+		var caps core.ClientCaps
+		b.stampViewerTranscoding(v, &caps)
+		if caps.NoVideoTranscode {
+			return false
+		}
+	}
+	return true
+}
+
 func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core.Viewer) ([]core.QualityVariant, []core.QualityLimitation, error) {
 	if s.public.Protocol != "vela" || s.live || s.restored {
 		return nil, nil, nil
 	}
-	if b.videoTranscodingOff() {
+	caps := s.caps
+	b.stampViewerTranscoding(viewer, &caps)
+	if b.videoOff(caps) {
 		return nil, nil, nil
 	}
-	if !b.ProactiveFallbackAvailable() {
+	if !b.ProactiveFallbackAvailableFor(viewer) {
 		return nil, nil, nil
 	}
 	if !b.currentMediaPolicy(ctx, viewer, s) {

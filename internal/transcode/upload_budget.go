@@ -131,7 +131,7 @@ func (s *Session) supportsBudgetSteppingLocked() bool {
 	if s.closed || s.liveInput || s.proto != core.ProtocolHLS || len(s.rungs) == 0 {
 		return false
 	}
-	if s.m != nil && s.m.VideoTranscodingOff() {
+	if s.videoTranscodingOff() {
 		return false
 	}
 	switch s.container {

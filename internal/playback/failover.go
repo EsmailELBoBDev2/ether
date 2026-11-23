@@ -105,9 +105,23 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			}
 		}
 	}
-	if res != nil && m.videoTranscodingOff() && cached != nil {
-		if _, needs := m.probedNeedsVideoTranscode(cached.info, s.caps); needs {
-			return nil, nil, false
+	if res != nil && m.videoOff(s.caps) {
+		if cached != nil {
+			if _, needs := m.probedNeedsVideoTranscode(cached.info, s.caps); needs {
+				return nil, nil, false
+			}
+		} else {
+			capKbps := s.caps.MaxBitrateKbps
+			if capKbps <= 0 && s.caps.Remote {
+				capKbps = m.config().Transcode.RemoteMaxBitrateKbps
+			}
+			dur := time.Duration(0)
+			if s.title != nil {
+				dur = s.title.Runtime
+			}
+			if !rememberedCodecCurrent(res.Release, s.caps) || !sourceFitsBitrate(res.Release.Size, dur, 0, capKbps) {
+				return nil, nil, false
+			}
 		}
 	}
 	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || !m.rememberedChoiceAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
@@ -180,7 +194,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	}()
 	rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
 		info := g.infoSnapshot()
-		if m.videoTranscodingOff() {
+		if m.videoOff(s.caps) {
 			if _, needs := m.probedNeedsVideoTranscode(info, s.caps); needs {
 				return false
 			}
@@ -395,7 +409,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			}
 		}
 		g, err := m.openGeneration(openCtx, s, res, fallback, cached)
-		if err == nil && m.videoTranscodingOff() {
+		if err == nil && m.videoOff(s.caps) {
 			if dec, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
 				reason := core.ErrVideoTranscodingDisabled.Error()
 				if dec.Reason != "" {

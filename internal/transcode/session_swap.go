@@ -160,7 +160,7 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	if s.isDASH() {
 		next = dashDecision(info, next)
 	}
-	if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() && info.Video() != nil && !next.VideoCopy {
+	if s.videoTranscodingOff() && info.Video() != nil && !next.VideoCopy {
 		return ErrVideoTranscodingDisabled
 	}
 	s.stopRunForLocked("input swap")
@@ -384,7 +384,7 @@ func (s *Session) SkipDamagedSegment(ctx context.Context, inputURL string, info 
 		if s.input != inputURL {
 			nextDecision := adaptToContract(s.audioMatchBaseDecision(), s.info, info, s.container, s.contract)
 			nextDecision = s.applyAudioMatchLocked(inputURL, nextDecision)
-			if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() && info.Video() != nil && !nextDecision.VideoCopy {
+			if s.videoTranscodingOff() && info.Video() != nil && !nextDecision.VideoCopy {
 				s.inputFailed = true
 				s.mu.Unlock()
 				return ErrVideoTranscodingDisabled
@@ -534,7 +534,7 @@ func (s *Session) SkipDamagedSegment(ctx context.Context, inputURL string, info 
 // format the client already opened. Playback calls it before committing
 // a replacement so an incompatible candidate is skipped, not spliced.
 func (s *Session) CheckSwap(info core.MediaInfo) error {
-	if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() && !info.Estimated && info.Video() != nil && !s.SwapWouldCopyVideo(info) {
+	if s.videoTranscodingOff() && !info.Estimated && info.Video() != nil && !s.SwapWouldCopyVideo(info) {
 		return ErrVideoTranscodingDisabled
 	}
 	if s.contract == nil {

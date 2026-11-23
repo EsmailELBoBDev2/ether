@@ -565,6 +565,8 @@ export type SafetyPolicy = {
   blockedKeywords: string[];
   remoteDisabled: boolean;
   maxBitrateKbps: number;
+  videoTranscodingDisabled?: boolean;
+  allowDownloads?: boolean | null;
   allowedHours: number[];
   timezone: string;
 };
@@ -582,7 +584,7 @@ function emptyPolicy(): SafetyPolicy {
 
 export function normalizePolicy(p: Partial<SafetyPolicy> | null | undefined): SafetyPolicy {
   const base = emptyPolicy();
-  return {
+  const out: SafetyPolicy = {
     ...base,
     ...p,
     blockedGenres: p?.blockedGenres ?? [],
@@ -591,6 +593,12 @@ export function normalizePolicy(p: Partial<SafetyPolicy> | null | undefined): Sa
     timezone:
       p?.bedtime?.timezone || p?.timezone || (p?.allowedHours?.length ? "UTC" : base.timezone),
   };
+  if (p?.allowDownloads === true || p?.allowDownloads === false) {
+    out.allowDownloads = p.allowDownloads;
+  } else {
+    delete out.allowDownloads;
+  }
+  return out;
 }
 
 export const KID_PRESETS = localized(

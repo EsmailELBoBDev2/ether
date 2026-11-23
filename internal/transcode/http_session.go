@@ -95,7 +95,7 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 		m.mu.Unlock()
 		return nil, errors.New("transcode: manager closed")
 	}
-	if !req.LiveInput && encoding && m.cfg.VideoTranscodingOff() {
+	if !req.LiveInput && encoding && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff()) {
 		m.mu.Unlock()
 		return nil, ErrVideoTranscodingDisabled
 	}
@@ -120,6 +120,7 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 		log:             m.log.With("session", id, "protocol", core.ProtocolHTTP),
 		created:         time.Now(),
 		encoder:         life,
+		sessionInput:    sessionInput{liveInput: req.LiveInput, noVideoTranscode: req.NoVideoTranscode},
 		sessionDelivery: sessionDelivery{changed: make(chan struct{})},
 	}
 	if !life.attach(stub) {

@@ -132,14 +132,18 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 	if dec.Kind == frontend.DecisionDirectPlay {
 		// The client asked for DASH anyway: remux unless the app override
 		// requires video encoding or the DASH target rejects the stream.
+		caps := entry.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
 		dec.Kind, dec.VideoCopy, dec.AudioCopy = frontend.DecisionRemux, true, true
-		videoOK := !(ps.Info.Video() != nil && entry.caps.AlwaysEncodeVideo) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(entry.caps, dec.VideoCodec))
-		audioOK := len(entry.caps.TranscodeAudioCodecs) == 0 || dec.AudioCodec == "" || slices.Contains(entry.caps.TranscodeAudioCodecs, dec.AudioCodec)
+		videoOK := !(ps.Info.Video() != nil && caps.EffectiveAlwaysEncodeVideo()) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(caps, dec.VideoCodec))
+		audioOK := len(caps.TranscodeAudioCodecs) == 0 || dec.AudioCodec == "" || slices.Contains(caps.TranscodeAudioCodecs, dec.AudioCodec)
 		if !videoOK || !audioOK {
 			opts := entry.opts
 			opts.DirectPlay = false
 			opts.DirectStream = videoOK
-			dec = s.transcoder().Decide(ps.Info, entry.caps, opts)
+			dec = s.transcoder().Decide(ps.Info, caps, opts)
 		}
 	}
 	if existing, ok := s.plexHLSSession(p.sessionID); ok && existing != nil {
@@ -165,6 +169,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		SessionID:           p.sessionID,
 		ReleaseID:           ps.SourceReleaseID(),
 		InputURL:            s.playback().InputURL(ps.ID),
+		NoVideoTranscode:    entry.caps.NoVideoTranscode,
 		Info:                ps.Info,
 		Decision:            dec,
 		StartOffset:         p.offset,

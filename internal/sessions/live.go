@@ -77,6 +77,9 @@ type DirectLiveBackend interface {
 }
 
 func (b *Broker) planLive(ctx context.Context, req frontend.PlanRequest, viewer *core.Viewer) (frontend.PlayPlan, error) {
+	// Live TV is unaffected by the per-viewer "no video transcoding" switch,
+	// matching the server-wide switch.
+	req.Caps.NoVideoTranscode = false
 	if b.deps.Live == nil {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}

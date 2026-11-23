@@ -291,7 +291,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		s.fallbackRTXLocked("selected soft subtitle requires a shared encoder output", seg)
 		rp.decision = s.trackDecisionLocked(s.wantTrack)
 	}
-	if !s.liveInput && s.info.Video() != nil && !rp.decision.VideoCopy && s.m != nil && s.m.VideoTranscodingOff() {
+	if s.info.Video() != nil && !rp.decision.VideoCopy && s.videoTranscodingOff() {
 		return ErrVideoTranscodingDisabled
 	}
 	s.boundHLSRateLocked(&rp)

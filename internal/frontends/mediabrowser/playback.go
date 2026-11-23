@@ -458,6 +458,14 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if !planned {
 		plan, err = i.host.Sessions.Plan(r.Context(), planBase)
+		if err != nil && errors.Is(err, frontend.ErrVideoTranscodingDisabled) && detailSource != "" && version == "" {
+			detailSource, expectedETag = "", ""
+			planBase.DetailSource, planBase.ExpectedSourceETag = "", ""
+			planBase.Intent.AudioSet, planBase.Intent.SubtitleSet = false, false
+			planBase.Intent.Options.AudioStream, planBase.Intent.Options.SubtitleStream = -1, -1
+			planBase.Intent.Options.BurnSubtitles = false
+			plan, err = i.host.Sessions.Plan(r.Context(), planBase)
+		}
 	}
 	if err != nil {
 		if i.protocol == "jellyfin" {

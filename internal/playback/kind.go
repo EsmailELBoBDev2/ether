@@ -56,13 +56,14 @@ func (m *Manager) PrepareKind(ctx context.Context, user *core.User, in core.Kind
 	// If the existing session does not fit the requested version or a newer
 	// remembered choice, stop it (for non-deferred callers) and open fresh.
 	if s := m.byIdent[id]; s != nil && !s.closed {
-		fits := sessionFitsSelection(s, caps, prefer, exact)
+		fits := m.sessionFitsSelection(s, caps, prefer, exact)
 		if fits && prefer == "" {
 			if g := s.current(); g != nil && !m.rememberedChoiceAllows(s, g.releaseID()) {
 				fits = false
 			}
 		}
 		if fits {
+			s.setNoVideoTranscode(caps.NoVideoTranscode)
 			m.mu.Unlock()
 			s.touch(m.now())
 			return s.snapshot(m.now()), nil

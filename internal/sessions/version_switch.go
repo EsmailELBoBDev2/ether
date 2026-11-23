@@ -59,6 +59,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	caps := s.caps
+	b.stampViewerTranscoding(viewer, &caps)
 	viewer, err = b.confirm(ctx, viewer, caps)
 	if err != nil {
 		return frontend.PlayPlan{}, err
@@ -180,6 +181,11 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 			return frontend.PlayPlan{}, err
 		case errors.Is(err, core.ErrNotCached), errors.Is(err, core.ErrDownloadQueued), errors.Is(err, core.ErrPrepareSlow):
 			return frontend.PlayPlan{}, &core.PreparingError{RetryAfter: versionSwitchRetryAfter}
+		case errors.Is(err, core.ErrVideoTranscodingDisabled):
+			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
+				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+				Cause:         core.ErrVideoTranscodingDisabled,
+			}
 		case errors.Is(err, core.ErrNotAvailable), errors.Is(err, core.ErrReleaseRejected), errors.Is(err, core.ErrArticleMissing), errors.Is(err, core.ErrArchiveUnstreamable):
 			return frontend.PlayPlan{}, core.ErrVersionUnavailable
 		default:
@@ -246,7 +252,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	if b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+	if b.videoOff(planReq.Caps) && decisionEncodesVideo(dec, ps.Info) {
 		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
 			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
 			Cause:         core.ErrVideoTranscodingDisabled,
@@ -265,7 +271,14 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 			httpAllowed, _ = b.httpPlanOutput(ps, planReq, dec)
 		}
 		if !hlsAllowed && !httpAllowed {
-			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, planReq)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
+			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, planReq)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
+			if b.videoOff(planReq.Caps) {
+				if hlsDec, ok := b.hlsOutputDecision(ps, planReq.Caps, planReq.Intent.Options, s.allowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
+					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
+					outErr.Cause = core.ErrVideoTranscodingDisabled
+				}
+			}
+			return frontend.PlayPlan{}, outErr
 		}
 	}
 	if !sameSource {
@@ -319,6 +332,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		live.format = ""
 	}
 	live.playID = ps.ID
+	live.caps.NoVideoTranscode = caps.NoVideoTranscode
 	live.opts = planReq.Intent.Options
 	live.decision = dec
 	live.versionHandle = normHandle
@@ -364,7 +378,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		DirectPlay:          direct,
 		DirectStream:        remux,
 		Transcoding:         transcoding,
-		VideoTranscodingOff: b.videoTranscodingOff(),
+		VideoTranscodingOff: b.videoOff(planReq.Caps),
 		HLS:                 hls,
 		HLSContainer:        hlsContainer,
 		HTTP:                httpOK,

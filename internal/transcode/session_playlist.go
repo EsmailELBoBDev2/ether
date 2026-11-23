@@ -379,7 +379,7 @@ func (s *Session) maybeGovernLocked() {
 	if !s.governorOn || s.plan == nil || s.goodput.Samples() < 2 || len(s.segSizes) == 0 {
 		return
 	}
-	if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() {
+	if s.videoTranscodingOff() {
 		return
 	}
 	goodput := s.goodput.Kbps()

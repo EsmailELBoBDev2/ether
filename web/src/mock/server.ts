@@ -733,7 +733,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
       signInMethods: ["local", "plex"],
       ...opts.bootstrap,
     } as Bootstrap,
-    config: defaultConfig(),
+    config: {
+      ...defaultConfig(),
+      ...(opts.capabilityOverrides
+        ? {
+            clients: {
+              overrides: opts.capabilityOverrides as NonNullable<
+                ReturnType<typeof defaultConfig>["clients"]
+              >["overrides"],
+            },
+          }
+        : {}),
+    },
     // Null until a caller opts in (the browser mock does). Viewer tests still
     // overlay these routes on a 404 from the shared fake.
     streamDefaults: (opts.householdAudio

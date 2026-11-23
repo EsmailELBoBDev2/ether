@@ -93,6 +93,7 @@ type sessionInput struct {
 	rtxDiscontinuities     map[int]bool
 	loopInput              bool
 	liveInput              bool
+	noVideoTranscode       bool
 	liveFromBacklog        bool
 	inputLease             core.EncoderInputLease
 	inputHeaders           map[string]string
@@ -146,6 +147,16 @@ type sessionInput struct {
 	audioMatch     audioMatchState
 	swapBoundary   int
 	swapSeekAt     time.Time
+}
+
+// videoTranscodingOff reports whether video re-encoding is forbidden for this
+// session by either the per-viewer switch or the server-wide setting. Live TV
+// sessions are unaffected.
+func (s *Session) videoTranscodingOff() bool {
+	if s == nil || s.liveInput {
+		return false
+	}
+	return s.noVideoTranscode || (s.m != nil && s.m.VideoTranscodingOff())
 }
 
 // sessionEncoding owns one aspect of the session. Fields are guarded by Session.mu.

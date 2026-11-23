@@ -456,14 +456,21 @@ func (s *Server) prepareExtra(ctx context.Context, pr *Request, p *playRequest, 
 		info.Duration = e.Duration
 	}
 	applySelections(p, info, s.audioLanguages(pr.User))
+	extraCaps := p.caps
+	if s.cfg().Transcode.VideoTranscodingOff() {
+		extraCaps.NoVideoTranscode = true
+	}
 	var dec frontend.Decision
 	if s.transcoder() != nil {
-		dec = s.transcoder().Decide(info, p.caps, p.opts)
+		dec = s.transcoder().Decide(info, extraCaps, p.opts)
 	} else {
-		dec = frontend.DecideTranscode(info, p.caps, p.opts, frontend.TranscodePolicy{RemoteMaxBitrateKbps: s.cfg().Transcode.RemoteMaxBitrateKbps})
+		dec = frontend.DecideTranscode(info, extraCaps, p.opts, frontend.TranscodePolicy{RemoteMaxBitrateKbps: s.cfg().Transcode.RemoteMaxBitrateKbps})
 		if dec.Kind != frontend.DecisionDirectPlay {
 			return nil, errors.New("this client requires media conversion; install or configure FFmpeg")
 		}
+	}
+	if extraCaps.NoVideoTranscode && info.Video() != nil && dec.Kind == frontend.DecisionTranscode && !dec.VideoCopy {
+		return nil, frontend.ErrVideoTranscodingDisabled
 	}
 	sess := &extraSession{
 		id: p.sessionID, userID: pr.User.ID, clientID: pr.ClientID, extra: e,
@@ -610,11 +617,15 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	}
 	dec := sess.decision
 	if dec.Kind == frontend.DecisionDirectPlay {
-		if sess.info.Video() != nil && sess.caps.AlwaysEncodeVideo {
+		caps := sess.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
+		if sess.info.Video() != nil && caps.EffectiveAlwaysEncodeVideo() {
 			opts := sess.opts
 			opts.DirectPlay = false
 			opts.DirectStream = false
-			dec = s.transcoder().Decide(sess.info, sess.caps, opts)
+			dec = s.transcoder().Decide(sess.info, caps, opts)
 		} else {
 			dec.Kind, dec.VideoCopy, dec.AudioCopy, dec.Container = frontend.DecisionRemux, true, true, "mpegts"
 		}
@@ -656,8 +667,8 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	}
 	hs, err := s.transcoder().StartHLS(context.WithoutCancel(ctx), frontend.HLSRequest{
 		SessionID: p.sessionID, InputURL: sess.resolved.Input(),
-		InputHeaders: sess.resolved.Headers, Info: sess.info,
-		Decision: dec, StartOffset: p.offset, Protocol: proto,
+		InputHeaders: sess.resolved.Headers, NoVideoTranscode: sess.caps.NoVideoTranscode,
+		Info: sess.info, Decision: dec, StartOffset: p.offset, Protocol: proto,
 		PMSDASH: dash && !strings.EqualFold(strings.TrimSpace(pr.Product), "Plex Web"),
 	})
 	if err != nil {

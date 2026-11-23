@@ -37,6 +37,9 @@ type Policy struct {
 	BlockedKeywords []string      `json:"blockedKeywords"`
 	RemoteDisabled  bool          `json:"remoteDisabled"`
 	MaxBitrateKbps  int           `json:"maxBitrateKbps"`
+	// VideoTranscodingDisabled plays this viewer's video only as it is
+	// (direct play or remux); the server-wide switch still applies when set.
+	VideoTranscodingDisabled bool `json:"videoTranscodingDisabled,omitempty"`
 	// AllowedHours is empty for any time, otherwise hours 0..23 in Timezone.
 	AllowedHours []int  `json:"allowedHours"`
 	Timezone     string `json:"timezone"`
@@ -147,10 +150,19 @@ func (s *Service) SetBus(bus clusterbus.Bus) {
 
 // Close disconnects the cluster bus.
 func (s *Service) Close() { s.SetBus(nil) }
+func cloneBoolPtr(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 func (s *Service) Get(id int64) Policy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p := s.policies[id]
+	p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
 	p.Bedtime = cloneBedtime(p.Bedtime)
 	p.AllowedHours = append([]int(nil), p.AllowedHours...)
 	p.BlockedGenres = append([]string(nil), p.BlockedGenres...)
@@ -181,6 +193,7 @@ func (p Policy) Validate() error {
 
 func (s *Service) Put(ctx context.Context, id int64, p Policy) error {
 	// Cache an independent snapshot, just as Get returns one to callers.
+	p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
 	p.Bedtime = cloneBedtime(p.Bedtime)
 	p.AllowedHours = append([]int(nil), p.AllowedHours...)
 	p.BlockedGenres = append([]string(nil), p.BlockedGenres...)
@@ -505,6 +518,11 @@ func (s *Service) UserPolicy(u *core.User) *core.User {
 	return &out
 }
 func (s *Service) BitrateLimit(u *core.User) int { return s.ForUser(u).MaxBitrateKbps }
+
+// VideoTranscodingDisabled reports the owner's per-viewer switch.
+func (s *Service) VideoTranscodingDisabled(u *core.User) bool {
+	return u != nil && s.ForUser(u).VideoTranscodingDisabled
+}
 
 func (s *Service) Restricted(u *core.User) bool {
 	if u == nil {

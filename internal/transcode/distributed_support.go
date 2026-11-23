@@ -30,7 +30,7 @@ func (m *Manager) SupportsDistributedRequest(req core.HLSRequest) bool {
 	if closed || cfg.SpikeGovernor || (cfg.RTXVideo.Mode != "" && cfg.RTXVideo.Mode != "off") {
 		return false
 	}
-	if cfg.VideoTranscodingOff() && !req.Decision.VideoCopy && req.Info.Video() != nil {
+	if (cfg.VideoTranscodingOff() || req.NoVideoTranscode) && !req.LiveInput && !req.Decision.VideoCopy && req.Info.Video() != nil {
 		return false
 	}
 	f := m.feat

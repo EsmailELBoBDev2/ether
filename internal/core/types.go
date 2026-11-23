@@ -538,15 +538,18 @@ type ClientCaps struct {
 	ExplicitMaxHeight     bool   `json:"explicitMaxHeight,omitempty"` // true when MaxHeight came from a request header/query limitation rather than a product default
 	MaxHeightSource       string `json:"-"`                           // declaration, preset or override that established MaxHeight
 	// HDRFormats preserves explicit display range declarations for Vela.
-	HDRFormats           []string            `json:"hdrFormats,omitempty"`
-	HDR10                bool                `json:"hdr10"`
-	ExplicitNoHDR        bool                `json:"explicitNoHdr,omitempty"` // true when HDR was explicitly denied by profile-extra limitations
-	DolbyVision          bool                `json:"dolbyVision"`
-	VideoCodecs          []string            `json:"videoCodecs"`                    // h264, hevc, av1, vp9
-	AudioCodecs          []string            `json:"audioCodecs"`                    // aac, ac3, eac3, truehd, dts, opus, flac
-	Containers           []string            `json:"containers"`                     // mp4, mkv, mpegts
-	HLSContainers        []string            `json:"hlsContainers,omitempty"`        // explicit segmented output targets; distinct from direct-play containers
-	MaxBitrateKbps       int                 `json:"maxBitrateKbps"`                 // 0 = unlimited
+	HDRFormats     []string `json:"hdrFormats,omitempty"`
+	HDR10          bool     `json:"hdr10"`
+	ExplicitNoHDR  bool     `json:"explicitNoHdr,omitempty"` // true when HDR was explicitly denied by profile-extra limitations
+	DolbyVision    bool     `json:"dolbyVision"`
+	VideoCodecs    []string `json:"videoCodecs"`             // h264, hevc, av1, vp9
+	AudioCodecs    []string `json:"audioCodecs"`             // aac, ac3, eac3, truehd, dts, opus, flac
+	Containers     []string `json:"containers"`              // mp4, mkv, mpegts
+	HLSContainers  []string `json:"hlsContainers,omitempty"` // explicit segmented output targets; distinct from direct-play containers
+	MaxBitrateKbps int      `json:"maxBitrateKbps"`          // 0 = unlimited
+	// NoVideoTranscode is the owner's per-viewer switch: this viewer's video is
+	// played or remuxed as it is, never re-encoded. Audio may still convert.
+	NoVideoTranscode     bool                `json:"noVideoTranscode,omitempty"`
 	DefaultRemoteBitrate bool                `json:"defaultRemoteBitrate,omitempty"` // true when MaxBitrateKbps came from the server's default remote cap rather than a client limitation
 	SubtitleCodecs       []string            `json:"subtitleCodecs"`                 // native image/text subtitle rendering
 	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses defaults unless DVProfilesExplicit
@@ -629,6 +632,13 @@ func FilterOutSurroundAudio(codecs []string) []string {
 }
 
 func (c ClientCaps) SupportsVideo(codec string) bool { return contains(c.VideoCodecs, codec) }
+
+// EffectiveAlwaysEncodeVideo reports whether the app compatibility override
+// forcing video encoding applies to this request. "No video transcoding" takes
+// precedence over "Always convert video".
+func (c ClientCaps) EffectiveAlwaysEncodeVideo() bool {
+	return c.AlwaysEncodeVideo && !c.NoVideoTranscode
+}
 func (c ClientCaps) SupportsAudio(codec string) bool {
 	if c.ConvertSurroundAudio && IsSurroundAudioCodec(codec) {
 		return false

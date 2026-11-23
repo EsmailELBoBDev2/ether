@@ -293,7 +293,7 @@ func (m *Manager) raceInitialAlternates(openCtx context.Context, s *session, pro
 				results <- initialRaceResult{alt: res.Release, err: err}
 				return
 			}
-			if m.videoTranscodingOff() {
+			if m.videoOff(s.caps) {
 				if dec, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
 					reason := core.ErrVideoTranscodingDisabled.Error()
 					if dec.Reason != "" {

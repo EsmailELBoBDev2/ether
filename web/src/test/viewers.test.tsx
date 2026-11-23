@@ -994,3 +994,78 @@ it("keeps filtered-out notice visible when all accounts on a connected Plex serv
   ).toBeInTheDocument();
   expect(within(drawer).queryByText(/No connected Plex Media Servers found/i)).toBeNull();
 });
+
+it("explains Live TV and Always convert video conflicts for per-viewer No video transcoding", async () => {
+  const { fake } = renderApp("/viewers/2/limits", {
+    capabilityOverrides: [{ product: "Plex Web", platform: "Chrome", alwaysEncodeVideo: true }],
+  });
+  const toggle = await screen.findByLabelText("No video transcoding", {}, WAIT);
+  expect(screen.getByText(/Live TV is unaffected\./)).toBeInTheDocument();
+  expect(screen.queryByRole("status")).toBeNull();
+
+  fireEvent.click(toggle);
+  const alert = await screen.findByRole("status", {}, WAIT);
+  expect(alert).toHaveTextContent(/Always convert video/);
+  expect(alert).toHaveTextContent(/Plex Web · Chrome/);
+  expect(alert).toHaveTextContent(/No video transcoding.*wins/i);
+  expect(within(alert).getByRole("link", { name: "Review App compatibility" })).toHaveAttribute(
+    "href",
+    "/playback/devices",
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+  await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(1), WAIT);
+  expect(calls(fake, "PUT", "/safety/policies/2")[0]!.body).toMatchObject({
+    videoTranscodingDisabled: true,
+  });
+});
+
+it("controls per-viewer downloads with effective status, moot server-off state, and hides it on the owner", async () => {
+  const { fake } = renderApp("/viewers/2/limits");
+  const downloads = await screen.findByRole("radiogroup", { name: "Downloads" }, WAIT);
+  expect(screen.getByText("Effective: Blocked")).toBeInTheDocument();
+  expect(
+    screen.getByText("Following the server setting: friends cannot download."),
+  ).toBeInTheDocument();
+
+  fireEvent.click(within(downloads).getByRole("radio", { name: "Allow" }));
+  expect(screen.getByText("Effective: Allowed")).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+  await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(1), WAIT);
+  expect(calls(fake, "PUT", "/safety/policies/2")[0]!.body).toMatchObject({
+    allowDownloads: true,
+  });
+
+  fireEvent.click(within(downloads).getByRole("radio", { name: "Server default" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+  await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(2), WAIT);
+  expect(calls(fake, "PUT", "/safety/policies/2")[1]!.body).not.toHaveProperty("allowDownloads");
+});
+
+it("explains when server-wide downloads make the per-viewer Downloads choice moot and omits it for the owner", async () => {
+  renderApp("/viewers/2/limits", {}, (fake) => {
+    fake.state.config.downloads = {
+      ...fake.state.config.downloads!,
+      enabled: false,
+      allowFriends: true,
+    };
+  });
+  const downloads = await screen.findByRole("radiogroup", { name: "Downloads" }, WAIT);
+  fireEvent.click(within(downloads).getByRole("radio", { name: "Allow" }));
+  expect(screen.getByText("Effective: Blocked")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /Offline downloads are turned off for the whole server, so this setting has no effect right now\./,
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open Plex downloads" })).toHaveAttribute(
+    "href",
+    "/apps/plex/downloads",
+  );
+});
+
+it("omits the per-viewer Downloads control on the owner's Limits tab", async () => {
+  renderApp("/viewers/1/limits");
+  await screen.findByLabelText("No video transcoding", {}, WAIT);
+  expect(screen.queryByRole("radiogroup", { name: "Downloads" })).toBeNull();
+});

@@ -192,6 +192,10 @@ type Server struct {
 	DisableConsoleOnMainPort bool   `json:"disableConsoleOnMainPort,omitempty"`
 	BindAddress              string `json:"bindAddress"`
 	FriendlyName             string `json:"friendlyName"`
+	// ResumeAfterSeconds is how far into a title a viewer must be before
+	// their position is kept as a resume point. 0 keeps the default, 5% of
+	// the title.
+	ResumeAfterSeconds int `json:"resumeAfterSeconds,omitempty"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.

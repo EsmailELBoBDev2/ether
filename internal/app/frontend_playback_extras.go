@@ -158,6 +158,12 @@ func (s cinemaSurface) Trailers(ctx context.Context, viewer *core.Viewer, device
 	if s.exp == nil || s.extras == nil || !s.extras.Enabled() || limit <= 0 {
 		return nil, nil
 	}
+	// A plugin library item (an adult scene, a sports event, an audiobook) has
+	// no related catalogue films; the fallback picked popular movie trailers to
+	// play before it.
+	if feature.IsPluginKey() {
+		return nil, nil
+	}
 	detail, err := s.exp.Item(ctx, frontend.ItemRequest{Viewer: viewer, Device: device, Key: feature})
 	if err != nil {
 		return nil, err

@@ -7,6 +7,10 @@ import (
 )
 
 func (s *Server) continueExperience(pr *Request) frontend.Continue {
+	return s.continueExperienceForSection(pr, Section{})
+}
+
+func (s *Server) continueExperienceForSection(pr *Request, scope Section) frontend.Continue {
 	batchOpts := frontend.EpisodeBatchOptions{Catalog: s.catalog(), State: s.state()}
 	if s.episodeOrder() != nil {
 		batchOpts.EpisodeOrder = s.episodeOrder()
@@ -65,6 +69,15 @@ func (s *Server) continueExperience(pr *Request) frontend.Continue {
 			return !ok || s.canSeeSection(u, sec.ID)
 		},
 		OnError: func(err error) { s.log.Warn("load in-progress", "err", err) }}
+	if scope.ID != 0 {
+		vis := s.sectionVisibility(scope)
+		opts.Visible = func(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
+			return s.visibleTitleWith(ctx, vis, u, t)
+		}
+		opts.SectionAllowed = func(u *frontend.Viewer, t frontend.MediaType) bool {
+			return titleInSectionType(t, scope.Type) && s.canSeeSection(u, scope.ID)
+		}
+	}
 	// Checking a selected episode's visibility loads its parent series. Read
 	// those parents together before walking the history candidates; otherwise
 	// a cold cache hydrates each show's facts, counts and dates separately.

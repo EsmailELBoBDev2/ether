@@ -1443,16 +1443,24 @@ func (s *Server) sectionHasLibraryScope(ctx context.Context, sec Section, u *fro
 }
 
 func (s *Server) filterSectionMembers(ctx context.Context, sec Section, items []frontend.Title) []frontend.Title {
+	if scoped, ok := s.scopedSectionMembers(ctx, sec, items); ok {
+		return scoped
+	}
+	return items
+}
+
+// scopedSectionMembers reports whether membership was actually checked.
+func (s *Server) scopedSectionMembers(ctx context.Context, sec Section, items []frontend.Title) ([]frontend.Title, bool) {
 	if len(items) == 0 || sec.PluginID != "" || s.exp() == nil {
-		return items
+		return nil, false
 	}
 	sr, ok := s.exp().(frontend.LibraryScopeReader)
 	if !ok {
-		return items
+		return nil, false
 	}
 	libID := sectionLibraryID(sec)
 	if libID == 0 {
-		return items
+		return nil, false
 	}
 	keys := make([]frontend.RatingKey, len(items))
 	for i := range items {
@@ -1464,7 +1472,7 @@ func (s *Server) filterSectionMembers(ctx context.Context, sec Section, items []
 	}
 	members, scoped, err := sr.LibraryMembers(ctx, libID, keys)
 	if err != nil || !scoped {
-		return items
+		return nil, false
 	}
 	out := make([]frontend.Title, 0, len(items))
 	for i := range items {
@@ -1476,7 +1484,7 @@ func (s *Server) filterSectionMembers(ctx context.Context, sec Section, items []
 			out = append(out, items[i])
 		}
 	}
-	return out
+	return out, true
 }
 
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {

@@ -17,7 +17,18 @@ import (
 const streamGrantParam = frontend.StreamGrantParam
 
 func transcodeSessionID(path string) string {
-	rest, ok := strings.CutPrefix(path, "/video/:/transcode/universal/session/")
+	var rest string
+	var ok bool
+	for _, prefix := range []string{
+		"/video/:/transcode/universal/session/",
+		"/music/:/transcode/universal/session/",
+		"/audio/:/transcode/universal/session/",
+		"/subtitles/:/transcode/universal/session/",
+	} {
+		if rest, ok = strings.CutPrefix(path, prefix); ok {
+			break
+		}
+	}
 	if !ok {
 		return ""
 	}

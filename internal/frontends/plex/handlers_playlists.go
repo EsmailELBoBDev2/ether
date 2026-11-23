@@ -97,6 +97,40 @@ func (s *Server) expandKey(ctx context.Context, pr *Request, k frontend.RatingKe
 			return capKeys(out), nil
 		}
 	}
+	if k.IsPluginKey() {
+		t, err := s.metadataTitle(ctx, pr, k)
+		if err != nil {
+			return nil, err
+		}
+		if t == nil || !s.canSeePluginTitle(pr.User, t) {
+			return nil, frontend.ErrNotFound
+		}
+		var titles []frontend.Title
+		switch t.Type {
+		case frontend.TypeShow:
+			titles, err = s.metadataGrandchildren(ctx, pr, k)
+		case frontend.TypeSeason:
+			titles, err = s.metadataChildren(ctx, pr, k)
+		default:
+			if !s.pluginAwarePlayable(ctx, pr.User, t) {
+				return nil, frontend.ErrNotFound
+			}
+			return []frontend.RatingKey{k}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out := make([]frontend.RatingKey, 0, len(titles))
+		for _, title := range titles {
+			if title.Type == frontend.TypeShow || title.Type == frontend.TypeSeason {
+				continue
+			}
+			if s.canSeePluginTitle(pr.User, &title) && s.pluginAwarePlayable(ctx, pr.User, &title) {
+				out = append(out, title.Key)
+			}
+		}
+		return capKeys(out), nil
+	}
 	selection := s.exp().NewPlaylistSelection(frontend.PlaylistSelectionOptions{Playlists: s.playlists(), Collections: s.collections(), Visibility: s.visibility(), Children: func(ctx context.Context, key frontend.RatingKey) ([]frontend.Title, error) {
 		return s.metadataChildren(ctx, pr, key)
 	}, Grandchildren: func(ctx context.Context, key frontend.RatingKey) ([]frontend.Title, error) {
@@ -299,6 +333,33 @@ func (s *Server) expandURI(ctx context.Context, pr *Request, uri string) ([]fron
 			return nil, frontend.ErrNotFound
 		}
 		q, _ := url.ParseQuery(rawQuery)
+		if sec.PluginID != "" {
+			query := frontend.ItemQuery{Limit: maxExpand}
+			if tp := typeFromParam(q.Get("type")); tp != "" && tp != "collection" {
+				query.Recursive = true
+				query.Types = []frontend.MediaType{tp}
+			}
+			query = sanitizePluginSectionQuery(sec, q, query)
+			page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), query)
+			if err != nil {
+				return nil, err
+			}
+			var out []frontend.RatingKey
+			for _, t := range page.Items {
+				if t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason {
+					sub, err := s.expandKey(ctx, pr, t.Key)
+					if err == nil {
+						out = append(out, sub...)
+					}
+				} else if s.canSeePluginTitle(pr.User, &t) && s.pluginAwarePlayable(ctx, pr.User, &t) {
+					out = append(out, t.Key)
+				}
+				if len(out) >= maxExpand {
+					break
+				}
+			}
+			return capKeys(out), nil
+		}
 		br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q, rawQuery)
 		br.q.Offset, br.q.Limit = 0, maxExpand
 		page, err := s.catalog().Browse(ctx, br.q)

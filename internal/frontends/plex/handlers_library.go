@@ -1626,19 +1626,45 @@ func (s *Server) inProgressTitles(ctx context.Context, pr *Request, t frontend.M
 // getTitles fetches titles concurrently, preserving order and skipping
 // failures.
 func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []frontend.Title {
+	var pr *Request
+	if ctx != nil {
+		pr = FromContext(ctx)
+	}
 	if ctx != nil && ctx.Value(storedPolicyKey{}) != nil {
 		if cached, ok := s.catalog().(frontend.CachedTitleBatchReader); ok {
-			got, err := cached.CachedGetMany(ctx, keys)
-			if err != nil || len(got) == 0 {
+			var catalogKeys []frontend.RatingKey
+			hasPlugin := false
+			for _, k := range keys {
+				if k.IsPluginKey() {
+					hasPlugin = true
+				} else {
+					catalogKeys = append(catalogKeys, k)
+				}
+			}
+			var got map[frontend.RatingKey]frontend.Title
+			if len(catalogKeys) > 0 {
+				var err error
+				got, err = cached.CachedGetMany(ctx, catalogKeys)
+				if err != nil {
+					got = nil
+				}
+			}
+			if len(got) == 0 && !hasPlugin {
 				return nil
 			}
-			out := make([]frontend.Title, 0, len(got))
+			out := make([]frontend.Title, 0, len(keys))
 			seen := map[frontend.RatingKey]bool{}
 			for _, k := range keys {
 				if seen[k] {
 					continue
 				}
 				seen[k] = true
+				if k.IsPluginKey() {
+					if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
+						out = append(out, *t)
+						continue
+					}
+				}
 				if t, ok := got[k]; ok {
 					out = append(out, t)
 				}
@@ -1651,7 +1677,15 @@ func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []fro
 		// reads them (detail time included): each Get below then finds its
 		// title in the catalogue's title cache instead of reading it and its
 		// facts alone (a 3000-item playlist read 2,810 titles one by one).
-		pre.PreloadStored(ctx, keys)
+		catalogKeys := make([]frontend.RatingKey, 0, len(keys))
+		for _, k := range keys {
+			if !k.IsPluginKey() {
+				catalogKeys = append(catalogKeys, k)
+			}
+		}
+		if len(catalogKeys) > 4 {
+			pre.PreloadStored(ctx, catalogKeys)
+		}
 	}
 	res := make([]*frontend.Title, len(keys))
 	sem := make(chan struct{}, 8)
@@ -1662,8 +1696,16 @@ func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []fro
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if t, err := s.catalog().Get(ctx, k); err == nil && t != nil {
-				res[i] = t
+			if k.IsPluginKey() {
+				if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
+					res[i] = t
+					return
+				}
+			}
+			if s.catalog() != nil {
+				if t, err := s.catalog().Get(ctx, k); err == nil && t != nil {
+					res[i] = t
+				}
 			}
 		}()
 	}

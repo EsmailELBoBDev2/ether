@@ -743,6 +743,40 @@ func subtitleProfileTargetFormat(extra string) string {
 	return target
 }
 
+func directMusicProfile(extra string) (containers, codecs []string) {
+	for _, d := range ParseProfileExtra(extra) {
+		if d.Verb != "add-direct-play-profile" || d.Args["type"] != "musicProfile" {
+			continue
+		}
+		containers = addUnique(containers, splitList(d.Args["container"])...)
+		codecs = addUnique(codecs, splitList(d.Args["audioCodec"])...)
+	}
+	return containers, codecs
+}
+
+func streamingMusicTarget(extra, protocol string) (containers, codecs []string) {
+	for _, d := range ParseProfileExtra(extra) {
+		switch d.Verb {
+		case "add-transcode-target", "add-transcode-target-codec", "append-transcode-target-codec":
+		default:
+			continue
+		}
+		a := d.Args
+		if a["type"] != "musicProfile" {
+			continue
+		}
+		if context := a["context"]; context != "" && context != "all" && context != "streaming" {
+			continue
+		}
+		if target := a["protocol"]; target != "" && !strings.EqualFold(target, protocol) {
+			continue
+		}
+		containers = addUnique(containers, splitList(a["container"])...)
+		codecs = addUnique(codecs, splitList(a["audioCodec"])...)
+	}
+	return containers, codecs
+}
+
 // h264LevelMaxHeight maps an H.264 level*10 upper bound (e.g. 40, 41, 42) to
 // the tallest standard frame height that level's macroblock ceiling supports.
 // Levels >= 5.0 support 4K and return 0 (unbounded).

@@ -585,6 +585,10 @@ export interface EtherConfig {
     diskBudgetBytes: number;
     expiry: string;
     maxHeight: number;
+    limitUnit?: string;
+    limitAmount?: number;
+    limitPeriod?: string;
+    noTranscode?: boolean;
   };
   personalize?: {
     postPlay: boolean;

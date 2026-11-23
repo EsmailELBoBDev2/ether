@@ -470,83 +470,182 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               </div>
             ) : null}
             {!isOwner ? (
-              <SettingsRow
-                setting="downloads"
-                title={t("Downloads")}
-                description={
-                  <span className="space-y-1">
-                    <span className="block">
-                      {t(
-                        "Allow or block offline downloads for this viewer, or follow the server setting.",
-                      )}
+              <>
+                <SettingsRow
+                  setting="downloads"
+                  title={t("Downloads")}
+                  description={
+                    <span className="space-y-1">
+                      <span className="block">
+                        {t(
+                          "Allow or block offline downloads for this viewer, or follow the server setting.",
+                        )}
+                      </span>
+                      {config.data ? (
+                        !serverDownloadsOn ? (
+                          <span className="block">
+                            {t(
+                              "Offline downloads are turned off for the whole server, so this setting has no effect right now.",
+                            )}{" "}
+                            <Link
+                              to="/apps/plex/downloads"
+                              className="font-medium text-primary hover:underline"
+                            >
+                              {t("Open Plex downloads")}
+                            </Link>
+                          </span>
+                        ) : downloadMode === "default" ? (
+                          <span className="block">
+                            {plexAllowSync === false
+                              ? t(
+                                  "Following the server setting, but this viewer's plex.tv share disables downloads. Pick Allow to override it.",
+                                )
+                              : serverFriendsDownloads
+                                ? t("Following the server setting: friends can download.")
+                                : t("Following the server setting: friends cannot download.")}
+                          </span>
+                        ) : downloadMode === "allow" ? (
+                          <span className="block">
+                            {t(
+                              "Overrides the server and plex.tv share settings while server-wide downloads are on.",
+                            )}
+                          </span>
+                        ) : (
+                          <span className="block">
+                            {t(
+                              "Blocks offline downloads for this viewer even if friends are allowed.",
+                            )}
+                          </span>
+                        )
+                      ) : null}
                     </span>
-                    {config.data ? (
-                      !serverDownloadsOn ? (
-                        <span className="block">
-                          {t(
-                            "Offline downloads are turned off for the whole server, so this setting has no effect right now.",
-                          )}{" "}
-                          <Link
-                            to="/apps/plex/downloads"
-                            className="font-medium text-primary hover:underline"
-                          >
-                            {t("Open Plex downloads")}
-                          </Link>
-                        </span>
-                      ) : downloadMode === "default" ? (
-                        <span className="block">
-                          {plexAllowSync === false
-                            ? t(
-                                "Following the server setting, but this viewer's plex.tv share disables downloads. Pick Allow to override it.",
-                              )
-                            : serverFriendsDownloads
-                              ? t("Following the server setting: friends can download.")
-                              : t("Following the server setting: friends cannot download.")}
-                        </span>
-                      ) : downloadMode === "allow" ? (
-                        <span className="block">
-                          {t(
-                            "Overrides the server and plex.tv share settings while server-wide downloads are on.",
-                          )}
-                        </span>
-                      ) : (
-                        <span className="block">
-                          {t(
-                            "Blocks offline downloads for this viewer even if friends are allowed.",
-                          )}
-                        </span>
-                      )
-                    ) : null}
-                  </span>
-                }
-                control={
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Segmented
-                      size="sm"
-                      ariaLabel={t("Downloads")}
-                      value={downloadMode}
-                      onChange={(next) =>
-                        patchPolicy({
-                          allowDownloads: next === "default" ? undefined : next === "allow",
-                        })
+                  }
+                  control={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Segmented
+                        size="sm"
+                        ariaLabel={t("Downloads")}
+                        value={downloadMode}
+                        onChange={(next) =>
+                          patchPolicy({
+                            allowDownloads: next === "default" ? undefined : next === "allow",
+                          })
+                        }
+                        options={[
+                          { value: "default", label: t("Server default") },
+                          { value: "allow", label: t("Allow") },
+                          { value: "block", label: t("Block") },
+                        ]}
+                      />
+                      {config.data ? (
+                        <Badge
+                          variant={effectiveDownloads ? "success" : "secondary"}
+                          className="whitespace-nowrap"
+                        >
+                          {effectiveDownloads ? t("Effective: Allowed") : t("Effective: Blocked")}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  }
+                />
+                <SettingsRow
+                  setting="no-download-transcoding"
+                  title={t("No converting for downloads")}
+                  description={t(
+                    "Downloads for this viewer use only a version that needs no video conversion at the chosen quality. Separate from playback: either switch can be on without the other.",
+                  )}
+                  control={
+                    <Switch
+                      aria-label={t("No converting for downloads")}
+                      checked={Boolean(p.downloadTranscodingDisabled)}
+                      onChange={(e) =>
+                        patchPolicy({ downloadTranscodingDisabled: e.target.checked })
                       }
-                      options={[
-                        { value: "default", label: t("Server default") },
-                        { value: "allow", label: t("Allow") },
-                        { value: "block", label: t("Block") },
-                      ]}
                     />
-                    {config.data ? (
-                      <Badge
-                        variant={effectiveDownloads ? "success" : "secondary"}
-                        className="whitespace-nowrap"
-                      >
-                        {effectiveDownloads ? t("Effective: Allowed") : t("Effective: Blocked")}
-                      </Badge>
-                    ) : null}
-                  </div>
-                }
-              />
+                  }
+                />
+                <SettingsRow
+                  setting="download-limit"
+                  title={t("Download limit")}
+                  description={t(
+                    "How much this viewer can download: a number of titles or an amount of data, per day or per month. Server default follows the Downloads settings under Apps.",
+                  )}
+                  control={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <SearchSelect
+                        ariaLabel={t("Download limit counts")}
+                        value={p.downloadLimitUnit || "default"}
+                        options={[
+                          { value: "default", label: t("Server default") },
+                          { value: "none", label: t("No limit") },
+                          { value: "titles", label: t("Titles") },
+                          { value: "gb", label: t("GB") },
+                        ]}
+                        onChange={(choice) =>
+                          patchPolicy({
+                            downloadLimitUnit:
+                              choice === "none" || choice === "titles" || choice === "gb"
+                                ? choice
+                                : "",
+                          })
+                        }
+                        {...searchSelectLabels()}
+                      />
+                      {p.downloadLimitUnit === "titles" || p.downloadLimitUnit === "gb" ? (
+                        <>
+                          <NumberInput
+                            aria-label={t("Download limit amount")}
+                            className="w-24"
+                            min={0}
+                            value={p.downloadLimitAmount ?? 0}
+                            onChange={(n) =>
+                              patchPolicy({
+                                downloadLimitAmount: Math.max(0, Math.min(100000, Math.round(n))),
+                              })
+                            }
+                          />
+                          <SearchSelect
+                            ariaLabel={t("Download limit period")}
+                            value={p.downloadLimitPeriod === "month" ? "month" : "day"}
+                            options={[
+                              { value: "day", label: t("per day") },
+                              { value: "month", label: t("per month") },
+                            ]}
+                            onChange={(choice) =>
+                              patchPolicy({
+                                downloadLimitPeriod: choice === "month" ? "month" : "day",
+                              })
+                            }
+                            {...searchSelectLabels()}
+                          />
+                        </>
+                      ) : null}
+                    </div>
+                  }
+                />
+                <SettingsRow
+                  setting="download-max-height"
+                  title={t("Highest download quality")}
+                  description={t(
+                    "Downloads for this viewer are capped at this resolution. It cannot go above the server's download cap.",
+                  )}
+                  control={
+                    <SearchSelect
+                      ariaLabel={t("Highest download quality")}
+                      value={String(p.downloadMaxHeight ?? 0)}
+                      options={[
+                        { value: "0", label: t("Server default") },
+                        { value: "480", label: "480p" },
+                        { value: "720", label: "720p" },
+                        { value: "1080", label: "1080p" },
+                        { value: "2160", label: "4K" },
+                      ]}
+                      onChange={(choice) => patchPolicy({ downloadMaxHeight: Number(choice) || 0 })}
+                      {...searchSelectLabels()}
+                    />
+                  }
+                />
+              </>
             ) : null}
             <SettingsRow
               title={t("Maximum bitrate")}

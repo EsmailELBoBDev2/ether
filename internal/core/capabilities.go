@@ -65,6 +65,26 @@ type DamageReporter interface{ SetDamageHandler(func(int64, int64) bool) }
 // DirectPlayRetrier exposes the optional RetryDirectPlay capability.
 type DirectPlayRetrier interface{ RetryDirectPlay() bool }
 
+// DownloadAllowance is what one viewer may download: the owner's server-wide
+// defaults with that viewer's overrides applied. LimitUnit is "" for no
+// limit, "titles" or "gb"; LimitPeriod is "day" or "month".
+type DownloadAllowance struct {
+	LimitUnit   string
+	LimitAmount int
+	LimitPeriod string
+	MaxHeight   int  // 0 = the server's download resolution cap only
+	NoTranscode bool // downloads come only from a release needing no video re-encode
+}
+
+// DownloadLimitPolicy exposes the optional per-viewer download limits.
+// AdmitDownload records key against the viewer's usage and reports whether it
+// is within the limit; a refused download returns the limit's unit.
+type DownloadLimitPolicy interface {
+	DownloadAllowance(*User) DownloadAllowance
+	AdmitDownload(context.Context, *User, RatingKey) (ok bool, unit string)
+	RecordDownloadBytes(context.Context, *User, RatingKey, int64)
+}
+
 // DownloadAccessPolicy exposes the optional AllowDownloads capability.
 type DownloadAccessPolicy interface{ AllowDownloads(*User) bool }
 

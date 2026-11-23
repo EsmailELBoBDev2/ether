@@ -872,6 +872,44 @@ export const DOWNLOADS: FieldGroup[] = localized(() => [
         kind: "bool",
         help: t("Off lets only you download. A viewer's access policy can still allow or deny it."),
       },
+      {
+        key: "limitUnit",
+        label: t("Download limit counts"),
+        kind: "select",
+        options: [
+          { value: "", label: t("No limit") },
+          { value: "titles", label: t("Titles") },
+          { value: "gb", label: t("GB") },
+        ],
+        help: t(
+          "The default limit for every viewer except you. A viewer's own limit, set on their Limits page, replaces it.",
+        ),
+      },
+      {
+        key: "limitAmount",
+        label: t("Download limit amount"),
+        kind: "number",
+        min: 0,
+        step: 1,
+        help: t("How many titles or GB. 0 is no limit."),
+      },
+      {
+        key: "limitPeriod",
+        label: t("Download limit period"),
+        kind: "select",
+        options: [
+          { value: "day", label: t("Per day") },
+          { value: "month", label: t("Per month") },
+        ],
+      },
+      {
+        key: "noTranscode",
+        label: t("No converting for downloads"),
+        kind: "bool",
+        help: t(
+          "Downloads use only a version that needs no video conversion at the chosen quality, for every viewer. A viewer's own switch can also turn this on.",
+        ),
+      },
     ],
     more: [
       {

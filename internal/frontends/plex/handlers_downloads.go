@@ -292,6 +292,18 @@ func (s *Server) downloadCaps(r *http.Request, pr *Request) frontend.ClientCaps 
 	if mh := s.cfg().Downloads.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
 		caps.MaxHeight = mh
 	}
+	// The viewer's own allowance: a lower resolution cap, and downloads made
+	// only from a release that needs no video re-encode. Release selection
+	// and the download decision both read these from the caps.
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok && pr != nil {
+		allowance := policy.DownloadAllowance(pr.User)
+		if mh := allowance.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
+			caps.MaxHeight = mh
+		}
+		if allowance.NoTranscode {
+			caps.NoVideoTranscode = true
+		}
+	}
 	return caps
 }
 
@@ -368,11 +380,34 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 		}
 		for _, t := range titles {
 			it := s.addDownloadItem(q, pr.User, t, caps, burn)
+			if msg := s.countDownload(ctx, pr.User, t.Key); msg != "" {
+				// Over the viewer's limit: the item is listed with the
+				// reason, as a failed download is, and never starts.
+				s.downloads.Fail(ctx, it, msg)
+			}
 			added = append(added, addedQueueItemModel{ID: it.ID, Key: keyPath(t.Key)})
 		}
 	}
 	s.scheduleDownloads()
 	s.write(w, r, &downloadContainer{Size: len(added), Added: added})
+}
+
+// countDownload records key against u's download usage and returns the
+// message to show when u is over the owner's limit, or "" when the download
+// may go ahead.
+func (s *Server) countDownload(ctx context.Context, u *frontend.User, key frontend.RatingKey) string {
+	policy, ok := s.policy().(frontend.DownloadLimitPolicy)
+	if !ok || u == nil {
+		return ""
+	}
+	switch admitted, unit := policy.AdmitDownload(ctx, u, key); {
+	case admitted:
+		return ""
+	case unit == "gb":
+		return frontend.MsgViewerDownloadDataLimit
+	default:
+		return frontend.MsgViewerDownloadLimit
+	}
 }
 
 // addDownloadItem appends an item, or returns the existing one when the
@@ -470,7 +505,28 @@ func (s *Server) handleDownloadQueueItemRestart(w http.ResponseWriter, r *http.R
 	if q == nil {
 		return
 	}
-	s.downloads.Restart(q, parseItemIDs(r), s.sessionRuntime().Downloads().ReleaseDownload)
+	ids := parseItemIDs(r)
+	s.downloads.Restart(q, ids, s.sessionRuntime().Downloads().ReleaseDownload)
+	// A restart must not be a way around the daily cap: an item that was
+	// refused for it is refused again unless today's tally has room.
+	if pr := FromContext(r.Context()); pr != nil && pr.User != nil {
+		var restarted []*downloadItem
+		s.downloads.Lock()
+		for _, it := range q.Items {
+			for _, id := range ids {
+				if it.ID == id {
+					restarted = append(restarted, it)
+					break
+				}
+			}
+		}
+		s.downloads.Unlock()
+		for _, it := range restarted {
+			if msg := s.countDownload(r.Context(), pr.User, it.Key); msg != "" {
+				s.downloads.Fail(r.Context(), it, msg)
+			}
+		}
+	}
 	s.scheduleDownloads()
 	w.WriteHeader(http.StatusOK)
 }
@@ -801,6 +857,8 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			s.log.Warn("download preparation failed", "key", it.Key, "err", err)
 			if noRelease(err) {
 				fail("No release available for download at this quality.")
+			} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) && it.Caps.NoVideoTranscode {
+				fail(frontend.MsgViewerDownloadTranscodingOff)
 			} else {
 				fail(playbackMessage(err))
 			}
@@ -814,12 +872,21 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			// Deleted, restarted or shutting down; state already reset.
 		case errors.Is(err, frontend.ErrDownloadNeedsTranscode):
 			fail("This title cannot be downloaded: it cannot be converted to a playable MP4.")
+		case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
+			if it.Caps.NoVideoTranscode {
+				fail(frontend.MsgViewerDownloadTranscodingOff)
+			} else {
+				fail(playbackMessage(err))
+			}
 		case errors.Is(err, frontend.ErrDownloadBudget):
 			fail("Not enough temporary disk space on the server for this download.")
 		default:
 			fail(msgPlayFailed)
 		}
 		return
+	}
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok {
+		policy.RecordDownloadBytes(ctx, it.User, it.Key, size)
 	}
 	if !s.downloads.Complete(ctx, it, p, size, s.now()) {
 		s.sessionRuntime().Downloads().ReleaseDownload(p)

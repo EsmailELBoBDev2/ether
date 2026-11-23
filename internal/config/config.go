@@ -647,6 +647,15 @@ type Downloads struct {
 	Expiry Duration `json:"expiry"`
 	// MaxHeight caps the download profile's resolution (default 1080).
 	MaxHeight int `json:"maxHeight"`
+	// The default download limit for every non-owner viewer; a viewer's own
+	// policy can replace it. LimitUnit is "" (no limit), "titles" or "gb";
+	// LimitPeriod is "day" (default) or "month".
+	LimitUnit   string `json:"limitUnit"`
+	LimitAmount int    `json:"limitAmount"`
+	LimitPeriod string `json:"limitPeriod"`
+	// NoTranscode makes every viewer's downloads come only from a release
+	// that needs no video re-encode; a viewer's policy can also set it.
+	NoTranscode bool `json:"noTranscode"`
 }
 
 // PlexServers controls watch sync with owner-run servers; server credentials and

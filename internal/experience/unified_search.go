@@ -143,6 +143,10 @@ func (s *Service) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device
 	if err != nil {
 		return frontend.UnifiedSearchPage{}, err
 	}
+	if core.SearchWasSuperseded(ctx) {
+		// The viewer typed on: no description job for a stale query.
+		return frontend.UnifiedSearchPage{SearchPage: page, Match: frontend.SearchMatchNone}, nil
+	}
 	out := frontend.UnifiedSearchPage{SearchPage: page, Match: frontend.SearchMatchTitle}
 	if len(page.Page.Items) == 0 {
 		out.Match = frontend.SearchMatchNone

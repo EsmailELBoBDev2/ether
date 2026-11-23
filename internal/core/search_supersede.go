@@ -74,6 +74,14 @@ func SearchSuperseded(ctx context.Context) <-chan struct{} {
 	return turn.superseded
 }
 
+// SearchWasSuperseded reports whether ctx was cancelled because a newer
+// search from the same viewer and client replaced it. Such a search
+// answers empty rather than failing: an error invites a client to retry
+// the stale query, which would in turn supersede the newer one.
+func SearchWasSuperseded(ctx context.Context) bool {
+	return ctx != nil && errors.Is(context.Cause(ctx), ErrSearchSuperseded)
+}
+
 // IsShortSearch reports a query of one or two letters or digits: a prefix
 // being typed. It answers from indexed local paths only, never a remote
 // lookup or AI.

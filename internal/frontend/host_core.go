@@ -202,6 +202,12 @@ func EnterSearch(ctx context.Context, viewerID int64, client, query string) (con
 	return core.EnterSearch(ctx, viewerID, client, query)
 }
 
+// SearchWasSuperseded reports a search cancelled by a newer one from the
+// same client (core.SearchWasSuperseded); it answers empty, not an error.
+func SearchWasSuperseded(ctx context.Context) bool {
+	return core.SearchWasSuperseded(ctx)
+}
+
 // WithExplicitSearch marks a request as a viewer or owner typing a search,
 // so browsing-only catalogue rules do not filter out explicit search hits.
 func WithExplicitSearch(ctx context.Context) context.Context {

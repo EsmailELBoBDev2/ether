@@ -32,11 +32,11 @@ func TestEnterSearchSupersedesOlderQueryFromSameClient(t *testing.T) {
 	newer, leaveNewer := EnterSearch(bg, 7, "tv", "jam")
 	defer leaveNewer()
 	for _, ctx := range []context.Context{old, sameQuery} {
-		if !errors.Is(context.Cause(ctx), ErrSearchSuperseded) || !superseded(SearchSuperseded(ctx)) {
+		if !errors.Is(context.Cause(ctx), ErrSearchSuperseded) || !SearchWasSuperseded(ctx) || !superseded(SearchSuperseded(ctx)) {
 			t.Fatal("a newer query must cancel every request running the older one")
 		}
 	}
-	if newer.Err() != nil || superseded(SearchSuperseded(newer)) {
+	if newer.Err() != nil || SearchWasSuperseded(newer) || superseded(SearchSuperseded(newer)) {
 		t.Fatal("the newest search must keep running")
 	}
 	if otherClient.Err() != nil || otherViewer.Err() != nil {

@@ -117,29 +117,37 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 	seriesField := SeriesFacetField(decl)
 	seriesParents := synthesizeSeriesParents(item, seriesField, mediaRole, effIndex, indexDisplay)
 
+	var primaryChildLevel string
+	if len(decl.ChildLevels(item.Level)) > 1 {
+		if primary, ok := decl.PrimaryChildLevel(item.Level, mediaClass); ok {
+			primaryChildLevel = primary.Key
+		}
+	}
+
 	t := core.Title{
-		Key:           item.Key,
-		Type:          mediaType,
-		MBItemType:    mbItemType,
-		KindLevel:     item.Level,
-		ItemIndex:     effIndex,
-		PluginAddedAt: item.AddedAt,
-		LandscapeCard: EffectiveCard(ownerCard, decl.Library) == core.CardLandscape,
-		DateDisplay:   dateDisplay,
-		MediaClass:    mediaClass,
-		MediaRole:     mediaRole,
-		IndexDisplay:  indexDisplay,
-		Disc:          extractDiscNumber(item),
-		MediaParents:  seriesParents,
-		MediaReading:  reading,
-		Title:         item.Title,
-		SortTitle:     sortTitle,
-		Summary:       strings.TrimSpace(item.Summary),
-		Year:          item.Year,
-		Rating:        item.Rating,
-		Popularity:    extractPopularity(item),
-		ChildCount:    item.ChildCount,
-		LeafCount:     item.LeafCount,
+		Key:               item.Key,
+		Type:              mediaType,
+		MBItemType:        mbItemType,
+		KindLevel:         item.Level,
+		PrimaryChildLevel: primaryChildLevel,
+		ItemIndex:         effIndex,
+		PluginAddedAt:     item.AddedAt,
+		LandscapeCard:     EffectiveCard(ownerCard, decl.Library) == core.CardLandscape,
+		DateDisplay:       dateDisplay,
+		MediaClass:        mediaClass,
+		MediaRole:         mediaRole,
+		IndexDisplay:      indexDisplay,
+		Disc:              extractDiscNumber(item),
+		MediaParents:      seriesParents,
+		MediaReading:      reading,
+		Title:             item.Title,
+		SortTitle:         sortTitle,
+		Summary:           strings.TrimSpace(item.Summary),
+		Year:              item.Year,
+		Rating:            item.Rating,
+		Popularity:        extractPopularity(item),
+		ChildCount:        item.ChildCount,
+		LeafCount:         item.LeafCount,
 	}
 
 	if item.Released > 0 {

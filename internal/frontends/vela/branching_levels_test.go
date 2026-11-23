@@ -57,15 +57,16 @@ func TestVelaPluginLevelsCapabilitiesTabRowsCardChildCountsAndRoleFilter(t *test
 	concert2Key := core.PluginKey(804)
 
 	artist := frontend.Title{
-		Key:         artistKey,
-		LibraryID:   88,
-		Type:        core.TypeShow,
-		Title:       "Miles Davis",
-		KindLevel:   "artist",
-		MediaClass:  core.MediaClassMusic,
-		MediaRole:   core.MediaRoleArtist,
-		ChildCount:  3,
-		ChildCounts: map[string]int{"album": 1, "concert": 2},
+		Key:               artistKey,
+		LibraryID:         88,
+		Type:              core.TypeShow,
+		Title:             "Miles Davis",
+		KindLevel:         "artist",
+		PrimaryChildLevel: "album",
+		MediaClass:        core.MediaClassMusic,
+		MediaRole:         core.MediaRoleArtist,
+		ChildCount:        3,
+		ChildCounts:       map[string]int{"album": 1, "concert": 2},
 	}
 	album := frontend.Title{
 		Key:          albumKey,
@@ -166,10 +167,12 @@ func TestVelaPluginLevelsCapabilitiesTabRowsCardChildCountsAndRoleFilter(t *test
 			return frontend.ItemDetail{}, core.ErrNotFound
 		}
 	}
+	var artistChildQueries []frontend.ItemQuery
 	exp.childrenByQuery = func(parent core.RatingKey, q frontend.ItemQuery) frontend.Page {
 		if parent != artistKey {
 			return frontend.Page{}
 		}
+		artistChildQueries = append(artistChildQueries, q)
 		var pool []frontend.Title
 		switch {
 		case q.Role == "concert" || q.Level == "concert":
@@ -304,6 +307,62 @@ func TestVelaPluginLevelsCapabilitiesTabRowsCardChildCountsAndRoleFilter(t *test
 	childCounts := artistMedia["childCounts"].(map[string]any)
 	if childCounts["album"] != float64(1) || childCounts["concert"] != float64(2) {
 		t.Fatalf("artist media.childCounts = %+v, want {album:1, concert:2}", childCounts)
+	}
+	if artistMedia["childCount"] != float64(3) {
+		t.Fatalf("artist media.childCount = %v, want 3 (direct children)", artistMedia["childCount"])
+	}
+	// Detail seasons must contain only the primary child level (albums), never mixing concerts.
+	seasons, _ := artistWire["seasons"].([]any)
+	if len(seasons) != 1 || seasons[0].(map[string]any)["name"] != "Kind of Blue" {
+		t.Fatalf("artist detail seasons = %+v, want single album (concerts excluded)", seasons)
+	}
+	if len(artistChildQueries) == 0 || artistChildQueries[len(artistChildQueries)-1].Level != "album" {
+		t.Fatalf("detailChildren artist queries = %+v, want Level=album", artistChildQueries)
+	}
+
+	// 4b. Unhydrated artist detail refreshes media.childCount / childCounts after detailChildren hydrates it.
+	unhydratedKey := core.PluginKey(809)
+	unhydrated := artist
+	unhydrated.Key = unhydratedKey
+	unhydrated.Title = "Hydrating Artist"
+	unhydrated.PrimaryChildLevel = "" // also exercises filterPrimaryBranchItems fallback when PrimaryChildLevel is unset
+	unhydrated.ChildCount = 12        // stale leaf count before hydration
+	unhydrated.ChildCounts = nil
+	hydrated := false
+	origItemFunc := exp.ItemFunc
+	exp.ItemFunc = func(c context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+		if req.Key == unhydratedKey {
+			if !hydrated {
+				return frontend.ItemDetail{Title: unhydrated}, nil
+			}
+			done := unhydrated
+			done.ChildCount = 3
+			done.ChildCounts = map[string]int{"album": 1, "concert": 2}
+			return frontend.ItemDetail{Title: done}, nil
+		}
+		return origItemFunc(c, req)
+	}
+	origChildren := exp.childrenByQuery
+	exp.childrenByQuery = func(parent core.RatingKey, q frontend.ItemQuery) frontend.Page {
+		if parent == unhydratedKey {
+			hydrated = true
+			// Return mixed levels to verify filterPrimaryBranchItems strips concerts from seasons.
+			return frontend.Page{Items: []frontend.Title{album, concert1, concert2}, Total: 3, TotalExact: true}
+		}
+		return origChildren(parent, q)
+	}
+	status, hydWire := get("/vela/v0/titles/" + ids.RatingKeyGUID(unhydratedKey))
+	if status != http.StatusOK {
+		t.Fatalf("unhydrated artist detail status = %d", status)
+	}
+	hydMedia := hydWire["title"].(map[string]any)["media"].(map[string]any)
+	hydCounts, _ := hydMedia["childCounts"].(map[string]any)
+	if hydMedia["childCount"] != float64(3) || hydCounts["album"] != float64(1) || hydCounts["concert"] != float64(2) {
+		t.Fatalf("hydrated detail media = %+v, want childCount=3 childCounts={album:1,concert:2}", hydMedia)
+	}
+	hydSeasons, _ := hydWire["seasons"].([]any)
+	if len(hydSeasons) != 1 || hydSeasons[0].(map[string]any)["name"] != "Kind of Blue" {
+		t.Fatalf("unhydrated detail seasons = %+v, want album only", hydSeasons)
 	}
 
 	// 5. /titles/{id}/children?role=concert pages within that role, rejects cross-role cursor replay (409),

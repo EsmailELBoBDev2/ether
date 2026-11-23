@@ -1215,14 +1215,65 @@ func resolveFilteredChildLevels(decl plugins.MediaKindMeta, _ core.Presentations
 	return byKey
 }
 
+func resolveChildLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, parentLevel string, q frontend.ItemQuery) (levels []string, filtering bool, allDirect bool) {
+	reqLevel := strings.TrimSpace(q.Level)
+	reqRole := strings.TrimSpace(q.Role)
+	hasTypeFilter := len(q.Types) > 0 || len(q.UnservedTypes) > 0 || len(q.ExcludedTypes) > 0
+	if reqLevel == "" && reqRole == "" && (!hasTypeFilter || !decl.HasChildLevels(parentLevel)) {
+		return nil, false, false
+	}
+	levelKeys := resolveFilteredChildLevels(decl, present, parentLevel, q.Recursive, reqLevel, reqRole)
+	if hasTypeFilter {
+		matched := levelKeys[:0]
+		for _, lk := range levelKeys {
+			lv, idx, ok := decl.Level(lk)
+			if !ok {
+				continue
+			}
+			projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+			if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
+				if !levelMatchesQueryTypes(lv, idx, decl, present, projected, q) {
+					continue
+				}
+			} else if levelExcludedByQuery(lv, idx, decl, present, projected, q) {
+				continue
+			}
+			matched = append(matched, lv.Key)
+		}
+		levelKeys = matched
+	}
+	if len(levelKeys) == 0 {
+		return nil, true, false
+	}
+	direct := true
+	for _, lk := range levelKeys {
+		if decl.LevelParent(lk) != parentLevel {
+			direct = false
+			break
+		}
+	}
+	return levelKeys, true, direct
+}
+
 func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recursive bool, cursor string, limit int) (experience.PluginBrowsePage, error) {
-	return c.ChildrenFiltered(ctx, parent, recursive, "", "", cursor, limit)
+	return c.ChildrenQuery(ctx, parent, frontend.ItemQuery{Recursive: recursive}, cursor, limit)
 }
 
 // ChildrenFiltered implements experience.PluginFilteredChildrenLibraries,
 // pushing optional child level and semantic role filters directly into SQL so
 // filtered child paging stays O(page).
 func (c *KindCatalog) ChildrenFiltered(ctx context.Context, parent core.RatingKey, recursive bool, reqLevel, reqRole, cursor string, limit int) (experience.PluginBrowsePage, error) {
+	return c.ChildrenQuery(ctx, parent, frontend.ItemQuery{
+		Recursive: recursive,
+		Level:     reqLevel,
+		Role:      reqRole,
+	}, cursor, limit)
+}
+
+// ChildrenQuery implements experience.PluginQueryChildrenLibraries, pushing
+// optional child level, role, and media-type filters directly into SQL so
+// filtered and typed child paging stays O(page).
+func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, q frontend.ItemQuery, cursor string, limit int) (experience.PluginBrowsePage, error) {
 	if c == nil || c.items == nil || c.libs == nil || !parent.IsPluginKey() {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
@@ -1250,13 +1301,10 @@ func (c *KindCatalog) ChildrenFiltered(ctx context.Context, parent core.RatingKe
 		c.maybeHydrateContainer(ctx, rec, lib, parentItem, levelIdx)
 	}
 
-	reqLevel = strings.TrimSpace(reqLevel)
-	reqRole = strings.TrimSpace(reqRole)
-	filtering := reqLevel != "" || reqRole != ""
-	var targetLevels []string
+	recursive := q.Recursive
+	targetLevels, filtering, allDirect := resolveChildLevelsForQuery(rec.Decl, lib.Present, parentItem.Level, q)
 	var targetLevelSet map[string]bool
 	if filtering {
-		targetLevels = resolveFilteredChildLevels(rec.Decl, lib.Present, parentItem.Level, recursive, reqLevel, reqRole)
 		if len(targetLevels) == 0 {
 			return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 		}
@@ -1311,7 +1359,7 @@ func (c *KindCatalog) ChildrenFiltered(ctx context.Context, parent core.RatingKe
 			NextCursor: next,
 		}, nil
 	}
-	if !recursive || !hasGrandchildLevels(rec.Decl, parentItem.Level) {
+	if !recursive || !hasGrandchildLevels(rec.Decl, parentItem.Level) || (filtering && allDirect) {
 		if strings.HasPrefix(cursor, "part:") && !filtering {
 			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
 			if parts := syntheticAudiobookParts(parentItem, self[0]); len(parts) > 1 {
@@ -1381,16 +1429,18 @@ func (c *KindCatalog) ChildrenFiltered(ctx context.Context, parent core.RatingKe
 				return experience.PluginBrowsePage{}, err
 			}
 			for _, it := range page.Items {
-				if filtering && targetLevelSet[it.Level] {
-					leaves = append(leaves, it)
-					if len(leaves) >= maxExpanded {
-						break
-					}
-					continue
-				}
-				if rec.Decl.HasChildLevels(it.Level) && !it.Playable {
+				isContainer := rec.Decl.HasChildLevels(it.Level) && !it.Playable
+				if isContainer {
 					queue = append(queue, it.Ref)
-				} else if !filtering {
+				}
+				if filtering {
+					if targetLevelSet[it.Level] {
+						leaves = append(leaves, it)
+						if len(leaves) >= maxExpanded {
+							break
+						}
+					}
+				} else if !isContainer {
 					leaves = append(leaves, it)
 					if len(leaves) >= maxExpanded {
 						break
@@ -2055,7 +2105,10 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 		t.LibraryID = lib.ID
 		scopeTitleMediaParents(&t, lib.ID)
 		if pc, ok := parentCounts[it.Ref]; ok {
-			if pc.ChildCount > t.ChildCount {
+			// Direct children from the indexed parent tally govern ChildCount
+			// (matching sum(ChildCounts)) even when a plugin reports a larger
+			// leaf/track total in item.ChildCount.
+			if pc.ChildCount > 0 {
 				t.ChildCount = pc.ChildCount
 			}
 			if pc.LeafCount > t.LeafCount {

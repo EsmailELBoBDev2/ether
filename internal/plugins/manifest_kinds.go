@@ -827,6 +827,27 @@ func (k MediaKindMeta) ChildLevels(parentKey string) []KindLevel {
 	return out
 }
 
+// PrimaryChildLevel returns the primary direct child level of parentKey.
+// For a branching container (more than one direct child level), it prefers
+// the first child level whose effective media class matches parentKey's own
+// effective media class, falling back to the first declared child level.
+func (k MediaKindMeta) PrimaryChildLevel(parentKey string, kindMedia core.MediaClass) (KindLevel, bool) {
+	children := k.ChildLevels(parentKey)
+	if len(children) == 0 {
+		return KindLevel{}, false
+	}
+	if len(children) == 1 {
+		return children[0], true
+	}
+	parentMedia := k.EffectiveLevelMedia(parentKey, kindMedia)
+	for _, lv := range children {
+		if k.EffectiveLevelMedia(lv.Key, kindMedia) == parentMedia {
+			return lv, true
+		}
+	}
+	return children[0], true
+}
+
 // HasChildLevels reports whether any declared level has key as its effective parent.
 func (k MediaKindMeta) HasChildLevels(key string) bool {
 	if key == "" {

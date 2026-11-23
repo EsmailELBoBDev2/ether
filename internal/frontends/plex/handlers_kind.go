@@ -511,6 +511,55 @@ func (s *Server) kindChildren(ctx context.Context, pr *Request, k frontend.Ratin
 	return page.Items, nil
 }
 
+// kindChildrenForParent lists one plugin container's children for Plex's
+// primary child listing (e.g. albums under an artist, seasons under a show).
+// For a branching container it requests the primary child level directly so
+// secondary branches (such as video concerts) are neither mixed nor counted
+// against the page budget.
+func (s *Server) kindChildrenForParent(ctx context.Context, pr *Request, parent *frontend.Title) ([]frontend.Title, error) {
+	q := frontend.ItemQuery{}
+	if parent != nil && parent.Type == frontend.TypeShow && parent.PrimaryChildLevel != "" {
+		q.Level = parent.PrimaryChildLevel
+	}
+	page, err := s.exp().Children(ctx, pr.User, plexDevice(pr), parent.Key, q)
+	if err != nil {
+		return nil, err
+	}
+	base, _ := s.kindSectionBaseForTitle(parent)
+	return filterKindChildren(parent, base, page.Items), nil
+}
+
+// filterKindChildren restricts a branching container's child list to its
+// primary child level (or omits video branches under a music artist when
+// PrimaryChildLevel was not populated).
+func filterKindChildren(parent *frontend.Title, base string, kids []frontend.Title) []frontend.Title {
+	if parent == nil || parent.Type != frontend.TypeShow || len(kids) == 0 {
+		return kids
+	}
+	if parent.PrimaryChildLevel != "" {
+		filtered := make([]frontend.Title, 0, len(kids))
+		for _, k := range kids {
+			if k.KindLevel == "" || k.KindLevel == parent.PrimaryChildLevel {
+				filtered = append(filtered, k)
+			}
+		}
+		return filtered
+	}
+	if base == plexBaseArtist {
+		// Video children under a music artist are surfaced via Plex Extras
+		// rather than mixed into the artist's album listing.
+		filtered := make([]frontend.Title, 0, len(kids))
+		for _, k := range kids {
+			if k.MediaClass == frontend.MediaClassVideo {
+				continue
+			}
+			filtered = append(filtered, k)
+		}
+		return filtered
+	}
+	return kids
+}
+
 // plexTypeFor is the Plex wire type of a title: the protocol-native base for a
 // plugin item in a music/photo section, the projected type otherwise. It is
 // the single mapping used by detail, children and listings.
@@ -611,18 +660,7 @@ func (s *Server) writeKindChildren(w http.ResponseWriter, r *http.Request, pr *R
 	mc.Thumb = s.thumbURL(parent)
 	mc.Art = s.artURL(parent)
 	base, _ := s.kindSectionBaseForTitle(parent)
-	if base == plexBaseArtist && parent.Type == frontend.TypeShow {
-		// Video children under a music artist are surfaced via Plex Extras
-		// rather than mixed into the artist's album listing.
-		filtered := make([]frontend.Title, 0, len(kids))
-		for _, k := range kids {
-			if k.MediaClass == frontend.MediaClassVideo {
-				continue
-			}
-			filtered = append(filtered, k)
-		}
-		kids = filtered
-	}
+	kids = filterKindChildren(parent, base, kids)
 	mc.ViewGroup = kindViewGroupForBase(base, parent.Type)
 	mc.ViewMode = viewModeList
 	lo, hi := pr.window(len(kids))

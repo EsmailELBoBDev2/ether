@@ -382,3 +382,206 @@ func TestChildrenRolePrecedenceMatchesDeclaredRoleThenRolelessKey(t *testing.T) 
 		t.Fatalf("?level=live-film = %+v, err=%v", byLevel.Items, err)
 	}
 }
+
+// TestBranchingContainerDirectChildCountHydrationAndTypedChildren proves:
+//   - container ChildCount reflects direct children (sum of ChildCounts) even
+//     when a plugin stores a larger leaf/track total in item.ChildCount, while
+//     LeafCount preserves the recursive leaf count;
+//   - list surfaces carry ChildCounts from the indexed per-level tally;
+//   - unhydrated branching containers commit the first page of every child
+//     branch before returning so childCounts is complete on first open;
+//   - typed recursive child queries (MusicAlbum / Video / Audio) return only
+//     the matching branch without mixing levels or dropping intermediate folders.
+func TestBranchingContainerDirectChildCountHydrationAndTypedChildren(t *testing.T) {
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	ctx := context.Background()
+
+	const pluginID = "community.example.music-w302"
+	h.rt.routes["/ether/v1/kinds/music/browse"] = func(req plugins.Request) (plugins.Response, error) {
+		var br core.KindBrowseRequest
+		_ = json.Unmarshal(req.Body, &br)
+		var items []core.KindItem
+		if br.ParentID == "art-stub" {
+			switch br.Level {
+			case "album":
+				items = []core.KindItem{{ID: "stub-alb-1", Level: "album", ParentID: "art-stub", Index: 1, Title: "Stub Album"}}
+			case "concert":
+				items = []core.KindItem{{ID: "stub-con-1", Level: "concert", ParentID: "art-stub", Index: 1, Title: "Stub Concert", Playable: true}}
+			}
+		}
+		b, _ := json.Marshal(core.KindPage{Items: items})
+		return plugins.Response{Status: http.StatusOK, Body: b}, nil
+	}
+
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Music W302",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Two-branch music fixture",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"contributes": map[string]any{
+				"mediaKinds": []any{map[string]any{
+					"key":   "music",
+					"label": "Music",
+					"media": "music",
+					"library": map[string]any{
+						"name": "Music",
+						"card": "square",
+						"tabs": []any{
+							map[string]any{"key": "recommended", "label": "Recommended", "kind": "recommended"},
+							map[string]any{"key": "library", "label": "Library", "kind": "library"},
+							map[string]any{"key": "artists", "label": "Artists", "kind": "library", "level": "artist"},
+						},
+					},
+					"levels": []any{
+						map[string]any{"key": "artist", "label": "Artist", "role": "artist", "container": true},
+						map[string]any{"key": "album", "label": "Album", "parent": "artist", "role": "album", "container": true},
+						map[string]any{"key": "track", "label": "Track", "parent": "album", "role": "track", "playable": true},
+						map[string]any{"key": "concert", "label": "Concert", "parent": "artist", "media": "video", "role": "concert", "playable": true},
+					},
+					"present": map[string]any{
+						"vela":         map[string]any{"type": "shows"},
+						"plex":         map[string]any{"base": "artist"},
+						"mediaBrowser": map[string]any{"collectionType": "music"},
+					},
+					"browse": map[string]any{"sorts": []string{"title"}},
+					"sync":   map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, nil)
+
+	lib := pluginLibraryOf(t, h, pluginID)
+	viewID := strconv.Itoa(int(lib.ID))
+
+	// Seed AC/DC with plugin-reported ChildCount=27 (leaf/track total), 5 albums x 5 tracks + 2 concerts (7 direct children, 27 leaves),
+	// The Who with plugin-reported ChildCount=71 and 3 albums, and an unhydrated stub artist.
+	items := []core.KindItem{
+		{ID: "art-acdc", Level: "artist", Title: "AC/DC", ChildCount: 27},
+		{ID: "art-who", Level: "artist", Title: "The Who", ChildCount: 71, LeafCount: 71},
+		{ID: "art-stub", Level: "artist", Title: "Stub Artist", ChildCount: 10},
+	}
+	for a := 1; a <= 5; a++ {
+		albID := "acdc-alb-" + strconv.Itoa(a)
+		items = append(items, core.KindItem{ID: albID, Level: "album", ParentID: "art-acdc", Index: a, Title: "AC/DC Album " + strconv.Itoa(a)})
+		for tr := 1; tr <= 5; tr++ {
+			items = append(items, core.KindItem{
+				ID:       albID + "-trk-" + strconv.Itoa(tr),
+				Level:    "track",
+				ParentID: albID,
+				Index:    tr,
+				Title:    "Track " + strconv.Itoa(tr),
+				Playable: true,
+			})
+		}
+	}
+	items = append(items,
+		core.KindItem{ID: "acdc-con-1", Level: "concert", ParentID: "art-acdc", Index: 1, Title: "Live at River Plate", Playable: true},
+		core.KindItem{ID: "acdc-con-2", Level: "concert", ParentID: "art-acdc", Index: 2, Title: "Live at Donington", Playable: true},
+	)
+	for a := 1; a <= 3; a++ {
+		items = append(items, core.KindItem{ID: "who-alb-" + strconv.Itoa(a), Level: "album", ParentID: "art-who", Index: a, Title: "Who Album " + strconv.Itoa(a)})
+	}
+	if _, err := h.items.KindUpsert(ctx, pluginID, "music", items); err != nil {
+		t.Fatal(err)
+	}
+
+	exp := h.experienceFor(t, "vela")
+
+	// 1. List surface projects direct ChildCount (7 / 3), preserves LeafCount (27 / 71),
+	//    sets PrimaryChildLevel="album", and populates ChildCounts from the indexed tally.
+	page, err := exp.LibraryItems(ctx, h.users[1], core.Device{}, viewID, frontend.ItemQuery{Sort: core.SortTitle, Limit: 20})
+	if err != nil || len(page.Items) != 3 {
+		t.Fatalf("LibraryItems = %+v, err=%v", page.Items, err)
+	}
+	byTitle := map[string]core.Title{}
+	for _, it := range page.Items {
+		byTitle[it.Title] = it
+	}
+	acdc := byTitle["AC/DC"]
+	wantACDC := map[string]int{"album": 5, "concert": 2}
+	if acdc.ChildCount != 7 || acdc.LeafCount != 27 || !maps.Equal(acdc.ChildCounts, wantACDC) || acdc.PrimaryChildLevel != "album" {
+		t.Fatalf("AC/DC list projection = ChildCount:%d LeafCount:%d ChildCounts:%v PrimaryChildLevel:%q, want 7 / 27 / %v / album",
+			acdc.ChildCount, acdc.LeafCount, acdc.ChildCounts, acdc.PrimaryChildLevel, wantACDC)
+	}
+	who := byTitle["The Who"]
+	wantWho := map[string]int{"album": 3}
+	if who.ChildCount != 3 || who.LeafCount != 71 || !maps.Equal(who.ChildCounts, wantWho) || who.PrimaryChildLevel != "album" {
+		t.Fatalf("The Who list projection = ChildCount:%d LeafCount:%d ChildCounts:%v PrimaryChildLevel:%q, want 3 / 71 / %v / album",
+			who.ChildCount, who.LeafCount, who.ChildCounts, who.PrimaryChildLevel, wantWho)
+	}
+
+	// 2. Detail projection matches list projection.
+	acdcDetail, err := exp.Item(ctx, frontend.ItemRequest{Viewer: h.users[1], Key: acdc.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acdcDetail.Title.ChildCount != 7 || acdcDetail.Title.LeafCount != 27 || !maps.Equal(acdcDetail.Title.ChildCounts, wantACDC) {
+		t.Fatalf("AC/DC detail = ChildCount:%d LeafCount:%d ChildCounts:%v", acdcDetail.Title.ChildCount, acdcDetail.Title.LeafCount, acdcDetail.Title.ChildCounts)
+	}
+
+	// 3. Unhydrated stub artist hydrates BOTH child branches (album + concert) before
+	//    Children returns so both branches immediately appear in ChildCounts on list and detail.
+	stub := byTitle["Stub Artist"]
+	if len(stub.ChildCounts) != 0 {
+		t.Fatalf("expected unhydrated stub to start with no ChildCounts, got %v", stub.ChildCounts)
+	}
+	stubAlbums, err := exp.Children(ctx, h.users[1], core.Device{}, stub.Key, frontend.ItemQuery{Level: "album", Limit: 10})
+	if err != nil || len(stubAlbums.Items) != 1 || stubAlbums.Items[0].Title != "Stub Album" {
+		t.Fatalf("stub Children(level=album) = %+v, err=%v", stubAlbums.Items, err)
+	}
+	stubRefreshed, err := exp.Item(ctx, frontend.ItemRequest{Viewer: h.users[1], Key: stub.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStubCounts := map[string]int{"album": 1, "concert": 1}
+	if stubRefreshed.Title.ChildCount != 2 || !maps.Equal(stubRefreshed.Title.ChildCounts, wantStubCounts) {
+		t.Fatalf("hydrated stub = ChildCount:%d ChildCounts:%v, want 2 / %v", stubRefreshed.Title.ChildCount, stubRefreshed.Title.ChildCounts, wantStubCounts)
+	}
+
+	// 4. Jellyfin-style typed recursive children queries do not mix branches or drop MusicAlbum folders.
+	mbExp := h.experienceFor(t, "jellyfin")
+	albumsRec, err := mbExp.Children(ctx, h.users[1], core.Device{}, acdc.Key, frontend.ItemQuery{
+		Recursive:     true,
+		UnservedTypes: []string{"musicalbum"},
+		Limit:         20,
+	})
+	if err != nil || len(albumsRec.Items) != 5 {
+		t.Fatalf("Children(MusicAlbum, Recursive=true) len=%d err=%v, want 5 albums", len(albumsRec.Items), err)
+	}
+	for _, it := range albumsRec.Items {
+		if it.MBItemType != "MusicAlbum" {
+			t.Fatalf("Children(MusicAlbum, Recursive=true) leaked %q (%q)", it.MBItemType, it.Title)
+		}
+	}
+	videosRec, err := mbExp.Children(ctx, h.users[1], core.Device{}, acdc.Key, frontend.ItemQuery{
+		Recursive:     true,
+		UnservedTypes: []string{"video"},
+		Limit:         20,
+	})
+	if err != nil || len(videosRec.Items) != 2 {
+		t.Fatalf("Children(Video, Recursive=true) len=%d err=%v, want 2 concerts", len(videosRec.Items), err)
+	}
+	for _, it := range videosRec.Items {
+		if it.MBItemType != "Video" {
+			t.Fatalf("Children(Video, Recursive=true) leaked %q (%q)", it.MBItemType, it.Title)
+		}
+	}
+	tracksRec, err := mbExp.Children(ctx, h.users[1], core.Device{}, acdc.Key, frontend.ItemQuery{
+		Recursive:     true,
+		UnservedTypes: []string{"audio"},
+		Limit:         50,
+	})
+	if err != nil || len(tracksRec.Items) != 25 {
+		t.Fatalf("Children(Audio, Recursive=true) len=%d err=%v, want 25 tracks", len(tracksRec.Items), err)
+	}
+	for _, it := range tracksRec.Items {
+		if it.MBItemType != "Audio" {
+			t.Fatalf("Children(Audio, Recursive=true) leaked %q (%q)", it.MBItemType, it.Title)
+		}
+	}
+}

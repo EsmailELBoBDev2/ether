@@ -342,7 +342,11 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		if m.ParentYear == 0 && t.ShowYear > 0 {
 			m.ParentYear = t.ShowYear
 		}
-		m.LeafCount = model.Ptr(t.ChildCount)
+		leafCount := t.LeafCount
+		if leafCount == 0 {
+			leafCount = t.ChildCount
+		}
+		m.LeafCount = model.Ptr(leafCount)
 		m.ViewedLeafCount = model.Ptr(0)
 		m.Year, m.OriginallyAvailableAt, m.TitleSort = 0, "", ""
 		m.ContentRating, m.AudienceRating, m.AudienceRatingImage = "", 0, ""
@@ -1842,7 +1846,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 		var all []frontend.Title
 		complete := true
 		for _, title := range ts {
-			if title.Type != frontend.TypeShow && title.Type != frontend.TypeSeason {
+			if title.Key.IsPluginKey() || (title.Type != frontend.TypeShow && title.Type != frontend.TypeSeason) {
 				continue
 			}
 			show := frontend.ShowKey(title.Key.TMDB())
@@ -1878,7 +1882,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 	// show's episodes, loaded once, rather than by loading every season.
 	together := map[frontend.RatingKey]int{}
 	for i := range ts {
-		if ts[i].Type == frontend.TypeSeason {
+		if !ts[i].Key.IsPluginKey() && ts[i].Type == frontend.TypeSeason {
 			together[frontend.ShowKey(ts[i].Key.TMDB())]++
 		}
 	}
@@ -1889,6 +1893,9 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 			continue
 		}
 		title := ts[sourceIndex]
+		if title.Key.IsPluginKey() {
+			continue
+		}
 		var eps []frontend.Title
 		var err error
 		switch title.Type {

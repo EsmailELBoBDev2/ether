@@ -609,6 +609,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		return nil, fmt.Errorf("pluginitems: reindex pending kinds: %w", err)
 	}
 	s.scheduleStaleArtistReindexes(ctx)
+	s.ensureParentTallies(ctx)
 	var maxGen int64
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation), 0) FROM plugin_sync_state`).Scan(&maxGen); err != nil {
 		bgCancel()

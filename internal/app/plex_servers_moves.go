@@ -106,7 +106,7 @@ type plexMoveResult struct {
 	// RemoveLater lists the servers that stop sharing with the viewer once
 	// they accept the new invite (the old share keeps working until then).
 	RemoveLater []string `json:"removeLater,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 
 // serverClient is the plex.tv client and owner token of a server.

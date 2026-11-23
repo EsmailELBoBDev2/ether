@@ -55,9 +55,9 @@ type plexExtras struct {
 	running map[string]*plexServerRuntime
 	// seats is each server's share count from its last friend sync ("" is
 	// the main server): accepted and pending shares, not Plex Home members.
-	seats    map[string]int
-	seatsAt  map[string]time.Time
-	starting bool
+	seats     map[string]int
+	seatsAt   map[string]time.Time
+	starting  bool
 	finishing bool
 	// sections is the library list the main server publishes; every extra
 	// server publishes the same libraries.

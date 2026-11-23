@@ -1,0 +1,15 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-30]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: test
+        shell: bash -o pipefail {0}
+        run: go test ./internal/frontends/mediabrowser/... ./internal/frontends/plex/... ./internal/frontends/silo/... ./internal/frontends/vela/... ./internal/frontends/stremio/... ./internal/frontends/xtream/... ./internal/frontend/kit/reading/... ./internal/sessions/... 2>&1 | grep -E '^(ok|FAIL|---|panic)' | head -80

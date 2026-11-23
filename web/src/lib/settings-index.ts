@@ -71,7 +71,7 @@ function rows(
 export function settingsIndex(): SettingHit[] {
   const general = t("General");
   const apps = t("Apps");
-  const serverAddress = `${apps} › ${t("Server address")}`;
+  const serverAddress = `${general} › ${t("Server address")}`;
   const quality = t("Quality");
   const playback = t("Playback");
   const cachePreloading = `${t("Cache")} › ${t("Preloading")}`;
@@ -172,8 +172,8 @@ export function settingsIndex(): SettingHit[] {
       ],
       "how-ether-reaches-the-internet",
     ),
-    // Apps › Overview (Server address & connection hub)
-    ...rows("/apps/overview", serverAddress, [
+    // General › Server address
+    ...rows("/server", serverAddress, [
       ["server-port", t("Main port")],
       ["local-address", t("Local")],
       ["remote-address", t("Remote")],
@@ -181,13 +181,13 @@ export function settingsIndex(): SettingHit[] {
     ]),
     ...fieldHits(
       (connectGroup?.more ?? []).filter((f) => f.key === "allowRemoteConsole"),
-      "/apps/overview",
+      "/server",
       serverAddress,
       undefined,
     ),
     ...fieldHits(
       (connectGroup?.more ?? []).filter((f) => f.key !== "allowRemoteConsole"),
-      "/apps/overview",
+      "/server",
       serverAddress,
       "connect",
     ),

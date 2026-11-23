@@ -37,7 +37,6 @@ import {
   DEDICATED_PORT_APPS,
   fetchEtherConfig,
   OverviewPortConflictChip,
-  ServerAddressPanel,
   type HubFrontendInfo,
 } from "./ConnectionHub";
 import { usableAddresses } from "./reachability";
@@ -1363,12 +1362,6 @@ export default function Apps() {
           <LoadingRows />
         ) : (
           <div className="space-y-6">
-            <ServerAddressPanel
-              frontends={apps}
-              configData={configState.data}
-              configError={configState.error}
-              onReloadConfig={() => configState.reload()}
-            />
             {plexOn &&
             isPlainObject(dashboard?.sections.remote) &&
             dashboard.sections.remote.claimed === false ? (

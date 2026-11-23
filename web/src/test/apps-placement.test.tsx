@@ -28,8 +28,8 @@ describe("Apps Plex placement", () => {
       expect(screen.queryByLabelText("Allow remote access")).not.toBeInTheDocument(),
     );
     expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Server address" })).toBeInTheDocument();
-    expect(document.querySelector('[data-setting="server-port"]')).toHaveTextContent("32400");
+    // Server address (with the read-only main port) moved to General.
+    expect(screen.queryByRole("heading", { name: "Server address" })).toBeNull();
     const plexRow = document.querySelector('[data-app-id="plex"]') as HTMLElement;
     expect(plexRow).not.toBeNull();
     expect(within(plexRow).getByRole("switch", { name: "Plex enabled" })).toBeChecked();

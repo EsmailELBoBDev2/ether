@@ -8,7 +8,9 @@ import { DomainPage, useRouteTab } from "../../components/layout";
 import { RestartButton } from "../../components/RestartDrawer";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t } from "../../i18n";
-import { api } from "../../lib/api";
+import { api, apiFetch } from "../../lib/api";
+import { useAsync } from "../../lib/hooks";
+import { ServerAddressPanel, type HubFrontendInfo } from "../apps/ConnectionHub";
 import type { UpdateStatus } from "../../lib/types";
 import Logs from "../Logs";
 import { BackupsAndImport } from "./Backups";
@@ -50,6 +52,7 @@ export function GeneralPage() {
           )}
         label={t("General")}
         before={() => <ServerStatus />}
+        afterGroup={(group) => (group.id === "identity" ? <GeneralServerAddress /> : null)}
         onSaved={() => void reloadBoot()}
       />
       <ConsolePortSection />
@@ -57,6 +60,12 @@ export function GeneralPage() {
       <RunSetupWizard />
     </DomainPage>
   );
+}
+
+/** Server address (main port, local/remote/Tailscale, remote console). */
+function GeneralServerAddress() {
+  const state = useAsync((signal) => apiFetch<HubFrontendInfo[]>("/frontends", { signal }), []);
+  return <ServerAddressPanel frontends={state.data ?? []} />;
 }
 
 function RunSetupWizard() {

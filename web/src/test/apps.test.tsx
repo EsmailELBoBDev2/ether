@@ -1,9 +1,13 @@
 import { ConfirmRoot } from "@braedonsaunders/appkit-ui";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Apps from "../pages/apps/Apps";
-import { classifyAppAddresses } from "../pages/apps/ConnectionHub";
+import {
+  classifyAppAddresses,
+  ServerAddressPanel,
+  type HubFrontendInfo,
+} from "../pages/apps/ConnectionHub";
 import { usableAddresses } from "../pages/apps/reachability";
 
 const apiFetch = vi.fn();
@@ -238,24 +242,11 @@ describe("Apps connection hub", () => {
     });
 
     renderApps("/apps");
-    expect(await screen.findByRole("heading", { name: "Server address" })).toBeInTheDocument();
-    expect(document.querySelector('[data-setting="server-port"]')).toHaveTextContent("32400");
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-    expect(screen.getAllByText("http://192.168.1.2:32400").length).toBeGreaterThan(0);
-    expect(screen.getByText("http://100.64.0.2:32400")).toBeInTheDocument();
-    expect(screen.getByText("https://203-0-113-7.abc.plex.direct:32400")).toBeInTheDocument();
-
-    const remoteSwitch = screen.getByRole("switch", {
-      name: "Open this console from outside your network",
-    });
-    expect(remoteSwitch).not.toBeChecked();
-    fireEvent.click(remoteSwitch);
     await waitFor(() =>
-      expect(apiFetch).toHaveBeenCalledWith("/config/server", {
-        method: "PUT",
-        body: JSON.stringify({ allowRemoteConsole: true }),
-      }),
+      expect(document.querySelectorAll("[data-app-id]").length).toBeGreaterThan(0),
     );
+    // Server address lives on General (Server › General), not Apps.
+    expect(screen.queryByRole("heading", { name: "Server address" })).toBeNull();
 
     const rows = Array.from(document.querySelectorAll("[data-app-id]"));
     expect(rows.map((el) => el.getAttribute("data-app-id"))).toEqual([
@@ -284,6 +275,31 @@ describe("Apps connection hub", () => {
     expect(within(embyRow).getByRole("link", { name: "Emby" })).toHaveAttribute(
       "href",
       "/apps/emby",
+    );
+    cleanup();
+    const frontends = (await apiFetch("/frontends")) as HubFrontendInfo[];
+    render(
+      <MemoryRouter>
+        <ServerAddressPanel frontends={frontends} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("heading", { name: "Server address" })).toBeInTheDocument();
+    expect(document.querySelector('[data-setting="server-port"]')).toHaveTextContent("32400");
+    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("http://192.168.1.2:32400").length).toBeGreaterThan(0);
+    expect(screen.getByText("http://100.64.0.2:32400")).toBeInTheDocument();
+    expect(screen.getByText("https://203-0-113-7.abc.plex.direct:32400")).toBeInTheDocument();
+
+    const remoteSwitch = screen.getByRole("switch", {
+      name: "Open this console from outside your network",
+    });
+    expect(remoteSwitch).not.toBeChecked();
+    fireEvent.click(remoteSwitch);
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith("/config/server", {
+        method: "PUT",
+        body: JSON.stringify({ allowRemoteConsole: true }),
+      }),
     );
   });
 

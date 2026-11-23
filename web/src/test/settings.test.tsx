@@ -78,11 +78,13 @@ describe("Settings", () => {
     );
   });
 
-  it("shows server listener power options on Apps Overview and secondary interface labels on app pages", async () => {
-    const overview = renderApp("/apps/overview");
+  it("shows server listener power options on General and secondary interface labels on app pages", async () => {
+    const overview = renderApp("/server");
     expect(await screen.findByRole("heading", { name: "Server address" }, WAIT)).toBeVisible();
     expect(screen.queryByLabelText("Listen address")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More options: Server address" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "More options: Server address" }, WAIT),
+    );
     expect(screen.getByLabelText("Listen address")).toBeInTheDocument();
     overview.unmount();
 

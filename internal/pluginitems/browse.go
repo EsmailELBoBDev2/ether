@@ -782,7 +782,7 @@ func (s *Service) libraryHasAtMostItems(ctx context.Context, itemWhere string, i
 	qArgs := append(append([]any(nil), itemArgs...), maxItems+1)
 	var n int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items i WHERE `+itemWhere+` LIMIT ?)`,
+		`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items i WHERE `+itemWhere+` LIMIT ?) s`,
 		qArgs...).Scan(&n); err != nil {
 		return false, err
 	}
@@ -1053,13 +1053,12 @@ func (s *Service) scanEnvelopeYearCounts(ctx context.Context, libraryID core.Lib
 	qArgs = append(qArgs, int64(libraryID), int64(libraryID))
 	qArgs = append(qArgs, itemArgs...)
 	return s.scanIntFacetCounts(ctx, `
-WITH RECURSIVE distinct_years(y) AS (
-	SELECT (SELECT i.year FROM plugin_items i WHERE i.library_id = ? AND i.year > 0 ORDER BY i.year DESC LIMIT 1)
+WITH RECURSIVE distinct_years(y, n) AS (
+	SELECT (SELECT i.year FROM plugin_items i WHERE i.library_id = ? AND i.year > 0 ORDER BY i.year DESC LIMIT 1), 1
 	UNION ALL
-	SELECT (SELECT i.year FROM plugin_items i WHERE i.library_id = ? AND i.year > 0 AND i.year < distinct_years.y ORDER BY i.year DESC LIMIT 1)
+	SELECT (SELECT i.year FROM plugin_items i WHERE i.library_id = ? AND i.year > 0 AND i.year < distinct_years.y ORDER BY i.year DESC LIMIT 1), distinct_years.n + 1
 	FROM distinct_years
-	WHERE distinct_years.y IS NOT NULL
-	LIMIT 300
+	WHERE distinct_years.y IS NOT NULL AND distinct_years.n < 300
 )
 SELECT y, (
 	SELECT COUNT(*) FROM (
@@ -1163,13 +1162,12 @@ func (s *Service) scanEnvelopeRatingCounts(ctx context.Context, libraryID core.L
 	qArgs = append(qArgs, int64(libraryID), int64(libraryID))
 	qArgs = append(qArgs, itemArgs...)
 	return s.scanFloatFacetCounts(ctx, `
-WITH RECURSIVE distinct_ratings(r) AS (
-	SELECT (SELECT i.rating FROM plugin_items i WHERE i.library_id = ? AND i.rating > 0 ORDER BY i.rating DESC LIMIT 1)
+WITH RECURSIVE distinct_ratings(r, n) AS (
+	SELECT (SELECT i.rating FROM plugin_items i WHERE i.library_id = ? AND i.rating > 0 ORDER BY i.rating DESC LIMIT 1), 1
 	UNION ALL
-	SELECT (SELECT i.rating FROM plugin_items i WHERE i.library_id = ? AND i.rating > 0 AND i.rating < distinct_ratings.r ORDER BY i.rating DESC LIMIT 1)
+	SELECT (SELECT i.rating FROM plugin_items i WHERE i.library_id = ? AND i.rating > 0 AND i.rating < distinct_ratings.r ORDER BY i.rating DESC LIMIT 1), distinct_ratings.n + 1
 	FROM distinct_ratings
-	WHERE distinct_ratings.r IS NOT NULL
-	LIMIT 200
+	WHERE distinct_ratings.r IS NOT NULL AND distinct_ratings.n < 200
 )
 SELECT r, (
 	SELECT COUNT(*) FROM (
@@ -1351,13 +1349,12 @@ func (s *Service) scanFieldIntCounts(ctx context.Context, fieldKey, itemWhere, f
 	qArgs = append(qArgs, fieldKey, fieldKey, fieldKey)
 	qArgs = append(qArgs, itemArgs...)
 	return s.scanIntFacetCounts(ctx, `
-WITH RECURSIVE distinct_ints(v) AS (
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) ORDER BY f.v_int ASC LIMIT 1)
+WITH RECURSIVE distinct_ints(v, n) AS (
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) ORDER BY f.v_int ASC LIMIT 1), 1
 	UNION ALL
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int > distinct_ints.v ORDER BY f.v_int ASC LIMIT 1)
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int > distinct_ints.v ORDER BY f.v_int ASC LIMIT 1), distinct_ints.n + 1
 	FROM distinct_ints
-	WHERE distinct_ints.v IS NOT NULL
-	LIMIT 400
+	WHERE distinct_ints.v IS NOT NULL AND distinct_ints.n < 400
 )
 SELECT v, (
 	SELECT COUNT(*) FROM (
@@ -1381,13 +1378,12 @@ func (s *Service) scanFieldFloatCounts(ctx context.Context, fieldKey, itemWhere,
 	qArgs = append(qArgs, fieldKey, fieldKey, fieldKey)
 	qArgs = append(qArgs, itemArgs...)
 	return s.scanFloatFacetCounts(ctx, `
-WITH RECURSIVE distinct_reals(v) AS (
-	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = '' ORDER BY f.v_real ASC LIMIT 1)
+WITH RECURSIVE distinct_reals(v, n) AS (
+	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = '' ORDER BY f.v_real ASC LIMIT 1), 1
 	UNION ALL
-	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = '' AND f.v_real > distinct_reals.v ORDER BY f.v_real ASC LIMIT 1)
+	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = '' AND f.v_real > distinct_reals.v ORDER BY f.v_real ASC LIMIT 1), distinct_reals.n + 1
 	FROM distinct_reals
-	WHERE distinct_reals.v IS NOT NULL
-	LIMIT 400
+	WHERE distinct_reals.v IS NOT NULL AND distinct_reals.n < 400
 )
 SELECT v, (
 	SELECT COUNT(*) FROM (
@@ -1408,13 +1404,12 @@ func (s *Service) scanFieldTextCountsLarge(ctx context.Context, fieldKey, fieldD
 	qArgs = append(qArgs, itemArgs...)
 	qArgs = append(qArgs, countCap)
 	rows, err := s.db.QueryContext(ctx, `
-WITH RECURSIVE distinct_vals(val) AS (
-	SELECT (SELECT f.v_text FROM plugin_item_fields f WHERE f.field = ? AND f.v_text > '' ORDER BY f.v_text ASC LIMIT 1)
+WITH RECURSIVE distinct_vals(val, n) AS (
+	SELECT (SELECT f.v_text FROM plugin_item_fields f WHERE f.field = ? AND f.v_text > '' ORDER BY f.v_text ASC LIMIT 1), 1
 	UNION ALL
-	SELECT (SELECT f.v_text FROM plugin_item_fields f WHERE f.field = ? AND f.v_text > distinct_vals.val ORDER BY f.v_text ASC LIMIT 1)
+	SELECT (SELECT f.v_text FROM plugin_item_fields f WHERE f.field = ? AND f.v_text > distinct_vals.val ORDER BY f.v_text ASC LIMIT 1), distinct_vals.n + 1
 	FROM distinct_vals
-	WHERE distinct_vals.val IS NOT NULL
-	LIMIT 400
+	WHERE distinct_vals.val IS NOT NULL AND distinct_vals.n < 400
 )
 SELECT val, (
 	SELECT COUNT(*) FROM (
@@ -1461,13 +1456,12 @@ func (s *Service) scanPeopleCandidatesLarge(ctx context.Context, fieldKey, field
 	qArgs = append(qArgs, itemArgs...)
 	qArgs = append(qArgs, countCap)
 	rows, err := s.db.QueryContext(ctx, `
-WITH RECURSIVE distinct_pids(pid) AS (
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1)
+WITH RECURSIVE distinct_pids(pid, n) AS (
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1), 1
 	UNION ALL
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int > distinct_pids.pid AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1)
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int > distinct_pids.pid AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1), distinct_pids.n + 1
 	FROM distinct_pids
-	WHERE distinct_pids.pid IS NOT NULL
-	LIMIT 400
+	WHERE distinct_pids.pid IS NOT NULL AND distinct_pids.n < 400
 )
 SELECT pid,
 	COALESCE((

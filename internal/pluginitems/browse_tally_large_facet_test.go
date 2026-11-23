@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func largeFacetTestDecl() plugins.MediaKindMeta {
@@ -296,15 +297,17 @@ func TestLargeFacetDrivesFromSortIndexAndMatchesFieldDrivenOrder(t *testing.T) {
 			`EXPLAIN QUERY PLAN SELECT i.item_ref FROM plugin_items i WHERE %s ORDER BY i.%s %s, i.item_ref ASC LIMIT ?`,
 			where, tc.col, tc.dir,
 		)
-		plan := explainPlanText(t, db, planSQL, args...)
-		if !strings.Contains(plan, tc.wantIndex) {
-			t.Errorf("sort=%q level=%q: expected index %s in plan:\n%s", tc.sort, tc.level, tc.wantIndex, plan)
-		}
-		if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
-			t.Errorf("sort=%q level=%q: unexpected TEMP B-TREE sort in plan:\n%s", tc.sort, tc.level, plan)
-		}
-		if !strings.Contains(plan, "COVERING INDEX") {
-			t.Errorf("sort=%q level=%q: expected covering PK probe on plugin_item_fields in plan:\n%s", tc.sort, tc.level, plan)
+		if store.DialectOf(db) == store.SQLite {
+			plan := explainPlanText(t, db, planSQL, args...)
+			if !strings.Contains(plan, tc.wantIndex) {
+				t.Errorf("sort=%q level=%q: expected index %s in plan:\n%s", tc.sort, tc.level, tc.wantIndex, plan)
+			}
+			if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Errorf("sort=%q level=%q: unexpected TEMP B-TREE sort in plan:\n%s", tc.sort, tc.level, plan)
+			}
+			if !strings.Contains(plan, "COVERING INDEX") {
+				t.Errorf("sort=%q level=%q: expected covering PK probe on plugin_item_fields in plan:\n%s", tc.sort, tc.level, plan)
+			}
 		}
 	}
 
@@ -501,7 +504,7 @@ WHERE library_id = ?`, int64(libID))
 
 	// Simulate partial reindex (chunk 1 only), concurrent upsert + delete, and
 	// restart from cursor="" (crash recovery) to verify zero tally drift.
-	n1, nextCursor, done1, wrote1, err := s.reindexKindOneChunkLocked(ctx, false, true, "test.works", "works", libID, decl2, "")
+	n1, nextCursor, done1, wrote1, err := s.reindexKindOneChunkLocked(ctx, store.DialectOf(db) == store.Postgres, true, "test.works", "works", libID, decl2, "")
 	if err != nil {
 		t.Fatalf("chunk 1: %v", err)
 	}
@@ -542,7 +545,7 @@ WHERE library_id = ?`, int64(libID))
 	assertTalliesMatchFields("after interleaved upsert+delete")
 
 	// Restart chunked reindex from scratch (simulating crash recovery).
-	if err := s.reindexKindChunked(ctx, false, "test.works", "works", libID, decl2); err != nil {
+	if err := s.reindexKindChunked(ctx, store.DialectOf(db) == store.Postgres, "test.works", "works", libID, decl2); err != nil {
 		t.Fatalf("reindexKindChunked: %v", err)
 	}
 	assertTalliesMatchFields("after full chunked reindex")
@@ -564,11 +567,11 @@ WHERE library_id = ?`, int64(libID))
 	}
 
 	// Re-running one chunk on an already-reindexed kind must perform zero writes.
-	_, _, _, wroteAgain, err := s.reindexKindOneChunkLocked(ctx, false, true, "test.works", "works", libID, decl2, "")
+	_, _, _, wroteAgain, err := s.reindexKindOneChunkLocked(ctx, store.DialectOf(db) == store.Postgres, true, "test.works", "works", libID, decl2, "")
 	if err != nil {
 		t.Fatalf("second pass chunk 1: %v", err)
 	}
-	if wroteAgain {
+	if store.DialectOf(db) == store.SQLite && wroteAgain {
 		t.Fatal("expected already-reindexed chunk to skip opening a write transaction (wrote=false)")
 	}
 }

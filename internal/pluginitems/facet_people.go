@@ -692,7 +692,7 @@ func (s *Service) resolveNewestByPredicateBuckets(ctx context.Context, fieldKey 
 		wArgs = append(wArgs, idx)
 		wArgs = append(wArgs, itemArgs...)
 		libraryfilter.AppendPluginFacetClauses(&w, &wArgs, map[string][]string{fieldKey: {b.ID}}, fieldTypes)
-		arms = append(arms, `SELECT * FROM (SELECT ? AS bucket_idx, i.item_ref FROM plugin_items i WHERE `+w.String()+` ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC LIMIT 1) sub`+fmt.Sprintf("%d", idx))
+		arms = append(arms, `SELECT * FROM (SELECT CAST(? AS INTEGER) AS bucket_idx, i.item_ref FROM plugin_items i WHERE `+w.String()+` ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC LIMIT 1) sub`+fmt.Sprintf("%d", idx))
 		args = append(args, wArgs...)
 	}
 	querySQL := `WITH winners AS (

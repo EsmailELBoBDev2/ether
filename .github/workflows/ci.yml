@@ -460,7 +460,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [store, cluster, clusterconfig, clusterbus, clusterplayback, state, livetv, app, artwork/service, auth, backup, debrid, experience, handles/capability, identity, migrate, playback, playbackcontinuity, placement, plexwatch, sessions]
+        package: [store, cluster, clusterconfig, clusterbus, clusterplayback, state, livetv, app, artwork/service, auth, backup, debrid, experience, handles/capability, identity, migrate, playback, playbackcontinuity, placement, plexwatch, pluginitems, sessions]
         include:
           # The node-local long-tail index on shared PostgreSQL: a node with no
           # index yet falls back without errors; each node builds its own.

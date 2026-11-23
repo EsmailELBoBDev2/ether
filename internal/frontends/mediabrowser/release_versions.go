@@ -357,10 +357,15 @@ func (i *instance) issueReleaseHandle(r *http.Request, scope frontend.VersionSco
 	return handle
 }
 
-// playbackTitle loads the title facts the variants service needs. It uses
-// StoredItem when available to avoid full detail enrichment on PlaybackInfo.
-func (i *instance) playbackTitle(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
-	if i.host.Experience == nil || key == 0 || v == nil {
+// authorizePlaybackItem verifies that key is visible to viewer on this surface
+// using the same single-lookup path as item detail (StoredItem when available,
+// avoiding full detail enrichment). When Experience is unset (minimal unit
+// hosts), it reports allowed so isolated handler tests keep their setup.
+func (i *instance) authorizePlaybackItem(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
+	if i.host.Experience == nil {
+		return frontend.Title{}, true
+	}
+	if key == 0 || v == nil {
 		return frontend.Title{}, false
 	}
 	req := frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}
@@ -376,10 +381,23 @@ func (i *instance) playbackTitle(r *http.Request, v *frontend.Viewer, key fronte
 	} else {
 		detail, err = i.host.Experience.Item(i.identityContext(r), req)
 	}
-	if err != nil || detail.Title.Title == "" {
+	if err != nil {
 		return frontend.Title{}, false
 	}
 	return detail.Title, true
+}
+
+// playbackTitle loads the title facts the variants service needs. It uses
+// StoredItem when available to avoid full detail enrichment on PlaybackInfo.
+func (i *instance) playbackTitle(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
+	if i.host.Experience == nil || key == 0 || v == nil {
+		return frontend.Title{}, false
+	}
+	title, ok := i.authorizePlaybackItem(r, v, key)
+	if !ok || title.Title == "" {
+		return frontend.Title{}, false
+	}
+	return title, true
 }
 
 // detailSources builds the MediaSources list for a single item page. With an

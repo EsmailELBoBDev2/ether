@@ -12,16 +12,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
-func (i *instance) isBookKey(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) bool {
-	if i == nil || i.host.Experience == nil || v == nil || key == 0 {
-		return false
-	}
-	d, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{
-		Viewer: v, Device: device(r), Key: key,
-	})
-	return err == nil && mbIsBookItem(d.Title)
-}
-
 func mbIsHLSContainer(container string) bool {
 	switch strings.ToLower(strings.TrimSpace(container)) {
 	case "fmp4", "mpegts", "ts", "mkv":
@@ -148,10 +138,6 @@ func buildUniversalAudioProfile(r *http.Request) (caps.DeviceProfile, string, ti
 func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, viewer *frontend.Viewer, access frontend.SessionAccess, key frontend.RatingKey, version, detailSource, expectedETag string) {
 	if i.host.Sessions == nil || i.host.Capabilities == nil {
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if key.IsPluginKey() && i.isBookKey(r, viewer, key) {
-		http.NotFound(w, r)
 		return
 	}
 	dev := access.Device

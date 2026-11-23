@@ -10,7 +10,10 @@ import (
 )
 
 // surfaceEditions exposes probed local copies and release variants.
-type surfaceEditions struct{ app *App }
+type surfaceEditions struct {
+	app     *App
+	surface string
+}
 
 func (s surfaceEditions) Editions(ctx context.Context, _ *core.Viewer, _ core.Device, key core.RatingKey) ([]frontend.Version, error) {
 	if s.app == nil {
@@ -90,6 +93,9 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 	}
 	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
 		vctx := ctx
+		if s.surface != "" {
+			vctx = core.WithLiveApp(vctx, s.surface)
+		}
 		if core.IndexerPurpose(vctx) == "" {
 			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
 		}
@@ -151,6 +157,9 @@ func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveReque
 			return nil, nil
 		}
 		vctx := ctx
+		if s.surface != "" {
+			vctx = core.WithLiveApp(vctx, s.surface)
+		}
 		if core.IndexerPurpose(vctx) == "" {
 			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
 		}

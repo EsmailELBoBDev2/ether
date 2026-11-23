@@ -132,6 +132,11 @@ func (a *App) sharedPluginArtworkItem(ctx context.Context, viewer *core.User, _ 
 	if piv.Library.Hidden || !a.pluginsRT.kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
 		return nil, nil, core.ErrNotFound
 	}
+	if app := core.LiveApp(ctx); app != "" {
+		if _, _, ok := presentLibraryForProtocol(piv.Library.Present, core.Protocol(app), a.pluginsRT.kindCatalog.RootMediaType(ctx, piv.Library)); !ok {
+			return nil, nil, core.ErrNotFound
+		}
+	}
 	if !experience.SectionAllowed(active, int(piv.Library.ID)) || !experience.TitleAllowed(a.safety, active, &piv.Title) {
 		return nil, nil, core.ErrNotFound
 	}

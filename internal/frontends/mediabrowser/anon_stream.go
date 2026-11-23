@@ -461,6 +461,10 @@ func (i *instance) serveAnonymousStream(w http.ResponseWriter, r *http.Request, 
 	}
 	i.anon.touch(peer, key, entry.seq)
 	viewer := entry.viewer
+	if _, ok := i.authorizePlaybackItem(r, &viewer, key); !ok {
+		http.NotFound(w, r)
+		return true
+	}
 	versionScope, err := i.versionScope(r, &viewer)
 	if err != nil {
 		return false

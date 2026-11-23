@@ -811,6 +811,11 @@ func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.Kin
 	if piv.Library.Hidden || !u.AllowsLibrary(piv.Library.ID) || !kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
 		return nil, core.ErrNotFound
 	}
+	if app := core.LiveApp(ctx); app != "" {
+		if _, _, ok := presentLibraryForProtocol(piv.Library.Present, core.Protocol(app), kindCatalog.RootMediaType(ctx, piv.Library)); !ok {
+			return nil, core.ErrNotFound
+		}
+	}
 	if u.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, u.MaxContentRating) {
 		return nil, core.ErrNotFound
 	}

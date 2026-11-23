@@ -105,6 +105,10 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
 			return
 		}
+		if errors.Is(err, frontend.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 		return
 	}

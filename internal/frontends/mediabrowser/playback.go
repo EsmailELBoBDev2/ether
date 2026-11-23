@@ -294,9 +294,18 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if channel == "" && key.IsPluginKey() && i.isBookKey(r, v, key) {
-		i.writeNoCompatibleStream(w)
-		return
+	var playbackItem frontend.Title
+	if channel == "" && key != 0 && key.Kind() != frontend.KindExtra {
+		var ok bool
+		playbackItem, ok = i.authorizePlaybackItem(r, v, key)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if key.IsPluginKey() && mbIsBookItem(playbackItem) {
+			i.writeNoCompatibleStream(w)
+			return
+		}
 	}
 	// Native clients commonly omit IsPlayback on POST when starting a stream.
 	// GET is informational by default and must not open a release.
@@ -430,12 +439,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// when the client did not pick a version and this is a single playable
 	// item, never a live channel or a plugin kind.
 	var variants []frontend.ReleaseVariant
-	titleLanguage, titleName := "", ""
-	if i.host.Editions != nil && !versionRequested && channel == "" && !key.IsPluginKey() {
-		if title, ok := i.playbackTitle(r, v, key); ok {
-			titleLanguage, titleName = title.Language, title.Title
-			variants = i.releaseVariants(r, scope, title)
-		}
+	titleLanguage, titleName := playbackItem.Language, playbackItem.Title
+	if i.host.Editions != nil && !versionRequested && channel == "" && !key.IsPluginKey() && playbackItem.Title != "" {
+		variants = i.releaseVariants(r, scope, playbackItem)
 	}
 	listVersions := len(variants) > 0
 	autoSwitchedRelease := ""
@@ -1554,6 +1560,17 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 		return
+	}
+	if channel == "" && key != 0 && key.Kind() != frontend.KindExtra {
+		item, ok := i.authorizePlaybackItem(r, viewer, key)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if name == "universal" && key.IsPluginKey() && mbIsBookItem(item) {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	vals := route.Query(r.URL.Query(), "PlaySessionId")
 	if len(vals) > 1 {

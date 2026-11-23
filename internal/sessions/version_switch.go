@@ -66,7 +66,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	}
 	var title *core.Title
 	if isPlugin {
-		if in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item); ierr == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item {
+		if in, ierr := b.deps.KindSource(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item); ierr == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item {
 			title = in.Title
 		} else {
 			return frontend.PlayPlan{}, core.ErrNotFound
@@ -102,7 +102,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	var chosen *core.ReleaseVariant
 	if isPlugin {
 		if b.deps.KindVersions != nil {
-			if variants, verr := b.deps.KindVersions(ctx, viewer, s.public.Item); verr == nil {
+			if variants, verr := b.deps.KindVersions(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item); verr == nil {
 				for j := range variants {
 					if variants[j].ID == targetSelector || variants[j].Release.ID == targetSelector {
 						chosen = &variants[j]
@@ -144,7 +144,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		} else {
 			previous, existed = kp.SessionForKind(viewer.ID, caps.ClientID, s.public.Item)
 		}
-		in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item)
+		in, ierr := b.deps.KindSource(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item)
 		if ierr != nil || in == nil {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}

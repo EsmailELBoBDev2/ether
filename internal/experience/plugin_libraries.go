@@ -1525,15 +1525,17 @@ func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query str
 }
 
 // unscopedPluginScore places a plugin library's relevance (1.0 for its
-// exact title, 0.90 a prefix, 0.60 a loose or cast match) on the
-// catalogue's scale for a search across every library. Plugin items carry
-// no catalogue standing, so the exact title of a book or song ranks just
-// below the films and series the viewer most likely meant: an exact or
-// franchise title, or the filmography of the person named ("tom hanks"
-// is Tom Hanks's films before books called Tom Hanks). It still outranks
+// exact title, 0.90 a prefix, 0.60 a loose or cast match, plus up to 0.08
+// of the plugin's own popularity) on the catalogue's scale for a search
+// across every library. Plugin items carry no catalogue standing, so the
+// films and series the viewer most likely meant come first: an exact or
+// franchise title, a person's filmography ("tom hanks" is Tom Hanks's films
+// before books called Tom Hanks), a title being typed, and a well-known
+// title holding the query's words in order ("breaking bad": El Camino
+// before songs called Breaking Bad). A plugin's exact title still outranks
 // loose catalogue matches.
 func unscopedPluginScore(score float64) float64 {
-	return min(score*0.92, PersonMatchScore-0.001)
+	return min(score, 1) * 0.82
 }
 
 // PluginOptInLibraries is an optional PluginLibraries capability: OptInLibrary

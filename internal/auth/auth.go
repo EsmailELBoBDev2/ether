@@ -1481,6 +1481,9 @@ func (s *Service) syncFriends(ctx context.Context, serverID string, friends []pl
 	s.membershipMu.Lock()
 	defer s.membershipMu.Unlock()
 	now := s.o.Now().Unix()
+	// Viewers with a local sign-in (Jellyfin, Emby, Silo, web) keep their
+	// account when Plex stops sharing with them: only their Plex access ends.
+	local := s.localSignIns(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1630,6 +1633,12 @@ RETURNING id`,
 		return err
 	}
 	for _, id := range gone {
+		if local[id] {
+			if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET plex_shared=0, updated_at=? WHERE id=?`, now, id); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET active=0, plex_shared=0, updated_at=? WHERE id=?`, now, id); err != nil {
 			return err
 		}

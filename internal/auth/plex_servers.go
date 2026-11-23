@@ -154,3 +154,67 @@ func (s *Service) ServerMembers(ctx context.Context) (map[string]int, error) {
 	}
 	return out, rows.Err()
 }
+
+// ServerMemberships lists, per viewer, the Plex servers that share with them
+// ("" is the main server), as the last friend syncs recorded.
+func (s *Service) ServerMemberships(ctx context.Context) (map[int64][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id, server_id FROM auth_server_members ORDER BY server_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]string{}
+	for rows.Next() {
+		var uid int64
+		var id string
+		if err := rows.Scan(&uid, &id); err != nil {
+			return nil, err
+		}
+		if id == mainServerMember {
+			id = ""
+		}
+		out[uid] = append(out[uid], id)
+	}
+	return out, rows.Err()
+}
+
+// MoveServerMember records at once that viewer uid moved from the servers
+// in from to the server to, so seat counts and tags follow a move before
+// the next friend sync (which then records what plex.tv reports).
+func (s *Service) MoveServerMember(ctx context.Context, uid int64, from []string, to string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range from {
+		if id == to {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_members WHERE server_id=? AND user_id=?`, memberServer(id), uid); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_server_members (server_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`, memberServer(to), uid); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// localSignIns is the set of viewers with a local username and password
+// (identity_links). Empty when the identity tables are not installed.
+func (s *Service) localSignIns(ctx context.Context) map[int64]bool {
+	out := map[int64]bool{}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT viewer_id FROM identity_links WHERE provider='local' AND password_hash<>''`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			out[id] = true
+		}
+	}
+	return out
+}

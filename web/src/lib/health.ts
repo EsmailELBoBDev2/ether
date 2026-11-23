@@ -1000,6 +1000,26 @@ export function plexServersHealth(v: unknown, now = new Date()): HealthItem | nu
       name: str(s.name) || str(s.id),
     }),
   );
+  const blocked = Array.isArray(v.blocked) ? v.blocked.map(str).filter(Boolean) : [];
+  if (blocked.length) {
+    return {
+      id: "plexservers",
+      label: t("Plex seats"),
+      href,
+      level: "error",
+      summary: t("plex.tv seems to have blocked {names}: move its viewers to another Plex server", {
+        names: blocked.join(", "),
+      }),
+      note:
+        v.room === true
+          ? t("Other Plex servers still have room. Open Plex servers and use Move viewers.")
+          : t(
+              "No Plex server has room left: add a Plex server with a different Plex account, or move viewers to local sign-in.",
+            ),
+      details: notes,
+      fill: total > 0 ? Math.min(1, used / total) : undefined,
+    };
+  }
   if (v.warning === true) {
     return {
       id: "plexservers",

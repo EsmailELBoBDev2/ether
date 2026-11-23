@@ -400,7 +400,12 @@ func (ps *plexExtras) checkCapacity(ctx context.Context) {
 	if !cfg.Plex.Claimed {
 		return
 	}
-	standby := standbyPlexOrder(cfg)
+	var standby []config.PlexExtraServer
+	for _, s := range standbyPlexOrder(cfg) {
+		if !s.Retired {
+			standby = append(standby, s)
+		}
+	}
 	if len(standby) == 0 || !ps.almostFull(ctx, cfg) {
 		return
 	}
@@ -428,11 +433,12 @@ func (ps *plexExtras) checkCapacity(ctx context.Context) {
 func (ps *plexExtras) almostFull(ctx context.Context, cfg config.Config) bool {
 	warn := cfg.PlexSeatWarning()
 	used := ps.seatsUsed(ctx)
-	if used[""] < warn {
+	// A blocked, retired or stopped server counts as full.
+	if used[""] < warn && ps.takesInvites(cfg, "") {
 		return false
 	}
 	for _, s := range activePlexOrder(cfg) {
-		if used[s.ID] < warn {
+		if used[s.ID] < warn && ps.takesInvites(cfg, s.ID) {
 			return false
 		}
 	}
@@ -442,25 +448,7 @@ func (ps *plexExtras) almostFull(ctx context.Context, cfg config.Config) bool {
 // pick is the server a new invite goes to: the first, oldest first, with a
 // free seat. "" is the main server.
 func (ps *plexExtras) pick(ctx context.Context) (string, error) {
-	cfg := ps.app.cfg.Get()
-	seats := cfg.PlexSeatsPerServer()
-	used := ps.seatsUsed(ctx)
-	if used[""] < seats {
-		return "", nil
-	}
-	for _, s := range activePlexOrder(cfg) {
-		if used[s.ID] < seats && ps.runtime(s.ID) != nil {
-			return s.ID, nil
-		}
-	}
-	// Full everywhere: start a standby server now rather than refuse.
-	if standby := standbyPlexOrder(cfg); len(standby) > 0 {
-		if err := ps.activate(ctx, standby[0].ID); err != nil {
-			return "", err
-		}
-		return standby[0].ID, nil
-	}
-	return "", errPlexServersFull
+	return ps.pickExcept(ctx, nil)
 }
 
 // share invites a viewer on the server pick chose.

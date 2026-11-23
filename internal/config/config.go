@@ -268,6 +268,9 @@ type Plex struct {
 	// next standby server starts, or the owner is warned. Default 90% of
 	// SeatsPerServer.
 	SeatWarning int `json:"seatWarning,omitempty"`
+	// MainRetired stops new invites on the main Plex server (a ban): new
+	// viewers go to the extra servers.
+	MainRetired bool `json:"mainRetired,omitempty"`
 }
 
 type Usenet struct {

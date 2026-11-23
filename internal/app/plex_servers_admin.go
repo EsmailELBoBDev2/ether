@@ -28,6 +28,9 @@ type plexServerView struct {
 	SeatsUsed     int    `json:"seatsUsed"`
 	AddedAt       int64  `json:"addedAt,omitempty"`
 	ActivatedAt   int64  `json:"activatedAt,omitempty"`
+	Retired       bool   `json:"retired,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	BlockedReason string `json:"blockedReason,omitempty"`
 }
 
 // plexServersView is the console's Plex servers panel and the dashboard
@@ -46,6 +49,10 @@ type plexServersView struct {
 	Warning bool `json:"warning"`
 	// Claimed: the main server is linked to plex.tv (extra servers need it).
 	Claimed bool `json:"claimed"`
+	// Blocked names the servers plex.tv seems to have blocked or banned.
+	Blocked []string `json:"blocked,omitempty"`
+	// Room: some server still takes new viewers.
+	Room bool `json:"room"`
 }
 
 // recentActivation is how long the console notes that a standby server
@@ -68,14 +75,22 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 		Claimed:        cfg.Plex.Claimed,
 	}
 	out.Servers = append(out.Servers, plexServerView{
-		ID: "", Main: true, Name: cfg.Server.FriendlyName, Account: cfg.Plex.OwnerUsername,
+		ID: "main", Main: true, Name: cfg.Server.FriendlyName, Account: cfg.Plex.OwnerUsername,
 		State: config.PlexServerActive, Running: cfg.Plex.Claimed, Claimed: cfg.Plex.Claimed, SeatsUsed: used[""],
+		Retired: cfg.Plex.MainRetired,
 	})
+	if h := ps.health(""); h.Blocked {
+		out.Servers[0].Blocked, out.Servers[0].BlockedReason = true, h.Reason
+	}
 	for _, s := range append(activePlexOrder(cfg), standbyPlexOrder(cfg)...) {
 		v := plexServerView{
 			ID: s.ID, Name: s.AdvertisedName(cfg), NameInherited: s.Name == "", Account: s.Account.Username,
 			State: s.State, Running: ps.runtime(s.ID) != nil, Claimed: s.Claimed, SeatsUsed: used[s.ID],
 			AddedAt: s.AddedAt, ActivatedAt: s.ActivatedAt,
+			Retired: s.Retired,
+		}
+		if h := ps.health(s.ID); h.Blocked {
+			v.Blocked, v.BlockedReason = true, h.Reason
 		}
 		if !s.Active() {
 			out.Standby++
@@ -83,6 +98,12 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 		out.Servers = append(out.Servers, v)
 	}
 	for _, v := range out.Servers {
+		if v.Blocked {
+			out.Blocked = append(out.Blocked, v.Name)
+		}
+		if v.State == config.PlexServerActive && v.Claimed && !v.Blocked && !v.Retired && v.SeatsUsed < out.SeatsPerServer {
+			out.Room = true
+		}
 		if v.State == config.PlexServerActive {
 			out.SeatsUsed += v.SeatsUsed
 			out.SeatsTotal += out.SeatsPerServer
@@ -157,4 +178,23 @@ func (p plexExtrasAdmin) Rename(id, name string) error { return p.app.plexExtras
 
 func (p plexExtrasAdmin) Remove(ctx context.Context, id string) error {
 	return p.app.plexExtras.remove(ctx, id)
+}
+
+func (p plexExtrasAdmin) Retire(id string, on bool) error {
+	if id == "main" {
+		id = ""
+	}
+	return p.app.plexExtras.setRetired(id, on)
+}
+
+func (p plexExtrasAdmin) Move(ctx context.Context, userIDs []int64, to string, removeOld bool) (any, error) {
+	return p.app.plexExtras.move(ctx, userIDs, to, removeOld)
+}
+
+func (p plexExtrasAdmin) Members(ctx context.Context) any {
+	return p.app.plexExtras.memberNames(ctx)
+}
+
+func (p plexExtrasAdmin) Invite(ctx context.Context, handle string, plexID int64) (any, error) {
+	return p.app.plexExtras.invite(ctx, handle, plexID)
 }

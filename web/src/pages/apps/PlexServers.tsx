@@ -13,6 +13,12 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { t, tx } from "../../i18n";
 import { ApiError, apiFetch, errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
+import {
+  PlexMoveResults,
+  loadPlexMembers,
+  movePlexViewers,
+  type PlexMoveResult,
+} from "./plex-moves";
 
 /** One Plex server as GET /plex/servers lists it. The main server has id "". */
 export type PlexServerRow = {
@@ -27,6 +33,9 @@ export type PlexServerRow = {
   seatsUsed: number;
   addedAt?: number;
   activatedAt?: number;
+  retired?: boolean;
+  blocked?: boolean;
+  blockedReason?: string;
 };
 
 export type PlexServersStatus = {
@@ -39,6 +48,8 @@ export type PlexServersStatus = {
   standby: number;
   warning: boolean;
   claimed: boolean;
+  blocked?: string[] | null;
+  room?: boolean;
 };
 
 type Pin = { id: string; code: string; authUrl: string };
@@ -51,6 +62,7 @@ function seatsLabel(row: PlexServerRow, seats: number) {
 }
 
 function rowState(row: PlexServerRow, warnAt: number) {
+  if (row.blocked) return "unreachable";
   if (row.state === "standby") return "pending";
   if (!row.running || !row.claimed) return "warning";
   return row.seatsUsed >= warnAt ? "warning" : "reachable";
@@ -64,6 +76,8 @@ function rowDetail(row: PlexServerRow, status: PlexServersStatus, now: number) {
       .join(" · ");
   }
   const parts = [account, seatsLabel(row, status.seatsPerServer)];
+  if (row.blocked) parts.push(row.blockedReason || t("plex.tv seems to have blocked this server."));
+  if (row.retired) parts.push(t("Not taking new viewers"));
   if (!row.main && row.activatedAt && now - row.activatedAt * 1000 < RECENT_MS) {
     parts.push(t("Started on its own because the other Plex servers were almost full."));
   }
@@ -78,6 +92,7 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
   const [notice, setNotice] = useState<{ tone: "info" | "warn"; text: string } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [seats, setSeats] = useState<{ per: string; warn: string } | null>(null);
+  const [moved, setMoved] = useState<PlexMoveResult[]>([]);
   const mounted = useRef(true);
   const pollRef = useRef<number | null>(null);
   const pinRun = useRef(0);
@@ -176,6 +191,46 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
     }
   }
 
+  async function moveAll(row: PlexServerRow) {
+    const ok = await confirmDialog({
+      title: t("Move viewers off {name}?", { name: row.name }),
+      message: t(
+        "Every viewer on {name} is invited on the next Plex server with room and taken off {name}. Each one has to accept the new invite; watch history and settings stay as they are.",
+        { name: row.name },
+      ),
+      confirmLabel: t("Move viewers"),
+    });
+    if (!ok) return;
+    setBusy("move:" + row.id);
+    setNotice(null);
+    setMoved([]);
+    try {
+      const members = await loadPlexMembers();
+      const ids = Object.entries(members)
+        .filter(([, servers]) => servers.some((s) => s.id === row.id))
+        .map(([id]) => Number(id));
+      if (!ids.length) {
+        setNotice({ tone: "info", text: t("No viewers are recorded on this server yet.") });
+        return;
+      }
+      // Stop new invites there first so "auto" never picks it again.
+      if (!row.retired) {
+        await apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/retire`, {
+          method: "POST",
+          body: JSON.stringify({ retired: true }),
+        });
+      }
+      const results = await movePlexViewers(ids, "auto", true);
+      if (!mounted.current) return;
+      setMoved(results);
+      await refresh();
+    } catch (error) {
+      if (mounted.current) setNotice({ tone: "warn", text: errorMessage(error) });
+    } finally {
+      if (mounted.current) setBusy("");
+    }
+  }
+
   async function remove(row: PlexServerRow) {
     const ok = await confirmDialog({
       title: t("Remove Plex server"),
@@ -251,6 +306,21 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
           "plex.tv lets one account share with about 100 people. Each extra Plex server is claimed by a different Plex account and adds its own seats. They all run on this port and show the same libraries and watch history.",
         )}
       >
+        {data.blocked?.length ? (
+          <StatusRow
+            state="unreachable"
+            title={t("plex.tv seems to have blocked {names}", { names: data.blocked.join(", ") })}
+            description={
+              data.room
+                ? t(
+                    "Press Move viewers on that server: its viewers are invited on the next server with room and keep their watch history.",
+                  )
+                : t(
+                    "No other Plex server has room. Add a Plex server with a different Plex account, or give viewers a local sign-in for Jellyfin, Emby and Silo (Viewers, select, Bulk actions).",
+                  )
+            }
+          />
+        ) : null}
         {data.warning ? (
           <StatusRow
             state="warning"
@@ -280,50 +350,84 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
             }
             description={rowDetail(row, data, now)}
             control={
-              row.main ? null : (
-                <div className="flex flex-wrap gap-2">
-                  {row.state === "standby" ? (
+              <div className="flex flex-wrap gap-2">
+                {row.state === "active" ? (
+                  <>
                     <Button
+                      variant={row.blocked ? undefined : "outline"}
+                      size="sm"
+                      disabled={busy !== "" || row.seatsUsed === 0}
+                      onClick={() => void moveAll(row)}
+                    >
+                      {busy === "move:" + row.id ? <Spinner size={13} label={t("Moving")} /> : null}
+                      {t("Move viewers")}
+                    </Button>
+                    <Button
+                      variant="outline"
                       size="sm"
                       disabled={busy !== ""}
                       onClick={() =>
                         void act(
                           row.id,
                           () =>
-                            apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/start`, {
+                            apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/retire`, {
                               method: "POST",
+                              body: JSON.stringify({ retired: !row.retired }),
                             }),
-                          t("Plex server started"),
+                          row.retired ? t("Taking new viewers again") : t("No new viewers go here"),
                         )
                       }
                     >
-                      {busy === row.id ? <Spinner size={13} label={t("Starting")} /> : null}
-                      {t("Start now")}
+                      {row.retired ? t("Take new viewers") : t("Stop new viewers")}
                     </Button>
-                  ) : null}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy !== ""}
-                    onClick={() =>
-                      setRenaming({ id: row.id, name: row.nameInherited ? "" : row.name })
-                    }
-                  >
-                    {t("Rename")}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy !== ""}
-                    onClick={() => void remove(row)}
-                  >
-                    {t("Remove")}
-                  </Button>
-                </div>
-              )
+                  </>
+                ) : null}
+                {row.main ? null : (
+                  <div className="flex flex-wrap gap-2">
+                    {row.state === "standby" ? (
+                      <Button
+                        size="sm"
+                        disabled={busy !== ""}
+                        onClick={() =>
+                          void act(
+                            row.id,
+                            () =>
+                              apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/start`, {
+                                method: "POST",
+                              }),
+                            t("Plex server started"),
+                          )
+                        }
+                      >
+                        {busy === row.id ? <Spinner size={13} label={t("Starting")} /> : null}
+                        {t("Start now")}
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy !== ""}
+                      onClick={() =>
+                        setRenaming({ id: row.id, name: row.nameInherited ? "" : row.name })
+                      }
+                    >
+                      {t("Rename")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy !== ""}
+                      onClick={() => void remove(row)}
+                    >
+                      {t("Remove")}
+                    </Button>
+                  </div>
+                )}
+              </div>
             }
           />
         ))}
+        <PlexMoveResults results={moved} />
         {renaming ? (
           <SettingsRow
             title={t("Name")}

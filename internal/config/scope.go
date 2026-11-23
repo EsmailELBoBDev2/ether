@@ -106,6 +106,7 @@ var mixedSections = map[string]map[string]Scope{
 		"certHash":                   Shared,
 		"seatsPerServer":             Shared,
 		"seatWarning":                Shared,
+		"mainRetired":                Shared,
 		"secureConnections":          Shared,
 		"usePlexMetadata":            Shared,
 		"delivery":                   Shared,

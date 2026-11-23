@@ -51,6 +51,9 @@ type PlexExtraServer struct {
 	CertHash      string `json:"certHash,omitempty"`
 	AddedAt       int64  `json:"addedAt,omitempty"`
 	ActivatedAt   int64  `json:"activatedAt,omitempty"`
+	// Retired: the owner stopped new invites here (a ban, or emptying it);
+	// the server keeps running for the viewers still on it.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // Active reports whether the server is started (claimed and published).

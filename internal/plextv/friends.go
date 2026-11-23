@@ -858,6 +858,16 @@ func resolveCommunityFriendHandle(friends []CommunityFriend, name string) string
 // If the share already exists, it updates it so allLibraries remains granted.
 // It falls back to v1 XML if v2 is unavailable.
 func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail string, userID int64, sectionIDs []int64) error {
+	_, err := c.ShareServerInvite(ctx, ownerToken, usernameOrEmail, userID, sectionIDs)
+	return err
+}
+
+// ShareServerInvite is ShareServer that also returns the invite link plex.tv
+// answered a new share with, when its reply carries one ("" otherwise). The
+// link is the one Plex Web shows at the end of its share flow; plex.tv does
+// not document it, so it is read from any URL in the reply that names an
+// invite.
+func (c *Client) ShareServerInvite(ctx context.Context, ownerToken, usernameOrEmail string, userID int64, sectionIDs []int64) (string, error) {
 	usernameOrEmail = strings.TrimSpace(usernameOrEmail)
 	if userID <= 0 && usernameOrEmail != "" {
 		if parsedID, err := strconv.ParseInt(usernameOrEmail, 10, 64); err == nil && parsedID > 0 {
@@ -865,10 +875,10 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 		}
 	}
 	if usernameOrEmail == "" && userID <= 0 {
-		return errors.New("plextv: username, email or user ID required")
+		return "", errors.New("plextv: username, email or user ID required")
 	}
 	if c.id.ClientIdentifier == "" {
-		return errors.New("plextv: client identifier required")
+		return "", errors.New("plextv: client identifier required")
 	}
 	if userID <= 0 && usernameOrEmail != "" {
 		resolvedID, resolvedHandle := c.resolveFriendByName(ctx, ownerToken, usernameOrEmail)
@@ -879,7 +889,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 			usernameOrEmail = resolvedHandle
 		}
 		if userID <= 0 && strings.Contains(usernameOrEmail, " ") {
-			return fmt.Errorf("plextv: %q contains spaces and could not be matched to a Plex friend; enter their Plex username or email instead", usernameOrEmail)
+			return "", fmt.Errorf("plextv: %q contains spaces and could not be matched to a Plex friend; enter their Plex username or email instead", usernameOrEmail)
 		}
 	}
 
@@ -911,10 +921,10 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 
 	bodyV2, err := json.Marshal(payloadV2)
 	if err != nil {
-		return fmt.Errorf("plextv: marshal share payload: %w", err)
+		return "", fmt.Errorf("plextv: marshal share payload: %w", err)
 	}
 
-	_, postV2Err := c.do(ctx, request{
+	respV2, postV2Err := c.do(ctx, request{
 		method:      http.MethodPost,
 		path:        "/api/v2/shared_servers",
 		token:       ownerToken,
@@ -923,10 +933,10 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 		accept:      "application/json",
 	})
 	if postV2Err == nil {
-		return nil
+		return inviteLink(respV2.body), nil
 	}
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return "", ctx.Err()
 	}
 
 	// If v2 reported already sharing (422 / 400), check existing share via v2.
@@ -973,7 +983,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 				accept:      "application/json",
 			})
 			if postUpdateErr == nil {
-				return nil
+				return "", nil
 			}
 		}
 	}
@@ -1006,7 +1016,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 	}
 	bodyV1, err := json.Marshal(payloadV1)
 	if err != nil {
-		return fmt.Errorf("plextv: marshal v1 share payload: %w", err)
+		return "", fmt.Errorf("plextv: marshal v1 share payload: %w", err)
 	}
 
 	_, postV1Err := c.do(ctx, request{
@@ -1018,13 +1028,13 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 		accept:      "application/json, application/xml",
 	})
 	if postV1Err == nil {
-		return nil
+		return "", nil
 	}
 
 	// v1 PUT fallback
 	shares, listErr := c.listRawShares(ctx, ownerToken)
 	if listErr != nil {
-		return postV2Err
+		return "", postV2Err
 	}
 	var v1ShareID int64
 	for _, s := range shares {
@@ -1042,7 +1052,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 		}
 	}
 	if v1ShareID == 0 {
-		return postV2Err
+		return "", postV2Err
 	}
 
 	_, putV1Err := c.do(ctx, request{
@@ -1054,9 +1064,9 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 		accept:      "application/json, application/xml",
 	})
 	if putV1Err != nil {
-		return fmt.Errorf("plextv: update share %d: %w", v1ShareID, putV1Err)
+		return "", fmt.Errorf("plextv: update share %d: %w", v1ShareID, putV1Err)
 	}
-	return nil
+	return "", nil
 }
 
 // SharedUser is an entry of the owner's friends/home list (v2 server users).

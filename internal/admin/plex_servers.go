@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 )
 
 // PlexExtras manages extra Plex servers: each is claimed by a different
@@ -23,6 +24,16 @@ type PlexExtras interface {
 	Rename(id, name string) error
 	// Remove signs a server out of plex.tv and forgets it.
 	Remove(ctx context.Context, id string) error
+	// Retire stops (or resumes) new invites on a server ("main" is the main
+	// server), for a ban or to empty it.
+	Retire(id string, retired bool) error
+	// Move shares viewers on another server (to "auto", "main" or an id) and,
+	// when removeOld, takes them off the servers they were on.
+	Move(ctx context.Context, userIDs []int64, to string, removeOld bool) (any, error)
+	// Members maps viewer ids to the Plex servers that share with them.
+	Members(ctx context.Context) any
+	// Invite shares the first server with room with a Plex user.
+	Invite(ctx context.Context, handle string, plexID int64) (any, error)
 }
 
 // ErrPlexAccountInUse marks a sign-in with an account that already owns one
@@ -124,4 +135,94 @@ func (h *Handler) handlePlexExtraRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, ps.Status(r.Context()))
+}
+
+func (h *Handler) handlePlexExtraRetire(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
+	if !ok {
+		return
+	}
+	var body struct {
+		Retired bool `json:"retired"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	if err := ps.Retire(r.PathValue("id"), body.Retired); err != nil {
+		writeError(w, http.StatusBadRequest, "plex_server_retire_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ps.Status(r.Context()))
+}
+
+func (h *Handler) handlePlexExtraMove(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
+	if !ok {
+		return
+	}
+	var body struct {
+		UserIDs   []int64 `json:"userIds"`
+		To        string  `json:"to"`
+		RemoveOld bool    `json:"removeOld"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	if len(body.UserIDs) == 0 || len(body.UserIDs) > 1000 {
+		writeError(w, http.StatusBadRequest, "invalid", "pick between 1 and 1000 viewers")
+		return
+	}
+	if body.To == "" {
+		body.To = "auto"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	results, err := ps.Move(ctx, body.UserIDs, body.To, body.RemoveOld)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "plex_move_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (h *Handler) handlePlexExtraMembers(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, ps.Members(r.Context()))
+}
+
+func (h *Handler) handlePlexExtraInvite(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
+	if !ok {
+		return
+	}
+	var body struct {
+		PlexID   int64  `json:"plexId"`
+		Username string `json:"username"`
+		Email    string `json:"email"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	handle := body.Username
+	if handle == "" {
+		handle = body.Email
+	}
+	if handle == "" && body.PlexID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid", "a Plex username, email or id is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*h.deps.TestTimeout)
+	defer cancel()
+	res, err := ps.Invite(ctx, handle, body.PlexID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "plex_invite_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

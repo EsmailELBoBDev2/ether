@@ -224,33 +224,47 @@ function PartRows({
           </ul>
         );
       return (
-        <ul className="divide-y divide-border">
-          {lists.map((d) => {
-            const [name, type] = textOf(d.label)
-              .split("·")
-              .map((s) => s.trim());
-            const used = usage[d.id] ?? 0;
-            return (
-              <Row
-                key={d.id}
-                title={name ?? textOf(d.label)}
-                badge={type ? <Badge variant="secondary">{typeLabel(type)}</Badge> : null}
-                detail={
-                  used
-                    ? tn(used, "Used by {count} collection", "Used by {count} collections")
-                    : t("Not used yet")
-                }
-                action={
-                  <RowLink
-                    to={pluginCollectionHref(d.id, textOf(d.label))}
-                    label={t("Make a collection")}
-                    onClose={onClose}
-                  />
-                }
+        <div className="space-y-2">
+          {detail.stremioOnly ? (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-bg-subtle/60 px-3 py-2">
+              <span className="text-xs text-fg-muted">
+                {t("Import multiple catalogues into a folder and follow manifest changes.")}
+              </span>
+              <RowLink
+                to={`/collections?importAddon=${encodeURIComponent(detail.id)}`}
+                label={t("Import catalogues…")}
+                onClose={onClose}
               />
-            );
-          })}
-        </ul>
+            </div>
+          ) : null}
+          <ul className="divide-y divide-border">
+            {lists.map((d) => {
+              const [name, type] = textOf(d.label)
+                .split("·")
+                .map((s) => s.trim());
+              const used = usage[d.id] ?? 0;
+              return (
+                <Row
+                  key={d.id}
+                  title={name ?? textOf(d.label)}
+                  badge={type ? <Badge variant="secondary">{typeLabel(type)}</Badge> : null}
+                  detail={
+                    used
+                      ? tn(used, "Used by {count} collection", "Used by {count} collections")
+                      : t("Not used yet")
+                  }
+                  action={
+                    <RowLink
+                      to={pluginCollectionHref(d.id, textOf(d.label))}
+                      label={t("Make a collection")}
+                      onClose={onClose}
+                    />
+                  }
+                />
+              );
+            })}
+          </ul>
+        </div>
       );
     }
     case "livetv_channels":

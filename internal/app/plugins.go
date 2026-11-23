@@ -41,18 +41,19 @@ import (
 
 // pluginRuntime is the plugin host and its adapters.
 type pluginRuntime struct {
-	mgr           *plugins.Manager
-	cat           *catalogue.Service
-	studio        *studio.Studio
-	tunnel        *remote.TunnelServer
-	pairing       *remote.Pairing
-	pluginHost    http.Handler
-	subtitleProbe *adapters.SubtitleProbe
-	pluginitems   *pluginitems.Service
-	blobcache     *blobcache.Cache
-	kindCatalog   *adapters.KindCatalog
-	kindResolver  *adapters.KindResolver
-	screens       *screens.Service
+	mgr            *plugins.Manager
+	cat            *catalogue.Service
+	studio         *studio.Studio
+	tunnel         *remote.TunnelServer
+	pairing        *remote.Pairing
+	pluginHost     http.Handler
+	subtitleProbe  *adapters.SubtitleProbe
+	catalogImports *adapters.CatalogImporter
+	pluginitems    *pluginitems.Service
+	blobcache      *blobcache.Cache
+	kindCatalog    *adapters.KindCatalog
+	kindResolver   *adapters.KindResolver
+	screens        *screens.Service
 	// adapterCtrl keeps plugin-provided frontend adapters registered with
 	// the frontend registry; adapterTickets mints the scoped stream tickets
 	// adapter responses embed.
@@ -391,6 +392,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	}
 	a.closers = append(a.closers, func() { _ = tunnel.Close() })
 	adapters.Attach(mgr, a.collections, a.personalize, a.livetv)
+	catalogImports := adapters.AttachCatalogImporter(a.db, mgr, a.collections, a.log.With("component", "addon-imports"))
 	adapters.AttachSubtitles(mgr, a.subtitles)
 	adapters.AttachMetadata(mgr, a.catalog)
 	adapters.AttachDebrid(mgr, a.debrid)
@@ -667,6 +669,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	})
 	return &pluginRuntime{
 		subtitleProbe:  subtitleProbe,
+		catalogImports: catalogImports,
 		mgr:            mgr,
 		cat:            cat,
 		studio:         studioSvc,

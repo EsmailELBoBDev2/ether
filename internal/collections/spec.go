@@ -123,6 +123,21 @@ func Normalize(s *core.CollectionSpec) {
 	s.MediaType = core.NormalizeRuleMediaType(s.MediaType)
 	s.Name = strings.TrimSpace(s.Name)
 	s.Description = strings.TrimSpace(s.Description)
+	s.Folder = strings.TrimSpace(s.Folder)
+	if s.SortOrder < 0 {
+		s.SortOrder = 0
+	}
+	if s.AddonSync != nil {
+		s.AddonSync.AddonID = strings.TrimSpace(s.AddonSync.AddonID)
+		s.AddonSync.AddonName = strings.TrimSpace(s.AddonSync.AddonName)
+		s.AddonSync.CatalogType = strings.TrimSpace(s.AddonSync.CatalogType)
+		s.AddonSync.CatalogID = strings.TrimSpace(s.AddonSync.CatalogID)
+		s.AddonSync.CatalogKey = strings.TrimSpace(s.AddonSync.CatalogKey)
+		s.AddonSync.ManagedName = strings.TrimSpace(s.AddonSync.ManagedName)
+		if s.AddonSync.AddonID == "" || s.AddonSync.CatalogKey == "" {
+			s.AddonSync = nil
+		}
+	}
 	if s.MediaType == "" {
 		s.MediaType = MediaMovie
 	}
@@ -212,9 +227,9 @@ func NormalizeSchedule(sc *core.CollectionSchedule) *core.CollectionSchedule {
 }
 
 // Validate checks a normalized spec. It returns a *ValidationError.
-func Validate(s *core.CollectionSpec) error { return validateWith(defaultKinds, s) }
+func Validate(s *core.CollectionSpec) error { return validateWith(defaultKinds, s, nil) }
 
-func validateWith(reg *KindRegistry, s *core.CollectionSpec) error {
+func validateWith(reg *KindRegistry, s *core.CollectionSpec, allowMissing map[string]bool) error {
 	ve := &ValidationError{}
 	switch s.ReleaseMode {
 	case "", "released":
@@ -251,6 +266,9 @@ func validateWith(reg *KindRegistry, s *core.CollectionSpec) error {
 	if len(s.Description) > 2000 {
 		ve.add("description", "keep the description under 2000 characters")
 	}
+	if len(s.Folder) > 80 {
+		ve.add("folder", "keep the folder name under 80 characters")
+	}
 	switch s.MediaType {
 	case MediaMovie, MediaShow, MediaMixed:
 	default:
@@ -260,6 +278,9 @@ func validateWith(reg *KindRegistry, s *core.CollectionSpec) error {
 		ve.add("sources", "at most 25 sources")
 	}
 	for i, src := range s.Sources {
+		if allowMissing[src.Kind] {
+			continue
+		}
 		validateSourceIn(reg, ve, fmt.Sprintf("sources[%d]", i), src)
 	}
 	if s.Match != MatchAll && s.Match != MatchAny {

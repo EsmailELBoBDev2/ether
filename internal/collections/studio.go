@@ -97,6 +97,23 @@ func (s *Service) CreateSpec(ctx context.Context, sp core.CollectionSpec) (*core
 	return s.afterSave(ctx, row)
 }
 
+// CreateSpecDeferred validates and saves a new collection without starting an
+// immediate background build. Bulk imports use this so importing hundreds of
+// remote catalogues lets the scheduler build them in bounded batches instead
+// of launching a burst of concurrent upstream requests.
+func (s *Service) CreateSpecDeferred(ctx context.Context, sp core.CollectionSpec) (*core.CollectionSpec, error) {
+	Normalize(&sp)
+	if err := s.validate(&sp); err != nil {
+		return nil, err
+	}
+	row, err := s.insertRow(ctx, sp, 0)
+	if err != nil {
+		return nil, err
+	}
+	v := row.view()
+	return &v, nil
+}
+
 // UpdateSpec replaces a collection. Built-ins accept only enabled,
 // targets, artwork, rotate and limit.
 func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionSpec) (*core.CollectionSpec, error) {
@@ -108,7 +125,36 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 	if row.builtin {
 		sp = mergeBuiltin(row.spec, sp)
 	}
-	if err := s.validate(&sp); err != nil {
+	// If the owner swapped away from the synced add-on catalogue source,
+	// detach the add-on sync metadata automatically.
+	if sp.AddonSync != nil {
+		wantKind := "plugin:" + sp.AddonSync.AddonID + "/" + sp.AddonSync.CatalogKey
+		hasSyncedSource := false
+		for _, src := range sp.Sources {
+			if src.Kind == wantKind {
+				hasSyncedSource = true
+				break
+			}
+		}
+		if !hasSyncedSource {
+			sp.AddonSync = nil
+		}
+	}
+	// Allow unchanged removed add-on sources so owners can unpublish, rename
+	// or reorganize a collection whose catalogue disappeared from its add-on.
+	var allowMissing map[string]bool
+	if row.spec.AddonSync != nil && row.spec.AddonSync.Removed {
+		prevPlugins := map[string]bool{}
+		for _, src := range row.spec.Sources {
+			if strings.HasPrefix(src.Kind, "plugin:") {
+				prevPlugins[src.Kind] = true
+			}
+		}
+		if len(prevPlugins) > 0 {
+			allowMissing = prevPlugins
+		}
+	}
+	if err := s.validateWithExisting(&sp, allowMissing); err != nil {
 		return nil, err
 	}
 	keepBuild := row.buildHash != "" && !row.lastBuilt.IsZero() && membershipSpecEqual(row.spec, sp)
@@ -125,6 +171,45 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 		return &v, nil
 	}
 	return s.afterSave(ctx, row)
+}
+
+// UpdateSpecFromAddonSync applies a manifest-sync mutation to an existing
+// collection, preserving built members whenever membership inputs did not
+// change and optionally updating stored warnings (for example when a catalogue
+// is removed from or restored by its add-on).
+func (s *Service) UpdateSpecFromAddonSync(ctx context.Context, id string, mutate func(sp *core.CollectionSpec, prevWarnings []string) (warnings []string, setWarnings bool)) (*core.CollectionSpec, error) {
+	row, err := s.rowByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if row.builtin {
+		return nil, core.ErrNotFound
+	}
+	sp := cloneSpec(row.spec)
+	warnings, setWarnings := mutate(&sp, append([]string(nil), row.warnings...))
+	Normalize(&sp)
+	allowMissing := map[string]bool{}
+	if sp.AddonSync != nil && sp.AddonSync.Removed {
+		for _, src := range sp.Sources {
+			if strings.HasPrefix(src.Kind, "plugin:") {
+				allowMissing[src.Kind] = true
+			}
+		}
+	}
+	if err := s.validateWithExisting(&sp, allowMissing); err != nil {
+		return nil, err
+	}
+	keepBuild := row.buildHash != "" && !row.lastBuilt.IsZero() && membershipSpecEqual(row.spec, sp)
+	if err := s.updateRowWarnings(ctx, row.id, sp, keepBuild, warnings, setWarnings); err != nil {
+		return nil, err
+	}
+	s.changed(row.id)
+	fresh, err := s.rowByID(ctx, idString(row.id))
+	if err != nil {
+		return nil, err
+	}
+	v := fresh.view()
+	return &v, nil
 }
 
 // membershipSpecEqual reports whether two normalized specs evaluate to the same
@@ -170,10 +255,22 @@ func membershipSpecEqual(a, b core.CollectionSpec) bool {
 	return errA == nil && errB == nil && bytes.Equal(ja, jb)
 }
 
+func (s *Service) remoteBuildGate() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.remoteGate == nil {
+		s.remoteGate = make(chan struct{}, 2)
+	}
+	return s.remoteGate
+}
+
 func (s *Service) afterSave(ctx context.Context, row *specRow) (*core.CollectionSpec, error) {
 	if row.enabled {
 		if hasRemoteListSource(row.spec) {
+			gate := s.remoteBuildGate()
 			go func() {
+				gate <- struct{}{}
+				defer func() { <-gate }()
 				bctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				_, _ = s.build(bctx, row)

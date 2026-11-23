@@ -265,8 +265,14 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return out, nil
 		},
-		PluginLibraryRows:  a.pluginLibraryLayoutRows,
-		Collections:        a.collections,
+		PluginLibraryRows: a.pluginLibraryLayoutRows,
+		Collections:       a.collections,
+		AddonCatalogImports: func() admin.AddonCatalogImporter {
+			if a.pluginsRT == nil || a.pluginsRT.catalogImports == nil {
+				return nil
+			}
+			return a.pluginsRT.catalogImports
+		}(),
 		CatalogHelper:      a.collections,
 		ViewerCatalogRules: a.catalog,
 		TitleSchedules:     a.catalog,

@@ -1131,21 +1131,56 @@ export function createPluginsMock(): {
     ...cinema.manifest,
     catalogs: [
       { type: "movie", id: "popular", name: "Popular movies" },
+      { type: "series", id: "popular", name: "Popular series" },
       { type: "movie", id: "classics", name: "Classic movies" },
     ],
     resources: ["catalog"],
   };
-  for (const detail of [books, cinema])
-    fixtures.push({
-      detail,
-      settings: {},
-      schema: {},
-      descriptors: [],
-      journal: [],
-      shadowJournal: [],
-      logs: [],
-      calls: [],
-    });
+  fixtures.push({
+    detail: books,
+    settings: {},
+    schema: {},
+    descriptors: [],
+    journal: [],
+    shadowJournal: [],
+    logs: [],
+    calls: [],
+  });
+  fixtures.push({
+    detail: cinema,
+    settings: {},
+    schema: {},
+    descriptors: [
+      {
+        kind: "collectionSource",
+        id: "plugin:cinemeta/movie/popular",
+        owner: "cinemeta",
+        group: "Cinemeta",
+        label: { resolved: "Popular movies · movie" },
+        meta: { editor: "plugin", catalog: "movie/popular" },
+      },
+      {
+        kind: "collectionSource",
+        id: "plugin:cinemeta/series/popular",
+        owner: "cinemeta",
+        group: "Cinemeta",
+        label: { resolved: "Popular series · series" },
+        meta: { editor: "plugin", catalog: "series/popular" },
+      },
+      {
+        kind: "collectionSource",
+        id: "plugin:cinemeta/movie/classics",
+        owner: "cinemeta",
+        group: "Cinemeta",
+        label: { resolved: "Classic movies · movie" },
+        meta: { editor: "plugin", catalog: "movie/classics" },
+      },
+    ],
+    journal: [],
+    shadowJournal: [],
+    logs: [],
+    calls: [],
+  });
   const pairings = new Map<
     string,
     { id: string; created: number; lastUsed: number; expires: number }[]

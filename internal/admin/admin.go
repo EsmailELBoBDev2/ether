@@ -292,6 +292,8 @@ type Deps struct {
 
 	// Collections backs /api/collections* (Collection Studio).
 	Collections CollectionStudio
+	// AddonCatalogImports backs /api/collections/addon-imports*.
+	AddonCatalogImports AddonCatalogImporter
 	// CatalogHelper backs /api/catalog/*.
 	CatalogHelper CatalogHelper
 	// TitleSchedules backs the catalogue drawer's episode and release tabs;

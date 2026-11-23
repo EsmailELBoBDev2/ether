@@ -90,16 +90,18 @@ type Service struct {
 	traktCfg        func() config.Trakt
 	sealer          config.FieldSealer
 
-	liveTTL     time.Duration
-	tick        time.Duration
-	buildBudget time.Duration
+	liveTTL                time.Duration
+	tick                   time.Duration
+	buildBudget            time.Duration
+	maxPluginBuildsPerTick int
 
-	mu       sync.Mutex
-	airGate  chan struct{} // context-aware admission to serialized air-date refreshes
-	members  map[int64]*memberSet
-	failed   map[buildKey]time.Time
-	flights  flight.Group[buildKey, *memberSet]
-	personal map[string]personalEntry
+	mu         sync.Mutex
+	airGate    chan struct{} // context-aware admission to serialized air-date refreshes
+	remoteGate chan struct{} // bounds concurrent background remote-list builds
+	members    map[int64]*memberSet
+	failed     map[buildKey]time.Time
+	flights    flight.Group[buildKey, *memberSet]
+	personal   map[string]personalEntry
 
 	invalMu       sync.Mutex
 	inval         *clusterbus.Invalidator // nil on a standalone server
@@ -164,6 +166,12 @@ func WithTraktConfig(fn func() config.Trakt) Option { return func(s *Service) { 
 // WithUserAgent identifies Ether to list sites.
 func WithUserAgent(ua string) Option { return func(s *Service) { s.opts.userAgent = ua } }
 
+// WithMaxPluginBuildsPerTick overrides the per-add-on scheduled build budget
+// per RunDue tick (default 12). Useful in tests.
+func WithMaxPluginBuildsPerTick(n int) Option {
+	return func(s *Service) { s.maxPluginBuildsPerTick = n }
+}
+
 // New creates the collection engine and seeds the built-in discovery feeds.
 // It creates no owner collections; owners add them from templates.
 func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Service, error) {
@@ -177,8 +185,8 @@ func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Servi
 		log = slog.Default()
 	}
 	s := &Service{db: db, cat: cat, log: log, now: time.Now, kinds: NewKindRegistry(),
-		liveTTL: 2 * time.Minute, tick: time.Minute, buildBudget: 20 * time.Second,
-		members: map[int64]*memberSet{}, failed: map[buildKey]time.Time{}, personal: map[string]personalEntry{}, airGate: make(chan struct{}, 1),
+		liveTTL: 2 * time.Minute, tick: time.Minute, buildBudget: 20 * time.Second, maxPluginBuildsPerTick: defaultMaxPluginBuildsPerTick,
+		members: map[int64]*memberSet{}, failed: map[buildKey]time.Time{}, personal: map[string]personalEntry{}, airGate: make(chan struct{}, 1), remoteGate: make(chan struct{}, 2),
 		opts: options{indexTTL: 2 * time.Minute}}
 	for _, fn := range opts {
 		fn(s)

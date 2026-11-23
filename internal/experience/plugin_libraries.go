@@ -1435,51 +1435,82 @@ func (s *Service) filterLibraryFacets(ctx context.Context, viewer *core.Viewer, 
 	return vals, true, nil
 }
 
-func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query string, q frontend.ItemQuery, window int) ([]core.Title, error) {
-	if s.d.PluginLibraries == nil || strings.TrimSpace(query) == "" {
-		return nil, nil
+// pluginSearchConcurrency bounds the plugin libraries one search reads at
+// once.
+const pluginSearchConcurrency = 8
+
+// pluginSearchItems searches the viewer's published plugin libraries for an
+// unscoped search, every library at once. Libraries an app was opted into
+// (PluginOptInLibraries) and searches for a catalogue media class
+// (ItemQuery.CatalogueOnly) leave plugin items out; scoped library searches
+// go through readPluginLibraryItems instead. Scores are placed on the
+// catalogue's scale by unscopedPluginScore; best is the highest score
+// before that, on the plugin's own scale.
+func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query string, q frontend.ItemQuery, window int) (items []core.Title, best float64, err error) {
+	if s.d.PluginLibraries == nil || strings.TrimSpace(query) == "" || q.CatalogueOnly {
+		return nil, 0, nil
 	}
 	libs, err := s.d.PluginLibraries.Libraries(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	subQ := q
 	subQ.Filter.Query = ""
-	var out []core.Title
-	seen := make(map[core.RatingKey]bool)
+	var targets []core.Library
 	for _, lib := range libs {
-		if lib.Source != core.LibraryPlugin || !v.AllowsLibrary(lib.ID) {
+		if lib.Source != core.LibraryPlugin || !v.AllowsLibrary(lib.ID) || s.optInLibrary(ctx, lib) {
 			continue
 		}
 		if _, _, ok := s.publishedLibrary(ctx, lib); !ok {
 			continue
 		}
-		hits, err := s.d.PluginLibraries.Search(ctx, lib, query, subQ, window)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil, err
+		targets = append(targets, lib)
+	}
+	hits := make([][]core.Title, len(targets)+1)
+	errs := make([]error, len(targets)+1)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, pluginSearchConcurrency)
+	for i, lib := range targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			found, err := s.d.PluginLibraries.Search(ctx, lib, query, subQ, window)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					errs[i] = err
+				}
+				return
 			}
-			continue
+			hits[i], errs[i] = s.filterPluginTitles(ctx, v, found, subQ)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, peopleTitles, err := s.searchPluginPeopleForUser(ctx, v, query, subQ, 20)
+		if err != nil && errors.Is(err, context.Canceled) {
+			errs[len(targets)] = err
 		}
-		filtered, err := s.filterPluginTitles(ctx, v, hits, subQ)
+		hits[len(targets)] = peopleTitles
+	}()
+	wg.Wait()
+	for _, err := range errs {
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		for _, item := range filtered {
+	}
+	var out []core.Title
+	seen := make(map[core.RatingKey]bool)
+	for _, group := range hits {
+		for _, item := range group {
 			if !seen[item.Key] {
 				seen[item.Key] = true
+				best = max(best, item.SearchScore)
+				item.SearchScore = unscopedPluginScore(item.SearchScore)
 				out = append(out, item)
 			}
-		}
-	}
-	_, peopleTitles, err := s.searchPluginPeopleForUser(ctx, v, query, subQ, 20)
-	if err != nil && errors.Is(err, context.Canceled) {
-		return nil, err
-	}
-	for _, item := range peopleTitles {
-		if !seen[item.Key] {
-			seen[item.Key] = true
-			out = append(out, item)
 		}
 	}
 	if len(out) > 1 {
@@ -1490,7 +1521,33 @@ func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query str
 			return out[i].Popularity > out[j].Popularity
 		})
 	}
-	return out, nil
+	return out, best, nil
+}
+
+// unscopedPluginScore places a plugin library's relevance (1.0 for its
+// exact title, 0.90 a prefix, 0.60 a loose or cast match) on the
+// catalogue's scale for a search across every library. Plugin items carry
+// no catalogue standing, so the exact title of a book or song ranks just
+// below the films and series the viewer most likely meant: an exact or
+// franchise title, or the filmography of the person named ("tom hanks"
+// is Tom Hanks's films before books called Tom Hanks). It still outranks
+// loose catalogue matches.
+func unscopedPluginScore(score float64) float64 {
+	return min(score*0.92, PersonMatchScore-0.001)
+}
+
+// PluginOptInLibraries is an optional PluginLibraries capability: OptInLibrary
+// reports a library whose kind starts unpublished in protocol's app (its
+// manifest marks the presentation default:false), private content an owner
+// opted the app into. Browsing it is unchanged; search reaches it only when
+// scoped to it, never in an unscoped or media-class search.
+type PluginOptInLibraries interface {
+	OptInLibrary(ctx context.Context, lib core.Library, protocol core.Protocol) bool
+}
+
+func (s *Service) optInLibrary(ctx context.Context, lib core.Library) bool {
+	o, ok := s.d.PluginLibraries.(PluginOptInLibraries)
+	return ok && o.OptInLibrary(ctx, lib, s.d.Protocol)
 }
 
 func (s *Service) builtinNative(mt core.MediaType) string {

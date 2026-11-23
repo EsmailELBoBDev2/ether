@@ -409,6 +409,11 @@ type ItemQuery struct {
 	UnservedTypes []string
 	// ExcludedTypes contains core media type names excluded by the client.
 	ExcludedTypes []core.MediaType
+	// CatalogueOnly limits a search to the catalogue's own media classes
+	// (Types): a client whose search filter offers each plugin library kind
+	// separately (Vela's Movies and Shows) asked for films or series, not for
+	// books, music or other plugin items that borrow that card shape.
+	CatalogueOnly bool
 	// Level selects a specific declared hierarchy level key on a plugin library.
 	Level string
 	// Role selects children matching a semantic role (or role-less level key) on a plugin library.
@@ -456,6 +461,11 @@ type SearchPage struct {
 	Page         core.Page
 	TotalExact   bool
 	Continuation Continuation
+	// Pending reports that a slower source (a plugin's remote catalogue) was
+	// still answering: the page holds what Ether already had, and the same
+	// search shortly returns more. Only searches run with
+	// core.WithSearchPending answer early.
+	Pending bool
 }
 
 // Image identifies an image authorized for an item. Path is an opaque,

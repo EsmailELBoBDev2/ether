@@ -719,6 +719,7 @@ func (a *App) applyConfig(c config.Config) {
 	if a.state != nil {
 		a.state.SetResumeAfter(c.Server.ResumeAfterSeconds)
 	}
+	core.SetPausedSessionRetention(time.Duration(c.Server.PausedStreamMinutes) * time.Minute)
 	if a.uploadBudget != nil {
 		a.uploadBudget.OnSessionsChanged()
 	}

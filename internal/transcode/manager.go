@@ -98,7 +98,8 @@ func defaultOptions() options {
 		segmentPadLimit:   segmentPadMax,
 		copySamplePackets: copySamplePackets,
 		stallTimeout:      30 * time.Second,
-		httpWriteTimeout:  core.PausedSessionRetention,
+		// 0 follows the paused-stream retention, including the owner's setting.
+		httpWriteTimeout: 0,
 		restartAhead:      24 * time.Second,
 		maxAhead:          2 * time.Minute,
 		keepBehind:        3 * time.Minute,

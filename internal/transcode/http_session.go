@@ -837,7 +837,7 @@ func (w flushWriter) Write(p []byte) (int, error) {
 	rc := http.NewResponseController(w.ResponseWriter)
 	timeout := w.timeout
 	if timeout <= 0 {
-		timeout = core.PausedSessionRetention
+		timeout = core.PausedRetention()
 	}
 	arm := func() error {
 		err := rc.SetWriteDeadline(time.Now().Add(timeout))

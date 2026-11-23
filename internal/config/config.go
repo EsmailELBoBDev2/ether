@@ -523,11 +523,17 @@ type Resolver struct {
 	// AlternativesPerResolution distributes the alternative count across
 	// available resolutions while retaining Auto and the shared menu cap.
 	AlternativesPerResolution bool `json:"alternativesPerResolution,omitempty"`
-	// AlternativesPerSource reserves at least one Play Version slot per
-	// source class (Remux, Blu-ray encode, WEB, or other when nothing else)
-	// within each resolution tier that appears, so a lighter WEB-DL still
-	// shows beside a tier full of remuxes. Auto is unchanged.
+	// AlternativesPerSource offers a Remux, a Blu-ray encode and a WEB
+	// release at every resolution in Play Version (higher resolutions first
+	// when they do not all fit), so a lighter WEB-DL still shows beside a
+	// tier full of remuxes. It is SourceVersions with every cell "offer";
+	// an explicit SourceVersions replaces it. Auto is unchanged.
 	AlternativesPerSource bool `json:"alternativesPerSource,omitempty"`
+	// SourceVersions chooses, per resolution, whether Play Version offers,
+	// requires or leaves out a Remux, a Blu-ray encode and a WEB release.
+	// Nil falls back to AlternativesPerSource (SourceVersionPlan). Auto is
+	// unchanged either way.
+	SourceVersions *SourceVersions `json:"sourceVersions,omitempty"`
 	// OfferHigherVersions lets Play Version list releases taller than the
 	// profile ceiling (a 4K copy on a 1080p profile). Off, the default,
 	// keeps that ceiling: height, HDR policy and size limits.

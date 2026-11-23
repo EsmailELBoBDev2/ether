@@ -705,7 +705,7 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":{"code":"preparing","message":"The item is still being prepared. Try again shortly."}}`))
+		_, _ = w.Write(frontend.PreparingErrorBody(err))
 	case errors.Is(err, frontend.ErrJobsBusy):
 		w.Header().Set("Retry-After", strconv.Itoa(frontend.JobsBusyRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "jobs_busy")

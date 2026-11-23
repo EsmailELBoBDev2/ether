@@ -308,6 +308,10 @@ export interface DebridProviderStatus {
   slots?: number;
   /** The account-wide concurrent API call limit. */
   accountSlots?: number;
+  /** Active queued downloads tracked on this provider. */
+  queuedDownloads?: number;
+  /** Provider queue reason, e.g. "queued at TorBox behind 3 active downloads". */
+  queuedDetail?: string;
 }
 
 export interface PosterProviderConfig {

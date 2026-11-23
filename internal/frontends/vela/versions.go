@@ -341,11 +341,15 @@ func versionPreparing(w http.ResponseWriter, err error) {
 	if errors.As(err, &prep) && prep.RetryAfter > 0 {
 		secs = min(300, max(1, int((prep.RetryAfter+time.Second-1)/time.Second)))
 	}
+	msg := "version preparing"
+	if detail := frontend.DownloadQueuedDetail(err); detail != "" {
+		msg = detail
+	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	send(w, 503, object{"error": object{
 		"class":   "source",
 		"code":    "version_preparing",
-		"message": "version preparing",
+		"message": msg,
 		"retry":   object{"allowed": true, "afterSeconds": secs, "maxAttempts": 3},
 	}})
 }

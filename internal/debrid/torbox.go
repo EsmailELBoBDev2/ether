@@ -26,9 +26,11 @@ import (
 // Endpoints used:
 //
 //	GET  /torrents/checkcached?hash=a,b&format=object&list_files=true -> data{hash: {name,size,files}}
-//	POST /torrents/createtorrent  multipart magnet=, allow_zip=false, add_only_if_cached= -> data{torrent_id}
-//	GET  /torrents/mylist?id=&bypass_cache=true -> data{id,hash,download_present,download_finished,files[{id,name,size,zipped}]}
-//	GET  /torrents/mylist?bypass_cache=true&files=false -> data[...] (reuse by hash)
+//	POST /torrents/createtorrent  multipart magnet=, allow_zip=false, add_only_if_cached= -> data{torrent_id} or data{queued_id, hash, current_active_downloads}
+//	GET  /torrents/mylist?id=&bypass_cache=true -> data{id,hash,active,download_present,download_finished,files[{id,name,size,zipped}]}
+//	GET  /torrents/mylist?bypass_cache=true&files=false -> data[...] (reuse and queued follow-up by hash)
+//	GET  /queued/getqueued?type=torrent&bypass_cache=true -> data[{id,hash,name,type}]
+//	POST /queued/controlqueued {queued_id, operation:"delete"}
 //	GET  /torrents/requestdl?token=&torrent_id=&file_id= -> data "https://..."
 //	POST /torrents/controltorrent {torrent_id, operation:"delete"}
 //	GET  /user/me -> data{email, plan, premium_expires_at}
@@ -140,10 +142,68 @@ type tbTorrent struct {
 	ID               json.Number `json:"id"`
 	Hash             string      `json:"hash"`
 	Name             string      `json:"name"`
+	Active           bool        `json:"active"`
 	DownloadPresent  bool        `json:"download_present"`
 	DownloadFinished bool        `json:"download_finished"`
 	DownloadState    string      `json:"download_state"`
 	Files            []tbFile    `json:"files"`
+}
+
+type tbQueued struct {
+	ID   json.Number `json:"id"`
+	Hash string      `json:"hash"`
+	Name string      `json:"name"`
+	Type string      `json:"type"`
+}
+
+func tbID(n json.Number) string {
+	s := strings.TrimSpace(n.String())
+	if s == "" {
+		return ""
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if i <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(i, 10)
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		if f <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(f), 10)
+	}
+	if s == "0" {
+		return ""
+	}
+	return s
+}
+
+func tbCount(n json.Number) int {
+	s := strings.TrimSpace(n.String())
+	if s == "" {
+		return 0
+	}
+	if i, err := strconv.Atoi(s); err == nil && i > 0 {
+		return i
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+		return int(f)
+	}
+	return 0
+}
+
+func matchesQueuedHash(candidate string, hashes ...string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	for _, h := range hashes {
+		if h != "" && strings.EqualFold(candidate, h) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *torBox) do(ctx context.Context, r apiRequest) (json.RawMessage, error) {
@@ -175,7 +235,7 @@ func (p *torBox) classify(status int, env tbEnvelope) error {
 	}
 	code := strings.ToUpper(env.Error)
 	switch {
-	case code == "DUPLICATE_ITEM":
+	case code == "DUPLICATE_ITEM" || strings.Contains(strings.ToLower(msg), "already queued"):
 		return errDuplicateTorrent
 	case strings.Contains(code, "AUTH") || strings.Contains(code, "TOKEN") || strings.Contains(code, "PLAN") || code == "NO_AUTH":
 		return fmt.Errorf("torbox: %s: %w", msg, ErrAuth)
@@ -259,6 +319,113 @@ func (p *torBox) loadList(ctx context.Context) (map[string]string, error) {
 	return m, nil
 }
 
+func decodeTorBoxTorrents(data json.RawMessage) ([]tbTorrent, error) {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil, nil
+	}
+	var items []tbTorrent
+	if err := json.Unmarshal(t, &items); err != nil {
+		return nil, errors.New("torbox: unexpected torrent list")
+	}
+	return items, nil
+}
+
+func decodeTorBoxQueued(data json.RawMessage) ([]tbQueued, error) {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil, nil
+	}
+	if t[0] == '[' {
+		var items []tbQueued
+		if err := json.Unmarshal(t, &items); err != nil {
+			return nil, errors.New("torbox: unexpected queued list")
+		}
+		return items, nil
+	}
+	if t[0] == '{' {
+		var item tbQueued
+		if err := json.Unmarshal(t, &item); err != nil {
+			return nil, errors.New("torbox: unexpected queued item")
+		}
+		if tbID(item.ID) == "" && strings.TrimSpace(item.Hash) == "" {
+			return nil, nil
+		}
+		return []tbQueued{item}, nil
+	}
+	return nil, errors.New("torbox: unexpected queued list")
+}
+
+func (p *torBox) findQueued(ctx context.Context, queuedID string, hashes ...string) (string, bool, error) {
+	data, err := p.do(ctx, apiRequest{
+		method: http.MethodGet,
+		path:   "/queued/getqueued",
+		query:  url.Values{"type": {"torrent"}, "bypass_cache": {"true"}},
+	})
+	if err != nil {
+		if errors.Is(err, ErrGone) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	items, err := decodeTorBoxQueued(data)
+	if err != nil {
+		return "", false, err
+	}
+	for _, it := range items {
+		id := tbID(it.ID)
+		if (queuedID != "" && id == queuedID) || matchesQueuedHash(it.Hash, hashes...) {
+			if id == "" {
+				id = queuedID
+			}
+			return id, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (p *torBox) removeQueued(ctx context.Context, queuedID string) error {
+	if queuedID == "" {
+		return nil
+	}
+	var idv any = queuedID
+	if n, err := strconv.ParseInt(queuedID, 10, 64); err == nil {
+		idv = n
+	}
+	body, _ := json.Marshal(map[string]any{"queued_id": idv, "operation": "delete"})
+	_, err := p.do(ctx, apiRequest{
+		method: http.MethodPost,
+		path:   "/queued/controlqueued",
+		body:   bytes.NewReader(body),
+		ctype:  "application/json",
+	})
+	return err
+}
+
+// followQueuedTorrent checks whether a queued TorBox add has moved into
+// /torrents/mylist yet or is still waiting in /queued/getqueued.
+func (p *torBox) followQueuedTorrent(ctx context.Context, hash, queuedHash, queuedID string) (queuedTorrentStatus, error) {
+	id, active, err := p.findInMyList(ctx, hash, queuedHash)
+	if err != nil {
+		return queuedTorrentStatus{}, err
+	}
+	if id != "" {
+		return queuedTorrentStatus{TorrentID: id}, nil
+	}
+	qid, ok, err := p.findQueued(ctx, queuedID, hash, queuedHash)
+	if err != nil {
+		return queuedTorrentStatus{}, err
+	}
+	if ok {
+		return queuedTorrentStatus{
+			StillQueued:     true,
+			QueuedID:        qid,
+			ActiveDownloads: active,
+		}, nil
+	}
+	return queuedTorrentStatus{}, nil
+}
+
 func (p *torBox) torrent(ctx context.Context, id string) (*tbTorrent, error) {
 	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"id": {id}, "bypass_cache": {"true"}}})
 	if err != nil {
@@ -301,11 +468,23 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 			// The account may contain an item added by another app/node.
 			// Only this collision needs a fresh account-wide hash lookup;
 			// never identify it by a similar title or delete the existing item.
-			id, err = p.findFresh(ctx, req.InfoHash)
+			var active int
+			id, active, err = p.findDuplicate(ctx, req.InfoHash)
 			if err != nil {
 				return nil, err
 			}
 			if id == "" {
+				qid, ok, qerr := p.findQueued(ctx, "", req.InfoHash)
+				if qerr != nil {
+					return nil, qerr
+				}
+				if ok {
+					err := fmt.Errorf("torbox: torrent queued: %w", core.ErrNotCached)
+					if req.CachedOnly {
+						return nil, err
+					}
+					return nil, queued(qid, req.InfoHash, active, err)
+				}
 				return nil, fmt.Errorf("torbox: duplicate torrent not listed: %w", core.ErrSourceUnavailable)
 			}
 		} else {
@@ -313,12 +492,36 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 				return nil, err
 			}
 			var out struct {
-				TorrentID json.Number `json:"torrent_id"`
+				TorrentID              json.Number `json:"torrent_id"`
+				QueuedID               json.Number `json:"queued_id"`
+				Hash                   string      `json:"hash"`
+				CurrentActiveDownloads json.Number `json:"current_active_downloads"`
+				ActiveLimit            json.Number `json:"active_limit"`
 			}
-			if err := json.Unmarshal(data, &out); err != nil || out.TorrentID.String() == "" {
+			if err := json.Unmarshal(data, &out); err != nil {
 				return nil, errors.New("torbox: createtorrent returned no torrent id")
 			}
-			id, added = out.TorrentID.String(), true
+			if tid := tbID(out.TorrentID); tid != "" {
+				id, added = tid, true
+			} else if qid := tbID(out.QueuedID); qid != "" {
+				qhash := strings.ToLower(strings.TrimSpace(out.Hash))
+				if qhash == "" {
+					qhash = strings.ToLower(strings.TrimSpace(req.InfoHash))
+				}
+				active := tbCount(out.CurrentActiveDownloads)
+				qerr := fmt.Errorf("torbox: torrent queued: %w", core.ErrNotCached)
+				if req.CachedOnly {
+					if req.RemoveUncached {
+						rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+						defer cancel()
+						_ = p.removeQueued(rctx, qid)
+					}
+					return nil, qerr
+				}
+				return nil, queued(qid, qhash, active, qerr)
+			} else {
+				return nil, errors.New("torbox: createtorrent returned no torrent id")
+			}
 		}
 	}
 	cleanup := func() bool {

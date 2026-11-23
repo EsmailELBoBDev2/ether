@@ -164,7 +164,7 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = io.WriteString(w, `{"error":{"code":"preparing","message":"The item is still being prepared. Try again shortly."}}`)
+		_, _ = w.Write(frontend.PreparingErrorBody(err))
 		return
 	}
 	if errors.Is(err, frontend.ErrJobsBusy) {

@@ -16,10 +16,12 @@ func TestVelaPreparingErrorMapsTo503RetryAfter(t *testing.T) {
 		err       error
 		wantDelay string
 		wantSec   int
+		wantMsg   string
 	}{
-		{"explicit retryAfter", &frontend.PreparingError{RetryAfter: 7 * time.Second}, "7", 7},
-		{"bare sentinel defaults to 5s", frontend.ErrPreparing, "5", 5},
-		{"preparing wrapping queued download", &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: frontend.ErrDownloadQueued}}, "5", 5},
+		{"explicit retryAfter", &frontend.PreparingError{RetryAfter: 7 * time.Second}, "7", 7, "item is still being prepared"},
+		{"bare sentinel defaults to 5s", frontend.ErrPreparing, "5", 5, "item is still being prepared"},
+		{"preparing wrapping queued download", &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: frontend.ErrDownloadQueued}}, "5", 5, "item is still being prepared"},
+		{"preparing queued behind active downloads", &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: &frontend.DownloadQueuedError{Provider: "TorBox", ActiveDownloads: 3, Err: frontend.ErrDownloadQueued}}}, "5", 5, "queued at TorBox behind 3 active downloads"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -42,7 +44,7 @@ func TestVelaPreparingErrorMapsTo503RetryAfter(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &wire); err != nil {
 				t.Fatal(err)
 			}
-			if wire.Error.Class != "source" || wire.Error.Code != "preparing" || !wire.Error.Retry.Allowed || wire.Error.Retry.AfterSeconds != tc.wantSec || wire.Error.Retry.MaxAttempts != 3 {
+			if wire.Error.Class != "source" || wire.Error.Code != "preparing" || wire.Error.Message != tc.wantMsg || !wire.Error.Retry.Allowed || wire.Error.Retry.AfterSeconds != tc.wantSec || wire.Error.Retry.MaxAttempts != 3 {
 				t.Fatalf("unexpected wire payload: %+v", wire)
 			}
 		})

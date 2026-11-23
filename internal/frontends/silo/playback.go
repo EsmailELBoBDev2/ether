@@ -789,15 +789,16 @@ func playbackError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, frontend.ErrPreparing) {
+		msg := frontend.PreparingMessage(err)
 		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "preparing")
 		requestID, idErr := controlCommandID()
 		if idErr != nil {
-			http.Error(w, "The item is still being prepared. Try again shortly.", http.StatusServiceUnavailable)
+			http.Error(w, msg, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("X-Request-ID", requestID)
-		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "about:blank", "title": "Item is still being prepared", "status": http.StatusServiceUnavailable, "detail": "The item is still being prepared. Try again shortly.", "instance": "urn:silo:request:" + requestID})
+		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "about:blank", "title": "Item is still being prepared", "status": http.StatusServiceUnavailable, "detail": msg, "instance": "urn:silo:request:" + requestID})
 		return
 	}
 	if errors.Is(err, frontend.ErrSessionBusy) {

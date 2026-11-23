@@ -51,7 +51,17 @@ function classifyDecisionClause(line: string): { text: string; generic?: boolean
   if (/pinned release .* cannot be played/i.test(line)) {
     return { text: t("Pinned release couldn't be played") };
   }
-  if (/not cached on the debrid service.*download queued|download queued/i.test(line)) {
+  const queuedBehind = /\b(queued at [^:]+? behind \d+ active downloads?)\b/i.exec(line);
+  if (queuedBehind) {
+    return {
+      text: `${t("Not cached yet — queued to download on debrid")} (${queuedBehind[1]})`,
+    };
+  }
+  if (
+    /not cached on the debrid service.*(?:download queued|sent to the debrid service to download)|download queued/i.test(
+      line,
+    )
+  ) {
     return { text: t("Not cached yet — queued to download on debrid") };
   }
   if (/active-download limit/i.test(line)) {

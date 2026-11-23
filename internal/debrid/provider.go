@@ -110,6 +110,40 @@ type untrackedPending struct{ err error }
 func (e *untrackedPending) Error() string { return e.err.Error() }
 func (e *untrackedPending) Unwrap() error { return e.err }
 
+// queuedPending is core.ErrNotCached for a torrent the provider placed in its
+// own queue instead of starting immediately (TorBox returning queued_id with
+// no torrent_id when active slots are full). A later check looks the hash up
+// on the account until the provider promotes it to an active torrent.
+type queuedPending struct {
+	queuedID        string
+	hash            string
+	activeDownloads int
+	err             error
+}
+
+func (e *queuedPending) Error() string { return e.err.Error() }
+func (e *queuedPending) Unwrap() error { return e.err }
+
+func queued(queuedID, hash string, activeDownloads int, err error) error {
+	if queuedID == "" {
+		return err
+	}
+	return &queuedPending{
+		queuedID:        queuedID,
+		hash:            strings.ToLower(strings.TrimSpace(hash)),
+		activeDownloads: activeDownloads,
+		err:             err,
+	}
+}
+
+func pendingQueue(err error) (*queuedPending, bool) {
+	var qp *queuedPending
+	if errors.As(err, &qp) && qp != nil && qp.queuedID != "" {
+		return qp, true
+	}
+	return nil, false
+}
+
 func (e *pendingError) Error() string { return e.err.Error() }
 func (e *pendingError) Unwrap() error { return e.err }
 

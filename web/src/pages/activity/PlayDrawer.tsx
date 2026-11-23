@@ -17,7 +17,7 @@ import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { Kpi } from "../../components/Kpi";
 import { SubtabNav } from "../../components/layout";
-import { SessionArtwork } from "../../components/SessionArtwork";
+import { LiveChannelArtwork, SessionArtwork } from "../../components/SessionArtwork";
 import { getLocale, t, tn } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import {
@@ -359,18 +359,34 @@ export function PlayDrawer({
 
   const p = play.data && play.data.id === id ? play.data : null;
   const live = id && session ? session : null;
+  const isLivePlay = Boolean(live?.isLive || p?.channelId || p?.channelName);
   const ratingKey = live?.ratingKey || p?.ratingKey;
-  const titleKey = ratingKey ? String(ratingKey) : live?.key || undefined;
+  const titleKey =
+    !isLivePlay && ratingKey && ratingKey > 0
+      ? String(ratingKey)
+      : !isLivePlay && live?.key && live.key !== "0"
+        ? live.key
+        : undefined;
   const media = useTitle(id ? titleKey : undefined);
 
-  const displayTitle = (live ? media?.title : undefined) || live?.title || p?.title || t("Play");
+  const displayTitle =
+    (live ? media?.title : undefined) ||
+    live?.title ||
+    (isLivePlay ? p?.channelName || p?.title : p?.title) ||
+    t("Play");
   const subtitle =
     media?.type === "episode" && media.showTitle
       ? `${media.showTitle} · ${t("S{season} E{episode}", { season: media.season ?? 0, episode: media.episode ?? 0 })}`
       : media?.year
         ? String(media.year)
-        : "";
-  const channel = live ? channelLabel(live) : "";
+        : isLivePlay && p?.title && p.title !== displayTitle
+          ? p.title
+          : "";
+  const channel = live
+    ? channelLabel(live)
+    : p?.channelName || p?.channelNumber
+      ? channelLabel({ channelName: p.channelName ?? "", channelNumber: p.channelNumber ?? "" })
+      : "";
 
   const converting = live ? isStreamConverting(live) : p?.decision === "transcode";
   const decision = live ? liveDecisionLabel(live) : p ? historyDecisionLabel(p.decision) : "";
@@ -474,6 +490,12 @@ export function PlayDrawer({
                 posterTitle={displayTitle}
                 className="aspect-[2/3] w-14 shrink-0 rounded-md"
               />
+            ) : isLivePlay ? (
+              <LiveChannelArtwork
+                channelId={p?.channelId}
+                name={p?.channelName || p?.channelNumber || displayTitle}
+                className="aspect-[2/3] w-14 shrink-0 rounded-md"
+              />
             ) : (
               <Artwork
                 src={media?.poster}
@@ -487,9 +509,12 @@ export function PlayDrawer({
                 {live ? (
                   <Badge variant="info">{live.isLive ? t("Live") : t("Streaming now")}</Badge>
                 ) : (
-                  <Badge variant={p!.completed ? "success" : "secondary"}>
-                    {p!.completed ? t("Completed") : p!.ended ? t("Ended") : t("Last observed")}
-                  </Badge>
+                  <>
+                    {isLivePlay ? <Badge variant="info">{t("Live TV")}</Badge> : null}
+                    <Badge variant={p!.completed ? "success" : "secondary"}>
+                      {p!.completed ? t("Completed") : p!.ended ? t("Ended") : t("Last observed")}
+                    </Badge>
+                  </>
                 )}
                 {!live && p?.failed ? (
                   <Badge variant="destructive">{t("Never started")}</Badge>
@@ -596,7 +621,7 @@ export function PlayDrawer({
                 label={t("Watched")}
                 value={t("{minutes} min", { minutes: fixed(p.watchedMs / 60000, 0) })}
                 detail={
-                  p.durationMs
+                  !isLivePlay && p.durationMs
                     ? t("{percent} of {length}", {
                         percent: formatPercent(Math.min(1, p.watchedMs / p.durationMs)),
                         length: t("{minutes} min", { minutes: fixed(p.durationMs / 60000, 0) }),

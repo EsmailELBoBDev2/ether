@@ -617,7 +617,7 @@ func (s *Service) expireSessions() {
 	s.mu.Unlock()
 	for _, ss := range stale {
 		s.sessionLog(ss).Info("live session expired")
-		ss.close(s)
+		ss.closeExpired(s)
 		if s.o.SessionExpired != nil {
 			s.o.SessionExpired(ss.info.ID)
 		}

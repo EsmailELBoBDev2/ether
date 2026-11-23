@@ -50,7 +50,7 @@ func (s *Service) ServeContinuous(w http.ResponseWriter, r *http.Request, id str
 	}
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "no-store")
-	observed := s.observeMedia(w, ss)
+	observed := s.observeContinuousMedia(w, ss)
 	defer observed.done()
 	observed.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
@@ -101,7 +101,7 @@ func (s *Service) serveBroadcastContinuous(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "no-store")
-	observed := s.observeMedia(w, ss)
+	observed := s.observeContinuousMedia(w, ss)
 	defer observed.done()
 	observed.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {

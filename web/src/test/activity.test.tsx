@@ -993,4 +993,144 @@ describe("Play timeline drawer", () => {
     ).toBeInTheDocument();
     expect(calls.some((u) => u.includes("/logs"))).toBe(false);
   });
+
+  it("renders Live TV history rows, Viewing live kind and PlayDrawer without looking up ratingKey 0", async () => {
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        readonly root = null;
+        readonly rootMargin = "";
+        readonly thresholds = [];
+        constructor(private readonly callback: IntersectionObserverCallback) {}
+        observe(target: Element) {
+          this.callback(
+            [{ isIntersecting: true, target } as IntersectionObserverEntry],
+            this as unknown as IntersectionObserver,
+          );
+        }
+        unobserve() {}
+        disconnect() {}
+        takeRecords() {
+          return [];
+        }
+      },
+    );
+    const calls: string[] = [];
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    const liveSummary = {
+      plays: 3,
+      watchedMs: 5_400_000,
+      bytes: 1_500_000_000,
+      completed: 1,
+      daily: [{ label: "2026-11-20", plays: 3, watchedMs: 5_400_000, bytes: 1_500_000_000 }],
+      hourly: [],
+      platforms: [],
+      titles: [
+        {
+          label: "ESPN",
+          channelId: "ch-espn",
+          plays: 2,
+          watchedMs: 3_600_000,
+          bytes: 1_000_000_000,
+        },
+        {
+          label: "Legacy Live",
+          key: "0",
+          plays: 1,
+          watchedMs: 1_800_000,
+          bytes: 500_000_000,
+        },
+      ],
+      users: [{ label: "Sam", key: "7", plays: 3, watchedMs: 5_400_000, bytes: 1_500_000_000 }],
+      kinds: [
+        { label: "live", plays: 2, watchedMs: 3_600_000, bytes: 1_000_000_000 },
+        { label: "movie", plays: 1, watchedMs: 1_800_000, bytes: 500_000_000 },
+      ],
+      dailyKinds: [{ label: "2026-11-20", movieMs: 1_800_000, episodeMs: 0, liveMs: 3_600_000 }],
+    };
+    const liveHistory = [
+      {
+        id: "live-espn-1",
+        userId: 7,
+        ratingKey: 0,
+        username: "Sam",
+        title: "SportsCenter",
+        channelId: "ch-espn",
+        channelName: "ESPN",
+        channelNumber: "206",
+        device: "Living Room Apple TV",
+        platform: "tvOS",
+        decision: "copy",
+        started: 1_763_660_000,
+        ended: 1_763_661_800,
+        bytes: 800_000_000,
+        watchedMs: 1_800_000,
+        completed: false,
+        failovers: 0,
+        error: "",
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.includes("/livetv/channels/ch-espn/logo")) {
+          return new Response(pngBytes, {
+            status: 200,
+            headers: { "Content-Type": "image/png", "X-Ether-Logo-Background": "light" },
+          });
+        }
+        let v: unknown = { ok: true };
+        if (url.endsWith("/cluster/")) v = { mode: "solo" };
+        else if (url.endsWith("/users"))
+          v = { users: [{ id: 7, title: "Sam", username: "sam", isOwner: true }] };
+        else if (url.endsWith("/status/sessions")) v = { value: [] };
+        else if (url.endsWith("/status/hwaccel"))
+          v = { value: { hwaccel: { name: "none", encoders: [] } } };
+        else if (url.includes("/stats/summary")) v = liveSummary;
+        else if (url.includes("/stats/history")) v = liveHistory;
+        else if (url.endsWith("/stats/plays/live-espn-1"))
+          v = {
+            ...liveHistory[0],
+            updated: 1_763_661_800,
+            durationMs: 0,
+            switches: 0,
+            origin: "Live TV",
+            release: "",
+            remote: false,
+            measured: true,
+            startMs: 1200,
+            bufferEvents: 0,
+            bufferMs: 0,
+            failed: false,
+            reasonKind: "",
+            reasonDetail: "",
+          };
+        return new Response(JSON.stringify(v), { status: 200 });
+      }),
+    );
+
+    const view = renderAt("/activity/history");
+    expect(await screen.findByText("206 · ESPN", {}, WAIT)).toBeInTheDocument();
+    expect(screen.getByText("SportsCenter · Sam")).toBeInTheDocument();
+    expect(screen.getByText("Live TV")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(calls.some((u) => u.includes("/livetv/channels/ch-espn/logo"))).toBe(true),
+    );
+
+    // Clicking the Live TV row opens PlayDrawer with channel logo and without /titles/0 lookup.
+    fireEvent.click(screen.getByText("206 · ESPN"));
+    const drawer = await screen.findByRole("dialog", { name: "ESPN" }, WAIT);
+    expect(within(drawer).getByText("SportsCenter")).toBeInTheDocument();
+    expect(within(drawer).getAllByText("Live TV").length).toBeGreaterThan(0);
+
+    view.unmount();
+
+    // Viewing tab renders the "live" kind bucket as "Live TV" and channel logo in Top titles.
+    renderAt("/activity/viewing");
+    expect((await screen.findAllByText("Live TV", {}, WAIT)).length).toBeGreaterThan(0);
+    expect(await screen.findByText("ESPN", {}, WAIT)).toBeInTheDocument();
+    expect(calls.some((u) => /\/titles\/0\b/.test(u))).toBe(false);
+  });
 });

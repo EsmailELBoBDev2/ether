@@ -162,8 +162,9 @@ type EngineStats struct {
 }
 
 var (
-	_ core.Engine        = (*Engine)(nil)
-	_ core.HealthChecker = (*Engine)(nil)
+	_ core.Engine               = (*Engine)(nil)
+	_ core.HealthChecker        = (*Engine)(nil)
+	_ core.ReleaseHealthChecker = (*Engine)(nil)
 )
 
 // Busy debrid CDN edges can take several seconds to accept a connection and
@@ -395,6 +396,20 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
 	}); ok {
 		return lister.ListFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// ListArchiveMembers forwards bounded NZB archive member listing (RAR, 7z, ZIP)
+// to the wrapped streaming engine.
+func (e *Engine) ListArchiveMembers(ctx context.Context, nzbData []byte) (map[int][]core.ReleaseMember, error) {
+	if IsPayload(nzbData) {
+		return nil, core.ErrNotAvailable
+	}
+	if lister, ok := e.inner.(interface {
+		ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+	}); ok {
+		return lister.ListArchiveMembers(ctx, nzbData)
 	}
 	return nil, core.ErrNotAvailable
 }

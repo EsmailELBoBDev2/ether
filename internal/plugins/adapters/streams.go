@@ -947,6 +947,7 @@ type Engine struct {
 var (
 	_ core.Engine               = (*Engine)(nil)
 	_ core.ReleaseHealthChecker = (*Engine)(nil)
+	_ core.DurablePrefetcher    = (*Engine)(nil)
 )
 
 // WrapEngine wraps inner with local-file payload support backed by s.
@@ -1056,6 +1057,17 @@ func (e *Engine) Prefetch(ctx context.Context, releaseID string, payload []byte,
 	return e.inner.Prefetch(ctx, releaseID, payload, offset, length)
 }
 
+// DurablePrefetch implements core.DurablePrefetcher.
+func (e *Engine) DurablePrefetch(ctx context.Context, id string, payload []byte, off, n int64) error {
+	if IsLocalPayload(payload) {
+		return errors.New("plugins: local file source does not support durable prefetch")
+	}
+	if dp, ok := e.inner.(core.DurablePrefetcher); ok {
+		return dp.DurablePrefetch(ctx, id, payload, off, n)
+	}
+	return errors.New("plugins: durable prefetch unsupported by inner engine")
+}
+
 // ListFiles forwards NZB release file listing (exact decoded sizes via PAR2/yEnc
 // when available) to the wrapped streaming engine.
 func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte) ([]core.ReleaseFile, error) {
@@ -1063,6 +1075,20 @@ func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte
 		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
 	}); ok {
 		return lister.ListFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// ListArchiveMembers forwards bounded NZB archive member listing (RAR, 7z, ZIP)
+// to the wrapped streaming engine.
+func (e *Engine) ListArchiveMembers(ctx context.Context, nzbData []byte) (map[int][]core.ReleaseMember, error) {
+	if IsLocalPayload(nzbData) {
+		return nil, core.ErrNotAvailable
+	}
+	if lister, ok := e.inner.(interface {
+		ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+	}); ok {
+		return lister.ListArchiveMembers(ctx, nzbData)
 	}
 	return nil, core.ErrNotAvailable
 }

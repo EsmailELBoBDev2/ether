@@ -7,6 +7,7 @@ import (
 
 	at "github.com/braedonsaunders/ether/internal/archive/archivetest"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -86,6 +87,109 @@ func TestReleaseFromSourceForwardsTrackHintAndReleaseFilesPopulatesArchiveMember
 	members := cands[0].Files[0].Members
 	if len(members) != 2 || members[1].Path != "05-metallica-you_must_burn-moonblood.flac" {
 		t.Fatalf("Files[0].Members = %+v, want 2 scene FLAC members", members)
+	}
+}
+
+func TestWrappedEngineListsArchiveMembersAndPreservesOptionalInterfaces(t *testing.T) {
+	ctx := context.Background()
+	fetcher := &simpleMemFetcher{articles: map[string]struct {
+		data []byte
+		part core.ArticlePart
+	}{}}
+	vols, err := at.BuildRAR([]at.RARFile{
+		{Name: "01 - The Beachcomber.flac", Data: append([]byte("fLaC"), make([]byte, 32*1024)...)},
+		{Name: "02 - Wait for the Moment.flac", Data: append([]byte("fLaC"), make([]byte, 48*1024)...)},
+	}, at.RAROptions{Version: 5, VolumeSize: 60_000})
+	if err != nil {
+		t.Fatalf("BuildRAR: %v", err)
+	}
+
+	var filesXML string
+	for i, v := range vols {
+		name := fmt.Sprintf("vulfpeck.part%02d.rar", i+1)
+		id := fmt.Sprintf("wrapped-rarvol%d@test", i+1)
+		fetcher.mu.Lock()
+		fetcher.articles[id] = struct {
+			data []byte
+			part core.ArticlePart
+		}{
+			data: v,
+			part: core.ArticlePart{Name: name, FileSize: int64(len(v)), Part: 1, Total: 1, Begin: 1, End: int64(len(v))},
+		}
+		fetcher.mu.Unlock()
+		filesXML += fmt.Sprintf(`<file poster="p@test" date="1" subject="[%d/%d] - &quot;%s&quot; yEnc (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="%d" number="1">%s</segment></segments></file>`, i+1, len(vols), name, len(v)+200, id)
+	}
+	nzbBytes := []byte(`<?xml version="1.0" encoding="UTF-8"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">` + filesXML + `</nzb>`)
+
+	// Mirror internal/app/build_sources.go: *debrid.Engine -> *adapters.Engine -> *stream.Engine.
+	base := stream.New(fetcher, nil, stream.Options{}, nil)
+	t.Cleanup(func() { _ = base.Close() })
+	ss := NewStreamSources(nil)
+	wrapped := ss.WrapEngine(base)
+	media := debrid.NewEngine(nil, debrid.EngineOptions{Inner: wrapped, Health: wrapped})
+	t.Cleanup(func() { media.Close() })
+
+	var eng core.Engine = media
+
+	// Every optional engine interface relied upon by the plugin host and app
+	// must survive both wrapping layers.
+	if _, ok := eng.(core.HealthChecker); !ok {
+		t.Fatal("wrapped engine lost core.HealthChecker")
+	}
+	if _, ok := eng.(core.ReleaseHealthChecker); !ok {
+		t.Fatal("wrapped engine lost core.ReleaseHealthChecker")
+	}
+	if _, ok := eng.(core.DurablePrefetcher); !ok {
+		t.Fatal("wrapped engine lost core.DurablePrefetcher")
+	}
+	if _, ok := eng.(debrid.PackNamer); !ok {
+		t.Fatal("wrapped engine lost debrid.PackNamer")
+	}
+	if _, ok := eng.(usenetArticleChecker); !ok {
+		t.Fatal("wrapped engine lost usenetArticleChecker")
+	}
+	fl, ok := eng.(interface {
+		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
+	})
+	if !ok {
+		t.Fatal("wrapped engine lost ListFiles")
+	}
+	files, err := fl.ListFiles(ctx, "rel-1", nzbBytes)
+	if err != nil || len(files) != len(vols) {
+		t.Fatalf("wrapped ListFiles = (%d files, %v), want %d files", len(files), err, len(vols))
+	}
+	ml, ok := eng.(interface {
+		ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+	})
+	if !ok {
+		t.Fatal("wrapped engine lost ListArchiveMembers")
+	}
+	directMembers, err := ml.ListArchiveMembers(ctx, nzbBytes)
+	if err != nil || len(directMembers[0]) != 2 {
+		t.Fatalf("wrapped ListArchiveMembers = (%+v, %v), want 2 members at file 0", directMembers, err)
+	}
+
+	// End-to-end through KindResolver.ResolveSources("release_files").
+	idx := &countingNZBIndexer{nzbs: map[string][]byte{"https://idx.test/vulfpeck.nzb": nzbBytes}}
+	kr := NewKindResolver(KindResolverDeps{
+		Engine:  eng,
+		Indexer: idx,
+	})
+	cands, err := kr.ResolveSources(ctx, "music.plug", core.SourceQuery{
+		Kind: "release_files",
+		Candidate: &core.SourceCandidate{
+			NZBURL: "https://idx.test/vulfpeck.nzb",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveSources(release_files): %v", err)
+	}
+	if len(cands) != 1 || len(cands[0].Files) < 1 {
+		t.Fatalf("cands = %+v", cands)
+	}
+	members := cands[0].Files[0].Members
+	if len(members) != 2 || members[0].Path != "01 - The Beachcomber.flac" || members[1].Path != "02 - Wait for the Moment.flac" {
+		t.Fatalf("wrapped Files[0].Members = %+v, want 2 FLAC members", members)
 	}
 }
 

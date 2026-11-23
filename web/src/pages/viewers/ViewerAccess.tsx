@@ -414,17 +414,77 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               }
             />
             <SettingsRow
-              title={t("Downloads per day")}
-              description={t("How many titles this viewer can download in one day. 0 is no limit.")}
+              title={t("Download limit")}
+              description={t(
+                "How much this viewer can download: a number of titles or an amount of data, per day or per month. Server default follows the Downloads settings under Apps.",
+              )}
               control={
-                <NumberInput
-                  aria-label={t("Downloads per day")}
-                  className="w-28"
-                  min={0}
-                  value={p.downloadsPerDay ?? 0}
-                  onChange={(n) =>
-                    patchPolicy({ downloadsPerDay: Math.max(0, Math.min(1000, Math.round(n))) })
-                  }
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <SearchSelect
+                    ariaLabel={t("Download limit counts")}
+                    value={p.downloadLimitUnit || "default"}
+                    options={[
+                      { value: "default", label: t("Server default") },
+                      { value: "none", label: t("No limit") },
+                      { value: "titles", label: t("Titles") },
+                      { value: "gb", label: t("GB") },
+                    ]}
+                    onChange={(choice) =>
+                      patchPolicy({
+                        downloadLimitUnit:
+                          choice === "none" || choice === "titles" || choice === "gb" ? choice : "",
+                      })
+                    }
+                    {...searchSelectLabels()}
+                  />
+                  {p.downloadLimitUnit === "titles" || p.downloadLimitUnit === "gb" ? (
+                    <>
+                      <NumberInput
+                        aria-label={t("Download limit amount")}
+                        className="w-24"
+                        min={0}
+                        value={p.downloadLimitAmount ?? 0}
+                        onChange={(n) =>
+                          patchPolicy({
+                            downloadLimitAmount: Math.max(0, Math.min(100000, Math.round(n))),
+                          })
+                        }
+                      />
+                      <SearchSelect
+                        ariaLabel={t("Download limit period")}
+                        value={p.downloadLimitPeriod === "month" ? "month" : "day"}
+                        options={[
+                          { value: "day", label: t("per day") },
+                          { value: "month", label: t("per month") },
+                        ]}
+                        onChange={(choice) =>
+                          patchPolicy({ downloadLimitPeriod: choice === "month" ? "month" : "day" })
+                        }
+                        {...searchSelectLabels()}
+                      />
+                    </>
+                  ) : null}
+                </div>
+              }
+            />
+            <SettingsRow
+              title={t("Highest download quality")}
+              description={t(
+                "Downloads for this viewer are capped at this resolution. It cannot go above the server's download cap.",
+              )}
+              control={
+                <SearchSelect
+                  ariaLabel={t("Highest download quality")}
+                  value={String(p.downloadMaxHeight ?? 0)}
+                  options={[
+                    { value: "0", label: t("Server default") },
+                    { value: "480", label: "480p" },
+                    { value: "720", label: "720p" },
+                    { value: "1080", label: "1080p" },
+                    { value: "2160", label: "4K" },
+                  ]}
+                  onChange={(choice) => patchPolicy({ downloadMaxHeight: Number(choice) || 0 })}
+                  {...searchSelectLabels()}
                 />
               }
             />

@@ -574,6 +574,15 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Transcode.MaxTranscodes < 0 {
 		v.add("transcode.maxTranscodes", "must be >= 0")
 	}
+	if cfg.Downloads.LimitUnit != "" {
+		v.oneOf("downloads.limitUnit", cfg.Downloads.LimitUnit, "titles", "gb")
+	}
+	if cfg.Downloads.LimitPeriod != "" {
+		v.oneOf("downloads.limitPeriod", cfg.Downloads.LimitPeriod, "day", "month")
+	}
+	if cfg.Downloads.LimitAmount < 0 {
+		v.add("downloads.limitAmount", "must be >= 0")
+	}
 	if cfg.Transcode.RemoteMaxBitrateKbps < 0 {
 		v.add("transcode.remoteMaxBitrateKbps", "must be >= 0")
 	}

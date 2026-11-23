@@ -58,7 +58,8 @@ const (
 // Wordings for a viewer's own download limits.
 const (
 	MsgViewerDownloadTranscodingOff = "This title would need converting to download at this quality, and converting downloads is turned off for your account. Try another quality, or ask the server owner."
-	MsgViewerDownloadLimit          = "You have reached your download limit for today. Try again tomorrow, or ask the server owner."
+	MsgViewerDownloadLimit          = "You have reached your download limit. Try again later, or ask the server owner."
+	MsgViewerDownloadDataLimit      = "You have reached your download data limit. Try again later, or ask the server owner."
 )
 
 // VideoTranscodingOffMessage picks the wording for viewer. policy is the

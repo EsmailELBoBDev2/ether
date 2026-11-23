@@ -570,8 +570,12 @@ export type SafetyPolicy = {
   allowDownloads?: boolean | null;
   /** Downloads only from releases that need no video conversion. */
   downloadTranscodingDisabled?: boolean;
-  /** Titles this viewer may queue for download per day; 0 is no limit. */
-  downloadsPerDay?: number;
+  /** "" follows the server, "none" is no limit, else what the limit counts. */
+  downloadLimitUnit?: "" | "none" | "titles" | "gb";
+  downloadLimitAmount?: number;
+  downloadLimitPeriod?: "" | "day" | "month";
+  /** Highest download resolution for this viewer; 0 follows the server. */
+  downloadMaxHeight?: number;
   allowedHours: number[];
   timezone: string;
 };

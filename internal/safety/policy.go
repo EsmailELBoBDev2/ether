@@ -44,9 +44,15 @@ type Policy struct {
 	// a download is made from a release that needs no video re-encode, or not
 	// at all. It is independent of VideoTranscodingDisabled.
 	DownloadTranscodingDisabled bool `json:"downloadTranscodingDisabled,omitempty"`
-	// DownloadsPerDay caps how many titles this viewer may queue for download
-	// in one UTC day. 0 is no limit.
-	DownloadsPerDay int `json:"downloadsPerDay,omitempty"`
+	// This viewer's download limit. DownloadLimitUnit is "" to follow the
+	// server default, "none" for no limit, "titles" or "gb";
+	// DownloadLimitPeriod is "day" (default) or "month".
+	DownloadLimitUnit   string `json:"downloadLimitUnit,omitempty"`
+	DownloadLimitAmount int    `json:"downloadLimitAmount,omitempty"`
+	DownloadLimitPeriod string `json:"downloadLimitPeriod,omitempty"`
+	// DownloadMaxHeight caps this viewer's download resolution below the
+	// server's cap. 0 follows the server.
+	DownloadMaxHeight int `json:"downloadMaxHeight,omitempty"`
 	// AllowedHours is empty for any time, otherwise hours 0..23 in Timezone.
 	AllowedHours []int  `json:"allowedHours"`
 	Timezone     string `json:"timezone"`
@@ -68,6 +74,7 @@ type Service struct {
 
 	plexShare        func(*core.User) PlexShare
 	friendsDownloads func() bool
+	downloadDefaults func() core.DownloadAllowance
 	shareCache       map[int64]cachedShare
 
 	playbackMu    sync.Mutex
@@ -176,8 +183,16 @@ func (p Policy) Validate() error {
 	if p.MaxBitrateKbps < 0 {
 		return fmt.Errorf("invalid viewer or bitrate")
 	}
-	if p.DownloadsPerDay < 0 || p.DownloadsPerDay > 1000 {
-		return fmt.Errorf("downloads per day must be 0..1000")
+	switch p.DownloadLimitUnit {
+	case "", "none", "titles", "gb":
+	default:
+		return fmt.Errorf("download limit unit must be titles or gb")
+	}
+	if p.DownloadLimitPeriod != "" && p.DownloadLimitPeriod != "day" && p.DownloadLimitPeriod != "month" {
+		return fmt.Errorf("download limit period must be day or month")
+	}
+	if p.DownloadLimitAmount < 0 || p.DownloadLimitAmount > 100000 || p.DownloadMaxHeight < 0 {
+		return fmt.Errorf("invalid download limit")
 	}
 	for _, h := range p.AllowedHours {
 		if h < 0 || h > 23 {
@@ -519,19 +534,10 @@ func (s *Service) UserPolicy(u *core.User) *core.User {
 }
 func (s *Service) BitrateLimit(u *core.User) int { return s.ForUser(u).MaxBitrateKbps }
 
-// DownloadTranscodingDisabled reports the owner's per-viewer switch for
-// offline downloads.
+// DownloadTranscodingDisabled reports whether u's downloads must not
+// re-encode video: the server default or the owner's switch for u.
 func (s *Service) DownloadTranscodingDisabled(u *core.User) bool {
-	return u != nil && s.ForUser(u).DownloadTranscodingDisabled
-}
-
-// DownloadsPerDay is the owner's daily download cap for u; 0 is no limit and
-// the owner is never limited.
-func (s *Service) DownloadsPerDay(u *core.User) int {
-	if u == nil || u.IsOwner {
-		return 0
-	}
-	return s.ForUser(u).DownloadsPerDay
+	return s.DownloadAllowance(u).NoTranscode
 }
 
 // VideoTranscodingDisabled reports the owner's per-viewer switch.

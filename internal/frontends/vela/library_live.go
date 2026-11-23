@@ -412,6 +412,7 @@ func (i *instance) libraryLivePlay(w http.ResponseWriter, r *http.Request) {
 	i.refreshTrackDelivery(r.Context(), i.access(r, v), s.ID, ps)
 	i.addQualityPaths(r.Context(), i.access(r, v), s.ID, ps)
 	i.refreshOutput(r.Context(), s.ID, ps)
+	alignUnobservedLivePosition(ps)
 	i.mu.Lock()
 	for oldID, old := range i.sessions {
 		old.mu.Lock()

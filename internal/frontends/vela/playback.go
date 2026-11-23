@@ -77,6 +77,7 @@ type playSession struct {
 	accessDevice                     frontend.Device
 	plan                             object
 	source, seek, revision, sequence uint64
+	observedSource                   uint64
 	position                         time.Duration
 	cursor                           uint64
 	events                           []object
@@ -439,6 +440,9 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	i.addQualityPaths(r.Context(), i.access(r, v), s.ID, ps)
 	i.refreshOutput(r.Context(), s.ID, ps)
+	if b.ChannelID != "" {
+		alignUnobservedLivePosition(ps)
+	}
 	if b.TitleID != "" && i.versionsAvailable() {
 		ps.versionsCold = i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, plan.VersionHandle, plan.ReleaseID, p)
 	}
@@ -1246,6 +1250,7 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.sequence = b.Sequence
+	s.observedSource = s.source
 	s.position = pos
 	if b.State != s.observedState {
 		attrs := []any{"session", s.id, "state", b.State, "previous", s.observedState, "position", pos.Round(time.Millisecond)}

@@ -57,6 +57,7 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				s.mu.Lock()
 				if changed && !s.commandActive && s.revision == revision && s.source == copy.source && s.seek == copy.seek && s.ended.IsZero() {
 					s.applyOutput(copy)
+					alignUnobservedLivePosition(s)
 					s.publish("plan")
 				}
 				s.mu.Unlock()

@@ -495,8 +495,9 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 		}
 		i.host.Sessions.ServeMedia(w, req)
 	}
-	// PlaybackInfo already started this direct file. Serve that URL here so
-	// the client does not pay a second round trip, or a second stream start.
+	// PlaybackInfo already started this stream. Reuse its direct file or HLS
+	// master instead of calling StartStream again at position 0 (which would
+	// tear down and restart a resumed HLS stream from the beginning).
 	if format == frontend.StreamDirect {
 		for _, session := range sessions {
 			if session.ID != sessionID || !directFilePath(session.MediaPath) {
@@ -505,8 +506,18 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 			serveDirect(session.MediaPath)
 			return
 		}
+	} else if format == frontend.StreamHLS {
+		for _, session := range sessions {
+			if session.ID != sessionID || !strings.HasPrefix(session.MediaPath, "/sessions/media/") || !strings.HasSuffix(session.MediaPath, "/master.m3u8") || strings.ContainsAny(session.MediaPath, "\r\n") {
+				continue
+			}
+			url := clientnet.RedirectPath(requestRedirectPrefix(r, i.host.Origin), "", session.MediaPath)
+			http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+			return
+		}
 	}
-	url, err := i.host.Sessions.StartStream(r.Context(), access, sessionID, frontend.StreamRequest{Format: format})
+	fullTimeline := i.protocol == "jellyfin" && format == frontend.StreamHLS
+	url, err := i.host.Sessions.StartStream(r.Context(), access, sessionID, frontend.StreamRequest{Format: format, FullTimeline: fullTimeline})
 	if err != nil {
 		streamError(i.protocol, w, err)
 		return

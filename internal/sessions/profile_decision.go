@@ -123,6 +123,10 @@ func profileName(s string) string {
 		return "ac3"
 	case "ec3", "e-ac3":
 		return "eac3"
+	case "dca":
+		return "dts"
+	case "mlp":
+		return "truehd"
 	case "avc", "avc1":
 		return "h264"
 	case "h265":
@@ -402,24 +406,107 @@ func applyProfileRangeCaps(caps core.ClientCaps) core.ClientCaps {
 		// ApplyConditions say when a codec profile applies (Wholphin lists
 		// the ranges it cannot play there), not which ranges are playable.
 	}
-	if !listed && !caps.HDR10 && !caps.ExplicitNoHDR {
+	if !listed && !caps.ExplicitNoHDR {
+		hasVideo := false
 		if caps.Profiles.DirectPlay == nil {
 			for _, tp := range caps.Profiles.Transcoding {
 				if tp.MediaType == "" || strings.EqualFold(tp.MediaType, "video") {
-					caps.HDR10 = true
+					hasVideo = true
 					break
 				}
 			}
 		} else {
 			for _, dp := range caps.Profiles.DirectPlay {
 				if dp.MediaType == "" || strings.EqualFold(dp.MediaType, "video") {
-					caps.HDR10 = true
+					hasVideo = true
 					break
+				}
+			}
+		}
+		if hasVideo {
+			if !caps.HDR10 && profileAllowsVideoRange(caps.Profiles, "HDR10") {
+				caps.HDR10 = true
+			}
+			// A client that excludes only unsupported ranges (Wholphin,
+			// Jellyfin Android TV, Streamyfin) or declares no codec
+			// conditions (Fladder) accepts every unexcluded DV range in
+			// Jellyfin. Leaving DolbyVision false made Android's
+			// hdr10BaseReason force a remux/encode even when the profile
+			// allows DV direct play.
+			if !caps.DolbyVision && len(caps.DVProfiles) == 0 {
+				var dvProfiles []int
+				if profileAllowsVideoRange(caps.Profiles, "DOVI") {
+					dvProfiles = append(dvProfiles, 5)
+				}
+				if profileAllowsVideoRange(caps.Profiles, "DOVIWithHDR10") {
+					dvProfiles = append(dvProfiles, 8)
+				}
+				if len(dvProfiles) > 0 {
+					caps.DolbyVision = true
+					caps.DVProfiles = dvProfiles
 				}
 			}
 		}
 	}
 	return caps
+}
+
+// profileAllowsVideoRange reports whether video codec profiles in p leave
+// rangeType unexcluded. Profiles with ApplyConditions (Wholphin / Jellyfin
+// Android TV) apply only when their VideoRangeType ApplyConditions match
+// rangeType, and exclude it when their Conditions reject rangeType.
+func profileAllowsVideoRange(p *core.ClientCapabilityProfiles, rangeType string) bool {
+	if p == nil {
+		return true
+	}
+	for _, cp := range p.Codecs {
+		if cp.MediaType != "" && !strings.EqualFold(cp.MediaType, "video") {
+			continue
+		}
+		if !profileContains(cp.Codecs, "hevc") {
+			continue
+		}
+		if len(cp.ApplyConditions) > 0 {
+			hasRangeApply := false
+			applies := true
+			for _, cond := range cp.ApplyConditions {
+				if !strings.EqualFold(cond.Property, "VideoRangeType") {
+					continue
+				}
+				hasRangeApply = true
+				ok, known := profileConditionHolds(rangeType, cond)
+				if known && !ok {
+					applies = false
+					break
+				}
+			}
+			if !hasRangeApply || !applies {
+				continue
+			}
+		} else if rangeType != "SDR" {
+			for _, cond := range cp.Conditions {
+				prop, op := strings.ToLower(cond.Property), strings.ToLower(cond.Operator)
+				if prop == "videobitdepth" && (op == "lessthanequal" || op == "equals") {
+					if depth, err := strconv.Atoi(cond.Value); err == nil && depth < 10 {
+						return false
+					}
+				}
+				if prop == "videoprofile" && (op == "equals" || op == "equalsany") && !strings.Contains(strings.ToLower(cond.Value), "main 10") && !strings.Contains(strings.ToLower(cond.Value), "main10") {
+					return false
+				}
+			}
+		}
+		for _, cond := range cp.Conditions {
+			if !strings.EqualFold(cond.Property, "VideoRangeType") {
+				continue
+			}
+			ok, known := profileConditionHolds(rangeType, cond)
+			if known && !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // noteProfileRange reports whether cond positively lists playable ranges.
@@ -1194,6 +1281,7 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			reject("delivery", outputRejection(d, ps.Info, req.Intent.AllowTranscoding))
 		}
 	}
+	var encodeFallback *core.Decision
 	for _, candidate := range req.Caps.Profiles.Transcoding {
 		reject(candidate.Delivery, "no output matches declared containers ["+strings.Join(candidate.Containers, ",")+"] video ["+strings.Join(candidate.VideoCodecs, ",")+"] audio ["+strings.Join(candidate.AudioCodecs, ",")+"] and profile constraints")
 		if !strings.EqualFold(candidate.Delivery, "hls") && !strings.EqualFold(candidate.Delivery, "dash") {
@@ -1204,6 +1292,8 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			caps.VideoCodecs = videoCodecs
 			caps.AudioCodecs = candidate.AudioCodecs
 			caps.HLSContainers = candidate.Containers
+			caps.TranscodeVideoCodecs = nil
+			caps.TranscodeAudioCodecs = nil
 			// MaxAudioChannels constrains this delivery, not direct-file
 			// decoding. Feed it into the audio planner so supported surround
 			// codecs are downmixed instead of repeatedly proposing copy.
@@ -1267,12 +1357,19 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			return core.Decision{}, false
 		}
 		if decision, ok := try(candidate.VideoCodecs); ok {
-			if decision.Kind == core.DecisionTranscode {
-				b.profileDiagnostic(ProfileFallbackTranscode)
-			} else {
-				b.profileDiagnostic(ProfileFallbackRemux)
+			if decision.VideoCopy {
+				if decision.Kind == core.DecisionTranscode {
+					b.profileDiagnostic(ProfileFallbackTranscode)
+				} else {
+					b.profileDiagnostic(ProfileFallbackRemux)
+				}
+				return decision, nil
 			}
-			return decision, nil
+			if encodeFallback == nil {
+				d := decision
+				encodeFallback = &d
+			}
+			continue
 		}
 		// A combined codec list may repeatedly select source copy even when
 		// its required profile predicates reject that source. Try individually
@@ -1291,14 +1388,29 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 				continue
 			}
 			if decision, ok := try([]string{codec}); ok {
-				if decision.Kind == core.DecisionTranscode {
-					b.profileDiagnostic(ProfileFallbackTranscode)
-				} else {
-					b.profileDiagnostic(ProfileFallbackRemux)
+				if decision.VideoCopy {
+					if decision.Kind == core.DecisionTranscode {
+						b.profileDiagnostic(ProfileFallbackTranscode)
+					} else {
+						b.profileDiagnostic(ProfileFallbackRemux)
+					}
+					return decision, nil
 				}
-				return decision, nil
+				if encodeFallback == nil {
+					d := decision
+					encodeFallback = &d
+				}
+				break
 			}
 		}
+	}
+	if encodeFallback != nil {
+		if encodeFallback.Kind == core.DecisionTranscode {
+			b.profileDiagnostic(ProfileFallbackTranscode)
+		} else {
+			b.profileDiagnostic(ProfileFallbackRemux)
+		}
+		return *encodeFallback, nil
 	}
 	b.profileDiagnostic(ProfileNoDelivery)
 	outErr := &frontend.NoCompatiblePathError{RejectedPaths: rejected}

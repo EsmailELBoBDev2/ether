@@ -66,7 +66,6 @@ func (m *Manager) ResumedVersion(ctx context.Context, user *core.User, key core.
 				if sanitized, ok := persistedProbeFacts(g.infoSnapshot()); ok && rememberedInfoCodecCurrent(sanitized, caps) {
 					m.mu.Unlock()
 					sanitized.Keyframes = nil
-					sanitized.Chapters = nil
 					return sanitized, rp.Release, rp.VersionSelector, true
 				}
 			}
@@ -79,7 +78,6 @@ func (m *Manager) ResumedVersion(ctx context.Context, user *core.User, key core.
 	}
 	info := facts.info
 	info.Keyframes = nil
-	info.Chapters = nil
 	return info, rp.Release, rp.VersionSelector, true
 }
 

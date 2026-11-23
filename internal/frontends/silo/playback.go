@@ -28,15 +28,32 @@ func installationChanged(w http.ResponseWriter) {
 	problemReply(w, http.StatusConflict, map[string]any{"type": "/problems/installation_changed", "title": "Playback installation changed", "status": http.StatusConflict, "detail": "Refresh playback capabilities before retrying."})
 }
 
+type siloHDRDetails struct {
+	HDR10           bool  `json:"hdr10"`
+	HDR10Plus       bool  `json:"hdr10_plus"`
+	HLG             bool  `json:"hlg"`
+	DVProfiles      []int `json:"dolby_vision_profiles"`
+	DVProfileLevels []struct {
+		Profile int `json:"profile"`
+	} `json:"dolby_vision_profile_levels"`
+}
+
 type startRequest struct {
 	Context struct {
 		Deliveries map[string]struct {
-			Enabled   bool `json:"enabled"`
-			Supported bool `json:"supported_on_device"`
+			Enabled     bool     `json:"enabled"`
+			Supported   bool     `json:"supported_on_device"`
+			Containers  []string `json:"containers"`
+			VideoCodecs []string `json:"video_codecs"`
+			// AudioDecode lists codecs the player decodes itself for this
+			// delivery (for example ExoPlayer/FFmpeg software TrueHD/DTS on an
+			// Android tablet without an AV receiver).
+			AudioDecode []string `json:"audio_decode_codecs"`
 			// AudioPassthrough lists codecs the device bitstreams to its
 			// audio output (TrueHD, DTS-HD to an AV receiver) without decoding
 			// them; codecs_audio lists only what it decodes.
-			AudioPassthrough []string `json:"audio_passthrough_codecs"`
+			AudioPassthrough []string        `json:"audio_passthrough_codecs"`
+			HDRDetails       *siloHDRDetails `json:"hdr_details"`
 			Subtitles        struct {
 				ASSStyling      bool `json:"ass_styling"`
 				FontAttachments bool `json:"font_attachments"`
@@ -63,11 +80,15 @@ type startRequest struct {
 	Subtitle         *int     `json:"subtitle_track_index"`
 	SubtitleFidelity string   `json:"subtitle_fidelity_preference"`
 	Capabilities     struct {
-		Video      []string `json:"codecs_video"`
-		Audio      []string `json:"codecs_audio"`
-		Containers []string `json:"containers"`
-		HDR        bool     `json:"hdr"`
-		Resolution string   `json:"max_resolution"`
+		Video            []string `json:"codecs_video"`
+		Audio            []string `json:"codecs_audio"`
+		Containers       []string `json:"containers"`
+		HDR              bool     `json:"hdr"`
+		Resolution       string   `json:"max_resolution"`
+		AudioPassthrough struct {
+			PassthroughCodecs []string `json:"passthrough_codecs"`
+		} `json:"audio_passthrough"`
+		HDRDetails *siloHDRDetails `json:"hdr_details"`
 	} `json:"client_capabilities"`
 }
 
@@ -104,17 +125,50 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	if h, e := strconv.Atoi(strings.TrimSuffix(b.Quality, "p")); e == nil && h > 0 && (height == 0 || h < height) {
 		height = h
 	}
-	// The original file plays any codec the device can pass through, as well
-	// as those it decodes: a TrueHD track goes to the receiver untouched.
-	audioCodecs := slices.Clone(b.Capabilities.Audio)
-	if original, ok := b.Context.Deliveries["original_http"]; ok && original.Enabled && original.Supported {
-		for _, codec := range original.AudioPassthrough {
-			if codec = strings.ToLower(strings.TrimSpace(codec)); codec != "" && !slices.Contains(audioCodecs, codec) {
-				audioCodecs = append(audioCodecs, codec)
+	// The original file plays any codec the device decodes (including player
+	// software decoders listed under original_http.audio_decode_codecs on
+	// tablets without an AV receiver) or bitstreams to a receiver.
+	appendUnique := func(dst []string, items ...string) []string {
+		for _, item := range items {
+			if item = strings.ToLower(strings.TrimSpace(item)); item != "" && !slices.Contains(dst, item) {
+				dst = append(dst, item)
+			}
+		}
+		return dst
+	}
+	videoCodecs := appendUnique(nil, b.Capabilities.Video...)
+	audioCodecs := appendUnique(nil, b.Capabilities.Audio...)
+	audioCodecs = appendUnique(audioCodecs, b.Capabilities.AudioPassthrough.PassthroughCodecs...)
+	containers := appendUnique(nil, b.Capabilities.Containers...)
+	hdr10 := b.Capabilities.HDR
+	var dvProfiles []int
+	mergeHDR := func(h *siloHDRDetails) {
+		if h == nil {
+			return
+		}
+		if h.HDR10 || h.HDR10Plus || h.HLG {
+			hdr10 = true
+		}
+		for _, p := range h.DVProfiles {
+			if p > 0 && !slices.Contains(dvProfiles, p) {
+				dvProfiles = append(dvProfiles, p)
+			}
+		}
+		for _, pl := range h.DVProfileLevels {
+			if pl.Profile > 0 && !slices.Contains(dvProfiles, pl.Profile) {
+				dvProfiles = append(dvProfiles, pl.Profile)
 			}
 		}
 	}
-	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Platform: d.Platform, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: b.Capabilities.Video, AudioCodecs: audioCodecs, Containers: b.Capabilities.Containers, MaxHeight: height, HDR10: b.Capabilities.HDR}, UserAgent: r.UserAgent()})
+	mergeHDR(b.Capabilities.HDRDetails)
+	if original, ok := b.Context.Deliveries["original_http"]; ok && original.Enabled && original.Supported {
+		videoCodecs = appendUnique(videoCodecs, original.VideoCodecs...)
+		audioCodecs = appendUnique(audioCodecs, original.AudioDecode...)
+		audioCodecs = appendUnique(audioCodecs, original.AudioPassthrough...)
+		containers = appendUnique(containers, original.Containers...)
+		mergeHDR(original.HDRDetails)
+	}
+	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Platform: d.Platform, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: videoCodecs, AudioCodecs: audioCodecs, Containers: containers, MaxHeight: height, HDR10: hdr10, DolbyVision: len(dvProfiles) > 0, DVProfiles: dvProfiles}, UserAgent: r.UserAgent()})
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
@@ -177,7 +231,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		pos = i.skipIntroAtStart(r, v, scope, key, versionHandle, pos)
 		b.Position = float64(pos) / float64(time.Second)
 	}
-	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(b.Capabilities.Video) > 0}})
+	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(videoCodecs) > 0}})
 	if err != nil {
 		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 			i.versionUnavailable(w, err, "plan")
@@ -844,6 +898,12 @@ func intentReplan(operation string) bool {
 	return operation == "track_change" || operation == "quality_change"
 }
 
+// nonFailureReplan reports an operation that is not a playback route failure
+// and therefore may legitimately carry an empty attempted_plan_keys list.
+func nonFailureReplan(operation string) bool {
+	return intentReplan(operation) || operation == "seek_reanchor" || operation == "output_change"
+}
+
 type replanRoute struct {
 	delivery string
 	format   frontend.StreamFormat
@@ -867,10 +927,14 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b replanRequest
+	if err := json.Unmarshal(raw, &b); err != nil {
+		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is missing a required field.")
+		return
+	}
 	if b.Quality == "" {
 		b.Quality = "auto"
 	}
-	if json.Unmarshal(raw, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.ReplanID == "" || b.FailedPlan == "" || b.PlanAttempt == "" || b.PlanKey == "" || b.Quality == "" || b.AttemptCount < 1 || (len(b.Attempted) == 0 && !intentReplan(b.Operation)) || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) {
+	if b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.ReplanID == "" || b.FailedPlan == "" || b.PlanAttempt == "" || b.PlanKey == "" || b.AttemptCount < 1 || (len(b.Attempted) == 0 && !nonFailureReplan(b.Operation)) || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) {
 		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is missing a required field.")
 		return
 	}
@@ -924,7 +988,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 			attempted[k] = true
 		}
 	}
-	if b.Operation != "seek_reanchor" {
+	if !nonFailureReplan(b.Operation) {
 		if b.PlanKey != "" {
 			attempted[b.PlanKey] = true
 		}
@@ -944,7 +1008,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 	nextKey := currentKey
 	nextReason, _ := plan["decision_reason"].(string)
 
-	routeFailed := b.Operation != "seek_reanchor" && (attempted[currentKey] || attempted[currentPlanID] || b.Operation == "failure_recovery")
+	routeFailed := !nonFailureReplan(b.Operation) && (attempted[currentKey] || attempted[currentPlanID] || b.Operation == "failure_recovery")
 	if routeFailed {
 		var ladder []replanRoute
 		switch currentDelivery {
@@ -989,7 +1053,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 			playbackError(w, err)
 			return
 		}
-		if b.Operation != "seek_reanchor" && attempted[nextKey] {
+		if !nonFailureReplan(b.Operation) && attempted[nextKey] {
 			siloAdaptationUnavailable(w, id)
 			return
 		}
@@ -1272,9 +1336,23 @@ func withoutNativeSubtitles(plan map[string]any) {
 }
 
 // siloServerFeatures are the playback features every plan document declares.
-// The subtitle rendition features tell the player that a server HLS stream
-// can carry its embedded text track (transcode and copy remux alike).
-var siloServerFeatures = []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1", "hls_subtitle_renditions_v1", "hls_remux_subtitle_renditions_v1"}
+// Each name corresponds to a contract Ether implements: native embedded tracks,
+// seek re-anchoring on offset HLS streams, direct-stream resume, route event
+// diagnostics, active quality reporting, and HLS text subtitle renditions.
+var siloServerFeatures = []string{
+	"playback_plan_v3",
+	"neutral_playback_v3_contract_v1",
+	"embedded_subtitles_v1",
+	"playback_route_diagnostics",
+	"seek_reanchor_v1",
+	"direct_stream_resume_v1",
+	"header_authenticated_media_v1",
+	"sequenced_progress_v1",
+	"plan_source_duration_v1",
+	"plan_active_quality_v1",
+	"hls_subtitle_renditions_v1",
+	"hls_remux_subtitle_renditions_v1",
+}
 
 // replanSelection answers a track or quality pick within the playing
 // session: the plan names the new audio and subtitle selection, and a server

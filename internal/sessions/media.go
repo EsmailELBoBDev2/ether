@@ -469,7 +469,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		live.httpExt = httpExt
 		live.streamPosition = req.Position
 		live.segmentDuration = req.SegmentDuration
-		if tracksChanged {
+		if tracksChanged || reencode {
 			live.opts = s.opts
 			live.decision = dec
 			live.qualityCapped = s.qualityCapped

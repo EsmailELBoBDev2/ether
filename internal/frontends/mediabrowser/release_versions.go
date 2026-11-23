@@ -226,7 +226,7 @@ func (i *instance) applyProbedMediaFacts(source map[string]any, itemID string, i
 	}
 	id, _ := source["Id"].(string)
 	probed := i.detailMediaSourceDTO(id, info)
-	for _, field := range []string{"MediaStreams", "Container", "Size", "RunTimeTicks", "Bitrate"} {
+	for _, field := range []string{"MediaStreams", "Container", "Size", "RunTimeTicks", "Bitrate", "Chapters"} {
 		if val, ok := probed[field]; ok {
 			source[field] = val
 		}

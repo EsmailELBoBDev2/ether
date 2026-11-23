@@ -634,7 +634,8 @@ func (c ClientCaps) SupportsAudio(codec string) bool {
 	}
 	want := canonicalAudioCodec(codec)
 	for _, v := range c.AudioCodecs {
-		if v == codec || canonicalAudioCodec(v) == want {
+		got := canonicalAudioCodec(v)
+		if v == codec || got == want || (want == "dts" && got == "dtshd") {
 			return true
 		}
 	}
@@ -681,6 +682,12 @@ func canonicalAudioCodec(codec string) string {
 		return "eac3"
 	case "ac-3":
 		return "ac3"
+	case "dca":
+		return "dts"
+	case "dts-hd", "dtshd_ma", "dca-ma":
+		return "dtshd"
+	case "mlp":
+		return "truehd"
 	}
 	return s
 }

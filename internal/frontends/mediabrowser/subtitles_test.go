@@ -141,7 +141,13 @@ func TestPlaybackInfoDirectPlayEmbedsDeclaredSubtitleFormats(t *testing.T) {
 	viewer := &frontend.Viewer{ID: 1}
 	broker := hlsSubtitleFake{baseSessions: frontendtest.Sessions{
 		PlanFunc: func(context.Context, frontend.PlanRequest) (frontend.PlayPlan, error) {
-			return frontend.PlayPlan{ID: "plan", Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true, Media: frontend.MediaInfo{Container: "mkv", Size: 1 << 30, Streams: []frontend.StreamInfo{{Type: "subtitle", Index: 2, Codec: "subrip"}, {Type: "subtitle", Index: 4, Codec: "ass"}}}}, nil
+			return frontend.PlayPlan{ID: "plan", Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true, Media: frontend.MediaInfo{Container: "mkv", Size: 1 << 30, Streams: []frontend.StreamInfo{
+				{Type: "subtitle", Index: 2, Codec: "subrip"},
+				{Type: "subtitle", Index: 3, Codec: "vobsub"},
+				{Type: "subtitle", Index: 4, Codec: "ass"},
+				{Type: "subtitle", Index: 5, Codec: "mov_text"},
+				{Type: "subtitle", Index: 6, Codec: "webvtt"},
+			}}}, nil
 		},
 		OpenFunc: func(context.Context, frontend.OpenRequest) (frontend.Session, error) {
 			return frontend.Session{ID: "session"}, nil
@@ -156,7 +162,7 @@ func TestPlaybackInfoDirectPlayEmbedsDeclaredSubtitleFormats(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/Items/"+ids.RatingKeyGUID(5)+"/PlaybackInfo", strings.NewReader(`{"IsPlayback":true,"DeviceProfile":{"SubtitleProfiles":[{"Format":"srt","Method":"Embed"},{"Format":"vtt","Method":"External"}]}}`))
+	r := httptest.NewRequest("POST", "/Items/"+ids.RatingKeyGUID(5)+"/PlaybackInfo", strings.NewReader(`{"IsPlayback":true,"DeviceProfile":{"SubtitleProfiles":[{"Format":"srt","Method":"Embed"},{"Format":"dvdsub","Method":"Embed"},{"Format":"ssa","Method":"Embed"},{"Format":"tx3g","Method":"Embed"},{"Format":"vtt","Method":"External"}]}}`))
 	r.Header.Set("X-Emby-Token", "grant")
 	inst.Handler().ServeHTTP(w, r)
 	var body struct {
@@ -173,10 +179,12 @@ func TestPlaybackInfoDirectPlayEmbedsDeclaredSubtitleFormats(t *testing.T) {
 			streams[s["Index"].(float64)] = s
 		}
 	}
-	if s := streams[2]; s == nil || s["DeliveryMethod"] != "Embed" || s["DeliveryUrl"] != nil {
-		t.Fatalf("embedded SubRip: %v", s)
+	for _, idx := range []float64{2, 3, 4, 5} {
+		if s := streams[idx]; s == nil || s["DeliveryMethod"] != "Embed" || s["DeliveryUrl"] != nil {
+			t.Fatalf("embedded subtitle index %.0f: %v", idx, s)
+		}
 	}
-	if s := streams[4]; s == nil || s["DeliveryMethod"] != "External" || s["DeliveryUrl"] != "/sessions/media/session/scoped/subtitles/4.vtt" {
-		t.Fatalf("undeclared ASS: %v", s)
+	if s := streams[6]; s == nil || s["DeliveryMethod"] != "External" || s["DeliveryUrl"] != "/sessions/media/session/scoped/subtitles/6.vtt" {
+		t.Fatalf("external VTT: %v", s)
 	}
 }

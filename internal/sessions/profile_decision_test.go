@@ -408,3 +408,117 @@ func TestProfileDecisionPreservesHDROnHEVCDownscale(t *testing.T) {
 		t.Fatalf("expected 720p HDR-preserving HEVC transcode, got %+v", d)
 	}
 }
+
+// An Android TV profile that excludes only unsupported ranges (Wholphin /
+// Jellyfin Android TV) must direct-play unexcluded Dolby Vision 8.1 instead
+// of tripping Android's hdr10BaseReason and falling back to an H.264 encode.
+func TestApplyProfileRangeCapsAndroidTVDolbyVision(t *testing.T) {
+	no := false
+	info := core.MediaInfo{
+		Container:   "mkv",
+		BitrateKbps: 24000,
+		Streams: []core.StreamInfo{
+			{
+				Index:                      0,
+				Type:                       "video",
+				Codec:                      "hevc",
+				Profile:                    "Main 10",
+				Width:                      3840,
+				Height:                     2160,
+				FrameRate:                  24,
+				BitDepth:                   10,
+				PixelFormat:                "yuv420p10le",
+				ColorPrimaries:             "bt2020",
+				ColorTransfer:              "smpte2084",
+				ColorSpace:                 "bt2020nc",
+				DolbyVision:                true,
+				DolbyVisionProfile:         8,
+				DolbyVisionCompatibilityID: 1,
+				DolbyVisionELPresent:       &no,
+			},
+			{Index: 1, Type: "audio", Codec: "truehd", Channels: 8, Default: true},
+		},
+	}
+	makeCaps := func(excluded string) core.ClientCaps {
+		var codecs []core.ClientCodecProfile
+		if excluded != "" {
+			codecs = []core.ClientCodecProfile{{
+				MediaType:       "video",
+				Codecs:          []string{"hevc"},
+				ApplyConditions: []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "EqualsAny", Value: excluded}},
+				Conditions:      []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "NotEquals", Value: excluded}},
+			}}
+		}
+		return core.ClientCaps{
+			Protocol:    "jellyfin",
+			Product:     "Wholphin",
+			Platform:    "Android",
+			Device:      "SHIELD Android TV",
+			Containers:  []string{"mkv", "mp4"},
+			VideoCodecs: []string{"h264", "hevc"},
+			AudioCodecs: []string{"aac", "ac3", "eac3", "truehd"},
+			Profiles: &core.ClientCapabilityProfiles{
+				DirectPlay:  []core.ClientDirectPlayProfile{{MediaType: "video", Containers: []string{"mkv"}, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3", "truehd"}}},
+				Codecs:      codecs,
+				Transcoding: []core.ClientTranscodeProfile{{MediaType: "video", Delivery: "hls", Containers: []string{"ts"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"ac3", "aac"}, MaxAudioChannels: "6"}},
+			},
+		}
+	}
+	b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, Transcoder: profileTranscoder{}}}
+
+	// Only HDR10Plus excluded: DV 8.1 stays direct play.
+	d, err := b.decideProfile(&core.PlaySession{Info: info}, frontend.PlanRequest{
+		Caps:   makeCaps("HDR10Plus"),
+		Intent: frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 1, SubtitleStream: -1}},
+	})
+	if err != nil || d.Kind != core.DecisionDirectPlay || !d.VideoCopy || !d.AudioCopy {
+		t.Fatalf("DV-capable Android TV should direct-play DV 8.1, got %+v (err=%v)", d, err)
+	}
+
+	// DV explicitly excluded: profile does not claim DV and rejects DV direct play.
+	noDVCaps := applyProfileRangeCaps(makeCaps("DOVI|DOVIWithHDR10"))
+	if noDVCaps.DolbyVision || !noDVCaps.HDR10 {
+		t.Fatalf("non-DV HDR10 TV caps = HDR10:%v DV:%v, want HDR10:true DV:false", noDVCaps.HDR10, noDVCaps.DolbyVision)
+	}
+}
+
+// When direct play cannot be used (for example an audio-track switch that
+// needs an audio transcode) and an earlier streaming profile is H.264-only
+// while a later profile accepts HEVC, decideProfile must prefer copying the
+// video over encoding it.
+func TestDecideProfilePrefersVideoCopyAcrossTranscodingProfiles(t *testing.T) {
+	info := core.MediaInfo{
+		Container:   "mkv",
+		BitrateKbps: 20000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160, FrameRate: 24, BitDepth: 10, ColorTransfer: "smpte2084"},
+			{Index: 1, Type: "audio", Codec: "truehd", Channels: 8},
+			{Index: 2, Type: "audio", Codec: "dts", Channels: 6},
+		},
+	}
+	profiles := &core.ClientCapabilityProfiles{
+		DirectPlay: []core.ClientDirectPlayProfile{{MediaType: "video", Containers: []string{"mkv"}, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"truehd"}}},
+		Transcoding: []core.ClientTranscodeProfile{
+			{MediaType: "video", Delivery: "hls", Containers: []string{"ts"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"ac3", "aac"}, MaxAudioChannels: "6"},
+			{MediaType: "video", Delivery: "hls", Containers: []string{"mp4"}, VideoCodecs: []string{"hevc", "h264"}, AudioCodecs: []string{"eac3", "ac3", "aac"}, MaxAudioChannels: "6"},
+		},
+	}
+	caps := core.ClientCaps{
+		Protocol:    "jellyfin",
+		Product:     "Wholphin",
+		Platform:    "Android",
+		HDR10:       true,
+		Containers:  []string{"mkv"},
+		VideoCodecs: []string{"h264", "hevc"},
+		AudioCodecs: []string{"truehd", "eac3", "ac3", "aac"},
+		Profiles:    profiles,
+	}
+	b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, Transcoder: profileTranscoder{}}}
+	d, err := b.decideProfile(&core.PlaySession{Info: info}, frontend.PlanRequest{
+		Caps:   caps,
+		Intent: frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 2, SubtitleStream: -1}},
+	})
+	if err != nil || d.Kind != core.DecisionRemux || !d.VideoCopy || d.VideoCodec != "hevc" || d.AudioCopy {
+		t.Fatalf("audio switch across transcoding profiles = %+v (err=%v), want HEVC video copy + audio transcode", d, err)
+	}
+}

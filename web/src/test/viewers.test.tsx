@@ -1068,6 +1068,7 @@ it("omits the per-viewer Downloads control on the owner's Limits tab", async () 
   renderApp("/viewers/1/limits");
   await screen.findByLabelText("No video transcoding", {}, WAIT);
   expect(screen.queryByRole("radiogroup", { name: "Downloads" })).toBeNull();
+});
 
 it("lists active sign-in lockouts and supports Clear and Clear all", async () => {
   const { fake } = renderApp("/viewers");

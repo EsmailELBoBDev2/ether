@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/agent/tools"
@@ -121,6 +122,9 @@ type Deps struct {
 
 // Manager is the plugin host. It is safe for concurrent use.
 type Manager struct {
+	// viewerState backs the kinds.state / kinds.favorite / kinds.played /
+	// kinds.rate / kinds.favorites / kinds.playlist* host services.
+	viewerState        atomic.Pointer[KindViewerState]
 	archiveDirectories archiveDirectoryCache
 	hashMu             sync.Mutex
 	hashJobs           map[string]*folderHashWork

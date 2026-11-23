@@ -850,7 +850,7 @@ export interface FrontendAdapterMeta {
   pathPrefix: string;
   defaultPort?: number;
   clients?: string[];
-  auth?: "ether_token" | "basic" | "none_lan";
+  auth?: "ether_token" | "basic" | "none_lan" | "query_credentials";
   libraries?: string[];
   /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
   searchPaths?: string[];

@@ -1100,7 +1100,7 @@ type FrontendAdapterMeta struct {
 	PathPrefix   string   `json:"pathPrefix"`
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
-	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan|query_credentials
 	// Libraries lists the plugin's media-kind keys this adapter publishes.
 	// Ether resolves each key to the library the kind created and admits a
 	// viewer only to the libraries they may see; a viewer who sees none of
@@ -1172,9 +1172,32 @@ type FrontendBlob struct {
 	MemberIndex *int   `json:"memberIndex,omitempty"`
 }
 
+// FrontendMedia asks Ether to serve one of the plugin's own playable kind
+// items to the authenticated adapter viewer, at the adapter URL itself, with
+// Range support. Ether re-checks ownership and library visibility exactly as
+// frontend.streamURL does; the bytes never pass through the plugin. It suits
+// protocols whose clients do not follow redirects or re-request ranges long
+// after a stream ticket would have expired.
+type FrontendMedia struct {
+	ItemRef   string `json:"itemRef"`
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
+// FrontendArt asks Ether to serve the stored artwork of one of the plugin's
+// own kind items (role poster, thumb, backdrop or logo; empty picks the
+// first). Ether fetches and caches the image itself, so a plugin cannot use it
+// to proxy arbitrary URLs.
+type FrontendArt struct {
+	ItemRef string `json:"itemRef"`
+	Role    string `json:"role,omitempty"`
+}
+
 // Response is a plugin's answer to a Request.
 type Response struct {
 	Blob    *FrontendBlob     `json:"blob,omitempty"`
+	Media   *FrontendMedia    `json:"media,omitempty"`
+	Art     *FrontendArt      `json:"art,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`

@@ -537,7 +537,7 @@ type FrontendAdapterMeta struct {
 	PathPrefix   string   `json:"pathPrefix"`
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
-	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan|query_credentials
 	Libraries    []string `json:"libraries,omitempty"`
 	// SearchPaths optionally lists adapter subpaths (such as "/search",
 	// "/rest/search3", or "/graphql") allowed to call ai.complete when

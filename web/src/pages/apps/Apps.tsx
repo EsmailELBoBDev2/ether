@@ -1009,6 +1009,17 @@ function ProtocolSettings({
         ) : null}
         {(id === "jellyfin" || id === "emby") && !hidden ? <APIKeysSection id={id} /> : null}
         {id === "xtream" && info?.enabled ? <XtreamLogins /> : null}
+        {id.startsWith("plugin:") &&
+        info?.enabled &&
+        info.descriptor.auth === "query_credentials" ? (
+          <XtreamLogins
+            surface={id}
+            title={t("App logins")}
+            description={t("Each viewer signs in to {app} apps with their own app login.", {
+              app: info.descriptor.name || id,
+            })}
+          />
+        ) : null}
         {id === "jellyfin" || id === "emby" ? (
           <SettingsSection
             title={t("Home")}

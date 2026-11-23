@@ -55,6 +55,10 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth, err := inst.auth.authenticate(r.Context(), r)
 		if err != nil {
+			if f.decl.Meta.Auth == AuthQueryCredentials && errors.Is(err, errUnauthenticated) {
+				f.relayUnauthenticated(w, r, inst)
+				return
+			}
 			writeAuthError(w, err)
 			return
 		}
@@ -72,7 +76,7 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			PluginID: f.decl.PluginID,
 			Method:   r.Method,
 			Path:     pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
-			Query:    firstValues(r.URL.Query()),
+			Query:    firstValues(f.pluginQuery(r)),
 			Headers:  outboundHeaders(r, auth),
 		}
 		if len(body) > 0 {
@@ -99,6 +103,13 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			f.writeBlob(w, r, auth, resp)
 			return
 		}
+		if resp.Media != nil || resp.Art != nil {
+			if stream != nil {
+				stream.Close()
+			}
+			f.writeHostMedia(w, r, auth, resp)
+			return
+		}
 		if stream != nil {
 			defer stream.Close()
 			writeStream(w, resp, stream)
@@ -106,6 +117,68 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 		}
 		writeResponse(w, resp)
 	})
+}
+
+// UnauthenticatedPath is the reserved plugin sub-path under which a
+// query-credentials adapter receives requests that carried no valid
+// credentials. They arrive without any viewer identity, so the plugin can
+// answer only with its protocol's authentication error or a public document
+// (for example a capabilities list the protocol defines as auth-free).
+const UnauthenticatedPath = "/.unauthenticated"
+
+// anonymousViewer is the shared rate-limit bucket for unauthenticated relays.
+const anonymousViewer int64 = 0
+
+// pluginQuery is the query the plugin sees: query credentials are removed so
+// the plugin never receives a password or a token.
+func (f *Frontend) pluginQuery(r *http.Request) map[string][]string {
+	if f.decl.Meta.Auth == AuthQueryCredentials {
+		return stripQueryCredentials(r.URL.Query())
+	}
+	return r.URL.Query()
+}
+
+// relayUnauthenticated forwards a request without valid query credentials to
+// the plugin under UnauthenticatedPath, with no viewer identity, so the client
+// gets the protocol's own error document instead of a bare HTTP 401. Relays
+// share one anonymous rate-limit bucket; anything the plugin cannot answer
+// falls back to 401.
+func (f *Frontend) relayUnauthenticated(w http.ResponseWriter, r *http.Request, inst *instance) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
+		writeAuthError(w, errUnauthenticated)
+		return
+	}
+	if !inst.limits.allow(anonymousViewer, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
+	headers := make(map[string]string, len(forwardedRequestHeaders))
+	for _, name := range forwardedRequestHeaders {
+		if v := r.Header.Get(name); v != "" {
+			headers[name] = v
+		}
+	}
+	req := plugins.Request{
+		PluginID: f.decl.PluginID,
+		Method:   r.Method,
+		Path:     pluginPath(f.decl.Meta.Key, UnauthenticatedPath+stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
+		Query:    firstValues(f.pluginQuery(r)),
+		Headers:  headers,
+	}
+	resp, stream, err := f.call(r.Context(), req)
+	if stream != nil {
+		defer stream.Close()
+	}
+	if err != nil || resp.Blob != nil || resp.Media != nil || resp.Art != nil || resp.Status == http.StatusNotFound {
+		writeAuthError(w, errUnauthenticated)
+		return
+	}
+	if stream != nil {
+		writeStream(w, resp, stream)
+		return
+	}
+	writeResponse(w, resp)
 }
 
 // call relays one request. It streams when the plugin runtime supports it
@@ -196,6 +269,9 @@ func headerValue(headers map[string]string, name string) string {
 // answer 401 with a Basic challenge so readers prompt for one.
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errRateLimited):
+		w.Header().Set("Retry-After", "900")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	case errors.Is(err, errNotVisible):
 		http.Error(w, "not found", http.StatusNotFound)
 	default:

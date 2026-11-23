@@ -219,7 +219,19 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
 		}
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
+	var media *FrontendMedia
+	if len(resp.Media) > 0 && string(resp.Media) != "null" {
+		if err := json.Unmarshal(resp.Media, &media); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend media response: %w", err)
+		}
+	}
+	var art *FrontendArt
+	if len(resp.Art) > 0 && string(resp.Art) != "null" {
+		if err := json.Unmarshal(resp.Art, &art); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend art response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob, Media: media, Art: art}, nil
 }
 
 func (r *hostedRuntime) Close() error              { return r.p.Close() }
@@ -387,6 +399,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		}
 		out, err := json.Marshal(v)
 		return out, err
+	}
+	if strings.HasPrefix(name, "kinds.") {
+		if vs, ok := b.h.(interface {
+			callViewerState(context.Context, string, []json.RawMessage) (any, error, bool)
+		}); ok {
+			if v, err, handled := vs.callViewerState(ctx, name, args); handled {
+				return result(v, err)
+			}
+		}
 	}
 	switch name {
 	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "cache.rasterize", "archive.list", "archive.open", "archive.read", "archive.extract":

@@ -874,8 +874,15 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		if want == "" {
 			return true
 		}
-		name := strings.ReplaceAll(f.Path, "\\", "/")
-		if strings.TrimPrefix(name, "/") == strings.TrimPrefix(want, "/") {
+		name := strings.TrimPrefix(strings.ReplaceAll(f.Path, "\\", "/"), "/")
+		want = strings.TrimPrefix(want, "/")
+		if name == want {
+			return true
+		}
+		// Providers list the same torrent with and without its root folder
+		// (Real-Debrid "/01.flac", TorBox "Album/01.flac"), so a path that is
+		// the other's suffix on a folder boundary is the same file.
+		if strings.HasSuffix(name, "/"+want) || strings.HasSuffix(want, "/"+name) {
 			return true
 		}
 		return !strings.Contains(want, "/") && path.Base(name) == want

@@ -52,14 +52,14 @@ type plexServersView struct {
 // started on its own.
 const recentActivation = 7 * 24 * time.Hour
 
-func (a *App) plexServersStatus(ctx context.Context) any {
-	if a.plexServers == nil {
+func (a *App) plexExtrasStatus(ctx context.Context) any {
+	if a.plexExtras == nil {
 		return nil
 	}
-	return a.plexServers.view(ctx)
+	return a.plexExtras.view(ctx)
 }
 
-func (ps *plexServers) view(ctx context.Context) plexServersView {
+func (ps *plexExtras) view(ctx context.Context) plexServersView {
 	cfg := ps.app.cfg.Get()
 	used := ps.seatsUsed(ctx)
 	out := plexServersView{
@@ -93,20 +93,20 @@ func (ps *plexServers) view(ctx context.Context) plexServersView {
 	return out
 }
 
-// plexServersAdmin is the console API (admin.PlexServers).
-type plexServersAdmin struct {
+// plexExtrasAdmin is the console API (admin.PlexExtras).
+type plexExtrasAdmin struct {
 	app  *App
 	mu   *sync.Mutex
 	pins map[string]*plextv.PIN
 }
 
-func newPlexServersAdmin(a *App) plexServersAdmin {
-	return plexServersAdmin{app: a, mu: &sync.Mutex{}, pins: map[string]*plextv.PIN{}}
+func newPlexExtrasAdmin(a *App) plexExtrasAdmin {
+	return plexExtrasAdmin{app: a, mu: &sync.Mutex{}, pins: map[string]*plextv.PIN{}}
 }
 
-func (p plexServersAdmin) Status(ctx context.Context) any { return p.app.plexServers.view(ctx) }
+func (p plexExtrasAdmin) Status(ctx context.Context) any { return p.app.plexExtras.view(ctx) }
 
-func (p plexServersAdmin) StartPIN(ctx context.Context) (id, code, authURL string, err error) {
+func (p plexExtrasAdmin) StartPIN(ctx context.Context) (id, code, authURL string, err error) {
 	if p.app.registrar == nil {
 		return "", "", "", errors.New("plex.tv is not available")
 	}
@@ -125,7 +125,7 @@ func (p plexServersAdmin) StartPIN(ctx context.Context) (id, code, authURL strin
 	return id, pin.Code, c.AuthURL(pin, ""), nil
 }
 
-func (p plexServersAdmin) PollPIN(ctx context.Context, id string) (bool, any, error) {
+func (p plexExtrasAdmin) PollPIN(ctx context.Context, id string) (bool, any, error) {
 	p.mu.Lock()
 	pin := p.pins[id]
 	p.mu.Unlock()
@@ -142,19 +142,19 @@ func (p plexServersAdmin) PollPIN(ctx context.Context, id string) (bool, any, er
 	p.mu.Lock()
 	delete(p.pins, id)
 	p.mu.Unlock()
-	added, err := p.app.plexServers.addAccount(ctx, got.AuthToken)
+	added, err := p.app.plexExtras.addAccount(ctx, got.AuthToken)
 	if err != nil {
 		return false, nil, err
 	}
 	return true, map[string]any{"id": added.ID, "account": added.Account.Username, "state": added.State}, nil
 }
 
-func (p plexServersAdmin) Start(ctx context.Context, id string) error {
-	return p.app.plexServers.activate(ctx, id)
+func (p plexExtrasAdmin) Start(ctx context.Context, id string) error {
+	return p.app.plexExtras.activate(ctx, id)
 }
 
-func (p plexServersAdmin) Rename(id, name string) error { return p.app.plexServers.rename(id, name) }
+func (p plexExtrasAdmin) Rename(id, name string) error { return p.app.plexExtras.rename(id, name) }
 
-func (p plexServersAdmin) Remove(ctx context.Context, id string) error {
-	return p.app.plexServers.remove(ctx, id)
+func (p plexExtrasAdmin) Remove(ctx context.Context, id string) error {
+	return p.app.plexExtras.remove(ctx, id)
 }

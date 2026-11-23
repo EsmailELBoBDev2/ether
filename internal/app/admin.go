@@ -86,8 +86,8 @@ func (a *App) buildAdmin() http.Handler {
 		LogDir:           filepath.Join(a.opts.DataDir, "logs"),
 		Version:          a.opts.Version,
 		PlexAuth:         &plexAuth{app: a, pins: map[string]*plextv.PIN{}},
-		PlexServers:       newPlexServersAdmin(a),
-		PlexServersStatus: a.plexServersStatus,
+		PlexExtras:       newPlexExtrasAdmin(a),
+		PlexExtrasStatus:  a.plexExtrasStatus,
 		SignIn:           &plexSignIn{app: a, pins: map[string]*plextv.PIN{}},
 		IsOwnerToken: func(ctx context.Context) func(context.Context, string) bool {
 			return func(ctx context.Context, token string) bool {
@@ -378,10 +378,10 @@ func (a *App) plexWatchAPI() admin.PlexWatch {
 // sharePlexViewerNoSync invites a viewer on the first Plex server with a free
 // seat: the main server, then the active extra servers, oldest first.
 func (a *App) sharePlexViewerNoSync(ctx context.Context, usernameOrEmail string, userID int64) error {
-	if a.plexServers == nil {
+	if a.plexExtras == nil {
 		return a.shareOnMainServer(ctx, usernameOrEmail, userID)
 	}
-	id, err := a.plexServers.share(ctx, usernameOrEmail, userID)
+	id, err := a.plexExtras.share(ctx, usernameOrEmail, userID)
 	if err == nil && id != "" {
 		a.log.Info("viewer invited on an extra plex server", "server", id)
 	}
@@ -408,8 +408,8 @@ func (a *App) syncPlexFriends(ctx context.Context) error {
 	if a.registrar == nil {
 		return nil
 	}
-	if a.plexServers != nil {
-		return a.plexServers.syncAll(ctx)
+	if a.plexExtras != nil {
+		return a.plexExtras.syncAll(ctx)
 	}
 	return a.registrar.SyncFriendsNow(ctx)
 }

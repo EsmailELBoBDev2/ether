@@ -6,10 +6,10 @@ import (
 	"net/http"
 )
 
-// PlexServers manages extra Plex servers: each is claimed by a different
+// PlexExtras manages extra Plex servers: each is claimed by a different
 // plex.tv account and served on the same port as the main server, so viewers
 // beyond one account's share limit get seats (config.PlexExtraServer).
-type PlexServers interface {
+type PlexExtras interface {
 	// Status lists the servers with their seats and the capacity warning.
 	Status(ctx context.Context) any
 	// StartPIN begins a plex.tv sign-in for another account.
@@ -29,24 +29,24 @@ type PlexServers interface {
 // of the servers.
 var ErrPlexAccountInUse = errors.New("plex account already used")
 
-func (h *Handler) plexServers(w http.ResponseWriter) (PlexServers, bool) {
-	if h.deps.PlexServers == nil {
+func (h *Handler) plexExtras(w http.ResponseWriter) (PlexExtras, bool) {
+	if h.deps.PlexExtras == nil {
 		writeError(w, http.StatusNotImplemented, "unavailable", "Extra Plex servers are not available on this server.")
 		return nil, false
 	}
-	return h.deps.PlexServers, true
+	return h.deps.PlexExtras, true
 }
 
-func (h *Handler) handlePlexServers(w http.ResponseWriter, r *http.Request) {
-	ps, ok := h.plexServers(w)
+func (h *Handler) handlePlexExtras(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, ps.Status(r.Context()))
 }
 
-func (h *Handler) handlePlexServerPINStart(w http.ResponseWriter, r *http.Request) {
-	ps, ok := h.plexServers(w)
+func (h *Handler) handlePlexExtraPINStart(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
 	if !ok {
 		return
 	}
@@ -60,8 +60,8 @@ func (h *Handler) handlePlexServerPINStart(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "code": code, "authUrl": authURL})
 }
 
-func (h *Handler) handlePlexServerPINPoll(w http.ResponseWriter, r *http.Request) {
-	ps, ok := h.plexServers(w)
+func (h *Handler) handlePlexExtraPINPoll(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
 	if !ok {
 		return
 	}
@@ -79,8 +79,8 @@ func (h *Handler) handlePlexServerPINPoll(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"done": done, "server": server})
 }
 
-func (h *Handler) handlePlexServerStart(w http.ResponseWriter, r *http.Request) {
-	ps, ok := h.plexServers(w)
+func (h *Handler) handlePlexExtraStart(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
 	if !ok {
 		return
 	}
@@ -93,8 +93,8 @@ func (h *Handler) handlePlexServerStart(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, ps.Status(r.Context()))
 }
 
-func (h *Handler) handlePlexServerRename(w http.ResponseWriter, r *http.Request) {
-	ps, ok := h.plexServers(w)
+func (h *Handler) handlePlexExtraRename(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
 	if !ok {
 		return
 	}
@@ -112,8 +112,8 @@ func (h *Handler) handlePlexServerRename(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, ps.Status(r.Context()))
 }
 
-func (h *Handler) handlePlexServerRemove(w http.ResponseWriter, r *http.Request) {
-	ps, ok := h.plexServers(w)
+func (h *Handler) handlePlexExtraRemove(w http.ResponseWriter, r *http.Request) {
+	ps, ok := h.plexExtras(w)
 	if !ok {
 		return
 	}

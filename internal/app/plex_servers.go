@@ -46,7 +46,7 @@ type plexServerRuntime struct {
 	cancel    context.CancelFunc
 }
 
-type plexServers struct {
+type plexExtras struct {
 	app *App
 	log *slog.Logger
 
@@ -62,8 +62,8 @@ type plexServers struct {
 	tokenServers sync.Map
 }
 
-func newPlexServers(a *App) *plexServers {
-	return &plexServers{
+func newPlexExtras(a *App) *plexExtras {
+	return &plexExtras{
 		app:     a,
 		log:     a.log.With("component", "plex-servers"),
 		running: map[string]*plexServerRuntime{},
@@ -109,7 +109,7 @@ func (s *plexServerStore) Subscribe(fn func(config.Config)) {
 
 // plexSeatCounter wraps a server's viewer sync to count its shares.
 type plexSeatCounter struct {
-	ps *plexServers
+	ps *plexExtras
 	id string // "" is the main server
 }
 
@@ -145,7 +145,7 @@ func (u plexSeatCounter) SyncFriends(ctx context.Context, friends []plextv.Frien
 	return err
 }
 
-func (ps *plexServers) noteSeats(id string, n int) {
+func (ps *plexExtras) noteSeats(id string, n int) {
 	ps.mu.Lock()
 	ps.seats[id] = n
 	ps.seatsAt[id] = time.Now()
@@ -155,7 +155,7 @@ func (ps *plexServers) noteSeats(id string, n int) {
 
 // seatsUsed is each server's share count: the last friend sync, else the
 // viewers the database records for it.
-func (ps *plexServers) seatsUsed(ctx context.Context) map[string]int {
+func (ps *plexExtras) seatsUsed(ctx context.Context) map[string]int {
 	out := map[string]int{}
 	if ps.app.users != nil {
 		if members, err := ps.app.users.ServerMembers(ctx); err == nil {
@@ -197,7 +197,7 @@ func standbyPlexOrder(c config.Config) []config.PlexExtraServer {
 }
 
 // start runs every active extra server. Called once the main registrar runs.
-func (ps *plexServers) start(ctx context.Context) {
+func (ps *plexExtras) start(ctx context.Context) {
 	ps.mu.Lock()
 	ps.ctx = ctx
 	ps.mu.Unlock()
@@ -209,7 +209,7 @@ func (ps *plexServers) start(ctx context.Context) {
 	go ps.loop(ctx)
 }
 
-func (ps *plexServers) loop(ctx context.Context) {
+func (ps *plexExtras) loop(ctx context.Context) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
@@ -222,7 +222,7 @@ func (ps *plexServers) loop(ctx context.Context) {
 	}
 }
 
-func (ps *plexServers) build(id string) (*plexServerRuntime, error) {
+func (ps *plexExtras) build(id string) (*plexServerRuntime, error) {
 	a := ps.app
 	store := &plexServerStore{base: a.cfg, id: id}
 	view := store.Get()
@@ -267,7 +267,7 @@ func (ps *plexServers) build(id string) (*plexServerRuntime, error) {
 }
 
 // run starts the extra server id's plex.tv presence (it must be claimed).
-func (ps *plexServers) run(ctx context.Context, id string) error {
+func (ps *plexExtras) run(ctx context.Context, id string) error {
 	ps.mu.Lock()
 	if _, ok := ps.running[id]; ok {
 		ps.mu.Unlock()
@@ -282,7 +282,7 @@ func (ps *plexServers) run(ctx context.Context, id string) error {
 }
 
 // runRuntime starts a built server's registrar and records it as running.
-func (ps *plexServers) runRuntime(ctx context.Context, rt *plexServerRuntime) error {
+func (ps *plexExtras) runRuntime(ctx context.Context, rt *plexServerRuntime) error {
 	id := rt.id
 	rctx, cancel := context.WithCancel(ctx)
 	rt.cancel = cancel
@@ -309,7 +309,7 @@ func (ps *plexServers) runRuntime(ctx context.Context, rt *plexServerRuntime) er
 	return nil
 }
 
-func (ps *plexServers) stop(id string) {
+func (ps *plexExtras) stop(id string) {
 	ps.mu.Lock()
 	rt := ps.running[id]
 	delete(ps.running, id)
@@ -324,7 +324,7 @@ func (ps *plexServers) stop(id string) {
 	rt.certs.Close()
 }
 
-func (ps *plexServers) close() {
+func (ps *plexExtras) close() {
 	ps.mu.Lock()
 	ids := make([]string, 0, len(ps.running))
 	for id := range ps.running {
@@ -336,14 +336,14 @@ func (ps *plexServers) close() {
 	}
 }
 
-func (ps *plexServers) runtime(id string) *plexServerRuntime {
+func (ps *plexExtras) runtime(id string) *plexServerRuntime {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return ps.running[id]
 }
 
 // activate claims the standby server id with its account and publishes it.
-func (ps *plexServers) activate(ctx context.Context, id string) error {
+func (ps *plexExtras) activate(ctx context.Context, id string) error {
 	cfg := ps.app.cfg.Get()
 	e, ok := cfg.PlexExtraServer(id)
 	if !ok {
@@ -392,7 +392,7 @@ func (ps *plexServers) activate(ctx context.Context, id string) error {
 
 // checkCapacity starts the first standby server once every active server is
 // almost full.
-func (ps *plexServers) checkCapacity(ctx context.Context) {
+func (ps *plexExtras) checkCapacity(ctx context.Context) {
 	if ps.app.registrar == nil {
 		return
 	}
@@ -425,7 +425,7 @@ func (ps *plexServers) checkCapacity(ctx context.Context) {
 
 // almostFull reports whether every active server (the main one included)
 // has reached the warning seat count.
-func (ps *plexServers) almostFull(ctx context.Context, cfg config.Config) bool {
+func (ps *plexExtras) almostFull(ctx context.Context, cfg config.Config) bool {
 	warn := cfg.PlexSeatWarning()
 	used := ps.seatsUsed(ctx)
 	if used[""] < warn {
@@ -441,7 +441,7 @@ func (ps *plexServers) almostFull(ctx context.Context, cfg config.Config) bool {
 
 // pick is the server a new invite goes to: the first, oldest first, with a
 // free seat. "" is the main server.
-func (ps *plexServers) pick(ctx context.Context) (string, error) {
+func (ps *plexExtras) pick(ctx context.Context) (string, error) {
 	cfg := ps.app.cfg.Get()
 	seats := cfg.PlexSeatsPerServer()
 	used := ps.seatsUsed(ctx)
@@ -464,7 +464,7 @@ func (ps *plexServers) pick(ctx context.Context) (string, error) {
 }
 
 // share invites a viewer on the server pick chose.
-func (ps *plexServers) share(ctx context.Context, usernameOrEmail string, userID int64) (string, error) {
+func (ps *plexExtras) share(ctx context.Context, usernameOrEmail string, userID int64) (string, error) {
 	id, err := ps.pick(ctx)
 	if err != nil {
 		return "", err
@@ -484,7 +484,7 @@ func (ps *plexServers) share(ctx context.Context, usernameOrEmail string, userID
 }
 
 // syncAll re-reads every server's friend list.
-func (ps *plexServers) syncAll(ctx context.Context) error {
+func (ps *plexExtras) syncAll(ctx context.Context) error {
 	var errs []error
 	if ps.app.registrar != nil {
 		if err := ps.app.registrar.SyncFriendsNow(ctx); err != nil {
@@ -508,7 +508,7 @@ func (ps *plexServers) syncAll(ctx context.Context) error {
 // syncOnUnknownToken lets an unknown Plex token trigger a re-read of every
 // server's access tokens (a viewer shared on an extra server since the last
 // sync).
-func (ps *plexServers) syncOnUnknownToken(ctx context.Context) error {
+func (ps *plexExtras) syncOnUnknownToken(ctx context.Context) error {
 	var errs []error
 	if ps.app.registrar != nil {
 		if err := ps.app.registrar.SyncFriendsOnUnknownToken(ctx); err != nil {
@@ -537,7 +537,7 @@ func (e errPlexAccountInUse) Error() string {
 }
 
 // addAccount stores a signed-in plex.tv account as a standby server.
-func (ps *plexServers) addAccount(ctx context.Context, token string) (config.PlexExtraServer, error) {
+func (ps *plexExtras) addAccount(ctx context.Context, token string) (config.PlexExtraServer, error) {
 	acct, err := ps.app.plextv.User(ctx, token)
 	if err != nil {
 		return config.PlexExtraServer{}, fmt.Errorf("plex.tv account: %w", err)
@@ -564,7 +564,7 @@ func (ps *plexServers) addAccount(ctx context.Context, token string) (config.Ple
 	return added, nil
 }
 
-func (ps *plexServers) rename(id, name string) error {
+func (ps *plexExtras) rename(id, name string) error {
 	name = strings.TrimSpace(name)
 	if len(name) > 64 {
 		return errors.New("name is longer than 64 characters")
@@ -587,7 +587,7 @@ func (ps *plexServers) rename(id, name string) error {
 }
 
 // remove signs the server out of plex.tv (if claimed) and forgets it.
-func (ps *plexServers) remove(ctx context.Context, id string) error {
+func (ps *plexExtras) remove(ctx context.Context, id string) error {
 	if rt := ps.runtime(id); rt != nil {
 		if err := rt.registrar.Unclaim(ctx); err != nil {
 			ps.log.Warn("extra plex server unclaim", "server", id, "err", err)
@@ -654,7 +654,7 @@ type tokenServerEntry struct {
 // serverForRequest names the extra server a request is for, or "" for the
 // main server: the plex.direct host it reached (each server has its own
 // certificate hash), else the server its token was issued for.
-func (ps *plexServers) serverForRequest(r *http.Request) string {
+func (ps *plexExtras) serverForRequest(r *http.Request) string {
 	cfg := ps.app.cfg.Get()
 	if len(cfg.PlexExtraServers) == 0 {
 		return ""
@@ -695,7 +695,7 @@ func (ps *plexServers) serverForRequest(r *http.Request) string {
 }
 
 // identityForRequest is the frontend.Host ServerIdentityFor hook.
-func (ps *plexServers) identityForRequest(r *http.Request) (frontend.ServerIdentity, bool) {
+func (ps *plexExtras) identityForRequest(r *http.Request) (frontend.ServerIdentity, bool) {
 	id := ps.serverForRequest(r)
 	if id == "" {
 		return frontend.ServerIdentity{}, false
@@ -710,7 +710,7 @@ func (ps *plexServers) identityForRequest(r *http.Request) (frontend.ServerIdent
 
 // tlsConfig serves each server's own plex.direct certificate on the shared
 // port, chosen by the name the client asked for.
-func (ps *plexServers) tlsConfig() *tls.Config {
+func (ps *plexExtras) tlsConfig() *tls.Config {
 	main := ps.app.certs
 	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		if hash := plexDirectHash(hello.ServerName); hash != "" {
@@ -731,16 +731,16 @@ func (ps *plexServers) tlsConfig() *tls.Config {
 // plexTLSConfig is the shared port's TLS config: each Plex server's own
 // plex.direct certificate.
 func (a *App) plexTLSConfig() *tls.Config {
-	if a.plexServers == nil {
+	if a.plexExtras == nil {
 		return a.certs.TLSConfig()
 	}
-	return a.plexServers.tlsConfig()
+	return a.plexExtras.tlsConfig()
 }
 
 // plexIdentityForRequest is the Plex front end's per-request identity hook.
 func (a *App) plexIdentityForRequest(r *http.Request) (frontend.ServerIdentity, bool) {
-	if a.plexServers == nil {
+	if a.plexExtras == nil {
 		return frontend.ServerIdentity{}, false
 	}
-	return a.plexServers.identityForRequest(r)
+	return a.plexExtras.identityForRequest(r)
 }

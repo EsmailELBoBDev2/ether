@@ -595,7 +595,8 @@ func (ps *plexExtras) remove(ctx context.Context, id string) error {
 	}
 	ps.stop(id)
 	if err := ps.app.cfg.Update(func(c *config.Config) error {
-		out := c.PlexExtraServers[:0]
+		// A new slice: the old one may still back a snapshot someone holds.
+		out := make([]config.PlexExtraServer, 0, len(c.PlexExtraServers))
 		found := false
 		for _, s := range c.PlexExtraServers {
 			if s.ID == id {

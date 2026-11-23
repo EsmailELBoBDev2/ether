@@ -15,7 +15,7 @@ export type PlexMoveResult = {
   toName?: string;
   inviteUrl?: string;
   acceptUrl?: string;
-  removed?: string[];
+  removeLater?: string[];
   error?: string;
 };
 
@@ -56,7 +56,7 @@ export function PlexMoveResults({ results }: { results: PlexMoveResult[] }) {
           total: results.length,
         })}{" "}
         {t(
-          "Each one has to accept the invite in a Plex app or on plex.tv. Their watch history and settings are already there.",
+          "Each one has to accept the invite in a Plex app or on plex.tv; their old server keeps working until then. Their watch history and settings are already there.",
         )}
       </p>
       {links ? (
@@ -77,8 +77,8 @@ export function PlexMoveResults({ results }: { results: PlexMoveResult[] }) {
                   ? r.error
                   : [
                       t("Invited on {name}", { name: r.toName || r.to }),
-                      r.removed?.length
-                        ? t("removed from {names}", { names: r.removed.join(", ") })
+                      r.removeLater?.length
+                        ? t("leaves {names} once they accept", { names: r.removeLater.join(", ") })
                         : "",
                     ]
                       .filter(Boolean)
@@ -181,7 +181,7 @@ export function PlexMovePanel({
             checked={removeOld}
             onChange={(e) => setRemoveOld(e.target.checked)}
           />
-          <span>{t("Remove them from the Plex server they are on now")}</span>
+          <span>{t("Take them off their current Plex server once they accept")}</span>
         </label>
         <p className="text-xs text-fg-muted">
           {t("They get a new Plex invite to accept. Watch history and settings stay.")}

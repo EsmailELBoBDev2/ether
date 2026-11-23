@@ -78,3 +78,59 @@ func TestExtraPlexServerMembership(t *testing.T) {
 		t.Fatalf("members after unshare = %v", members)
 	}
 }
+
+// A viewer with a local sign-in keeps the account when Plex stops sharing,
+// but every Plex credential of theirs stops working (audit P0).
+func TestLocalSignInSurvivesUnshareButPlexAccessEnds(t *testing.T) {
+	s, _, _ := setup(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS identity_links (viewer_id INTEGER, provider TEXT, password_hash TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := s.Authenticate(ctx, "alice-access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO identity_links (viewer_id, provider, password_hash) VALUES (?, 'local', 'x')`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncFriends(ctx, []plextv.Friend{
+		{Owned: true, Token: "owner-access", PlexID: 42},
+		{PlexID: 101, Username: "bob", Token: "bob-access", AllLibs: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	active := func() (bool, bool) {
+		all, err := s.AllUsers(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range all {
+			if u.ID == alice.ID {
+				return u.Active, u.PlexShared
+			}
+		}
+		t.Fatal("alice is gone")
+		return false, false
+	}
+	if a, shared := active(); !a || shared {
+		t.Fatalf("after unshare: active=%v plexShared=%v, want active and not shared", a, shared)
+	}
+	if _, err := s.Authenticate(ctx, "alice-access"); err == nil {
+		t.Fatal("alice's server access token still works")
+	}
+	// Her personal plex.tv token: plex.tv (the fake) says she has no access.
+	if _, err := s.Authenticate(ctx, "alice-device"); err == nil {
+		t.Fatal("alice's personal Plex token still works after Plex stopped sharing")
+	}
+	if a, _ := active(); !a {
+		t.Fatal("a refused Plex token switched off the local sign-in")
+	}
+	// A second sync leaves her as she is.
+	if err := s.SyncFriends(ctx, []plextv.Friend{{Owned: true, Token: "owner-access", PlexID: 42}, {PlexID: 101, Username: "bob", Token: "bob-access"}}); err != nil {
+		t.Fatal(err)
+	}
+	if a, shared := active(); !a || shared {
+		t.Fatalf("after a second sync: active=%v plexShared=%v", a, shared)
+	}
+}

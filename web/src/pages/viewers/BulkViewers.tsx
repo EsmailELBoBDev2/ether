@@ -456,8 +456,8 @@ export function BulkViewersDrawer({
               <CheckRow
                 checked={removeOld}
                 onChange={setRemoveOld}
-                label={t("Remove them from the Plex server they are on now")}
-                hint={t("Leave unchecked to keep the old share until they accept the new one.")}
+                label={t("Take them off their current Plex server once they accept")}
+                hint={t("Their old server keeps working until they accept the new invite.")}
               />
             </div>
           ) : null}

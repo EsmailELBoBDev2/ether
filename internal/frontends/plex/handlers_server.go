@@ -29,8 +29,9 @@ const APIVersion = "1.2.3"
 func (s *Server) serverInfoAttrs(ctx context.Context, providers bool, viewer *frontend.User) []model.Attr {
 	id := s.identityCtx(ctx)
 	c := s.cfg()
+	owner, claimed := s.accountCtx(ctx)
 	signIn, mapping := "none", "unknown"
-	if c.Plex.Claimed || c.Plex.Token != "" {
+	if claimed {
 		signIn, mapping = "ok", "mapped"
 	}
 	// The transcoder and playback come from the shared session runtime
@@ -65,7 +66,7 @@ func (s *Server) serverInfoAttrs(ctx context.Context, providers bool, viewer *fr
 	if !providers {
 		attrs = append(attrs, model.A("hubSearch", true), model.A("itemClusters", false))
 	}
-	if c.Plex.Claimed || c.Plex.Token != "" {
+	if claimed {
 		attrs = append(attrs, model.A("offlineTranscode", 1))
 	}
 	attrs = append(attrs,
@@ -77,11 +78,11 @@ func (s *Server) serverInfoAttrs(ctx context.Context, providers bool, viewer *fr
 	}
 	attrs = append(attrs,
 		model.A("musicAnalysis", 0),
-		model.A("myPlex", c.Plex.Claimed || c.Plex.Token != ""),
+		model.A("myPlex", claimed),
 		model.A("myPlexMappingState", mapping),
 		model.A("myPlexSigninState", signIn),
 		model.A("myPlexSubscription", id.MyPlexSubscription),
-		model.A("myPlexUsername", c.Plex.OwnerUsername),
+		model.A("myPlexUsername", owner),
 		model.A("ownerFeatures", strings.Join(id.OwnerFeatures, ",")),
 		model.A("platform", id.Platform),
 		model.A("platformVersion", id.PlatformVersion),
@@ -130,10 +131,13 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	id := s.identityCtx(r.Context())
-	c := s.cfg()
+	claimed := s.cfg().Plex.Claimed
+	if o, ok := r.Context().Value(identityOverrideKey{}).(frontend.ServerIdentity); ok && o.Account != nil {
+		claimed = o.Account.Claimed
+	}
 	s.write(w, r, &model.MediaContainer{Extra: []model.Attr{
 		model.A("apiVersion", APIVersion),
-		model.A("claimed", c.Plex.Claimed),
+		model.A("claimed", claimed),
 		model.A("machineIdentifier", id.MachineIdentifier),
 		model.A("version", id.Version),
 	}})
@@ -333,13 +337,14 @@ func applyLegacyServerVersion(r *http.Request, mc *model.MediaContainer) {
 
 func (s *Server) handleMyPlexAccount(w http.ResponseWriter, r *http.Request) {
 	c := s.cfg()
+	owner, claimed := s.accountCtx(r.Context())
 	acct := model.MyPlex{
-		Username:          c.Plex.OwnerUsername,
+		Username:          owner,
 		MappingState:      "unknown",
 		SignInState:       "none",
 		SubscriptionState: "Unknown",
 	}
-	if c.Plex.Claimed || c.Plex.Token != "" {
+	if claimed {
 		acct.MappingState = "mapped"
 		acct.SignInState = "ok"
 	}

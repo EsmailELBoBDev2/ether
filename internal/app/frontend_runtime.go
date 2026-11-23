@@ -781,6 +781,9 @@ func (r *frontendRuntime) publishLibrarySections() {
 		})
 	}
 	r.app.registrar.SetLibrarySections(libraries)
+	if r.app.plexExtras != nil {
+		r.app.plexExtras.setLibrarySections(libraries)
+	}
 }
 
 func (r *frontendRuntime) noteOwnerStop(sessionID, reason string) {

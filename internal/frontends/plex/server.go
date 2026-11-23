@@ -842,6 +842,11 @@ func (s *Server) identityCtx(ctx context.Context) Identity {
 		if o.FriendlyName != "" {
 			id.FriendlyName = o.FriendlyName
 		}
+		if o.Account != nil {
+			// The extra server's own account: never the main owner's Plex Pass.
+			id.MyPlexSubscription = o.Account.PlexPass
+			id.OwnerFeatures = o.Account.OwnerFeatures
+		}
 	}
 	return id
 }
@@ -1222,4 +1227,16 @@ type noopResources struct{}
 
 func (noopResources) Query(int, int64, int64, int64, bool, bool, bool) []frontend.ResourceSample {
 	return nil
+}
+
+// accountCtx is the plex.tv owner and claim state of the server the request
+// in ctx is for: an extra Plex server's own account, else the main one.
+func (s *Server) accountCtx(ctx context.Context) (owner string, claimed bool) {
+	if ctx != nil {
+		if o, ok := ctx.Value(identityOverrideKey{}).(frontend.ServerIdentity); ok && o.Account != nil {
+			return o.Account.OwnerUsername, o.Account.Claimed
+		}
+	}
+	c := s.cfg()
+	return c.Plex.OwnerUsername, c.Plex.Claimed || c.Plex.Token != ""
 }

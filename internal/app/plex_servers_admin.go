@@ -31,6 +31,7 @@ type plexServerView struct {
 	Retired       bool   `json:"retired,omitempty"`
 	Blocked       bool   `json:"blocked,omitempty"`
 	BlockedReason string `json:"blockedReason,omitempty"`
+	Problem       string `json:"problem,omitempty"`
 }
 
 // plexServersView is the console's Plex servers panel and the dashboard
@@ -79,9 +80,8 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 		State: config.PlexServerActive, Running: cfg.Plex.Claimed, Claimed: cfg.Plex.Claimed, SeatsUsed: used[""],
 		Retired: cfg.Plex.MainRetired,
 	})
-	if h := ps.health(""); h.Blocked {
-		out.Servers[0].Blocked, out.Servers[0].BlockedReason = true, h.Reason
-	}
+	h := ps.health("")
+	out.Servers[0].Blocked, out.Servers[0].BlockedReason, out.Servers[0].Problem = h.Blocked, h.Reason, h.Problem
 	for _, s := range append(activePlexOrder(cfg), standbyPlexOrder(cfg)...) {
 		v := plexServerView{
 			ID: s.ID, Name: s.AdvertisedName(cfg), NameInherited: s.Name == "", Account: s.Account.Username,
@@ -89,9 +89,8 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 			AddedAt: s.AddedAt, ActivatedAt: s.ActivatedAt,
 			Retired: s.Retired,
 		}
-		if h := ps.health(s.ID); h.Blocked {
-			v.Blocked, v.BlockedReason = true, h.Reason
-		}
+		h := ps.health(s.ID)
+		v.Blocked, v.BlockedReason, v.Problem = h.Blocked, h.Reason, h.Problem
 		if !s.Active() {
 			out.Standby++
 		}

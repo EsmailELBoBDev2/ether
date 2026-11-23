@@ -16,12 +16,14 @@ import (
 type plexServerHealth struct {
 	Blocked bool
 	Reason  string
+	// Problem is a plex.tv failure that does not show a ban by itself
+	// (publishing fails, the server is not listed): shown, not acted on.
+	Problem string
 }
 
-// health reads a server's registrar status ("" is the main server). A
-// server whose token plex.tv refuses, or that plex.tv stopped listing while
-// publishing fails, looks blocked: banned account, removed device, or a
-// blocked address.
+// health reads a server's registrar status ("" is the main server). Only a
+// token plex.tv refuses (401/403) counts as blocked: a banned account or a
+// server removed from it. Other failures are reported as problems.
 func (ps *plexExtras) health(id string) plexServerHealth {
 	var reg *plextv.Registrar
 	if id == "" {
@@ -38,8 +40,8 @@ func (ps *plexExtras) health(id string) plexServerHealth {
 		return plexServerHealth{}
 	case st.TokenRejected:
 		return plexServerHealth{Blocked: true, Reason: "plex.tv refuses this server's token: the Plex account may be banned or the server removed from it"}
-	case !st.Listed && st.LastPublishError != "" && !st.LastPublish.IsZero():
-		return plexServerHealth{Blocked: true, Reason: "plex.tv stopped listing this server and publishing fails: " + st.LastPublishError}
+	case !st.Listed && st.LastPublishError != "":
+		return plexServerHealth{Problem: "plex.tv does not list this server and publishing fails: " + st.LastPublishError}
 	}
 	return plexServerHealth{}
 }
@@ -101,8 +103,9 @@ type plexMoveResult struct {
 	// AcceptURL is where the viewer accepts pending invites in any case.
 	InviteURL string `json:"inviteUrl,omitempty"`
 	AcceptURL string `json:"acceptUrl,omitempty"`
-	// Removed lists the servers the viewer was taken off.
-	Removed []string `json:"removed,omitempty"`
+	// RemoveLater lists the servers that stop sharing with the viewer once
+	// they accept the new invite (the old share keeps working until then).
+	RemoveLater []string `json:"removeLater,omitempty"`
 	Error   string   `json:"error,omitempty"`
 }
 
@@ -233,34 +236,22 @@ func (ps *plexExtras) move(ctx context.Context, userIDs []int64, to string, remo
 			out = append(out, res)
 			continue
 		}
-		var removed []string
 		if removeOld {
 			for _, id := range from {
 				if id == target {
 					continue
 				}
-				c, tok, err := ps.serverClient(cfg, id)
-				if err != nil {
-					continue // stopped or banned: its share is gone or useless
-				}
-				if err := c.UnshareServer(ctx, tok, u.PlexID, u.Username); err != nil && !errors.Is(err, plextv.ErrShareNotFound) {
-					ps.log.Warn("plex move: remove old share", "server", id, "err", err)
+				if err := ps.app.users.AddPendingMove(ctx, uid, id, target); err != nil {
+					ps.log.Warn("plex move: record pending removal", "err", err)
 					continue
 				}
-				removed = append(removed, serverName(cfg, id))
+				res.RemoveLater = append(res.RemoveLater, serverName(cfg, id))
 			}
 		}
-		res.Removed = removed
-		keep := from
-		if !removeOld {
-			keep = nil
-		}
-		if err := ps.app.users.MoveServerMember(ctx, uid, keep, target); err != nil {
-			ps.log.Warn("plex move: record membership", "err", err)
-		}
-		ps.mu.Lock()
-		ps.seats = map[string]int{} // recount from the database until the next sync
-		ps.mu.Unlock()
+		// Memberships change only when plex.tv reports them: the new one when
+		// the viewer accepts (friend sync), the old one when finishMoves has
+		// removed that share. The sync below recounts seats, pending invites
+		// included.
 		out = append(out, res)
 	}
 	go func() {
@@ -319,4 +310,81 @@ func (ps *plexExtras) invite(ctx context.Context, handle string, plexID int64) (
 	}
 	res.InviteURL, err = client.ShareServerInvite(ctx, token, handle, plexID, nil)
 	return res, err
+}
+
+// finishMoves ends the old share of every moved viewer who accepted the new
+// server's invite: plex.tv then lists them on the new server. A failed
+// removal stays pending and is retried after the next friend sync.
+func (ps *plexExtras) finishMoves(ctx context.Context) {
+	if ps.app.users == nil {
+		return
+	}
+	ps.mu.Lock()
+	if ps.finishing {
+		ps.mu.Unlock()
+		return
+	}
+	ps.finishing = true
+	ps.mu.Unlock()
+	defer func() {
+		ps.mu.Lock()
+		ps.finishing = false
+		ps.mu.Unlock()
+	}()
+	moves, err := ps.app.users.PendingMoves(ctx)
+	if err != nil || len(moves) == 0 {
+		return
+	}
+	members, err := ps.app.users.ServerMemberships(ctx)
+	if err != nil {
+		return
+	}
+	cfg := ps.app.cfg.Get()
+	for _, m := range moves {
+		accepted := false
+		for _, id := range members[m.UserID] {
+			if id == m.To {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			continue
+		}
+		u, err := ps.app.users.User(ctx, m.UserID)
+		if err != nil || u == nil {
+			continue
+		}
+		client, token, err := ps.serverClient(cfg, m.From)
+		if err != nil {
+			// The old server is stopped or gone: its share no longer matters,
+			// but its membership stays until its own sync drops it.
+			continue
+		}
+		if err := client.UnshareServer(ctx, token, u.PlexID, u.Username); err != nil && !errors.Is(err, plextv.ErrShareNotFound) {
+			ps.log.Warn("plex move: remove old share", "server", m.From, "err", err)
+			continue
+		}
+		if err := ps.app.users.DonePendingMove(ctx, m.UserID, m.From); err != nil {
+			ps.log.Warn("plex move: record removal", "err", err)
+			continue
+		}
+		ps.log.Info("plex move finished", "user", m.UserID, "from", serverName(cfg, m.From), "to", serverName(cfg, m.To))
+	}
+}
+
+// setLibrarySections publishes the libraries on every extra server too (the
+// main registrar gets them from the frontend runtime); a server started
+// later picks them up in build.
+func (ps *plexExtras) setLibrarySections(secs []plextv.LibrarySection) {
+	ps.mu.Lock()
+	ps.sections = append([]plextv.LibrarySection(nil), secs...)
+	rts := make([]*plexServerRuntime, 0, len(ps.running))
+	for _, rt := range ps.running {
+		rts = append(rts, rt)
+	}
+	ps.mu.Unlock()
+	for _, rt := range rts {
+		rt.registrar.SetLibrarySections(secs)
+	}
 }

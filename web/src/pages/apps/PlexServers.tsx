@@ -36,6 +36,7 @@ export type PlexServerRow = {
   retired?: boolean;
   blocked?: boolean;
   blockedReason?: string;
+  problem?: string;
 };
 
 export type PlexServersStatus = {
@@ -78,6 +79,7 @@ function rowDetail(row: PlexServerRow, status: PlexServersStatus, now: number) {
   const parts = [account, seatsLabel(row, status.seatsPerServer)];
   if (row.blocked) parts.push(row.blockedReason || t("plex.tv seems to have blocked this server."));
   if (row.retired) parts.push(t("Not taking new viewers"));
+  if (!row.blocked && row.problem) parts.push(row.problem);
   if (!row.main && row.activatedAt && now - row.activatedAt * 1000 < RECENT_MS) {
     parts.push(t("Started on its own because the other Plex servers were almost full."));
   }
@@ -195,7 +197,7 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
     const ok = await confirmDialog({
       title: t("Move viewers off {name}?", { name: row.name }),
       message: t(
-        "Every viewer on {name} is invited on the next Plex server with room and taken off {name}. Each one has to accept the new invite; watch history and settings stay as they are.",
+        "Every viewer on {name} is invited on the next Plex server with room. Each one is taken off {name} once they accept the new invite; watch history and settings stay as they are.",
         { name: row.name },
       ),
       confirmLabel: t("Move viewers"),

@@ -104,6 +104,9 @@ func (s *Service) RemoveServer(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_members WHERE server_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_moves WHERE from_server=? OR to_server=?`, id, id); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -178,29 +181,6 @@ func (s *Service) ServerMemberships(ctx context.Context) (map[int64][]string, er
 	return out, rows.Err()
 }
 
-// MoveServerMember records at once that viewer uid moved from the servers
-// in from to the server to, so seat counts and tags follow a move before
-// the next friend sync (which then records what plex.tv reports).
-func (s *Service) MoveServerMember(ctx context.Context, uid int64, from []string, to string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, id := range from {
-		if id == to {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_members WHERE server_id=? AND user_id=?`, memberServer(id), uid); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_server_members (server_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`, memberServer(to), uid); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // localSignIns is the set of viewers with a local username and password
 // (identity_links). Empty when the identity tables are not installed.
 func (s *Service) localSignIns(ctx context.Context) map[int64]bool {
@@ -217,4 +197,72 @@ func (s *Service) localSignIns(ctx context.Context) map[int64]bool {
 		}
 	}
 	return out
+}
+
+func init() {
+	// A move waiting for the viewer to accept the new server's invite: the
+	// old server keeps sharing until then (from/to "main" is the main server).
+	store.Register("plex_server_members", 2, `CREATE TABLE auth_server_moves (
+	user_id INTEGER NOT NULL,
+	from_server TEXT NOT NULL,
+	to_server TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (user_id, from_server)
+);`)
+	store.RegisterViewerTable("plex_server_members", "auth_server_moves", "user_id", store.ViewerMergeDrop)
+}
+
+// PendingMove is a viewer invited on To who still has From's share.
+type PendingMove struct {
+	UserID int64
+	From   string
+	To     string
+}
+
+// AddPendingMove records that uid's share on from ends once they accept to.
+func (s *Service) AddPendingMove(ctx context.Context, uid int64, from, to string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_server_moves (user_id, from_server, to_server, created_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (user_id, from_server) DO UPDATE SET to_server=excluded.to_server, created_at=excluded.created_at`,
+		uid, memberServer(from), memberServer(to), s.o.Now().Unix())
+	return err
+}
+
+// PendingMoves lists the moves waiting for an accepted invite.
+func (s *Service) PendingMoves(ctx context.Context) ([]PendingMove, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id, from_server, to_server FROM auth_server_moves ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingMove
+	for rows.Next() {
+		var m PendingMove
+		if err := rows.Scan(&m.UserID, &m.From, &m.To); err != nil {
+			return nil, err
+		}
+		if m.From == mainServerMember {
+			m.From = ""
+		}
+		if m.To == mainServerMember {
+			m.To = ""
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// DonePendingMove forgets a finished move and records the viewer off from.
+func (s *Service) DonePendingMove(ctx context.Context, uid int64, from string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_moves WHERE user_id=? AND from_server=?`, uid, memberServer(from)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_members WHERE user_id=? AND server_id=?`, uid, memberServer(from)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

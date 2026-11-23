@@ -58,6 +58,10 @@ type plexExtras struct {
 	seats    map[string]int
 	seatsAt  map[string]time.Time
 	starting bool
+	finishing bool
+	// sections is the library list the main server publishes; every extra
+	// server publishes the same libraries.
+	sections []plextv.LibrarySection
 	// tokenServers caches which server a token belongs to (a minute).
 	tokenServers sync.Map
 }
@@ -151,6 +155,11 @@ func (ps *plexExtras) noteSeats(id string, n int) {
 	ps.seatsAt[id] = time.Now()
 	ps.mu.Unlock()
 	go ps.checkCapacity(context.Background())
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		ps.finishMoves(ctx)
+	}()
 }
 
 // seatsUsed is each server's share count: the last friend sync, else the
@@ -262,6 +271,12 @@ func (ps *plexExtras) build(id string) (*plexServerRuntime, error) {
 	if err != nil {
 		certs.Close()
 		return nil, fmt.Errorf("registrar: %w", err)
+	}
+	ps.mu.Lock()
+	sections := ps.sections
+	ps.mu.Unlock()
+	if sections != nil {
+		reg.SetLibrarySections(sections)
 	}
 	return &plexServerRuntime{id: id, client: client, certs: certs, registrar: reg}, nil
 }
@@ -679,7 +694,13 @@ func (ps *plexExtras) serverForRequest(r *http.Request) string {
 			id = ""
 		}
 	}
-	ps.tokenServers.Store(key, tokenServerEntry{id: id, ok: ok, expires: now.Add(time.Minute)})
+	// An unknown token is cached briefly: a friend sync may soon tie it to
+	// an extra server.
+	ttl := time.Minute
+	if !ok {
+		ttl = 5 * time.Second
+	}
+	ps.tokenServers.Store(key, tokenServerEntry{id: id, ok: ok, expires: now.Add(ttl)})
 	return id
 }
 
@@ -694,7 +715,12 @@ func (ps *plexExtras) identityForRequest(r *http.Request) (frontend.ServerIdenti
 	if !ok {
 		return frontend.ServerIdentity{}, false
 	}
-	return frontend.ServerIdentity{MachineID: e.MachineIdentifier, FriendlyName: e.AdvertisedName(cfg)}, true
+	acct := &frontend.ServerAccount{OwnerUsername: e.OwnerUsername, Claimed: e.Claimed}
+	if rt := ps.runtime(id); rt != nil {
+		st := rt.registrar.Status()
+		acct.PlexPass, acct.OwnerFeatures = st.PlexPass, st.OwnerFeatures
+	}
+	return frontend.ServerIdentity{MachineID: e.MachineIdentifier, FriendlyName: e.AdvertisedName(cfg), Account: acct}, true
 }
 
 // tlsConfig serves each server's own plex.direct certificate on the shared

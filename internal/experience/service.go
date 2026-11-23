@@ -359,7 +359,7 @@ func (s *Service) visible(ctx context.Context, v *core.User, title *core.Title) 
 }
 func (s *Service) playable(ctx context.Context, v *core.User, key core.RatingKey) (*core.Title, error) {
 	if key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return nil, core.ErrNotFound
 		}
@@ -376,7 +376,7 @@ func (s *Service) playable(ctx context.Context, v *core.User, key core.RatingKey
 }
 func (s *Service) item(ctx context.Context, v *core.User, key core.RatingKey) (*core.Title, error) {
 	if key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return nil, core.ErrNotFound
 		}
@@ -1013,7 +1013,11 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 		return frontend.ItemDetail{}, err
 	}
 	if req.Key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, req.Key)
+		itemCtx := ctx
+		if !core.ColdDetail(ctx, req.Key) {
+			itemCtx = core.WithNoContainerExpand(ctx)
+		}
+		piv, err := s.pluginItem(itemCtx, v, req.Key)
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
@@ -1621,7 +1625,7 @@ func (s *Service) AuthorizeArtworkAs(ctx context.Context, viewer *core.Viewer, d
 
 func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device core.Device, key core.RatingKey) error {
 	if key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return err
 		}
@@ -2496,7 +2500,8 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 		return err
 	}
 	if k.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, viewer, k)
+		noExpandCtx := core.WithNoContainerExpand(ctx)
+		piv, err := s.pluginItem(noExpandCtx, viewer, k)
 		if err != nil {
 			return err
 		}
@@ -2505,7 +2510,7 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 			keys = nil
 			cursor := ""
 			for {
-				page, err := s.d.PluginLibraries.Children(ctx, k, true, cursor, 500)
+				page, err := s.d.PluginLibraries.Children(noExpandCtx, k, true, cursor, 500)
 				if err != nil {
 					return err
 				}

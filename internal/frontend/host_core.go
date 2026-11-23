@@ -217,6 +217,12 @@ func ColdDetail(ctx context.Context, key RatingKey) bool {
 	return core.ColdDetail(ctx, key)
 }
 
+// WithNoContainerExpand suppresses plugin container-on-open expansion for
+// list, artwork, Home, and background reads.
+func WithNoContainerExpand(ctx context.Context) context.Context {
+	return core.WithNoContainerExpand(ctx)
+}
+
 // DetailPending is the exact-page enrichment snapshot.
 type DetailPending = core.DetailPending
 

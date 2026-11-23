@@ -618,6 +618,12 @@
                             },
                             "type": "array"
                           },
+                          "levels": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
                           "ttlHours": {
                             "type": "integer"
                           }

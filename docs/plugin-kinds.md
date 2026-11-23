@@ -48,7 +48,7 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     "facets": ["genre", "durationSec"],
     "search": true,
     "liveSearch": true,
-    "expand": { "facets": ["genre"], "ttlHours": 168 } // optional on-demand slice expansion
+    "expand": { "facets": ["genre"], "levels": ["artist", "album"], "ttlHours": 168 } // optional on-demand slice & container expansion
   },
   "sync": { "mode": "pull", "refresh": "1h" },
   "cache": { "maxBytes": 2147483648 },        // optional; per-library blob cache
@@ -148,7 +148,7 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
-| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or unhydrated container | For facets/people: background only when `browse.expand` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For containers with `childCount > 0` and missing/stale children: triggered on container open (never on list render) with `{parentId, level?, cursor?}` (falling back to `/browse` with `parentId` on 400/404/501), deduplicated per container with a bounded first-page wait (~1.8s) and background continuation. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
@@ -181,11 +181,12 @@ quickly; the Studio template has it on with the explanation beside
 the toggle. Pair it with `browse.search: true` so earlier live
 results stay findable locally.
 
-### On-demand facet and person expansion (`browse.expand`)
+### On-demand facet, person, and container expansion (`browse.expand`)
 
-When a plugin seeds a starter catalogue (for example top games across studios)
-and wants to fetch the full back-catalogue of a developer or voice cast member
-only when someone actually opens that slice, declare `browse.expand`:
+When a plugin seeds a starter catalogue (for example top games across studios,
+or artists with 1–4 featured albums out of 80+) and wants to fetch the full
+back-catalogue of a developer, person, or container only when someone actually
+opens it, declare `browse.expand`:
 
 ```json
 "browse": {
@@ -194,35 +195,62 @@ only when someone actually opens that slice, declare `browse.expand`:
   "search": true,
   "expand": {
     "facets": ["developers", "voiceCast"],
+    "levels": ["artist", "album"],
     "ttlHours": 168
   }
 }
 ```
 
-- Every entry in `browse.expand.facets` must already appear in `browse.facets`
-  (and the plugin must declare `catalog_provider`). `ttlHours` defaults to
-  `168` (7 days) when omitted or `0`.
-- **Viewer requests never wait on the plugin**: when a viewer opens a bucket's
-  items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo` or
-  `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin equivalents)
-  or a plugin person's titles (`GET /vela/v0/people/{id}/titles`), Ether returns
-  stored items immediately and, if no fresh expansion exists within `ttlHours`,
-  queues one background expansion job per `(plugin, kind, facet, value)` in the
-  two-slot background job pool at lowered OS priority. Listing tabs or
-  collections never triggers expansion.
-- Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
+- `browse.expand` requires `catalog_provider` and must list at least one entry
+  in `facets` or `levels`. Every entry in `facets` must appear in
+  `browse.facets`, and every entry in `levels` must name a declared level with
+  `container: true`. `ttlHours` defaults to `168` (7 days) when omitted or `0`
+  and applies to both facets and container levels.
+- **Facet and person slices (`browse.expand.facets`)**: when a viewer opens a
+  bucket's items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo`
+  or `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin
+  equivalents) or a plugin person's titles (`GET /vela/v0/people/{id}/titles`),
+  Ether checks freshness within `ttlHours` and launches one background
+  expansion job per `(plugin, kind, facet, value)` in the two-slot background
+  job pool at lowered OS priority (waiting up to ~1.8 s on page 1). Listing
+  tabs or collections never triggers expansion. Ether calls
+  `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
   (`value` is the bucket label such as `"Nintendo"` or person name; `valueId` is
   the synthetic plugin person ID when expanding a `people` facet) under
   owner-granted background limits.
+- **Container expansion on open (`browse.expand.levels`)**: when a viewer opens
+  a container at a declared level — either its title detail (`Item`) or its
+  children list (`Children`, including `?role=` / `?level=`), on every frontend
+  (Vela, Jellyfin/Emby, Plex, Silo, Stremio, Xtream) — Ether checks whether a
+  fresh expansion exists for `(plugin, kind, item)` within `ttlHours` **and**
+  the container has at least one stored child. If no fresh expansion exists or
+  the container has 0 stored children, Ether calls
+  `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level, cursor?}` where
+  `parentId` is the container's external ID and `level` is the **container's**
+  level key (`facet`, `value`, and `valueId` are omitted).
+  - `items` holds the container's direct children at any declared child level
+    (each with `parentId` set to the container and its own `level`), may
+    include grandchildren, and may include the container itself (same
+    external ID and level) to refresh its metadata in place.
+  - Concurrent opens of the same container (such as detail + children) share
+    one single-flight call per `(plugin, kind, itemRef)`. Page 1 waits at most
+    ~1.8 s, upserts additively (never deleting omitted children; `parentId` and
+    `level` are validated against the declared level tree), then answers with
+    accurate tallied `childCount` / `childCounts`. Further pages continue in
+    the background through the expand job.
+  - Child counts (`childCount`, `childCounts`, `leafCount`) for tallied parent
+    levels come strictly from stored parent tallies — plugin-supplied
+    `childCount` values on container items are ignored for tallied levels.
+  - Never triggered in the background, Search, lists, Home, or artwork loads.
 - Return `{items: [...], cursor?: "next"}` (`nextCursor` is also accepted; Ether
   pages up to 20 pages or 2,000 items per expansion and upserts them through the
   standard kind item pipeline so policy, FTS, `v_fold`, tallies, and art apply)
   or `{job: "/ether/job/..."}` to finish via a continuation job that writes items
   with `KindUpsert`. Answering `404` or `501` is treated as a clean no-op.
-- While an expansion for that slice is running, Vela adds `"expanding": true` to
-  `GET /vela/v0/libraries/{id}/items` and `GET /vela/v0/people/{id}/titles`, and
-  bumps the response `ETag` and kind sync generation when it finishes.
-- **On-demand container hydration**: when a client opens a container item (for example an artist or album) whose `childCount > 0` has no stored children yet — or whose children are older than `browse.expand.ttlHours` (default `168` hours) — Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level?, cursor?}` (falling back automatically to `POST /ether/v1/kinds/{kind}/browse` with `{parentId, level?, cursor?, limit}` when `/expand` answers `400`, `404`, `501`, or empty). Concurrent opens of the same container coalesce into a single plugin call, the first page waits up to ~1.8 seconds before returning whatever is stored while remaining pages continue in the background, and list renders (`Browse`, `Recommended`, `Search`) never trigger container hydration.
+- While a facet/person expansion for that slice is running, Vela adds
+  `"expanding": true` to `GET /vela/v0/libraries/{id}/items` and
+  `GET /vela/v0/people/{id}/titles`, and bumps the response `ETag` and kind
+  sync generation when it finishes.
 
 ## Resolving bytes
 

@@ -807,10 +807,13 @@ export interface KindLibraryDecl {
   shelves?: KindLibraryShelf[];
 }
 
-/** On-demand background expansion settings for declared browse facets. */
+/** On-demand expansion settings for declared browse facets and container levels. */
 export interface KindBrowseExpand {
-  facets: string[];
-  /** Freshness TTL in hours before an expanded slice may be refreshed (default 168). */
+  /** Declared browse facets expanded on open (collection bucket or plugin person). */
+  facets?: string[];
+  /** Declared container levels (container: true) expanded when opened by a viewer. */
+  levels?: string[];
+  /** Freshness TTL in hours before an expanded slice or container may be refreshed (default 168). */
   ttlHours?: number;
 }
 

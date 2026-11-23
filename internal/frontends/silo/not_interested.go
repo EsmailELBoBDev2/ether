@@ -104,7 +104,7 @@ func (i *instance) notInterestedList(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		for _, entry := range page.Items {
-			detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: entry.Key})
+			detail, e := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: v, Device: device(r), Key: entry.Key})
 			if e != nil || detail.Title.Key != entry.Key {
 				continue
 			}

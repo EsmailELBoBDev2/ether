@@ -41,6 +41,22 @@ func ColdDetail(ctx context.Context, key RatingKey) bool {
 	return ok && requested == key
 }
 
+type noContainerExpandKey struct{}
+
+// WithNoContainerExpand prevents plugin container-on-open expansion for
+// background, list, artwork, ancestor, and internal lookup paths that read a
+// plugin item without opening it as a container view.
+func WithNoContainerExpand(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noContainerExpandKey{}, true)
+}
+
+// NoContainerExpand reports whether plugin container-on-open expansion is
+// suppressed for this call.
+func NoContainerExpand(ctx context.Context) bool {
+	v, _ := ctx.Value(noContainerExpandKey{}).(bool)
+	return v
+}
+
 // DetailPending records work admitted while reading one exact title. It is a
 // response snapshot: completion after a read cannot make its missing data whole.
 type DetailPending struct {

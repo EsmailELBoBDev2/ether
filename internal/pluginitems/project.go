@@ -124,6 +124,13 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		}
 	}
 
+	// ChildCount for tallied parent levels comes strictly from stored parent
+	// tallies (plugin_item_parent_tally), ignoring plugin-supplied ChildCount.
+	childCount := item.ChildCount
+	if len(decl.Levels) >= 2 && decl.HasChildLevels(item.Level) {
+		childCount = 0
+	}
+
 	t := core.Title{
 		Key:               item.Key,
 		Type:              mediaType,
@@ -146,7 +153,7 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		Year:              item.Year,
 		Rating:            item.Rating,
 		Popularity:        extractPopularity(item),
-		ChildCount:        item.ChildCount,
+		ChildCount:        childCount,
 		LeafCount:         item.LeafCount,
 	}
 

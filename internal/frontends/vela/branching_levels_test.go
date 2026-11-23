@@ -232,8 +232,8 @@ func TestVelaPluginLevelsCapabilitiesTabRowsCardChildCountsAndRoleFilter(t *test
 	}
 	feats, _ := caps["features"].(map[string]any)
 	pl, _ := feats["pluginLevels"].(map[string]any)
-	if pl["available"] != true || pl["tabRows"] != true || pl["childRoles"] != true {
-		t.Fatalf("features.pluginLevels = %+v, want available/tabRows/childRoles all true", pl)
+	if pl["available"] != true || pl["tabRows"] != true || pl["childRoles"] != true || pl["expandOnOpen"] != true {
+		t.Fatalf("features.pluginLevels = %+v, want available/tabRows/childRoles/expandOnOpen all true", pl)
 	}
 
 	// 2. Libraries emits LibraryTab.card for recommended tabs.

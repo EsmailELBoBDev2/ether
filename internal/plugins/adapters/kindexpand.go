@@ -408,6 +408,401 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 	return nil
 }
 
+func containerExpandDedupKey(pluginID, kindKey string, itemRef core.ItemRef) string {
+	return pluginID + "\x00" + kindKey + "\x00" + containerExpandFacet + "\x00" + string(itemRef)
+}
+
+// maybeExpandContainer checks whether an opened container at a level declared
+// in browse.expand.levels needs on-demand expansion via
+// POST /ether/v1/kinds/{kind}/expand ({parentId, level, cursor?}).
+//
+// It triggers only when no fresh expansion exists within ttlHours OR the
+// container currently has 0 stored direct children. Concurrent opens of the
+// same (plugin, kind, itemRef) share one single-flight expand job via
+// Manager.StartExpandJob. The caller waits bounded by firstOpenWait (clamped
+// by ctx.Deadline()) for page 1 to upsert, while later pages continue in the
+// background through the expand job.
+//
+// Returns (didExpand, timedOut): didExpand is true if an expand job was
+// launched or joined (so Item callers should re-read the container for any
+// self-refresh), and timedOut is true when page 1 did not finish within the
+// bounded wait.
+func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, container core.KindItem) (bool, bool) {
+	if c == nil || c.items == nil || c.mgr == nil || core.NoContainerExpand(ctx) {
+		return false, false
+	}
+	if !rec.Decl.Browse.Expand.ExpandsLevel(container.Level) {
+		return false, false
+	}
+	if !c.IsPluginLibraryActive(ctx, lib) {
+		return false, false
+	}
+
+	ttl := time.Duration(rec.Decl.Browse.Expand.EffectiveTTLHours()) * time.Hour
+	now := c.items.Now()
+	routePath := "/ether/v1/kinds/" + rec.KindKey + "/expand"
+	dedupKey := containerExpandDedupKey(rec.PluginID, rec.KindKey, container.Ref)
+
+	expandLaunchMu.Lock()
+	if c.mgr.IsExpandJobRunning(rec.PluginID, dedupKey) {
+		var waitCh chan struct{}
+		if ch, ok := expandReady.Load(dedupKey); ok {
+			waitCh = ch.(chan struct{})
+		}
+		expandLaunchMu.Unlock()
+		if waitCh != nil {
+			return true, c.waitFirstOpen(ctx, waitCh)
+		}
+		return true, false
+	}
+	exp, hasExp, expErr := c.items.GetFacetExpansion(ctx, rec.PluginID, rec.KindKey, containerExpandFacet, container.ID)
+	if expErr == nil && hasExp && exp.IsFresh(now, ttl) {
+		hasChildren, _, childErr := c.items.ChildrenFreshness(ctx, lib.ID, container.Ref)
+		if childErr == nil && hasChildren {
+			expandLaunchMu.Unlock()
+			return false, false
+		}
+	}
+
+	ready := make(chan struct{})
+	firstPage := make(chan struct{})
+	var firstOnce sync.Once
+	signal := func() { firstOnce.Do(func() { close(firstPage) }) }
+
+	started, startErr := c.mgr.StartExpandJob(rec.PluginID, routePath, dedupKey, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
+		defer func() {
+			expandReady.Delete(dedupKey)
+			signal()
+		}()
+		<-ready
+		return c.runContainerExpansion(jobCtx, run, rec, lib.ID, routePath, container, signal)
+	})
+	if startErr == nil && !started {
+		var waitCh chan struct{}
+		if ch, ok := expandReady.Load(dedupKey); ok {
+			waitCh = ch.(chan struct{})
+		}
+		close(ready)
+		expandLaunchMu.Unlock()
+		if waitCh != nil {
+			return true, c.waitFirstOpen(ctx, waitCh)
+		}
+		return true, false
+	}
+	if startErr != nil {
+		close(ready)
+		expandLaunchMu.Unlock()
+		c.log.Debug("container expansion deferred", "plugin", rec.PluginID, "kind", rec.KindKey, "container", container.ID, "level", container.Level, "err", startErr)
+		return false, false
+	}
+	markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = c.items.MarkFacetExpansionRunning(markCtx, rec.PluginID, rec.KindKey, lib.ID, containerExpandFacet, container.ID)
+	cancel()
+	expandReady.Store(dedupKey, firstPage)
+	close(ready)
+	expandLaunchMu.Unlock()
+
+	return true, c.waitFirstOpen(ctx, firstPage)
+}
+
+func (c *KindCatalog) waitFirstOpen(ctx context.Context, ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return false
+	default:
+	}
+	if firstOpenWait <= 0 {
+		return true
+	}
+	wait := firstOpenWait
+	if dl, ok := ctx.Deadline(); ok {
+		if rem := time.Until(dl); rem <= 0 {
+			return true
+		} else if rem < wait {
+			wait = rem
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return false
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return true
+	}
+}
+
+func (c *KindCatalog) validateContainerExpandItems(ctx context.Context, rec pluginitems.KindRecord, container core.KindItem, knownAncestors map[string]string, items []core.KindItem) ([]core.KindItem, error) {
+	out := make([]core.KindItem, len(items))
+	batchItems := make(map[string]core.KindItem, len(items))
+	for i, it := range items {
+		if it.ID == container.ID {
+			if it.Level == "" {
+				it.Level = container.Level
+			}
+			if it.Level != container.Level {
+				return nil, fmt.Errorf("%w: container self-refresh %q: expected level %q, got %q",
+					pluginitems.ErrInvalidItem, it.ID, container.Level, it.Level)
+			}
+			if it.ParentID == "" && container.ParentID != "" {
+				it.ParentID = container.ParentID
+			}
+			if it.ParentID != container.ParentID {
+				return nil, fmt.Errorf("%w: container self-refresh %q: parentId %q does not match stored parent %q",
+					pluginitems.ErrInvalidItem, it.ID, it.ParentID, container.ParentID)
+			}
+			out[i] = it
+			continue
+		}
+		_, at, ok := rec.Decl.Level(it.Level)
+		if !ok {
+			return nil, fmt.Errorf("%w: item %q: undeclared level %q", pluginitems.ErrInvalidItem, it.ID, it.Level)
+		}
+		if at == 0 {
+			return nil, fmt.Errorf("%w: item %q: root-level item cannot be returned when expanding container %q",
+				pluginitems.ErrInvalidItem, it.ID, container.ID)
+		}
+		if it.ParentID == "" {
+			return nil, fmt.Errorf("%w: item %q: level %q needs a parentId", pluginitems.ErrInvalidItem, it.ID, it.Level)
+		}
+		batchItems[it.ID] = it
+		out[i] = it
+	}
+
+	maxHops := max(len(rec.Decl.Levels), 1)
+	dbParents := make(map[string]core.KindItem)
+	for _, it := range out {
+		if it.ID == container.ID {
+			continue
+		}
+		curID := it.ID
+		curLevel := it.Level
+		parentID := it.ParentID
+		visited := map[string]bool{curID: true}
+		reached := false
+		for hops := 0; hops < maxHops && parentID != ""; hops++ {
+			if visited[parentID] {
+				return nil, fmt.Errorf("%w: item %q: cyclic parentId chain at %q", pluginitems.ErrInvalidItem, it.ID, parentID)
+			}
+			visited[parentID] = true
+			expectedParent := rec.Decl.LevelParent(curLevel)
+			if expectedParent == "" {
+				return nil, fmt.Errorf("%w: item %q: level %q has no declared parent level", pluginitems.ErrInvalidItem, curID, curLevel)
+			}
+			if pLevel, ok := knownAncestors[parentID]; ok {
+				if pLevel != expectedParent {
+					return nil, fmt.Errorf("%w: item %q: level %q requires parent level %q, got %q",
+						pluginitems.ErrInvalidItem, curID, curLevel, expectedParent, pLevel)
+				}
+				reached = true
+				break
+			}
+			if pItem, ok := batchItems[parentID]; ok {
+				if pItem.Level != expectedParent {
+					return nil, fmt.Errorf("%w: item %q: level %q requires parent level %q, got %q",
+						pluginitems.ErrInvalidItem, curID, curLevel, expectedParent, pItem.Level)
+				}
+				curID = pItem.ID
+				curLevel = pItem.Level
+				parentID = pItem.ParentID
+				continue
+			}
+			stored, cached := dbParents[parentID]
+			if !cached {
+				var err error
+				stored, _, err = c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, parentID)
+				if err != nil {
+					return nil, fmt.Errorf("%w: item %q: parentId %q not found", pluginitems.ErrInvalidItem, curID, parentID)
+				}
+				dbParents[parentID] = stored
+			}
+			if stored.Level != expectedParent {
+				return nil, fmt.Errorf("%w: item %q: level %q requires parent level %q, got %q",
+					pluginitems.ErrInvalidItem, curID, curLevel, expectedParent, stored.Level)
+			}
+			curID = stored.ID
+			curLevel = stored.Level
+			parentID = stored.ParentID
+		}
+		if !reached {
+			return nil, fmt.Errorf("%w: item %q: parentId %q is outside container %q",
+				pluginitems.ErrInvalidItem, it.ID, it.ParentID, container.ID)
+		}
+	}
+
+	for _, it := range out {
+		if it.ID != container.ID && it.ID != "" {
+			knownAncestors[it.ID] = it.Level
+		}
+	}
+	return out, nil
+}
+
+func (c *KindCatalog) runContainerExpansion(jobCtx context.Context, run *plugins.ExpandJobRunner, rec pluginitems.KindRecord, libID core.LibraryID, routePath string, container core.KindItem, firstPage func()) error {
+	var (
+		pages              int
+		callTime, saveTime time.Duration
+		began              = time.Now()
+	)
+	finish := func(state string, added int, errMsg string) {
+		c.log.Info("container expansion finished", "plugin", rec.PluginID, "kind", rec.KindKey, "container", container.ID, "level", container.Level,
+			"state", state, "pages", pages, "added", added, "took", time.Since(began), "plugin_time", callTime, "save_time", saveTime, "err", errMsg)
+		finCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = c.items.FinishFacetExpansion(finCtx, rec.PluginID, rec.KindKey, libID, containerExpandFacet, container.ID, state, added, errMsg)
+		c.items.BumpGeneration()
+	}
+
+	knownAncestors := map[string]string{
+		container.ID: container.Level,
+	}
+
+	upsertSlice := func(items []core.KindItem) (accepted int, added int, err error) {
+		validated, err := c.validateContainerExpandItems(jobCtx, rec, container, knownAncestors, items)
+		if err != nil {
+			return 0, 0, err
+		}
+		for start := 0; start < len(validated); start += pluginitems.MaxUpsertBatch {
+			end := min(start+pluginitems.MaxUpsertBatch, len(validated))
+			acc, add, uErr := c.items.UpsertPinnedItemsWithAdded(jobCtx, rec.PluginID, rec.KindKey, validated[start:end])
+			if uErr != nil {
+				return accepted, added, uErr
+			}
+			accepted += acc
+			added += add
+		}
+		return accepted, added, nil
+	}
+
+	var (
+		cursor        string
+		totalAccepted int
+		totalAdded    int
+		seenCursor    = make(map[string]bool)
+	)
+
+	for pageIdx := 0; pageIdx < MaxKindExpandPages && totalAccepted < MaxKindExpandItems; pageIdx++ {
+		req := core.KindExpandRequest{
+			ParentID: container.ID,
+			Level:    container.Level,
+			Cursor:   cursor,
+		}
+		body, err := json.Marshal(req)
+		if err != nil {
+			finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+			return err
+		}
+
+		callStart := time.Now()
+		resp, err := run.Call(plugins.WithBackgroundCall(jobCtx), plugins.Request{
+			PluginID: rec.PluginID,
+			Method:   http.MethodPost,
+			Path:     routePath,
+			Headers:  map[string]string{"content-type": "application/json"},
+			Body:     body,
+		})
+		callTime += time.Since(callStart)
+		pages++
+		if err != nil {
+			finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+			return err
+		}
+		if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented {
+			finish(pluginitems.ExpansionStateDone, totalAdded, "")
+			return nil
+		}
+		if resp.Status < 200 || resp.Status >= 300 {
+			callErr := fmt.Errorf("expand %s/%s (%s=%s): status %d", rec.PluginID, rec.KindKey, container.Level, container.ID, resp.Status)
+			finish(pluginitems.ExpansionStateError, totalAdded, callErr.Error())
+			return callErr
+		}
+
+		var page core.KindExpandResponse
+		if len(resp.Body) > 0 {
+			if err := json.Unmarshal(resp.Body, &page); err != nil {
+				finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
+				return err
+			}
+		}
+
+		jobPath := strings.TrimSpace(page.Job)
+		next := page.EffectiveCursor()
+		hasMore := jobPath != "" || (next != "" && len(page.Items) > 0 && !seenCursor[next] && totalAccepted+len(page.Items) < MaxKindExpandItems)
+
+		if len(page.Items) > 0 {
+			remaining := MaxKindExpandItems - totalAccepted
+			batch := page.Items
+			if len(batch) > remaining {
+				batch = batch[:remaining]
+			}
+			saveStart := time.Now()
+			acc, add, uErr := upsertSlice(batch)
+			saveTime += time.Since(saveStart)
+			if uErr != nil {
+				finish(pluginitems.ExpansionStateError, totalAdded, uErr.Error())
+				return uErr
+			}
+			totalAccepted += acc
+			totalAdded += add
+			c.items.BumpGeneration()
+			run.SetProgress(fmt.Sprintf("%s: %s (%d items)", container.Level, container.ID, totalAccepted))
+			if hasMore {
+				firstPage()
+			}
+		}
+
+		if jobPath != "" {
+			beforeCount, _ := c.items.CountKindItems(jobCtx, rec.PluginID, rec.KindKey)
+			stepAdded := 0
+			contErr := run.RunContinuation(jobCtx, jobPath, body, func(stepBody json.RawMessage) error {
+				var stepItems struct {
+					Items []core.KindItem `json:"items"`
+				}
+				if json.Unmarshal(stepBody, &stepItems) == nil && len(stepItems.Items) > 0 && totalAccepted < MaxKindExpandItems {
+					rem := MaxKindExpandItems - totalAccepted
+					batch := stepItems.Items
+					if len(batch) > rem {
+						batch = batch[:rem]
+					}
+					acc, add, uErr := upsertSlice(batch)
+					if uErr != nil {
+						return uErr
+					}
+					totalAccepted += acc
+					totalAdded += add
+					stepAdded += add
+					c.items.BumpGeneration()
+					firstPage()
+				}
+				return nil
+			})
+			cntCtx, cntCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			afterCount, _ := c.items.CountKindItems(cntCtx, rec.PluginID, rec.KindKey)
+			cntCancel()
+			if hostAdded := afterCount - beforeCount - stepAdded; hostAdded > 0 {
+				totalAdded += hostAdded
+			}
+			if contErr != nil {
+				finish(pluginitems.ExpansionStateError, totalAdded, contErr.Error())
+				return contErr
+			}
+			finish(pluginitems.ExpansionStateDone, totalAdded, "")
+			return nil
+		}
+
+		if next == "" || len(page.Items) == 0 || seenCursor[next] || totalAccepted >= MaxKindExpandItems {
+			break
+		}
+		seenCursor[next] = true
+		cursor = next
+	}
+
+	finish(pluginitems.ExpansionStateDone, totalAdded, "")
+	return nil
+}
+
 // maybeHydrateContainer checks in O(1) whether an opened container (with
 // ChildCount > 0) has missing or stale children past the kind's expand TTL.
 // When hydration is needed, it launches a per-container deduplicated fetch

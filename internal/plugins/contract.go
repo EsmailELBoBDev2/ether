@@ -991,10 +991,11 @@ var BuiltinKindArtRoles = map[string]bool{"poster": true, "backdrop": true, "thu
 // fresh background expansion.
 const DefaultKindExpandTTLHours = 168
 
-// KindBrowseExpand declares on-demand background expansion for specific browse
-// facets (collection buckets or people fields).
+// KindBrowseExpand declares on-demand expansion for specific browse facets
+// (collection buckets or people fields) and/or container levels opened by a viewer.
 type KindBrowseExpand struct {
-	Facets   []string `json:"facets"`             // subset of browse.facets
+	Facets   []string `json:"facets,omitempty"`   // subset of browse.facets
+	Levels   []string `json:"levels,omitempty"`   // container levels (container: true) expanded on open
 	TTLHours int      `json:"ttlHours,omitempty"` // default 168 (7 days)
 }
 
@@ -1005,6 +1006,20 @@ func (e *KindBrowseExpand) EffectiveTTLHours() int {
 		return DefaultKindExpandTTLHours
 	}
 	return e.TTLHours
+}
+
+// ExpandsLevel reports whether level is declared for container-on-open
+// expansion in browse.expand.levels.
+func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
+	if e == nil || level == "" {
+		return false
+	}
+	for _, lv := range e.Levels {
+		if lv == level {
+			return true
+		}
+	}
+	return false
 }
 
 // KindBrowseDecl is how a kind library is browsed.

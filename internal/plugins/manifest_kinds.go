@@ -284,8 +284,8 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if !hasProvider {
 			add(ebase, "expand needs the catalog_provider capability")
 		}
-		if len(k.Browse.Expand.Facets) == 0 {
-			add(ebase+".facets", "must list at least one browse facet")
+		if len(k.Browse.Expand.Facets) == 0 && len(k.Browse.Expand.Levels) == 0 {
+			add(ebase, "must list at least one browse facet or container level")
 		}
 		seenExpand := map[string]bool{}
 		for j, f := range k.Browse.Expand.Facets {
@@ -296,6 +296,20 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			seenExpand[f] = true
 			if !seenFacet[f] {
 				add(fbase, "must name a declared browse facet")
+			}
+		}
+		seenExpandLevel := map[string]bool{}
+		for j, lvKey := range k.Browse.Expand.Levels {
+			lbase := fmt.Sprintf("%s.levels[%d]", ebase, j)
+			if seenExpandLevel[lvKey] {
+				add(lbase, "is listed twice")
+			}
+			seenExpandLevel[lvKey] = true
+			lv, _, ok := k.Level(lvKey)
+			if !ok {
+				add(lbase, "must name a declared level")
+			} else if !lv.Container {
+				add(lbase, "must name a level with container: true")
 			}
 		}
 		if k.Browse.Expand.TTLHours < 0 {

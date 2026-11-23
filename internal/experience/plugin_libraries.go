@@ -1149,9 +1149,12 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 }
 
 func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
-	piv, err := s.pluginItem(ctx, v, parent)
+	piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, parent)
 	if err != nil {
 		return core.Page{}, err
+	}
+	if q.SuppressExpand {
+		ctx = core.WithNoContainerExpand(ctx)
 	}
 	// Album and audiobook track/part lists naturally follow disc/track order,
 	// including Jellyfin Web's Album Play query (SortBy=SortName ascending).
@@ -1322,7 +1325,7 @@ func slicePluginTitles(items []core.Title, q frontend.ItemQuery) (core.Page, err
 }
 
 func (s *Service) pluginAncestors(ctx context.Context, v *core.User, key core.RatingKey) ([]core.Title, error) {
-	if _, err := s.pluginItem(ctx, v, key); err != nil {
+	if _, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key); err != nil {
 		return nil, err
 	}
 	ancestors, lib, err := s.d.PluginLibraries.Ancestors(ctx, key)

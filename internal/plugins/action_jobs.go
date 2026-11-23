@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"net/http"
 	"runtime"
@@ -21,6 +22,7 @@ const (
 	ActionJobConcurrency   = 2
 	ResolverJobConcurrency = 4
 	actionJobMinDelay      = 100 * time.Millisecond
+	jobErrorBodyLimit      = 300
 )
 
 // ActionJobStatus is a bounded, in-memory snapshot. Checkpoints belong in plugin
@@ -226,6 +228,12 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
 		return fmt.Errorf("invalid job path %q", jobPath)
 	}
+	redact := func(s string) string {
+		if r.m == nil || r.m.store == nil {
+			return logredact.String(s)
+		}
+		return r.m.store.redactKnown(context.Background(), r.pluginID, s)
+	}
 	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 		payload := map[string]json.RawMessage{}
 		_ = json.Unmarshal(initial, &payload)
@@ -237,7 +245,7 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 		}
 		encoded, _ := json.Marshal(payload)
 		return r.m.Call(WithBackgroundCall(ctx), r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
-	}, onStep)
+	}, onStep, redact)
 }
 
 // IsExpandJobRunning reports whether a background expansion job with dedupKey
@@ -449,7 +457,13 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 		}
 		defer cancel()
 		defer close(j.done)
-		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
+		redact := func(s string) string {
+			if m == nil || m.store == nil {
+				return logredact.String(s)
+			}
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		err := runActionJobWithHook(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 			if !isResolver {
 				if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
 					return Response{}, err
@@ -469,7 +483,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				callCtx = WithBackgroundCall(ctx)
 			}
 			return m.Call(callCtx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
-		})
+		}, nil, redact)
 		if err != nil {
 			state := "error"
 			if ctx.Err() == context.Canceled {
@@ -506,10 +520,10 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 // runActionJob treats an absent continuation flag as completion for existing
 // one-call jobs. Explicit failures and non-success HTTP responses always stop.
 func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error)) error {
-	return runActionJobWithHook(ctx, j, attempts, call, nil)
+	return runActionJobWithHook(ctx, j, attempts, call, nil, nil)
 }
 
-func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error) error {
+func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error, redact func(string) string) error {
 	var token json.RawMessage
 	for n := 0; n < attempts; n++ {
 		if err := ctx.Err(); err != nil {
@@ -526,7 +540,7 @@ func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call 
 			return fmt.Errorf("job stopped: %w", err)
 		}
 		if resp.Status < 200 || resp.Status >= 300 {
-			return fmt.Errorf("job returned HTTP %d", resp.Status)
+			return formatJobHTTPError(resp.Status, resp.Body, redact)
 		}
 		var step struct {
 			ContinueInMS *int64          `json:"continueInMs"`
@@ -578,6 +592,72 @@ func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call 
 		}
 	}
 	return fmt.Errorf("job reached its limit of %d calls", attempts)
+}
+
+// summarizeJobErrorBody extracts a bounded, single-line, secret-redacted
+// summary from a non-2xx plugin job response body (preferring a structured
+// message field when present). Redaction runs before truncation so a secret
+// straddling the truncation boundary is never partially exposed (#768).
+func summarizeJobErrorBody(body json.RawMessage, redact func(string) string) string {
+	raw := unwrapJSONStringBody(body)
+	if len(raw) == 0 {
+		return ""
+	}
+	const maxInspectBytes = 64 << 10
+	if len(raw) > maxInspectBytes {
+		raw = raw[:maxInspectBytes]
+	}
+	var text string
+	var env struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+		Failed  string          `json:"failed"`
+	}
+	if json.Unmarshal(raw, &env) == nil {
+		var errStr string
+		if len(env.Error) > 0 {
+			var errObj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(env.Error, &errObj) == nil && strings.TrimSpace(errObj.Message) != "" {
+				text = errObj.Message
+			} else {
+				_ = json.Unmarshal(env.Error, &errStr)
+			}
+		}
+		if text == "" && strings.TrimSpace(env.Message) != "" {
+			text = env.Message
+		}
+		if text == "" && strings.TrimSpace(env.Failed) != "" {
+			text = env.Failed
+		}
+		if text == "" && strings.TrimSpace(errStr) != "" {
+			text = errStr
+		}
+	}
+	if text == "" {
+		if scrubbed := redactJSON(raw); scrubbed != "" {
+			text = scrubbed
+		} else {
+			text = string(raw)
+		}
+	}
+	if redact != nil {
+		text = redact(text)
+	}
+	text = logredact.String(text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	return truncate(text, jobErrorBodyLimit)
+}
+
+func formatJobHTTPError(status int, body json.RawMessage, redact func(string) string) error {
+	if summary := summarizeJobErrorBody(body, redact); summary != "" {
+		return fmt.Errorf("job returned HTTP %d: %s", status, summary)
+	}
+	return fmt.Errorf("job returned HTTP %d", status)
 }
 
 func (m *Manager) cancelActionJobs(id string) {

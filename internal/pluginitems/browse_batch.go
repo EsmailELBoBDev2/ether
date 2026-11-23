@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 type browseBatchEntry struct {
@@ -434,6 +435,7 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		return strings.Compare(a.field, b.field)
 	})
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	const chunkSize = 250
 	for _, gk := range groupKeys {
 		vals := make([]string, 0, len(groups[gk]))
@@ -443,16 +445,21 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		slices.Sort(vals)
 		for start := 0; start < len(vals); start += chunkSize {
 			chunk := vals[start:min(start+chunkSize, len(vals))]
-			ph := make([]string, len(chunk))
-			args := make([]any, 0, 3+len(chunk))
+			var qSQL strings.Builder
+			args := make([]any, 0, 3+2*len(chunk))
+			qSQL.WriteString(`SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ?`)
 			args = append(args, int64(libraryID), gk.level, gk.field)
-			for i, v := range chunk {
-				ph[i] = "?"
-				args = append(args, v)
+			if isPG {
+				appendPGMD5In(&qSQL, &args, "v_text", chunk)
+			} else {
+				ph := make([]string, len(chunk))
+				for i, v := range chunk {
+					ph[i] = "?"
+					args = append(args, v)
+				}
+				qSQL.WriteString(` AND v_text IN (` + strings.Join(ph, ",") + `)`)
 			}
-			rows, err := s.db.QueryContext(ctx,
-				`SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? AND v_text IN (`+strings.Join(ph, ",")+`)`,
-				args...)
+			rows, err := s.db.QueryContext(ctx, qSQL.String(), args...)
 			if err != nil {
 				return err
 			}

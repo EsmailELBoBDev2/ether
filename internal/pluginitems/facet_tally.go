@@ -2,7 +2,9 @@ package pluginitems
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,74 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
+
+// pgIndexPrefixRunes bounds PostgreSQL btree expression index prefixes on text
+// columns (left(col, 256)). At most 256 runes × 4 UTF-8 bytes = 1,024 bytes,
+// keeping every composite btree index tuple well below PostgreSQL's 2,704-byte
+// version-4 btree maximum even for MaxFieldRunes (4,000-rune) values (#768).
+const pgIndexPrefixRunes = 256
+
+func pgTextPrefix(s string) string {
+	n := 0
+	for i := range s {
+		if n == pgIndexPrefixRunes {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
+func pgTextMD5(s string) string {
+	sum := md5.Sum([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func appendPGPrefixIn(where *strings.Builder, args *[]any, col string, vals []string) {
+	seen := make(map[string]struct{}, len(vals))
+	prefixes := make([]string, 0, len(vals))
+	for _, v := range vals {
+		p := pgTextPrefix(v)
+		if _, dup := seen[p]; !dup {
+			seen[p] = struct{}{}
+			prefixes = append(prefixes, p)
+		}
+	}
+	pPh := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		pPh[i] = "?"
+		*args = append(*args, p)
+	}
+	vPh := make([]string, len(vals))
+	for i, v := range vals {
+		vPh[i] = "?"
+		*args = append(*args, v)
+	}
+	where.WriteString(` AND left(` + col + `, 256) IN (` + strings.Join(pPh, ", ") + `) AND ` + col + ` IN (` + strings.Join(vPh, ", ") + `)`)
+}
+
+func appendPGMD5In(where *strings.Builder, args *[]any, col string, vals []string) {
+	seen := make(map[string]struct{}, len(vals))
+	hashes := make([]string, 0, len(vals))
+	for _, v := range vals {
+		h := pgTextMD5(v)
+		if _, dup := seen[h]; !dup {
+			seen[h] = struct{}{}
+			hashes = append(hashes, h)
+		}
+	}
+	hPh := make([]string, len(hashes))
+	for i, h := range hashes {
+		hPh[i] = "?"
+		*args = append(*args, h)
+	}
+	vPh := make([]string, len(vals))
+	for i, v := range vals {
+		vPh[i] = "?"
+		*args = append(*args, v)
+	}
+	where.WriteString(` AND md5(` + col + `) IN (` + strings.Join(hPh, ", ") + `) AND ` + col + ` IN (` + strings.Join(vPh, ", ") + `)`)
+}
 
 const (
 	migration17SQLiteDDL = `
@@ -99,6 +169,43 @@ DROP INDEX IF EXISTS plugin_item_person_tally_count;
 CREATE INDEX plugin_item_person_tally_count
 	ON plugin_item_person_tally(library_id, level, field, cnt DESC, label_lower, label, v_int, label_fold, rep_ref, thumb_ref);
 `
+
+	// postgresTallyIndexesDDL creates bounded-prefix PostgreSQL tally sort
+	// indexes (left(..., 256)) so v0.3.18->v0.3.19 upgrades with long field
+	// values never hit PostgreSQL's 2,704-byte btree tuple limit during
+	// Migration 17/18 (#768).
+	postgresTallyIndexesDDL = `
+DROP INDEX IF EXISTS plugin_item_field_tally_count;
+CREATE INDEX plugin_item_field_tally_count
+	ON plugin_item_field_tally(library_id, level, field, cnt DESC, (left(v_lower, 256)));
+DROP INDEX IF EXISTS plugin_item_field_tally_name;
+CREATE INDEX plugin_item_field_tally_name
+	ON plugin_item_field_tally(library_id, level, field, (left(v_lower, 256)));
+DROP INDEX IF EXISTS plugin_item_person_tally_name;
+CREATE INDEX plugin_item_person_tally_name
+	ON plugin_item_person_tally(library_id, level, field, (left(label_lower, 256)), v_int);
+DROP INDEX IF EXISTS plugin_item_person_tally_count;
+CREATE INDEX plugin_item_person_tally_count
+	ON plugin_item_person_tally(library_id, level, field, cnt DESC, (left(label_lower, 256)), v_int);
+`
+
+	migration19PostgresDDL = `
+ALTER TABLE plugin_item_fields DROP CONSTRAINT IF EXISTS plugin_item_fields_pkey;
+DROP INDEX IF EXISTS plugin_item_fields_pkey_idx;
+CREATE UNIQUE INDEX plugin_item_fields_pkey_idx
+	ON plugin_item_fields(item_ref, field, (md5(v_text)), v_int);
+DROP INDEX IF EXISTS plugin_item_fields_lookup;
+CREATE INDEX plugin_item_fields_lookup
+	ON plugin_item_fields(field, (left(v_text, 256)), item_ref);
+DROP INDEX IF EXISTS plugin_item_fields_fold;
+CREATE INDEX plugin_item_fields_fold
+	ON plugin_item_fields(field, (left(v_fold, 256)), v_int, item_ref);
+
+ALTER TABLE plugin_item_field_tally DROP CONSTRAINT IF EXISTS plugin_item_field_tally_pkey;
+DROP INDEX IF EXISTS plugin_item_field_tally_pkey_idx;
+CREATE UNIQUE INDEX plugin_item_field_tally_pkey_idx
+	ON plugin_item_field_tally(library_id, level, field, (md5(v_text)));
+` + postgresTallyIndexesDDL
 )
 
 func applyMigration18SQLite(ctx context.Context, tx *sql.Tx) error {
@@ -119,7 +226,7 @@ func applyMigration18Postgres(ctx context.Context, tx *sql.Tx) error {
 	if err := backfillTallyRepsTx(ctx, tx, true, 0); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, migration18IndexesDDL)
+	_, err := tx.ExecContext(ctx, postgresTallyIndexesDDL)
 	return err
 }
 
@@ -141,12 +248,12 @@ func applyMigration17Postgres(ctx context.Context, tx *sql.Tx) error {
 	if err := backfillFacetTalliesTx(ctx, tx, true); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, migration17IndexesDDL)
+	_, err := tx.ExecContext(ctx, postgresTallyIndexesDDL)
 	return err
 }
 
 func backfillFacetTalliesTx(ctx context.Context, tx *sql.Tx, isPG bool) error {
-	if err := backfillFieldTallyCaseTx(ctx, tx, 0); err != nil {
+	if err := backfillFieldTallyCaseTx(ctx, tx, isPG, 0); err != nil {
 		return err
 	}
 	return backfillPersonTallyTx(ctx, tx, isPG, 0)
@@ -154,7 +261,7 @@ func backfillFacetTalliesTx(ctx context.Context, tx *sql.Tx, isPG bool) error {
 
 // backfillFieldTallyCaseTx populates v_lower and v_fold on plugin_item_field_tally
 // in bounded keyset batches. libraryID == 0 backfills all libraries.
-func backfillFieldTallyCaseTx(ctx context.Context, tx *sql.Tx, libraryID int64) error {
+func backfillFieldTallyCaseTx(ctx context.Context, tx *sql.Tx, isPG bool, libraryID int64) error {
 	const batchSize = 2000
 	type rowKey struct {
 		libID int64
@@ -227,12 +334,23 @@ LIMIT ?`, curLib, curLevel, curField, curText, batchSize)
 			break
 		}
 		for _, k := range batch {
-			if _, err := tx.ExecContext(ctx, `
+			var err error
+			if isPG {
+				_, err = tx.ExecContext(ctx, `
+UPDATE plugin_item_field_tally
+SET v_lower = ?, v_fold = ?
+WHERE library_id = ? AND level = ? AND field = ? AND md5(v_text) = ? AND v_text = ?`,
+					strings.ToLower(k.text), FoldFieldText(k.text),
+					k.libID, k.level, k.field, pgTextMD5(k.text), k.text)
+			} else {
+				_, err = tx.ExecContext(ctx, `
 UPDATE plugin_item_field_tally
 SET v_lower = ?, v_fold = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
-				strings.ToLower(k.text), FoldFieldText(k.text),
-				k.libID, k.level, k.field, k.text); err != nil {
+					strings.ToLower(k.text), FoldFieldText(k.text),
+					k.libID, k.level, k.field, k.text)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -511,16 +629,28 @@ WHERE `+where.String(), args...)
 			}
 			return strings.Compare(a.text, b.text)
 		})
-		stmt, err := tx.PrepareContext(ctx, `
+		updateSQL := `
 UPDATE plugin_item_field_tally
 SET rep_ref = ?, rep_released = ?, rep_added = ?, rep_year = ?
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`)
+WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`
+		if isPG {
+			updateSQL = `
+UPDATE plugin_item_field_tally
+SET rep_ref = ?, rep_released = ?, rep_added = ?, rep_year = ?
+WHERE library_id = ? AND level = ? AND field = ? AND md5(v_text) = ? AND v_text = ?`
+		}
+		stmt, err := tx.PrepareContext(ctx, updateSQL)
 		if err != nil {
 			return err
 		}
 		for _, k := range fKeys {
 			r := fieldBest[k]
-			if _, err := stmt.ExecContext(ctx, r.ref, r.released, r.addedAt, r.year, k.libID, k.level, k.field, k.text); err != nil {
+			if isPG {
+				_, err = stmt.ExecContext(ctx, r.ref, r.released, r.addedAt, r.year, k.libID, k.level, k.field, pgTextMD5(k.text), k.text)
+			} else {
+				_, err = stmt.ExecContext(ctx, r.ref, r.released, r.addedAt, r.year, k.libID, k.level, k.field, k.text)
+			}
+			if err != nil {
 				stmt.Close()
 				return err
 			}
@@ -769,10 +899,24 @@ func itemHasPersonThumb(fieldsJSON string, peopleFields []string, targetPID int6
 	return false
 }
 
+func wrapTallyItemErr(ref, field string, err error) error {
+	if _, _, extID, ok := core.ItemRef(ref).Parse(); ok && extID != "" {
+		if field != "" {
+			return fmt.Errorf("pluginitems: kind item %q field %q: %w", extID, field, err)
+		}
+		return fmt.Errorf("pluginitems: kind item %q: %w", extID, err)
+	}
+	if field != "" {
+		return fmt.Errorf("pluginitems: field %q: %w", field, err)
+	}
+	return err
+}
+
 type fieldTallyChange struct {
 	delta       int64
 	bestAdded   tallyItemRank
 	removedRefs map[string]struct{}
+	sampleRef   string
 }
 
 func addFieldTallyChange(delta map[fieldTallyKey]*fieldTallyChange, level, field, text string, d int64, added tallyItemRank, removedRef string) {
@@ -790,6 +934,13 @@ func addFieldTallyChange(delta map[fieldTallyKey]*fieldTallyChange, level, field
 		if added.valid() && added.beats(ch.bestAdded) {
 			ch.bestAdded = added
 		}
+		if ch.sampleRef == "" {
+			if added.ref != "" {
+				ch.sampleRef = added.ref
+			} else if removedRef != "" {
+				ch.sampleRef = removedRef
+			}
+		}
 		if removedRef != "" {
 			if ch.removedRefs == nil {
 				ch.removedRefs = map[string]struct{}{}
@@ -804,8 +955,12 @@ const recomputeSortProbeMinCount = 512
 func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field, text string, curCnt int64) (tallyItemRank, error) {
 	if curCnt >= recomputeSortProbeMinCount {
 		levelCol := `+i.level`
+		textCond := `f.v_text = ?`
+		textArgs := []any{text}
 		if isPG {
 			levelCol = `i.level`
+			textCond = `md5(f.v_text) = ? AND f.v_text = ?`
+			textArgs = []any{pgTextMD5(text), text}
 		}
 		var (
 			probeSQL  string
@@ -816,19 +971,19 @@ func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_items i
 WHERE i.library_id = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?)
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
 ORDER BY i.released DESC, i.item_ref ASC
 LIMIT 1`
-			probeArgs = []any{libID, level, field, text}
+			probeArgs = append([]any{libID, level, field}, textArgs...)
 		} else {
 			probeSQL = `
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_items i
 WHERE i.library_id = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?)
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
 ORDER BY i.released DESC, i.item_ref ASC
 LIMIT 1`
-			probeArgs = []any{libID, field, text}
+			probeArgs = append([]any{libID, field}, textArgs...)
 		}
 		var cand tallyItemRank
 		err := tx.QueryRowContext(ctx, probeSQL, probeArgs...).Scan(&cand.ref, &cand.released, &cand.addedAt, &cand.year)
@@ -859,19 +1014,19 @@ LIMIT 1`
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_items i
 WHERE i.library_id = ? AND i.released = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?)
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
 ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
-				tieArgs = []any{libID, cand.released, level, field, text}
+				tieArgs = append([]any{libID, cand.released, level, field}, textArgs...)
 			} else {
 				tieSQL = `
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_items i
 WHERE i.library_id = ? AND i.released = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?)
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
 ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
-				tieArgs = []any{libID, cand.released, field, text}
+				tieArgs = append([]any{libID, cand.released, field}, textArgs...)
 			}
 			var exact tallyItemRank
 			err := tx.QueryRowContext(ctx, tieSQL, tieArgs...).Scan(&exact.ref, &exact.released, &exact.addedAt, &exact.year)
@@ -883,8 +1038,12 @@ LIMIT 1`
 	}
 
 	libCheck := `i.library_id + 0 = ?`
+	lookupCond := `f.v_text = ?`
+	lookupArgs := []any{field, text}
 	if isPG {
 		libCheck = `i.library_id = ?`
+		lookupCond = `left(f.v_text, 256) = ? AND f.v_text = ?`
+		lookupArgs = []any{field, pgTextPrefix(text), text}
 	}
 	var (
 		q    string
@@ -895,19 +1054,19 @@ LIMIT 1`
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND f.v_text = ? AND ` + libCheck + ` AND i.level = ?
+WHERE f.field = ? AND ` + lookupCond + ` AND ` + libCheck + ` AND i.level = ?
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
-		args = []any{field, text, libID, level}
+		args = append(lookupArgs, libID, level)
 	} else {
 		q = `
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND f.v_text = ? AND ` + libCheck + ` AND i.level <> ''
+WHERE f.field = ? AND ` + lookupCond + ` AND ` + libCheck + ` AND i.level <> ''
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
-		args = []any{field, text, libID}
+		args = append(lookupArgs, libID)
 	}
 	var out tallyItemRank
 	err := tx.QueryRowContext(ctx, q, args...).Scan(&out.ref, &out.released, &out.addedAt, &out.year)
@@ -942,6 +1101,18 @@ func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, isPG bool, libraryI
 	libID := int64(libraryID)
 	repBeats := repBeatsExistingSQL("plugin_item_field_tally", "rep")
 	repParamBeats := paramBeatsStoredSQL("rep")
+	conflictCols := `library_id, level, field, v_text`
+	keyCond := `library_id = ? AND level = ? AND field = ? AND v_text = ?`
+	if isPG {
+		conflictCols = `library_id, level, field, md5(v_text)`
+		keyCond = `library_id = ? AND level = ? AND field = ? AND md5(v_text) = ? AND v_text = ?`
+	}
+	keyArgs := func(k fieldTallyKey) []any {
+		if isPG {
+			return []any{libID, k.level, k.field, pgTextMD5(k.text), k.text}
+		}
+		return []any{libID, k.level, k.field, k.text}
+	}
 	var emptied map[fieldTallyKey]bool
 	for _, k := range keys {
 		ch := delta[k]
@@ -953,7 +1124,7 @@ INSERT INTO plugin_item_field_tally(
 	library_id, level, field, v_text, v_lower, v_fold, cnt,
 	rep_ref, rep_released, rep_added, rep_year
 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(library_id, level, field, v_text) DO UPDATE SET
+ON CONFLICT(`+conflictCols+`) DO UPDATE SET
 	cnt          = plugin_item_field_tally.cnt + excluded.cnt,
 	rep_released = CASE WHEN `+repBeats+` THEN excluded.rep_released ELSE plugin_item_field_tally.rep_released END,
 	rep_added    = CASE WHEN `+repBeats+` THEN excluded.rep_added    ELSE plugin_item_field_tally.rep_added END,
@@ -961,22 +1132,21 @@ ON CONFLICT(library_id, level, field, v_text) DO UPDATE SET
 	rep_ref      = CASE WHEN `+repBeats+` THEN excluded.rep_ref      ELSE plugin_item_field_tally.rep_ref END`,
 				libID, k.level, k.field, k.text, strings.ToLower(k.text), FoldFieldText(k.text), ch.delta,
 				r.ref, r.released, r.addedAt, r.year); err != nil {
-				return nil, err
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 		} else if ch.delta < 0 {
+			uArgs := append([]any{ch.delta}, keyArgs(k)...)
 			if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_field_tally
 SET cnt = cnt + ?
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
-				ch.delta, libID, k.level, k.field, k.text); err != nil {
-				return nil, err
+WHERE `+keyCond, uArgs...); err != nil {
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			res, err := tx.ExecContext(ctx, `
 DELETE FROM plugin_item_field_tally
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
-				libID, k.level, k.field, k.text)
+WHERE `+keyCond+` AND cnt <= 0`, keyArgs(k)...)
 			if err != nil {
-				return nil, err
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			if n, _ := res.RowsAffected(); n > 0 {
 				if emptied == nil {
@@ -992,14 +1162,15 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
 
 		if ch.delta <= 0 && ch.bestAdded.valid() {
 			r := ch.bestAdded
-			pArgs := make([]any, 0, 18)
-			pArgs = append(pArgs, r.released, r.addedAt, r.year, r.ref, libID, k.level, k.field, k.text)
+			pArgs := make([]any, 0, 19)
+			pArgs = append(pArgs, r.released, r.addedAt, r.year, r.ref)
+			pArgs = append(pArgs, keyArgs(k)...)
 			pArgs = append(pArgs, paramBeatsStoredArgs(r)...)
 			if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_field_tally
 SET rep_released = ?, rep_added = ?, rep_year = ?, rep_ref = ?
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND `+repParamBeats, pArgs...); err != nil {
-				return nil, err
+WHERE `+keyCond+` AND `+repParamBeats, pArgs...); err != nil {
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 		}
 
@@ -1009,13 +1180,12 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND `+repParamBe
 			err := tx.QueryRowContext(ctx, `
 SELECT rep_ref, cnt
 FROM plugin_item_field_tally
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
-				libID, k.level, k.field, k.text).Scan(&curRep, &curCnt)
+WHERE `+keyCond, keyArgs(k)...).Scan(&curRep, &curCnt)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
 			if err != nil {
-				return nil, err
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			if curRep != "" {
 				if _, hit := ch.removedRefs[curRep]; !hit {
@@ -1024,15 +1194,14 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
 			}
 			winner, err := recomputeFieldRepTx(ctx, tx, isPG, libID, k.level, k.field, k.text, curCnt)
 			if err != nil {
-				return nil, err
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
+			wArgs := append([]any{winner.ref, winner.released, winner.addedAt, winner.year}, keyArgs(k)...)
 			if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_field_tally
 SET rep_ref = ?, rep_released = ?, rep_added = ?, rep_year = ?
-WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
-				winner.ref, winner.released, winner.addedAt, winner.year,
-				libID, k.level, k.field, k.text); err != nil {
-				return nil, err
+WHERE `+keyCond, wArgs...); err != nil {
+				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 		}
 	}
@@ -1053,6 +1222,7 @@ type personTallyChange struct {
 	removedRepRefs   map[string]struct{}
 	bestThumbAdded   tallyItemRank
 	removedThumbRefs map[string]struct{}
+	sampleRef        string
 }
 
 func addPersonTallyChange(
@@ -1080,6 +1250,18 @@ func addPersonTallyChange(
 			delta[k] = ch
 		}
 		ch.delta += d
+		if ch.sampleRef == "" {
+			switch {
+			case addedRep.ref != "":
+				ch.sampleRef = addedRep.ref
+			case addedThumb.ref != "":
+				ch.sampleRef = addedThumb.ref
+			case removedRepRef != "":
+				ch.sampleRef = removedRepRef
+			case removedThumbRef != "":
+				ch.sampleRef = removedThumbRef
+			}
+		}
 		if addedText != "" && (ch.minAdded == "" || addedText < ch.minAdded) {
 			ch.minAdded = addedText
 		}
@@ -1418,7 +1600,7 @@ ON CONFLICT(library_id, level, field, v_int) DO UPDATE SET
 				libID, k.level, k.field, k.vInt, lbl, strings.ToLower(lbl), FoldFieldText(lbl), ch.delta,
 				rep.ref, rep.released, rep.addedAt, rep.year,
 				th.ref, th.released, th.addedAt, th.year); err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 		} else if ch.delta < 0 {
 			if _, err := tx.ExecContext(ctx, `
@@ -1426,14 +1608,14 @@ UPDATE plugin_item_person_tally
 SET cnt = cnt + ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 				ch.delta, libID, k.level, k.field, k.vInt); err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			res, err := tx.ExecContext(ctx, `
 DELETE FROM plugin_item_person_tally
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND cnt <= 0`,
 				libID, k.level, k.field, k.vInt)
 			if err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			if n, _ := res.RowsAffected(); n > 0 {
 				deleted = true
@@ -1469,14 +1651,14 @@ WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND `+libCheck+` AND i.level 
 					k.field, k.vInt, libID).Scan(&newLabel)
 			}
 			if err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			if !newLabel.Valid || newLabel.String == "" {
 				if _, err := tx.ExecContext(ctx, `
 DELETE FROM plugin_item_person_tally
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 					libID, k.level, k.field, k.vInt); err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 				continue
 			}
@@ -1486,7 +1668,7 @@ UPDATE plugin_item_person_tally
 SET label = ?, label_lower = ?, label_fold = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 				lbl, strings.ToLower(lbl), FoldFieldText(lbl), libID, k.level, k.field, k.vInt); err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 		} else if ch.delta <= 0 && ch.minAdded != "" {
 			lbl := ch.minAdded
@@ -1495,7 +1677,7 @@ UPDATE plugin_item_person_tally
 SET label = ?, label_lower = ?, label_fold = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND ? < label`,
 				lbl, strings.ToLower(lbl), FoldFieldText(lbl), libID, k.level, k.field, k.vInt, lbl); err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 		}
 
@@ -1509,7 +1691,7 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND ? < label`,
 UPDATE plugin_item_person_tally
 SET rep_released = ?, rep_added = ?, rep_year = ?, rep_ref = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND `+repParamBeats, pArgs...); err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 			}
 			if ch.bestThumbAdded.valid() {
@@ -1521,7 +1703,7 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND `+repParamBea
 UPDATE plugin_item_person_tally
 SET thumb_released = ?, thumb_added = ?, thumb_year = ?, thumb_ref = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND `+thumbParamBeats, pArgs...); err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 			}
 		}
@@ -1538,14 +1720,14 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 				continue
 			}
 			if err != nil {
-				return err
+				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
 			needRep := len(ch.removedRepRefs) > 0 && (curRep == "" || func() bool { _, hit := ch.removedRepRefs[curRep]; return hit }())
 			needThumb := len(ch.removedThumbRefs) > 0 && curThumb != "" && func() bool { _, hit := ch.removedThumbRefs[curThumb]; return hit }()
 			if needRep {
 				winner, err := recomputePersonRepTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, curCnt)
 				if err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 				if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_person_tally
@@ -1553,13 +1735,13 @@ SET rep_ref = ?, rep_released = ?, rep_added = ?, rep_year = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 					winner.ref, winner.released, winner.addedAt, winner.year,
 					libID, k.level, k.field, k.vInt); err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 			}
 			if needThumb {
 				winner, err := recomputePersonThumbTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, curCnt, peopleFields)
 				if err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 				if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_person_tally
@@ -1567,7 +1749,7 @@ SET thumb_ref = ?, thumb_released = ?, thumb_added = ?, thumb_year = ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 					winner.ref, winner.released, winner.addedAt, winner.year,
 					libID, k.level, k.field, k.vInt); err != nil {
-					return err
+					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
 			}
 		}

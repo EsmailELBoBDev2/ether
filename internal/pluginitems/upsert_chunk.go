@@ -195,9 +195,14 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 			it := &p.validated.Item
 			ex, isExisting := existing[it.Ref]
 			if err := parentTally.apply(ctx, it.Ref, isExisting, ex.parentRef, core.ItemRef(p.parentRef), ex.level, it.Level); err != nil {
-				return res, err
+				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}
 		}
+	}
+
+	fieldConflictCols := `item_ref, field, v_text, v_int`
+	if isPG {
+		fieldConflictCols = `item_ref, field, md5(v_text), v_int`
 	}
 
 	for i := range chunk {
@@ -265,7 +270,7 @@ INSERT INTO plugin_items(
 				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash,
 				it.Title, v.SearchFields, v.SearchPeople,
 			); err != nil {
-				return res, err
+				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx, `
@@ -304,24 +309,24 @@ INSERT INTO plugin_items(
 				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, contentRatingLevel(it.Fields), p.playableInt, it.ChildCount, it.LeafCount,
 				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash,
 			); err != nil {
-				return res, err
+				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}
 			if err := sqliteIndexFTS(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields, v.SearchPeople); err != nil {
-				return res, err
+				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}
 		}
 
 		// Replace indexed fields for this item.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return res, err
+			return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 		}
 		var itemPersonHasThumb map[int64]bool
 		for _, fv := range v.IndexedFields {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+				 ON CONFLICT(`+fieldConflictCols+`) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
 				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
-				return res, err
+				return res, fmt.Errorf("pluginitems: kind item %q field %q: %w", it.ID, fv.Field, err)
 			}
 			if fv.HasThumb && core.IsPluginPersonID(fv.Int) {
 				if itemPersonHasThumb == nil {
@@ -441,13 +446,13 @@ INSERT INTO plugin_items(
 
 		// Replace artwork rows for this item.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_art WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return res, err
+			return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 		}
 		for _, a := range it.Art {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO plugin_item_art(item_ref, role, url, width, height) VALUES(?, ?, ?, ?, ?)`,
 				string(it.Ref), a.Role, a.URL, a.Width, a.Height); err != nil {
-				return res, err
+				return res, fmt.Errorf("pluginitems: kind item %q art %q: %w", it.ID, a.Role, err)
 			}
 		}
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plextv"
 )
 
@@ -113,18 +114,128 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 	return out
 }
 
+// plexEnrollment is one pending sign-in for a new extra server. It owns the
+// setup identifier allocated before its PIN was created: client sends that
+// identifier for the PIN, the approval page, every poll and the account
+// lookup, and the stored profile keeps it. plex.tv need not echo it.
+type plexEnrollment struct {
+	clientID string
+	client   *plextv.Client
+	pin      *plextv.PIN
+	// sem serialises completion: concurrent polls of one sign-in store one
+	// profile, and the others report the same outcome.
+	sem chan struct{}
+	// The fields below are guarded by sem. token is the approved account
+	// token, kept for a retry after a failure; err is a terminal failure
+	// (expired, account in use).
+	token  string
+	done   bool
+	result map[string]any
+	err    error
+}
+
+// plexEnrollments holds the pending sign-ins. pins is bounded and expired by
+// rememberPIN; flows holds the same keys, so a PIN and its setup identifier
+// are always dropped together.
+type plexEnrollments struct {
+	mu    sync.Mutex
+	pins  map[string]*plextv.PIN
+	flows map[string]*plexEnrollment
+}
+
+// prune drops every flow whose PIN rememberPIN discarded. The caller holds mu.
+func (s *plexEnrollments) prune() {
+	for id := range s.flows {
+		if s.pins[id] == nil {
+			delete(s.flows, id)
+		}
+	}
+}
+
+func (s *plexEnrollments) add(id string, e *plexEnrollment) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rememberPIN(s.pins, id, e.pin)
+	s.flows[id] = e
+	s.prune()
+}
+
+// get returns the pending sign-in id; expired reports one that ran out.
+func (s *plexEnrollments) get(id string) (e *plexEnrollment, expired bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e = s.flows[id]
+	if e == nil {
+		return nil, false
+	}
+	if !e.pin.ExpiresAt.IsZero() && !time.Now().Before(e.pin.ExpiresAt) {
+		delete(s.pins, id)
+		delete(s.flows, id)
+		return nil, true
+	}
+	return e, false
+}
+
+// drop forgets the sign-in id if it is still e.
+func (s *plexEnrollments) drop(id string, e *plexEnrollment) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.flows[id] == e {
+		delete(s.pins, id)
+		delete(s.flows, id)
+	}
+}
+
+// clientIDPending reports whether a pending sign-in already uses clientID.
+func (s *plexEnrollments) clientIDPending(clientID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.flows {
+		if e.clientID == clientID {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	errPlexEnrollmentUnknown = errors.New("unknown sign-in request; start again")
+	errPlexEnrollmentExpired = errors.New("sign-in request expired; start again")
+)
+
 // plexExtrasAdmin is the console API (admin.PlexExtras).
 type plexExtrasAdmin struct {
-	app  *App
-	mu   *sync.Mutex
-	pins map[string]*plextv.PIN
+	app     *App
+	pending *plexEnrollments
 }
 
 func newPlexExtrasAdmin(a *App) plexExtrasAdmin {
-	return plexExtrasAdmin{app: a, mu: &sync.Mutex{}, pins: map[string]*plextv.PIN{}}
+	return plexExtrasAdmin{app: a, pending: &plexEnrollments{pins: map[string]*plextv.PIN{}, flows: map[string]*plexEnrollment{}}}
 }
 
 func (p plexExtrasAdmin) Status(ctx context.Context) any { return p.app.plexExtras.view(ctx) }
+
+// enrollmentClient returns a client for one new profile's sign-in: the setup
+// wizard's product identity with clientID as its identifier, on a copy of the
+// plex.tv client (same transport, endpoints and timeouts). The shared client
+// and the main setup identity are not changed.
+func (p plexExtrasAdmin) enrollmentClient(clientID string) *plextv.Client {
+	id := plextv.AppIdentity(p.app.cfg.Get(), "")
+	id.ClientIdentifier = clientID
+	return p.app.registrar.Client().WithIdentity(id)
+}
+
+// newSetupID allocates an identifier no profile or pending sign-in uses.
+func (p plexExtrasAdmin) newSetupID() (string, error) {
+	cfg := p.app.cfg.Get()
+	for i := 0; i < 8; i++ {
+		id := config.NewPlexClientIdentifier()
+		if !cfg.PlexClientIdentifierInUse(id) && !p.pending.clientIDPending(id) {
+			return id, nil
+		}
+	}
+	return "", errors.New("could not allocate a Plex setup identifier")
+}
 
 func (p plexExtrasAdmin) StartPIN(ctx context.Context) (id, code, authURL string, err error) {
 	if p.app.registrar == nil {
@@ -133,40 +244,79 @@ func (p plexExtrasAdmin) StartPIN(ctx context.Context) (id, code, authURL string
 	if !p.app.cfg.Get().Plex.Claimed {
 		return "", "", "", errors.New("link the main Plex server first")
 	}
-	c := p.app.registrar.SignInClient()
+	clientID, err := p.newSetupID()
+	if err != nil {
+		return "", "", "", err
+	}
+	c := p.enrollmentClient(clientID)
 	pin, err := c.CreatePIN(ctx)
 	if err != nil {
 		return "", "", "", err
 	}
 	id = strconv.FormatInt(pin.ID, 10)
-	p.mu.Lock()
-	rememberPIN(p.pins, id, pin)
-	p.mu.Unlock()
+	p.pending.add(id, &plexEnrollment{clientID: clientID, client: c, pin: pin, sem: make(chan struct{}, 1)})
 	return id, pin.Code, c.AuthURL(pin, ""), nil
 }
 
 func (p plexExtrasAdmin) PollPIN(ctx context.Context, id string) (bool, any, error) {
-	p.mu.Lock()
-	pin := p.pins[id]
-	p.mu.Unlock()
-	if pin == nil {
-		return false, nil, errors.New("unknown sign-in request; start again")
+	e, expired := p.pending.get(id)
+	if expired {
+		return false, nil, errPlexEnrollmentExpired
 	}
-	got, err := p.app.registrar.SignInClient().CheckPIN(ctx, pin.ID, pin.Code)
-	if err != nil {
+	if e == nil {
+		return false, nil, errPlexEnrollmentUnknown
+	}
+	select {
+	case e.sem <- struct{}{}:
+	case <-ctx.Done():
+		return false, nil, ctx.Err()
+	}
+	defer func() { <-e.sem }()
+	// A poll that waited behind the one that finished reports its outcome.
+	if e.done {
+		if e.err != nil {
+			return false, nil, e.err
+		}
+		return true, e.result, nil
+	}
+	fail := func(err error) (bool, any, error) {
+		e.done, e.err, e.token = true, err, ""
+		p.pending.drop(id, e)
 		return false, nil, err
 	}
-	if got.AuthToken == "" {
-		return false, nil, nil
+	if !e.pin.ExpiresAt.IsZero() && !time.Now().Before(e.pin.ExpiresAt) {
+		return fail(errPlexEnrollmentExpired)
 	}
-	p.mu.Lock()
-	delete(p.pins, id)
-	p.mu.Unlock()
-	added, err := p.app.plexExtras.addAccount(ctx, got.AuthToken)
-	if err != nil {
+	if e.token == "" {
+		got, err := e.client.CheckPIN(ctx, e.pin.ID, e.pin.Code)
+		if errors.Is(err, core.ErrNotFound) {
+			// plex.tv deletes expired PINs.
+			return fail(errPlexEnrollmentExpired)
+		}
+		if err != nil {
+			return false, nil, err
+		}
+		if got.AuthToken == "" {
+			return false, nil, nil
+		}
+		e.token = got.AuthToken
+	}
+	added, err := p.app.plexExtras.addAccount(ctx, e.client, e.clientID, e.token)
+	switch {
+	case err == nil:
+	case errors.Is(err, admin.ErrPlexAccountInUse), errors.Is(err, errPlexSetupIDInUse), errors.Is(err, core.ErrUnauthorized):
+		// Trying again cannot succeed: forget the sign-in.
+		return fail(err)
+	default:
+		// The account lookup or the save failed and nothing was stored. The
+		// sign-in stays until it expires, so the next poll tries again with
+		// the same identifier and token.
 		return false, nil, err
 	}
-	return true, map[string]any{"id": added.ID, "account": added.Account.Username, "state": added.State}, nil
+	e.done, e.token = true, ""
+	e.result = map[string]any{"id": added.ID, "account": added.Account.Username, "state": added.State}
+	p.pending.drop(id, e)
+	return true, e.result, nil
 }
 
 func (p plexExtrasAdmin) Start(ctx context.Context, id string) error {

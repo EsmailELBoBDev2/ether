@@ -38,7 +38,11 @@ type PlexExtraServer struct {
 	// Name overrides the advertised name; empty uses Server.FriendlyName.
 	Name string `json:"name,omitempty"`
 	// MachineIdentifier and ClientIdentifier are generated when the server
-	// is added and never change.
+	// is added and never change. MachineIdentifier is the server's plex.tv
+	// device id. ClientIdentifier is the profile's own app-instance id: the
+	// one its account sign-in (PIN) used, so the account's plex.tv
+	// "authorized devices" entry is not shared with other profiles. Entries
+	// added before sign-ins carried their own id hold an unrelated random id.
 	MachineIdentifier string            `json:"machineIdentifier"`
 	ClientIdentifier  string            `json:"clientIdentifier"`
 	State             string            `json:"state"`
@@ -144,6 +148,24 @@ func NewPlexExtraServer(id string, acct PlexServerAccount, now int64) PlexExtraS
 		Account:           acct,
 		AddedAt:           now,
 	}
+}
+
+// NewPlexClientIdentifier returns a fresh app-instance client identifier for
+// one profile's plex.tv sign-in.
+func NewPlexClientIdentifier() string { return randomID(16) }
+
+// PlexClientIdentifierInUse reports whether id is the main setup identifier
+// or belongs to an extra server (either of its identifiers).
+func (c Config) PlexClientIdentifierInUse(id string) bool {
+	if id == "" || id == c.Plex.ClientIdentifier || id == c.Server.MachineIdentifier {
+		return true
+	}
+	for _, s := range c.PlexExtraServers {
+		if id == s.ClientIdentifier || id == s.MachineIdentifier {
+			return true
+		}
+	}
+	return false
 }
 
 // NextPlexServerID is the first unused id of the form p2, p3, ...

@@ -77,3 +77,19 @@ func TestWithPlexServerOverlaysIdentityOnly(t *testing.T) {
 		t.Fatalf("next id = %q, want p3", id)
 	}
 }
+
+func TestPlexClientIdentifierInUse(t *testing.T) {
+	var c Config
+	c.Server.MachineIdentifier = "main-machine"
+	c.Plex.ClientIdentifier = "main-client"
+	c.PlexExtraServers = []PlexExtraServer{{ID: "p2", MachineIdentifier: "p2-machine", ClientIdentifier: "p2-client"}}
+	for _, id := range []string{"", "main-machine", "main-client", "p2-machine", "p2-client"} {
+		if !c.PlexClientIdentifierInUse(id) {
+			t.Errorf("%q reported free", id)
+		}
+	}
+	a, b := NewPlexClientIdentifier(), NewPlexClientIdentifier()
+	if len(a) != 32 || a == b || c.PlexClientIdentifierInUse(a) {
+		t.Fatalf("fresh identifiers %q %q", a, b)
+	}
+}

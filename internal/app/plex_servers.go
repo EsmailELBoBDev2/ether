@@ -64,6 +64,8 @@ type plexExtras struct {
 	sections []plextv.LibrarySection
 	// tokenServers caches which server a token belongs to (a minute).
 	tokenServers sync.Map
+	// afterAdd replaces the capacity check that follows a new account (tests).
+	afterAdd func()
 }
 
 func newPlexExtras(a *App) *plexExtras {
@@ -539,9 +541,19 @@ func (e errPlexAccountInUse) Error() string {
 	return fmt.Sprintf("this Plex account already runs %q, so it adds no seats: sign in with a different Plex account", e.name)
 }
 
-// addAccount stores a signed-in plex.tv account as a standby server.
-func (ps *plexExtras) addAccount(ctx context.Context, token string) (config.PlexExtraServer, error) {
-	acct, err := ps.app.plextv.User(ctx, token)
+// errPlexSetupIDInUse refuses a sign-in whose setup identifier another
+// profile took meanwhile; a new sign-in gets a new one.
+var errPlexSetupIDInUse = errors.New("this sign-in's identifier is already used by another Plex server; start again")
+
+// addAccount stores a signed-in plex.tv account as a standby server. client
+// is the sign-in's own client and clientID the identifier it sent for the
+// PIN; the account is read with them and the profile keeps clientID. Nothing
+// is stored unless the account is new and the config saved.
+func (ps *plexExtras) addAccount(ctx context.Context, client *plextv.Client, clientID, token string) (config.PlexExtraServer, error) {
+	if client == nil || clientID == "" || client.Identity().ClientIdentifier != clientID {
+		return config.PlexExtraServer{}, errors.New("plex sign-in has no setup identifier; start again")
+	}
+	acct, err := client.User(ctx, token)
 	if err != nil {
 		return config.PlexExtraServer{}, fmt.Errorf("plex.tv account: %w", err)
 	}
@@ -555,7 +567,13 @@ func (ps *plexExtras) addAccount(ctx context.Context, token string) (config.Plex
 				return errPlexAccountInUse{name: s.AdvertisedName(*c)}
 			}
 		}
+		if c.PlexClientIdentifierInUse(clientID) {
+			return errPlexSetupIDInUse
+		}
 		added = config.NewPlexExtraServer(c.NextPlexServerID(), config.PlexServerAccount{ID: acct.ID, Username: acct.Username, Token: token}, time.Now().Unix())
+		// The profile keeps the identifier its sign-in used. The machine
+		// identifier stays the freshly generated one.
+		added.ClientIdentifier = clientID
 		c.PlexExtraServers = append(c.PlexExtraServers, added)
 		return nil
 	})
@@ -563,7 +581,11 @@ func (ps *plexExtras) addAccount(ctx context.Context, token string) (config.Plex
 		return config.PlexExtraServer{}, err
 	}
 	ps.log.Info("plex account added as a standby server", "server", added.ID, "account", acct.Username)
-	go ps.checkCapacity(context.Background())
+	if ps.afterAdd != nil {
+		ps.afterAdd()
+	} else {
+		go ps.checkCapacity(context.Background())
+	}
 	return added, nil
 }
 

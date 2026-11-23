@@ -1636,13 +1636,13 @@ func (s *Service) libraryTally(ctx context.Context, libraryID core.LibraryID) (l
 			st.active = true
 			return st, nil
 		}
-		var hasAny int
+		var hasAny bool
 		if err := s.db.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE library_id = ?)`,
 			int64(libraryID)).Scan(&hasAny); err != nil {
 			return libraryTallyState{}, err
 		}
-		st.active = hasAny == 0
+		st.active = !hasAny
 		return st, nil
 	})
 }

@@ -487,6 +487,9 @@ func TestPartialNumericFieldIndexesPlanAndParity(t *testing.T) {
 
 	t.Run("migration_7_to_8_upgrade_and_parity", func(t *testing.T) {
 		s, db := openTestService(t, Options{})
+		if store.DialectOf(db) != store.SQLite {
+			t.Skip("SQLite migration/query-plan test")
+		}
 		const libID core.LibraryID = 71
 		elenaID, _ := seedPartialIndexLibrary(t, ctx, s, db, libID, "test.upgrade", 120, 1)
 
@@ -567,6 +570,9 @@ func TestPartialNumericFieldIndexesPlanAndParity(t *testing.T) {
 
 	t.Run("query_plans_use_partial_indexes", func(t *testing.T) {
 		s, db := openTestService(t, Options{})
+		if store.DialectOf(db) != store.SQLite {
+			t.Skip("SQLite query-plan test")
+		}
 		const largeLib core.LibraryID = 81
 		const smallLib core.LibraryID = 82
 

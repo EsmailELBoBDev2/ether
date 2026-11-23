@@ -12,21 +12,22 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func setupViewerStateTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS state_watch (
-			user_id INTEGER NOT NULL,
-			rating_key INTEGER NOT NULL,
-			view_offset_ns INTEGER NOT NULL DEFAULT 0,
-			duration_ns INTEGER NOT NULL DEFAULT 0,
-			view_count INTEGER NOT NULL DEFAULT 0,
-			counted INTEGER NOT NULL DEFAULT 0,
-			last_viewed_at INTEGER NOT NULL DEFAULT 0,
-			user_rating REAL NOT NULL DEFAULT 0,
-			updated_at INTEGER NOT NULL DEFAULT 0,
+			user_id BIGINT NOT NULL,
+			rating_key BIGINT NOT NULL,
+			view_offset_ns BIGINT NOT NULL DEFAULT 0,
+			duration_ns BIGINT NOT NULL DEFAULT 0,
+			view_count BIGINT NOT NULL DEFAULT 0,
+			counted BIGINT NOT NULL DEFAULT 0,
+			last_viewed_at BIGINT NOT NULL DEFAULT 0,
+			user_rating DOUBLE PRECISION NOT NULL DEFAULT 0,
+			updated_at BIGINT NOT NULL DEFAULT 0,
 			PRIMARY KEY (user_id, rating_key)
 		)`,
 		`CREATE INDEX IF NOT EXISTS state_watch_last_viewed ON state_watch(user_id, last_viewed_at DESC, rating_key) WHERE last_viewed_at>0`,
@@ -40,8 +41,8 @@ func setupViewerStateTables(t *testing.T, db *sql.DB) {
 			PRIMARY KEY (viewer_id, kind, subject_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS watchlist_items (
-			user_id INTEGER NOT NULL,
-			item_key INTEGER NOT NULL,
+			user_id BIGINT NOT NULL,
+			item_key BIGINT NOT NULL,
 			source TEXT NOT NULL,
 			title TEXT NOT NULL,
 			added INTEGER NOT NULL,
@@ -310,42 +311,44 @@ func TestSmartViewViewerFiltersHistoryPaginationAndIsolation(t *testing.T) {
 	}
 
 	// 6. EXPLAIN QUERY PLAN check: positive viewer filters and history sort must NOT full-scan plugin_items.
-	explain := func(query string, args ...any) string {
-		t.Helper()
-		rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
-		if err != nil {
-			t.Fatalf("EXPLAIN %q: %v", query, err)
-		}
-		defer rows.Close()
-		var lines []string
-		for rows.Next() {
-			var id, parent, notused int
-			var detail string
-			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-				t.Fatal(err)
+	if store.DialectOf(db) == store.SQLite {
+		explain := func(query string, args ...any) string {
+			t.Helper()
+			rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+			if err != nil {
+				t.Fatalf("EXPLAIN %q: %v", query, err)
 			}
-			lines = append(lines, detail)
+			defer rows.Close()
+			var lines []string
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				lines = append(lines, detail)
+			}
+			return strings.Join(lines, "\n")
 		}
-		return strings.Join(lines, "\n")
-	}
 
-	// Phase 0 history sort plan must drive from state_watch_last_viewed into plugin_items(seq).
-	planHist := explain(fmt.Sprintf(`SELECT i.item_ref FROM state_watch w CROSS JOIN plugin_items i WHERE w.user_id = ? AND w.last_viewed_at > 0 AND i.seq = w.rating_key - %d AND i.library_id = ? AND i.level = 'doc' ORDER BY w.last_viewed_at DESC, i.item_ref ASC LIMIT 20`, core.PluginKeyOffset), 1, int64(libID))
-	if !strings.Contains(planHist, "state_watch_last_viewed") {
-		t.Fatalf("expected state_watch_last_viewed in history sort plan, got:\n%s", planHist)
-	}
-	if strings.Contains(planHist, "SCAN i") {
-		t.Fatalf("history sort must not full-scan plugin_items, got:\n%s", planHist)
-	}
+		// Phase 0 history sort plan must drive from state_watch_last_viewed into plugin_items(seq).
+		planHist := explain(fmt.Sprintf(`SELECT i.item_ref FROM state_watch w CROSS JOIN plugin_items i WHERE w.user_id = ? AND w.last_viewed_at > 0 AND i.seq = w.rating_key - %d AND i.library_id = ? AND i.level = 'doc' ORDER BY w.last_viewed_at DESC, i.item_ref ASC LIMIT 20`, core.PluginKeyOffset), 1, int64(libID))
+		if !strings.Contains(planHist, "state_watch_last_viewed") {
+			t.Fatalf("expected state_watch_last_viewed in history sort plan, got:\n%s", planHist)
+		}
+		if strings.Contains(planHist, "SCAN i") {
+			t.Fatalf("history sort must not full-scan plugin_items, got:\n%s", planHist)
+		}
 
-	// Positive favorite filter plan must drive from favorites_items via semi-join into plugin_items(seq), not SCAN i.
-	favPol := compileSmartViewTab(t, ctx, s, libID, `{"match":"all","rules":[{"field":"viewer","op":"is","value":{"favorite":true}}]}`)
-	favSQL, favArgs := favPol.PluginSQLShownForViewer(core.TypeMovie, RuleFields(decl), 1)
-	planFav := explain(`SELECT i.item_ref FROM plugin_items i WHERE i.library_id = ? AND i.level = 'doc' AND (`+favSQL+`) ORDER BY i.sort_title ASC, i.item_ref ASC LIMIT 20`, append([]any{int64(libID)}, favArgs...)...)
-	if strings.Contains(planFav, "SCAN i") {
-		t.Fatalf("favorite Smart View must not full-scan plugin_items, got:\n%s", planFav)
-	}
-	if !strings.Contains(planFav, "favorites_items") {
-		t.Fatalf("expected favorites_items in favorite Smart View plan, got:\n%s", planFav)
+		// Positive favorite filter plan must drive from favorites_items via semi-join into plugin_items(seq), not SCAN i.
+		favPol := compileSmartViewTab(t, ctx, s, libID, `{"match":"all","rules":[{"field":"viewer","op":"is","value":{"favorite":true}}]}`)
+		favSQL, favArgs := favPol.PluginSQLShownForViewer(core.TypeMovie, RuleFields(decl), 1)
+		planFav := explain(`SELECT i.item_ref FROM plugin_items i WHERE i.library_id = ? AND i.level = 'doc' AND (`+favSQL+`) ORDER BY i.sort_title ASC, i.item_ref ASC LIMIT 20`, append([]any{int64(libID)}, favArgs...)...)
+		if strings.Contains(planFav, "SCAN i") {
+			t.Fatalf("favorite Smart View must not full-scan plugin_items, got:\n%s", planFav)
+		}
+		if !strings.Contains(planFav, "favorites_items") {
+			t.Fatalf("expected favorites_items in favorite Smart View plan, got:\n%s", planFav)
+		}
 	}
 }

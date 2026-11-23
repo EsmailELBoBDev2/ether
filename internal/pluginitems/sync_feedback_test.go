@@ -129,7 +129,7 @@ func TestSyncProtectsEngagedAndPinnedItemsAndAncestors(t *testing.T) {
 
 	// Create viewer engagement tables matching production state/favorites schemas.
 	for _, ddl := range []string{
-		`CREATE TABLE IF NOT EXISTS state_watch (user_id INTEGER NOT NULL, rating_key INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS state_watch (user_id BIGINT NOT NULL, rating_key BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS favorites_items (user_id INTEGER NOT NULL, kind TEXT NOT NULL, subject_id TEXT NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(ctx, ddl); err != nil {

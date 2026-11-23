@@ -27,11 +27,15 @@ import (
 // stable for the life of the release.
 
 // detailVariantBudget bounds how long an opened detail page waits for the
-// release search it started. Keep it well below Jellyfin Android TV's 750 ms
-// FullDetailsFragment.onResume timer (which dereferences mBaseItem without a
-// null guard if /Items/{id} has not returned yet); RefillSearchCache continues
-// warming the search cache in the background for PlaybackInfo.
-const detailVariantBudget = 400 * time.Millisecond
+// release search it started, matching the Plex frontend's render budget.
+// Jellyfin Android TV gets androidTVDetailVariantBudget instead: its
+// FullDetailsFragment.onResume timer fires after 750 ms and dereferences
+// mBaseItem without a null guard if /Items/{id} has not returned yet.
+// RefillSearchCache keeps warming the cache in the background either way.
+const (
+	detailVariantBudget          = 3 * time.Second
+	androidTVDetailVariantBudget = 400 * time.Millisecond
+)
 
 // refillDetailSearch starts the title's release search when its cached
 // results are missing, as the Plex detail page does, and waits up to
@@ -50,7 +54,11 @@ func (i *instance) refillDetailSearch(r *http.Request, title frontend.Title) {
 	if done == nil {
 		return
 	}
-	timer := time.NewTimer(detailVariantBudget)
+	budget := detailVariantBudget
+	if frontend.JellyfinAndroidTVClient(device(r).Client) {
+		budget = androidTVDetailVariantBudget
+	}
+	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
 	case <-done:

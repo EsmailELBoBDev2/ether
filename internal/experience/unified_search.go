@@ -155,6 +155,13 @@ func (s *Service) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device
 		out.RetryAfterSeconds = unifiedRetrySeconds
 	}
 	source := s.descriptiveSource()
+	ctrl, _ := source.(core.DescriptiveSearchController)
+	client := core.SearchClientFrom(ctx)
+	// Any other query from this client, a title or a prefix being typed
+	// included, drops the Describe job of the one before: nobody waits on it.
+	if prev, superseded := s.ensureSearchGate().supersede(viewer, client, query); superseded && ctrl != nil {
+		ctrl.CancelDescribeSearch(viewer, prev)
+	}
 	// A one- or two-letter prefix is still being typed: never AI.
 	if confident || core.IsShortSearch(query) || source == nil || !source.DescriptiveSearchAvailable() || max(q.Offset, 0) > 0 {
 		return out, nil
@@ -166,18 +173,12 @@ func (s *Service) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device
 	if err != nil {
 		return frontend.UnifiedSearchPage{}, err
 	}
-	ctrl, _ := source.(core.DescriptiveSearchController)
-	client := core.SearchClientFrom(ctx)
 	if !unifiedSettles.settled(v, client, query, unifiedNow()) && (ctrl == nil || !ctrl.DescribeCached(v, query)) {
 		// Not asked again yet: the viewer may still be typing.
 		out.Pending = true
 		out.RetryAfterSeconds = unifiedRetrySeconds
 		out.Descriptive = &frontend.DescriptiveSearchStatus{State: frontend.DescriptivePending, RetryAfterSeconds: unifiedRetrySeconds}
 		return out, nil
-	}
-	// A new described query from this client cancels the previous one's job.
-	if prev, superseded := s.ensureSearchGate().supersede(v, client, query); superseded && ctrl != nil {
-		ctrl.CancelDescribeSearch(v, prev)
 	}
 	described, err := s.DescriptiveSearch(ctx, viewer, device, query, q)
 	if err != nil {

@@ -309,11 +309,11 @@ func (s *Service) CountPartsMany(ctx context.Context, refs []core.ItemRef) (map[
 	case 1:
 		return out, nil
 	case 0:
-		var hasAny int
+		var hasAny bool
 		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_item_parts)`).Scan(&hasAny); err != nil {
 			return nil, err
 		}
-		if hasAny == 0 {
+		if !hasAny {
 			s.partsState.CompareAndSwap(0, 1)
 			return out, nil
 		}

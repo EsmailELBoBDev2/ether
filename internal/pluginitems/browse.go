@@ -227,7 +227,7 @@ func (s *Service) buildBrowsePredicates(
 	// Base filter predicate.
 	var bw strings.Builder
 	baseArgs = []any{int64(q.LibraryID)}
-	if driveFromFields && parentRef == "" {
+	if driveFromFields && parentRef == "" && store.DialectOf(s.db) != store.Postgres {
 		bw.WriteString(`i.library_id + 0 = ?`)
 	} else {
 		bw.WriteString(`i.library_id = ?`)
@@ -611,7 +611,7 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 		}
 		if n == 0 {
 			// Guard against raw-SQL test fixtures that seeded plugin_items without parent tallies.
-			var hasAny int
+			var hasAny bool
 			var probeErr error
 			if len(pLevels) == 1 {
 				probeErr = s.db.QueryRowContext(ctx,
@@ -625,7 +625,7 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 			if probeErr != nil {
 				return browseTallyInfo{}, probeErr
 			}
-			if hasAny > 0 {
+			if hasAny {
 				return browseTallyInfo{}, nil
 			}
 		}
@@ -2698,7 +2698,11 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if len(terms) > 0 {
 			var subWhere strings.Builder
 			var subArgs []any
-			subWhere.WriteString(`f.field = ? AND f.v_int + 0 > 0 AND f.v_text <> ''`)
+			if store.DialectOf(s.db) == store.Postgres {
+				subWhere.WriteString(`f.field = ? AND f.v_int > 0 AND f.v_text <> ''`)
+			} else {
+				subWhere.WriteString(`f.field = ? AND f.v_int + 0 > 0 AND f.v_text <> ''`)
+			}
 			subArgs = append(subArgs, fieldKey)
 			appendFoldedWordPrefix(&subWhere, &subArgs, terms)
 			subArgs = append(subArgs, 50000)

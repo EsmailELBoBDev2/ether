@@ -207,16 +207,18 @@ func TestFieldValuesPagingFoldedSearchDeclaredAndPlans(t *testing.T) {
 			if !strings.Contains(st.SQL, "ORDER BY") {
 				continue
 			}
-			// Build matching args for EXPLAIN QUERY PLAN.
-			args := []any{int64(libID), "", q.FieldKey}
-			for _, term := range foldQueryTerms(q.Query) {
-				args = append(args, term+"%", "% "+term+"%")
-			}
-			args = append(args, q.Limit+1, q.Offset)
-			plan := explainSQLitePlan(t, ctx, db, st.SQL, args...)
-			t.Logf("[%s] PLAN: %s", label, plan)
-			if !strings.Contains(plan, wantIdx) {
-				t.Fatalf("%s expected covering index %q, got plan: %s", label, wantIdx, plan)
+			if store.DialectOf(db) == store.SQLite {
+				// Build matching args for EXPLAIN QUERY PLAN.
+				args := []any{int64(libID), "", q.FieldKey}
+				for _, term := range foldQueryTerms(q.Query) {
+					args = append(args, term+"%", "% "+term+"%")
+				}
+				args = append(args, q.Limit+1, q.Offset)
+				plan := explainSQLitePlan(t, ctx, db, st.SQL, args...)
+				t.Logf("[%s] PLAN: %s", label, plan)
+				if !strings.Contains(plan, wantIdx) {
+					t.Fatalf("%s expected covering index %q, got plan: %s", label, wantIdx, plan)
+				}
 			}
 			checked++
 		}

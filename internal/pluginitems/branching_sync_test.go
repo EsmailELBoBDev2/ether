@@ -9,6 +9,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func branchingMusicDecl() plugins.MediaKindMeta {
@@ -264,7 +265,7 @@ func TestBranchingParentTallyRebuiltOnChunkedReindexUpgradeAndStartup(t *testing
 	if _, err := db.ExecContext(ctx, `DELETE FROM plugin_item_parent_tally WHERE library_id = ?`, int64(libID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.reindexKindChunked(ctx, false, pluginID, kindKey, libID, fullDecl); err != nil {
+	if err := s.reindexKindChunked(ctx, store.DialectOf(db) == store.Postgres, pluginID, kindKey, libID, fullDecl); err != nil {
 		t.Fatalf("reindexKindChunked: %v", err)
 	}
 	afterReindex, err := s.ParentCountsMany(ctx, libID, []core.ItemRef{ref("art-1")})

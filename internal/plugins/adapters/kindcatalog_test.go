@@ -1212,15 +1212,15 @@ func TestKindCatalogManifestViewHistoryTab(t *testing.T) {
 	ctx := context.Background()
 	h := newKindTestHarness(t, 250*time.Millisecond, nil)
 	if _, err := h.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (
-		user_id INTEGER NOT NULL,
-		rating_key INTEGER NOT NULL,
-		view_offset_ns INTEGER NOT NULL DEFAULT 0,
-		duration_ns INTEGER NOT NULL DEFAULT 0,
-		view_count INTEGER NOT NULL DEFAULT 0,
-		counted INTEGER NOT NULL DEFAULT 0,
-		last_viewed_at INTEGER NOT NULL DEFAULT 0,
-		user_rating REAL NOT NULL DEFAULT 0,
-		updated_at INTEGER NOT NULL DEFAULT 0,
+		user_id BIGINT NOT NULL,
+		rating_key BIGINT NOT NULL,
+		view_offset_ns BIGINT NOT NULL DEFAULT 0,
+		duration_ns BIGINT NOT NULL DEFAULT 0,
+		view_count BIGINT NOT NULL DEFAULT 0,
+		counted BIGINT NOT NULL DEFAULT 0,
+		last_viewed_at BIGINT NOT NULL DEFAULT 0,
+		user_rating DOUBLE PRECISION NOT NULL DEFAULT 0,
+		updated_at BIGINT NOT NULL DEFAULT 0,
 		PRIMARY KEY (user_id, rating_key)
 	)`); err != nil {
 		t.Fatal(err)

@@ -909,7 +909,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -1505,6 +1505,47 @@ unless the plugin explicitly declares a custom mapping.
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.
 
+### Frontend adapter authentication
+
+`contributes.frontendAdapters[].auth` picks how Ether authenticates the
+viewer before your adapter sees a request:
+
+| Mode | Client sends | Notes |
+|---|---|---|
+| `ether_token` (default) | `Authorization: Bearer <token>` (or the token as a Basic password) | Connect apps hands the viewer a token. |
+| `basic` | HTTP Basic, username + an Ether-issued app password | |
+| `none_lan` | nothing | Trusted LAN only, with an owner-picked viewer (DLNA rule). |
+| `query_credentials` | `u` plus `p` (plain or `enc:<hex>`) or `t` + `s` (`t` = md5(password + `s`), lowercase hex) on every request | Subsonic's scheme. Ether issues each viewer dedicated, revocable **app logins** (a generated username and a 15-character app password, like Xtream logins) from Connect apps and the adapter's page under Apps. The household password is never accepted, failed attempts share Ether's per-address sign-in limiter, and `p`, `t` and `s` are removed before the request reaches you (`u` stays). |
+
+In `query_credentials` mode a request without valid credentials is not
+answered with a bare 401: Ether relays it to
+`/ether/v1/frontend/{key}/.unauthenticated/<original path>` with **no**
+viewer headers or token, so you can answer in your protocol's own error
+shape (Subsonic error 40) or serve a document the protocol defines as
+public (OpenSubsonic's `getOpenSubsonicExtensions`). Anything you do not
+handle there (404) falls back to 401.
+
+### Host-served media and artwork
+
+An adapter response may name bytes for Ether to serve at the adapter URL
+itself, instead of a body or a redirect:
+
+- `{"media": {"itemRef", "partIndex"?, "source"?}}` — one of your playable
+  items, opened for the authenticated viewer through the same path as a
+  stream ticket (resolver, Range requests, read-ahead). Every Range request
+  re-authenticates with the client's own credentials, so players that seek
+  long after a 2-minute ticket would have expired keep working, and clients
+  that do not follow redirects are fine.
+- `{"art": {"itemRef", "role"?}}` — the stored artwork of one of your items
+  (`poster`, `thumb`, `backdrop`, `logo`; empty picks the first). Ether
+  fetches and caches the image; the URL comes from the stored item, never
+  from your response.
+
+Both are hosted-runtime fields (like `blob`), checked for item ownership
+and library visibility before anything is written. A hosted adapter's
+string `body` is the document itself (XML, HTML, text) and is written
+unquoted; object and array bodies are JSON.
+
 ## Matching
 
 Matching is yours; persistence and the console are Ether's. A manual
@@ -1542,6 +1583,26 @@ computed: `"cheap"` (the default) returns `total` only when it is O(1)
 single-page result) and omits `total` otherwise rather than scanning the
 library; `"none"` never computes or returns `total`; `"exact"` computes
 and caches an exact count for the current library generation.
+
+Frontend adapters also read and write the authenticated viewer's own
+state for your items, in the same stores every Ether app uses (likes are
+the viewer's favourites, plays and ratings their watch state, playlists
+their Ether playlists), so a star in a Subsonic app is a like in Vela.
+Hosted JS, all scoped to the adapter viewer and your own items of one kind:
+
+| Call | Returns |
+|---|---|
+| `ether.kinds.get(kind, ids)` | stored items the viewer may see (≤500 ids), in request order |
+| `ether.kinds.state(kind, ids)` | `[{id, playCount, lastPlayedAt?, favorite, rating?}]` (≤500) |
+| `ether.kinds.favorite(kind, ids, on)` | likes or unlikes (≤500) |
+| `ether.kinds.played(kind, id)` | records a completed play |
+| `ether.kinds.rate(kind, id, rating)` | 0–10, `0` clears |
+| `ether.kinds.favorites(kind, {level?, limit?})` | `[{id, level, addedAt}]`, newest first (≤1000) |
+| `ether.kinds.playlists(kind)` | the viewer's playlists that are empty or hold your items: `[{id, title, summary?, createdAt, updatedAt, total, items, indexes}]` (`items` lists only your items; `indexes` are their positions in the whole playlist) |
+| `ether.kinds.playlist(kind, id)` | one playlist |
+| `ether.kinds.playlistCreate(kind, title, ids)` | the new playlist |
+| `ether.kinds.playlistUpdate(kind, id, {title?, summary?, remove?, add?})` | `remove` takes whole-playlist positions and runs before `add` |
+| `ether.kinds.playlistDelete(kind, id)` | |
 
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already
@@ -4457,6 +4518,7 @@ const (
 	ActionJobConcurrency   = 2
 	ResolverJobConcurrency = 4
 	actionJobMinDelay      = 100 * time.Millisecond
+	jobErrorBodyLimit      = 300
 )
 ``````
 
@@ -4752,6 +4814,12 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
 		return fmt.Errorf("invalid job path %q", jobPath)
 	}
+	redact := func(s string) string {
+		if r.m == nil || r.m.store == nil {
+			return logredact.String(s)
+		}
+		return r.m.store.redactKnown(context.Background(), r.pluginID, s)
+	}
 	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 		payload := map[string]json.RawMessage{}
 		_ = json.Unmarshal(initial, &payload)
@@ -4763,7 +4831,7 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 		}
 		encoded, _ := json.Marshal(payload)
 		return r.m.Call(WithBackgroundCall(ctx), r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
-	}, onStep)
+	}, onStep, redact)
 }
 ``````
 
@@ -4991,7 +5059,13 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 		}
 		defer cancel()
 		defer close(j.done)
-		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
+		redact := func(s string) string {
+			if m == nil || m.store == nil {
+				return logredact.String(s)
+			}
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		err := runActionJobWithHook(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 			if !isResolver {
 				if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
 					return Response{}, err
@@ -5011,7 +5085,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				callCtx = WithBackgroundCall(ctx)
 			}
 			return m.Call(callCtx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
-		})
+		}, nil, redact)
 		if err != nil {
 			state := "error"
 			if ctx.Err() == context.Canceled {
@@ -5052,14 +5126,14 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 // runActionJob treats an absent continuation flag as completion for existing
 // one-call jobs. Explicit failures and non-success HTTP responses always stop.
 func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error)) error {
-	return runActionJobWithHook(ctx, j, attempts, call, nil)
+	return runActionJobWithHook(ctx, j, attempts, call, nil, nil)
 }
 ``````
 
 ## Source: internal/plugins/action_jobs.go#runActionJobWithHook
 
 ``````
-func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error) error {
+func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error, redact func(string) string) error {
 	var token json.RawMessage
 	for n := 0; n < attempts; n++ {
 		if err := ctx.Err(); err != nil {
@@ -5076,7 +5150,7 @@ func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call 
 			return fmt.Errorf("job stopped: %w", err)
 		}
 		if resp.Status < 200 || resp.Status >= 300 {
-			return fmt.Errorf("job returned HTTP %d", resp.Status)
+			return formatJobHTTPError(resp.Status, resp.Body, redact)
 		}
 		var step struct {
 			ContinueInMS *int64          `json:"continueInMs"`
@@ -5128,6 +5202,80 @@ func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call 
 		}
 	}
 	return fmt.Errorf("job reached its limit of %d calls", attempts)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#summarizeJobErrorBody
+
+``````
+// summarizeJobErrorBody extracts a bounded, single-line, secret-redacted
+// summary from a non-2xx plugin job response body (preferring a structured
+// message field when present). Redaction runs before truncation so a secret
+// straddling the truncation boundary is never partially exposed (#768).
+func summarizeJobErrorBody(body json.RawMessage, redact func(string) string) string {
+	raw := unwrapJSONStringBody(body)
+	if len(raw) == 0 {
+		return ""
+	}
+	const maxInspectBytes = 64 << 10
+	if len(raw) > maxInspectBytes {
+		raw = raw[:maxInspectBytes]
+	}
+	var text string
+	var env struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+		Failed  string          `json:"failed"`
+	}
+	if json.Unmarshal(raw, &env) == nil {
+		var errStr string
+		if len(env.Error) > 0 {
+			var errObj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(env.Error, &errObj) == nil && strings.TrimSpace(errObj.Message) != "" {
+				text = errObj.Message
+			} else {
+				_ = json.Unmarshal(env.Error, &errStr)
+			}
+		}
+		if text == "" && strings.TrimSpace(env.Message) != "" {
+			text = env.Message
+		}
+		if text == "" && strings.TrimSpace(env.Failed) != "" {
+			text = env.Failed
+		}
+		if text == "" && strings.TrimSpace(errStr) != "" {
+			text = errStr
+		}
+	}
+	if text == "" {
+		if scrubbed := redactJSON(raw); scrubbed != "" {
+			text = scrubbed
+		} else {
+			text = string(raw)
+		}
+	}
+	if redact != nil {
+		text = redact(text)
+	}
+	text = logredact.String(text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	return truncate(text, jobErrorBodyLimit)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#formatJobHTTPError
+
+``````
+func formatJobHTTPError(status int, body json.RawMessage, redact func(string) string) error {
+	if summary := summarizeJobErrorBody(body, redact); summary != "" {
+		return fmt.Errorf("job returned HTTP %d: %s", status, summary)
+	}
+	return fmt.Errorf("job returned HTTP %d", status)
 }
 ``````
 
@@ -7274,7 +7422,7 @@ type KindMatchDecl struct {
 | `pathPrefix` | `string` | emitted (validation may require a value) |  |
 | `defaultPort` | `int` | may be omitted (see validation for conditions) |  |
 | `clients` | `[]string` | may be omitted (see validation for conditions) |  |
-| `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan |
+| `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan\|query_credentials |
 | `libraries` | `[]string` | may be omitted (see validation for conditions) | Libraries lists the plugin's media-kind keys this adapter publishes. Ether resolves each key to the library the kind created and admits a viewer only to the libraries they may see; a viewer who sees none of them is answered 404. Empty means the adapter is not library-scoped. |
 | `searchPaths` | `[]string` | may be omitted (see validation for conditions) | SearchPaths optionally lists adapter subpaths (such as "/search", "/rest/search3", or "/graphql") that handle interactive viewer searches and may call ai.complete when permissions.ai is "complete+search" (#702). When omitted, conventional search subpaths (ending in /search, /search2, or /search3, with optional .json/.xml/.view suffix) are recognized. |
 
@@ -7291,7 +7439,7 @@ type FrontendAdapterMeta struct {
 	PathPrefix   string   `json:"pathPrefix"`
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
-	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan|query_credentials
 	// Libraries lists the plugin's media-kind keys this adapter publishes.
 	// Ether resolves each key to the library the kind created and admits a
 	// viewer only to the libraries they may see; a viewer who sees none of
@@ -7379,8 +7527,13 @@ type Request struct {
 	Method   string            `json:"method"`
 	Path     string            `json:"path"`
 	Query    map[string]string `json:"query,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Body     json.RawMessage   `json:"body,omitempty"`
+	// RepeatedQuery holds every value of query keys that appeared more than
+	// once on a frontend adapter request (Subsonic sends id=1&id=2). Hosted
+	// runtimes deliver those keys as arrays; the remote wire keeps Query's
+	// first value. Host-side only.
+	RepeatedQuery map[string][]string `json:"-"`
+	Headers       map[string]string   `json:"headers,omitempty"`
+	Body          json.RawMessage     `json:"body,omitempty"`
 	// BodyBase64 carries the exact request bytes, base64-encoded, when the
 	// caller needs them byte-for-byte (frontend adapter routes). Body holds
 	// the parsed JSON value when the bytes are valid JSON; a non-JSON body
@@ -7425,11 +7578,59 @@ type FrontendBlob struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#FrontendMedia.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `itemRef` | `string` | emitted (validation may require a value) |  |
+| `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FrontendMedia
+
+``````
+// FrontendMedia asks Ether to serve one of the plugin's own playable kind
+// items to the authenticated adapter viewer, at the adapter URL itself, with
+// Range support. Ether re-checks ownership and library visibility exactly as
+// frontend.streamURL does; the bytes never pass through the plugin. It suits
+// protocols whose clients do not follow redirects or re-request ranges long
+// after a stream ticket would have expired.
+type FrontendMedia struct {
+	ItemRef   string `json:"itemRef"`
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#FrontendArt.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `itemRef` | `string` | emitted (validation may require a value) |  |
+| `role` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FrontendArt
+
+``````
+// FrontendArt asks Ether to serve the stored artwork of one of the plugin's
+// own kind items (role poster, thumb, backdrop or logo; empty picks the
+// first). Ether fetches and caches the image itself, so a plugin cannot use it
+// to proxy arbitrary URLs.
+type FrontendArt struct {
+	ItemRef string `json:"itemRef"`
+	Role    string `json:"role,omitempty"`
+}
+``````
+
 ## Source: internal/plugins/contract.go#Response.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `blob` | `*FrontendBlob` | may be omitted (see validation for conditions) |  |
+| `media` | `*FrontendMedia` | may be omitted (see validation for conditions) |  |
+| `art` | `*FrontendArt` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -7441,6 +7642,8 @@ type FrontendBlob struct {
 // Response is a plugin's answer to a Request.
 type Response struct {
 	Blob    *FrontendBlob     `json:"blob,omitempty"`
+	Media   *FrontendMedia    `json:"media,omitempty"`
+	Art     *FrontendArt      `json:"art,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -9524,11 +9727,15 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	var jobErr string
 	switch {
 	case err != nil && ctx.Err() == nil:
-		jobErr = err.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, err.Error())
 	case startErr != nil:
-		jobErr = startErr.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, startErr.Error())
 	case err == nil && resp.Status >= 400:
-		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+		redact := func(s string) string {
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		jobErr = formatJobHTTPError(resp.Status, resp.Body, redact).Error()
+		m.log.Warn("plugin schedule: job failed", "plugin", pluginID, "call", callPath, "err", jobErr)
 	}
 	if jobErr != "" {
 		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))
@@ -18659,6 +18866,11 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	for k, v := range req.Query {
 		q[k] = []string{v}
 	}
+	for k, v := range req.RepeatedQuery {
+		if len(v) > 1 {
+			q[k] = append([]string(nil), v...)
+		}
+	}
 	headers := req.Headers
 	if req.Locale != "" {
 		headers = cloneHeaders(headers)
@@ -18674,7 +18886,19 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
 		}
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
+	var media *FrontendMedia
+	if len(resp.Media) > 0 && string(resp.Media) != "null" {
+		if err := json.Unmarshal(resp.Media, &media); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend media response: %w", err)
+		}
+	}
+	var art *FrontendArt
+	if len(resp.Art) > 0 && string(resp.Art) != "null" {
+		if err := json.Unmarshal(resp.Art, &art); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend art response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob, Media: media, Art: art}, nil
 }
 ``````
 
@@ -18903,6 +19127,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		}
 		out, err := json.Marshal(v)
 		return out, err
+	}
+	if strings.HasPrefix(name, "kinds.") {
+		if vs, ok := b.h.(interface {
+			callViewerState(context.Context, string, []json.RawMessage) (any, error, bool)
+		}); ok {
+			if v, err, handled := vs.callViewerState(ctx, name, args); handled {
+				return result(v, err)
+			}
+		}
 	}
 	switch name {
 	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "cache.rasterize", "archive.list", "archive.open", "archive.read", "archive.extract":
@@ -25624,8 +25857,8 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 		if a.DefaultPort < 0 || a.DefaultPort > 65535 {
 			add(base+".defaultPort", "must be a port number")
 		}
-		if a.Auth != "" && !map[string]bool{"ether_token": true, "basic": true, "none_lan": true}[a.Auth] {
-			add(base+".auth", "must be ether_token, basic or none_lan")
+		if a.Auth != "" && !map[string]bool{"ether_token": true, "basic": true, "none_lan": true, "query_credentials": true}[a.Auth] {
+			add(base+".auth", "must be ether_token, basic, none_lan or query_credentials")
 		}
 		seenLib := map[string]bool{}
 		for j, key := range a.Libraries {
@@ -32281,7 +32514,18 @@ globalThis.ether = (() => {
              delete: (kind, ids) => call("kinds.delete", [kind, ids == null ? [] : ids]),
              items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
              visible: (kind, ids) => call("kinds.visible", [kind, ids == null ? [] : ids]),
-             browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]) },
+             browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]),
+             get: (kind, ids) => call("kinds.get", [kind, ids == null ? [] : ids]),
+             state: (kind, ids) => call("kinds.state", [kind, ids == null ? [] : ids]),
+             favorite: (kind, ids, on) => call("kinds.favorite", [kind, ids == null ? [] : ids, on !== false]),
+             played: (kind, id) => call("kinds.played", [kind, id]),
+             rate: (kind, id, rating) => call("kinds.rate", [kind, id, rating == null ? 0 : rating]),
+             favorites: (kind, query) => call("kinds.favorites", [kind, query == null ? {} : query]),
+             playlists: (kind) => call("kinds.playlists", [kind]),
+             playlist: (kind, id) => call("kinds.playlist", [kind, id]),
+             playlistCreate: (kind, title, ids) => call("kinds.playlistCreate", [kind, title, ids == null ? [] : ids]),
+             playlistUpdate: (kind, id, update) => call("kinds.playlistUpdate", [kind, id, update == null ? {} : update]),
+             playlistDelete: (kind, id) => call("kinds.playlistDelete", [kind, id]) },
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
              open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]),
@@ -33531,6 +33775,8 @@ type Request struct {
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `blob` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
+| `media` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
+| `art` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -33543,6 +33789,8 @@ type Request struct {
 // as its body field (usually a JSON string), passed through untouched.
 type Response struct {
 	Blob    json.RawMessage   `json:"blob,omitempty"`
+	Media   json.RawMessage   `json:"media,omitempty"`
+	Art     json.RawMessage   `json:"art,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -33585,6 +33833,8 @@ var DefaultCosts = map[string]int64{
 	"secret.get": 5, "secret.set": 10, "secret.delete": 5, "http.fetch": 100, "http.fetchMany": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
+	"kinds.get": 15, "kinds.state": 15, "kinds.favorite": 20, "kinds.played": 20, "kinds.rate": 20, "kinds.favorites": 20,
+	"kinds.playlists": 20, "kinds.playlist": 20, "kinds.playlistCreate": 50, "kinds.playlistUpdate": 50, "kinds.playlistDelete": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
 	"ai.complete": 200, "media.probe": 100,
@@ -39452,9 +39702,22 @@ built-in protocol projectors:
   and dropping unknown or hidden IDs. Use this when your adapter builds a custom
   list or keeps its own index and needs to prune hidden items before returning them.
 
+- `kinds.get(kind, ids)` — the stored items (up to **500**) the viewer may see, in
+  request order (hosted JS).
+- Viewer state for your own items, stored in Ether's shared favourites, watch
+  state and playlists (a like here is a like in every Ether app), hosted JS:
+  `kinds.state`, `kinds.favorite`, `kinds.played`, `kinds.rate`,
+  `kinds.favorites`, `kinds.playlists`, `kinds.playlist`, `kinds.playlistCreate`,
+  `kinds.playlistUpdate`, `kinds.playlistDelete`. See docs/plugin-kinds.md › Host services.
+- Adapter auth `query_credentials` (Subsonic `u` + `p`/`t`+`s`) authenticates
+  Ether-issued per-viewer app logins; failed requests are relayed to
+  `/ether/v1/frontend/{key}/.unauthenticated/…` without a viewer so you can answer
+  your protocol's own error. Answer `{media: {itemRef}}` or `{art: {itemRef, role}}`
+  to have Ether serve an item's bytes (with ranges) or artwork at the adapter URL.
+
 **Security guard:** Only viewer-authenticated frontend adapter requests
 (`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
-`kinds.visible` or `kinds.browse`. Any other route (catalogue browse, jobs,
+`kinds.visible`, `kinds.browse` or the viewer-state calls above. Any other route (catalogue browse, jobs,
 views, actions, unauthenticated requests) receives a permission error. The
 viewer identity always comes from Ether's authenticated request context (and the
 host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin
@@ -62456,7 +62719,7 @@ type KindMatchDecl struct {
 | `pathPrefix` | `string` | emitted (validation may require a value) |  |
 | `defaultPort` | `int` | may be omitted (see validation for conditions) |  |
 | `clients` | `[]string` | may be omitted (see validation for conditions) |  |
-| `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan |
+| `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan\|query_credentials |
 | `libraries` | `[]string` | may be omitted (see validation for conditions) |  |
 | `searchPaths` | `[]string` | may be omitted (see validation for conditions) | SearchPaths optionally lists adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". |
 
@@ -62472,7 +62735,7 @@ type FrontendAdapterMeta struct {
 	PathPrefix   string   `json:"pathPrefix"`
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
-	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan|query_credentials
 	Libraries    []string `json:"libraries,omitempty"`
 	// SearchPaths optionally lists adapter subpaths (such as "/search",
 	// "/rest/search3", or "/graphql") allowed to call ai.complete when
@@ -74689,7 +74952,7 @@ export interface FrontendAdapterMeta {
   pathPrefix: string;
   defaultPort?: number;
   clients?: string[];
-  auth?: "ether_token" | "basic" | "none_lan";
+  auth?: "ether_token" | "basic" | "none_lan" | "query_credentials";
   libraries?: string[];
   /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
   searchPaths?: string[];

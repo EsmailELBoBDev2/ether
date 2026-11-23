@@ -1784,8 +1784,23 @@ export interface FrontendBlob {
   memberIndex?: number;
 }
 
+/** Frontend adapters: Ether serves one of your playable items' bytes (with ranges) at the adapter URL. */
+export interface FrontendMedia {
+  itemRef: string;
+  partIndex?: number;
+  source?: string;
+}
+
+/** Frontend adapters: Ether serves one of your items' stored artwork at the adapter URL. */
+export interface FrontendArt {
+  itemRef: string;
+  role?: string;
+}
+
 export interface RawResponse {
   blob?: FrontendBlob;
+  media?: FrontendMedia;
+  art?: FrontendArt;
   status: number;
   headers?: Record<string, string>;
   body?: unknown;

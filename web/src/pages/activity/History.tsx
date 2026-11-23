@@ -2,7 +2,9 @@ import { Badge, EmptyState, Input, PagedTable, Select } from "@braedonsaunders/a
 import { CheckCircle2, Clock, History as HistoryIcon, PlayCircle, Users } from "lucide-react";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { Kpi, KpiRow } from "../../components/Kpi";
+import { LiveChannelArtwork } from "../../components/SessionArtwork";
 import { fixed, formatNumber, formatPercent } from "../../lib/format";
+import { channelLabel } from "../../lib/health";
 import { DASH } from "./experience-format";
 import { getLocale, t, tn } from "../../i18n";
 import { pagedTableLabels } from "../../i18n/appkit-labels";
@@ -61,10 +63,22 @@ export function ViewingFilters({
   );
 }
 
+const isLivePlay = (p: Play) => Boolean(p.channelId || p.channelName);
+
+function playChannelTitle(p: Play): string {
+  return (
+    channelLabel({
+      channelName: p.channelName ?? "",
+      channelNumber: p.channelNumber ?? "",
+    }) || p.title
+  );
+}
+
 function statusCell(p: Play) {
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1">
+        {isLivePlay(p) ? <Badge variant="info">{t("Live TV")}</Badge> : null}
         <Badge variant={p.completed ? "success" : "secondary"}>
           {p.completed ? t("Completed") : p.ended ? t("Ended") : t("Last observed")}
         </Badge>
@@ -149,14 +163,39 @@ export function PlayHistory({
             {
               key: "title",
               header: t("Title / viewer"),
-              search: (p) => p.title + " " + p.username,
-              sortValue: (p) => p.title,
-              cell: (p) => (
-                <>
-                  <p className="font-medium text-fg">{p.title}</p>
-                  <p className="text-xs text-fg-muted">{p.username || t("Unknown viewer")}</p>
-                </>
-              ),
+              search: (p) =>
+                [p.channelNumber, p.channelName, p.title, p.username].filter(Boolean).join(" "),
+              sortValue: (p) => (isLivePlay(p) ? p.channelName || p.title : p.title),
+              cell: (p) => {
+                if (isLivePlay(p)) {
+                  const channel = playChannelTitle(p);
+                  const programme =
+                    p.title && p.title !== p.channelName && p.title !== channel ? p.title : "";
+                  const sub = [programme, p.username || t("Unknown viewer")]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <div className="flex items-center gap-2.5">
+                      <LiveChannelArtwork
+                        channelId={p.channelId}
+                        name={p.channelName || p.channelNumber || p.title}
+                        className="size-8 shrink-0 rounded-md"
+                        imgClassName="p-1"
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-fg">{channel}</p>
+                        <p className="truncate text-xs text-fg-muted">{sub}</p>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <>
+                    <p className="font-medium text-fg">{p.title}</p>
+                    <p className="text-xs text-fg-muted">{p.username || t("Unknown viewer")}</p>
+                  </>
+                );
+              },
             },
             {
               key: "started",

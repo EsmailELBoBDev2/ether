@@ -62,6 +62,7 @@ type session struct {
 	inputSource         StreamSource
 	inputHeaders        http.Header
 	firstMediaDelivered bool
+	firstDeliveredAt    time.Time
 	firstMediaByte      bool
 	bytesServed         int64
 	tuneStartedAt       time.Time
@@ -257,7 +258,55 @@ func (s *Service) startOwnedHLS(request context.Context, ss *session, req core.H
 	return hls, cancel, nil
 }
 
-func (ss *session) close(s *Service) {
+func (s *Service) clockNow() time.Time {
+	if s != nil && s.o.Now != nil {
+		return s.o.Now()
+	}
+	return time.Now()
+}
+
+func (s *Service) observeSession(p *core.PlaySession, ended bool, problem string) {
+	if s == nil || s.o.ObserveSession == nil || p == nil || p.ID == "" {
+		return
+	}
+	s.o.ObserveSession(p, ended, problem)
+}
+
+func (s *Service) sessionSnapshotLocked(ss *session, now time.Time) core.PlaySession {
+	p := ss.view
+	if p.LiveChannel != nil {
+		ch := *p.LiveChannel
+		p.LiveChannel = &ch
+	}
+	p.Liveness = s.sessionLivenessLocked(ss, now).State
+	p.LastActive = ss.last
+	p.BytesServed = ss.bytesServed
+	if ss.firstMediaDelivered {
+		p.ViewerState = "playing"
+		startedAt := ss.info.StartedAt
+		deliveredAt := ss.firstDeliveredAt
+		if deliveredAt.IsZero() {
+			deliveredAt = now
+		}
+		var startTime time.Duration
+		if !startedAt.IsZero() && !deliveredAt.IsZero() {
+			startTime = max(0, deliveredAt.Sub(startedAt))
+		}
+		p.Experience = &core.PlayExperience{
+			Requested:   true,
+			RequestedAt: startedAt,
+			Pictured:    true,
+			PicturedAt:  deliveredAt,
+			StartTime:   startTime,
+		}
+	}
+	return p
+}
+
+func (ss *session) close(s *Service)        { ss.closeWithReason(s, false) }
+func (ss *session) closeExpired(s *Service) { ss.closeWithReason(s, true) }
+
+func (ss *session) closeWithReason(s *Service, expired bool) {
 	defer s.onChannelSessionClosed(ss.info.Channel.ID)
 	defer s.endPersonal(ss.info.Channel, ss.info.UserID)
 	if ss.startupCancel != nil {
@@ -288,6 +337,13 @@ func (ss *session) close(s *Service) {
 	mode := sessionPlayoutModeLocked(ss)
 	stopInfo := ss.info
 	stopSrc := ss.inputSource
+	now := s.clockNow()
+	end := now
+	if expired && !ss.last.IsZero() && ss.last.Before(end) {
+		end = ss.last
+	}
+	snap := s.sessionSnapshotLocked(ss, end)
+	snap.LastActive = end
 	ss.mu.Unlock()
 	if broadcast != nil {
 		broadcast.close()
@@ -305,9 +361,12 @@ func (ss *session) close(s *Service) {
 			limiter.EndChannel(ss.info.ID)
 		}
 	}
-	age := s.o.Now().Sub(stopInfo.StartedAt)
+	age := now.Sub(stopInfo.StartedAt)
 	if ready {
 		s.emitChannelStopped(stopInfo, stopSrc, age.Milliseconds(), bytesServed, mode)
+	}
+	if delivered {
+		s.observeSession(&snap, true, "")
 	}
 	s.sessionLog(ss).Info("live session resources released", "ready", ready, "media_requested", requested, "media_delivered", delivered, "age", age, "viewer_reservation_released", reserved)
 }
@@ -323,7 +382,12 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		return SessionInfo{}, core.ErrNotAvailable
 	}
 	started := time.Now()
+	tuneStarted := s.clockNow()
 	attemptID := liveSessionID()
+	var admitted bool
+	var tunedCh Channel
+	var tunedProg *Programme
+	var tunedSess *session
 	log := s.logger().With("session", attemptID, "channel", channelID, "client", caps.ClientID, "product", caps.Product)
 	log.Info("live tune started")
 	defer func() {
@@ -335,6 +399,37 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 				log.Debug("live tune cancelled", attrs...)
 			} else {
 				log.Info("live tune failed", attrs...)
+				if admitted && u != nil && tunedCh.ID != "" && !(tunedSess != nil && errors.Is(resultErr, core.ErrNotFound) && tunedSess.isClosed()) {
+					var snap core.PlaySession
+					if tunedSess != nil {
+						tunedSess.mu.Lock()
+						snap = s.sessionSnapshotLocked(tunedSess, s.clockNow())
+						tunedSess.mu.Unlock()
+					} else {
+						title := tunedCh.Name
+						if tunedProg != nil && tunedProg.Item.Title != "" {
+							title = tunedProg.Item.Title
+						}
+						snap = core.PlaySession{
+							ID: attemptID, PlaybackGroup: attemptID,
+							UserID: u.ID, Username: u.Username,
+							ClientID: caps.ClientID, Client: caps,
+							TitleName: title, StartedAt: tuneStarted,
+							Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true,
+							DecisionReason: "Live channel playout",
+							Origin:         "Live TV",
+							LiveChannel:    &core.LiveChannel{ID: tunedCh.ID, Name: tunedCh.Name, Number: tunedCh.Number},
+						}
+					}
+					msg := detail.Error()
+					snap.ViewerState = ""
+					snap.Experience = &core.PlayExperience{
+						Requested:    true,
+						RequestedAt:  snap.StartedAt,
+						StartFailure: msg,
+					}
+					s.observeSession(&snap, true, msg)
+				}
 			}
 		} else {
 			log.Info("live tune ready", append(attrs, "source", result.Channel.SourceID, "analyzed", result.MediaInfo != nil)...)
@@ -388,6 +483,9 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	if !s.allowed(ctx, u, c, p) {
 		return SessionInfo{}, core.ErrUnauthorized
 	}
+	admitted = true
+	tunedCh = c
+	tunedProg = p
 	// Apply the viewer override only to this tune's channel copy. A channel
 	// already requiring conversion remains converted for every viewer.
 	if c.Kind == "iptv" && policy.Transcode {
@@ -406,6 +504,8 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		if ep != nil {
 			p = ep
 		}
+		tunedCh = c
+		tunedProg = p
 	}
 	// A single client device watches one live channel at a time, except tiles
 	// belonging to the same multiview group. A non-group tune supersedes the
@@ -465,13 +565,14 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ss.startupCancel = cancel
-	ss.view = core.PlaySession{ID: ss.info.ID, PlaybackGroup: ss.info.ID, UserID: u.ID, Username: u.Username, ClientID: caps.ClientID, Client: caps, TitleName: c.Name, StartedAt: ss.info.StartedAt, Decision: core.DecisionRemux, DecisionReason: "Live channel playout"}
+	ss.view = core.PlaySession{ID: ss.info.ID, PlaybackGroup: ss.info.ID, UserID: u.ID, Username: u.Username, ClientID: caps.ClientID, Client: caps, TitleName: c.Name, StartedAt: ss.info.StartedAt, Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true, DecisionReason: "Live channel playout", Origin: "Live TV"}
 	ss.view.LiveChannel = &core.LiveChannel{ID: c.ID, Name: c.Name, Number: c.Number}
 	if p != nil {
 		ss.view.Key = p.Item.Key
 		ss.view.TitleName = p.Item.Title
 		ss.view.Info.Duration = p.End.Sub(p.Start)
 	}
+	tunedSess = ss
 	s.sessions[ss.info.ID] = ss
 	s.noteWatchedLocked(c.ID)
 	if u != nil && u.ID > 0 {
@@ -599,11 +700,15 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		return SessionInfo{}, core.ErrNotAvailable
 	}
 	started := time.Now()
+	tuneStarted := s.clockNow()
 	attemptID := liveSessionID()
 	title := strings.TrimSpace(ds.Title)
 	if title == "" {
 		title = "Live stream"
 	}
+	var admitted bool
+	var tunedCh Channel
+	var tunedSess *session
 	log := s.logger().With("session", attemptID, "direct_live", ds.ID, "client", caps.ClientID, "product", caps.Product)
 	log.Info("direct live tune started")
 	defer func() {
@@ -615,6 +720,33 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 				log.Debug("direct live tune cancelled", attrs...)
 			} else {
 				log.Info("direct live tune failed", attrs...)
+				if admitted && u != nil && tunedCh.ID != "" && !(tunedSess != nil && errors.Is(resultErr, core.ErrNotFound) && tunedSess.isClosed()) {
+					var snap core.PlaySession
+					if tunedSess != nil {
+						tunedSess.mu.Lock()
+						snap = s.sessionSnapshotLocked(tunedSess, s.clockNow())
+						tunedSess.mu.Unlock()
+					} else {
+						snap = core.PlaySession{
+							ID: attemptID, PlaybackGroup: attemptID,
+							UserID: u.ID, Username: u.Username,
+							ClientID: caps.ClientID, Client: caps,
+							TitleName: title, StartedAt: tuneStarted,
+							Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true,
+							DecisionReason: "Plugin live stream",
+							Origin:         "Live TV",
+							LiveChannel:    &core.LiveChannel{ID: tunedCh.ID, Name: tunedCh.Name},
+						}
+					}
+					msg := detail.Error()
+					snap.ViewerState = ""
+					snap.Experience = &core.PlayExperience{
+						Requested:    true,
+						RequestedAt:  snap.StartedAt,
+						StartFailure: msg,
+					}
+					s.observeSession(&snap, true, msg)
+				}
 			}
 		} else {
 			log.Info("direct live tune ready", append(attrs, "analyzed", result.MediaInfo != nil)...)
@@ -658,6 +790,8 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 			Enabled: true,
 		}},
 	}
+	admitted = true
+	tunedCh = c
 
 	callerHandover := core.LiveHandover(ctx)
 	handoverIDs := s.supersedeBeforeTune(u.ID, caps, attemptID, callerHandover)
@@ -701,8 +835,11 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		UserID: u.ID, Username: u.Username,
 		ClientID: caps.ClientID, Client: caps,
 		TitleName: title, StartedAt: ss.info.StartedAt,
-		Decision: core.DecisionRemux, DecisionReason: "Plugin live stream",
+		Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true,
+		DecisionReason: "Plugin live stream", Origin: "Live TV",
+		LiveChannel: &core.LiveChannel{ID: c.ID, Name: c.Name},
 	}
+	tunedSess = ss
 	s.sessions[ss.info.ID] = ss
 	s.mu.Unlock()
 	s.notifySessionsChanged()
@@ -1418,14 +1555,13 @@ func (s *Service) ViewingSessions() []*core.PlaySession {
 	now := s.o.Now()
 	out := make([]*core.PlaySession, 0, len(list))
 	for _, ss := range list {
-		p := ss.view
+		var p core.PlaySession
 		if ss.mu.TryLock() {
-			p.Liveness = s.sessionLivenessLocked(ss, now).State
-			p.LastActive = ss.last
-			p.BytesServed = ss.bytesServed
+			p = s.sessionSnapshotLocked(ss, now)
 			ss.mu.Unlock()
 		} else {
 			// Startup I/O holds ss.mu: never block monitoring.
+			p = ss.view
 			p.Liveness = core.SessionLivenessStarting
 		}
 		out = append(out, &p)

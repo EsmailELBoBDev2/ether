@@ -18,7 +18,12 @@ func (a *App) buildInsights() {
 	ownerSession := func(id string) (*core.PlaySession, bool) {
 		return (ownerPlayback{Playback: a.playback, app: a}).Session(id)
 	}
-	a.stats = stats.New(a.db, stats.Options{NodeID: a.clusterNodeID(), Now: parityClock(), Availability: a.dbAvail, Playback: a.playback, Session: ownerSession, SessionExists: func(id string) bool { _, ok := ownerSession(id); return ok }, Providers: a.fetcher.Stats, Indexers: a.indexers.Remaining, Logger: a.log.With("component", "stats"), StopSession: a.stopOwnerSession, MetadataType: func(key core.RatingKey) int {
+	a.stats = stats.New(a.db, stats.Options{NodeID: a.clusterNodeID(), Now: parityClock(), Availability: a.dbAvail, Playback: a.playback, Session: ownerSession, LiveSessions: func() []*core.PlaySession {
+		if a.livetv == nil {
+			return nil
+		}
+		return a.livetv.ViewingSessions()
+	}, SessionExists: func(id string) bool { _, ok := ownerSession(id); return ok }, Providers: a.fetcher.Stats, Indexers: a.indexers.Remaining, Logger: a.log.With("component", "stats"), StopSession: a.stopOwnerSession, MetadataType: func(key core.RatingKey) int {
 		if a.catalog == nil {
 			return 0
 		}

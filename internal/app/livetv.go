@@ -41,6 +41,15 @@ func (a *App) buildLiveTV() error {
 			defer cancel()
 			broker.CleanupStoppedLive(ctx, playID)
 		}()
+	}, ObserveSession: func(p *core.PlaySession, ended bool, problem string) {
+		if a.stats == nil || p == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := a.stats.Record(ctx, p, ended, problem); err != nil {
+			a.log.Warn("record live tv stats", "err", err)
+		}
 	}, RemoteUploadCap: a.remoteUploadCap, SourcesChanged: a.publishDashboard, VODChanged: func() {
 		if a.resolver != nil {
 			a.resolver.SourcesChanged(context.Background())

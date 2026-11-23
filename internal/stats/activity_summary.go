@@ -118,7 +118,7 @@ func (s *Service) catalogSummary(ctx context.Context, out *Summary, args []any) 
 		// index is still an episode scan for every selected play.
 		period += `NOT INDEXED `
 	}
-	const filter = ` WHERE t.key=p.rating_key AND p.started>=? AND p.started<? AND (?=0 OR p.user_id=?) AND (p.bytes>0 OR p.watched_ms>0) `
+	const filter = ` WHERE t.key=p.rating_key AND p.channel_id='' AND p.started>=? AND p.started<? AND (?=0 OR p.user_id=?) AND (p.bytes>0 OR p.watched_ms>0) `
 	queries := []struct {
 		query string
 		dst   *[]Bucket

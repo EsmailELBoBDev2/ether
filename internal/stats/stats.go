@@ -3,6 +3,7 @@
 package stats
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -60,6 +61,9 @@ ALTER TABLE stats_plays ADD COLUMN reason_detail TEXT NOT NULL DEFAULT '';`)
 	store.Register("stats", 9, `ALTER TABLE stats_plays ADD COLUMN quality_fallback TEXT NOT NULL DEFAULT '';`)
 	store.Register("stats", 10, `ALTER TABLE stats_plays ADD COLUMN client_ip TEXT;
 ALTER TABLE stats_plays ADD COLUMN audio_copy INTEGER;`)
+	store.Register("stats", 15, `ALTER TABLE stats_plays ADD COLUMN channel_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE stats_plays ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE stats_plays ADD COLUMN channel_number TEXT NOT NULL DEFAULT '';`)
 	store.RegisterAfter("stats_seen_devices", "stats")
 	store.Register("stats_seen_devices", 1, `ALTER TABLE stats_plays ADD COLUMN product TEXT NOT NULL DEFAULT '';
 ALTER TABLE stats_plays ADD COLUMN device_match TEXT NOT NULL DEFAULT '';
@@ -82,6 +86,7 @@ type Options struct {
 	StopSession   func(string) error
 	SessionExists func(string) bool
 	Session       func(string) (*core.PlaySession, bool)
+	LiveSessions  func() []*core.PlaySession
 	Playback      core.Playback
 	Providers     func() []usenet.ProviderStats
 	Indexers      func(context.Context) ([]newznab.Remaining, error)
@@ -143,11 +148,12 @@ func (s *Service) liveSession(id string) (*core.PlaySession, bool) {
 
 // playRecord is one observation of a play, captured when it was made.
 type playRecord struct {
-	p       core.PlaySession
-	at      time.Time
-	ended   bool
-	problem string
-	release string // release name, kept after Resolution is dropped
+	p         core.PlaySession
+	at        time.Time
+	ended     bool
+	problem   string
+	release   string // release name, kept after Resolution is dropped
+	watchedMS int64  // active duration for live sessions; 0 for VOD (tracked by ObserveState)
 }
 
 // mergePlay keeps the newest observation of a row but never forgets that
@@ -159,6 +165,9 @@ func mergePlay(old, nw playRecord) playRecord {
 	}
 	if nw.release == "" {
 		nw.release = old.release
+	}
+	if old.watchedMS > nw.watchedMS {
+		nw.watchedMS = old.watchedMS
 	}
 	return nw
 }
@@ -226,6 +235,11 @@ func (s *Service) ObservePlayback(ev playback.Event) {
 // a record the database cannot take is held and written when it is back.
 func (s *Service) Record(ctx context.Context, p *core.PlaySession, ended bool, problem string) error {
 	if p == nil || p.ID == "" {
+		return nil
+	}
+	// Internal virtual-channel programme feeders belong to the channel's live
+	// viewing session, never as separate VOD plays.
+	if strings.HasPrefix(p.ClientID, "channel-input/") || strings.HasPrefix(p.Client.ClientID, "channel-input/") {
 		return nil
 	}
 	problem = clampTimelineText(problem)
@@ -302,11 +316,18 @@ func (s *Service) record(ctx context.Context, r playRecord) error {
 	if problem == "" {
 		problem = clampTimelineText(q.startFailure)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO stats_plays(id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,bytes,duration_ms,failovers,error,node_id,`+
-		`measured,played,pictured,ttff_ms,start_failed,buffer_events,buffer_ms,down_failovers,source_kbps,uhd,hdr,remote,origin,release_name,reason_kind,reason_detail,quality_fallback,client_ip,audio_copy,product,device_match) `+
-		`VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,title=excluded.title,platform=excluded.platform,device=excluded.device,decision=excluded.decision,updated=excluded.updated,`+
+	var channelID, channelName, channelNumber string
+	if p.LiveChannel != nil {
+		channelID = cmp.Or(p.LiveChannel.ID, p.LiveChannel.Name)
+		channelName = cmp.Or(p.LiveChannel.Name, p.TitleName)
+		channelNumber = p.LiveChannel.Number
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO stats_plays(id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,bytes,watched_ms,duration_ms,failovers,error,node_id,`+
+		`measured,played,pictured,ttff_ms,start_failed,buffer_events,buffer_ms,down_failovers,source_kbps,uhd,hdr,remote,origin,release_name,reason_kind,reason_detail,quality_fallback,client_ip,audio_copy,product,device_match,channel_id,channel_name,channel_number) `+
+		`VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,title=excluded.title,platform=excluded.platform,device=excluded.device,decision=excluded.decision,updated=excluded.updated,`+
 		`ended=excluded.ended,product=CASE WHEN excluded.product='' THEN stats_plays.product ELSE excluded.product END,device_match=CASE WHEN excluded.device_match='' THEN stats_plays.device_match ELSE excluded.device_match END,`+
 		`bytes=CASE WHEN excluded.bytes>stats_plays.bytes THEN excluded.bytes ELSE stats_plays.bytes END,`+
+		`watched_ms=CASE WHEN excluded.watched_ms>stats_plays.watched_ms THEN excluded.watched_ms ELSE stats_plays.watched_ms END,`+
 		`duration_ms=CASE WHEN excluded.duration_ms>stats_plays.duration_ms THEN excluded.duration_ms ELSE stats_plays.duration_ms END,`+
 		`failovers=excluded.failovers,error=CASE WHEN excluded.error='' THEN stats_plays.error ELSE excluded.error END,node_id=excluded.node_id,`+
 		// The viewing (viewing.go) holds the row's experience totals.
@@ -321,9 +342,12 @@ func (s *Service) record(ctx context.Context, r playRecord) error {
 		`release_name=CASE WHEN excluded.release_name='' THEN stats_plays.release_name ELSE excluded.release_name END,`+
 		`reason_kind=CASE WHEN excluded.decision='' THEN stats_plays.reason_kind ELSE excluded.reason_kind END,`+
 		`reason_detail=CASE WHEN excluded.decision='' THEN stats_plays.reason_detail ELSE excluded.reason_detail END,`+
-		`quality_fallback=CASE WHEN excluded.quality_fallback='' THEN stats_plays.quality_fallback ELSE excluded.quality_fallback END`,
-		p.ID, p.UserID, int64(p.Key), p.Username, p.TitleName, p.Client.Platform, device, string(p.Decision), start.Unix(), now.Unix(), end, p.BytesServed, p.Info.Duration.Milliseconds(), p.Failovers, problem, s.opts.NodeID,
-		q.played, q.pictured, q.ttffMS, q.startFailed, q.bufferEvents, q.bufferMS, p.DownFailovers, q.sourceKbps, q.uhd, q.hdr, q.remote, p.Origin, q.release, q.reasonKind, q.reasonDetail, p.QualityFallback, nullIP(p.Client.ClientIP), audioCopy(p), p.Client.Product, deviceMatch)
+		`quality_fallback=CASE WHEN excluded.quality_fallback='' THEN stats_plays.quality_fallback ELSE excluded.quality_fallback END,`+
+		`channel_id=CASE WHEN excluded.channel_id='' THEN stats_plays.channel_id ELSE excluded.channel_id END,`+
+		`channel_name=CASE WHEN excluded.channel_name='' THEN stats_plays.channel_name ELSE excluded.channel_name END,`+
+		`channel_number=CASE WHEN excluded.channel_number='' THEN stats_plays.channel_number ELSE excluded.channel_number END`,
+		p.ID, p.UserID, int64(p.Key), p.Username, p.TitleName, p.Client.Platform, device, string(p.Decision), start.Unix(), now.Unix(), end, p.BytesServed, r.watchedMS, p.Info.Duration.Milliseconds(), p.Failovers, problem, s.opts.NodeID,
+		q.played, q.pictured, q.ttffMS, q.startFailed, q.bufferEvents, q.bufferMS, p.DownFailovers, q.sourceKbps, q.uhd, q.hdr, q.remote, p.Origin, q.release, q.reasonKind, q.reasonDetail, p.QualityFallback, nullIP(p.Client.ClientIP), audioCopy(p), p.Client.Product, deviceMatch, channelID, channelName, channelNumber)
 	if err == nil && clientID != "" {
 		_, err = s.db.ExecContext(ctx, `UPDATE stats_device_registry SET last_seen=?,latest_play_id=? WHERE client_identifier=? AND last_seen<=?`, now.Unix(), p.ID, clientID, now.Unix())
 	}
@@ -354,14 +378,14 @@ func (s *Service) ObserveState(ev state.Event) {
 		var id string
 		var prevCompleted, count int
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT id,completed,(SELECT COUNT(*) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0 LIMIT 1`,
+			`SELECT id,completed,(SELECT COUNT(*) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0 AND channel_id='') FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0 AND channel_id='' LIMIT 1`,
 			ev.UserID, int64(ev.Key), ev.UserID, int64(ev.Key),
 		).Scan(&id, &prevCompleted, &count); err == nil && count == 1 && prevCompleted == 0 {
 			newlyCompletedID = id
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE stats_plays SET watched_ms=watched_ms+CASE WHEN CAST(? AS TEXT)='progress' AND timeline_state='playing' AND timeline>0 AND CAST(? AS BIGINT)>timeline AND CAST(? AS BIGINT)-timeline<=60000 THEN CAST(? AS BIGINT)-timeline ELSE 0 END,`+
-		`timeline=?,timeline_state=?,duration_ms=CASE WHEN CAST(? AS BIGINT)>duration_ms THEN CAST(? AS BIGINT) ELSE duration_ms END,completed=CASE WHEN CAST(? AS BIGINT)>completed THEN CAST(? AS BIGINT) ELSE completed END WHERE id=(SELECT id FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0) AND (SELECT COUNT(*) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0)=1`, string(ev.Kind), t, t, t, t, ev.State, ev.Duration.Milliseconds(), ev.Duration.Milliseconds(), completed, completed, ev.UserID, int64(ev.Key), ev.UserID, int64(ev.Key))
+		`timeline=?,timeline_state=?,duration_ms=CASE WHEN CAST(? AS BIGINT)>duration_ms THEN CAST(? AS BIGINT) ELSE duration_ms END,completed=CASE WHEN CAST(? AS BIGINT)>completed THEN CAST(? AS BIGINT) ELSE completed END WHERE id=(SELECT id FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0 AND channel_id='') AND (SELECT COUNT(*) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0 AND channel_id='')=1`, string(ev.Kind), t, t, t, t, ev.State, ev.Duration.Milliseconds(), ev.Duration.Milliseconds(), completed, completed, ev.UserID, int64(ev.Key), ev.UserID, int64(ev.Key))
 	if err != nil {
 		s.opts.Logger.Warn("record timeline stats", "err", err)
 	} else if newlyCompletedID != "" {
@@ -413,6 +437,13 @@ func (s *Service) Sample(ctx context.Context) {
 				_ = s.Record(ctx, p, false, "")
 			}
 		}
+		if s.opts.LiveSessions != nil {
+			for _, p := range s.opts.LiveSessions() {
+				if p.ViewerState == "playing" && core.SessionActiveStream(p) {
+					_ = s.Record(ctx, p, false, "")
+				}
+			}
+		}
 		return
 	}
 	if err := s.MaybeNewsletter(ctx); err != nil {
@@ -422,6 +453,16 @@ func (s *Service) Sample(ctx context.Context) {
 		for _, p := range s.opts.Playback.Sessions() {
 			if err := s.Record(ctx, p, false, ""); err != nil {
 				s.opts.Logger.Warn("sample play stats", "err", err)
+			}
+		}
+	}
+	if s.opts.LiveSessions != nil {
+		for _, p := range s.opts.LiveSessions() {
+			if p.ViewerState != "playing" || !core.SessionActiveStream(p) {
+				continue
+			}
+			if err := s.Record(ctx, p, false, ""); err != nil {
+				s.opts.Logger.Warn("sample live play stats", "err", err)
 			}
 		}
 	}
@@ -499,31 +540,34 @@ func audioCopy(p *core.PlaySession) any {
 }
 
 type Play struct {
-	IP         *string `json:"ip"`
-	ID         string  `json:"id"`
-	UserID     int64   `json:"userId"`
-	Key        int64   `json:"ratingKey"`
-	Username   string  `json:"username"`
-	Title      string  `json:"title"`
-	Platform   string  `json:"platform"`
-	Device     string  `json:"device"`
-	Decision   string  `json:"decision"`
-	Started    int64   `json:"started"`
-	Updated    int64   `json:"updated"`
-	Ended      int64   `json:"ended"`
-	Bytes      int64   `json:"bytes"`
-	WatchedMS  int64   `json:"watchedMs"`
-	DurationMS int64   `json:"durationMs"`
-	Completed  bool    `json:"completed"`
-	Failovers  int     `json:"failovers"`
-	Error      string  `json:"error"`
+	IP            *string `json:"ip"`
+	ID            string  `json:"id"`
+	UserID        int64   `json:"userId"`
+	Key           int64   `json:"ratingKey"`
+	Username      string  `json:"username"`
+	Title         string  `json:"title"`
+	ChannelID     string  `json:"channelId,omitempty"`
+	ChannelName   string  `json:"channelName,omitempty"`
+	ChannelNumber string  `json:"channelNumber,omitempty"`
+	Platform      string  `json:"platform"`
+	Device        string  `json:"device"`
+	Decision      string  `json:"decision"`
+	Started       int64   `json:"started"`
+	Updated       int64   `json:"updated"`
+	Ended         int64   `json:"ended"`
+	Bytes         int64   `json:"bytes"`
+	WatchedMS     int64   `json:"watchedMs"`
+	DurationMS    int64   `json:"durationMs"`
+	Completed     bool    `json:"completed"`
+	Failovers     int     `json:"failovers"`
+	Error         string  `json:"error"`
 }
 
 func (s *Service) History(ctx context.Context, since, until time.Time, user int64, limit int) ([]Play, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,bytes,watched_ms,duration_ms,completed,failovers,error,client_ip FROM stats_plays WHERE started>=? AND started<? AND (?=0 OR user_id=?) ORDER BY started DESC LIMIT ?`, since.Unix(), until.Unix(), user, user, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,user_id,rating_key,username,title,channel_id,channel_name,channel_number,platform,device,decision,started,updated,ended,bytes,watched_ms,duration_ms,completed,failovers,error,client_ip FROM stats_plays WHERE started>=? AND started<? AND (?=0 OR user_id=?) ORDER BY started DESC LIMIT ?`, since.Unix(), until.Unix(), user, user, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +575,7 @@ func (s *Service) History(ctx context.Context, since, until time.Time, user int6
 	out := []Play{}
 	for rows.Next() {
 		var p Play
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Key, &p.Username, &p.Title, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Updated, &p.Ended, &p.Bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Failovers, &p.Error, &p.IP); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Key, &p.Username, &p.Title, &p.ChannelID, &p.ChannelName, &p.ChannelNumber, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Updated, &p.Ended, &p.Bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Failovers, &p.Error, &p.IP); err != nil {
 			return nil, err
 		}
 		p.Error = clampTimelineText(p.Error)
@@ -544,7 +588,10 @@ type Bucket struct {
 	Label string `json:"label"`
 	// Key identifies the bucket's subject when it has one: a title's or
 	// show's rating key, or a viewer's user id (for artwork and avatars).
-	Key       string `json:"key,omitempty"`
+	Key string `json:"key,omitempty"`
+	// ChannelID identifies a Live TV channel bucket so the console shows the
+	// channel logo rather than looking up a catalogue poster.
+	ChannelID string `json:"channelId,omitempty"`
 	Plays     int64  `json:"plays"`
 	WatchedMS int64  `json:"watchedMs"`
 	Bytes     int64  `json:"bytes"`
@@ -720,7 +767,7 @@ func (s *Service) Summary(ctx context.Context, since, until time.Time, user int6
 		dst   *[]Bucket
 		order string
 		label func(int64) string // set when expr is numeric
-	}{{fmt.Sprintf(`(started+%d)/86400`, shift), &out.Daily, "1", day}, {fmt.Sprintf(`((started+%d)/3600)%%24`, shift), &out.Hourly, "1", hour}, {`CASE WHEN decision='directplay' THEN 'direct-play' WHEN decision='copy' AND (audio_copy=1 OR audio_copy IS NULL) THEN 'direct-stream' WHEN decision='copy' AND audio_copy=0 THEN 'audio-transcode' WHEN decision='transcode' THEN 'transcode' ELSE 'unknown' END`, &out.Decisions, "2 DESC", nil}, {`CASE WHEN origin='' THEN 'Other' ELSE origin END`, &out.Origins, "2 DESC", nil}, {`CASE WHEN uhd<>0 AND hdr<>0 THEN '4K HDR' WHEN uhd<>0 THEN '4K' WHEN hdr<>0 THEN 'HDR' ELSE 'HD/SD' END`, &out.Qualities, "2 DESC", nil}, {`CASE WHEN remote<>0 THEN 'away' ELSE 'home' END`, &out.Places, "2 DESC", nil}, {`CASE WHEN rating_key/1000000000000000=1 THEN 'movie' WHEN rating_key/1000000000000000=4 THEN 'episode' ELSE 'unknown' END`, &out.Kinds, "2 DESC", nil}, {`platform`, &out.Platforms, "2 DESC", nil}, {`title`, &out.Titles, "2 DESC", nil}, {`username || ' (' || user_id || ')'`, &out.Users, "2 DESC", nil}}
+	}{{fmt.Sprintf(`(started+%d)/86400`, shift), &out.Daily, "1", day}, {fmt.Sprintf(`((started+%d)/3600)%%24`, shift), &out.Hourly, "1", hour}, {`CASE WHEN decision='directplay' THEN 'direct-play' WHEN decision='copy' AND (audio_copy=1 OR audio_copy IS NULL) THEN 'direct-stream' WHEN decision='copy' AND audio_copy=0 THEN 'audio-transcode' WHEN decision='transcode' THEN 'transcode' ELSE 'unknown' END`, &out.Decisions, "2 DESC", nil}, {`CASE WHEN origin='' THEN 'Other' ELSE origin END`, &out.Origins, "2 DESC", nil}, {`CASE WHEN uhd<>0 AND hdr<>0 THEN '4K HDR' WHEN uhd<>0 THEN '4K' WHEN hdr<>0 THEN 'HDR' ELSE 'HD/SD' END`, &out.Qualities, "2 DESC", nil}, {`CASE WHEN remote<>0 THEN 'away' ELSE 'home' END`, &out.Places, "2 DESC", nil}, {`CASE WHEN channel_id<>'' THEN 'live' WHEN rating_key/1000000000000000=1 THEN 'movie' WHEN rating_key/1000000000000000=4 THEN 'episode' ELSE 'unknown' END`, &out.Kinds, "2 DESC", nil}, {`platform`, &out.Platforms, "2 DESC", nil}, {`username || ' (' || user_id || ')'`, &out.Users, "2 DESC", nil}}
 	for _, g := range groups {
 		*g.dst = []Bucket{}
 		rows, err := s.db.QueryContext(ctx, `SELECT `+g.expr+`,COUNT(*),CAST(COALESCE(SUM(watched_ms),0) AS BIGINT),CAST(COALESCE(SUM(bytes),0) AS BIGINT)`+where+` GROUP BY 1 ORDER BY `+g.order+` LIMIT 366`, args...)
@@ -794,41 +841,43 @@ func (s *Service) SetCost(ctx context.Context, c Cost) error {
 	return err
 }
 
-// DailyKind is one day's watch time split into movies and TV episodes.
+// DailyKind is one day's watch time split into movies, TV episodes and Live TV.
 type DailyKind struct {
 	Label     string `json:"label"`
 	MovieMS   int64  `json:"movieMs"`
 	EpisodeMS int64  `json:"episodeMs"`
+	LiveMS    int64  `json:"liveMs"`
 }
 
-// keyBuckets gives titles their rating key and viewers their user id (and a
-// plain name), so the console can show artwork and avatars beside them.
+// keyBuckets populates Top titles (grouping Live TV rows by channel with their
+// channel id, and VOD rows by title with their rating key) and splits viewer
+// buckets into plain name and user id.
 func (s *Service) keyBuckets(ctx context.Context, out *Summary, where string, args []any) error {
-	if len(out.Titles) > 0 {
-		keys := map[string]string{}
-		rows, err := s.db.QueryContext(ctx, `SELECT title,CAST(MAX(rating_key) AS BIGINT)`+where+` GROUP BY title`, args...)
-		if err != nil {
+	out.Titles = []Bucket{}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT CASE WHEN channel_id<>'' THEN COALESCE(NULLIF(channel_name,''),title) ELSE title END,`+
+			`channel_id,CAST(MAX(CASE WHEN channel_id='' THEN rating_key ELSE 0 END) AS BIGINT),`+
+			`COUNT(*),CAST(COALESCE(SUM(watched_ms),0) AS BIGINT),CAST(COALESCE(SUM(bytes),0) AS BIGINT)`+
+			where+` GROUP BY channel_id,CASE WHEN channel_id<>'' THEN COALESCE(NULLIF(channel_name,''),title) ELSE title END ORDER BY 4 DESC,5 DESC,1 ASC LIMIT 366`, args...)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var b Bucket
+		var key int64
+		if err = rows.Scan(&b.Label, &b.ChannelID, &key, &b.Plays, &b.WatchedMS, &b.Bytes); err != nil {
+			rows.Close()
 			return err
 		}
-		for rows.Next() {
-			var title string
-			var key int64
-			if err = rows.Scan(&title, &key); err != nil {
-				rows.Close()
-				return err
-			}
-			if key > 0 {
-				keys[title] = strconv.FormatInt(key, 10)
-			}
+		if b.ChannelID == "" && key > 0 {
+			b.Key = strconv.FormatInt(key, 10)
 		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		for i := range out.Titles {
-			out.Titles[i].Key = keys[out.Titles[i].Label]
-		}
+		out.Titles = append(out.Titles, b)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
 	}
 	// Viewer buckets are labelled "name (id)" so that two viewers sharing a
 	// name stay apart; split that into the name and the id.
@@ -842,13 +891,14 @@ func (s *Service) keyBuckets(ctx context.Context, out *Summary, where string, ar
 	return nil
 }
 
-// dailyKinds splits each day's watch time into movies and episodes, on the
-// same local-day buckets as Daily.
+// dailyKinds splits each day's watch time into movies, episodes and Live TV, on
+// the same local-day buckets as Daily.
 func (s *Service) dailyKinds(ctx context.Context, out *Summary, where string, args []any, shift int, day func(int64) string) error {
 	out.DailyKinds = []DailyKind{}
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT (started+%d)/86400,`+
-		`CAST(COALESCE(SUM(CASE WHEN rating_key/1000000000000000=1 THEN watched_ms ELSE 0 END),0) AS BIGINT),`+
-		`CAST(COALESCE(SUM(CASE WHEN rating_key/1000000000000000=4 THEN watched_ms ELSE 0 END),0) AS BIGINT)`, shift)+
+		`CAST(COALESCE(SUM(CASE WHEN channel_id='' AND rating_key/1000000000000000=1 THEN watched_ms ELSE 0 END),0) AS BIGINT),`+
+		`CAST(COALESCE(SUM(CASE WHEN channel_id='' AND rating_key/1000000000000000=4 THEN watched_ms ELSE 0 END),0) AS BIGINT),`+
+		`CAST(COALESCE(SUM(CASE WHEN channel_id<>'' THEN watched_ms ELSE 0 END),0) AS BIGINT)`, shift)+
 		where+` GROUP BY 1 ORDER BY 1 LIMIT 366`, args...)
 	if err != nil {
 		return err
@@ -857,7 +907,7 @@ func (s *Service) dailyKinds(ctx context.Context, out *Summary, where string, ar
 	for rows.Next() {
 		var n int64
 		var d DailyKind
-		if err := rows.Scan(&n, &d.MovieMS, &d.EpisodeMS); err != nil {
+		if err := rows.Scan(&n, &d.MovieMS, &d.EpisodeMS, &d.LiveMS); err != nil {
 			return err
 		}
 		d.Label = day(n)

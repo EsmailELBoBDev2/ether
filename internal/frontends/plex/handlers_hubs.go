@@ -386,8 +386,14 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 	}
 	unfiltered := v == cwSection && sec.Type == frontend.TypeShow
 	fetch := s.saferFetchCount(pr.User, count)
-	picked, _ := reqmemo.Do(ctx, fmt.Sprintf("plex:continue:%p:%d:%s:%d:%t", s, uid, t, fetch, unfiltered), func() (selection, error) {
-		selector := s.continueExperience(pr)
+	var scope Section
+	if v == cwSection && isCustomTVSection(sec) {
+		scope = sec
+		// A newer episode from another library must not fill this shelf's page.
+		fetch = s.saferFetchCount(pr.User, plexOnDeckLimit)
+	}
+	picked, _ := reqmemo.Do(ctx, fmt.Sprintf("plex:continue:%p:%d:%s:%d:%t:%d", s, uid, t, fetch, unfiltered, scope.ID), func() (selection, error) {
+		selector := s.continueExperienceForSection(pr, scope)
 		if unfiltered {
 			selector = selector.WithoutFilter()
 		}
@@ -395,6 +401,10 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 		return selection{items, state, more}, nil
 	})
 	items, state, more := append([]frontend.Title(nil), picked.items...), maps.Clone(picked.state), picked.more
+	if scope.ID != 0 {
+		// If membership cannot be checked, suppress the shelf.
+		items, _ = s.scopedSectionMembers(frontend.WithCatalogViewer(ctx, pr.User), scope, items)
+	}
 	if windowed := s.onDeckWindowed(items, state); len(windowed) < len(items) {
 		// Newest first: the window cut the tail, and the overflow
 		// candidate behind it is older still.
@@ -427,6 +437,9 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 		vis = s.sectionVisibility(sec)
 	}
 	items = s.visibleTitlesWith(vis, pr.User, items)
+	if scope.ID != 0 {
+		more = len(items) > count
+	}
 	if count > 0 && len(items) > count {
 		items = items[:count]
 	}
@@ -901,7 +914,12 @@ func (s *Server) handleContinueWatchingItems(w http.ResponseWriter, r *http.Requ
 		hs.Items = filtered
 	}
 	mc := hubContainer()
-	mc.Metadata = s.renderTitles(ctx, pr, hs.Items, renderOpts{media: true, state: hs.state, detailEpisodes: !hs.plain})
+	opts := renderOpts{media: true, state: hs.state, detailEpisodes: !hs.plain}
+	if v == cwSection && isCustomTVSection(sec) {
+		vis := s.sectionVisibility(sec)
+		opts.vis, opts.section = &vis, &sec
+	}
+	mc.Metadata = s.renderTitles(ctx, pr, hs.Items, opts)
 	if hs.included {
 		stampIncluded(mc.Metadata)
 	}

@@ -19,6 +19,10 @@ func isPluginKindSection(sec Section) bool {
 	return sec.PluginID != ""
 }
 
+func isCustomTVSection(sec Section) bool {
+	return sec.Type == frontend.TypeShow && isKindSection(sec) && !isPluginKindSection(sec)
+}
+
 func isKindMusicSection(sec Section) bool {
 	return isKindSection(sec) && string(sec.Type) == plexBaseArtist
 }
@@ -384,10 +388,8 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		layoutNeutral = append(layoutNeutral, neutral)
 		served[mh.HubIdentifier] = hs.Hub
 	}
-	if !promotedOnly && !metadataOptionOn(r.URL.Query().Get("excludeContinueWatching")) && !isKindSection(sec) {
-		cw := s.continueHub(ctx, pr, cwSection, sec, visibleCount)
-		cw.Hub.Items = s.filterSectionMembers(ctx, sec, cw.Hub.Items)
-		add(cw)
+	if !promotedOnly && !metadataOptionOn(r.URL.Query().Get("excludeContinueWatching")) && (!isKindSection(sec) || isCustomTVSection(sec)) {
+		add(s.continueHub(ctx, pr, cwSection, sec, visibleCount))
 	}
 	if !isKindSection(sec) {
 		if ra, err := s.recentlyAddedHub(ctx, pr, sec, count); err == nil {
@@ -461,6 +463,9 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 			if strings.Contains(h.HubIdentifier, ".recentlyadded.") {
 				at = i + 1
 				break
+			}
+			if isCustomTVSection(sec) && h.HubIdentifier == "tv.inprogress."+sec.IDString() {
+				at = i + 1
 			}
 		}
 		mc.Hub = append(mc.Hub, model.Hub{})

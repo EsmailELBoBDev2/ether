@@ -352,6 +352,7 @@ export interface EtherConfig {
     disableConsoleOnMainPort?: boolean;
     bindAddress: string;
     friendlyName: string;
+    resumeAfterSeconds?: number;
     machineIdentifier: string;
     logLevel: string;
     defaultStreamLimit: number;

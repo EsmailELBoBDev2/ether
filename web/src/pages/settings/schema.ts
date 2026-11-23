@@ -15,6 +15,17 @@ export const SERVER: FieldGroup[] = localized(() => [
         kind: "text",
         help: t("How the server appears in apps."),
       },
+      {
+        key: "resumeAfterSeconds",
+        label: t("Keep a resume point after"),
+        kind: "number",
+        min: 0,
+        step: 1,
+        unit: "s",
+        help: t(
+          "How many seconds into a title a viewer must be before Ether remembers where they stopped, in every app. 0 uses the default: 5% of the title, about 6 minutes of a two-hour film.",
+        ),
+      },
     ],
   },
   {

@@ -574,6 +574,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Transcode.MaxTranscodes < 0 {
 		v.add("transcode.maxTranscodes", "must be >= 0")
 	}
+	if n := cfg.Server.ResumeAfterSeconds; n < 0 || n > 3600 {
+		v.add("server.resumeAfterSeconds", "must be between 0 and 3600")
+	}
 	if cfg.Transcode.RemoteMaxBitrateKbps < 0 {
 		v.add("transcode.remoteMaxBitrateKbps", "must be >= 0")
 	}

@@ -93,6 +93,28 @@ const (
 	StartedThreshold = 0.05
 )
 
+// resumeAfterSeconds is the owner's setting for how far into a title a resume
+// point starts being kept. 0 keeps the default, StartedThreshold of the title.
+var resumeAfterSeconds atomic.Int64
+
+// SetResumeAfter sets how many seconds into a title a resume point is kept
+// from, for every frontend. 0 restores the default of 5% of the title.
+func SetResumeAfter(seconds int) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	resumeAfterSeconds.Store(int64(seconds))
+}
+
+// notStarted reports whether offset is too early in a title of length dur to
+// keep as a resume point.
+func notStarted(offset, dur time.Duration) bool {
+	if n := resumeAfterSeconds.Load(); n > 0 {
+		return offset < time.Duration(n)*time.Second
+	}
+	return dur > 0 && float64(offset) < StartedThreshold*float64(dur)
+}
+
 // EventKind identifies a state change subscribers may react to.
 type EventKind string
 
@@ -877,7 +899,7 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 			}
 			cur.counted = true
 			cur.ws.ViewOffset = 0
-		case cur.ws.Duration > 0 && frac < StartedThreshold:
+		case notStarted(offset, cur.ws.Duration):
 			// Not really started (or rewound to the beginning): no resume
 			// point. `counted` is left alone so scrubbing back and forth
 			// over the end of one viewing cannot inflate the view count.

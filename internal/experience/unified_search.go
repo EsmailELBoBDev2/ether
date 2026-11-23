@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -46,16 +47,53 @@ const (
 	pluginNamedScore  = 0.90
 )
 
-func namesTitle(items []core.Title) bool {
+// namesTitle reports whether a result shows the viewer naming a title: it
+// scores unifiedNamedScore, or its title holds every word of the query (the
+// last one possibly half typed), as "El Camino: A Breaking Bad Movie" holds
+// "breaking bad". A description's words are rarely all in one title.
+func namesTitle(query string, items []core.Title) bool {
+	words := foldWords(query)
 	for i := range items {
 		if items[i].SearchScore >= unifiedNamedScore {
+			return true
+		}
+		if len(words) > 0 && (holdsWords(foldWords(items[i].Title), words) || holdsWords(foldWords(items[i].OriginalTitle), words)) {
 			return true
 		}
 	}
 	return false
 }
 
+func foldWords(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+}
+
+func holdsWords(title, words []string) bool {
+	if len(title) == 0 {
+		return false
+	}
+	if strings.Contains(strings.Join(title, ""), strings.Join(words, "")) {
+		return true
+	}
+	for i, w := range words {
+		found := false
+		for _, t := range title {
+			if t == w || (i == len(words)-1 && strings.HasPrefix(t, w)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 var unifiedSettles = &unifiedSettleState{seen: map[descriptiveFlightKey]unifiedSeen{}}
+
+// unifiedNow is the clock the settle reads (tests move it).
+var unifiedNow = time.Now
 
 // settled records query for (viewer, client) and reports whether the same
 // query was already asked at least unifiedSettle ago.
@@ -120,7 +158,7 @@ func (s *Service) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device
 	}
 	ctrl, _ := source.(core.DescriptiveSearchController)
 	client := core.SearchClientFrom(ctx)
-	if !unifiedSettles.settled(v, client, query, time.Now()) && (ctrl == nil || !ctrl.DescribeCached(v, query)) {
+	if !unifiedSettles.settled(v, client, query, unifiedNow()) && (ctrl == nil || !ctrl.DescribeCached(v, query)) {
 		// Not asked again yet: the viewer may still be typing.
 		out.Pending = true
 		out.RetryAfterSeconds = unifiedRetrySeconds

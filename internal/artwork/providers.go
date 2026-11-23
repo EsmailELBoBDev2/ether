@@ -31,17 +31,23 @@ func (im *Images) posterSettings() config.Posters {
 	}
 	return config.Posters{}
 }
-func posterVersion(p config.Posters) string {
+func posterVersionAt(p config.Posters, now time.Time) string {
 	if !p.Enabled {
 		return ""
 	}
 	b, _ := json.Marshal(p)
 	// Periodic refresh permits provider-side style and rating changes.
-	b = append(b, []byte(strconv.FormatInt(time.Now().Unix()/21600, 10))...)
+	b = append(b, []byte(strconv.FormatInt(now.Unix()/21600, 10))...)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
-func (im *Images) PosterVersion() string { return posterVersion(im.posterSettings()) }
+func (im *Images) PosterVersion() string { return posterVersionAt(im.posterSettings(), im.now()) }
+func (im *Images) PosterGeneration() uint64 {
+	if im != nil && im.o.Posters != nil {
+		return im.o.Posters().Generation
+	}
+	return 0
+}
 
 // GetPoster never sends provider URLs to a client. Missing IDs, unsupported
 // title kinds and every provider failure use the original TMDB artwork.

@@ -6930,6 +6930,7 @@
   "m_14c6deb9075676": "Korta {role}",
   "m_14c7a1feb33b17": "Tidszon",
   "m_14c996f579d9e2": "Förbättrar en mjuk bild innan den skickas. Tittarens gränser för upplösning och bithastighet gäller fortfarande. Video som inte stöds spelas upp som vanligt.",
+  "m_14ca92aca5fa59": "Appar läser in affischer på nytt nästa gång de öppnar ett bibliotek; vissa kan behöva startas om.",
   "m_14ceb1918df932": "Direkt",
   "m_14d0589d0bcfb5": "Enheten kan inte spela upp ljudet, så Ether konverterar det.",
   "m_14d0b20864211c": "Beskriv vad som ska hända eller börja från en mall — det första Flow:et tar en minut.",

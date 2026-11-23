@@ -34,7 +34,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // saveConfig validates and persists next (secrets already unredacted),
 // preserving identity fields the UI must never rotate accidentally.
-func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]json.RawMessage) ([]FieldError, error) {
+func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]json.RawMessage, rollPosters bool) ([]FieldError, error) {
 	errs := ValidateConfig(next)
 	if h.deps.ValidateExtra != nil {
 		errs = append(errs, h.deps.ValidateExtra(next)...)
@@ -73,10 +73,16 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		// config document loaded before setup finished must not clear it.
 		keepSetup := c.SetupComplete
 		keepExtrasMigrated := c.Extras.DefaultOnMigrated
+		keepPosterGen := c.Posters.Generation
 		*c = next
 		c.Database = keepDatabase
 		c.SetupComplete = keepSetup
 		c.Extras.DefaultOnMigrated = keepExtrasMigrated || c.Extras.DefaultOnMigrated
+		if rollPosters {
+			c.Posters.Generation = keepPosterGen + 1
+		} else {
+			c.Posters.Generation = keepPosterGen
+		}
 		if keepMachine != "" {
 			c.Server.MachineIdentifier = keepMachine
 		}
@@ -90,6 +96,18 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 	}
 	h.log.Info("admin: config updated")
 	return nil, nil
+}
+
+func postersEqual(a, b config.Posters) bool {
+	if (a.OwnerEnabled == nil) != (b.OwnerEnabled == nil) {
+		return false
+	}
+	if a.OwnerEnabled != nil && *a.OwnerEnabled != *b.OwnerEnabled {
+		return false
+	}
+	a.OwnerEnabled, b.OwnerEnabled = nil, nil
+	a.Generation, b.Generation = 0, 0
+	return a == b
 }
 
 func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +181,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Availability.ApplyMode()
 	next.SetCachePolicy(next.Cache)
-	errs, err := h.saveConfig(next, prev, identityFields(plexRaw))
+	errs, err := h.saveConfig(next, prev, identityFields(plexRaw), !postersEqual(next.Posters, prev.Posters))
 	switch {
 	case err != nil:
 		h.log.Error("admin: save config", "err", err)
@@ -284,7 +302,7 @@ func (h *Handler) handlePutSection(w http.ResponseWriter, r *http.Request) {
 	if field == "plex" {
 		identity = identityFields(body)
 	}
-	errs, err := h.saveConfig(next, prev, identity)
+	errs, err := h.saveConfig(next, prev, identity, field == "posters")
 	switch {
 	case err != nil:
 		h.log.Error("admin: save config section", "section", field, "err", err)

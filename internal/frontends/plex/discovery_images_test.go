@@ -16,6 +16,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/discovery"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/braedonsaunders/ether/internal/overlays"
 )
 
@@ -208,5 +209,100 @@ func TestPhotoTranscodePosterProvider(t *testing.T) {
 	md = f.srv.metadata(context.Background(), pr, &fightClub, renderOpts{})
 	if strings.Contains(md.Thumb, discoveryArtworkTokenPrefix) || strings.Contains(md.Thumb, "discoveryPoster") {
 		t.Fatal("default not restored")
+	}
+}
+
+func TestPosterGenerationRollsCoverPosterAndEpisodes(t *testing.T) {
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 400, 600)), nil)
+	tmdbBuf := buf.Bytes()
+	var providerBuf bytes.Buffer
+	_ = jpeg.Encode(&providerBuf, image.NewRGBA(image.Rect(0, 0, 300, 450)), nil)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(providerBuf.Bytes())
+	}))
+	defer upstream.Close()
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(tmdbBuf)
+	}))
+	defer tmdbSrv.Close()
+
+	cfg := config.Posters{Version: 1, Source: "tmdb"}
+	images := artwork.NewImages(artwork.ImagesOptions{Posters: func() config.Posters { return cfg }})
+	f := newFixture()
+	defer f.srv.Close()
+	f.srv.setImageURL(func(path, size string) string { return tmdbSrv.URL + "/" + size + path })
+	ov := overlays.New(discoveryDB(t), overlays.Options{Images: images})
+	f.srv.setDiscovery((&discovery.Features{Overlays: ov}).Frontend())
+	pr := &Request{User: &ownerUser}
+
+	coverPosterOf := func(md model.Metadata) string {
+		for _, img := range md.Image {
+			if img.Type == "coverPoster" {
+				return img.URL
+			}
+		}
+		return ""
+	}
+
+	// 0. Baseline before enabling any poster source (overlays off).
+	baseMovie := f.srv.metadata(context.Background(), pr, &fightClub, renderOpts{})
+	baseCover := coverPosterOf(baseMovie)
+	if baseCover == "" || baseCover != baseMovie.Thumb {
+		t.Fatalf("baseline coverPoster=%q thumb=%q", baseCover, baseMovie.Thumb)
+	}
+
+	// 1. Enable poster provider with overlays OFF: both Thumb and Image[coverPoster]
+	// must move to the discovery token URL (Plex for iOS renders coverPoster),
+	// and episodes must use the show's discovery poster for grandparentThumb/coverPoster.
+	cfg.Generation = 1
+	cfg.Source = "postersplus"
+	cfg.Accounts.PostersPlus = config.PosterAccount{Enabled: true, BaseURL: upstream.URL}
+	enabledMovie := f.srv.metadata(context.Background(), pr, &fightClub, renderOpts{})
+	enabledCover := coverPosterOf(enabledMovie)
+	if !strings.Contains(enabledMovie.Thumb, "/thumb/"+discoveryArtworkTokenPrefix) || enabledCover != enabledMovie.Thumb {
+		t.Fatalf("enabled overlays-off movie: thumb=%q coverPoster=%q", enabledMovie.Thumb, enabledCover)
+	}
+	ep := f.srv.metadata(context.Background(), pr, &bbE1, renderOpts{})
+	epCover := coverPosterOf(ep)
+	if !strings.HasPrefix(ep.GrandparentThumb, "/library/metadata/"+breakingBad.Key.String()+"/thumb/"+discoveryArtworkTokenPrefix) || epCover != ep.GrandparentThumb {
+		t.Fatalf("enabled episode show poster: grandparent=%q coverPoster=%q", ep.GrandparentThumb, epCover)
+	}
+	// Episode's own still stays on its own key, never rewritten to a show poster.
+	if strings.Contains(ep.Thumb, discoveryArtworkTokenPrefix) {
+		t.Fatalf("episode still rewritten: %q", ep.Thumb)
+	}
+
+	// 2. Re-saving same settings within the 6-hour window rolls Generation -> new token URLs.
+	cfg.Generation = 2
+	resavedMovie := f.srv.metadata(context.Background(), pr, &fightClub, renderOpts{})
+	if resavedMovie.Thumb == enabledMovie.Thumb || coverPosterOf(resavedMovie) != resavedMovie.Thumb {
+		t.Fatalf("resave did not roll URL: before=%q after=%q cover=%q", enabledMovie.Thumb, resavedMovie.Thumb, coverPosterOf(resavedMovie))
+	}
+
+	// 3. Disabling rolls Generation -> restores default TMDB poster at a NEW URL
+	// (never reverting to the pre-enable cached URL), still valid through /photo/:/transcode.
+	cfg.Generation = 3
+	cfg.Source = "tmdb"
+	cfg.Accounts.PostersPlus.Enabled = false
+	disabledMovie := f.srv.metadata(context.Background(), pr, &fightClub, renderOpts{})
+	disabledCover := coverPosterOf(disabledMovie)
+	if strings.Contains(disabledMovie.Thumb, discoveryArtworkTokenPrefix) || disabledMovie.Thumb == baseMovie.Thumb || disabledCover != disabledMovie.Thumb {
+		t.Fatalf("disabled movie URL: base=%q disabled=%q cover=%q", baseMovie.Thumb, disabledMovie.Thumb, disabledCover)
+	}
+	r := f.request(t, http.MethodGet, "/photo/:/transcode?width=200&url="+url.QueryEscape(disabledCover), nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("transcode disabled rolled URL %q: %d", disabledCover, r.Code)
+	}
+
+	// 4. Re-enabling the same provider within the same 6-hour bucket rolls to a fresh URL.
+	cfg.Generation = 4
+	cfg.Source = "postersplus"
+	cfg.Accounts.PostersPlus.Enabled = true
+	reenabledMovie := f.srv.metadata(context.Background(), pr, &fightClub, renderOpts{})
+	if reenabledMovie.Thumb == enabledMovie.Thumb || reenabledMovie.Thumb == resavedMovie.Thumb || coverPosterOf(reenabledMovie) != reenabledMovie.Thumb {
+		t.Fatalf("reenable collided with prior URL: g1=%q g2=%q g4=%q cover=%q", enabledMovie.Thumb, resavedMovie.Thumb, reenabledMovie.Thumb, coverPosterOf(reenabledMovie))
 	}
 }

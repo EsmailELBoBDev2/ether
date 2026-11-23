@@ -14,6 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 // Source has no protocol server or protocol wire model dependencies.
 type Source struct {
 	OwnerEnabled     func() bool
+	PosterGen        func() uint64
 	OwnerDir         string
 	AssetFolder      func() string
 	Assets           *artwork.LocalAssets
@@ -64,6 +66,19 @@ func (a Source) now() time.Time {
 		return a.Now()
 	}
 	return time.Now()
+}
+func (a Source) PosterGeneration() uint64 {
+	if a.PosterGen != nil {
+		if gen := a.PosterGen(); gen > 0 {
+			return gen
+		}
+	}
+	if a.Discovery != nil && a.Discovery.Overlays != nil {
+		if pg, ok := a.Discovery.Overlays.(interface{ PosterGeneration() uint64 }); ok {
+			return pg.PosterGeneration()
+		}
+	}
+	return 0
 }
 func (a Source) title(ctx context.Context, key core.RatingKey) (*core.Title, error) {
 	if t, ok := frontend.ArtworkTitle(ctx, key); ok {
@@ -290,9 +305,13 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 		}
 	}
 	var entries []frontendArtworkEntry
+	posterGen := a.PosterGeneration()
 	add := func(kind, source string, entry frontendArtworkEntry) {
 		if !frontend.ArtworkKindWanted(ctx, kind) {
 			return
+		}
+		if posterGen > 0 && (kind == frontend.ImagePoster || (kind == frontend.ImageThumb && !a.LandscapeThumb) || entry.ownerKind != "") {
+			source += "\x00pgen:" + strconv.FormatUint(posterGen, 10)
 		}
 		identityReq := req
 		if a.LandscapeThumb {
@@ -446,9 +465,13 @@ func (a Source) pluginEntries(ctx context.Context, req frontend.ArtworkRequest) 
 		}
 	}
 	var entries []frontendArtworkEntry
+	posterGen := a.PosterGeneration()
 	add := func(kind, source string, entry frontendArtworkEntry) {
 		if !frontend.ArtworkKindWanted(ctx, kind) {
 			return
+		}
+		if posterGen > 0 && entry.ownerKind != "" {
+			source += "\x00pgen:" + strconv.FormatUint(posterGen, 10)
 		}
 		identityReq := req
 		if a.LandscapeThumb {

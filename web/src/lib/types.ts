@@ -318,6 +318,7 @@ export interface PosterProviderConfig {
   assetFolder?: string;
   ownerEnabled?: boolean;
   version?: number;
+  generation?: number;
   accounts?: Record<string, PosterProviderConfig>;
   enabled: boolean;
   source: string;

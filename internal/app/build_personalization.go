@@ -48,10 +48,11 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	}
 	libs := []experience.Library{{ID: 1, Name: "Movies", Type: core.TypeMovie}, {ID: 2, Name: "TV Shows", Type: core.TypeShow}}
 	visibility := experienceVisibility(a.safety, a.catalog.Get, func(ctx context.Context, titles []core.Title) []core.Title {
-		if a.availability == nil {
+		avail := a.availabilityLive.Load()
+		if avail == nil {
 			return titles
 		}
-		return a.availability.FilterDiscovery(ctx, titles)
+		return avail.FilterDiscovery(ctx, titles)
 	}, func() []*core.PlaySession {
 		if a.playback == nil {
 			return nil

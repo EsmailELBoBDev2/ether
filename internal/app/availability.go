@@ -61,6 +61,7 @@ func (a *App) buildAvailability() error {
 		Pace: 3 * time.Second,
 	})
 	a.availability = s
+	a.availabilityLive.Store(s)
 	if err == nil {
 		a.closers = append(a.closers, s.Close)
 	}

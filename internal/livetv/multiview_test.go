@@ -516,7 +516,7 @@ func TestMultiviewReplanKeepsLiveAnchorAndCushion(t *testing.T) {
 			t.Fatalf("replanned windowStartSeconds = %v, want > 0 (carried from broadcast anchor)", win1080.Anchor.WindowStartSeconds)
 		}
 		buffer := win1080.LiveEdgeSeconds - win1080.Anchor.WindowStartSeconds
-		if buffer < (3 * segment).Seconds() {
+		if buffer+1e-6 < (3 * segment).Seconds() {
 			t.Fatalf("replanned buffer = %.2fs (edge=%.2fs start=%.2fs), want >= %.2fs", buffer, win1080.LiveEdgeSeconds, win1080.Anchor.WindowStartSeconds, (3 * segment).Seconds())
 		}
 
@@ -645,12 +645,14 @@ func (*silentSegmentEncoder) Close() error                                    { 
 // idle reaper independently of any group TTL, releasing stream slots and
 // notifying SessionExpired while sibling active tiles keep playing.
 func TestMultiviewIdleTileExpiresAndFiresSessionExpired(t *testing.T) {
+	var clockMu sync.Mutex
 	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	advance := func(d time.Duration) { clockMu.Lock(); now = now.Add(d); clockMu.Unlock() }
 	var expiredMu sync.Mutex
 	var expiredIDs []string
 	pb := &fakePlayback{}
 	s := testService(t, Options{
-		Now:        func() time.Time { return now },
+		Now:        func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now },
 		Playback:   pb,
 		Transcoder: &fakeTranscoder{},
 		SessionExpired: func(id string) {
@@ -691,7 +693,7 @@ func TestMultiviewIdleTileExpiresAndFiresSessionExpired(t *testing.T) {
 	s.touchMedia(ss1)
 
 	// Advance 25s: only tile 1 keeps fetching segments.
-	now = now.Add(25 * time.Second)
+	advance(25 * time.Second)
 	s.touchMedia(ss1)
 	s.expireSessions()
 	if got := len(s.ViewingSessions()); got != 2 {
@@ -699,7 +701,7 @@ func TestMultiviewIdleTileExpiresAndFiresSessionExpired(t *testing.T) {
 	}
 
 	// Advance another 10s (tile 0 silent for 35s > 30s IdleTimeout; tile 1 silent 10s).
-	now = now.Add(10 * time.Second)
+	advance(10 * time.Second)
 	s.expireSessions()
 
 	expiredMu.Lock()
@@ -715,7 +717,7 @@ func TestMultiviewIdleTileExpiresAndFiresSessionExpired(t *testing.T) {
 
 	// Now tile 1 also stops fetching segments; 35s later it expires too,
 	// freeing the viewer's stream slot cleanly.
-	now = now.Add(35 * time.Second)
+	advance(35 * time.Second)
 	s.expireSessions()
 	if got := len(s.ViewingSessions()); got != 0 {
 		t.Fatalf("after both tiles idle: viewing sessions = %d, want 0", got)

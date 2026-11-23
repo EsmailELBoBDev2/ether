@@ -358,7 +358,7 @@ func TestPrismUpgradePostgresPreservesDeliveredRows(t *testing.T) {
 		}
 		assertUpgradeTables(t, db, before)
 		assertPrismCandidateArtifacts(t, db)
-		if got := maxMigration(t, db, "auth"); got != 9 {
+		if got := maxMigration(t, db, "auth"); got != 10 {
 			t.Fatalf("postgres auth %d", got)
 		}
 		var sessions int

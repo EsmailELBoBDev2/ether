@@ -1001,7 +1001,7 @@ it("explains Live TV and Always convert video conflicts for per-viewer No video 
   });
   const toggle = await screen.findByLabelText("No video transcoding", {}, WAIT);
   expect(screen.getByText(/Live TV is unaffected\./)).toBeInTheDocument();
-  expect(screen.queryByRole("status")).toBeNull();
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull(), WAIT);
 
   fireEvent.click(toggle);
   const alert = await screen.findByRole("status", {}, WAIT);

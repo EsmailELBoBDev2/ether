@@ -160,6 +160,9 @@ type App struct {
 	brokerTranscoder core.Transcoder
 	perf             *perfObserver // per-request database cost, budgets and trace
 	availability     *availability.Service
+	// availabilityLive publishes availability to background workers (the
+	// personalization builder) that start before buildAvailability runs.
+	availabilityLive atomic.Pointer[availability.Service]
 	opts             Options
 	log              *slog.Logger
 	logs             *admin.LogBuffer

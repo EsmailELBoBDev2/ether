@@ -20,6 +20,7 @@ type itemJSONGen struct {
 	catalog   uint64
 	libraries uint64
 	kindSync  uint64
+	config    uint64
 }
 
 type itemJSONCache struct {
@@ -53,7 +54,7 @@ func (c *itemJSONCache) put(gen itemJSONGen, key string, frag []byte) {
 
 func dynamicItemKey(key string) bool {
 	switch key {
-	case "UserData", "ImageTags", "BackdropImageTags", "ImageBlurHashes", "PrimaryImageAspectRatio", "MediaSources", "Path":
+	case "UserData", "ImageTags", "BackdropImageTags", "ImageBlurHashes", "PrimaryImageAspectRatio", "PrimaryImageTag", "SeriesPrimaryImageTag", "ParentPrimaryImageTag", "ParentLogoImageTag", "ParentBackdropImageTags", "MediaSources", "Path":
 		return true
 	default:
 		return false
@@ -64,7 +65,7 @@ func (i *instance) replyItems(w http.ResponseWriter, r *http.Request, v any) {
 	var gen itemJSONGen
 	if i.host.PageFreshness != nil {
 		f := i.host.PageFreshness()
-		gen = itemJSONGen{catalog: f.Catalog, libraries: f.Libraries, kindSync: f.KindSync}
+		gen = itemJSONGen{catalog: f.Catalog, libraries: f.Libraries, kindSync: f.KindSync, config: f.Config}
 	}
 	lang := ""
 	if r != nil {

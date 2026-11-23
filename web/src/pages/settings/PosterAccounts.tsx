@@ -135,7 +135,7 @@ export function PosterAccounts({
   onEnabled,
 }: {
   locked: boolean;
-  children?: (cards: ReactNode) => ReactNode;
+  children?: (cards: ReactNode, savedNote: ReactNode) => ReactNode;
   tab?: string;
   onEnabled?: (flags: Record<string, boolean>) => void;
 }) {
@@ -144,6 +144,7 @@ export function PosterAccounts({
   const [editing, setEditing] = useState<Posters | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   useEffect(() => {
     if (config.data)
       onEnabled?.(
@@ -155,6 +156,9 @@ export function PosterAccounts({
   useEffect(() => {
     setEditing(config.data?.accounts?.[tab] ?? null);
   }, [tab, config.data]);
+  useEffect(() => {
+    setSaved(false);
+  }, [tab]);
   async function save(account: Posters) {
     if (!config.data) return;
     setSaving(true);
@@ -172,6 +176,7 @@ export function PosterAccounts({
       });
       config.setData(normalizePosters(result.value));
       setDraft(null);
+      setSaved(true);
       toast.success(t("Poster provider saved"));
     } catch (e) {
       setError(e);
@@ -219,9 +224,14 @@ export function PosterAccounts({
       }
     />
   ));
+  const savedNote = saved ? (
+    <p className="text-sm text-fg-muted" role="status">
+      {t("Apps reload posters the next time they open a library; some may need to be restarted.")}
+    </p>
+  ) : null;
   return (
     <>
-      {children?.(cards)}
+      {children?.(cards, savedNote)}
       {editing && (
         <>
           <IntegrationTab
@@ -237,6 +247,7 @@ export function PosterAccounts({
             current={config.data?.source === tab}
           >
             <PosterAccountForm value={editing} onChange={setEditing} />
+            {savedNote}
           </IntegrationTab>
           <SaveBar
             dirty={JSON.stringify(editing) !== JSON.stringify(config.data?.accounts?.[tab])}

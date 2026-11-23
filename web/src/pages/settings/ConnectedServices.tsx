@@ -1051,10 +1051,11 @@ export function ConnectedServices({
         </div>
       ) : null}
       <PosterAccounts locked={locked} tab={tab} onEnabled={setPosterFlags}>
-        {(posterCards) => (
+        {(posterCards, posterSavedNote) => (
           <div hidden={tab !== "overview"}>
             <ServiceOverview
               posterCards={posterCards}
+              posterSavedNote={posterSavedNote}
               onTmdbSetup={() => setTmdbSetup(true)}
               onRatingsSetup={toggleRatings}
               draft={draft}
@@ -1248,12 +1249,14 @@ function ServiceOverview({
   locked,
   onToggle,
   posterCards,
+  posterSavedNote,
   onTmdbSetup,
   onRatingsSetup,
 }: {
   onTmdbSetup: (next: boolean) => void;
   onRatingsSetup: (next: boolean) => void;
   posterCards: ReactNode;
+  posterSavedNote?: ReactNode;
   draft: Record<string, Obj>;
   stored: Record<string, Obj> | null;
   ratings: RatingSettings | undefined;
@@ -1264,6 +1267,7 @@ function ServiceOverview({
   const navigate = useNavigate();
   const catalogue = useAsync((signal) => librariesApi.catalogueSources(signal), []);
   const [addingSource, setAddingSource] = useState(false);
+  const [ownerPostersSaved, setOwnerPostersSaved] = useState(false);
   useStreamEvent("plugins.changed", () => {
     void catalogue.reload();
   });
@@ -1450,9 +1454,21 @@ function ServiceOverview({
         />
       </IntegrationGroup>
       <>
-        <IntegrationGroup title={t("Artwork and ratings")}>
+        <IntegrationGroup
+          title={t("Artwork and ratings")}
+          footer={
+            posterSavedNote ??
+            (ownerPostersSaved ? (
+              <p className="text-sm text-fg-muted" role="status">
+                {t(
+                  "Apps reload posters the next time they open a library; some may need to be restarted.",
+                )}
+              </p>
+            ) : null)
+          }
+        >
           {posterCards}
-          <OwnerPosters locked={locked} />
+          <OwnerPosters locked={locked} onSaved={() => setOwnerPostersSaved(true)} />
           <IntegrationAppCard
             identity={{ id: "ratings", name: t("OMDb and MDBList") }}
             description={t("IMDb, Rotten Tomatoes and other rating badges.")}

@@ -6937,6 +6937,7 @@
   "m_14c6deb9075676": "Shorten {role}",
   "m_14c7a1feb33b17": "Timezone",
   "m_14c996f579d9e2": "Cleans up a soft picture before it is sent. The viewer's resolution and bitrate limits still apply. Unsupported videos play normally.",
+  "m_14ca92aca5fa59": "Apps reload posters the next time they open a library; some may need to be restarted.",
   "m_14ceb1918df932": "Right away",
   "m_14d0589d0bcfb5": "The device can't play the audio, so Ether converts it.",
   "m_14d0b20864211c": "Describe what should happen, or start from a template — the first flow takes a minute.",

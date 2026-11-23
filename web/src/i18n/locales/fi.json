@@ -6930,6 +6930,7 @@
   "m_14c6deb9075676": "Lyhennä: {role}",
   "m_14c7a1feb33b17": "Aikavyöhyke",
   "m_14c996f579d9e2": "Terävöittää pehmeän kuvan ennen lähettämistä. Katsojan tarkkuus- ja bittinopeusrajat ovat yhä voimassa. Videot, joita ei tueta, toistetaan normaalisti.",
+  "m_14ca92aca5fa59": "Sovellukset lataavat julisteet uudelleen seuraavan kerran, kun ne avaavat kirjaston; osa saattaa vaatia uudelleenkäynnistyksen.",
   "m_14ceb1918df932": "Heti",
   "m_14d0589d0bcfb5": "Laite ei pysty toistamaan ääntä, joten Ether muuntaa sen.",
   "m_14d0b20864211c": "Kuvaile, mitä pitäisi tapahtua, tai aloita mallista — ensimmäinen Flow syntyy minuutissa.",

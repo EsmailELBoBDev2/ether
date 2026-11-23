@@ -93,6 +93,12 @@ func (s *Service) posterVersion() string {
 	}
 	return ""
 }
+func (s *Service) PosterGeneration() uint64 {
+	if p, ok := s.o.Images.(interface{ PosterGeneration() uint64 }); ok {
+		return p.PosterGeneration()
+	}
+	return 0
+}
 
 type Options struct {
 	// CacheDir contains disposable generated variants only. Empty disables disk caching.
@@ -417,7 +423,11 @@ func (s *Service) Version(ctx context.Context, u *core.User, t *core.Title, lang
 	}
 	labels := visibleLabels(s.presentation(ctx, u, t, cfg).Labels)
 	// Viewer identity and unrelated catalogue updates do not change pixels.
-	raw, _ := json.Marshal([]any{s.posterVersion(), p, b, t.LogoPath, labels, pixelStyle(cfg, len(labels) > 0), "compositor-v5"})
+	parts := []any{s.posterVersion(), p, b, t.LogoPath, labels, pixelStyle(cfg, len(labels) > 0), "compositor-v5"}
+	if gen := s.PosterGeneration(); gen > 0 {
+		parts = append(parts, gen)
+	}
+	raw, _ := json.Marshal(parts)
 	hash := sha256.Sum256(raw)
 	return hex.EncodeToString(hash[:8])
 }

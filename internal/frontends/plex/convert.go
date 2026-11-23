@@ -159,13 +159,44 @@ func overlayArtStamp(t *frontend.Title, row frontend.CachedMetadataOverlay, ok b
 	return imageStamp(t)
 }
 
+func (s *Server) posterGeneration() uint64 {
+	if s == nil {
+		return 0
+	}
+	if d := s.discovery(); d != nil && d.Overlays != nil {
+		if pg, ok := d.Overlays.(interface{ PosterGeneration() uint64 }); ok {
+			if gen := pg.PosterGeneration(); gen > 0 {
+				return gen
+			}
+		}
+	}
+	if art := s.getHost().Artwork; art != nil {
+		if pg, ok := art.(interface{ PosterGeneration() uint64 }); ok {
+			return pg.PosterGeneration()
+		}
+	}
+	return 0
+}
+
+func (s *Server) posterStamp(stamp string) string {
+	if gen := s.posterGeneration(); gen > 0 {
+		return stamp + "-p" + strconv.FormatUint(gen, 10)
+	}
+	return stamp
+}
+
 // thumbURL / artURL are our own artwork endpoints for an item.
 func (s *Server) thumbURL(t *frontend.Title) string {
 	return s.stampedThumbURL(t, imageStamp(t))
 }
 
 func (s *Server) stampedThumbURL(t *frontend.Title, stamp string) string {
+	poster := t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow ||
+		(t.Type == "" && (t.Key.Kind() == frontend.KindMovie || t.Key.Kind() == frontend.KindShow))
 	if version := s.ownerArtworkVersion(t, frontend.ImagePoster); version != "" {
+		if poster {
+			version = s.posterStamp(version)
+		}
 		return "/library/metadata/" + t.Key.String() + "/thumb/" + version
 	}
 	if t.PosterPath == "" && t.StillPath == "" {
@@ -174,10 +205,16 @@ func (s *Server) stampedThumbURL(t *frontend.Title, stamp string) string {
 		// caches refetch) when the title gains a real poster.
 		if s != nil {
 			if st, ok := frontend.TitlePosterStamp(t); ok {
+				if poster {
+					st = s.posterStamp(st)
+				}
 				return "/library/metadata/" + t.Key.String() + "/thumb/" + st
 			}
 		}
 		return ""
+	}
+	if poster {
+		stamp = s.posterStamp(stamp)
 	}
 	return "/library/metadata/" + t.Key.String() + "/thumb/" + stamp
 }
@@ -188,7 +225,7 @@ func (s *Server) artURL(t *frontend.Title) string {
 
 func (s *Server) stampedArtURL(t *frontend.Title, stamp string) string {
 	if version := s.ownerArtworkVersion(t, frontend.ImageBackdrop); version != "" {
-		return "/library/metadata/" + t.Key.String() + "/art/" + version
+		return "/library/metadata/" + t.Key.String() + "/art/" + s.posterStamp(version)
 	}
 	if t.BackdropPath == "" {
 		return ""
@@ -328,7 +365,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 				m.ParentGUID = showGUID(showKey)
 			}
 			m.ParentKey = "/library/metadata/" + showKey.String()
-			m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
+			m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + s.posterStamp(imageStamp(t))
 			if m.Art == "" {
 				m.Art = "/library/metadata/" + showKey.String() + "/art/" + imageStamp(t)
 			}
@@ -414,7 +451,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			}
 			m.GrandparentKey = "/library/metadata/" + showKey.String()
 			m.GrandparentTitle = t.ShowTitle
-			m.GrandparentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
+			m.GrandparentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + s.posterStamp(imageStamp(t))
 			m.GrandparentArt = "/library/metadata/" + showKey.String() + "/art/" + imageStamp(t)
 			if m.Art == "" {
 				m.Art = m.GrandparentArt
@@ -565,7 +602,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			m.Duration = m.Media[0].Duration
 		}
 	}
-	s.decorateDiscoveryMetadata(ctx, pr, t, &m, o.detail)
+	s.decorateDiscoveryMetadata(ctx, pr, t, show, &m, o.detail)
 	return m
 }
 
@@ -600,14 +637,15 @@ func (s *Server) imageTags(t *frontend.Title, show *frontend.Title, thumbStamp, 
 			}
 		}
 		showPath := "/library/metadata/" + showKey.String()
+		showThumbStamp := s.posterStamp(thumbStamp)
 		if t.Type == frontend.TypeSeason {
 			if th := s.stampedThumbURL(t, thumbStamp); th != "" {
 				out = append(out, img("coverPoster", th))
 			} else {
-				out = append(out, img("coverPoster", showPath+"/thumb/"+thumbStamp))
+				out = append(out, img("coverPoster", showPath+"/thumb/"+showThumbStamp))
 			}
 		} else {
-			out = append(out, img("coverPoster", showPath+"/thumb/"+thumbStamp))
+			out = append(out, img("coverPoster", showPath+"/thumb/"+showThumbStamp))
 			if th := s.stampedThumbURL(t, thumbStamp); th != "" {
 				out = append(out, img("snapshot", th))
 			}

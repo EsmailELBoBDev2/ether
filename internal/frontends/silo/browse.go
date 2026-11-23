@@ -331,7 +331,11 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(frontend.WithRequestMemo(r.Context()))
-	cacheKey := siloSectionKey(v, device(r), r.URL.RequestURI())
+	var configGen uint64
+	if i.host.PageFreshness != nil {
+		configGen = i.host.PageFreshness().Config
+	}
+	cacheKey := siloSectionKey(v, configGen, device(r), r.URL.RequestURI())
 	if cached, ok := i.cachedSections(cacheKey); ok {
 		reply(w, 200, map[string]any{"sections": cached})
 		return
@@ -453,12 +457,12 @@ type siloSectionPage struct {
 	sections []any
 }
 
-func siloSectionKey(v *frontend.Viewer, dev frontend.Device, uri string) string {
+func siloSectionKey(v *frontend.Viewer, configGen uint64, dev frontend.Device, uri string) string {
 	id := int64(0)
 	if v != nil {
 		id = v.ID
 	}
-	return strconv.FormatInt(id, 10) + "\n" + dev.ID + "\n" + uri
+	return strconv.FormatInt(id, 10) + "\n" + strconv.FormatUint(configGen, 10) + "\n" + dev.ID + "\n" + uri
 }
 
 func (i *instance) cachedSections(key string) ([]any, bool) {

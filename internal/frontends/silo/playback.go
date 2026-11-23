@@ -194,6 +194,10 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		}
 		offer, err = i.host.SourceOffers.Resolve(r.Context(), scope, b.FileID)
 		if err != nil || offer.Target.Item == 0 || (offer.Target.VersionHandle == "") == (offer.Target.DetailSource == "") {
+			if errors.Is(err, frontend.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
 			if err == nil {
 				err = fmt.Errorf("offer %q item %d version %q detail %q", b.FileID, offer.Target.Item, offer.Target.VersionHandle, offer.Target.DetailSource)
 			}

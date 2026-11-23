@@ -1547,6 +1547,11 @@ func (r *KindResolver) RefsForKeys(ctx context.Context, viewer *core.Viewer, key
 		if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
 			continue
 		}
+		if r.authorize != nil {
+			if err := r.authorize(ctx, viewer, item.Key); err != nil {
+				continue
+			}
+		}
 		out[key] = item.Ref
 	}
 	return out, nil

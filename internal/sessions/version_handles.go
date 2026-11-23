@@ -116,7 +116,7 @@ func (v *versionHandles) allowedOffers(ctx context.Context, scope frontend.Versi
 		if v.broker.deps.KindVersions == nil {
 			return nil, nil, core.ErrNotFound
 		}
-		offered, err := v.broker.deps.KindVersions(ctx, viewer, item)
+		offered, err := v.broker.deps.KindVersions(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, item)
 		if err != nil {
 			return nil, nil, err
 		}

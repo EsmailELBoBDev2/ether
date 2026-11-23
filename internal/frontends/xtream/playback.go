@@ -119,6 +119,10 @@ func (i *instance) admit(w http.ResponseWriter, r *http.Request, l login, req fr
 				http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
 				return false
 			}
+			if errors.Is(err, frontend.ErrNotFound) {
+				http.NotFound(w, r)
+				return false
+			}
 			status := http.StatusServiceUnavailable
 			if errors.Is(err, frontend.ErrStreamLimit) {
 				status = http.StatusTooManyRequests

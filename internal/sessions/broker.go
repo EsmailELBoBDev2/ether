@@ -564,7 +564,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		if req.ExpectedSourceETag != "" || req.DetailSource != "" {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
-		return b.planKind(ctx, req, v)
+		return b.planKind(core.WithLiveApp(ctx, string(req.Protocol)), req, v)
 	}
 	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil {
@@ -1003,7 +1003,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	}
 	var title *core.Title
 	if p.request.Item.IsPluginKey() && b.deps.KindSource != nil {
-		if in, kerr := b.deps.KindSource(ctx, v, p.request.Item); kerr == nil && in != nil {
+		if in, kerr := b.deps.KindSource(core.WithLiveApp(ctx, string(p.request.Protocol)), v, p.request.Item); kerr == nil && in != nil {
 			title = in.Title
 		}
 	} else {
@@ -1579,7 +1579,7 @@ func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAcces
 	if lookup == nil {
 		return core.ErrNotAvailable
 	}
-	title, err := lookup(ctx, viewer, a.Device, item)
+	title, err := lookup(core.WithLiveApp(ctx, string(a.Protocol)), viewer, a.Device, item)
 	if err != nil || title == nil || title.Key != item {
 		if err != nil {
 			return err

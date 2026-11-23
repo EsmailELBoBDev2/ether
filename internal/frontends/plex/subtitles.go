@@ -1334,6 +1334,11 @@ func (s *Server) serveEmbeddedStream(w http.ResponseWriter, r *http.Request, key
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
+	t, err := s.metadataTitle(r.Context(), pr, key)
+	if err != nil || t == nil || !s.pluginAwarePlayable(r.Context(), pr.User, t) {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
 	var playID string
 	var bestAt time.Time
 	matroska := false

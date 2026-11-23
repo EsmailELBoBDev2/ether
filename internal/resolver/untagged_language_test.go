@@ -14,16 +14,16 @@ func TestUntaggedReleaseTakesTitleOriginalLanguage(t *testing.T) {
 	english := &core.Title{Language: "en"}
 	untagged := releaseparse.Parse("[Group] Show - 001 [2160p]")
 	dub := releaseparse.Parse("Show.S01E01.1080p.English.Dub.WEB-DL")
-	if audioAcceptable(untagged, []string{"english"}, anime) {
+	if audioAcceptable(untagged, "", []string{"english"}, anime) {
 		t.Fatal("untagged release of a Japanese title accepted by an English-only profile")
 	}
-	if !audioAcceptable(dub, []string{"english"}, anime) {
+	if !audioAcceptable(dub, "", []string{"english"}, anime) {
 		t.Fatalf("declared English dub rejected: %+v", dub.Languages)
 	}
-	if !audioAcceptable(untagged, []string{"english"}, english) {
+	if !audioAcceptable(untagged, "", []string{"english"}, english) {
 		t.Fatal("untagged release of an English title rejected")
 	}
-	if !audioAcceptable(untagged, []string{"english", "ja"}, anime) {
+	if !audioAcceptable(untagged, "", []string{"english", "ja"}, anime) {
 		t.Fatal("untagged release rejected when the original language is accepted")
 	}
 }

@@ -106,7 +106,7 @@ func TestSpanishNewPCTChapterPacksAndTrailingYears(t *testing.T) {
 		if got := rejectIdentity(r, tc.title, searchRequestFor(tc.title), "es-ES"); got != "" {
 			t.Fatalf("%q rejected: %q (parsed %+v)", tc.name, got, r.Info)
 		}
-		if !audioAcceptable(r.Info, []string{"es-ES"}, nil) {
+		if !audioAcceptable(r.Info, "", []string{"es-ES"}, nil) {
 			t.Fatalf("%q Spanish audio not acceptable: %+v", tc.name, r.Info.Languages)
 		}
 	}

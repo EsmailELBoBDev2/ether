@@ -2136,6 +2136,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 	}
+	langActive := viewerLanguageActive(wanted, t)
 	var movieLangs []string
 	var movieOrig string
 	if sreq.Type == core.TypeMovie {
@@ -2266,12 +2267,19 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 			continue
 		}
-		langOK := audioAcceptable(langRel.Info, accepted, t)
-		langWanted := langOK && foreignTitleWantedAudio(langRel.Info, rel.SourceLanguage, wanted, t)
+		langOK := audioAcceptable(langRel.Info, rel.SourceLanguage, accepted, t)
+		var langMatch viewerLanguageMatch
+		if langOK {
+			langMatch = matchViewerLanguage(langRel.Info, rel.SourceLanguage, wanted, t)
+		}
+		langRank := 0
+		if langMatch.Matched {
+			langRank = langMatch.Rank + 1
+		}
 		lowBitrate := bitrateScore(sizedForEpisode(rel), t) < 0
 		starved := lowBitrate || upscales[ri]
 		yearGuessed := seriesYearGuessed(rel, sreq)
-		facts := formatFacts{starved: starved, lowBitrate: lowBitrate, viewerLanguage: langWanted, viewerSubs: indexerListsSubtitles(rel, env.wantedSubs), yearDiffers: yearGuessed, pastRetention: s.pastRetention(rel, now)}
+		facts := formatFacts{starved: starved, lowBitrate: lowBitrate, viewerLanguage: langMatch, originalLanguage: titleOriginalLanguage(t), viewerSubs: indexerListsSubtitles(rel, env.wantedSubs), yearDiffers: yearGuessed, pastRetention: s.pastRetention(rel, now)}
 		sc, err := s.scoreRelease(rel, profile, req.Client, t, policyResult, facts)
 		if errors.Is(err, errFormatTimeout) {
 			// One (possibly hostile) release name must not fail the whole
@@ -2366,6 +2374,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 			if !langOK {
 				note("ranked after releases in an accepted audio language")
+			} else if !addonOrdered && !langMatch.Matched && isBareDual(langRel.Info, rel.SourceLanguage, t) && langActive {
+				note("bare DUAL names no dub language: ranked as original-language fallback")
 			}
 			if identityEv == AnimeReleaseStyleIdentityReason {
 				note(AnimeReleaseStyleIdentityReason)
@@ -2384,7 +2394,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		if addonOrdered {
 			cf = 0
 		}
-		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, t, sreq), identityConflict: namesake && identityEv == "" && episodeRegionConflict(rel, t), audioUnverified: audioUnverified, unverifiedLangs: unverifiedLangs, fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, delivery: delivery, yearGuessed: yearGuessed, cf: cf, keys: keys})
+		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, t, sreq), identityConflict: namesake && identityEv == "" && episodeRegionConflict(rel, t), audioUnverified: audioUnverified, unverifiedLangs: unverifiedLangs, fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langRank: langRank, starved: starved, bandwidth: bandwidth, delivery: delivery, yearGuessed: yearGuessed, cf: cf, keys: keys})
 	}
 	if env.seaDex != nil && len(cands) > 0 {
 		s.addSeaDexScores(env.seaDex, cands, trace)
@@ -2558,6 +2568,9 @@ func (s *Service) scoreRelease(rel core.Release, profile core.QualityProfile, ca
 	for _, m := range matches {
 		revisionScored = revisionScored || (m.revision && m.Score != 0)
 	}
+	if facts.originalLanguage == "" && t != nil {
+		facts.originalLanguage = titleOriginalLanguage(t)
+	}
 	for _, id := range builtinFormatMatches(formatRel, profile, caps, facts) {
 		if id == core.FormatRepackProper && revisionScored {
 			// The profile scores revisions with its own Repack/Proper
@@ -2568,8 +2581,13 @@ func (s *Service) scoreRelease(rel core.Release, profile core.QualityProfile, ca
 		if !scored || score == 0 {
 			continue // a built-in format the profile doesn't use
 		}
+		name := BuiltinFormatName(id)
+		if id == core.FormatViewerLanguage {
+			score = viewerLanguageScore(score, facts.viewerLanguage.Rank)
+			name = viewerLanguageFormatName(facts.viewerLanguage)
+		}
 		total += score
-		matches = append(matches, FormatMatch{ID: id, Name: BuiltinFormatName(id), Score: score})
+		matches = append(matches, FormatMatch{ID: id, Name: name, Score: score})
 	}
 	for _, r := range profile.ReleaseRules {
 		if r.Action != "prefer" || r.Disabled || policy.PreferRule(r.ID) <= 0 {

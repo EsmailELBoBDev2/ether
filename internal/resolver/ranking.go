@@ -112,7 +112,7 @@ func compareCandidates(a, b candidate) bool {
 	if x.protocol != y.protocol {
 		return x.protocol
 	}
-	if a.langWanted == b.langWanted && a.delivery != b.delivery {
+	if a.langRank == b.langRank && a.delivery != b.delivery {
 		return a.delivery > b.delivery
 	}
 	if x.priority != y.priority {

@@ -284,8 +284,13 @@ func scoreSourceRelease(s *Service, scorer *FormatScorer, rel core.Release, prof
 		if !scored || score == 0 {
 			continue
 		}
+		name := BuiltinFormatName(id)
+		if id == core.FormatViewerLanguage {
+			score = viewerLanguageScore(score, facts.viewerLanguage.Rank)
+			name = viewerLanguageFormatName(facts.viewerLanguage)
+		}
 		total += score
-		matches = append(matches, FormatMatch{ID: id, Name: BuiltinFormatName(id), Score: score})
+		matches = append(matches, FormatMatch{ID: id, Name: name, Score: score})
 	}
 	for _, r := range profile.ReleaseRules {
 		if r.Action != "prefer" || r.Disabled || policy.PreferRule(r.ID) <= 0 {

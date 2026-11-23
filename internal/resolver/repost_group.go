@@ -352,7 +352,7 @@ func repostGroupCompatible(a, b candidate) bool {
 		a.belowScore != b.belowScore ||
 		a.starved != b.starved ||
 		a.langOK != b.langOK ||
-		a.langWanted != b.langWanted ||
+		a.langRank != b.langRank ||
 		a.audioUnverified != b.audioUnverified ||
 		a.identityWeak != b.identityWeak ||
 		a.identityConflict != b.identityConflict ||

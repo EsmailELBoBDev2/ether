@@ -525,6 +525,13 @@ const (
 	IndexerStatusError    = "error"
 )
 
+// Reason values for IndexerSearchStatus.Reason when Status is IndexerStatusSkipped.
+const (
+	// IndexerSkipReasonPaused reports an indexer skipped because its circuit
+	// breaker paused it in backoff after repeated failures or timeouts.
+	IndexerSkipReasonPaused = "paused_backoff"
+)
+
 // IndexerRef identifies one configured indexer by ID and display name,
 // returned in the top-level pending list on indexer_search and
 // indexer_search_results responses.
@@ -535,7 +542,7 @@ type IndexerRef struct {
 
 // IndexerSearchStatus reports either one enabled indexer's outcome on an
 // indexer_search / indexer_search_results / indexer_search_cancel query
-// (Status, Results, MS, Error) or one enabled indexer's summary on an
+// (Status, Results, MS, Reason, Error) or one enabled indexer's summary on an
 // indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
 	IndexerID string `json:"indexerId"`
@@ -543,6 +550,7 @@ type IndexerSearchStatus struct {
 	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
 	Results   int    `json:"results,omitempty"`
 	MS        int64  `json:"ms"`
+	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
 	Error     string `json:"error,omitempty"`
 	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
 	// responses (never carrying API keys, URLs with secrets, or cookies).
@@ -553,7 +561,7 @@ type IndexerSearchStatus struct {
 }
 
 // MarshalJSON preserves ms:0 on search status entries (Status != "") while
-// omitting status/ms/results/error on kind:"indexers" listing entries
+// omitting status/ms/results/reason/error on kind:"indexers" listing entries
 // (Status == "").
 func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 	if s.Status == "" {
@@ -580,6 +588,7 @@ func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 		Status    string `json:"status"`
 		Results   int    `json:"results,omitempty"`
 		MS        int64  `json:"ms"`
+		Reason    string `json:"reason,omitempty"`
 		Error     string `json:"error,omitempty"`
 		Kind      string `json:"kind,omitempty"`
 		MedianMS  *int64 `json:"medianMs,omitempty"`
@@ -592,6 +601,7 @@ func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 		Status:    s.Status,
 		Results:   s.Results,
 		MS:        s.MS,
+		Reason:    s.Reason,
 		Error:     s.Error,
 		Kind:      s.Kind,
 		MedianMS:  s.MedianMS,

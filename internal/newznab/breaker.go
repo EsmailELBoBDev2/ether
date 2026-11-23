@@ -249,6 +249,36 @@ func transientFailure(err error) bool {
 	return errors.As(err, &ne)
 }
 
+type searchCeilingKey struct{}
+
+// withSearchCeiling tags a context whose deadline is the indexer search
+// ceiling (for example SearchWithOptions's detached background timeout), so
+// DeadlineExceeded on that context counts as an indexer timeout rather than
+// a caller leaving early.
+func withSearchCeiling(ctx context.Context) context.Context {
+	return context.WithValue(ctx, searchCeilingKey{}, true)
+}
+
+func isSearchCeiling(ctx context.Context) bool {
+	v, _ := ctx.Value(searchCeilingKey{}).(bool)
+	return v
+}
+
+// callerLeft reports whether ctx ended because the caller cancelled or set a
+// shorter deadline than our indexer search ceiling. A DeadlineExceeded at the
+// search ceiling (or after defaultHTTPTimeout) means the indexer itself timed
+// out and must count against the circuit breaker.
+func callerLeft(ctx context.Context, elapsed time.Duration) bool {
+	err := ctx.Err()
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) && (isSearchCeiling(ctx) || elapsed >= defaultHTTPTimeout) {
+		return false
+	}
+	return true
+}
+
 // guardSearch runs one search request through the breaker and per-host
 // concurrency limiter. Local host-queue wait is excluded from both the
 // adaptive timeout and p95 latency sampling. adaptive applies the adaptive
@@ -285,7 +315,7 @@ func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool,
 	res, err := do(rctx)
 	elapsed := time.Since(started)
 	releaseHost()
-	if err != nil && (ctx.Err() != nil || errors.Is(err, core.ErrBudgetExhausted)) {
+	if err != nil && (errors.Is(err, core.ErrBudgetExhausted) || callerLeft(ctx, elapsed)) {
 		// The caller went away, or a budget or rate-limit pause (which
 		// has its own back-off) refused the request: no verdict.
 		settled = true
@@ -295,12 +325,17 @@ func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool,
 	if err != nil && limit > 0 && rctx.Err() != nil {
 		err = fmt.Errorf("indexer %q: no answer within %s (its usual time is far shorter): %w", c.Name(), limit.Round(time.Second), context.DeadlineExceeded)
 	}
+	settled = true
+	c.settleBreaker(ctx, tk, err, elapsed, adaptive)
+	return res, err
+}
+
+func (c *Client) settleBreaker(ctx context.Context, tk breakerTicket, err error, elapsed time.Duration, adaptive bool) {
 	failed := transientFailure(err)
 	var sample time.Duration
 	if err == nil && adaptive {
 		sample = elapsed
 	}
-	settled = true
 	now := c.now()
 	if err != nil {
 		c.emitRequestFailed(searchEventKind(ctx), err, elapsed)
@@ -325,7 +360,17 @@ func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool,
 			OutageDurationMS: outageDur.Milliseconds(),
 		})
 	}
-	return res, err
+}
+
+// recordSearchTimeout feeds a search-ceiling timeout that happened before
+// guardSearch (for example during a cold t=caps request against a hung server)
+// into the circuit breaker so repeated hangs still open backoff.
+func (c *Client) recordSearchTimeout(ctx context.Context, err error, elapsed time.Duration) {
+	tk, admitErr := c.br.admit(c.now())
+	if admitErr != nil {
+		return
+	}
+	c.settleBreaker(ctx, tk, err, elapsed, false)
 }
 
 // searchPaused reports whether the indexer is paused by the breaker, so a

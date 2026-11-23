@@ -666,8 +666,14 @@ func (r *KindResolver) pollStreamingIndexerSearch(ctx context.Context, pluginID 
 	}
 
 	wait := time.Duration(q.WaitMS) * time.Millisecond
-	if maxWait := r.streamMaxWaitDuration(); wait > maxWait {
+	maxWait := r.streamMaxWaitDuration()
+	if wait > maxWait {
 		wait = maxWait
+	}
+	if wait > 0 {
+		if budget := defaultIndexerWaitBudget(ctx, now, maxWait); budget > 0 && wait > budget {
+			wait = budget
+		}
 	}
 	idleTTL := r.streamIdleTTLDuration()
 

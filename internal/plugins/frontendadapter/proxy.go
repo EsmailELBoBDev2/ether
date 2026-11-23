@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			// browser-held auth), so browser clients on any origin, such as
 			// web Subsonic players, may call the adapter.
 			if allowAnyOrigin(w, r) {
+				return
+			}
+			if err := mergeFormIntoQuery(r); err != nil {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 				return
 			}
 		}
@@ -126,6 +131,35 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 		}
 		writeResponse(w, resp)
 	})
+}
+
+// mergeFormIntoQuery folds a form-encoded POST body into the query string.
+// Query-credential protocols (Subsonic) let clients send every parameter,
+// credentials included, either way; after this the request is handled exactly
+// like the equivalent GET.
+func mergeFormIntoQuery(r *http.Request) error {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return nil
+	}
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if !strings.EqualFold(strings.TrimSpace(ct), "application/x-www-form-urlencoded") {
+		return nil
+	}
+	body, err := readBody(r)
+	if err != nil {
+		return err
+	}
+	r.Body = http.NoBody
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return nil
+	}
+	q := r.URL.Query()
+	for k, vs := range form {
+		q[k] = append(q[k], vs...)
+	}
+	r.URL.RawQuery = q.Encode()
+	return nil
 }
 
 // allowAnyOrigin sets permissive CORS headers and answers a preflight. It

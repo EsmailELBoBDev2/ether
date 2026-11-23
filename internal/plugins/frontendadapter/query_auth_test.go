@@ -92,6 +92,22 @@ func TestQueryCredentialsNeverReachPlugin(t *testing.T) {
 		}
 	}
 
+	// Subsonic clients may POST every parameter form-encoded instead.
+	mgr.calls = nil
+	post := httptest.NewRequest(http.MethodPost, "/subsonic/rest/star.view?f=json", strings.NewReader("u=alice01&p=abcde-fghjk-mnpqr&id=tr-1&id=tr-2"))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(rec, post)
+	if rec.Code != 200 || len(mgr.calls) != 1 {
+		t.Fatalf("form post: status %d calls %d", rec.Code, len(mgr.calls))
+	}
+	if got := mgr.calls[0]; got.Query["p"] != "" || len(got.RepeatedQuery["id"]) != 2 || got.BodyBase64 != "" {
+		t.Fatalf("form post reached the plugin as %+v", got)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("query-credential adapters allow any origin")
+	}
+
 	for _, query := range []string{"u=alice01&p=wrong&f=json", "f=json"} {
 		mgr.calls = nil
 		rec := httptest.NewRecorder()

@@ -419,6 +419,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			resumedRel      core.Release
 			resumedSelector string
 			hasResumed      bool
+			markerEstimated = true
 		)
 		if a.playback != nil {
 			caps := core.ClientCaps{PreserveEmptyVideoCodecs: policy.NativePlaybackCapabilities, Protocol: protocol, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, ClientID: device.ID, Version: device.Version}
@@ -433,7 +434,16 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			if !hasResumed || !core.IsAutoVersionSelector(resumedSelector) {
 				info = a.playback.Estimate(ctx, title, caps)
 			}
-			markerInfo := experience.MarkerMedia(u, device, title.Key, info, a.playback.SessionFor)
+			markerSession := func(userID int64, clientID string, key core.RatingKey) (*core.PlaySession, bool) {
+				if surf := string(protocol); sessionSurface(surf) != "" {
+					if sess, ok := a.playback.SessionForSurfaceClient(surf, userID, clientID, key); ok && sess != nil {
+						return sess, true
+					}
+				}
+				return a.playback.SessionFor(userID, clientID, key)
+			}
+			markerInfo := experience.MarkerMedia(u, device, title.Key, info, markerSession)
+			markerEstimated = markerInfo.Estimated
 			if a.markers != nil {
 				result.Markers = experience.ItemMarkers(ctx, a.markers, title.Key, markerInfo)
 			} else {
@@ -493,6 +503,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 			for n := range result.Versions {
 				result.Versions[n].Markers = experience.ItemMarkers(ctx, markerSource, title.Key, result.Versions[n].Media)
+			}
+			if markerEstimated && len(result.Markers) == 0 && len(result.Versions) > 0 && !result.Versions[0].Media.Estimated {
+				result.Markers = result.Versions[0].Markers
 			}
 		}
 		if a.extras != nil {
@@ -1058,6 +1071,7 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 	out := make(map[core.RatingKey][]frontend.Image, len(keys))
 	var titleKeys []core.RatingKey
 	var franchiseKeys []core.RatingKey
+	var smartKeys []core.RatingKey
 	seenDirect := map[core.RatingKey]bool{}
 	for _, k := range keys {
 		switch k.Kind() {
@@ -1067,7 +1081,13 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			}
 			seenDirect[k] = true
 			franchiseKeys = append(franchiseKeys, k)
-		case core.KindSmart, core.KindPlaylist:
+		case core.KindSmart:
+			if seenDirect[k] {
+				continue
+			}
+			seenDirect[k] = true
+			smartKeys = append(smartKeys, k)
+		case core.KindPlaylist:
 			if seenDirect[k] {
 				continue
 			}
@@ -1084,6 +1104,35 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			}
 		default:
 			titleKeys = append(titleKeys, k)
+		}
+	}
+	if len(smartKeys) > 0 && s.artwork != nil {
+		cols, err := s.PageArtworkSmartCollections(ctx, viewer, smartKeys)
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+			cols = nil
+			err = nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range smartKeys {
+			col, ok := cols[k]
+			if !ok {
+				continue
+			}
+			listCtx := ctx
+			if !col.Upcoming && col.PosterPath != "" {
+				c := col
+				listCtx = frontend.WithArtworkCollection(ctx, &c)
+			}
+			imgs, _, err := s.artwork.List(listCtx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
+			if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			out[k] = imgs
 		}
 	}
 	if len(franchiseKeys) > 0 && s.artwork != nil {

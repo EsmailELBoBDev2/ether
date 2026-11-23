@@ -593,9 +593,19 @@ func (i *instance) writeBoxSets(w http.ResponseWriter, r *http.Request, viewer *
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	r = withJellyfinListFiles(withBrowseMemo(r))
+	titles := make([]frontend.Title, 0, len(page.Items))
+	for _, collection := range page.Items {
+		titles = append(titles, frontend.Title{Key: collection.Key, Type: "boxset"})
+	}
+	images := i.gridListImages(r, titles)
 	items := make([]any, 0, len(page.Items))
 	for _, collection := range page.Items {
-		items = append(items, i.boxSetDTO(collection))
+		dto := i.boxSetDTO(collection)
+		for key, value := range images[collection.Key] {
+			dto[key] = value
+		}
+		items = append(items, dto)
 	}
 	jsonReply(w, i.queryResult(items, page.Total, q.Offset))
 }

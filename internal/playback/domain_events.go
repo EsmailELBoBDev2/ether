@@ -692,18 +692,36 @@ func (m *Manager) observeMarkerTransition(s *session, posMS int64, now time.Time
 	s.mu.Lock()
 	loaded := s.markersLoaded
 	markers := s.markersCache
+	markersDur := s.markersDuration
 	key := s.ident.key
 	g := s.cur
 	s.mu.Unlock()
 
-	if !loaded && g != nil {
+	if g != nil {
 		info := g.infoSnapshot()
-		found := m.deps.CachedMarkers(key, info)
-		s.mu.Lock()
-		s.markersLoaded = true
-		s.markersCache = found
-		markers = found
-		s.mu.Unlock()
+		if !loaded || markersDur != info.Duration {
+			found := m.deps.CachedMarkers(key, info)
+			s.mu.Lock()
+			if s.markersDuration != info.Duration {
+				s.markersDuration = info.Duration
+				s.markersFirstCheck = time.Time{}
+				s.markersLoaded = false
+			}
+			if len(found) > 0 {
+				s.markersLoaded = true
+				s.markersCache = found
+			} else {
+				if s.markersFirstCheck.IsZero() {
+					s.markersFirstCheck = now
+				}
+				if now.Sub(s.markersFirstCheck) >= 20*time.Second {
+					s.markersLoaded = true
+				}
+				s.markersCache = nil
+			}
+			markers = s.markersCache
+			s.mu.Unlock()
+		}
 	}
 	if len(markers) == 0 {
 		return

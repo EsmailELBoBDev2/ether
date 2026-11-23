@@ -317,6 +317,8 @@ type session struct {
 	lastProgressAt    time.Time
 	markersLoaded     bool
 	markersCache      []MarkerSpan
+	markersDuration   time.Duration
+	markersFirstCheck time.Time
 	activeMarkerKind  string
 	activeMarkerStart int64
 	activeMarkerEnd   int64

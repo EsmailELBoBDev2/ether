@@ -398,6 +398,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	a.closers = append(a.closers, subtitleProbe.Close)
 	markerCtx, cancelMarkers := context.WithCancel(context.Background())
 	markerBridge := adapters.AttachMarkers(markerCtx, mgr, a.markers, a.catalog, adapters.MarkerBridgeOptions{
+		Logger: a.log.With("component", "markers"),
 		Selected: func(id string) bool {
 			for _, source := range a.cfg.Read().Markers.SourceOrder {
 				if source == id {
@@ -602,8 +603,11 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	stopPlayback := func() {}
 	if a.playback != nil {
 		stopPlayback = a.playback.Subscribe(func(ev playback.Event) {
-			if ev.Kind == "start" && ev.Session != nil {
-				markerBridge.Schedule(ev.Session.Key, ev.Session.Info.Duration)
+			if ev.Session != nil && !ev.Session.PreparedOnly && !ev.Session.Info.Estimated {
+				switch ev.Kind {
+				case "start", "surface", "failover", "downfailover":
+					markerBridge.Schedule(ev.Session.Key, ev.Session.Info.Duration)
+				}
 			}
 			name := plugins.NormalizePlayback(ev.Kind, "")
 			if name == "" {

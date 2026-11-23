@@ -131,6 +131,7 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 	}
 	a.playback.Subscribe(func(ev playback.Event) {
 		a.onPlaybackSubtitleEvent(ev)
+		a.onPlaybackMarkerEvent(ev)
 		if ev.Kind == "stop" && ev.Session != nil && ev.Session.ID != "" && a.frontends != nil && a.frontends.broker != nil {
 			broker := a.frontends.broker
 			playID := ev.Session.ID
@@ -198,6 +199,7 @@ func (a *App) buildPlaybackPresentation() {
 		c := a.cfg.Read().Markers
 		return markers.Lookup{Enabled: c.TheIntroDB, APIKey: c.APIKey, IntroOff: !c.OfferIntro(), CreditsOff: !c.OfferCredits(), SourceOrder: append([]string(nil), c.SourceOrder...), SkipDB: c.SkipDB}
 	}, Aligner: a.subtitles.TimelineAligner(), Dialogue: a.markerDialogue})
+	a.closers = append(a.closers, a.markers.Close)
 	a.buildAdoption()
 }
 

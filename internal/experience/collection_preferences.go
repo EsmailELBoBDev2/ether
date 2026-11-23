@@ -1054,6 +1054,89 @@ func (s *Service) PageArtworkCollections(ctx context.Context, viewer *core.Viewe
 	return out, true, nil
 }
 
+// smartCollectionHasVisibleMember checks whether a smart collection has at
+// least one visible member without loading member pages when the viewer's
+// exclusions fit an indexed SQL probe on collections_members.
+func (s *Service) smartCollectionHasVisibleMember(ctx context.Context, v *core.User, c core.Collection, counters map[core.MediaType]func(core.Collection) (int, error)) (bool, error) {
+	canSQL := c.Type != "" && !c.Upcoming && !c.Key.IsEphemeral() && (s.d.Visibility.Policy == nil || s.d.PageExclusions != nil)
+	if canSQL && s.d.Visibility.SectionFor != nil {
+		sec, ok := s.d.Visibility.SectionFor(c.Type)
+		canSQL = ok && frontend.SectionAllowed(v, sec)
+	}
+	if canSQL {
+		var counter func(core.Collection) (int, error)
+		if counters != nil {
+			var ok bool
+			counter, ok = counters[c.Type]
+			if !ok {
+				fn, err := s.ownedMemberCounter(ctx, v, nil, c.Type)
+				if err != nil {
+					return false, err
+				}
+				counters[c.Type] = fn
+				counter = fn
+			}
+		} else {
+			fn, err := s.ownedMemberCounter(ctx, v, nil, c.Type)
+			if err != nil {
+				return false, err
+			}
+			counter = fn
+		}
+		if counter != nil {
+			n, err := counter(c)
+			if err != nil {
+				return false, err
+			}
+			if n > 0 {
+				return true, nil
+			}
+		}
+	}
+	return s.collectionHasVisibleMember(ctx, v, c)
+}
+
+// PageArtworkSmartCollections authorizes and loads a page of smart collection
+// keys (KindSmart), reusing the viewer lookup and per-type SQL member counters
+// across the page instead of loading members per collection.
+func (s *Service) PageArtworkSmartCollections(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) (map[core.RatingKey]core.Collection, error) {
+	if s.d.Collections == nil || len(keys) == 0 {
+		return map[core.RatingKey]core.Collection{}, nil
+	}
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	counters := make(map[core.MediaType]func(core.Collection) (int, error), 2)
+	out := make(map[core.RatingKey]core.Collection, len(keys))
+	seen := make(map[core.RatingKey]bool, len(keys))
+	for _, k := range keys {
+		if k.Kind() != core.KindSmart || seen[k] {
+			continue
+		}
+		seen[k] = true
+		c, err := s.d.Collections.Get(ctx, v, k)
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !s.d.Visibility.CollectionAllowed(v, c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
+			continue
+		}
+		ok, err := s.smartCollectionHasVisibleMember(ctx, v, *c, counters)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out[k] = *c
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) libraryCollectionItems(ctx context.Context, v *core.User, device core.Device, library *Library, stored *core.Library, q frontend.ItemQuery) (core.Page, error) {
 	detail, err := s.Item(ctx, frontend.ItemRequest{Viewer: v, Device: device, Key: q.CollectionKey})
 	if err != nil || detail.Collection == nil {

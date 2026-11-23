@@ -249,6 +249,22 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 			return nil, false, err
 		}
 		collectionVersion = collectionStamp(collection)
+		if collection != nil {
+			if _, bound := frontend.ArtworkCollection(ctx, req.Item); !bound {
+				col := *collection
+				if col.PosterPath == "" && s.Collections != nil {
+					if p, err := s.Collections.Items(ctx, req.Viewer, req.Item, 0, 20); err == nil {
+						for i := range p.Items {
+							if p.Items[i].PosterPath != "" && s.visible(ctx, req.Viewer, &p.Items[i]) {
+								col.PosterPath = p.Items[i].PosterPath
+								break
+							}
+						}
+					}
+				}
+				ctx = frontend.WithArtworkCollection(ctx, &col)
+			}
+		}
 	case core.KindPlaylist:
 		if s.Playlists == nil {
 			return nil, false, core.ErrNotFound

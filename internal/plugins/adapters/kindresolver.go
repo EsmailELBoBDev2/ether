@@ -1557,7 +1557,44 @@ const (
 	sourceReleaseFilesTimeout  = 30 * time.Second
 	sourceDebridCheckTimeout   = 15 * time.Second
 	sourceDebridAcquireTimeout = 30 * time.Second
+
+	// Viewer / deadline-bounded indexer_search leaves at least
+	// max(1.5 s, 35% of remaining time) so the calling plugin can still rank
+	// candidates, run a debrid check, and return before its route deadline.
+	indexerSearchReserveFloor = 1500 * time.Millisecond
+	indexerSearchReservePct   = 35
 )
+
+// defaultIndexerWaitBudget computes the default deadline-aware wait budget for
+// an indexer_search call under ctx. It returns 0 when ctx has no deadline or
+// when a background/granted-limits call still has more remaining time than
+// ceiling (so background jobs keep waiting up to the full ceiling unchanged).
+func defaultIndexerWaitBudget(ctx context.Context, now time.Time, ceiling time.Duration) time.Duration {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	remaining := dl.Sub(now)
+	if remaining <= 0 {
+		return 0
+	}
+	callPath := wasm.CallPath(ctx)
+	if (wasm.IsBackgroundCall(ctx) || (callPath != "" && wasm.GrantedLimitsPath(callPath))) && remaining > ceiling {
+		return 0
+	}
+	reserve := max(indexerSearchReserveFloor, remaining*indexerSearchReservePct/100)
+	wait := remaining - reserve
+	// Join smoothly at remaining == 2 s (where remaining - 1.5 s == remaining/4 == 0.5 s)
+	// so tight callers still get a bounded wait rather than falling back to 0 (unbounded).
+	if floor := remaining / 4; wait < floor {
+		wait = floor
+	}
+	wait = max(time.Millisecond, wait)
+	if ceiling > 0 && wait >= ceiling {
+		return 0
+	}
+	return wait
+}
 
 func withHardTimeout(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
 	if limit <= 0 {
@@ -1600,6 +1637,9 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 	if err != nil {
 		return core.SourceResolveResult{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return core.SourceResolveResult{}, err
+	}
 	if r.indexer == nil {
 		return core.SourceResolveResult{Candidates: []core.SourceCandidate{}}, nil
 	}
@@ -1629,6 +1669,11 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 	}
 	if q.TimeoutMS > 0 {
 		opts.WaitTimeout = min(time.Duration(q.TimeoutMS)*time.Millisecond, ceiling)
+	}
+	if waitBudget := defaultIndexerWaitBudget(ctx, r.now(), ceiling); waitBudget > 0 {
+		if opts.WaitTimeout == 0 || opts.WaitTimeout > waitBudget {
+			opts.WaitTimeout = waitBudget
+		}
 	}
 
 	var (

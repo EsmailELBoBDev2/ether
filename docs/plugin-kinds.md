@@ -361,9 +361,28 @@ and the query unchanged, rather than assuming a movie or TV request.
 When `query` is omitted or empty and `category` is set, Ether issues a
 recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
 the newest 100 candidates; an empty `query` with no `category` is refused.
-By default `indexer_search` waits for every enabled indexer up to Ether's 30 s
-ceiling. Optional fan-out controls let a resolver stay responsive when one
-indexer is slow or rate-paced:
+On a deadline-bounded request (any viewer or interactive route such as `/resolve`
+or `/match`), `indexer_search` is deadline-aware by default: even when no fan-out
+options are passed, Ether caps the wait to the remaining route deadline minus
+`max(1.5 s, 35% of remaining time)` (at least 25% of remaining time when under
+2 s left — for example 3.25 s on a fresh 5 s `/resolve`, leaving 1.75 s for the
+plugin to rank, check cache, and reply). Candidates that have already arrived are
+returned immediately, while slower indexers are reported as `"pending"` (and
+listed in top-level `pending`) and continue finishing into Ether's search cache
+in the background up to the 30 s indexer ceiling. On unbounded or background-job
+calls (`/ether/job/*`, kind sync, Live TV sync) whose remaining deadline exceeds
+the 30 s ceiling, `indexer_search` still waits for every enabled indexer up to
+the 30 s ceiling unchanged.
+
+Indexers that time out or fail repeatedly (3 consecutive transient failures at
+Ether's search ceiling, sharing the same per-indexer circuit breaker as Ether's
+built-in resolver) enter exponential backoff (2 min up to 30 min, with a single
+half-open recovery probe once backoff expires). While paused in backoff, cache
+misses skip the stalled indexer immediately with `status: "skipped"` and
+`reason: "paused_backoff"` (`ms: 0`) so healthy indexers answer without waiting
+out the cut-off window.
+
+Optional fan-out controls let a resolver tune latency further:
 
 - `stream: true`: starts the fan-out (reusing Ether's `SearchWith` arrival
   callback and `WithIndexerSkip` filters) and answers immediately with
@@ -394,19 +413,22 @@ indexer is slow or rate-paced:
   each) of indexer IDs (`indexerId`) or display names (`indexer`) to exclude or
   include for this search. `skipIndexers` takes precedence over `onlyIndexers`.
 - `timeoutMs`: per-call wait budget in milliseconds, capped by Ether's 30 s
-  ceiling (and any shorter parent request deadline). When `timeoutMs` is shorter
-  than the ceiling and expires while slow indexers keep filling the search cache
-  in the background, those indexers are reported as `"pending"` (and listed in
-  top-level `pending`). Indexers that hit the 30 s ceiling (or are cancelled
-  because the detached background cap is full) are reported as `"timed_out"`.
+  ceiling and any tighter deadline-aware reserve on viewer/interactive calls.
+  When the effective wait budget is shorter than the 30 s ceiling and expires
+  while slow indexers keep filling the search cache in the background, those
+  indexers are reported as `"pending"` (and listed in top-level `pending`).
+  Indexers that hit the 30 s ceiling (or are cancelled because the detached
+  background cap is full) are reported as `"timed_out"`.
 
 For `indexer_search`, `indexer_search_results`, and `indexer_search_cancel`,
 the `sources.resolve` response envelope includes
-`indexers: [{indexerId, indexer, status, results?, ms, error?}]` alongside
-`candidates`, where `status` is `"answered"`, `"pending"`, `"timed_out"`,
-`"skipped"`, or `"error"` (with a sanitized short `error` code on failure), plus
-top-level `pending: [{indexerId, indexer}]` whenever indexers remain running in
-the background (and `searchId`/`done` for streaming calls).
+`indexers: [{indexerId, indexer, status, results?, ms, reason?, error?}]`
+alongside `candidates`, where `status` is `"answered"`, `"pending"`,
+`"timed_out"`, `"skipped"` (carrying `reason: "paused_backoff"` when skipped by
+Ether's stalled-indexer circuit breaker), or `"error"` (with a sanitized short
+`error` code on failure), plus top-level `pending: [{indexerId, indexer}]`
+whenever indexers remain running in the background (and `searchId`/`done` for
+streaming calls).
 
 `ResolveSources({kind: "indexers"})` (gated by the same `permissions.sources: "search"`
 permission) lists the owner's currently enabled indexers in priority order under

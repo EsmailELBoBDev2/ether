@@ -685,11 +685,13 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 		c.capsMu.Unlock()
 		return caps, nil
 	}
+	capsStarted := time.Now()
 	caps, err := c.fetchCaps(ctx)
+	capsElapsed := time.Since(capsStarted)
 	c.capsMu.Lock()
 	current := c.capsEndpoint() == ep // the config did not change meanwhile
 	if err != nil {
-		if current && ctx.Err() == nil && !errors.Is(err, core.ErrBudgetExhausted) {
+		if current && !callerLeft(ctx, capsElapsed) && !errors.Is(err, core.ErrBudgetExhausted) {
 			c.capsFailAt = c.now()
 		}
 		c.capsMu.Unlock()
@@ -1301,7 +1303,15 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 	}
 	media := config.IdentityMediaTypeForSearch(req)
 	id := c.identityFor(config.RequestSearch, cfg.URL, media)
-	caps, _ := c.Caps(ctx) // best effort; failures just mean no param gating
+	capsStarted := time.Now()
+	caps, capsErr := c.Caps(ctx) // best effort; failures just mean no param gating
+	if capsErr != nil && ctx.Err() != nil {
+		capsElapsed := time.Since(capsStarted)
+		if !callerLeft(ctx, capsElapsed) {
+			c.recordSearchTimeout(ctx, capsErr, capsElapsed)
+		}
+		return nil, capsErr
+	}
 	attempts := c.searchAttempts(req, caps)
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("newznab: search request has no usable identifiers")

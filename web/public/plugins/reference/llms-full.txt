@@ -419,7 +419,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Source discovery
 
-Requires kind_resolver and sources: search, search+check, acquire, or acquire+check. Search permits indexer discovery, debrid checks, release inspection, and on-demand usenet_check; acquire permits opening content; +check additionally permits background usenet_check in jobs and schedules within the owner's per-plugin daily allowance (default 20/UTC day, configurable under Sources › Indexers › Daily budgets, answering rate_limited with retryAfterSec/retryAt once spent; on-demand viewer calls never count against it and verdicts are shared with Ether's availability/Play cache for 15 min good / 30 min bad). On indexer_search, optional firstResults (with settleMs, default 250 ms), minResults, skipIndexers, onlyIndexers, and timeoutMs (capped at 30000 ms) bound fan-out latency while slow indexers keep filling Ether's search cache in the background, and the response envelope includes per-indexer status in indexers: [{indexerId, indexer, status, results?, ms, error?}] (omitted for other source query kinds). Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler. Torrent releases follow the owner's debrid setting (queueing uncached downloads and answering preparing / 503 Retry-After when Cached torrents only is off); set release.cachedOnly: true to opt out.
+Requires kind_resolver and sources: search, search+check, acquire, or acquire+check. Search permits indexer discovery, debrid checks, release inspection, and on-demand usenet_check; acquire permits opening content; +check additionally permits background usenet_check in jobs and schedules within the owner's per-plugin daily allowance (default 20/UTC day, configurable under Sources › Indexers › Daily budgets, answering rate_limited with retryAfterSec/retryAt once spent; on-demand viewer calls never count against it and verdicts are shared with Ether's availability/Play cache for 15 min good / 30 min bad). On viewer or deadline-bounded requests, indexer_search is deadline-aware by default: Ether caps the wait to remaining time minus max(1.5 s, 35%) (unbounded/background jobs still wait up to the 30 s ceiling), returning arrived results while stragglers finish into Ether's search cache as status: "pending". Indexers that repeatedly time out or fail enter Ether's shared circuit-breaker backoff (2 min..30 min) and are skipped immediately with status: "skipped" and reason: "paused_backoff". Optional firstResults (with settleMs, default 250 ms), minResults, skipIndexers, onlyIndexers, and timeoutMs (capped at 30000 ms and any tighter deadline reserve) further tune fan-out latency, and the response envelope includes per-indexer status in indexers: [{indexerId, indexer, status, results?, ms, reason?, error?}] (omitted for other source query kinds). Cached debrid candidates report holding services in acquisition order via cachedBy: [{id, name}] (omitted when uncached; on debrid_acquire, the service that served it). Return a release source after choosing a candidate instead of downloading in the request handler. Torrent releases follow the owner's debrid setting (queueing uncached downloads and answering preparing / 503 Retry-After when Cached torrents only is off); set release.cachedOnly: true to opt out.
 
 ```ts
 const { candidates, indexers } = ether.sources.resolve({
@@ -1111,9 +1111,28 @@ and the query unchanged, rather than assuming a movie or TV request.
 When `query` is omitted or empty and `category` is set, Ether issues a
 recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
 the newest 100 candidates; an empty `query` with no `category` is refused.
-By default `indexer_search` waits for every enabled indexer up to Ether's 30 s
-ceiling. Optional fan-out controls let a resolver stay responsive when one
-indexer is slow or rate-paced:
+On a deadline-bounded request (any viewer or interactive route such as `/resolve`
+or `/match`), `indexer_search` is deadline-aware by default: even when no fan-out
+options are passed, Ether caps the wait to the remaining route deadline minus
+`max(1.5 s, 35% of remaining time)` (at least 25% of remaining time when under
+2 s left — for example 3.25 s on a fresh 5 s `/resolve`, leaving 1.75 s for the
+plugin to rank, check cache, and reply). Candidates that have already arrived are
+returned immediately, while slower indexers are reported as `"pending"` (and
+listed in top-level `pending`) and continue finishing into Ether's search cache
+in the background up to the 30 s indexer ceiling. On unbounded or background-job
+calls (`/ether/job/*`, kind sync, Live TV sync) whose remaining deadline exceeds
+the 30 s ceiling, `indexer_search` still waits for every enabled indexer up to
+the 30 s ceiling unchanged.
+
+Indexers that time out or fail repeatedly (3 consecutive transient failures at
+Ether's search ceiling, sharing the same per-indexer circuit breaker as Ether's
+built-in resolver) enter exponential backoff (2 min up to 30 min, with a single
+half-open recovery probe once backoff expires). While paused in backoff, cache
+misses skip the stalled indexer immediately with `status: "skipped"` and
+`reason: "paused_backoff"` (`ms: 0`) so healthy indexers answer without waiting
+out the cut-off window.
+
+Optional fan-out controls let a resolver tune latency further:
 
 - `stream: true`: starts the fan-out (reusing Ether's `SearchWith` arrival
   callback and `WithIndexerSkip` filters) and answers immediately with
@@ -1144,19 +1163,22 @@ indexer is slow or rate-paced:
   each) of indexer IDs (`indexerId`) or display names (`indexer`) to exclude or
   include for this search. `skipIndexers` takes precedence over `onlyIndexers`.
 - `timeoutMs`: per-call wait budget in milliseconds, capped by Ether's 30 s
-  ceiling (and any shorter parent request deadline). When `timeoutMs` is shorter
-  than the ceiling and expires while slow indexers keep filling the search cache
-  in the background, those indexers are reported as `"pending"` (and listed in
-  top-level `pending`). Indexers that hit the 30 s ceiling (or are cancelled
-  because the detached background cap is full) are reported as `"timed_out"`.
+  ceiling and any tighter deadline-aware reserve on viewer/interactive calls.
+  When the effective wait budget is shorter than the 30 s ceiling and expires
+  while slow indexers keep filling the search cache in the background, those
+  indexers are reported as `"pending"` (and listed in top-level `pending`).
+  Indexers that hit the 30 s ceiling (or are cancelled because the detached
+  background cap is full) are reported as `"timed_out"`.
 
 For `indexer_search`, `indexer_search_results`, and `indexer_search_cancel`,
 the `sources.resolve` response envelope includes
-`indexers: [{indexerId, indexer, status, results?, ms, error?}]` alongside
-`candidates`, where `status` is `"answered"`, `"pending"`, `"timed_out"`,
-`"skipped"`, or `"error"` (with a sanitized short `error` code on failure), plus
-top-level `pending: [{indexerId, indexer}]` whenever indexers remain running in
-the background (and `searchId`/`done` for streaming calls).
+`indexers: [{indexerId, indexer, status, results?, ms, reason?, error?}]`
+alongside `candidates`, where `status` is `"answered"`, `"pending"`,
+`"timed_out"`, `"skipped"` (carrying `reason: "paused_backoff"` when skipped by
+Ether's stalled-indexer circuit breaker), or `"error"` (with a sanitized short
+`error` code on failure), plus top-level `pending: [{indexerId, indexer}]`
+whenever indexers remain running in the background (and `searchId`/`done` for
+streaming calls).
 
 `ResolveSources({kind: "indexers"})` (gated by the same `permissions.sources: "search"`
 permission) lists the owner's currently enabled indexers in priority order under
@@ -2702,6 +2724,17 @@ const (
 )
 ``````
 
+## Source: internal/core/kinditem.go#IndexerSkipReasonPaused
+
+``````
+// Reason values for IndexerSearchStatus.Reason when Status is IndexerStatusSkipped.
+const (
+	// IndexerSkipReasonPaused reports an indexer skipped because its circuit
+	// breaker paused it in backoff after repeated failures or timeouts.
+	IndexerSkipReasonPaused = "paused_backoff"
+)
+``````
+
 ## Source: internal/core/kinditem.go#IndexerRef.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2731,6 +2764,7 @@ type IndexerRef struct {
 | `status` | `string` | may be omitted (see validation for conditions) | answered\|pending\|timed_out\|skipped\|error |
 | `results` | `int` | may be omitted (see validation for conditions) |  |
 | `ms` | `int64` | emitted (validation may require a value) |  |
+| `reason` | `string` | may be omitted (see validation for conditions) | populated on automatic skips (for example paused_backoff) |
 | `error` | `string` | may be omitted (see validation for conditions) |  |
 | `kind` | `string` | may be omitted (see validation for conditions) | Kind, MedianMS, LastMS and LastError are populated on kind:"indexers" responses (never carrying API keys, URLs with secrets, or cookies). newznab\|torznab\|builtin\|stremio\|zilean\|addon |
 | `medianMs` | `*int64` | may be omitted (see validation for conditions) |  |
@@ -2743,7 +2777,7 @@ type IndexerRef struct {
 ``````
 // IndexerSearchStatus reports either one enabled indexer's outcome on an
 // indexer_search / indexer_search_results / indexer_search_cancel query
-// (Status, Results, MS, Error) or one enabled indexer's summary on an
+// (Status, Results, MS, Reason, Error) or one enabled indexer's summary on an
 // indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
 	IndexerID string `json:"indexerId"`
@@ -2751,6 +2785,7 @@ type IndexerSearchStatus struct {
 	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
 	Results   int    `json:"results,omitempty"`
 	MS        int64  `json:"ms"`
+	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
 	Error     string `json:"error,omitempty"`
 	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
 	// responses (never carrying API keys, URLs with secrets, or cookies).
@@ -2765,7 +2800,7 @@ type IndexerSearchStatus struct {
 
 ``````
 // MarshalJSON preserves ms:0 on search status entries (Status != "") while
-// omitting status/ms/results/error on kind:"indexers" listing entries
+// omitting status/ms/results/reason/error on kind:"indexers" listing entries
 // (Status == "").
 func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 	if s.Status == "" {
@@ -2792,6 +2827,7 @@ func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 		Status    string `json:"status"`
 		Results   int    `json:"results,omitempty"`
 		MS        int64  `json:"ms"`
+		Reason    string `json:"reason,omitempty"`
 		Error     string `json:"error,omitempty"`
 		Kind      string `json:"kind,omitempty"`
 		MedianMS  *int64 `json:"medianMs,omitempty"`
@@ -2804,6 +2840,7 @@ func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 		Status:    s.Status,
 		Results:   s.Results,
 		MS:        s.MS,
+		Reason:    s.Reason,
 		Error:     s.Error,
 		Kind:      s.Kind,
 		MedianMS:  s.MedianMS,
@@ -37802,7 +37839,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "type": "integer",
           "minimum": 0,
           "maximum": 30000,
-          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). When shorter than the ceiling, slow indexers still running in the background are reported as \"pending\" (and listed in top-level pending) while continuing to populate Ether's search cache; indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
+          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling and any tighter deadline-aware reserve. On viewer/deadline-bounded requests when timeoutMs is omitted (or exceeds the reserve), Ether automatically caps the wait to remaining time minus max(1.5 s, 35% of remaining time) — at least 25% of remaining time when under 2 s — returning arrived results while stragglers are reported as \"pending\" (and listed in top-level pending) and continue filling Ether's search cache up to the 30000 ms ceiling. Unbounded/background job calls wait up to the 30000 ms ceiling unchanged. Indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
         },
         "infoHashes": {
           "type": "array",
@@ -37855,7 +37892,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
     },
     "indexerSearchStatus": {
       "type": "object",
-      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
+      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, reason?, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
       "required": [
         "indexerId",
         "indexer"
@@ -37877,7 +37914,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
             "skipped",
             "error"
           ],
-          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling."
+          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling; \"skipped\" includes caller filters as well as indexers paused in circuit-breaker backoff (with reason \"paused_backoff\")."
         },
         "results": {
           "type": "integer",
@@ -37888,6 +37925,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "type": "integer",
           "minimum": 0,
           "description": "Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped indexers). Present on search status entries; omitted on kind:\"indexers\" listings."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Machine-readable reason when status is \"skipped\" automatically (for example \"paused_backoff\" when the indexer's circuit breaker paused it after repeated failures or timeouts)."
         },
         "error": {
           "type": "string",
@@ -38651,9 +38692,19 @@ With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`, plus
 `resolveSourcesWithResult` / `ResolveSourcesWithResult` /
 `resolve_sources_with_result` to read the full response envelope) supports:
 
+- **Deadline-aware default & stalled-indexer backoff (`kind: "indexer_search"`):**
+  under any viewer/request deadline (such as `/resolve`'s 5 s budget), Ether
+  automatically caps the wait to remaining time minus `max(1.5 s, 35%)` (so a
+  fresh 5 s `/resolve` waits at most 3.25 s, leaving 1.75 s reserve) and returns
+  arrived results while stragglers finish into Ether's search cache in the
+  background as `status: "pending"` (unbounded/background jobs still wait up to
+  the 30 s ceiling unchanged). Indexers that time out or fail 3 times in a row
+  enter Ether's shared circuit-breaker backoff (2 min..30 min) and are skipped
+  immediately with `status: "skipped"` and `reason: "paused_backoff"`.
 - **Controlled fan-out (`kind: "indexer_search"`):** optional `firstResults`,
   `settleMs` (default 250 ms, `0` = immediate), `minResults`, `timeoutMs`
-  (up to the 30 s ceiling), and case-insensitive `skipIndexers` / `onlyIndexers`
+  (up to the 30 s ceiling and clamped to the deadline-aware reserve on viewer
+  routes), and case-insensitive `skipIndexers` / `onlyIndexers`
   filters. Early returns keep slower indexers filling Ether's search cache in
   the background (bounded at 30 s and coalesced), reporting them as
   `status: "pending"` and in top-level `pending: [{indexerId, indexer}]`;
@@ -55050,6 +55101,17 @@ const (
 )
 ``````
 
+## Source: sdk/go/kinds.go#IndexerSkipReasonPaused
+
+``````
+// Reason values for IndexerSearchStatus.Reason when Status is IndexerStatusSkipped.
+const (
+	// IndexerSkipReasonPaused reports an indexer skipped because its circuit
+	// breaker paused it in backoff after repeated failures or timeouts.
+	IndexerSkipReasonPaused = "paused_backoff"
+)
+``````
+
 ## Source: sdk/go/kinds.go#IndexerRef.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -55078,6 +55140,7 @@ type IndexerRef struct {
 | `status` | `string` | may be omitted (see validation for conditions) | answered\|pending\|timed_out\|skipped\|error |
 | `results` | `int` | may be omitted (see validation for conditions) |  |
 | `ms` | `int64` | emitted (validation may require a value) |  |
+| `reason` | `string` | may be omitted (see validation for conditions) | populated on automatic skips (for example paused_backoff) |
 | `error` | `string` | may be omitted (see validation for conditions) |  |
 | `kind` | `string` | may be omitted (see validation for conditions) | newznab\|torznab\|builtin\|stremio\|zilean\|addon |
 | `medianMs` | `*int64` | may be omitted (see validation for conditions) |  |
@@ -55090,14 +55153,15 @@ type IndexerRef struct {
 ``````
 // IndexerSearchStatus reports either one enabled indexer's outcome during an
 // indexer_search / indexer_search_results / indexer_search_cancel call (Status,
-// Results, MS, Error) or an enabled indexer summary on kind:"indexers" (Kind,
-// MedianMS, LastMS, LastError) (#733).
+// Results, MS, Reason, Error) or an enabled indexer summary on kind:"indexers"
+// (Kind, MedianMS, LastMS, LastError) (#733).
 type IndexerSearchStatus struct {
 	IndexerID string `json:"indexerId"`
 	Indexer   string `json:"indexer"`
 	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
 	Results   int    `json:"results,omitempty"`
 	MS        int64  `json:"ms"`
+	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
 	Error     string `json:"error,omitempty"`
 	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
 	MedianMS  *int64 `json:"medianMs,omitempty"`
@@ -55110,7 +55174,7 @@ type IndexerSearchStatus struct {
 
 ``````
 // MarshalJSON preserves ms:0 on search status entries (Status != "") while
-// omitting status/results/ms/error on kind:"indexers" entries (Status == "").
+// omitting status/results/ms/reason/error on kind:"indexers" entries (Status == "").
 func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 	if s.Status == "" {
 		type listing struct {
@@ -55136,6 +55200,7 @@ func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 		Status    string `json:"status"`
 		Results   int    `json:"results,omitempty"`
 		MS        int64  `json:"ms"`
+		Reason    string `json:"reason,omitempty"`
 		Error     string `json:"error,omitempty"`
 		Kind      string `json:"kind,omitempty"`
 		MedianMS  *int64 `json:"medianMs,omitempty"`
@@ -55148,6 +55213,7 @@ func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
 		Status:    s.Status,
 		Results:   s.Results,
 		MS:        s.MS,
+		Reason:    s.Reason,
 		Error:     s.Error,
 		Kind:      s.Kind,
 		MedianMS:  s.MedianMS,
@@ -67763,6 +67829,7 @@ class IndexerSearchStatus(TypedDict, total=False):
     status: Literal["answered", "pending", "timed_out", "skipped", "error"]
     results: int
     ms: int
+    reason: str
     error: str
     kind: Literal["newznab", "torznab", "builtin", "stremio", "zilean", "addon"]
     medianMs: int
@@ -74396,6 +74463,8 @@ export interface IndexerSearchStatus {
   results?: number;
   /** Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped). */
   ms?: number;
+  /** Machine-readable skip reason when status is "skipped" automatically (for example "paused_backoff" while in circuit-breaker backoff after repeated failures/timeouts). */
+  reason?: string;
   /** Sanitized short error code when status is "error". */
   error?: string;
   /** Indexer kind on kind:"indexers" responses. */

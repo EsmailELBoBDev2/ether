@@ -3818,6 +3818,7 @@ class IndexerSearchStatus(TypedDict, total=False):
     status: Literal["answered", "pending", "timed_out", "skipped", "error"]
     results: int
     ms: int
+    reason: str
     error: str
     kind: Literal["newznab", "torznab", "builtin", "stremio", "zilean", "addon"]
     medianMs: int

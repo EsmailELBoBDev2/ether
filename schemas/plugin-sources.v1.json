@@ -82,7 +82,7 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 30000,
-          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling (and any shorter parent request deadline). When shorter than the ceiling, slow indexers still running in the background are reported as \"pending\" (and listed in top-level pending) while continuing to populate Ether's search cache; indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
+          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling and any tighter deadline-aware reserve. On viewer/deadline-bounded requests when timeoutMs is omitted (or exceeds the reserve), Ether automatically caps the wait to remaining time minus max(1.5 s, 35% of remaining time) — at least 25% of remaining time when under 2 s — returning arrived results while stragglers are reported as \"pending\" (and listed in top-level pending) and continue filling Ether's search cache up to the 30000 ms ceiling. Unbounded/background job calls wait up to the 30000 ms ceiling unchanged. Indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
         },
         "infoHashes": {
           "type": "array",
@@ -135,7 +135,7 @@
     },
     "indexerSearchStatus": {
       "type": "object",
-      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
+      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, reason?, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
       "required": [
         "indexerId",
         "indexer"
@@ -157,7 +157,7 @@
             "skipped",
             "error"
           ],
-          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling."
+          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling; \"skipped\" includes caller filters as well as indexers paused in circuit-breaker backoff (with reason \"paused_backoff\")."
         },
         "results": {
           "type": "integer",
@@ -168,6 +168,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped indexers). Present on search status entries; omitted on kind:\"indexers\" listings."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Machine-readable reason when status is \"skipped\" automatically (for example \"paused_backoff\" when the indexer's circuit breaker paused it after repeated failures or timeouts)."
         },
         "error": {
           "type": "string",

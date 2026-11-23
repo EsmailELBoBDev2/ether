@@ -1022,6 +1022,8 @@ export interface IndexerSearchStatus {
   results?: number;
   /** Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped). */
   ms?: number;
+  /** Machine-readable skip reason when status is "skipped" automatically (for example "paused_backoff" while in circuit-breaker backoff after repeated failures/timeouts). */
+  reason?: string;
   /** Sanitized short error code when status is "error". */
   error?: string;
   /** Indexer kind on kind:"indexers" responses. */

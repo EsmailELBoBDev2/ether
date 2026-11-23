@@ -151,9 +151,9 @@ func (m *Manager) recordIndexerTiming(id string, dur time.Duration, err error) {
 	if m == nil || id == "" {
 		return
 	}
-	// Caller cancellation (for example indexer_search_cancel) is neither an
-	// indexer latency sample nor an indexer error.
-	if err != nil && errors.Is(err, context.Canceled) {
+	// Caller cancellation (for example indexer_search_cancel) and breaker
+	// backoff skips are neither indexer latency samples nor new errors.
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrIndexerPaused)) {
 		return
 	}
 	ms := max(int64(0), dur.Milliseconds())
@@ -191,9 +191,14 @@ func buildIndexerStatus(ctx context.Context, id, name string, res []core.Release
 		MS:        max(int64(0), dur.Milliseconds()),
 	}
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+		switch {
+		case errors.Is(err, ErrIndexerPaused):
+			st.Status = core.IndexerStatusSkipped
+			st.Reason = core.IndexerSkipReasonPaused
+			st.MS = 0
+		case errors.Is(err, context.DeadlineExceeded) || (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)):
 			st.Status = core.IndexerStatusTimedOut
-		} else {
+		default:
 			st.Status = core.IndexerStatusError
 			st.Error = classifyIndexerError(err)
 		}
@@ -312,7 +317,7 @@ func (m *Manager) SearchWithOptions(ctx context.Context, req core.SearchRequest,
 			m.bgMu.Unlock()
 			return SearchResult{}, context.Canceled
 		}
-		runCtx, bgCancel = context.WithTimeout(context.WithoutCancel(ctx), bgLimit)
+		runCtx, bgCancel = context.WithTimeout(withSearchCeiling(context.WithoutCancel(ctx)), bgLimit)
 		if m.bgCancels == nil {
 			m.bgCancels = map[int]context.CancelFunc{}
 		}
@@ -397,9 +402,17 @@ func (m *Manager) SearchWithOptions(ctx context.Context, req core.SearchRequest,
 		}(i, slots[i].client)
 	}
 
+	// When WaitTimeout reaches/exceeds bgLimit, wait on runCtx.Done() rather
+	// than a competing waitTimer so runCtx expires naturally with
+	// DeadlineExceeded (recording the ceiling timeout in each client's breaker)
+	// instead of racing bgCancel() into context.Canceled.
+	waitOnRunCtx := hasWaitTimeout && opts.WaitTimeout >= bgLimit
 	var waitTimer *time.Timer
 	var waitCh <-chan time.Time
-	if hasWaitTimeout {
+	var ceilingCh <-chan struct{}
+	if waitOnRunCtx {
+		ceilingCh = runCtx.Done()
+	} else if hasWaitTimeout {
 		waitTimer = time.NewTimer(opts.WaitTimeout)
 		defer waitTimer.Stop()
 		waitCh = waitTimer.C
@@ -426,6 +439,9 @@ waitLoop:
 		stateMu.Unlock()
 
 		if allDone {
+			if waitOnRunCtx && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				timedOutWait = true
+			}
 			break
 		}
 
@@ -460,6 +476,9 @@ waitLoop:
 			earlyCut = true
 			break waitLoop
 		case <-waitCh:
+			timedOutWait = true
+			break waitLoop
+		case <-ceilingCh:
 			timedOutWait = true
 			break waitLoop
 		case <-ctx.Done():
@@ -580,6 +599,9 @@ func (m *Manager) searchClientCoalescedWith(ctx context.Context, cl *Client, req
 		m.flightMu.Lock()
 		if f, ok := m.flights[key]; ok {
 			m.flightMu.Unlock()
+			if err := cl.searchPaused(); err != nil {
+				return nil, err
+			}
 			select {
 			case <-f.done:
 				if errors.Is(f.err, context.Canceled) && ctx.Err() == nil {
@@ -648,6 +670,10 @@ func snapshotSearchSlots(slots []searchSlot, searchStart time.Time, unfinishedSt
 					Indexer:   s.name,
 				})
 			}
+		case s.err != nil && errors.Is(s.err, ErrIndexerPaused):
+			st.Status = core.IndexerStatusSkipped
+			st.Reason = core.IndexerSkipReasonPaused
+			st.MS = 0
 		case s.err != nil:
 			errs = append(errs, s.err)
 			st.MS = max(int64(0), s.duration.Milliseconds())
@@ -734,7 +760,7 @@ func (m *Manager) recordSlotsAfterWait(ctx context.Context, slots []searchSlot, 
 		if deadlineHit && errors.Is(err, context.Canceled) {
 			err = context.DeadlineExceeded
 		}
-		if err != nil && errors.Is(err, context.Canceled) {
+		if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrIndexerPaused)) {
 			continue
 		}
 		errCode := ""

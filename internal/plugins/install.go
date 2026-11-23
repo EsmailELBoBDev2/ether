@@ -569,8 +569,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		if man.Ether == nil || man.Ether.Kind != reviewed.Kind {
 			return nil, fmt.Errorf("plugins: manifest kind does not match the catalogue review")
 		}
-		approved := Manifest{Ether: &EtherBlock{Permissions: reviewed.Permissions, Capabilities: reviewed.Capabilities}}
-		if added := PermissionDiff(approved, man); len(added) != 0 {
+		if added := catalogueReviewDiff(*reviewed, man); len(added) != 0 {
 			return nil, fmt.Errorf("plugins: manifest requests permissions beyond the catalogue review: %s", strings.Join(added, "; "))
 		}
 	}
@@ -1418,4 +1417,16 @@ func StremioInstallID(link string) (id, base string, err error) {
 		return "", "", err
 	}
 	return "addon." + stremio.Fingerprint(u)[:16], u.String(), nil
+}
+
+// catalogueReviewDiff lists what man asks for beyond its catalogue entry. The
+// package bytes are pinned by the entry's SHA-256, so what it contributes
+// (libraries, screens, flow actions, badges) is exactly what was reviewed;
+// only the permissions and capabilities declared on the entry are compared.
+func catalogueReviewDiff(reviewed CatalogueArtifact, man Manifest) []string {
+	approved := Manifest{Ether: &EtherBlock{Permissions: reviewed.Permissions, Capabilities: reviewed.Capabilities}}
+	if man.Ether != nil {
+		approved.Ether.Contributes = man.Ether.Contributes
+	}
+	return PermissionDiff(approved, man)
 }

@@ -482,12 +482,26 @@ func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.Live
 	if p.Lens != "" {
 		md.Summary = p.Lens + "\n\n" + md.Summary
 	}
+	if mediaType == "episode" {
+		showTitle := p.Item.ShowTitle
+		if showTitle == "" && p.Item.EpisodeTitle != "" && p.Item.Title != "" && p.Item.Title != p.Item.EpisodeTitle {
+			showTitle = p.Item.Title
+		}
+		if showTitle != "" {
+			md.GrandparentTitle = showTitle
+		}
+		if p.Item.EpisodeTitle != "" {
+			md.Title = p.Item.EpisodeTitle
+		}
+	}
 	if strings.HasPrefix(p.Item.GUID, "plex://") {
 		md.GUID = p.Item.GUID
 		if p.Item.EpisodeTitle != "" {
 			md.Title = p.Item.EpisodeTitle
 		}
-		md.GrandparentTitle = p.Item.ShowTitle
+		if p.Item.ShowTitle != "" {
+			md.GrandparentTitle = p.Item.ShowTitle
+		}
 		md.GrandparentGUID = p.Item.ShowGUID
 		md.Art = liveProgrammeArt(p.Item.Key, p.Item.Art)
 		grandparentKey := p.Item.ShowKey

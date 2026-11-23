@@ -2679,6 +2679,8 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		ranked[i] = mc.SearchResult[j]
 		if len(leading) > 0 && ranked[i].Score > 0.95 {
 			ranked[i].Score = 0.95
+		} else if live.hasChannelMatches && raw[j] < liveChannelMatchRawFloor && ranked[i].Score > 0.98 {
+			ranked[i].Score = 0.98
 		}
 	}
 	if len(leading) > 0 {

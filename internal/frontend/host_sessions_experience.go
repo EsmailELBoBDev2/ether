@@ -544,14 +544,15 @@ type DownloadItem struct {
 	// previous Run's.
 	Run int64
 
-	Path       string
-	Size       int64
-	ReadyAt    time.Time
-	VideoCodec string
-	AudioCodec string
-	Duration   time.Duration
-	Bandwidth  int // requested maxVideoBitrate, kbps
-	Burn       bool
+	Path          string
+	Size          int64
+	ReadyAt       time.Time
+	VideoCodec    string
+	AudioCodec    string
+	Duration      time.Duration
+	Bandwidth     int // requested maxVideoBitrate, kbps
+	Burn          bool
+	LimitReserved bool // AdmitDownload inserted a fresh usage row for this item
 }
 
 type DownloadQueue struct {

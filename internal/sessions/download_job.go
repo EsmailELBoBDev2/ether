@@ -23,7 +23,7 @@ func (j DownloadJob) Run(ctx context.Context, q DownloadRequest) (string, int64,
 	caps.ClientID += "/download/" + strconv.FormatInt(q.Run, 10)
 	ps, err := j.Playback.Prepare(ctx, q.Viewer, q.Item, caps)
 	for _, height := range []int{1080, 2160} {
-		if !q.NoRelease(err) || ctx.Err() != nil || caps.MaxHeight <= 0 || height <= caps.MaxHeight {
+		if !q.NoRelease(err) || ctx.Err() != nil || caps.MaxHeight <= 0 || height <= caps.MaxHeight || caps.NoVideoTranscode {
 			continue
 		}
 		sourceCaps := caps

@@ -15,6 +15,18 @@ export const SERVER: FieldGroup[] = localized(() => [
         kind: "text",
         help: t("How the server appears in apps."),
       },
+      {
+        key: "resumeAfterSeconds",
+        label: t("Keep a resume point after"),
+        kind: "number",
+        min: 0,
+        max: 3600,
+        step: 1,
+        unit: "s",
+        help: t(
+          "How many seconds into a title a viewer must be before Ether keeps a resume point, in every app. 0 keeps the default: 5% of the title.",
+        ),
+      },
     ],
   },
   {
@@ -871,6 +883,46 @@ export const DOWNLOADS: FieldGroup[] = localized(() => [
         label: t("Friends can download"),
         kind: "bool",
         help: t("Off lets only you download. A viewer's access policy can still allow or deny it."),
+      },
+      {
+        key: "limitUnit",
+        label: t("Download limit counts"),
+        kind: "select",
+        options: [
+          { value: "", label: t("No limit") },
+          { value: "titles", label: t("Titles") },
+          { value: "gb", label: t("GB") },
+        ],
+        help: t(
+          "The default limit for every viewer except you. A viewer's own limit, set on their Limits page, replaces it.",
+        ),
+      },
+      {
+        key: "limitAmount",
+        label: t("Download limit amount"),
+        kind: "number",
+        min: 0,
+        max: 100000,
+        step: 1,
+        help: t("How many titles or GB. 0 is no limit."),
+      },
+      {
+        key: "limitPeriod",
+        label: t("Download limit period"),
+        kind: "select",
+        defaultValue: "day",
+        options: [
+          { value: "day", label: t("Per day") },
+          { value: "month", label: t("Per month") },
+        ],
+      },
+      {
+        key: "noTranscode",
+        label: t("No converting for downloads"),
+        kind: "bool",
+        help: t(
+          "Downloads use only a version that needs no video conversion at the chosen quality, for every viewer. A viewer's own switch can also turn this on.",
+        ),
       },
     ],
     more: [

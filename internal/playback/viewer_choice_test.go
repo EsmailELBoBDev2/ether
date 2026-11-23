@@ -107,3 +107,46 @@ func TestViewerVersionChoiceRecordsOnlyAfterRealPlayOnExplicitVersion(t *testing
 		t.Fatalf("repeated progress recorded %d choices, want 1", rec.count())
 	}
 }
+
+func TestViewerVersionChoiceFollowsResumeAfterSeconds(t *testing.T) {
+	h := newHarness(t, nil, []string{"rel-alt"})
+	rec := &recordingChoiceResolver{Resolver: h.resolver}
+	h.m.deps.Resolver = rec
+
+	cfg := h.m.config()
+	cfg.Server.ResumeAfterSeconds = 30
+	h.m.SetConfig(cfg)
+
+	user := &core.User{ID: 43, Username: "viewer"}
+	title := h.catalog.titles[movieKey]
+	rel := core.Release{ID: "rel-alt", Name: "Movie.1080p"}
+	s := &session{
+		id:         "s-resume-after",
+		ident:      identity{userID: user.ID, clientID: "vela", key: movieKey},
+		user:       *user,
+		title:      title,
+		caps:       defaultCaps("vela"),
+		prefer:     "slot:alt0",
+		stopCancel: func() {},
+		cur:        &generation{res: &core.Resolution{Release: rel}, info: core.MediaInfo{Duration: 100 * time.Minute}},
+	}
+	h.m.mu.Lock()
+	h.m.sessions[s.id] = s
+	h.m.mu.Unlock()
+	t.Cleanup(func() {
+		h.m.mu.Lock()
+		delete(h.m.sessions, s.id)
+		h.m.mu.Unlock()
+	})
+
+	h.m.NoteStartPosition(s.id, 0)
+	h.m.PlaybackProgress(user.ID, "vela", movieKey, 20*time.Second, "playing")
+	if rec.count() != 0 {
+		t.Fatalf("below 30s threshold recorded %d choices, want 0", rec.count())
+	}
+	// 35s is far below 5% of 100m (5m), yet crosses the configured 30s threshold.
+	h.m.PlaybackProgress(user.ID, "vela", movieKey, 35*time.Second, "playing")
+	if rec.count() != 1 {
+		t.Fatalf("at 35s with ResumeAfterSeconds=30 recorded %d choices, want 1", rec.count())
+	}
+}

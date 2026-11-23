@@ -2,10 +2,13 @@ package mediabrowser
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -61,6 +64,30 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachm
 		http.NotFound(w, r)
 		return
 	}
+	var (
+		dlPolicy frontend.DownloadLimitPolicy
+		reserved bool
+		served   bool
+	)
+	if attachment && r.Method != http.MethodHead {
+		if p, ok := i.host.ViewerPolicy.(frontend.DownloadLimitPolicy); ok {
+			dlPolicy = p
+			dec := p.AdmitDownload(r.Context(), viewer, key, 0)
+			if !dec.Allowed {
+				if wait := int(time.Until(dec.ResetAt).Seconds()); wait > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(wait))
+				}
+				http.Error(w, frontend.DownloadLimitMessage(dec), http.StatusTooManyRequests)
+				return
+			}
+			reserved = dec.Reserved
+			defer func() {
+				if reserved && !served {
+					dlPolicy.ReleaseDownloadReservation(context.Background(), viewer, key)
+				}
+			}()
+		}
+	}
 	media, err := i.host.KindStreams.OpenKind(r.Context(), viewer, key, reading.AcceptPatterns)
 	if err != nil {
 		if errors.Is(err, frontend.ErrArchiveUnstreamable) {
@@ -86,6 +113,16 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachm
 		http.Error(w, "Unsupported book format", http.StatusUnprocessableEntity)
 		return
 	}
+	if dlPolicy != nil && media.Size > 0 {
+		if rec := dlPolicy.ReconcileDownloadBytes(r.Context(), viewer, key, media.Size); !rec.Allowed {
+			if wait := int(time.Until(rec.ResetAt).Seconds()); wait > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(wait))
+			}
+			http.Error(w, frontend.DownloadLimitMessage(rec), http.StatusTooManyRequests)
+			return
+		}
+	}
+	served = true
 	filename := reading.Filename(media.Name, detail.Title.Title, format)
 	dispType := "inline"
 	if attachment {

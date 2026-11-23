@@ -192,6 +192,10 @@ type Server struct {
 	DisableConsoleOnMainPort bool   `json:"disableConsoleOnMainPort,omitempty"`
 	BindAddress              string `json:"bindAddress"`
 	FriendlyName             string `json:"friendlyName"`
+	// ResumeAfterSeconds is how far into a title a viewer must be before
+	// their position is kept as a resume point. 0 keeps the default, 5% of
+	// the title.
+	ResumeAfterSeconds int `json:"resumeAfterSeconds,omitempty"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.
@@ -647,6 +651,15 @@ type Downloads struct {
 	Expiry Duration `json:"expiry"`
 	// MaxHeight caps the download profile's resolution (default 1080).
 	MaxHeight int `json:"maxHeight"`
+	// The default download limit for every non-owner viewer; a viewer's own
+	// policy can replace it. LimitUnit is "" (no limit), "titles" or "gb";
+	// LimitPeriod is "day" (default) or "month".
+	LimitUnit   string `json:"limitUnit"`
+	LimitAmount int    `json:"limitAmount"`
+	LimitPeriod string `json:"limitPeriod"`
+	// NoTranscode makes every viewer's downloads come only from a release
+	// that needs no video re-encode; a viewer's policy can also set it.
+	NoTranscode bool `json:"noTranscode"`
 }
 
 // PlexServers controls watch sync with owner-run servers; server credentials and

@@ -381,7 +381,7 @@ func (d *DownloadRemuxer) RemuxDownload(ctx context.Context, req core.DownloadRe
 			})
 	}
 	path, size, err := d.convertDownload(ctx, req, progress)
-	if err != nil && ctx.Err() == nil && !errors.Is(err, core.ErrDownloadBudget) && ok && qualityConversion && !downloadBurnsImage(req) {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, core.ErrDownloadBudget) && !errors.Is(err, ErrVideoTranscodingDisabled) && ok && qualityConversion && !downloadBurnsImage(req) {
 		d.m.log.Warn("download quality conversion failed; trying source quality", "err", err)
 		return d.runDownload(ctx, req, progress, estimateBytes(req.Info), "remux",
 			func(part string) []string {

@@ -64,6 +64,15 @@ const (
 	msgVideoTranscodingOff = "This title needs a video transcode to play on this device, and video transcoding is turned off."
 )
 
+// playbackMessageFor is playbackMessage with the wording for a viewer whose
+// own account has video transcoding switched off.
+func (s *Server) playbackMessageFor(pr *Request, err error) string {
+	if pr != nil && pr.User != nil && errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		return frontend.VideoTranscodingOffMessage(s.policy(), pr.User)
+	}
+	return playbackMessage(err)
+}
+
 func playbackMessage(err error) string {
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
@@ -118,7 +127,7 @@ func (s *Server) writeStartErr(w http.ResponseWriter, r *http.Request, pr *Reque
 	}
 	s.log.Warn("playback start failed", "reason", playbackMessage(err), "err", err)
 	if pr != nil && pr.User != nil {
-		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), playbackMessage(err))
+		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), s.playbackMessageFor(pr, err))
 	}
 	// A completed attempt is terminal. Retry-After on a 503 makes media
 	// loaders retry while waiting for a timeline they may never send.
@@ -1226,7 +1235,7 @@ func (s *Server) decisionError(ctx context.Context, pr *Request, t *frontend.Tit
 	if errors.As(err, &profileErr) {
 		return profileErrorContainer(pr, p, profileErr)
 	}
-	msg := playbackMessage(err)
+	msg := s.playbackMessageFor(pr, err)
 	s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), msg)
 	mc := libraryContainer()
 	if t != nil {
@@ -3075,6 +3084,47 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusForbidden)
 		return
 	}
+	var (
+		dlPolicy         frontend.DownloadLimitPolicy
+		downloadReserved bool
+		downloadServed   bool
+	)
+	if download {
+		// Plex Web's Download button is a plain part read; only the viewer
+		// policy (an owner override or plex.tv allowSync=0) refuses it. The
+		// download queue being off is a different feature.
+		if p, ok := s.policy().(frontend.DownloadAccessPolicy); ok && !p.AllowDownloads(pr.User) {
+			writeHTTPError(w, http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodHead {
+			if p, ok := s.policy().(frontend.DownloadLimitPolicy); ok && pr.User != nil {
+				dlPolicy = p
+				estCaps := s.clientCapsForKey(pr, key)
+				if mh := s.cfg().Downloads.MaxHeight; mh > 0 && (estCaps.MaxHeight == 0 || estCaps.MaxHeight > mh) {
+					estCaps.MaxHeight = mh
+				}
+				if mh := p.DownloadAllowance(pr.User).MaxHeight; mh > 0 && (estCaps.MaxHeight == 0 || estCaps.MaxHeight > mh) {
+					estCaps.MaxHeight = mh
+				}
+				est := s.estimateDownloadBytes(ctx, title, estCaps)
+				dec := p.AdmitDownload(ctx, pr.User, key, est)
+				if !dec.Allowed {
+					if wait := int(time.Until(dec.ResetAt).Seconds()); wait > 0 {
+						w.Header().Set("Retry-After", strconv.Itoa(wait))
+					}
+					http.Error(w, frontend.DownloadLimitMessage(dec), http.StatusTooManyRequests)
+					return
+				}
+				downloadReserved = dec.Reserved
+				defer func() {
+					if downloadReserved && !downloadServed {
+						dlPolicy.ReleaseDownloadReservation(context.Background(), pr.User, key)
+					}
+				}()
+			}
+		}
+	}
 	// Clients may fall back from a failed decision to the original part URL.
 	// Do not launch the same failed acquisition again during that attempt.
 	if releaseID == "" && pr.ClientID != "" {
@@ -3121,6 +3171,16 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		caps := s.clientCapsForKey(pr, key)
+		if download && releaseID == "" {
+			if mh := s.cfg().Downloads.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
+				caps.MaxHeight = mh
+			}
+			if dlPolicy != nil && pr.User != nil {
+				if mh := dlPolicy.DownloadAllowance(pr.User).MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
+					caps.MaxHeight = mh
+				}
+			}
+		}
 		s.observeClientAdmission(pr, caps)
 		ps, err = s.prepareForRelease(ctx, pr.User, key, caps, releaseID)
 		if err != nil {
@@ -3181,12 +3241,16 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if download {
-		// Plex Web's Download button is a plain part read; only the viewer
-		// policy (an owner override or plex.tv allowSync=0) refuses it. The
-		// download queue being off is a different feature.
-		if p, ok := s.policy().(frontend.DownloadAccessPolicy); ok && !p.AllowDownloads(pr.User) {
-			writeHTTPError(w, http.StatusForbidden)
-			return
+		if dlPolicy != nil && pr.User != nil && r.Method != http.MethodHead {
+			if actual := preparedDownloadBytes(ps.Info, frontend.DecideOptions{}); actual > 0 {
+				if rec := dlPolicy.ReconcileDownloadBytes(ctx, pr.User, key, actual); !rec.Allowed {
+					if wait := int(time.Until(rec.ResetAt).Seconds()); wait > 0 {
+						w.Header().Set("Retry-After", strconv.Itoa(wait))
+					}
+					http.Error(w, frontend.DownloadLimitMessage(rec), http.StatusTooManyRequests)
+					return
+				}
+			}
 		}
 		filename := chi.URLParam(r, "file")
 		if decoded, err := url.PathUnescape(filename); err == nil {
@@ -3202,6 +3266,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 	if !download && r.Method == http.MethodGet && s.partDirectDelivery(w, r, ps.ID) {
 		return
 	}
+	downloadServed = true
 	cw := s.newCountWriter(w, r)
 	s.plexSources().ServePart(cw, parts.Request(r), ps.ID)
 	cw.finish()
@@ -3218,7 +3283,7 @@ func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Reques
 		return
 	}
 	if pr != nil && pr.User != nil {
-		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), playbackMessage(err))
+		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), s.playbackMessageFor(pr, err))
 	}
 	writePlaybackStatus(w, http.StatusBadGateway)
 }

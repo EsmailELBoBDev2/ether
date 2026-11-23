@@ -52,6 +52,65 @@ var ErrDownloadNeedsTranscode = core.ErrDownloadNeedsTranscode
 // requires re-encoding video while transcode.videoTranscoding is set to "off".
 var ErrVideoTranscodingDisabled = core.ErrVideoTranscodingDisabled
 
+// The two wordings a viewer can be shown when a title would need its video
+// re-encoded: the server-wide switch, or the owner's switch for their account.
+const (
+	MsgVideoTranscodingOff       = "This title needs a video transcode to play on this device, and video transcoding is turned off."
+	MsgViewerVideoTranscodingOff = "This title would need converting to play on this device, and converting video is turned off for your account. Try another version or device, or ask the server owner."
+)
+
+// Wordings for download conversion and download limits.
+const (
+	MsgDownloadTranscodingOff       = "This title would need converting to download at this quality, and converting downloads is turned off on this server. Try another quality, or ask the server owner."
+	MsgViewerDownloadTranscodingOff = "This title would need converting to download at this quality, and converting downloads is turned off for your account. Try another quality, or ask the server owner."
+	MsgViewerDownloadLimit          = "You've reached your download limit for today. It resets tomorrow at 00:00 UTC."
+	MsgViewerDownloadDataLimit      = "You've reached your download data limit for today. It resets tomorrow at 00:00 UTC."
+)
+
+// DownloadLimitMessage formats a viewer-facing explanation when a download
+// hits the server or per-viewer download limit, including when it resets.
+func DownloadLimitMessage(d core.DownloadLimitDecision) string {
+	period := d.Period
+	if period != "month" {
+		period = "day"
+	}
+	var head string
+	if d.Unit == "gb" {
+		if period == "month" {
+			head = "You've reached your download data limit for this month."
+		} else {
+			head = "You've reached your download data limit for today."
+		}
+	} else {
+		if period == "month" {
+			head = "You've reached your download limit for this month."
+		} else {
+			head = "You've reached your download limit for today."
+		}
+	}
+	if period == "month" {
+		if !d.ResetAt.IsZero() {
+			return head + " It resets on " + d.ResetAt.UTC().Format("Jan 2 at 15:04 UTC") + "."
+		}
+		return head + " It resets next month."
+	}
+	if !d.ResetAt.IsZero() {
+		return head + " It resets tomorrow at " + d.ResetAt.UTC().Format("15:04 UTC") + "."
+	}
+	return head + " It resets tomorrow at 00:00 UTC."
+}
+
+// VideoTranscodingOffMessage picks the wording for viewer. policy is the
+// host's viewer policy; one that cannot answer gets the server-wide wording.
+func VideoTranscodingOffMessage(policy any, viewer *core.User) string {
+	if p, ok := policy.(interface {
+		VideoTranscodingDisabled(*core.User) bool
+	}); ok && viewer != nil && p.VideoTranscodingDisabled(viewer) {
+		return MsgViewerVideoTranscodingOff
+	}
+	return MsgVideoTranscodingOff
+}
+
 // ErrInteractionReceipt is an invalid, stale or out-of-scope interaction handle.
 var ErrInteractionReceipt = errors.New("experience: invalid interaction receipt")
 

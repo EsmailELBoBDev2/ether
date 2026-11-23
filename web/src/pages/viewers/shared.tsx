@@ -566,7 +566,16 @@ export type SafetyPolicy = {
   remoteDisabled: boolean;
   maxBitrateKbps: number;
   videoTranscodingDisabled?: boolean;
+  /** Owner override for offline downloads; absent follows the server setting. */
   allowDownloads?: boolean | null;
+  /** Downloads only from releases that need no video conversion. */
+  downloadTranscodingDisabled?: boolean;
+  /** "" follows the server, "none" is no limit, else what the limit counts. */
+  downloadLimitUnit?: "" | "none" | "titles" | "gb";
+  downloadLimitAmount?: number;
+  downloadLimitPeriod?: "" | "day" | "month";
+  /** Highest download resolution for this viewer; 0 follows the server. */
+  downloadMaxHeight?: number;
   allowedHours: number[];
   timezone: string;
 };

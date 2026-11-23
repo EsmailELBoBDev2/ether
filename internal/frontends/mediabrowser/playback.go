@@ -469,9 +469,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if i.protocol == "jellyfin" {
-			i.playbackInfoError(w, "plan", err)
+			i.playbackInfoError(w, v, "plan", err)
 		} else if playback && noCompatibleStream(err) {
-			i.writeNoCompatibleStream(w)
+			if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+				i.writeNoCompatibleStreamMessage(w, frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v))
+			} else {
+				i.writeNoCompatibleStream(w)
+			}
 		} else if errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
 			streamError(i.protocol, w, err)
 		} else {
@@ -495,7 +499,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed && plan.Decision.Kind == "transcode" {
 		if i.protocol == "jellyfin" {
-			i.playbackInfoError(w, "transcoding disabled", frontend.ErrNotAvailable)
+			i.playbackInfoError(w, v, "transcoding disabled", frontend.ErrNotAvailable)
 		} else {
 			http.Error(w, "Playback unavailable", 422)
 		}
@@ -572,7 +576,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			}
 			if !jellyfinStaticFallback(err) || !staticPlayable {
 				if i.protocol == "jellyfin" {
-					i.playbackInfoError(w, "open", err)
+					i.playbackInfoError(w, v, "open", err)
 				} else if errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
 					streamError(i.protocol, w, err)
 				} else {
@@ -628,7 +632,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				_ = i.host.Sessions.Stop(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID)
 				if !jellyfinStaticFallback(err) || !staticPlayable {
-					i.playbackInfoError(w, "start stream", err)
+					i.playbackInfoError(w, v, "start stream", err)
 					return
 				}
 				if i.host.Log != nil {
@@ -1415,11 +1419,16 @@ func noCompatibleStream(err error) bool {
 // reads ErrorCode only on a resolved request, and otherwise shows its generic
 // network error. Admission failures retain 503 and Retry-After so clients
 // can retry once capacity returns. Keep failure stages in server diagnostics.
-func (i *instance) playbackInfoError(w http.ResponseWriter, stage string, err error) {
+func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, stage string, err error) {
 	if i.host.Log != nil {
 		i.host.Log.Warn("PlaybackInfo failed", "protocol", i.protocol, "stage", stage, "err", err)
 	}
 	if i.protocol != "jellyfin" || errors.Is(err, frontend.ErrSessionBusy) || errors.Is(err, frontend.ErrTranscodeCapacity) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
+		if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+			// Emby and the pass-through cases get the viewer's own wording too.
+			http.Error(w, frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v), http.StatusUnprocessableEntity)
+			return
+		}
 		streamError(i.protocol, w, err)
 		return
 	}
@@ -1434,13 +1443,21 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, stage string, err er
 	if errors.As(err, &bedtime) {
 		body["Message"] = bedtime.Error()
 	} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
-		body["Message"] = msgVideoTranscodingOff
+		body["Message"] = frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v)
 	}
 	jsonReply(w, body)
 }
 
 func (i *instance) writeNoCompatibleStream(w http.ResponseWriter) {
 	jsonReply(w, map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": "NoCompatibleStream"})
+}
+
+func (i *instance) writeNoCompatibleStreamMessage(w http.ResponseWriter, msg string) {
+	body := map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": "NoCompatibleStream"}
+	if msg != "" {
+		body["Message"] = msg
+	}
+	jsonReply(w, body)
 }
 
 func directFilePath(path string) bool {

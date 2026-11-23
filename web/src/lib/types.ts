@@ -356,6 +356,7 @@ export interface EtherConfig {
     disableConsoleOnMainPort?: boolean;
     bindAddress: string;
     friendlyName: string;
+    resumeAfterSeconds?: number;
     machineIdentifier: string;
     logLevel: string;
     defaultStreamLimit: number;
@@ -585,6 +586,10 @@ export interface EtherConfig {
     diskBudgetBytes: number;
     expiry: string;
     maxHeight: number;
+    limitUnit?: string;
+    limitAmount?: number;
+    limitPeriod?: string;
+    noTranscode?: boolean;
   };
   personalize?: {
     postPlay: boolean;

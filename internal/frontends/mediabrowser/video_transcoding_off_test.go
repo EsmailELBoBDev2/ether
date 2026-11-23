@@ -89,7 +89,7 @@ type mbTestProgress struct {
 func TestPlaybackInfoErrorVideoTranscodingOff(t *testing.T) {
 	i := &instance{protocol: "jellyfin"}
 	rec := httptest.NewRecorder()
-	i.playbackInfoError(rec, "plan", frontend.ErrVideoTranscodingDisabled)
+	i.playbackInfoError(rec, nil, "plan", frontend.ErrVideoTranscodingDisabled)
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("json: %v", err)
@@ -212,13 +212,15 @@ func TestPlaybackInfoPerViewerNoVideoTranscode(t *testing.T) {
 	}}
 
 	// Jellyfin PlaybackInfo path:
-	// - restricted viewer with HEVC source -> ErrorCode: NoCompatibleStream mentioning video transcoding off.
+	// - restricted viewer with HEVC source -> ErrorCode: NoCompatibleStream with per-account wording.
 	// - unrestricted viewer with HEVC source -> succeeds (MediaSources populated).
 	// - restricted viewer with H.264 + TrueHD -> succeeds (video copy + audio conversion).
+	viewerPolicy := mbVideoOffPolicy{viewerID: restricted.ID}
 	jfInst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{
 		Identity:     ident,
 		Sessions:     sessions.BindSurface(broker, "jellyfin"),
 		Capabilities: h264Caps,
+		ViewerPolicy: viewerPolicy,
 		Log:          slog.Default(),
 		SurfaceURL:   func(context.Context, *http.Request) (string, error) { return "https://ether.example/jellyfin", nil },
 	})
@@ -240,8 +242,8 @@ func TestPlaybackInfoPerViewerNoVideoTranscode(t *testing.T) {
 		t.Fatalf("jellyfin restricted HEVC json: %v (status=%d body=%s)", err, w.Code, w.Body.String())
 	}
 	jfMsg, _ := jfResp["Message"].(string)
-	if jfResp["ErrorCode"] != "NoCompatibleStream" || !strings.Contains(jfMsg, "turned off") {
-		t.Fatalf("jellyfin restricted HEVC = %d %+v, want NoCompatibleStream with turned-off message", w.Code, jfResp)
+	if jfResp["ErrorCode"] != "NoCompatibleStream" || jfMsg != frontend.MsgViewerVideoTranscodingOff {
+		t.Fatalf("jellyfin restricted HEVC = %d %+v, want NoCompatibleStream with per-account message %q", w.Code, jfResp, frontend.MsgViewerVideoTranscodingOff)
 	}
 
 	wOwner := jfCall("owner-token", h264ProfileBody)
@@ -269,12 +271,13 @@ func TestPlaybackInfoPerViewerNoVideoTranscode(t *testing.T) {
 		t.Fatalf("jellyfin restricted H264+TrueHD expected MediaSources, got %+v", h264Resp)
 	}
 
-	// Emby PlaybackInfo path: restricted viewer against HEVC source returns NoCompatibleStream.
+	// Emby PlaybackInfo path: restricted viewer against HEVC source returns NoCompatibleStream with per-account wording.
 	currentInfo = hevcInfo
 	embyInst, err := (Emby{MachineID: "test"}).Mount(context.Background(), frontend.Host{
 		Identity:     ident,
 		Sessions:     sessions.BindSurface(broker, "emby"),
 		Capabilities: h264Caps,
+		ViewerPolicy: viewerPolicy,
 		SurfaceURL:   func(context.Context, *http.Request) (string, error) { return "https://ether.example/emby", nil },
 	})
 	if err != nil {
@@ -289,7 +292,17 @@ func TestPlaybackInfoPerViewerNoVideoTranscode(t *testing.T) {
 	if err := json.Unmarshal(embyW.Body.Bytes(), &embyResp); err != nil {
 		t.Fatalf("emby restricted HEVC json: %v (status=%d body=%s)", err, embyW.Code, embyW.Body.String())
 	}
-	if embyResp["ErrorCode"] != "NoCompatibleStream" {
-		t.Fatalf("emby restricted HEVC = %d %+v, want ErrorCode=NoCompatibleStream", embyW.Code, embyResp)
+	if embyResp["ErrorCode"] != "NoCompatibleStream" || embyResp["Message"] != frontend.MsgViewerVideoTranscodingOff {
+		t.Fatalf("emby restricted HEVC = %d %+v, want ErrorCode=NoCompatibleStream with %q", embyW.Code, embyResp, frontend.MsgViewerVideoTranscodingOff)
 	}
+}
+
+type mbVideoOffPolicy struct{ viewerID int64 }
+
+func (p mbVideoOffPolicy) SetMaxRating(context.Context, *frontend.Viewer, string) error { return nil }
+func (p mbVideoOffPolicy) Allowed(*core.User, *core.Title) bool                         { return true }
+func (p mbVideoOffPolicy) DiscoveryAllowed(*core.User, *core.Title) bool                { return true }
+func (p mbVideoOffPolicy) TitleFacts(*core.User) core.TitleFacts                        { return 0 }
+func (p mbVideoOffPolicy) VideoTranscodingDisabled(u *core.User) bool {
+	return u != nil && u.ID == p.viewerID
 }

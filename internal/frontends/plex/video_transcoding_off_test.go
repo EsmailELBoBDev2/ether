@@ -44,7 +44,7 @@ func TestPlexDecisionPerViewerNoVideoTranscode(t *testing.T) {
 	defer f.srv.Close()
 
 	pol := viewerVideoOffPolicy{disabled: map[int64]bool{friendUser.ID: true}}
-	f.srv.host.ViewerPolicy = pol
+	f.srv.setTestPolicy(pol)
 	tr := realDecidePlexTranscoder{fakeTranscoder: f.trans}
 	f.srv.setTranscoder(tr)
 
@@ -110,8 +110,8 @@ func TestPlexDecisionPerViewerNoVideoTranscode(t *testing.T) {
 		"X-Plex-Client-Identifier":    "friend-web",
 		"X-Plex-Client-Profile-Extra": chromeProfile,
 	})
-	if friendRec.Code != http.StatusOK || !strings.Contains(friendRec.Body.String(), msgVideoTranscodingOff) {
-		t.Fatalf("friend HEVC decision = %d %s, want %q", friendRec.Code, friendRec.Body.String(), msgVideoTranscodingOff)
+	if friendRec.Code != http.StatusOK || !strings.Contains(friendRec.Body.String(), frontend.MsgViewerVideoTranscodingOff) {
+		t.Fatalf("friend HEVC decision = %d %s, want %q", friendRec.Code, friendRec.Body.String(), frontend.MsgViewerVideoTranscodingOff)
 	}
 
 	ownerRec := f.request(t, http.MethodGet, decPath+"&session=owner-hevc", map[string]string{
@@ -122,7 +122,7 @@ func TestPlexDecisionPerViewerNoVideoTranscode(t *testing.T) {
 		"X-Plex-Client-Identifier":    "owner-web",
 		"X-Plex-Client-Profile-Extra": chromeProfile,
 	})
-	if ownerRec.Code != http.StatusOK || strings.Contains(ownerRec.Body.String(), msgVideoTranscodingOff) {
+	if ownerRec.Code != http.StatusOK || strings.Contains(ownerRec.Body.String(), msgVideoTranscodingOff) || strings.Contains(ownerRec.Body.String(), frontend.MsgViewerVideoTranscodingOff) {
 		t.Fatalf("owner HEVC decision should not be refused: %d %s", ownerRec.Code, ownerRec.Body.String())
 	}
 

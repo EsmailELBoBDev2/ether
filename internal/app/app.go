@@ -716,6 +716,9 @@ func (a *App) applyConfig(c config.Config) {
 	if a.transcoder != nil {
 		a.transcoder.UpdateConfig(c.Transcode)
 	}
+	if a.state != nil {
+		a.state.SetResumeAfter(c.Server.ResumeAfterSeconds)
+	}
 	if a.uploadBudget != nil {
 		a.uploadBudget.OnSessionsChanged()
 	}

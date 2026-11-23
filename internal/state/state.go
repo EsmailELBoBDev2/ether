@@ -93,6 +93,15 @@ const (
 	StartedThreshold = 0.05
 )
 
+// notStartedWith reports whether offset is too early in a title of length dur
+// to keep as a resume point. When resumeAfter > 0, it replaces StartedThreshold.
+func notStartedWith(offset, dur, resumeAfter time.Duration) bool {
+	if resumeAfter > 0 {
+		return offset < resumeAfter
+	}
+	return dur > 0 && float64(offset) < StartedThreshold*float64(dur)
+}
+
 // EventKind identifies a state change subscribers may react to.
 type EventKind string
 
@@ -158,6 +167,9 @@ type Options struct {
 	// persist a resume offset (for example music tracks). LastViewedAt and
 	// completion are still recorded.
 	SkipResume func(context.Context, core.RatingKey) bool
+	// ResumeAfterSeconds sets how many seconds into a title a resume point is
+	// kept from, for every frontend. 0 keeps the default (StartedThreshold).
+	ResumeAfterSeconds int
 }
 
 // State implements core.State and core.Playlists.
@@ -174,10 +186,11 @@ type State struct {
 	// a bounded progress write beyond its timeout).
 	wmu chan struct{}
 
-	mu         sync.RWMutex
-	subs       map[int]func(Event)
-	next       int
-	skipResume func(context.Context, core.RatingKey) bool
+	mu          sync.RWMutex
+	subs        map[int]func(Event)
+	next        int
+	skipResume  func(context.Context, core.RatingKey) bool
+	resumeAfter atomic.Int64
 
 	// progress holds timeline writes through a database outage (nil when
 	// Options.Availability is nil).
@@ -191,6 +204,35 @@ type State struct {
 	// State, for production wiring and tests.
 	journalGate  func(ctx context.Context, tx *sql.Tx, userID int64) (generation int64, ok bool, err error)
 	journalFault func() error
+}
+
+// SetResumeAfter sets how many seconds into a title a resume point is kept
+// from, for every frontend. 0 restores the default of 5% of the title.
+func (s *State) SetResumeAfter(seconds int) {
+	if s == nil {
+		return
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	s.resumeAfter.Store(int64(seconds))
+}
+
+// ResumeAfter returns the configured minimum play offset before a resume point
+// is kept, or 0 when the default StartedThreshold (5% of duration) applies.
+func (s *State) ResumeAfter() time.Duration {
+	if s == nil {
+		return 0
+	}
+	n := s.resumeAfter.Load()
+	if n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
+}
+
+func (s *State) notStarted(offset, dur time.Duration) bool {
+	return notStartedWith(offset, dur, s.ResumeAfter())
 }
 
 // Generation changes when watch progress, played state, or a rating is saved.
@@ -214,6 +256,7 @@ func New(db *sql.DB, opts Options) *State {
 		opts.Now = time.Now
 	}
 	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1), skipResume: opts.SkipResume}
+	s.SetResumeAfter(opts.ResumeAfterSeconds)
 	if opts.PendingSQLite {
 		s.pending = newPendingWrites(s)
 	}
@@ -535,7 +578,7 @@ func (s *State) GetMany(ctx context.Context, userID int64, keys []core.RatingKey
 		rows.Close()
 	}
 	for k, w := range pending {
-		out[k] = overlayPending(out[k], w, counted[k], watchAt[k])
+		out[k] = overlayPending(out[k], w, counted[k], watchAt[k], s.ResumeAfter())
 	}
 	if err := s.fillParentViewed(ctx, userID, out); err != nil {
 		return nil, err
@@ -649,7 +692,7 @@ func (s *State) PageUserData(ctx context.Context, userID int64, keys []core.Rati
 		rows.Close()
 	}
 	for k, w := range pending {
-		out[k] = overlayPending(out[k], w, counted[k], watchAt[k])
+		out[k] = overlayPending(out[k], w, counted[k], watchAt[k], s.ResumeAfter())
 	}
 	return out, nil
 }
@@ -843,7 +886,8 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 		offset := reported // fn may be re-run after a conflict
 		before := cur.ws.ViewOffset
 		if state == "progress" {
-			if offset <= time.Minute {
+			resumeAfter := s.ResumeAfter()
+			if (resumeAfter > 0 && offset < resumeAfter) || (resumeAfter == 0 && offset <= time.Minute) {
 				return false, false, nil
 			}
 			if skipResume {
@@ -877,7 +921,7 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 			}
 			cur.counted = true
 			cur.ws.ViewOffset = 0
-		case cur.ws.Duration > 0 && frac < StartedThreshold:
+		case s.notStarted(offset, cur.ws.Duration):
 			// Not really started (or rewound to the beginning): no resume
 			// point. `counted` is left alone so scrubbing back and forth
 			// over the end of one viewing cannot inflate the view count.
@@ -1093,7 +1137,7 @@ func (s *State) InProgress(ctx context.Context, userID int64, limit int) ([]core
 		byKey[ws.Key] = ws
 	}
 	for k, w := range pending {
-		ws := overlayPending(current[k], w, false, current[k].UpdatedAt)
+		ws := overlayPending(current[k], w, false, current[k].UpdatedAt, s.ResumeAfter())
 		if IsInProgress(ws) {
 			byKey[k] = ws
 		} else {

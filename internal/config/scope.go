@@ -74,6 +74,7 @@ var mixedSections = map[string]map[string]Scope{
 		"bindAddress":              Local,
 		"logLevel":                 Local,
 		"friendlyName":             Shared,
+		"resumeAfterSeconds":       Shared,
 		"webFrameOrigins":          Shared,
 		"allowRemoteConsole":       Shared,
 		"startupAnimation":         Shared, // console preference, the same on every node
@@ -172,6 +173,10 @@ var mixedSections = map[string]map[string]Scope{
 		"maxConcurrentPerUser": Shared,
 		"expiry":               Shared,
 		"maxHeight":            Shared,
+		"limitUnit":            Shared,
+		"limitAmount":          Shared,
+		"limitPeriod":          Shared,
+		"noTranscode":          Shared,
 		// Remuxes run on and are stored by the node serving them.
 		"maxConcurrent":   Local,
 		"diskBudgetBytes": Local,

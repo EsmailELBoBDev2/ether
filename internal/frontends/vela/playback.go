@@ -259,7 +259,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		fail(w, e, r)
+		i.failFor(w, v, e, r)
 		return
 	}
 	if plan.Estimated {
@@ -275,18 +275,18 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		}
 		if b.ChannelID != "" {
 			if errors.Is(e, frontend.ErrTooManyTranscodes) || errors.Is(e, frontend.ErrTranscodeCapacity) || errors.Is(e, frontend.ErrStreamLimit) || errors.Is(e, frontend.ErrSessionBusy) {
-				fail(w, e, r)
+				i.failFor(w, v, e, r)
 				return
 			}
 			var mvErr *frontend.MultiviewError
 			if mvTarget != nil && (errors.As(e, &mvErr) || errors.Is(e, frontend.ErrInvalidMultiview)) {
-				fail(w, e, r)
+				i.failFor(w, v, e, r)
 				return
 			}
 			detail := frontend.DiagnoseLiveTV("tune", e)
 			send(w, 503, object{"error": object{"class": "source", "code": detail.Code, "message": detail.Message, "retry": object{"allowed": false}}})
 		} else {
-			fail(w, e, r)
+			i.failFor(w, v, e, r)
 		}
 		return
 	}
@@ -322,7 +322,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	url, e := i.host.Sessions.StartStream(r.Context(), i.access(r, v), s.ID, frontend.StreamRequest{Format: format, Position: pos, LazyStart: true, Continuous: true})
 	if e != nil {
 		_ = i.host.Sessions.Stop(r.Context(), i.access(r, v), s.ID)
-		fail(w, e, r)
+		i.failFor(w, v, e, r)
 		return
 	}
 	kind := "direct"
@@ -704,7 +704,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			fail(w, err, r)
+			i.failFor(w, v, err, r)
 			return
 		}
 		for _, previous := range paths {
@@ -776,7 +776,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if e != nil {
-				fail(w, e, r)
+				i.failFor(w, v, e, r)
 				return
 			}
 			if rung := s.rungFor(path); rung != "" {
@@ -845,7 +845,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			fail(w, err, r)
+			i.failFor(w, v, err, r)
 			return
 		}
 		paths := s.plan["paths"].([]object)
@@ -959,7 +959,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, frontend.ErrNotFound):
 				problem(w, 400, "request", "invalid_version")
 			default:
-				fail(w, err, r)
+				i.failFor(w, v, err, r)
 			}
 			return
 		}
@@ -982,7 +982,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			fail(w, err, r)
+			i.failFor(w, v, err, r)
 			return
 		}
 		kind := "direct"

@@ -13,6 +13,7 @@ import (
 )
 
 func init() {
+	store.Register("newznab", 5, `CREATE TABLE newznab_search_modes (indexer_id TEXT PRIMARY KEY, identity TEXT NOT NULL, mode INTEGER NOT NULL DEFAULT 0, verified INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL);`)
 	store.Register("newznab", 4, `CREATE TABLE newznab_feed_modes (indexer_id TEXT PRIMARY KEY, identity TEXT NOT NULL, unfiltered INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL);`)
 	// endpoint fingerprints the URL and API key the caps were fetched
 	// from: an indexer edited to point elsewhere must not reuse them.

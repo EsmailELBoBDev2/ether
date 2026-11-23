@@ -215,8 +215,8 @@ func downloadArgs(input string, video, audio *core.StreamInfo, out string) []str
 		"-c", "copy")
 	if audio != nil {
 		args = append(args, "-disposition:a:0", "default")
-		if audio.Language != "" {
-			args = append(args, "-metadata:s:a:0", "language="+audio.Language)
+		if lang := mp4Language(audio.Language); lang != "" {
+			args = append(args, "-metadata:s:a:0", "language="+lang)
 		}
 	}
 	if strings.EqualFold(video.Codec, "hevc") {
@@ -276,8 +276,8 @@ func downloadConvertArgs(input string, info core.MediaInfo, dec core.Decision, a
 	}
 	if a := findStream(info, dec.AudioStream, "audio"); a != nil {
 		args = append(args, "-disposition:a:0", "default")
-		if a.Language != "" {
-			args = append(args, "-metadata:s:a:0", "language="+a.Language)
+		if lang := mp4Language(a.Language); lang != "" {
+			args = append(args, "-metadata:s:a:0", "language="+lang)
 		}
 	}
 	if strings.EqualFold(codec, "hevc") {
@@ -308,8 +308,8 @@ func downloadTextArgs(args []string, info core.MediaInfo, index int, out string)
 		}
 	}
 	filtered = append(filtered, "-map", fmt.Sprintf("0:%d", sub.Index), "-c:s", "mov_text", "-disposition:s:0", "default")
-	if sub.Language != "" {
-		filtered = append(filtered, "-metadata:s:s:0", "language="+sub.Language)
+	if lang := mp4Language(sub.Language); lang != "" {
+		filtered = append(filtered, "-metadata:s:s:0", "language="+lang)
 	}
 	return append(filtered, out)
 }

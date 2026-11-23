@@ -85,7 +85,28 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 		return nil, derr
 	}
 	lr := &io.LimitedReader{R: decoded, N: limit + 1}
-	br := bufio.NewReader(lr)
+	head := &headCapture{r: lr, max: 8192}
+	if resp.StatusCode != http.StatusOK {
+		body, rerr := io.ReadAll(head)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if lr.N <= 0 {
+			return nil, fmt.Errorf("newznab: response exceeds %d bytes", limit)
+		}
+		c.noteAPILimit(hctx, head.buf)
+		if _, perr := parseFeed(body, c.Name()); perr != nil {
+			var ae *APIError
+			if errors.As(perr, &ae) {
+				if ae.Budget {
+					return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), perr)
+				}
+				return nil, perr
+			}
+		}
+		return nil, apiError(resp.StatusCode, resp.Status)
+	}
+	br := bufio.NewReader(head)
 	// Sniff without waiting for EOF (XML is the usual Newznab format).
 	for {
 		ch, e := br.Peek(1)
@@ -99,9 +120,9 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 	}
 	first, _ := br.Peek(1)
 	var rs []core.Release
-	if first[0] == '<' && resp.StatusCode == http.StatusOK {
+	if first[0] == '<' {
 		rs, err = parseXMLStream(br, c.Name(), emit)
-	} else if (first[0] == '{' || first[0] == '[') && resp.StatusCode == http.StatusOK {
+	} else if first[0] == '{' || first[0] == '[' {
 		rs, err = parseJSONStream(br, c.Name(), emit)
 	} else {
 		var body []byte
@@ -110,6 +131,7 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 			rs, err = parseFeed(body, c.Name())
 		}
 	}
+	c.noteAPILimit(hctx, head.buf)
 	if lr.N <= 0 {
 		return nil, fmt.Errorf("newznab: response exceeds %d bytes", limit)
 	}
@@ -120,10 +142,24 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 		}
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp.StatusCode, resp.Status)
-	}
 	return rs, nil
+}
+
+// headCapture records up to max bytes of a streamed body so noteAPILimit can
+// inspect <newznab:apilimits> without buffering the whole response.
+type headCapture struct {
+	r   io.Reader
+	max int
+	buf []byte
+}
+
+func (h *headCapture) Read(p []byte) (int, error) {
+	n, err := h.r.Read(p)
+	if n > 0 && len(h.buf) < h.max {
+		take := min(n, h.max-len(h.buf))
+		h.buf = append(h.buf, p[:take]...)
+	}
+	return n, err
 }
 
 // Decode complete JSON objects as they arrive, including nested RSS/channel

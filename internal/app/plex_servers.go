@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync/atomic"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -49,6 +50,7 @@ func (e errPlexExtrasLimit) Error() string {
 
 type plexServerRuntime struct {
 	id        string
+	store     *plexServerStore
 	client    *plextv.Client
 	certs     *plextv.CertManager
 	registrar *plextv.Registrar
@@ -67,9 +69,11 @@ type plexExtras struct {
 	seats     map[string]int
 	seatsAt   map[string]time.Time
 	finishing bool
-	// toggleMu orders the stops and starts that follow the on/off setting;
-	// toggleOn is the value last applied (toggleSeen once one was).
-	toggleMu   sync.Mutex
+	// lifeMu orders every start and stop of an extra server: the on/off
+	// setting, Start (activate) and remove, so a switch turned off while a
+	// server is being claimed cannot leave it running. toggleOn is the
+	// setting value last applied (toggleSeen once one was).
+	lifeMu     sync.Mutex
 	toggleSeen bool
 	toggleOn   bool
 	// sections is the library list the main server publishes; every extra
@@ -95,6 +99,9 @@ func newPlexExtras(a *App) *plexExtras {
 type plexServerStore struct {
 	base *config.Store
 	id   string
+	// stopped ends config notifications once the server is stopped: the
+	// subscription itself cannot be removed from the config store.
+	stopped atomic.Bool
 }
 
 func (s *plexServerStore) Get() config.Config {
@@ -120,6 +127,9 @@ func (s *plexServerStore) Update(fn func(*config.Config) error) error {
 
 func (s *plexServerStore) Subscribe(fn func(config.Config)) {
 	s.base.Subscribe(func(c config.Config) {
+		if s.stopped.Load() {
+			return
+		}
 		if e, ok := c.PlexExtraServer(s.id); ok {
 			fn(c.WithPlexServer(e))
 		}
@@ -174,6 +184,17 @@ func (ps *plexExtras) noteSeats(id string, n int) {
 		defer cancel()
 		ps.finishMoves(ctx)
 	}()
+}
+
+// noteInvited counts an invite just sent on server id ("" is main) until the
+// next friend sync reports the real count, so a run of invites or moves does
+// not send everyone to one server past its seats.
+func (ps *plexExtras) noteInvited(ctx context.Context, id string) {
+	n := ps.seatsUsed(ctx)[id] + 1
+	ps.mu.Lock()
+	ps.seats[id] = n
+	ps.seatsAt[id] = time.Now()
+	ps.mu.Unlock()
 }
 
 // seatsUsed is each server's share count: the last friend sync, else the
@@ -238,8 +259,8 @@ func (ps *plexExtras) start(ctx context.Context) {
 // applyEnabled stops every extra server when the feature is off, and runs
 // the started ones that are not running when it is on.
 func (ps *plexExtras) applyEnabled(ctx context.Context, on bool) {
-	ps.toggleMu.Lock()
-	defer ps.toggleMu.Unlock()
+	ps.lifeMu.Lock()
+	defer ps.lifeMu.Unlock()
 	// Every config save notifies; act only when the setting changed, so a
 	// start the owner just made (activate) is never doubled here.
 	if ps.toggleSeen && on == ps.toggleOn {
@@ -256,7 +277,25 @@ func (ps *plexExtras) applyEnabled(ctx context.Context, on bool) {
 		for _, id := range ids {
 			ps.stop(id)
 		}
-		if len(ids) > 0 {
+		// A server that is off shares with no one: its tokens and
+		// memberships go, and the main server's next sync switches off
+		// viewers only it shared with. Its next start syncs them back.
+		withdrawn := 0
+		if ps.app.users != nil {
+			for _, s := range ps.app.cfg.Get().PlexExtraServers {
+				if err := ps.app.users.RemoveServer(ctx, s.ID); err != nil {
+					ps.log.Warn("extra plex server access not withdrawn", "server", s.ID, "err", err)
+					continue
+				}
+				withdrawn++
+			}
+		}
+		if withdrawn > 0 && ps.app.registrar != nil {
+			if err := ps.app.registrar.SyncFriendsNow(ctx); err != nil {
+				ps.log.Warn("plex friend sync after turning extra servers off", "err", err)
+			}
+		}
+		if len(ids) > 0 || withdrawn > 0 {
 			ps.log.Info("extra plex servers turned off", "stopped", len(ids))
 		}
 		return
@@ -318,7 +357,7 @@ func (ps *plexExtras) build(id string) (*plexServerRuntime, error) {
 	if sections != nil {
 		reg.SetLibrarySections(sections)
 	}
-	return &plexServerRuntime{id: id, client: client, certs: certs, registrar: reg}, nil
+	return &plexServerRuntime{id: id, store: store, client: client, certs: certs, registrar: reg}, nil
 }
 
 // run starts the extra server id's plex.tv presence (it must be claimed).
@@ -358,6 +397,16 @@ func (ps *plexExtras) runRuntime(ctx context.Context, rt *plexServerRuntime) err
 	}
 	rt.registrar.ListenerReady()
 	ps.mu.Lock()
+	if old := ps.running[id]; old != nil && old != rt {
+		// Lifecycle calls hold lifeMu, so this cannot happen; keep one
+		// runtime per server regardless.
+		ps.mu.Unlock()
+		rt.store.stopped.Store(true)
+		cancel()
+		rt.registrar.Stop()
+		rt.certs.Close()
+		return nil
+	}
 	ps.running[id] = rt
 	ps.mu.Unlock()
 	ps.app.publishDashboard()
@@ -374,6 +423,7 @@ func (ps *plexExtras) stop(id string) {
 	if rt == nil {
 		return
 	}
+	rt.store.stopped.Store(true)
 	rt.cancel()
 	rt.registrar.Stop()
 	rt.certs.Close()
@@ -399,6 +449,8 @@ func (ps *plexExtras) runtime(id string) *plexServerRuntime {
 
 // activate claims the standby server id with its account and publishes it.
 func (ps *plexExtras) activate(ctx context.Context, id string) error {
+	ps.lifeMu.Lock()
+	defer ps.lifeMu.Unlock()
 	cfg := ps.app.cfg.Get()
 	if !cfg.Plex.ExtraServersEnabled {
 		return errPlexExtrasOff
@@ -456,12 +508,21 @@ func (ps *plexExtras) pick(ctx context.Context) (string, error) {
 
 // share invites a viewer on the server pick chose.
 func (ps *plexExtras) share(ctx context.Context, usernameOrEmail string, userID int64) (string, error) {
+	// Without extra servers in use, invites behave exactly as before: the
+	// main server, with no seat count of Ether's own.
+	if cfg := ps.app.cfg.Get(); !cfg.Plex.ExtraServersEnabled || len(cfg.PlexExtraServers) == 0 {
+		return "", ps.app.shareOnMainServer(ctx, usernameOrEmail, userID)
+	}
 	id, err := ps.pick(ctx)
 	if err != nil {
 		return "", err
 	}
 	if id == "" {
-		return "", ps.app.shareOnMainServer(ctx, usernameOrEmail, userID)
+		err := ps.app.shareOnMainServer(ctx, usernameOrEmail, userID)
+		if err == nil {
+			ps.noteInvited(ctx, id)
+		}
+		return "", err
 	}
 	rt := ps.runtime(id)
 	e, ok := ps.app.cfg.Get().PlexExtraServer(id)
@@ -471,6 +532,7 @@ func (ps *plexExtras) share(ctx context.Context, usernameOrEmail string, userID 
 	if err := rt.client.ShareServer(ctx, e.Token, usernameOrEmail, userID, nil); err != nil {
 		return id, err
 	}
+	ps.noteInvited(ctx, id)
 	return id, nil
 }
 
@@ -603,6 +665,8 @@ func (ps *plexExtras) rename(id, name string) error {
 
 // remove signs the server out of plex.tv (if claimed) and forgets it.
 func (ps *plexExtras) remove(ctx context.Context, id string) error {
+	ps.lifeMu.Lock()
+	defer ps.lifeMu.Unlock()
 	if rt := ps.runtime(id); rt != nil {
 		if err := rt.registrar.Unclaim(ctx); err != nil {
 			ps.log.Warn("extra plex server unclaim", "server", id, "err", err)
@@ -706,13 +770,12 @@ func (ps *plexExtras) serverForRequest(r *http.Request) string {
 			id = ""
 		}
 	}
-	// An unknown token is cached briefly: a friend sync may soon tie it to
-	// an extra server.
-	ttl := time.Minute
-	if !ok {
-		ttl = 5 * time.Second
+	// Only tokens this Ether issued are remembered (a minute): an unknown
+	// token is looked up again, so random tokens cannot grow the cache and
+	// a friend sync can tie a new token to its server at once.
+	if ok {
+		ps.tokenServers.Store(key, tokenServerEntry{id: id, ok: ok, expires: now.Add(time.Minute)})
 	}
-	ps.tokenServers.Store(key, tokenServerEntry{id: id, ok: ok, expires: now.Add(ttl)})
 	return id
 }
 

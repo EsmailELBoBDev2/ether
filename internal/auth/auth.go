@@ -1587,14 +1587,20 @@ ON CONFLICT(plex_id) DO UPDATE SET
 	email=CASE WHEN excluded.email<>'' THEN excluded.email ELSE auth_users.email END,
 	thumb=CASE WHEN excluded.thumb<>'' THEN excluded.thumb ELSE auth_users.thumb END,
 	is_home=excluded.is_home, restricted=excluded.restricted,
-	plex_shared=CASE WHEN auth_users.is_owner=1 THEN 1 ELSE excluded.active END,
- active=CASE WHEN auth_users.is_owner=1 THEN 1 WHEN auth_users.owner_enabled=1 THEN excluded.active ELSE 0 END,
+	plex_shared=CASE WHEN auth_users.is_owner=1 THEN 1
+		WHEN excluded.active=0 AND EXISTS (SELECT 1 FROM auth_server_members m WHERE m.user_id=auth_users.id AND m.server_id<>?) THEN auth_users.plex_shared
+		ELSE excluded.active END,
+ active=CASE WHEN auth_users.is_owner=1 THEN 1
+		WHEN excluded.active=0 AND EXISTS (SELECT 1 FROM auth_server_members m WHERE m.user_id=auth_users.id AND m.server_id<>?) THEN auth_users.active
+		WHEN auth_users.owner_enabled=1 THEN excluded.active ELSE 0 END,
 	origin=CASE WHEN auth_users.origin='owner' THEN auth_users.origin ELSE 'friend' END,
 	plex_sections=excluded.plex_sections, updated_at=excluded.updated_at
 WHERE auth_users.origin<>'dlna_guest'
 RETURNING id`,
 				f.PlexID, f.UUID, f.Username, f.DisplayName(), f.Email, f.Thumb, store.BoolInt(f.Home), store.BoolInt(f.Restricted),
-				store.BoolInt(!f.Pending), store.BoolInt(!f.Pending), string(secs), now, now, f.Title, f.Title).Scan(&uid); err != nil {
+				// A pending invite here never switches off a viewer another
+				// Plex server of this Ether still shares with (a move).
+				store.BoolInt(!f.Pending), store.BoolInt(!f.Pending), string(secs), now, now, f.Title, f.Title, member, member).Scan(&uid); err != nil {
 				return fmt.Errorf("auth: save friend %d: %w", f.PlexID, err)
 			}
 			if !f.Pending {

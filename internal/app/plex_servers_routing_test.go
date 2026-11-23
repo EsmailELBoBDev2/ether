@@ -123,3 +123,50 @@ func TestPickSendsNewViewersToTheMainServerFirst(t *testing.T) {
 		}
 	}
 }
+
+// Turning extra servers off withdraws what they granted: their tokens no
+// longer route and their memberships are gone (the next start syncs them).
+func TestTurningOffWithdrawsExtraServerAccess(t *testing.T) {
+	e := routingEnv(t)
+	ctx := context.Background()
+	if err := e.app.users.SyncServerFriends(ctx, "p2", []plextv.Friend{
+		{PlexID: 301, Username: "only-p2", Token: "only-p2-token"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := e.app.users.ServerMembers(ctx); m["p2"] != 1 {
+		t.Fatalf("members before = %v", m)
+	}
+	e.app.plexExtras.applyEnabled(ctx, false)
+	if m, _ := e.app.users.ServerMembers(ctx); m["p2"] != 0 {
+		t.Fatalf("p2 still has members after turning off: %v", m)
+	}
+	if id, ok := e.app.users.TokenServer(ctx, "only-p2-token"); ok {
+		t.Fatalf("p2's token still known (server %q)", id)
+	}
+	if got := e.app.cfg.Get().PlexExtraServers; len(got) != 2 {
+		t.Fatalf("turning off removed profiles: %+v", got)
+	}
+}
+
+// Without extra servers turned on, an invite never meets Ether's own seat
+// count: an owner with many shares can still invite.
+func TestShareIgnoresSeatsWhenFeatureOff(t *testing.T) {
+	e := routingEnv(t)
+	if err := e.app.cfg.Update(func(c *config.Config) error {
+		c.Plex.ExtraServersEnabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.app.plexExtras.noteSeats("", 5000)
+	if _, err := e.app.plexExtras.pick(context.Background()); err == nil {
+		t.Fatal("pick should report no room with main over its seats")
+	}
+	// share must not consult pick: it goes to the main server. The fake
+	// plex.tv here does not accept shares, so only the error kind matters.
+	_, err := e.app.plexExtras.share(context.Background(), "someone", 0)
+	if err == errPlexServersFull {
+		t.Fatal("share refused for seats with extra servers off")
+	}
+}

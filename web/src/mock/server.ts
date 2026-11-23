@@ -13,6 +13,11 @@ import { createPrerollsMock } from "./prerolls";
 import { createVelaBrandingMock, VELA_SETTINGS_SCHEMA } from "./velaBranding";
 import type {
   ActivityDay,
+  AddonCatalogImportRequest,
+  AddonCatalogPreview,
+  AddonCatalogPreviewItem,
+  AddonCatalogSubscription,
+  AddonImportNameMode,
   AvailableRow,
   CollectionSpec,
   Device,
@@ -852,6 +857,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       expiresAt: string;
     }[],
     collections: [] as CollectionSpec[],
+    addonImports: [] as AddonCatalogSubscription[],
     overrides: new Map<number, TasteOverride[]>(),
     layout: {
       global: [
@@ -6200,6 +6206,314 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({ templates: TEMPLATES });
       case "GET /collections/template-bundles":
         return json({ bundles: TEMPLATE_BUNDLES });
+      case "GET /collections/addon-imports": {
+        const availableAddons = [
+          {
+            addonId: "cinemeta",
+            name: "Cinemeta",
+            host: "catalogue.example",
+            enabled: true,
+            catalogCount: 4,
+            hasImport: state.addonImports.some((s) => s.addonId === "cinemeta"),
+          },
+        ];
+        return json({
+          imports: state.addonImports.map((sub) => {
+            const linked = state.collections.filter((c) => c.addonSync?.addonId === sub.addonId);
+            return {
+              ...sub,
+              managedCount: linked.length,
+              removedCount: linked.filter((c) => c.addonSync?.removed).length,
+            };
+          }),
+          availableAddons,
+        });
+      }
+      case "POST /collections/addon-imports/preview": {
+        const req = (body ?? {}) as { addonId?: string; url?: string };
+        const addonId = req.addonId?.trim() || "addon.aiometadata";
+        const isCinemeta = addonId === "cinemeta" || (req.url ?? "").includes("cinemeta");
+        const resolvedId = isCinemeta ? "cinemeta" : addonId;
+        const addonName = isCinemeta ? "Cinemeta" : "AIOMetadata";
+        let host = isCinemeta ? "catalogue.example" : "aiometadata.example";
+        if (req.url) {
+          try {
+            host = new URL(req.url.replace(/^stremio:\/\//i, "https://")).host || host;
+          } catch {
+            // keep default host
+          }
+        }
+        const rawCatalogs: Omit<
+          AddonCatalogPreviewItem,
+          | "order"
+          | "hasDuplicateName"
+          | "imported"
+          | "existingCollectionId"
+          | "existingCollectionName"
+          | "existingParams"
+        >[] = isCinemeta
+          ? [
+              {
+                key: "movie/popular",
+                type: "movie",
+                id: "popular",
+                name: "Popular",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "series/popular",
+                type: "series",
+                id: "popular",
+                name: "Popular",
+                mediaType: "show",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/classics",
+                type: "movie",
+                id: "classics",
+                name: "Classics",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/search",
+                type: "movie",
+                id: "search",
+                name: "Search",
+                mediaType: "movie",
+                standalone: false,
+                requiredExtras: ["search"],
+                extras: [{ name: "search", label: "Search", required: true }],
+              },
+            ]
+          : [
+              {
+                key: "movie/popular",
+                type: "movie",
+                id: "popular",
+                name: "Popular",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "series/popular",
+                type: "series",
+                id: "popular",
+                name: "Popular",
+                mediaType: "show",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/trakt-trending",
+                type: "movie",
+                id: "trakt-trending",
+                name: "Trending Now",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "series/mdblist-acclaimed",
+                type: "series",
+                id: "mdblist-acclaimed",
+                name: "Critically Acclaimed",
+                mediaType: "show",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/by-genre",
+                type: "movie",
+                id: "by-genre",
+                name: "By Genre",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: false,
+                requiredExtras: ["genre"],
+                extras: [
+                  {
+                    name: "genre",
+                    label: "Genre",
+                    required: true,
+                    options: ["Sci-Fi", "Horror", "Documentary", "Animation"],
+                  },
+                ],
+              },
+              {
+                key: "movie/search",
+                type: "movie",
+                id: "search",
+                name: "Search",
+                mediaType: "movie",
+                standalone: false,
+                requiredExtras: ["search"],
+                extras: [{ name: "search", label: "Search", required: true }],
+              },
+            ];
+        const nameCounts = new Map<string, number>();
+        for (const c of rawCatalogs) {
+          const k = c.name.toLowerCase();
+          nameCounts.set(k, (nameCounts.get(k) ?? 0) + 1);
+        }
+        const catalogs: AddonCatalogPreviewItem[] = rawCatalogs.map((c, idx) => {
+          const existing = state.collections.find(
+            (col) => col.addonSync?.addonId === resolvedId && col.addonSync?.catalogKey === c.key,
+          );
+          const dup = (nameCounts.get(c.name.toLowerCase()) ?? 0) > 1;
+          return {
+            ...c,
+            order: idx + 1,
+            hasDuplicateName: dup,
+            imported: Boolean(existing?.id),
+            ...(existing?.id
+              ? { existingCollectionId: existing.id, existingCollectionName: existing.name }
+              : {}),
+          };
+        });
+        const preview: AddonCatalogPreview = {
+          addonId: resolvedId,
+          installed:
+            resolvedId === "cinemeta" || state.addonImports.some((s) => s.addonId === resolvedId),
+          addonName,
+          addonVersion: "2.4.0",
+          host,
+          addonDescription: isCinemeta
+            ? "Official Stremio movie and series catalogues"
+            : "Unified Trakt, MDBList, and TMDB catalogue add-on",
+          catalogs,
+          subscription: state.addonImports.find((s) => s.addonId === resolvedId),
+        };
+        return json(preview);
+      }
+      case "POST /collections/addon-imports": {
+        const req = (body ?? {}) as AddonCatalogImportRequest;
+        const addonId = req.addonId?.trim() || "addon.aiometadata";
+        const addonName = addonId === "cinemeta" ? "Cinemeta" : "AIOMetadata";
+        const folder = (req.folder ?? addonName).trim() || addonName;
+        const nameMode: AddonImportNameMode = req.nameMode ?? "autoType";
+        const nameAffix = (req.nameAffix ?? "").trim();
+        const now = new Date().toISOString();
+        const createdIds: string[] = [];
+        let createdCount = 0;
+        let updatedCount = 0;
+        const selections = req.items ?? [];
+        const baseNameOf = (sel: (typeof selections)[number]) => {
+          const keyParts = sel.key.split("/");
+          const raw = (keyParts[1] ?? sel.key).replace(/[-_]+/g, " ");
+          return raw.replace(/\b\w/g, (ch: string) => ch.toUpperCase());
+        };
+        const dupCounts = new Map<string, number>();
+        for (const s of selections) {
+          const n = (s.name?.trim() || baseNameOf(s)).toLowerCase();
+          dupCounts.set(n, (dupCounts.get(n) ?? 0) + 1);
+        }
+        selections.forEach((sel, idx) => {
+          const mediaType = sel.key.startsWith("series/") ? "show" : "movie";
+          const base = sel.name?.trim() || baseNameOf(sel);
+          const dup = (dupCounts.get(base.toLowerCase()) ?? 0) > 1;
+          let resolvedName = base;
+          if (!sel.name?.trim()) {
+            const typeLabel = mediaType === "show" ? "Series" : "Movies";
+            if (nameMode === "appendType" || (nameMode === "autoType" && dup)) {
+              resolvedName = `${base} (${typeLabel})`;
+            } else if (nameMode === "prefix" && nameAffix) {
+              resolvedName = `${nameAffix} ${base}`;
+            } else if (nameMode === "suffix" && nameAffix) {
+              resolvedName = `${base} ${nameAffix}`;
+            }
+          }
+          const existingIdx = state.collections.findIndex(
+            (c) => c.addonSync?.addonId === addonId && c.addonSync?.catalogKey === sel.key,
+          );
+          const pluginSource = {
+            kind: `plugin:${addonId}/${sel.key}`,
+            ...(sel.params ? { params: sel.params } : {}),
+          } as unknown as Source;
+          const spec = normalizeSpec({
+            name: resolvedName,
+            mediaType,
+            sources: [pluginSource],
+            rules: [],
+            limit: sel.maxItems ?? req.maxItems ?? 100,
+            refresh: req.refresh ?? "daily",
+            targets: req.targets ?? { collectionsTab: true, users: "all" },
+            folder,
+            sortOrder: idx + 1,
+            enabled: req.enabled ?? true,
+            addonSync: {
+              addonId,
+              addonName,
+              catalogType: sel.key.split("/")[0] ?? "movie",
+              catalogId: sel.key.split("/")[1] ?? sel.key,
+              catalogKey: sel.key,
+              managedName: resolvedName,
+            },
+          });
+          if (existingIdx >= 0) {
+            const existing = state.collections[existingIdx]!;
+            const saved: CollectionSpec = {
+              ...existing,
+              ...spec,
+              id: existing.id,
+              updatedAt: now,
+            };
+            state.collections[existingIdx] = saved;
+            updatedCount++;
+            if (saved.id) createdIds.push(saved.id);
+          } else {
+            const id = `c${seq++}`;
+            const saved: CollectionSpec = {
+              ...spec,
+              id,
+              updatedAt: now,
+              lastBuiltAt: now,
+              itemCount: Math.min(req.maxItems || 100, evaluate(spec).total || 18),
+            };
+            state.collections.push(saved);
+            createdCount++;
+            createdIds.push(id);
+          }
+        });
+        const sub: AddonCatalogSubscription = {
+          addonId,
+          addonName,
+          host: addonId === "cinemeta" ? "catalogue.example" : "aiometadata.example",
+          addonEnabled: true,
+          folder,
+          nameMode,
+          nameAffix,
+          followManifest: Boolean(req.followManifest),
+          refresh: req.refresh ?? "daily",
+          maxItems: req.maxItems ?? 100,
+          enabled: req.enabled ?? true,
+          targets: req.targets ?? { collectionsTab: true, users: "all" },
+          catalogCount: addonId === "cinemeta" ? 4 : 6,
+          managedCount: state.collections.filter((c) => c.addonSync?.addonId === addonId).length,
+          removedCount: 0,
+          lastSyncedAt: now,
+          lastSummary: { created: createdCount, updated: updatedCount, removed: 0, restored: 0 },
+        };
+        const subIdx = state.addonImports.findIndex((s) => s.addonId === addonId);
+        if (subIdx >= 0) state.addonImports[subIdx] = sub;
+        else state.addonImports.push(sub);
+        return json({
+          addonId,
+          addonName,
+          created: createdCount,
+          updated: updatedCount,
+          removed: 0,
+          restored: 0,
+          collectionIds: createdIds,
+          subscription: sub,
+        });
+      }
       case "POST /libraries/preview":
       case "POST /catalog/visibility/preview": {
         const reqLibId = Number((body as { libraryId?: number }).libraryId ?? 0);
@@ -6570,6 +6884,30 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       case "GET /insights/activity":
         return json({ days: activity() });
+    }
+
+    if (seg[0] === "collections" && seg[1] === "addon-imports" && seg[2]) {
+      const addonId = decodeURIComponent(seg[2]);
+      if (seg[3] === "sync" && method === "POST") {
+        const sub = state.addonImports.find((s) => s.addonId === addonId);
+        if (!sub) return err(404, "not_found", "no such add-on import");
+        sub.lastSyncedAt = new Date().toISOString();
+        return json({
+          addonId,
+          addonName: sub.addonName ?? addonId,
+          manifestChanged: false,
+          created: 0,
+          updated: 0,
+          removed: 0,
+          restored: 0,
+          subscription: sub,
+        });
+      }
+      if (!seg[3] && method === "DELETE") {
+        const idx = state.addonImports.findIndex((s) => s.addonId === addonId);
+        if (idx >= 0) state.addonImports.splice(idx, 1);
+        return json({ ok: true });
+      }
     }
 
     if (

@@ -177,6 +177,15 @@ func (c Catalog) Extras() []Extra {
 			out = append(out, Extra{Name: name, IsRequired: true})
 		}
 	}
+	if len(c.Genres) > 0 {
+		if i, ok := have["genre"]; ok {
+			if len(out[i].Options) == 0 {
+				out[i].Options = append([]string(nil), c.Genres...)
+			}
+		} else {
+			out = append(out, Extra{Name: "genre", Options: append([]string(nil), c.Genres...)})
+		}
+	}
 	return out
 }
 

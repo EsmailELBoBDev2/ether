@@ -206,6 +206,8 @@ func (s *Service) gather(ctx context.Context, sp *core.CollectionSpec, src core.
 	g := &Gather{Ctx: ctx, Svc: s, Spec: sp, Src: src, Rules: rules, Want: wantFor(sp), Kinds: kinds}
 	if k, ok := s.kindRegistry().Lookup(src.Kind); ok {
 		k.Gather(g)
+	} else if strings.HasPrefix(src.Kind, "plugin:") {
+		g.Fail(fmt.Errorf("catalogue source %s is no longer available from its add-on", src.Kind))
 	}
 	return g.Res
 }

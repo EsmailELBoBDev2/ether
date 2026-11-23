@@ -1,5 +1,9 @@
 import type {
   ActivityDay,
+  AddonCatalogImportList,
+  AddonCatalogImportRequest,
+  AddonCatalogImportResult,
+  AddonCatalogPreview,
   CollectionPreview,
   CollectionSpec,
   CollectionTemplate,
@@ -556,6 +560,26 @@ export const api = {
   applyTemplateBundle: (id: string) =>
     post<CollectionTemplateBundleApplyResult>(
       `/collections/template-bundles/${encodeURIComponent(id)}/apply`,
+    ),
+  addonCatalogImports: async (): Promise<AddonCatalogImportList> => {
+    const res = await apiFetch<AddonCatalogImportList | null>("/collections/addon-imports");
+    return {
+      imports: res?.imports ?? [],
+      availableAddons: res?.availableAddons ?? [],
+    };
+  },
+  previewAddonCatalogImport: (req: { url?: string; addonId?: string }) =>
+    post<AddonCatalogPreview>("/collections/addon-imports/preview", req),
+  applyAddonCatalogImport: (req: AddonCatalogImportRequest) =>
+    post<AddonCatalogImportResult>("/collections/addon-imports", req),
+  syncAddonCatalogImport: (addonId: string) =>
+    post<AddonCatalogImportResult>(
+      `/collections/addon-imports/${encodeURIComponent(addonId)}/sync`,
+    ),
+  deleteAddonCatalogImport: (addonId: string, deleteCollections = false) =>
+    apiFetch<null>(
+      `/collections/addon-imports/${encodeURIComponent(addonId)}${qs({ deleteCollections: deleteCollections ? 1 : undefined })}`,
+      { method: "DELETE" },
     ),
   artworkUrl: (id: string, w: number, version?: string) =>
     `${API_BASE}/collections/${encodeURIComponent(id)}/artwork${qs({ w, v: version })}`,

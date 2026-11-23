@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,21 +37,23 @@ type Bridge struct {
 	pers *personalize.Engine
 	tv   *livetv.Service
 
-	mu       sync.Mutex
-	listIDs  map[string][]string
-	livetvID map[string]string
+	mu          sync.Mutex
+	listIDs     map[string][]string
+	livetvID    map[string]string
+	pausedUntil map[string]time.Time
 }
 
 // Attach wires plugin list sources (collections + Home rows) and Live TV
 // channel sources to the plugin manager's lifecycle.
 func Attach(mgr *plugins.Manager, cols *collections.Service, pers *personalize.Engine, tv *livetv.Service) *Bridge {
 	b := &Bridge{
-		mgr:      mgr,
-		cols:     cols,
-		pers:     pers,
-		tv:       tv,
-		listIDs:  map[string][]string{},
-		livetvID: map[string]string{},
+		mgr:         mgr,
+		cols:        cols,
+		pers:        pers,
+		tv:          tv,
+		listIDs:     map[string][]string{},
+		livetvID:    map[string]string{},
+		pausedUntil: map[string]time.Time{},
 	}
 	if cols != nil && pers != nil {
 		cols.SetOnBuilt(pers.InvalidateOwnerRows)
@@ -96,6 +100,7 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 			continue
 		}
 		kind := &listSourceKind{
+			bridge:     b,
 			mgr:        b.mgr,
 			pluginID:   r.ID,
 			pluginName: r.Name,
@@ -157,6 +162,7 @@ func resolvePlainText(mgr *plugins.Manager, pluginID, raw, fallback string) stri
 }
 
 type listSourceKind struct {
+	bridge     *Bridge
 	mgr        *plugins.Manager
 	pluginID   string
 	pluginName string
@@ -333,6 +339,12 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 		return
 	}
 	preview := collections.IsPreview(g.Ctx)
+	if !preview && k.bridge != nil {
+		if until, paused := k.bridge.rateLimitUntil(k.pluginID); paused {
+			g.Fail(fmt.Errorf("add-on rate-limited until %s", until.UTC().Format(time.RFC3339)))
+			return
+		}
+	}
 	limit := k.maxItems(g.Src)
 	if preview && limit > collections.PreviewItems {
 		limit = collections.PreviewItems
@@ -357,6 +369,11 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 			metas, err = addon.Catalog(g.Ctx, cat, extra, limit-total)
 		}
 		if err != nil {
+			var he *stremio.HTTPError
+			rateLimited := errors.As(err, &he) && he.RateLimited()
+			if rateLimited && k.bridge != nil {
+				k.bridge.recordRateLimit(rec.ID, he.RetryAfter)
+			}
 			if preview && errors.Is(err, context.DeadlineExceeded) {
 				g.Fail(fmt.Errorf("plugin list preview timed out: %w", err))
 				return
@@ -366,7 +383,9 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 			}
 			// If earlier pages already yielded items, keep them and warn instead
 			// of discarding the whole list when a deep skip page fails.
-			if g.Strict && len(metas) == 0 && !read {
+			// On a rate limit during a background build, fail instead of wiping
+			// the collection's existing members.
+			if (g.Strict || (!preview && rateLimited)) && len(metas) == 0 && !read {
 				g.Fail(err)
 				return
 			}
@@ -439,6 +458,60 @@ func (f *healthFetcher) Fetch(ctx context.Context, route string, limit int64) ([
 		f.recorded = true
 	}
 	return body, err
+}
+
+func (b *Bridge) rateLimitUntil(pluginID string) (time.Time, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	until := b.pausedUntil[pluginID]
+	if until.IsZero() || !time.Now().Before(until) {
+		delete(b.pausedUntil, pluginID)
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+func (b *Bridge) recordRateLimit(pluginID, retryAfter string) {
+	wait := parseRetryAfterDuration(retryAfter)
+	until := time.Now().Add(wait)
+	b.mu.Lock()
+	if until.After(b.pausedUntil[pluginID]) {
+		b.pausedUntil[pluginID] = until
+	}
+	b.mu.Unlock()
+}
+
+func parseRetryAfterDuration(raw string) time.Duration {
+	const (
+		def = time.Minute
+		min = 15 * time.Second
+		max = 30 * time.Minute
+	)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		d := time.Duration(secs) * time.Second
+		if d < min {
+			return min
+		}
+		if d > max {
+			return max
+		}
+		return d
+	}
+	if at, err := http.ParseTime(raw); err == nil {
+		d := time.Until(at)
+		if d < min {
+			return min
+		}
+		if d > max {
+			return max
+		}
+		return d
+	}
+	return def
 }
 
 func firstNonEmpty(vals ...string) string {

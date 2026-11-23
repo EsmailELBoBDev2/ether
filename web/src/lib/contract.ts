@@ -166,7 +166,7 @@ export type CollectionSort =
   | "personal"
   | "source";
 
-type Refresh = "live" | "hourly" | "daily" | "weekly";
+export type Refresh = "live" | "hourly" | "daily" | "weekly";
 export type ArtworkMode = "auto" | "collage" | "backdrop" | "tmdb" | "custom";
 export type DeviceClass = "tv" | "mobile" | "web" | "desktop";
 
@@ -214,8 +214,160 @@ export interface CollectionSpec {
   updatedAt?: string;
   lastBuiltAt?: string;
   itemCount?: number;
+  warnings?: string[];
   /** Set by the server on built-in collections (read-only in the studio). */
   builtIn?: boolean;
+  /** Optional folder name grouping collections in the console and frontends. */
+  folder?: string;
+  /** Optional 1-based display order within a folder or add-on import. */
+  sortOrder?: number;
+  /** Present when this collection is kept in sync with a Stremio add-on catalogue. */
+  addonSync?: CollectionAddonSync | null;
+}
+
+export interface CollectionAddonSync {
+  addonId: string;
+  addonName?: string;
+  catalogType: string;
+  catalogId: string;
+  catalogKey: string;
+  managedName?: string;
+  removed?: boolean;
+}
+
+export type AddonImportNameMode = "autoType" | "plain" | "appendType" | "prefix" | "suffix";
+
+export interface AddonCatalogExtra {
+  name: string;
+  label: string;
+  required?: boolean;
+  options?: string[];
+}
+
+export interface AddonCatalogPreviewItem {
+  key: string;
+  type: "movie" | "series" | string;
+  mediaType: "movie" | "show";
+  id: string;
+  name: string;
+  order: number;
+  supportsSkip?: boolean;
+  standalone: boolean;
+  extras?: AddonCatalogExtra[];
+  requiredExtras?: string[];
+  hasDuplicateName?: boolean;
+  imported?: boolean;
+  existingCollectionId?: string;
+  existingCollectionName?: string;
+  existingParams?: Record<string, string>;
+  existingMaxItems?: number;
+  existingRemoved?: boolean;
+}
+
+export interface AddonCatalogRemovedItem {
+  id: string;
+  name: string;
+  catalogType: string;
+  catalogId: string;
+  catalogKey: string;
+}
+
+export interface AddonImportSkippedItem {
+  key: string;
+  name: string;
+  reason: string;
+}
+
+export interface AddonImportSummary {
+  created: number;
+  updated: number;
+  removed: number;
+  restored: number;
+  skipped?: AddonImportSkippedItem[];
+}
+
+export interface AddonCatalogSubscription {
+  addonId: string;
+  addonName?: string;
+  addonLogo?: string;
+  host?: string;
+  addonEnabled: boolean;
+  folder: string;
+  nameMode: AddonImportNameMode;
+  nameAffix?: string;
+  followManifest: boolean;
+  refresh: Refresh;
+  maxItems: number;
+  enabled: boolean;
+  targets: CollectionSpec["targets"];
+  catalogCount: number;
+  managedCount: number;
+  removedCount: number;
+  lastSyncedAt?: string;
+  lastSummary?: AddonImportSummary;
+}
+
+export interface AddonCatalogAvailable {
+  addonId: string;
+  name: string;
+  logo?: string;
+  host?: string;
+  enabled: boolean;
+  catalogCount: number;
+  hasImport?: boolean;
+}
+
+export interface AddonCatalogImportList {
+  imports: AddonCatalogSubscription[];
+  availableAddons: AddonCatalogAvailable[];
+}
+
+export interface AddonCatalogPreview {
+  addonId: string;
+  installed: boolean;
+  addonName: string;
+  addonVersion?: string;
+  addonDescription?: string;
+  addonLogo?: string;
+  host?: string;
+  configureFirst?: boolean;
+  subscription?: AddonCatalogSubscription;
+  catalogs: AddonCatalogPreviewItem[];
+  removedCollections?: AddonCatalogRemovedItem[];
+}
+
+export interface AddonCatalogImportItem {
+  key: string;
+  name?: string;
+  params?: Record<string, string>;
+  maxItems?: number;
+}
+
+export interface AddonCatalogImportRequest {
+  url?: string;
+  addonId?: string;
+  folder?: string;
+  nameMode?: AddonImportNameMode;
+  nameAffix?: string;
+  followManifest: boolean;
+  refresh?: Refresh;
+  maxItems?: number;
+  enabled: boolean;
+  targets: CollectionSpec["targets"];
+  items: AddonCatalogImportItem[];
+}
+
+export interface AddonCatalogImportResult {
+  addonId: string;
+  addonName: string;
+  manifestChanged?: boolean;
+  created: number;
+  updated: number;
+  removed: number;
+  restored: number;
+  skipped?: AddonImportSkippedItem[];
+  collectionIds?: string[];
+  subscription: AddonCatalogSubscription;
 }
 
 export interface CollectionPreview {

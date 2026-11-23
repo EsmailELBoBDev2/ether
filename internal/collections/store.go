@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -238,7 +239,72 @@ func (s *Service) readRows(ctx context.Context) ([]*specRow, error) {
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	orderRowsForDisplay(out)
+	return out, nil
+}
+
+// orderRowsForDisplay keeps built-ins partitioned after owner collections while
+// keeping collections from the same add-on import or folder grouped at their
+// earliest member's position and ordered by SortOrder (1-based) then id.
+// Collections without a folder or add-on sync preserve exact id order.
+func orderRowsForDisplay(rows []*specRow) {
+	if len(rows) < 2 {
+		return
+	}
+	groupOf := func(r *specRow) string {
+		if r.builtin {
+			return ""
+		}
+		if r.spec.AddonSync != nil && r.spec.AddonSync.AddonID != "" {
+			return "addon:" + r.spec.AddonSync.AddonID
+		}
+		if r.spec.Folder != "" {
+			return "folder:" + strings.ToLower(r.spec.Folder)
+		}
+		return ""
+	}
+	hasGrouped := false
+	anchors := map[string]int64{}
+	for _, r := range rows {
+		g := groupOf(r)
+		if g == "" {
+			continue
+		}
+		hasGrouped = true
+		if cur, ok := anchors[g]; !ok || r.id < cur {
+			anchors[g] = r.id
+		}
+	}
+	if !hasGrouped {
+		return
+	}
+	anchorOf := func(r *specRow) int64 {
+		if g := groupOf(r); g != "" {
+			return anchors[g]
+		}
+		return r.id
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.builtin != b.builtin {
+			return !a.builtin
+		}
+		aa, ab := anchorOf(a), anchorOf(b)
+		if aa != ab {
+			return aa < ab
+		}
+		ao, bo := a.spec.SortOrder, b.spec.SortOrder
+		if (ao > 0) != (bo > 0) {
+			return ao > 0
+		}
+		if ao != bo {
+			return ao < bo
+		}
+		return a.id < b.id
+	})
 }
 
 // rowByID finds a row by public id (number or built-in slug).
@@ -445,15 +511,32 @@ func (s *Service) insertSpecTx(ctx context.Context, tx *sql.Tx, sp core.Collecti
 }
 
 func (s *Service) updateRow(ctx context.Context, id int64, sp core.CollectionSpec, keepBuild bool) error {
+	return s.updateRowWarnings(ctx, id, sp, keepBuild, nil, false)
+}
+
+func (s *Service) updateRowWarnings(ctx context.Context, id int64, sp core.CollectionSpec, keepBuild bool, warnings []string, setWarnings bool) error {
 	js, err := specJSON(sp)
 	if err != nil {
 		return err
 	}
-	q := `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, build_hash='' WHERE id=?`
-	if keepBuild {
-		q = `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=? WHERE id=?`
+	var res sql.Result
+	if setWarnings {
+		wj, _ := json.Marshal(warnings)
+		if warnings == nil {
+			wj = []byte("[]")
+		}
+		q := `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, warnings_json=?, build_hash='' WHERE id=?`
+		if keepBuild {
+			q = `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, warnings_json=? WHERE id=?`
+		}
+		res, err = s.db.ExecContext(ctx, q, js, store.BoolInt(sp.Enabled), s.now().Unix(), string(wj), id)
+	} else {
+		q := `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, build_hash='' WHERE id=?`
+		if keepBuild {
+			q = `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=? WHERE id=?`
+		}
+		res, err = s.db.ExecContext(ctx, q, js, store.BoolInt(sp.Enabled), s.now().Unix(), id)
 	}
-	res, err := s.db.ExecContext(ctx, q, js, store.BoolInt(sp.Enabled), s.now().Unix(), id)
 	if err != nil {
 		return err
 	}

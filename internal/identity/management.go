@@ -2,6 +2,8 @@ package identity
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"strconv"
 	"time"
@@ -38,6 +40,48 @@ func (l *Local) UpsertPassword(ctx context.Context, viewerID int64, username, pa
 		return l.SetPassword(ctx, viewerID, username, password)
 	}
 	return l.Create(ctx, viewerID, username, password)
+}
+
+// ClearPassword removes a viewer's local password hash without removing the
+// viewer row or its local link (used by Jellyfin/Emby ResetPassword).
+func (l *Local) ClearPassword(ctx context.Context, viewerID int64) error {
+	if viewerID <= 0 {
+		return core.ErrNotFound
+	}
+	_, err := l.db.ExecContext(ctx, `UPDATE identity_links SET password_hash='' WHERE viewer_id=? AND provider='local' AND EXISTS(SELECT 1 FROM auth_users WHERE id=? AND origin<>'dlna_guest')`, viewerID, viewerID)
+	return err
+}
+
+// LocalUsername returns the viewer's existing local link subject, or "" if none.
+func (l *Local) LocalUsername(ctx context.Context, viewerID int64) (string, error) {
+	var subject string
+	err := l.db.QueryRowContext(ctx, `SELECT subject FROM identity_links WHERE viewer_id=? AND provider='local' ORDER BY id LIMIT 1`, viewerID).Scan(&subject)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return subject, nil
+}
+
+// LocalPasswordViewerIDs returns the set of viewer IDs (active or paused) that
+// currently have a non-empty local password configured, in one query.
+func (l *Local) LocalPasswordViewerIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := l.db.QueryContext(ctx, `SELECT DISTINCT viewer_id FROM identity_links WHERE provider='local' AND password_hash<>''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 type GrantInfo struct {

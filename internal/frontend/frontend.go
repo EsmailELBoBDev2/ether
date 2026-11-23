@@ -487,6 +487,7 @@ type Host struct {
 	Experience         Experience
 	ViewerCapabilities ViewerCapabilitiesFunc
 	ViewerPolicy       ViewerPolicy
+	ViewerAdmin        ViewerAdmin
 	Capabilities       Capabilities
 	Preferences        Preferences
 	TrackPreferences   TrackPreferenceService

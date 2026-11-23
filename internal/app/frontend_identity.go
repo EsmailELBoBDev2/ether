@@ -25,6 +25,7 @@ type surfaceIdentity struct {
 	resolver    *identity.Resolver
 	local       *identity.Local
 	grants      *identity.Grants
+	apiKeys     *identity.APIKeys
 	quick       *identity.QuickConnect
 	times       *identity.ViewerTimes
 	login, poll *identity.LoginLimiter
@@ -37,8 +38,36 @@ func (s surfaceIdentity) Resolve(ctx context.Context, credential string) (*core.
 	return s.resolver.Resolve(ctx, string(s.surface), credential)
 }
 
+func (s surfaceIdentity) ResolveAPIKey(ctx context.Context, key string) (*core.Viewer, frontend.APIKeyInfo, error) {
+	if s.apiKeys == nil || (s.surface != "jellyfin" && s.surface != "emby") {
+		return nil, frontend.APIKeyInfo{}, core.ErrUnauthorized
+	}
+	return s.apiKeys.Resolve(ctx, string(s.surface), key)
+}
+
+func (s surfaceIdentity) ListAPIKeys(ctx context.Context) ([]frontend.APIKeyInfo, error) {
+	if s.apiKeys == nil || (s.surface != "jellyfin" && s.surface != "emby") {
+		return nil, core.ErrUnauthorized
+	}
+	return s.apiKeys.List(ctx, string(s.surface))
+}
+
+func (s surfaceIdentity) CreateAPIKey(ctx context.Context, appName string) (frontend.APIKeyInfo, string, error) {
+	if s.apiKeys == nil || (s.surface != "jellyfin" && s.surface != "emby") {
+		return frontend.APIKeyInfo{}, "", core.ErrUnauthorized
+	}
+	return s.apiKeys.Create(ctx, string(s.surface), appName)
+}
+
+func (s surfaceIdentity) RevokeAPIKey(ctx context.Context, keyOrHandle string) (int64, error) {
+	if s.apiKeys == nil || (s.surface != "jellyfin" && s.surface != "emby") {
+		return 0, core.ErrUnauthorized
+	}
+	return s.apiKeys.Revoke(ctx, string(s.surface), keyOrHandle)
+}
+
 func (s surfaceIdentity) Accept(ctx context.Context, token string) (*core.Viewer, frontend.CredentialAcceptance, error) {
-	if !s.policy.ExternalIdentity || core.IsGrantCredential(token) {
+	if !s.policy.ExternalIdentity || core.IsGrantCredential(token) || core.IsAPIKeyCredential(token) {
 		return nil, frontend.CredentialAcceptance{}, core.ErrUnauthorized
 	}
 	if acc, ok := s.users.(frontend.CredentialAcceptor); ok {
@@ -100,7 +129,15 @@ func (s surfaceIdentity) ViewerTimes(ctx context.Context, credential string, tar
 	if s.times == nil || target <= 0 {
 		return frontend.ViewerTimes{}, core.ErrUnauthorized
 	}
-	viewer, err := s.Resolve(ctx, credential)
+	var (
+		viewer *core.Viewer
+		err    error
+	)
+	if core.IsAPIKeyCredential(credential) {
+		viewer, _, err = s.ResolveAPIKey(frontend.WithQuietIdentity(ctx), credential)
+	} else {
+		viewer, err = s.Resolve(ctx, credential)
+	}
 	if err != nil {
 		return frontend.ViewerTimes{}, err
 	}
@@ -529,3 +566,5 @@ func (s surfaceIdentity) RedeemOriginWebCode(ctx context.Context, code string, d
 type plexAccountAuthenticator interface {
 	AuthenticatePlexAccount(context.Context, string) (*frontend.User, int64, error)
 }
+
+var _ frontend.APIKeyIdentity = surfaceIdentity{}

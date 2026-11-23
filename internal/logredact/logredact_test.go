@@ -229,3 +229,27 @@ func TestMagnetAndTrackerCredentials(t *testing.T) {
 		t.Fatalf("benign magnet modified:\n in: %s\ngot: %s", benign, got)
 	}
 }
+
+func TestStringRemovesAPIKeysAndMediaBrowserPasswords(t *testing.T) {
+	apiKey := "ek1_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456"
+	for _, in := range []string{
+		"X-Emby-Token: " + apiKey,
+		"X-MediaBrowser-Token: " + apiKey,
+		`Authorization: MediaBrowser Token="` + apiKey + `"`,
+		"GET /System/Info?api_key=" + apiKey,
+		"DELETE /Auth/Keys/" + apiKey,
+		"POST /Auth/Keys/" + apiKey + "/Delete",
+		"DELETE /Auth/Keys/" + secret,
+		`{"AccessToken":"` + apiKey + `"}`,
+		`{"NewPw":"` + secret + `","CurrentPw":"` + secret + `"}`,
+		`{"CurrentPassword":"` + secret + `","Pw":"` + secret + `"}`,
+	} {
+		out := String(in)
+		if strings.Contains(out, apiKey) || strings.Contains(out, secret) {
+			t.Errorf("leaked credential: %q -> %q", in, out)
+		}
+		if !strings.Contains(out, Mask) {
+			t.Errorf("missing mask: %q -> %q", in, out)
+		}
+	}
+}

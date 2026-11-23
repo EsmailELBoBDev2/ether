@@ -75,6 +75,7 @@ func (a *App) buildAdmin() http.Handler {
 		AuthenticatePlex: a.users.Authenticate, LinkPlex: a.users.LinkPlex, LocalIdentity: local, IdentityGrants: grants, IdentityLimiter: limiter, OwnerCredentialChanged: a.syncOwnerRecovery, PollLimiter: pollLimiter, QuickConnect: quick, RefreshViewers: a.users.RefreshViewers, OwnerConfigured: func(ctx context.Context) bool { _, err := a.users.Owner(ctx); return err == nil },
 		Config:           a.cfg,
 		Frontends:        a.frontends.control,
+		FrontendAPIKeys:  a.mustAPIKeyStore(),
 		Vela:             a.velaManager(),
 		VelaSkins:        a.velaSkinsAdmin(),
 		Extensions:       a.extensionHandlers(),

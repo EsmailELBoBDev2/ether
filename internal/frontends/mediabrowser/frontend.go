@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -178,6 +179,9 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 	if err := inst.dashboardRoutes(); err != nil {
 		return nil, err
 	}
+	if err := inst.adminRoutes(); err != nil {
+		return nil, err
+	}
 	mounted = true
 	return inst, nil
 }
@@ -197,8 +201,10 @@ type instance struct {
 	extraClient *http.Client
 	// webClient installs and serves the official Jellyfin Web build. Nil on
 	// Emby and when the host supplies no clients directory.
-	webClient *webclient.Installer
-	anon      *anonIndex
+	webClient               *webclient.Installer
+	anon                    *anonIndex
+	keyReveals              apiKeyRevealStore
+	unsupportedPolicyLogged sync.Map
 }
 
 func (i *instance) Handler() http.Handler {

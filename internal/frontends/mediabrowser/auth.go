@@ -83,12 +83,34 @@ type principalKey struct{}
 type principal struct {
 	viewer *frontend.Viewer
 	token  string
+	apiKey bool
 }
 
 func (i *instance) authenticate(r *http.Request) (*frontend.Viewer, string, error) {
 	token := authhdr.MediaBrowserToken(r)
 	if token == "" {
 		return nil, "", errors.New("missing credential")
+	}
+	if frontend.IsAPIKeyCredential(token) {
+		apiKeys, ok := i.host.Identity.(frontend.APIKeyIdentity)
+		if !ok {
+			return nil, "", errors.New("api keys unavailable")
+		}
+		v, info, err := apiKeys.ResolveAPIKey(r.Context(), token)
+		if err != nil || v == nil || !v.IsOwner || v.Delegated {
+			i.logIdentityFailure("api-key", err)
+			return nil, "", errors.New("invalid api key")
+		}
+		dev := device(r)
+		if dev.Client == "" {
+			dev.Client = info.AppName
+			dev.Product = info.AppName
+		}
+		if dev.ID == "" {
+			dev.ID = "apikey:" + info.Handle
+		}
+		*r = *r.WithContext(context.WithValue(r.Context(), verifiedDeviceKey{}, dev))
+		return v, token, nil
 	}
 	v, err := i.host.Identity.Resolve(r.Context(), token)
 	if err == nil && v != nil {
@@ -271,12 +293,15 @@ func (i *instance) userDTO(r *http.Request, v *frontend.Viewer) map[string]any {
 		result["HasPassword"] = *caps.HasLocalPassword
 		result["HasConfiguredPassword"] = *caps.HasLocalPassword
 		if i.host.Config != nil {
-			if enabled, ok := i.host.Config()["publicViewerPicker"].(bool); ok && enabled && *caps.HasLocalPassword {
+			if enabled, ok := i.host.Config()["publicViewerPicker"].(bool); ok && enabled && *caps.HasLocalPassword && !v.Hidden {
 				policy["IsHidden"] = false
 			}
 		}
 	}
-	if caps.AllowedLibraries != nil {
+	if len(v.AllowedLibraries) == 0 {
+		policy["EnableAllFolders"] = true
+		policy["EnabledFolders"] = []string{}
+	} else if caps.AllowedLibraries != nil {
 		folders := make([]string, 0, len(*caps.AllowedLibraries))
 		for _, view := range *caps.AllowedLibraries {
 			n, e := ids.ParseDecimal(view.ID)
@@ -285,6 +310,15 @@ func (i *instance) userDTO(r *http.Request, v *frontend.Viewer) map[string]any {
 			}
 			guid, e := ids.GUID(ids.View, n)
 			if e == nil {
+				folders = append(folders, guid)
+			}
+		}
+		policy["EnableAllFolders"] = false
+		policy["EnabledFolders"] = folders
+	} else {
+		folders := make([]string, 0, len(v.AllowedLibraries))
+		for _, libID := range v.AllowedLibraries {
+			if guid, e := ids.GUID(ids.View, int64(libID)); e == nil {
 				folders = append(folders, guid)
 			}
 		}
@@ -642,22 +676,14 @@ func (i *instance) routes() error {
 			}
 			jsonReply(w, i.userDTOWithTimes(r, v, token))
 		}},
-		{"GET", "/Users/{userId}", func(w http.ResponseWriter, r *http.Request) {
-			v, token, err := i.viewer(r)
-			if errors.Is(err, errViewerScope) {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-			if err != nil || v == nil {
-				http.Error(w, "Unauthorized", 401)
-				return
-			}
-			jsonReply(w, i.userDTOWithTimes(r, v, token))
-		}},
+		{"GET", "/Users/{userId}", i.getUserByID},
 		{"POST", "/Sessions/Logout", func(w http.ResponseWriter, r *http.Request) {
 			_, token, err := i.viewer(r)
 			if err == nil {
-				err = i.host.Identity.Revoke(r.Context(), token)
+				i.keyReveals.forgetCreator(token)
+				if !frontend.IsAPIKeyCredential(token) {
+					err = i.host.Identity.Revoke(r.Context(), token)
+				}
 			}
 			if err != nil {
 				identityError(w, err)

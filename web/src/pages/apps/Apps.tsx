@@ -25,6 +25,7 @@ import { isPlainObject } from "../../lib/format";
 import { useAsync, useInterval } from "../../lib/hooks";
 import { viewerStatus } from "../viewers/ViewerStatus";
 import { XtreamLogins } from "./XtreamLogins";
+import { APIKeysSection } from "./APIKeysSection";
 import { AwayFromHome } from "./AwayFromHome";
 import { PlexApp } from "./PlexApp";
 import { appLabel, appPath, appRank } from "./catalog";
@@ -1007,6 +1008,7 @@ function ProtocolSettings({
             }
           />
         ) : null}
+        {(id === "jellyfin" || id === "emby") && !hidden ? <APIKeysSection id={id} /> : null}
         {id === "xtream" && info?.enabled ? <XtreamLogins /> : null}
         {id === "jellyfin" || id === "emby" ? (
           <SettingsSection

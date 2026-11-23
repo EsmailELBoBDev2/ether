@@ -191,6 +191,7 @@ type DirectDeliverer = core.DirectDeliverer
 
 var WithRangeResponse = core.WithRangeResponse
 var IsGrantCredential = core.IsGrantCredential
+var IsAPIKeyCredential = core.IsAPIKeyCredential
 
 // HLS output evidence is shared with adapters without exposing the encoder.
 type HLSRung = core.HLSRung

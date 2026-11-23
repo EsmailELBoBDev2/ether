@@ -550,6 +550,10 @@ func (i *instance) serveTaglessImage(w http.ResponseWriter, r *http.Request) {
 		i.servePublicImage(w, r, wireID, imageType, index)
 		return
 	}
+	if frontend.IsAPIKeyCredential(token) {
+		i.servePublicImage(w, r, wireID, imageType, index)
+		return
+	}
 	r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token}))
 	if v, token, err = i.viewer(r); err != nil || v == nil {
 		mediaBrowserError(w, r, http.StatusNotFound)

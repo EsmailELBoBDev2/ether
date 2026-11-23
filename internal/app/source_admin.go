@@ -53,7 +53,7 @@ func (a *App) verifySourceOwner(ctx context.Context, credential string) error {
 	}
 	user, err := grants.Resolve(ctx, "owner", credential)
 	if err != nil {
-		if core.IsGrantCredential(credential) {
+		if core.IsGrantCredential(credential) || core.IsAPIKeyCredential(credential) {
 			return sourceadmin.ErrDenied
 		}
 		if auth.IsOwnerSession(credential) {

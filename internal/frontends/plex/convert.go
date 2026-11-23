@@ -164,14 +164,14 @@ func (s *Server) posterGeneration() uint64 {
 		return 0
 	}
 	if d := s.discovery(); d != nil && d.Overlays != nil {
-		if pg, ok := d.Overlays.(interface{ PosterGeneration() uint64 }); ok {
+		if pg, ok := d.Overlays.(frontend.PosterGenerationSource); ok {
 			if gen := pg.PosterGeneration(); gen > 0 {
 				return gen
 			}
 		}
 	}
 	if art := s.getHost().Artwork; art != nil {
-		if pg, ok := art.(interface{ PosterGeneration() uint64 }); ok {
+		if pg, ok := art.(frontend.PosterGenerationSource); ok {
 			return pg.PosterGeneration()
 		}
 	}

@@ -1413,3 +1413,9 @@ type QualitySessions interface {
 type VideoTranscodingPolicy interface {
 	VideoTranscodingDisabled(*User) bool
 }
+
+// PosterGenerationSource reports the poster presentation generation, which
+// advances each time the owner saves poster settings so apps refetch posters.
+type PosterGenerationSource interface {
+	PosterGeneration() uint64
+}

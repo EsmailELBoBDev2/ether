@@ -778,7 +778,7 @@ func selectArchiveMemberForMIME(members []archive.Member, wantName string, wantI
 			return archive.Member{}, -1, fmt.Errorf("kindstream: track hint (disc=%d number=%d title=%q) matched multiple members: %w", nt.Disc, nt.Number, nt.Title, core.ErrWrongContent)
 		}
 		if !ok {
-			return archive.Member{}, -1, fmt.Errorf("kindstream: archive holds no track matching (disc=%d number=%d title=%q): %w", nt.Disc, nt.Number, nt.Title, core.ErrNoUsableFile)
+			return archive.Member{}, -1, fmt.Errorf("kindstream: archive holds no track matching (disc=%d number=%d title=%q): %w: %w", nt.Disc, nt.Number, nt.Title, core.ErrNoUsableFile, core.ErrWrongContent)
 		}
 		if nonDir[idx].Size <= 0 {
 			return archive.Member{}, -1, fmt.Errorf("kindstream: archive member %q is empty: %w", nonDir[idx].Name, core.ErrNoUsableFile)

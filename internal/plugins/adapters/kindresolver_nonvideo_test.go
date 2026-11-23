@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/archive/archivetest"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -194,7 +195,7 @@ func TestKindResolverUsenetLooseAudioAndFailFastGrabs(t *testing.T) {
 	}
 	_ = bs.Close()
 
-	// 2. 10 unusable non-video Usenet sources stop after 1 NZB grab (not 10).
+	// 2. 10 unusable non-video Usenet sources obey DefaultMaxNonVideoReleaseGrabs (not 10).
 	idx.grabs.Store(0)
 	var badSources []core.PlayableSource
 	for i := 1; i <= 10; i++ {
@@ -208,7 +209,65 @@ func TestKindResolverUsenetLooseAudioAndFailFastGrabs(t *testing.T) {
 	if _, _, err := kindstream.OpenSources(ctx, badSources, deps); err == nil {
 		t.Fatal("expected error for 10 unusable non-video NZBs")
 	}
-	if grabs := idx.grabs.Load(); grabs != 1 {
-		t.Fatalf("10 unusable non-video Usenet sources burned %d grabs, want 1", grabs)
+	if grabs := idx.grabs.Load(); int(grabs) != kindstream.DefaultMaxNonVideoReleaseGrabs {
+		t.Fatalf("10 unusable non-video Usenet sources burned %d grabs, want %d", grabs, kindstream.DefaultMaxNonVideoReleaseGrabs)
+	}
+
+	// 3. One release's archive missing a requested track moves on to the next
+	// release instead of skipping it, and reports a media-neutral error (#753).
+	track10Data := append([]byte("fLaC"), bytes.Repeat([]byte("track10-payload"), 2000)...)
+	rarMiss, err := archivetest.BuildRAR([]archivetest.RARFile{
+		{Name: "01 - Opening.flac", Data: flacData},
+	}, archivetest.RAROptions{Version: 5})
+	if err != nil {
+		t.Fatalf("BuildRAR(miss): %v", err)
+	}
+	rarHit, err := archivetest.BuildRAR([]archivetest.RARFile{
+		{Name: "01 - Opening.flac", Data: flacData},
+		{Name: "10 - 7 rings.flac", Data: track10Data},
+	}, archivetest.RAROptions{Version: 5})
+	if err != nil {
+		t.Fatalf("BuildRAR(hit): %v", err)
+	}
+	idx.nzbs["https://idx1.test/rel-a.nzb"] = buildSingleFileNZB(fetcher, "release-a.rar", rarMiss[0])
+	idx.nzbs["https://idx2.test/rel-b.nzb"] = buildSingleFileNZB(fetcher, "release-b.rar", rarHit[0])
+	idx.grabs.Store(0)
+
+	var failedErrs []error
+	trackDeps := deps
+	trackDeps.OnSourceSkipped = func(failures []kindstream.SourceFailure, _ core.PlayableSource) {
+		for _, f := range failures {
+			failedErrs = append(failedErrs, f.Err)
+		}
+	}
+	wantTrack := &core.TrackHint{Disc: 1, Number: 10, Title: "7 rings"}
+	bs2, win2, err := kindstream.OpenSources(ctx, []core.PlayableSource{
+		{
+			ID:      "rel-a",
+			Pattern: kindstream.PatternRelease,
+			MIME:    "audio/flac",
+			Release: &core.ReleaseHint{NZBURL: "https://idx1.test/rel-a.nzb", Track: wantTrack},
+		},
+		{
+			ID:      "rel-b",
+			Pattern: kindstream.PatternRelease,
+			MIME:    "audio/flac",
+			Release: &core.ReleaseHint{NZBURL: "https://idx2.test/rel-b.nzb", Track: wantTrack},
+		},
+	}, trackDeps)
+	if err != nil {
+		t.Fatalf("OpenSources(track miss -> working release): %v", err)
+	}
+	gotTrack10 := make([]byte, bs2.Size())
+	if n, rerr := bs2.ReadAt(gotTrack10, 0); (rerr != nil && rerr != io.EOF) || int64(n) != bs2.Size() || !bytes.Equal(gotTrack10, track10Data) {
+		_ = bs2.Close()
+		t.Fatalf("track 10 read mismatch: n=%d err=%v", n, rerr)
+	}
+	_ = bs2.Close()
+	if win2.ID != "rel-b" || idx.grabs.Load() != 2 {
+		t.Fatalf("winner=%q grabs=%d, want (rel-b, 2)", win2.ID, idx.grabs.Load())
+	}
+	if len(failedErrs) != 1 || strings.Contains(failedErrs[0].Error(), "video") || !strings.Contains(failedErrs[0].Error(), "no playable file in release") {
+		t.Fatalf("candidate 1 failure = %v, want single media-neutral no playable file error", failedErrs)
 	}
 }

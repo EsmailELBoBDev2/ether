@@ -235,55 +235,37 @@ func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSo
 	}
 }
 
-type releaseCandidateShape struct {
-	protocol string // "usenet" or "torrent"
-	selector string // "explicit_file", "archive_member", or "auto"
-	family   string // nzb.MIMEFamily(effMIME)
-}
-
-func classifyNonVideoRelease(cand core.PlayableSource, defaultMIME string) (nonVideo bool, shape releaseCandidateShape, isUsenet bool) {
+func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool {
+	if strings.TrimSpace(cand.BlobRef) != "" {
+		return false
+	}
 	pattern := strings.ToLower(strings.TrimSpace(cand.Pattern))
 	if pattern == "" && cand.Release != nil && cand.Container == nil {
 		pattern = PatternRelease
 	}
 	if pattern != PatternRelease || cand.Release == nil {
-		return false, releaseCandidateShape{}, false
+		return false
 	}
 	effMIME := nzb.NormalizeMIME(cand.MIME)
 	if effMIME == "" {
 		effMIME = nzb.NormalizeMIME(defaultMIME)
 	}
 	if strings.HasPrefix(effMIME, "video/") {
-		return false, releaseCandidateShape{}, false
+		return false
 	}
 	explicitFile := hasExplicitReleaseSelector(*cand.Release)
 	archiveMember := strings.TrimSpace(cand.Release.FileHint) != "" ||
 		(cand.Release.Track != nil && (cand.Release.Track.Number > 0 || strings.TrimSpace(cand.Release.Track.Title) != "")) ||
 		(cand.Container != nil && (strings.TrimSpace(cand.Container.Member) != "" || cand.Container.MemberIndex != nil))
 	if !nzb.IsNonVideoMIME(effMIME) && !explicitFile && !archiveMember {
-		return false, releaseCandidateShape{}, false
+		return false
 	}
 
 	r := cand.Release
 	hasNZB := strings.TrimSpace(r.NZBURL) != "" || (r.Candidate != nil && strings.TrimSpace(r.Candidate.NZBURL) != "")
 	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" || strings.TrimSpace(r.TorrentURL) != "" ||
 		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != "" || strings.TrimSpace(r.Candidate.TorrentURL) != ""))
-	isUsenet = hasNZB && !hasTorrent
-	proto := "torrent"
-	if isUsenet {
-		proto = "usenet"
-	}
-	sel := "auto"
-	if explicitFile {
-		sel = "explicit_file"
-	} else if archiveMember {
-		sel = "archive_member"
-	}
-	return true, releaseCandidateShape{
-		protocol: proto,
-		selector: sel,
-		family:   nzb.MIMEFamily(effMIME),
-	}, isUsenet
+	return hasNZB && !hasTorrent
 }
 
 func effectivePattern(src core.PlayableSource) string {
@@ -498,10 +480,11 @@ func routeTieredSources(sources []core.PlayableSource, router SourceRouter, relF
 // core.ErrSourceUnavailable; otherwise all-failed candidates wrap
 // core.ErrSourceUnavailable (spec §4.5).
 //
-// For non-video release candidates (#659), OpenSources caps Usenet release
-// grabs per play (DefaultMaxNonVideoReleaseGrabs) and stops trying further
-// candidates of the same shape after the first structural core.ErrNoUsableFile
-// verdict so one failed play never burns a full page of indexer grabs.
+// For non-video Usenet release candidates (#659), OpenSources caps grabs per
+// play (DefaultMaxNonVideoReleaseGrabs) so a failing play never burns a full
+// page of indexer grabs, while per-release content failures (such as a missing
+// track, missing archive member, missing articles, or an archive with no usable
+// file) still advance to later releases.
 func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) (ByteSource, core.PlayableSource, error) {
 	if len(sources) == 0 {
 		return nil, core.PlayableSource{}, core.ErrSourceUnavailable
@@ -520,19 +503,13 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		maxUsenetGrabs = DefaultMaxNonVideoReleaseGrabs
 	}
 
-	type nonVideoInfo struct {
-		nonVideo bool
-		shape    releaseCandidateShape
-		isUsenet bool
-	}
 	rels := make([]core.Release, len(ordered))
 	grabs := make([]bool, len(ordered))
-	nv := make([]nonVideoInfo, len(ordered))
+	nonVideoUsenet := make([]bool, len(ordered))
 	for i, cand := range ordered {
 		rels[i] = relFor(cand)
 		grabs[i] = sourceSpendsGrab(cand, rels[i])
-		isNV, shape, isUsenet := classifyNonVideoRelease(cand, deps.DefaultReleaseMIME)
-		nv[i] = nonVideoInfo{nonVideo: isNV, shape: shape, isUsenet: isUsenet}
+		nonVideoUsenet[i] = isNonVideoUsenetRelease(cand, deps.DefaultReleaseMIME)
 	}
 
 	type sourceAttempt struct {
@@ -542,9 +519,7 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	}
 	attempts := make([]*sourceAttempt, len(ordered))
 	skipErrs := make([]error, len(ordered))
-	skipPrev := make([]error, len(ordered))
 	usenetNonVideoGrabs := 0
-	structuralFailed := make(map[releaseCandidateShape]error)
 
 	outcome := resolver.RunRankedWindow(ctx, resolver.RankedWindowConfig[sourceAttempt]{
 		Count:     len(ordered),
@@ -584,31 +559,19 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			return resolver.DefaultHealthHedgeDelay
 		},
 		BeforeLaunch: func(_, next, _ int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
-			if nv[next].nonVideo {
-				if prev, failed := structuralFailed[nv[next].shape]; failed {
-					skipErrs[next] = fmt.Errorf("source %q (%s): skipped after same-shape structural failure: %w", ordered[next].ID, ordered[next].Pattern, prev)
-					skipPrev[next] = prev
-					return resolver.LaunchSkip, time.Time{}
-				}
-				if nv[next].isUsenet && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
-					skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", ordered[next].ID, ordered[next].Pattern, maxUsenetGrabs)
-					return resolver.LaunchSkip, time.Time{}
-				}
+			if nonVideoUsenet[next] && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
+				skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", ordered[next].ID, ordered[next].Pattern, maxUsenetGrabs)
+				return resolver.LaunchSkip, time.Time{}
 			}
 			return resolver.LaunchAllow, time.Time{}
 		},
 		OnLaunch: func(i int) {
-			if nv[i].nonVideo && nv[i].isUsenet {
+			if nonVideoUsenet[i] {
 				usenetNonVideoGrabs++
 			}
 		},
 		OnResult: func(i int, a sourceAttempt) {
 			attempts[i] = &a
-			if a.err != nil && nv[i].nonVideo && errors.Is(a.err, core.ErrNoUsableFile) {
-				if _, exists := structuralFailed[nv[i].shape]; !exists {
-					structuralFailed[nv[i].shape] = a.err
-				}
-			}
 		},
 		OnDrop: func(_ int, a sourceAttempt, _ bool) {
 			if a.bs != nil {
@@ -651,12 +614,8 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if skipErrs[i] != nil {
 			errs = append(errs, skipErrs[i])
 			allUnstreamable = false
-			if prev := skipPrev[i]; prev == nil || !isPermanentRejection(prev) {
-				allRejected = false
-			}
-			if prev := skipPrev[i]; prev == nil || !errors.Is(prev, core.ErrWrongContent) {
-				allWrongContent = false
-			}
+			allRejected = false
+			allWrongContent = false
 			continue
 		}
 		a := attempts[i]

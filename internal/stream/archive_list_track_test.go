@@ -84,8 +84,8 @@ func TestListArchiveMembersAndTrackHintSceneRARZIPAnd7z(t *testing.T) {
 			Member: "Other Album/05-someone-else.flac",
 			MIME:   "audio/flac",
 		})
-		if _, err := e.Open(context.Background(), "rar-bad-hint", badHintNZB); !errors.Is(err, core.ErrNoUsableFile) || !strings.Contains(err.Error(), "archive holds no member") {
-			t.Fatalf("unmatched path fileHint err = %v, want 'archive holds no member'", err)
+		if _, err := e.Open(context.Background(), "rar-bad-hint", badHintNZB); !errors.Is(err, core.ErrNoUsableFile) || !strings.Contains(err.Error(), "archive holds no member") || strings.Contains(err.Error(), "video") {
+			t.Fatalf("unmatched path fileHint err = %v, want media-neutral 'archive holds no member'", err)
 		}
 
 		// 4. Exact member name discovered from ListArchiveMembers succeeds.

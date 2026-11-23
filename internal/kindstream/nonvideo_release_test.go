@@ -272,9 +272,58 @@ func TestOpenSourcesNonVideoFailFastAndGrabCap(t *testing.T) {
 		return out
 	}
 
-	// 1. Structural ErrNoUsableFile on non-video Usenet stops after 1 grab (not 10).
+	flacSample := append([]byte("fLaC"), bytes.Repeat([]byte{0x11}, 512)...)
+
+	// 1. A per-release ErrNoUsableFile / track-miss on candidate 1 must move on
+	// to candidate 2 (a different release of the same protocol/selector/family).
+	var trackFailoverGrabs atomic.Int32
+	trackSources := makeUsenetSources(2, "audio/flac")
+	for i := range trackSources {
+		trackSources[i].Release.Track = &core.TrackHint{Disc: 1, Number: 10, Title: "7 rings"}
+	}
+	bsTrack, winTrack, err := OpenSources(ctx, trackSources, Deps{
+		OpenReleaseSource: func(_ context.Context, src core.PlayableSource) (core.MediaSource, error) {
+			trackFailoverGrabs.Add(1)
+			if src.ID == "usenet-1" {
+				return nil, fmt.Errorf("%w: %w: archive holds no track matching (disc=1 number=10 title=\"7 rings\"): %w", core.ErrReleaseRejected, stream.ErrNoPlayableFile, core.ErrWrongContent)
+			}
+			return &fakeMediaSource{id: src.ID, name: "10 - 7 rings.flac", data: flacSample}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("track-miss failover failed: %v", err)
+	}
+	_ = bsTrack.Close()
+	if winTrack.ID != "usenet-2" || trackFailoverGrabs.Load() != 2 {
+		t.Fatalf("track-miss failover winner=%q grabs=%d, want (usenet-2, 2)", winTrack.ID, trackFailoverGrabs.Load())
+	}
+
+	// 2. Per-release ErrNoUsableFile on debrid torrent 1 also moves on to torrent 2.
+	var torrentFailover atomic.Int32
+	torrents := []core.PlayableSource{
+		{ID: "tor-1", Pattern: PatternRelease, MIME: "audio/flac", Release: &core.ReleaseHint{InfoHash: "0123456789abcdef0123456789abcdef01234567"}},
+		{ID: "tor-2", Pattern: PatternRelease, MIME: "audio/flac", Release: &core.ReleaseHint{InfoHash: "fedcba9876543210fedcba9876543210fedcba98"}},
+	}
+	bsTor, winTor, err := OpenSources(ctx, torrents, Deps{
+		OpenReleaseSource: func(_ context.Context, src core.PlayableSource) (core.MediaSource, error) {
+			torrentFailover.Add(1)
+			if src.ID == "tor-1" {
+				return nil, fmt.Errorf("%w: %w", core.ErrReleaseRejected, stream.ErrNoPlayableFile)
+			}
+			return &fakeMediaSource{id: src.ID, name: "01 - Track.flac", data: flacSample}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("torrent ErrNoUsableFile failover failed: %v", err)
+	}
+	_ = bsTor.Close()
+	if winTor.ID != "tor-2" || torrentFailover.Load() != 2 {
+		t.Fatalf("torrent failover winner=%q attempts=%d, want (tor-2, 2)", winTor.ID, torrentFailover.Load())
+	}
+
+	// 3. Repeated ErrNoUsableFile on non-video Usenet obeys DefaultMaxNonVideoReleaseGrabs (3, not 10).
 	var grabs atomic.Int32
-	_, _, err := OpenSources(ctx, makeUsenetSources(10, "audio/flac"), Deps{
+	_, _, err = OpenSources(ctx, makeUsenetSources(10, "audio/flac"), Deps{
 		OpenReleaseSource: func(_ context.Context, _ core.PlayableSource) (core.MediaSource, error) {
 			grabs.Add(1)
 			return nil, fmt.Errorf("%w: %w", core.ErrReleaseRejected, stream.ErrNoPlayableFile)
@@ -283,11 +332,11 @@ func TestOpenSourcesNonVideoFailFastAndGrabCap(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all non-video releases have no usable file")
 	}
-	if grabs.Load() != 1 {
-		t.Fatalf("structural ErrNoUsableFile made %d grabs, want 1", grabs.Load())
+	if int(grabs.Load()) != DefaultMaxNonVideoReleaseGrabs {
+		t.Fatalf("repeated ErrNoUsableFile made %d grabs, want %d", grabs.Load(), DefaultMaxNonVideoReleaseGrabs)
 	}
 
-	// 2. Different candidate shape (debrid torrent) is still attempted after Usenet structural failure.
+	// 4. Debrid torrent is still attempted after Usenet reaches the grab cap.
 	var usenetGrabs, torrentGrabs atomic.Int32
 	mixed := append(makeUsenetSources(5, "audio/flac"), core.PlayableSource{
 		ID:      "torrent-1",
@@ -295,7 +344,6 @@ func TestOpenSourcesNonVideoFailFastAndGrabCap(t *testing.T) {
 		MIME:    "audio/flac",
 		Release: &core.ReleaseHint{InfoHash: "0123456789abcdef0123456789abcdef01234567"},
 	})
-	flacSample := append([]byte("fLaC"), bytes.Repeat([]byte{0x11}, 512)...)
 	bs, winner, err := OpenSources(ctx, mixed, Deps{
 		OpenReleaseSource: func(_ context.Context, src core.PlayableSource) (core.MediaSource, error) {
 			if src.Release.NZBURL != "" {
@@ -310,11 +358,11 @@ func TestOpenSourcesNonVideoFailFastAndGrabCap(t *testing.T) {
 		t.Fatalf("mixed Usenet + torrent failed: %v", err)
 	}
 	_ = bs.Close()
-	if winner.ID != "torrent-1" || usenetGrabs.Load() != 1 || torrentGrabs.Load() != 1 {
-		t.Fatalf("mixed winner=%q usenetGrabs=%d torrentGrabs=%d, want (torrent-1, 1, 1)", winner.ID, usenetGrabs.Load(), torrentGrabs.Load())
+	if winner.ID != "torrent-1" || int(usenetGrabs.Load()) != DefaultMaxNonVideoReleaseGrabs || torrentGrabs.Load() != 1 {
+		t.Fatalf("mixed winner=%q usenetGrabs=%d torrentGrabs=%d, want (torrent-1, %d, 1)", winner.ID, usenetGrabs.Load(), torrentGrabs.Load(), DefaultMaxNonVideoReleaseGrabs)
 	}
 
-	// 3. Non-structural failures (DMCA / missing articles) obey DefaultMaxNonVideoReleaseGrabs (3, not 10).
+	// 5. Missing-article failures (DMCA) also obey DefaultMaxNonVideoReleaseGrabs (3, not 10).
 	var dmcaGrabs atomic.Int32
 	_, _, err = OpenSources(ctx, makeUsenetSources(10, "application/epub+zip"), Deps{
 		OpenReleaseSource: func(_ context.Context, _ core.PlayableSource) (core.MediaSource, error) {
@@ -329,7 +377,7 @@ func TestOpenSourcesNonVideoFailFastAndGrabCap(t *testing.T) {
 		t.Fatalf("DMCA non-video grabs = %d, want %d", dmcaGrabs.Load(), DefaultMaxNonVideoReleaseGrabs)
 	}
 
-	// 4. Video releases are 100% unaffected: all 5 candidates tried until #5 succeeds.
+	// 6. Video releases are 100% unaffected: all 5 candidates tried until #5 succeeds.
 	var videoGrabs atomic.Int32
 	mkvSample := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, bytes.Repeat([]byte{0x22}, 512)...)
 	bsVid, winVid, err := OpenSources(ctx, makeUsenetSources(5, "video/x-matroska"), Deps{

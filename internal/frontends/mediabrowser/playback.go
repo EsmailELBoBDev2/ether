@@ -1659,9 +1659,12 @@ func (i *instance) liveTuneError(w http.ResponseWriter, err error) {
 var subtitleCodecAliases = [][]string{
 	{"subrip", "srt"},
 	{"webvtt", "vtt"},
+	{"ass", "ssa"},
+	{"mov_text", "tx3g"},
 	{"hdmv_pgs_subtitle", "pgssub", "pgs"},
-	{"dvd_subtitle", "dvdsub"},
+	{"dvd_subtitle", "dvdsub", "vobsub"},
 	{"dvb_subtitle", "dvbsub"},
+	{"eia_608", "cea_608"},
 }
 
 // embedsSubtitle reports whether a declared device profile renders this

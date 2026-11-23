@@ -310,3 +310,28 @@ func TestAnonymousQueuePrefetchDefersOpen(t *testing.T) {
 		t.Fatalf("queued stream = %d opens=%d served=%v", w.Code, opened, state.served)
 	}
 }
+
+// A stream alias for an already-started HLS session must redirect straight to
+// its active master playlist instead of calling StartStream again at position 0.
+func TestServeAliasSessionReusesActiveHLSMaster(t *testing.T) {
+	device := frontend.Device{ID: "tablet"}
+	startCalls := 0
+	broker := frontendtest.Sessions{
+		SessionsFunc: func(context.Context, frontend.SessionAccess) ([]frontend.Session, error) {
+			return []frontend.Session{{ID: "hls-session", Item: 5, Protocol: "jellyfin", Device: device, MediaPath: "/sessions/media/hls-session/scoped/master.m3u8"}}, nil
+		},
+		StartStreamFunc: func(context.Context, frontend.SessionAccess, string, frontend.StreamRequest) (string, error) {
+			startCalls++
+			return "/sessions/media/hls-session/scoped/master.m3u8", nil
+		},
+	}
+	inst := mountAnonTest(t, "jellyfin", broker)
+	r := httptest.NewRequest("GET", "/jellyfin/Videos/"+ids.RatingKeyGUID(5)+"/master.m3u8?PlaySessionId=hls-session", nil)
+	r.Header.Set("X-Emby-Token", "grant")
+	r.Header.Set("X-Emby-Device-Id", "tablet")
+	w := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusTemporaryRedirect || w.Header().Get("Location") != "/jellyfin/sessions/media/hls-session/scoped/master.m3u8" || startCalls != 0 {
+		t.Fatalf("HLS alias = %d loc=%q startCalls=%d, want 307 without restarting stream", w.Code, w.Header().Get("Location"), startCalls)
+	}
+}

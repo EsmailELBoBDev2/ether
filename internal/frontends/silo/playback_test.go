@@ -9,6 +9,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
@@ -1151,5 +1153,116 @@ func TestEmbeddedSubtitleNeedsNoWholeFileArtifact(t *testing.T) {
 	rendition, _ := hls["hls_rendition"].(map[string]any)
 	if hls["mode"] != "convert" || hls["artifact"] != nil || hls["embedded"] != nil || rendition == nil || rendition["group_id"] != "subs" || rendition["name"] != "eng (4)" {
 		t.Fatalf("HLS subtitle: %+v", hls)
+	}
+}
+
+// Silo Android tablets decode TrueHD/DTS in software under original_http
+// without an AV receiver (audio_passthrough_codecs is empty), and Android TV
+// declares Dolby Vision support in hdr_details. Both must reach capability
+// building, and seek_reanchor replans with empty attempted_plan_keys must
+// re-anchor the playing HLS stream instead of returning 400.
+func TestSiloOriginalAudioDecodeHDRDetailsAndSeekReanchor(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 7}
+	sessionID := "8d1f0a6b-9c34-4e11-a217-5e9a3d0f2b12"
+	var gotDevice caps.DeviceInfo
+	var startedPositions []time.Duration
+	session := frontendtest.Sessions{
+		PlanFunc: func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+			return frontend.PlayPlan{
+				ID: "plan-dv",
+				Media: frontend.MediaInfo{
+					Container: "mkv", Duration: time.Hour,
+					Streams: []frontend.StreamInfo{
+						{Type: "video", Index: 0, Codec: "hevc", Width: 3840, Height: 2160},
+						{Type: "audio", Index: 1, Codec: "truehd", Channels: 8, Default: true},
+					},
+				},
+				Decision: frontend.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCodec: "eac3", AudioStream: 1},
+			}, nil
+		},
+		OpenFunc: func(context.Context, frontend.OpenRequest) (frontend.Session, error) {
+			return frontend.Session{ID: sessionID}, nil
+		},
+		SessionsFunc: func(context.Context, frontend.SessionAccess) ([]frontend.Session, error) {
+			return []frontend.Session{{ID: sessionID, ViewerID: viewer.ID, Protocol: "silo", Device: frontend.Device{ID: "tv"}}}, nil
+		},
+		StartStreamFunc: func(_ context.Context, _ frontend.SessionAccess, _ string, req frontend.StreamRequest) (string, error) {
+			startedPositions = append(startedPositions, req.Position)
+			return "/sessions/media/" + sessionID + "/scoped/master.m3u8", nil
+		},
+	}
+	capBuilder := frontendtest.Capabilities{BuildFunc: func(_ context.Context, req frontend.CapabilityRequest) (frontend.CapabilityResult, error) {
+		gotDevice = req.Device
+		return frontend.CapabilityResult{Client: core.ClientCaps{
+			VideoCodecs: req.Device.VideoCodecs, AudioCodecs: req.Device.AudioCodecs,
+			Containers: req.Device.Containers, HDR10: req.Device.HDR10,
+			DolbyVision: req.Device.DolbyVision, DVProfiles: req.Device.DVProfiles,
+		}}, nil
+	}}
+	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
+	inst, err := (Frontend{MachineID: "test"}).Mount(context.Background(), frontend.Host{
+		Identity: testDeviceIdentity(ident, viewer), Sessions: testScopedMedia{session}, Capabilities: capBuilder,
+		VersionHandles: testVersionHandles{}, SourceOffers: testSourceOffers{}, IDs: ids.Codecs{Allocator: fileIDs{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installID := inst.(*instance).installationID()
+	startBody := `{"protocol_version":3,"file_id":"101","profile_id":"7","installation_id":"` + installID + `","playback_attempt_id":"attempt-1","quality_preference":"auto","client_features":["playback_plan_v3","seek_reanchor_v1"],"client_capabilities":{"codecs_video":["h264","hevc"],"codecs_audio":["aac","eac3"],"containers":["mp4"],"hdr":false,"hdr_details":{"hdr10":true,"dolby_vision_profiles":[5,8]},"audio_passthrough":{"passthrough_codecs":["dtshd"]}},"client_playback_context":{"deliveries":{"original_http":{"enabled":true,"supported_on_device":true,"containers":["mkv"],"video_codecs":["av1"],"audio_decode_codecs":["truehd","mlp","dts"],"audio_passthrough_codecs":[]},"hls":{"enabled":true,"supported_on_device":true}}}}`
+	req := httptest.NewRequest("POST", "/api/v2/playback/start", strings.NewReader(startBody))
+	req.Header.Set("Authorization", "Bearer account-secret")
+	req.Header.Set("X-Silo-Device-Id", "tv")
+	w := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{"truehd", "mlp", "dts", "dtshd"} {
+		if !slices.Contains(gotDevice.AudioCodecs, want) {
+			t.Fatalf("missing audio codec %q in %v", want, gotDevice.AudioCodecs)
+		}
+	}
+	if !gotDevice.HDR10 || !gotDevice.DolbyVision || !slices.Equal(gotDevice.DVProfiles, []int{5, 8}) || !slices.Contains(gotDevice.Containers, "mkv") || !slices.Contains(gotDevice.VideoCodecs, "av1") {
+		t.Fatalf("unexpected device caps: %+v", gotDevice)
+	}
+	var started struct {
+		Features []string `json:"server_features"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	for _, feat := range []string{"seek_reanchor_v1", "direct_stream_resume_v1", "embedded_subtitles_v1", "plan_active_quality_v1"} {
+		if !slices.Contains(started.Features, feat) {
+			t.Fatalf("server_features missing %q: %v", feat, started.Features)
+		}
+	}
+
+	reanchorBody := `{"installation_id":"` + installID + `","protocol_version":3,"operation":"seek_reanchor","playback_attempt_id":"attempt-1","replan_request_id":"seek-1","failed_plan_id":"plan-dv","plan_attempt_id":"planattempt-1","plan_attempt_key":"plan-dv","attempted_plan_keys":[],"attempt_count":1,"quality_preference":"","position_seconds":600,"selected_tracks":{},"client_capabilities":{},"client_playback_context":{}}`
+	rreq := httptest.NewRequest("POST", "/api/v2/playback/"+sessionID+"/replan", strings.NewReader(reanchorBody))
+	rreq.Header.Set("Authorization", "Bearer account-secret")
+	rreq.Header.Set("X-Silo-Device-Id", "tv")
+	rw := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(rw, rreq)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("seek_reanchor replan = %d %s", rw.Code, rw.Body.String())
+	}
+	if len(startedPositions) != 2 || startedPositions[1] != 600*time.Second {
+		t.Fatalf("seek_reanchor StartStream positions = %v, want [0s, 10m0s]", startedPositions)
+	}
+	var replanned struct {
+		Outcome string `json:"outcome"`
+		Plan    struct {
+			Timeline struct {
+				SourceStart float64 `json:"source_start_seconds"`
+				Origin      float64 `json:"stream_origin_seconds"`
+				Offset      float64 `json:"timeline_offset_seconds"`
+			} `json:"timeline"`
+		} `json:"playback_plan"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &replanned); err != nil {
+		t.Fatal(err)
+	}
+	if replanned.Outcome != "playable" || replanned.Plan.Timeline.SourceStart != 600 || replanned.Plan.Timeline.Origin != 600 || replanned.Plan.Timeline.Offset != 600 {
+		t.Fatalf("unexpected seek_reanchor response: %+v", replanned)
 	}
 }

@@ -31,12 +31,12 @@ func HLSContainer(caps core.ClientCaps, videoCodec, audioCodec string) string {
 			ts = true
 		}
 	}
-	// Jellyfin carries HEVC in MPEG-TS for a client whose transcoding profile
-	// offers only TS (Jellyfin for Android and Android TV, Streamyfin).
-	// Forcing fMP4 there broke the declared profile and turned a cheap HEVC
-	// remux into a 4K H.264 encode. Apple players cannot decode HEVC in TS
-	// and keep fMP4.
-	if ts && videoCodec == "hevc" && caps.Protocol == "jellyfin" && !appleClient(caps) && segmentContainer("", audioCodec) == ContainerMPEGTS {
+	// Jellyfin and Emby carry HEVC in MPEG-TS for a client whose transcoding
+	// profile offers only TS (Jellyfin for Android and Android TV, Wholphin,
+	// Streamyfin). Forcing fMP4 there broke the declared profile and turned a
+	// cheap HEVC remux into a 4K H.264 encode. Apple players cannot decode
+	// HEVC in TS and keep fMP4.
+	if ts && videoCodec == "hevc" && (caps.Protocol == "jellyfin" || caps.Protocol == "emby") && !appleClient(caps) && segmentContainer("", audioCodec) == ContainerMPEGTS {
 		return ContainerMPEGTS
 	}
 	return segmentContainer(videoCodec, audioCodec)

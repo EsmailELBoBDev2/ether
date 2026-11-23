@@ -552,13 +552,13 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 	if libTotal == 0 {
 		// Guard against raw-SQL test fixtures that seeded plugin_items without
 		// populating plugin_item_tally; O(1) index probe on plugin_items_browse.
-		var hasAny int
+		var hasAny bool
 		if err := s.db.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE library_id = ?)`,
 			int64(q.LibraryID)).Scan(&hasAny); err != nil {
 			return browseTallyInfo{}, err
 		}
-		if hasAny > 0 {
+		if hasAny {
 			return browseTallyInfo{}, nil
 		}
 	}

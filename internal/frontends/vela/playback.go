@@ -218,7 +218,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		if b.PositionSeconds == nil {
 			states, err := i.host.Experience.UserData(r.Context(), v, []frontend.RatingKey{item})
 			if err != nil {
-				fail(w, err, r)
+				i.failPlayback(w, r, err)
 				return
 			}
 			pos = states[item].ViewOffset
@@ -627,7 +627,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			fail(w, err, r)
+			i.failPlayback(w, r, err)
 			return
 		}
 		for _, previous := range paths {
@@ -768,7 +768,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			fail(w, err, r)
+			i.failPlayback(w, r, err)
 			return
 		}
 		paths := s.plan["paths"].([]object)
@@ -882,7 +882,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, frontend.ErrNotFound):
 				problem(w, 400, "request", "invalid_version")
 			default:
-				fail(w, err, r)
+				i.failPlayback(w, r, err)
 			}
 			return
 		}
@@ -905,7 +905,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			fail(w, err, r)
+			i.failPlayback(w, r, err)
 			return
 		}
 		kind := "direct"
@@ -1479,4 +1479,24 @@ func sourceMIME(container string) string {
 		return "application/vnd.comicbook+zip"
 	}
 	return "application/octet-stream"
+}
+
+// failPlayback answers a playback error. When video would need re-encoding and
+// the owner turned that off for this viewer's account, the viewer is told so in
+// the account's own wording; every other error keeps fail's answer.
+func (i *instance) failPlayback(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) && r != nil {
+		if viewer, _, verr := i.viewer(r); verr == nil && viewer != nil {
+			if message := frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, viewer); message != frontend.MsgVideoTranscodingOff {
+				paths := []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{frontend.ErrVideoTranscodingDisabled.Error()}}}
+				var incompatible *frontend.NoCompatiblePathError
+				if errors.As(err, &incompatible) {
+					paths = incompatible.RejectedPaths
+				}
+				send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": message, "rejectedPaths": paths, "retry": object{"allowed": false}}})
+				return
+			}
+		}
+	}
+	fail(w, err, r)
 }

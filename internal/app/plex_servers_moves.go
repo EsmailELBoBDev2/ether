@@ -65,6 +65,8 @@ func (ps *plexExtras) takesInvites(cfg config.Config, id string) bool {
 		if !cfg.Plex.Claimed {
 			return false
 		}
+	} else if !cfg.Plex.ExtraServersEnabled {
+		return false
 	} else if e, ok := cfg.PlexExtraServer(id); !ok || !e.Active() || ps.runtime(id) == nil {
 		return false
 	}
@@ -86,10 +88,6 @@ func (ps *plexExtras) setRetired(id string, on bool) error {
 		}
 		return fmt.Errorf("plex server %s not found", id)
 	})
-	if err == nil && on {
-		// Retiring may leave no server with room: start a standby one.
-		go ps.checkCapacity(context.Background())
-	}
 	return err
 }
 
@@ -148,15 +146,7 @@ func (ps *plexExtras) pickExcept(ctx context.Context, skip map[string]bool) (str
 			return s.ID, nil
 		}
 	}
-	for _, s := range standbyPlexOrder(cfg) {
-		if skip[s.ID] || s.Retired {
-			continue
-		}
-		if err := ps.activate(ctx, s.ID); err != nil {
-			return "", err
-		}
-		return s.ID, nil
-	}
+	// A server added but not started stays that way: only the owner starts it.
 	return "", errPlexServersFull
 }
 

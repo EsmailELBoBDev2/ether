@@ -222,6 +222,7 @@ func newEnrollEnv(t *testing.T) *enrollEnv {
 		c.Server.MachineIdentifier = enrollMainMachineID
 		c.Plex.ClientIdentifier = enrollMainClientID
 		c.Plex.Claimed, c.Plex.OwnerPlexID, c.Plex.OwnerUsername, c.Plex.Token = true, 1, "owner", "main-server-token"
+		c.Plex.ExtraServersEnabled = true
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -715,7 +716,7 @@ func TestExtraEnrollmentExpiryAndRetention(t *testing.T) {
 	}
 }
 
-func TestExtraEnrollmentCapacityCheckStaysLocal(t *testing.T) {
+func TestExtraEnrollmentNeverStartsOnItsOwn(t *testing.T) {
 	ctx := context.Background()
 	e := newEnrollEnv(t)
 	pin, _ := e.start(t)
@@ -724,15 +725,81 @@ func TestExtraEnrollmentCapacityCheckStaysLocal(t *testing.T) {
 		t.Fatalf("PollPIN: done=%v err=%v", done, err)
 	}
 	seen := len(e.fake.seen(http.MethodGet, "/")) + len(e.fake.seen(http.MethodPost, "/"))
-	// The real check, run here instead of in the background: the main
-	// server has room, so the standby profile is neither claimed nor
-	// published and plex.tv is not contacted (the env blocks other hosts).
-	e.app.plexExtras.checkCapacity(ctx)
+	// A new account waits for the owner: no background step claims or
+	// publishes it, and plex.tv is not contacted again (the env blocks
+	// other hosts). The main server being full changes nothing.
+	e.app.plexExtras.noteSeats("", 1000)
+	time.Sleep(50 * time.Millisecond)
 	if got := len(e.fake.seen(http.MethodGet, "/")) + len(e.fake.seen(http.MethodPost, "/")); got != seen {
-		t.Fatalf("capacity check made %d plex.tv requests", got-seen)
+		t.Fatalf("a full main server made %d plex.tv requests", got-seen)
 	}
 	got := e.profiles()
 	if len(got) != 1 || got[0].State != config.PlexServerStandby || got[0].Claimed {
-		t.Fatalf("capacity check changed the profile: %+v", got)
+		t.Fatalf("the new account started on its own: %+v", got)
+	}
+}
+
+// Extra Plex servers are off by default: no sign-in, no start, and requests
+// stay on the main server.
+func TestExtraServersOffRefusesSignInAndStart(t *testing.T) {
+	ctx := context.Background()
+	e := newEnrollEnv(t)
+	pin, _ := e.start(t)
+	e.fake.approve(pin, "token-a", 201)
+	if done, _, err := e.admin.PollPIN(ctx, pin); !done || err != nil {
+		t.Fatalf("PollPIN: done=%v err=%v", done, err)
+	}
+	if err := e.app.cfg.Update(func(c *config.Config) error {
+		c.Plex.ExtraServersEnabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := e.admin.StartPIN(ctx); !errors.Is(err, errPlexExtrasOff) {
+		t.Fatalf("StartPIN while off: %v", err)
+	}
+	id := e.profiles()[0].ID
+	if err := e.admin.Start(ctx, id); !errors.Is(err, errPlexExtrasOff) {
+		t.Fatalf("Start while off: %v", err)
+	}
+	if got := e.profiles(); len(got) != 1 || got[0].State != config.PlexServerStandby {
+		t.Fatalf("profile changed while off: %+v", got)
+	}
+	cfg := e.app.cfg.Get()
+	if !e.app.plexExtras.takesInvites(cfg, "") || e.app.plexExtras.takesInvites(cfg, id) {
+		t.Fatal("an extra server takes invites while the feature is off")
+	}
+	if config.DefaultMaxExtraPlexServers != 2 || (config.Config{}).PlexMaxExtraServers() != 2 {
+		t.Fatal("the default limit is not 2")
+	}
+}
+
+// The limit holds for a new sign-in and for sign-ins already in flight.
+func TestExtraServersLimit(t *testing.T) {
+	ctx := context.Background()
+	e := newEnrollEnv(t)
+	if err := e.app.cfg.Update(func(c *config.Config) error {
+		c.Plex.MaxExtraServers = 1
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Two sign-ins start while there is still room for one.
+	pinA, _ := e.start(t)
+	pinB, _ := e.start(t)
+	e.fake.approve(pinA, "token-a", 201)
+	e.fake.approve(pinB, "token-b", 202)
+	if done, _, err := e.admin.PollPIN(ctx, pinA); !done || err != nil {
+		t.Fatalf("PollPIN A: done=%v err=%v", done, err)
+	}
+	var limit errPlexExtrasLimit
+	if _, _, err := e.admin.PollPIN(ctx, pinB); !errors.As(err, &limit) || limit.max != 1 {
+		t.Fatalf("PollPIN B over the limit: %v", err)
+	}
+	if got := e.profiles(); len(got) != 1 || got[0].Account.ID != 201 {
+		t.Fatalf("profiles = %+v, want only account 201", got)
+	}
+	if _, _, _, err := e.admin.StartPIN(ctx); !errors.As(err, &limit) {
+		t.Fatalf("StartPIN at the limit: %v", err)
 	}
 }

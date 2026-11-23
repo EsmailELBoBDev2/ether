@@ -36,19 +36,19 @@ type plexServerView struct {
 }
 
 // plexServersView is the console's Plex servers panel and the dashboard
-// section the capacity warning reads.
+// section the blocked-server warning reads.
 type plexServersView struct {
+	// Enabled: the owner turned extra Plex servers on (off by default).
+	Enabled bool `json:"enabled"`
+	// MaxExtra is how many extra Plex servers can be added; ExtraCount how
+	// many are.
+	MaxExtra       int              `json:"maxExtra"`
+	ExtraCount     int              `json:"extraCount"`
 	SeatsPerServer int              `json:"seatsPerServer"`
-	SeatWarning    int              `json:"seatWarning"`
 	SeatsUsed      int              `json:"seatsUsed"`
-	SeatsTotal     int              `json:"seatsTotal"`
 	Servers        []plexServerView `json:"servers"`
-	// AlmostFull: every active server has reached SeatWarning.
-	AlmostFull bool `json:"almostFull"`
-	// Standby counts signed-in accounts waiting to start.
+	// Standby counts added accounts the owner has not started.
 	Standby int `json:"standby"`
-	// Warning: almost full and nothing left to start; add a Plex server.
-	Warning bool `json:"warning"`
 	// Claimed: the main server is linked to plex.tv (extra servers need it).
 	Claimed bool `json:"claimed"`
 	// Blocked names the servers plex.tv seems to have blocked or banned.
@@ -56,10 +56,6 @@ type plexServersView struct {
 	// Room: some server still takes new viewers.
 	Room bool `json:"room"`
 }
-
-// recentActivation is how long the console notes that a standby server
-// started on its own.
-const recentActivation = 7 * 24 * time.Hour
 
 func (a *App) plexExtrasStatus(ctx context.Context) any {
 	if a.plexExtras == nil {
@@ -72,8 +68,10 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 	cfg := ps.app.cfg.Get()
 	used := ps.seatsUsed(ctx)
 	out := plexServersView{
+		Enabled:        cfg.Plex.ExtraServersEnabled,
+		MaxExtra:       cfg.PlexMaxExtraServers(),
+		ExtraCount:     len(cfg.PlexExtraServers),
 		SeatsPerServer: cfg.PlexSeatsPerServer(),
-		SeatWarning:    cfg.PlexSeatWarning(),
 		Claimed:        cfg.Plex.Claimed,
 	}
 	out.Servers = append(out.Servers, plexServerView{
@@ -106,11 +104,8 @@ func (ps *plexExtras) view(ctx context.Context) plexServersView {
 		}
 		if v.State == config.PlexServerActive {
 			out.SeatsUsed += v.SeatsUsed
-			out.SeatsTotal += out.SeatsPerServer
 		}
 	}
-	out.AlmostFull = cfg.Plex.Claimed && ps.almostFull(ctx, cfg)
-	out.Warning = out.AlmostFull && out.Standby == 0
 	return out
 }
 
@@ -241,8 +236,15 @@ func (p plexExtrasAdmin) StartPIN(ctx context.Context) (id, code, authURL string
 	if p.app.registrar == nil {
 		return "", "", "", errors.New("plex.tv is not available")
 	}
-	if !p.app.cfg.Get().Plex.Claimed {
+	cfg := p.app.cfg.Get()
+	if !cfg.Plex.Claimed {
 		return "", "", "", errors.New("link the main Plex server first")
+	}
+	if !cfg.Plex.ExtraServersEnabled {
+		return "", "", "", errPlexExtrasOff
+	}
+	if n := cfg.PlexMaxExtraServers(); len(cfg.PlexExtraServers) >= n {
+		return "", "", "", errPlexExtrasLimit{max: n}
 	}
 	clientID, err := p.newSetupID()
 	if err != nil {

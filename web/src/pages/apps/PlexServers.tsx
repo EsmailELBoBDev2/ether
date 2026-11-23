@@ -3,6 +3,7 @@ import {
   Input,
   SettingsSection,
   Spinner,
+  Switch,
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
@@ -40,14 +41,13 @@ export type PlexServerRow = {
 };
 
 export type PlexServersStatus = {
+  enabled: boolean;
+  maxExtra: number;
+  extraCount: number;
   seatsPerServer: number;
-  seatWarning: number;
   seatsUsed: number;
-  seatsTotal: number;
   servers: PlexServerRow[] | null;
-  almostFull: boolean;
   standby: number;
-  warning: boolean;
   claimed: boolean;
   blocked?: string[] | null;
   room?: boolean;
@@ -55,34 +55,28 @@ export type PlexServersStatus = {
 
 type Pin = { id: string; code: string; authUrl: string };
 
-/** A standby server that started on its own is noted for a week. */
-const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
-
-function seatsLabel(row: PlexServerRow, seats: number) {
-  return t("{used} of {seats} seats", { used: row.seatsUsed, seats });
+function viewersLabel(row: PlexServerRow) {
+  return t("{count} viewers", { count: row.seatsUsed });
 }
 
-function rowState(row: PlexServerRow, warnAt: number) {
+function rowState(row: PlexServerRow) {
   if (row.blocked) return "unreachable";
   if (row.state === "standby") return "pending";
   if (!row.running || !row.claimed) return "warning";
-  return row.seatsUsed >= warnAt ? "warning" : "reachable";
+  return "reachable";
 }
 
-function rowDetail(row: PlexServerRow, status: PlexServersStatus, now: number) {
+function rowDetail(row: PlexServerRow) {
   const account = row.account ? t("Plex account {name}", { name: row.account }) : "";
   if (row.state === "standby") {
-    return [account, t("Standby: starts on its own when the running Plex servers are almost full.")]
+    return [account, t("Added, not started. Press Start when you want to use it.")]
       .filter(Boolean)
       .join(" · ");
   }
-  const parts = [account, seatsLabel(row, status.seatsPerServer)];
+  const parts = [account, viewersLabel(row)];
   if (row.blocked) parts.push(row.blockedReason || t("plex.tv seems to have blocked this server."));
   if (row.retired) parts.push(t("Not taking new viewers"));
   if (!row.blocked && row.problem) parts.push(row.problem);
-  if (!row.main && row.activatedAt && now - row.activatedAt * 1000 < RECENT_MS) {
-    parts.push(t("Started on its own because the other Plex servers were almost full."));
-  }
   if (!row.main && !row.running) parts.push(t("Not running"));
   return parts.filter(Boolean).join(" · ");
 }
@@ -93,7 +87,8 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<{ tone: "info" | "warn"; text: string } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
-  const [seats, setSeats] = useState<{ per: string; warn: string } | null>(null);
+  const [seats, setSeats] = useState<string | null>(null);
+  const [limit, setLimit] = useState<string | null>(null);
   const [moved, setMoved] = useState<PlexMoveResult[]>([]);
   const mounted = useRef(true);
   const pollRef = useRef<number | null>(null);
@@ -146,10 +141,9 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
               text:
                 server?.state === "active"
                   ? t("Plex account {name} added and started.", { name: server?.account ?? "" })
-                  : t(
-                      "Plex account {name} added on standby. It starts on its own when the running Plex servers are almost full, or press Start now.",
-                      { name: server?.account ?? "" },
-                    ),
+                  : t("Plex account {name} added. Press Start when you want to use it.", {
+                      name: server?.account ?? "",
+                    }),
             });
             await refresh();
           })
@@ -266,20 +260,38 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
     if (mounted.current) setRenaming(null);
   }
 
-  async function saveSeats() {
-    if (!seats) return;
-    const per = Number(seats.per) || 0;
-    const warn = Number(seats.warn) || 0;
+  async function savePlex(key: string, body: Record<string, unknown>) {
     await act(
-      "seats",
-      () =>
-        apiFetch("/config/plex", {
-          method: "PUT",
-          body: JSON.stringify({ seatsPerServer: per, seatWarning: warn }),
-        }),
+      key,
+      () => apiFetch("/config/plex", { method: "PUT", body: JSON.stringify(body) }),
       t("Settings saved"),
     );
+  }
+
+  async function saveSeats() {
+    if (seats == null) return;
+    await savePlex("seats", { seatsPerServer: Number(seats) || 0 });
     if (mounted.current) setSeats(null);
+  }
+
+  async function saveLimit() {
+    if (limit == null) return;
+    await savePlex("limit", { maxExtraServers: Number(limit) || 0 });
+    if (mounted.current) setLimit(null);
+  }
+
+  async function setEnabled(on: boolean) {
+    if (on) {
+      const ok = await confirmDialog({
+        title: t("Turn on extra Plex servers?"),
+        message: t(
+          "This lets you connect other Plex accounts you own to this Ether. Plex's terms allow personal, non-commercial use only: do not sell or resell access.",
+        ),
+        confirmLabel: t("Turn on"),
+      });
+      if (!ok) return;
+    }
+    await savePlex("enabled", { extraServersEnabled: on });
   }
 
   if (status.error) {
@@ -298,274 +310,291 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
     );
   }
   const rows = data.servers ?? [];
-  const now = Date.now();
+  const atLimit = data.extraCount >= data.maxExtra;
+  const blockedRow = data.blocked?.length ? (
+    <StatusRow
+      state="unreachable"
+      title={t("plex.tv seems to have blocked {names}", { names: data.blocked.join(", ") })}
+      description={
+        data.room
+          ? t(
+              "Press Move viewers on that server: its viewers are invited on another server with room and keep their watch history.",
+            )
+          : t(
+              "No other Plex server has room. You can give viewers a local sign-in for Jellyfin, Emby and Silo (Viewers, select, Bulk actions).",
+            )
+      }
+    />
+  ) : null;
 
   return (
     <>
       <SettingsSection
-        title={t("Plex servers")}
+        title={t("Extra Plex servers")}
         description={t(
-          "plex.tv lets one account share with about 100 people. Each extra Plex server is claimed by a different Plex account and adds its own seats. They all run on this port and show the same libraries and watch history.",
+          "Connect another Plex account you own to this Ether. Each one appears in Plex as its own server, with the same libraries and watch history. Off by default.",
         )}
       >
-        {data.blocked?.length ? (
-          <StatusRow
-            state="unreachable"
-            title={t("plex.tv seems to have blocked {names}", { names: data.blocked.join(", ") })}
-            description={
-              data.room
-                ? t(
-                    "Press Move viewers on that server: its viewers are invited on the next server with room and keep their watch history.",
-                  )
-                : t(
-                    "No other Plex server has room. Add a Plex server with a different Plex account, or give viewers a local sign-in for Jellyfin, Emby and Silo (Viewers, select, Bulk actions).",
-                  )
-            }
-          />
-        ) : null}
-        {data.warning ? (
-          <StatusRow
-            state="warning"
-            title={t("Plex servers are almost full")}
-            description={t(
-              "{used} of {total} seats are used and no standby server is left. Add another Plex server with a different Plex account.",
-              { used: data.seatsUsed, total: data.seatsTotal },
-            )}
-          />
-        ) : data.almostFull && data.standby > 0 ? (
-          <StatusRow
-            state="pending"
-            title={t("A standby Plex server starts next")}
-            description={t(
-              "The running Plex servers are almost full; the next invite starts a standby server.",
-            )}
-          />
-        ) : null}
-        {rows.map((row) => (
-          <StatusRow
-            key={row.id || "main"}
-            state={rowState(row, data.seatWarning)}
-            title={
-              row.main
-                ? t("{name} (main)", { name: row.name || t("Main Plex server") })
-                : row.name || row.id
-            }
-            description={rowDetail(row, data, now)}
-            control={
-              <div className="flex flex-wrap gap-2">
-                {row.state === "active" ? (
-                  <>
-                    <Button
-                      variant={row.blocked ? undefined : "outline"}
-                      size="sm"
-                      disabled={busy !== "" || row.seatsUsed === 0}
-                      onClick={() => void moveAll(row)}
-                    >
-                      {busy === "move:" + row.id ? <Spinner size={13} label={t("Moving")} /> : null}
-                      {t("Move viewers")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy !== ""}
-                      onClick={() =>
-                        void act(
-                          row.id,
-                          () =>
-                            apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/retire`, {
-                              method: "POST",
-                              body: JSON.stringify({ retired: !row.retired }),
-                            }),
-                          row.retired ? t("Taking new viewers again") : t("No new viewers go here"),
-                        )
-                      }
-                    >
-                      {row.retired ? t("Take new viewers") : t("Stop new viewers")}
-                    </Button>
-                  </>
-                ) : null}
-                {row.main ? null : (
-                  <div className="flex flex-wrap gap-2">
-                    {row.state === "standby" ? (
-                      <Button
-                        size="sm"
-                        disabled={busy !== ""}
-                        onClick={() =>
-                          void act(
-                            row.id,
-                            () =>
-                              apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/start`, {
-                                method: "POST",
-                              }),
-                            t("Plex server started"),
-                          )
-                        }
-                      >
-                        {busy === row.id ? <Spinner size={13} label={t("Starting")} /> : null}
-                        {t("Start now")}
-                      </Button>
-                    ) : null}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy !== ""}
-                      onClick={() =>
-                        setRenaming({ id: row.id, name: row.nameInherited ? "" : row.name })
-                      }
-                    >
-                      {t("Rename")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy !== ""}
-                      onClick={() => void remove(row)}
-                    >
-                      {t("Remove")}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            }
-          />
-        ))}
-        <PlexMoveResults results={moved} />
-        {renaming ? (
-          <SettingsRow
-            title={t("Name")}
-            description={t("Leave empty to use the server name from Settings.")}
-            control={
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  aria-label={t("Name")}
-                  value={renaming.name}
-                  maxLength={64}
-                  onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
-                />
-                <Button size="sm" disabled={busy !== ""} onClick={() => void saveName()}>
+        <SettingsRow
+          title={t("Use extra Plex servers")}
+          description={t("Plex's terms allow personal, non-commercial use only.")}
+          control={
+            <Switch
+              aria-label={t("Use extra Plex servers")}
+              checked={data.enabled}
+              disabled={busy !== ""}
+              onChange={(e) => void setEnabled(e.target.checked)}
+            />
+          }
+        />
+        <SettingsRow
+          title={t("Most extra Plex servers")}
+          description={t("How many other Plex accounts can be connected. 2 unless you change it.")}
+          control={
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label={t("Most extra Plex servers")}
+                type="number"
+                min={1}
+                max={10}
+                value={limit ?? String(data.maxExtra)}
+                onChange={(e) => setLimit(e.target.value)}
+              />
+              {limit != null ? (
+                <Button size="sm" disabled={busy !== ""} onClick={() => void saveLimit()}>
                   {t("Save")}
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => setRenaming(null)}>
-                  {t("Cancel")}
-                </Button>
-              </div>
-            }
-          />
-        ) : null}
-        <SettingsRow
-          title={t("Add Plex server")}
-          description={
-            data.claimed
-              ? t(
-                  "Sign in with a different Plex account. It waits on standby and starts on its own when the running servers are almost full.",
-                )
-              : t("Sign in and claim the main Plex server first.")
-          }
-          control={
-            <Button
-              size="sm"
-              disabled={!data.claimed || busy !== "" || pin != null}
-              onClick={() => void addServer()}
-            >
-              {t("Add Plex server")}
-            </Button>
+              ) : null}
+            </div>
           }
         />
-        {pin ? (
-          <div className="space-y-3 px-5 py-4">
-            <p className="text-sm text-fg">
-              {t(
-                "A plex.tv window opened. Sign in there with the other Plex account and allow Ether; this page continues on its own.",
-              )}
-            </p>
-            <div className="flex flex-wrap items-center gap-3 text-sm text-fg-muted">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.open(pin.authUrl, "_blank", "noopener,noreferrer")}
+        {data.enabled ? null : blockedRow}
+        {!data.enabled && notice ? (
+          <p className="px-5 py-3 text-sm text-warning">{notice.text}</p>
+        ) : null}
+      </SettingsSection>
+      {data.enabled ? (
+        <>
+          <SettingsSection
+            title={t("Plex servers")}
+            description={t(
+              "Servers start only when you start them. New viewers go to the first started server with room.",
+            )}
+          >
+            {blockedRow}
+            {rows.map((row) => (
+              <StatusRow
+                key={row.id || "main"}
+                state={rowState(row)}
+                title={
+                  row.main
+                    ? t("{name} (main)", { name: row.name || t("Main Plex server") })
+                    : row.name || row.id
+                }
+                description={rowDetail(row)}
+                control={
+                  <div className="flex flex-wrap gap-2">
+                    {row.state === "active" ? (
+                      <>
+                        <Button
+                          variant={row.blocked ? undefined : "outline"}
+                          size="sm"
+                          disabled={busy !== "" || row.seatsUsed === 0}
+                          onClick={() => void moveAll(row)}
+                        >
+                          {busy === "move:" + row.id ? (
+                            <Spinner size={13} label={t("Moving")} />
+                          ) : null}
+                          {t("Move viewers")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy !== ""}
+                          onClick={() =>
+                            void act(
+                              row.id,
+                              () =>
+                                apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/retire`, {
+                                  method: "POST",
+                                  body: JSON.stringify({ retired: !row.retired }),
+                                }),
+                              row.retired
+                                ? t("Taking new viewers again")
+                                : t("No new viewers go here"),
+                            )
+                          }
+                        >
+                          {row.retired ? t("Take new viewers") : t("Stop new viewers")}
+                        </Button>
+                      </>
+                    ) : null}
+                    {row.main ? null : (
+                      <div className="flex flex-wrap gap-2">
+                        {row.state === "standby" ? (
+                          <Button
+                            size="sm"
+                            disabled={busy !== ""}
+                            onClick={() =>
+                              void act(
+                                row.id,
+                                () =>
+                                  apiFetch(`/plex/servers/${encodeURIComponent(row.id)}/start`, {
+                                    method: "POST",
+                                  }),
+                                t("Plex server started"),
+                              )
+                            }
+                          >
+                            {busy === row.id ? <Spinner size={13} label={t("Starting")} /> : null}
+                            {t("Start now")}
+                          </Button>
+                        ) : null}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy !== ""}
+                          onClick={() =>
+                            setRenaming({ id: row.id, name: row.nameInherited ? "" : row.name })
+                          }
+                        >
+                          {t("Rename")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy !== ""}
+                          onClick={() => void remove(row)}
+                        >
+                          {t("Remove")}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                }
+              />
+            ))}
+            <PlexMoveResults results={moved} />
+            {renaming ? (
+              <SettingsRow
+                title={t("Name")}
+                description={t("Leave empty to use the server name from Settings.")}
+                control={
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      aria-label={t("Name")}
+                      value={renaming.name}
+                      maxLength={64}
+                      onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
+                    />
+                    <Button size="sm" disabled={busy !== ""} onClick={() => void saveName()}>
+                      {t("Save")}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setRenaming(null)}>
+                      {t("Cancel")}
+                    </Button>
+                  </div>
+                }
+              />
+            ) : null}
+            <SettingsRow
+              title={t("Add Plex server")}
+              description={
+                !data.claimed
+                  ? t("Sign in and claim the main Plex server first.")
+                  : atLimit
+                    ? t("You have connected {count} of {max} extra Plex servers.", {
+                        count: data.extraCount,
+                        max: data.maxExtra,
+                      })
+                    : t(
+                        "Sign in with another Plex account you own. You start it when you want to use it.",
+                      )
+              }
+              control={
+                <Button
+                  size="sm"
+                  disabled={!data.claimed || atLimit || busy !== "" || pin != null}
+                  onClick={() => void addServer()}
+                >
+                  {t("Add Plex server")}
+                </Button>
+              }
+            />
+            {pin ? (
+              <div className="space-y-3 px-5 py-4">
+                <p className="text-sm text-fg">
+                  {t(
+                    "A plex.tv window opened. Sign in there with the other Plex account and allow Ether; this page continues on its own.",
+                  )}
+                </p>
+                <div className="flex flex-wrap items-center gap-3 text-sm text-fg-muted">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => window.open(pin.authUrl, "_blank", "noopener,noreferrer")}
+                  >
+                    {t("Open plex.tv sign-in")} <ExternalLink size={13} />
+                  </Button>
+                  <span className="inline-flex items-center gap-2">
+                    {t("Waiting for approval")} <Spinner size={13} label={t("Waiting")} />
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      pinRun.current++;
+                      stopPolling();
+                      setPin(null);
+                    }}
+                  >
+                    {t("Cancel")}
+                  </Button>
+                </div>
+                {pin.code.length <= 8 ? (
+                  <p className="text-sm text-fg-muted">
+                    {tx("Or enter {code} at plex.tv/link.", {
+                      code: <span className="font-mono font-semibold text-fg">{pin.code}</span>,
+                    })}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {notice ? (
+              <p
+                className={`px-5 py-3 text-sm ${notice.tone === "warn" ? "text-warning" : "text-fg-muted"}`}
               >
-                {t("Open plex.tv sign-in")} <ExternalLink size={13} />
-              </Button>
-              <span className="inline-flex items-center gap-2">
-                {t("Waiting for approval")} <Spinner size={13} label={t("Waiting")} />
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  pinRun.current++;
-                  stopPolling();
-                  setPin(null);
-                }}
-              >
-                {t("Cancel")}
-              </Button>
-            </div>
-            {pin.code.length <= 8 ? (
-              <p className="text-sm text-fg-muted">
-                {tx("Or enter {code} at plex.tv/link.", {
-                  code: <span className="font-mono font-semibold text-fg">{pin.code}</span>,
-                })}
+                {notice.text}
               </p>
             ) : null}
-          </div>
-        ) : null}
-        {notice ? (
-          <p
-            className={`px-5 py-3 text-sm ${notice.tone === "warn" ? "text-warning" : "text-fg-muted"}`}
-          >
-            {notice.text}
-          </p>
-        ) : null}
-      </SettingsSection>
-      <SettingsSection title={t("Seats")}>
-        <SettingsRow
-          title={t("Seats per Plex server")}
-          description={t(
-            "How many people one Plex account shares with before the next server is used. plex.tv allows 99 (100 with the owner).",
-          )}
-          control={
-            <Input
-              aria-label={t("Seats per Plex server")}
-              type="number"
-              min={1}
-              max={1000}
-              value={seats ? seats.per : String(data.seatsPerServer)}
-              onChange={(e) =>
-                setSeats({ per: e.target.value, warn: seats?.warn ?? String(data.seatWarning) })
+          </SettingsSection>
+          <SettingsSection title={t("Viewers per Plex server")}>
+            <SettingsRow
+              title={t("Viewers per Plex server")}
+              description={t(
+                "When a server has this many viewers, new viewers go to the next started server.",
+              )}
+              control={
+                <div className="flex items-center gap-2">
+                  <Input
+                    aria-label={t("Viewers per Plex server")}
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={seats ?? String(data.seatsPerServer)}
+                    onChange={(e) => setSeats(e.target.value)}
+                  />
+                  {seats != null ? (
+                    <Button size="sm" disabled={busy !== ""} onClick={() => void saveSeats()}>
+                      {t("Save")}
+                    </Button>
+                  ) : null}
+                </div>
               }
             />
-          }
-        />
-        <SettingsRow
-          title={t("Almost full at")}
-          description={t(
-            "When every running server reaches this many seats, a standby server starts or you get a warning to add one.",
-          )}
-          control={
-            <Input
-              aria-label={t("Almost full at")}
-              type="number"
-              min={1}
-              max={1000}
-              value={seats ? seats.warn : String(data.seatWarning)}
-              onChange={(e) =>
-                setSeats({ per: seats?.per ?? String(data.seatsPerServer), warn: e.target.value })
-              }
-            />
-          }
-        />
-        {seats ? (
-          <div className="flex gap-2 px-5 py-3">
-            <Button size="sm" disabled={busy !== ""} onClick={() => void saveSeats()}>
-              {t("Save")}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setSeats(null)}>
-              {t("Cancel")}
-            </Button>
-          </div>
-        ) : null}
-      </SettingsSection>
+          </SettingsSection>
+        </>
+      ) : null}
     </>
   );
 }

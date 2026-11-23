@@ -71,6 +71,21 @@ func (s PlexExtraServer) AdvertisedName(c Config) string {
 	return strings.TrimSpace(c.Server.FriendlyName)
 }
 
+// DefaultMaxExtraPlexServers is how many extra Plex servers an owner can add
+// unless they raise the limit.
+const DefaultMaxExtraPlexServers = 2
+
+// MaxExtraPlexServersLimit is the highest limit the setting accepts.
+const MaxExtraPlexServersLimit = 10
+
+// PlexMaxExtraServers is how many extra Plex servers can be added.
+func (c Config) PlexMaxExtraServers() int {
+	if c.Plex.MaxExtraServers > 0 {
+		return c.Plex.MaxExtraServers
+	}
+	return DefaultMaxExtraPlexServers
+}
+
 // PlexSeatsPerServer is how many viewers fill one Plex server.
 func (c Config) PlexSeatsPerServer() int {
 	if c.Plex.SeatsPerServer > 0 {

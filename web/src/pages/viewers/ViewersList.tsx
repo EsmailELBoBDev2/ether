@@ -8,7 +8,7 @@ import {
 } from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { MonitorSmartphone, Plus, RefreshCw, Users } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAppOptional } from "../../app-context";
 import { ErrorPanel } from "../../components/feedback";
 import { DomainPage } from "../../components/layout";
@@ -195,7 +195,6 @@ function People() {
   };
   return (
     <div className="space-y-4">
-      <PlexSeatsWarning />
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" disabled={!selected.length} onClick={() => setBulkOpen(true)}>
           {t("Bulk actions ({count})", { count: selected.length })}
@@ -368,24 +367,5 @@ function People() {
         ]}
       />
     </div>
-  );
-}
-
-/** Shown when every Plex server is almost full and no standby server is left. */
-function PlexSeatsWarning() {
-  const app = useAppOptional();
-  const extras = app?.dashboard?.sections?.plexExtras;
-  if (app?.boot.plexEnabled === false || !isPlainObject(extras) || extras.warning !== true)
-    return null;
-  return (
-    <p role="alert" className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
-      {t("Plex servers are almost full ({used} of {total} seats).", {
-        used: Number(extras.seatsUsed) || 0,
-        total: Number(extras.seatsTotal) || 0,
-      })}{" "}
-      <Link to="/apps/plex/servers" className="font-medium text-primary hover:underline">
-        {t("Add Plex server")}
-      </Link>
-    </p>
   );
 }

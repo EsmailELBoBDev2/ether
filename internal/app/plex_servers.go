@@ -19,24 +19,33 @@ import (
 	"github.com/braedonsaunders/ether/internal/plextv"
 )
 
-// Extra Plex servers (config.PlexExtraServer): one Ether presented to plex.tv
-// as several servers, each owned by a different plex.tv account, on the same
-// port. plex.tv caps how many people one account shares with (100 with the
-// owner), so every extra account adds seats.
+// Extra Plex servers (config.PlexExtraServer): other Plex accounts the owner
+// connects to this Ether, each presented to plex.tv as its own server on the
+// same port. The feature is off until the owner turns it on, and the number
+// of extra servers is capped (config.PlexMaxExtraServers, 2 by default).
 //
 // Each active extra server runs the same plex.tv code as the main server
 // (claim, connection publishing, certificate, presence, friend sync) through
 // a view of the config that swaps in its identity (plexServerStore). The
 // Plex front end picks the identity per request (plexIdentityForRequest).
 //
-// A signed-in account starts as standby: nothing is claimed or published.
-// When every active server is almost full (config.PlexSeatWarning), the
-// first standby server is claimed and published, and new invites go to the
-// first server with a free seat, oldest first.
+// A signed-in account is added as standby: nothing is claimed or published
+// until the owner starts it. Nothing starts on its own. New invites go to the
+// first started server with room, oldest first.
 
-// errPlexServersFull reports that every active server is full and no standby
-// server is left to start.
-var errPlexServersFull = errors.New("every Plex server is full: add another Plex server under Apps > Plex")
+// errPlexServersFull reports that every running server is full.
+var errPlexServersFull = errors.New("no Plex server has room for another viewer")
+
+// errPlexExtrasOff refuses extra-server work while the owner has the feature
+// turned off (Apps > Plex > Plex servers).
+var errPlexExtrasOff = errors.New("extra Plex servers are turned off: turn them on under Apps > Plex > Plex servers")
+
+// errPlexExtrasLimit refuses another account once the owner's limit is reached.
+type errPlexExtrasLimit struct{ max int }
+
+func (e errPlexExtrasLimit) Error() string {
+	return fmt.Sprintf("this Ether already has %d extra Plex servers, the limit set under Apps > Plex > Plex servers", e.max)
+}
 
 type plexServerRuntime struct {
 	id        string
@@ -59,12 +68,17 @@ type plexExtras struct {
 	seatsAt   map[string]time.Time
 	starting  bool
 	finishing bool
+	// toggleMu orders the stops and starts that follow the on/off setting;
+	// toggleOn is the value last applied (toggleSeen once one was).
+	toggleMu   sync.Mutex
+	toggleSeen bool
+	toggleOn   bool
 	// sections is the library list the main server publishes; every extra
 	// server publishes the same libraries.
 	sections []plextv.LibrarySection
 	// tokenServers caches which server a token belongs to (a minute).
 	tokenServers sync.Map
-	// afterAdd replaces the capacity check that follows a new account (tests).
+	// afterAdd runs after a new account is stored (tests).
 	afterAdd func()
 }
 
@@ -156,7 +170,6 @@ func (ps *plexExtras) noteSeats(id string, n int) {
 	ps.seats[id] = n
 	ps.seatsAt[id] = time.Now()
 	ps.mu.Unlock()
-	go ps.checkCapacity(context.Background())
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -207,28 +220,54 @@ func standbyPlexOrder(c config.Config) []config.PlexExtraServer {
 	return out
 }
 
-// start runs every active extra server. Called once the main registrar runs.
+// start runs every active extra server when the feature is on. Called once
+// the main registrar runs.
 func (ps *plexExtras) start(ctx context.Context) {
 	ps.mu.Lock()
 	ps.ctx = ctx
 	ps.mu.Unlock()
-	for _, s := range activePlexOrder(ps.app.cfg.Get()) {
-		if err := ps.run(ctx, s.ID); err != nil {
-			ps.log.Warn("extra plex server did not start", "server", s.ID, "err", err)
-		}
-	}
-	go ps.loop(ctx)
+	// Extra servers run only while the owner has them turned on, and they
+	// start only when the owner starts them: nothing starts on its own.
+	// Turning the feature off stops the running ones; turning it back on
+	// runs again the ones the owner had started.
+	ps.app.cfg.Subscribe(func(c config.Config) {
+		go ps.applyEnabled(ctx, c.Plex.ExtraServersEnabled)
+	})
+	ps.applyEnabled(ctx, ps.app.cfg.Get().Plex.ExtraServersEnabled)
 }
 
-func (ps *plexExtras) loop(ctx context.Context) {
-	t := time.NewTicker(5 * time.Minute)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			ps.checkCapacity(ctx)
+// applyEnabled stops every extra server when the feature is off, and runs
+// the started ones that are not running when it is on.
+func (ps *plexExtras) applyEnabled(ctx context.Context, on bool) {
+	ps.toggleMu.Lock()
+	defer ps.toggleMu.Unlock()
+	// Every config save notifies; act only when the setting changed, so a
+	// start the owner just made (activate) is never doubled here.
+	if ps.toggleSeen && on == ps.toggleOn {
+		return
+	}
+	ps.toggleSeen, ps.toggleOn = true, on
+	if !on {
+		ps.mu.Lock()
+		ids := make([]string, 0, len(ps.running))
+		for id := range ps.running {
+			ids = append(ids, id)
+		}
+		ps.mu.Unlock()
+		for _, id := range ids {
+			ps.stop(id)
+		}
+		if len(ids) > 0 {
+			ps.log.Info("extra plex servers turned off", "stopped", len(ids))
+		}
+		return
+	}
+	for _, s := range activePlexOrder(ps.app.cfg.Get()) {
+		if ps.runtime(s.ID) != nil {
+			continue
+		}
+		if err := ps.run(ctx, s.ID); err != nil {
+			ps.log.Warn("extra plex server did not start", "server", s.ID, "err", err)
 		}
 	}
 }
@@ -362,6 +401,9 @@ func (ps *plexExtras) runtime(id string) *plexServerRuntime {
 // activate claims the standby server id with its account and publishes it.
 func (ps *plexExtras) activate(ctx context.Context, id string) error {
 	cfg := ps.app.cfg.Get()
+	if !cfg.Plex.ExtraServersEnabled {
+		return errPlexExtrasOff
+	}
 	e, ok := cfg.PlexExtraServer(id)
 	if !ok {
 		return fmt.Errorf("plex server %s not found", id)
@@ -405,61 +447,6 @@ func (ps *plexExtras) activate(ctx context.Context, id string) error {
 	}
 	ps.log.Info("extra plex server started", "server", id, "account", e.Account.Username)
 	return nil
-}
-
-// checkCapacity starts the first standby server once every active server is
-// almost full.
-func (ps *plexExtras) checkCapacity(ctx context.Context) {
-	if ps.app.registrar == nil {
-		return
-	}
-	cfg := ps.app.cfg.Get()
-	if !cfg.Plex.Claimed {
-		return
-	}
-	var standby []config.PlexExtraServer
-	for _, s := range standbyPlexOrder(cfg) {
-		if !s.Retired {
-			standby = append(standby, s)
-		}
-	}
-	if len(standby) == 0 || !ps.almostFull(ctx, cfg) {
-		return
-	}
-	ps.mu.Lock()
-	if ps.starting {
-		ps.mu.Unlock()
-		return
-	}
-	ps.starting = true
-	ps.mu.Unlock()
-	defer func() {
-		ps.mu.Lock()
-		ps.starting = false
-		ps.mu.Unlock()
-	}()
-	actx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	if err := ps.activate(actx, standby[0].ID); err != nil {
-		ps.log.Warn("standby plex server did not start", "server", standby[0].ID, "err", err)
-	}
-}
-
-// almostFull reports whether every active server (the main one included)
-// has reached the warning seat count.
-func (ps *plexExtras) almostFull(ctx context.Context, cfg config.Config) bool {
-	warn := cfg.PlexSeatWarning()
-	used := ps.seatsUsed(ctx)
-	// A blocked, retired or stopped server counts as full.
-	if used[""] < warn && ps.takesInvites(cfg, "") {
-		return false
-	}
-	for _, s := range activePlexOrder(cfg) {
-		if used[s.ID] < warn && ps.takesInvites(cfg, s.ID) {
-			return false
-		}
-	}
-	return true
 }
 
 // pick is the server a new invite goes to: the first, oldest first, with a
@@ -559,6 +546,12 @@ func (ps *plexExtras) addAccount(ctx context.Context, client *plextv.Client, cli
 	}
 	var added config.PlexExtraServer
 	err = ps.app.cfg.Update(func(c *config.Config) error {
+		if !c.Plex.ExtraServersEnabled {
+			return errPlexExtrasOff
+		}
+		if n := c.PlexMaxExtraServers(); len(c.PlexExtraServers) >= n {
+			return errPlexExtrasLimit{max: n}
+		}
 		if c.Plex.OwnerPlexID != 0 && c.Plex.OwnerPlexID == acct.ID {
 			return errPlexAccountInUse{name: c.Server.FriendlyName}
 		}
@@ -583,8 +576,6 @@ func (ps *plexExtras) addAccount(ctx context.Context, client *plextv.Client, cli
 	ps.log.Info("plex account added as a standby server", "server", added.ID, "account", acct.Username)
 	if ps.afterAdd != nil {
 		ps.afterAdd()
-	} else {
-		go ps.checkCapacity(context.Background())
 	}
 	return added, nil
 }
@@ -682,7 +673,7 @@ type tokenServerEntry struct {
 // certificate hash), else the server its token was issued for.
 func (ps *plexExtras) serverForRequest(r *http.Request) string {
 	cfg := ps.app.cfg.Get()
-	if len(cfg.PlexExtraServers) == 0 {
+	if len(cfg.PlexExtraServers) == 0 || !cfg.Plex.ExtraServersEnabled {
 		return ""
 	}
 	host := r.Host

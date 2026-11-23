@@ -107,6 +107,8 @@ var mixedSections = map[string]map[string]Scope{
 		"seatsPerServer":             Shared,
 		"seatWarning":                Shared,
 		"mainRetired":                Shared,
+		"extraServersEnabled":        Shared,
+		"maxExtraServers":            Shared,
 		"secureConnections":          Shared,
 		"usePlexMetadata":            Shared,
 		"delivery":                   Shared,

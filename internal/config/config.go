@@ -271,6 +271,12 @@ type Plex struct {
 	// MainRetired stops new invites on the main Plex server (a ban): new
 	// viewers go to the extra servers.
 	MainRetired bool `json:"mainRetired,omitempty"`
+	// ExtraServersEnabled turns on extra Plex servers: other Plex accounts
+	// the owner connects to this Ether. Off by default.
+	ExtraServersEnabled bool `json:"extraServersEnabled,omitempty"`
+	// MaxExtraServers caps how many extra Plex servers can be added; 0 is
+	// the default (DefaultMaxExtraPlexServers).
+	MaxExtraServers int `json:"maxExtraServers,omitempty"`
 }
 
 type Usenet struct {

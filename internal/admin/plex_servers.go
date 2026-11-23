@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// PlexExtras manages extra Plex servers: each is claimed by a different
-// plex.tv account and served on the same port as the main server, so viewers
-// beyond one account's share limit get seats (config.PlexExtraServer).
+// PlexExtras manages extra Plex servers: other Plex accounts the owner
+// connects to this Ether, each served on the same port as the main server
+// (config.PlexExtraServer). Off by default and capped.
 type PlexExtras interface {
-	// Status lists the servers with their seats and the capacity warning.
+	// Status lists the servers, their viewers and any blocked server.
 	Status(ctx context.Context) any
 	// StartPIN begins a plex.tv sign-in for another account.
 	StartPIN(ctx context.Context) (id, code, authURL string, err error)

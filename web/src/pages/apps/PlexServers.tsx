@@ -156,7 +156,7 @@ export function PlexServers({ onChanged }: { onChanged?: () => void }) {
               text:
                 error instanceof ApiError && error.code === "plex_account_in_use"
                   ? t(
-                      "That Plex account already runs one of these servers, so it adds no seats. Sign in with a different Plex account.",
+                      "That Plex account already runs one of these servers. Sign in with another Plex account.",
                     )
                   : errorMessage(error),
             });

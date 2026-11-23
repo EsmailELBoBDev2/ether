@@ -4,22 +4,21 @@ import (
 	"strings"
 )
 
-// Extra Plex servers let one Ether present several Plex servers, each claimed
-// by a different plex.tv account, on the same port. plex.tv caps how many
-// people one account can share with, so each extra account adds its own seats.
-// Every extra server serves the same Ether: libraries, viewers, watch state
-// and settings are shared; only the plex.tv identity differs.
+// Extra Plex servers are other Plex accounts the owner connects to this Ether.
+// Each appears in Plex as its own server on the same port and serves the same
+// Ether: libraries, viewers, watch state and settings are shared; only the
+// plex.tv identity differs. The feature is off by default and capped
+// (Plex.ExtraServersEnabled, PlexMaxExtraServers).
 
 // PlexServerStandby is a signed-in account whose server is not claimed or
-// published yet. It starts (PlexServerActive) when the active servers are
-// almost full.
+// published yet. It starts (PlexServerActive) only when the owner starts it.
 const (
 	PlexServerStandby = "standby"
 	PlexServerActive  = "active"
 )
 
-// DefaultPlexSeatsPerServer is how many people one plex.tv account can share
-// a server with: plex.tv's limit of 100 includes the owner.
+// DefaultPlexSeatsPerServer is how many viewers one Plex server takes before
+// new invites go to the next started server.
 const DefaultPlexSeatsPerServer = 99
 
 // PlexServerAccount is the plex.tv account that owns an extra server.
@@ -94,8 +93,8 @@ func (c Config) PlexSeatsPerServer() int {
 	return DefaultPlexSeatsPerServer
 }
 
-// PlexSeatWarning is the seat count at which a server counts as almost full:
-// the next standby server starts, or the owner is warned to add one.
+// PlexSeatWarning is the stored Plex.SeatWarning or its default. Nothing acts
+// on it any more; it is kept so saved settings still load and validate.
 func (c Config) PlexSeatWarning() int {
 	seats := c.PlexSeatsPerServer()
 	if w := c.Plex.SeatWarning; w > 0 && w <= seats {

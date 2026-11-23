@@ -525,7 +525,7 @@ func (ps *plexExtras) syncOnUnknownToken(ctx context.Context) error {
 type errPlexAccountInUse struct{ name string }
 
 func (e errPlexAccountInUse) Error() string {
-	return fmt.Sprintf("this Plex account already runs %q, so it adds no seats: sign in with a different Plex account", e.name)
+	return fmt.Sprintf("this Plex account already runs %q: sign in with another Plex account", e.name)
 }
 
 // errPlexSetupIDInUse refuses a sign-in whose setup identifier another

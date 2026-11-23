@@ -260,13 +260,10 @@ type Plex struct {
 	KeyFile           string `json:"keyFile"`
 	CertHash          string `json:"certHash"`          // plex.direct subdomain hash
 	SecureConnections string `json:"secureConnections"` // "required", "preferred", "disabled"
-	// SeatsPerServer is how many viewers fill one Plex server before new
-	// invites go to the next one (default 99: plex.tv shares one account's
-	// server with at most 100 people, the owner included).
+	// SeatsPerServer is how many viewers one Plex server takes before new
+	// invites go to the next started server (default 99).
 	SeatsPerServer int `json:"seatsPerServer,omitempty"`
-	// SeatWarning is the seat count at which a server is almost full: the
-	// next standby server starts, or the owner is warned. Default 90% of
-	// SeatsPerServer.
+	// SeatWarning is no longer used; it is kept so saved settings load.
 	SeatWarning int `json:"seatWarning,omitempty"`
 	// MainRetired stops new invites on the main Plex server (a ban): new
 	// viewers go to the extra servers.

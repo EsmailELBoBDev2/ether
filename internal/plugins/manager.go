@@ -109,8 +109,8 @@ type Deps struct {
 
 // Manager is the plugin host. It is safe for concurrent use.
 type Manager struct {
-	replaceMu   sync.Mutex
-	replaceLibs map[string]bool
+	replaceMu          sync.Mutex
+	replaceLibs        map[string]bool
 	archiveDirectories archiveDirectoryCache
 	hashMu             sync.Mutex
 	hashJobs           map[string]*folderHashWork

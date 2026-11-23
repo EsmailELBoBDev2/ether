@@ -1140,8 +1140,13 @@ type Request struct {
 	Method   string            `json:"method"`
 	Path     string            `json:"path"`
 	Query    map[string]string `json:"query,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Body     json.RawMessage   `json:"body,omitempty"`
+	// RepeatedQuery holds every value of query keys that appeared more than
+	// once on a frontend adapter request (Subsonic sends id=1&id=2). Hosted
+	// runtimes deliver those keys as arrays; the remote wire keeps Query's
+	// first value. Host-side only.
+	RepeatedQuery map[string][]string `json:"-"`
+	Headers       map[string]string   `json:"headers,omitempty"`
+	Body          json.RawMessage     `json:"body,omitempty"`
 	// BodyBase64 carries the exact request bytes, base64-encoded, when the
 	// caller needs them byte-for-byte (frontend adapter routes). Body holds
 	// the parsed JSON value when the bytes are valid JSON; a non-JSON body

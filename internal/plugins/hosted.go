@@ -204,6 +204,11 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	for k, v := range req.Query {
 		q[k] = []string{v}
 	}
+	for k, v := range req.RepeatedQuery {
+		if len(v) > 1 {
+			q[k] = append([]string(nil), v...)
+		}
+	}
 	headers := req.Headers
 	if req.Locale != "" {
 		headers = cloneHeaders(headers)

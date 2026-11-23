@@ -73,11 +73,12 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			return
 		}
 		req := plugins.Request{
-			PluginID: f.decl.PluginID,
-			Method:   r.Method,
-			Path:     pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
-			Query:    firstValues(f.pluginQuery(r)),
-			Headers:  outboundHeaders(r, auth),
+			PluginID:      f.decl.PluginID,
+			Method:        r.Method,
+			Path:          pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
+			Query:         firstValues(f.pluginQuery(r)),
+			RepeatedQuery: repeatedValues(f.pluginQuery(r)),
+			Headers:       outboundHeaders(r, auth),
 		}
 		if len(body) > 0 {
 			// The exact bytes always ride along base64-encoded so a plugin
@@ -199,6 +200,15 @@ func (f *Frontend) call(ctx context.Context, req plugins.Request) (plugins.Respo
 	if int64(len(resp.Body)) > MaxHostedResponseBytes {
 		return plugins.Response{}, nil, errors.New("frontendadapter: hosted response exceeds cap")
 	}
+	// A hosted plugin's body is the JSON value it returned. A string body is
+	// the document itself (XML, HTML, plain text), so it is written unquoted;
+	// object and array bodies are already the JSON document.
+	if len(resp.Body) > 0 && resp.Body[0] == '"' {
+		var text string
+		if json.Unmarshal(resp.Body, &text) == nil {
+			resp.Body = []byte(text)
+		}
+	}
 	return resp, nil, nil
 }
 
@@ -306,6 +316,26 @@ func stripPrefix(path, prefix string) string {
 		return rest
 	}
 	return path
+}
+
+// maxRepeatedValues bounds how many values of one repeated query key reach a
+// plugin, so a request cannot fan one call into unbounded work.
+const maxRepeatedValues = 500
+
+// repeatedValues keeps every value of keys that appear more than once, for
+// runtimes that can deliver them (hosted plugins receive arrays).
+func repeatedValues(values map[string][]string) map[string][]string {
+	var out map[string][]string
+	for k, v := range values {
+		if len(v) < 2 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string][]string)
+		}
+		out[k] = append([]string(nil), v[:min(len(v), maxRepeatedValues)]...)
+	}
+	return out
 }
 
 // firstValues flattens a query into the map[string]string the plugin

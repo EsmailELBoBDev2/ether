@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -138,6 +139,43 @@ func checkPlaylistTitle(title string) error {
 	return nil
 }
 
+// kindGet returns the stored items for a bounded batch of external ids,
+// limited to those the frontend-adapter viewer may see under the library's
+// Rules and access policy, in the requested order.
+func (h *host) kindGet(ctx context.Context, kindKey string, ids []string) ([]core.KindItem, error) {
+	if err := checkStateIDs("ids", ids, MaxKindVisibleIDs); err != nil {
+		return nil, err
+	}
+	visible, err := h.KindVisible(ctx, kindKey, ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(visible) == 0 {
+		return []core.KindItem{}, nil
+	}
+	backend := h.m.kindBackends().KindItemsByID
+	if backend == nil {
+		return nil, ErrUnavailable
+	}
+	items, err := backend(ctx, h.plugin, kindKey, visible)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]core.KindItem, len(items))
+	for _, it := range items {
+		byID[it.ID] = it
+	}
+	out := make([]core.KindItem, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if it, ok := byID[id]; ok && !seen[id] {
+			seen[id] = true
+			out = append(out, it)
+		}
+	}
+	return out, nil
+}
+
 // callViewerState dispatches the hosted kinds.* viewer-state services.
 func (h *host) callViewerState(ctx context.Context, name string, args []json.RawMessage) (any, error, bool) {
 	str := func(i int) string {
@@ -158,6 +196,13 @@ func (h *host) callViewerState(ctx context.Context, name string, args []json.Raw
 	}
 	kind := str(0)
 	switch name {
+	case "kinds.get":
+		ids, err := strs(1)
+		if err != nil {
+			return nil, err, true
+		}
+		out, err := h.kindGet(ctx, kind, ids)
+		return out, err, true
 	case "kinds.state":
 		ids, err := strs(1)
 		if err != nil {

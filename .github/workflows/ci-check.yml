@@ -1,0 +1,17 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-plugin-items]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: vet
+        run: go vet ./internal/frontends/plex/... ./internal/frontends/silo/... ./internal/frontends/vela/... ./internal/frontend/kit/plextimeline/...
+      - name: test
+        run: go test ./internal/frontends/plex/... ./internal/frontends/silo/... ./internal/frontends/vela/... ./internal/frontend/kit/plextimeline/... 2>&1 | tail -150
+        shell: bash -o pipefail {0}

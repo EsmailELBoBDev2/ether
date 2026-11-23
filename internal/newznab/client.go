@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -134,6 +135,10 @@ type Client struct {
 	memCache map[string]memCacheEntry
 	torrents torrentDescriptorCache
 	br       breaker
+	// newznabPath is set once /api answered 404 and {base}/api/newznab
+	// worked: some indexers (Netuno) serve Newznab there, which Radarr and
+	// Sonarr reach through their API Path field.
+	newznabPath atomic.Bool
 
 	capsMu     sync.Mutex
 	caps       *Caps
@@ -408,6 +413,45 @@ func (c *Client) apiURL(params url.Values) (string, error) {
 	return c.apiURLFor(params, c.clientIdentity())
 }
 
+// explicitEndpoint reports whether the owner's URL already names the API
+// endpoint: it ends in /api, or in /newznab (Netuno's /api/newznab/, entered
+// the way Radarr's API Path field takes it).
+func explicitEndpoint(path string) bool {
+	lower := strings.ToLower(strings.TrimRight(path, "/"))
+	return strings.HasSuffix(lower, "/api") || strings.HasSuffix(lower, "/newznab")
+}
+
+// endpointPath turns the owner's URL path into the API endpoint: unchanged
+// when it already names one, otherwise /api, or /api/newznab once that is
+// what this indexer answered on.
+func (c *Client) endpointPath(path string) string {
+	if explicitEndpoint(path) {
+		return path
+	}
+	if c.newznabPath.Load() {
+		return path + "/api/newznab"
+	}
+	return path + "/api"
+}
+
+// learnNewznabPath switches a bare-host indexer to {base}/api/newznab after
+// {base}/api answered HTTP 404, so the caller can retry once. It reports
+// whether it switched.
+func (c *Client) learnNewznabPath(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Code != http.StatusNotFound {
+		return false
+	}
+	cfg := c.Config()
+	if cfg.IsZilean() {
+		return false
+	}
+	if u, perr := url.Parse(strings.TrimSpace(cfg.URL)); perr == nil && explicitEndpoint(u.Path) {
+		return false
+	}
+	return c.newznabPath.CompareAndSwap(false, true)
+}
+
 func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error) {
 	cfg := c.Config()
 	raw := strings.TrimSpace(cfg.URL)
@@ -421,10 +465,7 @@ func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		base := strings.TrimRight(raw, "/")
-		if !strings.HasSuffix(base, "/api") {
-			base += "/api"
-		}
+		base := c.endpointPath(strings.TrimRight(raw, "/"))
 		q := url.Values{}
 		for k, vs := range params {
 			q[k] = vs
@@ -434,10 +475,7 @@ func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error
 		}
 		return base + "?" + id.ApplyParams(q), nil
 	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	if !strings.HasSuffix(u.Path, "/api") {
-		u.Path += "/api"
-	}
+	u.Path = c.endpointPath(strings.TrimRight(u.Path, "/"))
 	q := u.Query()
 	q.Del("t")
 	for k, vs := range params {
@@ -722,6 +760,15 @@ func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
 		return nil, err
 	}
 	body, err := c.get(hctx, u, 5<<20, id)
+	if err != nil && c.learnNewznabPath(err) {
+		alt, aerr := c.apiURLFor(url.Values{"t": {"caps"}}, id)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if body, err = c.get(hctx, alt, 5<<20, id); err != nil {
+			c.newznabPath.Store(false)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1205,6 +1252,16 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 			return c.getSearchStream(ctx, u, wrappedEmit, id)
 		}
 		body, err := c.get(ctx, u, 20<<20, id)
+		if err != nil && c.learnNewznabPath(err) {
+			// {base}/api answered 404: retry once on {base}/api/newznab.
+			alt, aerr := c.apiURLFor(params, id)
+			if aerr != nil {
+				return nil, aerr
+			}
+			if body, err = c.get(ctx, alt, 20<<20, id); err != nil {
+				c.newznabPath.Store(false)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}

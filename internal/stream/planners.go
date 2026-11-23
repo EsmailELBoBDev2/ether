@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,33 @@ import (
 	"github.com/braedonsaunders/ether/internal/par2"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
+
+// trackNameRe reads "[disc-]number title" from a member hint without an
+// extension, e.g. "1-03 They Don't Care About Us" or "01 I'll Be There".
+var trackNameRe = regexp.MustCompile(`^(?:(\d{1,2})[-.])?(\d{1,3})(?:\s*[-._)]\s*|\s+)(.+)$`)
+
+// trackHintFromName turns a synthetic track-style member hint into a
+// TrackHint. Hints that carry a file extension are real paths, not tracks.
+func trackHintFromName(name string) (nzb.TrackHint, bool) {
+	name = strings.TrimSpace(path.Base(strings.ReplaceAll(name, "\\", "/")))
+	if ext := path.Ext(name); ext != "" && len(ext) <= 5 && !strings.ContainsAny(ext, " '") {
+		return nzb.TrackHint{}, false
+	}
+	m := trackNameRe.FindStringSubmatch(name)
+	if m == nil {
+		return nzb.TrackHint{}, false
+	}
+	var h nzb.TrackHint
+	if m[1] != "" {
+		h.Disc, _ = strconv.Atoi(m[1])
+	}
+	h.Number, _ = strconv.Atoi(m[2])
+	h.Title = strings.TrimSpace(m[3])
+	if h.Number <= 0 {
+		return nzb.TrackHint{}, false
+	}
+	return h, true
+}
 
 // nonVideoArchiveHint returns the NZB's non-video hint when archive member
 // selection or non-video archive extraction is requested.
@@ -55,6 +83,24 @@ func chooseNonVideoMember(members []archive.Member, hint nzb.NonVideoHint) (*arc
 			return nil, fmt.Errorf("stream: archive member %q matched multiple files: %w", want, core.ErrWrongContent)
 		}
 		if !ok {
+			// A hint that names no member exactly may still describe a track
+			// ("1-03 Title", "01 Title"): fall back to the structured track
+			// hint, or one read from the name, before giving up.
+			track := hint.Track
+			if !track.NonEmpty() {
+				if parsed, okParse := trackHintFromName(want); okParse {
+					track = &parsed
+				}
+			}
+			if track.NonEmpty() {
+				fallback := hint
+				fallback.Member = ""
+				fallback.MemberIndex = nil
+				fallback.Track = track
+				if m, err := chooseNonVideoMember(members, fallback); err == nil {
+					return m, nil
+				}
+			}
 			return nil, fmt.Errorf("%w: archive holds no member %q: %w", ErrNoPlayableFile, want, core.ErrWrongContent)
 		}
 		if nonDirs[idx].Size <= 0 {

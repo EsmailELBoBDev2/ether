@@ -3142,14 +3142,34 @@ export function createFakeServer(opts: FakeOptions = {}) {
         levels: [{ key: "book", label: "Book", role: "book", playable: true }],
         fields: [
           { key: "author", type: "people", label: "Author", indexed: true },
-          { key: "subject", type: "strings", label: "Subject", indexed: true },
+          {
+            key: "subject",
+            type: "strings",
+            label: "Subject",
+            indexed: true,
+            values: [
+              "Science Fiction",
+              "Space Opera",
+              "Cyberpunk",
+              "Classic Literature",
+              "Solarpunk",
+              "Historical Fiction",
+            ],
+          },
           { key: "series", type: "string", label: "Series", indexed: true },
           { key: "publisher", type: "string", label: "Publisher", indexed: true },
-          { key: "format", type: "enum", label: "Format", indexed: false },
-          { key: "pages", type: "int", label: "Page count", indexed: false },
-          { key: "published", type: "date", label: "Published", indexed: false },
-          { key: "abridged", type: "bool", label: "Abridged", indexed: false },
-          { key: "language", type: "string", label: "Book language", indexed: false },
+          {
+            key: "format",
+            type: "enum",
+            label: "Format",
+            indexed: true,
+            enum: ["Hardcover", "EPUB", "Audiobook", "Paperback"],
+          },
+          { key: "pages", type: "int", label: "Page count", indexed: true },
+          { key: "duration", type: "duration", label: "Audio length", indexed: true },
+          { key: "published", type: "date", label: "Published", indexed: true },
+          { key: "abridged", type: "bool", label: "Abridged", indexed: true },
+          { key: "language", type: "string", label: "Book language", indexed: true },
         ],
         present: {},
         browse: {
@@ -3785,8 +3805,34 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (!seg[3] && method === "DELETE") return json(libraryTabs.resetTabs(lib));
       return err(405, "method_not_allowed", "method not allowed");
     }
-    if (seg[2] === "facets")
-      return json(libraryTabs.facetValuesFor(lib, decodeURIComponent(seg[3] ?? "")));
+    if (seg[2] === "facets") {
+      const q = url.searchParams.get("q") ?? undefined;
+      const offsetRaw = url.searchParams.get("offset");
+      const limitRaw = url.searchParams.get("limit");
+      const orderRaw = url.searchParams.get("order");
+      const declaredRaw = url.searchParams.get("declared");
+      const hasOpts =
+        q !== undefined ||
+        offsetRaw !== null ||
+        limitRaw !== null ||
+        orderRaw !== null ||
+        declaredRaw !== null;
+      return json(
+        libraryTabs.facetValuesFor(
+          lib,
+          decodeURIComponent(seg[3] ?? ""),
+          hasOpts
+            ? {
+                q,
+                offset: offsetRaw ? Number(offsetRaw) : undefined,
+                limit: limitRaw ? Number(limitRaw) : undefined,
+                order: orderRaw === "name" ? "name" : "count",
+                declared: declaredRaw === "1" || declaredRaw === "true",
+              }
+            : undefined,
+        ),
+      );
+    }
     if (seg[2] === "sync") return json({ upserted: 1, deleted: 0, skipped: 0 });
     if (seg[2] === "cache") {
       if (seg[3])

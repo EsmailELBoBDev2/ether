@@ -104,30 +104,262 @@ func ParseDateYearBucket(id string) (int64, int64, bool) {
 	return start, end, true
 }
 
-func parseIntRange(v string) (int64, int64, bool) {
-	if !strings.Contains(v, "..") {
-		return 0, 0, false
-	}
-	parts := strings.SplitN(v, "..", 2)
-	lo, err1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-	hi, err2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-	if err1 != nil || err2 != nil || lo > hi {
-		return 0, 0, false
-	}
-	return lo, hi, true
+// IntRange describes a one- or two-sided integer range with inclusive or
+// exclusive bounds.
+type IntRange struct {
+	HasLo bool
+	Lo    int64
+	LoInc bool // true for >=, false for >
+	HasHi bool
+	Hi    int64
+	HiInc bool // true for <=, false for <
 }
 
-func parseFloatRange(v string) (float64, float64, bool) {
-	if !strings.Contains(v, "..") {
-		return 0, 0, false
+// ExcludesZero reports whether 0 falls strictly outside the range, allowing
+// callers to use the stricter `f.v_int <> 0` partial-index predicate.
+func (r IntRange) ExcludesZero() bool {
+	if r.HasLo && (r.Lo > 0 || (r.Lo == 0 && !r.LoInc)) {
+		return true
 	}
-	parts := strings.SplitN(v, "..", 2)
-	lo, err1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	hi, err2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	if err1 != nil || err2 != nil || math.IsNaN(lo) || math.IsNaN(hi) || math.IsInf(lo, 0) || math.IsInf(hi, 0) || lo > hi {
-		return 0, 0, false
+	if r.HasHi && (r.Hi < 0 || (r.Hi == 0 && !r.HiInc)) {
+		return true
 	}
-	return lo, hi, true
+	return false
+}
+
+// SQL renders the range predicate on col and returns its bound arguments.
+func (r IntRange) SQL(col string) (string, []any) {
+	switch {
+	case r.HasLo && r.HasHi:
+		if r.LoInc && r.HiInc {
+			return col + ` BETWEEN ? AND ?`, []any{r.Lo, r.Hi}
+		}
+		loOp := `>`
+		if r.LoInc {
+			loOp = `>=`
+		}
+		hiOp := `<`
+		if r.HiInc {
+			hiOp = `<=`
+		}
+		return `(` + col + ` ` + loOp + ` ? AND ` + col + ` ` + hiOp + ` ?)`, []any{r.Lo, r.Hi}
+	case r.HasLo:
+		if r.LoInc {
+			return col + ` >= ?`, []any{r.Lo}
+		}
+		return col + ` > ?`, []any{r.Lo}
+	default:
+		if r.HiInc {
+			return col + ` <= ?`, []any{r.Hi}
+		}
+		return col + ` < ?`, []any{r.Hi}
+	}
+}
+
+// FloatRange describes a one- or two-sided floating-point range with inclusive
+// or exclusive bounds.
+type FloatRange struct {
+	HasLo bool
+	Lo    float64
+	LoInc bool // true for >=, false for >
+	HasHi bool
+	Hi    float64
+	HiInc bool // true for <=, false for <
+}
+
+// SQL renders the range predicate on col and returns its bound arguments.
+func (r FloatRange) SQL(col string) (string, []any) {
+	switch {
+	case r.HasLo && r.HasHi:
+		if r.LoInc && r.HiInc {
+			return col + ` BETWEEN ? AND ?`, []any{r.Lo, r.Hi}
+		}
+		loOp := `>`
+		if r.LoInc {
+			loOp = `>=`
+		}
+		hiOp := `<`
+		if r.HiInc {
+			hiOp = `<=`
+		}
+		return `(` + col + ` ` + loOp + ` ? AND ` + col + ` ` + hiOp + ` ?)`, []any{r.Lo, r.Hi}
+	case r.HasLo:
+		if r.LoInc {
+			return col + ` >= ?`, []any{r.Lo}
+		}
+		return col + ` > ?`, []any{r.Lo}
+	default:
+		if r.HiInc {
+			return col + ` <= ?`, []any{r.Hi}
+		}
+		return col + ` < ?`, []any{r.Hi}
+	}
+}
+
+func stripLoPrefix(s string) (num string, inc bool) {
+	s = strings.TrimSpace(s)
+	if rest, ok := strings.CutPrefix(s, ">="); ok {
+		return strings.TrimSpace(rest), true
+	}
+	if rest, ok := strings.CutPrefix(s, ">"); ok {
+		return strings.TrimSpace(rest), false
+	}
+	return s, true
+}
+
+func stripHiPrefix(s string) (num string, inc bool) {
+	s = strings.TrimSpace(s)
+	if rest, ok := strings.CutPrefix(s, "<="); ok {
+		return strings.TrimSpace(rest), true
+	}
+	if rest, ok := strings.CutPrefix(s, "<"); ok {
+		return strings.TrimSpace(rest), false
+	}
+	return s, true
+}
+
+// ParseIntRange parses closed (`lo..hi`), open (`lo..`, `..hi`), and exclusive
+// (`<hi`, `>lo`, `..<hi`, `>lo..`, `<=hi`, `>=lo`) integer range expressions.
+func ParseIntRange(v string) (IntRange, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return IntRange{}, false
+	}
+	if strings.Contains(v, "..") {
+		parts := strings.SplitN(v, "..", 2)
+		left := strings.TrimSpace(parts[0])
+		right := strings.TrimSpace(parts[1])
+		if left == "" && right == "" {
+			return IntRange{}, false
+		}
+		var r IntRange
+		if left != "" {
+			num, inc := stripLoPrefix(left)
+			lo, err := strconv.ParseInt(num, 10, 64)
+			if err != nil {
+				return IntRange{}, false
+			}
+			r.HasLo, r.Lo, r.LoInc = true, lo, inc
+		}
+		if right != "" {
+			num, inc := stripHiPrefix(right)
+			hi, err := strconv.ParseInt(num, 10, 64)
+			if err != nil {
+				return IntRange{}, false
+			}
+			r.HasHi, r.Hi, r.HiInc = true, hi, inc
+		}
+		if r.HasLo && r.HasHi {
+			if r.Lo > r.Hi || (r.Lo == r.Hi && (!r.LoInc || !r.HiInc)) {
+				return IntRange{}, false
+			}
+		}
+		return r, true
+	}
+	switch {
+	case strings.HasPrefix(v, "<="):
+		hi, err := strconv.ParseInt(strings.TrimSpace(v[2:]), 10, 64)
+		if err != nil {
+			return IntRange{}, false
+		}
+		return IntRange{HasHi: true, Hi: hi, HiInc: true}, true
+	case strings.HasPrefix(v, ">="):
+		lo, err := strconv.ParseInt(strings.TrimSpace(v[2:]), 10, 64)
+		if err != nil {
+			return IntRange{}, false
+		}
+		return IntRange{HasLo: true, Lo: lo, LoInc: true}, true
+	case strings.HasPrefix(v, "<"):
+		hi, err := strconv.ParseInt(strings.TrimSpace(v[1:]), 10, 64)
+		if err != nil {
+			return IntRange{}, false
+		}
+		return IntRange{HasHi: true, Hi: hi, HiInc: false}, true
+	case strings.HasPrefix(v, ">"):
+		lo, err := strconv.ParseInt(strings.TrimSpace(v[1:]), 10, 64)
+		if err != nil {
+			return IntRange{}, false
+		}
+		return IntRange{HasLo: true, Lo: lo, LoInc: false}, true
+	default:
+		return IntRange{}, false
+	}
+}
+
+// ParseFloatRange parses closed (`lo..hi`), open (`lo..`, `..hi`), and
+// exclusive (`<hi`, `>lo`, `..<hi`, `>lo..`, `<=hi`, `>=lo`) floating-point
+// range expressions.
+func ParseFloatRange(v string) (FloatRange, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return FloatRange{}, false
+	}
+	parseNum := func(s string) (float64, bool) {
+		n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		return n, true
+	}
+	if strings.Contains(v, "..") {
+		parts := strings.SplitN(v, "..", 2)
+		left := strings.TrimSpace(parts[0])
+		right := strings.TrimSpace(parts[1])
+		if left == "" && right == "" {
+			return FloatRange{}, false
+		}
+		var r FloatRange
+		if left != "" {
+			num, inc := stripLoPrefix(left)
+			lo, ok := parseNum(num)
+			if !ok {
+				return FloatRange{}, false
+			}
+			r.HasLo, r.Lo, r.LoInc = true, lo, inc
+		}
+		if right != "" {
+			num, inc := stripHiPrefix(right)
+			hi, ok := parseNum(num)
+			if !ok {
+				return FloatRange{}, false
+			}
+			r.HasHi, r.Hi, r.HiInc = true, hi, inc
+		}
+		if r.HasLo && r.HasHi {
+			if r.Lo > r.Hi || (r.Lo == r.Hi && (!r.LoInc || !r.HiInc)) {
+				return FloatRange{}, false
+			}
+		}
+		return r, true
+	}
+	switch {
+	case strings.HasPrefix(v, "<="):
+		hi, ok := parseNum(v[2:])
+		if !ok {
+			return FloatRange{}, false
+		}
+		return FloatRange{HasHi: true, Hi: hi, HiInc: true}, true
+	case strings.HasPrefix(v, ">="):
+		lo, ok := parseNum(v[2:])
+		if !ok {
+			return FloatRange{}, false
+		}
+		return FloatRange{HasLo: true, Lo: lo, LoInc: true}, true
+	case strings.HasPrefix(v, "<"):
+		hi, ok := parseNum(v[1:])
+		if !ok {
+			return FloatRange{}, false
+		}
+		return FloatRange{HasHi: true, Hi: hi, HiInc: false}, true
+	case strings.HasPrefix(v, ">"):
+		lo, ok := parseNum(v[1:])
+		if !ok {
+			return FloatRange{}, false
+		}
+		return FloatRange{HasLo: true, Lo: lo, LoInc: false}, true
+	default:
+		return FloatRange{}, false
+	}
 }
 
 // AppendPluginFacetClauses appends ` AND EXISTS (...)` (or envelope ` AND (...)`)
@@ -208,7 +440,7 @@ func AppendPluginFacetClauses(where *strings.Builder, args *[]any, facets map[st
 			var dargs []any
 			var exactPh []string
 			var exactArgs []any
-			invalid := false
+			col := `i.` + key
 			for _, value := range cleanVals {
 				if key == "released" {
 					if lo, hi, ok := ParseDateYearBucket(value); ok {
@@ -217,24 +449,49 @@ func AppendPluginFacetClauses(where *strings.Builder, args *[]any, facets map[st
 						continue
 					}
 				}
-				if lo, hi, ok := parseFloatRange(value); ok {
-					disjuncts = append(disjuncts, `i.`+key+` BETWEEN ? AND ?`)
-					dargs = append(dargs, lo, hi)
+				if key == "year" || key == "released" {
+					if r, ok := ParseIntRange(value); ok {
+						q, rargs := r.SQL(col)
+						if key == "year" && (!r.HasLo || r.Lo < 0 || (r.Lo == 0 && r.LoInc)) {
+							q = `(i.year > 0 AND ` + q + `)`
+						} else if key == "released" && !r.ExcludesZero() {
+							q = `(i.released <> 0 AND ` + q + `)`
+						}
+						disjuncts = append(disjuncts, q)
+						dargs = append(dargs, rargs...)
+						continue
+					}
+					if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+						exactPh = append(exactPh, "?")
+						exactArgs = append(exactArgs, n)
+						continue
+					}
+				}
+				if r, ok := ParseFloatRange(value); ok {
+					q, rargs := r.SQL(col)
+					if key == "rating" && (!r.HasLo || r.Lo < 0 || (r.Lo == 0 && r.LoInc)) {
+						q = `(i.rating > 0 AND ` + q + `)`
+					} else if key == "year" && (!r.HasLo || r.Lo < 0 || (r.Lo == 0 && r.LoInc)) {
+						q = `(i.year > 0 AND ` + q + `)`
+					} else if key == "released" && (!r.HasLo || r.Lo <= 0) && (!r.HasHi || r.Hi >= 0) {
+						q = `(i.released <> 0 AND ` + q + `)`
+					}
+					disjuncts = append(disjuncts, q)
+					dargs = append(dargs, rargs...)
 					continue
 				}
 				number, err := strconv.ParseFloat(value, 64)
 				if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-					invalid = true
 					continue
 				}
 				exactPh = append(exactPh, "?")
 				exactArgs = append(exactArgs, number)
 			}
 			if len(exactPh) > 0 {
-				disjuncts = append(disjuncts, `i.`+key+` IN (`+strings.Join(exactPh, ",")+`)`)
+				disjuncts = append(disjuncts, col+` IN (`+strings.Join(exactPh, ",")+`)`)
 				dargs = append(dargs, exactArgs...)
 			}
-			if len(disjuncts) == 0 || (invalid && len(disjuncts) == 0) {
+			if len(disjuncts) == 0 {
 				where.WriteString(` AND 0=1`)
 				continue
 			}
@@ -277,7 +534,7 @@ func allIntRanges(vals []string) bool {
 		return false
 	}
 	for _, v := range vals {
-		if _, _, ok := parseIntRange(v); !ok {
+		if _, ok := ParseIntRange(v); !ok {
 			return false
 		}
 	}
@@ -309,9 +566,10 @@ func appendIntFieldClause(where *strings.Builder, args *[]any, key, ftype string
 				continue
 			}
 		}
-		if lo, hi, ok := parseIntRange(v); ok {
-			disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
-			dargs = append(dargs, lo, hi)
+		if r, ok := ParseIntRange(v); ok {
+			q, rargs := r.SQL(`f.v_int`)
+			disjuncts = append(disjuncts, q)
+			dargs = append(dargs, rargs...)
 			continue
 		}
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -344,9 +602,10 @@ func appendFloatFieldClause(where *strings.Builder, args *[]any, key string, val
 	var exactPh []string
 	var exactArgs []any
 	for _, v := range vals {
-		if lo, hi, ok := parseFloatRange(v); ok {
-			disjuncts = append(disjuncts, `f.v_real BETWEEN ? AND ?`)
-			dargs = append(dargs, lo, hi)
+		if r, ok := ParseFloatRange(v); ok {
+			q, rargs := r.SQL(`f.v_real`)
+			disjuncts = append(disjuncts, q)
+			dargs = append(dargs, rargs...)
 			continue
 		}
 		n, err := strconv.ParseFloat(v, 64)

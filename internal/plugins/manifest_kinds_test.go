@@ -320,6 +320,18 @@ func TestContentManifestRules(t *testing.T) {
 		{"enum values on text field", func(m *Manifest) {
 			kind(m).Fields[1].Enum = []string{"x"}
 		}, "fields[1].enum"},
+		{"values on non-strings field", func(m *Manifest) {
+			kind(m).Fields[1].Values = []string{"x"}
+		}, "fields[1].values"},
+		{"values on enum field", func(m *Manifest) {
+			kind(m).Fields[0].Values = []string{"x"}
+		}, "fields[0].values"},
+		{"blank value in strings values", func(m *Manifest) {
+			kind(m).Fields = append(kind(m).Fields, KindField{Key: "tags", Type: "strings", Label: "Tags", Indexed: true, Values: []string{"ambient", "  "}})
+		}, "fields[3].values"},
+		{"duplicate value in strings values", func(m *Manifest) {
+			kind(m).Fields = append(kind(m).Fields, KindField{Key: "tags", Type: "strings", Label: "Tags", Indexed: true, Values: []string{"ambient", "ambient"}})
+		}, "fields[3].values"},
 		{"facet not indexed", func(m *Manifest) { kind(m).Fields[0].Indexed = false }, "browse.facets[0]"},
 		{"facet unknown field", func(m *Manifest) { kind(m).Browse.Facets = []string{"mood"} }, "browse.facets[0]"},
 		{"bad sort", func(m *Manifest) { kind(m).Browse.Sorts = []string{"vibes"} }, "browse.sorts[0]"},
@@ -436,14 +448,28 @@ func TestValidateMediaKindsUpgrade(t *testing.T) {
 		k := validMediaKind()
 		return []MediaKindMeta{k}
 	}
-	// Additive: new field, trailing level, enum value, label change.
+	// Additive: new field, trailing level, enum value, strings values, label change.
 	next := clone()
 	next[0].Label = "Field recordings and more"
-	next[0].Fields = append(next[0].Fields, KindField{Key: "mood", Type: "string", Label: "Mood"})
+	next[0].Fields = append(next[0].Fields,
+		KindField{Key: "mood", Type: "string", Label: "Mood"},
+		KindField{Key: "tags", Type: "strings", Label: "Tags", Indexed: true, Values: []string{"field", "night"}},
+	)
 	next[0].Fields[0].Enum = append(next[0].Fields[0].Enum, "night")
 	next[0].Levels = append(next[0].Levels, KindLevel{Key: "take", Label: "Take", Playable: true})
 	if err := ValidateMediaKindsUpgrade(base, next); err != nil {
 		t.Fatalf("additive upgrade: %v", err)
+	}
+	// Updating strings.values across upgrades is allowed (declared vocabulary, not a closed enum).
+	next2 := clone()
+	next2[0].Fields = append(next2[0].Fields,
+		KindField{Key: "mood", Type: "string", Label: "Mood"},
+		KindField{Key: "tags", Type: "strings", Label: "Tags", Indexed: true, Values: []string{"night", "rain"}},
+	)
+	next2[0].Fields[0].Enum = append(next2[0].Fields[0].Enum, "night")
+	next2[0].Levels = append(next2[0].Levels, KindLevel{Key: "take", Label: "Take", Playable: true})
+	if err := ValidateMediaKindsUpgrade(next, next2); err != nil {
+		t.Fatalf("strings.values update upgrade: %v", err)
 	}
 	bad := []struct {
 		name string

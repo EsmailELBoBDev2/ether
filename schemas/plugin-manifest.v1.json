@@ -701,6 +701,12 @@
                             "strings",
                             "people"
                           ]
+                        },
+                        "values": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
                         }
                       },
                       "type": "object"

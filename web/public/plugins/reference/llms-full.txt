@@ -807,7 +807,10 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 ```
 
 Rules that will bite if ignored: at least one level must be
-`playable`; facet fields must be `indexed`; field keys may not reuse
+`playable`; facet fields must be `indexed` (except `people`, which is
+always indexed); `enum` fields declare a closed `enum` list, while
+`strings` fields may declare an optional `values` vocabulary shown in the
+rules editor even before any item carries them; field keys may not reuse
 envelope names (`id`, `title`, …); declarations are **additive across
 versions** — removing or retyping a field/level is refused at upgrade
 unless the owner agrees to replace the library's contents.
@@ -6973,6 +6976,7 @@ type KindLevel struct {
 | `label` | `string` | emitted (validation may require a value) |  |
 | `indexed` | `bool` | may be omitted (see validation for conditions) | gets a typed column in the item store |
 | `enum` | `[]string` | may be omitted (see validation for conditions) |  |
+| `values` | `[]string` | may be omitted (see validation for conditions) | Values optionally declares a known vocabulary for a "strings" field so the rules editor can offer those values before any item uses them. |
 | `fact` | `*bool` | may be omitted (see validation for conditions) | Fact controls whether this field is surfaced in TitleMedia.facts. Nil follows the default rule (non-structural fields appear as facts); explicit true/false overrides it. |
 
 
@@ -6986,6 +6990,9 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"` // gets a typed column in the item store
 	Enum    []string `json:"enum,omitempty"`
+	// Values optionally declares a known vocabulary for a "strings" field so
+	// the rules editor can offer those values before any item uses them.
+	Values []string `json:"values,omitempty"`
 	// Fact controls whether this field is surfaced in TitleMedia.facts.
 	// Nil follows the default rule (non-structural fields appear as facts);
 	// explicit true/false overrides it.
@@ -24911,6 +24918,20 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		} else if len(f.Enum) > 0 {
 			add(fbase+".enum", "only enum fields list values")
 		}
+		if len(f.Values) > 0 {
+			if f.Type != "strings" {
+				add(fbase+".values", "only strings fields may declare values")
+			} else {
+				seenValues := map[string]bool{}
+				for _, v := range f.Values {
+					if strings.TrimSpace(v) == "" || seenValues[v] {
+						add(fbase+".values", "values must be non-empty and listed once")
+						break
+					}
+					seenValues[v] = true
+				}
+			}
+		}
 	}
 
 	seenArt := map[string]bool{}
@@ -24993,7 +25014,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	if !k.Library.IsZero() {
 		declaredIndexed := make(map[string]string, len(k.Fields))
 		for _, f := range k.Fields {
-			if f.Indexed {
+			if f.Indexed || f.Type == "people" {
 				declaredIndexed[f.Key] = f.Type
 			}
 		}
@@ -25791,7 +25812,7 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 	fieldList := make([]KindField, 0, len(fields))
 	for _, f := range fields {
 		fieldList = append(fieldList, f)
-		if f.Indexed {
+		if f.Indexed || f.Type == "people" {
 			declaredIndexed[f.Key] = f.Type
 		}
 	}
@@ -35384,6 +35405,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].fields[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].type` | `any` | false | {"enum":["string","int","float","bool","date","duration","enum","strings","people"]} |
+| `ether.contributes.mediaKinds[].fields[].values` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels` | `array` | false | {} |
@@ -36317,6 +36339,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                             "strings",
                             "people"
                           ]
+                        },
+                        "values": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
                         }
                       },
                       "type": "object"
@@ -62049,6 +62077,7 @@ type KindLevel struct {
 | `label` | `string` | emitted (validation may require a value) |  |
 | `indexed` | `bool` | may be omitted (see validation for conditions) |  |
 | `enum` | `[]string` | may be omitted (see validation for conditions) |  |
+| `values` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#KindField
@@ -62061,6 +62090,7 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"`
 	Enum    []string `json:"enum,omitempty"`
+	Values  []string `json:"values,omitempty"`
 }
 ``````
 
@@ -74313,6 +74343,7 @@ export interface KindField {
   label: string;
   indexed?: boolean;
   enum?: string[];
+  values?: string[];
 }
 
 export interface KindArt {

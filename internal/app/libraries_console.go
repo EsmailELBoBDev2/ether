@@ -875,14 +875,47 @@ func (c *librariesConsole) handleFacets(w http.ResponseWriter, r *http.Request) 
 	field := r.PathValue("field")
 	p := r.URL.Query()
 	limit, _ := strconv.Atoi(p.Get("limit"))
-	if limit <= 0 {
-		limit = 500 // the store's ceiling; the response says when a field has more
-	}
 	if lib.Source == core.LibraryPlugin {
 		items, _, err := c.services()
 		if err != nil || items == nil {
 			libError(w, http.StatusServiceUnavailable, "Plugin items are unavailable")
 			return
+		}
+		q := p.Get("q")
+		offset, _ := strconv.Atoi(p.Get("offset"))
+		order := p.Get("order")
+		includeDeclared := p.Get("declared") == "1" || strings.EqualFold(p.Get("declared"), "true")
+		if q != "" || offset > 0 || order != "" || includeDeclared {
+			if limit <= 0 {
+				limit = 40
+			}
+			page, err := items.FieldValues(r.Context(), pluginitems.FieldValuesQuery{
+				LibraryID:       lib.ID,
+				Level:           p.Get("level"),
+				FieldKey:        field,
+				Query:           q,
+				Offset:          offset,
+				Limit:           limit,
+				Order:           order,
+				IncludeDeclared: includeDeclared,
+			})
+			if err != nil {
+				libError(w, http.StatusInternalServerError, "Could not list filter values")
+				return
+			}
+			if page.Values == nil {
+				page.Values = []pluginitems.FacetCount{}
+			}
+			libJSON(w, http.StatusOK, map[string]any{
+				"field":     field,
+				"values":    page.Values,
+				"truncated": page.More,
+				"more":      page.More,
+			})
+			return
+		}
+		if limit <= 0 {
+			limit = 500 // the store's ceiling; the response says when a field has more
 		}
 		page, err := items.Facets(r.Context(), lib.ID, p.Get("level"), field, limit)
 		if err != nil {

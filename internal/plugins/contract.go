@@ -971,6 +971,9 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"` // gets a typed column in the item store
 	Enum    []string `json:"enum,omitempty"`
+	// Values optionally declares a known vocabulary for a "strings" field so
+	// the rules editor can offer those values before any item uses them.
+	Values []string `json:"values,omitempty"`
 	// Fact controls whether this field is surfaced in TitleMedia.facts.
 	// Nil follows the default rule (non-structural fields appear as facts);
 	// explicit true/false overrides it.

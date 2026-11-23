@@ -38,6 +38,13 @@ const (
 	// memo.
 	liveSearchMemoTTL = 10 * time.Minute
 	liveSearchMemoMax = 512
+	// liveSearchFailTTL keeps a failed or timed-out live search from being
+	// retried by every search (and keeping each one pending) for a while.
+	liveSearchFailTTL = 2 * time.Minute
+	// liveSearchPendingWindow is how long a search that does not wait still
+	// reports a running live search as pending: a plugin slower than this
+	// answers a later search instead of holding the client's retries.
+	liveSearchPendingWindow = 4 * time.Second
 )
 
 // KindCatalogDeps configures a KindCatalog adapter.
@@ -55,14 +62,16 @@ type KindCatalogDeps struct {
 }
 
 type liveSearchCall struct {
-	done  chan struct{}
-	items []core.KindItem
-	ok    bool // the plugin answered (possibly with no items)
+	done    chan struct{}
+	items   []core.KindItem
+	ok      bool // the plugin answered (possibly with no items)
+	started time.Time
 }
 
 type liveSearchMemo struct {
 	items []core.KindItem
 	at    time.Time
+	ttl   time.Duration
 }
 
 // KindCatalog bridges plugin media-kind declarations and lifecycle events to
@@ -2009,7 +2018,7 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 
 	c.liveMu.Lock()
 	if m, ok := c.liveMemo[sfKey]; ok {
-		if time.Since(m.at) < liveSearchMemoTTL {
+		if time.Since(m.at) < m.ttl {
 			c.liveMu.Unlock()
 			return m.items
 		}
@@ -2017,7 +2026,7 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 	}
 	call, inflight := c.liveCalls[sfKey]
 	if !inflight {
-		call = &liveSearchCall{done: make(chan struct{})}
+		call = &liveSearchCall{done: make(chan struct{}), started: time.Now()}
 		c.liveCalls[sfKey] = call
 		sem := c.liveSems[rec.PluginID]
 		if sem == nil {
@@ -2036,7 +2045,9 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 		case <-call.done:
 			return call.items
 		default:
-			pending.Mark()
+			if time.Since(call.started) < liveSearchPendingWindow {
+				pending.Mark()
+			}
 			return nil
 		}
 	}
@@ -2069,7 +2080,9 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		c.liveMu.Lock()
 		delete(c.liveCalls, sfKey)
 		if call.ok {
-			c.rememberLiveSearch(sfKey, call.items)
+			c.rememberLiveSearch(sfKey, call.items, liveSearchMemoTTL)
+		} else {
+			c.rememberLiveSearch(sfKey, nil, liveSearchFailTTL)
 		}
 		c.liveMu.Unlock()
 	}()
@@ -2126,12 +2139,12 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 }
 
 // rememberLiveSearch memoizes a finished live search; c.liveMu is held.
-func (c *KindCatalog) rememberLiveSearch(sfKey string, items []core.KindItem) {
+func (c *KindCatalog) rememberLiveSearch(sfKey string, items []core.KindItem, ttl time.Duration) {
 	now := time.Now()
 	if len(c.liveMemo) >= liveSearchMemoMax {
 		oldestKey, oldest := "", now
 		for k, m := range c.liveMemo {
-			if now.Sub(m.at) >= liveSearchMemoTTL {
+			if now.Sub(m.at) >= m.ttl {
 				delete(c.liveMemo, k)
 				continue
 			}
@@ -2143,7 +2156,7 @@ func (c *KindCatalog) rememberLiveSearch(sfKey string, items []core.KindItem) {
 			delete(c.liveMemo, oldestKey)
 		}
 	}
-	c.liveMemo[sfKey] = liveSearchMemo{items: items, at: now}
+	c.liveMemo[sfKey] = liveSearchMemo{items: items, at: now, ttl: ttl}
 }
 
 func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, items []core.KindItem) []core.Title {

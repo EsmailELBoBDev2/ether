@@ -968,6 +968,17 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	varyLanguage(w)
 	cacheDetail(w, r, resp, pending)
 }
+
+type searchRequest struct {
+	Query, Mode, Cursor string
+	Generation, Limit   int
+	// Sort orders the results (searchSorts); "relevance" or empty keeps
+	// the search's own order. Kind limits results to movies, shows, or a
+	// plugin kind; Library scopes results to one visible Vela library.
+	Sort, Direction, Kind string
+	Library               string
+}
+
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(frontend.WithSearchMemo(r.Context()))
 	v, t, e := i.viewer(r)
@@ -975,15 +986,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
-	var b struct {
-		Query, Mode, Cursor string
-		Generation, Limit   int
-		// Sort orders the results (searchSorts); "relevance" or empty keeps
-		// the search's own order. Kind limits results to movies, shows, or a
-		// plugin kind; Library scopes results to one visible Vela library.
-		Sort, Direction, Kind string
-		Library               string
-	}
+	var b searchRequest
 	if body(r, &b) != nil || b.Query == "" {
 		problem(w, 400, "request", "invalid_request")
 		return
@@ -1045,7 +1048,11 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	switch b.Kind {
 	case "":
 	case "movie", "show":
+		// Movies and Shows are the catalogue's films and series. Plugin
+		// libraries that borrow their card shape (books, music, any plugin
+		// kind) have their own searchKinds entries.
 		iq.Types = []frontend.MediaType{frontend.MediaType(b.Kind)}
+		iq.CatalogueOnly = true
 	default:
 		_, libs := i.searchKinds(r, v)
 		lib, ok := libs[b.Kind]
@@ -1055,9 +1062,18 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 		kindLibrary = lib
 	}
-	if b.Cursor != "" {
-		problem(w, 409, "conflict", "cursor_expired")
+	unified, _ := i.host.Experience.(frontend.UnifiedSearcher)
+	if b.Mode == "auto" && unified == nil {
+		problem(w, 400, "request", "invalid_search_mode")
 		return
+	}
+	if b.Cursor != "" {
+		offset, ok := decodeSearchCursor(b.Cursor, b)
+		if !ok || b.Mode != "auto" {
+			problem(w, 409, "conflict", "cursor_expired")
+			return
+		}
+		iq.Offset = offset
 	}
 	n := b.Limit
 	if n <= 0 {
@@ -1065,6 +1081,10 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	}
 	n = min(n, 100)
 	iq.Limit = n
+	if b.Mode == "auto" {
+		i.autoSearch(w, r, v, t, unified, b, iq, targetView, kindLibrary)
+		return
+	}
 
 	incompatible := false
 	if targetView != nil {

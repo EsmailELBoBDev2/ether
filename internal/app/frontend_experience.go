@@ -1573,6 +1573,14 @@ func (s *surfaceExperience) Search(ctx context.Context, viewer *core.Viewer, dev
 	return page, err
 }
 
+func (s *surfaceExperience) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device core.Device, query string, options frontend.ItemQuery) (frontend.UnifiedSearchPage, error) {
+	page, err := s.Service.UnifiedSearch(ctx, viewer, device, query, options)
+	if err == nil {
+		s.warmArtwork(page.Page.Items, device)
+	}
+	return page, err
+}
+
 func (s *surfaceExperience) Similar(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey, query frontend.ItemQuery) (frontend.SearchPage, error) {
 	page, err := s.Service.Similar(ctx, viewer, device, key, query)
 	if err == nil {

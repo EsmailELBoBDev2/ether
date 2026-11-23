@@ -163,22 +163,25 @@ type App struct {
 	// availabilityLive publishes availability to background workers (the
 	// personalization builder) that start before buildAvailability runs.
 	availabilityLive atomic.Pointer[availability.Service]
-	opts             Options
-	log              *slog.Logger
-	logs             *admin.LogBuffer
-	playLogs         *stats.SessionLogSink
-	support          *diagnostics.Recorder
-	cfg              *config.Store
-	proxyMu          sync.Mutex
-	pluginLiveTVMu   sync.Mutex
-	prowlarrMu       sync.Mutex
-	apiKeysMu        sync.Mutex
-	apiKeys          *identity.APIKeys
-	prowlarrState    string
-	prowlarrKept     bool
-	proxyGen         uint64
-	proxyReady       bool
-	proxyPrefixes    []netip.Prefix
+	// built is closed once build has constructed every service, releasing
+	// background builders (personalization) that read them.
+	built          chan struct{}
+	opts           Options
+	log            *slog.Logger
+	logs           *admin.LogBuffer
+	playLogs       *stats.SessionLogSink
+	support        *diagnostics.Recorder
+	cfg            *config.Store
+	proxyMu        sync.Mutex
+	pluginLiveTVMu sync.Mutex
+	prowlarrMu     sync.Mutex
+	apiKeysMu      sync.Mutex
+	apiKeys        *identity.APIKeys
+	prowlarrState  string
+	prowlarrKept   bool
+	proxyGen       uint64
+	proxyReady     bool
+	proxyPrefixes  []netip.Prefix
 	// seenFamilies records a client family policy once per process. Playback
 	// does not take a write lock to refresh last_seen.
 	seenFamilies sync.Map
@@ -642,6 +645,9 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	if err := a.build(ctx, cfg); err != nil {
 		a.Close()
 		return nil, err
+	}
+	if a.built != nil {
+		close(a.built)
 	}
 	phase("service construction")
 	a.connectClusterHooks()

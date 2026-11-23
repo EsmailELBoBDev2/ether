@@ -140,13 +140,16 @@ type Options struct {
 	RebuildDebounce time.Duration // after a watch-state change (default 20s)
 	Retention       time.Duration // item impressions (default 60 days)
 	Workers         int           // concurrent model builds (default 2)
-	ColdWait        time.Duration // how long a request may wait for the first-ever model (default 1.5s)
-	OwnerRowsWait   time.Duration // how long a request may wait for owner rows it has never fetched (default 1.5s)
-	SourceTimeout   time.Duration // Trakt and owner collection calls (default 16s)
-	LLMTimeout      time.Duration // LLM themed rows during a build (default 60s)
-	BuildTimeout    time.Duration // one model build (default 3m)
-	MaxHomeRows     int           // default 20 across the complete composed page
-	MaxSectionRows  int           // default 16
+	// Ready, when set, holds model builds until it is closed: the host closes
+	// it once every dependency the build callbacks read has been constructed.
+	Ready          <-chan struct{}
+	ColdWait       time.Duration // how long a request may wait for the first-ever model (default 1.5s)
+	OwnerRowsWait  time.Duration // how long a request may wait for owner rows it has never fetched (default 1.5s)
+	SourceTimeout  time.Duration // Trakt and owner collection calls (default 16s)
+	LLMTimeout     time.Duration // LLM themed rows during a build (default 60s)
+	BuildTimeout   time.Duration // one model build (default 3m)
+	MaxHomeRows    int           // default 20 across the complete composed page
+	MaxSectionRows int           // default 16
 	// MinRowItems is the fewest titles an engine row may show (default 12;
 	// negative disables the floor). Continue Watching, Up Next and owner
 	// collections are exempt; Top 10 and smaller requested pages use their cap.

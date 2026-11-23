@@ -151,7 +151,9 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		}
 		return out
 	}
+	a.built = make(chan struct{})
 	if a.personalize, err = personalize.New(personalize.Options{
+		Ready: a.built,
 		PersonalWatchlist: func(ctx context.Context, u *core.User) ([]core.Title, error) {
 			if a.watchlist == nil {
 				return nil, nil

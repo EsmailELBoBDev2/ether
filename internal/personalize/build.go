@@ -67,6 +67,13 @@ func (e *Engine) finish(userID int64) {
 
 func (e *Engine) worker(ctx context.Context) {
 	defer e.wg.Done()
+	if e.opts.Ready != nil {
+		select {
+		case <-e.opts.Ready:
+		case <-ctx.Done():
+			return
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():

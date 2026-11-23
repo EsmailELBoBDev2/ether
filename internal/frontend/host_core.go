@@ -246,6 +246,12 @@ func WithNoContainerExpand(ctx context.Context) context.Context {
 	return core.WithNoContainerExpand(ctx)
 }
 
+// NoContainerExpand reports whether plugin container-on-open expansion is
+// suppressed on ctx.
+func NoContainerExpand(ctx context.Context) bool {
+	return core.NoContainerExpand(ctx)
+}
+
 // DetailPending is the exact-page enrichment snapshot.
 type DetailPending = core.DetailPending
 

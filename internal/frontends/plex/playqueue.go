@@ -192,7 +192,7 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(cleanPath, ",") || strings.Contains(cleanPath, "/sections/") || strings.HasSuffix(cleanPath, "/children") || strings.HasSuffix(cleanPath, "/allLeaves") || strings.HasSuffix(cleanPath, "/grandchildren") || sourceKey.Kind() == frontend.KindShow || sourceKey.Kind() == frontend.KindSeason || sourceKey.Kind() == frontend.KindCollection {
 					kind = "directory"
 				} else if sourceKey.IsPluginKey() {
-					if t, err := s.metadataTitle(ctx, pr, sourceKey); err == nil && t != nil && (t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason) {
+					if t, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, sourceKey); err == nil && t != nil && (t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason) {
 						kind = "directory"
 					}
 				}
@@ -223,7 +223,7 @@ func (s *Server) queueStartPlayable(ctx context.Context, pr *Request, key fronte
 		_, ok := s.extraMetadataByKey(ctx, pr, key)
 		return ok
 	}
-	t, err := s.metadataTitle(ctx, pr, key)
+	t, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 	if err != nil || t == nil || !s.pluginAwarePlayable(ctx, pr.User, t) {
 		return false
 	}

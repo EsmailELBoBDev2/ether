@@ -43,7 +43,7 @@ func (s *Server) continueExperience(pr *Request) frontend.Continue {
 	deck := s.exp().NewContinueDeck(deckOpts)
 	opts := frontend.ContinueOptions{ShowOnDeck: deck.Select, PrepareShowOnDeck: deck.Prepare, State: s.state(), Now: s.now, FavoriteShows: s.favoriteShows(),
 		Grandchildren: func(ctx context.Context, k frontend.RatingKey) ([]frontend.Title, error) {
-			return s.metadataGrandchildren(ctx, pr, k)
+			return s.metadataGrandchildren(frontend.WithNoContainerExpand(ctx), pr, k)
 		},
 		Unrestricted: func(u *frontend.Viewer) bool { return !s.viewerRestricted(u) },
 		NextEpisode: func(ctx context.Context, k frontend.RatingKey) (*frontend.Title, error) {

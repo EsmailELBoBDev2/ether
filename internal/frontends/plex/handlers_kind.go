@@ -539,6 +539,9 @@ func filterKindChildren(parent *frontend.Title, base string, kids []frontend.Tit
 	if parent.PrimaryChildLevel != "" {
 		filtered := make([]frontend.Title, 0, len(kids))
 		for _, k := range kids {
+			if base == plexBaseArtist && k.MediaClass == frontend.MediaClassVideo {
+				continue
+			}
 			if k.KindLevel == "" || k.KindLevel == parent.PrimaryChildLevel {
 				filtered = append(filtered, k)
 			}

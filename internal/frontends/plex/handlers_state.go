@@ -111,7 +111,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		title, err := s.metadataTitle(ctx, pr, key)
+		title, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
@@ -404,7 +404,7 @@ func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		known = err == nil
 	default:
 		if key.IsPluginKey() {
-			title, e := s.metadataTitle(ctx, pr, key)
+			title, e := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 			known = e == nil && title != nil && s.canSeePluginTitle(pr.User, title)
 		} else if s.catalog() != nil {
 			var title *frontend.Title
@@ -446,14 +446,16 @@ func (s *Server) scrobble(w http.ResponseWriter, r *http.Request, watched bool) 
 	if !ok {
 		return
 	}
-	title, titleErr := s.metadataTitle(ctx, pr, key)
+	noExpandCtx := frontend.WithNoContainerExpand(ctx)
+	title, titleErr := s.metadataTitle(noExpandCtx, pr, key)
 	if titleErr == nil && title != nil {
 		ctx = frontend.WithHistoryTitle(ctx, title)
+		noExpandCtx = frontend.WithHistoryTitle(noExpandCtx, title)
 	}
 	// Containers mark every episode.
 	keys := []frontend.RatingKey{key}
 	if key.Kind() == frontend.KindShow || key.Kind() == frontend.KindSeason || (key.IsPluginKey() && title != nil && (title.Type == frontend.TypeShow || title.Type == frontend.TypeSeason)) {
-		if ks, err := s.expandKey(ctx, pr, key); err == nil && len(ks) > 0 {
+		if ks, err := s.expandKey(noExpandCtx, pr, key); err == nil && len(ks) > 0 {
 			keys = ks
 		}
 	}
@@ -590,7 +592,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			md = s.playlistMetadata(withRequest(ctx, viewer), pl, false)
 		} else {
-			t, err := s.metadataTitle(ctx, viewer, e.key)
+			t, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), viewer, e.key)
 			if err != nil || t == nil {
 				continue
 			}

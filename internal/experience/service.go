@@ -1264,8 +1264,9 @@ func (s *Service) BatchTitles(ctx context.Context, viewer *core.Viewer, keys []c
 		if err != nil {
 			return nil, err
 		}
+		pubCache := make(map[core.LibraryID]bool, 4)
 		for k, piv := range views {
-			if s.pluginItemAllowed(ctx, v, piv) {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
 				allowed[k] = piv.Title
 			}
 		}

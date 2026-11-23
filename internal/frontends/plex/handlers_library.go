@@ -1623,24 +1623,72 @@ func (s *Server) inProgressTitles(ctx context.Context, pr *Request, t frontend.M
 	return s.continueExperience(pr).InProgress(ctx, pr.User, t, limit)
 }
 
+// kindItemsBatch resolves plugin rating keys in one batched Experience read
+// when TitleBatchReader is available, avoiding per-item plugin queries on
+// play-queue, playlist, hub, and history list paths. Falls back to per-item
+// kindItem only for minimal test doubles that do not implement BatchTitles.
+func (s *Server) kindItemsBatch(ctx context.Context, pr *Request, keys []frontend.RatingKey) map[frontend.RatingKey]frontend.Title {
+	if len(keys) == 0 || s.exp() == nil {
+		return nil
+	}
+	var viewer *frontend.Viewer
+	if pr != nil {
+		viewer = pr.User
+	}
+	if batch, ok := s.exp().(frontend.TitleBatchReader); ok {
+		titles, err := batch.BatchTitles(ctx, viewer, keys)
+		if err != nil || len(titles) == 0 {
+			return nil
+		}
+		out := make(map[frontend.RatingKey]frontend.Title, len(titles))
+		for _, t := range titles {
+			if t.LibraryID != 0 {
+				sec, ok := s.sectionForLibraryCtx(ctx, t.LibraryID)
+				if !ok || !s.canSeeSection(viewer, sec.ID) {
+					continue
+				}
+			}
+			out[t.Key] = t
+		}
+		return out
+	}
+	noExpandCtx := frontend.WithNoContainerExpand(ctx)
+	out := make(map[frontend.RatingKey]frontend.Title, len(keys))
+	for _, k := range keys {
+		if _, seen := out[k]; seen {
+			continue
+		}
+		if t, err := s.kindItem(noExpandCtx, pr, k); err == nil && t != nil {
+			out[k] = *t
+		}
+	}
+	return out
+}
+
 // getTitles fetches titles concurrently, preserving order and skipping
 // failures.
 func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []frontend.Title {
+	if len(keys) == 0 {
+		return nil
+	}
 	var pr *Request
 	if ctx != nil {
 		pr = FromContext(ctx)
 	}
+	var catalogKeys, pluginKeys []frontend.RatingKey
+	for _, k := range keys {
+		if k.IsPluginKey() {
+			pluginKeys = append(pluginKeys, k)
+		} else {
+			catalogKeys = append(catalogKeys, k)
+		}
+	}
+	var pluginGot map[frontend.RatingKey]frontend.Title
+	if len(pluginKeys) > 0 {
+		pluginGot = s.kindItemsBatch(ctx, pr, pluginKeys)
+	}
 	if ctx != nil && ctx.Value(storedPolicyKey{}) != nil {
 		if cached, ok := s.catalog().(frontend.CachedTitleBatchReader); ok {
-			var catalogKeys []frontend.RatingKey
-			hasPlugin := false
-			for _, k := range keys {
-				if k.IsPluginKey() {
-					hasPlugin = true
-				} else {
-					catalogKeys = append(catalogKeys, k)
-				}
-			}
 			var got map[frontend.RatingKey]frontend.Title
 			if len(catalogKeys) > 0 {
 				var err error
@@ -1649,10 +1697,10 @@ func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []fro
 					got = nil
 				}
 			}
-			if len(got) == 0 && !hasPlugin {
+			if len(got) == 0 && len(pluginGot) == 0 {
 				return nil
 			}
-			out := make([]frontend.Title, 0, len(keys))
+			out := make([]frontend.Title, 0, len(got)+len(pluginGot))
 			seen := map[frontend.RatingKey]bool{}
 			for _, k := range keys {
 				if seen[k] {
@@ -1660,10 +1708,10 @@ func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []fro
 				}
 				seen[k] = true
 				if k.IsPluginKey() {
-					if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
-						out = append(out, *t)
-						continue
+					if t, ok := pluginGot[k]; ok {
+						out = append(out, t)
 					}
+					continue
 				}
 				if t, ok := got[k]; ok {
 					out = append(out, t)
@@ -1672,40 +1720,46 @@ func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []fro
 			return out
 		}
 	}
-	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(keys) > 4 {
+	if len(catalogKeys) == 0 {
+		if len(pluginGot) == 0 {
+			return nil
+		}
+		out := make([]frontend.Title, 0, len(keys))
+		for _, k := range keys {
+			if t, ok := pluginGot[k]; ok {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(catalogKeys) > 4 {
 		// Read the stored titles in batches first, cached exactly as Get
 		// reads them (detail time included): each Get below then finds its
 		// title in the catalogue's title cache instead of reading it and its
 		// facts alone (a 3000-item playlist read 2,810 titles one by one).
-		catalogKeys := make([]frontend.RatingKey, 0, len(keys))
-		for _, k := range keys {
-			if !k.IsPluginKey() {
-				catalogKeys = append(catalogKeys, k)
-			}
-		}
-		if len(catalogKeys) > 4 {
-			pre.PreloadStored(ctx, catalogKeys)
-		}
+		pre.PreloadStored(ctx, catalogKeys)
 	}
 	res := make([]*frontend.Title, len(keys))
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	for i, k := range keys {
+		if k.IsPluginKey() {
+			if t, ok := pluginGot[k]; ok {
+				cp := t
+				res[i] = &cp
+			}
+			continue
+		}
+		if s.catalog() == nil {
+			continue
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if k.IsPluginKey() {
-				if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
-					res[i] = t
-					return
-				}
-			}
-			if s.catalog() != nil {
-				if t, err := s.catalog().Get(ctx, k); err == nil && t != nil {
-					res[i] = t
-				}
+			if t, err := s.catalog().Get(ctx, k); err == nil && t != nil {
+				res[i] = t
 			}
 		}()
 	}

@@ -3307,6 +3307,15 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// The owner's download limit covers this button as it covers the
+		// download queue. Only the first read of a file counts, so a browser
+		// resuming with a Range request is not charged again.
+		if rng := r.Header.Get("Range"); r.Method == http.MethodGet && (rng == "" || strings.HasPrefix(rng, "bytes=0-")) {
+			if msg := s.countDownload(ctx, pr.User, key); msg != "" {
+				http.Error(w, msg, http.StatusForbidden)
+				return
+			}
+		}
 		filename := chi.URLParam(r, "file")
 		if decoded, err := url.PathUnescape(filename); err == nil {
 			filename = decoded

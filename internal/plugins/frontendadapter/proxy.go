@@ -53,6 +53,14 @@ func (i *instance) Close(context.Context) error { return nil }
 // relays each request to the plugin.
 func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.decl.Meta.Auth == AuthQueryCredentials {
+			// Query credentials carry no ambient authority (no cookies or
+			// browser-held auth), so browser clients on any origin, such as
+			// web Subsonic players, may call the adapter.
+			if allowAnyOrigin(w, r) {
+				return
+			}
+		}
 		auth, err := inst.auth.authenticate(r.Context(), r)
 		if err != nil {
 			if f.decl.Meta.Auth == AuthQueryCredentials && errors.Is(err, errUnauthenticated) {
@@ -118,6 +126,24 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 		}
 		writeResponse(w, resp)
 	})
+}
+
+// allowAnyOrigin sets permissive CORS headers and answers a preflight. It
+// reports true when the request was a preflight and has been answered.
+func allowAnyOrigin(w http.ResponseWriter, r *http.Request) bool {
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type")
+	if r.Method != http.MethodOptions || r.Header.Get("Access-Control-Request-Method") == "" {
+		return false
+	}
+	h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+	if req := r.Header.Get("Access-Control-Request-Headers"); req != "" {
+		h.Set("Access-Control-Allow-Headers", req)
+	}
+	h.Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // UnauthenticatedPath is the reserved plugin sub-path under which a

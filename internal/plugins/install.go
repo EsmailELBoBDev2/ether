@@ -701,6 +701,9 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
 				return Record{}, err
 			}
+		} else if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
+			// The library sync after this install rebuilds the changed kinds.
+			m.markReplaceLibraries(man.ID)
 		}
 		added := PermissionDiff(cur.Manifest, man)
 		if len(added) > 0 && !opts.AcceptAddedPermissions {

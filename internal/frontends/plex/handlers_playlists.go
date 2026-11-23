@@ -71,7 +71,51 @@ func uriPath(uri string) (string, error) {
 
 // expandKey expands containers (show, season, collection, playlist) into
 // playable items.
+// expandPluginKey expands a plugin library item into the playable items under
+// it. Plugin keys carry no kind (show, season, album), so the generic
+// expansion returned the container itself: "play" on a league, a season or an
+// album queued one unplayable row, and a queue that named a container with a
+// start item inside it answered 404.
+func (s *Server) expandPluginKey(ctx context.Context, pr *Request, k frontend.RatingKey) ([]frontend.RatingKey, error) {
+	t, err := s.kindItem(ctx, pr, k)
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, frontend.ErrNotFound
+	}
+	if out := s.pluginLeaves(ctx, pr, t, 0, nil); len(out) > 0 {
+		return out, nil
+	}
+	return []frontend.RatingKey{k}, nil
+}
+
+// pluginLeaves appends the playable items at or under t. Children arrive as
+// titles, so a leaf costs no further read.
+func (s *Server) pluginLeaves(ctx context.Context, pr *Request, t *frontend.Title, depth int, out []frontend.RatingKey) []frontend.RatingKey {
+	leaf := t.Type == frontend.TypeMovie || t.Type == frontend.TypeEpisode || (t.ChildCount == 0 && t.LeafCount == 0)
+	if leaf || depth >= 4 {
+		return append(out, t.Key)
+	}
+	kids, err := s.kindChildren(ctx, pr, t.Key)
+	if err != nil || len(kids) == 0 {
+		return append(out, t.Key)
+	}
+	for i := range kids {
+		if len(out) >= maxExpand {
+			break
+		}
+		if kids[i].Key.IsPluginKey() {
+			out = s.pluginLeaves(ctx, pr, &kids[i], depth+1, out)
+		}
+	}
+	return out
+}
+
 func (s *Server) expandKey(ctx context.Context, pr *Request, k frontend.RatingKey) ([]frontend.RatingKey, error) {
+	if k.IsPluginKey() {
+		return s.expandPluginKey(ctx, pr, k)
+	}
 	if k.Kind() == frontend.KindPlaylist {
 		pl, err := s.playlist(ctx, pr.User, k)
 		if err != nil {

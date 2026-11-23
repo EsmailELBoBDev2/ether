@@ -49,7 +49,8 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
-	if t := q.Get("type"); t != "video" {
+	// Music and audiobook libraries (plugin kinds) queue with type=audio.
+	if t := q.Get("type"); t != "video" && t != "audio" && t != "music" {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}

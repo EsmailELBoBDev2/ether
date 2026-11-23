@@ -111,13 +111,23 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		title, err := s.catalog().Get(ctx, key)
+		// A plugin library item has no catalogue row: it is read from the
+		// kind store, which also checks the viewer may see its library.
+		// Reading it from the catalogue answered 404 to every timeline of a
+		// plugin item, so its progress, resume point and stop were dropped.
+		var title *frontend.Title
+		var err error
+		if key.IsPluginKey() {
+			title, err = s.kindItem(ctx, pr, key)
+		} else {
+			title, err = s.catalog().Get(ctx, key)
+		}
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
 		ctx = frontend.WithHistoryTitle(ctx, title)
-		if title == nil || !s.titleVisible(pr.User, title) {
+		if title == nil || (!key.IsPluginKey() && !s.titleVisible(pr.User, title)) {
 			writeHTTPError(w, http.StatusNotFound)
 			return
 		}

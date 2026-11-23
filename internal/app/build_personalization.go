@@ -18,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/personalize"
 	"github.com/braedonsaunders/ether/internal/recommend"
 	"github.com/braedonsaunders/ether/internal/simkl"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/subtitles"
@@ -34,6 +35,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	a.state = state.New(a.db, state.Options{Now: parityClock(), Logger: log.With("component", "state"), Availability: a.dbAvail, PendingSQLite: store.DialectOf(a.db) == store.SQLite})
 	if a.cfg != nil {
 		state.SetResumeAfter(a.cfg.Get().Server.ResumeAfterSeconds)
+		plextimeline.SetResumeAfter(a.cfg.Get().Server.ResumeAfterSeconds)
 		core.SetPausedSessionRetention(time.Duration(a.cfg.Get().Server.PausedStreamMinutes) * time.Minute)
 	}
 	a.state.SetJournalGate(func(context.Context, *sql.Tx, int64) (int64, bool, error) { return 0, false, nil })

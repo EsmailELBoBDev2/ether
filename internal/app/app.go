@@ -69,6 +69,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/simkl"
 	"github.com/braedonsaunders/ether/internal/spike"
 	"github.com/braedonsaunders/ether/internal/startup"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/stats"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -708,6 +709,7 @@ func (a *App) applyConfig(c config.Config) {
 		a.transcoder.UpdateConfig(c.Transcode)
 	}
 	state.SetResumeAfter(c.Server.ResumeAfterSeconds)
+	plextimeline.SetResumeAfter(c.Server.ResumeAfterSeconds)
 	core.SetPausedSessionRetention(time.Duration(c.Server.PausedStreamMinutes) * time.Minute)
 	if a.uploadBudget != nil {
 		a.uploadBudget.OnSessionsChanged()

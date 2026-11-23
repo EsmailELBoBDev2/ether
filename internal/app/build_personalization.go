@@ -18,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/personalize"
 	"github.com/braedonsaunders/ether/internal/recommend"
 	"github.com/braedonsaunders/ether/internal/simkl"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/subtitles"
@@ -35,6 +36,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	if a.cfg != nil {
 		state.SetResumeAfter(a.cfg.Get().Server.ResumeAfterSeconds)
 		core.SetPausedSessionRetention(time.Duration(a.cfg.Get().Server.PausedStreamMinutes) * time.Minute)
+		timeline.SetResumeAfter(a.cfg.Get().Server.ResumeAfterSeconds)
 	}
 	a.state.SetJournalGate(func(context.Context, *sql.Tx, int64) (int64, bool, error) { return 0, false, nil })
 	basePlaylists := a.state.Playlists()

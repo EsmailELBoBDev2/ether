@@ -14,7 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// An indexer that serves Newznab at /api/newznab (Netuno) works from its bare
+// An indexer that serves Newznab at /api/newznab works from its bare
 // host URL and from the full endpoint URL.
 func TestNewznabEndpointAtAPINewznab(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

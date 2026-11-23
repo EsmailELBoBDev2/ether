@@ -14,7 +14,7 @@ import (
 // searchCatMode records how default movie/TV category filtering behaves on
 // this indexer when the owner left MovieCategories/TVCategories unset.
 // Standard Newznab servers expand parent categories (2000 -> 2000..2999,
-// 5000 -> 5000..5999). Some custom implementations (e.g. Netuno) only match
+// 5000 -> 5000..5999). Some custom implementations only match
 // explicit subcategories advertised in caps, or require omitting cat=.
 type searchCatMode int
 

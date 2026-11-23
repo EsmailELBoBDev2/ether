@@ -138,7 +138,7 @@ type Client struct {
 	torrents torrentDescriptorCache
 	br       breaker
 	// newznabPath is set once /api answered 404 and {base}/api/newznab
-	// worked: some indexers (Netuno) serve Newznab there, which Radarr and
+	// worked: some indexers serve Newznab there, which Radarr and
 	// Sonarr reach through their API Path field.
 	newznabPath atomic.Bool
 
@@ -420,7 +420,7 @@ func (c *Client) apiURL(params url.Values) (string, error) {
 }
 
 // explicitEndpoint reports whether the owner's URL already names the API
-// endpoint: it ends in /api, or in /newznab (Netuno's /api/newznab/, entered
+// endpoint: it ends in /api, or in /newznab (an /api/newznab/ endpoint, entered
 // the way Radarr's API Path field takes it).
 func explicitEndpoint(path string) bool {
 	lower := strings.ToLower(strings.TrimRight(path, "/"))

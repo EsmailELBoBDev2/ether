@@ -1964,24 +1964,44 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	defer tx.Rollback()
 
 	for _, del := range fieldDeletes {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
-			del.itemRef, del.pk.field, del.pk.text, del.pk.intV); err != nil {
+		var err error
+		if isPG {
+			_, err = tx.ExecContext(ctx,
+				`DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND md5(v_text) = ? AND v_text = ? AND v_int = ?`,
+				del.itemRef, del.pk.field, pgTextMD5(del.pk.text), del.pk.text, del.pk.intV)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				`DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
+				del.itemRef, del.pk.field, del.pk.text, del.pk.intV)
+		}
+		if err != nil {
 			return 0, cursor, false, false, err
 		}
+	}
+	fieldConflictCols := `item_ref, field, v_text, v_int`
+	if isPG {
+		fieldConflictCols = `item_ref, field, md5(v_text), v_int`
 	}
 	for _, ins := range fieldInserts {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+			 ON CONFLICT(`+fieldConflictCols+`) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
 			ins.itemRef, ins.pk.field, ins.pk.text, ins.pk.intV, ins.extra.realV, ins.extra.fold); err != nil {
 			return 0, cursor, false, false, err
 		}
 	}
 	for _, upd := range fieldUpdates {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE plugin_item_fields SET v_real = ?, v_fold = ? WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
-			upd.extra.realV, upd.extra.fold, upd.itemRef, upd.pk.field, upd.pk.text, upd.pk.intV); err != nil {
+		var err error
+		if isPG {
+			_, err = tx.ExecContext(ctx,
+				`UPDATE plugin_item_fields SET v_real = ?, v_fold = ? WHERE item_ref = ? AND field = ? AND md5(v_text) = ? AND v_text = ? AND v_int = ?`,
+				upd.extra.realV, upd.extra.fold, upd.itemRef, upd.pk.field, pgTextMD5(upd.pk.text), upd.pk.text, upd.pk.intV)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				`UPDATE plugin_item_fields SET v_real = ?, v_fold = ? WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
+				upd.extra.realV, upd.extra.fold, upd.itemRef, upd.pk.field, upd.pk.text, upd.pk.intV)
+		}
+		if err != nil {
 			return 0, cursor, false, false, err
 		}
 	}
@@ -2340,7 +2360,7 @@ WHERE library_id = ? AND level <> ''
 GROUP BY library_id, field, v_text`, libID); err != nil {
 			return err
 		}
-		if err := backfillFieldTallyCaseTx(ctx, tx, libID); err != nil {
+		if err := backfillFieldTallyCaseTx(ctx, tx, isPG, libID); err != nil {
 			return err
 		}
 		if hasPersonTally {

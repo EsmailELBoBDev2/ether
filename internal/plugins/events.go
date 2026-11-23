@@ -482,11 +482,15 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	var jobErr string
 	switch {
 	case err != nil && ctx.Err() == nil:
-		jobErr = err.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, err.Error())
 	case startErr != nil:
-		jobErr = startErr.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, startErr.Error())
 	case err == nil && resp.Status >= 400:
-		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+		redact := func(s string) string {
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		jobErr = formatJobHTTPError(resp.Status, resp.Body, redact).Error()
+		m.log.Warn("plugin schedule: job failed", "plugin", pluginID, "call", callPath, "err", jobErr)
 	}
 	if jobErr != "" {
 		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))

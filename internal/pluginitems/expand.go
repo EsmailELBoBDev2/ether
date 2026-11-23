@@ -169,12 +169,17 @@ WHERE library_id = ? AND level = '' AND field = ? AND v_int = ?`,
 				return 0, "", false, err
 			}
 		}
+		isPG := store.DialectOf(s.db) == store.Postgres
 		if folded := FoldFieldText(trimmed); folded != "" {
+			orderBy := `label_lower ASC, label ASC, v_int ASC`
+			if isPG {
+				orderBy = `left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+			}
 			err = s.db.QueryRowContext(ctx, `
 SELECT v_int, label
 FROM plugin_item_person_tally
 WHERE library_id = ? AND level = '' AND field = ? AND label_fold = ?
-ORDER BY label_lower ASC, label ASC, v_int ASC
+ORDER BY `+orderBy+`
 LIMIT 1`, int64(libraryID), field, folded).Scan(&personID, &canonicalName)
 			if err == nil && core.IsPluginPersonID(personID) && canonicalName != "" {
 				return personID, canonicalName, true, nil
@@ -186,16 +191,26 @@ LIMIT 1`, int64(libraryID), field, folded).Scan(&personID, &canonicalName)
 		return 0, "", false, nil
 	}
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	libCheck := `i.library_id + 0 = ?`
-	if store.DialectOf(s.db) == store.Postgres {
+	if isPG {
 		libCheck = `i.library_id = ?`
 	}
-	err = s.db.QueryRowContext(ctx, `
+	if isPG {
+		err = s.db.QueryRowContext(ctx, `
+SELECT f.v_int, f.v_text
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE f.field = ? AND left(f.v_text, 256) = ? AND f.v_text = ? AND f.v_int > 0 AND `+libCheck+`
+LIMIT 1`, field, pgTextPrefix(trimmed), trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
+	} else {
+		err = s.db.QueryRowContext(ctx, `
 SELECT f.v_int, f.v_text
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
 WHERE f.field = ? AND f.v_text = ? AND f.v_int > 0 AND `+libCheck+`
 LIMIT 1`, field, trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
+	}
 	if err == nil && core.IsPluginPersonID(personID) {
 		return personID, canonicalName, true, nil
 	}
@@ -206,12 +221,21 @@ LIMIT 1`, field, trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
 	if folded == "" {
 		return 0, "", false, nil
 	}
-	err = s.db.QueryRowContext(ctx, `
+	if isPG {
+		err = s.db.QueryRowContext(ctx, `
+SELECT f.v_int, f.v_text
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE f.field = ? AND left(f.v_fold, 256) = ? AND f.v_fold = ? AND f.v_int > 0 AND `+libCheck+`
+LIMIT 1`, field, pgTextPrefix(folded), folded, int64(libraryID)).Scan(&personID, &canonicalName)
+	} else {
+		err = s.db.QueryRowContext(ctx, `
 SELECT f.v_int, f.v_text
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
 WHERE f.field = ? AND f.v_fold = ? AND f.v_int > 0 AND `+libCheck+`
 LIMIT 1`, field, folded, int64(libraryID)).Scan(&personID, &canonicalName)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", false, nil
 	}

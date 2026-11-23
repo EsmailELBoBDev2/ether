@@ -249,7 +249,7 @@ func flowsTools(d Deps) []tools.Tool {
 				_ = json.Unmarshal(raw, &data)
 				return tools.Result{
 					Data:  map[string]any{"flow": data},
-					Links: []tools.Link{{Label: f.Name, Route: "/flows/edit/" + f.ID}},
+					Links: []tools.Link{{Label: f.Name, Route: "/flows/list/" + url.PathEscape(f.ID)}},
 				}, nil
 			},
 		}),
@@ -329,7 +329,7 @@ func flowsTools(d Deps) []tools.Tool {
 						}
 						return tools.Result{
 							Data:  map[string]any{"created": true, "flow": flowSummary(*saved)},
-							Links: []tools.Link{{Label: saved.Name, Route: "/flows/edit/" + saved.ID}},
+							Links: []tools.Link{{Label: saved.Name, Route: "/flows/list/" + url.PathEscape(saved.ID)}},
 						}, nil
 					},
 				), nil
@@ -389,7 +389,7 @@ func flowsTools(d Deps) []tools.Tool {
 						}
 						return tools.Result{
 							Data:  map[string]any{"changed": true, "flowId": id, "enabled": enabled},
-							Links: []tools.Link{{Label: existing.Name, Route: "/flows/edit/" + existing.ID}},
+							Links: []tools.Link{{Label: existing.Name, Route: "/flows/list/" + url.PathEscape(existing.ID)}},
 						}, nil
 					},
 				), nil
@@ -489,7 +489,7 @@ func flowsTools(d Deps) []tools.Tool {
 							"run":   runSummary(res.Run),
 							"steps": steps,
 						},
-						Links: []tools.Link{{Label: existing.Name, Route: "/flows/edit/" + existing.ID}},
+						Links: []tools.Link{{Label: existing.Name, Route: "/flows/list/" + url.PathEscape(existing.ID)}},
 					}, nil
 				}
 				if dryRun {

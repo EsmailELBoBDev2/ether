@@ -43,7 +43,7 @@ export default function Notifications() {
       <Channels
         data={data}
         onChanged={notices.reload}
-        onFlowCreated={(id) => navigate(`/flows/edit/${id}`)}
+        onFlowCreated={(id) => navigate(`/flows/list/${encodeURIComponent(id)}`)}
       />
     ) : (
       <Deliveries data={data} />

@@ -237,6 +237,9 @@ func TestFlowsBuiltinTools(t *testing.T) {
 	if res.Data["flow"].(map[string]any)["name"] != "Backup alerts" {
 		t.Fatalf("unexpected flow_get result: %+v", res.Data)
 	}
+	if len(res.Links) != 1 || res.Links[0].Route != "/flows/list/flow_1" {
+		t.Fatalf("unexpected flow_get links: %+v", res.Links)
+	}
 	if _, err := callTool(t, cat, ctx, owner, "flow_get", map[string]any{"flowId": "missing"}); err == nil {
 		t.Fatal("expected error for missing flow_get")
 	}
@@ -266,6 +269,9 @@ func TestFlowsBuiltinTools(t *testing.T) {
 	if ff.writes != 1 || applied.Data["created"] != true {
 		t.Fatalf("unexpected apply result: writes=%d data=%+v", ff.writes, applied.Data)
 	}
+	if len(applied.Links) != 1 || applied.Links[0].Route != "/flows/list/flow_created" {
+		t.Fatalf("unexpected flow_create_from_template links: %+v", applied.Links)
+	}
 
 	// 4. flow_enable (proposes before mutating).
 	res, err = callTool(t, cat, ctx, owner, "flow_enable", map[string]any{
@@ -282,8 +288,12 @@ func TestFlowsBuiltinTools(t *testing.T) {
 	if !ff.flowsMap["flow_1"].Enabled {
 		t.Fatal("flow_enable mutated before approval")
 	}
-	if _, err := res.Proposal.Apply(ctx); err != nil {
+	enableApplied, err := res.Proposal.Apply(ctx)
+	if err != nil {
 		t.Fatalf("apply flow_enable: %v", err)
+	}
+	if len(enableApplied.Links) != 1 || enableApplied.Links[0].Route != "/flows/list/flow_1" {
+		t.Fatalf("unexpected flow_enable links: %+v", enableApplied.Links)
 	}
 	if ff.flowsMap["flow_1"].Enabled {
 		t.Fatal("expected flow_1 to be disabled after approval")
@@ -303,6 +313,9 @@ func TestFlowsBuiltinTools(t *testing.T) {
 	}
 	if len(ff.testReqs) != 1 || !ff.testReqs[0].DryRun {
 		t.Fatalf("unexpected dry-run call: %+v", ff.testReqs)
+	}
+	if len(res.Links) != 1 || res.Links[0].Route != "/flows/list/flow_1" {
+		t.Fatalf("unexpected flow_test_run links: %+v", res.Links)
 	}
 	liveRes, err := callTool(t, cat, ctx, owner, "flow_test_run", map[string]any{
 		"flowId": "flow_1",

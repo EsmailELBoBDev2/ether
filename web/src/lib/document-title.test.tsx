@@ -63,8 +63,9 @@ describe("resolveRouteTitle", () => {
     expect(titleFor("/services/trakt")).toBe("Integrations · Trakt — Home");
     expect(titleFor("/notifications/report")).toBe("Notifications · Weekly report — Home");
     expect(titleFor("/flows")).toBe("Flows — Home");
+    expect(titleFor("/flows/list")).toBe("Flows — Home");
     expect(titleFor("/flows/runs")).toBe("Flows · Runs — Home");
-    expect(titleFor("/flows/new")).toBe("Flows · New flow — Home");
+    expect(titleFor("/flows/templates")).toBe("Flows · Templates — Home");
     expect(titleFor("/cluster", "?tab=nodes")).toBe("Cluster · Nodes — Home");
     expect(titleFor("/maintenance/backups/import")).toBe(
       "Maintenance · Backups & import · Import & export — Home",
@@ -141,5 +142,19 @@ describe("document.title integration", () => {
       expect(document.title).toBe("Maintenance · Logs · Record a problem — Living Room Ether");
     });
     drawer.unmount();
+
+    const newFlowDrawer = renderApp("/flows/list/new");
+    await screen.findByRole("dialog", {}, { timeout: 15000 });
+    await waitFor(() => {
+      expect(document.title).toBe("Flows · New flow — Living Room Ether");
+    });
+    newFlowDrawer.unmount();
+
+    const editFlowDrawer = renderApp("/flows/list/flow-stop-remote-4k-transcodes");
+    await screen.findByRole("dialog", {}, { timeout: 15000 });
+    await waitFor(() => {
+      expect(document.title).toBe("Flows · Stop remote 4K video transcodes — Living Room Ether");
+    });
+    editFlowDrawer.unmount();
   });
 });

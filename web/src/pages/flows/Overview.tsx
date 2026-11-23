@@ -246,7 +246,7 @@ export function FlowsOverview({
       <DescribeFlowDialog
         open={describeOpen}
         onClose={() => setDescribeOpen(false)}
-        onDraft={(draft) => navigate("/flows/new", { state: { draft } })}
+        onDraft={(draft) => navigate("/flows/list/new", { state: { draft } })}
       />
     </div>
   );

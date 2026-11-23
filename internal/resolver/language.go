@@ -139,13 +139,64 @@ func acceptedAudio(profile core.QualityProfile, user *core.User, serverLang stri
 	return out
 }
 
+// originalInLanguages reports whether the title's original language matches
+// one of langs, or is unknown (when no original language is recorded).
+func originalInLanguages(t *core.Title, langs []string) bool {
+	orig := titleOriginalLanguage(t)
+	if orig == "" {
+		return true
+	}
+	for _, want := range langs {
+		if releaseparse.LanguageMatch(orig, want) != releaseparse.LanguageNoMatch {
+			return true
+		}
+	}
+	return false
+}
+
+// dualSourceDub returns the canonical dub language implied by an indexer's
+// sourceLang when it names a real language distinct from the title's original
+// language (or when the title's original language is unknown).
+func dualSourceDub(sourceLang string, t *core.Title) string {
+	return dualSourceDubForOrig(sourceLang, titleOriginalLanguage(t))
+}
+
+func dualSourceDubForOrig(sourceLang, orig string) string {
+	src := releaseparse.LanguageName(sourceLang)
+	if src == "" || src == releaseparse.LanguageMulti || src == releaseparse.LanguageDual {
+		return ""
+	}
+	if orig != "" && releaseparse.LanguageMatch(src, orig) != releaseparse.LanguageNoMatch {
+		return ""
+	}
+	return src
+}
+
+// isBareDual reports whether a release declares only DUAL (no named audio
+// language and no MULTI) without an indexer source language naming the dub.
+func isBareDual(info core.ReleaseInfo, sourceLang string, t *core.Title) bool {
+	hasDual := false
+	for _, l := range info.Languages {
+		if l == releaseparse.LanguageDual {
+			hasDual = true
+			continue
+		}
+		if l != "" {
+			return false
+		}
+	}
+	return hasDual && dualSourceDub(sourceLang, t) == ""
+}
+
 // audioAcceptable reports whether a release's declared audio fits the
 // accepted languages. A release that declares nothing is in the title's
 // original language as far as anyone knows, so it is acceptable when that
-// language is; MULTI / DUAL carry more than one track and are acceptable;
-// so is a regional variant of an accepted language (Castilian for a Latino
-// preference).
-func audioAcceptable(info core.ReleaseInfo, accepted []string, t *core.Title) bool {
+// language is. MULTI carries more than one track and is acceptable; bare DUAL
+// ("original + one unknown") is acceptable only when the title's original
+// language or a non-original indexer source language is accepted. A regional
+// variant of an accepted language (Castilian for a Latino preference) is also
+// acceptable.
+func audioAcceptable(info core.ReleaseInfo, sourceLang string, accepted []string, t *core.Title) bool {
 	if len(accepted) == 0 {
 		return true
 	}
@@ -155,20 +206,21 @@ func audioAcceptable(info core.ReleaseInfo, accepted []string, t *core.Title) bo
 		// English-dub profile on an anime), it is not acceptable, so a
 		// declared dub outranks it at any resolution; it still plays as a
 		// fallback when no acceptable release exists.
-		orig := titleOriginalLanguage(t)
-		if orig == "" {
-			return true
-		}
-		for _, want := range accepted {
-			if releaseparse.LanguageMatch(orig, want) != releaseparse.LanguageNoMatch {
-				return true
-			}
-		}
-		return false
+		return originalInLanguages(t, accepted)
 	}
+	orig := titleOriginalLanguage(t)
+	hasDual := false
+	hasConcreteNonOrig := false
 	for _, l := range info.Languages {
-		if l == releaseparse.LanguageMulti || l == releaseparse.LanguageDual {
+		if l == releaseparse.LanguageMulti {
 			return true
+		}
+		if l == releaseparse.LanguageDual {
+			hasDual = true
+			continue
+		}
+		if orig == "" || releaseparse.LanguageMatch(l, orig) == releaseparse.LanguageNoMatch {
+			hasConcreteNonOrig = true
 		}
 		for _, want := range accepted {
 			if releaseparse.LanguageMatch(l, want) != releaseparse.LanguageNoMatch {
@@ -176,54 +228,204 @@ func audioAcceptable(info core.ReleaseInfo, accepted []string, t *core.Title) bo
 			}
 		}
 	}
+	if hasDual {
+		if !hasConcreteNonOrig {
+			if src := dualSourceDubForOrig(sourceLang, orig); src != "" {
+				for _, want := range accepted {
+					if releaseparse.LanguageMatch(src, want) != releaseparse.LanguageNoMatch {
+						return true
+					}
+				}
+			}
+		}
+		return originalInLanguages(t, accepted)
+	}
 	return false
 }
 
-// foreignTitleWantedAudio reports whether a release of a non-wanted-language
-// title explicitly declares the viewer's wanted audio language (or MULTI).
-// When the title's original language is already one of the viewer's wanted
-// languages (or unknown), untagged releases are already in the viewer's
-// language and this returns false for all candidates so their relative order
-// is unchanged. On a foreign-language title (e.g. a Spanish film for an
-// English viewer), releases that declare English or MULTI are ranked ahead of
-// untagged original-language or bare .DUAL releases within the same resolution
-// tier. A bare DUAL/MULTI from an indexer that declares the viewer's wanted
-// language (sourceLang) carries that dub, so it counts too.
-func foreignTitleWantedAudio(info core.ReleaseInfo, sourceLang string, wanted []string, t *core.Title) bool {
-	orig := titleOriginalLanguage(t)
-	if orig == "" || len(wanted) == 0 {
-		return false
-	}
+// viewerLanguageMatch describes how well a release satisfies the viewer's
+// ordered wanted audio languages (wantedAudio). Rank is 0-based (0 is the
+// viewer's first choice).
+type viewerLanguageMatch struct {
+	Matched  bool
+	Rank     int    // 0 = 1st wanted language, 1 = 2nd, ...
+	Language string // canonical matched language name (e.g. "german", "english", "multi")
+	Original bool   // matched via the title's original language (untagged release)
+	Multi    bool   // viewer configured multiple ordered languages
+}
+
+// normalizeWantedLanguages returns canonical, deduplicated wanted language
+// names in preference order.
+func normalizeWantedLanguages(wanted []string) []string {
+	var norm []string
 	for _, w := range wanted {
-		if releaseparse.LanguageMatch(orig, w) != releaseparse.LanguageNoMatch {
-			return false
-		}
-	}
-	// The source language fills a bare DUAL/MULTI's unnamed dub.
-	sourceWanted := false
-	for _, w := range wanted {
-		if releaseparse.LanguageMatch(sourceLang, w) != releaseparse.LanguageNoMatch {
-			sourceWanted = true
-			break
-		}
-	}
-	for _, l := range info.Languages {
-		if l == releaseparse.LanguageMulti {
-			return true
-		}
-		if l == releaseparse.LanguageDual {
-			if sourceWanted {
-				return true
-			}
+		name := releaseparse.LanguageName(w)
+		if name == "" || name == releaseparse.LanguageMulti || name == releaseparse.LanguageDual {
 			continue
 		}
-		for _, w := range wanted {
-			if releaseparse.LanguageMatch(l, w) != releaseparse.LanguageNoMatch {
-				return true
+		if !slices.Contains(norm, name) {
+			norm = append(norm, name)
+		}
+	}
+	return norm
+}
+
+// viewerLanguageActive reports whether the viewer's ordered audio preferences
+// distinguish candidates on title t. A single wanted language only applies on
+// a foreign title (whose original language is known and differs from it); an
+// ordered list of two or more languages always applies so earlier languages
+// outrank later fallbacks.
+func viewerLanguageActive(wanted []string, t *core.Title) bool {
+	norm := normalizeWantedLanguages(wanted)
+	if len(norm) == 0 {
+		return false
+	}
+	if len(norm) == 1 {
+		orig := titleOriginalLanguage(t)
+		return orig != "" && releaseparse.LanguageMatch(orig, norm[0]) == releaseparse.LanguageNoMatch
+	}
+	return true
+}
+
+// matchViewerLanguage matches a release against the viewer's ordered wanted
+// audio languages. With a single wanted language (such as an owner with []
+// falling back to the catalogue language), it grants a rank-0 match only on a
+// foreign-language title whose release explicitly declares that language,
+// bare MULTI, or a DUAL/MULTI from an indexer declaring that language. With
+// multiple ordered languages (e.g. ["de","en"] on an English title), earlier
+// languages earn a better rank than later fallbacks, untagged releases match
+// at the title's original language's rank when present in wanted, and bare
+// DUAL ("original + one unknown") earns no bonus unless the indexer declares
+// a non-original wanted source language.
+func matchViewerLanguage(info core.ReleaseInfo, sourceLang string, wanted []string, t *core.Title) viewerLanguageMatch {
+	norm := normalizeWantedLanguages(wanted)
+	if len(norm) == 0 {
+		return viewerLanguageMatch{}
+	}
+	orig := titleOriginalLanguage(t)
+	multi := len(norm) > 1
+	if !multi {
+		if orig == "" || releaseparse.LanguageMatch(orig, norm[0]) != releaseparse.LanguageNoMatch {
+			return viewerLanguageMatch{}
+		}
+	}
+
+	bestRank := func(lang string) (int, bool) {
+		baseRank := -1
+		for i, w := range norm {
+			switch releaseparse.LanguageMatch(lang, w) {
+			case releaseparse.LanguageExactMatch:
+				return i, true
+			case releaseparse.LanguageBaseMatch:
+				if baseRank < 0 {
+					baseRank = i
+				}
+			}
+		}
+		if baseRank >= 0 {
+			return baseRank, true
+		}
+		return -1, false
+	}
+
+	if len(info.Languages) == 0 {
+		if orig != "" {
+			if r, ok := bestRank(orig); ok {
+				return viewerLanguageMatch{
+					Matched:  true,
+					Rank:     r,
+					Language: releaseparse.LanguageName(orig),
+					Original: true,
+					Multi:    multi,
+				}
+			}
+		}
+		return viewerLanguageMatch{}
+	}
+
+	var best viewerLanguageMatch
+	hasMulti := false
+	hasDual := false
+	hasConcreteNonOrig := false
+	consider := func(rank int, lang string) {
+		if !best.Matched || rank < best.Rank {
+			best = viewerLanguageMatch{
+				Matched:  true,
+				Rank:     rank,
+				Language: lang,
+				Multi:    multi,
 			}
 		}
 	}
-	return false
+
+	for _, l := range info.Languages {
+		switch l {
+		case releaseparse.LanguageMulti:
+			hasMulti = true
+		case releaseparse.LanguageDual:
+			hasDual = true
+		default:
+			if orig == "" || releaseparse.LanguageMatch(l, orig) == releaseparse.LanguageNoMatch {
+				hasConcreteNonOrig = true
+			}
+			if r, ok := bestRank(l); ok {
+				consider(r, releaseparse.LanguageName(l))
+			}
+		}
+	}
+
+	sourceDub := dualSourceDubForOrig(sourceLang, orig)
+	if hasDual && !hasConcreteNonOrig && sourceDub != "" {
+		if r, ok := bestRank(sourceDub); ok {
+			consider(r, sourceDub)
+		}
+	}
+	if hasMulti && !best.Matched {
+		if sourceDub != "" {
+			if r, ok := bestRank(sourceDub); ok {
+				consider(r, sourceDub)
+			}
+		} else {
+			consider(0, releaseparse.LanguageMulti)
+		}
+	}
+	return best
+}
+
+// viewerLanguageScore scales a profile's FormatViewerLanguage weight by the
+// 0-based rank of the matched language: rank 0 receives the full score,
+// rank 1 receives half, rank 2 a quarter, and so on, always remaining non-zero
+// when base is non-zero.
+func viewerLanguageScore(base, rank int) int {
+	if base == 0 || rank <= 0 {
+		return base
+	}
+	scaled := base / (1 << min(rank, 30))
+	if scaled == 0 {
+		if base > 0 {
+			return 1
+		}
+		return -1
+	}
+	return scaled
+}
+
+// viewerLanguageFormatName formats the explainable FormatMatch label for
+// FormatViewerLanguage. Single-language viewers keep the plain built-in name;
+// ordered multi-language lists show the matched rank and language.
+func viewerLanguageFormatName(m viewerLanguageMatch) string {
+	base := BuiltinFormatName(core.FormatViewerLanguage)
+	if !m.Multi {
+		return base
+	}
+	switch {
+	case m.Original && m.Language != "":
+		return fmt.Sprintf("%s (#%d, %s original)", base, m.Rank+1, m.Language)
+	case m.Language != "":
+		return fmt.Sprintf("%s (#%d, %s)", base, m.Rank+1, m.Language)
+	default:
+		return fmt.Sprintf("%s (#%d)", base, m.Rank+1)
+	}
 }
 
 // localizedEpisodeTitle reports a release dubbed into a language that is

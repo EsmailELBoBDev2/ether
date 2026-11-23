@@ -136,7 +136,7 @@ func sameTier(a, b candidate) bool {
 		qualityTier(a.rel.Info) == qualityTier(b.rel.Info) &&
 		a.starved == b.starved &&
 		a.langOK == b.langOK &&
-		a.langWanted == b.langWanted
+		a.langRank == b.langRank
 }
 
 // sameQuality reports releases that are interchangeable for source

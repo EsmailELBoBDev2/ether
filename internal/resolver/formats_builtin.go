@@ -57,12 +57,13 @@ func BuiltinFormatName(id string) string { return builtinFormatNames[id] }
 // formatFacts is what the built-in formats read besides the release, the
 // profile and the client.
 type formatFacts struct {
-	starved        bool // below its bitrate floor or a presumed upscale: no HDR credit
-	lowBitrate     bool // below its bitrate floor
-	viewerLanguage bool // declares the viewer's language on a foreign title
-	viewerSubs     bool // the indexer lists subtitles in the viewer's language
-	yearDiffers    bool // accepted although its series year differs
-	pastRetention  bool // a Usenet post older than provider retention
+	starved          bool                // below its bitrate floor or a presumed upscale: no HDR credit
+	lowBitrate       bool                // below its bitrate floor
+	viewerLanguage   viewerLanguageMatch // matches the viewer's ordered audio languages
+	originalLanguage string              // title's original language, when known
+	viewerSubs       bool                // the indexer lists subtitles in the viewer's language
+	yearDiffers      bool                // accepted although its series year differs
+	pastRetention    bool                // a Usenet post older than provider retention
 }
 
 // builtinFormatMatches lists the built-in formats a release matches for a
@@ -106,8 +107,8 @@ func builtinFormatMatches(rel core.Release, profile core.QualityProfile, caps co
 	if f.lowBitrate {
 		add(core.FormatLowBitrate)
 	}
-	out = append(out, languageFormats(info, rel.SourceLanguage, profile.PreferredLanguages)...)
-	if f.viewerLanguage {
+	out = append(out, languageFormats(info, rel.SourceLanguage, profile.PreferredLanguages, f.originalLanguage)...)
+	if f.viewerLanguage.Matched {
 		add(core.FormatViewerLanguage)
 	}
 	if f.viewerSubs {
@@ -139,47 +140,72 @@ func builtinFormatMatches(rel core.Release, profile core.QualityProfile, caps co
 // unset profile is language-neutral) and may be ISO codes ("fr", "es-419")
 // or release language names. Audio decides: a release declaring only
 // other audio languages is "Not a preferred language"; the preferred
-// language, MULTI or a bare DUAL (local dub plus the original) is not, and
-// another regional variant of a preferred language (Castilian for a Latino
-// preference) is the "other region" format. A bare DUAL or MULTI from an
-// indexer that declares the preferred language (sourceLang) counts as
-// carrying it: the tracker's language is the evidence the name omits.
+// language or MULTI is not, and another regional variant of a preferred
+// language (Castilian for a Latino preference) is the "other region" format.
+// Bare DUAL ("original + one unknown") escapes "Not a preferred language"
+// only when the title's original language is unknown or among prefs, or when
+// the indexer declares a non-original preferred source language (sourceLang).
 // Subtitle-only declarations (VOSTFR) never stand in for audio; they have a
 // format of their own.
-func languageFormats(info core.ReleaseInfo, sourceLang string, prefs []string) []string {
+func languageFormats(info core.ReleaseInfo, sourceLang string, prefs []string, orig string) []string {
 	if len(prefs) == 0 {
 		return nil
+	}
+	sourceDub := dualSourceDubForOrig(sourceLang, orig)
+	origOK := orig == ""
+	if !origOK {
+		for _, pref := range prefs {
+			if releaseparse.LanguageMatch(orig, pref) != releaseparse.LanguageNoMatch {
+				origOK = true
+				break
+			}
+		}
 	}
 	var out []string
 	if len(info.Languages) > 0 {
 		ok, exact, base := false, false, false
+		hasMulti, hasDual, hasConcreteNonOrig := false, false, false
 		for _, l := range info.Languages {
-			if l == releaseparse.LanguageMulti || l == releaseparse.LanguageDual {
-				// A bare DUAL/MULTI carries the source language when the
-				// indexer declares one that is preferred.
+			switch l {
+			case releaseparse.LanguageMulti:
+				hasMulti = true
+			case releaseparse.LanguageDual:
+				hasDual = true
+			default:
+				if orig == "" || releaseparse.LanguageMatch(l, orig) == releaseparse.LanguageNoMatch {
+					hasConcreteNonOrig = true
+				}
 				best := releaseparse.LanguageNoMatch
 				for _, pref := range prefs {
-					best = max(best, releaseparse.LanguageMatch(sourceLang, pref))
+					best = max(best, releaseparse.LanguageMatch(l, pref))
 				}
 				switch best {
 				case releaseparse.LanguageExactMatch:
 					ok, exact = true, true
 				case releaseparse.LanguageBaseMatch:
 					ok, base = true, true
-				default:
-					ok = true
 				}
-				continue
 			}
+		}
+		if hasMulti || hasDual {
+			// A bare DUAL/MULTI carries the source language when the
+			// indexer declares a non-original preferred language and the
+			// release does not already name a non-original dub.
 			best := releaseparse.LanguageNoMatch
-			for _, pref := range prefs {
-				best = max(best, releaseparse.LanguageMatch(l, pref))
+			if !hasConcreteNonOrig && sourceDub != "" {
+				for _, pref := range prefs {
+					best = max(best, releaseparse.LanguageMatch(sourceDub, pref))
+				}
 			}
 			switch best {
 			case releaseparse.LanguageExactMatch:
 				ok, exact = true, true
 			case releaseparse.LanguageBaseMatch:
 				ok, base = true, true
+			default:
+				if hasMulti || origOK {
+					ok = true
+				}
 			}
 		}
 		switch {

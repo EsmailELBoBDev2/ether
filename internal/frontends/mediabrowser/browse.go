@@ -593,6 +593,9 @@ func (i *instance) browseRoutes() error {
 				return
 			}
 		}
+		if i.writeExtraDetail(w, r, v, key) {
+			return
+		}
 		if i.host.Experience == nil {
 			http.Error(w, "Unavailable", 503)
 			return

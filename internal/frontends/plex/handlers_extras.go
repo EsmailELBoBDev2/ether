@@ -828,7 +828,7 @@ func (s *Server) prewarmFeature(ctx context.Context, pr *Request, feature fronte
 // cinemaTrailerKeys picks up to n trailers of other, unwatched movies
 // for this viewer (PMS Cinema Trailers semantics), in candidate order.
 func (s *Server) cinemaTrailerKeys(ctx context.Context, pr *Request, feature frontend.RatingKey, n int) []frontend.RatingKey {
-	if n <= 0 || !s.extrasEnabled() || s.catalog() == nil {
+	if n <= 0 || !s.extrasEnabled() || s.catalog() == nil || feature.IsPluginKey() {
 		return nil
 	}
 	if n > frontend.MaxExtras {

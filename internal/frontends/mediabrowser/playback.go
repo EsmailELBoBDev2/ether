@@ -149,6 +149,11 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 		http.Error(w, msgVideoTranscodingOff, http.StatusUnprocessableEntity)
 		return
 	}
+	var reqLang *frontend.RequiredAudioLanguageError
+	if errors.As(err, &reqLang) {
+		http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	if errors.Is(err, frontend.ErrArchiveUnstreamable) {
 		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
 		return
@@ -471,8 +476,11 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		if i.protocol == "jellyfin" {
 			i.playbackInfoError(w, v, "plan", err)
 		} else if playback && noCompatibleStream(err) {
+			var reqLang *frontend.RequiredAudioLanguageError
 			if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 				i.writeNoCompatibleStreamMessage(w, frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v))
+			} else if errors.As(err, &reqLang) {
+				i.writeNoCompatibleStreamMessage(w, reqLang.Error())
 			} else {
 				i.writeNoCompatibleStream(w)
 			}
@@ -1440,10 +1448,13 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, 
 	}
 	body := map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code}
 	var bedtime *frontend.ErrBedtime
+	var reqLang *frontend.RequiredAudioLanguageError
 	if errors.As(err, &bedtime) {
 		body["Message"] = bedtime.Error()
 	} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 		body["Message"] = frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v)
+	} else if errors.As(err, &reqLang) {
+		body["Message"] = reqLang.Error()
 	}
 	jsonReply(w, body)
 }

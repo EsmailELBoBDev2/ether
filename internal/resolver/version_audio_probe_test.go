@@ -75,6 +75,7 @@ func TestRankingUsesProbedTracksForAudioLanguagePreference(t *testing.T) {
 	cfg := testCfg()
 	for i := range cfg.Quality.Profiles {
 		cfg.Quality.Profiles[i].Language = "English"
+		cfg.Quality.Profiles[i].AudioLanguageMode = core.AudioLanguageModeRequired
 		cfg.Quality.Profiles[i].PreferredLanguages = []string{"en"}
 	}
 

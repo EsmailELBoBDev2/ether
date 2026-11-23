@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -544,5 +545,318 @@ func TestBareDualAcceptabilityAndOtherLanguagePenalty(t *testing.T) {
 	}
 	if got := languageFormats(frenchDual, "de", []string{"de"}, "en"); !slices.Equal(got, []string{core.FormatOtherLanguage}) {
 		t.Fatalf("FRENCH.DUAL with German sourceLang formats = %v, want [%s]", got, core.FormatOtherLanguage)
+	}
+}
+
+type rescueCountingIndexer struct {
+	fakeIndexer
+	rescueCalls int
+}
+
+func (r *rescueCountingIndexer) SearchRescue(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+	r.rescueCalls++
+	return nil, nil
+}
+
+// W321: Profile Audio language can be Preferred (ranking with original-language
+// fallback, composed with the viewer's ordered language list from #743) or
+// Required (strict gate that fails fast without rescue searches and tells the
+// player how to allow other languages).
+func TestProfileAudioLanguagePreferredVsRequired(t *testing.T) {
+	bluey := &core.Title{
+		Key:       core.EpisodeKey(82728, 1, 30),
+		Type:      core.TypeEpisode,
+		ShowKey:   core.ShowKey(82728),
+		ShowTitle: "Bluey",
+		ShowYear:  2018,
+		ShowIDs:   core.IDs{TMDB: 82728},
+		Title:     "The Claw",
+		Season:    1,
+		Episode:   30,
+		Language:  "en",
+		Runtime:   7 * time.Minute,
+	}
+	koreanShow := &core.Title{
+		Key:       core.EpisodeKey(93405, 1, 1),
+		Type:      core.TypeEpisode,
+		ShowKey:   core.ShowKey(93405),
+		ShowTitle: "Seoul Drift",
+		ShowYear:  2024,
+		ShowIDs:   core.IDs{TMDB: 93405},
+		Title:     "Pilot",
+		Season:    1,
+		Episode:   1,
+		Language:  "ko",
+		Runtime:   50 * time.Minute,
+	}
+
+	makeRel := func(id, name string, mb int64) core.Release {
+		return withParsed(rel(id, name, mb))
+	}
+
+	blueyPool := []core.Release{
+		makeRel("bluey-es", "Bluey.S01E30.1080p.WEB-DL.SPANISH.H.264-GRP", 900),
+		makeRel("bluey-ja", "Bluey.S01E30.1080p.WEB-DL.JAPANESE.H.264-GRP", 850),
+		makeRel("bluey-en", "Bluey.S01E30.1080p.WEB-DL.H.264-GRP", 700),
+		makeRel("bluey-multi-en", "Bluey.S01E30.1080p.WEB-DL.MULTI.ENGLISH.SPANISH.H.264-GRP", 500),
+		makeRel("bluey-fr", "Bluey.S01E30.1080p.WEB-DL.FRENCH.H.264-GRP", 950),
+	}
+
+	koreanOnlyPool := []core.Release{
+		makeRel("ko-orig", "Seoul.Drift.S01E01.1080p.WEB-DL.KOREAN.H.264-GRP", 3600),
+		makeRel("ko-untagged", "Seoul.Drift.S01E01.1080p.WEB-DL.H.264-RAW", 3400),
+		makeRel("ko-fr", "Seoul.Drift.S01E01.1080p.WEB-DL.FRENCH.H.264-DUB", 4200),
+	}
+
+	koreanWithDubPool := []core.Release{
+		makeRel("ko-orig", "Seoul.Drift.S01E01.1080p.WEB-DL.KOREAN.H.264-GRP", 4200),
+		makeRel("ko-en-dub", "Seoul.Drift.S01E01.1080p.WEB-DL.ENGLISH.H.264-GRP", 3200),
+		makeRel("ko-multi-en", "Seoul.Drift.S01E01.1080p.WEB-DL.MULTI.ENGLISH.KOREAN.H.264-GRP", 3500),
+		makeRel("ko-multi-es-fr", "Seoul.Drift.S01E01.1080p.WEB-DL.MULTI.SPANISH.FRENCH.H.264-GRP", 4500),
+		makeRel("ko-es", "Seoul.Drift.S01E01.1080p.WEB-DL.SPANISH.H.264-GRP", 3800),
+		makeRel("ko-fr", "Seoul.Drift.S01E01.1080p.WEB-DL.FRENCH.H.264-GRP", 4000),
+	}
+
+	cases := []struct {
+		name               string
+		title              *core.Title
+		profileLang        string
+		profileMode        string
+		stripViewerLangCF  bool
+		user               *core.User
+		pool               []core.Release
+		exclude            []string
+		wantWinner         string
+		wantOrder          []string
+		wantErrMsg         string
+		wantRescueCalls    int
+		wantCompatContains map[string]string
+		wantFormatName     map[string]string
+	}{
+		{
+			name:        "Bluey English Preferred ranks English and MULTI-with-English above Spanish and Japanese",
+			title:       bluey,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			pool:        blueyPool,
+			wantWinner:  "bluey-en",
+			wantOrder:   []string{"bluey-en", "bluey-multi-en", "bluey-es", "bluey-fr", "bluey-ja"},
+			wantCompatContains: map[string]string{
+				"bluey-multi-en": "preferred language (English)",
+				"bluey-en":       "preferred language (English)",
+				"bluey-es":       "other language (fallback)",
+				"bluey-ja":       "other language (fallback)",
+			},
+			wantFormatName: map[string]string{
+				"bluey-multi-en": "preferred language (English)",
+				"bluey-en":       "preferred language (English)",
+			},
+		},
+		{
+			name:        "Bluey English Preferred counts MULTI release including English as matching over larger Spanish/Japanese",
+			title:       bluey,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			pool:        []core.Release{blueyPool[0], blueyPool[1], blueyPool[3]}, // es (900MB), ja (850MB), multi-en (500MB)
+			wantWinner:  "bluey-multi-en",
+			wantOrder:   []string{"bluey-multi-en", "bluey-es", "bluey-ja"},
+			wantCompatContains: map[string]string{
+				"bluey-multi-en": "preferred language (English)",
+				"bluey-es":       "other language (fallback)",
+				"bluey-ja":       "other language (fallback)",
+			},
+			wantFormatName: map[string]string{
+				"bluey-multi-en": "preferred language (English)",
+			},
+		},
+		{
+			name:        "Bluey English Preferred falls back to Spanish/Japanese only when no English exists",
+			title:       bluey,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			pool:        []core.Release{blueyPool[0], blueyPool[1]}, // Spanish (900MB) and Japanese (850MB) only
+			wantWinner:  "bluey-es",
+			wantOrder:   []string{"bluey-es", "bluey-ja"},
+			wantCompatContains: map[string]string{
+				"bluey-es": "other language (fallback)",
+				"bluey-ja": "other language (fallback)",
+			},
+		},
+		{
+			name:        "Korean show with English Preferred plays Korean original ahead of French fallback",
+			title:       koreanShow,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			pool:        koreanOnlyPool,
+			wantWinner:  "ko-orig",
+			wantOrder:   []string{"ko-orig", "ko-untagged", "ko-fr"},
+			wantCompatContains: map[string]string{
+				"ko-orig": "other language (fallback)",
+				"ko-fr":   "other language (fallback)",
+			},
+		},
+		{
+			name:              "Korean show with English Preferred still boosts English even without FormatViewerLanguage in CustomFormatScores",
+			title:             koreanShow,
+			profileLang:       "English",
+			profileMode:       core.AudioLanguageModePreferred,
+			stripViewerLangCF: true,
+			pool:              koreanWithDubPool,
+			wantWinner:        "ko-multi-en",
+			wantOrder:         []string{"ko-multi-en", "ko-en-dub", "ko-multi-es-fr", "ko-orig", "ko-fr", "ko-es"},
+			wantFormatName: map[string]string{
+				"ko-multi-en": "preferred language (English)",
+				"ko-en-dub":   "preferred language (English)",
+			},
+		},
+		{
+			name:            "Korean show with English Required fails fast without rescue search and explains how to allow other languages",
+			title:           koreanShow,
+			profileLang:     "English",
+			profileMode:     core.AudioLanguageModeRequired,
+			pool:            koreanOnlyPool,
+			wantErrMsg:      "No English release found; set Audio language to Preferred to allow other languages",
+			wantRescueCalls: 0,
+		},
+		{
+			name:            "Korean show with unset audioLanguageMode keeps existing Required strictness and fails fast",
+			title:           koreanShow,
+			profileLang:     "English",
+			profileMode:     "",
+			pool:            koreanOnlyPool,
+			wantErrMsg:      "No English release found; set Audio language to Preferred to allow other languages",
+			wantRescueCalls: 0,
+		},
+		{
+			name:        "Interplay: Bluey English Preferred + viewer [ja,es] puts English first and refines fallback to Japanese over Spanish",
+			title:       bluey,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			user:        &core.User{ID: 7, AudioLanguages: []string{"ja", "es"}},
+			pool:        blueyPool,
+			wantWinner:  "bluey-en",
+			wantOrder:   []string{"bluey-en", "bluey-multi-en", "bluey-ja", "bluey-es", "bluey-fr"},
+			wantFormatName: map[string]string{
+				"bluey-en": "preferred language (English)",
+				"bluey-ja": "#2, japanese",
+				"bluey-es": "#3, spanish",
+			},
+		},
+		{
+			name:        "Interplay: Bluey English Preferred + viewer [ja,es] falls back to Japanese ahead of Spanish when English is absent",
+			title:       bluey,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			user:        &core.User{ID: 7, AudioLanguages: []string{"ja", "es"}},
+			pool:        []core.Release{blueyPool[0], blueyPool[1], blueyPool[4]}, // es, ja, fr
+			wantWinner:  "bluey-ja",
+			wantOrder:   []string{"bluey-ja", "bluey-es", "bluey-fr"},
+		},
+		{
+			name:        "Interplay: Korean show English Preferred + viewer [es,en] deduplicates English at #1, refines Spanish to #2, Korean original to #3",
+			title:       koreanShow,
+			profileLang: "English",
+			profileMode: core.AudioLanguageModePreferred,
+			user:        &core.User{ID: 8, AudioLanguages: []string{"es", "en"}},
+			pool:        koreanWithDubPool,
+			wantWinner:  "ko-multi-en",
+			wantOrder:   []string{"ko-multi-en", "ko-en-dub", "ko-multi-es-fr", "ko-es", "ko-orig", "ko-fr"},
+			wantFormatName: map[string]string{
+				"ko-en-dub":      "preferred language (English)",
+				"ko-multi-es-fr": "#2, spanish",
+				"ko-es":          "#2, spanish",
+			},
+		},
+		{
+			name:            "Interplay: Korean show English Required stays strict even when viewer asks for Korean",
+			title:           koreanShow,
+			profileLang:     "English",
+			profileMode:     core.AudioLanguageModeRequired,
+			user:            &core.User{ID: 9, AudioLanguages: []string{"ko"}},
+			pool:            koreanOnlyPool,
+			wantErrMsg:      "No English release found; set Audio language to Preferred to allow other languages",
+			wantRescueCalls: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testCfg()
+			for i := range cfg.Quality.Profiles {
+				cfg.Quality.Profiles[i].Language = tc.profileLang
+				cfg.Quality.Profiles[i].AudioLanguageMode = tc.profileMode
+				if tc.stripViewerLangCF {
+					delete(cfg.Quality.Profiles[i].CustomFormatScores, core.FormatViewerLanguage)
+				}
+			}
+			idx := &rescueCountingIndexer{fakeIndexer: fakeIndexer{releases: tc.pool}}
+			svc := New(idx, fakeHealth{}, nil, cfg, Options{Now: func() time.Time { return corpusNow }})
+			defer svc.Close()
+
+			caps := appleTV4K()
+			req := core.ResolveRequest{Title: tc.title, Client: caps, User: tc.user, Exclude: tc.exclude}
+			res, err := svc.Resolve(context.Background(), req)
+
+			if tc.wantErrMsg != "" {
+				if err == nil {
+					t.Fatalf("Resolve() succeeded with %q, want error %q", res.Release.ID, tc.wantErrMsg)
+				}
+				var reqLangErr *core.RequiredAudioLanguageError
+				if !strings.Contains(err.Error(), tc.wantErrMsg) {
+					t.Fatalf("Resolve() err = %q, want substring %q", err.Error(), tc.wantErrMsg)
+				}
+				if !errors.As(err, &reqLangErr) {
+					t.Fatalf("Resolve() err = %T (%v), want *core.RequiredAudioLanguageError", err, err)
+				}
+				if !errors.Is(err, core.ErrNotAvailable) {
+					t.Fatalf("RequiredAudioLanguageError must unwrap to core.ErrNotAvailable")
+				}
+				if idx.rescueCalls != tc.wantRescueCalls {
+					t.Fatalf("SearchRescue calls = %d, want %d (must fail fast)", idx.rescueCalls, tc.wantRescueCalls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Resolve() err = %v", err)
+			}
+			if res.Release.ID != tc.wantWinner {
+				t.Fatalf("winner = %q, want %q", res.Release.ID, tc.wantWinner)
+			}
+
+			profile := SelectProfileForMedia(cfg.Quality, caps, tc.user, titleMedia(tc.title))
+			var tr Trace
+			cands, _, rerr := svc.rankCandidates(context.Background(), req, searchRequestFor(tc.title), profile, slices.Clone(tc.pool), &tr, "")
+			if rerr != nil {
+				t.Fatalf("rankCandidates: %v", rerr)
+			}
+			if len(tc.wantOrder) > 0 {
+				gotOrder := make([]string, len(cands))
+				for i, c := range cands {
+					gotOrder[i] = c.rel.ID
+				}
+				if !slices.Equal(gotOrder, tc.wantOrder) {
+					t.Fatalf("order = %v, want %v", gotOrder, tc.wantOrder)
+				}
+			}
+			for id, wantSub := range tc.wantCompatContains {
+				ct := findTraceCandidate(t, tr, id)
+				if !strings.Contains(ct.CompatibilityReason, wantSub) {
+					t.Errorf("%s: CompatibilityReason = %q, want substring %q", id, ct.CompatibilityReason, wantSub)
+				}
+			}
+			for id, wantSub := range tc.wantFormatName {
+				ct := findTraceCandidate(t, tr, id)
+				found := false
+				for _, fm := range ct.CustomFormats {
+					if fm.ID == core.FormatViewerLanguage && strings.Contains(fm.Name, wantSub) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("%s: CustomFormats = %+v, want %s containing %q", id, ct.CustomFormats, core.FormatViewerLanguage, wantSub)
+				}
+			}
+		})
 	}
 }

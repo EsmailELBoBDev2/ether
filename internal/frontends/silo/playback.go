@@ -233,7 +233,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(videoCodecs) > 0}})
 	if err != nil {
-		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) && !errors.As(err, new(*frontend.RequiredAudioLanguageError)) {
 			i.versionUnavailable(w, err, "plan")
 			return
 		}
@@ -242,7 +242,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: "silo", PlanID: plan.ID, Viewer: v, Device: d})
 	if err != nil {
-		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) && !errors.As(err, new(*frontend.RequiredAudioLanguageError)) {
 			i.versionUnavailable(w, err, "open")
 			return
 		}
@@ -782,6 +782,11 @@ func (i *instance) playbackError(w http.ResponseWriter, v *frontend.Viewer, err 
 func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error) {
 	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 		http.Error(w, frontend.VideoTranscodingOffMessage(policy, viewer), http.StatusUnprocessableEntity)
+		return
+	}
+	var reqLang *frontend.RequiredAudioLanguageError
+	if errors.As(err, &reqLang) {
+		http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	if errors.Is(err, frontend.ErrArchiveUnstreamable) {

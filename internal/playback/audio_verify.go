@@ -12,6 +12,9 @@ import (
 const maxUnknownAudioProbes = releasepolicy.MaxUnknownAudioProbes
 
 func normalizedProfileLanguage(profile core.QualityProfile) string {
+	if profile.EffectiveAudioLanguageMode() != core.AudioLanguageModeRequired {
+		return ""
+	}
 	raw := strings.ToLower(strings.TrimSpace(profile.Language))
 	if raw == "" || raw == core.ProfileLanguageOriginal || raw == core.ProfileLanguageAny {
 		return ""

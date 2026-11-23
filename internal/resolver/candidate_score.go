@@ -281,6 +281,9 @@ func scoreSourceRelease(s *Service, scorer *FormatScorer, rel core.Release, prof
 			continue
 		}
 		score, scored := profile.CustomFormatScores[id]
+		if id == core.FormatViewerLanguage && facts.viewerLanguage.ProfilePreferred != "" && (!scored || score == 0) {
+			score, scored = defaultPreferredLanguageScore, true
+		}
 		if !scored || score == 0 {
 			continue
 		}

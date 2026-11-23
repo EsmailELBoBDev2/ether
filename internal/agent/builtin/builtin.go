@@ -182,6 +182,7 @@ type ProfileInfo struct {
 	Rules              []core.ReleaseRule
 	QualityOrder       []core.QualityItem
 	Language           string
+	AudioLanguageMode  string
 	PreferredLanguages []string
 	MaxHeight          int
 	MinHeight          int

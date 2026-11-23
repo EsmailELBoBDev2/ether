@@ -158,6 +158,31 @@ func LanguageName(v string) string {
 	return name
 }
 
+// LanguageDisplayName formats a language code or canonical parser name for
+// user-facing text (e.g. "en" -> "English", "spanish-latino" -> "Spanish (Latino)").
+func LanguageDisplayName(v string) string {
+	name := LanguageName(v)
+	switch name {
+	case "":
+		return ""
+	case LanguageSpanishLatino:
+		return "Spanish (Latino)"
+	case LanguageSpanishSpain:
+		return "Spanish (Spain)"
+	case LanguagePortugueseBrazil:
+		return "Portuguese (Brazil)"
+	case LanguagePortuguesePortugal:
+		return "Portuguese (Portugal)"
+	}
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, "-")
+}
+
 // KnownLanguage reports whether v names a language the parser knows, in
 // any form LanguageName accepts.
 func KnownLanguage(v string) bool {

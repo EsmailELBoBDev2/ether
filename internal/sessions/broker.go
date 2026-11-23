@@ -761,7 +761,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 					req.Version = ps.Resolution.Release.ID
 					release = ps.Resolution.Release.ID
 				}
-			} else if errors.Is(fallbackErr, core.ErrVideoTranscodingDisabled) {
+			} else if errors.Is(fallbackErr, core.ErrVideoTranscodingDisabled) || errors.As(fallbackErr, new(*core.RequiredAudioLanguageError)) {
 				err = fallbackErr
 			}
 		}

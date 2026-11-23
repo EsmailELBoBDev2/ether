@@ -17,7 +17,7 @@ func (s *Service) catalogLanguage() string {
 }
 
 // profileLanguageMode reads a profile's Language (Radarr-style): specific
-// is the one language its releases must be in ("" for none), any accepts
+// is the one language the profile names ("" for none), any accepts
 // every language, and neither is the original behaviour — each title's
 // original language alongside the preferred ones. A language Ether does
 // not recognise keeps the original behaviour rather than rejecting
@@ -35,14 +35,35 @@ func profileLanguageMode(profile core.QualityProfile) (specific string, anyLang 
 	return "", false
 }
 
-// profileLanguageRejection is the reason a release fails a profile's
-// specific Language, or "" when it passes (or the profile sets none). A
-// release declaring no audio is in the title's original language as far as
-// anyone knows, so it passes when that is the profile's language or
-// unknown; MULTI and DUAL carry more than one track and pass, as in
-// audioAcceptable.
-func profileLanguageRejection(info core.ReleaseInfo, profile core.QualityProfile, t *core.Title) string {
+// profileRequiredLanguage returns the canonical language name when the profile
+// names a specific Audio language in Required mode (the default when
+// AudioLanguageMode is unset on existing profiles).
+func profileRequiredLanguage(profile core.QualityProfile) string {
 	lang, _ := profileLanguageMode(profile)
+	if lang == "" || profile.EffectiveAudioLanguageMode() != core.AudioLanguageModeRequired {
+		return ""
+	}
+	return lang
+}
+
+// profilePreferredLanguage returns the canonical language name when the profile
+// names a specific Audio language in Preferred mode.
+func profilePreferredLanguage(profile core.QualityProfile) string {
+	lang, _ := profileLanguageMode(profile)
+	if lang == "" || profile.EffectiveAudioLanguageMode() != core.AudioLanguageModePreferred {
+		return ""
+	}
+	return lang
+}
+
+// profileLanguageRejection is the reason a release fails a profile's
+// required Audio language, or "" when it passes, the profile sets none, or
+// AudioLanguageMode is Preferred (which ranks rather than filters). A release
+// declaring no audio is in the title's original language as far as anyone
+// knows, so it passes when that is the profile's language or unknown; MULTI
+// and DUAL carry more than one track and pass, as in audioAcceptable.
+func profileLanguageRejection(info core.ReleaseInfo, profile core.QualityProfile, t *core.Title) string {
+	lang := profileRequiredLanguage(profile)
 	if lang == "" {
 		return ""
 	}
@@ -63,13 +84,25 @@ func profileLanguageRejection(info core.ReleaseInfo, profile core.QualityProfile
 	return fmt.Sprintf("audio is not in the profile's language (%s)", lang)
 }
 
-// wantedAudio lists the viewer's own preferred audio languages: the profile's
-// language when it names one, else its preferred languages when the owner
-// set them, otherwise the viewer's own audio languages, otherwise the
-// server's catalogue language.
+// wantedAudio lists the ordered preferred audio languages for ranking:
+//   - Specific profile Language in Required mode: only that language
+//     (non-matching releases are rejected by profileLanguageRejection).
+//   - Specific profile Language in Preferred mode: the profile's language
+//     ranks first (rank 0), followed by the viewer's own ordered audio
+//     languages (#743) so the viewer's list refines the fallback order.
+//   - Otherwise: the profile's PreferredLanguages when the owner set them,
+//     else the viewer's own audio languages, else the server's catalogue
+//     language (unless the viewer chose PreferOriginal).
 func wantedAudio(profile core.QualityProfile, user *core.User, serverLang string) []string {
-	if lang, _ := profileLanguageMode(profile); lang != "" {
+	if lang := profileRequiredLanguage(profile); lang != "" {
 		return []string{lang}
+	}
+	if lang := profilePreferredLanguage(profile); lang != "" {
+		out := []string{lang}
+		if user != nil && len(user.AudioLanguages) > 0 {
+			out = append(out, user.AudioLanguages...)
+		}
+		return out
 	}
 	var out []string
 	switch {
@@ -90,7 +123,8 @@ func wantedAudio(profile core.QualityProfile, user *core.User, serverLang string
 // language for multi-file movie pack file selection. An explicit "Original"
 // profile language puts the title's original language ahead of viewer/server
 // fallbacks; otherwise wanted audio languages lead and the original language
-// trails as a fallback over unrelated dubs.
+// trails as a fallback over unrelated dubs (unless the profile requires one
+// specific language).
 func movieTargetLanguages(profile core.QualityProfile, wanted []string, t *core.Title) ([]string, string) {
 	orig := titleOriginalLanguage(t)
 	var out []string
@@ -105,23 +139,27 @@ func movieTargetLanguages(profile core.QualityProfile, wanted []string, t *core.
 	for _, w := range wanted {
 		add(w)
 	}
-	if specific, _ := profileLanguageMode(profile); specific == "" && orig != "" {
+	if profileRequiredLanguage(profile) == "" && orig != "" {
 		add(orig)
 	}
 	return out, releaseparse.LanguageName(orig)
 }
 
 // acceptedAudio lists the audio languages a release may declare and still
-// rank with the rest: the profile's languages when the owner set them,
-// otherwise the viewer's own audio languages, otherwise the server's
-// language; the title's original language is always accepted. A profile
-// language of Any accepts everything; a specific profile language accepts
-// only itself (profileLanguageRejection is the hard gate). An empty
-// result accepts everything (nothing is known to ask for).
+// rank with the rest:
+//   - Any: nil (every language is accepted).
+//   - Specific profile Language in Required mode: only that language
+//     (profileLanguageRejection is the hard gate).
+//   - Specific profile Language in Preferred mode: the profile's preferred
+//     language, followed by any viewer audio languages (#743), plus the
+//     title's original language as fallback ahead of unrelated dubs (which
+//     stay playable as last-resort fallbacks).
+//   - Otherwise: wantedAudio plus the title's original language.
 func acceptedAudio(profile core.QualityProfile, user *core.User, serverLang string, t *core.Title) []string {
-	if lang, anyLang := profileLanguageMode(profile); anyLang {
+	if _, anyLang := profileLanguageMode(profile); anyLang {
 		return nil
-	} else if lang != "" {
+	}
+	if lang := profileRequiredLanguage(profile); lang != "" {
 		return []string{lang}
 	}
 	out := wantedAudio(profile, user, serverLang)
@@ -243,16 +281,22 @@ func audioAcceptable(info core.ReleaseInfo, sourceLang string, accepted []string
 	return false
 }
 
-// viewerLanguageMatch describes how well a release satisfies the viewer's
-// ordered wanted audio languages (wantedAudio). Rank is 0-based (0 is the
-// viewer's first choice).
+// viewerLanguageMatch describes how well a release satisfies the profile's
+// preferred language and/or the viewer's ordered wanted audio languages
+// (wantedAudio). Rank is 0-based (0 is the first choice).
 type viewerLanguageMatch struct {
-	Matched  bool
-	Rank     int    // 0 = 1st wanted language, 1 = 2nd, ...
-	Language string // canonical matched language name (e.g. "german", "english", "multi")
-	Original bool   // matched via the title's original language (untagged release)
-	Multi    bool   // viewer configured multiple ordered languages
+	Matched          bool
+	Rank             int    // 0 = 1st wanted language, 1 = 2nd, ...
+	Language         string // canonical matched language name (e.g. "german", "english", "multi")
+	Original         bool   // matched via the title's original language (untagged release)
+	Multi            bool   // multiple ordered languages active
+	ProfilePreferred string // canonical profile Language when AudioLanguageMode is Preferred
 }
+
+// defaultPreferredLanguageScore is the strong ranking bonus awarded to a
+// profile's Preferred audio language when the profile does not configure an
+// explicit FormatViewerLanguage weight (e.g. imported TRaSH/Dictionarry profiles).
+const defaultPreferredLanguageScore = 10000
 
 // normalizeWantedLanguages returns canonical, deduplicated wanted language
 // names in preference order.
@@ -287,6 +331,17 @@ func viewerLanguageActive(wanted []string, t *core.Title) bool {
 	return true
 }
 
+// viewerLanguageActiveFor reports whether profile-preferred or viewer-ordered
+// audio ranking distinguishes candidates on title t. A profile with a specific
+// Preferred Audio language is always active, even on titles whose original
+// language matches it (so English beats Spanish/Japanese dubs on Bluey).
+func viewerLanguageActiveFor(wanted []string, profile core.QualityProfile, t *core.Title) bool {
+	if profilePreferredLanguage(profile) != "" {
+		return true
+	}
+	return viewerLanguageActive(wanted, t)
+}
+
 // matchViewerLanguage matches a release against the viewer's ordered wanted
 // audio languages. With a single wanted language (such as an owner with []
 // falling back to the catalogue language), it grants a rank-0 match only on a
@@ -298,13 +353,26 @@ func viewerLanguageActive(wanted []string, t *core.Title) bool {
 // DUAL ("original + one unknown") earns no bonus unless the indexer declares
 // a non-original wanted source language.
 func matchViewerLanguage(info core.ReleaseInfo, sourceLang string, wanted []string, t *core.Title) viewerLanguageMatch {
+	return matchAudioPreference(info, sourceLang, wanted, "", t)
+}
+
+// matchViewerLanguageFor matches a release against the profile's Preferred
+// audio language (if set) composed with the viewer's ordered audio languages
+// (#743). When the profile is not in Preferred mode, it delegates directly to
+// matchViewerLanguage so existing single- and multi-language behaviour is
+// preserved verbatim.
+func matchViewerLanguageFor(info core.ReleaseInfo, sourceLang string, wanted []string, profile core.QualityProfile, t *core.Title) viewerLanguageMatch {
+	return matchAudioPreference(info, sourceLang, wanted, profilePreferredLanguage(profile), t)
+}
+
+func matchAudioPreference(info core.ReleaseInfo, sourceLang string, wanted []string, profilePref string, t *core.Title) viewerLanguageMatch {
 	norm := normalizeWantedLanguages(wanted)
 	if len(norm) == 0 {
 		return viewerLanguageMatch{}
 	}
 	orig := titleOriginalLanguage(t)
 	multi := len(norm) > 1
-	if !multi {
+	if !multi && profilePref == "" {
 		if orig == "" || releaseparse.LanguageMatch(orig, norm[0]) != releaseparse.LanguageNoMatch {
 			return viewerLanguageMatch{}
 		}
@@ -332,11 +400,12 @@ func matchViewerLanguage(info core.ReleaseInfo, sourceLang string, wanted []stri
 		if orig != "" {
 			if r, ok := bestRank(orig); ok {
 				return viewerLanguageMatch{
-					Matched:  true,
-					Rank:     r,
-					Language: releaseparse.LanguageName(orig),
-					Original: true,
-					Multi:    multi,
+					Matched:          true,
+					Rank:             r,
+					Language:         releaseparse.LanguageName(orig),
+					Original:         true,
+					Multi:            multi,
+					ProfilePreferred: profilePref,
 				}
 			}
 		}
@@ -350,10 +419,11 @@ func matchViewerLanguage(info core.ReleaseInfo, sourceLang string, wanted []stri
 	consider := func(rank int, lang string) {
 		if !best.Matched || rank < best.Rank {
 			best = viewerLanguageMatch{
-				Matched:  true,
-				Rank:     rank,
-				Language: lang,
-				Multi:    multi,
+				Matched:          true,
+				Rank:             rank,
+				Language:         lang,
+				Multi:            multi,
+				ProfilePreferred: profilePref,
 			}
 		}
 	}
@@ -381,7 +451,18 @@ func matchViewerLanguage(info core.ReleaseInfo, sourceLang string, wanted []stri
 		}
 	}
 	if hasMulti && !best.Matched {
-		if sourceDub != "" {
+		if profilePref != "" && hasConcreteNonOrig {
+			// A multi-audio release listing explicit non-original languages
+			// (e.g. FRENCH.MULTI) carries those languages plus the title's
+			// original language; credit it only when the original language is
+			// wanted, not when unrelated languages (e.g. SPANISH.FRENCH.MULTI
+			// on a Korean show) exclude the preferred language.
+			if orig != "" {
+				if r, ok := bestRank(orig); ok {
+					consider(r, releaseparse.LanguageName(orig))
+				}
+			}
+		} else if sourceDub != "" {
 			if r, ok := bestRank(sourceDub); ok {
 				consider(r, sourceDub)
 			}
@@ -411,9 +492,14 @@ func viewerLanguageScore(base, rank int) int {
 }
 
 // viewerLanguageFormatName formats the explainable FormatMatch label for
-// FormatViewerLanguage. Single-language viewers keep the plain built-in name;
-// ordered multi-language lists show the matched rank and language.
+// FormatViewerLanguage. A profile's Preferred audio language at rank 0 is
+// labelled "preferred language (<Language>)"; single-language viewers keep the
+// plain built-in name; ordered multi-language lists show the matched rank and
+// language.
 func viewerLanguageFormatName(m viewerLanguageMatch) string {
+	if m.ProfilePreferred != "" && m.Rank == 0 {
+		return fmt.Sprintf("preferred language (%s)", releaseparse.LanguageDisplayName(m.ProfilePreferred))
+	}
 	base := BuiltinFormatName(core.FormatViewerLanguage)
 	if !m.Multi {
 		return base

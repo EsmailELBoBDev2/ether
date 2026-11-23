@@ -188,6 +188,8 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
 				Cause:         core.ErrVideoTranscodingDisabled,
 			}
+		case errors.As(err, new(*core.RequiredAudioLanguageError)):
+			return frontend.PlayPlan{}, err
 		case errors.Is(err, core.ErrNotAvailable), errors.Is(err, core.ErrReleaseRejected), errors.Is(err, core.ErrArticleMissing), errors.Is(err, core.ErrArchiveUnstreamable):
 			return frontend.PlayPlan{}, core.ErrVersionUnavailable
 		default:

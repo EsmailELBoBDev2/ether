@@ -1331,8 +1331,13 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		return nil, core.ErrNotAvailable
 	}
 	speculative := core.SpeculativeIndexerWork(ctx)
+	reqLang := profileRequiredLanguage(profile)
+	requiredLangRejected := reqLang != "" && traceHasRequiredProfileLanguageRejection(&trace)
 	rescueTried, rescueSkipped := false, false
-	if len(cands) == 0 && searchErr == nil && ctx.Err() == nil && speculative {
+	// When no candidate matched a Required profile audio language (and releases
+	// for this title were already found and rejected for that language), fail
+	// fast instead of running rescue searches for a language that cannot match.
+	if len(cands) == 0 && searchErr == nil && ctx.Err() == nil && (speculative || requiredLangRejected) {
 		rescueSkipped = true
 	} else if len(cands) == 0 && searchErr == nil && ctx.Err() == nil {
 		rescueTried = true
@@ -1377,6 +1382,11 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		if videoOff, _ := s.transcodeSettingsFor(req.Client); videoOff && traceHasRejectionReason(&trace, ReasonNeedsVideoTranscode) {
 			trace.Err = "no release can play without a video transcode, and transcoding is off"
 			return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrVideoTranscodingDisabled))
+		}
+		if reqLang != "" && traceHasRequiredProfileLanguageRejection(&trace) {
+			langErr := &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+			trace.Err = langErr.Error()
+			return nil, failed(fmt.Errorf("%q: %w", t.Title, langErr))
 		}
 		trace.Err = "no acceptable candidates"
 		return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable))
@@ -1640,6 +1650,11 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// A source that was tried and failed stays a temporary failure above.
 	if videoOff, _ := s.transcodeSettingsFor(req.Client); videoOff && traceHasRejectionReason(&trace, ReasonNeedsVideoTranscode) {
 		return nil, fmt.Errorf("%q: %w: %w", t.Title, core.ErrNotAvailable, core.ErrVideoTranscodingDisabled)
+	}
+	if reqLang != "" && traceHasRequiredProfileLanguageRejection(&trace) {
+		langErr := &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+		trace.Err = langErr.Error()
+		return nil, fmt.Errorf("%q: %w", t.Title, langErr)
 	}
 	return nil, fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable)
 }
@@ -2142,7 +2157,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 	}
-	langActive := viewerLanguageActive(wanted, t)
+	langActive := viewerLanguageActiveFor(wanted, profile, t)
+	prefLang := profilePreferredLanguage(profile)
 	var movieLangs []string
 	var movieOrig string
 	if sreq.Type == core.TypeMovie {
@@ -2277,7 +2293,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		langOK := audioAcceptable(langRel.Info, rel.SourceLanguage, accepted, t)
 		var langMatch viewerLanguageMatch
 		if langOK {
-			langMatch = matchViewerLanguage(langRel.Info, rel.SourceLanguage, wanted, t)
+			langMatch = matchViewerLanguageFor(langRel.Info, rel.SourceLanguage, wanted, profile, t)
 		}
 		langRank := 0
 		if langMatch.Matched {
@@ -2379,7 +2395,20 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			if !addonOrdered && yearGuessed {
 				note("series year differs but names no other show: ranked after correctly-labelled releases")
 			}
-			if !langOK {
+			if prefLang != "" && !addonOrdered {
+				switch {
+				case langMatch.Matched && langMatch.Rank == 0:
+					note(fmt.Sprintf("preferred language (%s)", releaseparse.LanguageDisplayName(prefLang)))
+				case !langOK:
+					note("other language (fallback)")
+				case !langMatch.Matched:
+					if isBareDual(langRel.Info, rel.SourceLanguage, t) {
+						note("bare DUAL names no dub language: other language (fallback)")
+					} else {
+						note("other language (fallback): original language")
+					}
+				}
+			} else if !langOK {
 				note("ranked after releases in an accepted audio language")
 			} else if !addonOrdered && !langMatch.Matched && isBareDual(langRel.Info, rel.SourceLanguage, t) && langActive {
 				note("bare DUAL names no dub language: ranked as original-language fallback")
@@ -2585,6 +2614,9 @@ func (s *Service) scoreRelease(rel core.Release, profile core.QualityProfile, ca
 			continue
 		}
 		score, scored := profile.CustomFormatScores[id]
+		if id == core.FormatViewerLanguage && facts.viewerLanguage.ProfilePreferred != "" && (!scored || score == 0) {
+			score, scored = defaultPreferredLanguageScore, true
+		}
 		if !scored || score == 0 {
 			continue // a built-in format the profile doesn't use
 		}

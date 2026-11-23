@@ -454,6 +454,20 @@ func TestXtreamAdmissionFailureStatus(t *testing.T) {
 			t.Fatalf("%v: %d want %d", tc.err, w.Code, tc.status)
 		}
 	}
+
+	// RequiredAudioLanguageError surfaces its actionable message with 422.
+	host, _ := testHost(t)
+	host.Experience = frontendtest.Experience{ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+		return frontend.ItemDetail{Title: frontend.Title{Key: req.Key, Type: "movie", Title: "Seoul Drift"}}, nil
+	}}
+	host.Capabilities = frontendtest.Capabilities{}
+	langErr := &frontend.RequiredAudioLanguageError{Language: "English"}
+	host.LazyStreams = &unavailableAdmission{err: langErr}
+	id, _ := host.IDs.Compact(context.Background(), "xtream", "item", fmt.Sprint(core.MovieKey(1)))
+	w := request(mount(t, host), fmt.Sprintf("/movie/%s/eg1_test/%d.mkv", frontend.XtreamUsername("eg1_test"), id))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), langErr.Error()) {
+		t.Fatalf("xtream RequiredAudioLanguageError = %d %q, want 422 with %q", w.Code, w.Body.String(), langErr.Error())
+	}
 }
 
 func TestXtreamSharedOriginPreservesFrontendPrefix(t *testing.T) {

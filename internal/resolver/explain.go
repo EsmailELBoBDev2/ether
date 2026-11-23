@@ -62,7 +62,7 @@ func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req cor
 			reasons["presumed upscale"]++
 		case strings.Contains(c.CompatibilityReason, "too little bitrate"):
 			reasons["too little bitrate for 4K"]++
-		case strings.Contains(c.CompatibilityReason, "accepted audio language") || strings.Contains(c.CompatibilityReason, "audio language unverified"):
+		case strings.Contains(c.CompatibilityReason, "accepted audio language") || strings.Contains(c.CompatibilityReason, "other language (fallback)") || strings.Contains(c.CompatibilityReason, "audio language unverified"):
 			reasons["audio in another or unverified language"]++
 		case strings.Contains(c.CompatibilityReason, "bare DUAL names no dub language"):
 			reasons["bare DUAL without named dub language"]++

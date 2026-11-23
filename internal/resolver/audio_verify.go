@@ -33,7 +33,7 @@ func classifyAudioVerification(
 		required = append(required, langs...)
 		policyResult.Rejected = false
 	}
-	if specific, _ := profileLanguageMode(profile); specific != "" {
+	if specific := profileRequiredLanguage(profile); specific != "" {
 		if !declaresConcreteLanguage(rel.Info, specific, title) {
 			if !slices.Contains(required, specific) {
 				required = append(required, specific)
@@ -101,11 +101,27 @@ func audioAbsentPolicyReason(policy *releasepolicy.Policy, ctx releasepolicy.Con
 }
 
 func audioAbsentProfileReason(profileReason string, profile core.QualityProfile) string {
-	lang, _ := profileLanguageMode(profile)
+	lang := profileRequiredLanguage(profile)
 	if lang == "" {
 		return profileReason
 	}
 	return fmt.Sprintf("audio language absent: %s; needs declared %s or dual/multi audio", profileReason, lang)
+}
+
+const profileLanguageAbsentPrefix = "audio language absent: audio is not in the profile's language ("
+
+// traceHasRequiredProfileLanguageRejection reports whether any candidate in tr
+// was rejected by the profile's Required audio language gate.
+func traceHasRequiredProfileLanguageRejection(tr *Trace) bool {
+	if tr == nil {
+		return false
+	}
+	for _, c := range tr.Candidates {
+		if c.Rejected && strings.HasPrefix(c.Reason, profileLanguageAbsentPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func audioUnverifiedCompatNote(langs []string) string {

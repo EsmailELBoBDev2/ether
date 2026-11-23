@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -577,5 +578,16 @@ func TestLazyStreamLocalityFollowsLiveSourceIP(t *testing.T) {
 	}
 	if len(pb.Sessions()) != 1 || !pb.Sessions()[0].Client.Remote || pb.Sessions()[0].Client.ClientIP != "203.0.113.88" {
 		t.Fatalf("remote redeem kept local or stale IP: %+v", pb.Sessions())
+	}
+}
+
+func TestLazyWritePlaybackErrorRequiredAudioLanguage(t *testing.T) {
+	langErr := &core.RequiredAudioLanguageError{Language: "English"}
+	ls := &lazyStreams{protocol: "stremio"}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/sessions/lazy/test", nil)
+	ls.writePlaybackError(w, r, fmt.Errorf("plan: %w", langErr))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), langErr.Error()) {
+		t.Fatalf("writePlaybackError(RequiredAudioLanguageError) = %d %q, want 422 with %q", w.Code, w.Body.String(), langErr.Error())
 	}
 }

@@ -49,7 +49,8 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
-	if t := q.Get("type"); t != "video" {
+	// Music and audiobook libraries (plugin kinds) queue with type=audio.
+	if t := q.Get("type"); t != "video" && t != "audio" && t != "music" {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
@@ -484,6 +485,44 @@ func (s *Server) handlePlayQueueMutate(op string) http.HandlerFunc {
 	}
 }
 
+// queueTitles reads the titles a play queue renders. Plugin library items
+// (a sports event, an audiobook, a scene) are not catalogue titles: the
+// catalogue has no row for their keys, so they are read from the kind store,
+// as the item's own detail page reads them. Without this a queue made from a
+// plugin item answered 200 with no Metadata and the client never asked for a
+// playback decision.
+func (s *Server) queueTitles(ctx context.Context, pr *Request, keys []frontend.RatingKey) []frontend.Title {
+	var catalogKeys []frontend.RatingKey
+	plugin := map[frontend.RatingKey]*frontend.Title{}
+	for _, k := range keys {
+		if !k.IsPluginKey() {
+			catalogKeys = append(catalogKeys, k)
+			continue
+		}
+		if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
+			plugin[k] = t
+		}
+	}
+	if len(catalogKeys) == len(keys) {
+		return s.getTitles(ctx, keys)
+	}
+	fromCatalog := map[frontend.RatingKey]frontend.Title{}
+	if len(catalogKeys) > 0 {
+		for _, t := range s.getTitles(ctx, catalogKeys) {
+			fromCatalog[t.Key] = t
+		}
+	}
+	out := make([]frontend.Title, 0, len(keys))
+	for _, k := range keys {
+		if t, ok := plugin[k]; ok {
+			out = append(out, *t)
+		} else if t, ok := fromCatalog[k]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQueue, playIntent bool) {
 	if pq.LiveSession != "" {
 		s.writeLivePlayQueue(w, r, pq)
@@ -543,7 +582,7 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	if pq.Selected >= 0 && pq.Selected < len(pq.Items) && !pq.SuppressMetadata {
 		keys = append(keys, pq.Items[pq.Selected].Key)
 	}
-	titles := s.visibleTitles(pr.User, s.getTitles(ctx, dedupeKeys(keys)))
+	titles := s.visibleTitles(pr.User, s.queueTitles(ctx, pr, dedupeKeys(keys)))
 	byKey := make(map[frontend.RatingKey]*frontend.Title, len(titles))
 	for i := range titles {
 		byKey[titles[i].Key] = &titles[i]
@@ -569,7 +608,9 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	if center >= 0 && center < len(pq.Items) {
 		targetItem = pq.Items[center]
 	}
-	if targetTitle, ok := byKey[targetItem.Key]; ok {
+	// A plugin item is prepared by its own resolver when the client asks for
+	// the playback decision; the catalogue warm-up below does not apply to it.
+	if targetTitle, ok := byKey[targetItem.Key]; ok && !targetItem.Key.IsPluginKey() {
 		if !(playIntent && bedrockPlayProbeClient(pr) && s.probeBedrockPlay(ctx, pr, targetTitle)) {
 			if pr != nil && pr.detailWaitUntil.IsZero() {
 				startDetailPageWait(pr)

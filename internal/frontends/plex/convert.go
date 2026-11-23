@@ -295,6 +295,10 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		if showKey == 0 {
 			showKey = t.Key.Parent()
 		}
+		// A plugin key encodes no parent; the item carries it.
+		if showKey == 0 && t.Key.IsPluginKey() {
+			showKey = t.ParentKey
+		}
 		m.ParentRatingKey = showKey.String()
 		m.ParentGUID = showGUID(showKey)
 		m.ParentKey = "/library/metadata/" + showKey.String()
@@ -331,6 +335,11 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.Index = model.Ptr(t.Episode)
 		m.ParentIndex = model.Ptr(t.Season)
 		season := t.Key.Parent()
+		// A plugin key encodes no parent; the item carries it. Without this
+		// the episode named season 0 and clients asked for /library/metadata/0.
+		if season == 0 && t.Key.IsPluginKey() {
+			season = t.ParentKey
+		}
 		showKey := t.ShowKey
 		if showKey == 0 {
 			showKey = season.Parent()

@@ -55,6 +55,14 @@ func (s *Server) mutationKey(w http.ResponseWriter, r *http.Request, integer boo
 			writeHTTPError(w, 404)
 			return 0, false
 		}
+		// Plugin library items are read from the kind store (see handleTimeline).
+		if key.IsPluginKey() {
+			if title, err := s.kindItem(r.Context(), pr, key); err != nil || title == nil {
+				writeHTTPError(w, 404)
+				return 0, false
+			}
+			return key, true
+		}
 		title, err := s.catalog().Get(r.Context(), key)
 		if err != nil || title == nil || !s.titleVisible(pr.User, title) {
 			writeHTTPError(w, 404)

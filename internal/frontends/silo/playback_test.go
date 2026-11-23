@@ -113,6 +113,11 @@ func TestPlaybackPreparingQueuedReturnsRetryableProblem(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	w2 := httptest.NewRecorder()
+	playbackError(w2, &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: &frontend.DownloadQueuedError{Provider: "TorBox", ActiveDownloads: 3, Err: frontend.ErrDownloadQueued}}})
+	if w2.Code != http.StatusServiceUnavailable || !strings.Contains(w2.Body.String(), "queued at TorBox behind 3 active downloads") {
+		t.Fatalf("preparing queued-behind response: %d %s", w2.Code, w2.Body.String())
+	}
 }
 
 func TestTranscodeCapacityReturnsValidRetryableProblem(t *testing.T) {

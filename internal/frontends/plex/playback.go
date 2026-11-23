@@ -81,6 +81,9 @@ func playbackMessage(err error) string {
 	case errors.Is(err, frontend.ErrNoSources):
 		return msgNoSources
 	case errors.Is(err, frontend.ErrDownloadQueued):
+		if detail := frontend.DownloadQueuedDetail(err); detail != "" {
+			return fmt.Sprintf("Not cached yet (%s). Try again later.", detail)
+		}
 		return msgDownloadQueued
 	case errors.As(err, new(*frontend.UncachedError)), onlyNotCached(err):
 		return notCachedMessage(err)

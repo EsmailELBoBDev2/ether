@@ -914,6 +914,18 @@ describe("Release traces", () => {
     expect(decisionErrorSummary(`"All Her Fault — S01E05": not available yet`)).toBe(
       "No playable release available yet",
     );
+    expect(
+      decisionErrorSummary(
+        `not cached on the debrid service: "Movie.2025" on TorBox: queued at TorBox behind 3 active downloads: sent to the debrid service to download: not cached by any debrid provider: not available yet`,
+      ),
+    ).toBe(
+      "Not cached yet — queued to download on debrid (queued at TorBox behind 3 active downloads)",
+    );
+    expect(
+      decisionErrorSummary(
+        `not cached on the debrid service: "Movie.2025" on TorBox: sent to the debrid service to download: not cached by any debrid provider: not available yet`,
+      ),
+    ).toBe("Not cached yet — queued to download on debrid");
 
     renderApp("/quality/history");
     const summary = await screen.findByText(

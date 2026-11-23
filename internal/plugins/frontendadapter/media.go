@@ -157,7 +157,7 @@ func (h *MediaHandler) refuse(w http.ResponseWriter, status int, code, message s
 func openFailure(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, core.ErrPreparing):
-		return http.StatusServiceUnavailable, "preparing", "The item is still being prepared. Try again shortly."
+		return http.StatusServiceUnavailable, "preparing", core.PreparingMessage(err)
 	case errors.Is(err, core.ErrJobsBusy):
 		return http.StatusServiceUnavailable, "jobs_busy", core.JobsBusyMessage(err)
 	case err == nil, errors.Is(err, core.ErrNotAvailable):

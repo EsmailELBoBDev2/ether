@@ -117,6 +117,7 @@ function activity(s: DebridProviderStatus): string[] {
         { slots },
       ),
     );
+  if (s.queuedDetail) out.push(s.queuedDetail);
   if (s.lastSuccess) out.push(t("last worked {time}", { time: relativeTime(s.lastSuccess) }));
   return out;
 }

@@ -735,7 +735,7 @@ func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request,
 	if errors.Is(err, core.ErrPreparing) {
 		w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "preparing")
-		http.Error(w, "The item is still being prepared. Try again shortly.", http.StatusServiceUnavailable)
+		http.Error(w, core.PreparingMessage(err), http.StatusServiceUnavailable)
 		return
 	}
 	if errors.Is(err, core.ErrJobsBusy) {

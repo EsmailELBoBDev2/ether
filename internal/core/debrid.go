@@ -118,6 +118,60 @@ var ErrPrivateUncached error = privateUncachedError{}
 // account to download (cached-only off): not playable yet, but it will be.
 var ErrDownloadQueued = fmt.Errorf("sent to the debrid service to download: %w", ErrNotCached)
 
+// DownloadQueuedError wraps ErrDownloadQueued with optional provider queue
+// context (for example TorBox holding a download behind active slots).
+type DownloadQueuedError struct {
+	Provider        string
+	ActiveDownloads int
+	Err             error
+}
+
+func (e *DownloadQueuedError) Error() string {
+	if e == nil {
+		return ErrDownloadQueued.Error()
+	}
+	if detail := e.Detail(); detail != "" {
+		if e.Err != nil {
+			return fmt.Sprintf("%s: %s", detail, e.Err.Error())
+		}
+		return detail
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return ErrDownloadQueued.Error()
+}
+
+func (e *DownloadQueuedError) Unwrap() []error {
+	if e == nil || e.Err == nil {
+		return []error{ErrDownloadQueued}
+	}
+	return []error{e.Err, ErrDownloadQueued}
+}
+
+// Detail describes why the download is waiting in the provider's queue, or ""
+// when no active-download queue count is known.
+func (e *DownloadQueuedError) Detail() string {
+	if e == nil || e.Provider == "" || e.ActiveDownloads <= 0 {
+		return ""
+	}
+	unit := "active downloads"
+	if e.ActiveDownloads == 1 {
+		unit = "active download"
+	}
+	return fmt.Sprintf("queued at %s behind %d %s", e.Provider, e.ActiveDownloads, unit)
+}
+
+// DownloadQueuedDetail returns the provider queue reason (for example
+// "queued at TorBox behind 3 active downloads") when err carries one, else "".
+func DownloadQueuedDetail(err error) string {
+	var qe *DownloadQueuedError
+	if errors.As(err, &qe) && qe != nil {
+		return qe.Detail()
+	}
+	return ""
+}
+
 // ErrDownloadRefused reports that an uncached torrent could not be sent to
 // a debrid account to download (cached-only off): the service refused it
 // (a blocked file, a refused add) or the add failed. Nothing is downloading.

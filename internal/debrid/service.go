@@ -99,8 +99,9 @@ type Service struct {
 	payloadMetaMu sync.RWMutex
 	payloadMeta   map[string]CachedFileMeta // payloadKey or bt:<hash> -> already-fetched file metadata
 
-	queuedMu sync.Mutex
-	queued   map[string]queuedDownload // queueKey -> the download sent for that title
+	queuedMu     sync.Mutex
+	queued       map[string]queuedDownload // queueKey -> the download sent for that title
+	queuedByHash map[string]string         // lowercase info hash -> queueKey (O(1) sibling lookup)
 
 	direct directClients // direct HTTP streams (direct.go)
 
@@ -221,10 +222,12 @@ type ProviderStats struct {
 	// Slots is how many API calls this node makes to the provider at once:
 	// AccountSlots on a standalone server, this node's share of it in a
 	// cluster.
-	Slots        int        `json:"slots"`
-	AccountSlots int        `json:"accountSlots"`
-	LastSuccess  *time.Time `json:"lastSuccess,omitempty"`
-	Latency      Latency    `json:"latency"`
+	Slots           int        `json:"slots"`
+	AccountSlots    int        `json:"accountSlots"`
+	QueuedDownloads int        `json:"queuedDownloads,omitempty"`
+	QueuedDetail    string     `json:"queuedDetail,omitempty"`
+	LastSuccess     *time.Time `json:"lastSuccess,omitempty"`
+	Latency         Latency    `json:"latency"`
 }
 
 // Latency holds exponentially weighted averages of a provider's timings:
@@ -467,6 +470,7 @@ func (s *Service) Stats() []ProviderStats {
 	entries := append([]*entry(nil), s.entries...)
 	s.mu.RUnlock()
 	now := s.now()
+	queuedCounts, queuedBehind := s.queuedStats(now)
 	out := make([]ProviderStats, 0, len(entries))
 	for _, e := range entries {
 		e.mu.Lock()
@@ -474,6 +478,13 @@ func (s *Service) Stats() []ProviderStats {
 		st.ID, st.Name, st.Kind, st.Enabled, st.Priority = e.cfg.ID, displayName(e.cfg), e.cfg.Kind, e.cfg.Enabled, e.cfg.Priority
 		st.LastError = e.lastError
 		st.Slots, st.AccountSlots = e.sem.size(), providerParallel
+		st.QueuedDownloads = queuedCounts[e.cfg.ID]
+		if n := queuedBehind[e.cfg.ID]; n > 0 {
+			st.QueuedDetail = (&core.DownloadQueuedError{
+				Provider:        st.Name,
+				ActiveDownloads: n,
+			}).Detail()
+		}
 		switch {
 		case !e.cfg.Enabled:
 			st.State = "disabled"
@@ -1252,10 +1263,14 @@ const queuedTTL = 6 * time.Hour
 const maxQueued = 10_000
 
 type queuedDownload struct {
-	hash, provider string
-	torrent        string // the provider's torrent id once added
-	release        string // release name, for messages and logs
-	at             time.Time
+	hash, provider  string
+	providerName    string // display name, for messages
+	torrent         string // the provider's torrent id once added
+	queuedID        string // provider queue id when queued behind active slots (TorBox)
+	queuedHash      string // hash reported by the provider's queued reply, if any
+	activeDownloads int    // active downloads ahead of this queued item, when known
+	release         string // release name, for messages and logs
+	at              time.Time
 }
 
 // queueKey identifies what a release is for (a movie, or one episode), so
@@ -1278,33 +1293,134 @@ func queueKey(rel core.Release) string {
 	return "hash|" + strings.ToLower(rel.InfoHash) // nothing says what it is for
 }
 
-// queuedFor returns the title's live queued download.
-func (s *Service) queuedFor(rel core.Release) (queuedDownload, bool) {
-	s.queuedMu.Lock()
-	defer s.queuedMu.Unlock()
-	q, ok := s.queued[queueKey(rel)]
-	if !ok || s.now().Sub(q.at) >= queuedTTL {
-		return queuedDownload{}, false
+func queuedDownloadError(relName, provider string, activeDownloads int) error {
+	if provider != "" && activeDownloads > 0 {
+		return fmt.Errorf("%q on %s: %w", relName, provider, &core.DownloadQueuedError{
+			Provider:        provider,
+			ActiveDownloads: activeDownloads,
+			Err:             core.ErrDownloadQueued,
+		})
 	}
-	return q, true
+	if provider != "" {
+		return fmt.Errorf("%q on %s: %w", relName, provider, core.ErrDownloadQueued)
+	}
+	return fmt.Errorf("%q: %w", relName, core.ErrDownloadQueued)
 }
 
-func (s *Service) forgetQueued(rel core.Release, hash string) {
-	key := queueKey(rel)
+func (s *Service) setQueuedLocked(key string, q queuedDownload) {
+	if s.queued == nil || len(s.queued) >= maxQueued {
+		s.queued = map[string]queuedDownload{}
+		s.queuedByHash = map[string]string{}
+	}
+	if s.queuedByHash == nil {
+		s.queuedByHash = map[string]string{}
+	}
+	if old, ok := s.queued[key]; ok && old.hash != "" && old.hash != q.hash && s.queuedByHash[old.hash] == key {
+		delete(s.queuedByHash, old.hash)
+	}
+	s.queued[key] = q
+	if q.hash != "" {
+		s.queuedByHash[q.hash] = key
+	}
+}
+
+func (s *Service) updateQueued(key string, q queuedDownload) {
 	s.queuedMu.Lock()
-	if q, ok := s.queued[key]; ok && q.hash == hash {
-		delete(s.queued, key)
+	if cur, ok := s.queued[key]; ok && cur.hash == q.hash {
+		s.queued[key] = q
+		if q.hash != "" && s.queuedByHash != nil {
+			s.queuedByHash[q.hash] = key
+		}
 	}
 	s.queuedMu.Unlock()
 }
 
+// queuedFor returns the title's (or matching info hash's) live queued download.
+func (s *Service) queuedFor(rel core.Release) (string, queuedDownload, bool) {
+	s.queuedMu.Lock()
+	defer s.queuedMu.Unlock()
+	now := s.now()
+	key := queueKey(rel)
+	if q, ok := s.queued[key]; ok && now.Sub(q.at) < queuedTTL {
+		return key, q, true
+	}
+	if hash := strings.ToLower(strings.TrimSpace(rel.InfoHash)); hash != "" {
+		if hkey, ok := s.queuedByHash[hash]; ok {
+			if q, ok := s.queued[hkey]; ok && q.hash == hash && now.Sub(q.at) < queuedTTL {
+				return hkey, q, true
+			}
+		}
+	}
+	return "", queuedDownload{}, false
+}
+
+func (s *Service) forgetQueuedKey(key, hash string) {
+	s.queuedMu.Lock()
+	if q, ok := s.queued[key]; ok && q.hash == hash {
+		delete(s.queued, key)
+		if s.queuedByHash[hash] == key {
+			delete(s.queuedByHash, hash)
+		}
+	}
+	s.queuedMu.Unlock()
+}
+
+func (s *Service) forgetQueued(rel core.Release, hash string) {
+	s.forgetQueuedKey(queueKey(rel), hash)
+}
+
+func (s *Service) queuedStats(now time.Time) (counts map[string]int, behind map[string]int) {
+	s.queuedMu.Lock()
+	defer s.queuedMu.Unlock()
+	for _, q := range s.queued {
+		if q.provider == "" || now.Sub(q.at) >= queuedTTL {
+			continue
+		}
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		counts[q.provider]++
+		if q.queuedID != "" && q.activeDownloads > 0 {
+			if behind == nil {
+				behind = map[string]int{}
+			}
+			if q.activeDownloads > behind[q.provider] {
+				behind[q.provider] = q.activeDownloads
+			}
+		}
+	}
+	return counts, behind
+}
+
+func (s *Service) followQueuedOn(ctx context.Context, e *entry, q queuedDownload) (queuedTorrentStatus, error) {
+	follower, ok := e.p.(queuedTorrentFollower)
+	if !ok {
+		return queuedTorrentStatus{}, nil
+	}
+	if err := e.acquire(ctx); err != nil {
+		return queuedTorrentStatus{}, err
+	}
+	defer e.release()
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, providerOpTimeout)
+	defer cancel()
+	ctx = context.WithValue(ctx, diagnosticKey{}, providerDiagnostic{s.log, displayName(e.cfg), q.release, q.hash})
+	st, err := follower.followQueuedTorrent(ctx, q.hash, q.queuedHash, q.queuedID)
+	if err == nil || parent.Err() == nil {
+		s.observe(e, err)
+	}
+	return st, err
+}
+
 // followQueued answers for the release that is its title's queued download:
 // the payload once the provider has it, core.ErrDownloadQueued while it is
-// still downloading. The torrent is followed by id, never added again, and
-// whatever cached-only now says (it is already on the account). ok is false
-// for any other release, or when the download is gone from the account.
+// still queued or downloading. The torrent is followed by id (or, when
+// provider-queued without a torrent id yet, via the provider's torrent list
+// and queued list), never added again, and whatever cached-only now says (it
+// is already on the account). ok is false for any other release, or when the
+// download is gone from the account.
 func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []*entry, base Payload, choose func([]File) (File, error)) ([]byte, error, bool) {
-	q, ok := s.queuedFor(rel)
+	key, q, ok := s.queuedFor(rel)
 	if !ok || q.hash != base.InfoHash {
 		return nil, nil, false
 	}
@@ -1317,6 +1433,51 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 	if e == nil || e.blocked(s.now()) != nil {
 		return nil, nil, false
 	}
+	if q.torrent == "" && q.queuedID != "" {
+		if _, canFollow := e.p.(queuedTorrentFollower); canFollow {
+			st, err := s.followQueuedOn(ctx, e, q)
+			switch {
+			case err != nil:
+				if ctx.Err() != nil {
+					return nil, ctx.Err(), true
+				}
+				if errors.Is(err, core.ErrBudgetExhausted) {
+					return nil, err, true
+				}
+				if errors.Is(err, ErrAuth) {
+					s.forgetQueuedKey(key, q.hash)
+					return nil, nil, false
+				}
+				// Transient lookup failure: keep remembering the queued item
+				// instead of forgetting and re-adding it.
+				return nil, queuedDownloadError(rel.Name, displayName(e.cfg), q.activeDownloads), true
+			case st.TorrentID != "":
+				q.torrent = st.TorrentID
+				q.queuedID = ""
+				q.activeDownloads = 0
+				s.updateQueued(key, q)
+				s.setKnown(ctx, e.cfg.ID, q.hash, st.TorrentID, false)
+			case st.StillQueued:
+				changed := false
+				if st.ActiveDownloads > 0 && st.ActiveDownloads != q.activeDownloads {
+					q.activeDownloads = st.ActiveDownloads
+					changed = true
+				}
+				if st.QueuedID != "" && st.QueuedID != q.queuedID {
+					q.queuedID = st.QueuedID
+					changed = true
+				}
+				if changed {
+					s.updateQueued(key, q)
+				}
+				return nil, queuedDownloadError(rel.Name, displayName(e.cfg), q.activeDownloads), true
+			default:
+				// Gone from both the torrent list and the queued list.
+				s.forgetQueuedKey(key, q.hash)
+				return nil, nil, false
+			}
+		}
+	}
 	if q.torrent != "" {
 		base.TorrentID = q.torrent
 	}
@@ -1325,7 +1486,7 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 	switch {
 	case err == nil:
 		s.savePayload(ctx, p)
-		s.forgetQueued(rel, q.hash)
+		s.forgetQueuedKey(key, q.hash)
 		s.log.Info("queued debrid download is ready", "release", rel.Name, "provider", displayName(e.cfg), "file", p.Name())
 		wait := s.now().Sub(q.at)
 		if wait <= 0 {
@@ -1338,11 +1499,17 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 	case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
 		return nil, err, true
 	case errors.Is(err, core.ErrNotCached) && !refusal(err) && !errors.Is(err, core.ErrDownloadLimit):
-		return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), core.ErrDownloadQueued), true
+		if tid := pendingTorrent(err); tid != "" && q.torrent == "" {
+			q.torrent = tid
+			q.queuedID = ""
+			q.activeDownloads = 0
+			s.updateQueued(key, q)
+		}
+		return nil, queuedDownloadError(rel.Name, displayName(e.cfg), q.activeDownloads), true
 	}
 	// Removed from the account, refused, or the provider failed: the
 	// download no longer stands; the release is checked like any other.
-	s.forgetQueued(rel, q.hash)
+	s.forgetQueuedKey(key, q.hash)
 	return nil, nil, false
 }
 
@@ -1378,14 +1545,17 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		if q.hash == hash && q.provider != "" {
 			return s.Acquire(ctx, rel) // follow it
 		}
-		return nil, fmt.Errorf("%q: %w", q.release, core.ErrDownloadQueued)
+		return nil, queuedDownloadError(q.release, q.providerName, q.activeDownloads)
 	}
-	if s.queued == nil || len(s.queued) >= maxQueued {
-		s.queued = map[string]queuedDownload{}
+	if hkey, ok := s.queuedByHash[hash]; ok {
+		if q, ok := s.queued[hkey]; ok && q.hash == hash && q.provider != "" && now.Sub(q.at) < queuedTTL {
+			s.queuedMu.Unlock()
+			return s.Acquire(ctx, rel) // follow the already-queued hash
+		}
 	}
 	// Claimed before the provider call, so concurrent plays of the title
 	// do not add it twice.
-	s.queued[key] = queuedDownload{hash: hash, release: rel.Name, at: now}
+	s.setQueuedLocked(key, queuedDownload{hash: hash, release: rel.Name, at: now})
 	s.queuedMu.Unlock()
 
 	magnet := rel.MagnetURL
@@ -1424,13 +1594,28 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 			s.emitQuotaExhausted(e.cfg, "active_downloads", 1, 1)
 		}
 		var untracked *untrackedPending
-		confirmed := pendingTorrent(err) != "" || errors.As(err, &untracked)
+		qp, isQueued := pendingQueue(err)
+		tid := pendingTorrent(err)
+		confirmed := tid != "" || isQueued || errors.As(err, &untracked)
 		if (confirmed || (e.cfg.Kind != "realdebrid" && e.cfg.Kind != "premiumize")) && errors.Is(err, core.ErrNotCached) && !refusal(err) && !errors.Is(err, core.ErrDownloadLimit) {
+			qd := queuedDownload{
+				hash:         hash,
+				provider:     e.cfg.ID,
+				providerName: displayName(e.cfg),
+				torrent:      tid,
+				release:      rel.Name,
+				at:           now,
+			}
+			if isQueued {
+				qd.queuedID = qp.queuedID
+				qd.queuedHash = qp.hash
+				qd.activeDownloads = qp.activeDownloads
+			}
 			s.queuedMu.Lock()
-			s.queued[key] = queuedDownload{hash: hash, provider: e.cfg.ID, torrent: pendingTorrent(err), release: rel.Name, at: now}
+			s.setQueuedLocked(key, qd)
 			s.queuedMu.Unlock()
-			s.log.Info("sent uncached torrent to download", "release", rel.Name, "provider", displayName(e.cfg))
-			return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), core.ErrDownloadQueued)
+			s.log.Info("sent uncached torrent to download", "release", rel.Name, "provider", displayName(e.cfg), "queued_id", qd.queuedID, "active_downloads", qd.activeDownloads)
+			return nil, queuedDownloadError(rel.Name, displayName(e.cfg), qd.activeDownloads)
 		}
 		if errors.Is(err, core.ErrReleaseRejected) {
 			s.forgetQueued(rel, hash)
@@ -1608,7 +1793,8 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		return acq, err
 	}
 	acq, err := acquire()
-	if err != nil && !core.IsBackgroundCheck(ctx) && torrentID != "" && pendingTorrent(err) == "" &&
+	_, isQueuedPending := pendingQueue(err)
+	if err != nil && !core.IsBackgroundCheck(ctx) && torrentID != "" && pendingTorrent(err) == "" && !isQueuedPending &&
 		(errors.Is(err, ErrGone) || errors.Is(err, core.ErrNotCached)) && !refusal(err) {
 		// The remembered torrent is gone or lacks the wanted file: add anew.
 		// One still downloading (pending) stays as it is.

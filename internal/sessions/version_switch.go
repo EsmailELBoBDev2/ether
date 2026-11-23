@@ -179,7 +179,9 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		switch {
 		case errors.Is(err, core.ErrPreparing):
 			return frontend.PlayPlan{}, err
-		case errors.Is(err, core.ErrNotCached), errors.Is(err, core.ErrDownloadQueued), errors.Is(err, core.ErrPrepareSlow):
+		case errors.Is(err, core.ErrDownloadQueued):
+			return frontend.PlayPlan{}, &core.PreparingError{RetryAfter: versionSwitchRetryAfter, Err: err}
+		case errors.Is(err, core.ErrNotCached), errors.Is(err, core.ErrPrepareSlow):
 			return frontend.PlayPlan{}, &core.PreparingError{RetryAfter: versionSwitchRetryAfter}
 		case errors.Is(err, core.ErrVideoTranscodingDisabled):
 			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{

@@ -415,8 +415,12 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		send(w, 503, object{"error": object{"class": "capacity", "code": "preparation_pending", "message": "preparation pending", "retry": object{"allowed": true, "afterSeconds": 2, "maxAttempts": 3}}})
 	case errors.Is(err, frontend.ErrPreparing):
 		seconds := frontend.PreparingRetrySeconds(err, 5)
+		msg := "item is still being prepared"
+		if detail := frontend.DownloadQueuedDetail(err); detail != "" {
+			msg = detail
+		}
 		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "source", "code": "preparing", "message": "item is still being prepared", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
+		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "source", "code": "preparing", "message": msg, "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
 	case errors.Is(err, frontend.ErrJobsBusy):
 		seconds := frontend.JobsBusyRetrySeconds(err, 5)
 		w.Header().Set("Retry-After", strconv.Itoa(seconds))

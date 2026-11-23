@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,18 @@ func (i *instance) Close(context.Context) error { return nil }
 // relays each request to the plugin.
 func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.decl.Meta.Auth == AuthQueryCredentials {
+			// Query credentials carry no ambient authority (no cookies or
+			// browser-held auth), so browser clients on any origin, such as
+			// web Subsonic players, may call the adapter.
+			if allowAnyOrigin(w, r) {
+				return
+			}
+			if err := mergeFormIntoQuery(r); err != nil {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
 		auth, err := inst.auth.authenticate(r.Context(), r)
 		if err != nil {
 			if f.decl.Meta.Auth == AuthQueryCredentials && errors.Is(err, errUnauthenticated) {
@@ -118,6 +131,53 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 		}
 		writeResponse(w, resp)
 	})
+}
+
+// mergeFormIntoQuery folds a form-encoded POST body into the query string.
+// Query-credential protocols (Subsonic) let clients send every parameter,
+// credentials included, either way; after this the request is handled exactly
+// like the equivalent GET.
+func mergeFormIntoQuery(r *http.Request) error {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return nil
+	}
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if !strings.EqualFold(strings.TrimSpace(ct), "application/x-www-form-urlencoded") {
+		return nil
+	}
+	body, err := readBody(r)
+	if err != nil {
+		return err
+	}
+	r.Body = http.NoBody
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return nil
+	}
+	q := r.URL.Query()
+	for k, vs := range form {
+		q[k] = append(q[k], vs...)
+	}
+	r.URL.RawQuery = q.Encode()
+	return nil
+}
+
+// allowAnyOrigin sets permissive CORS headers and answers a preflight. It
+// reports true when the request was a preflight and has been answered.
+func allowAnyOrigin(w http.ResponseWriter, r *http.Request) bool {
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type")
+	if r.Method != http.MethodOptions || r.Header.Get("Access-Control-Request-Method") == "" {
+		return false
+	}
+	h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+	if req := r.Header.Get("Access-Control-Request-Headers"); req != "" {
+		h.Set("Access-Control-Allow-Headers", req)
+	}
+	h.Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // UnauthenticatedPath is the reserved plugin sub-path under which a

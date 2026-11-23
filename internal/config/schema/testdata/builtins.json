@@ -894,6 +894,19 @@
             },
             {
               "help": {
+                "source": "How far ahead of the viewer Ether prepares video before it pauses the work, in every app (16–600 seconds; Live TV is unaffected). 0 uses the built-in distance: 16 seconds when converting, two minutes otherwise. A larger number survives short network drops but uses more processor, disk and download quota for video that may never be watched."
+              },
+              "key": "throttleSeconds",
+              "kind": "number",
+              "label": {
+                "source": "Throttle buffer (seconds)"
+              },
+              "max": 600,
+              "min": 0,
+              "step": 1
+            },
+            {
+              "help": {
                 "source": "Limits picture quality for people watching away from home, so the stream fits their connection. 0 means no limit."
               },
               "key": "remoteMaxBitrateKbps",

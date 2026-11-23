@@ -455,6 +455,7 @@ function defaultConfig(): EtherConfig {
       vaapiDevice: "",
       tempDir: "/tmp/ether-transcode",
       maxTranscodes: 2,
+      throttleSeconds: 0,
       remoteMaxBitrateKbps: 8000,
       remoteUploadBudgetKbps: 0,
       rtxVideo: {

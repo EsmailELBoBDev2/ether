@@ -486,37 +486,43 @@ func (s *Server) handlePlayQueueMutate(op string) http.HandlerFunc {
 }
 
 // queueTitles reads the titles a play queue renders. Plugin library items
-// (a sports event, an audiobook, a scene) are not catalogue titles: the
-// catalogue has no row for their keys, so they are read from the kind store,
-// as the item's own detail page reads them. Without this a queue made from a
-// plugin item answered 200 with no Metadata and the client never asked for a
-// playback decision.
+// (a sports event, an audiobook, a scene) have no catalogue row in a running
+// server, so a plugin key the catalogue does not return is read from the kind
+// store, as the item's own detail page reads it. Without this a queue made
+// from a plugin item answered 200 with no Metadata and the client never asked
+// for a playback decision.
 func (s *Server) queueTitles(ctx context.Context, pr *Request, keys []frontend.RatingKey) []frontend.Title {
-	var catalogKeys []frontend.RatingKey
-	plugin := map[frontend.RatingKey]*frontend.Title{}
+	titles := s.getTitles(ctx, keys)
+	found := make(map[frontend.RatingKey]bool, len(titles))
+	for i := range titles {
+		found[titles[i].Key] = true
+	}
+	missing := false
 	for _, k := range keys {
-		if !k.IsPluginKey() {
-			catalogKeys = append(catalogKeys, k)
-			continue
-		}
-		if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
-			plugin[k] = t
+		if k.IsPluginKey() && !found[k] {
+			missing = true
+			break
 		}
 	}
-	if len(catalogKeys) == len(keys) {
-		return s.getTitles(ctx, keys)
+	if !missing {
+		return titles
 	}
-	fromCatalog := map[frontend.RatingKey]frontend.Title{}
-	if len(catalogKeys) > 0 {
-		for _, t := range s.getTitles(ctx, catalogKeys) {
-			fromCatalog[t.Key] = t
+	byKey := make(map[frontend.RatingKey]frontend.Title, len(keys))
+	for i := range titles {
+		byKey[titles[i].Key] = titles[i]
+	}
+	for _, k := range keys {
+		if k.IsPluginKey() && !found[k] {
+			if t, err := s.kindItem(ctx, pr, k); err == nil && t != nil {
+				byKey[k] = *t
+			}
 		}
 	}
 	out := make([]frontend.Title, 0, len(keys))
+	seen := make(map[frontend.RatingKey]bool, len(keys))
 	for _, k := range keys {
-		if t, ok := plugin[k]; ok {
-			out = append(out, *t)
-		} else if t, ok := fromCatalog[k]; ok {
+		if t, ok := byKey[k]; ok && !seen[k] {
+			seen[k] = true
 			out = append(out, t)
 		}
 	}

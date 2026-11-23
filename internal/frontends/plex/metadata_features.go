@@ -47,6 +47,7 @@ func (s *Server) metadataChildren(ctx context.Context, pr *Request, k frontend.R
 	copy(out, items)
 	return out, nil
 }
+
 // maxGrandchildAlbumExpands caps how many empty child containers (e.g.
 // never-opened albums under an artist when artist expansion only stored album
 // shells) metadataGrandchildrenOf may expand on demand before returning.

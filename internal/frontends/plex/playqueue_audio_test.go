@@ -17,18 +17,23 @@ import (
 )
 
 type audioPluginStore struct {
-	lib      core.Library
-	items    map[core.RatingKey]core.Title
-	children map[core.RatingKey][]core.Title
-	all      []core.Title
+	lib         core.Library
+	extraLibs   []core.Library
+	items       map[core.RatingKey]core.Title
+	children    map[core.RatingKey][]core.Title
+	all         []core.Title
+	onItem      func(context.Context, core.RatingKey)
+	onItemsMany func(context.Context, []core.RatingKey)
+	onChildren  func(context.Context, core.RatingKey)
 }
 
 func (s *audioPluginStore) Libraries(context.Context) ([]core.Library, error) {
-	return []core.Library{
+	out := []core.Library{
 		{ID: core.LibraryMovies, Name: "Movies", Source: core.LibraryBuiltin, MediaType: core.TypeMovie},
 		{ID: core.LibraryShows, Name: "TV Shows", Source: core.LibraryBuiltin, MediaType: core.TypeShow},
 		s.lib,
-	}, nil
+	}
+	return append(out, s.extraLibs...), nil
 }
 
 func (s *audioPluginStore) Library(_ context.Context, id core.LibraryID) (core.Library, error) {
@@ -39,6 +44,11 @@ func (s *audioPluginStore) Library(_ context.Context, id core.LibraryID) (core.L
 		return core.Library{ID: core.LibraryShows, Name: "TV Shows", Source: core.LibraryBuiltin, MediaType: core.TypeShow}, nil
 	case s.lib.ID:
 		return s.lib, nil
+	}
+	for _, extra := range s.extraLibs {
+		if extra.ID == id {
+			return extra, nil
+		}
 	}
 	return core.Library{}, core.ErrNotFound
 }
@@ -71,29 +81,49 @@ func (s *audioPluginStore) Browse(_ context.Context, lib core.Library, q fronten
 	return experience.PluginBrowsePage{Items: out, Total: len(out), TotalExact: true}, nil
 }
 
-func (s *audioPluginStore) Item(_ context.Context, key core.RatingKey) (experience.PluginItemView, error) {
+func (s *audioPluginStore) itemView(key core.RatingKey) (experience.PluginItemView, error) {
 	t, ok := s.items[key]
 	if !ok {
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
+	lib := s.lib
+	for _, extra := range s.extraLibs {
+		if extra.ID == t.LibraryID {
+			lib = extra
+			break
+		}
+	}
 	return experience.PluginItemView{
 		Title:    t,
-		Library:  s.lib,
+		Library:  lib,
 		Playable: t.MediaClass != core.MediaClassBook && (t.Type == core.TypeEpisode || t.Type == core.TypeMovie),
 	}, nil
 }
 
+func (s *audioPluginStore) Item(ctx context.Context, key core.RatingKey) (experience.PluginItemView, error) {
+	if s.onItem != nil {
+		s.onItem(ctx, key)
+	}
+	return s.itemView(key)
+}
+
 func (s *audioPluginStore) ItemsMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]experience.PluginItemView, error) {
+	if s.onItemsMany != nil {
+		s.onItemsMany(ctx, keys)
+	}
 	out := make(map[core.RatingKey]experience.PluginItemView, len(keys))
 	for _, k := range keys {
-		if piv, err := s.Item(ctx, k); err == nil {
+		if piv, err := s.itemView(k); err == nil {
 			out[k] = piv
 		}
 	}
 	return out, nil
 }
 
-func (s *audioPluginStore) Children(_ context.Context, parent core.RatingKey, _ bool, _ string, _ int) (experience.PluginBrowsePage, error) {
+func (s *audioPluginStore) Children(ctx context.Context, parent core.RatingKey, _ bool, _ string, _ int) (experience.PluginBrowsePage, error) {
+	if s.onChildren != nil {
+		s.onChildren(ctx, parent)
+	}
 	kids := append([]core.Title(nil), s.children[parent]...)
 	return experience.PluginBrowsePage{Items: kids, Total: len(kids), TotalExact: true}, nil
 }
@@ -778,5 +808,481 @@ func TestPlexampAudioDecisionAndDirectStart(t *testing.T) {
 	}
 	if ac, _ := mp3M0["audioCodec"].(string); ac != "mp3" {
 		t.Errorf("pa-mp3 Media[0].audioCodec = %q, want mp3", ac)
+	}
+}
+
+type playbackCapturingSlots struct {
+	variantsByKey map[core.RatingKey][]core.ReleaseVariant
+	calls         int
+	lastLocal     bool
+	lastPurpose   string
+	lastLabels    bool
+}
+
+func (s *playbackCapturingSlots) Editions(context.Context, *frontend.Viewer, frontend.Device, frontend.RatingKey) ([]frontend.Version, error) {
+	return nil, nil
+}
+
+func (s *playbackCapturingSlots) Variants(ctx context.Context, req frontend.ResolveRequest, max int) ([]frontend.ReleaseVariant, error) {
+	return s.VersionSlots(ctx, req, max, true)
+}
+
+func (s *playbackCapturingSlots) VersionSlots(ctx context.Context, req frontend.ResolveRequest, _ int, labels bool) ([]frontend.ReleaseVariant, error) {
+	s.calls++
+	s.lastLocal = core.LocalResponse(ctx)
+	s.lastPurpose = core.IndexerPurpose(ctx)
+	s.lastLabels = labels
+	if req.Title == nil {
+		return nil, nil
+	}
+	return s.variantsByKey[req.Title.Key], nil
+}
+
+// TestPluginAudioBranchingPlayQueueAndFixes756 verifies the 0.3.19 + PR #754 +
+// PR #756 invariants across branching music libraries, 4-level plugin
+// containers, play-queue batching, container-expand storm caps, timeline,
+// scrobble/unscrobble/rate, parent metadata keys, and cold Play Version slots.
+func TestPluginAudioBranchingPlayQueueAndFixes756(t *testing.T) {
+	const (
+		musicLibID  = core.LibraryID(7)
+		sportsLibID = core.LibraryID(8)
+	)
+	artistKey := core.PluginKey(901)
+	albumKey := core.PluginKey(902)
+	track1Key := core.PluginKey(903)
+	track2Key := core.PluginKey(904)
+	concertKey := core.PluginKey(905)
+
+	// Empty-album artist to test maxGrandchildAlbumExpands cap.
+	emptyArtistKey := core.PluginKey(910)
+	emptyAlbs := []core.RatingKey{
+		core.PluginKey(911), core.PluginKey(912), core.PluginKey(913),
+		core.PluginKey(914), core.PluginKey(915),
+	}
+
+	// 4-level plugin hierarchy (league -> season -> round -> match) for PR #756 fix 6.
+	leagueKey := core.PluginKey(920)
+	seasonKey := core.PluginKey(921)
+	roundKey := core.PluginKey(922)
+	match1Key := core.PluginKey(923)
+	match2Key := core.PluginKey(924)
+
+	artist := core.Title{
+		Key: artistKey, Type: core.TypeShow, Title: "Branching Artist",
+		PrimaryChildLevel: "album", ChildCount: 1, LeafCount: 2,
+		KindLevel: "artist", MediaClass: core.MediaClassMusic, LibraryID: musicLibID,
+	}
+	album := core.Title{
+		Key: albumKey, Type: core.TypeSeason, Title: "Studio Album",
+		ParentKey: artistKey, ShowKey: artistKey, ShowTitle: "Branching Artist",
+		ChildCount: 2, LeafCount: 2, KindLevel: "album", MediaClass: core.MediaClassMusic, LibraryID: musicLibID,
+	}
+	track1 := core.Title{
+		Key: track1Key, Type: core.TypeEpisode, Title: "Audio Track 1",
+		Episode: 1, Disc: 1, ParentKey: albumKey, ParentTitle: "Studio Album",
+		ShowKey: artistKey, ShowTitle: "Branching Artist",
+		MediaClass: core.MediaClassMusic, KindLevel: "track", LibraryID: musicLibID, Runtime: 180 * time.Second,
+	}
+	track2 := core.Title{
+		Key: track2Key, Type: core.TypeEpisode, Title: "Audio Track 2",
+		Episode: 2, Disc: 1, ParentKey: albumKey, ParentTitle: "Studio Album",
+		ShowKey: artistKey, ShowTitle: "Branching Artist",
+		MediaClass: core.MediaClassMusic, KindLevel: "track", LibraryID: musicLibID, Runtime: 200 * time.Second,
+	}
+	concert := core.Title{
+		Key: concertKey, Type: core.TypeMovie, Title: "Live Concert Film",
+		ParentKey: artistKey, ParentTitle: "Branching Artist",
+		MediaClass: core.MediaClassVideo, KindLevel: "concert", MediaRole: "concert",
+		LibraryID: musicLibID, Runtime: 3600 * time.Second,
+	}
+
+	emptyArtist := core.Title{
+		Key: emptyArtistKey, Type: core.TypeShow, Title: "Empty Shells Artist",
+		PrimaryChildLevel: "album", ChildCount: len(emptyAlbs),
+		KindLevel: "artist", MediaClass: core.MediaClassMusic, LibraryID: musicLibID,
+	}
+	league := core.Title{
+		Key: leagueKey, Type: core.TypeShow, Title: "Premier League",
+		KindLevel: "league", MediaClass: core.MediaClassVideo, LibraryID: sportsLibID, ChildCount: 1,
+	}
+	season := core.Title{
+		Key: seasonKey, Type: core.TypeSeason, Title: "2026 Season",
+		ParentKey: leagueKey, ShowKey: leagueKey, ShowTitle: "Premier League",
+		KindLevel: "season", MediaClass: core.MediaClassVideo, LibraryID: sportsLibID, ChildCount: 1,
+	}
+	round := core.Title{
+		Key: roundKey, Type: core.TypeSeason, Title: "Matchday 1",
+		ParentKey: seasonKey, ShowKey: leagueKey, ShowTitle: "Premier League",
+		KindLevel: "round", MediaClass: core.MediaClassVideo, LibraryID: sportsLibID, ChildCount: 2,
+	}
+	match1 := core.Title{
+		Key: match1Key, Type: core.TypeEpisode, Title: "Match One",
+		Episode: 1, Season: 1, ParentKey: roundKey, ParentTitle: "Matchday 1",
+		ShowKey: leagueKey, ShowTitle: "Premier League",
+		KindLevel: "match", MediaClass: core.MediaClassVideo, LibraryID: sportsLibID, Runtime: 90 * time.Minute,
+	}
+	match2 := core.Title{
+		Key: match2Key, Type: core.TypeEpisode, Title: "Match Two",
+		Episode: 2, Season: 1, ParentKey: roundKey, ParentTitle: "Matchday 1",
+		ShowKey: leagueKey, ShowTitle: "Premier League",
+		KindLevel: "match", MediaClass: core.MediaClassVideo, LibraryID: sportsLibID, Runtime: 90 * time.Minute,
+	}
+
+	items := map[core.RatingKey]core.Title{
+		artistKey:      artist,
+		albumKey:       album,
+		track1Key:      track1,
+		track2Key:      track2,
+		concertKey:     concert,
+		emptyArtistKey: emptyArtist,
+		leagueKey:      league,
+		seasonKey:      season,
+		roundKey:       round,
+		match1Key:      match1,
+		match2Key:      match2,
+	}
+	emptyShellTitles := make([]core.Title, 0, len(emptyAlbs))
+	for i, ak := range emptyAlbs {
+		tAlb := core.Title{
+			Key: ak, Type: core.TypeSeason, Title: "Empty Album",
+			ParentKey: emptyArtistKey, ShowKey: emptyArtistKey,
+			KindLevel: "album", MediaClass: core.MediaClassMusic, LibraryID: musicLibID, Season: i + 1,
+		}
+		items[ak] = tAlb
+		emptyShellTitles = append(emptyShellTitles, tAlb)
+	}
+
+	var (
+		itemCalls          int
+		itemsManyCalls     int
+		expandAllowedCalls []core.RatingKey
+	)
+	store := &audioPluginStore{
+		lib: core.Library{
+			ID:        musicLibID,
+			Name:      "Music",
+			Source:    core.LibraryPlugin,
+			PluginID:  "ether.music",
+			KindKey:   "artists",
+			MediaType: core.TypeShow,
+			Present:   core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseArtist}},
+		},
+		extraLibs: []core.Library{
+			{
+				ID:        sportsLibID,
+				Name:      "Sports",
+				Source:    core.LibraryPlugin,
+				PluginID:  "ether.sports",
+				KindKey:   "leagues",
+				MediaType: core.TypeShow,
+				Present:   core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseShow}},
+			},
+		},
+		items: items,
+		children: map[core.RatingKey][]core.Title{
+			artistKey:      {album, concert},
+			albumKey:       {track1, track2},
+			emptyArtistKey: emptyShellTitles,
+			leagueKey:      {season},
+			seasonKey:      {round},
+			roundKey:       {match1, match2},
+		},
+		all: []core.Title{artist, concert, track1, track2},
+		onItem: func(_ context.Context, _ core.RatingKey) {
+			itemCalls++
+		},
+		onItemsMany: func(_ context.Context, _ []core.RatingKey) {
+			itemsManyCalls++
+		},
+		onChildren: func(ctx context.Context, parent core.RatingKey) {
+			if !core.NoContainerExpand(ctx) {
+				expandAllowedCalls = append(expandAllowedCalls, parent)
+			}
+		},
+	}
+
+	info1080 := core.MediaInfo{Container: "mkv", Duration: 90 * time.Minute, Streams: []core.StreamInfo{{Type: "video", Codec: "h264", Width: 1920, Height: 1080}}}
+	pb := &fakeVariantPlayback{fakePlayback: newFakePlayback(info1080)}
+	tc := newFakeTranscoder(core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: "mkv"})
+	restrictedUser := core.User{ID: 42, Username: "restricted", Title: "Restricted", AllowedLibraries: []core.LibraryID{core.LibraryMovies}}
+	f := newFixture(func(d *testServerDeps) {
+		d.Playback = pb
+		d.Transcoder = tc
+		setDepsAuth(d, &fakeAuth{users: map[string]core.User{
+			ownerToken:       ownerUser,
+			friendToken:      friendUser,
+			"restricted-tok": restrictedUser,
+		}})
+	})
+	defer f.srv.Close()
+	expSvc := experience.NewDirectService(experience.ServiceDeps{
+		Active: func(_ context.Context, id int64) (*core.User, error) {
+			switch id {
+			case ownerUser.ID:
+				u := ownerUser
+				return &u, nil
+			case restrictedUser.ID:
+				u := restrictedUser
+				return &u, nil
+			}
+			return nil, core.ErrUnauthorized
+		},
+		Catalog:         f.catalog,
+		State:           f.state,
+		Playlists:       f.pls,
+		PluginLibraries: store,
+		Protocol:        "plex",
+		LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+			if p.Plex != nil && p.Plex.Base != "" {
+				return mt, p.Plex.Base, true
+			}
+			if mt == core.TypeShow {
+				return mt, plexBaseShow, true
+			}
+			return mt, plexBaseMovie, true
+		},
+		BuiltinNative: func(mt core.MediaType) string {
+			if mt == core.TypeShow {
+				return plexBaseShow
+			}
+			return plexBaseMovie
+		},
+		Visibility: experience.Visibility{
+			SectionFor: func(mt core.MediaType) (int, bool) {
+				if mt == core.TypeShow || mt == core.TypeSeason || mt == core.TypeEpisode {
+					return 2, true
+				}
+				return 1, true
+			},
+		},
+	})
+	f.srv.bindHost(frontend.Host{
+		Experience: expSvc,
+	})
+	slots := &playbackCapturingSlots{
+		variantsByKey: map[core.RatingKey][]core.ReleaseVariant{
+			match2Key: {
+				{ID: core.KindAutoVersionID, Label: "Auto · 4K", Auto: true, Release: core.Release{ID: "rel-4k", Name: "4K"}, Info: info1080},
+				{ID: "rel-1080", Label: "1080p", Release: core.Release{ID: "rel-1080", Name: "1080p"}, Info: info1080},
+			},
+		},
+	}
+	f.srv.setVariants(slots)
+
+	machineID := f.srv.identity().MachineIdentifier
+	headers := map[string]string{
+		"Accept":                    "application/json",
+		"X-Plex-Client-Identifier":  "plex-test-756",
+		"X-Plex-Product":            "Plex Web",
+		"X-Plex-Session-Identifier": "pq-756-sess",
+	}
+	extractKeys := func(mc map[string]any) []string {
+		meta, _ := mc["Metadata"].([]any)
+		out := make([]string, 0, len(meta))
+		for _, row := range meta {
+			if rk, _ := row.(map[string]any)["ratingKey"].(string); rk != "" {
+				out = append(out, rk)
+			}
+		}
+		return out
+	}
+
+	// 1. Branching music artist: Play, /allLeaves, /children, shuffle=1, and GET /allLeaves
+	//    must return ONLY audio tracks (never the video concert), and play queue render must batch via ItemsMany.
+	for _, tcCase := range []struct {
+		name  string
+		uri   string
+		extra string
+	}{
+		{"artist play", "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + artistKey.String(), ""},
+		{"artist allLeaves", "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + artistKey.String() + "/allLeaves", ""},
+		{"artist children", "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + artistKey.String() + "/children", ""},
+		{"artist shuffle", "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + artistKey.String(), "&shuffle=1"},
+	} {
+		itemsManyCalls = 0
+		rec := f.request(t, http.MethodPost, "/playQueues?type=audio&uri="+url.QueryEscape(tcCase.uri)+tcCase.extra, headers)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", tcCase.name, rec.Code, rec.Body.String())
+		}
+		keys := extractKeys(decodeJSON(t, rec))
+		if len(keys) != 2 || slices.Contains(keys, concertKey.String()) {
+			t.Fatalf("%s: keys = %v, want only audio tracks (no concert %s)", tcCase.name, keys, concertKey)
+		}
+		if itemsManyCalls == 0 {
+			t.Fatalf("%s: expected play queue render to batch plugin titles via ItemsMany", tcCase.name)
+		}
+	}
+
+	allLeavesRec := f.request(t, http.MethodGet, "/library/metadata/"+artistKey.String()+"/allLeaves", headers)
+	if allLeavesRec.Code != http.StatusOK {
+		t.Fatalf("GET artist /allLeaves status=%d body=%s", allLeavesRec.Code, allLeavesRec.Body.String())
+	}
+	if keys := extractKeys(decodeJSON(t, allLeavesRec)); len(keys) != 2 || slices.Contains(keys, concertKey.String()) {
+		t.Fatalf("GET artist /allLeaves keys = %v, want only audio tracks (no concert)", keys)
+	}
+
+	// 1b. Direct video play queue on the concert itself still succeeds.
+	concertURI := "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + concertKey.String()
+	concertRec := f.request(t, http.MethodPost, "/playQueues?type=video&uri="+url.QueryEscape(concertURI), headers)
+	if concertRec.Code != http.StatusOK {
+		t.Fatalf("direct concert playQueue status=%d body=%s", concertRec.Code, concertRec.Body.String())
+	}
+	if keys := extractKeys(decodeJSON(t, concertRec)); !slices.Equal(keys, []string{concertKey.String()}) {
+		t.Fatalf("direct concert playQueue keys = %v, want [%s]", keys, concertKey)
+	}
+
+	// 1c. Section shuffle excludes concerts AND suppresses container expansion.
+	musicSec, ok := f.srv.sectionForLibrary(musicLibID)
+	if !ok {
+		t.Fatalf("music section not found for library %d", musicLibID)
+	}
+	musicSecID := musicSec.IDString()
+	expandAllowedCalls = nil
+	secURI := "server://" + machineID + "/com.plexapp.plugins.library/library/sections/" + musicSecID + "/all"
+	secRec := f.request(t, http.MethodPost, "/playQueues?type=audio&shuffle=1&uri="+url.QueryEscape(secURI), headers)
+	if secRec.Code != http.StatusOK {
+		t.Fatalf("section shuffle status=%d body=%s", secRec.Code, secRec.Body.String())
+	}
+	if keys := extractKeys(decodeJSON(t, secRec)); slices.Contains(keys, concertKey.String()) || len(keys) == 0 {
+		t.Fatalf("section shuffle keys = %v, want audio tracks only (no concert)", keys)
+	}
+	if len(expandAllowedCalls) != 0 {
+		t.Fatalf("section shuffle permitted container expansion on %v, want 0 (storm guard)", expandAllowedCalls)
+	}
+
+	// 1d. Empty-album shell fallback caps album expansions to maxGrandchildAlbumExpands.
+	expandAllowedCalls = nil
+	emptyArtistURI := "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + emptyArtistKey.String()
+	emptyRec := f.request(t, http.MethodPost, "/playQueues?type=audio&uri="+url.QueryEscape(emptyArtistURI), headers)
+	if emptyRec.Code != http.StatusOK {
+		t.Fatalf("empty shells artist playQueue status=%d body=%s", emptyRec.Code, emptyRec.Body.String())
+	}
+	albumExpands := 0
+	for _, k := range expandAllowedCalls {
+		if k != emptyArtistKey {
+			albumExpands++
+		}
+	}
+	if albumExpands > maxGrandchildAlbumExpands {
+		t.Fatalf("empty shells artist expanded %d albums, want <= %d", albumExpands, maxGrandchildAlbumExpands)
+	}
+
+	// 2. PR #756 fix 4: POST /playQueues accepts type=music as well as type=audio; rejects type=photo.
+	albumURI := "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + albumKey.String()
+	musicTypeRec := f.request(t, http.MethodPost, "/playQueues?type=music&uri="+url.QueryEscape(albumURI), headers)
+	if musicTypeRec.Code != http.StatusOK {
+		t.Fatalf("POST /playQueues?type=music status=%d body=%s", musicTypeRec.Code, musicTypeRec.Body.String())
+	}
+	photoTypeRec := f.request(t, http.MethodPost, "/playQueues?type=photo&uri="+url.QueryEscape(albumURI), headers)
+	if photoTypeRec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /playQueues?type=photo status=%d, want 400", photoTypeRec.Code)
+	}
+
+	// 3. PR #756 fix 6: 4-level plugin container (league -> season -> round -> match) queues matches
+	//    and honours key= start item inside the container.
+	leagueURI := "server://" + machineID + "/com.plexapp.plugins.library/library/metadata/" + leagueKey.String()
+	leagueRec := f.request(t, http.MethodPost, "/playQueues?type=video&uri="+url.QueryEscape(leagueURI)+"&key="+url.QueryEscape("/library/metadata/"+match2Key.String()), headers)
+	if leagueRec.Code != http.StatusOK {
+		t.Fatalf("4-level league playQueue status=%d body=%s", leagueRec.Code, leagueRec.Body.String())
+	}
+	leagueMC := decodeJSON(t, leagueRec)
+	if keys := extractKeys(leagueMC); !slices.Equal(keys, []string{match1Key.String(), match2Key.String()}) {
+		t.Fatalf("4-level league playQueue keys = %v, want [%s %s]", keys, match1Key, match2Key)
+	}
+	if sel, _ := leagueMC["playQueueSelectedMetadataItemID"].(string); sel != match2Key.String() {
+		t.Fatalf("4-level league selected = %q, want %q", sel, match2Key)
+	}
+
+	// 4. PR #756 fix 5: plugin season & episode metadata expose stored parentRatingKey (never 0).
+	for _, tcParent := range []struct {
+		key     core.RatingKey
+		wantPar string
+	}{
+		{seasonKey, leagueKey.String()},
+		{match1Key, roundKey.String()},
+	} {
+		rec := f.request(t, http.MethodGet, "/library/metadata/"+tcParent.key.String(), headers)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /library/metadata/%s status=%d", tcParent.key, rec.Code)
+		}
+		meta, _ := decodeJSON(t, rec)["Metadata"].([]any)
+		if len(meta) != 1 {
+			t.Fatalf("metadata len=%d", len(meta))
+		}
+		row := meta[0].(map[string]any)
+		if prk, _ := row["parentRatingKey"].(string); prk != tcParent.wantPar {
+			t.Fatalf("item %s parentRatingKey = %q, want %q", tcParent.key, prk, tcParent.wantPar)
+		}
+		if pk, _ := row["parentKey"].(string); pk != "/library/metadata/"+tcParent.wantPar {
+			t.Fatalf("item %s parentKey = %q, want /library/metadata/%s", tcParent.key, pk, tcParent.wantPar)
+		}
+	}
+
+	// 5. PR #756 fix 2: /:/timeline persists progress on a plugin item and denies restricted viewer.
+	tlRec := f.request(t, http.MethodGet, "/:/timeline?ratingKey="+match1Key.String()+"&key="+url.QueryEscape("/library/metadata/"+match1Key.String())+"&state=playing&time=120000&duration=5400000", headers)
+	if tlRec.Code != http.StatusOK {
+		t.Fatalf("/:/timeline plugin item status=%d body=%s", tlRec.Code, tlRec.Body.String())
+	}
+	f.state.mu.Lock()
+	gotProgress := append([]progressCall(nil), f.state.progress...)
+	f.state.mu.Unlock()
+	if len(gotProgress) == 0 || gotProgress[len(gotProgress)-1].key != match1Key || gotProgress[len(gotProgress)-1].offset != 120*time.Second {
+		t.Fatalf("plugin timeline progress = %+v, want key=%s off=120s", gotProgress, match1Key)
+	}
+	restrictedHdrs := map[string]string{"Accept": "application/json", "X-Plex-Token": "restricted-tok", "X-Plex-Client-Identifier": "plex-test-restricted"}
+	if tlDeny := f.request(t, http.MethodGet, "/:/timeline?ratingKey="+match1Key.String()+"&key="+url.QueryEscape("/library/metadata/"+match1Key.String())+"&state=playing&time=60000&duration=5400000", restrictedHdrs); tlDeny.Code != http.StatusNotFound {
+		t.Fatalf("restricted viewer /:/timeline status=%d, want 404", tlDeny.Code)
+	}
+
+	// 6. PR #756 fix 3: /:/scrobble, /:/unscrobble, and /:/rate succeed on plugin items and
+	//    containers without triggering container expansion, and reject restricted viewers.
+	expandAllowedCalls = nil
+	if scRec := f.request(t, http.MethodGet, "/:/scrobble?identifier=com.plexapp.plugins.library&key="+albumKey.String(), headers); scRec.Code != http.StatusOK {
+		t.Fatalf("/:/scrobble album status=%d body=%s", scRec.Code, scRec.Body.String())
+	}
+	if len(expandAllowedCalls) != 0 {
+		t.Fatalf("/:/scrobble permitted container expansion on %v, want 0", expandAllowedCalls)
+	}
+	if st1, _ := f.state.Get(context.Background(), ownerUser.ID, track1Key); st1.ViewCount < 1 {
+		t.Fatalf("track1 ViewCount after album scrobble = %d, want >= 1", st1.ViewCount)
+	}
+	if unRec := f.request(t, http.MethodGet, "/:/unscrobble?identifier=com.plexapp.plugins.library&key="+track1Key.String(), headers); unRec.Code != http.StatusOK {
+		t.Fatalf("/:/unscrobble track1 status=%d body=%s", unRec.Code, unRec.Body.String())
+	}
+	if st1, _ := f.state.Get(context.Background(), ownerUser.ID, track1Key); st1.ViewCount != 0 {
+		t.Fatalf("track1 ViewCount after unscrobble = %d, want 0", st1.ViewCount)
+	}
+	if rateRec := f.request(t, http.MethodGet, "/:/rate?identifier=com.plexapp.plugins.library&key="+match1Key.String()+"&rating=8", headers); rateRec.Code != http.StatusOK {
+		t.Fatalf("/:/rate plugin item status=%d body=%s", rateRec.Code, rateRec.Body.String())
+	}
+	f.state.mu.Lock()
+	gotRating := f.state.rated[match1Key]
+	f.state.mu.Unlock()
+	if gotRating != 8 {
+		t.Fatalf("match1 rated after /:/rate = %v, want 8", gotRating)
+	}
+	if scDeny := f.request(t, http.MethodGet, "/:/scrobble?identifier=com.plexapp.plugins.library&key="+match1Key.String(), restrictedHdrs); scDeny.Code != http.StatusNotFound {
+		t.Fatalf("restricted viewer /:/scrobble status=%d, want 404", scDeny.Code)
+	}
+
+	// 7. PR #756 fix 7: preparePlayback configures version slots for a cold plugin item
+	//    even without a prior detail render, clearing LocalResponse and setting Playback purpose.
+	itemCalls = 0
+	itemsManyCalls = 0
+	slots.calls = 0
+	pr := &Request{User: &ownerUser, ClientID: "plex-cold-slots", Product: "Plex Web"}
+	ps, err := f.srv.preparePlayback(frontend.WithLocalResponse(context.Background()), pr, &playRequest{key: match2Key, mediaIndex: 1})
+	if err != nil || ps == nil {
+		t.Fatalf("preparePlayback(cold plugin match2, mediaIndex=1) = (%v, %v)", ps, err)
+	}
+	if slots.calls != 1 || slots.lastLocal || slots.lastPurpose != core.IndexerPurposePlayback || !slots.lastLabels {
+		t.Fatalf("preparePlayback VersionSlots = calls:%d local:%v purpose:%q labels:%v, want 1/false/%q/true",
+			slots.calls, slots.lastLocal, slots.lastPurpose, slots.lastLabels, core.IndexerPurposePlayback)
+	}
+	if len(pb.variantCalls) == 0 || pb.variantCalls[len(pb.variantCalls)-1] != "rel-1080" {
+		t.Fatalf("PrepareVariant calls = %v, want rel-1080", pb.variantCalls)
+	}
+	if itemCalls != 0 || itemsManyCalls == 0 {
+		t.Fatalf("preparePlayback plugin lookup: itemCalls=%d itemsManyCalls=%d, want 0/>0 (batched)", itemCalls, itemsManyCalls)
 	}
 }

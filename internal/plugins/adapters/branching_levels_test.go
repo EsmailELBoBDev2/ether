@@ -267,6 +267,24 @@ func TestBranchingLevelsVideoChildrenTabsAndPlayback(t *testing.T) {
 		}
 	}
 
+	// 5b. Unfiltered recursive Children(artist, recursive=true) stays in the
+	//     artist's audio media class (excludes video concerts) for playlists,
+	//     scrobble, and Jellyfin/Vela play queues, while filtered Role=concert
+	//     still returns concerts.
+	recAudio, err := h.catalog.Children(ctx, artist.Key, true, "", 50)
+	if err != nil || len(recAudio.Items) != 2 {
+		t.Fatalf("unfiltered recursive Children(artist) = %+v, err=%v, want 2 tracks only", recAudio.Items, err)
+	}
+	for _, it := range recAudio.Items {
+		if it.KindLevel != "track" || it.MediaClass == core.MediaClassVideo {
+			t.Fatalf("unfiltered recursive Children(artist) leaked %q (%s/%s)", it.Title, it.KindLevel, it.MediaClass)
+		}
+	}
+	recConcerts, err := h.catalog.ChildrenQuery(ctx, artist.Key, frontend.ItemQuery{Recursive: true, Role: "concert"}, "", 50)
+	if err != nil || len(recConcerts.Items) != 2 {
+		t.Fatalf("filtered recursive Children(artist, Role=concert) = %+v, err=%v, want 2 concerts", recConcerts.Items, err)
+	}
+
 	// 6. Per-tab recommended rows & Continue Watching scoping:
 	//    Record mid-playback progress on concert-1; Concerts tab gets Continue Watching with con-1,
 	//    while default Music Recommended tab stays audio-only (no concert in Continue Watching)

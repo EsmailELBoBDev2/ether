@@ -137,6 +137,9 @@ func TestTurningOffWithdrawsExtraServerAccess(t *testing.T) {
 	if m, _ := e.app.users.ServerMembers(ctx); m["p2"] != 1 {
 		t.Fatalf("members before = %v", m)
 	}
+	// No main registrar here: the main server's follow-up friend sync is
+	// plex.tv work this test does not cover.
+	e.app.registrar = nil
 	e.app.plexExtras.applyEnabled(ctx, false)
 	if m, _ := e.app.users.ServerMembers(ctx); m["p2"] != 0 {
 		t.Fatalf("p2 still has members after turning off: %v", m)
@@ -163,10 +166,12 @@ func TestShareIgnoresSeatsWhenFeatureOff(t *testing.T) {
 	if _, err := e.app.plexExtras.pick(context.Background()); err == nil {
 		t.Fatal("pick should report no room with main over its seats")
 	}
-	// share must not consult pick: it goes to the main server. The fake
-	// plex.tv here does not accept shares, so only the error kind matters.
+	// share must not consult pick: it goes to the main server. With no
+	// plex.tv client the main-server share fails at once, without a request,
+	// so only the kind of error matters.
+	e.app.plextv = nil
 	_, err := e.app.plexExtras.share(context.Background(), "someone", 0)
-	if err == errPlexServersFull {
-		t.Fatal("share refused for seats with extra servers off")
+	if err == errPlexServersFull || err == nil {
+		t.Fatalf("share with extra servers off = %v, want the main server's own error", err)
 	}
 }

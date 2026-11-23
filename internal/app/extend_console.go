@@ -248,7 +248,7 @@ func consoleCommands() []extend.Descriptor {
 		{id: "new-notification-channel", label: T("New notification channel"), order: 60, meta: extend.CommandMeta{
 			Route: "/notifications/channels", Keywords: T("alert")}},
 		{id: "new-flow", label: T("New flow"), order: 65, meta: extend.CommandMeta{
-			Route: "/flows/new", Keywords: T("automation workflow create")}},
+			Route: "/flows/list/new", Keywords: T("automation workflow create")}},
 		{id: "back-up-now", label: T("Back up now"), order: 70, meta: extend.CommandMeta{
 			Route: "/maintenance/backups", Keywords: T("backup snapshot")}},
 		// Ask Ether suggestions (WS6): the label is the suggestion text.

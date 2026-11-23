@@ -270,8 +270,7 @@ function resolveBuiltinSubparts(
       return label ? [label] : [];
     }
     case "flows": {
-      if (tab === "new") return [t("New flow")];
-      if (tab === "edit") return [t("Edit")];
+      if (tab === "list") return [];
       if (tab === "templates") return [t("Templates")];
       if (tab === "runs") return [t("Runs")];
       return [];

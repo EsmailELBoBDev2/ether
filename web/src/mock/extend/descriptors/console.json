@@ -105,7 +105,7 @@
     "hint": {},
     "order": 65,
     "meta": {
-      "route": "/flows/new",
+      "route": "/flows/list/new",
       "keywords": {
         "source": "automation workflow create"
       }

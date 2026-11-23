@@ -30,8 +30,18 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useMemo, useRef, useState, type RefObject } from "react";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useOutlet,
+  useOutletContext,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
 import { Field, Segmented } from "../../components/fields";
 import { ErrorPanel, LoadingRows, MutationError } from "../../components/feedback";
@@ -44,7 +54,7 @@ import { useAsync, useInterval } from "../../lib/hooks";
 import { useStreamEvent } from "../../lib/stream";
 import type { NotificationsData } from "../notifications/types";
 import { DescribeFlowDialog } from "./DescribeFlowDialog";
-import { FlowEditor } from "./Editor";
+import { FlowEditorDrawer } from "./Editor";
 import { FlowsOverview, StatsRangePicker } from "./Overview";
 import { fillTemplateDefaults } from "./params";
 import { StepTrace } from "./RunTrace";
@@ -85,66 +95,144 @@ const TEMPLATE_ICONS: Record<string, LucideIcon> = {
 };
 
 /**
- * Flows home (overview / flows / templates / runs) plus the full-screen
- * canvas editor at /flows/edit/:id. /flows opens the overview; the flows
- * table lives at /flows/list. Older links still land: /flows/flows goes to
- * the table and /flows/<flow id> opens that flow in the editor.
+ * Flows home (overview / flows / templates / runs) with the canvas editor
+ * opening as a large URL-backed drawer over the flows list (/flows/list/new
+ * and /flows/list/:id). Older links still land: /flows/flows goes to the
+ * table and /flows/<flow id> opens that flow in the drawer.
  */
 export default function Flows() {
-  const location = useLocation();
-  const params = useParams();
-  const splat = (params["*"] ?? location.pathname.replace(/^\/flows\/?/, ""))
-    .split("/")
-    .filter(Boolean);
-
-  if (splat[0] === "edit") return <FlowEditor key={`edit:${splat[1] ?? ""}`} flowId={splat[1]} />;
-  if (splat[0] === "new") return <FlowEditor key={`new:${location.key}`} />;
-  if (splat[0] === "flows") return <Navigate to="/flows/list" replace />;
-  if (splat[0]?.startsWith("flow_") || splat[0]?.startsWith("flow-"))
-    return <Navigate to={`/flows/edit/${splat[0]}`} replace />;
-
-  const tab: TabKey = (TABS.find((x) => x.key === splat[0])?.key ?? "overview") as TabKey;
-  return <FlowsHome tab={tab} />;
-}
-
-function FlowsHome({ tab }: { tab: TabKey }) {
-  // Overview and the table share one list request.
-  const flowsState = useFlowsList(tab === "overview" || tab === "list");
   return (
-    <DomainPage
-      title={t("Flows")}
-      description={t(
-        "Automations for your whole server — when something happens, check a few things, then act. Flows react off to the side; they never sit in the way of playback.",
-      )}
-      base="/flows"
-      tabs={TABS}
-      active={tab}
-      tabHref={(key) => (key === "overview" ? "/flows" : `/flows/${key}`)}
-      tabActions={tab === "overview" ? <StatsRangePicker /> : undefined}
-      fit={tab === "overview" || tab === "list"}
-    >
-      {tab === "overview" ? (
-        <FlowsOverview
-          flows={flowsState.data}
-          flowsError={flowsState.error}
-          onRetryFlows={() => void flowsState.reload()}
-        />
-      ) : tab === "list" ? (
-        <FlowListTab flowsState={flowsState} />
-      ) : tab === "templates" ? (
-        <TemplatesTab />
-      ) : (
-        <RunsTab />
-      )}
-    </DomainPage>
+    <Routes>
+      <Route index element={<FlowsHome tab="overview" />} />
+      <Route path="list" element={<FlowsHome tab="list" />}>
+        <Route path=":id" element={<FlowEditorRoute />} />
+      </Route>
+      <Route path="templates" element={<FlowsHome tab="templates" />} />
+      <Route path="runs" element={<FlowsHome tab="runs" />} />
+      <Route path="flows" element={<Navigate to="/flows/list" replace />} />
+      <Route path="*" element={<FlowsFallback />} />
+    </Routes>
   );
 }
 
-function useFlowsList(active: boolean) {
+function FlowsFallback() {
+  const params = useParams();
+  const first = (params["*"] ?? "").split("/").filter(Boolean)[0];
+  if (first?.startsWith("flow_") || first?.startsWith("flow-")) {
+    return <Navigate to={`/flows/list/${encodeURIComponent(first)}`} replace />;
+  }
+  return <Navigate to="/flows" replace />;
+}
+
+interface FlowListOutletContext {
+  close: () => void;
+  onChanged: () => void;
+  promotedIdRef: RefObject<string | null>;
+}
+
+function FlowEditorRoute() {
+  const { close, onChanged, promotedIdRef } = useOutletContext<FlowListOutletContext>();
+  const { id } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const flowId = id === "new" ? undefined : id;
+
+  // Keep the same editor instance when a brand-new flow gets its first saved id,
+  // so the URL switches without closing or remounting the drawer.
+  const sessionKeyRef = useRef<string>(flowId ? `edit:${flowId}` : `new:${location.key}`);
+  const prevNewLocationKeyRef = useRef<string | null>(flowId ? null : location.key);
+  if (flowId) {
+    prevNewLocationKeyRef.current = null;
+    if (promotedIdRef.current !== flowId) {
+      promotedIdRef.current = null;
+      sessionKeyRef.current = `edit:${flowId}`;
+    }
+  } else if (prevNewLocationKeyRef.current !== location.key) {
+    promotedIdRef.current = null;
+    prevNewLocationKeyRef.current = location.key;
+    sessionKeyRef.current = `new:${location.key}`;
+  }
+
+  return (
+    <FlowEditorDrawer
+      key={sessionKeyRef.current}
+      flowId={flowId}
+      onClose={close}
+      onSaved={(saved, created) => {
+        onChanged();
+        if (created) {
+          promotedIdRef.current = saved.id;
+          navigate(`/flows/list/${encodeURIComponent(saved.id)}`, { replace: true });
+        }
+      }}
+      onDeleted={() => {
+        onChanged();
+        close();
+      }}
+    />
+  );
+}
+
+function FlowsHome({ tab }: { tab: TabKey }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const promotedIdRef = useRef<string | null>(null);
+  const editing = tab === "list" && /^\/flows\/list\/.+/.test(location.pathname.replace(/\/$/, ""));
+  const browseSearch = useRef(editing ? "" : location.search);
+  if (tab === "list" && !editing) browseSearch.current = location.search;
+
+  // Overview and the table share one list request; keep it mounted behind the editor drawer.
+  const flowsState = useFlowsList(tab === "overview" || tab === "list", !editing);
+  const outlet = useOutlet({
+    close: () => navigate(`/flows/list${browseSearch.current}`),
+    onChanged: () => void flowsState.reload(),
+    promotedIdRef,
+  } satisfies FlowListOutletContext);
+
+  return (
+    <>
+      <div
+        aria-hidden={editing ? true : undefined}
+        inert={editing}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <DomainPage
+          title={t("Flows")}
+          description={t(
+            "Automations for your whole server — when something happens, check a few things, then act. Flows react off to the side; they never sit in the way of playback.",
+          )}
+          base="/flows"
+          tabs={TABS}
+          active={tab}
+          tabHref={(key) => (key === "overview" ? "/flows" : `/flows/${key}`)}
+          tabActions={tab === "overview" ? <StatsRangePicker /> : undefined}
+          fit={tab === "overview" || tab === "list"}
+        >
+          {tab === "overview" ? (
+            <FlowsOverview
+              flows={flowsState.data}
+              flowsError={flowsState.error}
+              onRetryFlows={() => void flowsState.reload()}
+            />
+          ) : tab === "list" ? (
+            <FlowListTab flowsState={flowsState} />
+          ) : tab === "templates" ? (
+            <TemplatesTab />
+          ) : (
+            <RunsTab />
+          )}
+        </DomainPage>
+      </div>
+      {outlet}
+    </>
+  );
+}
+
+function useFlowsList(active: boolean, poll = active) {
   const state = useAsync(async () => (active ? flowsApi.listFlows() : undefined), [active]);
   useStreamEvent("flows.changed", () => void state.reload());
   useStreamEvent("flows.run", () => void state.reload());
-  useInterval(() => void state.reload(), active ? 30_000 : null);
+  useInterval(() => void state.reload(), active && poll ? 30_000 : null);
   return state;
 }
 
@@ -241,7 +329,7 @@ function FlowListTab({ flowsState }: { flowsState: ReturnType<typeof useFlowsLis
             <Button variant="outline" size="sm" onClick={() => setDescribeOpen(true)}>
               <Sparkles size={14} /> {t("Describe it")}
             </Button>
-            <Button size="sm" onClick={() => navigate("/flows/new")}>
+            <Button size="sm" onClick={() => navigate("/flows/list/new")}>
               <Plus size={14} /> {t("New flow")}
             </Button>
           </>
@@ -305,7 +393,7 @@ function FlowListTab({ flowsState }: { flowsState: ReturnType<typeof useFlowsLis
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => navigate(`/flows/edit/${flow.id}`)}
+                      onClick={() => navigate(`/flows/list/${encodeURIComponent(flow.id)}`)}
                       className="truncate text-left font-medium text-fg hover:underline"
                     >
                       {flow.name}
@@ -387,7 +475,7 @@ function FlowListTab({ flowsState }: { flowsState: ReturnType<typeof useFlowsLis
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => navigate(`/flows/edit/${flow.id}`)}
+                    onClick={() => navigate(`/flows/list/${encodeURIComponent(flow.id)}`)}
                   >
                     <Pencil size={13} /> {t("Edit")}
                   </Button>
@@ -428,7 +516,7 @@ function FlowListTab({ flowsState }: { flowsState: ReturnType<typeof useFlowsLis
       <DescribeFlowDialog
         open={describeOpen}
         onClose={() => setDescribeOpen(false)}
-        onDraft={(draft) => navigate("/flows/new", { state: { draft } })}
+        onDraft={(draft) => navigate("/flows/list/new", { state: { draft } })}
       />
       {testFlow && catalogueState.data ? (
         <TestRunDrawer
@@ -507,7 +595,7 @@ function TemplatesTab() {
                     size="sm"
                     variant="ghost"
                     onClick={() =>
-                      navigate("/flows/new", {
+                      navigate("/flows/list/new", {
                         state: {
                           draft: {
                             name: tpl.name,
@@ -588,7 +676,7 @@ export function UseTemplateDrawer({
       });
       toast.success(t("Flow created from template"));
       onClose();
-      navigate(`/flows/edit/${flow.id}`);
+      navigate(`/flows/list/${encodeURIComponent(flow.id)}`);
     } catch (e) {
       setError(e);
     } finally {

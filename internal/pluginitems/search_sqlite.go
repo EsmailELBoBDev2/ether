@@ -30,8 +30,12 @@ func sqliteDeleteFTS(ctx context.Context, tx *sql.Tx, seq int64) error {
 
 func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []string, limit int) (BrowsePage, error) {
 	parts := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		parts = append(parts, `"`+strings.ReplaceAll(tok, `"`, `""`)+`"*`)
+	for i, tok := range tokens {
+		part := `"` + strings.ReplaceAll(tok, `"`, `""`) + `"`
+		if searchTokenPrefix(tok, i, len(tokens)) {
+			part += "*"
+		}
+		parts = append(parts, part)
 	}
 	matchExpr := strings.Join(parts, " AND ")
 

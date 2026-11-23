@@ -9,8 +9,11 @@ import (
 
 func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []string, limit int) (BrowsePage, error) {
 	parts := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		parts = append(parts, tok+":*")
+	for i, tok := range tokens {
+		if searchTokenPrefix(tok, i, len(tokens)) {
+			tok += ":*"
+		}
+		parts = append(parts, tok)
 	}
 	tsQuery := strings.Join(parts, " & ")
 

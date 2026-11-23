@@ -115,7 +115,8 @@ func valid(s Subject) bool {
 		if s.Kind == KindCollection {
 			return key.Kind() == core.KindCollection || key.Kind() == core.KindSmart
 		}
-		return key.Kind() == core.KindMovie || key.Kind() == core.KindShow || key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode
+		// A plugin library's items (a track, an album, an artist, a book) are titles like any other.
+		return key.IsPluginKey() || key.Kind() == core.KindMovie || key.Kind() == core.KindShow || key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode
 	}
 	return true
 }

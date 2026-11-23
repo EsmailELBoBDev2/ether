@@ -529,6 +529,15 @@ const (
 	ProfileLanguageAny      = "any"      // every language
 )
 
+// A quality profile's AudioLanguageMode controls how a specific Language
+// applies. Existing profiles without this field keep AudioLanguageModeRequired
+// (strict filtering); new profiles default to AudioLanguageModePreferred
+// (ranking first, falling back to other releases, original language first).
+const (
+	AudioLanguageModeRequired  = "required"
+	AudioLanguageModePreferred = "preferred"
+)
+
 // QualityProfile is an owner-editable rule set ranking releases for a class
 // of client.
 type QualityProfile struct {
@@ -580,11 +589,16 @@ type QualityProfile struct {
 	// Language is the profile's audio language, as in Radarr: "" or
 	// ProfileLanguageOriginal accepts each title's original language
 	// alongside the preferred ones, ProfileLanguageAny accepts every
-	// language, and any other value names the one language a release's
-	// audio must be in (an ISO code or a language name; multi/dual-audio
-	// releases pass).
+	// language, and any other value names a specific language (an ISO code or
+	// a language name) whose strictness is governed by AudioLanguageMode.
 	Language string `json:"language,omitempty"`
-	AllowCam bool   `json:"allowCam"` // the only pre-release switch; CAM/TS/TC and screener/R5/workprint copies play only for profiles that allow them
+	// AudioLanguageMode controls how a specific Language applies: "" or
+	// AudioLanguageModeRequired strictly filters out non-matching releases
+	// (existing profiles keep this behaviour); AudioLanguageModePreferred
+	// ranks matching releases first and keeps other releases playable as
+	// fallbacks.
+	AudioLanguageMode string `json:"audioLanguageMode,omitempty"`
+	AllowCam          bool   `json:"allowCam"` // the only pre-release switch; CAM/TS/TC and screener/R5/workprint copies play only for profiles that allow them
 	// SelectionKey is the canonical hash of this profile's configured
 	// definition, computed by resolver.SelectProfile from the pristine
 	// configured profile before download reshaping or client-cap
@@ -592,6 +606,17 @@ type QualityProfile struct {
 	// original language is not: it is per-title evaluation context, not a
 	// profile fact. Runtime-only, never persisted with the profile.
 	SelectionKey string `json:"-"`
+}
+
+// EffectiveAudioLanguageMode returns the resolved mode for a specific profile
+// Language: AudioLanguageModePreferred only when explicitly configured, and
+// AudioLanguageModeRequired otherwise so existing profiles keep strict
+// filtering.
+func (p QualityProfile) EffectiveAudioLanguageMode() string {
+	if strings.EqualFold(strings.TrimSpace(p.AudioLanguageMode), AudioLanguageModePreferred) {
+		return AudioLanguageModePreferred
+	}
+	return AudioLanguageModeRequired
 }
 
 // SizeBoundsForKey returns the configured (min, max) MB/min bounds for a rating key.

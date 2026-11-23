@@ -510,6 +510,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			(p.MaxSizeMBPerMin > 0 && p.MinSizeMBPerMin > p.MaxSizeMBPerMin) {
 			v.add(f+".minSizeMbPerMin", "must be <= maxSizeMbPerMin")
 		}
+		if p.AudioLanguageMode != "" {
+			v.oneOf(f+".audioLanguageMode", p.AudioLanguageMode, core.AudioLanguageModeRequired, core.AudioLanguageModePreferred)
+		}
 		if p.EpisodeMinSizeMBPerMin < 0 || p.EpisodeMaxSizeMBPerMin < 0 ||
 			(p.EpisodeMaxSizeMBPerMin > 0 && p.EpisodeMinSizeMBPerMin > p.EpisodeMaxSizeMBPerMin) {
 			v.add(f+".episodeMinSizeMbPerMin", "must be <= episodeMaxSizeMbPerMin")

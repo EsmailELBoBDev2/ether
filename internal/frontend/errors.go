@@ -52,6 +52,10 @@ var ErrDownloadNeedsTranscode = core.ErrDownloadNeedsTranscode
 // requires re-encoding video while transcode.videoTranscoding is set to "off".
 var ErrVideoTranscodingDisabled = core.ErrVideoTranscodingDisabled
 
+// RequiredAudioLanguageError reports that no release matched the quality
+// profile's required Audio language.
+type RequiredAudioLanguageError = core.RequiredAudioLanguageError
+
 // The two wordings a viewer can be shown when a title would need its video
 // re-encoded: the server-wide switch, or the owner's switch for their account.
 const (

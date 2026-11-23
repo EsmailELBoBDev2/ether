@@ -522,6 +522,35 @@ describe("Releases", () => {
     expect(saved4k?.qualityOrder?.every((i) => i.qualities.length > 1)).toBe(true);
   });
 
+  it("shows Preferred / Required audio language mode only for specific languages and keeps existing profiles Required", async () => {
+    const { fake } = renderApp("/quality/profiles");
+    // Simulate an existing profile that has a specific language and no saved audioLanguageMode.
+    const existing = fake.state.config.quality.profiles?.find((p) => p.name === "4K");
+    if (existing) {
+      existing.language = "en";
+      delete existing.audioLanguageMode;
+    }
+    fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
+    const drawer = await screen.findByRole("dialog", { name: "4K" });
+    const modeGroup = within(drawer).getByRole("radiogroup", { name: "Audio language mode" });
+    expect(within(modeGroup).getByRole("radio", { name: "Required" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(within(modeGroup).getByRole("radio", { name: "Preferred" }));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
+    const body = calls(fake, "PUT", "/config/quality")[0]!.body as EtherConfig["quality"];
+    expect(body.profiles?.find((p) => p.name === "4K")?.audioLanguageMode).toBe("preferred");
+
+    // 1080p has no specific language (Original) so the mode toggle stays hidden.
+    fireEvent.click(await screen.findByRole("button", { name: "Edit 1080p" }, WAIT));
+    const drawer1080 = await screen.findByRole("dialog", { name: "1080p" });
+    expect(
+      within(drawer1080).queryByRole("radiogroup", { name: "Audio language mode" }),
+    ).toBeNull();
+  });
+
   it("shows Default at home and Default away badges and updates them from the profile drawer", async () => {
     const { fake } = renderApp("/quality/profiles");
     expect(await screen.findByText("Default at home", {}, WAIT)).toBeInTheDocument();

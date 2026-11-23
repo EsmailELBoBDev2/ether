@@ -666,9 +666,15 @@ export interface QualityProfile {
   /**
    * The profile's audio language, as in Radarr: "original" (or unset) is
    * each title's own language, "any" is every language, and any other
-   * value is the one language a release's audio must be in.
+   * value is a specific language whose strictness is set by audioLanguageMode.
    */
   language?: string | null;
+  /**
+   * How a specific profile language applies: "preferred" ranks matching
+   * releases first with fallback to viewer languages then original language;
+   * "required" (or unset on existing profiles) strictly rejects other audio.
+   */
+  audioLanguageMode?: "required" | "preferred" | null;
   allowCam: boolean;
   /** Imported profiles: the only source-resolution pairs allowed, e.g. "webdl-1080". */
   allowedQualities?: string[] | null;

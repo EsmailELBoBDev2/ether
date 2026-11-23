@@ -387,6 +387,7 @@ function defaultConfig(): EtherConfig {
           minSizeMbPerMin: 15,
           maxSizeMbPerMin: 1000,
           preferredLanguages: null,
+          audioLanguageMode: "preferred",
           allowCam: false,
         },
         {
@@ -413,6 +414,7 @@ function defaultConfig(): EtherConfig {
           minSizeMbPerMin: 5,
           maxSizeMbPerMin: 150,
           preferredLanguages: null,
+          audioLanguageMode: "preferred",
           allowCam: false,
         },
         {
@@ -440,6 +442,7 @@ function defaultConfig(): EtherConfig {
           minSizeMbPerMin: 5,
           maxSizeMbPerMin: 150,
           preferredLanguages: null,
+          audioLanguageMode: "preferred",
           allowCam: false,
         },
       ],

@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/vault"
 )
 
@@ -733,12 +734,19 @@ func (s *Service) resolveVersionSlot(ctx context.Context, p slotResolveParams) (
 	results := p.results
 	rescueTried := false
 	speculative := core.SpeculativeIndexerWork(ctx)
+	reqLang := profileRequiredLanguage(p.profile)
+	requiredLangRejected := reqLang != "" && traceHasRequiredProfileLanguageRejection(p.trace)
 
 	if len(cands) == 0 {
 		if p.req.PreferredOnly {
+			if requiredLangRejected {
+				langErr := &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+				p.trace.Err = langErr.Error()
+				return nil, fmt.Errorf("%q: %w", t.Title, langErr)
+			}
 			return nil, core.ErrNotAvailable
 		}
-		if p.searchErr == nil && ctx.Err() == nil && !speculative {
+		if p.searchErr == nil && ctx.Err() == nil && !speculative && !requiredLangRejected {
 			rescueTried = true
 			rescueReq := *p.req
 			rescueReq.Prefer = ""
@@ -748,6 +756,11 @@ func (s *Service) resolveVersionSlot(ctx context.Context, p slotResolveParams) (
 				p.trace.Err = err.Error()
 				return nil, err
 			}
+		}
+		if len(cands) == 0 && reqLang != "" && traceHasRequiredProfileLanguageRejection(p.trace) {
+			langErr := &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+			p.trace.Err = langErr.Error()
+			return nil, fmt.Errorf("%q: %w", t.Title, langErr)
 		}
 	}
 
@@ -1057,6 +1070,11 @@ func (s *Service) resolveVersionSlot(ctx context.Context, p slotResolveParams) (
 		if ct.Attempted && ct.Rejected {
 			return nil, fmt.Errorf("%q: %w: %w", t.Title, core.ErrNotAvailable, core.ErrSourceUnavailable)
 		}
+	}
+	if reqLang != "" && traceHasRequiredProfileLanguageRejection(p.trace) {
+		langErr := &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+		p.trace.Err = langErr.Error()
+		return nil, fmt.Errorf("%q: %w", t.Title, langErr)
 	}
 	return nil, fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable)
 }

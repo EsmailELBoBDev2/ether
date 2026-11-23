@@ -39,9 +39,9 @@ func sourceSuitabilityWithLanguages(r core.Release, t *core.Title, p core.Qualit
 			return "screener not allowed"
 		}
 	}
-	// A profile's specific Language is a hard gate, as in Radarr; an
-	// explicitly chosen release (a pin) bypasses it, as it does the
-	// minimum custom format score.
+	// A profile's specific Language in Required mode is a hard gate, as in
+	// Radarr (Preferred mode ranks rather than filters); an explicitly chosen
+	// release (a pin) bypasses it, as it does the minimum custom format score.
 	if !explicit {
 		if reason := profileLanguageRejection(info, p, t); reason != "" {
 			return reason

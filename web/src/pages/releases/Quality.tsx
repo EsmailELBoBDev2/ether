@@ -88,6 +88,7 @@ function blankProfile(profiles: QualityProfile[], media: ProfileMedia): QualityP
     episodeMinSizeMbPerMin: 0,
     episodeMaxSizeMbPerMin: 0,
     preferredLanguages: null,
+    audioLanguageMode: "preferred",
     allowCam: false,
   };
 }

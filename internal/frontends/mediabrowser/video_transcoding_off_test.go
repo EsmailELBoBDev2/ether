@@ -108,6 +108,23 @@ func TestPlaybackInfoErrorVideoTranscodingOff(t *testing.T) {
 	if embyRec.Code != http.StatusUnprocessableEntity || !strings.Contains(embyRec.Body.String(), "turned off") {
 		t.Fatalf("emby streamError = %d %q", embyRec.Code, embyRec.Body.String())
 	}
+
+	// RequiredAudioLanguageError surfaces actionable message in Jellyfin PlaybackInfo and Emby streamError.
+	langErr := &frontend.RequiredAudioLanguageError{Language: "English"}
+	jfLangRec := httptest.NewRecorder()
+	i.playbackInfoError(jfLangRec, nil, "plan", langErr)
+	var jfLangBody map[string]any
+	if err := json.Unmarshal(jfLangRec.Body.Bytes(), &jfLangBody); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if jfLangBody["Message"] != langErr.Error() {
+		t.Fatalf("jellyfin Message = %v, want %q", jfLangBody["Message"], langErr.Error())
+	}
+	embyLangRec := httptest.NewRecorder()
+	streamError("emby", embyLangRec, langErr)
+	if embyLangRec.Code != http.StatusUnprocessableEntity || !strings.Contains(embyLangRec.Body.String(), langErr.Error()) {
+		t.Fatalf("emby streamError(RequiredAudioLanguageError) = %d %q", embyLangRec.Code, embyLangRec.Body.String())
+	}
 }
 
 func TestPlaybackInfoPerViewerNoVideoTranscode(t *testing.T) {

@@ -693,6 +693,7 @@ func (ps *appProfileService) Profiles(ctx context.Context) ([]builtin.ProfileInf
 			Rules:              append([]core.ReleaseRule(nil), p.ReleaseRules...),
 			QualityOrder:       config.CloneQualityOrder(p.QualityOrder),
 			Language:           p.Language,
+			AudioLanguageMode:  p.AudioLanguageMode,
 			PreferredLanguages: append([]string(nil), p.PreferredLanguages...),
 			MaxHeight:          p.MaxHeight,
 			MinHeight:          p.MinHeight,

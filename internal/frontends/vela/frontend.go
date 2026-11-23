@@ -385,16 +385,21 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 	}
 
 	var incompatible *frontend.NoCompatiblePathError
+	var reqLang *frontend.RequiredAudioLanguageError
 	var changed *bootstrapChangedError
 	switch {
 	case errors.As(err, &incompatible):
 		message := "no compatible playback path"
 		if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 			message = frontend.VideoTranscodingOffMessage(policy, viewer)
+		} else if errors.As(err, &reqLang) {
+			message = reqLang.Error()
 		}
 		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": message, "rejectedPaths": incompatible.RejectedPaths, "retry": object{"allowed": false}}})
 	case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
 		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": frontend.VideoTranscodingOffMessage(policy, viewer), "rejectedPaths": []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{frontend.ErrVideoTranscodingDisabled.Error()}}}, "retry": object{"allowed": false}}})
+	case errors.As(err, &reqLang):
+		send(w, http.StatusUnprocessableEntity, object{"error": object{"class": "source", "code": "required_audio_language", "message": reqLang.Error(), "retry": object{"allowed": false}}})
 	case errors.As(err, &changed):
 		w.Header().Set("Retry-After", "1")
 		send(w, 409, object{"error": object{"class": "conflict", "code": "bootstrap_changed", "message": "home changed while loading", "retry": object{"allowed": true, "afterSeconds": 1, "maxAttempts": 3}}})

@@ -39,4 +39,10 @@ func TestPlaybackErrorVideoTranscodingOff(t *testing.T) {
 	if ownerRec.Code != http.StatusUnprocessableEntity || !strings.Contains(ownerRec.Body.String(), frontend.MsgVideoTranscodingOff) {
 		t.Fatalf("server-wide playbackError = %d %q, want %q", ownerRec.Code, ownerRec.Body.String(), frontend.MsgVideoTranscodingOff)
 	}
+	langErr := &frontend.RequiredAudioLanguageError{Language: "English"}
+	langRec := httptest.NewRecorder()
+	playbackError(langRec, langErr)
+	if langRec.Code != http.StatusUnprocessableEntity || !strings.Contains(langRec.Body.String(), langErr.Error()) {
+		t.Fatalf("playbackError(RequiredAudioLanguageError) = %d %q, want %q", langRec.Code, langRec.Body.String(), langErr.Error())
+	}
 }

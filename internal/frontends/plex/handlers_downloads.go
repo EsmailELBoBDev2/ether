@@ -950,7 +950,10 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			}
 			s.releaseDownloadLimit(context.Background(), it)
 			s.log.Warn("download preparation failed", "key", it.Key, "err", err)
-			if noRelease(err) {
+			var reqLang *frontend.RequiredAudioLanguageError
+			if errors.As(err, &reqLang) {
+				fail(reqLang.Error())
+			} else if noRelease(err) {
 				fail("No release available for download at this quality.")
 			} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 				fail(s.downloadTranscodingOffMessage(it))
@@ -963,9 +966,12 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			s.releaseDownloadLimit(context.Background(), it)
 			s.log.Warn("download processing failed", "key", it.Key, "err", err)
 		}
+		var reqLang *frontend.RequiredAudioLanguageError
 		switch {
 		case ctx.Err() != nil:
 			// Deleted, restarted or shutting down; state already reset.
+		case errors.As(err, &reqLang):
+			fail(reqLang.Error())
 		case errors.Is(err, frontend.ErrDownloadNeedsTranscode):
 			fail("This title cannot be downloaded: it cannot be converted to a playable MP4.")
 		case errors.Is(err, frontend.ErrVideoTranscodingDisabled):

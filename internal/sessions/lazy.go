@@ -744,6 +744,11 @@ func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request,
 		http.Error(w, core.JobsBusyMessage(err), http.StatusServiceUnavailable)
 		return
 	}
+	var reqLang *core.RequiredAudioLanguageError
+	if errors.As(err, &reqLang) {
+		http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone) {
 		s.sourceGone(w, r)
 		return

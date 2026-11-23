@@ -37,6 +37,10 @@ func TestPlaybackMessageVideoTranscodingOff(t *testing.T) {
 	if msg != msgVideoTranscodingOff || !strings.Contains(msg, "video transcode") || !strings.Contains(msg, "turned off") {
 		t.Fatalf("playbackMessage(ErrVideoTranscodingDisabled) = %q", msg)
 	}
+	langErr := &frontend.RequiredAudioLanguageError{Language: "English"}
+	if got := playbackMessage(fmt.Errorf("plan: %w", langErr)); got != langErr.Error() {
+		t.Fatalf("playbackMessage(RequiredAudioLanguageError) = %q, want %q", got, langErr.Error())
+	}
 }
 
 func TestPlexDecisionPerViewerNoVideoTranscode(t *testing.T) {

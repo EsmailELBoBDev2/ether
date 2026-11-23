@@ -78,6 +78,10 @@ func playbackMessage(err error) string {
 	if errors.As(err, &bedtime) {
 		return bedtime.Error()
 	}
+	var reqLang *frontend.RequiredAudioLanguageError
+	if errors.As(err, &reqLang) {
+		return reqLang.Error()
+	}
 	switch {
 	case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
 		return msgVideoTranscodingOff

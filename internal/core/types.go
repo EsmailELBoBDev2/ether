@@ -286,6 +286,22 @@ func (videoTranscodingDisabledError) Error() string {
 
 func (videoTranscodingDisabledError) Unwrap() error { return ErrNotAvailable }
 
+// RequiredAudioLanguageError reports that no release matched the quality
+// profile's required Audio language. It unwraps to ErrNotAvailable so existing
+// availability checks keep working while frontends surface the actionable hint.
+type RequiredAudioLanguageError struct {
+	Language string
+}
+
+func (e *RequiredAudioLanguageError) Error() string {
+	if e == nil || strings.TrimSpace(e.Language) == "" {
+		return "No release in the required language found; set Audio language to Preferred to allow other languages"
+	}
+	return fmt.Sprintf("No %s release found; set Audio language to Preferred to allow other languages", strings.TrimSpace(e.Language))
+}
+
+func (e *RequiredAudioLanguageError) Unwrap() error { return ErrNotAvailable }
+
 // ProviderConnectionCapError reports that an upstream live provider's
 // concurrent connection limit has been reached.
 type ProviderConnectionCapError struct {

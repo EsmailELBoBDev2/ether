@@ -347,8 +347,15 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 					if errors.Is(err, core.ErrVideoTranscodingDisabled) {
 						return nil, err
 					}
+					var reqLang *core.RequiredAudioLanguageError
+					if errors.As(err, &reqLang) {
+						return nil, err
+					}
 					if errors.Is(lastErr, core.ErrVideoTranscodingDisabled) {
 						return nil, fmt.Errorf("%w: %w", err, core.ErrVideoTranscodingDisabled)
+					}
+					if errors.As(lastErr, &reqLang) {
+						return nil, fmt.Errorf("%w: %w", err, reqLang)
 					}
 					if errors.Is(lastErr, core.ErrDebridAuth) {
 						return nil, fmt.Errorf("%w (last failure: %v): %w", err, lastErr, core.ErrDebridAuth)
@@ -397,7 +404,11 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if !s.exact && m.ownerPinAllows(s, "") {
 			if langs, unverified := candidateNeedsAudioVerification(profile, s.title, res.Release); unverified {
 				if unknownAudioProbes >= maxUnknownAudioProbes {
-					lastErr = fmt.Errorf("audio is not in the profile's language (%s)", langs[0])
+					if reqLang := normalizedProfileLanguage(profile); reqLang != "" && strings.EqualFold(langs[0], reqLang) {
+						lastErr = &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+					} else {
+						lastErr = fmt.Errorf("audio is not in the profile's language (%s)", langs[0])
+					}
 					allUncached = false
 					tried = append(tried, res.Release.ID)
 					alternates = res.Alternates
@@ -457,7 +468,11 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
 				m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reqReason)
 				m.dropGeneration(g)
-				lastErr = errors.New(reqReason)
+				if reqLang := normalizedProfileLanguage(profile); reqLang != "" && strings.HasPrefix(reqReason, "audio is not in the profile's language (") {
+					lastErr = &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+				} else {
+					lastErr = errors.New(reqReason)
+				}
 				allUncached = false
 				if needsAudioProbe && unknownAudioProbes < maxUnknownAudioProbes {
 					attempt--
@@ -582,8 +597,11 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 // errors stay text only, so release-level sentinels (ErrNotFound and the
 // like) cannot change how the failure is reported to the client.
 func releasesFailed(n int, lastErr error, allUncached bool) error {
+	var reqLang *core.RequiredAudioLanguageError
 	switch {
 	case errors.Is(lastErr, core.ErrVideoTranscodingDisabled):
+		return fmt.Errorf("%d releases failed: %w", n, lastErr)
+	case errors.As(lastErr, &reqLang):
 		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, frontend.ErrTrackSourceUnavailable):
 		return fmt.Errorf("%d releases failed: %w", n, lastErr)
@@ -2645,6 +2663,9 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 	switch {
 	case specificProfileLang:
 		wanted = append(wanted, profileLang)
+		if profile.EffectiveAudioLanguageMode() == core.AudioLanguageModePreferred && len(userAudio) > 0 {
+			wanted = append(wanted, userAudio...)
+		}
 	case len(profile.PreferredLanguages) > 0:
 		wanted = append(wanted, profile.PreferredLanguages...)
 	case len(userAudio) > 0:

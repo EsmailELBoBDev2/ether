@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
 // Real-Debrid REST API v1 (https://api.real-debrid.com). Bearer token auth.
@@ -162,15 +163,41 @@ func rdFiles(info *rdInfo) []File {
 	return out
 }
 
+// rdMediaClass returns the pack media class of p ("video", "audio", "book",
+// or "comic"), or "" for sidecars, artwork, metadata, and generic archives.
+func rdMediaClass(p string) string {
+	if isVideo(p) {
+		return "video"
+	}
+	switch fam := nzb.FileFamily(p); fam {
+	case "audio", "book", "comic":
+		return fam
+	default:
+		return ""
+	}
+}
+
 // rdSelection lists the files to select: the chosen one and every other
-// main video of the torrent. Real-Debrid serves a torrent instantly only for
-// a file set it already holds, and Torrentio, DMM and other debrid apps
-// select every video, so a cached season pack is held as the whole pack and
-// asking for one episode of it starts a new download (#262).
+// sibling file of the same media class in the torrent. Real-Debrid serves a
+// torrent instantly only for a file set it already holds, and Torrentio, DMM
+// and other debrid apps select every file of a pack, so a cached season pack
+// (#262), album, ebook pack, or comic pack is held as the whole pack and
+// asking for one file of it starts a new download.
 func rdSelection(files []File, chosen File) string {
 	ids := []string{chosen.ID}
+	class := rdMediaClass(chosen.Path)
+	if class == "" {
+		return chosen.ID
+	}
 	for _, f := range files {
-		if f.ID != chosen.ID && isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 {
+		if f.ID == chosen.ID || f.Size <= 0 {
+			continue
+		}
+		if class == "video" {
+			if isVideo(f.Path) && !isExtra(f.Path) {
+				ids = append(ids, f.ID)
+			}
+		} else if rdMediaClass(f.Path) == class {
 			ids = append(ids, f.ID)
 		}
 	}

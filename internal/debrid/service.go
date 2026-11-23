@@ -1165,6 +1165,9 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 			if f, err := ChooseFile(files, nil); err == nil {
 				return f, nil
 			}
+			if f, ok := primaryNonVideoFile(files); ok {
+				return f, nil
+			}
 			for _, f := range files {
 				if f.Size > 0 {
 					return f, nil
@@ -1194,6 +1197,45 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 		return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrNotCached, errors.Join(errs...))
 	}
 	return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
+}
+
+// primaryNonVideoFile picks a file from the dominant non-video pack media
+// class (audio, book, or comic) by total byte size so listing a cached album,
+// ebook, or comic torrent selects its media set rather than a leading sidecar
+// like cover.jpg or album.cue.
+func primaryNonVideoFile(files []File) (File, bool) {
+	var totals [3]int64
+	var best [3]File
+	for _, f := range files {
+		if f.Size <= 0 {
+			continue
+		}
+		var i int
+		switch rdMediaClass(f.Path) {
+		case "audio":
+			i = 0
+		case "book":
+			i = 1
+		case "comic":
+			i = 2
+		default:
+			continue
+		}
+		totals[i] += f.Size
+		if best[i].Size < f.Size {
+			best[i] = f
+		}
+	}
+	winner := -1
+	for i, tot := range totals {
+		if tot > 0 && (winner < 0 || tot > totals[winner]) {
+			winner = i
+		}
+	}
+	if winner < 0 {
+		return File{}, false
+	}
+	return best[winner], true
 }
 
 // CachedPackMatcher inspects a cached season-pack torrent once and returns a

@@ -395,6 +395,38 @@ func TitleAliases(title string) []string {
 	return out
 }
 
+// SubtitleAliases returns standalone halves of a colon-delimited title
+// (e.g. "Demon Slayer: Kimetsu no Yaiba" -> "Demon Slayer", "Kimetsu no Yaiba",
+// or "The Lord of the Rings: The Rings of Power" -> "The Rings of Power")
+// only when alternatives independently confirms that half as a known alias
+// for the same title. Unconfirmed prefixes such as sequel names
+// ("The Signal: Reloaded") are never returned.
+func SubtitleAliases(title string, alternatives []string) []string {
+	if len(alternatives) == 0 {
+		return nil
+	}
+	left, right, ok := strings.Cut(strings.TrimSpace(title), ":")
+	if !ok {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, half := range []string{strings.TrimSpace(left), strings.TrimSpace(right)} {
+		norm := NormalizeTitle(half)
+		if len([]rune(norm)) < 4 || seen[norm] || TitlesMatch(half, title) {
+			continue
+		}
+		for _, alt := range alternatives {
+			if TitlesMatch(half, alt) {
+				seen[norm] = true
+				out = append(out, half)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // TitleMatches reports whether a parsed release title matches the wanted title.
 func TitleMatches(parsed core.ReleaseInfo, want string) bool {
 	return TitlesMatch(parsed.Title, want)

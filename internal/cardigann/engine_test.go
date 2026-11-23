@@ -416,3 +416,28 @@ func TestCardigannFallbackFindsSeasonPackAndInitialismAlias(t *testing.T) {
 		t.Fatalf("cardigann season-pack fallback: got %+v err=%v", rels, err)
 	}
 }
+
+func TestCardigannFallbackFindsValidatedSubtitleAliasSeasonPack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if strings.Contains(r.URL.Path, "Demon+Slayer+S01") && !strings.Contains(r.URL.Path, "S01E01") {
+			fmt.Fprint(w, `<table id="torrents"><tbody><tr><td><a href="?cat=2">TV</a></td><td><a class="title" href="/d/1">Demon.Slayer.S01.1080p.BluRay.x265-GRP</a><a href="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567">dl</a></td><td class="size">12 GB</td><td class="seeders">14</td><td class="leechers">2</td></tr></tbody></table>`)
+			return
+		}
+		fmt.Fprint(w, `<table id="torrents"><tbody></tbody></table>`)
+	}))
+	defer srv.Close()
+	r := testRunner(t, loadDef(t, "public.yml"), srv.URL, runnerSetup{})
+	rels, err := r.Search(context.Background(), core.SearchRequest{
+		Type:              core.TypeEpisode,
+		Title:             "Demon Slayer: Kimetsu no Yaiba",
+		OriginalTitle:     "鬼滅の刃",
+		AlternativeTitles: []string{"Demon Slayer", "Kimetsu no Yaiba"},
+		Year:              2019,
+		Season:            1,
+		Episode:           1,
+	}, nil, nil, nil)
+	if err != nil || len(rels) != 1 || !strings.Contains(rels[0].Name, "Demon.Slayer.S01") {
+		t.Fatalf("cardigann subtitle-alias season-pack fallback: got %+v err=%v", rels, err)
+	}
+}

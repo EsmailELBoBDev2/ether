@@ -271,11 +271,32 @@ func (r *Runner) fallbackAttempts(req core.SearchRequest, movieCats, tvCats []in
 	if req.OriginalTitle != "" {
 		addTitle(req.OriginalTitle)
 	}
+	if req.EnglishTitle != "" {
+		addTitle(req.EnglishTitle)
+	}
 	for _, a := range releaseparse.TitleAliases(req.Title) {
 		addTitle(a)
 	}
 	if req.OriginalTitle != "" {
 		for _, a := range releaseparse.TitleAliases(req.OriginalTitle) {
+			addTitle(a)
+		}
+	}
+	if req.EnglishTitle != "" {
+		for _, a := range releaseparse.TitleAliases(req.EnglishTitle) {
+			addTitle(a)
+		}
+	}
+	for _, a := range releaseparse.SubtitleAliases(req.Title, req.AlternativeTitles) {
+		addTitle(a)
+	}
+	if req.OriginalTitle != "" {
+		for _, a := range releaseparse.SubtitleAliases(req.OriginalTitle, req.AlternativeTitles) {
+			addTitle(a)
+		}
+	}
+	if req.EnglishTitle != "" {
+		for _, a := range releaseparse.SubtitleAliases(req.EnglishTitle, req.AlternativeTitles) {
 			addTitle(a)
 		}
 	}
@@ -303,24 +324,26 @@ func (r *Runner) fallbackAttempts(req core.SearchRequest, movieCats, tvCats []in
 			out = append(out, aq)
 		}
 	}
-	// Torrent season-pack / complete-series rescue when an episode search
-	// returned 0 single-episode rows.
-	if isTV && req.Season > 0 && req.Episode > 0 && !strings.EqualFold(r.def.Protocol, "usenet") {
+	// Season-pack rescue when an episode search returned 0 single-episode rows.
+	if isTV && req.Season > 0 && req.Episode > 0 {
 		allTitles := []string{}
 		if primary := sanitizeTitle(req.Title); primary != "" {
 			allTitles = append(allTitles, primary)
 		}
 		allTitles = append(allTitles, altTitles...)
 		seasonStr := fmt.Sprintf("S%02d", req.Season)
+		isUsenet := strings.EqualFold(r.def.Protocol, "usenet")
 		for _, t := range allTitles {
 			sq := base
 			sq.ep = 0
 			sq.q = t
 			sq.keywords = strings.TrimSpace(t + " " + seasonStr)
 			out = append(out, sq)
-			sqWord := sq
-			sqWord.keywords = strings.TrimSpace(fmt.Sprintf("%s Season %d", t, req.Season))
-			out = append(out, sqWord)
+			if !isUsenet {
+				sqWord := sq
+				sqWord.keywords = strings.TrimSpace(fmt.Sprintf("%s Season %d", t, req.Season))
+				out = append(out, sqWord)
+			}
 		}
 	}
 	if req.Type == core.TypeEpisode {

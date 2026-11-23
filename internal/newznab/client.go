@@ -863,6 +863,11 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 		// Do not reuse persisted empty answers from that narrower search.
 		fmt.Fprint(h, "tv-keywords-v2|")
 	}
+	if !c.Config().UsesBackend() && !c.Config().IsTorrent() && isTVRequest(req) && req.Season > 0 && req.Episode > 0 {
+		// Usenet episode searches now fall back to season-pack queries when
+		// episode-specific queries miss; do not reuse persisted empty answers.
+		fmt.Fprint(h, "usenet-season-pack-v1|")
+	}
 	// The indexer's search identity: an edited URL, key, category list or
 	// built-in site setting must not be answered from the old config's
 	// results (in memory, or persisted for a fresh client).
@@ -875,6 +880,12 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
 	if orig := strings.ToLower(strings.TrimSpace(req.OriginalTitle)); orig != "" && orig != strings.ToLower(strings.TrimSpace(req.Title)) {
 		fmt.Fprintf(h, "|%s", orig)
+	}
+	if eng := strings.ToLower(strings.TrimSpace(req.EnglishTitle)); eng != "" && eng != strings.ToLower(strings.TrimSpace(req.Title)) && eng != strings.ToLower(strings.TrimSpace(req.OriginalTitle)) {
+		fmt.Fprintf(h, "|eng:%s", eng)
+	}
+	for _, sub := range subtitleQueryAliases(req) {
+		fmt.Fprintf(h, "|sub:%s", strings.ToLower(sub))
 	}
 	// Anime requests search more (absolute numbers, kitsu ids); keys of
 	// every other request stay as they were.
@@ -898,8 +909,31 @@ func joinCats(cats []int) string {
 	return strings.Join(parts, ",")
 }
 
+func subtitleQueryAliases(req core.SearchRequest) []string {
+	var out []string
+	seen := map[string]bool{}
+	addFrom := func(s string) {
+		if s == "" {
+			return
+		}
+		for _, a := range releaseparse.SubtitleAliases(s, req.AlternativeTitles) {
+			k := strings.ToLower(strings.TrimSpace(a))
+			if k == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, a)
+		}
+	}
+	addFrom(req.Title)
+	addFrom(req.OriginalTitle)
+	addFrom(req.EnglishTitle)
+	return out
+}
+
 // queryTitles returns the distinct search titles to try for req: Title
-// first, then OriginalTitle (when distinct), then structural aliases.
+// first, then OriginalTitle and EnglishTitle (when distinct), then structural
+// aliases and subtitle halves confirmed by AlternativeTitles.
 func queryTitles(req core.SearchRequest) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -929,6 +963,10 @@ func queryTitles(req core.SearchRequest) []string {
 	if req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
 		addClean(req.OriginalTitle)
 	}
+	if req.EnglishTitle != "" && !releaseparse.TitlesMatch(req.EnglishTitle, req.Title) &&
+		(req.OriginalTitle == "" || !releaseparse.TitlesMatch(req.EnglishTitle, req.OriginalTitle)) {
+		addClean(req.EnglishTitle)
+	}
 	for _, a := range releaseparse.TitleAliases(req.Title) {
 		addClean(a)
 	}
@@ -936,6 +974,14 @@ func queryTitles(req core.SearchRequest) []string {
 		for _, a := range releaseparse.TitleAliases(req.OriginalTitle) {
 			addClean(a)
 		}
+	}
+	if req.EnglishTitle != "" {
+		for _, a := range releaseparse.TitleAliases(req.EnglishTitle) {
+			addClean(a)
+		}
+	}
+	for _, a := range subtitleQueryAliases(req) {
+		addClean(a)
 	}
 	return out
 }
@@ -981,18 +1027,7 @@ func isTVRequest(req core.SearchRequest) bool {
 	return req.Type == core.TypeEpisode || req.Season > 0 || req.Type == core.TypeShow
 }
 
-// searchAttempts builds the ordered fallback queries for a request.
-func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps) []url.Values {
-	if req.Category != "" || req.Type != core.TypeEpisode {
-		return c.numberedSearchAttempts(req, caps)
-	}
-	var lists [][]url.Values
-	if !req.ReleaseAliasesOnly {
-		lists = append(lists, c.numberedSearchAttempts(req, caps))
-	}
-	for _, n := range core.EpisodeAliases(req) {
-		lists = append(lists, c.numberedSearchAttempts(core.AliasSearchRequest(req, n), caps))
-	}
+func interleaveAttempts(lists [][]url.Values) []url.Values {
 	var out []url.Values
 	seen := map[string]bool{}
 	for i := 0; ; i++ {
@@ -1000,14 +1035,54 @@ func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps) []url.Values
 		for _, list := range lists {
 			if i < len(list) {
 				any = true
-				if !seen[list[i].Encode()] {
-					seen[list[i].Encode()] = true
+				enc := list[i].Encode()
+				if !seen[enc] {
+					seen[enc] = true
 					out = append(out, list[i])
 				}
 			}
 		}
 		if !any {
 			break
+		}
+	}
+	return out
+}
+
+func (c *Client) searchAttemptsSplit(req core.SearchRequest, caps *Caps) (primary, packs []url.Values) {
+	if req.Category != "" || req.Type != core.TypeEpisode {
+		return c.numberedSearchAttemptsSplit(req, caps)
+	}
+	var epLists, packLists [][]url.Values
+	if !req.ReleaseAliasesOnly {
+		ep, pk := c.numberedSearchAttemptsSplit(req, caps)
+		epLists = append(epLists, ep)
+		packLists = append(packLists, pk)
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		ep, pk := c.numberedSearchAttemptsSplit(core.AliasSearchRequest(req, n), caps)
+		epLists = append(epLists, ep)
+		packLists = append(packLists, pk)
+	}
+	return interleaveAttempts(epLists), interleaveAttempts(packLists)
+}
+
+// searchAttempts builds the ordered fallback queries for a request.
+func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps) []url.Values {
+	primary, packs := c.searchAttemptsSplit(req, caps)
+	if len(packs) == 0 {
+		return primary
+	}
+	seen := make(map[string]bool, len(primary))
+	for _, p := range primary {
+		seen[p.Encode()] = true
+	}
+	out := slices.Clone(primary)
+	for _, p := range packs {
+		enc := p.Encode()
+		if !seen[enc] {
+			seen[enc] = true
+			out = append(out, p)
 		}
 	}
 	return out
@@ -1028,18 +1103,18 @@ func ordinalSeason(n int) string {
 	return fmt.Sprintf("%d%s Season", n, suffix)
 }
 
-func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []url.Values {
+func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps) ([]url.Values, []url.Values) {
 	cfg := c.Config()
 	if req.Category != "" {
 		cats, err := core.SearchCategories(req.Category)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}, "t": {"search"}, "cat": {joinCats(cats)}}
 		if q := strings.TrimSpace(req.Title); q != "" {
 			v.Set("q", q)
 		}
-		return []url.Values{v}
+		return []url.Values{v}, nil
 	}
 	isTV := isTVRequest(req)
 	catMode := c.currentSearchCatMode()
@@ -1147,10 +1222,12 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []ur
 				}
 			}
 		}
-		// Torznab season-pack and complete-series fallback: older TV shows
-		// on torrent indexers often exist only as full-season or complete
-		// packs, which an episode-specific query (ep=N / SxxExx) misses.
-		if cfg.IsTorrent() && req.Season > 0 {
+		// Season-pack fallback: TV shows on both torrent and Usenet indexers
+		// often exist only as full-season packs, which episode-specific queries
+		// (ep=N / SxxExx) miss. Usenet runs targeted ID and "Sxx" queries;
+		// Torznab also adds "tvsearch", "Season N" and "Complete" queries.
+		var packs []url.Values
+		if req.Season > 0 {
 			mkSeasonWith := func(idKey, idVal string, season int) url.Values {
 				v := base()
 				v.Set("t", "tvsearch")
@@ -1169,55 +1246,66 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []ur
 					if req.CourTVDBSeason > 0 {
 						tvdbSeason = req.CourTVDBSeason
 					}
-					attempts = append(attempts, mkSeasonWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason))
+					packs = append(packs, mkSeasonWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason))
 				}
 				if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
-					attempts = append(attempts, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
+					packs = append(packs, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 				}
 				if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
-					attempts = append(attempts, mkSeason("imdbid", imdb))
+					packs = append(packs, mkSeason("imdbid", imdb))
 				}
 				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
 					for _, title := range titles {
 						q := fmt.Sprintf("%s S%02d", title, req.CourTVDBSeason)
-						v := mkSeasonWith("", "", req.CourTVDBSeason)
-						v.Set("q", q)
-						attempts = append(attempts, v)
-						for _, sq := range []string{
-							q,
-							fmt.Sprintf("%s %s", title, ordinalSeason(req.CourTVDBSeason)),
-							fmt.Sprintf("%s Season %d", title, req.CourTVDBSeason),
-						} {
+						if cfg.IsTorrent() {
+							v := mkSeasonWith("", "", req.CourTVDBSeason)
+							v.Set("q", q)
+							packs = append(packs, v)
+							for _, sq := range []string{
+								q,
+								fmt.Sprintf("%s %s", title, ordinalSeason(req.CourTVDBSeason)),
+								fmt.Sprintf("%s Season %d", title, req.CourTVDBSeason),
+							} {
+								v2 := base()
+								v2.Set("t", "search")
+								v2.Set("q", sq)
+								packs = append(packs, v2)
+							}
+						} else {
 							v2 := base()
 							v2.Set("t", "search")
-							v2.Set("q", sq)
-							attempts = append(attempts, v2)
+							v2.Set("q", q)
+							packs = append(packs, v2)
 						}
 					}
 				}
 				for _, title := range titles {
 					q := fmt.Sprintf("%s S%02d", title, req.Season)
-					v := mkSeason("", "")
-					v.Set("q", q)
-					attempts = append(attempts, v)
+					if cfg.IsTorrent() {
+						v := mkSeason("", "")
+						v.Set("q", q)
+						packs = append(packs, v)
+					}
 					v2 := base()
 					v2.Set("t", "search")
 					v2.Set("q", q)
-					attempts = append(attempts, v2)
+					packs = append(packs, v2)
 				}
 			}
-			for _, title := range titles {
-				v := base()
-				v.Set("t", "search")
-				v.Set("q", fmt.Sprintf("%s Season %d", title, req.Season))
-				attempts = append(attempts, v)
-				vc := base()
-				vc.Set("t", "search")
-				vc.Set("q", title+" Complete")
-				attempts = append(attempts, vc)
+			if cfg.IsTorrent() {
+				for _, title := range titles {
+					v := base()
+					v.Set("t", "search")
+					v.Set("q", fmt.Sprintf("%s Season %d", title, req.Season))
+					packs = append(packs, v)
+					vc := base()
+					vc.Set("t", "search")
+					vc.Set("q", title+" Complete")
+					packs = append(packs, vc)
+				}
 			}
 		}
-		return attempts
+		return attempts, packs
 	}
 	if imdb != "" && (caps == nil || (!caps.MovieAvail || hasParam(caps.MovieParams, "imdbid"))) {
 		v := base()
@@ -1241,7 +1329,7 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []ur
 		v.Set("q", q)
 		attempts = append(attempts, v)
 	}
-	return attempts
+	return attempts, nil
 }
 
 func stampMissingCategory(results []core.Release, media config.IdentityMediaType) {
@@ -1612,7 +1700,7 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 		applyDefaultSearchCats(v, cfg, caps, isTV, catMode)
 		return v
 	}
-	primary := c.searchAttempts(req, caps)
+	primary, packs := c.searchAttemptsSplit(req, caps)
 	alreadyFirst := ""
 	if len(primary) > 0 {
 		alreadyFirst = primary[0].Encode()
@@ -1681,6 +1769,9 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 					add(vFull)
 				}
 			}
+		}
+		for _, p := range packs {
+			add(p)
 		}
 		for _, title := range titles {
 			if req.Season > 0 && req.Episode > 0 {

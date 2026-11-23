@@ -27,16 +27,14 @@ import {
   Sparkles,
   Timer,
   Trash2,
-  TriangleAlert,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
-import { Field } from "../../components/fields";
+import { Field, Segmented } from "../../components/fields";
 import { ErrorPanel, LoadingRows, MutationError } from "../../components/feedback";
-import { Kpi } from "../../components/Kpi";
 import { DomainPage, Section } from "../../components/layout";
 import { localized, t, tn } from "../../i18n";
 import { apiFetch, errorMessage } from "../../lib/api";
@@ -47,19 +45,32 @@ import { useStreamEvent } from "../../lib/stream";
 import type { NotificationsData } from "../notifications/types";
 import { DescribeFlowDialog } from "./DescribeFlowDialog";
 import { FlowEditor } from "./Editor";
+import { FlowsOverview, StatsRangePicker } from "./Overview";
+import { fillTemplateDefaults } from "./params";
 import { StepTrace } from "./RunTrace";
-import { RunStatusBadge, useCatalogue } from "./shared";
+import { RunStatusBadge, triggerSummary, useCatalogue } from "./shared";
 import { TestRunDrawer } from "./TestRunDrawer";
-import { FLOW_PICKER, type Flow, type FlowTemplate, type Run, type RunStatus } from "./types";
+import {
+  FLOW_PICKER,
+  type Flow,
+  type FlowSummary,
+  type FlowTemplate,
+  type ParamSchema,
+  type Run,
+  type RunStatus,
+} from "./types";
 
 const TABS = localized(
   () =>
     [
-      { key: "flows", label: t("My flows") },
+      { key: "overview", label: t("Overview") },
+      { key: "list", label: t("Flows") },
       { key: "templates", label: t("Templates") },
       { key: "runs", label: t("Runs") },
     ] as const,
 );
+
+type TabKey = (typeof TABS)[number]["key"];
 
 const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   OctagonX,
@@ -73,7 +84,12 @@ const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   Siren,
 };
 
-/** Flows home (list / templates / runs) plus the full-screen canvas editor at /flows/edit/:id. */
+/**
+ * Flows home (overview / flows / templates / runs) plus the full-screen
+ * canvas editor at /flows/edit/:id. /flows opens the overview; the flows
+ * table lives at /flows/list. Older links still land: /flows/flows goes to
+ * the table and /flows/<flow id> opens that flow in the editor.
+ */
 export default function Flows() {
   const location = useLocation();
   const params = useParams();
@@ -83,8 +99,17 @@ export default function Flows() {
 
   if (splat[0] === "edit") return <FlowEditor key={`edit:${splat[1] ?? ""}`} flowId={splat[1]} />;
   if (splat[0] === "new") return <FlowEditor key={`new:${location.key}`} />;
+  if (splat[0] === "flows") return <Navigate to="/flows/list" replace />;
+  if (splat[0]?.startsWith("flow_") || splat[0]?.startsWith("flow-"))
+    return <Navigate to={`/flows/edit/${splat[0]}`} replace />;
 
-  const tab = splat[0] === "templates" ? "templates" : splat[0] === "runs" ? "runs" : "flows";
+  const tab: TabKey = (TABS.find((x) => x.key === splat[0])?.key ?? "overview") as TabKey;
+  return <FlowsHome tab={tab} />;
+}
+
+function FlowsHome({ tab }: { tab: TabKey }) {
+  // Overview and the table share one list request.
+  const flowsState = useFlowsList(tab === "overview" || tab === "list");
   return (
     <DomainPage
       title={t("Flows")}
@@ -94,26 +119,46 @@ export default function Flows() {
       base="/flows"
       tabs={TABS}
       active={tab}
-      tabHref={(key) => (key === "flows" ? "/flows" : `/flows/${key}`)}
+      tabHref={(key) => (key === "overview" ? "/flows" : `/flows/${key}`)}
+      tabActions={tab === "overview" ? <StatsRangePicker /> : undefined}
+      fit={tab === "overview" || tab === "list"}
     >
-      {tab === "templates" ? <TemplatesTab /> : tab === "runs" ? <RunsTab /> : <FlowListTab />}
+      {tab === "overview" ? (
+        <FlowsOverview
+          flows={flowsState.data}
+          flowsError={flowsState.error}
+          onRetryFlows={() => void flowsState.reload()}
+        />
+      ) : tab === "list" ? (
+        <FlowListTab flowsState={flowsState} />
+      ) : tab === "templates" ? (
+        <TemplatesTab />
+      ) : (
+        <RunsTab />
+      )}
     </DomainPage>
   );
 }
 
-function useFlowsList() {
-  const state = useAsync(() => flowsApi.listFlows(), []);
+function useFlowsList(active: boolean) {
+  const state = useAsync(async () => (active ? flowsApi.listFlows() : undefined), [active]);
   useStreamEvent("flows.changed", () => void state.reload());
   useStreamEvent("flows.run", () => void state.reload());
-  useInterval(() => void state.reload(), 30_000);
+  useInterval(() => void state.reload(), active ? 30_000 : null);
   return state;
 }
 
-function FlowListTab() {
+type FlowFilter = "all" | "on" | "off" | "attention";
+
+function needsAttention(f: FlowSummary): boolean {
+  return Boolean(f.disabledReason) || (f.failures24h ?? 0) > 0 || f.lastStatus === "failed";
+}
+
+function FlowListTab({ flowsState }: { flowsState: ReturnType<typeof useFlowsList> }) {
   const navigate = useNavigate();
-  const flowsState = useFlowsList();
   const catalogueState = useCatalogue();
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<FlowFilter>("all");
   const [describeOpen, setDescribeOpen] = useState(false);
   const [testFlow, setTestFlow] = useState<Flow | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -121,25 +166,17 @@ function FlowListTab() {
   const flows = flowsState.data ?? [];
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q
-      ? flows.filter(
-          (f) =>
-            f.name.toLowerCase().includes(q) || (f.description ?? "").toLowerCase().includes(q),
-        )
-      : flows;
-  }, [flows, query]);
+    return flows.filter(
+      (f) =>
+        (filter === "all" ||
+          (filter === "on" && f.enabled) ||
+          (filter === "off" && !f.enabled) ||
+          (filter === "attention" && needsAttention(f))) &&
+        (!q || f.name.toLowerCase().includes(q) || (f.description ?? "").toLowerCase().includes(q)),
+    );
+  }, [flows, query, filter]);
 
-  const stats = useMemo(
-    () => ({
-      enabled: flows.filter((f) => f.enabled).length,
-      runs24h: flows.reduce((s, f) => s + (f.runs24h ?? 0), 0),
-      failures24h: flows.reduce((s, f) => s + (f.failures24h ?? 0), 0),
-      active: flows.reduce((s, f) => s + (f.activeRuns ?? 0), 0),
-    }),
-    [flows],
-  );
-
-  const act = async (flow: Flow, fn: () => Promise<void>, ok?: string) => {
+  const act = async (flow: FlowSummary, fn: () => Promise<void>, ok?: string) => {
     setBusyId(flow.id);
     try {
       await fn();
@@ -153,50 +190,54 @@ function FlowListTab() {
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi
-          label={t("Automations on")}
-          value={stats.enabled}
-          detail={tn(flows.length, "{count} flow in total", "{count} flows in total")}
-          icon={<Workflow size={17} />}
-          tone="primary"
-        />
-        <Kpi
-          label={t("Runs in 24 h")}
-          value={stats.runs24h}
-          detail={
-            stats.active
-              ? tn(stats.active, "{count} run in progress now", "{count} runs in progress now")
-              : t("Nothing running right now")
-          }
-          icon={<Activity size={17} />}
-          tone="info"
-        />
-        <Kpi
-          label={t("Failures in 24 h")}
-          value={stats.failures24h}
-          detail={
-            stats.failures24h ? t("Open Runs to see what went wrong") : t("Everything ran cleanly")
-          }
-          icon={<TriangleAlert size={17} />}
-          tone={stats.failures24h ? "danger" : "success"}
-        />
-        <Kpi
-          label={t("Watching for")}
-          value={t("Events, schedules & hooks")}
-          detail={t("119 event types across the server")}
-          icon={<Sparkles size={17} />}
-          tone="success"
-        />
-      </div>
+  // The list carries no graph; a test run needs the whole flow.
+  const openTest = async (flow: FlowSummary) => {
+    setBusyId(flow.id);
+    try {
+      setTestFlow(await flowsApi.getFlow(flow.id));
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
 
+  const attention = flows.filter(needsAttention).length;
+
+  return (
+    <>
       <Section
-        title={t("My flows")}
-        description={t("Each flow listens, checks, and acts — edit one on the canvas to see how.")}
+        title={t("Flows")}
+        className="flex min-h-[360px] flex-1 flex-col"
         actions={
           <>
+            <label className="flex w-56 max-w-full items-center gap-2 rounded-lg border border-border px-2.5 py-1.5">
+              <Search size={14} className="shrink-0 text-fg-subtle" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("Search flows…")}
+                aria-label={t("Search flows")}
+                className="min-w-0 flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-subtle"
+              />
+            </label>
+            <Segmented
+              ariaLabel={t("Show")}
+              size="sm"
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: "all", label: t("All") },
+                { value: "on", label: t("On") },
+                { value: "off", label: t("Off") },
+                {
+                  value: "attention",
+                  label: attention
+                    ? t("Needs attention ({count})", { count: attention })
+                    : t("Needs attention"),
+                },
+              ]}
+            />
             <Button variant="outline" size="sm" onClick={() => setDescribeOpen(true)}>
               <Sparkles size={14} /> {t("Describe it")}
             </Button>
@@ -205,20 +246,11 @@ function FlowListTab() {
             </Button>
           </>
         }
-        bodyClassName={visible.length ? "divide-y divide-border" : undefined}
+        bodyClassName={cn(
+          "min-h-0 flex-1 overflow-y-auto",
+          visible.length ? "divide-y divide-border" : undefined,
+        )}
       >
-        <div className="px-5 pt-4">
-          <label className="flex max-w-sm items-center gap-2 rounded-lg border border-border px-2.5 py-2">
-            <Search size={14} className="shrink-0 text-fg-subtle" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t("Search flows…")}
-              aria-label={t("Search flows")}
-              className="min-w-0 flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-subtle"
-            />
-          </label>
-        </div>
         {flowsState.error && !flowsState.data ? (
           <div className="px-5 py-4">
             <ErrorPanel error={flowsState.error} onRetry={() => void flowsState.reload()} />
@@ -233,7 +265,7 @@ function FlowListTab() {
             title={flows.length ? t("No flows match") : t("No flows yet")}
             description={
               flows.length
-                ? t("Try a different search.")
+                ? t("Try a different search or filter.")
                 : t(
                     "Describe what should happen, or start from a template — the first flow takes a minute.",
                   )
@@ -252,141 +284,144 @@ function FlowListTab() {
             }
           />
         ) : (
-          visible.map((flow) => (
-            <div key={flow.id} className="flex flex-wrap items-center gap-3 px-5 py-4">
-              <span
-                aria-hidden
-                className={cn(
-                  "size-2.5 shrink-0 rounded-full",
-                  !flow.enabled
-                    ? "bg-fg-subtle/40"
-                    : flow.lastStatus === "failed"
-                      ? "bg-danger"
-                      : flow.lastStatus === "waiting" || flow.lastStatus === "running"
-                        ? "animate-pulse bg-primary"
-                        : "bg-success",
-                )}
-              />
-              <div className="min-w-0 flex-1 basis-56">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/flows/edit/${flow.id}`)}
-                    className="truncate text-left font-medium text-fg hover:underline"
-                  >
-                    {flow.name}
-                  </button>
-                  {flow.lastStatus ? <RunStatusBadge status={flow.lastStatus} /> : null}
-                  {flow.disabledReason ? (
-                    <Badge variant="destructive">{t("Turned itself off")}</Badge>
+          visible.map((flow) => {
+            const trigger = triggerSummary(flow, catalogueState.data);
+            return (
+              <div key={flow.id} className="flex flex-wrap items-center gap-3 px-5 py-4">
+                <span
+                  aria-hidden
+                  className={cn(
+                    "size-2.5 shrink-0 rounded-full",
+                    !flow.enabled
+                      ? "bg-fg-subtle/40"
+                      : flow.lastStatus === "failed"
+                        ? "bg-danger"
+                        : flow.lastStatus === "waiting" || flow.lastStatus === "running"
+                          ? "animate-pulse bg-primary"
+                          : "bg-success",
+                  )}
+                />
+                <div className="min-w-0 flex-1 basis-56">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/flows/edit/${flow.id}`)}
+                      className="truncate text-left font-medium text-fg hover:underline"
+                    >
+                      {flow.name}
+                    </button>
+                    {flow.lastStatus ? <RunStatusBadge status={flow.lastStatus} /> : null}
+                    {flow.disabledReason && flow.disabledReason !== "disabled by owner" ? (
+                      <Badge variant="destructive">{t("Turned itself off")}</Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 truncate text-sm text-fg-muted" title={flow.description}>
+                    {flow.description || trigger}
+                  </p>
+                  <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-fg-subtle">
+                    {trigger ? <span>{trigger}</span> : null}
+                    <span>
+                      {flow.lastRunAt
+                        ? t("last run {when}", { when: relativeTime(flow.lastRunAt) })
+                        : t("never run yet")}
+                    </span>
+                    <span>
+                      {tn(flow.runs24h ?? 0, "{count} run in 24 h", "{count} runs in 24 h")}
+                    </span>
+                    {(flow.failures24h ?? 0) > 0 ? (
+                      <span className="font-medium text-danger">
+                        {tn(flow.failures24h ?? 0, "{count} failure", "{count} failures")}
+                      </span>
+                    ) : null}
+                    {(flow.activeRuns ?? 0) > 0 ? (
+                      <span className="font-medium text-primary">
+                        {t("{count} in progress", { count: flow.activeRuns ?? 0 })}
+                      </span>
+                    ) : null}
+                  </p>
+                  {flow.disabledReason && flow.disabledReason !== "disabled by owner" ? (
+                    <p className="mt-1 text-xs text-danger">{flow.disabledReason}</p>
                   ) : null}
                 </div>
-                <p className="mt-0.5 truncate text-sm text-fg-muted" title={flow.description}>
-                  {flow.description || flow.triggerSummary}
-                </p>
-                <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-fg-subtle">
-                  <span>{flow.triggerSummary ?? ""}</span>
-                  <span>
-                    {flow.lastRunAt
-                      ? t("last run {when}", { when: relativeTime(flow.lastRunAt) })
-                      : t("never run yet")}
-                  </span>
-                  <span>
-                    {tn(flow.runs24h ?? 0, "{count} run in 24 h", "{count} runs in 24 h")}
-                  </span>
-                  {(flow.failures24h ?? 0) > 0 ? (
-                    <span className="font-medium text-danger">
-                      {tn(flow.failures24h ?? 0, "{count} failure", "{count} failures")}
-                    </span>
-                  ) : null}
-                  {(flow.activeRuns ?? 0) > 0 ? (
-                    <span className="font-medium text-primary">
-                      {t("{count} in progress", { count: flow.activeRuns ?? 0 })}
-                    </span>
-                  ) : null}
-                </p>
-                {flow.disabledReason ? (
-                  <p className="mt-1 text-xs text-danger">{flow.disabledReason}</p>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-fg-muted">
-                  <Switch
-                    aria-label={t("Enable {name}", { name: flow.name })}
-                    checked={flow.enabled}
-                    disabled={busyId === flow.id}
-                    onChange={(e) =>
-                      void act(flow, async () => {
-                        if (e.target.checked) await flowsApi.enableFlow(flow.id);
-                        else await flowsApi.disableFlow(flow.id);
-                      })
-                    }
-                  />
-                  {flow.enabled ? t("On") : t("Off")}
-                </label>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!catalogueState.data}
-                  onClick={() => setTestFlow(flow)}
-                >
-                  <FlaskConical size={13} /> {t("Test")}
-                </Button>
-                {flow.graph.nodes.some((n) => n.kind === "trigger.manual") ? (
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+                    <Switch
+                      aria-label={t("Enable {name}", { name: flow.name })}
+                      checked={flow.enabled}
+                      disabled={busyId === flow.id}
+                      onChange={(e) =>
+                        void act(flow, async () => {
+                          if (e.target.checked) await flowsApi.enableFlow(flow.id);
+                          else await flowsApi.disableFlow(flow.id);
+                        })
+                      }
+                    />
+                    {flow.enabled ? t("On") : t("Off")}
+                  </label>
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={busyId === flow.id}
-                    onClick={() =>
-                      void act(
-                        flow,
-                        async () => {
-                          await flowsApi.runManual(flow.id);
-                        },
-                        t("Flow started"),
-                      )
-                    }
+                    disabled={!catalogueState.data || busyId === flow.id}
+                    onClick={() => void openTest(flow)}
                   >
-                    <Play size={13} /> {t("Run now")}
+                    <FlaskConical size={13} /> {t("Test")}
                   </Button>
-                ) : null}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => navigate(`/flows/edit/${flow.id}`)}
-                >
-                  <Pencil size={13} /> {t("Edit")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-label={t("Delete {name}", { name: flow.name })}
-                  disabled={busyId === flow.id}
-                  onClick={async () => {
-                    const ok = await confirmDialog({
-                      title: t("Delete this flow?"),
-                      message: t(
-                        "“{name}” and its run history will be removed. Active runs are cancelled.",
-                        { name: flow.name },
-                      ),
-                      confirmLabel: t("Delete"),
-                      tone: "danger",
-                    });
-                    if (ok)
-                      void act(
-                        flow,
-                        async () => {
-                          await flowsApi.deleteFlow(flow.id);
-                        },
-                        t("Flow deleted"),
-                      );
-                  }}
-                >
-                  <Trash2 size={14} />
-                </Button>
+                  {flow.trigger?.kinds.includes("trigger.manual") ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busyId === flow.id || !flow.enabled}
+                      onClick={() =>
+                        void act(
+                          flow,
+                          async () => {
+                            await flowsApi.runManual(flow.id);
+                          },
+                          t("Flow started"),
+                        )
+                      }
+                    >
+                      <Play size={13} /> {t("Run now")}
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate(`/flows/edit/${flow.id}`)}
+                  >
+                    <Pencil size={13} /> {t("Edit")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={t("Delete {name}", { name: flow.name })}
+                    disabled={busyId === flow.id}
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: t("Delete this flow?"),
+                        message: t(
+                          "“{name}” and its run history will be removed. Active runs are cancelled.",
+                          { name: flow.name },
+                        ),
+                        confirmLabel: t("Delete"),
+                        tone: "danger",
+                      });
+                      if (ok)
+                        void act(
+                          flow,
+                          async () => {
+                            await flowsApi.deleteFlow(flow.id);
+                          },
+                          t("Flow deleted"),
+                        );
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </Section>
 
@@ -404,7 +439,7 @@ function FlowListTab() {
           catalogue={catalogueState.data}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -474,7 +509,11 @@ function TemplatesTab() {
                     onClick={() =>
                       navigate("/flows/new", {
                         state: {
-                          draft: { name: tpl.name, description: tpl.description, graph: tpl.graph },
+                          draft: {
+                            name: tpl.name,
+                            description: tpl.description,
+                            graph: fillTemplateDefaults(tpl),
+                          },
                         },
                       })
                     }
@@ -492,6 +531,18 @@ function TemplatesTab() {
   );
 }
 
+/** The value a template param starts with in the drawer. */
+function initialTemplateValue(p: ParamSchema): unknown {
+  if (p.picker === FLOW_PICKER.channel && p.type === "string_list") return [];
+  return p.default ?? (p.type === "bool" ? false : "");
+}
+
+/** A required param with neither a value nor a server-side default. */
+function missingTemplateValue(p: ParamSchema, v: unknown): boolean {
+  if (!p.required || (p.default !== undefined && p.default !== null)) return false;
+  return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+}
+
 export function UseTemplateDrawer({
   template,
   onClose,
@@ -500,30 +551,40 @@ export function UseTemplateDrawer({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
+  const params = template.params ?? [];
   const [name, setName] = useState(template.name);
   const [enabled, setEnabled] = useState(true);
-  const [channels, setChannels] = useState<string[]>([]);
+  const [values, setValues] = useState<Record<string, unknown>>(() =>
+    Object.fromEntries(params.map((p) => [p.key, initialTemplateValue(p)])),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const notices = useAsync(
     () => apiFetch<NotificationsData>("/notifications/").catch(() => null),
     [],
   );
-  const channelParam = (template.params ?? []).find(
-    (p) => p.picker === FLOW_PICKER.channel && p.type === "string_list",
-  );
-  const wantsChannels = Boolean(channelParam);
+  const channels = notices.data?.channels ?? [];
+  const set = (key: string, v: unknown) => setValues((prev) => ({ ...prev, [key]: v }));
+  const missing = params.filter((p) => missingTemplateValue(p, values[p.key]));
 
   const create = async () => {
     setBusy(true);
     setError(null);
     try {
+      const out: Record<string, unknown> = {};
+      for (const p of params) {
+        const v = values[p.key];
+        if (p.picker === FLOW_PICKER.channel && p.type === "string_list") {
+          // An empty selection means every enabled channel.
+          out[p.key] = Array.isArray(v) && v.length > 0 ? v : ["*"];
+        } else if (v !== "" && v !== undefined) {
+          out[p.key] = v;
+        }
+      }
       const flow = await flowsApi.createFromTemplate(template.id, {
         name: name.trim() || template.name,
         enabled,
-        params: channelParam
-          ? { [channelParam.key]: channels.length > 0 ? channels : ["*"] }
-          : undefined,
+        params: params.length ? out : undefined,
       });
       toast.success(t("Flow created from template"));
       onClose();
@@ -545,7 +606,7 @@ export function UseTemplateDrawer({
           <Button variant="ghost" onClick={onClose}>
             {t("Cancel")}
           </Button>
-          <Button disabled={busy} onClick={() => void create()}>
+          <Button disabled={busy || missing.length > 0} onClick={() => void create()}>
             {busy ? t("Creating…") : t("Create & open in editor")}
           </Button>
         </div>
@@ -560,42 +621,16 @@ export function UseTemplateDrawer({
             onChange={(e) => setName(e.target.value)}
           />
         </Field>
-        {wantsChannels ? (
-          <Field
-            label={t("Send to")}
-            hint={t("Leave empty to use all enabled channels. You can change this per step later.")}
-          >
-            <div className="flex flex-wrap gap-1">
-              {(notices.data?.channels ?? []).map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  aria-pressed={channels.includes(c.id)}
-                  onClick={() =>
-                    setChannels((prev) =>
-                      prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id],
-                    )
-                  }
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
-                    channels.includes(c.id)
-                      ? "border-primary bg-primary-subtle text-primary"
-                      : "border-border text-fg-muted hover:text-fg",
-                  )}
-                >
-                  {c.name || c.kind}
-                </button>
-              ))}
-              {(notices.data?.channels ?? []).length === 0 ? (
-                <span className="text-sm text-fg-muted">
-                  {t(
-                    "No notification channels yet — the flow will use all channels once you add one.",
-                  )}
-                </span>
-              ) : null}
-            </div>
-          </Field>
-        ) : null}
+        {params.map((p) => (
+          <TemplateParamField
+            key={p.key}
+            param={p}
+            value={values[p.key]}
+            onChange={(v) => set(p.key, v)}
+            channels={channels}
+            channelsLoaded={Boolean(notices.data) || !notices.loading}
+          />
+        ))}
         <label className="flex items-center justify-between gap-3">
           <span className="text-sm text-fg">{t("Turn on right away")}</span>
           <Switch
@@ -610,6 +645,152 @@ export function UseTemplateDrawer({
   );
 }
 
+function TemplateParamField({
+  param: p,
+  value,
+  onChange,
+  channels,
+  channelsLoaded,
+}: {
+  param: ParamSchema;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  channels: NotificationsData["channels"];
+  channelsLoaded: boolean;
+}) {
+  const label = p.label + (missingTemplateValue(p, "") ? " *" : "");
+  if (p.picker === FLOW_PICKER.channel && p.type === "string_list") {
+    const selected = Array.isArray(value) ? value.map(String) : [];
+    return (
+      <Field
+        label={t("Send to")}
+        hint={t("Leave empty to use all enabled channels. You can change this per step later.")}
+      >
+        <div className="flex flex-wrap gap-1">
+          {channels.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              aria-pressed={selected.includes(c.id)}
+              onClick={() =>
+                onChange(
+                  selected.includes(c.id)
+                    ? selected.filter((x) => x !== c.id)
+                    : [...selected, c.id],
+                )
+              }
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                selected.includes(c.id)
+                  ? "border-primary bg-primary-subtle text-primary"
+                  : "border-border text-fg-muted hover:text-fg",
+              )}
+            >
+              {c.name || c.kind}
+            </button>
+          ))}
+          {channelsLoaded && channels.length === 0 ? (
+            <span className="text-sm text-fg-muted">
+              {t("No notification channels yet — the flow will use all channels once you add one.")}
+            </span>
+          ) : null}
+        </div>
+      </Field>
+    );
+  }
+  if (p.picker === FLOW_PICKER.channel) {
+    // One channel, e.g. the MQTT broker a lighting flow publishes to.
+    const mqtt = channels.filter((c) => c.kind === "mqtt");
+    const options = p.key === "brokerId" && mqtt.length > 0 ? mqtt : channels;
+    return (
+      <Field
+        label={label}
+        hint={
+          channelsLoaded && options.length === 0
+            ? p.key === "brokerId"
+              ? t("Add an MQTT broker under Notifications first, then come back.")
+              : t("Add a notification channel under Notifications first, then come back.")
+            : p.description
+        }
+      >
+        <Select
+          aria-label={p.label}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={options.length === 0}
+        >
+          <option value="">{t("Choose…")}</option>
+          {options.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name || c.kind}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    );
+  }
+  if (p.type === "bool") {
+    return (
+      <label className="flex items-center justify-between gap-3">
+        <span className="text-sm text-fg">{p.label}</span>
+        <Switch
+          aria-label={p.label}
+          checked={value === true}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+      </label>
+    );
+  }
+  if (p.type === "enum" && p.enum) {
+    return (
+      <Field label={label} hint={p.description}>
+        <Select
+          aria-label={p.label}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {p.enum.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label ?? o.value}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    );
+  }
+  if (p.type === "int" || p.type === "float" || p.type === "duration_ms") {
+    return (
+      <Field label={label} hint={p.description}>
+        <Input
+          aria-label={p.label}
+          type="number"
+          value={value === undefined || value === null ? "" : String(value)}
+          onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
+          className="w-40"
+        />
+      </Field>
+    );
+  }
+  return (
+    <Field label={label} hint={p.description}>
+      <Input
+        aria-label={p.label}
+        value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
+        onChange={(e) =>
+          onChange(
+            p.type === "string_list"
+              ? e.target.value
+                  .split(",")
+                  .map((x) => x.trim())
+                  .filter(Boolean)
+              : e.target.value,
+          )
+        }
+      />
+    </Field>
+  );
+}
+
 const RUN_FILTERS: { key: RunStatus | ""; label: () => string }[] = [
   { key: "", label: () => t("All runs") },
   { key: "running", label: () => t("Running") },
@@ -620,9 +801,25 @@ const RUN_FILTERS: { key: RunStatus | ""; label: () => string }[] = [
 ];
 
 function RunsTab() {
-  const [status, setStatus] = useState<RunStatus | "">("");
+  // ?status= and ?run= let the overview (and Ask Ether) link straight to
+  // failures or to one run's trace.
+  const [search, setSearch] = useSearchParams();
+  const fromUrl = search.get("status") ?? "";
+  const [status, setStatus] = useState<RunStatus | "">(
+    RUN_FILTERS.some((f) => f.key === fromUrl) ? (fromUrl as RunStatus) : "",
+  );
   const [flowId, setFlowId] = useState("");
-  const [openRun, setOpenRun] = useState<string | null>(null);
+  const openRun = search.get("run");
+  const setOpenRun = (id: string | null) =>
+    setSearch(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) next.set("run", id);
+        else next.delete("run");
+        return next;
+      },
+      { replace: true, preventScrollReset: true },
+    );
   const flowsState = useAsync(() => flowsApi.listFlows(), []);
   const runsState = useAsync(
     () => flowsApi.listRuns({ status, flowId: flowId || undefined, limit: 60 }),

@@ -28,8 +28,8 @@ import {
 import { t } from "../../i18n";
 import { flowsApi } from "../../lib/flowsApi";
 import { useAsync } from "../../lib/hooks";
-import type { ActionSpec, EventSchema, NodeKind, RunStatus } from "./types";
-import { nodeCategory } from "./types";
+import type { ActionSpec, EventSchema, FlowSummary, NodeKind, RunStatus } from "./types";
+import { nodeCategory, nodeKindLabel } from "./types";
 
 export const KIND_ICONS: Record<NodeKind, LucideIcon> = {
   "trigger.event": Zap,
@@ -169,4 +169,27 @@ export function formatValue(v: unknown): string {
 
 export function newNodeId(prefix = "n"): string {
   return `${prefix}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * What starts a flow, from its list row: event names from the catalogue
+ * ("Playback started · Playback paused"), or the trigger kind.
+ */
+export function triggerSummary(flow: FlowSummary, catalogue: Catalogue | undefined): string {
+  const parts: string[] = [];
+  const events = flow.trigger?.events ?? [];
+  const labels = events.map((e) => catalogue?.eventsByType.get(e)?.label ?? e);
+  if (labels.length > 3)
+    parts.push(
+      t("{first} and {count} more", {
+        first: labels.slice(0, 2).join(" · "),
+        count: labels.length - 2,
+      }),
+    );
+  else if (labels.length) parts.push(labels.join(" · "));
+  for (const kind of flow.trigger?.kinds ?? []) {
+    if (kind === "trigger.event") continue;
+    parts.push(nodeKindLabel(kind));
+  }
+  return parts.join(" · ");
 }

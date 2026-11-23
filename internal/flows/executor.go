@@ -714,7 +714,7 @@ func (e *Engine) executeRun(
 			if err != nil {
 				return e.failStepOrRun(ctx, run, flow, st, &step, memSteps, node, err, mode, persist)
 			}
-			timeoutDur, err := time.ParseDuration(cfg.Timeout)
+			timeoutDur, err := ParseDuration(cfg.Timeout)
 			if err != nil || timeoutDur <= 0 || timeoutDur > MaxDelayDuration {
 				return e.failStepOrRun(ctx, run, flow, st, &step, memSteps, node, fmt.Errorf("flows: invalid wait_event timeout %q", cfg.Timeout), mode, persist)
 			}
@@ -789,7 +789,7 @@ func (e *Engine) executeRun(
 			if err != nil {
 				return e.failStepOrRun(ctx, run, flow, st, &step, memSteps, node, err, mode, persist)
 			}
-			winDur, err := time.ParseDuration(cfg.Window)
+			winDur, err := ParseDuration(cfg.Window)
 			if err != nil || winDur <= 0 {
 				return e.failStepOrRun(ctx, run, flow, st, &step, memSteps, node, fmt.Errorf("flows: invalid window duration %q", cfg.Window), mode, persist)
 			}
@@ -840,7 +840,7 @@ func (e *Engine) executeRun(
 			if err != nil {
 				return e.failStepOrRun(ctx, run, flow, st, &step, memSteps, node, err, mode, persist)
 			}
-			coolDur, err := time.ParseDuration(cfg.Cooldown)
+			coolDur, err := ParseDuration(cfg.Cooldown)
 			if err != nil || coolDur <= 0 {
 				return e.failStepOrRun(ctx, run, flow, st, &step, memSteps, node, fmt.Errorf("flows: invalid dedupe cooldown %q", cfg.Cooldown), mode, persist)
 			}
@@ -925,7 +925,7 @@ func (e *Engine) executeRun(
 
 			actTimeout := defaultActionTimeout
 			if cfg.Timeout != "" {
-				if d, parseErr := time.ParseDuration(cfg.Timeout); parseErr == nil && d > 0 {
+				if d, parseErr := ParseDuration(cfg.Timeout); parseErr == nil && d > 0 {
 					actTimeout = min(d, MaxActionTimeout)
 				}
 			}
@@ -1171,7 +1171,7 @@ func applyParamDefaults(spec ActionSpec, params map[string]any) map[string]any {
 func computeDelayWakeAt(cfg DelayNodeConfig, ctx EvalContext, now time.Time) (time.Time, time.Duration, error) {
 	switch {
 	case strings.TrimSpace(cfg.Duration) != "":
-		d, err := time.ParseDuration(strings.TrimSpace(cfg.Duration))
+		d, err := ParseDuration(strings.TrimSpace(cfg.Duration))
 		if err != nil || d < 0 || d > MaxDelayDuration {
 			return time.Time{}, 0, fmt.Errorf("flows: invalid delay duration %q", cfg.Duration)
 		}
@@ -1196,7 +1196,7 @@ func computeDelayWakeAt(cfg DelayNodeConfig, ctx EvalContext, now time.Time) (ti
 		var d time.Duration
 		switch x := val.(type) {
 		case string:
-			parsed, err := time.ParseDuration(strings.TrimSpace(x))
+			parsed, err := ParseDuration(strings.TrimSpace(x))
 			if err != nil {
 				return time.Time{}, 0, fmt.Errorf("flows: invalid durationField %q value %q: %w", cfg.DurationField, x, err)
 			}

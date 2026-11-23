@@ -1,10 +1,12 @@
 package flows
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -179,6 +181,10 @@ func ValidateGraph(g Graph, opts ValidateOptions) ValidationResult {
 			continue
 		}
 		path := fmt.Sprintf("nodes[%d].config", i)
+		for _, key := range unresolvedTemplateParams(n.Config) {
+			addErr("unresolved_template_param", path, n.ID, "",
+				fmt.Sprintf("%q is a template setting that was never filled in; choose a value for it", key))
+		}
 		switch n.Kind {
 		case NodeTriggerEvent:
 			cfg, err := DecodeConfig[EventTriggerConfig](n)
@@ -211,9 +217,10 @@ func ValidateGraph(g Graph, opts ValidateOptions) ValidationResult {
 					addErr("invalid_cron", path+".cron", n.ID, "", err.Error())
 				}
 			} else if hasEvery {
-				d, err := time.ParseDuration(cfg.Every)
-				if err != nil || d < time.Minute {
-					addErr("invalid_interval", path+".every", n.ID, "", "schedule interval must be a valid duration of at least 1m")
+				if d, err := ParseDuration(cfg.Every); err != nil {
+					addErr("invalid_interval", path+".every", n.ID, "", durationIssue(cfg.Every, "schedule interval", time.Minute, time.Duration(1<<63-1)))
+				} else if d < time.Minute {
+					addErr("invalid_interval", path+".every", n.ID, "", "schedule interval must be at least 1m")
 				}
 			}
 			if cfg.Timezone != "" {
@@ -305,9 +312,8 @@ func ValidateGraph(g Graph, opts ValidateOptions) ValidationResult {
 				continue
 			}
 			if cfg.Duration != "" {
-				d, err := time.ParseDuration(cfg.Duration)
-				if err != nil || d <= 0 || d > MaxDelayDuration {
-					addErr("invalid_duration", path+".duration", n.ID, "", fmt.Sprintf("delay duration must be between 1ms and %s", MaxDelayDuration))
+				if msg := durationIssue(cfg.Duration, "delay", time.Millisecond, MaxDelayDuration); msg != "" {
+					addErr("invalid_duration", path+".duration", n.ID, "", msg)
 				}
 			}
 			if cfg.Until != "" {
@@ -326,9 +332,8 @@ func ValidateGraph(g Graph, opts ValidateOptions) ValidationResult {
 				addErr("missing_events", path+".eventTypes", n.ID, "", "wait_event node requires at least one event type")
 			}
 			schemas := validateEventPatterns(cfg.EventTypes, opts.Events, path+".eventTypes", n.ID, addErr, addWarn)
-			d, err := time.ParseDuration(cfg.Timeout)
-			if err != nil || d <= 0 || d > MaxDelayDuration {
-				addErr("invalid_timeout", path+".timeout", n.ID, "", fmt.Sprintf("wait_event timeout must be between 1ms and %s", MaxDelayDuration))
+			if msg := durationIssue(cfg.Timeout, "wait timeout", time.Millisecond, MaxDelayDuration); msg != "" {
+				addErr("invalid_timeout", path+".timeout", n.ID, "", msg)
 			}
 			if cfg.Filter != nil {
 				validateConditionGroup(*cfg.Filter, schemas, path+".filter", n.ID, addErr, addWarn)
@@ -343,9 +348,8 @@ func ValidateGraph(g Graph, opts ValidateOptions) ValidationResult {
 			if cfg.Threshold < 1 {
 				addErr("invalid_threshold", path+".threshold", n.ID, "", "window threshold must be >= 1")
 			}
-			d, err := time.ParseDuration(cfg.Window)
-			if err != nil || d < time.Second || d > MaxWindowDuration {
-				addErr("invalid_window", path+".window", n.ID, "", fmt.Sprintf("window duration must be between 1s and %s", MaxWindowDuration))
+			if msg := durationIssue(cfg.Window, "window", time.Second, MaxWindowDuration); msg != "" {
+				addErr("invalid_window", path+".window", n.ID, "", msg)
 			}
 			if cfg.KeyTemplate != "" {
 				if err := ValidateTemplate(cfg.KeyTemplate); err != nil {
@@ -359,9 +363,8 @@ func ValidateGraph(g Graph, opts ValidateOptions) ValidationResult {
 				addErr("invalid_config", path, n.ID, "", err.Error())
 				continue
 			}
-			d, err := time.ParseDuration(cfg.Cooldown)
-			if err != nil || d < time.Second || d > MaxDelayDuration {
-				addErr("invalid_cooldown", path+".cooldown", n.ID, "", fmt.Sprintf("dedupe cooldown must be between 1s and %s", MaxDelayDuration))
+			if msg := durationIssue(cfg.Cooldown, "cooldown", time.Second, MaxDelayDuration); msg != "" {
+				addErr("invalid_cooldown", path+".cooldown", n.ID, "", msg)
 			}
 			if cfg.MaxPerWindow < 0 {
 				addErr("invalid_max_per_window", path+".maxPerWindow", n.ID, "", "maxPerWindow must be >= 0")
@@ -835,9 +838,8 @@ func validateActionConfig(
 		return
 	}
 	if cfg.Timeout != "" {
-		d, err := time.ParseDuration(cfg.Timeout)
-		if err != nil || d <= 0 || d > MaxActionTimeout {
-			addErr("invalid_timeout", path+".timeout", nodeID, "", fmt.Sprintf("action timeout must be between 1ms and %s", MaxActionTimeout))
+		if msg := durationIssue(cfg.Timeout, "action timeout", time.Millisecond, MaxActionTimeout); msg != "" {
+			addErr("invalid_timeout", path+".timeout", nodeID, "", msg)
 		}
 	}
 	if cfg.IdempotencyKey != "" {
@@ -1040,4 +1042,23 @@ func validateCronField(field string, minVal, maxVal int) error {
 		}
 	}
 	return nil
+}
+
+// templateParamRe matches a template-gallery placeholder ({{ param.key }}).
+// Those are substituted when a template is instantiated; one left in a
+// saved flow renders empty at run time.
+var templateParamRe = regexp.MustCompile(`\{\{\s*param\.([A-Za-z0-9_.-]+)\s*\}\}`)
+
+// unresolvedTemplateParams lists the template parameter keys still
+// referenced by a node config, sorted and de-duplicated.
+func unresolvedTemplateParams(raw json.RawMessage) []string {
+	if len(raw) == 0 || !bytes.Contains(raw, []byte("param.")) {
+		return nil
+	}
+	var keys []string
+	for _, m := range templateParamRe.FindAllSubmatch(raw, -1) {
+		keys = appendUnique(keys, string(m[1]))
+	}
+	sort.Strings(keys)
+	return keys
 }

@@ -286,6 +286,12 @@ func (a *FlowsAPI) Handler() http.Handler {
 				return
 			}
 			a.handleCustomizeNotification(w, r)
+		case segs[0] == "stats" && len(segs) == 1:
+			if r.Method != http.MethodGet {
+				methodNotAllowed("GET")
+				return
+			}
+			a.handleRunStats(w, r)
 		case segs[0] == "runs":
 			a.routeRuns(w, r, segs, methodNotAllowed)
 		case segs[0] == "stream" && len(segs) == 1:
@@ -960,6 +966,51 @@ func (a *FlowsAPI) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 func (a *FlowsAPI) handleListFlowRuns(w http.ResponseWriter, r *http.Request) {
 	a.listRuns(w, r, r.PathValue("id"))
+}
+
+// runStatsWindow resolves ?range= (24h, 7d or 30d) and ?tz= (IANA, the
+// browser's zone) into whole local buckets ending with the current one:
+// 24 hours, 28 six-hour slots, or 30 days.
+func runStatsWindow(rng, tz string, now time.Time) (string, flows.RunStatsQuery) {
+	loc := time.UTC
+	if tz = strings.TrimSpace(tz); tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	local := now.In(loc)
+	switch rng {
+	case "7d":
+		slot := time.Date(local.Year(), local.Month(), local.Day(), local.Hour()/6*6, 0, 0, 0, loc)
+		return rng, flows.RunStatsQuery{Since: slot.Add(-27 * 6 * time.Hour), Bucket: 6 * time.Hour, Buckets: 28}
+	case "30d":
+		day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+		return rng, flows.RunStatsQuery{Since: day.AddDate(0, 0, -29), Bucket: 24 * time.Hour, Buckets: 30}
+	default:
+		hour := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, loc)
+		return "24h", flows.RunStatsQuery{Since: hour.Add(-23 * time.Hour), Bucket: time.Hour, Buckets: 24}
+	}
+}
+
+// handleRunStats serves GET /api/flows/stats: the Flows overview's
+// aggregates, computed in the database over one bounded window.
+func (a *FlowsAPI) handleRunStats(w http.ResponseWriter, r *http.Request) {
+	if !a.requireStore(w) {
+		return
+	}
+	statter, ok := a.deps.Store.(flows.RunStatsStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "run statistics are not available for this store")
+		return
+	}
+	q := r.URL.Query()
+	rng, query := runStatsWindow(q.Get("range"), q.Get("tz"), a.now())
+	stats, err := statter.RunStats(r.Context(), query)
+	if err != nil {
+		a.writeStoreError(w, err, "run statistics")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"range": rng, "stats": stats})
 }
 
 func (a *FlowsAPI) handleGetRun(w http.ResponseWriter, r *http.Request) {

@@ -36,6 +36,7 @@ import { flowsApi } from "../../lib/flowsApi";
 import { useAsync } from "../../lib/hooks";
 import { DescribeFlowDialog } from "./DescribeFlowDialog";
 import { NodeInspector } from "./NodeInspector";
+import { initialActionParams, pruneUnknownParams, validationFromError } from "./params";
 import { categoryTone, iconForNode, newNodeId, useCatalogue } from "./shared";
 import { TestRunDrawer } from "./TestRunDrawer";
 import type { Flow, FlowEdge, FlowNode, Graph, NodeKind, ValidationResult } from "./types";
@@ -263,7 +264,16 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
         kind,
         label: spec?.label ?? nodeKindLabel(kind),
         position: { x: Math.round(center.x), y: Math.round(center.y) },
-        config: defaultConfigForNode(kind, actionType),
+        config:
+          kind === "action"
+            ? {
+                actionType: actionType || "notify.send",
+                params: initialActionParams(
+                  catalogue?.actionsByType.get(actionType || "notify.send"),
+                  actionType || "notify.send",
+                ),
+              }
+            : defaultConfigForNode(kind, actionType),
       };
       touch({ ...graph, nodes: [...graph.nodes, node] });
       setSelectedNode(node.id);
@@ -403,21 +413,37 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
+  const showSaveProblems = (result: ValidationResult) => {
+    setValidation(result);
+    setSelectedNode(null);
+    setSelectedEdge(null);
+    setShowIssues(true);
+    toast.error(t("Fix the highlighted problems before saving."));
+  };
+
   const save = async () => {
-    if (validation && !validation.valid) {
-      setShowIssues(true);
-      toast.error(t("Fix the highlighted problems before saving."));
-      return;
-    }
     setSaving(true);
     try {
+      // Hidden params an action does not accept can't be fixed in the
+      // inspector; drop them rather than fail the save on them.
+      const clean = catalogue ? pruneUnknownParams(graph, catalogue.actionsByType) : graph;
+      if (clean !== graph) setGraph(clean);
       const payload = {
         name: name.trim() || t("Untitled flow"),
         description,
         enabled,
-        graph,
+        graph: clean,
         limits,
       };
+      // Check what is about to be saved, not the last debounced result.
+      const fresh = await flowsApi
+        .validateGraph({ name: payload.name, graph: clean, limits })
+        .catch(() => null);
+      if (fresh && !fresh.valid) {
+        showSaveProblems(fresh);
+        return;
+      }
+      if (fresh) setValidation(fresh);
       const saved = savedId
         ? await flowsApi.updateFlow(savedId, payload)
         : await flowsApi.createFlow(payload);
@@ -426,7 +452,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
       toast.success(t("Flow saved"));
       if (!flowId) navigate(`/flows/edit/${saved.id}`, { replace: true });
     } catch (e) {
-      toast.error(errorMessage(e));
+      const problems = validationFromError(e);
+      if (problems) showSaveProblems(problems);
+      else toast.error(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -456,7 +484,7 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     try {
       await flowsApi.deleteFlow(savedId);
       toast.success(t("Flow deleted"));
-      navigate("/flows");
+      navigate("/flows/list");
     } catch (e) {
       toast.error(errorMessage(e));
     }
@@ -531,7 +559,7 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2 pb-3">
         <Link
-          to="/flows"
+          to="/flows/list"
           className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-fg-muted transition-colors hover:text-fg"
         >
           <ArrowLeft size={15} /> {t("Flows")}
@@ -1025,6 +1053,7 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
               />
             ) : selected ? (
               <NodeInspector
+                key={selected.id}
                 node={selected}
                 catalogue={catalogue}
                 fieldGroups={fieldGroups}

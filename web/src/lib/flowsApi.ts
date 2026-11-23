@@ -9,11 +9,14 @@ import type {
   EventSchema,
   Flow,
   FlowLimits,
+  FlowSummary,
   FlowTemplate,
   Graph,
   Run,
+  RunStats,
   RunStatus,
   RunStep,
+  StatsRange,
   TestRunRequest,
   TestRunResult,
   ValidationResult,
@@ -76,19 +79,28 @@ export interface CustomizeNotificationResult {
   notes?: string[];
 }
 
-export interface FlowSummaryStats {
-  totalFlows: number;
-  enabledFlows: number;
-  runs24h: number;
-  failures24h: number;
-  activeRuns: number;
-}
-
 export const flowsApi = {
-  async listFlows(signal?: AbortSignal): Promise<Flow[]> {
-    const raw = await apiFetch<Flow[] | { flows: Flow[] | null }>("/flows", { signal });
+  async listFlows(signal?: AbortSignal): Promise<FlowSummary[]> {
+    const raw = await apiFetch<FlowSummary[] | { flows: FlowSummary[] | null }>("/flows", {
+      signal,
+    });
     if (Array.isArray(raw)) return raw;
     return raw?.flows ?? [];
+  },
+
+  /** Overview aggregates for one window, bucketed in the browser's time zone. */
+  async stats(range: StatsRange, signal?: AbortSignal): Promise<RunStats> {
+    let tz = "";
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
+    } catch {
+      // Older engines: the server buckets in UTC.
+    }
+    const raw = await apiFetch<{ range: StatsRange; stats: RunStats }>(
+      `/flows/stats${qs({ range, tz })}`,
+      { signal },
+    );
+    return raw.stats;
   },
 
   async getFlow(id: string, signal?: AbortSignal): Promise<Flow> {

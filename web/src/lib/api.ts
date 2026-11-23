@@ -184,6 +184,8 @@ export class ApiError extends Error {
   code: string;
   fields?: FieldError[];
   phase?: string;
+  /** The parsed error response, for endpoints that explain more (e.g. flow validation). */
+  body?: unknown;
   constructor(status: number, code: string, message: string, fields?: FieldError[]) {
     super(message);
     this.name = "ApiError";
@@ -263,6 +265,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     const errCode = errObj?.code ?? body?.code ?? "http";
     const error = new ApiError(res.status, errCode, errMsg, errObj?.fields);
     error.phase = errObj?.phase;
+    error.body = data;
     throw error;
   }
   return data as T;

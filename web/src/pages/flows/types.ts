@@ -200,6 +200,59 @@ export interface Flow {
   webhookConfigured?: boolean;
 }
 
+/**
+ * One row of GET /api/flows. The list carries no graph (that stays on
+ * GET /api/flows/{id}); `trigger` names what starts the flow.
+ */
+export interface FlowSummary {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  disabledReason?: string;
+  version: number;
+  tags?: string[];
+  templateId?: string;
+  consecutiveFailures?: number;
+  trigger?: { kinds: NodeKind[]; events?: string[] };
+  lastRunAt?: string;
+  lastStatus?: RunStatus;
+  runs24h?: number;
+  failures24h?: number;
+  activeRuns?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Aggregates for the Flows overview (GET /api/flows/stats). */
+export type StatsRange = "24h" | "7d" | "30d";
+
+export interface RunStatsBucket {
+  start: string;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  active: number;
+  avgDurationMs: number;
+}
+
+export interface RunStats {
+  since: string;
+  bucketMs: number;
+  totals: {
+    runs: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    active: number;
+    avgDurationMs: number;
+  };
+  buckets: RunStatsBucket[];
+  flows: { flowId: string; name: string; runs: number; failed: number; avgDurationMs: number }[];
+  triggers: { kind: NodeKind; eventType?: string; runs: number }[];
+  recentFailures: Run[];
+}
+
 export interface EventTriggerConfig {
   events: string[];
   filter?: ConditionGroup;
@@ -1167,11 +1220,13 @@ export function defaultConfigForNode(kind: NodeKind, actionType?: string): Recor
                         ? { scope: "library", format: "csv", metadataLevel: 2, mediaInfoLevel: 2 }
                         : actionType === "flow.set_variable"
                           ? { key: "reason", value: "{{ payload.error }}" }
-                          : {
-                              channelIds: ["*"],
-                              title: "{{ payload.titleName }}",
-                              message: "{{ payload.viewer.username }} · {{ event.type }}",
-                            },
+                          : actionType === "notify.send" || !actionType
+                            ? {
+                                channelIds: ["*"],
+                                title: "{{ payload.titleName }}",
+                                message: "{{ payload.viewer.username }} · {{ event.type }}",
+                              }
+                            : {},
       };
   }
 }

@@ -5,8 +5,10 @@ import { Field, NumberInput, Segmented } from "../../components/fields";
 import { localized, t } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
+import { librariesApi } from "../libraries/api";
 import type { NotificationsData } from "../notifications/types";
 import { ConditionBuilder } from "./ConditionBuilder";
+import { knownParams } from "./params";
 import type { Catalogue } from "./shared";
 import { TemplateField } from "./TemplateField";
 import type {
@@ -239,20 +241,11 @@ function ParamEditor({
       );
     }
   }
-  if (param.picker === FLOW_PICKER.library && param.type === "string") {
-    return (
-      <Field label={label}>
-        <Select
-          aria-label={param.label}
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-        >
-          <option value="">{t("Choose…")}</option>
-          <option value="1">{t("Movies")}</option>
-          <option value="2">{t("TV Shows")}</option>
-        </Select>
-      </Field>
-    );
+  if (
+    param.picker === FLOW_PICKER.library &&
+    (param.type === "string" || param.type === "string_list")
+  ) {
+    return <LibraryParam param={param} label={label} value={value} onChange={onChange} />;
   }
   if (param.type === "bool") {
     return (
@@ -281,6 +274,49 @@ function ParamEditor({
             </option>
           ))}
         </Select>
+      </Field>
+    );
+  }
+  if (param.type === "duration_ms") {
+    return (
+      <Field label={label} hint={param.description}>
+        <span className="flex items-center gap-1.5">
+          <NumberInput
+            aria-label={param.label}
+            value={Math.round(Number(value ?? param.default ?? 0) / 1000)}
+            min={0}
+            step={1}
+            onChange={(n) => onChange(Math.max(0, Math.round(n)) * 1000)}
+            className="w-32"
+          />
+          <span className="text-xs text-fg-subtle">{t("seconds")}</span>
+        </span>
+      </Field>
+    );
+  }
+  if (param.type === "object") {
+    return (
+      <Field label={label} hint={param.description}>
+        <KeyValueParam
+          value={value}
+          onChange={onChange}
+          ariaLabel={param.label}
+          fieldGroups={fieldGroups}
+          sample={sample}
+          template={Boolean(param.template)}
+        />
+      </Field>
+    );
+  }
+  if (param.type === "string_list") {
+    const list = Array.isArray(value) ? value.map(String) : [];
+    return (
+      <Field label={label} hint={param.description ?? t("Separate several with commas.")}>
+        <ListInput
+          aria-label={param.label}
+          value={list}
+          onChange={(next) => onChange(next.length ? next : undefined)}
+        />
       </Field>
     );
   }
@@ -320,6 +356,197 @@ function ParamEditor({
     <Field label={label} hint={param.description}>
       <Input aria-label={param.label} value={text} onChange={(e) => onChange(e.target.value)} />
     </Field>
+  );
+}
+
+let librariesCache: { id: string; name: string }[] | null = null;
+
+/** A library param: the server's real libraries, one or several. */
+function LibraryParam({
+  param,
+  label,
+  value,
+  onChange,
+}: {
+  param: ParamSchema;
+  label: string;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const libs = useAsync(async () => {
+    if (librariesCache) return librariesCache;
+    const list = await librariesApi.list();
+    librariesCache = list.map((l) => ({ id: String(l.id), name: l.name }));
+    return librariesCache;
+  }, []);
+  const options = libs.data ?? [];
+  if (param.type === "string_list") {
+    const selected = new Set(Array.isArray(value) ? value.map(String) : []);
+    return (
+      <Field label={label} hint={param.description}>
+        <div className="flex flex-wrap gap-1">
+          {options.map((l) => (
+            <button
+              key={l.id}
+              type="button"
+              aria-pressed={selected.has(l.id)}
+              onClick={() => {
+                const next = new Set(selected);
+                if (next.has(l.id)) next.delete(l.id);
+                else next.add(l.id);
+                onChange(next.size ? [...next] : undefined);
+              }}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                selected.has(l.id)
+                  ? "border-primary bg-primary-subtle text-primary"
+                  : "border-border text-fg-muted hover:text-fg",
+              )}
+            >
+              {l.name}
+            </button>
+          ))}
+          {libs.data && options.length === 0 ? (
+            <span className="text-sm text-fg-muted">{t("No libraries yet.")}</span>
+          ) : null}
+        </div>
+      </Field>
+    );
+  }
+  const current = String(value ?? "");
+  return (
+    <Field label={label} hint={param.description}>
+      <Select aria-label={param.label} value={current} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{t("Choose…")}</option>
+        {current && !options.some((l) => l.id === current) ? (
+          <option value={current}>{current}</option>
+        ) : null}
+        {options.map((l) => (
+          <option key={l.id} value={l.id}>
+            {l.name}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/**
+ * Comma-separated text edited as a list; keeps the text while typing. The
+ * inspector is keyed by step, so it starts fresh for each step.
+ */
+function ListInput({
+  value,
+  onChange,
+  ...rest
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  "aria-label": string;
+}) {
+  const [text, setText] = useState(value.join(", "));
+  const parsed = (s: string) =>
+    s
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+  return (
+    <Input
+      {...rest}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parsed(e.target.value));
+      }}
+    />
+  );
+}
+
+/**
+ * An object param (embed fields, webhook headers, JSON body) as name/value
+ * rows. Values are text (templates allowed); empty rows are dropped.
+ */
+function KeyValueParam({
+  value,
+  onChange,
+  ariaLabel,
+  fieldGroups,
+  sample,
+  template,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+  ariaLabel: string;
+  fieldGroups: PickerFieldGroup[];
+  sample?: Record<string, unknown>;
+  template: boolean;
+}) {
+  const fromValue = (): [string, string][] =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+          k,
+          typeof v === "string" ? v : JSON.stringify(v),
+        ])
+      : [];
+  const [rows, setRows] = useState<[string, string][]>(() => {
+    const r = fromValue();
+    return r.length ? r : [["", ""]];
+  });
+  const commit = (next: [string, string][]) => {
+    setRows(next);
+    const obj: Record<string, string> = {};
+    for (const [k, v] of next) if (k.trim()) obj[k.trim()] = v;
+    onChange(Object.keys(obj).length ? obj : undefined);
+  };
+  return (
+    <div className="space-y-1.5">
+      {rows.map(([k, v], i) => (
+        <div key={i} className="flex items-start gap-1.5">
+          <Input
+            aria-label={t("{field} name {n}", { field: ariaLabel, n: i + 1 })}
+            value={k}
+            placeholder={t("Name")}
+            onChange={(e) => commit(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))}
+            className="w-28 shrink-0"
+          />
+          <div className="min-w-0 flex-1">
+            {template ? (
+              <TemplateField
+                value={v}
+                onChange={(next) => commit(rows.map((r, j) => (j === i ? [r[0], next] : r)))}
+                fieldGroups={fieldGroups}
+                sample={sample}
+                ariaLabel={t("{field} value {n}", { field: ariaLabel, n: i + 1 })}
+              />
+            ) : (
+              <Input
+                aria-label={t("{field} value {n}", { field: ariaLabel, n: i + 1 })}
+                value={v}
+                placeholder={t("Value")}
+                onChange={(e) => commit(rows.map((r, j) => (j === i ? [r[0], e.target.value] : r)))}
+              />
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={t("Remove row")}
+            onClick={() => commit(rows.length > 1 ? rows.filter((_, j) => j !== i) : [["", ""]])}
+          >
+            <Trash2 size={14} />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setRows([...rows, ["", ""]])}
+      >
+        <Plus size={13} /> {t("Add row")}
+      </Button>
+    </div>
   );
 }
 
@@ -760,7 +987,10 @@ function ActionEditor({
             const defaults: Record<string, unknown> = {};
             for (const p of next?.params ?? [])
               if (p.default !== undefined) defaults[p.key] = p.default;
-            setCfg({ actionType: e.target.value, params: { ...defaults, ...params } });
+            setCfg({
+              actionType: e.target.value,
+              params: { ...defaults, ...knownParams(next, params) },
+            });
           }}
         >
           <option value="">{t("Choose an action…")}</option>

@@ -42,6 +42,10 @@ var sectionScopes = map[string]Scope{
 	"simkl":          Shared,
 	"mdblist":        Shared,
 	"plexServers":    Shared,
+
+	// Extra Plex servers on the same port (plex_extra_servers.go).
+	"plexExtraServers": Shared,
+
 	"openSubtitles":  Shared,
 	"subdl":          Shared,
 	"subsource":      Shared,
@@ -100,6 +104,8 @@ var mixedSections = map[string]map[string]Scope{
 		"remoteAccess":               Shared,
 		"customUrls":                 Shared,
 		"certHash":                   Shared,
+		"seatsPerServer":             Shared,
+		"seatWarning":                Shared,
 		"secureConnections":          Shared,
 		"usePlexMetadata":            Shared,
 		"delivery":                   Shared,

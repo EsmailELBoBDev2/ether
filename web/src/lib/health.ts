@@ -23,6 +23,7 @@ export interface HealthItem {
     | "remote"
     | "plexdirect"
     | "storage"
+    | "plexservers"
     | "transcode";
   label: string;
   level: HealthLevel;
@@ -979,6 +980,63 @@ export function storageHealth(v: unknown): HealthItem | null {
   };
 }
 
+/**
+ * Extra Plex servers: a warning when every active server is almost full and no
+ * signed-in account is waiting to start, and a note when one started on its own.
+ */
+export function plexServersHealth(v: unknown, now = new Date()): HealthItem | null {
+  if (!isPlainObject(v) || v.claimed !== true) return null;
+  const servers = Array.isArray(v.servers) ? (v.servers as Record<string, unknown>[]) : [];
+  const used = Number(v.seatsUsed) || 0;
+  const total = Number(v.seatsTotal) || 0;
+  const standby = Number(v.standby) || 0;
+  const href = "/apps/plex/servers";
+  const recent = servers.filter((s) => {
+    const at = Number(s.activatedAt) || 0;
+    return s.main !== true && at > 0 && now.getTime() / 1000 - at < 7 * 86400;
+  });
+  const notes = recent.map((s) =>
+    t("{name} started on its own because the other Plex servers were almost full.", {
+      name: str(s.name) || str(s.id),
+    }),
+  );
+  if (v.warning === true) {
+    return {
+      id: "plexservers",
+      label: t("Plex seats"),
+      href,
+      level: "warn",
+      summary: t(
+        "Plex servers are almost full ({used} of {total} seats): add another Plex server",
+        {
+          used,
+          total,
+        },
+      ),
+      note: t("Each extra Plex server uses a different Plex account and adds its own seats."),
+      details: notes,
+      fill: total > 0 ? Math.min(1, used / total) : undefined,
+    };
+  }
+  if (servers.length <= 1 && !notes.length) return null;
+  return {
+    id: "plexservers",
+    label: t("Plex seats"),
+    href,
+    level: "ok",
+    summary:
+      standby > 0
+        ? t("{used} of {total} seats used, {standby} Plex server ready to start", {
+            used,
+            total,
+            standby,
+          })
+        : t("{used} of {total} seats used", { used, total }),
+    details: notes,
+    fill: total > 0 ? Math.min(1, used / total) : undefined,
+  };
+}
+
 /** One Plex row until the server is claimed. The certificate check is the same missing sign-in. */
 function plexConnectionHealth(remote: unknown, now: Date): HealthItem[] {
   if (isPlainObject(remote) && remote.claimed === false) {
@@ -1011,6 +1069,7 @@ export function computeHealth(
     databaseHealth(s.database, now),
     storageHealth(s.storage),
     ...(plexOn ? plexConnectionHealth(s.remote, now) : []),
+    plexOn ? plexServersHealth(s.plexExtras, now) : null,
   ].filter((item): item is HealthItem => item !== null);
   const transcode = transcodeHealth(s.hwaccel);
   if (transcode) items.push(transcode);

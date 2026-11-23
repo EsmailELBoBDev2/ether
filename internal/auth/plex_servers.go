@@ -15,11 +15,15 @@ import (
 // shares with which viewer, so one server's friend sync never takes access
 // away that another server still grants.
 func init() {
-	store.Register("auth", 10, `CREATE TABLE auth_server_members (
+	// Its own component, without a foreign key, so the auth table rebuilds
+	// (auth/4) and the delivered auth version stay as they are; viewer
+	// purge and merge drop the rows (the next friend sync rebuilds them).
+	store.Register("plex_server_members", 1, `CREATE TABLE auth_server_members (
 	server_id TEXT NOT NULL,
-	user_id INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+	user_id INTEGER NOT NULL,
 	PRIMARY KEY (server_id, user_id)
 );`)
+	store.RegisterViewerTable("plex_server_members", "auth_server_members", "user_id", store.ViewerMergeDrop)
 }
 
 // mainServerMember is the main server's key in auth_server_members.

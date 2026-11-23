@@ -76,9 +76,21 @@ func TestDASHResumeHintStartsAtResumeSegment(t *testing.T) {
 	req := dashRequest(t, "dash-resume", 10*time.Minute)
 	req.FirstSegmentAt = 2 * time.Minute
 	s := startDASHSession(t, m, req)
-	wantSeg := int(req.FirstSegmentAt / s.segDur)
-	if wantSeg <= 0 || s.lastReq != wantSeg {
-		t.Fatalf("lastReq = %d, want %d", s.lastReq, wantSeg)
+	at := int(req.FirstSegmentAt / s.segDur)
+	wantSeg := max(0, at-1)
+	if at <= 0 || s.lastReq != wantSeg {
+		t.Fatalf("lastReq = %d, want %d (at=%d)", s.lastReq, wantSeg, at)
+	}
+	// Both at-1 (Plex Web resume fetch) and at must hit run=1 without restarting.
+	for _, seg := range []int{wantSeg, at} {
+		rec := httptest.NewRecorder()
+		s.ServeMedia(rec, httptest.NewRequest(http.MethodGet, "/seg", nil), 0, seg)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("segment %d: HTTP %d %s", seg, rec.Code, rec.Body.String())
+		}
+	}
+	if got := fr.startCount(); got != 1 {
+		t.Fatalf("encoder starts = %d, want 1 (no wasted restart on at-1)", got)
 	}
 }
 

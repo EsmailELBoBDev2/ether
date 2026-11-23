@@ -176,6 +176,9 @@ func (s *Session) watch(r *run) {
 			collect(false)
 			s.mu.Lock()
 			s.advanceHandoffLocked(r)
+			if s.cur == r {
+				s.throttleLocked()
+			}
 			s.mu.Unlock()
 			watchdog.check(s, r)
 			if s.traceOn() {

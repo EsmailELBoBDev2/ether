@@ -1,6 +1,7 @@
 package transcode
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,12 +54,17 @@ type dashRun struct {
 
 // dashTrack follows one representation's chunks in a run directory.
 type dashTrack struct {
-	rep       int
-	next      int // next chunk number ffmpeg will write (from 1)
-	init      []byte
-	info      trackInit
-	published bool // init copied into the session
-	sl        *slotter
+	rep         int
+	next        int // next chunk number ffmpeg will write (from 1)
+	init        []byte
+	info        trackInit
+	published   bool // init copied into the session
+	sl          *slotter
+	mediaEnd    time.Duration // end timestamp of last consumed chunk
+	hasMedia    bool
+	drained     bool // last pass hit ENOENT at next
+	chunkDurSum time.Duration
+	chunkCount  int
 }
 
 func newDASHRun(dir string, sessionTracks []int, base, segDur time.Duration, total, startSeg int) *dashRun {
@@ -247,14 +253,17 @@ func (s *Session) ServeMedia(w http.ResponseWriter, r *http.Request, rep, n int)
 	s.serveSegment(w, r, rep, n)
 }
 
-// dashCollectBatch bounds the chunks one collectDASH pass consumes per
-// track while ffmpeg is still running. Without a bound the pass chases a
-// fast producer — a copy/remux emits chunk files as fast as the filesystem
-// allows, and where each file operation is slow (Windows) the collector
-// stays permanently one chunk behind — and nothing, not even the init
-// segment, is published until it catches up. The final pass after ffmpeg
-// exits is unbounded.
-const dashCollectBatch = 32
+// dashCollectBatch is the nominal 1-second chunk count for one bounded
+// collectDASH pass; dashCollectMediaWindow balances tracks by media time
+// instead of raw chunk count so a 2 s copied-video GOP track cannot outrun a
+// 1 s AAC audio track. dashCollectMaxChunks caps chunks per track per pass as
+// a safety ceiling against unusually short chunks. The final pass after
+// ffmpeg exits is unbounded.
+const (
+	dashCollectBatch       = 32
+	dashCollectMediaWindow = dashCollectBatch * time.Second
+	dashCollectMaxChunks   = 4 * dashCollectBatch
+)
 
 // collectDASH picks up the chunks a DASH run has finished, regroups them
 // into numbered segments and publishes those. exited is true for the final
@@ -264,6 +273,18 @@ func (s *Session) collectDASH(r *run, exited bool) {
 	skip := s.closed || (r.stopped && s.cur != r)
 	stopped := r.stopped
 	eof := !skip && exited && !stopped && r.proc.Err() == nil
+	publishCap := -1
+	if !exited && s.cur == r && s.m != nil && (s.m.opts.maxAhead > 0 || s.speculative) && s.info.Duration > 0 && s.segDur > 0 {
+		publishCap = s.lastReq + s.aheadLimit() + 1
+		if publishCap < r.startSeg {
+			publishCap = r.startSeg
+		}
+	}
+	runStart := s.base + r.spec.Start
+	chunkDur := r.spec.ChunkDur
+	if chunkDur <= 0 {
+		chunkDur = dashChunkDuration
+	}
 	s.mu.Unlock()
 	if skip {
 		return
@@ -271,6 +292,20 @@ func (s *Session) collectDASH(r *run, exited bool) {
 	dr := r.dash
 	if dr.failed {
 		return
+	}
+	var targetEnd time.Duration
+	if !exited {
+		var minEnd time.Duration
+		for i, tr := range dr.tracks {
+			pos := runStart
+			if tr.hasMedia {
+				pos = tr.mediaEnd
+			}
+			if i == 0 || pos < minEnd {
+				minEnd = pos
+			}
+		}
+		targetEnd = minEnd + dashCollectMediaWindow
 	}
 	type initPub struct {
 		t    int
@@ -290,12 +325,24 @@ func (s *Session) collectDASH(r *run, exited bool) {
 		if t < len(dr.sessionTrack) {
 			st = dr.sessionTrack[t]
 		}
+		tr.drained = false
 		for consumed := 0; ; consumed++ {
-			if !exited && consumed >= dashCollectBatch {
-				break
+			if !exited {
+				if consumed >= dashCollectMaxChunks {
+					break
+				}
+				if tr.hasMedia && tr.mediaEnd >= targetEnd {
+					break
+				}
+				if publishCap >= 0 && tr.sl.count > 0 && tr.sl.last >= publishCap {
+					break
+				}
 			}
 			chunk := filepath.Join(dr.dir, dashChunkFile(tr.rep, tr.next))
 			if _, err := os.Stat(chunk); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					tr.drained = true
+				}
 				break
 			}
 			if tr.init == nil {
@@ -331,6 +378,14 @@ func (s *Session) collectDASH(r *run, exited bool) {
 				break
 			}
 			tr.next++
+			if !tr.hasMedia || c.end > tr.mediaEnd {
+				tr.mediaEnd = c.end
+				tr.hasMedia = true
+			}
+			if d := c.end - c.start; d > 0 {
+				tr.chunkDurSum += d
+				tr.chunkCount++
+			}
 			if tr.sl.index != nil && r.startSeg > 0 && !tr.sl.started &&
 				c.start < r.spec.Start-tr.sl.tol && c.end <= r.spec.Start+tr.sl.tol {
 				// Pure seek preroll ending at or before this run's planned
@@ -347,6 +402,11 @@ func (s *Session) collectDASH(r *run, exited bool) {
 				segs = append(segs, segPub{t: st, mt: t, out: o})
 			}
 		}
+	}
+	var backlogBytes int64
+	diskSeg, hasDiskSeg := -1, false
+	if !exited {
+		backlogBytes, diskSeg, hasDiskSeg = scanDASHBacklog(dr, chunkDur, runStart)
 	}
 	// Assemble segment files outside the lock.
 	for i := range segs {
@@ -420,6 +480,7 @@ func (s *Session) collectDASH(r *run, exited bool) {
 		changed = true
 	}
 	produced, maxDone := -1, -1
+	leadDone, hasLead := -1, false
 	for _, tr := range dr.tracks {
 		slLast := tr.sl.last
 		slCount := tr.sl.count
@@ -429,10 +490,27 @@ func (s *Session) collectDASH(r *run, exited bool) {
 				slCount = limit
 			}
 		}
+		if slCount > 0 && (!hasLead || slLast > leadDone) {
+			leadDone, hasLead = slLast, true
+		}
 		if produced < 0 || slCount < produced {
 			produced, maxDone = slCount, slLast
 		} else if slCount == produced && slLast < maxDone {
 			maxDone = slLast
+		}
+	}
+	if hasLead && (!r.hasLead || leadDone > r.leadDone) {
+		r.leadDone, r.hasLead = leadDone, true
+	}
+	r.dashDiskSeg, r.hasDashDiskSeg = diskSeg, hasDiskSeg
+	r.dashBacklogBytes = backlogBytes
+	r.hasMinDrained = false
+	for _, tr := range dr.tracks {
+		if tr.drained {
+			if !r.hasMinDrained || tr.sl.last < r.minDrainedSeg {
+				r.minDrainedSeg = tr.sl.last
+				r.hasMinDrained = true
+			}
 		}
 	}
 	if produced > r.produced {
@@ -455,7 +533,91 @@ func (s *Session) collectDASH(r *run, exited bool) {
 		s.throttleLocked()
 		s.chainOrHoldLocked(r)
 		s.broadcastLocked()
+	} else if s.cur == r {
+		s.throttleLocked()
 	}
+}
+
+func parseDASHChunkName(name string) (rep, num int, ok bool) {
+	if !strings.HasPrefix(name, "chunk-") || !strings.HasSuffix(name, ".m4s") {
+		return 0, 0, false
+	}
+	body := name[len("chunk-") : len(name)-len(".m4s")]
+	repStr, numStr, found := strings.Cut(body, "-")
+	if !found {
+		return 0, 0, false
+	}
+	rep, err1 := strconv.Atoi(repStr)
+	num, err2 := strconv.Atoi(numStr)
+	if err1 != nil || err2 != nil || rep < 0 || num <= 0 {
+		return 0, 0, false
+	}
+	return rep, num, true
+}
+
+// scanDASHBacklog measures uncollected chunk bytes and estimates the furthest
+// segment slot already written to dr.dir when any track stopped early (hitting
+// the media-time window, publish cap, or chunk ceiling). When all tracks
+// drained to ENOENT it skips the directory scan.
+func scanDASHBacklog(dr *dashRun, chunkDur, runStart time.Duration) (backlogBytes int64, diskSeg int, hasDiskSeg bool) {
+	allDrained := true
+	for _, tr := range dr.tracks {
+		if !tr.drained {
+			allDrained = false
+			break
+		}
+	}
+	if allDrained {
+		return 0, -1, false
+	}
+	entries, err := os.ReadDir(dr.dir)
+	if err != nil {
+		return 0, -1, false
+	}
+	maxChunk := make([]int, len(dr.tracks))
+	for _, e := range entries {
+		rep, num, ok := parseDASHChunkName(e.Name())
+		if !ok {
+			continue
+		}
+		idx := -1
+		for i, tr := range dr.tracks {
+			if tr.rep == rep {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 || num < dr.tracks[idx].next {
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			backlogBytes += info.Size()
+		}
+		if num > maxChunk[idx] {
+			maxChunk[idx] = num
+		}
+	}
+	diskSeg = -1
+	for i, tr := range dr.tracks {
+		if maxChunk[i] < tr.next {
+			continue
+		}
+		extra := maxChunk[i] - tr.next + 1
+		avgDur := chunkDur
+		if tr.chunkCount > 0 && tr.chunkDurSum > 0 {
+			avgDur = tr.chunkDurSum / time.Duration(tr.chunkCount)
+		}
+		base := runStart
+		if tr.hasMedia {
+			base = tr.mediaEnd
+		}
+		lastStart := base + time.Duration(extra-1)*avgDur
+		seg := tr.sl.slotOf(lastStart)
+		if !hasDiskSeg || seg > diskSeg {
+			diskSeg, hasDiskSeg = seg, true
+		}
+	}
+	return backlogBytes, diskSeg, hasDiskSeg
 }
 
 func (s *Session) failDASHRun(r *run, err error) {

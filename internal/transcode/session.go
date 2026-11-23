@@ -264,31 +264,43 @@ type run struct {
 	rtx          bool
 	rtxConfirmed atomic.Bool
 
-	seq           int
-	reason        string
-	startSeg      int
-	spec          runSpec
-	proc          Process
-	watchWork     *encoderWork
-	stopWork      *encoderWork
-	hw            bool
-	maxDone       int // last segment finished (DASH: on every track)
-	produced      int // segments finished (DASH: on the slowest track)
-	finished      bool
-	stopped       bool // stopped deliberately, not a failure
-	stalled       bool // watchdog interrupted a run with no progress
-	paused        bool
-	pausedDone    int // maxDone when Pause was applied; later growth means it did not hold
-	err           error
-	stderr        *tailBuffer
-	started       time.Time
-	traceBufferAt time.Time // rate limit optional playback buffer telemetry
-	mode          SegMode   // plan mode this run produces
-	planEnd       int       // first segment NOT produced by this run (mode change); -1 none
-	track         int       // session track (HLS rung / DASH video rep) encoded
+	seq                int
+	reason             string
+	startSeg           int
+	spec               runSpec
+	proc               Process
+	watchWork          *encoderWork
+	stopWork           *encoderWork
+	hw                 bool
+	maxDone            int // last segment finished (DASH: on every track)
+	produced           int // segments finished (DASH: on the slowest track)
+	leadDone           int // furthest segment finished on any track (DASH)
+	hasLead            bool
+	dashDiskSeg        int // furthest uncollected chunk slot on disk (DASH)
+	hasDashDiskSeg     bool
+	dashBacklogBytes   int64 // total bytes of uncollected chunks in run-N/ (DASH)
+	pausedBacklogBytes int64
+	minDrainedSeg      int // lowest last segment among tracks with no chunk waiting on disk (DASH)
+	hasMinDrained      bool
+	finished           bool
+	stopped            bool // stopped deliberately, not a failure
+	stalled            bool // watchdog interrupted a run with no progress
+	paused             bool
+	pausedDone         int // maxDone when Pause was applied; later growth means it did not hold
+	pausedLead         int // encoderSeg when Pause was applied
+	hasPausedLead      bool
+	err                error
+	stderr             *tailBuffer
+	started            time.Time
+	traceBufferAt      time.Time // rate limit optional playback buffer telemetry
+	mode               SegMode   // plan mode this run produces
+	planEnd            int       // first segment NOT produced by this run (mode change); -1 none
+	track              int       // session track (HLS rung / DASH video rep) encoded
 
-	progressMu sync.Mutex
-	progress   Progress
+	progressMu      sync.Mutex
+	progress        Progress
+	outTimeSeen     bool
+	outTimeRelative bool
 
 	dash   *dashRun  // DASH runs only; owned by the run's watch goroutine
 	chunks *chunkRun // chunked HLS runs only (chunks.go); likewise

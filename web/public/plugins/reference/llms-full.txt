@@ -798,7 +798,7 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     "facets": ["genre", "durationSec"],
     "search": true,
     "liveSearch": true,
-    "expand": { "facets": ["genre"], "ttlHours": 168 } // optional on-demand slice expansion
+    "expand": { "facets": ["genre"], "levels": ["artist", "album"], "ttlHours": 168 } // optional on-demand slice & container expansion
   },
   "sync": { "mode": "pull", "refresh": "1h" },
   "cache": { "maxBytes": 2147483648 },        // optional; per-library blob cache
@@ -816,7 +816,7 @@ unless the owner agrees to replace the library's contents.
 
 `library` and `browse` shape how Vela renders the library without per-plugin client logic:
 
-- `media` and `levels[].role`: optional semantic hints (`media`: `"video"`, `"music"`, `"audiobook"`, `"book"`, `"podcast"`, or `"photo"`; `role`: `"item"`, `"artist"`, `"album"`, `"track"`, `"series"`, `"book"`, `"audiobook"`, `"part"`, `"show"`, `"episode"`, or `"collection"`). Music kinds (`media: "music"`) and `"track"`-role items are excluded from Continue Watching and skip saving mid-track resume offsets while still recording playback timestamps and completions so history shelves work. Other media classes automatically localize the Continue shelf title per request locale (`Continue Watching` for video/photo, `Continue Reading` for book, `Continue Listening` for audiobook/podcast).
+- `media` and `levels[].role`: optional semantic hints (`media`: `"video"`, `"music"`, `"audiobook"`, `"book"`, `"podcast"`, or `"photo"`; `role`: `"item"`, `"artist"`, `"album"`, `"track"`, `"series"`, `"book"`, `"audiobook"`, `"part"`, `"show"`, `"episode"`, or `"collection"`). A level may also declare `parent` (to branch from an earlier level rather than the previous one) and its own `media` class (for example a `video` concert branch under a `music` artist). For containers with stored children, `media.childCounts` carries direct-child counts keyed by child role (or level key when role-less) from the indexed per-level tally on both list and detail responses, and `media.childCount` is the direct-child total (the sum over `media.childCounts`, not the recursive leaf count). On a branching container's detail response (`GET /vela/v0/titles/{id}`), `seasons` lists only the primary child level (the first child level matching the container's media class, else the first declared child level); other child branches are listed via `GET /vela/v0/titles/{id}/children?role=<role>`. Music kinds (`media: "music"`) and `"track"`-role items are excluded from Continue Watching and skip saving mid-track resume offsets while still recording playback timestamps and completions so history shelves work. Other media classes automatically localize the Continue shelf title per request locale (`Continue Watching` for video/photo, `Continue Reading` for book, `Continue Listening` for audiobook/podcast).
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
 - `library.tabs`: up to 50 entries of `{key, label, kind, level?, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). `library`, `view`, `collections`, and `people` tabs may set optional `level` (naming a declared `levels[].key`) to scope browsing, facets, facet collections, and people lists to a non-root hierarchy level (for example an `Albums` or `Tracks` tab on an `artist -> album -> track` kind). Vela exposes `level` on each tab and accepts `?level=<key>` on `/items` and `/facets/{field}` (or inherits the tab's `level` from `?tab=<key>`); Plex `?type=8/9/10` and Jellyfin `IncludeItemTypes=MusicArtist/MusicAlbum/Audio` resolve to matching declared levels on the indexed SQL path.
@@ -855,6 +855,7 @@ unless the owner agrees to replace the library's contents.
     ```
 - `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets` (with `"lastViewed"` always available for recently watched ordering). Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
 - Recommended rows (`GET /vela/v0/libraries/{id}/rows`):
+  - Accepts optional `?tab=<tabKey>` to query a specific `"recommended"` tab's shelves. An unknown `tab` id answers `404` (`not_found`), and a tab whose `kind` is not `"recommended"` answers `400` (`unsupported_library_query`).
   - When `library.shelves` is omitted, Ether builds auto-generated shelves (up to 8 by default, 20 items each) from your stored items — Continue watching, Newest, Recently added, Top rated (when `rating` is a declared sort), and daily-rotating values from your declared facets.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
     ```json
@@ -897,7 +898,7 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
-| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or unhydrated container | For facets/people: background only when `browse.expand` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For containers with `childCount > 0` and missing/stale children: triggered on container open (never on list render) with `{parentId, level?, cursor?}` (falling back to `/browse` with `parentId` on 400/404/501), deduplicated per container with a bounded first-page wait (~1.8s) and background continuation. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
@@ -930,11 +931,12 @@ quickly; the Studio template has it on with the explanation beside
 the toggle. Pair it with `browse.search: true` so earlier live
 results stay findable locally.
 
-### On-demand facet and person expansion (`browse.expand`)
+### On-demand facet, person, and container expansion (`browse.expand`)
 
-When a plugin seeds a starter catalogue (for example top games across studios)
-and wants to fetch the full back-catalogue of a developer or voice cast member
-only when someone actually opens that slice, declare `browse.expand`:
+When a plugin seeds a starter catalogue (for example top games across studios,
+or artists with 1–4 featured albums out of 80+) and wants to fetch the full
+back-catalogue of a developer, person, or container only when someone actually
+opens it, declare `browse.expand`:
 
 ```json
 "browse": {
@@ -943,35 +945,62 @@ only when someone actually opens that slice, declare `browse.expand`:
   "search": true,
   "expand": {
     "facets": ["developers", "voiceCast"],
+    "levels": ["artist", "album"],
     "ttlHours": 168
   }
 }
 ```
 
-- Every entry in `browse.expand.facets` must already appear in `browse.facets`
-  (and the plugin must declare `catalog_provider`). `ttlHours` defaults to
-  `168` (7 days) when omitted or `0`.
-- **Viewer requests never wait on the plugin**: when a viewer opens a bucket's
-  items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo` or
-  `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin equivalents)
-  or a plugin person's titles (`GET /vela/v0/people/{id}/titles`), Ether returns
-  stored items immediately and, if no fresh expansion exists within `ttlHours`,
-  queues one background expansion job per `(plugin, kind, facet, value)` in the
-  two-slot background job pool at lowered OS priority. Listing tabs or
-  collections never triggers expansion.
-- Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
+- `browse.expand` requires `catalog_provider` and must list at least one entry
+  in `facets` or `levels`. Every entry in `facets` must appear in
+  `browse.facets`, and every entry in `levels` must name a declared level with
+  `container: true`. `ttlHours` defaults to `168` (7 days) when omitted or `0`
+  and applies to both facets and container levels.
+- **Facet and person slices (`browse.expand.facets`)**: when a viewer opens a
+  bucket's items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo`
+  or `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin
+  equivalents) or a plugin person's titles (`GET /vela/v0/people/{id}/titles`),
+  Ether checks freshness within `ttlHours` and launches one background
+  expansion job per `(plugin, kind, facet, value)` in the two-slot background
+  job pool at lowered OS priority (waiting up to ~1.8 s on page 1). Listing
+  tabs or collections never triggers expansion. Ether calls
+  `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
   (`value` is the bucket label such as `"Nintendo"` or person name; `valueId` is
   the synthetic plugin person ID when expanding a `people` facet) under
   owner-granted background limits.
+- **Container expansion on open (`browse.expand.levels`)**: when a viewer opens
+  a container at a declared level — either its title detail (`Item`) or its
+  children list (`Children`, including `?role=` / `?level=`), on every frontend
+  (Vela, Jellyfin/Emby, Plex, Silo, Stremio, Xtream) — Ether checks whether a
+  fresh expansion exists for `(plugin, kind, item)` within `ttlHours` **and**
+  the container has at least one stored child. If no fresh expansion exists or
+  the container has 0 stored children, Ether calls
+  `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level, cursor?}` where
+  `parentId` is the container's external ID and `level` is the **container's**
+  level key (`facet`, `value`, and `valueId` are omitted).
+  - `items` holds the container's direct children at any declared child level
+    (each with `parentId` set to the container and its own `level`), may
+    include grandchildren, and may include the container itself (same
+    external ID and level) to refresh its metadata in place.
+  - Concurrent opens of the same container (such as detail + children) share
+    one single-flight call per `(plugin, kind, itemRef)`. Page 1 waits at most
+    ~1.8 s, upserts additively (never deleting omitted children; `parentId` and
+    `level` are validated against the declared level tree), then answers with
+    accurate tallied `childCount` / `childCounts`. Further pages continue in
+    the background through the expand job.
+  - Child counts (`childCount`, `childCounts`, `leafCount`) for tallied parent
+    levels come strictly from stored parent tallies — plugin-supplied
+    `childCount` values on container items are ignored for tallied levels.
+  - Never triggered in the background, Search, lists, Home, or artwork loads.
 - Return `{items: [...], cursor?: "next"}` (`nextCursor` is also accepted; Ether
   pages up to 20 pages or 2,000 items per expansion and upserts them through the
   standard kind item pipeline so policy, FTS, `v_fold`, tallies, and art apply)
   or `{job: "/ether/job/..."}` to finish via a continuation job that writes items
   with `KindUpsert`. Answering `404` or `501` is treated as a clean no-op.
-- While an expansion for that slice is running, Vela adds `"expanding": true` to
-  `GET /vela/v0/libraries/{id}/items` and `GET /vela/v0/people/{id}/titles`, and
-  bumps the response `ETag` and kind sync generation when it finishes.
-- **On-demand container hydration**: when a client opens a container item (for example an artist or album) whose `childCount > 0` has no stored children yet — or whose children are older than `browse.expand.ttlHours` (default `168` hours) — Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level?, cursor?}` (falling back automatically to `POST /ether/v1/kinds/{kind}/browse` with `{parentId, level?, cursor?, limit}` when `/expand` answers `400`, `404`, `501`, or empty). Concurrent opens of the same container coalesce into a single plugin call, the first page waits up to ~1.8 seconds before returning whatever is stored while remaining pages continue in the background, and list renders (`Browse`, `Recommended`, `Search`) never trigger container hydration.
+- While a facet/person expansion for that slice is running, Vela adds
+  `"expanding": true` to `GET /vela/v0/libraries/{id}/items` and
+  `GET /vela/v0/people/{id}/titles`, and bumps the response `ETag` and kind
+  sync generation when it finishes.
 
 ## Resolving bytes
 
@@ -7002,17 +7031,19 @@ const DefaultKindExpandTTLHours = 168
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `facets` | `[]string` | emitted (validation may require a value) | subset of browse.facets |
+| `facets` | `[]string` | may be omitted (see validation for conditions) | subset of browse.facets |
+| `levels` | `[]string` | may be omitted (see validation for conditions) | container levels (container: true) expanded on open |
 | `ttlHours` | `int` | may be omitted (see validation for conditions) | default 168 (7 days) |
 
 
 ## Source: internal/plugins/contract.go#KindBrowseExpand
 
 ``````
-// KindBrowseExpand declares on-demand background expansion for specific browse
-// facets (collection buckets or people fields).
+// KindBrowseExpand declares on-demand expansion for specific browse facets
+// (collection buckets or people fields) and/or container levels opened by a viewer.
 type KindBrowseExpand struct {
-	Facets   []string `json:"facets"`             // subset of browse.facets
+	Facets   []string `json:"facets,omitempty"`   // subset of browse.facets
+	Levels   []string `json:"levels,omitempty"`   // container levels (container: true) expanded on open
 	TTLHours int      `json:"ttlHours,omitempty"` // default 168 (7 days)
 }
 ``````
@@ -7027,6 +7058,24 @@ func (e *KindBrowseExpand) EffectiveTTLHours() int {
 		return DefaultKindExpandTTLHours
 	}
 	return e.TTLHours
+}
+``````
+
+## Source: internal/plugins/contract.go#*KindBrowseExpand.ExpandsLevel
+
+``````
+// ExpandsLevel reports whether level is declared for container-on-open
+// expansion in browse.expand.levels.
+func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
+	if e == nil || level == "" {
+		return false
+	}
+	for _, lv := range e.Levels {
+		if lv == level {
+			return true
+		}
+	}
+	return false
 }
 ``````
 
@@ -24909,8 +24958,8 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if !hasProvider {
 			add(ebase, "expand needs the catalog_provider capability")
 		}
-		if len(k.Browse.Expand.Facets) == 0 {
-			add(ebase+".facets", "must list at least one browse facet")
+		if len(k.Browse.Expand.Facets) == 0 && len(k.Browse.Expand.Levels) == 0 {
+			add(ebase, "must list at least one browse facet or container level")
 		}
 		seenExpand := map[string]bool{}
 		for j, f := range k.Browse.Expand.Facets {
@@ -24921,6 +24970,20 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			seenExpand[f] = true
 			if !seenFacet[f] {
 				add(fbase, "must name a declared browse facet")
+			}
+		}
+		seenExpandLevel := map[string]bool{}
+		for j, lvKey := range k.Browse.Expand.Levels {
+			lbase := fmt.Sprintf("%s.levels[%d]", ebase, j)
+			if seenExpandLevel[lvKey] {
+				add(lbase, "is listed twice")
+			}
+			seenExpandLevel[lvKey] = true
+			lv, _, ok := k.Level(lvKey)
+			if !ok {
+				add(lbase, "must name a declared level")
+			} else if !lv.Container {
+				add(lbase, "must name a level with container: true")
 			}
 		}
 		if k.Browse.Expand.TTLHours < 0 {
@@ -25478,6 +25541,31 @@ func (k MediaKindMeta) ChildLevels(parentKey string) []KindLevel {
 		}
 	}
 	return out
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.PrimaryChildLevel
+
+``````
+// PrimaryChildLevel returns the primary direct child level of parentKey.
+// For a branching container (more than one direct child level), it prefers
+// the first child level whose effective media class matches parentKey's own
+// effective media class, falling back to the first declared child level.
+func (k MediaKindMeta) PrimaryChildLevel(parentKey string, kindMedia core.MediaClass) (KindLevel, bool) {
+	children := k.ChildLevels(parentKey)
+	if len(children) == 0 {
+		return KindLevel{}, false
+	}
+	if len(children) == 1 {
+		return children[0], true
+	}
+	parentMedia := k.EffectiveLevelMedia(parentKey, kindMedia)
+	for _, lv := range children {
+		if k.EffectiveLevelMedia(lv.Key, kindMedia) == parentMedia {
+			return lv, true
+		}
+	}
+	return children[0], true
 }
 ``````
 
@@ -35279,6 +35367,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].browse` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].browse.expand` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].browse.expand.facets` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].browse.expand.levels` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].browse.expand.ttlHours` | `integer` | false | {} |
 | `ether.contributes.mediaKinds[].browse.facets` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].browse.liveSearch` | `boolean` | false | {} |
@@ -36140,6 +36229,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                       "expand": {
                         "properties": {
                           "facets": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "levels": {
                             "items": {
                               "type": "string"
                             },
@@ -38550,7 +38645,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`, ai `complete`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, `library.dateDisplay` `year\|date`, up to 50 `library.tabs` of `recommended\|library\|collections\|people\|view\|live` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs, required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, optional `layout` `grid\|list\|timeline`, `sort` (including `lastViewed`), `direction`, `search`/`searchPlaceholder`, and `filters` on `view` tabs supporting declared indexed fields and per-viewer state rules, optional `card` `landscape\|poster\|square` plus `search`/`searchPlaceholder` on `live` tabs backed by `/ether/v1/kinds/{kind}/live` and `/live/resolve`, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, `library.dateDisplay` `year\|date`, up to 50 `library.tabs` of `recommended\|library\|collections\|people\|view\|live` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs, required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, optional `layout` `grid\|list\|timeline`, `sort` (including `lastViewed`), `direction`, `search`/`searchPlaceholder`, and `filters` on `view` tabs supporting declared indexed fields and per-viewer state rules, optional `card` `landscape\|poster\|square` plus `search`/`searchPlaceholder` on `live` tabs backed by `/ether/v1/kinds/{kind}/live` and `/live/resolve`, and optional `browse.expand` `{facets?, levels?, ttlHours?}` for on-demand facet/person slice expansion and container-on-open expansion (`levels` names `container: true` levels)); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -38851,7 +38946,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`), `library.dateDisplay` (`year|date`),
 `library.tabs` (up to 50 tabs of `recommended|library|collections|people|view|live`, such as `{key:"live",label:"Live",kind:"live",card:"landscape",searchPlaceholder:"Search live streams"}`, `{key:"topics",label:"Topics",kind:"collections",facet:"topic",order:"name",searchPlaceholder:"Search topics"}`, `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`, or a Smart View History tab `{key:"history",label:"History",kind:"view",layout:"timeline",sort:"lastViewed",direction:"desc",filters:{match:"all",rules:[{field:"viewer",op:"is",value:{history:true}}]}}`),
 optional `library.shelves` (up to 40 default Recommended shelves such as `{key:"science-docs",label:"Science documentaries",facet:"topic",values:["Science","Nature"],sort:"released",direction:"desc"}` or multi-facet `filters`),
-and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["tournaments","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/live/resolve
+and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["tournaments","voiceCast"],levels:["artist","album"],ttlHours:168}` for on-demand `/ether/v1/kinds/{kind}/expand` facet slices and container-on-open expansion), then the browse/changes/expand/live/resolve
 handlers in `src/plugin.ts` (`onLive` / `OnLive` / `on_live` for live tabs). Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.
 
@@ -61999,17 +62094,20 @@ const DefaultKindExpandTTLHours = 168
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `facets` | `[]string` | emitted (validation may require a value) |  |
+| `facets` | `[]string` | may be omitted (see validation for conditions) |  |
+| `levels` | `[]string` | may be omitted (see validation for conditions) |  |
 | `ttlHours` | `int` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#KindBrowseExpand
 
 ``````
-// KindBrowseExpand configures on-demand background expansion for declared
-// browse facets when a viewer opens a facet collection bucket or plugin person.
+// KindBrowseExpand configures on-demand expansion for declared browse facets
+// (when a viewer opens a facet bucket or plugin person) and/or container levels
+// (when a viewer opens a container item or its children).
 type KindBrowseExpand struct {
-	Facets   []string `json:"facets"`
+	Facets   []string `json:"facets,omitempty"`
+	Levels   []string `json:"levels,omitempty"`
 	TTLHours int      `json:"ttlHours,omitempty"`
 }
 ``````
@@ -67698,6 +67796,51 @@ class KindLibraryTab(TypedDict, total=False):
     direction: Literal["asc", "desc"]
     filters: Dict[str, Any]
     shelves: List[KindLibraryShelf]
+
+
+class KindBrowseExpand(TypedDict, total=False):
+    """On-demand expansion settings for declared browse facets and container levels."""
+
+    facets: List[str]
+    levels: List[str]
+    ttlHours: int
+
+
+class KindBrowseDecl(TypedDict, total=False):
+    """Browse configuration on a contributed content kind."""
+
+    sorts: List[str]
+    facets: List[str]
+    search: bool
+    searchFields: List[str]
+    liveSearch: bool
+    expand: KindBrowseExpand
+
+
+class KindExpandRequest(TypedDict, total=False):
+    """Request body for POST /ether/v1/kinds/{kind}/expand.
+
+    For facet/person expansion: facet, value, optional valueId, optional cursor.
+    For container expansion (browse.expand.levels): parentId (container externalId),
+    level (the container's own level key), optional cursor.
+    """
+
+    kind: str
+    facet: str
+    value: str
+    valueId: int
+    parentId: str
+    level: str
+    cursor: str
+
+
+class KindExpandResponse(TypedDict, total=False):
+    """Response body for POST /ether/v1/kinds/{kind}/expand."""
+
+    items: List[Dict[str, Any]]
+    cursor: str
+    nextCursor: str
+    job: str
 
 
 class KindLibraryDecl(TypedDict, total=False):
@@ -74248,10 +74391,13 @@ export interface KindLibraryDecl {
   shelves?: KindLibraryShelf[];
 }
 
-/** On-demand background expansion settings for declared browse facets. */
+/** On-demand expansion settings for declared browse facets and container levels. */
 export interface KindBrowseExpand {
-  facets: string[];
-  /** Freshness TTL in hours before an expanded slice may be refreshed (default 168). */
+  /** Declared browse facets expanded on open (collection bucket or plugin person). */
+  facets?: string[];
+  /** Declared container levels (container: true) expanded when opened by a viewer. */
+  levels?: string[];
+  /** Freshness TTL in hours before an expanded slice or container may be refreshed (default 168). */
   ttlHours?: number;
 }
 

@@ -758,6 +758,17 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 		return experience.PluginItemView{}, core.ErrNotFound
 	}
 	c.items.PinItemAsync(item.Ref)
+	if !core.NoContainerExpand(ctx) && rec.Decl.Browse.Expand.ExpandsLevel(item.Level) {
+		didExpand, timedOut := c.maybeExpandContainer(ctx, rec, lib, item)
+		if timedOut {
+			core.ReportDetailPending(ctx, key, "children")
+		}
+		if didExpand {
+			if refreshed, _, gerr := c.items.GetByKey(ctx, key); gerr == nil {
+				item = refreshed
+			}
+		}
+	}
 	titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
 	parts := syntheticAudiobookParts(item, titles[0])
 	if len(parts) == 0 && item.Playable && item.Unavailable == nil {
@@ -1297,8 +1308,14 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 	}
 	_, levelIdx, _ := rec.Decl.Level(parentItem.Level)
 	_, parentRole := pluginitems.ResolveMediaClassAndRole(parentItem.Level, rec.Decl, lib.Present)
-	if cursor == "" {
-		c.maybeHydrateContainer(ctx, rec, lib, parentItem, levelIdx)
+	if cursor == "" && !core.NoContainerExpand(ctx) {
+		if rec.Decl.Browse.Expand.ExpandsLevel(parentItem.Level) {
+			if _, timedOut := c.maybeExpandContainer(ctx, rec, lib, parentItem); timedOut {
+				core.ReportDetailPending(ctx, parent, "children")
+			}
+		} else {
+			c.maybeHydrateContainer(ctx, rec, lib, parentItem, levelIdx)
+		}
 	}
 
 	recursive := q.Recursive
@@ -1492,7 +1509,7 @@ func (c *KindCatalog) Ancestors(ctx context.Context, key core.RatingKey) ([]core
 		if err != nil {
 			return nil, core.Library{}, err
 		}
-		piv, err := c.Item(ctx, parentKey)
+		piv, err := c.Item(core.WithNoContainerExpand(ctx), parentKey)
 		if err != nil {
 			return nil, core.Library{}, err
 		}
@@ -1505,7 +1522,7 @@ func (c *KindCatalog) Ancestors(ctx context.Context, key core.RatingKey) ([]core
 			if aerr != nil {
 				return nil, core.Library{}, aerr
 			}
-			piv, ierr := c.Item(ctx, parentItem.Key)
+			piv, ierr := c.Item(core.WithNoContainerExpand(ctx), parentItem.Key)
 			if ierr != nil {
 				return nil, core.Library{}, ierr
 			}
@@ -2104,30 +2121,32 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 		t := pluginitems.ProjectWithText(it, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		t.LibraryID = lib.ID
 		scopeTitleMediaParents(&t, lib.ID)
-		if pc, ok := parentCounts[it.Ref]; ok {
-			// Direct children from the indexed parent tally govern ChildCount
-			// (matching sum(ChildCounts)) even when a plugin reports a larger
-			// leaf/track total in item.ChildCount.
-			if pc.ChildCount > 0 {
+		if len(rec.Decl.Levels) >= 2 && rec.Decl.HasChildLevels(it.Level) {
+			// Direct children and per-level counts for tallied parent levels come
+			// strictly from plugin_item_parent_tally, ignoring any plugin-supplied
+			// item.ChildCount while preserving LeafCount when higher.
+			t.ChildCount = 0
+			t.ChildCounts = nil
+			if pc, ok := parentCounts[it.Ref]; ok {
 				t.ChildCount = pc.ChildCount
-			}
-			if pc.LeafCount > t.LeafCount {
-				t.LeafCount = pc.LeafCount
-			}
-			if len(pc.ByLevel) > 0 {
-				counts := make(map[string]int, len(pc.ByLevel))
-				for childLevel, n := range pc.ByLevel {
-					if n <= 0 {
-						continue
-					}
-					key := childLevel
-					if clv, _, ok := rec.Decl.Level(childLevel); ok && strings.TrimSpace(clv.Role) != "" {
-						key = strings.TrimSpace(clv.Role)
-					}
-					counts[key] += n
+				if pc.LeafCount > t.LeafCount {
+					t.LeafCount = pc.LeafCount
 				}
-				if len(counts) > 0 {
-					t.ChildCounts = counts
+				if len(pc.ByLevel) > 0 {
+					counts := make(map[string]int, len(pc.ByLevel))
+					for childLevel, n := range pc.ByLevel {
+						if n <= 0 {
+							continue
+						}
+						key := childLevel
+						if clv, _, ok := rec.Decl.Level(childLevel); ok && strings.TrimSpace(clv.Role) != "" {
+							key = strings.TrimSpace(clv.Role)
+						}
+						counts[key] += n
+					}
+					if len(counts) > 0 {
+						t.ChildCounts = counts
+					}
 				}
 			}
 		}

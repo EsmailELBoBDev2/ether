@@ -656,7 +656,7 @@ func (i *instance) imageTarget(r *http.Request, v *frontend.Viewer, wireID strin
 	if i.host.Experience == nil {
 		return 0, nil, false, frontend.ErrNotFound
 	}
-	detail, e := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	detail, e := i.host.Experience.Item(frontend.WithNoContainerExpand(i.identityContext(r)), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 	if e != nil || !detail.ImagesAuthoritative {
 		return 0, nil, false, frontend.ErrNotFound
 	}
@@ -766,7 +766,7 @@ func (i *instance) itemImages(w http.ResponseWriter, r *http.Request) {
 		mediaBrowserError(w, r, 503)
 		return
 	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithNoContainerExpand(i.identityContext(r)), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 	if err != nil {
 		mediaBrowserError(w, r, 404)
 		return

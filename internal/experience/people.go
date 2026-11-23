@@ -200,7 +200,7 @@ func (s *Service) peopleTitle(ctx context.Context, viewer *core.Viewer, key core
 		if err != nil {
 			return nil, err
 		}
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return nil, err
 		}

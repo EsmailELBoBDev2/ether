@@ -180,7 +180,7 @@ func (i *instance) artwork(r *http.Request, viewer *frontend.Viewer, credential 
 	if i.host.Experience == nil || i.host.ImageGrants == nil {
 		return
 	}
-	detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
 	if err != nil {
 		return
 	}

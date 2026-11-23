@@ -214,7 +214,7 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 								}
 								title = sh
 							} else {
-								detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: viewer, Device: device, Key: title.ShowKey})
+								detail, e := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: viewer, Device: device, Key: title.ShowKey})
 								if e != nil {
 									continue
 								}

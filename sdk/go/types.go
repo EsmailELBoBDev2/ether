@@ -477,10 +477,12 @@ type KindArt struct {
 // on-demand facet and person slice expansions when ttlHours is omitted or zero.
 const DefaultKindExpandTTLHours = 168
 
-// KindBrowseExpand configures on-demand background expansion for declared
-// browse facets when a viewer opens a facet collection bucket or plugin person.
+// KindBrowseExpand configures on-demand expansion for declared browse facets
+// (when a viewer opens a facet bucket or plugin person) and/or container levels
+// (when a viewer opens a container item or its children).
 type KindBrowseExpand struct {
-	Facets   []string `json:"facets"`
+	Facets   []string `json:"facets,omitempty"`
+	Levels   []string `json:"levels,omitempty"`
 	TTLHours int      `json:"ttlHours,omitempty"`
 }
 

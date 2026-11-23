@@ -471,7 +471,8 @@ func (s *Service) expandPlaylistKeys(ctx context.Context, v *core.User, keys []c
 			return nil, frontend.ErrPlaylistUnsupportedKind
 		}
 		if key.IsPluginKey() {
-			piv, err := s.pluginItem(ctx, v, key)
+			noExpandCtx := core.WithNoContainerExpand(ctx)
+			piv, err := s.pluginItem(noExpandCtx, v, key)
 			if err != nil {
 				return nil, err
 			}
@@ -485,7 +486,7 @@ func (s *Service) expandPlaylistKeys(ctx context.Context, v *core.User, keys []c
 				return nil, frontend.ErrPlaylistUnsupportedKind
 			}
 			remaining := maxEntries - len(expanded)
-			page, err := s.pluginChildren(ctx, v, key, frontend.ItemQuery{
+			page, err := s.pluginChildren(noExpandCtx, v, key, frontend.ItemQuery{
 				Recursive: piv.Title.Type == core.TypeShow,
 				Limit:     remaining + 1,
 			})

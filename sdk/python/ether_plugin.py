@@ -3689,6 +3689,51 @@ class KindLibraryTab(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class KindBrowseExpand(TypedDict, total=False):
+    """On-demand expansion settings for declared browse facets and container levels."""
+
+    facets: List[str]
+    levels: List[str]
+    ttlHours: int
+
+
+class KindBrowseDecl(TypedDict, total=False):
+    """Browse configuration on a contributed content kind."""
+
+    sorts: List[str]
+    facets: List[str]
+    search: bool
+    searchFields: List[str]
+    liveSearch: bool
+    expand: KindBrowseExpand
+
+
+class KindExpandRequest(TypedDict, total=False):
+    """Request body for POST /ether/v1/kinds/{kind}/expand.
+
+    For facet/person expansion: facet, value, optional valueId, optional cursor.
+    For container expansion (browse.expand.levels): parentId (container externalId),
+    level (the container's own level key), optional cursor.
+    """
+
+    kind: str
+    facet: str
+    value: str
+    valueId: int
+    parentId: str
+    level: str
+    cursor: str
+
+
+class KindExpandResponse(TypedDict, total=False):
+    """Response body for POST /ether/v1/kinds/{kind}/expand."""
+
+    items: List[Dict[str, Any]]
+    cursor: str
+    nextCursor: str
+    job: str
+
+
 class KindLibraryDecl(TypedDict, total=False):
     """Library presentation declaration on a contributed content kind."""
 

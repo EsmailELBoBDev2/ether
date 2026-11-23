@@ -18,7 +18,7 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 	if s == nil {
 		return core.ErrSourceChanged
 	}
-	if err := lock(ctx, s.failSem); err != nil {
+	if err := lockUnlessFailingOver(ctx, s); err != nil {
 		return err
 	}
 	defer unlock(s.failSem)

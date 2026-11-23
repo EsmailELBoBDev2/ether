@@ -244,21 +244,59 @@ func (i *instance) themeStream(w http.ResponseWriter, r *http.Request) {
 	i.host.Themes.ServeTheme(w, r, d.Title)
 }
 
+func (i *instance) themeSourceDTO(themeID, path string) map[string]any {
+	media := frontend.MediaInfo{
+		Container: "m4a",
+		Estimated: true,
+		Streams: []frontend.StreamInfo{
+			{Index: 0, Type: "audio", Codec: "aac", Channels: 2, Default: true},
+		},
+	}
+	source := i.mediaSourceDTO(themeID, media)
+	source["Path"] = path
+	source["Protocol"] = "Http"
+	source["SupportsDirectPlay"] = true
+	source["SupportsDirectStream"] = true
+	source["SupportsTranscoding"] = false
+	source["DirectStreamUrl"] = path
+	source["IsRemote"] = false
+	if i.protocol == "emby" {
+		i.embyMediaSourceDTO(source, themeID, media)
+		delete(source, "ETag")
+	}
+	i.mediaSourceDialect(source)
+	return source
+}
+
 func (i *instance) themeMedia(w http.ResponseWriter, r *http.Request) {
 	d, ok := i.authorizedTheme(w, r)
 	if !ok {
 		return
 	}
+	ownerID := ids.RatingKeyGUID(d.Title.Key)
 	empty := i.queryResult([]any{}, 0, 0)
-	empty["OwnerId"] = r.PathValue("id")
+	empty["OwnerId"] = ownerID
 	songs := empty
 	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil && i.host.Themes.Theme(d.Title, true) {
-		id := r.PathValue("id")
 		themeID := themeWireID(d.Title.Key)
 		path := "/Audio/" + themeID + "/stream.m4a"
-		source := map[string]any{"Id": themeID, "Path": path, "Protocol": "Http", "Container": "m4a", "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "MediaStreams": []any{map[string]any{"Type": "Audio", "Codec": "aac", "Index": 0, "Channels": 2}}, "DirectStreamUrl": path}
-		songs = i.queryResult([]any{map[string]any{"Id": themeID, "Name": d.Title.Title, "Type": "Audio", "MediaType": "Audio", "Container": "m4a", "IsFolder": false, "Path": path, "MediaSources": []any{source}, "MediaStreams": source["MediaStreams"]}}, 1, 0)
-		songs["OwnerId"] = id
+		source := i.themeSourceDTO(themeID, path)
+		songs = i.queryResult([]any{map[string]any{
+			"Id":                themeID,
+			"ServerId":          i.info.ID,
+			"Name":              d.Title.Title,
+			"Type":              "Audio",
+			"MediaType":         "Audio",
+			"Container":         "m4a",
+			"IsFolder":          false,
+			"Path":              path,
+			"UserData":          i.userDataDTO(themeID, frontend.WatchStatus{}),
+			"ImageTags":         map[string]string{},
+			"BackdropImageTags": []string{},
+			"MediaSources":      []any{source},
+			"MediaStreams":      source["MediaStreams"],
+		}}, 1, 0)
+		songs["OwnerId"] = ownerID
 	}
 	if strings.HasSuffix(strings.ToLower(r.URL.Path), "/thememedia") {
 		jsonReply(w, map[string]any{"ThemeSongsResult": songs, "ThemeVideosResult": empty, "SoundtrackSongsResult": empty})
@@ -489,7 +527,7 @@ func (i *instance) themePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := "/Audio/" + wireID + "/stream.m4a"
-	jsonReply(w, map[string]any{"MediaSources": []any{map[string]any{"Id": wireID, "Path": path, "Protocol": "Http", "Container": "m4a", "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "DirectStreamUrl": path, "MediaStreams": []any{map[string]any{"Type": "Audio", "Codec": "aac", "Index": 0, "Channels": 2}}}}})
+	jsonReply(w, map[string]any{"MediaSources": []any{i.themeSourceDTO(wireID, path)}})
 }
 
 // Negative item GUIDs reserve a stateless audio identity separate from the

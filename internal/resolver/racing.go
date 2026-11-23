@@ -235,6 +235,9 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 			budgetHit = true
 			break
 		}
+		if pastPlayDeadlineWithUnverified(ctx) {
+			break
+		}
 		if attempts.Load() >= int64(maxHealthAttempts) {
 			budgetHit = true
 			break

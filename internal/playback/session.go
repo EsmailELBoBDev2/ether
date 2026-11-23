@@ -253,6 +253,7 @@ type session struct {
 	stopCtx        context.Context
 	stopCancel     context.CancelFunc
 	failSem        chan struct{} // serialises failovers
+	failingOver    atomic.Bool   // true while failoverWith holds failSem
 	bytes          atomic.Int64
 	mediaBytes     atomic.Int64 // client-facing media bytes delivered (excludes ffmpeg loopback / background probes)
 	directRangeEnd atomic.Int64 // highest delivered byte offset on direct-play media ranges (-1 = none yet)

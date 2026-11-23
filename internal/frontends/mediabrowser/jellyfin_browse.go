@@ -84,7 +84,9 @@ func firstListValue(values []string) string {
 }
 
 // guidLike reports whether id parses as a UUID the way the Jellyfin
-// Kotlin SDK does: 32 hex digits, optionally dashed 8-4-4-4-12.
+// Kotlin SDK does: 32 lowercase hex digits, optionally dashed 8-4-4-4-12.
+// jellyfin-sdk-kotlin's UUIDSerializer rejects uppercase hex with an
+// uncaught IllegalArgumentException.
 func guidLike(id string) bool {
 	if len(id) == 36 && id[8] == '-' && id[13] == '-' && id[18] == '-' && id[23] == '-' {
 		id = id[:8] + id[9:13] + id[14:18] + id[19:23] + id[24:]
@@ -92,8 +94,13 @@ func guidLike(id string) bool {
 	if len(id) != 32 {
 		return false
 	}
-	_, err := hex.DecodeString(id)
-	return err == nil
+	for k := 0; k < len(id); k++ {
+		c := id[k]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func dashedGUID(id string) string {

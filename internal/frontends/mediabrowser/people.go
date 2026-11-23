@@ -327,6 +327,10 @@ func (i *instance) personSearchHints(r *http.Request, v *frontend.Viewer, term s
 	grants, _ := i.issuePersonGrants(r, page)
 	hints := make([]any, 0, len(page))
 	for n, person := range page {
+		// Jellyfin's Kotlin SDK decodes SearchHint.Id / ItemId as UUID.
+		if i.protocol == "jellyfin" && !guidLike(person.ID) {
+			continue
+		}
 		hint := map[string]any{"Id": person.ID, "ItemId": person.ID, "Name": person.Name, "Type": "Person", "IsFolder": false}
 		if grants[n] != "" {
 			hint["PrimaryImageTag"] = grants[n]

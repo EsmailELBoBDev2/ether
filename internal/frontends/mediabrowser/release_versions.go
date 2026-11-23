@@ -27,8 +27,11 @@ import (
 // stable for the life of the release.
 
 // detailVariantBudget bounds how long an opened detail page waits for the
-// release search it started, matching the Plex frontend's render budget.
-const detailVariantBudget = 3 * time.Second
+// release search it started. Keep it well below Jellyfin Android TV's 750 ms
+// FullDetailsFragment.onResume timer (which dereferences mBaseItem without a
+// null guard if /Items/{id} has not returned yet); RefillSearchCache continues
+// warming the search cache in the background for PlaybackInfo.
+const detailVariantBudget = 400 * time.Millisecond
 
 // refillDetailSearch starts the title's release search when its cached
 // results are missing, as the Plex detail page does, and waits up to

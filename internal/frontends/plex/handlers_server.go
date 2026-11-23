@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -25,8 +26,8 @@ const APIVersion = "1.2.3"
 // /media/providers (providers=true, which omits a few, as PMS does).
 // allowSync is the viewer's own download permission: Plex Web's
 // showSyncDownload gate reads server.allowSync for library providers.
-func (s *Server) serverInfoAttrs(providers bool, viewer *frontend.User) []model.Attr {
-	id := s.identity()
+func (s *Server) serverInfoAttrs(ctx context.Context, providers bool, viewer *frontend.User) []model.Attr {
+	id := s.identityCtx(ctx)
 	c := s.cfg()
 	signIn, mapping := "none", "unknown"
 	if c.Plex.Claimed || c.Plex.Token != "" {
@@ -118,7 +119,7 @@ var rootDirectories = []string{
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	mc := &model.MediaContainer{Extra: s.serverInfoAttrs(false, FromContext(r.Context()).User)}
+	mc := &model.MediaContainer{Extra: s.serverInfoAttrs(r.Context(), false, FromContext(r.Context()).User)}
 	for _, d := range rootDirectories {
 		mc.Directory = append(mc.Directory, model.Directory{Count: 1, Key: d, Title: d})
 	}
@@ -128,7 +129,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
-	id := s.identity()
+	id := s.identityCtx(r.Context())
 	c := s.cfg()
 	s.write(w, r, &model.MediaContainer{Extra: []model.Attr{
 		model.A("apiVersion", APIVersion),
@@ -265,7 +266,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsAllowed(u) {
 		provider.Feature = append(provider.Feature, downloadSubscribeFeature)
 	}
-	mc := &model.MediaContainer{Size: 1, Extra: s.serverInfoAttrs(true, u), MediaProvider: []model.MediaProvider{provider}}
+	mc := &model.MediaContainer{Size: 1, Extra: s.serverInfoAttrs(r.Context(), true, u), MediaProvider: []model.MediaProvider{provider}}
 	if p := s.liveTVProvider(r.Context(), FromContext(r.Context()).User); p != nil {
 		mc.MediaProvider = append(mc.MediaProvider, *p)
 		mc.Size++
@@ -342,7 +343,7 @@ func (s *Server) handleMyPlexAccount(w http.ResponseWriter, r *http.Request) {
 		acct.MappingState = "mapped"
 		acct.SignInState = "ok"
 	}
-	id := s.identity()
+	id := s.identityCtx(r.Context())
 	acct.SubscriptionActive = id.MyPlexSubscription
 	if id.MyPlexSubscription {
 		acct.SubscriptionState = "Active"
@@ -376,7 +377,7 @@ func (s *Server) handleRefreshReachability(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
-	id := s.identity()
+	id := s.identityCtx(r.Context())
 	host, portS, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		host = r.Host
@@ -393,7 +394,7 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePrefs(w http.ResponseWriter, r *http.Request) {
 	c := s.cfg()
-	id := s.identity()
+	id := s.identityCtx(r.Context())
 	secure := map[string]int{"required": 0, "preferred": 1, "disabled": 2}[c.Plex.SecureConnections]
 	if c.Plex.SecureConnections == "" {
 		secure = 1

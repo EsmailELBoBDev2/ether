@@ -815,7 +815,36 @@ func (s *Server) sessionHeartbeat() time.Duration {
 }
 
 // ServeHTTP implements http.Handler.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.router.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := s.getHost(); h.ServerIdentityFor != nil {
+		if id, ok := h.ServerIdentityFor(r); ok && id.MachineID != "" {
+			r = r.WithContext(context.WithValue(r.Context(), identityOverrideKey{}, id))
+		}
+	}
+	s.router.ServeHTTP(w, r)
+}
+
+// identityOverrideKey carries the server identity one request is for when
+// Ether presents several Plex servers on one port.
+type identityOverrideKey struct{}
+
+// identityCtx is identity as the request in ctx sees it: an extra Plex
+// server's machine identifier and name when the request is for one.
+func (s *Server) identityCtx(ctx context.Context) Identity {
+	id := s.identity()
+	if ctx == nil {
+		return id
+	}
+	if o, ok := ctx.Value(identityOverrideKey{}).(frontend.ServerIdentity); ok {
+		if o.MachineID != "" {
+			id.MachineIdentifier = o.MachineID
+		}
+		if o.FriendlyName != "" {
+			id.FriendlyName = o.FriendlyName
+		}
+	}
+	return id
+}
 
 // Closed reports whether Close has begun.
 func (s *Server) Closed() bool {

@@ -80,7 +80,7 @@ func (s *Server) liveSearchChannel(r *http.Request, c frontend.LiveTVChannel) *m
 		CoverPoster:        logo,
 		Language:           "eng",
 		ProviderIdentifier: frontend.LiveTVProvider,
-		Source:             "server://" + s.identity().MachineIdentifier + "/" + frontend.LiveTVProvider,
+		Source:             "server://" + s.identityCtx(r.Context()).MachineIdentifier + "/" + frontend.LiveTVProvider,
 		Categories:         categories,
 	}
 }
@@ -102,7 +102,7 @@ func (s *Server) appendLiveSearchHubs(r *http.Request, mc *model.MediaContainer,
 		s.log.Warn("live search unavailable", "error", err)
 		return
 	}
-	source := "server://" + s.identity().MachineIdentifier + "/" + frontend.LiveTVProvider
+	source := "server://" + s.identityCtx(r.Context()).MachineIdentifier + "/" + frontend.LiveTVProvider
 	var liveHubs []model.Hub
 	if len(results.Channels) > 0 {
 		hub := model.Hub{

@@ -54,6 +54,9 @@ type Config struct {
 	Simkl         Simkl         `json:"simkl"`
 	MDBList       MDBList       `json:"mdblist"`
 	PlexServers   PlexServers   `json:"plexServers"`
+	// PlexExtraServers are extra Plex servers, each claimed by a different
+	// plex.tv account, served on the same port (plex_extra_servers.go).
+	PlexExtraServers []PlexExtraServer `json:"plexExtraServers,omitempty"`
 	OpenSubtitles OpenSubtitles `json:"openSubtitles"`
 	SubDL         SubDL         `json:"subdl"`
 	SubSource     SubSource     `json:"subsource"`
@@ -257,6 +260,14 @@ type Plex struct {
 	KeyFile           string `json:"keyFile"`
 	CertHash          string `json:"certHash"`          // plex.direct subdomain hash
 	SecureConnections string `json:"secureConnections"` // "required", "preferred", "disabled"
+	// SeatsPerServer is how many viewers fill one Plex server before new
+	// invites go to the next one (default 99: plex.tv shares one account's
+	// server with at most 100 people, the owner included).
+	SeatsPerServer int `json:"seatsPerServer,omitempty"`
+	// SeatWarning is the seat count at which a server is almost full: the
+	// next standby server starts, or the owner is warned. Default 90% of
+	// SeatsPerServer.
+	SeatWarning int `json:"seatWarning,omitempty"`
 }
 
 type Usenet struct {

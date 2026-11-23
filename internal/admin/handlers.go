@@ -722,6 +722,7 @@ func (h *Handler) statusProviders() map[string]StatusFunc {
 	add("indexers", h.deps.IndexersStatus)
 	add("catalog", h.deps.CatalogStatus)
 	add("remote", h.deps.RemoteStatus)
+	add("plexServers", h.deps.PlexServersStatus)
 	add("hwaccel", h.deps.HWAccelStatus)
 	for name, fn := range h.deps.ExtraStatus {
 		add(name, fn)

@@ -91,10 +91,13 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 	// bus-triggered and polling certificate syncs stop (and finish writing)
 	// while the bus and the shared store are still open.
 	a.closers = append(a.closers, a.certs.Close)
+	a.plexServers = newPlexServers(a)
+	a.closers = append(a.closers, a.plexServers.close)
 	ropts := plextv.RegistrarOptions{
 		Config: a.cfg,
 		Client: a.plextv,
-		Users:  a.users,
+		// Counts the main server's seats for the extra Plex servers.
+		Users: plexSeatCounter{ps: a.plexServers, id: ""},
 		Certs:  a.certs,
 		Logger: log.With("component", "registrar"),
 		OnChange: func() {
@@ -109,7 +112,7 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 	if a.registrar, err = plextv.NewRegistrar(ropts); err != nil {
 		return fmt.Errorf("registrar: %w", err)
 	}
-	a.users.SetUnknownTokenRefresher(a.registrar.SyncFriendsOnUnknownToken)
+	a.users.SetUnknownTokenRefresher(a.plexServers.syncOnUnknownToken)
 	if cfg.Plex.Claimed && cfg.Plex.Token != "" && (cfg.Frontends == nil || cfg.Frontends["plex"].Enabled) {
 		rctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := a.registrar.RefreshOwner(rctx); err != nil {

@@ -653,7 +653,7 @@ func (s *Service) reload(ctx context.Context) error {
 	if err := trows.Err(); err != nil {
 		return err
 	}
-	srows, err := s.db.QueryContext(ctx, `SELECT token_hash FROM auth_tokens WHERE source=?`, sourceServer)
+	srows, err := s.db.QueryContext(ctx, `SELECT token_hash FROM auth_tokens WHERE source=? OR source LIKE 'server:%'`, sourceServer)
 	if err != nil {
 		return fmt.Errorf("auth: load server tokens: %w", err)
 	}
@@ -1462,6 +1462,22 @@ RETURNING id`,
 // deactivates every non-owner absent from the authoritative membership list,
 // including viewers first discovered through personal-token validation.
 func (s *Service) SyncFriends(ctx context.Context, friends []plextv.Friend) error {
+	return s.syncFriends(ctx, "", friends)
+}
+
+// SyncServerFriends replaces the friend list of the extra Plex server id
+// (config.PlexExtraServer). Its access tokens are kept apart from the main
+// server's, and a viewer stays active while any server still shares with
+// them.
+func (s *Service) SyncServerFriends(ctx context.Context, id string, friends []plextv.Friend) error {
+	if id == "" {
+		return errors.New("auth: extra plex server without id")
+	}
+	return s.syncFriends(ctx, id, friends)
+}
+
+func (s *Service) syncFriends(ctx context.Context, serverID string, friends []plextv.Friend) error {
+	source, member := friendSource(serverID), memberServer(serverID)
 	s.membershipMu.Lock()
 	defer s.membershipMu.Unlock()
 	now := s.o.Now().Unix()
@@ -1477,7 +1493,7 @@ func (s *Service) SyncFriends(ctx context.Context, friends []plextv.Friend) erro
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM auth_users WHERE is_owner=1`).Scan(&ownerLocal); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tokens WHERE source=?`, sourceFriend); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tokens WHERE source=?`, source); err != nil {
 		return err
 	}
 	// Snapshot existing friends so newly joined and deactivated viewers can be
@@ -1573,14 +1589,28 @@ RETURNING id`,
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO auth_tokens (token_hash, user_id, source, created_at) VALUES (?, ?, ?, ?)
 			ON CONFLICT(token_hash) DO UPDATE SET user_id=excluded.user_id, source=excluded.source, created_at=excluded.created_at`,
-			HashToken(f.Token), uid, sourceFriend, now); err != nil {
+			HashToken(f.Token), uid, source, now); err != nil {
 			return err
 		}
 	}
-	// Friends no longer in the list lost access.
+	// This server's members, so another server's sync knows who it shares with.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_server_members WHERE server_id=?`, member); err != nil {
+		return err
+	}
+	for id := range keep {
+		if id == ownerLocal {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO auth_server_members (server_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`, member, id); err != nil {
+			return err
+		}
+	}
+	// Friends no longer in the list lost access, unless another Plex server
+	// of this Ether still shares with them.
 	// Only friends who still have access can lose it: users already
 	// deactivated by an earlier sync are not counted (or rewritten) again.
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM auth_users WHERE is_owner=0 AND plex_id IS NOT NULL AND (active=1 OR plex_shared=1)`)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM auth_users WHERE is_owner=0 AND plex_id IS NOT NULL AND (active=1 OR plex_shared=1)
+		AND NOT EXISTS (SELECT 1 FROM auth_server_members m WHERE m.user_id=auth_users.id AND m.server_id<>?)`, member)
 	if err != nil {
 		return err
 	}

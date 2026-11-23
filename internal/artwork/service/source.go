@@ -306,9 +306,20 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 	}
 	var entries []frontendArtworkEntry
 	posterGen := a.PosterGeneration()
+	primaryOnly := frontend.PrimaryArtworkOnly(ctx)
+	var haveKind map[string]bool
+	if primaryOnly {
+		haveKind = map[string]bool{}
+	}
 	add := func(kind, source string, entry frontendArtworkEntry) {
 		if !frontend.ArtworkKindWanted(ctx, kind) {
 			return
+		}
+		if primaryOnly {
+			if haveKind[kind] {
+				return
+			}
+			haveKind[kind] = true
 		}
 		if posterGen > 0 && (kind == frontend.ImagePoster || (kind == frontend.ImageThumb && !a.LandscapeThumb) || entry.ownerKind != "") {
 			source += "\x00pgen:" + strconv.FormatUint(posterGen, 10)
@@ -393,7 +404,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 	}
 	complete := true
 	if title != nil {
-		if s.Palettes != nil && ultraBlurType(title.Type) && title.BackdropPath != "" && frontend.ArtworkKindWanted(ctx, frontend.ImageBackdrop) {
+		if s.Palettes != nil && ultraBlurType(title.Type) && title.BackdropPath != "" && frontend.ArtworkKindWanted(ctx, frontend.ImageBackdrop) && (!primaryOnly || !haveKind[frontend.ImageBackdrop]) {
 			if colors := s.Palettes.Lookup(title.Key, title.BackdropPath); colors != nil {
 				stamp := colors.TopLeft + colors.TopRight + colors.BottomLeft + colors.BottomRight
 				add(frontend.ImageBackdrop, "ultrablur\x00"+title.BackdropPath+"\x00"+stamp, frontendArtworkEntry{ultra: colors})
@@ -403,26 +414,45 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 			add(frontend.ImageStill, "still\x00"+title.StillPath, frontendArtworkEntry{remotePath: title.StillPath})
 		}
 		if virtualSeason == nil && a.Variants != nil {
-			variants, ready := a.Variants(title, req.Device.Language)
-			if ready && variants != nil {
-				for _, group := range []struct {
-					kind  string
-					files []frontend.ArtworkImageFile
-				}{{frontend.ImagePoster, variants.Posters}, {frontend.ImageBackdrop, variants.Backdrops}, {frontend.ImageLogo, variants.Logos}, {frontend.ImageStill, variants.Still}} {
-					for _, file := range group.files {
-						if artwork.ValidPath(file.FilePath) {
-							add(group.kind, "variant\x00"+file.FilePath, frontendArtworkEntry{remotePath: file.FilePath})
+			needVariants := !primaryOnly
+			if primaryOnly {
+				for _, k := range []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageLogo, frontend.ImageStill} {
+					if frontend.ArtworkKindWanted(ctx, k) && !haveKind[k] {
+						needVariants = true
+						break
+					}
+				}
+			}
+			if needVariants {
+				variants, ready := a.Variants(title, req.Device.Language)
+				if ready && variants != nil {
+					for _, group := range []struct {
+						kind  string
+						files []frontend.ArtworkImageFile
+					}{{frontend.ImagePoster, variants.Posters}, {frontend.ImageBackdrop, variants.Backdrops}, {frontend.ImageLogo, variants.Logos}, {frontend.ImageStill, variants.Still}} {
+						if !frontend.ArtworkKindWanted(ctx, group.kind) || (primaryOnly && haveKind[group.kind]) {
+							continue
+						}
+						for _, file := range group.files {
+							if artwork.ValidPath(file.FilePath) {
+								add(group.kind, "variant\x00"+file.FilePath, frontendArtworkEntry{remotePath: file.FilePath})
+								if primaryOnly {
+									break
+								}
+							}
 						}
 					}
 				}
 			}
 		}
-		for _, portrait := range creditedPortraits(*title) {
-			add(frontend.ImagePerson, portrait.source, frontendArtworkEntry{
-				personKind: portrait.role,
-				personID:   base64.RawURLEncoding.EncodeToString([]byte(portrait.thumb)),
-				subject:    portrait.subject,
-			})
+		if frontend.ArtworkKindWanted(ctx, frontend.ImagePerson) {
+			for _, portrait := range creditedPortraits(*title) {
+				add(frontend.ImagePerson, portrait.source, frontendArtworkEntry{
+					personKind: portrait.role,
+					personID:   base64.RawURLEncoding.EncodeToString([]byte(portrait.thumb)),
+					subject:    portrait.subject,
+				})
+			}
 		}
 	}
 	return entries, complete, nil
@@ -709,16 +739,45 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 			}
 		}
 	}
-	out := make(map[core.RatingKey][]frontend.Image, len(titles))
+	type listedTitle struct {
+		idx     int
+		req     frontend.ArtworkRequest
+		entries []frontendArtworkEntry
+	}
+	listed := make([]listedTitle, 0, len(titles))
+	withMetadata := a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	var lookups []artworkMetadataLookup
 	for i := range titles {
-		images, _, err := a.List(frontend.WithArtworkTitle(ctx, &titles[i]), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: titles[i].Key})
+		req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: titles[i].Key}
+		entries, _, err := a.entries(frontend.WithArtworkTitle(ctx, &titles[i]), req)
 		if errors.Is(err, core.ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		out[titles[i].Key] = images
+		listed = append(listed, listedTitle{idx: i, req: req, entries: entries})
+		if withMetadata && a.meta != nil {
+			for _, e := range entries {
+				lookups = append(lookups, artworkMetadataLookup{request: req, image: e.image})
+			}
+		}
+	}
+	if withMetadata && a.meta != nil && len(lookups) > 0 {
+		ctx = a.meta.Preload(ctx, lookups)
+	}
+	out := make(map[core.RatingKey][]frontend.Image, len(listed))
+	for _, item := range listed {
+		titleCtx := frontend.WithArtworkTitle(ctx, &titles[item.idx])
+		images := make([]frontend.Image, 0, len(item.entries))
+		for _, e := range item.entries {
+			img := e.image
+			if withMetadata {
+				img = a.Metadata(titleCtx, item.req, img)
+			}
+			images = append(images, img)
+		}
+		out[item.req.Item] = images
 	}
 	return out, nil
 }
@@ -728,11 +787,18 @@ func (a Source) List(ctx context.Context, req frontend.ArtworkRequest) ([]fronte
 	if err != nil {
 		return nil, false, err
 	}
+	withMetadata := a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	if withMetadata && a.meta != nil && len(entries) > 1 {
+		lookups := make([]artworkMetadataLookup, len(entries))
+		for i, e := range entries {
+			lookups[i] = artworkMetadataLookup{request: req, image: e.image}
+		}
+		ctx = a.meta.Preload(ctx, lookups)
+	}
 	out := make([]frontend.Image, 0, len(entries))
-	withMetadata := frontend.ArtworkMetadataWanted(ctx)
 	for _, e := range entries {
 		img := e.image
-		if a.Metadata != nil && withMetadata {
+		if withMetadata {
 			img = a.Metadata(ctx, req, img)
 		}
 		out = append(out, img)

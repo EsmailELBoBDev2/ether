@@ -254,7 +254,7 @@ func (s *ImageGrantService) SignPage(ctx context.Context, req frontend.ImagePage
 	if err != nil {
 		return nil, core.ErrNotAvailable
 	}
-	ctx = frontend.WithArtworkRows(ctx)
+	ctx = frontend.WithPrimaryArtworkOnly(frontend.WithArtworkRows(ctx))
 	experience := s.experience()
 	if page, ok := experience.(frontend.ItemArtworkPage); ok {
 		keys := make([]core.RatingKey, 0, len(req.Titles))

@@ -330,6 +330,9 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 				now := time.Now()
 				entries, err := LiveEntries(ctx, u, d.Live, now, now.Add(24*time.Hour), nil)
 				if err != nil {
+					if errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrNotAvailable) {
+						return frontend.RowEntry{}, core.ErrNotFound
+					}
 					return frontend.RowEntry{}, err
 				}
 				for _, entry := range entries {
@@ -387,7 +390,11 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 				return nil, core.ErrNotFound
 			}
 			now := time.Now()
-			return LiveEntries(ctx, viewer, d.Live, now, now.Add(24*time.Hour), nil)
+			live, err := LiveEntries(ctx, viewer, d.Live, now, now.Add(24*time.Hour), nil)
+			if errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrNotAvailable) {
+				return nil, nil
+			}
+			return live, err
 		})
 		if err != nil {
 			return nil, err

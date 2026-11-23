@@ -864,6 +864,25 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, ErrInvalid):
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
 	case errors.Is(err, ErrRateLimited):
+		var rl *plugins.RateLimitError
+		if errors.As(err, &rl) {
+			sec := rl.RetryAfterSeconds(time.Now())
+			if sec > 0 {
+				w.Header().Set("Retry-After", strconv.FormatInt(sec, 10))
+			}
+			errObj := map[string]any{
+				"code":    "rate_limited",
+				"message": rl.Error(),
+			}
+			if sec > 0 {
+				errObj["retryAfterSec"] = sec
+			}
+			if !rl.RetryAt.IsZero() {
+				errObj["retryAt"] = rl.RetryAt.UTC().Format(time.RFC3339)
+			}
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": errObj})
+			return false
+		}
 		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
 	case errors.Is(err, ErrNotConfigured):
 		writeHostError(w, http.StatusNotImplemented, "not_configured", "Language model is not configured")

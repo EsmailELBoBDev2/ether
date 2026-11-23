@@ -180,10 +180,7 @@ type KindResolver struct {
 	specBudgetMu    sync.Mutex
 	specBudgetUntil map[string]time.Time
 
-	usenetCheckMu   sync.Mutex
-	usenetByRelease map[string]*usenetCheckEntry
-	usenetByHash    map[string]*usenetCheckEntry
-	usenetEntries   map[*usenetCheckEntry]struct{}
+	usenetVerdicts *resolver.UsenetVerdictCache
 
 	streamMu           sync.Mutex
 	streamSearches     map[string]*streamSearchSession
@@ -237,6 +234,12 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 	if candidateOpenTimeout <= 0 {
 		candidateOpenTimeout = defaultKindCandidateOpenTimeout
 	}
+	usenetVerdicts := resolver.NewUsenetVerdictCache()
+	if deps.Resolver != nil {
+		if shared := deps.Resolver.UsenetVerdicts(); shared != nil {
+			usenetVerdicts = shared
+		}
+	}
 	r := &KindResolver{
 		mgr:                  deps.Manager,
 		libs:                 deps.Libraries,
@@ -248,6 +251,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		debrid:               deps.Debrid,
 		engine:               deps.Engine,
 		usenetServing:        deps.UsenetServing,
+		usenetVerdicts:       usenetVerdicts,
 		now:                  nowFn,
 		http:                 hc,
 		authorize:            deps.Authorize,
@@ -262,9 +266,6 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		candCache:            make(map[resolveFlightKey]cachedKindCandidates),
 		detailMissUntil:      make(map[resolveFlightKey]time.Time),
 		specBudgetUntil:      make(map[string]time.Time),
-		usenetByRelease:      make(map[string]*usenetCheckEntry),
-		usenetByHash:         make(map[string]*usenetCheckEntry),
-		usenetEntries:        make(map[*usenetCheckEntry]struct{}),
 		streamSearches:       make(map[string]*streamSearchSession),
 	}
 	if deps.Manager != nil {
@@ -3734,9 +3735,10 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			}
 			return nil, err
 		}
-		var nzbHash string
+		var nzbHash, contentID string
 		if rel.Target == nil {
 			nzbHash = hashNZBBytes(nzbData)
+			contentID, _, _, _ = nzb.InspectContent(nzbData)
 		}
 		if rel.Target != nil && rel.Target.AllowNonVideo {
 			prepared, perr := ensureNonVideoNZB(nzbData, rel.Target)
@@ -3766,7 +3768,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		openCancel()
 		openTook := time.Since(openStart)
 		if err != nil {
-			r.recordUsenetPlaybackFailure(releaseKey, nzbHash, err)
+			r.recordUsenetPlaybackFailure(releaseKey, nzbHash, contentID, err)
 			if r.log != nil {
 				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "engine_open", "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "err", err)
 			}
@@ -3775,7 +3777,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		if r.log != nil {
 			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
 		}
-		return r.wrapUsenetPlaybackSource(ms, releaseKey, nzbHash), nil
+		return r.wrapUsenetPlaybackSource(ms, releaseKey, nzbHash, contentID), nil
 	}
 	return nil, core.ErrSourceUnavailable
 }

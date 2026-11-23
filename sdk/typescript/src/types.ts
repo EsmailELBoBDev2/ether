@@ -208,8 +208,8 @@ export interface Permissions {
   collections?: "none" | "write";
   folders?: "none" | "read";
   secrets?: string[];
-  /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open. */
-  sources?: "none" | "search" | "acquire";
+  /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open; add "+check" ("search+check" or "acquire+check") to also allow background usenet_check calls in jobs/schedules within the per-plugin daily allowance. */
+  sources?: "none" | "search" | "search+check" | "acquire" | "acquire+check";
   /** Lets a plugin call ether.ai.complete on the owner's configured language model ("complete" for actions/jobs/sync/non-viewer routes; "complete+search" also allows bounded 20 s cached calls on interactive search routes). */
   ai?: "none" | "complete" | "complete+search";
   /** Lets a plugin probe container metadata via ether.media.probe from jobs, actions, and background sync (refused on viewer/client request paths). */

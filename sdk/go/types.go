@@ -152,7 +152,10 @@ type Permissions struct {
 	Collections string             `json:"collections,omitempty"`
 	Folders     string             `json:"folders,omitempty"`
 	Secrets     []string           `json:"secrets,omitempty"`
-	// Sources lets a kind resolver ask Ether to find bytes: ""|none|search|acquire.
+	// Sources lets a kind resolver ask Ether to find bytes:
+	// ""|none|search|search+check|acquire|acquire+check. The "+check" variants
+	// also allow background usenet_check calls in jobs and schedules within the
+	// owner's per-plugin daily allowance.
 	Sources string `json:"sources,omitempty"`
 	// AI lets a plugin call AIComplete on the owner's configured language model
 	// (""|none|complete|complete+search; "complete" allows actions, jobs, sync,

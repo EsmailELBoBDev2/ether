@@ -2263,6 +2263,7 @@
   "m_06b7242dda92f4": "Segment {ranges} (+{more} till)",
   "m_06b7b5a4bb13c0": "Klustret kan nås och anslutningstoken är giltig.",
   "m_06b7c98d690e23": "De mest älskade filmerna med Tom Hanks i huvudrollen.",
+  "m_06ba628af65bfe": "Söker i dina indexerare och öppnar källor via dina Debrid-konton",
   "m_06bad1fa6cc4f9": "{channel} slutar ta emot varningar. Dess leveranshistorik behålls.",
   "m_06bbd358edc1b0": "Används först för QR-koder och delningslänkar",
   "m_06bbf60ee1e71a": "Animerade filmer med åldersgräns PG och lägre",
@@ -5498,6 +5499,7 @@
   "m_10a557ed3fe993": "Markörtäckning",
   "m_10a5fbb2ff3d29": "Ljud av",
   "m_10a62833806a88": "Sparar program · {saved} av {total}",
+  "m_10a6d7ad3329d1": "Kontrollerar Usenet-utgåvor i bakgrunden inom en daglig kvot",
   "m_10a9d25a852a3d": "Skala Y",
   "m_10aa31270e92a6": "parameter",
   "m_10aea138220ce4": "ljudformatet ({format})",
@@ -8043,6 +8045,7 @@
   "m_18425a1a04d7ff": "Uppspelningskällor: {kind}",
   "m_1842938476577b": "Förhandsvisning av veckonyhetsbrev",
   "m_1842bc939bfcba": "Antal",
+  "m_1843953103996f": "Söker efter källor i dina indexerare",
   "m_184412952a7847": "Lägger till…",
   "m_1845d47e574338": {
     "one": "{count} skärmbild",
@@ -9329,6 +9332,7 @@
   "m_1c2f068b05621a": "Anslut en MQTT 3.1.1-broker för aviseringar samt Home Assistant- eller belysningsautomationer i Flows.",
   "m_1c2fd1a4ae6958": "{count} titlar · synkroniserad {when}",
   "m_1c2ffbbe2b2e35": "Spelas före",
+  "m_1c300eda9cc753": "Dagliga Usenet-bakgrundskontroller per plugin",
   "m_1c303d18601052": "Biblioteket stannar i konsolen men försvinner från alla appar.",
   "m_1c30ff30a80656": "Kliv åt sidan för titlar på den här servern",
   "m_1c313e71f089dc": "{label} från",
@@ -9672,6 +9676,7 @@
   "m_1d2dbff43d7656": "Lägg till en tittare. De visas här efter inloggning.",
   "m_1d2eb94cc73e14": "Nya filmer är dolda för tittare tills en digital utgåva eller skivutgåva finns och en spelbar källa hittas.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Maximalt antal bakgrundskontroller varje plugin får köra per dag (0 inaktiverar). Tittares uppspelning räknas aldrig mot denna gräns.",
   "m_1d31cf9996623d": {
     "one": "{count} rad på sidan",
     "other": "{count} rader på sidan"

@@ -380,6 +380,8 @@ type Service struct {
 	invalMu sync.Mutex
 	inval   *clusterbus.Invalidator // nil on a standalone server
 
+	usenetVerdicts *UsenetVerdictCache
+
 	events *events.Bus
 }
 
@@ -395,12 +397,13 @@ func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config
 		contentByRelease: map[string]contentLink{}, failedGrabs: map[string]failedGrabMark{},
 		reps:  map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
-		flights:       map[string]*inflight{},
-		retentionDays: opts.RetentionDays,
-		maxTraces:     opts.MaxTraces,
-		verified:      map[string]time.Time{},
-		healthTTL:     opts.HealthTTL,
-		events:        opts.Events,
+		flights:        map[string]*inflight{},
+		retentionDays:  opts.RetentionDays,
+		maxTraces:      opts.MaxTraces,
+		verified:       map[string]time.Time{},
+		healthTTL:      opts.HealthTTL,
+		usenetVerdicts: NewUsenetVerdictCache(),
+		events:         opts.Events,
 	}
 	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
 	if s.healthTTL == 0 {
@@ -554,6 +557,7 @@ func (s *Service) forgetSourceResults(ctx context.Context) {
 	clear(s.failedHealth)
 	clear(s.failedGrabs)
 	s.mu.Unlock()
+	s.usenetVerdicts.Clear()
 	if s.db != nil {
 		if _, err := s.db.ExecContext(ctx, `DELETE FROM resolver_availability WHERE available = 0`); err != nil {
 			s.log.Warn("forget unavailable titles", "err", err)
@@ -657,6 +661,9 @@ func (s *Service) MarkBad(ctx context.Context, releaseID string, reason string) 
 	s.markBadContentLocked(contentKeys, m)
 	s.mu.Unlock()
 	s.forgetVerifiedWithContent(ctx, releaseID, contentKeys...)
+	if urlKey, nzbHash, contentID := s.usenetKeysForReleaseID(releaseID, contentKeys); urlKey != "" || nzbHash != "" || contentID != "" {
+		s.usenetVerdicts.RecordPlaybackFailure(s.now(), urlKey, nzbHash, contentID, reason, false)
+	}
 	s.notePinsBlocked(ctx, releaseID, reason)
 	e := s.blockEntryFor(releaseID, reason, false)
 	if e.ContentID == "" {

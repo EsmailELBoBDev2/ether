@@ -25,7 +25,7 @@ import (
 const faultPrefix = "__ETHER_FAULT__"
 
 func encodeFault(f *Fault) string {
-	b, _ := json.Marshal(map[string]string{"code": f.Code, "message": f.Message})
+	b, _ := json.Marshal(f)
 	return faultPrefix + string(b)
 }
 
@@ -37,14 +37,9 @@ func decodeFault(msg string) *Fault {
 	var f Fault
 	// The payload may be followed by a JS stack trace; decode one value.
 	dec := json.NewDecoder(strings.NewReader(msg[at+len(faultPrefix):]))
-	var raw struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	if dec.Decode(&raw) != nil || raw.Code == "" {
+	if dec.Decode(&f) != nil || f.Code == "" {
 		return nil
 	}
-	f.Code, f.Message = raw.Code, raw.Message
 	return &f
 }
 
@@ -255,7 +250,12 @@ globalThis.ether = (() => {
       const message = String(e && e.message || e);
       const at = message.indexOf("__ETHER_FAULT__");
       if (at >= 0) {
-        try { const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)); e.code = fault.code || fault.Code; } catch (_) {}
+        try {
+          const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length));
+          e.code = fault.code || fault.Code;
+          if (typeof fault.retryAfterSec === "number") e.retryAfterSec = fault.retryAfterSec;
+          if (typeof fault.retryAt === "string") e.retryAt = fault.retryAt;
+        } catch (_) {}
       }
       throw e;
     }

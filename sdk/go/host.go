@@ -238,11 +238,14 @@ type AICompleteResponse struct {
 
 // HostError is a structured error returned by Ether's plugin-host API,
 // preserving the EPP error code (for example "not_configured", "rate_limited",
-// "permission_denied", or "invalid_output") alongside the human message.
+// "permission_denied", or "invalid_output") alongside the human message and
+// optional retry window when rate limited.
 type HostError struct {
-	Status  int
-	Code    string
-	Message string
+	Status        int
+	Code          string
+	Message       string
+	RetryAfterSec int64
+	RetryAt       string
 }
 
 func (e *HostError) Error() string { return e.Message }
@@ -441,24 +444,38 @@ func (c *RemoteHostClient) callJSONWithHeaders(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errDoc struct {
 			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
+				Code          string `json:"code"`
+				Message       string `json:"message"`
+				RetryAfterSec int64  `json:"retryAfterSec"`
+				RetryAt       string `json:"retryAt"`
 			} `json:"error"`
+		}
+		retryAfterSec := int64(0)
+		if hdr := strings.TrimSpace(resp.Header.Get("Retry-After")); hdr != "" {
+			if n, perr := strconv.ParseInt(hdr, 10, 64); perr == nil && n > 0 {
+				retryAfterSec = n
+			}
 		}
 		if json.Unmarshal(raw, &errDoc) == nil && (errDoc.Error.Message != "" || errDoc.Error.Code != "") {
 			msg := errDoc.Error.Message
 			if msg == "" {
 				msg = fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode)
 			}
+			if errDoc.Error.RetryAfterSec > 0 {
+				retryAfterSec = errDoc.Error.RetryAfterSec
+			}
 			return false, &HostError{
-				Status:  resp.StatusCode,
-				Code:    errDoc.Error.Code,
-				Message: msg,
+				Status:        resp.StatusCode,
+				Code:          errDoc.Error.Code,
+				Message:       msg,
+				RetryAfterSec: retryAfterSec,
+				RetryAt:       errDoc.Error.RetryAt,
 			}
 		}
 		return false, &HostError{
-			Status:  resp.StatusCode,
-			Message: fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+			Status:        resp.StatusCode,
+			Message:       fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+			RetryAfterSec: retryAfterSec,
 		}
 	}
 	if out != nil && len(raw) > 0 {

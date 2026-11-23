@@ -2263,6 +2263,7 @@
   "m_06b7242dda92f4": "Segmente {ranges} (+{more} weitere)",
   "m_06b7b5a4bb13c0": "Der Cluster ist erreichbar und das Beitritts-Token ist gültig.",
   "m_06b7c98d690e23": "Die beliebtesten Filme mit Tom Hanks in der Hauptrolle.",
+  "m_06ba628af65bfe": "Durchsucht deine Indexer und öffnet Quellen über deine Debrid-Konten",
   "m_06bad1fa6cc4f9": "{channel} erhält keine Benachrichtigungen mehr. Der Zustellverlauf bleibt erhalten.",
   "m_06bbd358edc1b0": "Wird zuerst für QR-Codes und Freigabelinks verwendet",
   "m_06bbf60ee1e71a": "Animationsfilme mit Freigabe PG und darunter",
@@ -5498,6 +5499,7 @@
   "m_10a557ed3fe993": "Marker-Abdeckung",
   "m_10a5fbb2ff3d29": "Stummschalten",
   "m_10a62833806a88": "Sendungen werden gespeichert · {saved} von {total}",
+  "m_10a6d7ad3329d1": "Prüft Usenet-Releases im Hintergrund innerhalb eines Tageskontingents",
   "m_10a9d25a852a3d": "Skalierung Y",
   "m_10aa31270e92a6": "Parameter",
   "m_10aea138220ce4": "das Audioformat ({format})",
@@ -8043,6 +8045,7 @@
   "m_18425a1a04d7ff": "Wiedergabequellen: {kind}",
   "m_1842938476577b": "Vorschau des Wochen-Newsletters",
   "m_1842bc939bfcba": "Anzahl",
+  "m_1843953103996f": "Durchsucht deine Indexer nach Quellen",
   "m_184412952a7847": "Wird hinzugefügt…",
   "m_1845d47e574338": {
     "one": "{count} Screenshot",
@@ -9329,6 +9332,7 @@
   "m_1c2f068b05621a": "Verbinde einen MQTT-3.1.1-Broker für Benachrichtigungen sowie Home-Assistant- oder Beleuchtungsautomation in Flows.",
   "m_1c2fd1a4ae6958": "{count} Titel · synchronisiert {when}",
   "m_1c2ffbbe2b2e35": "Läuft vor",
+  "m_1c300eda9cc753": "Tägliche Usenet-Hintergrundprüfungen pro Plugin",
   "m_1c303d18601052": "Die Bibliothek bleibt in dieser Konsole, verschwindet aber aus jeder App.",
   "m_1c30ff30a80656": "Für Titel auf diesem Server zurücktreten",
   "m_1c313e71f089dc": "{label} ab",
@@ -9672,6 +9676,7 @@
   "m_1d2dbff43d7656": "Füg einen Zuschauer hinzu. Nach der Anmeldung erscheint er hier.",
   "m_1d2eb94cc73e14": "Neue Filme bleiben für Zuschauer ausgeblendet, bis eine Digital- oder Disc-Veröffentlichung existiert und eine abspielbare Quelle gefunden wird.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Maximale Anzahl an Hintergrundprüfungen, die jedes Plugin pro Tag ausführen darf (0 deaktiviert). Die Wiedergabe durch Zuschauer zählt nie zu diesem Limit.",
   "m_1d31cf9996623d": {
     "one": "{count} Reihe auf der Seite",
     "other": "{count} Reihen auf der Seite"

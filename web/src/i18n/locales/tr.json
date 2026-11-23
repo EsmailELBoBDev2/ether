@@ -2263,6 +2263,7 @@
   "m_06b7242dda92f4": "Segmentler {ranges} (+{more} daha)",
   "m_06b7b5a4bb13c0": "Kümeye erişilebiliyor ve katılım belirteci geçerli.",
   "m_06b7c98d690e23": "Tom Hanks'in başrol oynadığı en sevilen filmler.",
+  "m_06ba628af65bfe": "Dizinleyicilerinizde arama yapar ve Debrid hesaplarınız üzerinden kaynakları açar",
   "m_06bad1fa6cc4f9": "{channel} artık uyarı almaz. Teslimat geçmişi korunur.",
   "m_06bbd358edc1b0": "QR kodları ve paylaşım bağlantıları için ilk olarak kullanılır",
   "m_06bbf60ee1e71a": "PG ve altı derecelendirmeli animasyon filmleri",
@@ -5489,6 +5490,7 @@
   "m_10a557ed3fe993": "İşaretçi kapsamı",
   "m_10a5fbb2ff3d29": "Sessize al",
   "m_10a62833806a88": "Programlar kaydediliyor · {saved} / {total}",
+  "m_10a6d7ad3329d1": "Günlük kota dahilinde arka planda Usenet sürümlerini denetler",
   "m_10a9d25a852a3d": "Y ölçeği",
   "m_10aa31270e92a6": "parametre",
   "m_10aea138220ce4": "ses biçimi ({format})",
@@ -8031,6 +8033,7 @@
   "m_18425a1a04d7ff": "Oynatma kaynakları: {kind}",
   "m_1842938476577b": "Haftalık bülten önizlemesi",
   "m_1842bc939bfcba": "Sayı",
+  "m_1843953103996f": "Dizinleyicilerinizde kaynak arar",
   "m_184412952a7847": "Ekleniyor…",
   "m_1845d47e574338": {
     "one": "{count} ekran görüntüsü",
@@ -9317,6 +9320,7 @@
   "m_1c2f068b05621a": "Bildirimler ve Flows’taki Home Assistant veya aydınlatma otomasyonları için bir MQTT 3.1.1 aracısı bağlayın.",
   "m_1c2fd1a4ae6958": "{count} başlık · {when} eşitlendi",
   "m_1c2ffbbe2b2e35": "Şunlardan önce",
+  "m_1c300eda9cc753": "Eklenti başına günlük arka plan Usenet denetimleri",
   "m_1c303d18601052": "Kitaplık konsolda kalır ama tüm uygulamalardan kaybolur.",
   "m_1c30ff30a80656": "Bu sunucudaki içeriklere yer aç",
   "m_1c313e71f089dc": "{label} başlangıç",
@@ -9660,6 +9664,7 @@
   "m_1d2dbff43d7656": "Bir izleyici ekleyin. Oturum açınca burada görünür.",
   "m_1d2eb94cc73e14": "Yeni filmler, dijital veya disk sürümü çıkıp oynatılabilir bir kaynak bulunana kadar izleyicilerden gizli kalır.",
   "m_1d300c71911652": "Loading Plex accounts…",
+  "m_1d30c2ff28ee20": "Her eklentinin günde çalıştırabileceği en fazla arka plan denetimi sayısı (0 devre dışı bırakır). İzleyici oynatması hiçbir zaman bu sınıra dahil edilmez.",
   "m_1d31cf9996623d": {
     "one": "Sayfada {count} satır",
     "other": "Sayfada {count} satır"

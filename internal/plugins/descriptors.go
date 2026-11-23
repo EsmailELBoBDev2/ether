@@ -337,11 +337,13 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Reads folders you choose")
 		needsFolders = true
 	}
-	switch normLevel(p.Sources) {
-	case "search":
-		lines = append(lines, "Searches your indexers for sources")
-	case "acquire":
+	if SourcesPermissionAllowsAcquire(p.Sources) {
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
+	} else if SourcesPermissionAllowsSearch(p.Sources) {
+		lines = append(lines, "Searches your indexers for sources")
+	}
+	if SourcesPermissionAllowsBackgroundCheck(p.Sources) {
+		lines = append(lines, "Checks Usenet releases in the background within a daily allowance")
 	}
 	switch normLevel(p.AI) {
 	case "complete":
@@ -461,13 +463,25 @@ func PermissionDiff(cur, next Manifest) []string {
 			added = append(added, "Uses your language model while a viewer searches")
 		}
 	}
-	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
-	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {
-		if normLevel(b.Sources) == "acquire" {
+	sourcesBase := func(l string) int {
+		switch {
+		case SourcesPermissionAllowsAcquire(l):
+			return 2
+		case SourcesPermissionAllowsSearch(l):
+			return 1
+		default:
+			return 0
+		}
+	}
+	if sourcesBase(b.Sources) > sourcesBase(a.Sources) {
+		if SourcesPermissionAllowsAcquire(b.Sources) {
 			added = append(added, "Searches your indexers and opens sources through your debrid accounts")
 		} else {
 			added = append(added, "Searches your indexers for sources")
 		}
+	}
+	if !SourcesPermissionAllowsBackgroundCheck(a.Sources) && SourcesPermissionAllowsBackgroundCheck(b.Sources) {
+		added = append(added, "Checks Usenet releases in the background within a daily allowance")
 	}
 	haveKindLib := map[string]bool{}
 	for _, k := range cur.Ether.Contributes.MediaKinds {

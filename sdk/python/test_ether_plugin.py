@@ -534,6 +534,42 @@ class EtherPluginSDKTest(unittest.TestCase):
         host.badges.clear("dub_languages")
         self.assertEqual(host.badges.usage()["titles"], 0)
 
+    def test_remote_host_error_retry_metadata(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.dumps({
+                    "error": {
+                        "code": "rate_limited",
+                        "message": "daily allowance exhausted",
+                        "retryAfterSec": 3600,
+                        "retryAt": "2026-11-23T00:00:00Z",
+                    }
+                }).encode("utf-8")
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", "3600")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            host = create_remote_host_client(f"http://127.0.0.1:{srv.server_port}", credential="cred")
+            with self.assertRaises(ether_plugin.HostError) as cm:
+                host.kinds.resolve_sources({"kind": "usenet_check", "nzbUrl": "https://idx.example/a.nzb"})
+            self.assertEqual(cm.exception.code, "rate_limited")
+            self.assertEqual(cm.exception.status, 429)
+            self.assertEqual(cm.exception.retry_after_sec, 3600)
+            self.assertEqual(cm.exception.retry_at, "2026-11-23T00:00:00Z")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

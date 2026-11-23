@@ -1094,3 +1094,174 @@ func TestHostResolveSourcesWithResultAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestHostUsenetCheckBackgroundPermissionAllowanceAndRevocation(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	env.m.now = func() time.Time { return now }
+	resetAt := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+
+	installWithSources := func(id, sourcesLevel string) Record {
+		t.Helper()
+		man := contentManifest()
+		man.ID = id
+		man.Name = id
+		man.Ether.Contributes.MediaKinds[0].Key = strings.ReplaceAll(id, ".", "-")
+		man.Ether.Contributes.MediaKinds[0].Sync = KindSyncDecl{Mode: KindSyncPush}
+		man.Ether.Permissions.Sources = sourcesLevel
+		raw, err := json.Marshal(man)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev, err := env.m.PreviewInstall(ctx, Source{
+			Kind:     "studio",
+			Manifest: raw,
+			Files:    map[string][]byte{"dist/plugin.js": []byte("// resolver")},
+		})
+		if err != nil {
+			t.Fatalf("preview %s: %v", id, err)
+		}
+		rec, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true})
+		if err != nil {
+			t.Fatalf("install %s: %v", id, err)
+		}
+		return rec
+	}
+
+	recSearch := installWithSources("community.example.bgsearch", "search")
+	recSearchCheck := installWithSources("community.example.bgsearchcheck", "search+check")
+	recAcquireCheck := installWithSources("community.example.bgacquirecheck", "acquire+check")
+
+	spent := map[string]int{}
+	dailyCap := 2
+	cachedURL := "https://idx.example/cached-bad.nzb"
+	var backendCalls int
+
+	env.m.SetKindBackends(KindBackends{
+		PeekUsenetCheck: func(q core.SourceQuery) (core.SourceCandidate, bool) {
+			if q.NZBURL == cachedURL {
+				return core.SourceCandidate{
+					NZBURL: cachedURL,
+					UsenetCheck: &core.UsenetCheckResult{
+						Available: false,
+						Cached:    true,
+						Reason:    "health_unhealthy",
+					},
+				}, true
+			}
+			return core.SourceCandidate{}, false
+		},
+		AdmitBackgroundUsenetCheck: func(ctx context.Context, pluginID string) (context.Context, func(), time.Time, error) {
+			if spent[pluginID] >= dailyCap {
+				return nil, nil, resetAt, core.ErrBudgetExhausted
+			}
+			spent[pluginID]++
+			return ctx, func() { spent[pluginID]-- }, resetAt, nil
+		},
+		ResolveSourcesResult: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+			backendCalls++
+			return core.SourceResolveResult{
+				Candidates: []core.SourceCandidate{{
+					NZBURL:      q.NZBURL,
+					UsenetCheck: &core.UsenetCheckResult{Available: true, Checked: 8},
+				}},
+			}, nil
+		},
+	})
+
+	hSearch := env.m.HostFor(recSearch.ID)
+	hSearchCheck := env.m.HostFor(recSearchCheck.ID)
+	hAcquireCheck := env.m.HostFor(recAcquireCheck.ID)
+
+	// Plain "search" still refuses background calls (including wasm-tagged contexts).
+	if _, err := hSearch.ResolveSources(wasm.WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/1.nzb",
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("search-only wasm background err = %v, want ErrPermissionDenied", err)
+	}
+
+	// "search+check" spends 2 background checks, then refuses the 3rd with RateLimitError + retryAt.
+	for i := 1; i <= dailyCap; i++ {
+		res, err := hSearchCheck.ResolveSources(WithBackgroundCall(ctx), core.SourceQuery{
+			Kind:   "usenet_check",
+			NZBURL: fmt.Sprintf("https://idx.example/bg-%d.nzb", i),
+		})
+		if err != nil || len(res) != 1 || res[0].UsenetCheck == nil || !res[0].UsenetCheck.Available {
+			t.Fatalf("background check %d: res=%+v err=%v", i, res, err)
+		}
+	}
+	_, err := hSearchCheck.ResolveSources(WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/bg-over.nzb",
+	})
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("exhausted background err = %v, want ErrRateLimited", err)
+	}
+	var rl *RateLimitError
+	if !errors.As(err, &rl) || !rl.RetryAt.Equal(resetAt) || rl.RetryAfterSeconds(now) != int64((6*time.Hour)/time.Second) {
+		t.Fatalf("RateLimitError = %#v (err=%v), want retryAt=%v retryAfter=21600s", rl, err, resetAt)
+	}
+
+	// Hosted fault preserves retryAfterSec and retryAt on rate_limited.
+	bridge := hostBridge{h: hSearchCheck}
+	if _, ferr := bridge.CallHost(WithBackgroundCall(ctx), "sources.resolve", json.RawMessage(`[{"kind":"usenet_check","nzbUrl":"https://idx.example/bg-over.nzb"}]`)); ferr == nil {
+		t.Fatal("expected hosted rate_limited fault")
+	} else {
+		var fault *wasm.Fault
+		if !errors.As(ferr, &fault) || fault.Code != "rate_limited" || fault.RetryAfterSec <= 0 || fault.RetryAt != resetAt.Format(time.RFC3339) {
+			t.Fatalf("hosted fault = %#v, want code=rate_limited retryAt=%s", fault, resetAt.Format(time.RFC3339))
+		}
+	}
+
+	// Cached verdict hit succeeds in background even after daily allowance is spent,
+	// without calling backend or incrementing spent.
+	beforeCalls := backendCalls
+	cachedRes, err := hSearchCheck.ResolveSources(WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: cachedURL,
+	})
+	if err != nil || len(cachedRes) != 1 || cachedRes[0].UsenetCheck == nil || !cachedRes[0].UsenetCheck.Cached || cachedRes[0].UsenetCheck.Available {
+		t.Fatalf("cached background check = (%+v, %v), want cached unavailable", cachedRes, err)
+	}
+	if backendCalls != beforeCalls || spent[recSearchCheck.ID] != dailyCap {
+		t.Fatalf("cached hit invoked backend (%d vs %d) or changed spent (%d)", backendCalls, beforeCalls, spent[recSearchCheck.ID])
+	}
+
+	// On-demand viewer call never counts against the daily allowance and still
+	// succeeds even after the plugin's background allowance is exhausted.
+	if _, err := hSearchCheck.ResolveSources(ctx, core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/viewer-ondemand.nzb",
+	}); err != nil {
+		t.Fatalf("on-demand usenet_check failed after background exhausted: %v", err)
+	}
+	if spent[recSearchCheck.ID] != dailyCap {
+		t.Fatalf("on-demand call changed background spent to %d, want %d", spent[recSearchCheck.ID], dailyCap)
+	}
+
+	// "acquire+check" also permits background usenet_check and supports revoking
+	// "sources.check" independently from on-demand "sources".
+	if _, err := hAcquireCheck.ResolveSources(WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/acq-bg.nzb",
+	}); err != nil {
+		t.Fatalf("acquire+check background check: %v", err)
+	}
+	if err := env.m.SetGrants(ctx, recAcquireCheck.ID, Grants{Revoked: []string{"sources.check"}}); err != nil {
+		t.Fatalf("revoke sources.check: %v", err)
+	}
+	if _, err := hAcquireCheck.ResolveSources(WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/acq-bg-revoked.nzb",
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("revoked sources.check background err = %v, want ErrPermissionDenied", err)
+	}
+	if _, err := hAcquireCheck.ResolveSources(ctx, core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: "https://idx.example/acq-ondemand-still-ok.nzb",
+	}); err != nil {
+		t.Fatalf("on-demand usenet_check failed when only sources.check was revoked: %v", err)
+	}
+}

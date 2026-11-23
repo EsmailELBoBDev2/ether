@@ -937,12 +937,21 @@ class MediaProbeResult(TypedDict):
 
 
 class HostError(RuntimeError):
-    """Structured error returned by Ether's plugin-host API, carrying `.code` and `.status`."""
+    """Structured error returned by Ether's plugin-host API, carrying `.code`, `.status`, and optional retry metadata."""
 
-    def __init__(self, message: str, code: str = "", status: int = 0) -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str = "",
+        status: int = 0,
+        retry_after_sec: Optional[int] = None,
+        retry_at: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
+        self.retry_after_sec = retry_after_sec
+        self.retry_at = retry_at
 
 
 class _AIClient:
@@ -1192,17 +1201,29 @@ class RemoteHostClient:
                 return None
             raw = exc.read().decode("utf-8", errors="replace")
             code = ""
+            retry_after_sec: Optional[int] = None
+            retry_at: Optional[str] = None
+            hdr_ra = exc.headers.get("Retry-After") if exc.headers is not None else None
+            if hdr_ra and hdr_ra.strip().isdigit():
+                retry_after_sec = int(hdr_ra.strip())
             try:
                 parsed = json.loads(raw)
                 err_obj = parsed.get("error", {}) if isinstance(parsed, dict) else {}
                 msg = err_obj.get("message") if isinstance(err_obj, dict) else None
                 code = str(err_obj.get("code") or "") if isinstance(err_obj, dict) else ""
+                if isinstance(err_obj, dict):
+                    if isinstance(err_obj.get("retryAfterSec"), (int, float)) and err_obj["retryAfterSec"] > 0:
+                        retry_after_sec = int(err_obj["retryAfterSec"])
+                    if isinstance(err_obj.get("retryAt"), str) and err_obj["retryAt"]:
+                        retry_at = err_obj["retryAt"]
             except Exception:
                 msg = None
             raise HostError(
                 msg or f"Host call {method} {path} failed with HTTP {exc.code}",
                 code=code,
                 status=int(exc.code),
+                retry_after_sec=retry_after_sec,
+                retry_at=retry_at,
             ) from exc
 
     def settings_get(self) -> Dict[str, Any]:
@@ -4110,12 +4131,17 @@ class _KindsClient:
           keys (Ether re-attaches credentials at fetch time using ``indexerId``).
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
-        - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
-          for a Usenet ``candidate`` (or ``nzbUrl``). Returns one candidate
-          with ``usenetCheck`` (``{available, checked, missing, cached?,
-          playbackFailed?, reason?, checkedAt?}``), backed by Ether's bounded
-          per-NZB verdict and playback-failure cache at background NNTP
-          priority. Refused inside background/scheduled calls.
+        - ``usenet_check``: sampled NNTP article check for a Usenet
+          ``candidate`` (or ``nzbUrl``). Returns one candidate with
+          ``usenetCheck`` (``{available, checked, missing, cached?,
+          playbackFailed?, reason?, checkedAt?}``), sharing Ether's bounded
+          per-NZB verdict cache (good 15 min, bad 30 min) and playback-failure
+          memory at background NNTP priority. On-demand viewer calls require
+          ``permissions.sources: "search"`` (or ``"acquire"``) and never count
+          against the daily background allowance; background job/schedule calls
+          require ``"search+check"`` or ``"acquire+check"`` and count against
+          the per-plugin daily allowance (default 20/day), answering
+          ``rate_limited`` with ``retry_after_sec`` / ``retry_at`` once spent.
         """
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])

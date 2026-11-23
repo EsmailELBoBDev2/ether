@@ -1092,6 +1092,7 @@ export interface AvailabilityConfig {
   checkRequests: number;
   grabs: number;
   checks: number;
+  pluginUsenetChecks?: number;
   checkBytes: number;
   reservePercent: number;
 }

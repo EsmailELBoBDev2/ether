@@ -236,7 +236,10 @@ export function settingsIndex(): SettingHit[] {
     ...rows(
       "/sources/indexers",
       t("Indexers"),
-      [["daily-budget-for-new-release-checks", t("Daily budget for new-release checks")]],
+      [
+        ["daily-budget-for-new-release-checks", t("Daily budget for new-release checks")],
+        ["daily-plugin-usenet-checks", t("Daily background Usenet checks per plugin")],
+      ],
       "daily-budgets",
     ),
     ...rows(

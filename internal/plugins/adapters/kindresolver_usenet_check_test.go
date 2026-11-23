@@ -9,7 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/availability"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/resolver"
+	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/stream"
 )
 
@@ -341,7 +347,7 @@ func TestKindResolverUsenetCheckPlaybackFailureRecording(t *testing.T) {
 		_, _ = src.ReadAt(make([]byte, 8), 0)
 		_ = src.Close()
 	}
-	if _, hit := kr.lookupUsenetCheck("https://idx1.example/transient.nzb", ""); hit {
+	if _, hit := kr.lookupUsenetCheck("https://idx1.example/transient.nzb", "", ""); hit {
 		t.Fatal("transient playback errors must not record a playbackFailed verdict")
 	}
 }
@@ -356,16 +362,13 @@ func TestKindResolverUsenetCheckCacheBoundedSize(t *testing.T) {
 		kr.storeUsenetCheck(
 			fmt.Sprintf("https://idx.example/%d.nzb", i),
 			fmt.Sprintf("hash-%d", i),
+			fmt.Sprintf("nzb:cid-%d", i),
 			core.UsenetCheckResult{Available: true, Checked: 12, Missing: 0},
 		)
 	}
-	kr.usenetCheckMu.Lock()
-	entries := len(kr.usenetEntries)
-	byRel := len(kr.usenetByRelease)
-	byHash := len(kr.usenetByHash)
-	kr.usenetCheckMu.Unlock()
-	if entries > maxUsenetCheckCacheEntries || byRel > maxUsenetCheckCacheEntries || byHash > maxUsenetCheckCacheEntries {
-		t.Fatalf("cache exceeded bound %d: entries=%d byRel=%d byHash=%d", maxUsenetCheckCacheEntries, entries, byRel, byHash)
+	entries, byRel, byHash, byContent := kr.verdicts().Stats()
+	if entries > maxUsenetCheckCacheEntries || byRel > maxUsenetCheckCacheEntries || byHash > maxUsenetCheckCacheEntries || byContent > maxUsenetCheckCacheEntries {
+		t.Fatalf("cache exceeded bound %d: entries=%d byRel=%d byHash=%d byContent=%d", maxUsenetCheckCacheEntries, entries, byRel, byHash, byContent)
 	}
 }
 
@@ -456,5 +459,371 @@ func TestKindResolverUsenetCheckFailsOnMissingRARVolumes(t *testing.T) {
 	}
 	if idx.fetches() != 1 {
 		t.Fatalf("indexer fetches = %d, want 1", idx.fetches())
+	}
+}
+
+type sharedVerdictIndexer struct {
+	mu      sync.Mutex
+	results []core.Release
+	nzbs    map[string][]byte
+	fetches int
+}
+
+func (s *sharedVerdictIndexer) Name() string { return "shared-usenet" }
+
+func (s *sharedVerdictIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]core.Release(nil), s.results...), nil
+}
+
+func (s *sharedVerdictIndexer) FetchNZB(_ context.Context, rel core.Release) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fetches++
+	if data, ok := s.nzbs[rel.NZBURL]; ok {
+		return data, nil
+	}
+	return nil, core.ErrNotFound
+}
+
+func (s *sharedVerdictIndexer) fetchCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fetches
+}
+
+type sharedVerdictHealth struct {
+	mu      sync.Mutex
+	healthy map[string]bool
+	calls   int
+}
+
+func (h *sharedVerdictHealth) Check(ctx context.Context, nzb []byte) (bool, error) {
+	return h.CheckRelease(ctx, "", nzb)
+}
+
+func (h *sharedVerdictHealth) CheckRelease(_ context.Context, releaseID string, _ []byte) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls++
+	if ok, exists := h.healthy[releaseID]; exists {
+		return ok, nil
+	}
+	return true, nil
+}
+
+type noopAvailFeeds struct{}
+
+func (noopAvailFeeds) FeedSources() []core.ReleaseFeed { return nil }
+func (noopAvailFeeds) Recent(context.Context, string, int, int) ([]core.Release, error) {
+	return nil, nil
+}
+
+type noopAvailCatalog struct{}
+
+func (noopAvailCatalog) ReleaseMatches(context.Context, []core.Release) (map[string][]core.Title, error) {
+	return nil, nil
+}
+func (noopAvailCatalog) CachedTitle(context.Context, core.RatingKey) (*core.Title, error) {
+	return nil, nil
+}
+func (noopAvailCatalog) CachedTitles(context.Context, []core.RatingKey) ([]core.Title, error) {
+	return nil, nil
+}
+
+type noopAvailValidator struct{}
+
+func (noopAvailValidator) FeedCandidate(context.Context, *core.Title, core.Release) (core.Release, string, error) {
+	return core.Release{}, "", nil
+}
+func (noopAvailValidator) VerifyFeedCandidate(context.Context, *core.Title, core.Release) error {
+	return nil
+}
+
+func (h *sharedVerdictHealth) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls
+}
+
+// TestBackgroundUsenetCheckSharedVerdictsAndAllowance verifies the full W295
+// end-to-end flow across availability.Service, plugins.Manager, KindResolver,
+// and resolver.Service:
+//  1. A background plugin usenet_check feeds the shared verdict cache (good
+//     15 min, bad 30 min) and is reused at Play with 0 NNTP health checks.
+//  2. A bad verdict recorded by Ether's own availability verifier
+//     (VerifyFeedCandidate) is answered from cache on plugin usenet_check
+//     without calling NNTP or spending the plugin's daily allowance.
+//  3. Uncached background checks count against the plugin's daily allowance in
+//     availability_budget, answer rate_limited with UTC midnight retry time
+//     once spent, and never affect on-demand viewer checks.
+func TestBackgroundUsenetCheckSharedVerdictsAndAllowance(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	wantReset := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Defaults(t.TempDir())
+	cfg.Availability.Verify = false
+	cfg.Availability.PluginUsenetChecks = 2
+
+	availSvc, err := availability.New(availability.Deps{
+		DB:        db,
+		Config:    func() config.Config { return cfg },
+		Feeds:     noopAvailFeeds{},
+		Catalog:   noopAvailCatalog{},
+		Validator: noopAvailValidator{},
+		Now:       func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goodURL := "https://idx1.example/good-movie.nzb"
+	goodMirrorURL := "https://idx2.example/good-movie-mirror.nzb"
+	goodNZB := sampleTestNZB("signal-good")
+	// Slightly different XML comment, identical message IDs -> same nzb:<sha256> content ID.
+	goodMirrorNZB := append([]byte("<!-- mirror -->\n"), goodNZB...)
+
+	badURL := "https://idx1.example/bad-avail.nzb"
+	badMirrorURL := "https://idx2.example/bad-avail-mirror.nzb"
+	badNZB := sampleTestNZB("signal-bad")
+	badMirrorNZB := append([]byte("<!-- mirror -->\n"), badNZB...)
+
+	extraURL1 := "https://idx1.example/extra-1.nzb"
+	viewerURL := "https://idx1.example/viewer-only.nzb"
+
+	movie := &core.Title{
+		Key:   core.MovieKey(100),
+		Type:  core.TypeMovie,
+		Title: "The Signal",
+		Year:  2026,
+		IDs:   core.IDs{TMDB: 100},
+	}
+	goodRel := core.Release{
+		ID:       "rel-good-mirror",
+		Name:     "The.Signal.2026.1080p.WEB-DL.DDP5.1.H.264-GRP",
+		Info:     releaseparse.Parse("The.Signal.2026.1080p.WEB-DL.DDP5.1.H.264-GRP"),
+		Size:     4 << 30,
+		Protocol: core.ProtocolUsenet,
+		Indexer:  "idx2",
+		NZBURL:   goodMirrorURL,
+		PubDate:  now.Add(-time.Hour),
+	}
+	badRel := core.Release{
+		ID:       "rel-bad-avail",
+		Name:     "The.Signal.2026.1080p.WEB-DL.DDP5.1.H.264-BAD",
+		Info:     releaseparse.Parse("The.Signal.2026.1080p.WEB-DL.DDP5.1.H.264-BAD"),
+		Size:     4 << 30,
+		Protocol: core.ProtocolUsenet,
+		Indexer:  "idx1",
+		NZBURL:   badURL,
+		PubDate:  now.Add(-time.Hour),
+	}
+
+	idx := &sharedVerdictIndexer{
+		results: []core.Release{goodRel},
+		nzbs: map[string][]byte{
+			goodURL:       goodNZB,
+			goodMirrorURL: goodMirrorNZB,
+			badURL:        badNZB,
+			badMirrorURL:  badMirrorNZB,
+			extraURL1:     sampleTestNZB("extra-1"),
+			viewerURL:     sampleTestNZB("viewer-only"),
+		},
+	}
+	health := &sharedVerdictHealth{
+		healthy: map[string]bool{
+			badRel.ID:  false,
+			goodRel.ID: true,
+		},
+	}
+	resSvc := resolver.New(idx, health, db, cfg, resolver.Options{
+		Now: func() time.Time { return now },
+	})
+	defer resSvc.Close()
+
+	eng := &stubUsenetEngine{
+		checkRes: core.UsenetCheckResult{Available: true, Checked: 10, Missing: 0},
+	}
+	kr := NewKindResolver(KindResolverDeps{
+		Indexer:  idx,
+		Resolver: resSvc,
+		Engine:   eng,
+		Now:      func() time.Time { return now },
+	})
+
+	// Install a plugin declaring permissions.sources: "search+check".
+	manJSON := []byte(`{
+		"id": "community.example.bgusenet",
+		"version": "1.0.0",
+		"name": "BG Usenet",
+		"description": "Tests background usenet checks.",
+		"ether": {
+			"protocol": 1,
+			"kind": "content",
+			"summary": "Tests background usenet checks",
+			"runtime": { "kind": "hosted", "entry": "dist/plugin.js" },
+			"capabilities": ["kind_resolver"],
+			"permissions": { "sources": "search+check" },
+			"contributes": {
+				"mediaKinds": [{
+					"key": "audio",
+					"label": "Audio",
+					"media": "music",
+					"levels": [{ "key": "track", "label": "Track", "playable": true }]
+				}]
+			}
+		}
+	}`)
+
+	mgr, err := plugins.New(plugins.Deps{
+		DB:  db,
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.SetKindBackends(plugins.KindBackends{
+		ResolveSources:             kr.ResolveSources,
+		ResolveSourcesResult:       kr.ResolveSourcesWithResult,
+		PeekUsenetCheck:            kr.PeekUsenetCheck,
+		AdmitBackgroundUsenetCheck: availSvc.AdmitPluginUsenetCheck,
+	})
+	prev, err := mgr.PreviewInstall(ctx, plugins.Source{
+		Kind:     "studio",
+		Manifest: manJSON,
+		Files:    map[string][]byte{"dist/plugin.js": []byte("// bg")},
+	})
+	if err != nil {
+		t.Fatalf("preview install: %v", err)
+	}
+	rec, err := mgr.Install(ctx, prev, plugins.InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	h := mgr.HostFor(rec.ID)
+
+	// 1. Background usenet_check checks goodURL (spends 1 of 2 daily allowance).
+	cands, err := h.ResolveSources(plugins.WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: goodURL,
+	})
+	if err != nil {
+		t.Fatalf("bg check 1: %v", err)
+	}
+	if len(cands) != 1 || cands[0].UsenetCheck == nil || !cands[0].UsenetCheck.Available || cands[0].UsenetCheck.Cached {
+		t.Fatalf("bg check 1 verdict = %+v", cands)
+	}
+	if eng.checks() != 1 {
+		t.Fatalf("eng.checks = %d, want 1", eng.checks())
+	}
+
+	// 2. Play (resolver.Service.Resolve) on a cross-indexer mirror with the same
+	// NZB message IDs reuses the plugin's background GOOD verdict (0 NNTP health checks!).
+	resolved, err := resSvc.Resolve(ctx, core.ResolveRequest{Title: movie})
+	if err != nil || resolved.Release.ID != goodRel.ID {
+		t.Fatalf("Play Resolve = (%+v, %v), want %s", resolved, err, goodRel.ID)
+	}
+	if health.count() != 0 {
+		t.Fatalf("Play ran %d NNTP health checks, want 0 (should reuse background verdict)", health.count())
+	}
+
+	// 3. Ether's own availability verifier (VerifyFeedCandidate) marks badRel as BAD.
+	if err := resSvc.VerifyFeedCandidate(ctx, movie, badRel); !errors.Is(err, core.ErrSourceUnavailable) {
+		t.Fatalf("VerifyFeedCandidate badRel err = %v, want ErrSourceUnavailable", err)
+	}
+	if health.count() != 1 {
+		t.Fatalf("VerifyFeedCandidate health checks = %d, want 1", health.count())
+	}
+
+	// 4. Background plugin usenet_check on badURL answers from the shared cache
+	// without fetching, calling NNTP, or spending the plugin's daily allowance.
+	fetchesBefore := idx.fetchCount()
+	cands, err = h.ResolveSources(plugins.WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: badURL,
+	})
+	if err != nil {
+		t.Fatalf("bg check badURL from cache: %v", err)
+	}
+	if len(cands) != 1 || cands[0].UsenetCheck == nil || cands[0].UsenetCheck.Available || !cands[0].UsenetCheck.Cached {
+		t.Fatalf("bg check badURL verdict = %+v, want cached unavailable", cands)
+	}
+	if idx.fetchCount() != fetchesBefore || eng.checks() != 1 {
+		t.Fatalf("cached badURL triggered work: fetches %d->%d, eng.checks=%d", fetchesBefore, idx.fetchCount(), eng.checks())
+	}
+
+	// 5. Cross-indexer mirror of badRel (different URL, same message-ID contentID)
+	// spends the 2nd daily slot for FetchNZB, then hits the shared bad verdict
+	// by contentID with 0 NNTP article checks!
+	cands, err = h.ResolveSources(plugins.WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: badMirrorURL,
+	})
+	if err != nil {
+		t.Fatalf("bg check badMirrorURL: %v", err)
+	}
+	if len(cands) != 1 || cands[0].UsenetCheck == nil || cands[0].UsenetCheck.Available || !cands[0].UsenetCheck.Cached {
+		t.Fatalf("bg check badMirrorURL verdict = %+v, want cached unavailable", cands)
+	}
+	if eng.checks() != 1 {
+		t.Fatalf("badMirrorURL should reuse shared bad verdict without NNTP check; eng.checks=%d", eng.checks())
+	}
+
+	// 6. Daily allowance (2/2) is now exhausted -> 3rd uncached background check
+	// returns RateLimitError (ErrRateLimited) with UTC midnight retry time.
+	_, err = h.ResolveSources(plugins.WithBackgroundCall(ctx), core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: extraURL1,
+	})
+	if !errors.Is(err, plugins.ErrRateLimited) {
+		t.Fatalf("exhausted bg check err = %v, want ErrRateLimited", err)
+	}
+	var rl *plugins.RateLimitError
+	if !errors.As(err, &rl) || !rl.RetryAt.Equal(wantReset) {
+		t.Fatalf("exhausted RateLimitError = %#v (err=%v), want retryAt=%v", rl, err, wantReset)
+	}
+
+	// 7. On-demand (viewer) usenet_check STILL succeeds and does not count
+	// against the plugin's daily background allowance.
+	cands, err = h.ResolveSources(ctx, core.SourceQuery{
+		Kind:   "usenet_check",
+		NZBURL: viewerURL,
+	})
+	if err != nil || len(cands) != 1 || cands[0].UsenetCheck == nil || !cands[0].UsenetCheck.Available {
+		t.Fatalf("on-demand viewer check after bg exhausted = (%+v, %v)", cands, err)
+	}
+	if eng.checks() != 2 {
+		t.Fatalf("viewer check eng.checks = %d, want 2", eng.checks())
+	}
+
+	// 8. Verify availability_budget recorded exactly 2 used for this plugin.
+	st, err := availSvc.Status(ctx)
+	if err != nil {
+		t.Fatalf("availability.Status: %v", err)
+	}
+	if got := st.Usage[availability.PluginUsenetCheckBucket(rec.ID)]; got != 2 {
+		t.Fatalf("availability_budget usage = %d, want 2 (status usage=%+v)", got, st.Usage)
+	}
+
+	// 9. Verify TTLs: after 16 min positive verdict expires while negative (30m)
+	// stays cached; after 31 min negative expires too.
+	now = now.Add(16 * time.Minute)
+	if _, ok := kr.PeekUsenetCheck(core.SourceQuery{Kind: "usenet_check", NZBURL: goodURL}); ok {
+		t.Fatal("positive verdict should expire after 15 min")
+	}
+	if cand, ok := kr.PeekUsenetCheck(core.SourceQuery{Kind: "usenet_check", NZBURL: badURL}); !ok || cand.UsenetCheck.Available {
+		t.Fatalf("negative verdict should remain cached at 16 min: ok=%v cand=%+v", ok, cand)
+	}
+	now = now.Add(15 * time.Minute)
+	if _, ok := kr.PeekUsenetCheck(core.SourceQuery{Kind: "usenet_check", NZBURL: badURL}); ok {
+		t.Fatal("negative verdict should expire after 30 min")
 	}
 }

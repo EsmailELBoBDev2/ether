@@ -144,8 +144,8 @@ func TestPublishedManifestSchema(t *testing.T) {
 		"enum":        []string{"none", "probe"},
 	}
 	wantSources := map[string]any{
-		"description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\" or \"acquire\"). Requires the kind_resolver capability.",
-		"enum":        []string{"none", "search", "acquire"},
+		"description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\", \"search+check\", \"acquire\", or \"acquire+check\"). The \"+check\" variants also permit background usenet_check calls in jobs and schedules within the owner's per-plugin daily allowance. Requires the kind_resolver capability.",
+		"enum":        []string{"none", "search", "search+check", "acquire", "acquire+check"},
 	}
 	contrib := ether["contributes"].(map[string]any)["properties"].(map[string]any)
 	kind := schemaType(reflect.TypeFor[plugins.MediaKindMeta]())

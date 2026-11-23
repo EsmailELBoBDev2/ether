@@ -77,7 +77,7 @@ func (s *Session) clientGoneLocked(now time.Time) bool {
 		return true
 	}
 	if s.m != nil && s.m.opts.idleTimeout > 0 {
-		if now.Sub(s.LastAccess()) >= s.m.opts.idleTimeout && now.UnixNano() >= s.pauseUntil.Load() {
+		if now.Sub(s.LastAccess()) >= s.m.opts.idleTimeout && now.UnixNano() >= s.pauseDeadline() {
 			return true
 		}
 	}

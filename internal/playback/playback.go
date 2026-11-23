@@ -128,6 +128,9 @@ type Options struct {
 	DataDir string
 	// IdleTimeout ends sessions without viewer activity (default 2m).
 	IdleTimeout time.Duration
+	// PauseRetention bounds how long an explicitly paused session is kept
+	// before expiring. Zero follows Server.PausedStreamMinutes (default 30m).
+	PauseRetention time.Duration
 	// StreamActivityTimeout is how long a session without active reads or
 	// segment requests continues to count against stream limits and active
 	// session listings (default 12s).
@@ -1451,6 +1454,16 @@ func (m *Manager) lookup(id string) *session {
 	return m.sessions[id]
 }
 
+func (m *Manager) pauseRetention() time.Duration {
+	if d := m.config().Server.PausedStreamRetention(); d > 0 {
+		return d
+	}
+	if m.opts.PauseRetention > 0 {
+		return m.opts.PauseRetention
+	}
+	return core.PausedSessionRetention
+}
+
 // sessionLiveness evaluates s under the shared core liveness rule.
 func (m *Manager) sessionLiveness(s *session, now time.Time) core.SessionLiveness {
 	if s == nil {
@@ -1476,6 +1489,7 @@ func (m *Manager) sessionLiveness(s *session, now time.Time) core.SessionLivenes
 		LastActive:       s.lastActive,
 		StartupGrace:     m.opts.StreamActivityTimeout,
 		IdleTimeout:      m.opts.IdleTimeout,
+		PauseRetention:   m.pauseRetention(),
 	}
 	s.mu.Unlock()
 	if m.deps.HLSLookup != nil {

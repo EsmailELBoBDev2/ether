@@ -715,6 +715,7 @@ func (a *App) applyConfig(c config.Config) {
 	a.prefetch.SetConfig(c.Cache)
 	if a.transcoder != nil {
 		a.transcoder.UpdateConfig(c.Transcode)
+		a.transcoder.SetPauseRetention(c.Server.PausedStreamRetention())
 	}
 	if a.state != nil {
 		a.state.SetResumeAfter(c.Server.ResumeAfterSeconds)
@@ -724,6 +725,7 @@ func (a *App) applyConfig(c config.Config) {
 	}
 	if a.deployment != nil && a.deployment.encoder != nil {
 		a.deployment.encoder.UpdateConfig(privateEncoderConfig(c, a.deployment.settings.Capacity))
+		a.deployment.encoder.SetPauseRetention(c.Server.PausedStreamRetention())
 	}
 	a.trakt.UpdateConfig(c.Trakt)
 	a.subtitles.UpdateConfig(c.OpenSubtitles)

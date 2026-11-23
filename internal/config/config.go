@@ -196,6 +196,10 @@ type Server struct {
 	// their position is kept as a resume point. 0 keeps the default, 5% of
 	// the title.
 	ResumeAfterSeconds int `json:"resumeAfterSeconds,omitempty"`
+	// PausedStreamMinutes is how long a paused stream is kept before Ether
+	// closes it (2–1440 minutes; effective minimum is about 2 minutes).
+	// 0 keeps the default, 30 minutes.
+	PausedStreamMinutes int `json:"pausedStreamMinutes,omitempty"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.
@@ -213,6 +217,15 @@ type Server struct {
 	// WebFrameOrigins permits embedding the owner UI in these exact HTTP(S)
 	// origins (for example a dashboard). Empty denies framing everywhere.
 	WebFrameOrigins []string `json:"webFrameOrigins,omitempty"`
+}
+
+// PausedStreamRetention returns the configured paused-stream retention, or 0
+// when the built-in default (core.PausedSessionRetention) applies.
+func (s Server) PausedStreamRetention() time.Duration {
+	if s.PausedStreamMinutes <= 0 {
+		return 0
+	}
+	return time.Duration(s.PausedStreamMinutes) * time.Minute
 }
 
 type Plex struct {

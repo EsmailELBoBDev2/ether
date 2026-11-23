@@ -27,6 +27,22 @@ func TestValidateDownloadsAndResumeAfter(t *testing.T) {
 		}
 	}
 
+	// Valid pausedStreamMinutes bounds: 0 (default) or 2..1440.
+	for _, mins := range []int{0, 2, 30, 1440} {
+		c := base()
+		c.Server.PausedStreamMinutes = mins
+		if errs := ValidateConfig(c); hasField(errs, "server.pausedStreamMinutes") {
+			t.Fatalf("pausedStreamMinutes=%d unexpectedly invalid: %v", mins, errs)
+		}
+	}
+	for _, mins := range []int{-1, 1, 1441, 5000} {
+		c := base()
+		c.Server.PausedStreamMinutes = mins
+		if errs := ValidateConfig(c); !hasField(errs, "server.pausedStreamMinutes") {
+			t.Fatalf("pausedStreamMinutes=%d expected validation error, got %v", mins, errs)
+		}
+	}
+
 	// Download limits validation.
 	c := base()
 	c.Downloads.LimitUnit = "titles"

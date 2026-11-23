@@ -27,6 +27,18 @@ export const SERVER: FieldGroup[] = localized(() => [
           "How many seconds into a title a viewer must be before Ether keeps a resume point, in every app. 0 keeps the default: 5% of the title.",
         ),
       },
+      {
+        key: "pausedStreamMinutes",
+        label: t("Close a paused stream after"),
+        kind: "number",
+        min: 0,
+        max: 1440,
+        step: 1,
+        unit: "min",
+        help: t(
+          "How long a stream can stay paused before Ether closes it and frees its place (2–1440 minutes; streams are closed no sooner than about 2 minutes). The viewer can press play again to start a new one from where they were. 0 keeps the default: 30 minutes.",
+        ),
+      },
     ],
   },
   {

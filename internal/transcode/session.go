@@ -66,7 +66,7 @@ type Session struct {
 	created             time.Time
 	lastAccess          atomic.Int64 // unix nanos
 	lastMediaAccess     atomic.Int64 // unix nanos of last non-HEAD segment/init delivery (0 until media served)
-	pauseUntil          atomic.Int64 // bounded authenticated player pause
+	pausedAt            atomic.Int64 // unix nanos when authenticated player paused (0 when not paused)
 	stoppedAt           atomic.Int64 // authenticated player stop; fetches after it do not revive
 	mu                  sync.Mutex
 	closed              bool
@@ -334,34 +334,44 @@ func (s *Session) LastMediaAccess() time.Time {
 var _ core.MediaAccessTracker = (*Session)(nil)
 
 func (s *Session) touchMediaAccess() {
-	now := time.Now().UnixNano()
+	now := s.m.now().UnixNano()
 	s.lastAccess.Store(now)
 	s.lastMediaAccess.Store(now)
 }
 
 // Touch marks the session as in use (e.g. on a Plex timeline ping while the
 // client is paused) so the idle reaper keeps it.
-func (s *Session) Touch() { s.lastAccess.Store(time.Now().UnixNano()) }
+func (s *Session) Touch() { s.lastAccess.Store(s.m.now().UnixNano()) }
+
+func (s *Session) pauseDeadline() int64 {
+	at := s.pausedAt.Load()
+	if at <= 0 {
+		return 0
+	}
+	return at + int64(s.m.effectivePauseRetention())
+}
 
 var _ core.SessionActivity = (*Session)(nil)
 
 func (s *Session) PlaybackState(state string) {
+	now := s.m.now()
 	switch state {
 	case "paused":
 		s.stoppedAt.Store(0)
-		if s.pauseUntil.Swap(time.Now().Add(core.PausedSessionRetention).UnixNano()) == 0 {
-			s.log.Info("player paused; retaining output", "retention", core.PausedSessionRetention)
+		retention := s.m.effectivePauseRetention()
+		if s.pausedAt.Swap(now.UnixNano()) == 0 {
+			s.log.Info("player paused; retaining output", "retention", retention)
 		}
-		s.Touch()
+		s.lastAccess.Store(now.UnixNano())
 	case "playing":
 		s.stoppedAt.Store(0)
-		s.Touch()
-		if s.pauseUntil.Swap(0) != 0 {
+		s.lastAccess.Store(now.UnixNano())
+		if s.pausedAt.Swap(0) != 0 {
 			s.log.Info("player resumed")
 		}
 	case "stopped":
-		s.pauseUntil.Store(0)
-		if s.stoppedAt.Swap(time.Now().UnixNano()) == 0 {
+		s.pausedAt.Store(0)
+		if s.stoppedAt.Swap(now.UnixNano()) == 0 {
 			s.log.Info("player stopped")
 		}
 	}

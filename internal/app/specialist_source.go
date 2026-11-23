@@ -134,6 +134,9 @@ func (a *App) applySourceConfig(c config.Config) {
 	c.Cache = a.runningCacheConfig()
 	a.engine.UpdatePlaybackReadAhead(c.Cache.PlaybackReadAhead())
 	a.playback.SetConfig(c)
+	if a.deployment != nil && a.deployment.encoder != nil {
+		a.deployment.encoder.SetPauseRetention(c.Server.PausedStreamRetention())
+	}
 }
 
 // Source ownership needs actual metadata fallback, without constructing an

@@ -357,6 +357,7 @@ export interface EtherConfig {
     bindAddress: string;
     friendlyName: string;
     resumeAfterSeconds?: number;
+    pausedStreamMinutes?: number;
     machineIdentifier: string;
     logLevel: string;
     defaultStreamLimit: number;

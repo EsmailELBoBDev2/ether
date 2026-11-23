@@ -214,12 +214,12 @@ func (s *httpSession) LastMediaAccess() time.Time {
 
 func (s *httpSession) Touch() {
 	s.mu.Lock()
-	s.lastAccess = time.Now()
+	s.lastAccess = s.m.now()
 	s.mu.Unlock()
 }
 
 func (s *httpSession) touchMediaAccess() {
-	now := time.Now()
+	now := s.m.now()
 	s.mu.Lock()
 	s.lastAccess = now
 	s.lastMediaAccess = now
@@ -837,10 +837,21 @@ func (w flushWriter) Write(p []byte) (int, error) {
 	rc := http.NewResponseController(w.ResponseWriter)
 	timeout := w.timeout
 	if timeout <= 0 {
-		timeout = core.PausedSessionRetention
+		if w.s != nil && w.s.m != nil {
+			timeout = w.s.m.effectivePauseRetention()
+			if w.s.m.opts.idleTimeout > 0 && timeout < w.s.m.opts.idleTimeout {
+				timeout = w.s.m.opts.idleTimeout
+			}
+		} else {
+			timeout = core.PausedSessionRetention
+		}
+	}
+	now := time.Now
+	if w.s != nil && w.s.m != nil {
+		now = w.s.m.now
 	}
 	arm := func() error {
-		err := rc.SetWriteDeadline(time.Now().Add(timeout))
+		err := rc.SetWriteDeadline(now().Add(timeout))
 		if errors.Is(err, http.ErrNotSupported) {
 			return nil // e.g. in-memory recorders
 		}

@@ -19,6 +19,9 @@ type RemotePlaybackOptions struct {
 	Capacity     int
 	// IdleTimeout follows the source Manager idle policy (default two minutes).
 	IdleTimeout time.Duration
+	// PauseRetention bounds how long an explicitly paused session is kept
+	// before expiring (default core.PausedSessionRetention).
+	PauseRetention time.Duration
 	// Now is the lifecycle clock, primarily for deterministic tests.
 	Now func() time.Time
 }
@@ -215,18 +218,34 @@ func (p *RemotePlayback) SessionForSurface(surface string, viewer int64, client 
 	}
 	return nil, false
 }
+
+// SetPauseRetention updates how long an explicitly paused session is kept
+// before expiring. Zero or negative restores core.PausedSessionRetention.
+func (p *RemotePlayback) SetPauseRetention(d time.Duration) {
+	if p == nil {
+		return
+	}
+	if d < 0 {
+		d = 0
+	}
+	p.mu.Lock()
+	p.o.PauseRetention = d
+	p.mu.Unlock()
+}
+
 func (p *RemotePlayback) entryLivenessLocked(e *remotePreparation, now time.Time) core.SessionLiveness {
 	if e == nil || e.retired || e.retiring || e.snapshot == nil {
 		return core.SessionLiveness{State: core.SessionLivenessStopped, Expired: true}
 	}
 	in := core.SessionLivenessInput{
-		PreparedOnly: e.snapshot.PreparedOnly,
-		StartedAt:    e.snapshot.StartedAt,
-		OpenedAt:     e.activity,
-		IsHLS:        e.request.Protocol == "hls" || e.snapshot.Decision == core.DecisionTranscode || e.snapshot.Decision == core.DecisionRemux,
-		ViewerState:  e.state,
-		LastActive:   e.activity,
-		IdleTimeout:  p.o.IdleTimeout,
+		PreparedOnly:   e.snapshot.PreparedOnly,
+		StartedAt:      e.snapshot.StartedAt,
+		OpenedAt:       e.activity,
+		IsHLS:          e.request.Protocol == "hls" || e.snapshot.Decision == core.DecisionTranscode || e.snapshot.Decision == core.DecisionRemux,
+		ViewerState:    e.state,
+		LastActive:     e.activity,
+		IdleTimeout:    p.o.IdleTimeout,
+		PauseRetention: p.o.PauseRetention,
 	}
 	if e.state == "playing" {
 		in.LastMediaAt = e.activity

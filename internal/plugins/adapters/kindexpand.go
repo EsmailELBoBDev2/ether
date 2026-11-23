@@ -33,6 +33,17 @@ var containerHydrateWait = 1800 * time.Millisecond
 
 type containerHydrateCall struct {
 	firstPage chan struct{}
+	startedAt time.Time
+}
+
+// expansionErrorCooldown suppresses immediately re-launching a facet or
+// container expansion after a failed attempt, so repeated opens of a failing
+// upstream slice do not block for firstOpenWait on every request.
+var expansionErrorCooldown = 15 * time.Minute
+
+type expandWaitState struct {
+	firstPage chan struct{}
+	startedAt time.Time
 }
 
 // firstOpenWait bounds how long the first page of a studio or performer
@@ -162,24 +173,36 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	}
 
 	ttl := time.Duration(rec.Decl.Browse.Expand.EffectiveTTLHours()) * time.Hour
-	var waits []chan struct{}
+	errCooldown := expansionErrorCooldown
+	if ttl > 0 && ttl < errCooldown {
+		errCooldown = ttl
+	}
+	var waits []*expandWaitState
 	now := c.items.Now()
 	routePath := "/ether/v1/kinds/" + rec.KindKey + "/expand"
 	anyRunning := false
+	hasExpiredInflight := false
 
 	for _, t := range targets {
 		dedupKey := rec.KindKey + "\x00" + t.facet + "\x00" + t.valueKey
 		expandLaunchMu.Lock()
 		if c.mgr.IsExpandJobRunning(rec.PluginID, dedupKey) {
-			if ch, ok := expandReady.Load(dedupKey); ok {
-				waits = append(waits, ch.(chan struct{}))
+			if v, ok := expandReady.Load(dedupKey); ok {
+				ws := v.(*expandWaitState)
+				if firstOpenWait > 0 && time.Since(ws.startedAt) < firstOpenWait {
+					waits = append(waits, ws)
+				} else {
+					hasExpiredInflight = true
+				}
+			} else {
+				hasExpiredInflight = true
 			}
 			expandLaunchMu.Unlock()
 			anyRunning = true
 			continue
 		}
 		exp, ok, err := c.items.GetFacetExpansion(ctx, rec.PluginID, rec.KindKey, t.facet, t.valueKey)
-		if err == nil && ok && exp.IsFresh(now, ttl) {
+		if err == nil && ok && (exp.IsFresh(now, ttl) || exp.IsInErrorCooldown(now, errCooldown)) {
 			expandLaunchMu.Unlock()
 			continue
 		}
@@ -200,6 +223,7 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 			close(ready)
 			expandLaunchMu.Unlock()
 			anyRunning = true
+			hasExpiredInflight = true
 			continue
 		}
 		if startErr != nil {
@@ -211,8 +235,9 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 		markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = c.items.MarkFacetExpansionRunning(markCtx, rec.PluginID, rec.KindKey, lib.ID, t.facet, t.valueKey)
 		cancel()
-		expandReady.Store(dedupKey, firstPage)
-		waits = append(waits, firstPage)
+		ws := &expandWaitState{firstPage: firstPage, startedAt: time.Now()}
+		expandReady.Store(dedupKey, ws)
+		waits = append(waits, ws)
 		close(ready)
 		expandLaunchMu.Unlock()
 		anyRunning = true
@@ -221,13 +246,21 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	if !anyRunning {
 		return false
 	}
-	// The first page waits for the fill's first stored page (its own fill or
-	// another viewer's), so a viewer opening a studio or performer sees the
-	// right titles the first time. Later pages never wait.
+	// The first page waits at most once per running fill (remaining time from
+	// startedAt up to firstOpenWait) for the first stored page; callers arriving
+	// after that initial window and later pages never block.
 	if q.Offset != 0 || q.StartAt != 0 || q.AdjacentTo != 0 || len(waits) == 0 || firstOpenWait <= 0 {
 		return true
 	}
-	wait := firstOpenWait
+	var wait time.Duration
+	for _, ws := range waits {
+		if rem := firstOpenWait - time.Since(ws.startedAt); rem > wait {
+			wait = rem
+		}
+	}
+	if wait <= 0 {
+		return true
+	}
 	if dl, ok := ctx.Deadline(); ok {
 		if rem := time.Until(dl); rem <= 0 {
 			return true
@@ -237,16 +270,16 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	for _, ch := range waits {
+	for _, ws := range waits {
 		select {
-		case <-ch:
+		case <-ws.firstPage:
 		case <-timer.C:
 			return true
 		case <-ctx.Done():
 			return true
 		}
 	}
-	return false
+	return hasExpiredInflight
 }
 
 func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.ExpandJobRunner, rec pluginitems.KindRecord, libID core.LibraryID, routePath string, target expandTarget, firstPage func()) error {
@@ -827,6 +860,10 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 		ttlHours = rec.Decl.Browse.Expand.EffectiveTTLHours()
 	}
 	ttl := time.Duration(ttlHours) * time.Hour
+	errCooldown := expansionErrorCooldown
+	if ttl > 0 && ttl < errCooldown {
+		errCooldown = ttl
+	}
 	now := c.items.Now()
 
 	sfKey := rec.PluginID + "\x00" + rec.KindKey + "\x00" + parentItem.ID
@@ -834,13 +871,13 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 	c.hydrateMu.Lock()
 	if call, inflight := c.hydrateInflight[sfKey]; inflight {
 		c.hydrateMu.Unlock()
-		waitContainerHydrate(ctx, call.firstPage)
+		waitContainerHydrate(ctx, call.firstPage, call.startedAt)
 		return
 	}
 	// Check durability + stored child freshness under the lock only after
 	// verifying no inflight hydration is running, avoiding duplicate launches.
 	exp, hasExp, expErr := c.items.GetFacetExpansion(ctx, rec.PluginID, rec.KindKey, containerExpandFacet, parentItem.ID)
-	if expErr == nil && hasExp && exp.IsFresh(now, ttl) {
+	if expErr == nil && hasExp && (exp.IsFresh(now, ttl) || exp.IsInErrorCooldown(now, errCooldown)) {
 		c.hydrateMu.Unlock()
 		return
 	}
@@ -850,7 +887,7 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 		return
 	}
 
-	call := &containerHydrateCall{firstPage: make(chan struct{})}
+	call := &containerHydrateCall{firstPage: make(chan struct{}), startedAt: time.Now()}
 	if c.hydrateInflight == nil {
 		c.hydrateInflight = make(map[string]*containerHydrateCall)
 	}
@@ -866,13 +903,19 @@ func (c *KindCatalog) maybeHydrateContainer(ctx context.Context, rec pluginitems
 	c.hydrateMu.Unlock()
 
 	go c.runContainerHydration(sfKey, sem, rec, lib.ID, parentItem, levelIdx, call)
-	waitContainerHydrate(ctx, call.firstPage)
+	waitContainerHydrate(ctx, call.firstPage, call.startedAt)
 }
 
-func waitContainerHydrate(ctx context.Context, firstPage <-chan struct{}) {
+func waitContainerHydrate(ctx context.Context, firstPage <-chan struct{}, startedAt time.Time) {
 	wait := containerHydrateWait
 	if wait <= 0 {
 		return
+	}
+	if !startedAt.IsZero() {
+		wait -= time.Since(startedAt)
+		if wait <= 0 {
+			return
+		}
 	}
 	if dl, ok := ctx.Deadline(); ok {
 		if rem := time.Until(dl); rem <= 0 {

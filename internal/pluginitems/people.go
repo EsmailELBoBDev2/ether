@@ -275,7 +275,7 @@ GROUP BY f.v_int`, cArgs...); cErr == nil {
 	}
 	out := make([]PersonMatch, 0, len(cands))
 	for _, c := range cands {
-		pm, ok, err := s.loadPersonMatch(ctx, rec, policy, pFields, c.id, c.name, c.count, loadItems, itemLimit > 0)
+		pm, ok, err := s.loadPersonMatch(ctx, rec, policy, pFields, c.id, c.name, c.count, loadItems, itemLimit > 0, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -298,6 +298,91 @@ func (s *Service) PersonByID(ctx context.Context, libraryID core.LibraryID, poli
 	pFields := declaredPeopleFields(rec.Decl)
 	if len(pFields) == 0 {
 		return PersonMatch{}, false, nil
+	}
+
+	loadItems := itemLimit
+	if loadItems <= 0 {
+		loadItems = 50
+	}
+
+	if policy.Passive() {
+		libTally, tErr := s.libraryTally(ctx, libraryID)
+		if tErr != nil {
+			return PersonMatch{}, false, tErr
+		}
+		if libTally.active {
+			if libTally.libTotal == 0 {
+				return PersonMatch{}, false, nil
+			}
+			placeholders := make([]string, len(pFields))
+			tArgs := make([]any, 0, 2+len(pFields))
+			tArgs = append(tArgs, int64(libraryID), personID)
+			for i, fk := range pFields {
+				placeholders[i] = "?"
+				tArgs = append(tArgs, fk)
+			}
+			rows, qErr := s.db.QueryContext(ctx, `
+SELECT field, label, cnt
+FROM plugin_item_person_tally
+WHERE library_id = ? AND level = '' AND v_int = ? AND field IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY field ASC`, tArgs...)
+			if qErr != nil {
+				return PersonMatch{}, false, qErr
+			}
+			var (
+				matchedFields []string
+				name          string
+				singleCnt     int
+				roles         = map[string]int{}
+			)
+			for rows.Next() {
+				var fk, lbl string
+				var cnt int
+				if scanErr := rows.Scan(&fk, &lbl, &cnt); scanErr != nil {
+					rows.Close()
+					return PersonMatch{}, false, scanErr
+				}
+				if cnt <= 0 || lbl == "" {
+					continue
+				}
+				matchedFields = append(matchedFields, fk)
+				if name == "" || lbl < name {
+					name = lbl
+				}
+				singleCnt = cnt
+				roles[creditRoleForField(fk)] += cnt
+			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				rows.Close()
+				return PersonMatch{}, false, rowsErr
+			}
+			rows.Close()
+			if len(matchedFields) == 0 || name == "" {
+				return PersonMatch{}, false, nil
+			}
+			totalCount := singleCnt
+			if len(matchedFields) > 1 {
+				mPlaceholders := make([]string, len(matchedFields))
+				mArgs := make([]any, 0, 2+len(matchedFields))
+				mArgs = append(mArgs, int64(libraryID), personID)
+				for i, fk := range matchedFields {
+					mPlaceholders[i] = "?"
+					mArgs = append(mArgs, fk)
+				}
+				if cErr := s.db.QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT f.item_ref)
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+strings.Join(mPlaceholders, ",")+`)`,
+					mArgs...).Scan(&totalCount); cErr != nil {
+					return PersonMatch{}, false, cErr
+				}
+			}
+			if totalCount <= 0 {
+				return PersonMatch{}, false, nil
+			}
+			return s.loadPersonMatch(ctx, rec, policy, matchedFields, personID, name, totalCount, loadItems, itemLimit > 0, roles)
+		}
 	}
 
 	placeholders := make([]string, len(pFields))
@@ -324,14 +409,10 @@ WHERE `+where.String(), args...).Scan(&name, &count)
 		return PersonMatch{}, false, err
 	}
 
-	loadItems := itemLimit
-	if loadItems <= 0 {
-		loadItems = 50
-	}
-	return s.loadPersonMatch(ctx, rec, policy, pFields, personID, name, count, loadItems, itemLimit > 0)
+	return s.loadPersonMatch(ctx, rec, policy, pFields, personID, name, count, loadItems, itemLimit > 0, nil)
 }
 
-func (s *Service) loadPersonMatch(ctx context.Context, rec KindRecord, policy *libraryfilter.Filter, pFields []string, personID int64, fallbackName string, totalCount, loadLimit int, keepItems bool) (PersonMatch, bool, error) {
+func (s *Service) loadPersonMatch(ctx context.Context, rec KindRecord, policy *libraryfilter.Filter, pFields []string, personID int64, fallbackName string, totalCount, loadLimit int, keepItems bool, precomputedRoles map[string]int) (PersonMatch, bool, error) {
 	if loadLimit <= 0 {
 		loadLimit = 20
 	}
@@ -367,30 +448,33 @@ LIMIT ?`
 		return PersonMatch{}, false, nil
 	}
 
-	roles := map[string]int{}
-	var roleWhere strings.Builder
-	roleArgs := make([]any, 0, 2+len(pFields))
-	roleArgs = append(roleArgs, int64(rec.LibraryID), personID)
-	for _, fk := range pFields {
-		roleArgs = append(roleArgs, fk)
-	}
-	roleWhere.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
-	if s.appendVisibility(ctx, &roleWhere, &roleArgs, rec.LibraryID, policy, false) == nil {
-		roleRows, err := s.db.QueryContext(ctx, `
+	roles := precomputedRoles
+	if roles == nil {
+		roles = map[string]int{}
+		var roleWhere strings.Builder
+		roleArgs := make([]any, 0, 2+len(pFields))
+		roleArgs = append(roleArgs, int64(rec.LibraryID), personID)
+		for _, fk := range pFields {
+			roleArgs = append(roleArgs, fk)
+		}
+		roleWhere.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
+		if s.appendVisibility(ctx, &roleWhere, &roleArgs, rec.LibraryID, policy, false) == nil {
+			roleRows, err := s.db.QueryContext(ctx, `
 SELECT f.field, COUNT(DISTINCT f.item_ref)
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
 WHERE `+roleWhere.String()+`
 GROUP BY f.field`, roleArgs...)
-		if err == nil {
-			for roleRows.Next() {
-				var fk string
-				var cnt int
-				if roleRows.Scan(&fk, &cnt) == nil && cnt > 0 {
-					roles[creditRoleForField(fk)] += cnt
+			if err == nil {
+				for roleRows.Next() {
+					var fk string
+					var cnt int
+					if roleRows.Scan(&fk, &cnt) == nil && cnt > 0 {
+						roles[creditRoleForField(fk)] += cnt
+					}
 				}
+				roleRows.Close()
 			}
-			roleRows.Close()
 		}
 	}
 

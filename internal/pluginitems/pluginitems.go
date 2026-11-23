@@ -115,6 +115,16 @@ ALTER TABLE plugin_sync_state ADD COLUMN guard_json TEXT NOT NULL DEFAULT '';
 	store.RegisterSQLiteApply("pluginitems", 17, applyMigration17SQLite)
 	store.RegisterPostgresApply("pluginitems", 17, applyMigration17Postgres)
 
+	// Migration 18: persist the newest representative item_ref (and person
+	// portrait-thumb item_ref) on plugin_item_field_tally and
+	// plugin_item_person_tally and cover them in the tally sort indexes so
+	// collections and people tabs resolve artwork in O(1) per bucket without
+	// scanning plugin_item_fields or probing plugin_items_released.
+	store.Register("pluginitems", 18, migration18SQLiteDDL)
+	store.RegisterDialect("pluginitems", 18, store.Postgres, migration18PostgresDDL)
+	store.RegisterSQLiteApply("pluginitems", 18, applyMigration18SQLite)
+	store.RegisterPostgresApply("pluginitems", 18, applyMigration18Postgres)
+
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain
 	// (field, 0, item_ref) entries for every text value. Both SQLite and

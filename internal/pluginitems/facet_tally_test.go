@@ -67,38 +67,85 @@ func assertTalliesExact(t *testing.T, db *sql.DB, libID core.LibraryID, step str
 	type fVal struct {
 		cnt        int
 		lower, fld string
+		rep        tallyItemRank
 	}
 	wantField := map[fKey]fVal{}
+	type pKey struct {
+		level, field string
+		vInt         int64
+	}
+	type pVal struct {
+		label, lower, fld string
+		cnt               int
+		rep               tallyItemRank
+		thumb             tallyItemRank
+	}
+	wantPerson := map[pKey]pVal{}
+
+	var declJSON string
+	var peopleFields []string
+	if err := db.QueryRowContext(ctx, `SELECT decl FROM plugin_kinds WHERE library_id = ? LIMIT 1`, int64(libID)).Scan(&declJSON); err == nil {
+		var decl plugins.MediaKindMeta
+		if json.Unmarshal([]byte(declJSON), &decl) == nil {
+			peopleFields = declaredPeopleFields(decl)
+		}
+	}
+
 	fRows, err := db.QueryContext(ctx, `
-SELECT i.level, f.field, f.v_text, COUNT(*)
+SELECT i.level, f.field, f.v_text, f.v_int, i.item_ref, i.released, i.added_at, i.year, i.fields
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id = ? AND i.level <> '' AND f.v_text <> ''
-GROUP BY i.level, f.field, f.v_text`, int64(libID))
+WHERE i.library_id = ? AND i.level <> '' AND f.v_text <> ''`, int64(libID))
 	if err != nil {
 		t.Fatalf("%s: ground-truth field query: %v", step, err)
 	}
 	for fRows.Next() {
-		var lv, field, text string
-		var cnt int
-		if err := fRows.Scan(&lv, &field, &text, &cnt); err != nil {
+		var lv, field, text, ref, fieldsJSON string
+		var vInt, released, addedAt, yr int64
+		if err := fRows.Scan(&lv, &field, &text, &vInt, &ref, &released, &addedAt, &yr, &fieldsJSON); err != nil {
 			fRows.Close()
 			t.Fatal(err)
 		}
 		lower := strings.ToLower(text)
 		fold := FoldFieldText(text)
-		wantField[fKey{lv, field, text}] = fVal{cnt: cnt, lower: lower, fld: fold}
-		cur := wantField[fKey{"", field, text}]
-		cur.cnt += cnt
-		cur.lower = lower
-		cur.fld = fold
-		wantField[fKey{"", field, text}] = cur
+		rank := tallyItemRank{ref: ref, released: released, addedAt: addedAt, year: yr}
+		for _, targetLv := range [2]string{lv, ""} {
+			k := fKey{targetLv, field, text}
+			cur := wantField[k]
+			cur.cnt++
+			cur.lower = lower
+			cur.fld = fold
+			if rank.beats(cur.rep) {
+				cur.rep = rank
+			}
+			wantField[k] = cur
+		}
+		if core.IsPluginPersonID(vInt) {
+			hasThumb := itemHasPersonThumb(fieldsJSON, peopleFields, vInt)
+			for _, targetLv := range [2]string{lv, ""} {
+				pk := pKey{targetLv, field, vInt}
+				cur, exists := wantPerson[pk]
+				if !exists || text < cur.label {
+					cur.label = text
+					cur.lower = lower
+					cur.fld = fold
+				}
+				cur.cnt++
+				if rank.beats(cur.rep) {
+					cur.rep = rank
+				}
+				if hasThumb && rank.beats(cur.thumb) {
+					cur.thumb = rank
+				}
+				wantPerson[pk] = cur
+			}
+		}
 	}
 	fRows.Close()
 
 	gotField := map[fKey]fVal{}
 	ftRows, err := db.QueryContext(ctx, `
-SELECT level, field, v_text, v_lower, v_fold, cnt
+SELECT level, field, v_text, v_lower, v_fold, cnt, rep_ref, rep_released, rep_added, rep_year
 FROM plugin_item_field_tally
 WHERE library_id = ?`, int64(libID))
 	if err != nil {
@@ -107,11 +154,12 @@ WHERE library_id = ?`, int64(libID))
 	for ftRows.Next() {
 		var lv, field, text, lower, fold string
 		var cnt int
-		if err := ftRows.Scan(&lv, &field, &text, &lower, &fold, &cnt); err != nil {
+		var rep tallyItemRank
+		if err := ftRows.Scan(&lv, &field, &text, &lower, &fold, &cnt, &rep.ref, &rep.released, &rep.addedAt, &rep.year); err != nil {
 			ftRows.Close()
 			t.Fatal(err)
 		}
-		gotField[fKey{lv, field, text}] = fVal{cnt: cnt, lower: lower, fld: fold}
+		gotField[fKey{lv, field, text}] = fVal{cnt: cnt, lower: lower, fld: fold, rep: rep}
 	}
 	ftRows.Close()
 	if len(gotField) != len(wantField) {
@@ -123,54 +171,11 @@ WHERE library_id = ?`, int64(libID))
 		}
 	}
 
-	type pKey struct {
-		level, field string
-		vInt         int64
-	}
-	type pVal struct {
-		label, lower, fld string
-		cnt               int
-	}
-	minPID := core.PluginPersonIDBase
-	maxPID := core.PluginPersonIDBase + core.PluginPersonIDSpan
-	wantPerson := map[pKey]pVal{}
-	pRows, err := db.QueryContext(ctx, `
-SELECT i.level, f.field, f.v_int, MIN(f.v_text), COUNT(*)
-FROM plugin_item_fields f
-JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id = ? AND i.level <> '' AND f.v_text <> '' AND f.v_int > ? AND f.v_int < ?
-GROUP BY i.level, f.field, f.v_int`, int64(libID), minPID, maxPID)
-	if err != nil {
-		t.Fatalf("%s: ground-truth person query: %v", step, err)
-	}
-	for pRows.Next() {
-		var lv, field, label string
-		var vInt int64
-		var cnt int
-		if err := pRows.Scan(&lv, &field, &vInt, &label, &cnt); err != nil {
-			pRows.Close()
-			t.Fatal(err)
-		}
-		wantPerson[pKey{lv, field, vInt}] = pVal{
-			label: label,
-			lower: strings.ToLower(label),
-			fld:   FoldFieldText(label),
-			cnt:   cnt,
-		}
-		cur, exists := wantPerson[pKey{"", field, vInt}]
-		if !exists || label < cur.label {
-			cur.label = label
-			cur.lower = strings.ToLower(label)
-			cur.fld = FoldFieldText(label)
-		}
-		cur.cnt += cnt
-		wantPerson[pKey{"", field, vInt}] = cur
-	}
-	pRows.Close()
-
 	gotPerson := map[pKey]pVal{}
 	ptRows, err := db.QueryContext(ctx, `
-SELECT level, field, v_int, label, label_lower, label_fold, cnt
+SELECT level, field, v_int, label, label_lower, label_fold, cnt,
+       rep_ref, rep_released, rep_added, rep_year,
+       thumb_ref, thumb_released, thumb_added, thumb_year
 FROM plugin_item_person_tally
 WHERE library_id = ?`, int64(libID))
 	if err != nil {
@@ -180,11 +185,14 @@ WHERE library_id = ?`, int64(libID))
 		var lv, field, label, lower, fold string
 		var vInt int64
 		var cnt int
-		if err := ptRows.Scan(&lv, &field, &vInt, &label, &lower, &fold, &cnt); err != nil {
+		var rep, thumb tallyItemRank
+		if err := ptRows.Scan(&lv, &field, &vInt, &label, &lower, &fold, &cnt,
+			&rep.ref, &rep.released, &rep.addedAt, &rep.year,
+			&thumb.ref, &thumb.released, &thumb.addedAt, &thumb.year); err != nil {
 			ptRows.Close()
 			t.Fatal(err)
 		}
-		gotPerson[pKey{lv, field, vInt}] = pVal{label: label, lower: lower, fld: fold, cnt: cnt}
+		gotPerson[pKey{lv, field, vInt}] = pVal{label: label, lower: lower, fld: fold, cnt: cnt, rep: rep, thumb: thumb}
 	}
 	ptRows.Close()
 	if len(gotPerson) != len(wantPerson) {
@@ -405,7 +413,7 @@ func TestMigration17BackfillFromPre17Schema(t *testing.T) {
 			PRIMARY KEY (library_id, level, field, v_text)
 		)`,
 		`CREATE INDEX plugin_item_field_tally_count ON plugin_item_field_tally(library_id, level, field, cnt DESC, v_text)`,
-		`DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version = 17`,
+		`DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version >= 17`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("rollback pre-17 (%s): %v", stmt, err)
@@ -534,25 +542,25 @@ func TestMigration17BackfillFromPre17Schema(t *testing.T) {
 	}{
 		{
 			name:      "people_name",
-			sql:       `EXPLAIN QUERY PLAN SELECT v_int, label, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY label_lower ASC, label ASC, v_int ASC LIMIT 101 OFFSET 0`,
+			sql:       `EXPLAIN QUERY PLAN SELECT v_int, label, cnt, rep_ref, thumb_ref FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY label_lower ASC, label ASC, v_int ASC LIMIT 101 OFFSET 0`,
 			args:      []any{int64(libID), "entry", "cast"},
 			wantIndex: "plugin_item_person_tally_name",
 		},
 		{
 			name:      "people_count",
-			sql:       `EXPLAIN QUERY PLAN SELECT v_int, label, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, label_lower ASC, label ASC, v_int ASC LIMIT 101 OFFSET 0`,
+			sql:       `EXPLAIN QUERY PLAN SELECT v_int, label, cnt, rep_ref, thumb_ref FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, label_lower ASC, label ASC, v_int ASC LIMIT 101 OFFSET 0`,
 			args:      []any{int64(libID), "entry", "cast"},
 			wantIndex: "plugin_item_person_tally_count",
 		},
 		{
 			name:      "collections_count",
-			sql:       `EXPLAIN QUERY PLAN SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, v_lower ASC, v_text ASC LIMIT 101 OFFSET 0`,
+			sql:       `EXPLAIN QUERY PLAN SELECT v_text, cnt, rep_ref FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, v_lower ASC, v_text ASC LIMIT 101 OFFSET 0`,
 			args:      []any{int64(libID), "entry", "tags"},
 			wantIndex: "plugin_item_field_tally_count",
 		},
 		{
 			name:      "collections_name",
-			sql:       `EXPLAIN QUERY PLAN SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY v_lower ASC, v_text ASC LIMIT 101 OFFSET 0`,
+			sql:       `EXPLAIN QUERY PLAN SELECT v_text, cnt, rep_ref FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY v_lower ASC, v_text ASC LIMIT 101 OFFSET 0`,
 			args:      []any{int64(libID), "entry", "tags"},
 			wantIndex: "plugin_item_field_tally_name",
 		},
@@ -842,5 +850,197 @@ func TestHybridLargeBucketNewestResolution(t *testing.T) {
 	}
 	if len(fp.Items) < 2 || fp.Items[0].Name != "Star Lead" || fp.Items[0].Thumb != "https://img.example.test/star-thumb.jpg" || fp.Items[0].SampleItem == nil || fp.Items[0].SampleItem.ID != "item-058" {
 		t.Fatalf("FacetPeople(cast) lead = %+v, want Star Lead thumb from item-058", fp.Items[0])
+	}
+}
+
+func TestTallyRepresentativeMaintenanceInvariants(t *testing.T) {
+	ctx := context.Background()
+	s, db := openTestService(t, Options{})
+	defer s.Close()
+
+	const (
+		pluginID = "test.games"
+		kindKey  = "game"
+		libID    = core.LibraryID(96)
+	)
+	decl := plugins.MediaKindMeta{
+		Key:   kindKey,
+		Label: "Games",
+		Levels: []plugins.KindLevel{
+			{Key: "game", Label: "Game", Playable: true},
+		},
+		Fields: []plugins.KindField{
+			{Key: "genres", Type: "strings", Label: "Genres", Indexed: true},
+			{Key: "cast", Type: "people", Label: "Cast"},
+			{Key: "directors", Type: "people", Label: "Directors"},
+		},
+		Browse: plugins.KindBrowseDecl{
+			Sorts:  []string{"title", "added", "released", "year"},
+			Facets: []string{"genres", "cast", "directors"},
+		},
+	}
+	if _, err := s.UpsertKind(ctx, pluginID, libID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed items testing:
+	// - tie-breaking on (released DESC, added_at DESC, year DESC, item_ref ASC)
+	// - cross-field thumb inheritance (g2 has cast without thumb + directors with thumb)
+	// - large-bucket (>512) recompute via sort-index probe on delete
+	items := []core.KindItem{
+		{
+			ID:       "g1",
+			Level:    "game",
+			Title:    "Alpha Quest",
+			Year:     2020,
+			Released: 1_700_000_100,
+			Playable: true,
+			Art:      []core.KindArtRef{{Role: "poster", URL: "https://img.example.test/g1.jpg"}},
+			Fields: map[string]json.RawMessage{
+				"genres": rawJSON(t, []string{"RPG"}),
+				"cast":   rawJSON(t, []map[string]any{{"name": "Jordan Lee", "thumb": "https://img.example.test/jordan-old.jpg"}}),
+			},
+		},
+		{
+			ID:       "g2",
+			Level:    "game",
+			Title:    "Beta Quest",
+			Year:     2022,
+			Released: 1_700_000_200,
+			Playable: true,
+			Art:      []core.KindArtRef{{Role: "poster", URL: "https://img.example.test/g2.jpg"}},
+			Fields: map[string]json.RawMessage{
+				"genres":    rawJSON(t, []string{"RPG"}),
+				"cast":      rawJSON(t, []map[string]any{{"name": "Jordan Lee"}}),
+				"directors": rawJSON(t, []map[string]any{{"name": "Jordan Lee", "thumb": "https://img.example.test/jordan-dir.jpg"}}),
+			},
+		},
+		{
+			ID:       "g3",
+			Level:    "game",
+			Title:    "Gamma Quest",
+			Year:     2024,
+			Released: 1_700_000_300,
+			Playable: true,
+			Art:      []core.KindArtRef{{Role: "poster", URL: "https://img.example.test/g3.jpg"}},
+			Fields: map[string]json.RawMessage{
+				"genres": rawJSON(t, []string{"RPG"}),
+				"cast":   rawJSON(t, []map[string]any{{"name": "Jordan Lee"}}),
+			},
+		},
+	}
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, items); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "initial seed")
+
+	// FacetCollections uses rep_ref (g3), while FacetPeople uses thumb_ref (g2 via directors thumb).
+	fc, err := s.FacetCollections(ctx, FacetCollectionsQuery{LibraryID: libID, Level: "game", FieldKey: "genres", Order: "count", Limit: 10})
+	if err != nil || len(fc.Items) != 1 || fc.Items[0].NewestItem == nil || fc.Items[0].NewestItem.ID != "g3" {
+		t.Fatalf("FacetCollections(genres) = %+v, err=%v, want g3", fc.Items, err)
+	}
+	fp, err := s.FacetPeople(ctx, FacetPeopleQuery{LibraryID: libID, Level: "game", FieldKey: "cast", Order: "name", Limit: 10})
+	if err != nil || len(fp.Items) != 1 || fp.Items[0].Thumb != "https://img.example.test/jordan-dir.jpg" || fp.Items[0].SampleItem == nil || fp.Items[0].SampleItem.ID != "g2" {
+		t.Fatalf("FacetPeople(cast) = %+v, err=%v, want g2 thumb", fp.Items, err)
+	}
+
+	// Update g3: lower its released date AND attach a portrait thumb (rank decreased while gaining thumb eligibility).
+	g3Updated := items[2]
+	g3Updated.Released = 1_700_000_250
+	g3Updated.Fields = map[string]json.RawMessage{
+		"genres": rawJSON(t, []string{"RPG"}),
+		"cast":   rawJSON(t, []map[string]any{{"name": "Jordan Lee", "thumb": "https://img.example.test/jordan-new.jpg"}}),
+	}
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{g3Updated}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "g3 demoted while gaining thumb")
+
+	// Demote g3 below g2 (g2 becomes rep_ref and keeps thumb_ref; g3 drops thumb).
+	g3Updated.Released = 1_700_000_150
+	g3Updated.Fields = map[string]json.RawMessage{
+		"genres": rawJSON(t, []string{"RPG"}),
+		"cast":   rawJSON(t, []map[string]any{{"name": "Jordan Lee"}}),
+	}
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{g3Updated}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "g3 demoted below g2 and thumb removed")
+
+	// Remove thumb from g2 without changing its released rank -> thumb_ref falls back to g1.
+	g2Updated := items[1]
+	g2Updated.Fields = map[string]json.RawMessage{
+		"genres":    rawJSON(t, []string{"RPG"}),
+		"cast":      rawJSON(t, []map[string]any{{"name": "Jordan Lee"}}),
+		"directors": rawJSON(t, []map[string]any{{"name": "Jordan Lee"}}),
+	}
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{g2Updated}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "g2 thumb removed -> fallback to g1")
+
+	// Promote g1 above g2 (rank increase without recompute).
+	g1Updated := items[0]
+	g1Updated.Released = 1_700_000_500
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{g1Updated}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "g1 promoted above g2")
+
+	// Delete g1 (removes both rep_ref and last thumb_ref -> thumb_ref clears to "").
+	if err := s.KindDelete(ctx, pluginID, kindKey, []string{"g1"}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "g1 deleted (last thumb removed)")
+
+	// Exercise the large-bucket (>= 512) sort-index recompute path on delete for
+	// both field rep_ref and person rep_ref/thumb_ref, including equal-released ties.
+	bulk := make([]core.KindItem, 520)
+	for i := range bulk {
+		rel := int64(1_710_000_000 + i*10)
+		yr := 2020
+		if i >= 517 {
+			// 3-way tie on released broken by year DESC then item_ref ASC.
+			rel = 1_710_010_000
+			yr = 2020 + (i - 517)
+		}
+		castObj := map[string]any{"name": "Jordan Lee"}
+		if i%2 == 0 {
+			castObj["thumb"] = "https://img.example.test/jordan-bulk.jpg"
+		}
+		bulk[i] = core.KindItem{
+			ID:       fmt.Sprintf("bulk-%04d", i),
+			Level:    "game",
+			Title:    fmt.Sprintf("Bulk Game %04d", i),
+			Year:     yr,
+			Released: rel,
+			Playable: true,
+			Fields: map[string]json.RawMessage{
+				"genres": rawJSON(t, []string{"RPG"}),
+				"cast":   rawJSON(t, []map[string]any{castObj}),
+			},
+		}
+	}
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, bulk); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "after 520 bulk inserts")
+
+	// Delete the top 2 items (triggers recomputeFieldRepTx, recomputePersonRepTx,
+	// and recomputePersonThumbTx large-bucket sort-index probes + tie-breaking).
+	if err := s.KindDelete(ctx, pluginID, kindKey, []string{"bulk-0519", "bulk-0518"}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "after deleting top 2 from 520-item bucket")
+
+	// Verify tally-backed LookupPersonFacetsByID and PersonByID match ground truth.
+	jordanID := core.PluginPersonID("Jordan Lee")
+	matches, err := s.LookupPersonFacetsByID(ctx, libID, []string{"cast", "directors"}, jordanID)
+	if err != nil || len(matches) != 2 {
+		t.Fatalf("LookupPersonFacetsByID = %+v, err=%v, want 2 fields", matches, err)
+	}
+	pm, ok, err := s.PersonByID(ctx, libID, nil, jordanID, 5)
+	if err != nil || !ok || pm.CreditCount != 520 || pm.Roles["actor"] != 520 || pm.Roles["director"] != 1 {
+		t.Fatalf("PersonByID = (%+v, ok=%v, err=%v), want count=520 actor=520 director=1", pm, ok, err)
 	}
 }

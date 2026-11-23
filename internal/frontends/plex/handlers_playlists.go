@@ -110,10 +110,8 @@ func (s *Server) expandKey(ctx context.Context, pr *Request, k frontend.RatingKe
 		excludeVideo := base == plexBaseArtist || (t.MediaClass != "" && t.MediaClass != frontend.MediaClassVideo)
 		var titles []frontend.Title
 		switch t.Type {
-		case frontend.TypeShow:
+		case frontend.TypeShow, frontend.TypeSeason:
 			titles, err = s.metadataGrandchildrenOf(ctx, pr, t)
-		case frontend.TypeSeason:
-			titles, err = s.metadataChildren(ctx, pr, k)
 		default:
 			if !s.pluginAwarePlayable(ctx, pr.User, t) {
 				return nil, frontend.ErrNotFound

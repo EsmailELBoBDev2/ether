@@ -680,10 +680,10 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 		if titles := s.getTitles(withRequest(ctx, pr), []frontend.RatingKey{p.key}); len(titles) == 1 {
 			// Plugin items populate their version menu on detail/play intent
 			// (labels=true), never on cold list renders. Tag explicit Play so
-			// playback resolves are never gated by discovery shares.
+			// playback resolves are never gated by discovery shares or LocalResponse.
 			vctx := ctx
 			if p.key.IsPluginKey() {
-				vctx = frontend.WithIndexerPurpose(vctx, frontend.IndexerPurposePlayback)
+				vctx = frontend.WithoutLocalResponse(frontend.WithIndexerPurpose(vctx, frontend.IndexerPurposePlayback))
 			}
 			plan, err := source.VersionSlots(vctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, p.key.IsPluginKey())
 			if err != nil {

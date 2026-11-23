@@ -50,7 +50,10 @@ func (s *Server) metadataChildren(ctx context.Context, pr *Request, k frontend.R
 // maxGrandchildAlbumExpands caps how many empty child containers (e.g.
 // never-opened albums under an artist when artist expansion only stored album
 // shells) metadataGrandchildrenOf may expand on demand before returning.
-const maxGrandchildAlbumExpands = 3
+const (
+	maxGrandchildAlbumExpands = 3
+	maxPluginExpandDepth      = 4
+)
 
 func (s *Server) metadataGrandchildren(ctx context.Context, pr *Request, k frontend.RatingKey) ([]frontend.Title, error) {
 	if k.IsPluginKey() {
@@ -66,15 +69,17 @@ func (s *Server) metadataGrandchildren(ctx context.Context, pr *Request, k front
 	return s.catalog().Grandchildren(ctx, k)
 }
 
-// metadataGrandchildrenOf expands a plugin root container (e.g. artist ->
-// albums -> tracks) while respecting branching levels and container expansion:
+// metadataGrandchildrenOf expands a plugin container (e.g. artist -> albums ->
+// tracks, album -> tracks, or 4-level league -> season -> round -> match) while
+// respecting branching levels and container expansion:
 //   - primary child listing excludes secondary branches (such as video concerts
 //     under a music artist) so artist Play, All Tracks, and Shuffle stay on audio;
-//   - when ctx allows expansion, opening a never-opened artist triggers the
-//     single-flight, error-backed-off container expansion once;
+//   - when ctx allows expansion, opening a never-opened root container triggers
+//     its single-flight, error-backed-off container expansion once;
 //   - child containers are first read without expansion to avoid storms, and
-//     only if zero tracks were stored are at most maxGrandchildAlbumExpands
-//     empty child containers expanded until playable tracks are found.
+//     only if zero playable leaves were stored are at most
+//     maxGrandchildAlbumExpands empty child containers expanded until playable
+//     leaves are found.
 func (s *Server) metadataGrandchildrenOf(ctx context.Context, pr *Request, parent *frontend.Title) ([]frontend.Title, error) {
 	if parent == nil {
 		return nil, frontend.ErrNotFound
@@ -92,44 +97,50 @@ func (s *Server) metadataGrandchildrenOf(ctx context.Context, pr *Request, paren
 	noExpandCtx := frontend.WithNoContainerExpand(ctx)
 	var out []frontend.Title
 	var emptyContainers []frontend.Title
-	for _, ch := range children {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if excludeVideo && ch.MediaClass == frontend.MediaClassVideo {
-			continue
-		}
-		if ch.Type != frontend.TypeShow && ch.Type != frontend.TypeSeason {
-			out = append(out, ch)
-		} else {
-			sub, serr := s.kindChildren(noExpandCtx, pr, ch.Key)
+	var walk func(walkCtx context.Context, items []frontend.Title, depth int, recordEmpty bool) error
+	walk = func(walkCtx context.Context, items []frontend.Title, depth int, recordEmpty bool) error {
+		for _, ch := range items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if excludeVideo && ch.MediaClass == frontend.MediaClassVideo {
+				continue
+			}
+			if ch.Type != frontend.TypeShow && ch.Type != frontend.TypeSeason {
+				out = append(out, ch)
+				if len(out) >= maxExpand {
+					out = out[:maxExpand]
+					return nil
+				}
+				continue
+			}
+			if depth >= maxPluginExpandDepth {
+				continue
+			}
+			before := len(out)
+			sub, serr := s.kindChildren(walkCtx, pr, ch.Key)
 			if serr != nil {
 				continue
 			}
-			added := 0
-			for _, g := range sub {
-				if excludeVideo && g.MediaClass == frontend.MediaClassVideo {
-					continue
-				}
-				out = append(out, g)
-				added++
-				if len(out) >= maxExpand {
-					out = out[:maxExpand]
-					return out, nil
-				}
+			if err := walk(noExpandCtx, sub, depth+1, false); err != nil {
+				return err
 			}
-			if added == 0 {
+			if len(out) >= maxExpand {
+				out = out[:maxExpand]
+				return nil
+			}
+			if recordEmpty && len(out) == before {
 				emptyContainers = append(emptyContainers, ch)
 			}
 		}
-		if len(out) >= maxExpand {
-			out = out[:maxExpand]
-			break
-		}
+		return nil
 	}
-	// If the artist expansion populated album shells without tracks yet and
-	// this request explicitly permits expansion, expand a bounded number of
-	// albums until tracks arrive.
+	if err := walk(noExpandCtx, children, 1, true); err != nil {
+		return nil, err
+	}
+	// If the root container expansion populated child container shells without
+	// leaves yet and this request explicitly permits expansion, expand a
+	// bounded number of empty child containers until leaves arrive.
 	if len(out) == 0 && len(emptyContainers) > 0 && !frontend.NoContainerExpand(ctx) {
 		limit := min(len(emptyContainers), maxGrandchildAlbumExpands)
 		for _, ch := range emptyContainers[:limit] {
@@ -140,14 +151,8 @@ func (s *Server) metadataGrandchildrenOf(ctx context.Context, pr *Request, paren
 			if serr != nil {
 				continue
 			}
-			for _, g := range sub {
-				if excludeVideo && g.MediaClass == frontend.MediaClassVideo {
-					continue
-				}
-				out = append(out, g)
-				if len(out) >= maxExpand {
-					return out[:maxExpand], nil
-				}
+			if err := walk(noExpandCtx, sub, 2, false); err != nil {
+				return nil, err
 			}
 			if len(out) > 0 {
 				break

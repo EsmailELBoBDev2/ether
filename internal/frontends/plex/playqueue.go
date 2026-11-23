@@ -49,7 +49,8 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
-	if t := q.Get("type"); t != "video" && t != "audio" {
+	// Music and audiobook libraries (plugin kinds) queue with type=audio (or music).
+	if t := q.Get("type"); t != "video" && t != "audio" && t != "music" {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
@@ -574,7 +575,9 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	if center >= 0 && center < len(pq.Items) {
 		targetItem = pq.Items[center]
 	}
-	if targetTitle, ok := byKey[targetItem.Key]; ok {
+	// A plugin item is prepared by its own resolver when the client asks for
+	// the playback decision; the catalogue warm-up below does not apply to it.
+	if targetTitle, ok := byKey[targetItem.Key]; ok && !targetItem.Key.IsPluginKey() {
 		if !(playIntent && bedrockPlayProbeClient(pr) && s.probeBedrockPlay(ctx, pr, targetTitle)) {
 			if pr != nil && pr.detailWaitUntil.IsZero() {
 				startDetailPageWait(pr)

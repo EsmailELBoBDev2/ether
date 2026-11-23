@@ -32,6 +32,9 @@ type storedTitle struct {
 	detail    bool
 	// detailAt is when the detail payload was last fetched (zero if never).
 	detailAt time.Time
+	// metaKnown reports that browsable/fetchedAt/detail/detailAt were read
+	// from catalog_titles rather than synthesized from a bare core.Title.
+	metaKnown bool
 }
 
 // extraScan appends trailing columns to a titleCols scan.
@@ -106,6 +109,7 @@ func (c *Catalog) loadByKey(ctx context.Context, key core.RatingKey) (*storedTit
 	if detailAt != 0 {
 		st.detailAt = time.Unix(detailAt, 0).UTC()
 	}
+	st.metaKnown = true
 	items := []core.Title{st.t}
 	// A cold local page will fetch its one minimum payload next. Do not
 	// expand an undetailed summary into several redundant fact/count reads.
@@ -168,6 +172,7 @@ func (c *Catalog) PreloadStored(ctx context.Context, keys []core.RatingKey) {
 			if detailAt != 0 {
 				st.detailAt = time.Unix(detailAt, 0).UTC()
 			}
+			st.metaKnown = true
 			stored = append(stored, st)
 		}
 		err = rows.Err()
@@ -777,7 +782,7 @@ func (c *Catalog) applyHydratedAdded(ctx context.Context, items []core.Title) er
 	if !needsAir {
 		return nil
 	}
-	return applyAirAddedTimes(ctx, c.db, items, now)
+	return applyAirAddedTimes(ctx, c.db, items, now, c.WriteGeneration())
 }
 
 // scanPairs applies each (key, value) row to every slice index registered

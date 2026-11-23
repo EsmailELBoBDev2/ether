@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/listcache"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 type Frontend struct{}
@@ -76,7 +77,16 @@ func (i *instance) Handler() http.Handler {
 		mediasafety.SetHeaders(w)
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		r = r.Clone(r.Context())
+		ctx := r.Context()
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if !reqmemo.Active(ctx) {
+				ctx = reqmemo.With(ctx)
+			}
+			if frontend.RequestMemoFrom(ctx) == nil {
+				ctx = frontend.WithRequestMemo(ctx)
+			}
+		}
+		r = r.Clone(ctx)
 		u := *r.URL
 		u.Path = strings.TrimPrefix(u.Path, "/xtream")
 		r.URL = &u

@@ -103,6 +103,16 @@ func (s *RowViewService) ResolveRowViews(ctx context.Context, reqs []frontend.Ro
 		if current {
 			policyCtx = context.WithValue(policyCtx, rowViewPolicyPreflightKey{}, &rowViewPolicyPreflight{})
 		}
+		if s.o.PrepareSnapshots != nil && len(ids) > 0 {
+			snaps := make([]RowViewSnapshot, len(ids))
+			for i, id := range ids {
+				snaps[i] = records[id.(string)].snapshot
+			}
+			policyCtx, e = s.o.PrepareSnapshots(policyCtx, active, snaps)
+			if e != nil {
+				return nil, e
+			}
+		}
 		for _, id := range ids {
 			if !s.o.ValidRow(policyCtx, active, first.Device, first.Protocol, records[id.(string)].snapshot) {
 				return nil, ErrRowViewStale

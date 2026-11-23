@@ -213,18 +213,40 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}, Additional: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 		return a.experienceAdditionalRows(core.WithLiveApp(ctx, string(protocol)), req, a.playlists, rowVis)
 	}}
-	entryPolicy := experience.RowEntryPolicy{Visibility: rowVis, Favorite: func(ctx context.Context, u *core.User, subject experience.FavoriteSubject) bool {
+	var cols core.Collections
+	if a.collections != nil {
+		cols = a.collections
+	}
+	var playlistExistsBatch func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
+	if batch, ok := a.playlists.(interface {
+		ExistsBatch(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
+	}); ok {
+		playlistExistsBatch = batch.ExistsBatch
+	}
+	entryPolicy := experience.RowEntryPolicy{Visibility: rowVis, Collections: cols, PlaylistExistsBatch: playlistExistsBatch, Favorite: func(ctx context.Context, u *core.User, subject experience.FavoriteSubject) bool {
 		return a.favoriteAllowedStored(ctx, u, favorites.Subject{Kind: favorites.Kind(subject.Kind), ID: subject.ID}, rowVis)
 	}, Playlist: func(ctx context.Context, u *core.User, key core.RatingKey) bool {
+		if ex, ok := a.playlists.(interface {
+			Exists(context.Context, int64, core.RatingKey) (bool, error)
+		}); ok {
+			ok, err := ex.Exists(ctx, u.ID, key)
+			return err == nil && ok
+		}
+		if hdr, ok := a.playlists.(interface {
+			GetHeader(context.Context, int64, core.RatingKey) (*core.Playlist, error)
+		}); ok {
+			_, err := hdr.GetHeader(ctx, u.ID, key)
+			return err == nil
+		}
 		_, err := a.playlists.Get(ctx, u.ID, key)
 		return err == nil
 	}}
-	interactions := experience.RowInteractionPolicy{Libraries: libs, LiveLibraries: liveLibraries, Visibility: rowVis, Get: a.catalog.CachedGet, AllowEntry: entryPolicy.Subject, CollectionMembers: func(ctx context.Context, u *core.User, key core.RatingKey, entries []core.NeutralEntryRef) bool {
+	interactions := experience.RowInteractionPolicy{Libraries: libs, LiveLibraries: liveLibraries, Visibility: rowVis, Get: a.catalog.CachedGet, AllowEntry: entryPolicy.Subject, Collections: cols, PlaylistExistsBatch: playlistExistsBatch, CollectionMembers: func(ctx context.Context, u *core.User, key core.RatingKey, entries []core.NeutralEntryRef) bool {
 		return rowViewCollectionMembers(ctx, a.collections, u, key, entries)
 	}, Impression: a.personalize.RecordNeutralImpression, EntryImpression: a.personalize.RecordNeutralEntryImpression, DetailOpen: a.personalize.RecordDetailOpen}
 	receipts, err := experience.NewReceipts(experience.ReceiptOptions{DB: a.db, PolicyLease: a.cfg.AcquirePolicy, Active: a.users.PolicyUser, TTL: 30 * time.Minute, MaxPerDevice: 10000, Prefetch: func(ctx context.Context, keys []core.RatingKey) {
 		_, _ = a.catalog.CachedGetMany(ctx, keys)
-	}, Allowed: func(ctx context.Context, u *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject) bool {
+	}, PrepareBatch: interactions.PrepareBatch, Allowed: func(ctx context.Context, u *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject) bool {
 		return interactions.Allowed(ctx, u, subject)
 	}, AllowedAction: func(_ context.Context, _ *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject, kind frontend.RowInteractionKind) bool {
 		return interactions.AllowedAction(subject, kind)
@@ -234,7 +256,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if err != nil {
 		return nil, err
 	}
-	rows, err := experience.NewRowsService(experience.RowServiceDeps{Source: source, Visibility: rowVis, Receipts: receipts, RankedSource: true, HomeFallback: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
+	rows, err := experience.NewRowsService(experience.RowServiceDeps{Source: source, Visibility: rowVis, Receipts: receipts, PrefetchTitles: a.catalog.PreloadStored, PrepareRows: entryPolicy.PrepareRows, RankedSource: true, HomeFallback: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 		if protocol == "plex" {
 			return nil, nil
 		}

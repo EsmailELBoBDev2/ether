@@ -131,7 +131,7 @@ func (c *Catalog) writeLocalPage(ctx context.Context, items []upsertItem) error 
 				detailAt = time.Unix(now, 0)
 			}
 			delete(c.titleCache, item.t.Key)
-			c.putSnapshotLocked(item.t.Key, gen, c.minuteBucket(), storedTitle{t: cloneTitle(titles[i]), detail: item.o.detail, detailAt: detailAt, fetchedAt: time.Unix(now, 0), browsable: item.o.browsable || !released[item.t.Key].IsZero()})
+			c.putSnapshotLocked(item.t.Key, gen, c.minuteBucket(), storedTitle{t: cloneTitle(titles[i]), detail: item.o.detail, detailAt: detailAt, fetchedAt: time.Unix(now, 0), browsable: item.o.browsable || !released[item.t.Key].IsZero(), metaKnown: true})
 		}
 		c.cacheMu.Unlock()
 	}

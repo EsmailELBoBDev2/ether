@@ -782,6 +782,22 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 			for _, candidate := range policyContinue {
 				pool = append(pool, candidate.t)
 			}
+			// Preload parent shows of episodes/seasons in one batch so inherited
+			// visibility checks in allow never trigger per-show CachedGet calls.
+			var parents []core.RatingKey
+			seenParent := map[core.RatingKey]bool{}
+			for i := range pool {
+				t := &pool[i]
+				show := t.ShowKey
+				if show == 0 && (t.Type == core.TypeEpisode || t.Type == core.TypeSeason) {
+					show = core.ShowKey(t.Key.TMDB())
+				}
+				if show != 0 && !seenParent[show] {
+					seenParent[show] = true
+					parents = append(parents, show)
+				}
+			}
+			preloadTitles(ctx, e.catalog, parents)
 			for i := range pool {
 				t := &pool[i]
 				if !seen[t.Key] {

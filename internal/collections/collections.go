@@ -870,7 +870,7 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 		}
 	}
 	if (c.PosterPath == "" || c.BackdropPath == "" || c.Type == "") && len(keys) > 0 {
-		if ts, err := s.mirror.TitlesIncludingFuture(ctx, keys[:min(len(keys), 4)]); err == nil {
+		if ts, err := s.mirror.ArtSummary(ctx, keys[:min(len(keys), 4)]); err == nil {
 			for _, mt := range ts {
 				if c.Type == "" {
 					c.Type = mt.Type
@@ -1132,6 +1132,264 @@ func (s *Service) Items(ctx context.Context, user *core.User, key core.RatingKey
 		return core.Page{Items: items, Total: total}, nil
 	}
 	return core.Page{}, core.ErrNotFound
+}
+
+// CheckMembers verifies that key is visible to user and that every key in want
+// belongs to the collection's first scanLimit served items, without hydrating
+// full item metadata (credits, keywords, aired counts).
+func (s *Service) CheckMembers(ctx context.Context, user *core.User, key core.RatingKey, want []core.RatingKey, scanLimit int) (*core.Collection, bool, error) {
+	if len(want) == 0 || scanLimit <= 0 {
+		return nil, false, nil
+	}
+	wantSet := make(map[core.RatingKey]bool, len(want))
+	wantList := make([]core.RatingKey, 0, len(want))
+	for _, k := range want {
+		if !wantSet[k] {
+			wantSet[k] = true
+			wantList = append(wantList, k)
+		}
+	}
+	base, section := key.CollectionSection()
+	if key.IsEphemeral() {
+		e, ok := s.vibeReg().get(key, s.now())
+		if !ok || e.owner != vibeOwner(user) {
+			return nil, false, core.ErrNotFound
+		}
+		if e.promoted != 0 {
+			return s.CheckMembers(ctx, user, e.promoted, wantList, scanLimit)
+		}
+		c, err := s.getEphemeral(ctx, user, key)
+		if err != nil {
+			return nil, false, err
+		}
+		for offset := 0; offset < scanLimit; {
+			page, err := s.ephemeralItems(ctx, user, key, offset, 100)
+			if err != nil {
+				return c, false, err
+			}
+			for _, it := range page.Items {
+				delete(wantSet, it.Key)
+			}
+			if len(wantSet) == 0 {
+				return c, true, nil
+			}
+			if len(page.Items) == 0 {
+				return c, false, nil
+			}
+			offset += len(page.Items)
+			if offset >= page.Total {
+				return c, false, nil
+			}
+		}
+		return c, false, nil
+	}
+	switch key.Kind() {
+	case core.KindCollection:
+		c, err := s.getFranchise(ctx, user, key)
+		if err != nil {
+			return nil, false, err
+		}
+		_, items, err := s.cat.Collection(ctx, key.TMDB())
+		if err != nil {
+			return c, false, err
+		}
+		items = filterTitlesByRating(items, user)
+		sort.SliceStable(items, func(i, j int) bool { return items[i].Released.Before(items[j].Released) })
+		limit := min(len(items), scanLimit)
+		for _, it := range items[:limit] {
+			delete(wantSet, it.Key)
+		}
+		return c, len(wantSet) == 0, nil
+	case core.KindSmart:
+		row, err := s.rowByKey(ctx, base)
+		if err != nil {
+			return nil, false, err
+		}
+		if !visible(row, user) || section != "" && (row.spec.MediaType != MediaMixed || !typeMatches(row.spec, section)) {
+			return nil, false, core.ErrNotFound
+		}
+		keys, err := s.serve(ctx, row, user, true)
+		if err != nil {
+			return nil, false, err
+		}
+		c := s.collectionFor(ctx, row, user, section, keys)
+		keys = sectionKeys(keys, section)
+		inServed := make(map[core.RatingKey]bool, len(keys))
+		for _, k := range keys {
+			inServed[k] = true
+		}
+		for _, k := range wantList {
+			if !inServed[k] {
+				return &c, false, nil
+			}
+		}
+		upcoming := row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed"
+		if len(keys) <= scanLimit {
+			valid, err := s.mirror.ValidKeys(ctx, wantList, upcoming)
+			if err != nil {
+				return &c, false, err
+			}
+			return &c, len(valid) == len(wantList), nil
+		}
+		valid, err := s.mirror.ValidKeys(ctx, keys, upcoming)
+		if err != nil {
+			return &c, false, err
+		}
+		for _, k := range valid[:min(len(valid), scanLimit)] {
+			delete(wantSet, k)
+		}
+		return &c, len(wantSet) == 0, nil
+	}
+	return nil, false, core.ErrNotFound
+}
+
+// CheckMembersBatch evaluates multiple collections for one policy pass in
+// bounded queries: one collections_specs query for all smart collections and
+// at most two mirror.ValidKeys queries across all wanted title keys. When
+// want[key] is empty, the returned map still carries the visible collection
+// header for visibility checks (matched[key] stays false).
+func (s *Service) CheckMembersBatch(ctx context.Context, user *core.User, keys []core.RatingKey, want map[core.RatingKey][]core.RatingKey, scanLimit int) (map[core.RatingKey]*core.Collection, map[core.RatingKey]bool, error) {
+	cols := make(map[core.RatingKey]*core.Collection, len(keys))
+	matched := make(map[core.RatingKey]bool, len(keys))
+	if len(keys) == 0 {
+		return cols, matched, nil
+	}
+	seenKey := make(map[core.RatingKey]bool, len(keys))
+	uniqueKeys := make([]core.RatingKey, 0, len(keys))
+	var smartIDs []int64
+	for _, k := range keys {
+		if k == 0 || seenKey[k] {
+			continue
+		}
+		seenKey[k] = true
+		uniqueKeys = append(uniqueKeys, k)
+		base, _ := k.CollectionSection()
+		if !k.IsEphemeral() && base.Kind() == core.KindSmart {
+			smartIDs = append(smartIDs, base.TMDB())
+		}
+	}
+	rowsByID, err := s.rowsByIDs(ctx, smartIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	type pendingSmart struct {
+		key      core.RatingKey
+		wantList []core.RatingKey
+		upcoming bool
+	}
+	var pending []pendingSmart
+	var regularWant, upcomingWant []core.RatingKey
+	seenRegular := map[core.RatingKey]bool{}
+	seenUpcoming := map[core.RatingKey]bool{}
+	for _, key := range uniqueKeys {
+		base, section := key.CollectionSection()
+		w := want[key]
+		if key.IsEphemeral() || base.Kind() != core.KindSmart {
+			if len(w) > 0 && scanLimit > 0 {
+				c, ok, err := s.CheckMembers(ctx, user, key, w, scanLimit)
+				if err == nil && c != nil {
+					cols[key] = c
+					matched[key] = ok
+				}
+			} else if c, err := s.Get(ctx, user, key); err == nil && c != nil {
+				cols[key] = c
+			}
+			continue
+		}
+		row := rowsByID[base.TMDB()]
+		if row == nil || !visible(row, user) || section != "" && (row.spec.MediaType != MediaMixed || !typeMatches(row.spec, section)) {
+			continue
+		}
+		served, err := s.serve(ctx, row, user, true)
+		if err != nil {
+			continue
+		}
+		c := s.collectionFor(ctx, row, user, section, served)
+		cols[key] = &c
+		if len(w) == 0 || scanLimit <= 0 {
+			continue
+		}
+		served = sectionKeys(served, section)
+		inServed := make(map[core.RatingKey]bool, len(served))
+		for _, k := range served {
+			inServed[k] = true
+		}
+		wantSet := make(map[core.RatingKey]bool, len(w))
+		wantList := make([]core.RatingKey, 0, len(w))
+		allInServed := true
+		for _, k := range w {
+			if !inServed[k] {
+				allInServed = false
+				break
+			}
+			if !wantSet[k] {
+				wantSet[k] = true
+				wantList = append(wantList, k)
+			}
+		}
+		if !allInServed || len(wantList) == 0 {
+			continue
+		}
+		upcoming := row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed"
+		if len(served) > scanLimit {
+			valid, err := s.mirror.ValidKeys(ctx, served, upcoming)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, k := range valid[:min(len(valid), scanLimit)] {
+				delete(wantSet, k)
+			}
+			matched[key] = len(wantSet) == 0
+			continue
+		}
+		pending = append(pending, pendingSmart{key: key, wantList: wantList, upcoming: upcoming})
+		for _, k := range wantList {
+			if upcoming {
+				if !seenUpcoming[k] {
+					seenUpcoming[k] = true
+					upcomingWant = append(upcomingWant, k)
+				}
+			} else if !seenRegular[k] {
+				seenRegular[k] = true
+				regularWant = append(regularWant, k)
+			}
+		}
+	}
+	validRegular := map[core.RatingKey]bool{}
+	if len(regularWant) > 0 {
+		valid, err := s.mirror.ValidKeys(ctx, regularWant, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, k := range valid {
+			validRegular[k] = true
+		}
+	}
+	validUpcoming := map[core.RatingKey]bool{}
+	if len(upcomingWant) > 0 {
+		valid, err := s.mirror.ValidKeys(ctx, upcomingWant, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, k := range valid {
+			validUpcoming[k] = true
+		}
+	}
+	for _, p := range pending {
+		set := validRegular
+		if p.upcoming {
+			set = validUpcoming
+		}
+		ok := true
+		for _, k := range p.wantList {
+			if !set[k] {
+				ok = false
+				break
+			}
+		}
+		matched[p.key] = ok
+	}
+	return cols, matched, nil
 }
 
 func (s *Service) AllowsPlaceholders(ctx context.Context, user *core.User, collection core.RatingKey, device string) bool {

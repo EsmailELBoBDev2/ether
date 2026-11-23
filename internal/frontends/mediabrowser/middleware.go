@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/support"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // anonymousStreamKey marks a request the middleware admitted without a
@@ -110,7 +111,20 @@ func (i *instance) requestLog(rt route.Route, next http.Handler) http.Handler {
 }
 
 func (i *instance) routeMiddleware(rt route.Route, next http.Handler) http.Handler {
-	return i.requestLog(rt, i.authenticatedRoute(rt, next))
+	inner := i.authenticatedRoute(rt, next)
+	return i.requestLog(rt, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			ctx := r.Context()
+			if !reqmemo.Active(ctx) {
+				ctx = reqmemo.With(ctx)
+			}
+			if frontend.RequestMemoFrom(ctx) == nil {
+				ctx = frontend.WithRequestMemo(ctx)
+			}
+			r = r.WithContext(ctx)
+		}
+		inner.ServeHTTP(w, r)
+	}))
 }
 
 func isSensitiveAuthRoute(pattern string) bool {

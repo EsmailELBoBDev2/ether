@@ -731,17 +731,25 @@ func (s *Server) playlistsHubProjection(ctx context.Context, pr *Request, count 
 		return model.Hub{}, frontend.Row{}, false
 	}
 	owned := pls[:0:0]
-	viewed := map[frontend.RatingKey]int64{}
+	plKeys := make([]frontend.RatingKey, 0, len(pls))
 	for _, pl := range pls {
 		if pl.UserID != pr.User.ID {
 			continue
 		}
-		m := s.playlistListingMetadata(ctx, &pl)
-		viewed[pl.Key] = m.LastViewedAt
 		owned = append(owned, pl)
+		plKeys = append(plKeys, pl.Key)
+	}
+	var states map[frontend.RatingKey]frontend.WatchStatus
+	if s.state() != nil && len(plKeys) > 0 {
+		states, _ = s.state().GetMany(ctx, pr.User.ID, plKeys)
+	}
+	meta := make(map[frontend.RatingKey]model.Metadata, len(owned))
+	for i := range owned {
+		st, hasState := states[owned[i].Key]
+		meta[owned[i].Key] = s.playlistListingMetadataWithState(ctx, &owned[i], st, hasState)
 	}
 	pls = owned
-	sort.SliceStable(pls, func(i, j int) bool { return viewed[pls[i].Key] > viewed[pls[j].Key] })
+	sort.SliceStable(pls, func(i, j int) bool { return meta[pls[i].Key].LastViewedAt > meta[pls[j].Key].LastViewedAt })
 	more := len(pls) > count
 	if more {
 		pls = pls[:count]
@@ -762,7 +770,7 @@ func (s *Server) playlistsHubProjection(ctx context.Context, pr *Request, count 
 	row := frontend.Row{ID: "home.playlists", Title: "Recent Playlists", Purpose: frontend.RowPurpose("playlist"), Style: "shelf", Promoted: true, More: more}
 	keys := make([]string, 0, len(pls))
 	for i := range pls {
-		h.Metadata = append(h.Metadata, s.playlistListingMetadata(ctx, &pls[i]))
+		h.Metadata = append(h.Metadata, meta[pls[i].Key])
 		if pls[i].UserID == pr.User.ID {
 			p := pls[i]
 			p.Items = nil

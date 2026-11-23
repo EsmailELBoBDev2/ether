@@ -70,7 +70,15 @@ func (s *Service) HomeRowsFor(ctx context.Context, user *core.User, hc core.HubC
 	if err != nil {
 		return nil, err
 	}
-	var out []core.CollectionRow
+	type pendingRow struct {
+		row     *specRow
+		keys    []core.RatingKey
+		page    []core.RatingKey
+		dropped bool
+	}
+	var pending []pendingRow
+	var allPageKeys []core.RatingKey
+	seenPageKey := map[core.RatingKey]bool{}
 	var indexReady *bool
 	for _, row := range rows {
 		if ctx.Err() != nil {
@@ -104,13 +112,42 @@ func (s *Service) HomeRowsFor(ctx context.Context, user *core.User, hc core.HubC
 			continue
 		}
 		page, dropped := rowPageKeys(keys, sp.MediaType)
-		items, err := s.mirror.Titles(ctx, page)
-		if err != nil || len(items) == 0 {
+		pending = append(pending, pendingRow{row: row, keys: keys, page: page, dropped: dropped})
+		for _, k := range page {
+			if !seenPageKey[k] {
+				seenPageKey[k] = true
+				allPageKeys = append(allPageKeys, k)
+			}
+		}
+	}
+	if len(pending) == 0 {
+		return nil, nil
+	}
+	// Hydrate all Home/section collection shelf pages together in one mirror batch
+	// instead of repeating titles, facets, credits and aired counts per row.
+	titles, err := s.mirror.Titles(ctx, allPageKeys)
+	if err != nil {
+		return nil, nil
+	}
+	byKey := make(map[core.RatingKey]core.Title, len(titles))
+	for _, t := range titles {
+		byKey[t.Key] = t
+	}
+	out := make([]core.CollectionRow, 0, len(pending))
+	for _, pr := range pending {
+		items := make([]core.Title, 0, len(pr.page))
+		for _, k := range pr.page {
+			if t, ok := byKey[k]; ok {
+				items = append(items, t)
+			}
+		}
+		if len(items) == 0 {
 			continue
 		}
+		sp := pr.row.spec
 		hub := core.Hub{
-			ID: "collection." + row.publicID(), Title: sp.Name, Style: "shelf", PreviewOnFocus: sp.PreviewOnFocus, RankedTop10: sp.RankedTop10,
-			Promoted: sp.Targets.HomeRow, Items: items, More: dropped || len(keys) > len(items), Key: row.key(),
+			ID: "collection." + pr.row.publicID(), Title: sp.Name, Style: "shelf", PreviewOnFocus: sp.PreviewOnFocus, RankedTop10: sp.RankedTop10,
+			Promoted: sp.Targets.HomeRow, Items: items, More: pr.dropped || len(pr.keys) > len(items), Key: pr.row.key(),
 		}
 		switch sp.MediaType {
 		case MediaMovie:
@@ -123,7 +160,7 @@ func (s *Service) HomeRowsFor(ctx context.Context, user *core.User, hc core.HubC
 		if sp.Targets.HomeRow {
 			hub.Context = "hub.home.collection"
 		}
-		out = append(out, core.CollectionRow{Hub: hub, CollectionID: row.publicID(),
+		out = append(out, core.CollectionRow{Hub: hub, CollectionID: pr.row.publicID(),
 			HomeRow: sp.Targets.HomeRow, SectionRow: sp.Targets.SectionRow, Schedule: sp.Targets.Schedule})
 	}
 	return out, nil

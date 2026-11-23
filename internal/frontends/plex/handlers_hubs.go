@@ -1907,6 +1907,18 @@ func (s *Server) searchRequestContext(ctx context.Context) context.Context {
 	return frontend.WithExplicitSearch(frontend.WithSearchMemo(s.exp().NoProviderWait(ctx)))
 }
 
+// enterSearch is searchRequestContext for r, made the latest search of the
+// viewer's client: the next keystroke's search cancels it and drops the
+// remote lookups only it wanted. leave must run when the request ends.
+func (s *Server) enterSearch(r *http.Request, query string) (*http.Request, func()) {
+	ctx := s.searchRequestContext(r.Context())
+	leave := func() {}
+	if pr := FromContext(ctx); pr != nil && pr.User != nil {
+		ctx, leave = frontend.EnterSearch(ctx, pr.User.ID, s.searchClientID(pr), query)
+	}
+	return r.WithContext(ctx), leave
+}
+
 func (s *Server) searchTypes(u *frontend.User, sectionID int) []frontend.MediaType {
 	var out []frontend.MediaType
 	seen := map[frontend.MediaType]bool{}
@@ -2098,7 +2110,8 @@ func searchLimit(w http.ResponseWriter, r *http.Request, fallback, ceiling int) 
 }
 
 func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(s.searchRequestContext(r.Context()))
+	r, leave := s.enterSearch(r, r.URL.Query().Get("query"))
+	defer leave()
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2376,7 +2389,8 @@ func searchScore(i, n int) float64 {
 
 // handleSearch is the legacy flat /search?query=.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(s.searchRequestContext(r.Context()))
+	r, leave := s.enterSearch(r, r.URL.Query().Get("query"))
+	defer leave()
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2475,7 +2489,8 @@ func parseLibrarySearchTypes(q url.Values) librarySearchFilter {
 // handleLibrarySearch is /library/search, used by the newer apps: results
 // wrapped in SearchResult with a score.
 func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(s.searchRequestContext(r.Context()))
+	r, leave := s.enterSearch(r, r.URL.Query().Get("query"))
+	defer leave()
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()

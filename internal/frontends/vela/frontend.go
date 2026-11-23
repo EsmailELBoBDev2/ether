@@ -686,9 +686,11 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_json")
 		return
 	}
-	if r.Method == "POST" && r.URL.Path == "/vela/v0/live/guide/window" {
+	if r.Method == "POST" && (r.URL.Path == "/vela/v0/live/guide/window" || r.URL.Path == "/vela/v0/search") {
 		// Bulk guide window is a pure read with optional idempotencyKey and
-		// ETag revalidation rather than a persisted mutation.
+		// ETag revalidation rather than a persisted mutation. So is a
+		// search, sent per keystroke: persisting a replay would make every
+		// keystroke queue for the database writer behind background writes.
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")

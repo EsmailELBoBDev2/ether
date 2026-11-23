@@ -1969,6 +1969,10 @@ func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.D
 	if err != nil {
 		return frontend.SearchPage{}, false, err
 	}
+	// A newer query from this viewer's client (the next keystroke) cancels
+	// this search and drops the remote lookups only it still wanted.
+	ctx, leave := core.EnterSearch(ctx, v.ID, core.SearchClientFrom(ctx), query)
+	defer leave()
 	if !s.requestedTypesServable(ctx, v, q) {
 		return frontend.SearchPage{}, false, nil
 	}
@@ -2114,7 +2118,7 @@ func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.D
 				aiMerged = true
 			}
 		}
-	} else if !unified && s.d.Protocol != "vela" && len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+	} else if !unified && s.d.Protocol != "vela" && len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 && !core.IsShortSearch(query) {
 		// Vela asks for description matches itself (mode "descriptive", or
 		// one list with mode "auto"): its title search never returns them.
 		items, err = s.vibeMembers(ctx, v, query, q)

@@ -134,6 +134,11 @@ func (s *Service) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device
 	if core.SearchClientFrom(ctx) == "" && device.ID != "" {
 		ctx = core.WithSearchClient(ctx, device.ID)
 	}
+	if viewer != nil {
+		var leave func()
+		ctx, leave = core.EnterSearch(ctx, viewer.ID, core.SearchClientFrom(ctx), query)
+		defer leave()
+	}
 	page, confident, err := s.search(ctx, viewer, device, query, q, true)
 	if err != nil {
 		return frontend.UnifiedSearchPage{}, err
@@ -146,7 +151,8 @@ func (s *Service) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device
 		out.RetryAfterSeconds = unifiedRetrySeconds
 	}
 	source := s.descriptiveSource()
-	if confident || source == nil || !source.DescriptiveSearchAvailable() || max(q.Offset, 0) > 0 {
+	// A one- or two-letter prefix is still being typed: never AI.
+	if confident || core.IsShortSearch(query) || source == nil || !source.DescriptiveSearchAvailable() || max(q.Offset, 0) > 0 {
 		return out, nil
 	}
 	if len(strings.Fields(query)) < 2 && len(page.Page.Items) > 0 {

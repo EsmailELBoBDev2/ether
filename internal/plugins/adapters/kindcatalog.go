@@ -66,6 +66,16 @@ type liveSearchCall struct {
 	items   []core.KindItem
 	ok      bool // the plugin answered (possibly with no items)
 	started time.Time
+	// ctx bounds the detached call; cancel drops it. wants counts the
+	// searches that may still be superseded (core.SearchSuperseded) and
+	// want the answer; pinned marks one that cannot be, so it is never
+	// dropped. dropped: every search that wanted it was superseded. All
+	// three are guarded by KindCatalog.liveMu.
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wants   int
+	pinned  bool
+	dropped bool
 }
 
 type liveSearchMemo struct {
@@ -2012,6 +2022,18 @@ func (c *KindCatalog) MembersOf(ctx context.Context, lib core.Library, keys []co
 }
 
 func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRecord, query string, limit int) []core.KindItem {
+	// A one- or two-letter prefix answers from the local index only: a
+	// remote lookup per keystroke is work the next keystroke throws away.
+	if core.IsShortSearch(query) {
+		return nil
+	}
+	superseded := core.SearchSuperseded(ctx)
+	select {
+	case <-superseded:
+		// The viewer already typed on: start nothing for this query.
+		return nil
+	default:
+	}
 	sfKey := rec.PluginID + "\x00" + rec.KindKey + "\x00" + strings.ToLower(strings.TrimSpace(query))
 	aiSearch := !c.customLiveTimeout && c.mgr != nil && c.mgr.AISearchGranted(ctx, rec.PluginID)
 	viewerID := core.CatalogViewerID(ctx)
@@ -2026,16 +2048,29 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 	}
 	call, inflight := c.liveCalls[sfKey]
 	if !inflight {
-		call = &liveSearchCall{done: make(chan struct{}), started: time.Now()}
+		bgWait := liveSearchBackgroundWait
+		if aiSearch {
+			bgWait = plugins.AISearchRouteDeadline
+		}
+		callCtx, cancel := context.WithTimeout(c.syncCtx, bgWait)
+		call = &liveSearchCall{done: make(chan struct{}), started: time.Now(), ctx: callCtx, cancel: cancel}
 		c.liveCalls[sfKey] = call
 		sem := c.liveSems[rec.PluginID]
 		if sem == nil {
 			sem = make(chan struct{}, maxLiveSearchPerPlugin)
 			c.liveSems[rec.PluginID] = sem
 		}
-		go c.execLiveSearch(sfKey, sem, rec, query, limit, viewerID, aiSearch, call)
+		go c.execLiveSearch(sfKey, sem, rec, query, limit, viewerID, call)
+	}
+	if superseded == nil {
+		call.pinned = true
+	} else {
+		call.wants++
 	}
 	c.liveMu.Unlock()
+	if superseded != nil {
+		go c.releaseLiveSearchWant(sfKey, call, superseded)
+	}
 
 	// A search that must not wait (core.WithSearchPending) answers from the
 	// local store; the call finishes in the background, stores what it found
@@ -2074,24 +2109,52 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 	}
 }
 
-func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec pluginitems.KindRecord, query string, limit int, viewerID int64, aiSearch bool, call *liveSearchCall) {
+// releaseLiveSearchWant drops a search's interest in call once a newer
+// search from the same viewer and client superseded it. The last interest
+// gone cancels the call, queued or running, unless a search that cannot be
+// superseded also wants it: a shared lookup still wanted keeps running.
+func (c *KindCatalog) releaseLiveSearchWant(sfKey string, call *liveSearchCall, superseded <-chan struct{}) {
+	select {
+	case <-call.done:
+		return
+	case <-superseded:
+	}
+	c.liveMu.Lock()
+	call.wants--
+	drop := call.wants <= 0 && !call.pinned && !call.dropped
+	if drop {
+		call.dropped = true
+		// A later search for the same words starts a fresh call.
+		if c.liveCalls[sfKey] == call {
+			delete(c.liveCalls, sfKey)
+		}
+	}
+	c.liveMu.Unlock()
+	if drop {
+		call.cancel()
+	}
+}
+
+func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec pluginitems.KindRecord, query string, limit int, viewerID int64, call *liveSearchCall) {
 	defer func() {
 		close(call.done)
 		c.liveMu.Lock()
-		delete(c.liveCalls, sfKey)
-		if call.ok {
+		if c.liveCalls[sfKey] == call {
+			delete(c.liveCalls, sfKey)
+		}
+		switch {
+		case call.ok:
 			c.rememberLiveSearch(sfKey, call.items, liveSearchMemoTTL)
-		} else {
+		case call.dropped:
+			// Dropped before the plugin answered: no failure to remember,
+			// so the same words typed again ask the plugin afresh.
+		default:
 			c.rememberLiveSearch(sfKey, nil, liveSearchFailTTL)
 		}
 		c.liveMu.Unlock()
 	}()
 
-	bgWait := liveSearchBackgroundWait
-	if aiSearch {
-		bgWait = plugins.AISearchRouteDeadline
-	}
-	bgCtx, cancel := context.WithTimeout(c.syncCtx, bgWait)
+	bgCtx, cancel := call.ctx, call.cancel
 	defer cancel()
 	if viewerID > 0 {
 		bgCtx = plugins.WithViewer(bgCtx, viewerID)

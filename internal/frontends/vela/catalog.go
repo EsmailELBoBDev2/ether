@@ -991,6 +991,11 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_request")
 		return
 	}
+	// The next keystroke from this device cancels this search, scoped or
+	// not, and drops the remote lookups only it wanted.
+	sctx, leave := frontend.EnterSearch(r.Context(), v.ID, requestDevice(r).ID, b.Query)
+	defer leave()
+	r = r.WithContext(sctx)
 	var targetView *frontend.View
 	if b.Library != "" {
 		views, err := i.host.Experience.Views(r.Context(), v)

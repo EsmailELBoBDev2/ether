@@ -189,6 +189,25 @@ func WithSearchClient(ctx context.Context, clientID string) context.Context {
 	return core.WithSearchClient(ctx, clientID)
 }
 
+// WithSearchPending makes the search in ctx answer without waiting on
+// remote lookups; the returned collector reports whether one was still
+// running (core.WithSearchPending).
+func WithSearchPending(ctx context.Context) (context.Context, *core.SearchPending) {
+	return core.WithSearchPending(ctx)
+}
+
+// EnterSearch makes ctx the latest search of a viewer's client: a newer
+// query from the same client cancels it (core.EnterSearch).
+func EnterSearch(ctx context.Context, viewerID int64, client, query string) (context.Context, func()) {
+	return core.EnterSearch(ctx, viewerID, client, query)
+}
+
+// SearchWasSuperseded reports a search cancelled by a newer one from the
+// same client (core.SearchWasSuperseded); it answers empty, not an error.
+func SearchWasSuperseded(ctx context.Context) bool {
+	return core.SearchWasSuperseded(ctx)
+}
+
 // WithExplicitSearch marks a request as a viewer or owner typing a search,
 // so browsing-only catalogue rules do not filter out explicit search hits.
 func WithExplicitSearch(ctx context.Context) context.Context {

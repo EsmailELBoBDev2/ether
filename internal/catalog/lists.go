@@ -497,7 +497,7 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		}
 		tailAnswered = tailAnswers(tail, scores)
 		if len(tail) > 0 {
-			if prefetch := c.posterPrefetch; prefetch != nil {
+			if prefetch := c.posterPrefetch; prefetch != nil && !core.IsShortSearch(query) {
 				prefetch(ctx, tail) // posters (L), overlapping the TMDB wait
 			}
 			out = mergeTailHits(out, tail, scores, limit)
@@ -518,7 +518,9 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		}
 		return finish(out)
 	}
-	if c.tmdb() == nil || (!wantMovie && !wantTV) {
+	// A one- or two-letter prefix answers from the mirror's indexes only:
+	// asking TMDB on every keystroke is work the next one throws away.
+	if c.tmdb() == nil || (!wantMovie && !wantTV) || core.IsShortSearch(query) {
 		return localAnswer()
 	}
 	kinds := fmt.Sprintf("%t%t", wantMovie, wantTV)

@@ -689,6 +689,11 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	}
 
 	switch {
+	case frontend.SearchWasSuperseded(r.Context()):
+		// The client's next keystroke replaced this search: answer empty,
+		// never an error a client might retry with the stale query.
+		mc := libraryContainer()
+		s.write(w, r, mc)
 	case errors.Is(err, frontend.ErrNotFound):
 		writeHTTPError(w, http.StatusNotFound)
 	case errors.Is(err, frontend.ErrUnauthorized):

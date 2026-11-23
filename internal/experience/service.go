@@ -1960,7 +1960,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 // (UnifiedSearch) and reports whether the results hold a confident match:
 // a title, franchise or person the query names, in the catalogue or a
 // plugin library.
-func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery, unified bool) (frontend.SearchPage, bool, error) {
+func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery, unified bool) (outPage frontend.SearchPage, outConfident bool, outErr error) {
 	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
 	if core.SearchClientFrom(ctx) == "" && device.ID != "" {
 		ctx = core.WithSearchClient(ctx, device.ID)
@@ -1969,6 +1969,17 @@ func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.D
 	if err != nil {
 		return frontend.SearchPage{}, false, err
 	}
+	// A newer query from this viewer's client (the next keystroke) cancels
+	// this search and drops the remote lookups only it still wanted.
+	ctx, leave := core.EnterSearch(ctx, v.ID, core.SearchClientFrom(ctx), query)
+	defer leave()
+	defer func() {
+		if outErr != nil && core.SearchWasSuperseded(ctx) {
+			// The viewer typed on: answer empty, never an error a client
+			// might retry (the retry would supersede the newer search).
+			outPage, outConfident, outErr = frontend.SearchPage{Page: core.Page{Items: []core.Title{}}, Continuation: frontend.ContinuationExhausted}, false, nil
+		}
+	}()
 	if !s.requestedTypesServable(ctx, v, q) {
 		return frontend.SearchPage{}, false, nil
 	}
@@ -2114,7 +2125,7 @@ func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.D
 				aiMerged = true
 			}
 		}
-	} else if !unified && s.d.Protocol != "vela" && len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+	} else if !unified && s.d.Protocol != "vela" && len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 && !core.IsShortSearch(query) {
 		// Vela asks for description matches itself (mode "descriptive", or
 		// one list with mode "auto"): its title search never returns them.
 		items, err = s.vibeMembers(ctx, v, query, q)

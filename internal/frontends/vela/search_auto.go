@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
@@ -75,7 +74,7 @@ func (i *instance) autoSearch(w http.ResponseWriter, r *http.Request, v *fronten
 		if compatible {
 			// A search scoped to one library: its own matches, a plugin's
 			// remote catalogue included when it has answered.
-			pctx, pending := core.WithSearchPending(ctx)
+			pctx, pending := frontend.WithSearchPending(ctx)
 			lq := iq
 			lq.Filter.Query = b.Query
 			lq.Limit = iq.Limit + 1

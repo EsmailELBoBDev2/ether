@@ -1488,7 +1488,8 @@ func (s *Server) scopedSectionMembers(ctx context.Context, sec Section, items []
 }
 
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {
-	r = r.WithContext(s.searchRequestContext(r.Context()))
+	r, leave := s.enterSearch(r, query)
+	defer leave()
 	pr := FromContext(r.Context())
 	ctx := frontend.WithSearchClient(r.Context(), s.searchClientID(pr))
 	var items []frontend.Title

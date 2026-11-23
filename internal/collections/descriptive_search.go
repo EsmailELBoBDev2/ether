@@ -371,6 +371,11 @@ func (s *Service) runDescribe(parent context.Context, user *core.User, key, quer
 	spec, err := s.describeSpec(ctx, key, query, publish)
 	draftDuration = time.Since(started)
 	result := core.DescriptiveResult{State: "failed"}
+	if errors.Is(err, core.ErrNothingDescribed) {
+		// Nothing to match: a finished answer with no titles.
+		result.State, err = "ready", nil
+		spec = &core.CollectionSpec{Name: query, Sources: []core.CollectionSource{{Kind: "catalog"}}}
+	}
 	if err == nil {
 		stage = "candidates"
 		candidatesStarted := time.Now()

@@ -250,11 +250,13 @@ type instance struct {
 	rowMu           sync.Mutex
 	rowMeta         map[string]frontend.RowView
 
-	eventsHeartbeat    time.Duration
-	eventsWriteTimeout time.Duration
-	disconnectGrace    time.Duration
-	liveHeartbeatCh    <-chan time.Time
-	liveEventInterval  time.Duration
+	eventsHeartbeat          time.Duration
+	eventsWriteTimeout       time.Duration
+	disconnectGrace          time.Duration
+	liveHeartbeatCh          <-chan time.Time
+	liveEventInterval        time.Duration
+	trickplayPollInterval    time.Duration
+	trickplayPublishInterval time.Duration
 
 	host            frontend.Host
 	ctx             context.Context
@@ -907,6 +909,8 @@ func (i *instance) routes() {
 	i.route("DELETE", "/sessions/{id}/audio-fallback/{audioId}", i.audioFallback)
 	i.route("GET", "/sessions/{id}", i.snapshot)
 	i.route("GET", "/sessions/{id}/events", i.events)
+	i.route("GET", "/sessions/{id}/trickplay/{width}/{sheet}", i.trickplaySheet)
+	i.route("HEAD", "/sessions/{id}/trickplay/{width}/{sheet}", i.trickplaySheet)
 	i.route("POST", "/sessions/{id}/commands", i.command)
 	i.route("POST", "/sessions/{id}/observations", i.observe)
 	i.route("GET", "/live/channels", i.channels)

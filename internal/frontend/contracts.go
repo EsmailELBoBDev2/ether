@@ -1267,7 +1267,7 @@ type Event struct {
 	Timeline        *Timeline
 }
 
-// TrickplayOffer is Jellyfin sprite geometry for one generated width.
+// TrickplayOffer is sprite geometry and coverage state for one generated width.
 // Width and Height are one thumbnail in pixels. Columns and Rows are the
 // grid inside each sheet. Interval is the time between thumbnails.
 type TrickplayOffer struct {
@@ -1276,6 +1276,17 @@ type TrickplayOffer struct {
 	Count         int
 	Interval      time.Duration
 	Bandwidth     int
+	CoverageUntil time.Duration
+	Revision      uint64
+	Generating    bool
+}
+
+// TrickplaySheetResult is one rendered or revalidated trickplay sheet.
+type TrickplaySheetResult struct {
+	Body        []byte
+	Offer       TrickplayOffer
+	Fallback    bool
+	NotModified bool
 }
 
 // TrickplayCacheKey binds preview work to the selected item, release and
@@ -1292,6 +1303,13 @@ type TrickplayCanceler interface{ CancelTrickplay(string) }
 type TrickplayTiles interface {
 	TrickplayOffer(context.Context, SessionAccess, core.RatingKey) (TrickplayOffer, bool)
 	TrickplaySheet(context.Context, SessionAccess, core.RatingKey, int) ([]byte, error)
+}
+
+// SessionTrickplay serves read-only trickplay metadata and JPEG sheets bound
+// strictly to one owning playback session without starting generation.
+type SessionTrickplay interface {
+	SessionTrickplayOffer(ctx context.Context, access SessionAccess, sessionID string) (TrickplayOffer, error)
+	SessionTrickplaySheet(ctx context.Context, access SessionAccess, sessionID string, width, index int, unchanged func(TrickplayOffer) bool) (TrickplaySheetResult, error)
 }
 
 // SessionAccess binds client operations to an authenticated viewer and surface.

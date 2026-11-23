@@ -90,6 +90,10 @@ type playSession struct {
 	previewExpires                   time.Time
 	multiviewGroup                   string
 	multiviewTile                    int
+	trickplayCurrent                 trickplayOfferKey
+	trickplayPublished               trickplayOfferKey
+	trickplayLastPublish             time.Time
+	trickplayGenerating              bool
 }
 
 func seconds(n float64) (time.Duration, bool) {
@@ -446,6 +450,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	if b.TitleID != "" && i.versionsAvailable() {
 		ps.versionsCold = i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, plan.VersionHandle, plan.ReleaseID, p)
 	}
+	i.refreshInitialTrickplay(r.Context(), i.access(r, v), s.ID, ps)
 	i.mu.Lock()
 	for id, old := range i.sessions {
 		old.mu.Lock()
@@ -519,6 +524,10 @@ func (s *playSession) publish(kind string) {
 	s.plan["sourceGeneration"] = s.source
 	s.plan["seekGeneration"] = s.seek
 	s.plan["positionSeconds"] = s.position.Seconds()
+	if kind == "plan" && s.trickplayCurrent != s.trickplayPublished {
+		s.trickplayPublished = s.trickplayCurrent
+		s.trickplayLastPublish = time.Now()
+	}
 	b, _ := json.Marshal(s.plan)
 	var p object
 	_ = json.Unmarshal(b, &p)
@@ -542,6 +551,7 @@ func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	i.refreshColdVersions(r, v, s)
 	i.refreshSessionLiveEvent(r.Context(), v, s)
+	i.refreshSessionTrickplay(r.Context(), i.access(r, v), r.PathValue("id"), s)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	send(w, 200, s.snapshot())
@@ -737,6 +747,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.retainDiagnostics()
 		s.source++
 		s.seek++
+		s.resetTrickplayForSourceLocked()
 		s.plan["fallback"] = object{"state": "idle"}
 		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
 			return
@@ -917,6 +928,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.retainDiagnostics()
 		s.source++
 		s.seek++
+		s.resetTrickplayForSourceLocked()
 		s.preparation = []frontend.HLSPreparationEvent{{Stage: "decision", At: time.Now().UTC()}}
 		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
 			return
@@ -1061,6 +1073,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.retainDiagnostics()
 		s.source++
 		s.seek++
+		s.resetTrickplayForSourceLocked()
 		s.preparation = nil
 		if !plan.SourceChosenAt.IsZero() {
 			s.preparation = append(s.preparation, frontend.HLSPreparationEvent{Stage: "source-chosen", At: plan.SourceChosenAt})
@@ -1140,6 +1153,19 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 	kind := "plan"
 	if b.Kind == "stop" {
 		kind = "ended"
+	}
+	if kind == "plan" && s.isTrickplayEligibleLocked() {
+		var key trickplayOfferKey
+		var generating, ok bool
+		if !s.port(w, func() {
+			key, generating, ok = i.queryTrickplay(r.Context(), i.access(r, v), id)
+		}) {
+			return
+		}
+		if ok && s.isTrickplayEligibleLocked() {
+			s.trickplayGenerating = generating
+			s.applyTrickplayLocked(key)
+		}
 	}
 	s.publish(kind)
 	send(w, 200, s.plan)

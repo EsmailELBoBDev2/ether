@@ -166,7 +166,14 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		// plan said; say so even if an encoder ran for this session before.
 		ps, _ := b.deps.Playback.Session(s.playID)
 		b.recordPlaybackDecision(s.playID, core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: ps == nil || !ps.Info.AudioOnly(), AudioCopy: true})
-		b.ensureTrickplay(ctx, s, req.Position)
+		if !req.LazyStart && !req.PrepareOnly {
+			b.mu.Lock()
+			if live := b.sessions[id]; live != nil {
+				live.trickplayStarted = true
+			}
+			b.mu.Unlock()
+			b.ensureTrickplay(ctx, s, req.Position)
+		}
 		// The file URL is an in-memory grant. ServeMedia rechecks the viewer
 		// and the current policy on every byte. The durable delivery row is
 		// published beside that, not in front of the first byte.
@@ -216,7 +223,12 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 				if entry, ok := b.bindings.Get(id); ok && entry.Started {
 					b.recordPlaybackDecision(s.playID, entry.Decision)
 				}
-				if req.Format != frontend.StreamHTTP {
+				if req.Format != frontend.StreamHTTP && !req.LazyStart && !req.PrepareOnly {
+					b.mu.Lock()
+					if live := b.sessions[id]; live != nil {
+						live.trickplayStarted = true
+					}
+					b.mu.Unlock()
 					b.ensureTrickplay(ctx, s, req.Position)
 				}
 				return mediaPath, nil
@@ -481,7 +493,14 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	b.mu.Unlock()
 	b.recordPlaybackDecision(s.playID, dec)
-	b.ensureTrickplay(ctx, s, req.Position)
+	if !req.LazyStart && !req.PrepareOnly {
+		b.mu.Lock()
+		if live := b.sessions[id]; live != nil {
+			live.trickplayStarted = true
+		}
+		b.mu.Unlock()
+		b.ensureTrickplay(ctx, s, req.Position)
+	}
 	if err := b.bindDeliveryAuthority(ctx, s, ps); err != nil {
 		b.transcodeStop(id)
 		return "", err
@@ -716,7 +735,10 @@ func (b *Broker) currentMediaPolicy(ctx context.Context, viewer *core.Viewer, s 
 	if err != nil || confirmed.ID != s.public.ViewerID {
 		return false
 	}
-	viewer = confirmed
+	return b.currentItemPolicy(ctx, confirmed, s)
+}
+
+func (b *Broker) currentItemPolicy(ctx context.Context, viewer *core.Viewer, s *brokerSession) bool {
 	if s.live {
 		if b.deps.Live == nil {
 			return false
@@ -893,6 +915,23 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		}
 		b.deps.Live.Serve(w, r, viewer, s.playID, strings.Join(tail[1:], "/"), liveBase)
 		return
+	}
+	if r.Method == http.MethodGet && !s.live && b.deps.Trickplay != nil && !s.trickplayStarted {
+		b.mu.Lock()
+		start := false
+		if cur := b.sessions[s.public.ID]; cur != nil && !b.closed && cur.playID == s.playID && !cur.trickplayStarted {
+			cur.trickplayStarted = true
+			start = true
+		}
+		b.mu.Unlock()
+		if start {
+			sealed := *s
+			go func() {
+				c, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+				defer cancel()
+				b.ensureTrickplay(c, &sealed, sealed.streamPosition)
+			}()
+		}
 	}
 	beginMediaRead := func() func() {
 		if r.Method == http.MethodHead || s.live || s.playID == "" {

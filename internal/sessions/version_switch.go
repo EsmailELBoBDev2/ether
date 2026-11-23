@@ -333,6 +333,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		b.transferPlanSourceLocked(ps.ID)
 		stopOld = b.releaseSessionSourceLocked(oldPlayID)
 		live.trickplay = nil
+		live.trickplayStarted = false
 		live.format = ""
 	}
 	live.playID = ps.ID

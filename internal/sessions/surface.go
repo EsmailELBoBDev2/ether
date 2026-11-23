@@ -376,6 +376,28 @@ func (s surface) TrickplaySheet(ctx context.Context, a frontend.SessionAccess, i
 	return tiles.TrickplaySheet(ctx, a, item, index)
 }
 
+func (s surface) SessionTrickplayOffer(ctx context.Context, a frontend.SessionAccess, sessionID string) (frontend.TrickplayOffer, error) {
+	if a.Protocol != s.protocol {
+		return frontend.TrickplayOffer{}, core.ErrUnauthorized
+	}
+	tp, ok := s.broker.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplayOffer{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplayOffer(ctx, a, sessionID)
+}
+
+func (s surface) SessionTrickplaySheet(ctx context.Context, a frontend.SessionAccess, sessionID string, width, index int, unchanged func(frontend.TrickplayOffer) bool) (frontend.TrickplaySheetResult, error) {
+	if a.Protocol != s.protocol {
+		return frontend.TrickplaySheetResult{}, core.ErrUnauthorized
+	}
+	tp, ok := s.broker.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplaySheetResult{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplaySheet(ctx, a, sessionID, width, index, unchanged)
+}
+
 func (s surface) TrickplayAvailable(id string) bool {
 	if tp, ok := s.broker.(interface{ TrickplayAvailable(string) bool }); ok {
 		return tp.TrickplayAvailable(id)

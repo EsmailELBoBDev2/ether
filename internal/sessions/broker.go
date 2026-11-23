@@ -149,6 +149,7 @@ type brokerSession struct {
 	distributed, restored bool
 	distributedSaved      time.Time
 	trickplay             *trickplay.Holder
+	trickplayStarted      bool
 	public                frontend.Session
 	grant                 string
 	playID                string

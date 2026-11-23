@@ -85,6 +85,8 @@ type options struct {
 	copySamplePackets int
 	retryBackoffBase  time.Duration
 	retryBackoffMax   time.Duration
+	dashBacklogPause  int64
+	dashBacklogStop   int64
 }
 
 func defaultOptions() options {
@@ -226,7 +228,7 @@ func (m *Manager) stageExternalSubtitles(dir string, info core.MediaInfo, source
 
 // Manager runs ffmpeg for Ether. It implements core.Transcoder.
 type Manager struct {
-	textCueMu    sync.Mutex
+	textCues     textCueStore
 	slotChanged  chan struct{}
 	slotViewers  int
 	slotHolders  []*transcodeSlot
@@ -1115,6 +1117,12 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			if plan != nil {
 				at = plan.IndexAt(req.FirstSegmentAt)
 			}
+			// Start one segment earlier so DASH players that request at-1 on
+			// resume (e.g. Plex Web / Shaka) hit run=1 directly while a player
+			// requesting at is still within run=1's forward window.
+			if at > 0 {
+				at--
+			}
 			if total > 1 && at >= total-1 {
 				at = total - 2
 			}
@@ -1572,6 +1580,7 @@ func (m *Manager) Close() error {
 	if cache, ok := m.feat.qsvToneMap.(*qsvToneMapCache); ok {
 		cache.close()
 	}
+	textCueDone := m.textCues.close()
 	for _, h := range https {
 		_ = h.Close()
 	}
@@ -1600,7 +1609,7 @@ func (m *Manager) Close() error {
 	}
 	continuousDone := make(chan struct{})
 	go func() { m.continuousWG.Wait(); close(continuousDone) }()
-	if !wait(continuousDone) || !wait(reaperDone) || !wait(setupDone) {
+	if !wait(continuousDone) || !wait(reaperDone) || !wait(setupDone) || !wait(textCueDone) {
 		return errors.Join(err, core.ErrEncoderPending)
 	}
 	return err

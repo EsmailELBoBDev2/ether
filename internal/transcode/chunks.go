@@ -1567,6 +1567,9 @@ func (s *Session) collectChunks(r *run, exited bool) {
 			}
 			if r.paused {
 				r.pausedDone = r.maxDone
+				if encSeg, ok := s.encoderSegLocked(r); ok && (!r.hasPausedLead || encSeg > r.pausedLead) {
+					r.pausedLead, r.hasPausedLead = encSeg, true
+				}
 			}
 		}
 	}

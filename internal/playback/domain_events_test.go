@@ -255,3 +255,54 @@ func TestPlaybackEmitsAllDomainEvents(t *testing.T) {
 		t.Fatalf("unexpected stopped payload: %+v", stopP)
 	}
 }
+
+func TestPlaybackMarkerTransitionPicksUpWarmedCacheInSameSession(t *testing.T) {
+	a := mkv("Movie.1999.2160p.WEB-DL", 128<<10, 10*time.Minute)
+	bus, rec := events.NewTestBus(t)
+	h := newHarness(t, []*fakeRelease{a}, []string{a.ID})
+	_ = h.m.Close()
+
+	var warmed bool
+	m, err := New(Deps{
+		Resolver:      h.resolver,
+		Engine:        h.engine,
+		Transcoder:    h.tr,
+		Catalog:       h.catalog,
+		Cache:         h.cache,
+		State:         h.state,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return h.cfg.Quality.Profiles[0] },
+		Events:        bus,
+		CachedMarkers: func(core.RatingKey, core.MediaInfo) []MarkerSpan {
+			if !warmed {
+				return nil
+			}
+			return []MarkerSpan{{Kind: "intro", StartMS: 30_000, EndMS: 90_000}}
+		},
+	}, h.cfg, Options{DataDir: h.dataDir, Now: h.clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	caps := core.ClientCaps{ClientID: "jf-tv", Product: "Jellyfin", Protocol: "jellyfin", MaxHeight: 2160}
+	if _, err := m.Prepare(context.Background(), owner, movieKey, caps); err != nil {
+		t.Fatal(err)
+	}
+	// First playing tick sees an empty cache while background warm is in flight.
+	h.clock.Advance(time.Second)
+	m.PlaybackProgress(owner.ID, "jf-tv", movieKey, 5*time.Second, "playing")
+
+	// Background warm completes and populates markers_cache; the same session picks it up.
+	warmed = true
+	h.clock.Advance(10 * time.Second)
+	m.PlaybackProgress(owner.ID, "jf-tv", movieKey, 45*time.Second, "playing")
+
+	evEnter := rec.WaitFor(t, events.EventPlaybackMarkerEntered, time.Second)
+	enterP, err := events.DecodePayload[events.PlaybackMarkerEnteredPayload](evEnter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enterP.MarkerKind != "intro" || enterP.StartMS != 30_000 || enterP.EndMS != 90_000 {
+		t.Fatalf("unexpected marker entered payload: %+v", enterP)
+	}
+}

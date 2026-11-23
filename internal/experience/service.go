@@ -1649,7 +1649,7 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		if !s.d.Visibility.CollectionAllowed(u, c) || (c.OwnerUserID != 0 && c.OwnerUserID != u.ID) {
 			return core.ErrNotFound
 		}
-		ok, err := s.collectionHasVisibleMember(ctx, u, *c)
+		ok, err := s.smartCollectionHasVisibleMember(ctx, u, *c, nil)
 		if err != nil {
 			return err
 		}

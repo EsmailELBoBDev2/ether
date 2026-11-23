@@ -341,3 +341,70 @@ func TestCollectionsPageFirstUsesOwnedAndFranchiseStore(t *testing.T) {
 		t.Fatalf("deep restricted offset walked franchises: page=%+v pageCalls=%d curCalls=%d err=%v", deepRestricted, frStore.pageCalls, frStore.curCalls, err)
 	}
 }
+
+type smartArtworkCollections struct {
+	core.Collections
+	byKey     map[core.RatingKey]core.Collection
+	itemsCall int
+}
+
+func (f *smartArtworkCollections) Get(_ context.Context, _ *core.User, k core.RatingKey) (*core.Collection, error) {
+	c, ok := f.byKey[k]
+	if !ok {
+		return nil, core.ErrNotFound
+	}
+	return &c, nil
+}
+
+func (f *smartArtworkCollections) Items(_ context.Context, _ *core.User, _ core.RatingKey, _, _ int) (core.Page, error) {
+	f.itemsCall++
+	return core.Page{}, nil
+}
+
+func TestPageArtworkSmartCollectionsAvoidsLoadingMembers(t *testing.T) {
+	ctx := context.Background()
+	viewer := &core.User{ID: 1}
+	k1 := core.SmartKey(11)
+	k2 := core.SmartKey(12)
+	emptyKey := core.SmartKey(13)
+	cols := &smartArtworkCollections{
+		byKey: map[core.RatingKey]core.Collection{
+			k1:       {Key: k1, Type: core.TypeMovie, Title: "Smart Movies", PosterPath: "/p1.jpg"},
+			k2:       {Key: k2, Type: core.TypeShow, Title: "Smart Shows", PosterPath: "/p2.jpg"},
+			emptyKey: {Key: emptyKey, Type: core.TypeMovie, Title: "Empty"},
+		},
+	}
+	s := &Service{d: ServiceDeps{
+		Active: func(context.Context, int64) (*core.User, error) { return viewer, nil },
+		Visibility: Visibility{SectionFor: func(typ core.MediaType) (int, bool) {
+			if typ == core.TypeShow {
+				return 2, true
+			}
+			return 1, true
+		}},
+		Collections: cols,
+		Browse: func(_ context.Context, q core.BrowseQuery) (core.Page, error) {
+			switch q.Filter.CollectionMembers {
+			case k1.TMDB(), k2.TMDB():
+				return core.Page{Total: 1}, nil
+			default:
+				return core.Page{Total: 0}, nil
+			}
+		},
+	}}
+	got, err := s.PageArtworkSmartCollections(ctx, viewer, []core.RatingKey{k1, k2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[k1].PosterPath != "/p1.jpg" || got[k2].PosterPath != "/p2.jpg" {
+		t.Fatalf("smart page = %+v", got)
+	}
+	if cols.itemsCall != 0 {
+		t.Fatalf("expected 0 Collections.Items member loads for visible smart collections, got %d", cols.itemsCall)
+	}
+	// Empty collection falls back to Collections.Items and is omitted when still empty.
+	got, err = s.PageArtworkSmartCollections(ctx, viewer, []core.RatingKey{emptyKey})
+	if err != nil || len(got) != 0 || cols.itemsCall == 0 {
+		t.Fatalf("empty smart collection = %+v err=%v itemsCall=%d", got, err, cols.itemsCall)
+	}
+}

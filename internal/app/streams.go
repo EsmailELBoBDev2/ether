@@ -251,6 +251,21 @@ func (a *App) startSubtitleCorrection(ctx context.Context, t *core.Title, id str
 	a.subtitles.StartCorrection(ctx, t, id, a.liveReleaseAccess(sess))
 }
 
+func (a *App) onPlaybackMarkerEvent(ev playback.Event) {
+	if a == nil || a.markers == nil || ev.Session == nil || ev.Session.PreparedOnly {
+		return
+	}
+	switch ev.Kind {
+	case "start", "surface", "failover", "downfailover":
+	default:
+		return
+	}
+	if ev.Session.Info.Estimated || ev.Session.Info.Duration <= 0 {
+		return
+	}
+	a.markers.Warm(ev.Session.Key, ev.Session.Info)
+}
+
 func (a *App) onPlaybackSubtitleEvent(ev playback.Event) {
 	if a == nil || a.subtitles == nil || a.playback == nil || ev.Session == nil || ev.Session.PreparedOnly {
 		return

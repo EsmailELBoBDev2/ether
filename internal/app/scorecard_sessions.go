@@ -119,6 +119,20 @@ func (s scorecardSessionWrapper) TrickplaySheet(ctx context.Context, a frontend.
 	}
 	return tiles.TrickplaySheet(ctx, a, item, index)
 }
+func (s scorecardSessionWrapper) SessionTrickplayOffer(ctx context.Context, a frontend.SessionAccess, sessionID string) (frontend.TrickplayOffer, error) {
+	tp, ok := s.embeddedScorecardSessions.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplayOffer{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplayOffer(ctx, a, sessionID)
+}
+func (s scorecardSessionWrapper) SessionTrickplaySheet(ctx context.Context, a frontend.SessionAccess, sessionID string, width, index int, unchanged func(frontend.TrickplayOffer) bool) (frontend.TrickplaySheetResult, error) {
+	tp, ok := s.embeddedScorecardSessions.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplaySheetResult{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplaySheet(ctx, a, sessionID, width, index, unchanged)
+}
 func (s scorecardSessionWrapper) TrickplayAvailable(id string) bool {
 	if tp, ok := s.embeddedScorecardSessions.(interface{ TrickplayAvailable(string) bool }); ok {
 		return tp.TrickplayAvailable(id)

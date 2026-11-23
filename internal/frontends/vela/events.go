@@ -32,6 +32,18 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 			}
 		}
 
+		var trickplayC <-chan time.Time
+		if _, ok := i.host.Sessions.(frontend.SessionTrickplay); ok {
+			s.mu.Lock()
+			eligible := s.isTrickplayEligibleLocked()
+			s.mu.Unlock()
+			if eligible {
+				tt := time.NewTicker(i.trickplayPollEvery())
+				defer tt.Stop()
+				trickplayC = tt.C
+			}
+		}
+
 		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
 		output := t.C
@@ -40,6 +52,9 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 
 			case <-liveEventC:
 				i.refreshSessionLiveEvent(ctx, viewer, s)
+
+			case <-trickplayC:
+				i.pollSessionTrickplay(ctx, viewer, device, id, s)
 
 			case <-output:
 				s.mu.Lock()

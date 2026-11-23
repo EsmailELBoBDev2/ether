@@ -62,6 +62,13 @@ type PluginLibraries interface {
 	MemberOf(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error)
 }
 
+// PluginBatchBrowseLibraries is an optional capability for plugin library
+// adapters that execute multiple SQL-ready browse queries for one library
+// together (sharing kind/tally reads, shelf ref queries, and item hydration).
+type PluginBatchBrowseLibraries interface {
+	BrowseBatch(ctx context.Context, lib core.Library, queries []frontend.ItemQuery) ([]PluginBrowsePage, error)
+}
+
 // PluginShelf is one resolved manifest-declared Recommended shelf for a plugin library.
 type PluginShelf struct {
 	Key       string
@@ -725,10 +732,23 @@ func (s *Service) pluginItem(ctx context.Context, v *core.User, key core.RatingK
 }
 
 func (s *Service) pluginItemAllowed(ctx context.Context, v *core.User, piv PluginItemView) bool {
+	return s.pluginItemAllowedCached(ctx, v, piv, nil)
+}
+
+func (s *Service) pluginItemAllowedCached(ctx context.Context, v *core.User, piv PluginItemView, pubCache map[core.LibraryID]bool) bool {
 	if v == nil || piv.Title.Key == 0 || !v.AllowsLibrary(piv.Library.ID) {
 		return false
 	}
-	if _, _, ok := s.publishedLibrary(ctx, piv.Library); !ok {
+	if pubCache != nil {
+		ok, seen := pubCache[piv.Library.ID]
+		if !seen {
+			_, _, ok = s.publishedLibrary(ctx, piv.Library)
+			pubCache[piv.Library.ID] = ok
+		}
+		if !ok {
+			return false
+		}
+	} else if _, _, ok := s.publishedLibrary(ctx, piv.Library); !ok {
 		return false
 	}
 	if v.MaxContentRating != "" && contentrating.EnforceExceeds(contentrating.EffectiveEnforcement(piv.Title.EnforcementRating, piv.Title.ContentRating, piv.Title.Adult, piv.Title.Keywords), v.MaxContentRating) {
@@ -1979,7 +1999,11 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	// Plugin-declared shelves (tab-specific or library-level) replace the
 	// auto-generated shelves and are not clamped to the auto candidate cap.
 	if declaredShelves {
-		for _, sh := range activeShelves {
+		if v != nil && core.CatalogViewerID(ctx) == 0 {
+			ctx = core.WithCatalogViewer(ctx, v)
+		}
+		shelfQueries := make([]frontend.ItemQuery, len(activeShelves))
+		for idx, sh := range activeShelves {
 			sortOrder := sh.Sort
 			if sortOrder == "" {
 				sortOrder = core.SortReleased
@@ -2010,15 +2034,51 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			if sortOrder.IsLastViewed() {
 				q.Filter.TabRules, q.Filter.TabFallback = requireViewerHistoryPolicy(q.Filter.TabRules, q.Filter.TabFallback)
 			}
-			page, pErr := s.pluginLibraryItems(ctx, v, lib, q)
-			if pErr != nil || len(page.Items) == 0 {
+			shelfQueries[idx] = q
+		}
+
+		var batchPages []PluginBrowsePage
+		batchSlot := make([]int, len(activeShelves))
+		for i := range batchSlot {
+			batchSlot[i] = -1
+		}
+		if batcher, ok := s.d.PluginLibraries.(PluginBatchBrowseLibraries); ok && len(activeShelves) > 1 {
+			var batchQs []frontend.ItemQuery
+			for idx, q := range shelfQueries {
+				if q.Sort.IsLastViewed() {
+					continue
+				}
+				if sqlQ, sqlOK := s.pluginBrowseQuery(ctx, v, lib, q); sqlOK && sqlQ.Limit > 0 {
+					batchSlot[idx] = len(batchQs)
+					batchQs = append(batchQs, sqlQ)
+				}
+			}
+			if len(batchQs) > 1 {
+				if pages, bErr := batcher.BrowseBatch(ctx, lib, batchQs); bErr == nil && len(pages) == len(batchQs) {
+					batchPages = pages
+				}
+			}
+		}
+
+		for idx, sh := range activeShelves {
+			var items []core.Title
+			if slot := batchSlot[idx]; slot >= 0 && batchPages != nil {
+				items = batchPages[slot].Items
+			} else {
+				page, pErr := s.pluginLibraryItems(ctx, v, lib, shelfQueries[idx])
+				if pErr != nil {
+					continue
+				}
+				items = page.Items
+			}
+			if len(items) == 0 {
 				continue
 			}
 			title := sh.Label
 			if strings.TrimSpace(title) == "" {
 				title = sh.Key
 			}
-			appendRow(rowPrefix+"shelf:"+sh.Key, title, frontend.RowRecommendation, "shelf", page.Items)
+			appendRow(rowPrefix+"shelf:"+sh.Key, title, frontend.RowRecommendation, "shelf", items)
 		}
 		if rows == nil {
 			return []frontend.Row{}, true, isDefaultTab, nil

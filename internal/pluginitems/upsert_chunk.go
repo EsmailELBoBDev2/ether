@@ -108,6 +108,7 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 	}
 
 	fieldTallyDelta := map[fieldTallyKey]int64{}
+	personTallyDelta := map[personTallyKey]*personTallyChange{}
 	changedExisting := make([]core.ItemRef, 0, len(chunk))
 	for i := range chunk {
 		if !changed[i] {
@@ -125,6 +126,9 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 		for _, of := range oldFields {
 			if ex, ok := existing[of.ref]; ok {
 				addFieldTallyDelta(fieldTallyDelta, ex.level, of.field, of.text, -1)
+				if core.IsPluginPersonID(of.intV) {
+					addPersonTallyDelta(personTallyDelta, ex.level, of.field, of.text, of.intV, -1)
+				}
 			}
 		}
 	}
@@ -304,6 +308,9 @@ INSERT INTO plugin_items(
 			}
 			if fv.Text != "" {
 				addFieldTallyDelta(fieldTallyDelta, it.Level, fv.Field, fv.Text, 1)
+				if core.IsPluginPersonID(fv.Int) {
+					addPersonTallyDelta(personTallyDelta, it.Level, fv.Field, fv.Text, fv.Int, 1)
+				}
 			}
 		}
 
@@ -323,7 +330,11 @@ INSERT INTO plugin_items(
 	if err := applyTallyDeltaTx(ctx, tx, kind.LibraryID, tallyDelta); err != nil {
 		return res, err
 	}
-	if err := applyFieldTallyDeltaTx(ctx, tx, kind.LibraryID, fieldTallyDelta); err != nil {
+	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, kind.LibraryID, fieldTallyDelta)
+	if err != nil {
+		return res, err
+	}
+	if err := applyPersonTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, personTallyDelta, emptiedText); err != nil {
 		return res, err
 	}
 	if parentTally != nil {

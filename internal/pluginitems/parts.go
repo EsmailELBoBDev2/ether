@@ -99,7 +99,11 @@ func (s *Service) SaveParts(ctx context.Context, itemRef core.ItemRef, parts []c
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_parts WHERE item_ref = ?`, string(itemRef)); err != nil {
 			return nil, err
 		}
-		return nil, tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		s.partsState.Store(0)
+		return nil, nil
 	}
 
 	var newCount int64
@@ -165,6 +169,7 @@ func (s *Service) SaveParts(ctx context.Context, itemRef core.ItemRef, parts []c
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.partsState.Store(2)
 	return out, nil
 }
 
@@ -298,6 +303,21 @@ func (s *Service) CountPartsMany(ctx context.Context, refs []core.ItemRef) (map[
 	out := make(map[core.ItemRef]int)
 	if s == nil || s.db == nil || len(refs) == 0 {
 		return out, nil
+	}
+	s.checkRestoreCaches()
+	switch s.partsState.Load() {
+	case 1:
+		return out, nil
+	case 0:
+		var hasAny int
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_item_parts)`).Scan(&hasAny); err != nil {
+			return nil, err
+		}
+		if hasAny == 0 {
+			s.partsState.CompareAndSwap(0, 1)
+			return out, nil
+		}
+		s.partsState.CompareAndSwap(0, 2)
 	}
 	const chunkSize = 250
 	for start := 0; start < len(refs); start += chunkSize {

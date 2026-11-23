@@ -2,6 +2,7 @@ package pluginitems
 
 import (
 	"context"
+	"database/sql"
 	"sort"
 	"strings"
 
@@ -102,28 +103,79 @@ func (s *Service) SearchPeople(ctx context.Context, libraryID core.LibraryID, po
 		personLimit = 100
 	}
 
-	placeholders := make([]string, len(pFields))
-	args := make([]any, 0, 2+len(pFields)+len(tokens))
-	args = append(args, int64(libraryID))
-	for i, fk := range pFields {
-		placeholders[i] = "?"
-		args = append(args, fk)
-	}
-
-	var where strings.Builder
-	where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int <> 0 AND f.v_int > 0 AND f.v_text <> ''`)
-	for _, tok := range tokens {
-		where.WriteString(` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`)
-		args = append(args, "%"+escapeLike(tok)+"%")
-	}
-	if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
-		return nil, err
+	var libTally libraryTallyState
+	if policy.Passive() {
+		libTally, err = s.libraryTally(ctx, libraryID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	exactNorm := strings.Join(tokens, " ")
 	fetchCap := max(personLimit*4, 100)
-	qArgs := append(append([]any(nil), args...), exactNorm, fetchCap)
-	rows, err := s.db.QueryContext(ctx, `
+	usedPersonTally := policy.Passive() && libTally.active
+	var rows *sql.Rows
+	if usedPersonTally {
+		if libTally.libTotal == 0 {
+			return nil, nil
+		}
+		placeholders := make([]string, len(pFields))
+		args := make([]any, 0, 4+len(pFields)+len(tokens))
+		args = append(args, int64(libraryID))
+		for i, fk := range pFields {
+			placeholders[i] = "?"
+			args = append(args, fk)
+		}
+		var where strings.Builder
+		where.WriteString(`library_id = ? AND level = '' AND field IN (` + strings.Join(placeholders, ",") + `)`)
+		for _, tok := range tokens {
+			where.WriteString(` AND label_lower LIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeLike(tok)+"%")
+		}
+		args = append(args, exactNorm, fetchCap)
+		if len(pFields) == 1 {
+			rows, err = s.db.QueryContext(ctx, `
+SELECT v_int, label, cnt
+FROM plugin_item_person_tally
+WHERE `+where.String()+`
+ORDER BY
+	CASE WHEN label_lower = ? THEN 0 ELSE 1 END ASC,
+	cnt DESC,
+	label ASC
+LIMIT ?`, args...)
+		} else {
+			rows, err = s.db.QueryContext(ctx, `
+SELECT v_int, MIN(label) AS display_name, SUM(cnt) AS cnt
+FROM plugin_item_person_tally
+WHERE `+where.String()+`
+GROUP BY v_int
+ORDER BY
+	CASE WHEN MIN(label_lower) = ? THEN 0 ELSE 1 END ASC,
+	cnt DESC,
+	display_name ASC
+LIMIT ?`, args...)
+		}
+	} else {
+		placeholders := make([]string, len(pFields))
+		args := make([]any, 0, 2+len(pFields)+len(tokens))
+		args = append(args, int64(libraryID))
+		for i, fk := range pFields {
+			placeholders[i] = "?"
+			args = append(args, fk)
+		}
+
+		var where strings.Builder
+		where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int <> 0 AND f.v_int > 0 AND f.v_text <> ''`)
+		for _, tok := range tokens {
+			where.WriteString(` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeLike(tok)+"%")
+		}
+		if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
+			return nil, err
+		}
+
+		qArgs := append(append([]any(nil), args...), exactNorm, fetchCap)
+		rows, err = s.db.QueryContext(ctx, `
 SELECT f.v_int, MIN(f.v_text) AS display_name, COUNT(DISTINCT f.item_ref) AS cnt
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
@@ -134,6 +186,7 @@ ORDER BY
 	cnt DESC,
 	display_name ASC
 LIMIT ?`, qArgs...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +231,42 @@ LIMIT ?`, qArgs...)
 	})
 	if len(cands) > personLimit {
 		cands = cands[:personLimit]
+	}
+
+	if usedPersonTally && len(pFields) > 1 {
+		fph := make([]string, len(pFields))
+		pph := make([]string, len(cands))
+		cArgs := make([]any, 0, len(pFields)+len(cands)+1)
+		for i, fk := range pFields {
+			fph[i] = "?"
+			cArgs = append(cArgs, fk)
+		}
+		for i, c := range cands {
+			pph[i] = "?"
+			cArgs = append(cArgs, c.id)
+		}
+		cArgs = append(cArgs, int64(libraryID))
+		if cRows, cErr := s.db.QueryContext(ctx, `
+SELECT f.v_int, COUNT(DISTINCT f.item_ref)
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE f.field IN (`+strings.Join(fph, ",")+`) AND f.v_int <> 0 AND f.v_int IN (`+strings.Join(pph, ",")+`) AND i.library_id + 0 = ?
+GROUP BY f.v_int`, cArgs...); cErr == nil {
+			exact := make(map[int64]int, len(cands))
+			for cRows.Next() {
+				var pid int64
+				var cnt int
+				if cRows.Scan(&pid, &cnt) == nil {
+					exact[pid] = cnt
+				}
+			}
+			cRows.Close()
+			for i := range cands {
+				if cnt, ok := exact[cands[i].id]; ok {
+					cands[i].count = cnt
+				}
+			}
+		}
 	}
 
 	loadItems := itemLimit
@@ -359,17 +448,43 @@ func (s *Service) FindPersonID(ctx context.Context, libraryID core.LibraryID, po
 		placeholders[i] = "?"
 		args = append(args, fk)
 	}
-	var where strings.Builder
-	where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int <> 0 AND f.v_int > 0`)
-	if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
-		return 0, false, err
+	var libTally libraryTallyState
+	if policy.Passive() {
+		libTally, err = s.libraryTally(ctx, libraryID)
+		if err != nil {
+			return 0, false, err
+		}
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	var rows *sql.Rows
+	if policy.Passive() && libTally.active {
+		if libTally.libTotal == 0 {
+			return 0, false, nil
+		}
+		if len(pFields) == 1 {
+			rows, err = s.db.QueryContext(ctx, `
+SELECT v_int, label
+FROM plugin_item_person_tally
+WHERE library_id = ? AND level = '' AND field = ?`, int64(libraryID), pFields[0])
+		} else {
+			rows, err = s.db.QueryContext(ctx, `
+SELECT v_int, MIN(label)
+FROM plugin_item_person_tally
+WHERE library_id = ? AND level = '' AND field IN (`+strings.Join(placeholders, ",")+`)
+GROUP BY v_int`, args...)
+		}
+	} else {
+		var where strings.Builder
+		where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int <> 0 AND f.v_int > 0`)
+		if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
+			return 0, false, err
+		}
+		rows, err = s.db.QueryContext(ctx, `
 SELECT f.v_int, MIN(f.v_text)
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
 WHERE `+where.String()+`
 GROUP BY f.v_int`, args...)
+	}
 	if err != nil {
 		return 0, false, err
 	}

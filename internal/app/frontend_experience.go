@@ -1130,6 +1130,7 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 	if len(titleKeys) == 0 {
 		return out, nil
 	}
+	ctx = core.WithCatalogViewer(ctx, viewer)
 	titles, err := s.PageArtworkTitles(ctx, viewer, titleKeys)
 	if err != nil {
 		return nil, err

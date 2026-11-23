@@ -2,6 +2,7 @@ package pluginitems
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // FacetPeopleQuery requests a single page of distinct people from one declared
@@ -81,6 +83,49 @@ func (s *Service) buildRootItemPredicates(ctx context.Context, rec KindRecord, l
 	return idxB.String(), fldB.String(), args, nil
 }
 
+func effectiveRootLevel(rec KindRecord, level string) string {
+	if lv := strings.TrimSpace(level); lv != "" {
+		return lv
+	}
+	if len(rec.Decl.Levels) > 0 {
+		return rec.Decl.Levels[0].Key
+	}
+	return ""
+}
+
+// buildSortProbeLevelPredicate builds the WHERE prefix for probing
+// plugin_items_released (library_id, released DESC, item_ref ASC) on passive
+// visibility queries. When singleLevel is true every item in the library
+// belongs to targetLevel, so omitting level lets SQLite stay on the covering
+// sort index until EXISTS matches.
+func (s *Service) buildSortProbeLevelPredicate(libraryID core.LibraryID, targetLevel string, singleLevel bool) (string, []any) {
+	if singleLevel {
+		return `i.library_id = ?`, []any{int64(libraryID)}
+	}
+	isPG := store.DialectOf(s.db) == store.Postgres
+	if targetLevel != "" {
+		if isPG {
+			return `i.library_id = ? AND i.level = ?`, []any{int64(libraryID), targetLevel}
+		}
+		return `i.library_id = ? AND +i.level = ?`, []any{int64(libraryID), targetLevel}
+	}
+	if isPG {
+		return `i.library_id = ? AND i.parent_ref = ''`, []any{int64(libraryID)}
+	}
+	return `i.library_id = ? AND +i.parent_ref = ''`, []any{int64(libraryID)}
+}
+
+// shouldProbeNewestFromSortIndex decides whether resolving the newest k items
+// in a bucket is cheaper by probing plugin_items_released (cost O(N/m * k))
+// than by scanning and sorting all m rows in plugin_item_fields_lookup (cost O(m)).
+func shouldProbeNewestFromSortIndex(bucketCount, libTotal, k int, policyPassive bool) bool {
+	if !policyPassive || libTotal <= 0 || bucketCount < largeFacetMinMatches {
+		return false
+	}
+	m := int64(bucketCount)
+	return m*m >= int64(libTotal)*int64(k)*8
+}
+
 // FacetPeople lists distinct people in a declared people-type field at the
 // library's root level, grouped by synthetic plugin person ID (v_int), with
 // label from v_text and item count, ordered by name (case-insensitive, default)
@@ -121,87 +166,152 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 		limit = 200
 	}
 	offset := max(q.Offset, 0)
+	orderByCount := strings.EqualFold(strings.TrimSpace(q.Order), "count")
+	targetLevel := effectiveRootLevel(rec, q.Level)
+
+	var (
+		out      []FacetPerson
+		more     bool
+		total    int
+		libTally libraryTallyState
+	)
+	if q.Policy.Passive() {
+		libTally, err = s.libraryTally(ctx, rec.LibraryID)
+		if err != nil {
+			return FacetPeoplePage{}, err
+		}
+	}
+
+	if q.Policy.Passive() && libTally.active {
+		if libTally.countFor(targetLevel) == 0 {
+			return FacetPeoplePage{Items: []FacetPerson{}}, nil
+		}
+		var tallyWhere strings.Builder
+		tallyWhere.WriteString(`library_id = ? AND level = ? AND field = ?`)
+		tallyArgs := []any{int64(rec.LibraryID), targetLevel, fieldKey}
+		appendFoldedWordPrefixCol(&tallyWhere, &tallyArgs, "label_fold", terms)
+		orderBy := `label_lower ASC, label ASC, v_int ASC`
+		if orderByCount {
+			orderBy = `cnt DESC, label_lower ASC, label ASC, v_int ASC`
+		}
+		pageArgs := append(append([]any(nil), tallyArgs...), limit+1, offset)
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT v_int, label, cnt
+			 FROM plugin_item_person_tally
+			 WHERE `+tallyWhere.String()+`
+			 ORDER BY `+orderBy+`
+			 LIMIT ? OFFSET ?`, pageArgs...)
+		if err != nil {
+			return FacetPeoplePage{}, err
+		}
+		for rows.Next() {
+			var pid int64
+			var label string
+			var cnt int
+			if err := rows.Scan(&pid, &label, &cnt); err != nil {
+				rows.Close()
+				return FacetPeoplePage{}, err
+			}
+			label = strings.TrimSpace(label)
+			if core.IsPluginPersonID(pid) && label != "" && cnt > 0 {
+				out = append(out, FacetPerson{
+					PersonID: pid,
+					Name:     label,
+					Count:    cnt,
+				})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return FacetPeoplePage{}, err
+		}
+		rows.Close()
+
+		if len(out) > limit {
+			out = out[:limit]
+			more = true
+		}
+		total = offset + len(out)
+		if more {
+			var cnt int
+			if err := s.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM plugin_item_person_tally WHERE `+tallyWhere.String(),
+				tallyArgs...,
+			).Scan(&cnt); err == nil && cnt >= total {
+				total = cnt
+			}
+		}
+		if len(out) == 0 {
+			return FacetPeoplePage{Items: []FacetPerson{}, Total: total}, nil
+		}
+	}
 
 	itemWhere, fieldDrivenWhere, itemArgs, err := s.buildRootItemPredicates(ctx, rec, q.Level, q.Policy)
 	if err != nil {
 		return FacetPeoplePage{}, err
 	}
 
-	orderBy := `LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
-	if strings.EqualFold(strings.TrimSpace(q.Order), "count") {
-		orderBy = `cnt DESC, LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
-	}
+	if !(q.Policy.Passive() && libTally.active) {
+		orderBy := `LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
+		if orderByCount {
+			orderBy = `cnt DESC, LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
+		}
 
-	minPersonID := core.PluginPersonIDBase
-	maxPersonID := core.PluginPersonIDBase + core.PluginPersonIDSpan
-	var where strings.Builder
-	qArgs := append([]any(nil), itemArgs...)
-	if len(terms) > 0 {
-		where.WriteString(fieldDrivenWhere)
-		where.WriteString(` AND f.field = ? AND f.v_int + 0 > ? AND f.v_int + 0 < ? AND f.v_text <> ''`)
-		qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
-		appendFoldedWordPrefix(&where, &qArgs, terms)
-	} else {
-		where.WriteString(itemWhere)
-		where.WriteString(` AND f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
-		qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
-	}
-	qArgs = append(qArgs, limit+1, offset)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
-		 FROM plugin_item_fields f
-		 JOIN plugin_items i ON i.item_ref = f.item_ref
-		 WHERE `+where.String()+`
-		 GROUP BY f.v_int
-		 ORDER BY `+orderBy+`
-		 LIMIT ? OFFSET ?`, qArgs...)
-	if err != nil {
-		return FacetPeoplePage{}, err
-	}
-	var out []FacetPerson
-	for rows.Next() {
-		var pid int64
-		var label string
-		var cnt int
-		if err := rows.Scan(&pid, &label, &cnt); err != nil {
+		minPersonID := core.PluginPersonIDBase
+		maxPersonID := core.PluginPersonIDBase + core.PluginPersonIDSpan
+		var where strings.Builder
+		qArgs := append([]any(nil), itemArgs...)
+		if len(terms) > 0 {
+			where.WriteString(fieldDrivenWhere)
+			where.WriteString(` AND f.field = ? AND f.v_int + 0 > ? AND f.v_int + 0 < ? AND f.v_text <> ''`)
+			qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
+			appendFoldedWordPrefix(&where, &qArgs, terms)
+		} else {
+			where.WriteString(itemWhere)
+			where.WriteString(` AND f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
+			qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
+		}
+		qArgs = append(qArgs, limit+1, offset)
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
+			 FROM plugin_item_fields f
+			 JOIN plugin_items i ON i.item_ref = f.item_ref
+			 WHERE `+where.String()+`
+			 GROUP BY f.v_int
+			 ORDER BY `+orderBy+`
+			 LIMIT ? OFFSET ?`, qArgs...)
+		if err != nil {
+			return FacetPeoplePage{}, err
+		}
+		for rows.Next() {
+			var pid int64
+			var label string
+			var cnt int
+			if err := rows.Scan(&pid, &label, &cnt); err != nil {
+				rows.Close()
+				return FacetPeoplePage{}, err
+			}
+			label = strings.TrimSpace(label)
+			if core.IsPluginPersonID(pid) && label != "" && cnt > 0 {
+				out = append(out, FacetPerson{
+					PersonID: pid,
+					Name:     label,
+					Count:    cnt,
+				})
+			}
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
 			return FacetPeoplePage{}, err
 		}
-		label = strings.TrimSpace(label)
-		if core.IsPluginPersonID(pid) && label != "" && cnt > 0 {
-			out = append(out, FacetPerson{
-				PersonID: pid,
-				Name:     label,
-				Count:    cnt,
-			})
-		}
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return FacetPeoplePage{}, err
-	}
-	rows.Close()
 
-	more := false
-	if len(out) > limit {
-		out = out[:limit]
-		more = true
-	}
-	total := offset + len(out)
-	if more {
-		if len(terms) == 0 && q.Policy == nil {
-			tallyLevel := strings.TrimSpace(q.Level)
-			if tallyLevel == "" && len(rec.Decl.Levels) > 0 {
-				tallyLevel = rec.Decl.Levels[0].Key
-			}
-			var cnt int
-			if err := s.db.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ?`,
-				int64(rec.LibraryID), tallyLevel, fieldKey,
-			).Scan(&cnt); err == nil && cnt >= total {
-				total = cnt
-			}
-		} else {
+		if len(out) > limit {
+			out = out[:limit]
+			more = true
+		}
+		total = offset + len(out)
+		if more {
 			countArgs := qArgs[:len(qArgs)-2]
 			var cnt int
 			if err := s.db.QueryRowContext(ctx,
@@ -213,26 +323,83 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 				total = cnt
 			}
 		}
-	}
-	if len(out) == 0 {
-		return FacetPeoplePage{Items: []FacetPerson{}, Total: total}, nil
+		if len(out) == 0 {
+			return FacetPeoplePage{Items: []FacetPerson{}, Total: total}, nil
+		}
 	}
 
-	// Fetch up to 4 candidate items per person on the page in ONE query driven
-	// from plugin_item_fields_lookup_int so we can pick a headshot-bearing
-	// credit (or fall back to the newest visible credit) with zero per-person loops.
+	// Fetch up to 4 candidate items per person on the page. Very large buckets
+	// probe plugin_items_released via covering EXISTS so sample lookup stays
+	// bounded regardless of bucket size; remaining buckets batch in one
+	// ROW_NUMBER() query driven from plugin_item_fields_lookup_int.
 	idxByPID := make(map[int64]int, len(out))
-	placeholders := make([]string, len(out))
-	sampleArgs := make([]any, 0, 1+len(out)+len(itemArgs))
-	sampleArgs = append(sampleArgs, fieldKey)
+	var largePIDs []int64
+	var smallPIDs []int64
 	for i, p := range out {
 		idxByPID[p.PersonID] = i
-		placeholders[i] = "?"
-		sampleArgs = append(sampleArgs, p.PersonID)
+		if shouldProbeNewestFromSortIndex(p.Count, libTally.libTotal, 4, q.Policy.Passive() && libTally.active) {
+			largePIDs = append(largePIDs, p.PersonID)
+		} else {
+			smallPIDs = append(smallPIDs, p.PersonID)
+		}
 	}
-	sampleArgs = append(sampleArgs, itemArgs...)
 
-	sampleSQL := `WITH ranked AS (
+	consumeSampleRows := func(sRows *sql.Rows) error {
+		defer sRows.Close()
+		for sRows.Next() {
+			var pid int64
+			it, _, _, scanErr := scanItemRow(prefixScanner{sc: sRows, prefix: []any{&pid}})
+			if scanErr != nil {
+				return scanErr
+			}
+			idx, ok := idxByPID[pid]
+			if !ok {
+				continue
+			}
+			if out[idx].SampleItem == nil {
+				cp := it
+				out[idx].SampleItem = &cp
+			}
+			if out[idx].Thumb != "" {
+				continue
+			}
+			cast, dirs, wris, crew, _ := extractProjectedPeople(it.Fields, rec.Decl)
+			for _, group := range [][]core.Person{cast, dirs, wris, crew} {
+				for _, cr := range group {
+					if cr.TMDB == pid {
+						if cr.Name != "" && out[idx].SampleItem != nil && out[idx].SampleItem.Ref == it.Ref {
+							out[idx].Name = cr.Name
+						}
+						if cr.ThumbPath != "" {
+							out[idx].Thumb = cr.ThumbPath
+							cp := it
+							out[idx].SampleItem = &cp
+							if cr.Name != "" {
+								out[idx].Name = cr.Name
+							}
+							break
+						}
+					}
+				}
+				if out[idx].Thumb != "" {
+					break
+				}
+			}
+		}
+		return sRows.Err()
+	}
+
+	if len(smallPIDs) > 0 {
+		placeholders := make([]string, len(smallPIDs))
+		sampleArgs := make([]any, 0, 1+len(smallPIDs)+len(itemArgs))
+		sampleArgs = append(sampleArgs, fieldKey)
+		for i, pid := range smallPIDs {
+			placeholders[i] = "?"
+			sampleArgs = append(sampleArgs, pid)
+		}
+		sampleArgs = append(sampleArgs, itemArgs...)
+
+		sampleSQL := `WITH ranked AS (
 	SELECT f.v_int AS bucket_pid,
 		i.item_ref,
 		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
@@ -246,56 +413,44 @@ JOIN plugin_items i ON i.item_ref = r.item_ref
 WHERE r.rn <= 4
 ORDER BY r.bucket_pid ASC, r.rn ASC`
 
-	sRows, err := s.db.QueryContext(ctx, sampleSQL, sampleArgs...)
-	if err != nil {
-		return FacetPeoplePage{}, err
+		sRows, err := s.db.QueryContext(ctx, sampleSQL, sampleArgs...)
+		if err != nil {
+			return FacetPeoplePage{}, err
+		}
+		if err := consumeSampleRows(sRows); err != nil {
+			return FacetPeoplePage{}, err
+		}
 	}
-	for sRows.Next() {
-		var pid int64
-		it, _, _, scanErr := scanItemRow(prefixScanner{sc: sRows, prefix: []any{&pid}})
-		if scanErr != nil {
-			sRows.Close()
-			return FacetPeoplePage{}, scanErr
-		}
-		idx, ok := idxByPID[pid]
-		if !ok {
-			continue
-		}
-		if out[idx].SampleItem == nil {
-			cp := it
-			out[idx].SampleItem = &cp
-		}
-		if out[idx].Thumb != "" {
-			continue
-		}
-		cast, dirs, wris, crew, _ := extractProjectedPeople(it.Fields, rec.Decl)
-		for _, group := range [][]core.Person{cast, dirs, wris, crew} {
-			for _, cr := range group {
-				if cr.TMDB == pid {
-					if cr.Name != "" && out[idx].SampleItem != nil && out[idx].SampleItem.Ref == it.Ref {
-						out[idx].Name = cr.Name
-					}
-					if cr.ThumbPath != "" {
-						out[idx].Thumb = cr.ThumbPath
-						cp := it
-						out[idx].SampleItem = &cp
-						if cr.Name != "" {
-							out[idx].Name = cr.Name
-						}
-						break
-					}
-				}
+
+	if len(largePIDs) > 0 {
+		probePred, probePrefixArgs := s.buildSortProbeLevelPredicate(rec.LibraryID, targetLevel, libTally.isSingleLevel(targetLevel))
+		const maxArms = 100
+		for start := 0; start < len(largePIDs); start += maxArms {
+			chunk := largePIDs[start:min(start+maxArms, len(largePIDs))]
+			arms := make([]string, len(chunk))
+			probeArgs := make([]any, 0, len(chunk)*(len(probePrefixArgs)+3))
+			for i, pid := range chunk {
+				arms[i] = `SELECT * FROM (SELECT CAST(? AS BIGINT) AS bucket_pid, i.item_ref, i.released FROM plugin_items i WHERE ` + probePred + ` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?) ORDER BY i.released DESC, i.item_ref ASC LIMIT 4) sub` + strconv.Itoa(i)
+				probeArgs = append(probeArgs, pid)
+				probeArgs = append(probeArgs, probePrefixArgs...)
+				probeArgs = append(probeArgs, fieldKey, pid)
 			}
-			if out[idx].Thumb != "" {
-				break
+			probeSQL := `WITH winners AS (
+	` + strings.Join(arms, "\n\tUNION ALL\n\t") + `
+)
+SELECT w.bucket_pid, ` + prefixedItemCols("i.") + `
+FROM winners w
+JOIN plugin_items i ON i.item_ref = w.item_ref
+ORDER BY w.bucket_pid ASC, w.released DESC, i.item_ref ASC`
+			sRows, err := s.db.QueryContext(ctx, probeSQL, probeArgs...)
+			if err != nil {
+				return FacetPeoplePage{}, err
+			}
+			if err := consumeSampleRows(sRows); err != nil {
+				return FacetPeoplePage{}, err
 			}
 		}
 	}
-	if err := sRows.Err(); err != nil {
-		sRows.Close()
-		return FacetPeoplePage{}, err
-	}
-	sRows.Close()
 
 	// Hydrate sample item artwork in a single batched query for people without
 	// an explicit portrait thumb (e.g. music artists using album cover art).
@@ -318,26 +473,42 @@ ORDER BY r.bucket_pid ASC, r.rn ASC`
 }
 
 // resolveNewestByTextBuckets resolves the newest visible item (plus artwork)
-// for all text-indexed buckets on a FacetCollections page in a single SQL query
-// driven from plugin_item_fields_lookup + 1 batched art hydration query.
-func (s *Service) resolveNewestByTextBuckets(ctx context.Context, fieldKey string, buckets []FacetBucket, fieldDrivenWhere string, itemArgs []any) ([]*core.KindItem, error) {
+// for all text-indexed buckets on a FacetCollections page. Large buckets probe
+// plugin_items_released via covering EXISTS so cost stays bounded regardless of
+// bucket size; smaller buckets batch in one ROW_NUMBER() query driven from
+// plugin_item_fields_lookup. All winners hydrate art in one batched query.
+func (s *Service) resolveNewestByTextBuckets(ctx context.Context, libraryID core.LibraryID, fieldKey string, buckets []FacetBucket, fieldDrivenWhere string, itemArgs []any, libTally libraryTallyState, targetLevel string, policyPassive bool) ([]*core.KindItem, error) {
 	if len(buckets) == 0 {
 		return nil, nil
 	}
 	idxByID := make(map[string][]int, len(buckets))
-	placeholders := make([]string, 0, len(buckets))
-	args := make([]any, 0, 1+len(buckets)+len(itemArgs))
-	args = append(args, fieldKey)
+	var smallIDs []string
+	var largeIDs []string
 	for i, b := range buckets {
 		if _, seen := idxByID[b.ID]; !seen {
-			placeholders = append(placeholders, "?")
-			args = append(args, b.ID)
+			if shouldProbeNewestFromSortIndex(b.Count, libTally.libTotal, 1, policyPassive && libTally.active) {
+				largeIDs = append(largeIDs, b.ID)
+			} else {
+				smallIDs = append(smallIDs, b.ID)
+			}
 		}
 		idxByID[b.ID] = append(idxByID[b.ID], i)
 	}
-	args = append(args, itemArgs...)
 
-	querySQL := `WITH ranked AS (
+	var items []core.KindItem
+	var bucketIDs []string
+
+	if len(smallIDs) > 0 {
+		placeholders := make([]string, len(smallIDs))
+		args := make([]any, 0, 1+len(smallIDs)+len(itemArgs))
+		args = append(args, fieldKey)
+		for i, id := range smallIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		args = append(args, itemArgs...)
+
+		querySQL := `WITH ranked AS (
 	SELECT f.v_text AS bucket_id,
 		i.item_ref,
 		ROW_NUMBER() OVER (PARTITION BY f.v_text ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
@@ -350,27 +521,68 @@ FROM ranked r
 JOIN plugin_items i ON i.item_ref = r.item_ref
 WHERE r.rn = 1`
 
-	rows, err := s.db.QueryContext(ctx, querySQL, args...)
-	if err != nil {
-		return nil, err
-	}
-	var items []core.KindItem
-	var bucketIDs []string
-	for rows.Next() {
-		var bID string
-		it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&bID}})
-		if scanErr != nil {
-			rows.Close()
-			return nil, scanErr
+		rows, err := s.db.QueryContext(ctx, querySQL, args...)
+		if err != nil {
+			return nil, err
 		}
-		items = append(items, it)
-		bucketIDs = append(bucketIDs, bID)
-	}
-	if err := rows.Err(); err != nil {
+		for rows.Next() {
+			var bID string
+			it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&bID}})
+			if scanErr != nil {
+				rows.Close()
+				return nil, scanErr
+			}
+			items = append(items, it)
+			bucketIDs = append(bucketIDs, bID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		rows.Close()
-		return nil, err
 	}
-	rows.Close()
+
+	if len(largeIDs) > 0 {
+		probePred, probePrefixArgs := s.buildSortProbeLevelPredicate(libraryID, targetLevel, libTally.isSingleLevel(targetLevel))
+		const maxArms = 100
+		for start := 0; start < len(largeIDs); start += maxArms {
+			chunk := largeIDs[start:min(start+maxArms, len(largeIDs))]
+			arms := make([]string, len(chunk))
+			args := make([]any, 0, len(chunk)*(len(probePrefixArgs)+3))
+			for i, id := range chunk {
+				arms[i] = `SELECT * FROM (SELECT CAST(? AS TEXT) AS bucket_id, i.item_ref FROM plugin_items i WHERE ` + probePred + ` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?) ORDER BY i.released DESC, i.item_ref ASC LIMIT 1) sub` + strconv.Itoa(i)
+				args = append(args, id)
+				args = append(args, probePrefixArgs...)
+				args = append(args, fieldKey, id)
+			}
+			querySQL := `WITH winners AS (
+	` + strings.Join(arms, "\n\tUNION ALL\n\t") + `
+)
+SELECT w.bucket_id, ` + prefixedItemCols("i.") + `
+FROM winners w
+JOIN plugin_items i ON i.item_ref = w.item_ref`
+
+			rows, err := s.db.QueryContext(ctx, querySQL, args...)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var bID string
+				it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&bID}})
+				if scanErr != nil {
+					rows.Close()
+					return nil, scanErr
+				}
+				items = append(items, it)
+				bucketIDs = append(bucketIDs, bID)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rows.Close()
+		}
+	}
 
 	out := make([]*core.KindItem, len(buckets))
 	if len(items) == 0 {
@@ -606,26 +818,45 @@ WHERE r.rn = 1`
 }
 
 // resolveNewestByPersonIDs resolves the newest visible item (plus artwork) for
-// all person-ID buckets on a FacetCollections page in a single SQL query driven
-// from plugin_item_fields_lookup_int + 1 batched art hydration query.
-func (s *Service) resolveNewestByPersonIDs(ctx context.Context, fieldKey string, personIDs []int64, fieldDrivenWhere string, itemArgs []any) ([]*core.KindItem, error) {
+// all person-ID buckets on a FacetCollections page. Very large buckets probe
+// plugin_items_released via covering EXISTS; smaller buckets batch in one
+// ROW_NUMBER() query driven from plugin_item_fields_lookup_int.
+func (s *Service) resolveNewestByPersonIDs(ctx context.Context, libraryID core.LibraryID, fieldKey string, personIDs []int64, buckets []FacetBucket, fieldDrivenWhere string, itemArgs []any, libTally libraryTallyState, targetLevel string, policyPassive bool) ([]*core.KindItem, error) {
 	if len(personIDs) == 0 {
 		return nil, nil
 	}
 	idxByPID := make(map[int64][]int, len(personIDs))
-	placeholders := make([]string, 0, len(personIDs))
-	args := make([]any, 0, 1+len(personIDs)+len(itemArgs))
-	args = append(args, fieldKey)
+	var smallPIDs []int64
+	var largePIDs []int64
 	for i, pid := range personIDs {
 		if _, seen := idxByPID[pid]; !seen {
-			placeholders = append(placeholders, "?")
-			args = append(args, pid)
+			cnt := 0
+			if i < len(buckets) {
+				cnt = buckets[i].Count
+			}
+			if shouldProbeNewestFromSortIndex(cnt, libTally.libTotal, 1, policyPassive && libTally.active) {
+				largePIDs = append(largePIDs, pid)
+			} else {
+				smallPIDs = append(smallPIDs, pid)
+			}
 		}
 		idxByPID[pid] = append(idxByPID[pid], i)
 	}
-	args = append(args, itemArgs...)
 
-	querySQL := `WITH ranked AS (
+	var items []core.KindItem
+	var pids []int64
+
+	if len(smallPIDs) > 0 {
+		placeholders := make([]string, len(smallPIDs))
+		args := make([]any, 0, 1+len(smallPIDs)+len(itemArgs))
+		args = append(args, fieldKey)
+		for i, pid := range smallPIDs {
+			placeholders[i] = "?"
+			args = append(args, pid)
+		}
+		args = append(args, itemArgs...)
+
+		querySQL := `WITH ranked AS (
 	SELECT f.v_int AS bucket_pid,
 		i.item_ref,
 		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
@@ -638,27 +869,68 @@ FROM ranked r
 JOIN plugin_items i ON i.item_ref = r.item_ref
 WHERE r.rn = 1`
 
-	rows, err := s.db.QueryContext(ctx, querySQL, args...)
-	if err != nil {
-		return nil, err
-	}
-	var items []core.KindItem
-	var pids []int64
-	for rows.Next() {
-		var pid int64
-		it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&pid}})
-		if scanErr != nil {
-			rows.Close()
-			return nil, scanErr
+		rows, err := s.db.QueryContext(ctx, querySQL, args...)
+		if err != nil {
+			return nil, err
 		}
-		items = append(items, it)
-		pids = append(pids, pid)
-	}
-	if err := rows.Err(); err != nil {
+		for rows.Next() {
+			var pid int64
+			it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&pid}})
+			if scanErr != nil {
+				rows.Close()
+				return nil, scanErr
+			}
+			items = append(items, it)
+			pids = append(pids, pid)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		rows.Close()
-		return nil, err
 	}
-	rows.Close()
+
+	if len(largePIDs) > 0 {
+		probePred, probePrefixArgs := s.buildSortProbeLevelPredicate(libraryID, targetLevel, libTally.isSingleLevel(targetLevel))
+		const maxArms = 100
+		for start := 0; start < len(largePIDs); start += maxArms {
+			chunk := largePIDs[start:min(start+maxArms, len(largePIDs))]
+			arms := make([]string, len(chunk))
+			args := make([]any, 0, len(chunk)*(len(probePrefixArgs)+3))
+			for i, pid := range chunk {
+				arms[i] = `SELECT * FROM (SELECT CAST(? AS BIGINT) AS bucket_pid, i.item_ref FROM plugin_items i WHERE ` + probePred + ` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?) ORDER BY i.released DESC, i.item_ref ASC LIMIT 1) sub` + strconv.Itoa(i)
+				args = append(args, pid)
+				args = append(args, probePrefixArgs...)
+				args = append(args, fieldKey, pid)
+			}
+			querySQL := `WITH winners AS (
+	` + strings.Join(arms, "\n\tUNION ALL\n\t") + `
+)
+SELECT w.bucket_pid, ` + prefixedItemCols("i.") + `
+FROM winners w
+JOIN plugin_items i ON i.item_ref = w.item_ref`
+
+			rows, err := s.db.QueryContext(ctx, querySQL, args...)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var pid int64
+				it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&pid}})
+				if scanErr != nil {
+					rows.Close()
+					return nil, scanErr
+				}
+				items = append(items, it)
+				pids = append(pids, pid)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rows.Close()
+		}
+	}
 
 	out := make([]*core.KindItem, len(personIDs))
 	if len(items) == 0 {

@@ -89,6 +89,7 @@ var (
 	_ experience.PluginPeopleLibraries       = (*KindCatalog)(nil)
 	_ experience.PluginPresentationLibraries = (*KindCatalog)(nil)
 	_ experience.PluginLevelFacetLibraries   = (*KindCatalog)(nil)
+	_ experience.PluginBatchBrowseLibraries  = (*KindCatalog)(nil)
 )
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
@@ -486,6 +487,180 @@ func (c *KindCatalog) Count(ctx context.Context, lib core.Library) (int, error) 
 	return total, nil
 }
 
+type pivRequestCache struct {
+	mu    sync.RWMutex
+	items map[core.RatingKey]experience.PluginItemView
+}
+
+func (c *KindCatalog) pivMemo(ctx context.Context) *pivRequestCache {
+	if c == nil || c.items == nil || !reqmemo.Active(ctx) {
+		return nil
+	}
+	key := fmt.Sprintf("kindcatalog:piv:%p:%d:%d", c, core.CatalogViewerID(ctx), c.items.WriteGen())
+	cache, err := reqmemo.Do(ctx, key, func() (*pivRequestCache, error) {
+		return &pivRequestCache{items: make(map[core.RatingKey]experience.PluginItemView)}, nil
+	})
+	if err != nil {
+		return nil
+	}
+	return cache
+}
+
+func (c *KindCatalog) buildPluginItemView(rec pluginitems.KindRecord, lib core.Library, landscape bool, it core.KindItem, title core.Title) (experience.PluginItemView, []core.KindItemPart) {
+	parts := syntheticAudiobookParts(it, title)
+	view := experience.PluginItemView{
+		Library:      lib,
+		Title:        title,
+		Images:       projectImages(it.Art, landscape),
+		Chapters:     extractItemDetailChapters(it, parts),
+		Unavailable:  it.Unavailable,
+		Playable:     it.Unavailable == nil && it.Playable && levelIsPlayable(rec.Decl, it.Level),
+		SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, it.Level),
+	}
+	return view, parts
+}
+
+func (c *KindCatalog) rememberBrowseViews(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, items []core.KindItem, titles []core.Title) {
+	cache := c.pivMemo(ctx)
+	if cache == nil || len(items) == 0 || len(items) != len(titles) {
+		return
+	}
+	landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
+	cache.mu.Lock()
+	for i, it := range items {
+		if it.Key == 0 {
+			continue
+		}
+		if _, exists := cache.items[it.Key]; exists {
+			continue
+		}
+		view, _ := c.buildPluginItemView(rec, lib, landscape, it, titles[i])
+		cache.items[it.Key] = view
+	}
+	cache.mu.Unlock()
+}
+
+// BrowseBatch implements experience.PluginBatchBrowseLibraries by executing all
+// shelf queries for one library together in pluginitems.Service.BrowseBatch and
+// projecting every unique item once.
+func (c *KindCatalog) BrowseBatch(ctx context.Context, lib core.Library, queries []frontend.ItemQuery) ([]experience.PluginBrowsePage, error) {
+	if c == nil || c.items == nil {
+		return nil, core.ErrNotFound
+	}
+	if len(queries) == 0 {
+		return nil, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := c.items.LibraryPolicy(ctx, lib)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]experience.PluginBrowsePage, len(queries))
+	bqs := make([]pluginitems.BrowseQuery, 0, len(queries))
+	bqIdx := make([]int, 0, len(queries))
+	flatFlags := make([]bool, 0, len(queries))
+	viewerID := core.CatalogViewerID(ctx)
+
+	for i, q := range queries {
+		if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
+			out[i] = experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}
+			continue
+		}
+		level, levels, anyLevel, matched := browseLevelsForQuery(rec.Decl, lib.Present, q)
+		if !matched {
+			out[i] = experience.PluginBrowsePage{Items: []core.Title{}, Total: 0, TotalExact: true}
+			continue
+		}
+		limit := q.Limit
+		if limit <= 0 {
+			limit = pluginitems.DefaultBrowseLimit
+		}
+		bq := pluginitems.BrowseQuery{
+			NoTotal:          q.NoTotal,
+			CheapTotal:       q.CheapTotal,
+			Policy:           policy,
+			LibraryID:        lib.ID,
+			ViewerID:         viewerID,
+			Level:            level,
+			Levels:           levels,
+			AnyLevel:         anyLevel,
+			PersonID:         q.Filter.Person,
+			Sort:             mapBrowseSort(q.Sort, q.Desc),
+			Facets:           mapFilterToFacets(rec.Decl, q.Filter),
+			ExcludeFacets:    mapExcludeGenresToFacets(rec.Decl, q.Filter.ExcludeGenres),
+			Watched:          q.Watched,
+			MaxContentRating: q.Filter.MaxContentRating,
+			ExcludeKeys:      q.Filter.ExcludeKeys,
+			Limit:            limit,
+		}
+		if len(q.Filter.TabRules) > 0 || q.Filter.TabFallback != "" {
+			tp, tpErr := c.items.CompilePolicy(ctx, lib.ID, q.Filter.TabRules, q.Filter.TabFallback)
+			if tpErr != nil {
+				return nil, tpErr
+			}
+			bq.TabPolicy = tp
+		}
+		bqs = append(bqs, bq)
+		bqIdx = append(bqIdx, i)
+		flatFlags = append(flatFlags, flatAudioQuery(rec.Decl, lib.Present, q))
+	}
+	if len(bqs) == 0 {
+		return out, nil
+	}
+
+	pages, err := c.items.BrowseBatch(ctx, bqs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deduplicate items across all shelves so projectItems runs once per unique item.
+	uniqueItems := make([]core.KindItem, 0, len(bqs)*8)
+	uniqueIdx := make(map[core.ItemRef]int, len(bqs)*8)
+	for _, p := range pages {
+		for _, it := range p.Items {
+			if _, seen := uniqueIdx[it.Ref]; !seen {
+				uniqueIdx[it.Ref] = len(uniqueItems)
+				uniqueItems = append(uniqueItems, it)
+			}
+		}
+	}
+	uniqueTitles := c.projectItems(ctx, rec, lib, uniqueItems)
+	anyNonFlat := false
+	for _, flat := range flatFlags {
+		if !flat {
+			anyNonFlat = true
+			break
+		}
+	}
+	if anyNonFlat {
+		c.rememberBrowseViews(ctx, rec, lib, uniqueItems, uniqueTitles)
+	}
+
+	for j, p := range pages {
+		origIdx := bqIdx[j]
+		flat := flatFlags[j]
+		titles := make([]core.Title, len(p.Items))
+		for k, it := range p.Items {
+			t := uniqueTitles[uniqueIdx[it.Ref]]
+			if flat && it.Playable && it.Unavailable == nil {
+				t = flatAlbumIncarnation(t)
+			}
+			titles[k] = t
+		}
+		out[origIdx] = experience.PluginBrowsePage{
+			Items:      titles,
+			Total:      p.Total,
+			TotalExact: p.TotalExact,
+			NextCursor: p.NextCursor,
+		}
+	}
+	return out, nil
+}
+
 // Browse implements experience.PluginLibraries. It reads strictly from the
 // pluginitems store and never invokes the plugin runtime.
 func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.ItemQuery, cursor string, limit int) (experience.PluginBrowsePage, error) {
@@ -544,6 +719,8 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 				titles[i] = flatAlbumIncarnation(titles[i])
 			}
 		}
+	} else {
+		c.rememberBrowseViews(ctx, rec, lib, page.Items, titles)
 	}
 	return experience.PluginBrowsePage{
 		Items:      titles,
@@ -724,9 +901,11 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		parentKey core.RatingKey
 		partIdx   int
 	}
+	pivCache := c.pivMemo(ctx)
 	fetchKeys := make([]core.RatingKey, 0, len(keys))
 	seenFetch := make(map[core.RatingKey]bool, len(keys))
 	wantDirect := make(map[core.RatingKey]bool, len(keys))
+	partParents := make(map[core.RatingKey]bool)
 	var partReqs []partReq
 	for _, k := range keys {
 		if !k.IsPluginKey() {
@@ -734,16 +913,48 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		}
 		if parentKey, partIdx, isPart := k.PluginPart(); isPart {
 			partReqs = append(partReqs, partReq{key: k, parentKey: parentKey, partIdx: partIdx})
+			partParents[parentKey] = true
 			if !seenFetch[parentKey] {
 				seenFetch[parentKey] = true
 				fetchKeys = append(fetchKeys, parentKey)
 			}
-			continue
 		}
-		wantDirect[k] = true
-		if !seenFetch[k] {
-			seenFetch[k] = true
-			fetchKeys = append(fetchKeys, k)
+	}
+	if pivCache != nil {
+		pivCache.mu.RLock()
+		for _, k := range keys {
+			if !k.IsPluginKey() {
+				continue
+			}
+			if _, _, isPart := k.PluginPart(); isPart {
+				continue
+			}
+			if !partParents[k] {
+				if cached, ok := pivCache.items[k]; ok {
+					out[k] = cached
+					continue
+				}
+			}
+			wantDirect[k] = true
+			if !seenFetch[k] {
+				seenFetch[k] = true
+				fetchKeys = append(fetchKeys, k)
+			}
+		}
+		pivCache.mu.RUnlock()
+	} else {
+		for _, k := range keys {
+			if !k.IsPluginKey() {
+				continue
+			}
+			if _, _, isPart := k.PluginPart(); isPart {
+				continue
+			}
+			wantDirect[k] = true
+			if !seenFetch[k] {
+				seenFetch[k] = true
+				fetchKeys = append(fetchKeys, k)
+			}
 		}
 	}
 	if len(fetchKeys) == 0 {
@@ -826,16 +1037,13 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		}
 		titles := c.projectItems(ctx, rec, lib, visibleItems)
 		landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
+		if pivCache != nil {
+			pivCache.mu.Lock()
+		}
 		for i, it := range visibleItems {
-			parts := syntheticAudiobookParts(it, titles[i])
-			view := experience.PluginItemView{
-				Library:      lib,
-				Title:        titles[i],
-				Images:       projectImages(it.Art, landscape),
-				Chapters:     extractItemDetailChapters(it, parts),
-				Unavailable:  it.Unavailable,
-				Playable:     it.Unavailable == nil && it.Playable && levelIsPlayable(rec.Decl, it.Level),
-				SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, it.Level),
+			view, parts := c.buildPluginItemView(rec, lib, landscape, it, titles[i])
+			if pivCache != nil && it.Key != 0 {
+				pivCache.items[it.Key] = view
 			}
 			if wantDirect[it.Key] {
 				out[it.Key] = view
@@ -843,6 +1051,9 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 			if parents != nil {
 				parents[it.Key] = projectedParent{item: it, view: view, parts: parts}
 			}
+		}
+		if pivCache != nil {
+			pivCache.mu.Unlock()
 		}
 	}
 	for _, pr := range partReqs {

@@ -26,6 +26,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/webclient"
 )
 
@@ -625,7 +626,16 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	r = r.WithContext(i.identityContext(r))
+	ctx := i.identityContext(r)
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		if !reqmemo.Active(ctx) {
+			ctx = reqmemo.With(ctx)
+		}
+		if frontend.RequestMemoFrom(ctx) == nil {
+			ctx = frontend.WithRequestMemo(ctx)
+		}
+	}
+	r = r.WithContext(ctx)
 	// Authentication/idempotency can fail before ServeMux dispatches. Record
 	// only its registered route template for those warnings too. Unknown routes
 	// and unsupported methods dispatch straight to ServeMux so they answer 404

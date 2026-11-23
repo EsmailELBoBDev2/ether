@@ -219,6 +219,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	defer tx.Rollback()
 
 	var (
+		oldLibID        int64
 		oldDeclJSON     string
 		oldHash         string
 		schemaVer       int64
@@ -226,8 +227,8 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		scheduleReindex bool
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
-		pluginID, decl.Key).Scan(&oldDeclJSON, &oldHash, &schemaVer)
+		`SELECT library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
+		pluginID, decl.Key).Scan(&oldLibID, &oldDeclJSON, &oldHash, &schemaVer)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		schemaVer = 1
@@ -305,7 +306,20 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	if err := tx.Commit(); err != nil {
 		return KindRecord{}, err
 	}
+	rec := KindRecord{
+		PluginID:      pluginID,
+		KindKey:       decl.Key,
+		LibraryID:     libraryID,
+		Decl:          decl,
+		DeclHash:      declHash,
+		SchemaVersion: schemaVer,
+	}
+	if oldLibID > 0 && core.LibraryID(oldLibID) != libraryID {
+		s.invalidateKindCache(pluginID, decl.Key, core.LibraryID(oldLibID))
+	}
+	s.cacheKindRecord(rec)
 	if purged {
+		s.partsState.Store(0)
 		s.noteWrite()
 		s.forgetLibraryStats(libraryID)
 	}
@@ -314,14 +328,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	} else if !purged && s.kindHasUnindexedArtistStrings(ctx, libraryID, decl) {
 		s.startKindReindex(pluginID, decl.Key, libraryID, decl)
 	}
-	return KindRecord{
-		PluginID:      pluginID,
-		KindKey:       decl.Key,
-		LibraryID:     libraryID,
-		Decl:          decl,
-		DeclHash:      declHash,
-		SchemaVersion: schemaVer,
-	}, nil
+	return rec, nil
 }
 
 // indexShapeChanged reports whether the parts of a kind declaration that
@@ -338,18 +345,114 @@ func indexShapeChanged(oldDecl, newDecl plugins.MediaKindMeta) bool {
 	return err1 != nil || err2 != nil || string(o) != string(n)
 }
 
+func kindCacheKey(pluginID, kindKey string) string {
+	return pluginID + "\x00" + kindKey
+}
+
+func (s *Service) checkRestoreCaches() {
+	gen := pluginItemsRestoreGen.Load()
+	s.kindCacheMu.RLock()
+	cur := s.kindCacheGen
+	s.kindCacheMu.RUnlock()
+	if cur == gen {
+		return
+	}
+	s.kindCacheMu.Lock()
+	if s.kindCacheGen != gen {
+		s.kindCacheGen = gen
+		clear(s.kindByLib)
+		clear(s.kindByKey)
+		s.partsState.Store(0)
+	}
+	s.kindCacheMu.Unlock()
+}
+
+func (s *Service) cacheKindRecord(rec KindRecord) {
+	s.checkRestoreCaches()
+	s.kindCacheMu.Lock()
+	if s.kindByLib == nil {
+		s.kindByLib = map[core.LibraryID]KindRecord{}
+	}
+	if s.kindByKey == nil {
+		s.kindByKey = map[string]KindRecord{}
+	}
+	if rec.LibraryID > 0 {
+		s.kindByLib[rec.LibraryID] = rec
+	}
+	s.kindByKey[kindCacheKey(rec.PluginID, rec.KindKey)] = rec
+	s.kindCacheMu.Unlock()
+}
+
+func (s *Service) invalidateKindCache(pluginID, kindKey string, libraryID core.LibraryID) {
+	s.kindCacheMu.Lock()
+	if libraryID > 0 {
+		delete(s.kindByLib, libraryID)
+	}
+	if pluginID != "" && kindKey != "" {
+		k := kindCacheKey(pluginID, kindKey)
+		if prev, ok := s.kindByKey[k]; ok && prev.LibraryID > 0 {
+			delete(s.kindByLib, prev.LibraryID)
+		}
+		delete(s.kindByKey, k)
+	}
+	s.kindCacheMu.Unlock()
+}
+
+func (s *Service) invalidatePluginKindCache(pluginID string) {
+	s.kindCacheMu.Lock()
+	for k, rec := range s.kindByKey {
+		if rec.PluginID == pluginID {
+			if rec.LibraryID > 0 {
+				delete(s.kindByLib, rec.LibraryID)
+			}
+			delete(s.kindByKey, k)
+		}
+	}
+	for libID, rec := range s.kindByLib {
+		if rec.PluginID == pluginID {
+			delete(s.kindByLib, libID)
+		}
+	}
+	s.kindCacheMu.Unlock()
+}
+
 // GetKind returns the installed KindRecord for (pluginID, kindKey).
 func (s *Service) GetKind(ctx context.Context, pluginID, kindKey string) (KindRecord, error) {
-	return s.scanKind(s.db.QueryRowContext(ctx,
+	s.checkRestoreCaches()
+	k := kindCacheKey(pluginID, kindKey)
+	s.kindCacheMu.RLock()
+	rec, ok := s.kindByKey[k]
+	s.kindCacheMu.RUnlock()
+	if ok {
+		return rec, nil
+	}
+	rec, err := s.scanKind(s.db.QueryRowContext(ctx,
 		`SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
 		pluginID, kindKey))
+	if err != nil {
+		return KindRecord{}, err
+	}
+	s.cacheKindRecord(rec)
+	return rec, nil
 }
 
 // GetKindByLibrary returns the installed KindRecord for libraryID.
 func (s *Service) GetKindByLibrary(ctx context.Context, libraryID core.LibraryID) (KindRecord, error) {
-	return s.scanKind(s.db.QueryRowContext(ctx,
+	s.checkRestoreCaches()
+	s.kindCacheMu.RLock()
+	rec, ok := s.kindByLib[libraryID]
+	s.kindCacheMu.RUnlock()
+	if ok {
+		return rec, nil
+	}
+	rec, err := s.scanKind(s.db.QueryRowContext(ctx,
 		`SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE library_id = ?`,
 		int64(libraryID)))
+	if err != nil {
+		return KindRecord{}, err
+	}
+	s.cacheKindRecord(rec)
+	return rec, nil
 }
 
 // ListKinds returns all installed kinds for pluginID (or all plugins when pluginID == "").
@@ -1604,11 +1707,12 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	}
 
 	var (
-		fieldDeletes   []reindexFieldDelete
-		fieldInserts   []reindexFieldUpsert
-		fieldUpdates   []reindexFieldUpsert
-		ftsWrites      []reindexFTSWrite
-		fieldTallyLibs map[core.LibraryID]map[fieldTallyKey]int64
+		fieldDeletes    []reindexFieldDelete
+		fieldInserts    []reindexFieldUpsert
+		fieldUpdates    []reindexFieldUpsert
+		ftsWrites       []reindexFTSWrite
+		fieldTallyLibs  map[core.LibraryID]map[fieldTallyKey]int64
+		personTallyLibs map[core.LibraryID]map[personTallyKey]*personTallyChange
 	)
 	deltaFor := func(libID core.LibraryID) map[fieldTallyKey]int64 {
 		if fieldTallyLibs == nil {
@@ -1618,6 +1722,17 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 		if d == nil {
 			d = map[fieldTallyKey]int64{}
 			fieldTallyLibs[libID] = d
+		}
+		return d
+	}
+	personDeltaFor := func(libID core.LibraryID) map[personTallyKey]*personTallyChange {
+		if personTallyLibs == nil {
+			personTallyLibs = map[core.LibraryID]map[personTallyKey]*personTallyChange{}
+		}
+		d := personTallyLibs[libID]
+		if d == nil {
+			d = map[personTallyKey]*personTallyChange{}
+			personTallyLibs[libID] = d
 		}
 		return d
 	}
@@ -1634,6 +1749,9 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 				fieldDeletes = append(fieldDeletes, reindexFieldDelete{itemRef: r.itemRef, pk: pk})
 				if hasFieldTally && pk.text != "" && r.level != "" {
 					addFieldTallyDelta(deltaFor(r.libraryID), r.level, pk.field, pk.text, -1)
+					if core.IsPluginPersonID(pk.intV) {
+						addPersonTallyDelta(personDeltaFor(r.libraryID), r.level, pk.field, pk.text, pk.intV, -1)
+					}
 				}
 			}
 		}
@@ -1643,6 +1761,9 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 				fieldInserts = append(fieldInserts, reindexFieldUpsert{itemRef: r.itemRef, pk: pk, extra: nv})
 				if hasFieldTally && pk.text != "" && r.level != "" {
 					addFieldTallyDelta(deltaFor(r.libraryID), r.level, pk.field, pk.text, 1)
+					if core.IsPluginPersonID(pk.intV) {
+						addPersonTallyDelta(personDeltaFor(r.libraryID), r.level, pk.field, pk.text, pk.intV, 1)
+					}
 				}
 			} else if ov != nv {
 				fieldUpdates = append(fieldUpdates, reindexFieldUpsert{itemRef: r.itemRef, pk: pk, extra: nv})
@@ -1733,21 +1854,40 @@ WHERE item_ref = ?
 			}
 		}
 	}
-	if hasFieldTally && len(fieldTallyLibs) > 0 {
-		libs := make([]core.LibraryID, 0, len(fieldTallyLibs))
+	if hasFieldTally && (len(fieldTallyLibs) > 0 || len(personTallyLibs) > 0) {
+		libSet := make(map[core.LibraryID]struct{}, len(fieldTallyLibs)+len(personTallyLibs))
 		for libID := range fieldTallyLibs {
+			libSet[libID] = struct{}{}
+		}
+		for libID := range personTallyLibs {
+			libSet[libID] = struct{}{}
+		}
+		libs := make([]core.LibraryID, 0, len(libSet))
+		for libID := range libSet {
 			libs = append(libs, libID)
 		}
 		slices.Sort(libs)
+		dialect := store.SQLite
+		if isPG {
+			dialect = store.Postgres
+		}
+		hasPersonTally := len(personTallyLibs) > 0 && hasTableTx(ctx, tx, dialect, "plugin_item_person_tally")
 		for _, libID := range libs {
-			if err := applyFieldTallyDeltaTx(ctx, tx, libID, fieldTallyLibs[libID]); err != nil {
+			emptied, err := applyFieldTallyDeltaTx(ctx, tx, libID, fieldTallyLibs[libID])
+			if err != nil {
 				return 0, cursor, false, false, err
+			}
+			if hasPersonTally && len(personTallyLibs[libID]) > 0 {
+				if err := applyPersonTallyDeltaTx(ctx, tx, isPG, libID, personTallyLibs[libID], emptied); err != nil {
+					return 0, cursor, false, false, err
+				}
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, cursor, false, false, err
 	}
+	s.invalidateKindCache(pluginID, kindKey, fallbackLibID)
 	s.noteWrite()
 	s.syncGen.Add(1)
 	return len(batch), nextCursor, done, true, nil
@@ -1942,7 +2082,7 @@ WHERE item_ref = ?`,
 		dialect = store.Postgres
 	}
 	if hasTableTx(ctx, tx, dialect, "plugin_item_field_tally") {
-		if err := rebuildKindFieldTallyTx(ctx, tx, pluginID, kindKey, fallbackLibID); err != nil {
+		if err := rebuildKindFieldTallyTx(ctx, tx, isPG, pluginID, kindKey, fallbackLibID); err != nil {
 			return err
 		}
 	}
@@ -1992,7 +2132,7 @@ func rebuildKindParentTallyForKindTx(ctx context.Context, tx *sql.Tx, pluginID, 
 	return nil
 }
 
-func rebuildKindFieldTallyTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, fallbackLibID core.LibraryID) error {
+func rebuildKindFieldTallyTx(ctx context.Context, tx *sql.Tx, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID) error {
 	libSet := map[int64]bool{}
 	if fallbackLibID > 0 {
 		libSet[int64(fallbackLibID)] = true
@@ -2016,6 +2156,12 @@ func rebuildKindFieldTallyTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey 
 		return err
 	}
 	rows.Close()
+
+	dialect := store.SQLite
+	if isPG {
+		dialect = store.Postgres
+	}
+	hasPersonTally := hasTableTx(ctx, tx, dialect, "plugin_item_person_tally")
 
 	libs := make([]int64, 0, len(libSet))
 	for id := range libSet {
@@ -2042,6 +2188,17 @@ FROM plugin_item_field_tally
 WHERE library_id = ? AND level <> ''
 GROUP BY library_id, field, v_text`, libID); err != nil {
 			return err
+		}
+		if err := backfillFieldTallyCaseTx(ctx, tx, libID); err != nil {
+			return err
+		}
+		if hasPersonTally {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_person_tally WHERE library_id = ?`, libID); err != nil {
+				return err
+			}
+			if err := backfillPersonTallyTx(ctx, tx, isPG, libID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -2232,6 +2389,7 @@ type existingTextField struct {
 	ref   core.ItemRef
 	field string
 	text  string
+	intV  int64
 }
 
 func addFieldTallyDelta(delta map[fieldTallyKey]int64, level, field, text string, d int64) {
@@ -2258,18 +2416,19 @@ func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.Ite
 			args[i] = string(r)
 		}
 		rows, err := tx.QueryContext(ctx,
-			`SELECT item_ref, field, v_text FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`) AND v_text <> ''`,
+			`SELECT item_ref, field, v_text, v_int FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`) AND v_text <> ''`,
 			args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
 			var refStr, field, text string
-			if err := rows.Scan(&refStr, &field, &text); err != nil {
+			var intV int64
+			if err := rows.Scan(&refStr, &field, &text, &intV); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			out = append(out, existingTextField{ref: core.ItemRef(refStr), field: field, text: text})
+			out = append(out, existingTextField{ref: core.ItemRef(refStr), field: field, text: text, intV: intV})
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -2280,9 +2439,9 @@ func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.Ite
 	return out, nil
 }
 
-func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, delta map[fieldTallyKey]int64) error {
+func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, delta map[fieldTallyKey]int64) (map[fieldTallyKey]bool, error) {
 	if len(delta) == 0 || libraryID <= 0 {
-		return nil
+		return nil, nil
 	}
 	keys := make([]fieldTallyKey, 0, len(delta))
 	for k, d := range delta {
@@ -2291,7 +2450,7 @@ func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.Libr
 		}
 	}
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 	slices.SortFunc(keys, func(a, b fieldTallyKey) int {
 		if c := strings.Compare(a.level, b.level); c != 0 {
@@ -2303,16 +2462,17 @@ func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.Libr
 		return strings.Compare(a.text, b.text)
 	})
 	libID := int64(libraryID)
+	var emptied map[fieldTallyKey]bool
 	for _, k := range keys {
 		d := delta[k]
 		if d > 0 {
 			if _, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, cnt)
-VALUES(?, ?, ?, ?, ?)
+INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, v_lower, v_fold, cnt)
+VALUES(?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(library_id, level, field, v_text) DO UPDATE SET
 	cnt = plugin_item_field_tally.cnt + excluded.cnt`,
-				libID, k.level, k.field, k.text, d); err != nil {
-				return err
+				libID, k.level, k.field, k.text, strings.ToLower(k.text), FoldFieldText(k.text), d); err != nil {
+				return nil, err
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx, `
@@ -2320,17 +2480,24 @@ UPDATE plugin_item_field_tally
 SET cnt = cnt + ?
 WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
 				d, libID, k.level, k.field, k.text); err != nil {
-				return err
+				return nil, err
 			}
-			if _, err := tx.ExecContext(ctx, `
+			res, err := tx.ExecContext(ctx, `
 DELETE FROM plugin_item_field_tally
 WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
-				libID, k.level, k.field, k.text); err != nil {
-				return err
+				libID, k.level, k.field, k.text)
+			if err != nil {
+				return nil, err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				if emptied == nil {
+					emptied = map[fieldTallyKey]bool{}
+				}
+				emptied[k] = true
 			}
 		}
 	}
-	return nil
+	return emptied, nil
 }
 
 // bumpKindSyncStateTx records a new generation and the kind's item
@@ -2601,9 +2768,13 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 		return err
 	}
 	fieldTallyDelta := map[fieldTallyKey]int64{}
+	personTallyDelta := map[personTallyKey]*personTallyChange{}
 	for _, of := range oldFields {
 		if t, ok := allTargets[of.ref]; ok {
 			addFieldTallyDelta(fieldTallyDelta, t.level, of.field, of.text, -1)
+			if core.IsPluginPersonID(of.intV) {
+				addPersonTallyDelta(personTallyDelta, t.level, of.field, of.text, of.intV, -1)
+			}
 		}
 	}
 
@@ -2639,7 +2810,11 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 	if err := applyTallyDeltaTx(ctx, tx, libraryID, tallyDelta); err != nil {
 		return err
 	}
-	if err := applyFieldTallyDeltaTx(ctx, tx, libraryID, fieldTallyDelta); err != nil {
+	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, libraryID, fieldTallyDelta)
+	if err != nil {
+		return err
+	}
+	if err := applyPersonTallyDeltaTx(ctx, tx, !isSQLite, libraryID, personTallyDelta, emptiedText); err != nil {
 		return err
 	}
 	if levelCount > 1 && libraryID > 0 {
@@ -2911,6 +3086,8 @@ func (s *Service) PurgeKind(ctx context.Context, pluginID, kindKey string) error
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	s.invalidateKindCache(pluginID, kindKey, core.LibraryID(libID))
+	s.partsState.Store(0)
 	if libID > 0 {
 		s.forgetLibraryStats(core.LibraryID(libID))
 	}
@@ -2956,6 +3133,8 @@ func (s *Service) PurgePlugin(ctx context.Context, pluginID string) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	s.invalidatePluginKindCache(pluginID)
+	s.partsState.Store(0)
 	for _, k := range kinds {
 		if k.LibraryID > 0 {
 			s.forgetLibraryStats(k.LibraryID)
@@ -3033,6 +3212,9 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_field_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_person_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_parent_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
 			return err
 		}
@@ -3044,6 +3226,11 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM plugin_item_field_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
+			args...); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM plugin_item_person_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
 			args...); err != nil {
 			return err
 		}

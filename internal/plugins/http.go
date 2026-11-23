@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/braedonsaunders/ether/internal/httpjson"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/viewspec"
 )
 
@@ -996,7 +998,9 @@ func (m *Manager) ResolveTextFunc(ctx context.Context, id, locale string) func(s
 	if m == nil {
 		return nil
 	}
-	row, err := m.store.settings(ctx, id)
+	row, err := reqmemo.Do(ctx, fmt.Sprintf("plugins:settings:%p:%s", m, id), func() (settingsRow, error) {
+		return m.store.settings(ctx, id)
+	})
 	if err != nil || len(row.Strings) == 0 {
 		return nil
 	}

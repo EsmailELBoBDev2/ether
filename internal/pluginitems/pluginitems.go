@@ -26,6 +26,8 @@ import (
 
 const currentFTSVersion int64 = 1
 
+var pluginItemsRestoreGen atomic.Uint64
+
 func init() {
 	// search_tsv exists only on PostgreSQL (SQLite searches plugin_item_fts),
 	// so a cluster's dump restored on a standalone server skips it.
@@ -36,6 +38,7 @@ func init() {
 	// rebuilds the engine's search index in bounded, resumable keyset batches.
 	store.RegisterRestore("pluginitems_search", func(ctx context.Context, tx *sql.Tx) (func(context.Context, *sql.Tx) error, error) {
 		return func(ctx context.Context, tx *sql.Tx) error {
+			pluginItemsRestoreGen.Add(1)
 			if store.RestoreDialect(ctx) == store.Postgres {
 				_, err := tx.ExecContext(ctx, `
 UPDATE plugin_kinds
@@ -102,6 +105,15 @@ ALTER TABLE plugin_sync_state ADD COLUMN guard_json TEXT NOT NULL DEFAULT '';
 	store.RegisterDialect("pluginitems", 16, store.Postgres, migration16PostgresDDL)
 	store.RegisterSQLiteApply("pluginitems", 16, applyMigration16SQLite)
 	store.RegisterPostgresApply("pluginitems", 16, applyMigration16Postgres)
+
+	// Migration 17: extend plugin_item_field_tally with case-folded search and
+	// name-order columns/indexes, and add plugin_item_person_tally keyed by
+	// v_int so people and collections tabs read bounded indexed pages from the
+	// tallies without scanning plugin_item_fields.
+	store.Register("pluginitems", 17, migration17SQLiteDDL)
+	store.RegisterDialect("pluginitems", 17, store.Postgres, migration17PostgresDDL)
+	store.RegisterSQLiteApply("pluginitems", 17, applyMigration17SQLite)
+	store.RegisterPostgresApply("pluginitems", 17, applyMigration17Postgres)
 
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain
@@ -506,6 +518,13 @@ type Service struct {
 	syncGen  atomic.Uint64
 	writeGen atomic.Uint64
 
+	kindCacheMu  sync.RWMutex
+	kindCacheGen uint64
+	kindByLib    map[core.LibraryID]KindRecord
+	kindByKey    map[string]KindRecord
+
+	partsState atomic.Int32 // 0 = unknown, 1 = empty, 2 = non-empty
+
 	countCacheMu sync.RWMutex
 	countCache   map[string]cachedBrowseCount
 
@@ -561,6 +580,9 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		onSyncEvent:       o.OnSyncEvent,
 		maxPluginItems:    o.MaxPluginItems,
 		maxPluginItemsFor: o.MaxPluginItemsFor,
+		kindCacheGen:      pluginItemsRestoreGen.Load(),
+		kindByLib:         map[core.LibraryID]KindRecord{},
+		kindByKey:         map[string]KindRecord{},
 		countCache:        map[string]cachedBrowseCount{},
 		kindLocks:         map[string]*sync.Mutex{},
 		syncLocks:         map[string]*sync.Mutex{},
@@ -841,6 +863,15 @@ type cachedBrowseCount struct {
 	total  int
 	gen    uint64
 	minute int64
+}
+
+// WriteGen returns a monotonically increasing counter bumped on every item
+// write or purge so request-scoped caches can key safely on store state.
+func (s *Service) WriteGen() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.writeGen.Load()
 }
 
 func (s *Service) noteWrite() {

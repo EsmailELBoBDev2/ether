@@ -1540,8 +1540,9 @@ func (s *Service) PageArtworkTitles(ctx context.Context, viewer *core.Viewer, ke
 			return nil, err
 		}
 		pluginTitles = make(map[core.RatingKey]core.Title, len(views))
+		pubCache := make(map[core.LibraryID]bool, 4)
 		for k, piv := range views {
-			if s.pluginItemAllowed(ctx, v, piv) {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
 				pluginTitles[k] = piv.Title
 			}
 		}
@@ -2211,8 +2212,9 @@ func (s *Service) UserData(ctx context.Context, viewer *core.Viewer, keys []core
 			return nil, err
 		}
 		pluginAllowed = make(map[core.RatingKey]bool, len(views))
+		pubCache := make(map[core.LibraryID]bool, 4)
 		for k, piv := range views {
-			if s.pluginItemAllowed(ctx, v, piv) {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
 				pluginAllowed[k] = true
 			}
 		}

@@ -140,6 +140,195 @@ func normalizeSortField(sortName string) (col string, kind string, defaultDesc b
 	}
 }
 
+func parseBrowseSort(q BrowseQuery) (col, kind string, desc, defaultDesc bool) {
+	col, kind, defaultDesc = normalizeSortField(q.Sort)
+	desc = defaultDesc
+	if q.Desc {
+		desc = !defaultDesc
+	}
+	lower := strings.ToLower(strings.TrimSpace(q.Sort))
+	if strings.HasSuffix(lower, ":desc") {
+		col, kind, defaultDesc = normalizeSortField(strings.TrimSuffix(lower, ":desc"))
+		desc = true
+	} else if strings.HasSuffix(lower, ":asc") {
+		col, kind, defaultDesc = normalizeSortField(strings.TrimSuffix(lower, ":asc"))
+		desc = false
+	}
+	return col, kind, desc, defaultDesc
+}
+
+func (s *Service) buildBrowsePredicates(
+	ctx context.Context,
+	q BrowseQuery,
+	parentRef, level, col, kind string,
+	desc, defaultDesc bool,
+	limit int,
+	tally browseTallyInfo,
+) (baseWhere string, baseArgs []any, viewerID int64, empty bool, err error) {
+	driveFacetFromSort := shouldDriveFacetFromSortIndex(tally, col, kind, desc, defaultDesc, level, q.Levels, q.AnyLevel, limit)
+
+	// Build person + facet predicates first so we know whether to drive the
+	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
+	var filterWhere strings.Builder
+	var filterArgs []any
+	driveFromFields := false
+
+	if driveFacetFromSort {
+		// Probe the covering PK (item_ref, field, v_text, v_int) via correlated
+		// EXISTS so SQLite/PostgreSQL walks the sort index and stops after
+		// limit+1 matches instead of sorting all matching rows (#682).
+		placeholders := make([]string, len(tally.positiveTextValues))
+		filterArgs = append(filterArgs, tally.positiveTextField)
+		for idx, v := range tally.positiveTextValues {
+			placeholders[idx] = "?"
+			filterArgs = append(filterArgs, v)
+		}
+		filterWhere.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
+	} else {
+		if q.PersonID > 0 {
+			ok, err := s.appendBrowsePersonFilter(ctx, q.LibraryID, &filterWhere, &filterArgs, q.PersonID)
+			if err != nil {
+				return "", nil, 0, false, err
+			}
+			if !ok {
+				return "", nil, 0, true, nil
+			}
+			driveFromFields = true
+		}
+		usedFacetIndex, err := s.appendBrowseFacets(ctx, q.LibraryID, &filterWhere, &filterArgs, q.Facets)
+		if err != nil {
+			return "", nil, 0, false, err
+		}
+		if usedFacetIndex {
+			driveFromFields = true
+		}
+		usedAllFacetIndex, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.AllFacets, facetAll)
+		if err != nil {
+			return "", nil, 0, false, err
+		}
+		if usedAllFacetIndex {
+			driveFromFields = true
+		}
+		// Exclusion predicates are NOT IN subqueries over the same indexed
+		// field rows; they filter the item scan and never drive it.
+		if _, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.ExcludeFacets, facetNone); err != nil {
+			return "", nil, 0, false, err
+		}
+		if !q.Hidden && (q.TabPolicy.HasPositiveViewerFilter() || q.Policy.HasPositiveViewerFilter()) {
+			driveFromFields = true
+		}
+	}
+
+	viewerID = q.ViewerID
+	if viewerID <= 0 {
+		viewerID = core.CatalogViewerID(ctx)
+	}
+
+	// Base filter predicate.
+	var bw strings.Builder
+	baseArgs = []any{int64(q.LibraryID)}
+	if driveFromFields && parentRef == "" {
+		bw.WriteString(`i.library_id + 0 = ?`)
+	} else {
+		bw.WriteString(`i.library_id = ?`)
+	}
+	// When driving a non-sort_title sort from its (library_id, col, item_ref)
+	// index on SQLite, keep equality predicates on level/parent_ref from pulling
+	// the planner onto plugin_items_browse / plugin_items_level_sort + TEMP B-TREE.
+	// On a single-level library where every item already belongs to the requested
+	// level, omit the redundant level/parent_ref check so SQLite can scan the
+	// sort index as a covering index until EXISTS matches.
+	omitSingleLevel := tally.singleLevel && parentRef == "" && col != "sort_title"
+	sqliteSortIndexHint := driveFacetFromSort && col != "sort_title" && store.DialectOf(s.db) != store.Postgres
+	if parentRef != "" {
+		bw.WriteString(` AND i.parent_ref = ?`)
+		baseArgs = append(baseArgs, parentRef)
+		if len(q.Levels) > 0 {
+			placeholders := make([]string, len(q.Levels))
+			for idx, lv := range q.Levels {
+				placeholders[idx] = "?"
+				baseArgs = append(baseArgs, strings.TrimSpace(lv))
+			}
+			bw.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
+		} else if level != "" {
+			bw.WriteString(` AND i.level = ?`)
+			baseArgs = append(baseArgs, level)
+		}
+	} else if !omitSingleLevel {
+		if len(q.Levels) > 0 {
+			placeholders := make([]string, len(q.Levels))
+			for idx, lv := range q.Levels {
+				placeholders[idx] = "?"
+				baseArgs = append(baseArgs, strings.TrimSpace(lv))
+			}
+			if sqliteSortIndexHint {
+				bw.WriteString(` AND +i.level IN (` + strings.Join(placeholders, ",") + `)`)
+			} else {
+				bw.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
+			}
+		} else if level != "" {
+			if sqliteSortIndexHint {
+				bw.WriteString(` AND +i.level = ?`)
+			} else {
+				bw.WriteString(` AND i.level = ?`)
+			}
+			baseArgs = append(baseArgs, level)
+		} else if !q.AnyLevel && q.PersonID <= 0 {
+			// Default to root items when neither Level nor ParentRef is specified.
+			if sqliteSortIndexHint {
+				bw.WriteString(` AND +i.parent_ref = ''`)
+			} else {
+				bw.WriteString(` AND i.parent_ref = ''`)
+			}
+		}
+	}
+	if filterWhere.Len() > 0 {
+		bw.WriteString(filterWhere.String())
+		baseArgs = append(baseArgs, filterArgs...)
+	}
+	if q.MaxContentRating != "" {
+		if lvl := contentrating.EnforceLevelOf(q.MaxContentRating); lvl == contentrating.Unrated {
+			bw.WriteString(` AND 0=1`)
+		} else {
+			bw.WriteString(` AND i.rating_level > 0 AND i.rating_level <= ?`)
+			baseArgs = append(baseArgs, int(lvl))
+		}
+	}
+	if len(q.ExcludeKeys) > 0 {
+		var placeholders []string
+		for _, k := range q.ExcludeKeys {
+			seq := k.PluginSeq()
+			if seq <= 0 {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			baseArgs = append(baseArgs, seq)
+		}
+		if len(placeholders) > 0 {
+			bw.WriteString(` AND i.seq NOT IN (` + strings.Join(placeholders, ",") + `)`)
+		}
+	}
+	if q.Watched != nil {
+		switch {
+		case viewerID <= 0 && *q.Watched:
+			bw.WriteString(` AND 0=1`)
+		case viewerID > 0 && *q.Watched:
+			bw.WriteString(fmt.Sprintf(` AND EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id = ? AND w.rating_key = %d + i.seq AND w.view_count > 0)`, core.PluginKeyOffset))
+			baseArgs = append(baseArgs, viewerID)
+		case viewerID > 0:
+			bw.WriteString(fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id = ? AND w.rating_key = %d + i.seq AND w.view_count > 0)`, core.PluginKeyOffset))
+			baseArgs = append(baseArgs, viewerID)
+		}
+	}
+	if err := s.appendVisibilityForViewer(ctx, &bw, &baseArgs, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
+		return "", nil, 0, false, err
+	}
+	if err := s.appendVisibilityForViewer(ctx, &bw, &baseArgs, q.LibraryID, q.TabPolicy, false, viewerID); err != nil {
+		return "", nil, 0, false, err
+	}
+	return bw.String(), baseArgs, viewerID, false, nil
+}
+
 // Browse returns a keyset-paged slice of items in a library (spec §2.3, §3.4).
 // Unfiltered totals are read from plugin_item_tally in O(1); filtered or
 // child-scoped totals execute an exact COUNT(*) with the same WHERE clauses,
@@ -159,18 +348,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		limit = MaxBrowseLimit
 	}
 
-	col, kind, defaultDesc := normalizeSortField(q.Sort)
-	desc := defaultDesc
-	if q.Desc {
-		desc = !defaultDesc
-	}
-	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(q.Sort)), ":desc") {
-		col, kind, _ = normalizeSortField(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(q.Sort)), ":desc"))
-		desc = true
-	} else if strings.HasSuffix(strings.ToLower(strings.TrimSpace(q.Sort)), ":asc") {
-		col, kind, _ = normalizeSortField(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(q.Sort)), ":asc"))
-		desc = false
-	}
+	col, kind, desc, defaultDesc := parseBrowseSort(q)
 
 	level := strings.TrimSpace(q.Level)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
@@ -202,170 +380,22 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: true}, nil
 	}
 
-	driveFacetFromSort := shouldDriveFacetFromSortIndex(tally, col, kind, desc, defaultDesc, level, q.Levels, q.AnyLevel, limit)
-
-	// Build person + facet predicates first so we know whether to drive the
-	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
-	var filterWhere strings.Builder
-	var filterArgs []any
-	driveFromFields := false
-
-	if driveFacetFromSort {
-		// Probe the covering PK (item_ref, field, v_text, v_int) via correlated
-		// EXISTS so SQLite/PostgreSQL walks the sort index and stops after
-		// limit+1 matches instead of sorting all matching rows (#682).
-		placeholders := make([]string, len(tally.positiveTextValues))
-		filterArgs = append(filterArgs, tally.positiveTextField)
-		for idx, v := range tally.positiveTextValues {
-			placeholders[idx] = "?"
-			filterArgs = append(filterArgs, v)
-		}
-		filterWhere.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
-	} else {
-		if q.PersonID > 0 {
-			ok, err := s.appendBrowsePersonFilter(ctx, q.LibraryID, &filterWhere, &filterArgs, q.PersonID)
-			if err != nil {
-				return BrowsePage{}, err
-			}
-			if !ok {
-				if q.NoTotal && !q.CheapTotal {
-					return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: false}, nil
-				}
-				return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: true}, nil
-			}
-			driveFromFields = true
-		}
-		usedFacetIndex, err := s.appendBrowseFacets(ctx, q.LibraryID, &filterWhere, &filterArgs, q.Facets)
-		if err != nil {
-			return BrowsePage{}, err
-		}
-		if usedFacetIndex {
-			driveFromFields = true
-		}
-		usedAllFacetIndex, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.AllFacets, facetAll)
-		if err != nil {
-			return BrowsePage{}, err
-		}
-		if usedAllFacetIndex {
-			driveFromFields = true
-		}
-		// Exclusion predicates are NOT IN subqueries over the same indexed
-		// field rows; they filter the item scan and never drive it.
-		if _, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.ExcludeFacets, facetNone); err != nil {
-			return BrowsePage{}, err
-		}
-		if !q.Hidden && (q.TabPolicy.HasPositiveViewerFilter() || q.Policy.HasPositiveViewerFilter()) {
-			driveFromFields = true
-		}
-	}
-
-	viewerID := q.ViewerID
-	if viewerID <= 0 {
-		viewerID = core.CatalogViewerID(ctx)
-	}
-
-	// Base filter predicate.
-	var baseWhere strings.Builder
-	baseArgs := []any{int64(q.LibraryID)}
-	if driveFromFields && parentRef == "" {
-		baseWhere.WriteString(`i.library_id + 0 = ?`)
-	} else {
-		baseWhere.WriteString(`i.library_id = ?`)
-	}
-	// When driving a non-sort_title sort from its (library_id, col, item_ref)
-	// index on SQLite, keep equality predicates on level/parent_ref from pulling
-	// the planner onto plugin_items_browse / plugin_items_level_sort + TEMP B-TREE.
-	sqliteSortIndexHint := driveFacetFromSort && col != "sort_title" && store.DialectOf(s.db) != store.Postgres
-	if parentRef != "" {
-		baseWhere.WriteString(` AND i.parent_ref = ?`)
-		baseArgs = append(baseArgs, parentRef)
-		if len(q.Levels) > 0 {
-			placeholders := make([]string, len(q.Levels))
-			for idx, lv := range q.Levels {
-				placeholders[idx] = "?"
-				baseArgs = append(baseArgs, strings.TrimSpace(lv))
-			}
-			baseWhere.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
-		} else if level != "" {
-			baseWhere.WriteString(` AND i.level = ?`)
-			baseArgs = append(baseArgs, level)
-		}
-	} else if len(q.Levels) > 0 {
-		placeholders := make([]string, len(q.Levels))
-		for idx, lv := range q.Levels {
-			placeholders[idx] = "?"
-			baseArgs = append(baseArgs, strings.TrimSpace(lv))
-		}
-		if sqliteSortIndexHint {
-			baseWhere.WriteString(` AND +i.level IN (` + strings.Join(placeholders, ",") + `)`)
-		} else {
-			baseWhere.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
-		}
-	} else if level != "" {
-		if sqliteSortIndexHint {
-			baseWhere.WriteString(` AND +i.level = ?`)
-		} else {
-			baseWhere.WriteString(` AND i.level = ?`)
-		}
-		baseArgs = append(baseArgs, level)
-	} else if !q.AnyLevel && q.PersonID <= 0 {
-		// Default to root items when neither Level nor ParentRef is specified.
-		if sqliteSortIndexHint {
-			baseWhere.WriteString(` AND +i.parent_ref = ''`)
-		} else {
-			baseWhere.WriteString(` AND i.parent_ref = ''`)
-		}
-	}
-	if filterWhere.Len() > 0 {
-		baseWhere.WriteString(filterWhere.String())
-		baseArgs = append(baseArgs, filterArgs...)
-	}
-	if q.MaxContentRating != "" {
-		if lvl := contentrating.EnforceLevelOf(q.MaxContentRating); lvl == contentrating.Unrated {
-			baseWhere.WriteString(` AND 0=1`)
-		} else {
-			baseWhere.WriteString(` AND i.rating_level > 0 AND i.rating_level <= ?`)
-			baseArgs = append(baseArgs, int(lvl))
-		}
-	}
-	if len(q.ExcludeKeys) > 0 {
-		var placeholders []string
-		for _, k := range q.ExcludeKeys {
-			seq := k.PluginSeq()
-			if seq <= 0 {
-				continue
-			}
-			placeholders = append(placeholders, "?")
-			baseArgs = append(baseArgs, seq)
-		}
-		if len(placeholders) > 0 {
-			baseWhere.WriteString(` AND i.seq NOT IN (` + strings.Join(placeholders, ",") + `)`)
-		}
-	}
-	if q.Watched != nil {
-		switch {
-		case viewerID <= 0 && *q.Watched:
-			baseWhere.WriteString(` AND 0=1`)
-		case viewerID > 0 && *q.Watched:
-			baseWhere.WriteString(fmt.Sprintf(` AND EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id = ? AND w.rating_key = %d + i.seq AND w.view_count > 0)`, core.PluginKeyOffset))
-			baseArgs = append(baseArgs, viewerID)
-		case viewerID > 0:
-			baseWhere.WriteString(fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id = ? AND w.rating_key = %d + i.seq AND w.view_count > 0)`, core.PluginKeyOffset))
-			baseArgs = append(baseArgs, viewerID)
-		}
-	}
-	if err := s.appendVisibilityForViewer(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
+	baseWhere, baseArgs, viewerID, empty, err := s.buildBrowsePredicates(ctx, q, parentRef, level, col, kind, desc, defaultDesc, limit, tally)
+	if err != nil {
 		return BrowsePage{}, err
 	}
-	if err := s.appendVisibilityForViewer(ctx, &baseWhere, &baseArgs, q.LibraryID, q.TabPolicy, false, viewerID); err != nil {
-		return BrowsePage{}, err
+	if empty {
+		if q.NoTotal && !q.CheapTotal {
+			return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: false}, nil
+		}
+		return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: true}, nil
 	}
 
 	if kind == "last_viewed" {
-		return s.browseLastViewed(ctx, q, viewerID, baseWhere.String(), baseArgs, hasFacets, parentRef, level, tally, desc, limit)
+		return s.browseLastViewed(ctx, q, viewerID, baseWhere, baseArgs, hasFacets, parentRef, level, tally, desc, limit)
 	}
 
-	pageWhere := baseWhere.String()
+	pageWhere := baseWhere
 	pageArgs := append([]any(nil), baseArgs...)
 
 	if hasCursor {
@@ -441,7 +471,7 @@ LIMIT ?`
 		}
 	}
 
-	total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere.String(), baseArgs, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
+	total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
 	if err != nil {
 		return BrowsePage{}, err
 	}
@@ -461,13 +491,24 @@ var largeFacetMinMatches = 1000
 type browseTallyInfo struct {
 	totalExact         bool
 	total              int
+	lowerBound         int
 	libTotal           int
+	singleLevel        bool
 	positiveTextField  string
 	positiveTextValues []string
 }
 
 func shouldDriveFacetFromSortIndex(tally browseTallyInfo, col, kind string, desc, defaultDesc bool, level string, levels []string, anyLevel bool, limit int) bool {
-	if !tally.totalExact || tally.positiveTextField == "" || kind == "last_viewed" {
+	if tally.positiveTextField == "" || kind == "last_viewed" {
+		return false
+	}
+	var m int64
+	switch {
+	case tally.totalExact:
+		m = int64(tally.total)
+	case tally.lowerBound > 0:
+		m = int64(tally.lowerBound)
+	default:
 		return false
 	}
 	if desc != defaultDesc {
@@ -478,7 +519,6 @@ func shouldDriveFacetFromSortIndex(tally browseTallyInfo, col, kind string, desc
 		// covers level=?; AnyLevel / multi-level sort_title lacks item_ref order.
 		return false
 	}
-	m := int64(tally.total)
 	if m < int64(largeFacetMinMatches) {
 		return false
 	}
@@ -593,10 +633,11 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 	}
 
 	var (
-		levels   []string
-		anyLevel bool
-		kindRec  KindRecord
-		hasKind  bool
+		levels        []string
+		anyLevel      bool
+		defaultedRoot bool
+		kindRec       KindRecord
+		hasKind       bool
 	)
 	switch {
 	case len(q.Levels) > 0:
@@ -615,56 +656,27 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 		}
 		kindRec = rec
 		hasKind = true
+		defaultedRoot = true
 		levels = []string{rec.Decl.Levels[0].Key}
 	}
 
-	var libTotal int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ?`,
-		int64(q.LibraryID)).Scan(&libTotal); err != nil {
+	libTally, err := s.libraryTally(ctx, q.LibraryID)
+	if err != nil {
 		return browseTallyInfo{}, err
 	}
-	if libTotal == 0 {
-		// Guard against raw-SQL test fixtures that seeded plugin_items without
-		// populating plugin_item_tally; O(1) index probe on plugin_items_browse.
-		var hasAny int
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE library_id = ?)`,
-			int64(q.LibraryID)).Scan(&hasAny); err != nil {
-			return browseTallyInfo{}, err
-		}
-		if hasAny > 0 {
-			return browseTallyInfo{}, nil
-		}
+	if !libTally.active {
+		return browseTallyInfo{}, nil
 	}
+	libTotal := libTally.libTotal
 
-	queryLevelTotal := func() (int, error) {
-		if anyLevel {
-			return libTotal, nil
+	levelTotal := libTotal
+	if !anyLevel {
+		levelTotal = 0
+		for _, lv := range levels {
+			levelTotal += libTally.levelCounts[lv]
 		}
-		if len(levels) == 1 {
-			var n int
-			err := s.db.QueryRowContext(ctx,
-				`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
-				int64(q.LibraryID), levels[0]).Scan(&n)
-			if errors.Is(err, sql.ErrNoRows) {
-				return 0, nil
-			}
-			return n, err
-		}
-		placeholders := make([]string, len(levels))
-		args := make([]any, 0, len(levels)+1)
-		args = append(args, int64(q.LibraryID))
-		for i, lv := range levels {
-			placeholders[i] = "?"
-			args = append(args, lv)
-		}
-		var n int
-		err := s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ? AND level IN (`+strings.Join(placeholders, ",")+`)`,
-			args...).Scan(&n)
-		return n, err
 	}
+	singleLevel := libTotal > 0 && levelTotal == libTotal && (!defaultedRoot || len(kindRec.Decl.Levels) == 1)
 
 	type activeFacet struct {
 		mode facetMode
@@ -693,24 +705,20 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 	}
 
 	if len(active) == 0 {
-		total, err := queryLevelTotal()
-		if err != nil {
-			return browseTallyInfo{}, err
-		}
-		return browseTallyInfo{totalExact: true, total: total, libTotal: libTotal}, nil
+		return browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
 	if len(active) > 1 {
-		return browseTallyInfo{libTotal: libTotal}, nil
+		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
 
 	f := active[0]
 	if envelopeFacet(f.key) {
-		return browseTallyInfo{libTotal: libTotal}, nil
+		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
 	if !hasKind {
 		rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
 		if err != nil {
-			return browseTallyInfo{libTotal: libTotal}, nil
+			return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 		}
 		kindRec = rec
 	}
@@ -728,15 +736,15 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 	case "strings":
 		singleValued = false
 	default:
-		return browseTallyInfo{libTotal: libTotal}, nil
+		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
-	if !singleValued && len(f.vals) > 1 {
-		return browseTallyInfo{libTotal: libTotal}, nil
+	if !singleValued && len(f.vals) > 1 && f.mode != facetAny {
+		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
 	if singleValued && f.mode == facetAll && len(f.vals) > 1 {
 		// Single-valued fields have at most one value per item, so requiring
 		// two distinct values is guaranteed empty.
-		return browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal}, nil
+		return browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
 
 	// Query plugin_item_field_tally (O(1) PK seeks on library_id, level, field, v_text).
@@ -748,7 +756,12 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 		sqlBuf strings.Builder
 		args   []any
 	)
-	sqlBuf.WriteString(`SELECT COALESCE(SUM(cnt), 0) FROM plugin_item_field_tally WHERE library_id = ?`)
+	multiOrMultiVal := !singleValued && len(f.vals) > 1 && f.mode == facetAny
+	if multiOrMultiVal {
+		sqlBuf.WriteString(`SELECT COALESCE(MAX(cnt), 0), COALESCE(SUM(cnt), 0) FROM plugin_item_field_tally WHERE library_id = ?`)
+	} else {
+		sqlBuf.WriteString(`SELECT COALESCE(SUM(cnt), 0) FROM plugin_item_field_tally WHERE library_id = ?`)
+	}
 	args = append(args, int64(q.LibraryID))
 	switch {
 	case anyLevel:
@@ -770,26 +783,41 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 		args = append(args, v)
 	}
 
+	if multiOrMultiVal {
+		var maxCount, sumCount int
+		if err := s.db.QueryRowContext(ctx, sqlBuf.String(), args...).Scan(&maxCount, &sumCount); err != nil {
+			return browseTallyInfo{}, err
+		}
+		if sumCount == 0 {
+			return browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+		}
+		return browseTallyInfo{
+			lowerBound:         maxCount,
+			libTotal:           libTotal,
+			singleLevel:        singleLevel,
+			positiveTextField:  f.key,
+			positiveTextValues: f.vals,
+		}, nil
+	}
+
 	var matchCount int
 	if err := s.db.QueryRowContext(ctx, sqlBuf.String(), args...).Scan(&matchCount); err != nil {
 		return browseTallyInfo{}, err
 	}
 
 	if f.mode == facetNone {
-		levelTotal, err := queryLevelTotal()
-		if err != nil {
-			return browseTallyInfo{}, err
-		}
 		return browseTallyInfo{
-			totalExact: true,
-			total:      max(0, levelTotal-matchCount),
-			libTotal:   libTotal,
+			totalExact:  true,
+			total:       max(0, levelTotal-matchCount),
+			libTotal:    libTotal,
+			singleLevel: singleLevel,
 		}, nil
 	}
 	return browseTallyInfo{
 		totalExact:         true,
 		total:              matchCount,
 		libTotal:           libTotal,
+		singleLevel:        singleLevel,
 		positiveTextField:  f.key,
 		positiveTextValues: f.vals,
 	}, nil
@@ -970,9 +998,22 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 	if err != nil {
 		return nil, err
 	}
-	smallLib, err := s.libraryHasAtMostItems(ctx, itemWhere, itemArgs, smallPluginLibraryMax)
-	if err != nil {
-		return nil, err
+	targetLevel := effectiveRootLevel(rec, level)
+	var libTally libraryTallyState
+	if policy.Passive() {
+		libTally, err = s.libraryTally(ctx, libraryID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var smallLib bool
+	if policy.Passive() && libTally.active {
+		smallLib = libTally.countFor(targetLevel) <= smallPluginLibraryMax
+	} else {
+		smallLib, err = s.libraryHasAtMostItems(ctx, itemWhere, itemArgs, smallPluginLibraryMax)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	fieldsByKey := make(map[string]struct {
@@ -1052,6 +1093,41 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 		}
 		return bucketFloatValues(vals), nil
 	case "people":
+		if policy.Passive() && libTally.active {
+			if libTally.countFor(targetLevel) == 0 {
+				return []FacetBucket{}, nil
+			}
+			qSQL := `SELECT label, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, label_lower ASC, label ASC, v_int ASC`
+			qArgs := []any{int64(libraryID), targetLevel, fieldKey}
+			if !smallLib {
+				qSQL += ` LIMIT 400`
+			}
+			rows, err := s.db.QueryContext(ctx, qSQL, qArgs...)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			var out []FacetBucket
+			for rows.Next() {
+				var name string
+				var cnt int
+				if err := rows.Scan(&name, &cnt); err != nil {
+					return nil, err
+				}
+				name = strings.TrimSpace(name)
+				if name != "" && cnt > 0 {
+					out = append(out, FacetBucket{ID: name, Label: name, Count: cnt})
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+			sort.SliceStable(out, func(i, j int) bool { return facetNameLess(out[i].Label, out[j].Label) })
+			if out == nil {
+				return []FacetBucket{}, nil
+			}
+			return out, nil
+		}
 		if !smallLib {
 			return s.scanPeopleBucketsLarge(ctx, fieldKey, fieldDrivenWhere, itemArgs)
 		}
@@ -1081,6 +1157,41 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 		}
 		return out, nil
 	default:
+		if policy.Passive() && libTally.active {
+			if libTally.countFor(targetLevel) == 0 {
+				return []FacetBucket{}, nil
+			}
+			qSQL := `SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, v_lower ASC, v_text ASC`
+			qArgs := []any{int64(libraryID), targetLevel, fieldKey}
+			if !smallLib {
+				qSQL += ` LIMIT 400`
+			}
+			rows, err := s.db.QueryContext(ctx, qSQL, qArgs...)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			var raw []FacetCount
+			for rows.Next() {
+				var v string
+				var cnt int
+				if err := rows.Scan(&v, &cnt); err != nil {
+					return nil, err
+				}
+				if v != "" && cnt > 0 {
+					raw = append(raw, FacetCount{Value: v, Count: cnt})
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+			orderFacetValues(raw, fieldType, enumVals)
+			out := make([]FacetBucket, 0, len(raw))
+			for _, fc := range raw {
+				out = append(out, FacetBucket{ID: fc.Value, Label: fc.Value, Count: fc.Count})
+			}
+			return out, nil
+		}
 		if !smallLib {
 			raw, err := s.scanFieldTextCountsLarge(ctx, fieldKey, fieldDrivenWhere, itemArgs, 2001)
 			if err != nil {
@@ -2473,9 +2584,22 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 	if err != nil {
 		return FacetCollectionsPage{}, err
 	}
-	smallLib, err := s.libraryHasAtMostItems(ctx, itemWhere, itemArgs, smallPluginLibraryMax)
-	if err != nil {
-		return FacetCollectionsPage{}, err
+	targetLevel := effectiveRootLevel(rec, q.Level)
+	var libTally libraryTallyState
+	if q.Policy.Passive() {
+		libTally, err = s.libraryTally(ctx, q.LibraryID)
+		if err != nil {
+			return FacetCollectionsPage{}, err
+		}
+	}
+	var smallLib bool
+	if q.Policy.Passive() && libTally.active {
+		smallLib = libTally.countFor(targetLevel) <= smallPluginLibraryMax
+	} else {
+		smallLib, err = s.libraryHasAtMostItems(ctx, itemWhere, itemArgs, smallPluginLibraryMax)
+		if err != nil {
+			return FacetCollectionsPage{}, err
+		}
 	}
 
 	fieldTypes := make(map[string]string, len(rec.Decl.Fields))
@@ -2501,6 +2625,54 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 
 	switch {
 	case !isEnv && !isDateDecade && fieldType == "people":
+		if q.Policy.Passive() && libTally.active {
+			if libTally.countFor(targetLevel) == 0 {
+				break
+			}
+			var tallyWhere strings.Builder
+			tallyWhere.WriteString(`library_id = ? AND level = ? AND field = ?`)
+			tallyArgs := []any{int64(q.LibraryID), targetLevel, fieldKey}
+			appendFoldedWordPrefixCol(&tallyWhere, &tallyArgs, "label_fold", terms)
+			orderClause := `cnt DESC, label_lower ASC, label ASC, v_int ASC`
+			if orderByName {
+				orderClause = `label_lower ASC, label ASC, v_int ASC`
+			}
+			tallyArgs = append(tallyArgs, limit+1, offset)
+			rows, err := s.db.QueryContext(ctx,
+				`SELECT v_int, label, cnt
+				 FROM plugin_item_person_tally
+				 WHERE `+tallyWhere.String()+`
+				 ORDER BY `+orderClause+`
+				 LIMIT ? OFFSET ?`, tallyArgs...)
+			if err != nil {
+				return FacetCollectionsPage{}, err
+			}
+			for rows.Next() {
+				var pid int64
+				var label string
+				var cnt int
+				if err := rows.Scan(&pid, &label, &cnt); err != nil {
+					rows.Close()
+					return FacetCollectionsPage{}, err
+				}
+				label = strings.TrimSpace(label)
+				if label != "" && cnt > 0 {
+					pageBuckets = append(pageBuckets, FacetBucket{ID: label, Label: label, Count: cnt})
+					pagePersonIDs = append(pagePersonIDs, pid)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return FacetCollectionsPage{}, err
+			}
+			rows.Close()
+			if len(pageBuckets) > limit {
+				pageBuckets = pageBuckets[:limit]
+				pagePersonIDs = pagePersonIDs[:limit]
+				more = true
+			}
+			break
+		}
 		if !smallLib && len(terms) == 0 {
 			cands, err := s.scanPeopleCandidatesLarge(ctx, fieldKey, fieldDrivenWhere, itemArgs, 2001)
 			if err != nil {
@@ -2593,6 +2765,50 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		}
 
 	case !isEnv && !isDateDecade && (fieldType == "string" || fieldType == "strings" || fieldType == "enum" || fieldType == "bool"):
+		if q.Policy.Passive() && libTally.active {
+			if libTally.countFor(targetLevel) == 0 {
+				break
+			}
+			var tallyWhere strings.Builder
+			tallyWhere.WriteString(`library_id = ? AND level = ? AND field = ?`)
+			tallyArgs := []any{int64(q.LibraryID), targetLevel, fieldKey}
+			appendFoldedWordPrefixCol(&tallyWhere, &tallyArgs, "v_fold", terms)
+			orderClause := `cnt DESC, v_lower ASC, v_text ASC`
+			if orderByName {
+				orderClause = `v_lower ASC, v_text ASC`
+			}
+			tallyArgs = append(tallyArgs, limit+1, offset)
+			rows, err := s.db.QueryContext(ctx,
+				`SELECT v_text, cnt
+				 FROM plugin_item_field_tally
+				 WHERE `+tallyWhere.String()+`
+				 ORDER BY `+orderClause+`
+				 LIMIT ? OFFSET ?`, tallyArgs...)
+			if err != nil {
+				return FacetCollectionsPage{}, err
+			}
+			for rows.Next() {
+				var val string
+				var cnt int
+				if err := rows.Scan(&val, &cnt); err != nil {
+					rows.Close()
+					return FacetCollectionsPage{}, err
+				}
+				if val != "" && cnt > 0 {
+					pageBuckets = append(pageBuckets, FacetBucket{ID: val, Label: val, Count: cnt})
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return FacetCollectionsPage{}, err
+			}
+			rows.Close()
+			if len(pageBuckets) > limit {
+				pageBuckets = pageBuckets[:limit]
+				more = true
+			}
+			break
+		}
 		if !smallLib && len(terms) == 0 {
 			raw, err := s.scanFieldTextCountsLarge(ctx, fieldKey, fieldDrivenWhere, itemArgs, 2001)
 			if err != nil {
@@ -2825,9 +3041,9 @@ SELECT idx, (
 	var newest []*core.KindItem
 	switch {
 	case !isEnv && !isDateDecade && fieldType == "people":
-		newest, err = s.resolveNewestByPersonIDs(ctx, fieldKey, pagePersonIDs, fieldDrivenWhere, itemArgs)
+		newest, err = s.resolveNewestByPersonIDs(ctx, q.LibraryID, fieldKey, pagePersonIDs, pageBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
 	case !isEnv && !isDateDecade && (fieldType == "string" || fieldType == "strings" || fieldType == "enum" || fieldType == "bool"):
-		newest, err = s.resolveNewestByTextBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
+		newest, err = s.resolveNewestByTextBuckets(ctx, q.LibraryID, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs, libTally, targetLevel, q.Policy.Passive())
 	case !isEnv && !isDateDecade && fieldType == "int":
 		newest, err = s.resolveNewestByIntBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
 	case !isEnv && !isDateDecade && fieldType == "float":

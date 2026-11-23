@@ -107,12 +107,16 @@ func foldedWordsMatch(label string, terms []string) bool {
 }
 
 func appendFoldedWordPrefix(where *strings.Builder, args *[]any, terms []string) {
+	appendFoldedWordPrefixCol(where, args, "f.v_fold", terms)
+}
+
+func appendFoldedWordPrefixCol(where *strings.Builder, args *[]any, col string, terms []string) {
 	if len(terms) == 0 {
 		return
 	}
-	where.WriteString(` AND f.v_fold > ''`)
+	where.WriteString(` AND ` + col + ` > ''`)
 	for _, term := range terms {
-		where.WriteString(` AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)`)
+		where.WriteString(` AND (` + col + ` LIKE ? OR ` + col + ` LIKE ?)`)
 		*args = append(*args, term+"%", "% "+term+"%")
 	}
 }

@@ -357,6 +357,15 @@ type KindPage struct {
 	Total      *int       `json:"total,omitempty"`      // provider claim; Ether never trusts it for its own totals
 }
 
+// KindBrowseFacetGroup is one OR-list of values on a single field for
+// KindBrowseRequest.AnyGroups (#767). Multiple groups — including repeated
+// groups on the same field — combine with AND alongside Facets, AllFacets,
+// and ExcludeFacets.
+type KindBrowseFacetGroup struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+
 // KindBrowseRequest is the request body sent to a catalog_provider
 // browse or search route (spec §3.1, §3.2) and passed to the
 // viewer-scoped kinds.browse host service (#615).
@@ -369,13 +378,16 @@ type KindBrowseRequest struct {
 	Desc     bool   `json:"desc,omitempty"`
 	// Facets requires any of the listed values per field (OR within a
 	// field, AND across fields). AllFacets requires every listed value
-	// per field and ExcludeFacets drops items having any listed value;
-	// all three maps combine with AND and accept the same per-type
-	// values (including lo..hi ranges and people names).
-	Facets        map[string][]string `json:"facets,omitempty"`
-	AllFacets     map[string][]string `json:"allFacets,omitempty"`
-	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
-	Query         string              `json:"query,omitempty"`
+	// per field, ExcludeFacets drops items having any listed value, and
+	// AnyGroups adds one OR-list per group so the same field can carry
+	// several any-of lists ANDed together (#767). All four combine with
+	// AND and accept the same per-type values (including lo..hi ranges
+	// and people names).
+	Facets        map[string][]string    `json:"facets,omitempty"`
+	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
+	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
+	Query         string                 `json:"query,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total (#682):
 	//   - "" or "cheap" (default): populate Total only when O(1) (item or
 	//     field tallies, a cached exact count, or a single-page result) and

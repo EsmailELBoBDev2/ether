@@ -28,9 +28,11 @@ type SearchQuery struct {
 	PersonID   int64
 	Facets     map[string][]string
 	// AllFacets requires every listed value per field; ExcludeFacets
-	// drops items having any listed value (see BrowseQuery).
+	// drops items having any listed value; AnyGroups adds one OR-list
+	// per group, ANDed with the rest (see BrowseQuery).
 	AllFacets     map[string][]string
 	ExcludeFacets map[string][]string
+	AnyGroups     []core.KindBrowseFacetGroup
 	Limit         int
 }
 

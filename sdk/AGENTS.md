@@ -684,7 +684,7 @@ Ether exposes two viewer-scoped host calls that run the exact same
 built-in protocol projectors:
 
 - `kinds.browse(kind, query)` — browse or search a kind page with policy already
-  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, query?, total?}`).
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, anyGroups?, query?, total?}`).
   `total` defaults to `"cheap"` (returns `total` only when O(1) from tallies/cache/single page, omitting it otherwise); pass `"none"` to skip totals or `"exact"` when a caller needs an exact filtered count.
   Prefer this when your adapter lists or searches pages directly from Ether's library.
 - `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and

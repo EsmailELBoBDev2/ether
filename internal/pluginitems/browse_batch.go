@@ -66,7 +66,7 @@ func (s *Service) BrowseBatch(ctx context.Context, queries []BrowseQuery) ([]Bro
 			fallbacks = append(fallbacks, i)
 			continue
 		}
-		if err := checkFacetValueBound(q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
+		if err := checkFacetValueBound(q.AnyGroups, q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
 			return nil, err
 		}
 		limit := q.Limit
@@ -340,6 +340,21 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		}
 		if len(active) <= 1 {
 			collect(q.ExcludeFacets, facetNone)
+		}
+		if len(active) <= 1 {
+			for _, g := range q.AnyGroups {
+				if strings.TrimSpace(g.Field) == "" {
+					continue
+				}
+				vals := dedupCleanValues(g.Values)
+				if len(vals) == 0 {
+					continue
+				}
+				active = append(active, activeFacet{mode: facetAny, key: g.Field, vals: vals})
+				if len(active) > 1 {
+					break
+				}
+			}
 		}
 
 		if len(active) == 0 {

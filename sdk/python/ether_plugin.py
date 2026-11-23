@@ -2910,6 +2910,7 @@ class MockHostClient:
             facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
             all_facets = q.get("allFacets") if isinstance(q.get("allFacets"), dict) else {}
             exclude_facets = q.get("excludeFacets") if isinstance(q.get("excludeFacets"), dict) else {}
+            any_groups = q.get("anyGroups") if isinstance(q.get("anyGroups"), list) else []
             matched: List[Dict[str, Any]] = []
             for it in self._p.kind_store.get(kind, []):
                 if not self._allowed(kind, it):
@@ -2922,7 +2923,7 @@ class MockHostClient:
                     hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
                     if needle not in hay:
                         continue
-                if facets or all_facets or exclude_facets:
+                if facets or all_facets or exclude_facets or any_groups:
                     item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
 
                     def _have(fk: str) -> List[str]:
@@ -2946,6 +2947,16 @@ class MockHostClient:
                     if ok:
                         for fk, want in exclude_facets.items():
                             if want and any(str(w).lower() in _have(fk) for w in want):
+                                ok = False
+                                break
+                    if ok:
+                        for grp in any_groups:
+                            if not isinstance(grp, dict):
+                                continue
+                            fk = str(grp.get("field") or "").strip()
+                            raw_vals = grp.get("values") if isinstance(grp.get("values"), list) else []
+                            want = [str(w).strip() for w in raw_vals if str(w).strip()]
+                            if fk and want and not any(w.lower() in _have(fk) for w in want):
                                 ok = False
                                 break
                     if not ok:

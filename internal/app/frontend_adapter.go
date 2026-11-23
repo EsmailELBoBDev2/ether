@@ -357,6 +357,7 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				Facets:        q.Facets,
 				AllFacets:     q.AllFacets,
 				ExcludeFacets: q.ExcludeFacets,
+				AnyGroups:     q.AnyGroups,
 				Limit:         limit,
 			})
 			if err != nil {
@@ -409,6 +410,7 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				Facets:        q.Facets,
 				AllFacets:     q.AllFacets,
 				ExcludeFacets: q.ExcludeFacets,
+				AnyGroups:     q.AnyGroups,
 				Cursor:        q.Cursor,
 				Limit:         limit,
 			})
@@ -443,6 +445,7 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				Facets:        q.Facets,
 				AllFacets:     q.AllFacets,
 				ExcludeFacets: q.ExcludeFacets,
+				AnyGroups:     q.AnyGroups,
 				Cursor:        cursor,
 				Limit:         remaining,
 			})

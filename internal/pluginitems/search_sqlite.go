@@ -62,7 +62,7 @@ func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []stri
 			return BrowsePage{Total: 0, TotalExact: !(q.NoTotal && !q.CheapTotal)}, nil
 		}
 	}
-	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
+	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets, q.AnyGroups); err != nil {
 		return BrowsePage{}, err
 	}
 	viewerID := q.ViewerID

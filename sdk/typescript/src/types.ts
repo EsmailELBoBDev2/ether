@@ -909,6 +909,12 @@ export interface KindPage {
 
 export type KindBrowseTotalMode = "cheap" | "none" | "exact";
 
+/** One OR-list of values on a single field for KindBrowseRequest.anyGroups (#767). */
+export interface KindBrowseFacetGroup {
+  field: string;
+  values: string[];
+}
+
 export interface KindBrowseRequest {
   kind: string;
   parentId?: string;
@@ -923,6 +929,8 @@ export interface KindBrowseRequest {
   allFacets?: Record<string, string[]>;
   /** Items having any listed value per field are dropped. */
   excludeFacets?: Record<string, string[]>;
+  /** Any-of facet groups ANDed together (allows multiple OR lists on the same field). */
+  anyGroups?: KindBrowseFacetGroup[];
   query?: string;
   /**
    * Controls whether kinds.browse computes KindPage.total:

@@ -511,6 +511,15 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
               if (want.some((w) => facetHave(k).includes(w.toLowerCase()))) return false;
             }
           }
+          if (query.anyGroups) {
+            for (const g of query.anyGroups) {
+              const fk = g?.field?.trim();
+              if (!fk) continue;
+              const want = (g.values ?? []).map((w) => w.trim()).filter(Boolean);
+              if (!want.length) continue;
+              if (!want.some((w) => facetHave(fk).includes(w.toLowerCase()))) return false;
+            }
+          }
           return true;
         });
         if (query.desc) matched = [...matched].reverse();

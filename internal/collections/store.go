@@ -259,6 +259,42 @@ func (s *Service) rowByID(ctx context.Context, id string) (*specRow, error) {
 	return r, err
 }
 
+// rowsByIDs reads multiple spec rows by integer ID in one query per chunk.
+func (s *Service) rowsByIDs(ctx context.Context, ids []int64) (map[int64]*specRow, error) {
+	out := make(map[int64]*specRow, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	unique := make([]any, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	for chunk := range store.Chunks(unique, 400) {
+		rows, err := s.db.QueryContext(ctx, `SELECT `+specCols+` FROM collections_specs WHERE id IN (`+store.Placeholders(len(chunk))+`)`, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			r, err := scanSpecRow(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[r.id] = r
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // ensurePluginLayoutRow finds or provisions a hidden backing specRow for a
 // plugin list source placed directly in Home Designer ("plugin:<id>/<key>").
 func (s *Service) ensurePluginLayoutRow(ctx context.Context, kindID string) (*specRow, error) {

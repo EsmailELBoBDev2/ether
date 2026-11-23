@@ -83,8 +83,12 @@ type RowViewOptions struct {
 	// PreparePolicy batches shared proofs for one policy pass only. It must
 	// be called again after assembly and before issuing receipts.
 	PreparePolicy func(context.Context, *core.User) (context.Context, error)
-	ValidRow      func(context.Context, *core.User, core.Device, core.Protocol, RowViewSnapshot) bool
-	ResolveEntry  func(context.Context, *core.User, core.Device, core.Protocol, core.NeutralEntryRef) (frontend.RowEntry, error)
+	// PrepareSnapshots optionally batches collection visibility and membership
+	// proofs across all snapshots validated in one policy pass. Like
+	// PreparePolicy, it is called fresh on every pass and never cached across passes.
+	PrepareSnapshots func(context.Context, *core.User, []RowViewSnapshot) (context.Context, error)
+	ValidRow         func(context.Context, *core.User, core.Device, core.Protocol, RowViewSnapshot) bool
+	ResolveEntry     func(context.Context, *core.User, core.Device, core.Protocol, core.NeutralEntryRef) (frontend.RowEntry, error)
 	// ResolveEntries may batch rehydration; every call must perform fresh policy checks.
 	ResolveEntries func(context.Context, *core.User, core.Device, core.Protocol, []core.NeutralEntryRef) ([]frontend.RowEntry, error)
 	Receipts       *Receipts
@@ -217,7 +221,7 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 	// One broken row must never take down the whole Home or library page:
 	// a row that fails validation or no longer resolves is dropped (and
 	// logged), and repeated entries inside a row are collapsed.
-	valid := make([]RowViewSnapshot, 0, len(rows))
+	normalized := make([]RowViewSnapshot, 0, len(rows))
 	seen := map[string]bool{}
 	for _, snap := range rows {
 		if snap.Row.ID == "" || snap.Row.Kind == "" || seen[snap.Row.ID] {
@@ -242,6 +246,16 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 		if len(snap.Entries) == 0 {
 			continue
 		}
+		normalized = append(normalized, snap)
+	}
+	if s.o.PrepareSnapshots != nil && len(normalized) > 0 {
+		policyCtx, err = s.o.PrepareSnapshots(policyCtx, u, normalized)
+		if err != nil {
+			return nil, err
+		}
+	}
+	valid := make([]RowViewSnapshot, 0, len(normalized))
+	for _, snap := range normalized {
 		if !s.o.ValidRow(policyCtx, u, req.Device, req.Protocol, snap) {
 			slog.Warn("experience: dropping row view", "row", snap.Row.ID, "kind", snap.Row.Kind, "reason", "row no longer valid")
 			continue
@@ -506,12 +520,23 @@ func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewR
 			return nil, false, ErrRowViewStale
 		}
 		var snap RowViewSnapshot
-		if json.Unmarshal([]byte(row.payload), &snap) != nil || snap.Placement != req.Placement || snap.ViewID != req.ViewID || snap.Item != req.Item || !s.o.ValidRow(policyCtx, req.Viewer, req.Device, req.Protocol, snap) {
+		if json.Unmarshal([]byte(row.payload), &snap) != nil || snap.Placement != req.Placement || snap.ViewID != req.ViewID || snap.Item != req.Item {
 			return nil, false, ErrRowViewStale
 		}
 		allRefs = append(allRefs, snap.Entries...)
 		out = append(out, frontend.RowView{ExpiresAt: time.UnixMilli(row.expires), ID: ref.Snapshot, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
 		snapshots = append(snapshots, snap)
+	}
+	if s.o.PrepareSnapshots != nil && len(snapshots) > 0 {
+		policyCtx, err = s.o.PrepareSnapshots(policyCtx, req.Viewer, snapshots)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	for _, snap := range snapshots {
+		if !s.o.ValidRow(policyCtx, req.Viewer, req.Device, req.Protocol, snap) {
+			return nil, false, ErrRowViewStale
+		}
 	}
 	// Rehydrate the visit as bounded batches, sharing title/parent reads across
 	// shelves rather than starting a new catalogue pass for every row.
@@ -532,6 +557,12 @@ func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewR
 	policyCtx = ctx
 	if s.o.PreparePolicy != nil {
 		policyCtx, err = s.o.PreparePolicy(ctx, active)
+		if err != nil {
+			return nil, true, err
+		}
+	}
+	if s.o.PrepareSnapshots != nil && len(snapshots) > 0 {
+		policyCtx, err = s.o.PrepareSnapshots(policyCtx, active, snapshots)
 		if err != nil {
 			return nil, true, err
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/support"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // writeJSON encodes before writing the status, so an unencodable value is a
@@ -129,6 +130,16 @@ func (i *instance) Handler() http.Handler {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
+		}
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			ctx := r.Context()
+			if !reqmemo.Active(ctx) {
+				ctx = reqmemo.With(ctx)
+			}
+			if frontend.RequestMemoFrom(ctx) == nil {
+				ctx = frontend.WithRequestMemo(ctx)
+			}
+			r = r.WithContext(ctx)
 		}
 		if strings.HasPrefix(r.URL.Path, "/stremio/") {
 			r = r.Clone(r.Context())

@@ -78,16 +78,30 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 		return nil, ErrReceipt
 	}
 	if s.opts.Prefetch != nil {
-		// The titles the subjects and their rows' entries name.
+		// The titles the subjects and their rows' entries name, plus parent
+		// shows for episodes and seasons so inherited visibility never falls
+		// back to per-show single-key reads.
 		var keys []core.RatingKey
-		seen := map[string]bool{}
-		add := func(kind, id string) {
-			if kind != string(frontend.RowEntryTitle) || seen[id] {
+		seen := map[core.RatingKey]bool{}
+		addKey := func(key core.RatingKey) {
+			if key == 0 || seen[key] {
 				return
 			}
-			seen[id] = true
+			seen[key] = true
+			keys = append(keys, key)
+			if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
+				if show := core.ShowKey(key.TMDB()); show != 0 && !seen[show] {
+					seen[show] = true
+					keys = append(keys, show)
+				}
+			}
+		}
+		add := func(kind, id string) {
+			if kind != string(frontend.RowEntryTitle) {
+				return
+			}
 			if key, err := core.ParseRatingKey(id); err == nil {
-				keys = append(keys, key)
+				addKey(key)
 			}
 		}
 		for _, subject := range subjects {
@@ -103,6 +117,9 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 		}
 	}
 	ctx = context.WithValue(ctx, rowInteractionBatchKey{}, make(map[*core.NeutralImpression]bool))
+	if s.opts.PrepareBatch != nil {
+		ctx = s.opts.PrepareBatch(ctx, active, subjects)
+	}
 	for _, subject := range subjects {
 		if !s.opts.Allowed(ctx, active, device, protocol, subject) {
 			return nil, ErrReceipt

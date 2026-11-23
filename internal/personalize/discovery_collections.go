@@ -273,6 +273,119 @@ func (c *reviewCollections) Items(ctx context.Context, u *core.User, key core.Ra
 	}
 	return c.base.Items(ctx, u, key, offset, limit)
 }
+func (c *reviewCollections) CheckMembers(ctx context.Context, u *core.User, key core.RatingKey, want []core.RatingKey, scanLimit int) (*core.Collection, bool, error) {
+	if len(want) == 0 || scanLimit <= 0 {
+		return nil, false, nil
+	}
+	if year, typ, ok := reviewCollectionParts(key); ok {
+		col, items, e := c.review(ctx, u, year, typ)
+		if e != nil {
+			return nil, false, e
+		}
+		wantSet := make(map[core.RatingKey]bool, len(want))
+		for _, k := range want {
+			wantSet[k] = true
+		}
+		for _, it := range items[:min(len(items), scanLimit)] {
+			delete(wantSet, it.Key)
+		}
+		return col, len(wantSet) == 0, nil
+	}
+	if c.base == nil {
+		return nil, false, core.ErrNotFound
+	}
+	if checker, ok := c.base.(interface {
+		CheckMembers(context.Context, *core.User, core.RatingKey, []core.RatingKey, int) (*core.Collection, bool, error)
+	}); ok {
+		return checker.CheckMembers(ctx, u, key, want, scanLimit)
+	}
+	col, err := c.base.Get(ctx, u, key)
+	if err != nil {
+		return nil, false, err
+	}
+	wantSet := make(map[core.RatingKey]bool, len(want))
+	for _, k := range want {
+		wantSet[k] = true
+	}
+	for offset := 0; offset < scanLimit; {
+		page, err := c.base.Items(ctx, u, key, offset, 100)
+		if err != nil {
+			return col, false, err
+		}
+		for _, it := range page.Items {
+			delete(wantSet, it.Key)
+		}
+		if len(wantSet) == 0 {
+			return col, true, nil
+		}
+		if len(page.Items) == 0 {
+			return col, false, nil
+		}
+		offset += len(page.Items)
+		if offset >= page.Total {
+			return col, false, nil
+		}
+	}
+	return col, false, nil
+}
+func (c *reviewCollections) CheckMembersBatch(ctx context.Context, u *core.User, keys []core.RatingKey, want map[core.RatingKey][]core.RatingKey, scanLimit int) (map[core.RatingKey]*core.Collection, map[core.RatingKey]bool, error) {
+	cols := make(map[core.RatingKey]*core.Collection, len(keys))
+	matched := make(map[core.RatingKey]bool, len(keys))
+	var baseKeys []core.RatingKey
+	for _, key := range keys {
+		if year, typ, ok := reviewCollectionParts(key); ok {
+			col, items, e := c.review(ctx, u, year, typ)
+			if e != nil || col == nil {
+				continue
+			}
+			cols[key] = col
+			w := want[key]
+			if len(w) > 0 && scanLimit > 0 {
+				wantSet := make(map[core.RatingKey]bool, len(w))
+				for _, k := range w {
+					wantSet[k] = true
+				}
+				for _, it := range items[:min(len(items), scanLimit)] {
+					delete(wantSet, it.Key)
+				}
+				matched[key] = len(wantSet) == 0
+			}
+			continue
+		}
+		baseKeys = append(baseKeys, key)
+	}
+	if len(baseKeys) == 0 || c.base == nil {
+		return cols, matched, nil
+	}
+	if batch, ok := c.base.(interface {
+		CheckMembersBatch(context.Context, *core.User, []core.RatingKey, map[core.RatingKey][]core.RatingKey, int) (map[core.RatingKey]*core.Collection, map[core.RatingKey]bool, error)
+	}); ok {
+		bcols, bmatched, err := batch.CheckMembersBatch(ctx, u, baseKeys, want, scanLimit)
+		if err != nil {
+			return nil, nil, err
+		}
+		for k, v := range bcols {
+			cols[k] = v
+		}
+		for k, v := range bmatched {
+			matched[k] = v
+		}
+		return cols, matched, nil
+	}
+	for _, key := range baseKeys {
+		w := want[key]
+		if len(w) > 0 && scanLimit > 0 {
+			col, ok, err := c.CheckMembers(ctx, u, key, w, scanLimit)
+			if err == nil && col != nil {
+				cols[key] = col
+				matched[key] = ok
+			}
+		} else if col, err := c.base.Get(ctx, u, key); err == nil && col != nil {
+			cols[key] = col
+		}
+	}
+	return cols, matched, nil
+}
 func (c *reviewCollections) CreateSmart(ctx context.Context, col core.Collection) (*core.Collection, error) {
 	if c.base == nil {
 		return nil, core.ErrNotFound

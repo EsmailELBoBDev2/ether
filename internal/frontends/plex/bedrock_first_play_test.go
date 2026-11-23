@@ -454,3 +454,380 @@ func TestBedrockPlayQueueProbesVersionsConcurrentlyWithAuto(t *testing.T) {
 		t.Fatalf("POST /playQueues 4K Media entry missing rule-selected subtitle:\n%s", pq.Body.String())
 	}
 }
+
+// Regression for #758: Plex for Linux (and other non-Bedrock direct-play Plex
+// clients) keep the pre-probe PlayQueue/metadata row for their subtitle menu
+// and initial track selection. On a cold MKV with embedded SubRip tracks and
+// viewer subtitles set to Always on, detail browsing must stay probe-free,
+// while POST /playQueues, pre-play /library/metadata (including advancing in a
+// continuous queue), and a metadata read arriving during an active Prepare must
+// expose all embedded subtitle tracks with the Always-on track selected and
+// share the single resolve+probe flight with direct play.
+func TestDirectPlayDesktopFirstPlayExposesEmbeddedSubtitlesAndSelectsAlwaysOn(t *testing.T) {
+	clients := []struct {
+		name    string
+		headers []string
+	}{
+		{
+			name: "plex-for-linux",
+			headers: []string{
+				"X-Plex-Product", "Plex for Linux",
+				"X-Plex-Platform", "Linux",
+				"X-Plex-Device", "Linux",
+				"X-Plex-Client-Identifier", "plex-linux-758",
+				"X-Plex-Session-Identifier", "sess-linux-758",
+			},
+		},
+		{
+			name: "plex-for-mac",
+			headers: []string{
+				"X-Plex-Product", "Plex for Mac",
+				"X-Plex-Platform", "OSX",
+				"X-Plex-Device", "OSX",
+				"X-Plex-Client-Identifier", "plex-mac-758",
+				"X-Plex-Session-Identifier", "sess-mac-758",
+			},
+		},
+	}
+
+	for _, client := range clients {
+		t.Run(client.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := config.Defaults(dir)
+			cfg.Quality.Default = "lab2160"
+			cfg.Quality.Remote = ""
+			cfg.Quality.Rules = nil
+			cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab2160", MaxHeight: 2160}}
+
+			const relSize = int64(4) << 30
+			ep1Name := "Boundary.Bay.S01E01.2160p.WEB-DL.DDP5.1.H.265-GRP"
+			ep2Name := "Boundary.Bay.S01E02.2160p.WEB-DL.DDP5.1.H.265-GRP"
+			idx := &bedrockLabIndexer{
+				byEpisode: map[int]core.Release{
+					1: {
+						ID: "ep1-758", GUID: "ep1-758", Indexer: "stremio-usenet-addon",
+						Name: ep1Name, Size: relSize, PubDate: fixedNow.Add(-24 * time.Hour),
+						NZBURL: "offline", Info: releaseparse.Parse(ep1Name),
+					},
+					2: {
+						ID: "ep2-758", GUID: "ep2-758", Indexer: "stremio-usenet-addon",
+						Name: ep2Name, Size: relSize, PubDate: fixedNow.Add(-24 * time.Hour),
+						NZBURL: "offline", Info: releaseparse.Parse(ep2Name),
+					},
+				},
+			}
+
+			var clock atomic.Int64
+			clock.Store(fixedNow.UnixNano())
+			nowFn := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+
+			f := newFixture(func(d *testServerDeps) {
+				setDepsConfig(d, func() config.Config { return cfg })
+				setDepsNow(d, nowFn)
+				d.DisableEnrichment = true
+				d.HomeCache = &testHomeCache{NoProviderWait: func(ctx context.Context) context.Context {
+					return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
+				}}
+			})
+			defer f.srv.Close()
+			f.srv.setTranscoder(&issue459Transcoder{fakeTranscoder: f.trans})
+
+			prefs := trackprefs.New(store.OpenTest(t))
+			f.srv.setTrackPreferences(prefs)
+			rules := trackprefs.Default()
+			rules.SubtitleMode = "always"
+			rules.SubtitleLanguages = []string{"en", "hu", "fr", "es", "pt", "it"}
+			if err := prefs.PutRules(context.Background(), ownerUser.ID, rules); err != nil {
+				t.Fatal(err)
+			}
+
+			rs := resolver.New(idx, nil, nil, cfg, resolver.Options{Now: nowFn})
+			defer rs.Close()
+
+			db, err := store.Open(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			var probes atomic.Int32
+			hi := true
+			probedMKV := core.MediaInfo{
+				Container: "mkv", Duration: bbE1.Runtime, BitrateKbps: 18000,
+				Streams: []core.StreamInfo{
+					{Index: 0, Type: "video", Codec: "hevc", Profile: "main 10", Width: 3840, Height: 2160, BitDepth: 10, Default: true, BitrateKbps: 17000},
+					{Index: 1, Type: "audio", Codec: "eac3", Language: "eng", Channels: 6, Default: true, BitrateKbps: 640},
+					{Index: 2, Type: "subtitle", Codec: "subrip", Language: "eng"},
+					{Index: 3, Type: "subtitle", Codec: "subrip", Language: "eng", Title: "SDH", HearingImpaired: &hi},
+				},
+			}
+			mgr, err := playback.New(playback.Deps{
+				Catalog:       f.catalog,
+				State:         f.state,
+				Resolver:      rs,
+				Engine:        &shieldLocalEngine{size: relSize},
+				Transcoder:    f.trans,
+				SelectProfile: func(c core.ClientCaps, u *core.User, _ string) core.QualityProfile { return rs.ProfileFor(c, u) },
+				DB:            db,
+				NativeProbe: func(_ context.Context, s core.MediaSource) (*core.MediaInfo, error) {
+					probes.Add(1)
+					info := core.CloneMediaInfo(probedMKV)
+					info.Size = s.Size()
+					return &info, nil
+				},
+			}, cfg, playback.Options{
+				SessionSurface: func(surface string) string {
+					if surface == "plex" {
+						return ""
+					}
+					return surface
+				},
+				DataDir: dir,
+				Now:     nowFn,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mgr.Close()
+			f.srv.setPlayback(mgr)
+			f.srv.setVariants(rs)
+
+			ep1Key := bbE1.Key.String()
+			ep2Key := bbE2.Key.String()
+
+			checkEmbeddedSubs := func(stage, body string) {
+				t.Helper()
+				subs := subtitleTags(body)
+				if len(subs) != 2 {
+					t.Fatalf("%s returned %d subtitle tracks, want 2 embedded SubRip tracks:\n%s", stage, len(subs), body)
+				}
+				sel := selectedTag(subs)
+				if sel == "" || streamAttr(sel, "languageCode") != "eng" || streamAttr(sel, "index") != "2" {
+					t.Fatalf("%s did not select Always-on English track 2: selected=%q all=%q", stage, sel, subs)
+				}
+			}
+
+			// 1. Detail browse before Play must not trigger a foreground play search.
+			browse := f.get(t, "/library/metadata/"+ep1Key+"?includeRelated=1&includeExtras=1", client.headers...)
+			if browse.Code != http.StatusOK {
+				t.Fatalf("detail browse %d: %s", browse.Code, browse.Body.String())
+			}
+			if idx.playSearches.Load() != 0 {
+				t.Fatalf("detail browse ran foreground play search (%d)", idx.playSearches.Load())
+			}
+
+			// 2. Pressing Play creates a continuous PlayQueue: POST /playQueues must
+			// probe before answering and return both embedded SubRip tracks with
+			// the Always-on English track selected="1".
+			ep1URI := url.QueryEscape("server://" + f.srv.identity().MachineIdentifier + "/com.plexapp.plugins.library/library/metadata/" + ep1Key)
+			pq := f.request(t, http.MethodPost, "/playQueues?type=video&continuous=1&uri="+ep1URI, headerMap(client.headers...))
+			if pq.Code != http.StatusOK {
+				t.Fatalf("POST /playQueues %d: %s", pq.Code, pq.Body.String())
+			}
+			checkEmbeddedSubs("POST /playQueues", pq.Body.String())
+
+			searchesAfterPQ := idx.playSearches.Load()
+			probesAfterPQ := probes.Load()
+
+			// 3. Follow-up GET /library/metadata and direct-play file.mkv adopt the
+			// same warm flight without re-probing.
+			meta1 := f.get(t, "/library/metadata/"+ep1Key, client.headers...)
+			if meta1.Code != http.StatusOK {
+				t.Fatalf("GET /library/metadata ep1 %d: %s", meta1.Code, meta1.Body.String())
+			}
+			checkEmbeddedSubs("GET /library/metadata ep1", meta1.Body.String())
+
+			partHeaders := headerMap(client.headers...)
+			partHeaders["Range"] = "bytes=0-15"
+			part := f.request(t, http.MethodGet, "/library/parts/"+ep1Key+"/0/file.mkv", partHeaders)
+			if part.Code != http.StatusPartialContent && part.Code != http.StatusOK {
+				t.Fatalf("GET /library/parts ep1 %d: %s", part.Code, part.Body.String())
+			}
+			if idx.playSearches.Load() != searchesAfterPQ || probes.Load() != probesAfterPQ {
+				t.Fatalf("direct play ep1 repeated work instead of adopting warm flight: searches %d->%d probes %d->%d",
+					searchesAfterPQ, idx.playSearches.Load(), probesAfterPQ, probes.Load())
+			}
+
+			// 4. Advancing to S01E02 in the continuous PlayQueue via a lean
+			// GET /library/metadata/S01E02 without a new POST /playQueues also
+			// probes and selects the Always-on embedded English subtitle.
+			clock.Store(fixedNow.Add(12 * time.Minute).UnixNano())
+			meta2 := f.get(t, "/library/metadata/"+ep2Key, client.headers...)
+			if meta2.Code != http.StatusOK {
+				t.Fatalf("GET /library/metadata ep2 %d: %s", meta2.Code, meta2.Body.String())
+			}
+			checkEmbeddedSubs("GET /library/metadata ep2", meta2.Body.String())
+		})
+	}
+}
+
+type activePrepareHook struct {
+	*playback.Manager
+	checked chan struct{}
+}
+
+func (h *activePrepareHook) HasActivePrepare(u *core.User, key core.RatingKey, caps core.ClientCaps) bool {
+	ok := h.Manager.HasActivePrepare(u, key, caps)
+	if ok {
+		select {
+		case h.checked <- struct{}{}:
+		default:
+		}
+	}
+	return ok
+}
+
+// Regression for #758: if a direct-play client starts streaming /library/parts
+// without a prior PlayQueue and reads /library/metadata while Prepare is still
+// probing the file, the metadata read waits for that active Prepare flight and
+// returns the real embedded subtitles with Always-on selection instead of
+// falling back to an estimate.
+func TestMetadataReadDuringActivePrepareJoinsProbedSubtitles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults(dir)
+	cfg.Quality.Default = "lab2160"
+	cfg.Quality.Remote = ""
+	cfg.Quality.Rules = nil
+	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab2160", MaxHeight: 2160}}
+
+	const relSize = int64(4) << 30
+	ep1Name := "Boundary.Bay.S01E01.2160p.WEB-DL.DDP5.1.H.265-GRP"
+	idx := &bedrockLabIndexer{
+		byEpisode: map[int]core.Release{
+			1: {
+				ID: "ep1-join", GUID: "ep1-join", Indexer: "stremio-usenet-addon",
+				Name: ep1Name, Size: relSize, PubDate: fixedNow.Add(-24 * time.Hour),
+				NZBURL: "offline", Info: releaseparse.Parse(ep1Name),
+			},
+		},
+	}
+
+	nowFn := func() time.Time { return fixedNow }
+	f := newFixture(func(d *testServerDeps) {
+		setDepsConfig(d, func() config.Config { return cfg })
+		setDepsNow(d, nowFn)
+		d.DisableEnrichment = true
+		d.HomeCache = &testHomeCache{NoProviderWait: func(ctx context.Context) context.Context {
+			return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
+		}}
+	})
+	defer f.srv.Close()
+
+	prefs := trackprefs.New(store.OpenTest(t))
+	f.srv.setTrackPreferences(prefs)
+	rules := trackprefs.Default()
+	rules.SubtitleMode = "always"
+	rules.SubtitleLanguages = []string{"en"}
+	if err := prefs.PutRules(context.Background(), ownerUser.ID, rules); err != nil {
+		t.Fatal(err)
+	}
+
+	rs := resolver.New(idx, nil, nil, cfg, resolver.Options{Now: nowFn})
+	defer rs.Close()
+
+	db, err := store.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	probeEntered := make(chan struct{}, 1)
+	releaseProbe := make(chan struct{})
+	var probes atomic.Int32
+	probedMKV := core.MediaInfo{
+		Container: "mkv", Duration: bbE1.Runtime, BitrateKbps: 18000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160, BitDepth: 10, Default: true},
+			{Index: 1, Type: "audio", Codec: "eac3", Language: "eng", Channels: 6, Default: true},
+			{Index: 2, Type: "subtitle", Codec: "subrip", Language: "eng"},
+		},
+	}
+	mgr, err := playback.New(playback.Deps{
+		Catalog:       f.catalog,
+		State:         f.state,
+		Resolver:      rs,
+		Engine:        &shieldLocalEngine{size: relSize},
+		Transcoder:    f.trans,
+		SelectProfile: func(c core.ClientCaps, u *core.User, _ string) core.QualityProfile { return rs.ProfileFor(c, u) },
+		DB:            db,
+		NativeProbe: func(pctx context.Context, s core.MediaSource) (*core.MediaInfo, error) {
+			probes.Add(1)
+			select {
+			case probeEntered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-releaseProbe:
+			case <-pctx.Done():
+				return nil, pctx.Err()
+			}
+			info := core.CloneMediaInfo(probedMKV)
+			info.Size = s.Size()
+			return &info, nil
+		},
+	}, cfg, playback.Options{
+		SessionSurface: func(surface string) string {
+			if surface == "plex" {
+				return ""
+			}
+			return surface
+		},
+		DataDir: dir,
+		Now:     nowFn,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	hook := &activePrepareHook{Manager: mgr, checked: make(chan struct{}, 1)}
+	f.srv.setPlayback(hook)
+	f.srv.setVariants(rs)
+
+	headers := []string{
+		"X-Plex-Product", "Plex for Linux",
+		"X-Plex-Platform", "Linux",
+		"X-Plex-Device", "Linux",
+		"X-Plex-Client-Identifier", "plex-linux-join-758",
+		"X-Plex-Session-Identifier", "sess-linux-join-758",
+	}
+	ep1Key := bbE1.Key.String()
+
+	partDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		h := headerMap(headers...)
+		h["Range"] = "bytes=0-15"
+		partDone <- f.request(t, http.MethodGet, "/library/parts/"+ep1Key+"/0/file.mkv", h)
+	}()
+	<-probeEntered
+
+	metaDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		metaDone <- f.get(t, "/library/metadata/"+ep1Key, headers...)
+	}()
+	select {
+	case <-hook.checked:
+	case <-time.After(4 * time.Second):
+		close(releaseProbe)
+		t.Fatal("metadata read did not check active Prepare flight")
+	}
+	close(releaseProbe)
+
+	partRec := <-partDone
+	if partRec.Code != http.StatusPartialContent && partRec.Code != http.StatusOK {
+		t.Fatalf("GET /library/parts %d: %s", partRec.Code, partRec.Body.String())
+	}
+	metaRec := <-metaDone
+	if metaRec.Code != http.StatusOK {
+		t.Fatalf("GET /library/metadata %d: %s", metaRec.Code, metaRec.Body.String())
+	}
+	subs := subtitleTags(metaRec.Body.String())
+	if len(subs) != 1 {
+		t.Fatalf("metadata during active Prepare returned %d subtitle tracks, want 1:\n%s", len(subs), metaRec.Body.String())
+	}
+	if sel := selectedTag(subs); sel == "" || streamAttr(sel, "languageCode") != "eng" {
+		t.Fatalf("metadata during active Prepare did not select Always-on English track: %q", subs)
+	}
+	if idx.playSearches.Load() != 1 || probes.Load() != 1 {
+		t.Fatalf("active Prepare join repeated work: searches=%d probes=%d, want 1/1", idx.playSearches.Load(), probes.Load())
+	}
+}

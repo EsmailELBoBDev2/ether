@@ -570,7 +570,7 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 		targetItem = pq.Items[center]
 	}
 	if targetTitle, ok := byKey[targetItem.Key]; ok {
-		if !(playIntent && bedrockPlayProbeClient(pr) && s.probeBedrockPlay(ctx, pr, targetTitle)) {
+		if !(playIntent && s.probePlayIntent(ctx, pr, targetTitle)) {
 			if pr != nil && pr.detailWaitUntil.IsZero() {
 				startDetailPageWait(pr)
 			}

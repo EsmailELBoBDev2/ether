@@ -455,3 +455,53 @@ func TestTakeWarmResolutionAdoptsPlayProbeForClientlessStream(t *testing.T) {
 		t.Fatalf("non-playProbe speculative entry cross-adopted by another clientID: %+v", got)
 	}
 }
+
+func TestProbePlayMetadataJoinsActivePrepareFlight(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	h.m.deps.Resolver = &playProbeGatingResolver{Resolver: h.resolver, gate: gate, entered: entered}
+	caps := defaultCaps("plex-linux-758")
+
+	prepDone := make(chan error, 1)
+	go func() {
+		_, err := h.m.Prepare(context.Background(), owner, movieKey, caps)
+		prepDone <- err
+	}()
+	<-entered
+	if !h.m.HasActivePrepare(owner, movieKey, caps) {
+		t.Fatal("HasActivePrepare = false while Prepare flight is active")
+	}
+
+	// Cancelling a metadata waiter must not cancel the live Prepare flight.
+	cctx, cancel := context.WithCancel(context.Background())
+	cancelDone := make(chan error, 1)
+	go func() {
+		cancelDone <- h.m.ProbePlayMetadata(cctx, owner, movieKey, caps)
+	}()
+	cancel()
+	if err := <-cancelDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled ProbePlayMetadata returned %v, want context.Canceled", err)
+	}
+
+	// Another metadata waiter joins the in-flight Prepare and succeeds once it lands.
+	probeDone := make(chan error, 1)
+	go func() {
+		probeDone <- h.m.ProbePlayMetadata(context.Background(), owner, movieKey, caps)
+	}()
+	close(gate)
+
+	if err := <-prepDone; err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	if err := <-probeDone; err != nil {
+		t.Fatalf("ProbePlayMetadata did not join active Prepare flight: %v", err)
+	}
+	if h.m.HasActivePrepare(owner, movieKey, caps) {
+		t.Fatal("HasActivePrepare = true after Prepare completed")
+	}
+	if r, p := counts(h); r != 1 || p != 1 {
+		t.Fatalf("ProbePlayMetadata repeated work alongside Prepare: resolves=%d probes=%d, want 1/1", r, p)
+	}
+}

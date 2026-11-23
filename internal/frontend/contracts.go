@@ -61,6 +61,9 @@ type View struct {
 	// Native is the protocol-native presentation string on the bound protocol
 	// (for example, MediaBrowser CollectionType or Plex base type).
 	Native string
+	// Subset is true when the library narrows a broader canonical catalogue
+	// with rules, visibility defaults, narrower sources, or a collection.
+	Subset bool
 	// Plugin library presentation metadata (optional; populated for plugin libraries).
 	Media       core.MediaClass `json:"media,omitempty"`
 	Card        string          `json:"card,omitempty"`

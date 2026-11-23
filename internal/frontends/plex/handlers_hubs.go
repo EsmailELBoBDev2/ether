@@ -615,6 +615,13 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 	}
 	rows, served := assembly.Rows(hubs, includeContinue, promotedOnly, true, frontend.HomePurpose)
 	mc.Hub = heroReadyHomeHubs(stableHomeHubs(rows))
+	if pr.HasPage {
+		total := len(mc.Hub)
+		lo, hi := pr.window(total)
+		mc.TotalSize = model.Ptr(total)
+		mc.Offset = model.Ptr(lo)
+		mc.Hub = mc.Hub[lo:hi]
+	}
 	mc.Size = len(mc.Hub)
 	return homeBuild{mc: mc, served: served, provisional: provisional}
 }

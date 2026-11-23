@@ -1007,6 +1007,29 @@ func (e *Engine) finalizeHomeRowsWithDefault(ctx context.Context, user *core.Use
 	return out
 }
 
+// HomeRowBudget returns the effective maximum Home rows for user and context,
+// honoring global, viewer, and device Home layout maxRows.
+func (e *Engine) HomeRowBudget(ctx context.Context, user *core.User, hc core.HubContext) int {
+	ctx = core.WithCatalogViewer(ctx, user)
+	layout := e.layoutForContext(ctx)
+	g, v := pagesForTarget(layout, userID(user), surfHome)
+	maxRows := e.opts.MaxHomeRows
+	for _, p := range []*core.LayoutPage{g, v} {
+		if p != nil {
+			if p.MaxRows > 0 {
+				maxRows = p.MaxRows
+			}
+			if p.DeviceMaxRows[hc.Device] > 0 {
+				maxRows = p.DeviceMaxRows[hc.Device]
+			}
+		}
+	}
+	if maxRows <= 0 {
+		maxRows = 20
+	}
+	return maxRows
+}
+
 // HomeRowEnabled checks the owner's inclusion policy without applying slot or
 // page-size constraints to a separately fetched Plex Continue Watching row.
 func (e *Engine) HomeRowEnabled(ctx context.Context, user *core.User, hc core.HubContext, id string) bool {

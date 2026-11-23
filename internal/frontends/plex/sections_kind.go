@@ -60,6 +60,7 @@ func (s *Server) publishedKindSections(ctx context.Context) []Section {
 			LibraryID:    frontend.LibraryID(id),
 			PluginID:     v.PluginID,
 			KindKey:      v.KindKey,
+			Subset:       v.Subset,
 			PluginSorts:  append([]string(nil), v.Sorts...),
 			PluginFacets: append([]frontend.ViewFacet(nil), v.Facets...),
 		})

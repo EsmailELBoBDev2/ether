@@ -1089,18 +1089,14 @@ func (i *instance) writePersonalActivity(w http.ResponseWriter, r *http.Request,
 	i.writeListedTitles(w, withRankedRow(withPreviewRowArtwork(r, shelf.row.PreviewOnFocus), shelf.row.RankedTop10, page, offset), v, page, nil, total, true, offset, latest)
 }
 
-func (i *instance) personalViewOrder(r *http.Request, v *frontend.Viewer) []string {
+func (i *instance) personalViewOrderWithViews(r *http.Request, v *frontend.Viewer, views []frontend.View) []string {
 	shelves := i.personalShelves(r, v)
 	if len(shelves) == 0 || i.host.Experience == nil {
 		return nil
 	}
-	order := make([]string, 0, len(shelves))
+	order := make([]string, 0, len(shelves)+len(views))
 	for _, shelf := range shelves {
 		order = append(order, shelf.wireID)
-	}
-	views, err := i.host.Experience.Views(r.Context(), v)
-	if err != nil {
-		return order
 	}
 	for _, view := range views {
 		n, err := ids.ParseDecimal(view.ID)
@@ -1113,6 +1109,113 @@ func (i *instance) personalViewOrder(r *http.Request, v *frontend.Viewer) []stri
 		}
 	}
 	return order
+}
+
+const subsetLatestCompareLimit = 12
+
+func latestTitleIdentity(t frontend.Title) frontend.RatingKey {
+	if (t.Type == frontend.TypeEpisode || t.Type == frontend.TypeSeason) && t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	return t.Key
+}
+
+// redundantSubsetViews reports which rule/catalogue subset views repeat their
+// parent library's Latest Home row without differing meaningfully.
+func (i *instance) redundantSubsetViews(r *http.Request, v *frontend.Viewer, views []frontend.View, hidePlayed bool) map[string]bool {
+	if v == nil || i.host.Experience == nil || len(views) < 2 {
+		return nil
+	}
+	parents := frontend.SubsetParents(views)
+	if len(parents) == 0 {
+		return nil
+	}
+	activity, ok := i.host.Experience.(frontend.LibraryActivity)
+	if !ok {
+		return nil
+	}
+	ctx := frontend.WithLatestPlayed(r.Context(), !hidePlayed)
+	dev := device(r)
+	loadLatest := func(viewID string) ([]frontend.LatestItem, error) {
+		if grouped, ok := i.host.Experience.(frontend.LibraryActivityGrouping); ok {
+			return grouped.LatestAddedGrouped(ctx, v, dev, viewID, subsetLatestCompareLimit, true)
+		}
+		return activity.LatestAdded(ctx, v, dev, viewID, subsetLatestCompareLimit)
+	}
+	parentCache := map[string]map[frontend.RatingKey]bool{}
+	var redundant map[string]bool
+	for _, view := range views {
+		parentID, isSubset := parents[view.ID]
+		if !isSubset {
+			continue
+		}
+		parentKeys, cached := parentCache[parentID]
+		if !cached {
+			pItems, err := loadLatest(parentID)
+			if err != nil {
+				parentCache[parentID] = nil
+				continue
+			}
+			parentKeys = make(map[frontend.RatingKey]bool, len(pItems))
+			for _, it := range pItems {
+				if k := latestTitleIdentity(it.Title); k != 0 {
+					parentKeys[k] = true
+				}
+			}
+			parentCache[parentID] = parentKeys
+		}
+		if parentKeys == nil {
+			continue
+		}
+		cItems, err := loadLatest(view.ID)
+		if err != nil {
+			continue
+		}
+		cKeys := make([]frontend.RatingKey, 0, len(cItems))
+		for _, it := range cItems {
+			if k := latestTitleIdentity(it.Title); k != 0 {
+				cKeys = append(cKeys, k)
+			}
+		}
+		if !frontend.SubsetRowDistinct(cKeys, parentKeys, nil) {
+			if redundant == nil {
+				redundant = map[string]bool{}
+			}
+			redundant[view.ID] = true
+		}
+	}
+	return redundant
+}
+
+func (i *instance) redundantSubsetLatestExcludes(r *http.Request, v *frontend.Viewer, views []frontend.View, hidePlayed bool) []string {
+	if v == nil || i.host.Experience == nil {
+		return nil
+	}
+	if views == nil {
+		var err error
+		views, err = i.host.Experience.Views(r.Context(), v)
+		if err != nil {
+			return nil
+		}
+	}
+	redundant := i.redundantSubsetViews(r, v, views, hidePlayed)
+	if len(redundant) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(redundant))
+	for _, view := range views {
+		if !redundant[view.ID] {
+			continue
+		}
+		n, err := ids.ParseDecimal(view.ID)
+		if err != nil || ids.PersonalView(n) {
+			continue
+		}
+		if wire, err := ids.GUID(ids.View, n); err == nil {
+			out = append(out, wire)
+		}
+	}
+	return out
 }
 
 const (
@@ -1149,10 +1252,26 @@ func (i *instance) applyOrderedViews(r *http.Request, v *frontend.Viewer, config
 			}
 			configuration[key] = value
 		}
+		if _, hasExcludes := stored["LatestItemsExcludes"]; !hasExcludes {
+			hidePlayed := true
+			if hp, ok := stored["HidePlayedInLatest"].(bool); ok {
+				hidePlayed = hp
+			}
+			if excludes := i.redundantSubsetLatestExcludes(r, v, nil, hidePlayed); len(excludes) > 0 {
+				configuration["LatestItemsExcludes"] = excludes
+			}
+		}
 		return
 	}
-	if order := i.personalViewOrder(r, v); len(order) > 0 {
+	var views []frontend.View
+	if i.host.Experience != nil && v != nil {
+		views, _ = i.host.Experience.Views(r.Context(), v)
+	}
+	if order := i.personalViewOrderWithViews(r, v, views); len(order) > 0 {
 		configuration["OrderedViews"] = order
+	}
+	if excludes := i.redundantSubsetLatestExcludes(r, v, views, true); len(excludes) > 0 {
+		configuration["LatestItemsExcludes"] = excludes
 	}
 }
 

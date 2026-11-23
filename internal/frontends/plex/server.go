@@ -54,6 +54,7 @@ type Section struct {
 	// built-in and filter libraries).
 	PluginID     string
 	KindKey      string
+	Subset       bool
 	PluginSorts  []string
 	PluginFacets []frontend.ViewFacet
 }

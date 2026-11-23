@@ -1069,7 +1069,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx = frontend.WithColdDetail(ctx, k)
-	parent, err := s.metadataTitle(ctx, pr, k)
+	parent, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, k)
 	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
 	}
@@ -1081,7 +1081,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 	var eps []frontend.Title
 	switch parent.Type {
 	case frontend.TypeShow:
-		eps, err = s.metadataGrandchildren(ctx, pr, k)
+		eps, err = s.metadataGrandchildrenOf(ctx, pr, parent)
 	case frontend.TypeSeason:
 		eps, err = s.metadataChildren(ctx, pr, k)
 	default:
@@ -1096,7 +1096,18 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 	mc.Title1 = parent.Title
 	mc.Title2 = "All Episodes"
 	mc.ViewGroup = "episode"
-	if parent.Type == frontend.TypeMovie {
+	if k.IsPluginKey() {
+		if base, ok := s.kindSectionBaseForTitle(parent); ok {
+			switch base {
+			case plexBaseArtist:
+				mc.Title2 = "All Tracks"
+				mc.ViewGroup = plexBaseTrack
+			case plexBasePhoto:
+				mc.Title2 = "All Photos"
+				mc.ViewGroup = plexBasePhoto
+			}
+		}
+	} else if parent.Type == frontend.TypeMovie {
 		mc.ViewGroup = "movie"
 	}
 	mc.ViewMode = viewModeList
@@ -1137,7 +1148,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 			recorded++
 		}
 	}
-	mc.Metadata = s.renderTitles(ctx, pr, eps[lo:hi], renderOpts{media: true, inSection: true})
+	mc.Metadata = s.renderTitles(ctx, pr, eps[lo:hi], renderOpts{media: true, inSection: true, storedOnly: k.IsPluginKey()})
 	mc.Size = len(mc.Metadata)
 	if pr.HasPage {
 		mc.SetPage(lo, len(eps))

@@ -653,14 +653,24 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	if n, err := strconv.Atoi(q.Get("mediaIndex")); err == nil && n > 0 {
 		p.mediaIndex = n
 	}
+	tt := chi.URLParam(r, "ttype")
 	if p.protocol == "" {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/start.mpd"):
 			p.protocol = frontend.ProtocolDASH
-		case strings.HasSuffix(r.URL.Path, "/start") && !strings.HasSuffix(r.URL.Path, "/start.m3u8"):
+		case strings.HasSuffix(r.URL.Path, "/start.m3u8"):
+			p.protocol = "hls"
+		case strings.HasSuffix(r.URL.Path, "/start") || chi.URLParam(r, "ext") != "":
+			p.protocol = frontend.ProtocolHTTP
+		case tt == "audio" || tt == "music":
 			p.protocol = frontend.ProtocolHTTP
 		default:
 			p.protocol = "hls"
+		}
+	}
+	if tt == "audio" || tt == "music" {
+		if rawContainer := strings.ToLower(strings.TrimSpace(q.Get("container"))); rawContainer != "" && len(p.caps.HLSContainers) == 0 {
+			p.caps.HLSContainers = []string{rawContainer}
 		}
 	}
 	p.opts = frontend.DecideOptions{
@@ -837,6 +847,9 @@ func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
 }
 
 func isPlayableKey(k frontend.RatingKey) bool {
+	if k.IsPluginKey() {
+		return true
+	}
 	switch k.Kind() {
 	case frontend.KindMovie, frontend.KindEpisode, frontend.KindLocal:
 		return true
@@ -1000,25 +1013,57 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			}
 		}
 		s.burnOnlyShownSubtitle(pr, p, ps.Info)
-		p.caps.TranscodeVideoCodecs = streamingVideoTarget(pr.ProfileExtra, p.protocol)
-		if len(p.caps.VideoCodecs) > 0 && len(p.caps.TranscodeVideoCodecs) > 0 {
-			var kept []string
-			for _, c := range p.caps.TranscodeVideoCodecs {
-				if p.caps.SupportsVideo(c) {
-					kept = append(kept, c)
+		if ps.Info.Video() == nil {
+			directContainers, directCodecs := directMusicProfile(pr.ProfileExtra)
+			if len(directContainers) > 0 {
+				p.caps.Containers = addUnique(p.caps.Containers, directContainers...)
+			}
+			if len(directCodecs) > 0 {
+				p.caps.AudioCodecs = addUnique(p.caps.AudioCodecs, directCodecs...)
+			}
+			if len(p.caps.HLSContainers) == 0 && len(p.caps.TranscodeAudioCodecs) == 0 {
+				targetContainers, targetCodecs := streamingMusicTarget(pr.ProfileExtra, p.protocol)
+				if len(targetContainers) > 0 {
+					p.caps.HLSContainers = targetContainers
+				}
+				if len(targetCodecs) > 0 {
+					p.caps.TranscodeAudioCodecs = targetCodecs
+				}
+			} else if p.protocol == frontend.ProtocolHTTP && len(p.caps.HLSContainers) == 0 && len(p.caps.TranscodeAudioCodecs) > 0 {
+				switch p.caps.TranscodeAudioCodecs[0] {
+				case "mp3":
+					p.caps.HLSContainers = []string{"mp3"}
+				case "opus", "vorbis":
+					p.caps.HLSContainers = []string{"ogg"}
+				case "flac":
+					p.caps.HLSContainers = []string{"flac"}
+				case "aac":
+					p.caps.HLSContainers = []string{"mp4"}
+				case "wav":
+					p.caps.HLSContainers = []string{"wav"}
 				}
 			}
-			p.caps.TranscodeVideoCodecs = kept
-		}
-		p.caps.TranscodeAudioCodecs = streamingAudioTarget(pr.ProfileExtra, p.protocol)
-		if len(p.caps.AudioCodecs) > 0 && len(p.caps.TranscodeAudioCodecs) > 0 {
-			var kept []string
-			for _, c := range p.caps.TranscodeAudioCodecs {
-				if p.caps.SupportsAudio(c) {
-					kept = append(kept, c)
+		} else {
+			p.caps.TranscodeVideoCodecs = streamingVideoTarget(pr.ProfileExtra, p.protocol)
+			if len(p.caps.VideoCodecs) > 0 && len(p.caps.TranscodeVideoCodecs) > 0 {
+				var kept []string
+				for _, c := range p.caps.TranscodeVideoCodecs {
+					if p.caps.SupportsVideo(c) {
+						kept = append(kept, c)
+					}
 				}
+				p.caps.TranscodeVideoCodecs = kept
 			}
-			p.caps.TranscodeAudioCodecs = kept
+			p.caps.TranscodeAudioCodecs = streamingAudioTarget(pr.ProfileExtra, p.protocol)
+			if len(p.caps.AudioCodecs) > 0 && len(p.caps.TranscodeAudioCodecs) > 0 {
+				var kept []string
+				for _, c := range p.caps.TranscodeAudioCodecs {
+					if p.caps.SupportsAudio(c) {
+						kept = append(kept, c)
+					}
+				}
+				p.caps.TranscodeAudioCodecs = kept
+			}
 		}
 		if err := s.applyDeviceProfile(pr, t, ps, p); err != nil {
 			return frontend.PlanAdmission{}, err
@@ -1195,18 +1240,18 @@ const decisionSourceWait time.Duration = 0
 // request stops waiting; the manager owns cancellation and continuation grace.
 func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) (*frontend.Title, error) {
 	pw, ok := s.playback().(frontend.PlaybackPrepareWithin)
-	if !ok || pr == nil || pr.User == nil || s.catalog() == nil {
+	if !ok || pr == nil || pr.User == nil {
 		return nil, nil
 	}
 	if tt := chi.URLParam(r, "ttype"); tt != "" && tt != "video" && tt != "music" && tt != "audio" {
 		return nil, nil
 	}
 	p, err := s.parsePlayRequest(r)
-	if err != nil || p.key == 0 || p.partReleaseID != "" || p.mediaIndex > 0 || !isPlayableKey(p.key) {
+	if err != nil || p.key == 0 || p.key.IsPluginKey() || p.partReleaseID != "" || p.mediaIndex > 0 || !isPlayableKey(p.key) || s.catalog() == nil {
 		return nil, nil
 	}
-	t, err := s.catalog().Get(ctx, p.key)
-	if err != nil || t == nil || !s.playableTitle(ctx, pr.User, t) {
+	t, err := s.metadataTitle(ctx, pr, p.key)
+	if err != nil || t == nil || !s.pluginAwarePlayable(ctx, pr.User, t) {
 		return nil, nil
 	}
 	if policy, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !policy.CanPlay(pr.User, p.caps.Remote, s.now()) {
@@ -1844,8 +1889,14 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logPlaybackStart(r, p)
 	if !s.decisionArmed(pr, p.key) {
-		writePlaybackStatus(w, http.StatusBadRequest)
-		return
+		if tt := chi.URLParam(r, "ttype"); tt == "audio" || tt == "music" {
+			owner := decisionOwner(pr)
+			owner.Generation = p.sessionID
+			s.decisionArms.Arm(owner, p.key)
+		} else {
+			writePlaybackStatus(w, http.StatusBadRequest)
+			return
+		}
 	}
 	unlockEncoder, lockErr := s.lockEncoder(ctx, p.sessionID)
 	if lockErr != nil {
@@ -3311,12 +3362,12 @@ func (s *Server) handlePartSelect(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolve and authorize the part before interpreting either selector.
 	key, _, found := s.partTitle(rawID)
-	if !found || s.catalog() == nil {
+	if !found || (!key.IsPluginKey() && s.catalog() == nil) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
 	title, err := s.metadataTitle(r.Context(), pr, key)
-	if err != nil || title == nil || !s.titleVisible(pr.User, title) {
+	if err != nil || title == nil || (key.IsPluginKey() && !s.canSeePluginTitle(pr.User, title)) || (!key.IsPluginKey() && !s.titleVisible(pr.User, title)) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}

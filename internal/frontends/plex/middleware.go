@@ -213,7 +213,10 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 
 // traceTranscodePath reports Plex HLS and session playlist/segment routes.
 func traceTranscodePath(path string) bool {
-	return strings.HasPrefix(path, "/video/:/transcode/") || strings.Contains(path, "/:/transcode/universal/session/")
+	return strings.HasPrefix(path, "/video/:/transcode/") ||
+		strings.HasPrefix(path, "/music/:/transcode/") ||
+		strings.HasPrefix(path, "/audio/:/transcode/") ||
+		strings.Contains(path, "/:/transcode/universal/session/")
 }
 
 // redactTraceQuery keeps the request query except credential parameters.

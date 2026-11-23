@@ -1429,6 +1429,8 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 
 	// Recursive multi-level expansion (e.g. root -> intermediate -> leaf):
 	// walk descendants breadth-first from the store with bounded pages.
+	kindMedia := ResolveKindMediaClass(rec.Decl, lib.Present)
+	parentMedia := rec.Decl.EffectiveLevelMedia(parentItem.Level, kindMedia)
 	var leaves []core.KindItem
 	queue := []core.ItemRef{parentItem.Ref}
 	const maxExpanded = 2000
@@ -1446,6 +1448,13 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 				return experience.PluginBrowsePage{}, err
 			}
 			for _, it := range page.Items {
+				if !filtering && rec.Decl.EffectiveLevelMedia(it.Level, kindMedia) != parentMedia {
+					// Unfiltered recursive leaf expansion stays within the
+					// container's own media class (e.g. artist Play, Shuffle,
+					// playlist, and scrobble stay on audio and exclude video
+					// concerts).
+					continue
+				}
 				isContainer := rec.Decl.HasChildLevels(it.Level) && !it.Playable
 				if isContainer {
 					queue = append(queue, it.Ref)

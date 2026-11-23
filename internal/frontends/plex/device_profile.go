@@ -436,6 +436,9 @@ type profileDecisionError struct {
 func (e *profileDecisionError) Error() string { return e.message }
 
 func (s *Server) applyDeviceProfile(pr *Request, t *frontend.Title, ps *frontend.PlaySession, p *playRequest) error {
+	if ps != nil && ps.Info.Video() == nil {
+		return nil
+	}
 	rule, ok := deviceProfile(pr)
 	if !ok {
 		if !p.opts.DirectPlay && pr.ProfileExtra != "" {

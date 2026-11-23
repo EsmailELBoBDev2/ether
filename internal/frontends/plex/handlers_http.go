@@ -42,12 +42,25 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.decisionArmed(pr, p.key) {
-		writePlaybackStatus(w, http.StatusBadRequest)
-		return
+		if tt := chi.URLParam(r, "ttype"); tt == "audio" || tt == "music" {
+			owner := decisionOwner(pr)
+			owner.Generation = p.sessionID
+			s.decisionArms.Arm(owner, p.key)
+		} else {
+			writePlaybackStatus(w, http.StatusBadRequest)
+			return
+		}
 	}
 	p.protocol = frontend.ProtocolHTTP
 	p.opts.Protocol = frontend.ProtocolHTTP
 	audioExt := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "ext")))
+	if audioExt == "" {
+		if tt := chi.URLParam(r, "ttype"); tt == "audio" || tt == "music" {
+			if qContainer := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("container"))); qContainer != "" && qContainer != "mkv" {
+				audioExt = qContainer
+			}
+		}
+	}
 	if audioExt != "" && audioExt != "mkv" {
 		p.caps.HLSContainers = []string{audioExt}
 		if len(p.caps.TranscodeAudioCodecs) == 0 {
@@ -131,18 +144,18 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		return s.transcoder().Decide(ps.Info, caps, opts)
 	}, func(dec frontend.Decision) frontend.Decision {
 		caps := entry.caps
-		if ps.Info.Video() == nil && audioExt != "" && audioExt != "mkv" {
-			caps.HLSContainers = []string{audioExt}
-			if len(p.caps.TranscodeAudioCodecs) > 0 {
-				caps.TranscodeAudioCodecs = p.caps.TranscodeAudioCodecs
+		if ps.Info.Video() == nil {
+			if audioExt != "" && audioExt != "mkv" {
+				caps.HLSContainers = []string{audioExt}
+				if len(p.caps.TranscodeAudioCodecs) > 0 {
+					caps.TranscodeAudioCodecs = p.caps.TranscodeAudioCodecs
+				}
 			}
-			if !strings.EqualFold(dec.Container, audioExt) && !(audioExt == "m4a" && dec.Container == "mp4") {
-				opts := entry.opts
-				opts.DirectPlay = false
-				opts.DirectStream = true
-				opts.Protocol = frontend.ProtocolHTTP
-				return s.transcoder().Decide(ps.Info, caps, opts)
-			}
+			opts := entry.opts
+			opts.DirectPlay = false
+			opts.DirectStream = true
+			opts.Protocol = frontend.ProtocolHTTP
+			return s.transcoder().Decide(ps.Info, caps, opts)
 		}
 		if s.cfg().Transcode.VideoTranscodingOff() {
 			caps.NoVideoTranscode = true

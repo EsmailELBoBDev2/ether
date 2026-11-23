@@ -317,6 +317,9 @@ func (s *Service) viewer(ctx context.Context, v *core.User) (*core.User, error) 
 	}
 	// A surface without a request memo still resolves the viewer once per
 	// read request, not once per listed item.
+	if s.d.Active == nil {
+		return nil, core.ErrNotFound
+	}
 	active, err := reqmemo.Do(ctx, "experience:active:"+strconv.FormatInt(v.ID, 10), func() (*core.User, error) {
 		return s.d.Active(ctx, v.ID)
 	})
@@ -1261,8 +1264,9 @@ func (s *Service) BatchTitles(ctx context.Context, viewer *core.Viewer, keys []c
 		if err != nil {
 			return nil, err
 		}
+		pubCache := make(map[core.LibraryID]bool, 4)
 		for k, piv := range views {
-			if s.pluginItemAllowed(ctx, v, piv) {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
 				allowed[k] = piv.Title
 			}
 		}

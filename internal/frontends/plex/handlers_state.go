@@ -111,13 +111,21 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		title, err := s.catalog().Get(ctx, key)
+		title, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
+		if title == nil {
+			writeHTTPError(w, http.StatusNotFound)
+			return
+		}
 		ctx = frontend.WithHistoryTitle(ctx, title)
-		if title == nil || !s.titleVisible(pr.User, title) {
+		visible := s.titleVisible(pr.User, title)
+		if key.IsPluginKey() {
+			visible = s.canSeePluginTitle(pr.User, title)
+		}
+		if !visible {
 			writeHTTPError(w, http.StatusNotFound)
 			return
 		}
@@ -395,7 +403,10 @@ func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		_, err = s.collectionRaw(ctx, pr.User, key)
 		known = err == nil
 	default:
-		if s.catalog() != nil {
+		if key.IsPluginKey() {
+			title, e := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
+			known = e == nil && title != nil && s.canSeePluginTitle(pr.User, title)
+		} else if s.catalog() != nil {
 			var title *frontend.Title
 			var e error
 			if stored, ok := s.catalog().(frontend.StoredTitleLookup); ok {
@@ -435,13 +446,16 @@ func (s *Server) scrobble(w http.ResponseWriter, r *http.Request, watched bool) 
 	if !ok {
 		return
 	}
-	if title, err := s.catalog().Get(ctx, key); err == nil && title != nil {
+	noExpandCtx := frontend.WithNoContainerExpand(ctx)
+	title, titleErr := s.metadataTitle(noExpandCtx, pr, key)
+	if titleErr == nil && title != nil {
 		ctx = frontend.WithHistoryTitle(ctx, title)
+		noExpandCtx = frontend.WithHistoryTitle(noExpandCtx, title)
 	}
 	// Containers mark every episode.
 	keys := []frontend.RatingKey{key}
-	if key.Kind() == frontend.KindShow || key.Kind() == frontend.KindSeason {
-		if ks, err := s.expandKey(ctx, pr, key); err == nil && len(ks) > 0 {
+	if key.Kind() == frontend.KindShow || key.Kind() == frontend.KindSeason || (key.IsPluginKey() && title != nil && (title.Type == frontend.TypeShow || title.Type == frontend.TypeSeason)) {
+		if ks, err := s.expandKey(noExpandCtx, pr, key); err == nil && len(ks) > 0 {
 			keys = ks
 		}
 	}
@@ -578,8 +592,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			md = s.playlistMetadata(withRequest(ctx, viewer), pl, false)
 		} else {
-			t, err := s.catalog().Get(ctx, e.key)
-			if err != nil {
+			t, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), viewer, e.key)
+			if err != nil || t == nil {
 				continue
 			}
 			sessionTitle = t

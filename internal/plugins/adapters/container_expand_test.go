@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,10 +25,13 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontends/plex"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/adapters"
+	"github.com/braedonsaunders/ether/internal/sessions"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -1181,5 +1186,244 @@ func TestContainerExpandOnOpen(t *testing.T) {
 				t.Fatalf("expected state=done after recovery, got (%+v, ok=%v, err=%v)", expDone, ok, err)
 			}
 		})
+	})
+}
+
+// TestPlexAudioPlayQueueExpandsNeverOpenedArtist proves end-to-end against real
+// KindCatalog + experience.Service + plex.Server:
+//  1. Concurrent POST /playQueues?type=audio and GET /library/metadata/{artist}/allLeaves
+//     on a never-opened artist share one single-flight /expand call and queue ONLY audio
+//     tracks (excluding expanded video concerts).
+//  2. A failing artist /expand enters the 15-minute cooldown so repeated play-queue
+//     requests do not retry or storm.
+//  3. Section shuffle (/library/sections/{id}/all) never expands unopened artists.
+func TestPlexAudioPlayQueueExpandsNeverOpenedArtist(t *testing.T) {
+	if os.Getenv("ETHER_TEST_POSTGRES") != "" {
+		t.Skip("synctest bubbles cannot own PostgreSQL connections; the race is store-independent")
+	}
+	env := openContainerExpandEnv(t)
+	synctest.Test(t, func(t *testing.T) {
+		h, cleanup := newContainerExpandHarnessWithEnv(t, env, "community.example.w323.plex", 24, time.Now)
+		defer func() {
+			cleanup()
+			synctest.Wait()
+		}()
+		ctx := context.Background()
+		if _, err := h.items.KindUpsert(ctx, h.plugin, "music", []core.KindItem{
+			{ID: "ar-cold", Level: "artist", Title: "Cold Artist"},
+			{ID: "ar-fail", Level: "artist", Title: "Failing Artist"},
+			{ID: "ar-idle", Level: "artist", Title: "Idle Artist"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		arCold := h.mustItem(t, "ar-cold")
+		arFail := h.mustItem(t, "ar-fail")
+
+		var coldCalls, failCalls, idleCalls atomic.Int32
+		coldStarted := make(chan struct{}, 1)
+		releaseCold := make(chan struct{})
+		h.rt.routes["/ether/v1/kinds/music/expand"] = func(req plugins.Request) (plugins.Response, error) {
+			var in core.KindExpandRequest
+			_ = json.Unmarshal(req.Body, &in)
+			switch in.ParentID {
+			case "ar-cold":
+				n := coldCalls.Add(1)
+				if n == 1 {
+					select {
+					case coldStarted <- struct{}{}:
+					default:
+					}
+					<-releaseCold
+				}
+				body, _ := json.Marshal(core.KindExpandResponse{
+					Items: []core.KindItem{
+						{ID: "al-cold", Level: "album", ParentID: "ar-cold", Title: "Expanded Album", Index: 1},
+						{ID: "tr-cold-1", Level: "track", ParentID: "al-cold", Title: "Expanded Track 1", Playable: true, Index: 1},
+						{ID: "tr-cold-2", Level: "track", ParentID: "al-cold", Title: "Expanded Track 2", Playable: true, Index: 2},
+						{ID: "con-cold-1", Level: "concert", ParentID: "ar-cold", Title: "Expanded Concert", Playable: true, Index: 1},
+					},
+				})
+				return plugins.Response{Status: http.StatusOK, Body: body}, nil
+			case "ar-fail":
+				failCalls.Add(1)
+				return plugins.Response{Status: http.StatusBadGateway, Body: []byte(`{"error":"upstream"}`)}, nil
+			default:
+				idleCalls.Add(1)
+				return plugins.Response{Status: http.StatusOK, Body: []byte(`{"items":[]}`)}, nil
+			}
+		}
+
+		log := slog.New(slog.NewTextHandler(io.Discard, nil))
+		st := state.New(h.db, state.Options{Logger: log})
+		owner := &core.User{ID: 1, Username: "owner", Title: "Owner", IsOwner: true}
+		getNone := func(context.Context, *core.User, core.RatingKey) (*core.Title, error) {
+			return nil, core.ErrNotFound
+		}
+		vis := experience.BindVisibility(nil, func(ctx context.Context, k core.RatingKey) (*core.Title, error) {
+			return getNone(ctx, nil, k)
+		}, nil, nil, nil)
+		exp, err := experience.NewService(experience.ServiceDeps{
+			Active: func(context.Context, int64) (*core.User, error) {
+				cp := *owner
+				return &cp, nil
+			},
+			State:               st,
+			Rows:                &experience.RowsService{},
+			Protocol:            "plex",
+			Visibility:          vis,
+			LibraryPresentation: plex.ProjectLibrary,
+			PluginLibraries:     h.kc,
+			Get:                 getNone,
+			Children: func(context.Context, *core.User, core.RatingKey) ([]core.Title, error) {
+				return nil, nil
+			},
+			Search: experience.Search{
+				Catalog: func(context.Context, string, []core.MediaType, int) ([]core.Title, error) {
+					return nil, nil
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := sessions.NewLocalRuntime(sessions.LocalRuntimeDeps{})
+		cfg := config.Config{}
+		cfg.Server.FriendlyName = "Test"
+		cfg.Server.MachineIdentifier = "test-machine-id"
+		srv := plex.NewServer(plex.Deps{
+			DisableEnrichment: true,
+			Host: frontend.Host{
+				Log:        log,
+				Now:        time.Now,
+				HostConfig: func() config.Config { return cfg },
+				Identity: frontendtest.Identity{
+					ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) {
+						cp := *owner
+						return &cp, nil
+					},
+				},
+				Experience: exp,
+				Sessions:   rt,
+			},
+		})
+		defer func() {
+			srv.Close()
+			synctest.Wait()
+		}()
+
+		doReq := func(method, target string) *httptest.ResponseRecorder {
+			r := httptest.NewRequest(method, target, nil)
+			r.Header.Set("Accept", "application/json")
+			r.Header.Set("X-Plex-Token", "owner-tok")
+			r.Header.Set("X-Plex-Client-Identifier", "plexamp-w323")
+			r.Header.Set("X-Plex-Product", "Plexamp")
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, r)
+			return w
+		}
+		extractKeys := func(rec *httptest.ResponseRecorder) []string {
+			var body struct {
+				MediaContainer struct {
+					Metadata []struct {
+						RatingKey string `json:"ratingKey"`
+					} `json:"Metadata"`
+				} `json:"MediaContainer"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode %s: %v", rec.Body.String(), err)
+			}
+			out := make([]string, 0, len(body.MediaContainer.Metadata))
+			for _, m := range body.MediaContainer.Metadata {
+				out = append(out, m.RatingKey)
+			}
+			return out
+		}
+
+		// 1. Concurrent play queue + /allLeaves on cold artist -> 1 single-flight expand,
+		//    2 audio tracks returned, expanded video concert excluded.
+		coldURI := "server://test-machine-id/com.plexapp.plugins.library/library/metadata/" + arCold.Key.String()
+		var (
+			wg           sync.WaitGroup
+			pqRec, alRec *httptest.ResponseRecorder
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			pqRec = doReq(http.MethodPost, "/playQueues?type=audio&uri="+url.QueryEscape(coldURI))
+		}()
+		go func() {
+			defer wg.Done()
+			alRec = doReq(http.MethodGet, "/library/metadata/"+arCold.Key.String()+"/allLeaves")
+		}()
+		<-coldStarted
+		synctest.Wait()
+		close(releaseCold)
+		wg.Wait()
+		synctest.Wait()
+
+		if coldCalls.Load() != 1 {
+			t.Fatalf("concurrent playQueue+/allLeaves triggered %d expands, want 1", coldCalls.Load())
+		}
+		tr1 := h.mustItem(t, "tr-cold-1").Key.String()
+		tr2 := h.mustItem(t, "tr-cold-2").Key.String()
+		con := h.mustItem(t, "con-cold-1").Key.String()
+		for name, rec := range map[string]*httptest.ResponseRecorder{"playQueue": pqRec, "allLeaves": alRec} {
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status=%d body=%s", name, rec.Code, rec.Body.String())
+			}
+			keys := extractKeys(rec)
+			if !slices.Equal(keys, []string{tr1, tr2}) || slices.Contains(keys, con) {
+				t.Fatalf("%s keys = %v, want [%s %s] (concert %s excluded)", name, keys, tr1, tr2, con)
+			}
+		}
+
+		// 2. Failing artist expand backs off for 15 minutes across repeated play queues.
+		failURI := "server://test-machine-id/com.plexapp.plugins.library/library/metadata/" + arFail.Key.String()
+		for i := range 3 {
+			rec := doReq(http.MethodPost, "/playQueues?type=audio&uri="+url.QueryEscape(failURI))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("failing artist playQueue %d status=%d body=%s", i, rec.Code, rec.Body.String())
+			}
+			synctest.Wait()
+		}
+		if failCalls.Load() != 1 {
+			t.Fatalf("failing artist playQueue retries triggered %d expands, want 1 (15m backoff)", failCalls.Load())
+		}
+
+		// 3. Section shuffle never triggers expansion on unopened ar-idle.
+		secRec := doReq(http.MethodGet, "/library/sections")
+		var secResp struct {
+			MediaContainer struct {
+				Directory []struct {
+					Key  string `json:"key"`
+					Type string `json:"type"`
+				} `json:"Directory"`
+			} `json:"MediaContainer"`
+		}
+		if err := json.Unmarshal(secRec.Body.Bytes(), &secResp); err != nil {
+			t.Fatalf("decode sections: %v", err)
+		}
+		musicSec := ""
+		for _, d := range secResp.MediaContainer.Directory {
+			if d.Type == "artist" {
+				musicSec = d.Key
+				break
+			}
+		}
+		if musicSec == "" {
+			t.Fatalf("music section not found in %s", secRec.Body.String())
+		}
+		shufURI := "server://test-machine-id/com.plexapp.plugins.library/library/sections/" + musicSec + "/all"
+		shufRec := doReq(http.MethodPost, "/playQueues?type=audio&shuffle=1&uri="+url.QueryEscape(shufURI))
+		if shufRec.Code != http.StatusOK {
+			t.Fatalf("section shuffle status=%d body=%s", shufRec.Code, shufRec.Body.String())
+		}
+		synctest.Wait()
+		if idleCalls.Load() != 0 {
+			t.Fatalf("section shuffle triggered %d expands on unopened ar-idle, want 0", idleCalls.Load())
+		}
+		if keys := extractKeys(shufRec); len(keys) != 2 || slices.Contains(keys, con) {
+			t.Fatalf("section shuffle keys = %v, want 2 stored audio tracks only (no concert)", keys)
+		}
 	})
 }

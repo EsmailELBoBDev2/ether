@@ -2080,7 +2080,7 @@ func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.D
 	if pluginErr != nil {
 		return frontend.SearchPage{}, false, pluginErr
 	}
-	confident := pluginBest >= pluginNamedScore || namesTitle(items)
+	confident := pluginBest >= pluginNamedScore || namesTitle(query, items)
 	aiMerged := false
 	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" && !unified {
 		if confident || !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || len(types) == 0 {

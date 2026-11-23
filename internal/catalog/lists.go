@@ -165,8 +165,13 @@ func (c *Catalog) reloadSearchRows(ctx context.Context, titles []core.Title) []c
 // A search waits at most searchRemoteWait for TMDB when the mirror has too
 // few matches, and searchRemoteGrace when it already has enough.
 const (
-	searchRemoteWait  = time.Second
-	searchRemoteGrace = 150 * time.Millisecond
+	// searchChildDiscount ranks a season or episode found by its own name
+	// after the films, series and people that match as well: the many talk
+	// show episodes called "Tom Hanks" follow his films, and episodes of
+	// other series called "Breaking Bad" follow the series and its film.
+	searchChildDiscount = 0.82
+	searchRemoteWait    = time.Second
+	searchRemoteGrace   = 150 * time.Millisecond
 )
 
 // Search reaches all of TMDB; matched titles join the browsable set.
@@ -378,6 +383,9 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 			seen[t.Key] = true
 			if t.SearchScore == 0 {
 				t.SearchScore = scoreSearchText(sq, &t)
+				if t.Type == core.TypeSeason || t.Type == core.TypeEpisode {
+					t.SearchScore *= searchChildDiscount
+				}
 			}
 			out = append(out, t)
 		}

@@ -59,6 +59,18 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (BrowsePage, error)
 	return s.searchSQLite(ctx, q, tokens, limit)
 }
 
+// searchTokenPrefix reports whether token i of n is matched as a prefix.
+// The last word is the one being typed; a short prefix ("s", "th") or a
+// short earlier word ("the") expanded to every word it begins makes the
+// full-text match read most of a library, so those match whole words only.
+func searchTokenPrefix(tok string, i, n int) bool {
+	runes := len([]rune(tok))
+	if i == n-1 {
+		return runes >= 3
+	}
+	return runes >= 4
+}
+
 func tokenizeSearchQuery(raw string) []string {
 	var tokens []string
 	var cur strings.Builder

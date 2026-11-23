@@ -862,7 +862,7 @@ func testKindBackendsAndPurge(t *testing.T) {
 	}
 
 	// Verify state_watch cleanup during PurgePlugin (§2.5).
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (user_id INTEGER NOT NULL, rating_key INTEGER NOT NULL, PRIMARY KEY (user_id, rating_key))`); err != nil {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (user_id BIGINT NOT NULL, rating_key BIGINT NOT NULL, PRIMARY KEY (user_id, rating_key))`); err != nil {
 		t.Fatal(err)
 	}
 	b1Item, _, err := s.GetByExternal(ctx, "community.books", "book", "b1")

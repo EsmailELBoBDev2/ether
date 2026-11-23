@@ -9,7 +9,15 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
+
+func (s *Service) fieldDrivenLibCheck() string {
+	if store.DialectOf(s.db) == store.Postgres {
+		return `i.library_id = ?`
+	}
+	return `i.library_id + 0 = ?`
+}
 
 // PersonMatch describes a credited person and their visible plugin items within
 // a single plugin library.
@@ -250,7 +258,7 @@ LIMIT ?`, qArgs...)
 SELECT f.v_int, COUNT(DISTINCT f.item_ref)
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field IN (`+strings.Join(fph, ",")+`) AND f.v_int <> 0 AND f.v_int IN (`+strings.Join(pph, ",")+`) AND i.library_id + 0 = ?
+WHERE f.field IN (`+strings.Join(fph, ",")+`) AND f.v_int <> 0 AND f.v_int IN (`+strings.Join(pph, ",")+`) AND `+s.fieldDrivenLibCheck()+`
 GROUP BY f.v_int`, cArgs...); cErr == nil {
 			exact := make(map[int64]int, len(cands))
 			for cRows.Next() {
@@ -373,7 +381,7 @@ ORDER BY field ASC`, tArgs...)
 SELECT COUNT(DISTINCT f.item_ref)
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+strings.Join(mPlaceholders, ",")+`)`,
+WHERE `+s.fieldDrivenLibCheck()+` AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+strings.Join(mPlaceholders, ",")+`)`,
 					mArgs...).Scan(&totalCount); cErr != nil {
 					return PersonMatch{}, false, cErr
 				}
@@ -393,7 +401,7 @@ WHERE i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+st
 		args = append(args, fk)
 	}
 	var where strings.Builder
-	where.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
+	where.WriteString(s.fieldDrivenLibCheck() + ` AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
 	if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
 		return PersonMatch{}, false, err
 	}
@@ -429,7 +437,7 @@ func (s *Service) loadPersonMatch(ctx context.Context, rec KindRecord, policy *l
 	args = append(args, personID)
 
 	var where strings.Builder
-	where.WriteString(`i.library_id + 0 = ? AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int <> 0 AND pf.v_int = ?)`)
+	where.WriteString(s.fieldDrivenLibCheck() + ` AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int <> 0 AND pf.v_int = ?)`)
 	if err := s.appendVisibility(ctx, &where, &args, rec.LibraryID, policy, false); err != nil {
 		return PersonMatch{}, false, err
 	}
@@ -457,7 +465,7 @@ LIMIT ?`
 		for _, fk := range pFields {
 			roleArgs = append(roleArgs, fk)
 		}
-		roleWhere.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
+		roleWhere.WriteString(s.fieldDrivenLibCheck() + ` AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
 		if s.appendVisibility(ctx, &roleWhere, &roleArgs, rec.LibraryID, policy, false) == nil {
 			roleRows, err := s.db.QueryContext(ctx, `
 SELECT f.field, COUNT(DISTINCT f.item_ref)

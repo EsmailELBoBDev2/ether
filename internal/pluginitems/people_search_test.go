@@ -39,6 +39,9 @@ func sampleStudioClipDecl() plugins.MediaKindMeta {
 func TestPeopleMigrationAndReindex(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite FTS5 migration test")
+	}
 
 	decl := sampleStudioClipDecl()
 	declJSON, err := json.Marshal(decl)

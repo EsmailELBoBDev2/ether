@@ -423,21 +423,23 @@ func TestFacetCollectionsScaleQueryCount(t *testing.T) {
 		SELECT r.bucket_val, i.item_ref FROM ranked r
 		JOIN plugin_items i ON i.item_ref = r.item_ref
 		WHERE r.rn = 1`
-	pRows, err := db.QueryContext(ctx, planSQL, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var planParts []string
-	for pRows.Next() {
-		var id, parent, notused int
-		var detail string
-		if err := pRows.Scan(&id, &parent, &notused, &detail); err != nil {
+	if store.DialectOf(db) == store.SQLite {
+		pRows, err := db.QueryContext(ctx, planSQL, args...)
+		if err != nil {
 			t.Fatal(err)
 		}
-		planParts = append(planParts, detail)
+		var planParts []string
+		for pRows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := pRows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			planParts = append(planParts, detail)
+		}
+		_ = pRows.Close()
+		t.Logf("EXPLAIN QUERY PLAN: %s", strings.Join(planParts, " | "))
 	}
-	_ = pRows.Close()
-	t.Logf("EXPLAIN QUERY PLAN: %s", strings.Join(planParts, " | "))
 
 	for _, order := range []string{"count", "name"} {
 		mCtx, stats := store.WithQueryStats(ctx)
@@ -470,6 +472,9 @@ func TestMigration4BackfillsFoldedFieldsInBoundedBatches(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite v3->v4 migration test")
+	}
 	oldBatch := migration4FoldBatchSize
 	migration4FoldBatchSize = 2
 	t.Cleanup(func() { migration4FoldBatchSize = oldBatch })
@@ -826,50 +831,52 @@ func TestTabSearchScale35k(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	explainPlan := func(sqlText string, args ...any) string {
-		pRows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+sqlText, args...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer pRows.Close()
-		var parts []string
-		for pRows.Next() {
-			var id, parent, notused int
-			var detail string
-			if err := pRows.Scan(&id, &parent, &notused, &detail); err != nil {
+	if store.DialectOf(db) == store.SQLite {
+		explainPlan := func(sqlText string, args ...any) string {
+			pRows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+sqlText, args...)
+			if err != nil {
 				t.Fatal(err)
 			}
-			parts = append(parts, detail)
+			defer pRows.Close()
+			var parts []string
+			for pRows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := pRows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				parts = append(parts, detail)
+			}
+			return strings.Join(parts, " | ")
 		}
-		return strings.Join(parts, " | ")
-	}
 
-	colPlan := explainPlan(`
-		SELECT f.v_text, COUNT(DISTINCT i.item_ref) AS c
-		FROM plugin_item_fields f
-		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_text != '' AND f.v_fold > '' AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)
-		  AND i.library_id + 0 = ? AND i.level = ?
-		GROUP BY f.v_text
-		ORDER BY LOWER(f.v_text) ASC, f.v_text ASC
-		LIMIT 51 OFFSET 0`, "developers", "zoe%", "% zoe%", int64(99), "game")
-	t.Logf("Collections EXPLAIN QUERY PLAN: %s", colPlan)
-	if !strings.Contains(colPlan, "plugin_item_fields_fold") {
-		t.Fatalf("expected collections plan to use plugin_item_fields_fold, got: %s", colPlan)
-	}
+		colPlan := explainPlan(`
+			SELECT f.v_text, COUNT(DISTINCT i.item_ref) AS c
+			FROM plugin_item_fields f
+			JOIN plugin_items i ON i.item_ref = f.item_ref
+			WHERE f.field = ? AND f.v_text != '' AND f.v_fold > '' AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)
+			  AND i.library_id + 0 = ? AND i.level = ?
+			GROUP BY f.v_text
+			ORDER BY LOWER(f.v_text) ASC, f.v_text ASC
+			LIMIT 51 OFFSET 0`, "developers", "zoe%", "% zoe%", int64(99), "game")
+		t.Logf("Collections EXPLAIN QUERY PLAN: %s", colPlan)
+		if !strings.Contains(colPlan, "plugin_item_fields_fold") {
+			t.Fatalf("expected collections plan to use plugin_item_fields_fold, got: %s", colPlan)
+		}
 
-	peoplePlan := explainPlan(`
-		SELECT f.v_int, MIN(f.v_text) AS name, COUNT(DISTINCT i.item_ref) AS c
-		FROM plugin_item_fields f
-		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_int + 0 > 1000000000 AND f.v_text != '' AND f.v_fold > '' AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)
-		  AND i.library_id + 0 = ? AND i.level = ?
-		GROUP BY f.v_int
-		ORDER BY LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC
-		LIMIT 51 OFFSET 0`, "voiceCast", "jo%", "% jo%", int64(99), "game")
-	t.Logf("People EXPLAIN QUERY PLAN: %s", peoplePlan)
-	if !strings.Contains(peoplePlan, "plugin_item_fields_fold") {
-		t.Fatalf("expected people plan to use plugin_item_fields_fold, got: %s", peoplePlan)
+		peoplePlan := explainPlan(`
+			SELECT f.v_int, MIN(f.v_text) AS name, COUNT(DISTINCT i.item_ref) AS c
+			FROM plugin_item_fields f
+			JOIN plugin_items i ON i.item_ref = f.item_ref
+			WHERE f.field = ? AND f.v_int + 0 > 1000000000 AND f.v_text != '' AND f.v_fold > '' AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)
+			  AND i.library_id + 0 = ? AND i.level = ?
+			GROUP BY f.v_int
+			ORDER BY LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC
+			LIMIT 51 OFFSET 0`, "voiceCast", "jo%", "% jo%", int64(99), "game")
+		t.Logf("People EXPLAIN QUERY PLAN: %s", peoplePlan)
+		if !strings.Contains(peoplePlan, "plugin_item_fields_fold") {
+			t.Fatalf("expected people plan to use plugin_item_fields_fold, got: %s", peoplePlan)
+		}
 	}
 
 	const queryCeiling = 6

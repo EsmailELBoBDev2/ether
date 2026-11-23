@@ -300,7 +300,10 @@ func TestPlannerStatsRefreshPushDebounceAndGrowthThreshold(t *testing.T) {
 	timers := &fakeTimerHarness{}
 	var analyzeCalls atomic.Int32
 
-	s, _ := openTestService(t, Options{Now: clock.Now})
+	s, db := openTestService(t, Options{Now: clock.Now})
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite planner stats test")
+	}
 	s.stats.afterFunc = timers.afterFunc
 	s.stats.analyzeFn = func(ctx context.Context, db *sql.DB, tables ...string) error {
 		analyzeCalls.Add(1)
@@ -364,7 +367,10 @@ func TestPlannerStatsRefreshPerLibraryRateLimit(t *testing.T) {
 	timers := &fakeTimerHarness{}
 	var analyzeCalls atomic.Int32
 
-	s, _ := openTestService(t, Options{Now: clock.Now})
+	s, db := openTestService(t, Options{Now: clock.Now})
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite planner stats test")
+	}
 	s.stats.afterFunc = timers.afterFunc
 	s.stats.analyzeFn = func(ctx context.Context, db *sql.DB, tables ...string) error {
 		analyzeCalls.Add(1)
@@ -439,7 +445,10 @@ func TestPlannerStatsRefreshNeverConcurrent(t *testing.T) {
 	var maxConcurrent atomic.Int32
 	var calls atomic.Int32
 
-	s, _ := openTestService(t, Options{Now: clock.Now})
+	s, db := openTestService(t, Options{Now: clock.Now})
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite planner stats test")
+	}
 	s.stats.afterFunc = timers.afterFunc
 	s.stats.analyzeFn = func(ctx context.Context, db *sql.DB, tables ...string) error {
 		cur := inFlight.Add(1)
@@ -601,7 +610,10 @@ func TestPlannerStatsRefreshPurgeAndClose(t *testing.T) {
 	clock := newFakeStatsClock()
 	timers := &fakeTimerHarness{}
 
-	s, _ := openTestService(t, Options{Now: clock.Now})
+	s, db := openTestService(t, Options{Now: clock.Now})
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite planner stats test")
+	}
 	s.stats.afterFunc = timers.afterFunc
 
 	decl := sampleBookDecl()
@@ -707,9 +719,12 @@ func TestPlannerStatsRefreshPurgeAndClose(t *testing.T) {
 func TestPlannerStatsRefreshNonLeaderNoOp(t *testing.T) {
 	ctx := context.Background()
 	timers := &fakeTimerHarness{}
-	s, _ := openTestService(t, Options{
+	s, db := openTestService(t, Options{
 		IsLeader: func() bool { return false },
 	})
+	if store.DialectOf(db) != store.SQLite {
+		t.Skip("SQLite planner stats test")
+	}
 	s.stats.afterFunc = timers.afterFunc
 
 	decl := sampleBookDecl()

@@ -55,7 +55,11 @@ func (s *Service) buildRootItemPredicates(ctx context.Context, rec KindRecord, l
 	var idxB, fldB strings.Builder
 	args = []any{int64(rec.LibraryID)}
 	idxB.WriteString(`i.library_id = ?`)
-	fldB.WriteString(`i.library_id + 0 = ?`)
+	if store.DialectOf(s.db) == store.Postgres {
+		fldB.WriteString(`i.library_id = ?`)
+	} else {
+		fldB.WriteString(`i.library_id + 0 = ?`)
+	}
 
 	if lv := strings.TrimSpace(level); lv != "" {
 		idxB.WriteString(` AND i.level = ?`)
@@ -317,7 +321,11 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 			qArgs := append([]any(nil), itemArgs...)
 			if len(terms) > 0 {
 				where.WriteString(fieldDrivenWhere)
-				where.WriteString(` AND f.field = ? AND f.v_int + 0 > ? AND f.v_int + 0 < ? AND f.v_text <> ''`)
+				if store.DialectOf(s.db) == store.Postgres {
+					where.WriteString(` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
+				} else {
+					where.WriteString(` AND f.field = ? AND f.v_int + 0 > ? AND f.v_int + 0 < ? AND f.v_text <> ''`)
+				}
 				qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
 				appendFoldedWordPrefix(&where, &qArgs, terms)
 			} else {
@@ -1088,7 +1096,7 @@ func (s *Service) resolveNewestByPredicateBuckets(ctx context.Context, fieldKey 
 		wArgs = append(wArgs, idx)
 		wArgs = append(wArgs, itemArgs...)
 		libraryfilter.AppendPluginFacetClauses(&w, &wArgs, map[string][]string{fieldKey: {b.ID}}, fieldTypes)
-		arms = append(arms, `SELECT * FROM (SELECT ? AS bucket_idx, i.item_ref FROM plugin_items i WHERE `+w.String()+` ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC LIMIT 1) sub`+fmt.Sprintf("%d", idx))
+		arms = append(arms, `SELECT * FROM (SELECT CAST(? AS INTEGER) AS bucket_idx, i.item_ref FROM plugin_items i WHERE `+w.String()+` ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC LIMIT 1) sub`+fmt.Sprintf("%d", idx))
 		args = append(args, wArgs...)
 	}
 	querySQL := `WITH winners AS (

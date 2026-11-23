@@ -232,14 +232,14 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		schemaVer = 1
-		var hasPreExisting int
+		var hasPreExisting bool
 		if err := tx.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM plugin_items WHERE plugin_id = ? AND kind_key = ?)`,
 			pluginID, decl.Key).Scan(&hasPreExisting); err != nil {
 			return KindRecord{}, err
 		}
 		ftsVer := currentFTSVersion
-		if hasPreExisting > 0 {
+		if hasPreExisting {
 			// Defer reindexing existing rows to a chunked background worker
 			// rather than holding the SQLite write lock across the install request.
 			ftsVer = 0

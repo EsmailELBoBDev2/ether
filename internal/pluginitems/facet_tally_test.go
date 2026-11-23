@@ -362,7 +362,7 @@ func TestFacetAndPersonTalliesInvariants(t *testing.T) {
 
 	// Chunked reindex preserves exact field and person tallies.
 	decl2 := facetTallyTestDecl()
-	if err := s.reindexKindChunked(ctx, false, pluginID, kindKey, libID, decl2); err != nil {
+	if err := s.reindexKindChunked(ctx, store.DialectOf(db) == store.Postgres, pluginID, kindKey, libID, decl2); err != nil {
 		t.Fatal(err)
 	}
 	assertTalliesExact(t, db, libID, "after chunked reindex")
@@ -405,11 +405,11 @@ func TestMigration17BackfillFromPre17Schema(t *testing.T) {
 		`DROP INDEX IF EXISTS plugin_item_field_tally_name`,
 		`DROP TABLE IF EXISTS plugin_item_field_tally`,
 		`CREATE TABLE plugin_item_field_tally (
-			library_id INTEGER NOT NULL,
+			library_id BIGINT  NOT NULL,
 			level      TEXT    NOT NULL,
 			field      TEXT    NOT NULL,
 			v_text     TEXT    NOT NULL,
-			cnt        INTEGER NOT NULL,
+			cnt        BIGINT  NOT NULL,
 			PRIMARY KEY (library_id, level, field, v_text)
 		)`,
 		`CREATE INDEX plugin_item_field_tally_count ON plugin_item_field_tally(library_id, level, field, cnt DESC, v_text)`,
@@ -565,13 +565,15 @@ func TestMigration17BackfillFromPre17Schema(t *testing.T) {
 			wantIndex: "plugin_item_field_tally_name",
 		},
 	}
-	for _, tc := range plans {
-		plan := explainPlanText(t, db, tc.sql, tc.args...)
-		if !strings.Contains(plan, "COVERING INDEX "+tc.wantIndex) {
-			t.Errorf("%s: expected COVERING INDEX %s, got:\n%s", tc.name, tc.wantIndex, plan)
-		}
-		if strings.Contains(plan, "USE TEMP B-TREE") {
-			t.Errorf("%s: unexpected TEMP B-TREE in plan:\n%s", tc.name, plan)
+	if store.DialectOf(db) == store.SQLite {
+		for _, tc := range plans {
+			plan := explainPlanText(t, db, tc.sql, tc.args...)
+			if !strings.Contains(plan, "COVERING INDEX "+tc.wantIndex) {
+				t.Errorf("%s: expected COVERING INDEX %s, got:\n%s", tc.name, tc.wantIndex, plan)
+			}
+			if strings.Contains(plan, "USE TEMP B-TREE") {
+				t.Errorf("%s: unexpected TEMP B-TREE in plan:\n%s", tc.name, plan)
+			}
 		}
 	}
 }
@@ -654,9 +656,11 @@ func TestBrowseBatchMatchesBrowseAndCacheInvalidation(t *testing.T) {
 	if err != nil || empty {
 		t.Fatalf("buildBrowsePredicates: empty=%v err=%v", empty, err)
 	}
-	multiPlan := explainPlanText(t, db, `EXPLAIN QUERY PLAN SELECT i.item_ref FROM plugin_items i WHERE `+bw+` ORDER BY i.released DESC, i.item_ref ASC LIMIT 2`, bArgs...)
-	if !strings.Contains(multiPlan, "COVERING INDEX plugin_items_released") || strings.Contains(multiPlan, "USE TEMP B-TREE") {
-		t.Fatalf("expected covering plugin_items_released scan without TEMP B-TREE for multi-value strings OR, got:\n%s", multiPlan)
+	if store.DialectOf(db) == store.SQLite {
+		multiPlan := explainPlanText(t, db, `EXPLAIN QUERY PLAN SELECT i.item_ref FROM plugin_items i WHERE `+bw+` ORDER BY i.released DESC, i.item_ref ASC LIMIT 2`, bArgs...)
+		if !strings.Contains(multiPlan, "COVERING INDEX plugin_items_released") || strings.Contains(multiPlan, "USE TEMP B-TREE") {
+			t.Fatalf("expected covering plugin_items_released scan without TEMP B-TREE for multi-value strings OR, got:\n%s", multiPlan)
+		}
 	}
 
 	queries := []BrowseQuery{

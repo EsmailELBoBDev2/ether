@@ -291,6 +291,18 @@ func (s *Server) downloadCaps(r *http.Request, pr *Request) frontend.ClientCaps 
 	if mh := s.cfg().Downloads.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
 		caps.MaxHeight = mh
 	}
+	// The viewer's own allowance: a lower resolution cap, and downloads made
+	// only from a release that needs no video re-encode. Release selection
+	// and the download decision both read these from the caps.
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok && pr != nil {
+		allowance := policy.DownloadAllowance(pr.User)
+		if mh := allowance.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
+			caps.MaxHeight = mh
+		}
+		if allowance.NoTranscode {
+			caps.NoVideoTranscode = true
+		}
+	}
 	return caps
 }
 
@@ -357,13 +369,6 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	caps := s.downloadCaps(r, pr)
-	if policy, ok := s.policy().(interface {
-		DownloadTranscodingDisabled(*frontend.User) bool
-	}); ok && policy.DownloadTranscodingDisabled(pr.User) {
-		// The owner's switch for this viewer's downloads: release selection
-		// and the download decision both read it from the caps.
-		caps.NoVideoTranscode = true
-	}
 	burn := r.URL.Query().Get("subtitles") == "burn"
 	added := []addedQueueItemModel{}
 	for _, k := range keys {
@@ -374,10 +379,10 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 		}
 		for _, t := range titles {
 			it := s.addDownloadItem(q, pr.User, t, caps, burn)
-			if !s.countDownload(pr.User, t.Key) {
-				// Over the viewer's daily cap: the item is listed with the
+			if msg := s.countDownload(ctx, pr.User, t.Key); msg != "" {
+				// Over the viewer's limit: the item is listed with the
 				// reason, as a failed download is, and never starts.
-				s.downloads.Fail(ctx, it, frontend.MsgViewerDownloadLimit)
+				s.downloads.Fail(ctx, it, msg)
 			}
 			added = append(added, addedQueueItemModel{ID: it.ID, Key: keyPath(t.Key)})
 		}
@@ -386,40 +391,22 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 	s.write(w, r, &downloadContainer{Size: len(added), Added: added})
 }
 
-// countDownload records t as one of u's downloads for today (UTC) and reports
-// whether it is within the owner's daily cap. A title already counted today
-// is free: re-queuing or restarting it is not a new download. The tally is
-// kept in memory, so a restart starts the day again.
-func (s *Server) countDownload(u *frontend.User, key frontend.RatingKey) bool {
-	policy, ok := s.policy().(interface {
-		DownloadsPerDay(*frontend.User) int
-	})
+// countDownload records key against u's download usage and returns the
+// message to show when u is over the owner's limit, or "" when the download
+// may go ahead.
+func (s *Server) countDownload(ctx context.Context, u *frontend.User, key frontend.RatingKey) string {
+	policy, ok := s.policy().(frontend.DownloadLimitPolicy)
 	if !ok || u == nil {
-		return true
+		return ""
 	}
-	limit := policy.DownloadsPerDay(u)
-	if limit <= 0 {
-		return true
+	switch admitted, unit := policy.AdmitDownload(ctx, u, key); {
+	case admitted:
+		return ""
+	case unit == "gb":
+		return frontend.MsgViewerDownloadDataLimit
+	default:
+		return frontend.MsgViewerDownloadLimit
 	}
-	day := s.now().UTC().Format("2006-01-02")
-	s.downloadTallyMu.Lock()
-	defer s.downloadTallyMu.Unlock()
-	if s.downloadTallyDay != day {
-		s.downloadTallyDay, s.downloadTally = day, map[int64]map[frontend.RatingKey]bool{}
-	}
-	seen := s.downloadTally[u.ID]
-	if seen == nil {
-		seen = map[frontend.RatingKey]bool{}
-		s.downloadTally[u.ID] = seen
-	}
-	if seen[key] {
-		return true
-	}
-	if len(seen) >= limit {
-		return false
-	}
-	seen[key] = true
-	return true
 }
 
 // addDownloadItem appends an item, or returns the existing one when the
@@ -534,8 +521,8 @@ func (s *Server) handleDownloadQueueItemRestart(w http.ResponseWriter, r *http.R
 		}
 		s.downloads.Unlock()
 		for _, it := range restarted {
-			if !s.countDownload(pr.User, it.Key) {
-				s.downloads.Fail(r.Context(), it, frontend.MsgViewerDownloadLimit)
+			if msg := s.countDownload(r.Context(), pr.User, it.Key); msg != "" {
+				s.downloads.Fail(r.Context(), it, msg)
 			}
 		}
 	}
@@ -896,6 +883,9 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			fail(msgPlayFailed)
 		}
 		return
+	}
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok {
+		policy.RecordDownloadBytes(ctx, it.User, it.Key, size)
 	}
 	if !s.downloads.Complete(ctx, it, p, size, s.now()) {
 		s.sessionRuntime().Downloads().ReleaseDownload(p)

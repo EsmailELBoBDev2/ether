@@ -172,6 +172,10 @@ var mixedSections = map[string]map[string]Scope{
 		"maxConcurrentPerUser": Shared,
 		"expiry":               Shared,
 		"maxHeight":            Shared,
+		"limitUnit":            Shared,
+		"limitAmount":          Shared,
+		"limitPeriod":          Shared,
+		"noTranscode":          Shared,
 		// Remuxes run on and are stored by the node serving them.
 		"maxConcurrent":   Local,
 		"diskBudgetBytes": Local,

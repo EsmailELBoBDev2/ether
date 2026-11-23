@@ -61,11 +61,24 @@ func (s surfaceViewerPolicy) DownloadTranscodingDisabled(u *core.User) bool {
 	return s.app != nil && s.app.safety != nil && s.app.safety.DownloadTranscodingDisabled(u)
 }
 
-func (s surfaceViewerPolicy) DownloadsPerDay(u *core.User) int {
+func (s surfaceViewerPolicy) DownloadAllowance(u *core.User) core.DownloadAllowance {
 	if s.app == nil || s.app.safety == nil {
-		return 0
+		return core.DownloadAllowance{}
 	}
-	return s.app.safety.DownloadsPerDay(u)
+	return s.app.safety.DownloadAllowance(u)
+}
+
+func (s surfaceViewerPolicy) AdmitDownload(ctx context.Context, u *core.User, key core.RatingKey) (bool, string) {
+	if s.app == nil || s.app.safety == nil {
+		return true, ""
+	}
+	return s.app.safety.AdmitDownload(ctx, u, key)
+}
+
+func (s surfaceViewerPolicy) RecordDownloadBytes(ctx context.Context, u *core.User, key core.RatingKey, bytes int64) {
+	if s.app != nil && s.app.safety != nil {
+		s.app.safety.RecordDownloadBytes(ctx, u, key, bytes)
+	}
 }
 
 func (s surfaceViewerPolicy) VideoTranscodingDisabled(u *core.User) bool {

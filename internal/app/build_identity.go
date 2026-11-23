@@ -52,6 +52,13 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 			}
 			return a.cfg.Get().Downloads.AllowFriends
 		})
+		a.safety.SetDownloadDefaults(func() core.DownloadAllowance {
+			if a.cfg == nil {
+				return core.DownloadAllowance{}
+			}
+			d := a.cfg.Get().Downloads
+			return core.DownloadAllowance{LimitUnit: d.LimitUnit, LimitAmount: d.LimitAmount, LimitPeriod: d.LimitPeriod, NoTranscode: d.NoTranscode}
+		})
 		if a.catalog != nil {
 			a.catalog.SetOwnerContentPolicy(func(ctx context.Context, t *core.Title) bool {
 				if a.users == nil || a.safety == nil {

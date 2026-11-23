@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -629,4 +630,126 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 			t.Fatalf("loopback range body mismatch")
 		}
 	})
+}
+
+type concurrentCountingMediaSource struct {
+	data           []byte
+	concurrentHits atomic.Int32
+	contextHits    atomic.Int32
+}
+
+func (s *concurrentCountingMediaSource) ReadAt(p []byte, off int64) (int, error) {
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+
+func (s *concurrentCountingMediaSource) ReadAtContext(_ context.Context, p []byte, off int64) (int, error) {
+	s.contextHits.Add(1)
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+
+func (s *concurrentCountingMediaSource) ReadAtConcurrentContext(_ context.Context, p []byte, off int64) (int, error) {
+	s.concurrentHits.Add(1)
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+
+func (s *concurrentCountingMediaSource) Size() int64       { return int64(len(s.data)) }
+func (s *concurrentCountingMediaSource) Name() string      { return "concert.mp4" }
+func (s *concurrentCountingMediaSource) ReleaseID() string { return "rel-concert" }
+func (s *concurrentCountingMediaSource) Close() error      { return nil }
+
+type unwrapTestByteSource struct {
+	ByteSource
+}
+
+func (u *unwrapTestByteSource) UnwrapByteSource() ByteSource { return u.ByteSource }
+
+func TestHTTPReaderAtAndReadAheadConcurrentRanges(t *testing.T) {
+	payload := make([]byte, 256<<10)
+	for i := range payload {
+		payload[i] = byte((i*31 + 7) & 0xff)
+	}
+	// Fake MP4 header so verifyAndResolveMIME recognizes video/mp4.
+	copy(payload[:12], []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "concert.mp4", time.Unix(1_700_000_000, 0), bytes.NewReader(payload))
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	bs, err := Open(ctx, core.PlayableSource{
+		ID:      "mp4-range",
+		Pattern: PatternRange,
+		MIME:    "video/mp4",
+		URL:     srv.URL + "/concert.mp4",
+		Size:    int64(len(payload)),
+	}, Deps{HTTP: srv.Client()})
+	if err != nil {
+		t.Fatalf("Open range: %v", err)
+	}
+	defer bs.Close()
+
+	cr, ok := bs.(core.ConcurrentRangeReaderAt)
+	if !ok {
+		t.Fatalf("HTTPReaderAt (%T) must implement core.ConcurrentRangeReaderAt", bs)
+	}
+
+	// Simulate ExoPlayer opening overlapping concurrent range reads: head, tail, middle.
+	spans := []struct {
+		off int64
+		n   int
+	}{
+		{0, 16 << 10},
+		{int64(len(payload)) - (32 << 10), 32 << 10},
+		{96 << 10, 24 << 10},
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(spans))
+	for _, sp := range spans {
+		wg.Add(1)
+		go func(off int64, n int) {
+			defer wg.Done()
+			got := make([]byte, n)
+			readN, rerr := cr.ReadAtConcurrentContext(ctx, got, off)
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				errs <- fmt.Errorf("offset %d: %w", off, rerr)
+				return
+			}
+			if readN != n || !bytes.Equal(got, payload[off:off+int64(n)]) {
+				errs <- fmt.Errorf("offset %d: read %d mismatch", off, readN)
+			}
+		}(sp.off, sp.n)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
+	}
+
+	// ReadAhead over a mediaSourceByteSource (including through an unwrapping
+	// wrapper such as partDefaultByteSource) must route reads through
+	// ReadAtConcurrentContext so parallel HTTP range connections never cancel a
+	// shared debrid read-ahead epoch.
+	ms := &concurrentCountingMediaSource{data: payload}
+	wrapped := &unwrapTestByteSource{ByteSource: &renamedByteSource{
+		ByteSource: &mediaSourceByteSource{ms: ms, name: "concert.mp4", mime: "video/mp4"},
+		name:       "concert.mp4",
+		mime:       "video/mp4",
+	}}
+	if UnwrapMediaSource(wrapped) != ms {
+		t.Fatalf("UnwrapMediaSource did not unwrap through UnwrapByteSource")
+	}
+	ra := ReadAhead(ctx, wrapped, int64(len(payload)))
+	buf := make([]byte, 4096)
+	if _, err := ra.ReadAt(buf, 8192); err != nil {
+		t.Fatalf("ReadAhead ReadAt: %v", err)
+	}
+	if !bytes.Equal(buf, payload[8192:8192+4096]) {
+		t.Fatalf("ReadAhead payload mismatch")
+	}
+	if ms.concurrentHits.Load() == 0 || ms.contextHits.Load() != 0 {
+		t.Fatalf("ReadAhead hits: concurrent=%d context=%d, want >0 concurrent and 0 context",
+			ms.concurrentHits.Load(), ms.contextHits.Load())
+	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/plugins/adapters"
 )
 
 func TestKindResolverMultiPartSequenceAndOpenKindPart(t *testing.T) {
@@ -359,5 +360,185 @@ func TestKindResolverPendingReturnsErrPreparingNotNoSource(t *testing.T) {
 	_, err = h.resolver.OpenKind(ctx, viewer, emptyItem.Key, nil)
 	if !errors.Is(err, core.ErrNotAvailable) || errors.Is(err, core.ErrPreparing) {
 		t.Fatalf("empty sources OpenKind err = %v, want core.ErrNotAvailable", err)
+	}
+}
+
+type pendingSearchIndexer struct {
+	pending atomic.Bool
+}
+
+func (p *pendingSearchIndexer) Name() string { return "pending-indexer" }
+func (p *pendingSearchIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+	return nil, nil
+}
+func (p *pendingSearchIndexer) FetchNZB(_ context.Context, _ core.Release) ([]byte, error) {
+	return nil, core.ErrNotAvailable
+}
+func (p *pendingSearchIndexer) SearchWithOptions(_ context.Context, _ core.SearchRequest, _ core.IndexerSearchOptions) (core.IndexerSearchResult, error) {
+	if p.pending.Load() {
+		return core.IndexerSearchResult{
+			Indexers: []core.IndexerSearchStatus{{IndexerID: "slow", Indexer: "Slow", Status: core.IndexerStatusPending}},
+			Pending:  []core.IndexerRef{{IndexerID: "slow", Indexer: "Slow"}},
+		}, nil
+	}
+	return core.IndexerSearchResult{
+		Indexers: []core.IndexerSearchStatus{{IndexerID: "slow", Indexer: "Slow", Status: core.IndexerStatusAnswered}},
+	}, nil
+}
+
+func TestKindResolverDeadlinePendingAndSpeculativeNotNegativeCached(t *testing.T) {
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "concert.mp4", time.Unix(1_700_000_000, 0), bytes.NewReader([]byte("concert-bytes")))
+	}))
+	defer mediaSrv.Close()
+
+	httpClient := &http.Client{
+		Transport: hostRewriteTransport{target: mediaSrv.URL, base: mediaSrv.Client().Transport},
+	}
+	h := newKindTestHarness(t, 0, httpClient)
+	ctx := context.Background()
+
+	idx := &pendingSearchIndexer{}
+	idx.pending.Store(true)
+	kr := adapters.NewKindResolver(adapters.KindResolverDeps{
+		Manager:   h.mgr,
+		Libraries: h.libs,
+		Items:     h.items,
+		Blobs:     h.blobs,
+		Catalog:   h.catalog,
+		Indexer:   idx,
+		HTTP:      httpClient,
+	})
+	defer kr.Close()
+
+	var (
+		mode        atomic.Int32 // 0 = DeadlineExceeded, 1 = indexer_search pending + empty, 2 = empty, 3 = ready
+		resolveHits atomic.Int32
+	)
+	const pluginID = "community.example.preparing"
+	h.rt.callContext = func(callCtx context.Context, req plugins.Request) (plugins.Response, error) {
+		switch req.Path {
+		case "/ether/health":
+			return plugins.Response{Status: 200, Body: json.RawMessage(`{"status":"ok"}`)}, nil
+		case "/ether/v1/kinds/recordings/resolve":
+			resolveHits.Add(1)
+			switch mode.Load() {
+			case 0:
+				return plugins.Response{}, context.DeadlineExceeded
+			case 1:
+				if _, err := kr.ResolveSourcesWithResult(callCtx, pluginID, core.SourceQuery{
+					Kind:  "indexer_search",
+					Query: "Metallica S&M",
+				}); err != nil {
+					return plugins.Response{}, err
+				}
+				return plugins.Response{Status: 200, Body: json.RawMessage(`{"sources":[]}`)}, nil
+			case 2:
+				return plugins.Response{Status: 200, Body: json.RawMessage(`{"sources":[]}`)}, nil
+			default:
+				return plugins.Response{
+					Status: 200,
+					Body:   json.RawMessage(`{"sources":[{"id":"concert-1","pattern":"range","mime":"video/mp4","size":13,"url":"https://media.example/concert.mp4"}]}`),
+				}, nil
+			}
+		default:
+			return plugins.Response{Status: 200, Body: json.RawMessage(`{"items":[]}`)}, nil
+		}
+	}
+
+	decl := recordingsKindDecl(true)
+	decl["sync"] = map[string]any{"mode": "push"}
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Preparing Concerts",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Preparing vs not available test",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"permissions":  map[string]any{"network": []string{"media.example"}, "sources": "search"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes":  map[string]any{"mediaKinds": []map[string]any{decl}},
+		},
+	}, map[string][]byte{"i18n/en.json": []byte(`{"lib_name":"Concerts"}`)})
+
+	host := h.mgr.HostFor(pluginID)
+	if _, err := host.KindUpsert(ctx, "recordings", []core.KindItem{
+		{ID: "alb-1", Level: "album", Title: "Concerts"},
+		{ID: "deadline-1", Level: "track", ParentID: "alb-1", Index: 1, Title: "Deadline Concert", Playable: true},
+		{ID: "pending-1", Level: "track", ParentID: "alb-1", Index: 2, Title: "Pending Search Concert", Playable: true},
+		{ID: "spec-1", Level: "track", ParentID: "alb-1", Index: 3, Title: "Speculative Miss Concert", Playable: true},
+	}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+	deadlineItem, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "deadline-1")
+	pendingItem, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "pending-1")
+	specItem, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "spec-1")
+
+	// 1. /resolve hitting context.DeadlineExceeded must surface ErrPreparing
+	// (503 + Retry-After), never terminal ErrNotAvailable (409), and must not
+	// poison negative cache.
+	mode.Store(0)
+	_, err := kr.OpenKind(ctx, viewer, deadlineItem.Key, nil)
+	if !errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("deadline OpenKind err = %v, want core.ErrPreparing (not ErrNotAvailable)", err)
+	}
+	if _, ok, rerr := h.items.GetPartResolution(ctx, deadlineItem.Ref, nil); ok || rerr != nil {
+		t.Fatalf("deadline cached negative resolution: ok=%v err=%v", ok, rerr)
+	}
+
+	// 2. /resolve returning empty sources while an indexer search still has
+	// pending background indexers must return ErrPreparing (not ErrNotAvailable)
+	// and must NOT save a 60s negative cache row.
+	mode.Store(1)
+	_, err = kr.OpenKind(ctx, viewer, pendingItem.Key, nil)
+	if !errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("pending-indexer OpenKind err = %v, want core.ErrPreparing (not ErrNotAvailable)", err)
+	}
+	if _, ok, rerr := h.items.GetPartResolution(ctx, pendingItem.Ref, nil); ok || rerr != nil {
+		t.Fatalf("pending-indexer saved negative resolution: ok=%v err=%v", ok, rerr)
+	}
+	// Once the search settles with a playable source, Play immediately opens it.
+	idx.pending.Store(false)
+	mode.Store(3)
+	media, err := kr.OpenKind(ctx, viewer, pendingItem.Key, nil)
+	if err != nil {
+		t.Fatalf("OpenKind after pending search settled: %v", err)
+	}
+	_ = media.Closer.Close()
+
+	// 3. A speculative detail warm (KindVersions with SpeculativeIndexerWork)
+	// returning 0 sources must NOT persist a 60s negative cache row that blocks
+	// a subsequent explicit Play.
+	mode.Store(2)
+	specCtx := core.WithIndexerPurpose(ctx, core.IndexerPurposeDetail)
+	if _, err := kr.KindVersions(specCtx, viewer, specItem.Key, nil, true); err != nil {
+		t.Fatalf("speculative KindVersions: %v", err)
+	}
+	if _, ok, rerr := h.items.GetPartResolution(ctx, specItem.Ref, nil); ok || rerr != nil {
+		t.Fatalf("speculative detail miss persisted negative cache: ok=%v err=%v", ok, rerr)
+	}
+	// Explicit Play runs /resolve fresh and succeeds.
+	mode.Store(3)
+	media2, err := kr.OpenKind(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), viewer, specItem.Key, nil)
+	if err != nil {
+		t.Fatalf("explicit Play after speculative miss: %v", err)
+	}
+	_ = media2.Closer.Close()
+
+	// 4. Genuine non-speculative empty result with no pending indexers still
+	// returns ErrNotAvailable and caches negatively.
+	mode.Store(2)
+	_, err = kr.OpenKind(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), viewer, deadlineItem.Key, nil)
+	if !errors.Is(err, core.ErrNotAvailable) || errors.Is(err, core.ErrPreparing) {
+		t.Fatalf("genuine empty Play err = %v, want core.ErrNotAvailable", err)
+	}
+	if _, ok, rerr := h.items.GetPartResolution(ctx, deadlineItem.Ref, nil); !ok || !errors.Is(rerr, core.ErrNotAvailable) {
+		t.Fatalf("genuine empty Play negative cache = (ok=%v, err=%v), want (true, ErrNotAvailable)", ok, rerr)
 	}
 }

@@ -917,4 +917,256 @@ func TestContainerExpandOnOpen(t *testing.T) {
 			t.Fatalf("expected 3 expand calls (Plex cold StoredItem, Vela/JF Item, JF/Vela Children), got %d", got)
 		}
 	})
+
+	t.Run("self-refresh with different parentId preserves stored parent and keeps children", func(t *testing.T) {
+		env := openContainerExpandEnv(t)
+		synctest.Test(t, func(t *testing.T) {
+			h, cleanup := newContainerExpandHarnessWithEnv(t, env, "community.example.w320.parent-mismatch", 24, time.Now)
+			defer func() {
+				cleanup()
+				synctest.Wait()
+			}()
+			ctx := context.Background()
+
+			// Seed featured artist ar-246791 with two collaboration albums:
+			// - al-6877261 whose self-refresh names an unstored primary artist (ar-4050205)
+			// - al-stored-primary whose self-refresh names a different stored artist (ar-primary)
+			if _, err := h.items.KindUpsert(ctx, h.plugin, "music", []core.KindItem{
+				{ID: "ar-246791", Level: "artist", Title: "Featured Artist"},
+				{ID: "ar-primary", Level: "artist", Title: "Primary Artist"},
+				{ID: "al-6877261", Level: "album", ParentID: "ar-246791", Title: "Collab Initial", Summary: "Old summary", Year: 2020, Index: 1},
+				{ID: "al-stored-primary", Level: "album", ParentID: "ar-246791", Title: "Split Initial", Summary: "Old split", Index: 2},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			arFeatured := h.mustItem(t, "ar-246791")
+			arPrimary := h.mustItem(t, "ar-primary")
+			alCollab := h.mustItem(t, "al-6877261")
+			alSplit := h.mustItem(t, "al-stored-primary")
+
+			var calls atomic.Int32
+			h.rt.routes["/ether/v1/kinds/music/expand"] = func(req plugins.Request) (plugins.Response, error) {
+				var in core.KindExpandRequest
+				_ = json.Unmarshal(req.Body, &in)
+				calls.Add(1)
+				switch in.ParentID {
+				case "al-6877261":
+					body, _ := json.Marshal(core.KindExpandResponse{
+						Items: []core.KindItem{
+							// Self-refresh names an unstored primary artist ar-4050205.
+							{ID: "al-6877261", Level: "album", ParentID: "ar-4050205", Title: "Collab Deluxe", Summary: "Full liner notes", Year: 2024},
+							{ID: "tr-1", Level: "track", ParentID: "al-6877261", Title: "Track One", Playable: true, Index: 1},
+							{ID: "tr-2", Level: "track", ParentID: "al-6877261", Title: "Track Two", Playable: true, Index: 2},
+						},
+					})
+					return plugins.Response{Status: http.StatusOK, Body: body}, nil
+				case "al-stored-primary":
+					body, _ := json.Marshal(core.KindExpandResponse{
+						Items: []core.KindItem{
+							// Self-refresh names a different stored artist ar-primary.
+							{ID: "al-stored-primary", Level: "album", ParentID: "ar-primary", Title: "Split Deluxe", Summary: "Refreshed split"},
+							{ID: "tr-3", Level: "track", ParentID: "al-stored-primary", Title: "Track Three", Playable: true, Index: 1},
+						},
+					})
+					return plugins.Response{Status: http.StatusOK, Body: body}, nil
+				}
+				return plugins.Response{Status: http.StatusNotFound}, nil
+			}
+
+			// Opening al-6877261 must refresh its metadata, keep stored parent ar-246791, and store both tracks.
+			piv, err := h.kc.Item(ctx, alCollab.Key)
+			if err != nil {
+				t.Fatalf("Item(al-6877261): %v", err)
+			}
+			synctest.Wait()
+			if piv.Title.Title != "Collab Deluxe" || piv.Title.Summary != "Full liner notes" || piv.Title.Year != 2024 {
+				t.Fatalf("expected refreshed metadata on al-6877261, got title=%q summary=%q year=%d",
+					piv.Title.Title, piv.Title.Summary, piv.Title.Year)
+			}
+			if piv.Title.ChildCount != 2 || piv.Title.LeafCount != 2 || piv.Title.ChildCounts["track"] != 2 {
+				t.Fatalf("al-6877261 counts = child:%d leaf:%d byRole:%+v, want 2/2/{track:2}",
+					piv.Title.ChildCount, piv.Title.LeafCount, piv.Title.ChildCounts)
+			}
+			storedCollab := h.mustItem(t, "al-6877261")
+			if storedCollab.ParentID != "ar-246791" {
+				t.Fatalf("al-6877261 stored parentId = %q, want stored parent %q", storedCollab.ParentID, "ar-246791")
+			}
+			tracks, err := h.kc.Children(ctx, alCollab.Key, false, "", 50)
+			if err != nil {
+				t.Fatalf("Children(al-6877261): %v", err)
+			}
+			if len(tracks.Items) != 2 {
+				t.Fatalf("al-6877261 tracks = %d, want 2", len(tracks.Items))
+			}
+			expRec, ok, err := h.items.GetFacetExpansion(ctx, h.plugin, "music", "__container__", "al-6877261")
+			if err != nil || !ok || expRec.State != pluginitems.ExpansionStateDone {
+				t.Fatalf("al-6877261 expansion record = (%+v, ok=%v, err=%v), want state=done", expRec, ok, err)
+			}
+
+			// Opening al-stored-primary must likewise keep ar-246791 and leave ar-primary untouched.
+			splitView, err := h.kc.Item(ctx, alSplit.Key)
+			if err != nil {
+				t.Fatalf("Item(al-stored-primary): %v", err)
+			}
+			synctest.Wait()
+			if splitView.Title.Title != "Split Deluxe" || splitView.Title.Summary != "Refreshed split" || splitView.Title.ChildCount != 1 {
+				t.Fatalf("al-stored-primary after expand = title:%q summary:%q childCount:%d",
+					splitView.Title.Title, splitView.Title.Summary, splitView.Title.ChildCount)
+			}
+			if got := h.mustItem(t, "al-stored-primary").ParentID; got != "ar-246791" {
+				t.Fatalf("al-stored-primary stored parentId = %q, want %q", got, "ar-246791")
+			}
+
+			// Featured artist still owns both albums and sees all 3 expanded leaf tracks; primary artist is untouched.
+			featuredView, err := h.kc.Item(core.WithNoContainerExpand(ctx), arFeatured.Key)
+			if err != nil {
+				t.Fatalf("Item(ar-246791): %v", err)
+			}
+			if featuredView.Title.ChildCount != 2 || featuredView.Title.LeafCount != 3 {
+				t.Fatalf("ar-246791 counts = child:%d leaf:%d, want 2/3", featuredView.Title.ChildCount, featuredView.Title.LeafCount)
+			}
+			primaryView, err := h.kc.Item(core.WithNoContainerExpand(ctx), arPrimary.Key)
+			if err != nil {
+				t.Fatalf("Item(ar-primary): %v", err)
+			}
+			if primaryView.Title.ChildCount != 0 || primaryView.Title.LeafCount != 0 {
+				t.Fatalf("ar-primary counts = child:%d leaf:%d, want 0/0", primaryView.Title.ChildCount, primaryView.Title.LeafCount)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("expected exactly 2 expand calls (one per album), got %d", got)
+			}
+		})
+	})
+
+	t.Run("failed expansion backs off across opens and single-flights across detail and children", func(t *testing.T) {
+		env := openContainerExpandEnv(t)
+		synctest.Test(t, func(t *testing.T) {
+			h, cleanup := newContainerExpandHarnessWithEnv(t, env, "community.example.w320.backoff", 24, time.Now)
+			defer func() {
+				cleanup()
+				synctest.Wait()
+			}()
+			ctx := context.Background()
+
+			if _, err := h.items.KindUpsert(ctx, h.plugin, "music", []core.KindItem{
+				{ID: "ar-err", Level: "artist", Title: "Failing Artist"},
+				{ID: "al-err", Level: "album", ParentID: "ar-err", Title: "Failing Album", Index: 1},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			alErr := h.mustItem(t, "al-err")
+
+			var (
+				calls      atomic.Int32
+				shouldFail atomic.Bool
+			)
+			shouldFail.Store(true)
+			firstStarted := make(chan struct{}, 1)
+			releaseFirst := make(chan struct{})
+
+			h.rt.routes["/ether/v1/kinds/music/expand"] = func(req plugins.Request) (plugins.Response, error) {
+				n := calls.Add(1)
+				if n == 1 {
+					firstStarted <- struct{}{}
+					<-releaseFirst
+				}
+				if shouldFail.Load() {
+					return plugins.Response{Status: http.StatusInternalServerError}, nil
+				}
+				body, _ := json.Marshal(core.KindExpandResponse{
+					Items: []core.KindItem{
+						{ID: "tr-ok-1", Level: "track", ParentID: "al-err", Title: "Recovered Track 1", Playable: true, Index: 1},
+						{ID: "tr-ok-2", Level: "track", ParentID: "al-err", Title: "Recovered Track 2", Playable: true, Index: 2},
+					},
+				})
+				return plugins.Response{Status: http.StatusOK, Body: body}, nil
+			}
+
+			// Concurrent detail + children of one page view share one single-flight failing expand.
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				if _, err := h.kc.Item(ctx, alErr.Key); err != nil {
+					t.Errorf("concurrent Item: %v", err)
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				if _, err := h.kc.Children(ctx, alErr.Key, false, "", 50); err != nil {
+					t.Errorf("concurrent Children: %v", err)
+				}
+			}()
+
+			<-firstStarted
+			synctest.Wait()
+			close(releaseFirst)
+			wg.Wait()
+			synctest.Wait()
+
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("concurrent detail+children on failing expand triggered %d calls, want 1", got)
+			}
+			expRec, ok, err := h.items.GetFacetExpansion(ctx, h.plugin, "music", "__container__", "al-err")
+			if err != nil || !ok || expRec.State != pluginitems.ExpansionStateError || expRec.FinishedAt.IsZero() || expRec.Error == "" {
+				t.Fatalf("expected persisted error record after failed expand, got (%+v, ok=%v, err=%v)", expRec, ok, err)
+			}
+
+			// Immediate sequential calls (same page view / rapid reopens) must NOT retry even with 0 stored children.
+			if _, err := h.kc.Item(ctx, alErr.Key); err != nil {
+				t.Fatalf("immediate Item: %v", err)
+			}
+			if _, err := h.kc.Children(ctx, alErr.Key, false, "", 50); err != nil {
+				t.Fatalf("immediate Children: %v", err)
+			}
+			if _, err := h.kc.ChildrenFiltered(ctx, alErr.Key, false, "", "track", "", 50); err != nil {
+				t.Fatalf("immediate ChildrenFiltered: %v", err)
+			}
+			synctest.Wait()
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("immediate opens during error backoff triggered %d calls, want 1", got)
+			}
+
+			// Still within error cooldown at +5m and +14m: must stay suppressed.
+			time.Sleep(5 * time.Minute)
+			if _, err := h.kc.Item(ctx, alErr.Key); err != nil {
+				t.Fatalf("Item at +5m: %v", err)
+			}
+			if _, err := h.kc.Children(ctx, alErr.Key, false, "", 50); err != nil {
+				t.Fatalf("Children at +5m: %v", err)
+			}
+			time.Sleep(9 * time.Minute)
+			if _, err := h.kc.Children(ctx, alErr.Key, false, "", 50); err != nil {
+				t.Fatalf("Children at +14m: %v", err)
+			}
+			synctest.Wait()
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("opens within 15m error cooldown triggered %d calls, want 1", got)
+			}
+
+			// Once error cooldown has elapsed (+16m total), the next open retries cleanly and succeeds.
+			shouldFail.Store(false)
+			time.Sleep(2 * time.Minute)
+			kids, err := h.kc.Children(ctx, alErr.Key, false, "", 50)
+			if err != nil {
+				t.Fatalf("Children after cooldown: %v", err)
+			}
+			synctest.Wait()
+			if got := calls.Load(); got != 2 || len(kids.Items) != 2 {
+				t.Fatalf("after cooldown retry: calls=%d items=%d, want 2/2", got, len(kids.Items))
+			}
+			view, err := h.kc.Item(ctx, alErr.Key)
+			if err != nil {
+				t.Fatalf("Item after recovery: %v", err)
+			}
+			if view.Title.ChildCount != 2 {
+				t.Fatalf("recovered Item ChildCount = %d, want 2", view.Title.ChildCount)
+			}
+			expDone, ok, err := h.items.GetFacetExpansion(ctx, h.plugin, "music", "__container__", "al-err")
+			if err != nil || !ok || expDone.State != pluginitems.ExpansionStateDone {
+				t.Fatalf("expected state=done after recovery, got (%+v, ok=%v, err=%v)", expDone, ok, err)
+			}
+		})
+	})
 }

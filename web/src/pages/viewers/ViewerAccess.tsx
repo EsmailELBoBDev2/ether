@@ -1,8 +1,17 @@
 import { ViewerCatalogRules } from "./ViewerCatalogRules";
-import { Button, SearchSelect, SettingsSection, Switch, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Alert,
+  AlertDescription,
+  Badge,
+  Button,
+  SearchSelect,
+  SettingsSection,
+  Switch,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ChipGroup, NumberInput } from "../../components/fields";
+import { ChipGroup, NumberInput, Segmented } from "../../components/fields";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -175,6 +184,21 @@ export function ViewerAccountSync({ viewer }: { viewer: Viewer }) {
   );
 }
 
+type PlexDownloadDefaults = {
+  allowSync?: boolean | null;
+};
+
+function overrideLabel(o: {
+  id?: string;
+  product?: string;
+  productMatch?: string;
+  device?: string;
+  platform?: string;
+}): string {
+  const parts = [o.product || o.productMatch, o.device, o.platform].filter(Boolean);
+  return parts.join(" · ") || o.id || t("App override");
+}
+
 /**
  * Everything that decides what one viewer may watch and when: streams at
  * once, the content rating limit, parental controls, allowed times and Live TV.
@@ -190,6 +214,15 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
       normalizePolicy(await apiFetch<SafetyPolicy>(`/safety/policies/${id}`, { signal })),
     [id],
   );
+  const plexDefaults = useAsync(
+    async (signal) =>
+      viewer.isOwner
+        ? null
+        : await apiFetch<PlexDownloadDefaults>(`/viewer-plex-defaults/${id}`, { signal }).catch(
+            () => null,
+          ),
+    [id, viewer.isOwner],
+  );
   const user = users.data?.find((u) => u.id === id);
   const limits = useDraft<UserLimits>(user ? userLimits(user) : null);
   const rules = useDraft<SafetyPolicy>(policy.data);
@@ -198,7 +231,15 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
   const [error, setError] = useState<unknown>(null);
 
   const patchLimits = (p: Partial<UserLimits>) => limits.setDraft((d) => (d ? { ...d, ...p } : d));
-  const patchPolicy = (p: Partial<SafetyPolicy>) => rules.setDraft((d) => (d ? { ...d, ...p } : d));
+  const patchPolicy = (p: Partial<SafetyPolicy>) =>
+    rules.setDraft((d) => {
+      if (!d) return d;
+      const next: SafetyPolicy = { ...d, ...p };
+      if ("allowDownloads" in p && p.allowDownloads == null) {
+        delete next.allowDownloads;
+      }
+      return next;
+    });
 
   const applyPreset = async (age: string) => {
     setPresetBusy(true);
@@ -245,6 +286,26 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
   const p = rules.draft;
   const noUser = users.data && (!user || !l);
   const isOwner = Boolean(user?.isOwner || viewer.isOwner);
+  const serverVideoOff = config.data?.transcode?.videoTranscoding === "off";
+  const alwaysEncodeOverrides = (config.data?.clients?.overrides ?? []).filter(
+    (o) => o.alwaysEncodeVideo,
+  );
+  const alwaysEncodeNames = alwaysEncodeOverrides.map(overrideLabel).join(", ");
+  const hasAlwaysEncodeConflict =
+    alwaysEncodeOverrides.length > 0 && (Boolean(p?.videoTranscodingDisabled) || serverVideoOff);
+
+  const serverDownloadsOn = Boolean(config.data?.downloads?.enabled);
+  const serverFriendsDownloads = Boolean(config.data?.downloads?.allowFriends);
+  const plexAllowSync = plexDefaults.data?.allowSync;
+  const downloadMode: "default" | "allow" | "block" =
+    p?.allowDownloads === true ? "allow" : p?.allowDownloads === false ? "block" : "default";
+  const effectiveDownloads = !serverDownloadsOn
+    ? false
+    : p?.allowDownloads !== undefined && p?.allowDownloads !== null
+      ? p.allowDownloads
+      : plexAllowSync === false
+        ? false
+        : serverFriendsDownloads;
   return (
     <div className="space-y-6">
       <ViewerCatalogRules key={id} id={id} region={String(config.data?.catalog?.region || "US")} />
@@ -363,10 +424,28 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               }
             />
             <SettingsRow
+              setting="no-video-transcoding"
               title={t("No video transcoding")}
-              description={t(
-                "Play this viewer's video only as it is. Ether picks a version their device can play and never converts the picture for them. Audio can still be converted.",
-              )}
+              description={
+                <span className="space-y-1">
+                  <span className="block">
+                    {t(
+                      "Play this viewer's video only as it is. Ether picks a version their device can play and never converts the picture for them. Audio can still be converted. Live TV is unaffected.",
+                    )}
+                  </span>
+                  {serverVideoOff ? (
+                    <span className="block">
+                      {t("Video transcoding is already turned off for the whole server.")}{" "}
+                      <Link
+                        to="/playback/transcoding"
+                        className="font-medium text-primary hover:underline"
+                      >
+                        {t("Review Transcoding")}
+                      </Link>
+                    </span>
+                  ) : null}
+                </span>
+              }
               control={
                 <Switch
                   aria-label={t("No video transcoding")}
@@ -375,6 +454,100 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
                 />
               }
             />
+            {hasAlwaysEncodeConflict ? (
+              <div className="px-5 py-3">
+                <Alert variant="warning" role="status">
+                  <AlertDescription>
+                    {t(
+                      "“Always convert video” is turned on in App compatibility ({apps}). “No video transcoding” wins for this viewer on movies and shows, so Ether still copies video instead of re-encoding it (Live TV is unaffected).",
+                      { apps: alwaysEncodeNames },
+                    )}{" "}
+                    <Link to="/playback/devices" className="font-medium underline">
+                      {t("Review App compatibility")}
+                    </Link>
+                  </AlertDescription>
+                </Alert>
+              </div>
+            ) : null}
+            {!isOwner ? (
+              <SettingsRow
+                setting="downloads"
+                title={t("Downloads")}
+                description={
+                  <span className="space-y-1">
+                    <span className="block">
+                      {t(
+                        "Allow or block offline downloads for this viewer, or follow the server setting.",
+                      )}
+                    </span>
+                    {config.data ? (
+                      !serverDownloadsOn ? (
+                        <span className="block">
+                          {t(
+                            "Offline downloads are turned off for the whole server, so this setting has no effect right now.",
+                          )}{" "}
+                          <Link
+                            to="/apps/plex/downloads"
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {t("Open Plex downloads")}
+                          </Link>
+                        </span>
+                      ) : downloadMode === "default" ? (
+                        <span className="block">
+                          {plexAllowSync === false
+                            ? t(
+                                "Following the server setting, but this viewer's plex.tv share disables downloads. Pick Allow to override it.",
+                              )
+                            : serverFriendsDownloads
+                              ? t("Following the server setting: friends can download.")
+                              : t("Following the server setting: friends cannot download.")}
+                        </span>
+                      ) : downloadMode === "allow" ? (
+                        <span className="block">
+                          {t(
+                            "Overrides the server and plex.tv share settings while server-wide downloads are on.",
+                          )}
+                        </span>
+                      ) : (
+                        <span className="block">
+                          {t(
+                            "Blocks offline downloads for this viewer even if friends are allowed.",
+                          )}
+                        </span>
+                      )
+                    ) : null}
+                  </span>
+                }
+                control={
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Segmented
+                      size="sm"
+                      ariaLabel={t("Downloads")}
+                      value={downloadMode}
+                      onChange={(next) =>
+                        patchPolicy({
+                          allowDownloads: next === "default" ? undefined : next === "allow",
+                        })
+                      }
+                      options={[
+                        { value: "default", label: t("Server default") },
+                        { value: "allow", label: t("Allow") },
+                        { value: "block", label: t("Block") },
+                      ]}
+                    />
+                    {config.data ? (
+                      <Badge
+                        variant={effectiveDownloads ? "success" : "secondary"}
+                        className="whitespace-nowrap"
+                      >
+                        {effectiveDownloads ? t("Effective: Allowed") : t("Effective: Blocked")}
+                      </Badge>
+                    ) : null}
+                  </div>
+                }
+              />
+            ) : null}
             <SettingsRow
               title={t("Maximum bitrate")}
               description={t("In kbps. 0 uses the server default.")}

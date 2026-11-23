@@ -256,21 +256,33 @@ func (s *Server) clientCaps(pr *Request) frontend.ClientCaps {
 	return s.clientCapsForKey(pr, 0)
 }
 
+func (s *Server) stampViewerTranscoding(u *frontend.User, caps *frontend.ClientCaps) {
+	if s == nil || u == nil || caps == nil {
+		return
+	}
+	if policy, ok := s.policy().(interface {
+		VideoTranscodingDisabled(*frontend.User) bool
+	}); ok && policy.VideoTranscodingDisabled(u) {
+		caps.NoVideoTranscode = true
+	}
+}
+
 func (s *Server) clientCapsForKey(pr *Request, key frontend.RatingKey) frontend.ClientCaps {
 	cfg := s.cfg()
 	caps := s.declaredCaps(pr)
 	h := s.getHost()
-	if h.Capabilities == nil {
-		return caps
+	if h.Capabilities != nil {
+		media := frontend.MediaAny
+		switch key.Kind() {
+		case frontend.KindMovie:
+			media = frontend.MediaMovie
+		case frontend.KindEpisode:
+			media = frontend.MediaTV
+		}
+		caps = h.Capabilities.ApplyClientRules(cfg.Quality, caps, pr.User, media)
 	}
-	media := frontend.MediaAny
-	switch key.Kind() {
-	case frontend.KindMovie:
-		media = frontend.MediaMovie
-	case frontend.KindEpisode:
-		media = frontend.MediaTV
-	}
-	return h.Capabilities.ApplyClientRules(cfg.Quality, caps, pr.User, media)
+	s.stampViewerTranscoding(pr.User, &caps)
+	return caps
 }
 
 // Directive is one parsed X-Plex-Client-Profile-Extra directive, e.g.

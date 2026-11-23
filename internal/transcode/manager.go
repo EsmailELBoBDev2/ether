@@ -848,7 +848,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	if v == nil {
 		d.VideoCopy = false
 	}
-	if !req.LiveInput && d.EncodesVideo(req.Info) && m.VideoTranscodingOff() {
+	if !req.LiveInput && d.EncodesVideo(req.Info) && (req.NoVideoTranscode || m.VideoTranscodingOff()) {
 		return nil, ErrVideoTranscodingDisabled
 	}
 	if d.VideoCopy && v != nil && d.VideoCodec == "" {
@@ -888,7 +888,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	}
 	d = segmentableAudio(req.Info, d)
 	m.mu.Lock()
-	videoOff := !req.LiveInput && m.cfg.VideoTranscodingOff()
+	videoOff := !req.LiveInput && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff())
 	rtxConfig, _ := normalizedRTX(m.cfg.RTXVideo)
 	adapt := adaptiveFromConfig(m.cfg)
 	if req.Ramp.Version != 0 {
@@ -1232,7 +1232,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		m.mu.Unlock()
 		return nil, errors.New("transcode: manager closed")
 	}
-	if !req.LiveInput && d.EncodesVideo(req.Info) && m.cfg.VideoTranscodingOff() {
+	if !req.LiveInput && d.EncodesVideo(req.Info) && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff()) {
 		m.mu.Unlock()
 		return nil, ErrVideoTranscodingDisabled
 	}
@@ -1296,6 +1296,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			rtxTimeline:        enhancementSelected(d),
 			rtxConfig:          rtxConfig,
 			liveInput:          req.LiveInput,
+			noVideoTranscode:   req.NoVideoTranscode,
 			liveFromBacklog:    req.LiveInput && req.LiveFromBacklog,
 			loopInput:          len(slateData) > 0,
 			input:              req.InputURL,

@@ -150,10 +150,19 @@ func (s *Service) SetBus(bus clusterbus.Bus) {
 
 // Close disconnects the cluster bus.
 func (s *Service) Close() { s.SetBus(nil) }
+func cloneBoolPtr(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 func (s *Service) Get(id int64) Policy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p := s.policies[id]
+	p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
 	p.Bedtime = cloneBedtime(p.Bedtime)
 	p.AllowedHours = append([]int(nil), p.AllowedHours...)
 	p.BlockedGenres = append([]string(nil), p.BlockedGenres...)
@@ -184,6 +193,7 @@ func (p Policy) Validate() error {
 
 func (s *Service) Put(ctx context.Context, id int64, p Policy) error {
 	// Cache an independent snapshot, just as Get returns one to callers.
+	p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
 	p.Bedtime = cloneBedtime(p.Bedtime)
 	p.AllowedHours = append([]int(nil), p.AllowedHours...)
 	p.BlockedGenres = append([]string(nil), p.BlockedGenres...)

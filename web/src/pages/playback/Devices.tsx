@@ -1,5 +1,7 @@
 import { SubtabNav } from "../../components/layout";
 import {
+  Alert,
+  AlertDescription,
   Badge,
   Button,
   EmptyState,
@@ -14,7 +16,7 @@ import {
 } from "@braedonsaunders/appkit-ui";
 import { Pencil, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { SettingsRow } from "../../components/SettingsRow";
 import { pagedTableLabels, searchSelectLabels } from "../../i18n/appkit-labels";
@@ -585,6 +587,7 @@ export function DeviceCapabilities() {
   const [baseline, setBaseline] = useState<Draft>(blankDraft);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<unknown>(null);
+  const config = useAsync(() => api.getConfig(), []);
   const matrix = useAsync(() => apiFetch<Catalog>("/playback/policy"), []);
   const apps = matrix.data?.apps ?? [];
   const devices = matrix.data?.devices ?? [];
@@ -1759,11 +1762,23 @@ export function DeviceCapabilities() {
           <BoolRow
             label={t("Always convert video")}
             help={t(
-              "Encode video instead of copying it when streaming. Direct play of the original file is unaffected.",
+              "Encode video instead of copying it when streaming. Direct play of the original file is unaffected. Ignored for movies and shows when “No video transcoding” is on for the server or the viewer.",
             )}
             value={draft.alwaysEncodeVideo}
             onChange={(alwaysEncodeVideo) => setDraft({ ...draft, alwaysEncodeVideo })}
           />
+          {draft.alwaysEncodeVideo && config.data?.transcode?.videoTranscoding === "off" ? (
+            <Alert variant="warning" role="status">
+              <AlertDescription>
+                {t(
+                  "Video transcoding is currently turned off for the whole server, so “No video transcoding” wins on movies and shows (Live TV is unaffected).",
+                )}{" "}
+                <Link to="/playback/transcoding" className="font-medium underline">
+                  {t("Review Transcoding")}
+                </Link>
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <BoolRow
             label={t("Use these settings even when the app reports otherwise")}
             help={t("Use this when your device can play something its app is too cautious about.")}

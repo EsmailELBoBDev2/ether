@@ -20,6 +20,14 @@ func (m *Manager) videoTranscodingOff() bool {
 	return false
 }
 
+func (m *Manager) videoOff(caps core.ClientCaps) bool {
+	return caps.NoVideoTranscode || m.videoTranscodingOff()
+}
+
+func (m *Manager) sessionVideoOff(s *session) bool {
+	return s.noVideoTranscodeActive() || m.videoTranscodingOff()
+}
+
 func (m *Manager) probedNeedsVideoTranscode(info core.MediaInfo, caps core.ClientCaps) (core.Decision, bool) {
 	if info.Estimated || info.Video() == nil {
 		return core.Decision{}, false
@@ -28,6 +36,9 @@ func (m *Manager) probedNeedsVideoTranscode(info core.MediaInfo, caps core.Clien
 		caps.MaxBitrateKbps == 0 && len(caps.VideoMaxHeights) == 0 &&
 		caps.Product == "" && caps.Platform == "" && caps.Protocol == "" && !caps.ExplicitNoHDR {
 		return core.Decision{}, false
+	}
+	if m.videoOff(caps) {
+		caps.NoVideoTranscode = true
 	}
 	opts := core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1}
 	var dec core.Decision
@@ -45,6 +56,35 @@ func (m *Manager) probedNeedsVideoTranscode(info core.MediaInfo, caps core.Clien
 	return dec, true
 }
 
+func (m *Manager) sessionNeedsVideoTranscode(s *session, g *generation, caps core.ClientCaps) bool {
+	if !m.videoOff(caps) || g == nil {
+		return false
+	}
+	info := g.infoSnapshot()
+	if _, needs := m.probedNeedsVideoTranscode(info, caps); needs {
+		return true
+	}
+	if info.Estimated || info.BitrateKbps <= 0 {
+		capKbps := caps.MaxBitrateKbps
+		if capKbps <= 0 && caps.Remote {
+			capKbps = m.config().Transcode.RemoteMaxBitrateKbps
+		}
+		if capKbps > 0 && g.res != nil {
+			dur := info.Duration
+			if dur <= 0 && s != nil && s.title != nil {
+				dur = s.title.Runtime
+			}
+			if !sourceFitsBitrate(g.res.Release.Size, dur, info.BitrateKbps, capKbps) {
+				return true
+			}
+		}
+		if info.Estimated && g.res != nil && !rememberedCodecCurrent(g.res.Release, caps) {
+			return true
+		}
+	}
+	return false
+}
+
 // swapChecker is implemented by HLS sessions whose delivered format is
 // fixed for their lifetime (a segmented-Matroska header the player never
 // refetches). It is optional: other sessions accept any replacement.
@@ -57,8 +97,10 @@ type swapChecker interface {
 // incompatible candidate is released and the next one tried. The mismatch
 // is specific to this session: the release is not marked bad.
 func (m *Manager) preflightSwap(ctx context.Context, s *session, g *generation) error {
-	if m.videoTranscodingOff() {
-		if _, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
+	if m.sessionVideoOff(s) {
+		caps := s.caps
+		caps.NoVideoTranscode = true
+		if _, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), caps); needs {
 			return core.ErrVideoTranscodingDisabled
 		}
 	}

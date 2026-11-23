@@ -854,6 +854,15 @@ func (s surface) ProactiveFallbackAvailable() bool {
 	q, ok := s.broker.(frontend.QualitySessions)
 	return s.protocol == "vela" && ok && q.ProactiveFallbackAvailable()
 }
+func (s surface) ProactiveFallbackAvailableFor(v *core.Viewer) bool {
+	if s.protocol != "vela" {
+		return false
+	}
+	if q, ok := s.broker.(interface{ ProactiveFallbackAvailableFor(*core.Viewer) bool }); ok {
+		return q.ProactiveFallbackAvailableFor(v)
+	}
+	return s.ProactiveFallbackAvailable()
+}
 func (s surface) QualityRungs(ctx context.Context, a frontend.SessionAccess, id string) ([]core.HLSRung, error) {
 	q, ok := s.broker.(frontend.QualitySessions)
 	if !ok || a.Protocol != s.protocol {

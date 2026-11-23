@@ -119,6 +119,9 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		opts.DirectPlay = false
 		opts.Protocol = frontend.ProtocolHTTP
 		caps := entry.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
 		if ps.Info.Video() == nil && audioExt != "" && audioExt != "mkv" {
 			caps.HLSContainers = []string{audioExt}
 			if len(p.caps.TranscodeAudioCodecs) > 0 {
@@ -141,7 +144,10 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 				return s.transcoder().Decide(ps.Info, caps, opts)
 			}
 		}
-		videoBlocked := ps.Info.Video() != nil && caps.AlwaysEncodeVideo
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
+		videoBlocked := ps.Info.Video() != nil && caps.EffectiveAlwaysEncodeVideo()
 		audioBlocked := len(caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(caps.TranscodeAudioCodecs, dec.AudioCodec)
 		if videoBlocked || audioBlocked {
 			opts := entry.opts
@@ -170,14 +176,15 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		s.stopPlexHLS(p.sessionID)
 	}
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
-		SessionID:      p.sessionID,
-		ReleaseID:      ps.SourceReleaseID(),
-		InputURL:       s.playback().InputURL(ps.ID),
-		Info:           ps.Info,
-		Decision:       dec,
-		StartOffset:    ps.SourcePosition(p.offset),
-		Protocol:       frontend.ProtocolHTTP,
-		CopyTimestamps: p.copyTimestamps,
+		SessionID:        p.sessionID,
+		ReleaseID:        ps.SourceReleaseID(),
+		InputURL:         s.playback().InputURL(ps.ID),
+		NoVideoTranscode: entry.caps.NoVideoTranscode,
+		Info:             ps.Info,
+		Decision:         dec,
+		StartOffset:      ps.SourcePosition(p.offset),
+		Protocol:         frontend.ProtocolHTTP,
+		CopyTimestamps:   p.copyTimestamps,
 	})
 	if err != nil {
 		s.writeStartErr(w, r, pr, err)

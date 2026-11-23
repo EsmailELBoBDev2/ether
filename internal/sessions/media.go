@@ -287,7 +287,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if req.Format == frontend.StreamDASH {
 		proto = core.ProtocolDASH
 		if dec.Kind == core.DecisionDirectPlay {
-			if ps.Info.Video() != nil && s.caps.AlwaysEncodeVideo {
+			if ps.Info.Video() != nil && s.caps.EffectiveAlwaysEncodeVideo() && (s.live || !b.videoOff(s.caps)) {
 				options := s.opts
 				options.DirectPlay = false
 				options.DirectStream = false
@@ -364,7 +364,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if proto != core.ProtocolDASH && !s.live {
 		startAt = ps.SourcePosition(startAt)
 	}
-	request := core.HLSRequest{FirstSegmentAt: firstSegmentAt, LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	request := core.HLSRequest{FirstSegmentAt: firstSegmentAt, LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), NoVideoTranscode: !s.live && b.videoOff(s.caps), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
 	if req.Continuous && s.public.Protocol == "vela" {
 		variants, _, e := b.qualityPlan(ctx, s, viewer)
 		if e != nil {
@@ -548,6 +548,9 @@ func (b *Broker) httpOutputDecision(ps *core.PlaySession, caps core.ClientCaps, 
 	}
 	opts.DirectPlay = false
 	opts.Protocol = core.ProtocolHTTP
+	if b.videoOff(caps) {
+		caps.NoVideoTranscode = true
+	}
 	if dec.Kind == core.DecisionDirectPlay || dec.Container != transcode.ContainerMatroska {
 		dec = b.deps.Transcoder.Decide(ps.Info, caps, opts)
 	}
@@ -584,12 +587,15 @@ func (b *Broker) hlsOutputDecision(ps *core.PlaySession, caps core.ClientCaps, o
 		}
 		return b.decideAudioProfile(ps, caps, opts, allowTranscoding, "hls")
 	}
+	if b.videoOff(caps) {
+		caps.NoVideoTranscode = true
+	}
 	dec = HLSDecision(dec, opts.DirectPlay, func() core.Decision {
 		retry := opts
 		retry.DirectPlay = false
 		return b.deps.Transcoder.Decide(ps.Info, caps, retry)
 	}, func(d core.Decision) core.Decision {
-		if ps.Info.Video() != nil && caps.AlwaysEncodeVideo {
+		if ps.Info.Video() != nil && caps.EffectiveAlwaysEncodeVideo() {
 			retry := opts
 			retry.DirectPlay = false
 			retry.DirectStream = false

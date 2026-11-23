@@ -438,8 +438,12 @@ func (d *DownloadRemuxer) convertDownload(ctx context.Context, req core.Download
 	} else if opts.SubtitleStream == 0 {
 		opts.SubtitleStream = -1
 	}
-	dec := d.m.Decide(req.Info, downloadProfile(req.Caps), opts)
-	if d.m.VideoTranscodingOff() && dec.EncodesVideo(req.Info) {
+	dlCaps := downloadProfile(req.Caps)
+	if d.m.VideoTranscodingOff() {
+		dlCaps.NoVideoTranscode = true
+	}
+	dec := d.m.Decide(req.Info, dlCaps, opts)
+	if dlCaps.NoVideoTranscode && dec.EncodesVideo(req.Info) {
 		return "", 0, ErrVideoTranscodingDisabled
 	}
 	if dec.Kind == core.DecisionDirectPlay {

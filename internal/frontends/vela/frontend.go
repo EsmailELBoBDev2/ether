@@ -1030,6 +1030,7 @@ func (i *instance) requestCapabilitiesFor(r *http.Request, v *frontend.Viewer) o
 		c["searchKinds"], _ = i.searchKinds(r, v)
 		if features, ok := c["features"].(object); ok {
 			features["quickConnectApproval"] = object{"available": i.quickConnectApprovalAvailable(v)}
+			features["proactiveFallback"] = object{"available": i.proactiveFallbackAvailableFor(v)}
 		}
 	}
 	if i.host.SecureOrigins != nil {

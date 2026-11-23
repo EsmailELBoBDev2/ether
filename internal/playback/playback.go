@@ -978,7 +978,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			variantID := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface, variant: picked, exact: exact}
 			if prep := m.byIdent[variantID]; prep != nil {
 				stale := !exact && m.preferenceStaleLocked(key, picked, m.now())
-				if sessionFitsSelection(prep, caps, "", exact) && (sessionFitsSelection(prep, caps, picked, exact) || (stale && prep.prefer == picked)) {
+				if m.sessionFitsSelection(prep, caps, "", exact) && (m.sessionFitsSelection(prep, caps, picked, exact) || (stale && prep.prefer == picked)) {
 					promotedReplaced = m.promotePreparedLocked(id, variantID, prep)
 				}
 			}
@@ -1009,12 +1009,13 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		m.lastCaps[user.ID] = caps
 		s := m.byIdent[id]
 		if s == nil && deferSupersession && prefer != "" && !exact {
-			if def := m.byIdent[identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface}]; sessionFitsSelection(def, caps, prefer, false) {
+			if def := m.byIdent[identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface}]; m.sessionFitsSelection(def, caps, prefer, false) {
 				s = def
 			}
 		}
 		if s != nil {
-			if sessionFitsSelection(s, caps, prefer, exact) {
+			if m.sessionFitsSelection(s, caps, prefer, exact) {
+				s.setNoVideoTranscode(caps.NoVideoTranscode)
 				now := m.now()
 				if !m.sessionCountsForLimit(s, now) {
 					cfg := m.config()

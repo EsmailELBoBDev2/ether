@@ -5,12 +5,15 @@ import "github.com/braedonsaunders/ether/internal/core"
 // sessionFitsSelection reports whether s satisfies the requested variant and
 // explicit client bitrate ceiling. A session already opened under the same or a
 // tighter explicit bitrate cap is kept even when no smaller source existed.
-func sessionFitsSelection(s *session, caps core.ClientCaps, prefer string, exact bool) bool {
+func (m *Manager) sessionFitsSelection(s *session, caps core.ClientCaps, prefer string, exact bool) bool {
 	if s == nil || s.closed || s.exact != exact {
 		return false
 	}
 	g := s.current()
 	if g == nil {
+		return false
+	}
+	if m.sessionNeedsVideoTranscode(s, g, caps) {
 		return false
 	}
 	if prefer != "" {

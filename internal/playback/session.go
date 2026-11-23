@@ -225,6 +225,7 @@ type session struct {
 	ident                 identity
 	user                  core.User
 	caps                  core.ClientCaps
+	noVideoTranscode      atomic.Int32 // 0=from caps, 1=off, 2=on
 	title                 *core.Title
 	titleName             string
 	profileKey            string // profileKey of the resolving profile
@@ -362,7 +363,30 @@ func newSession(id string, ident identity, user *core.User, caps core.ClientCaps
 		expectPos:        -1,
 	}
 	s.directRangeEnd.Store(-1)
+	s.setNoVideoTranscode(caps.NoVideoTranscode)
 	return s
+}
+
+func (s *session) noVideoTranscodeActive() bool {
+	if s == nil {
+		return false
+	}
+	switch s.noVideoTranscode.Load() {
+	case 1:
+		return false
+	case 2:
+		return true
+	default:
+		return s.caps.NoVideoTranscode
+	}
+}
+
+func (s *session) setNoVideoTranscode(off bool) {
+	if off {
+		s.noVideoTranscode.Store(2)
+	} else {
+		s.noVideoTranscode.Store(1)
+	}
 }
 
 func (s *session) isKind() bool {
@@ -523,6 +547,8 @@ func (s *session) toSource(g *generation, v int64) int64 {
 func (s *session) snapshot(now time.Time) *core.PlaySession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	caps := s.caps
+	caps.NoVideoTranscode = s.noVideoTranscodeActive()
 	ps := &core.PlaySession{
 		PreparedOnly:      s.preparedOnly,
 		ID:                s.id,
@@ -533,7 +559,7 @@ func (s *session) snapshot(now time.Time) *core.PlaySession {
 		StartedAt:         s.startedAt,
 		TitleName:         s.titleName,
 		Username:          s.user.Username,
-		Client:            s.caps,
+		Client:            caps,
 		Decision:          s.decision,
 		DeliveryDecision:  s.deliveryDecision,
 		DecisionReason:    s.decisionReason,

@@ -57,6 +57,9 @@ type warmDiscarder interface {
 // Dolby Vision turned on, another codec). Narrower caps are safe: Prepare's
 // own acceptance check rejects a warm release the device cannot play.
 func capsWiden(next, prev core.ClientCaps) bool {
+	if prev.NoVideoTranscode && !next.NoVideoTranscode {
+		return true
+	}
 	if prev.MaxBitrateKbps > 0 && (next.MaxBitrateKbps == 0 || next.MaxBitrateKbps > prev.MaxBitrateKbps) {
 		return true
 	}

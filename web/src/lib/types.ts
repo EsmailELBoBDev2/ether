@@ -505,6 +505,16 @@ export interface EtherConfig {
       maxConcurrent: number;
     };
   };
+  clients?: {
+    overrides?: {
+      id?: string;
+      product?: string;
+      productMatch?: string;
+      platform?: string;
+      device?: string;
+      alwaysEncodeVideo?: boolean;
+    }[];
+  };
   trakt: { enabled: boolean; clientId: string; clientSecret: string };
   simkl?: { enabled: boolean; clientId: string; clientSecret: string };
   mdblist?: { enabled: boolean };

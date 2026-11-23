@@ -171,7 +171,7 @@ func (m *Manager) enhanceDecision(info core.MediaInfo, caps core.ClientCaps, opt
 	if invalid != "" {
 		return reject("unavailable", invalid)
 	}
-	if cfg.VideoTranscodingOff() {
+	if cfg.VideoTranscodingOff() || caps.NoVideoTranscode {
 		return reject("off", "video transcoding is off")
 	}
 	if c.Mode == "off" {

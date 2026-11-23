@@ -1230,6 +1230,8 @@ func (s *Server) handleLiveOperationStop(w http.ResponseWriter, r *http.Request)
 }
 
 func liveTuneCaps(caps frontend.ClientCaps) frontend.ClientCaps {
+	// Live TV is unaffected by the per-viewer "no video transcoding" switch.
+	caps.NoVideoTranscode = false
 	caps.ProbeLiveWithoutCodecs = caps.ProbeLiveWithoutCodecs || frontend.HasQuirk(caps.Product, caps.Platform, caps.Device, "", caps.Version, "probe-hls-without-codecs")
 	// Plex Web plays Live TV via DASH (fMP4), not MPEG-TS HLS. Declaring fMP4
 	// at tune time lets direct IPTV copy into fMP4 once and serve start.mpd

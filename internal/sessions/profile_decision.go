@@ -1075,6 +1075,9 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
+	if req.Channel == "" && b.videoOff(req.Caps) {
+		req.Caps.NoVideoTranscode = true
+	}
 	requiresRemux := ps.RequiresRemux
 	if rr, ok := b.deps.Playback.(core.RemuxRequirer); ok && rr.RequiresRemux(ps.ID) {
 		requiresRemux = true

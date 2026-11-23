@@ -83,6 +83,9 @@ type HLSRequest struct {
 	// LiveInput permits playlist demuxers for owner-configured live sources.
 	// Ordinary resolved media must leave this false, even if duration is unknown.
 	LiveInput bool
+	// NoVideoTranscode enforces the owner's per-viewer "no video transcoding"
+	// policy on this session (never re-encode video; LiveInput is unaffected).
+	NoVideoTranscode bool `json:",omitempty"`
 	// LiveFromBacklog starts a live HLS input at the first segment its
 	// playlist lists (Live TV's relay trims that playlist to the channel's
 	// stability reserve), so the backlog primes the reserve instead of the

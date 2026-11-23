@@ -440,9 +440,13 @@ func (s *Session) PrepareRung(ctx context.Context, id string, position time.Dura
 	if s.plan != nil {
 		n = s.plan.IndexAt(position - s.base)
 	}
+	videoOff := s.videoTranscodingOff() && t >= 0 && t < len(s.rungs) && s.rungs[t].decision.EncodesVideo(s.info)
 	s.mu.Unlock()
 	if t < 0 {
 		return core.ErrNotAvailable
+	}
+	if videoOff {
+		return ErrVideoTranscodingDisabled
 	}
 	w := &preparationSink{header: make(http.Header)}
 	r, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/prepare", nil)

@@ -35,6 +35,9 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
+	if r.NoVideoTranscode {
+		r.Caps.NoVideoTranscode = true
+	}
 	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: !ps.Info.AudioOnly(), AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
 	if transcoder != nil {
 		dec = transcoder.Decide(ps.Info, r.Caps, r.Options)
@@ -102,7 +105,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		if healthSafety {
 			dec.Reason = "remux for failover safety: health unverified"
 		}
-		videoCopyOK := !(ps.Info.Video() != nil && r.Caps.AlwaysEncodeVideo) && (videoCodec == "" || transcode.SegmentedVideoCopyOK(r.Caps, videoCodec))
+		videoCopyOK := !(ps.Info.Video() != nil && r.Caps.EffectiveAlwaysEncodeVideo()) && (videoCodec == "" || transcode.SegmentedVideoCopyOK(r.Caps, videoCodec))
 		audioCopyOK := audioCodec == "" || transcode.SegmentedAudioCopyOK(r.Caps, audioCodec)
 		if !videoCopyOK || !audioCopyOK {
 			opts := r.Options

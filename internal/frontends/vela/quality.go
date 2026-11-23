@@ -14,6 +14,15 @@ func (i *instance) proactiveFallbackAvailable() bool {
 	return ok && q.ProactiveFallbackAvailable()
 }
 
+func (i *instance) proactiveFallbackAvailableFor(v *frontend.Viewer) bool {
+	if v != nil {
+		if q, ok := i.host.Sessions.(interface{ ProactiveFallbackAvailableFor(*frontend.Viewer) bool }); ok {
+			return q.ProactiveFallbackAvailableFor(v)
+		}
+	}
+	return i.proactiveFallbackAvailable()
+}
+
 func (i *instance) addQualityPaths(ctx context.Context, a frontend.SessionAccess, id string, s *playSession) {
 	if _, live := s.plan["live"]; live {
 		return
@@ -63,7 +72,7 @@ func (i *instance) prepareFallback(w http.ResponseWriter, r *http.Request, v *fr
 		return false
 	}
 	available := false
-	if !s.port(w, func() { available = q.ProactiveFallbackAvailable() }) {
+	if !s.port(w, func() { available = i.proactiveFallbackAvailableFor(v) }) {
 		return false
 	}
 	if !available {

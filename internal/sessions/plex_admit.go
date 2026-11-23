@@ -151,7 +151,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), etag: etag, external: true}
 	stored = true
 	b.mu.Unlock()
-	return frontend.PlayPlan{ID: id, Media: publicMedia(media), Decision: dec, ETag: etag}, nil
+	return frontend.PlayPlan{ID: id, Media: publicMedia(media), Decision: dec, VideoTranscodingOff: videoOff, ETag: etag}, nil
 }
 
 // reusePlexSession updates the broker session already published for a Plex

@@ -609,7 +609,7 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		caps.MaxBitrateKbps = limit
 	}
 	if caps.Remote && s.host.RemoteUploadCap != nil {
-		allowTC := !s.cfg().Transcode.VideoTranscodingOff()
+		allowTC := !s.cfg().Transcode.VideoTranscodingOff() && !caps.NoVideoTranscode
 		if limit, fromBudget := s.host.RemoteUploadCap(r.Context(), sessionID, caps.Remote, allowTC, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
 			if caps.MaxBitrateKbps == 0 {
 				caps.DefaultRemoteBitrate = true
@@ -808,6 +808,11 @@ func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
 	if (!p.opts.DirectPlay || p.ownerBitrateCap) && !p.caps.DefaultRemoteBitrate && p.caps.MaxBitrateKbps >= 1500 {
 		caps.MaxBitrateKbps = p.caps.MaxBitrateKbps
 		caps.DefaultRemoteBitrate = false
+	} else if p.caps.NoVideoTranscode && p.caps.MaxBitrateKbps > 0 {
+		// When video transcoding is off for this viewer, any bitrate ceiling
+		// must guide release selection instead of failing after admission.
+		caps.MaxBitrateKbps = p.caps.MaxBitrateKbps
+		caps.DefaultRemoteBitrate = p.caps.DefaultRemoteBitrate
 	}
 	if p.opts.MaxHeight >= 720 && !p.opts.DirectPlay && !p.opts.DirectStream {
 		caps.PreferredSourceHeight = p.opts.MaxHeight
@@ -885,13 +890,7 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 	if policy, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !policy.CanPlay(pr.User, p.caps.Remote, s.now()) {
 		return nil, nil, frontend.Decision{}, frontend.ErrUnauthorized
 	}
-	if policy, ok := s.policy().(interface {
-		VideoTranscodingDisabled(*frontend.User) bool
-	}); ok && policy.VideoTranscodingDisabled(pr.User) {
-		// The owner's per-viewer switch: release selection and the decision
-		// both read it from the caps.
-		p.caps.NoVideoTranscode = true
-	}
+	s.stampViewerTranscoding(pr.User, &p.caps)
 	if policy, ok := s.policy().(frontend.BitrateAccessPolicy); ok {
 		if limit := policy.BitrateLimit(pr.User); limit > 0 && (p.caps.MaxBitrateKbps == 0 || limit < p.caps.MaxBitrateKbps) {
 			p.caps.MaxBitrateKbps = limit
@@ -1197,13 +1196,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	if policy, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !policy.CanPlay(pr.User, p.caps.Remote, s.now()) {
 		return nil, nil
 	}
-	if policy, ok := s.policy().(interface {
-		VideoTranscodingDisabled(*frontend.User) bool
-	}); ok && policy.VideoTranscodingDisabled(pr.User) {
-		// The owner's per-viewer switch: release selection and the decision
-		// both read it from the caps.
-		p.caps.NoVideoTranscode = true
-	}
+	s.stampViewerTranscoding(pr.User, &p.caps)
 	if policy, ok := s.policy().(frontend.BitrateAccessPolicy); ok {
 		if limit := policy.BitrateLimit(pr.User); limit > 0 && (p.caps.MaxBitrateKbps == 0 || limit < p.caps.MaxBitrateKbps) {
 			p.caps.MaxBitrateKbps = limit
@@ -1905,27 +1898,35 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		if androidImageSubtitle(startPR, ps.Info, opts) {
 			opts.BurnSubtitles = true
 		}
-		return s.transcoder().Decide(ps.Info, entry.caps, opts)
+		caps := entry.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
+		return s.transcoder().Decide(ps.Info, caps, opts)
 	}, func(dec frontend.Decision) frontend.Decision {
 		// A client may request HLS after accepting an MDE direct-play
 		// decision (notably stable HTTP/debrid files). HLSDecision's legacy
 		// fallback is MPEG-TS, which cannot carry the selected text track.
 		// Use the negotiated Matroska/Android target even on this late handoff.
-		if plexAndroidClient(startPR) || slices.Contains(entry.caps.HLSContainers, frontend.ContainerMatroska) {
-			dec.Container = frontend.HLSContainer(entry.caps, dec.VideoCodec, dec.AudioCodec)
+		caps := entry.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
+		if plexAndroidClient(startPR) || slices.Contains(caps.HLSContainers, frontend.ContainerMatroska) {
+			dec.Container = frontend.HLSContainer(caps, dec.VideoCodec, dec.AudioCodec)
 			if androidImageSubtitle(startPR, ps.Info, entry.opts) {
 				opts := entry.opts
 				opts.DirectPlay, opts.BurnSubtitles = false, true
-				return s.transcoder().Decide(ps.Info, entry.caps, opts)
+				return s.transcoder().Decide(ps.Info, caps, opts)
 			}
 		}
-		videoOK := !(ps.Info.Video() != nil && entry.caps.AlwaysEncodeVideo) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(entry.caps, dec.VideoCodec))
-		audioOK := dec.AudioCodec == "" || frontend.SegmentedAudioCopyOK(entry.caps, dec.AudioCodec)
+		videoOK := !(ps.Info.Video() != nil && caps.EffectiveAlwaysEncodeVideo()) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(caps, dec.VideoCodec))
+		audioOK := dec.AudioCodec == "" || frontend.SegmentedAudioCopyOK(caps, dec.AudioCodec)
 		if !videoOK || !audioOK {
 			opts := entry.opts
 			opts.DirectPlay = false
 			opts.DirectStream = videoOK
-			return s.transcoder().Decide(ps.Info, entry.caps, opts)
+			return s.transcoder().Decide(ps.Info, caps, opts)
 		}
 		return dec
 	})
@@ -1951,6 +1952,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		SessionID:           p.sessionID,
 		ReleaseID:           ps.SourceReleaseID(),
 		InputURL:            s.playback().InputURL(ps.ID),
+		NoVideoTranscode:    entry.caps.NoVideoTranscode,
 		Info:                ps.Info,
 		Decision:            dec,
 		StartOffset:         ps.SourcePosition(p.offset),

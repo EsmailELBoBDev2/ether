@@ -357,6 +357,13 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	caps := s.downloadCaps(r, pr)
+	if policy, ok := s.policy().(interface {
+		DownloadTranscodingDisabled(*frontend.User) bool
+	}); ok && policy.DownloadTranscodingDisabled(pr.User) {
+		// The owner's switch for this viewer's downloads: release selection
+		// and the download decision both read it from the caps.
+		caps.NoVideoTranscode = true
+	}
 	burn := r.URL.Query().Get("subtitles") == "burn"
 	added := []addedQueueItemModel{}
 	for _, k := range keys {
@@ -367,11 +374,52 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 		}
 		for _, t := range titles {
 			it := s.addDownloadItem(q, pr.User, t, caps, burn)
+			if !s.countDownload(pr.User, t.Key) {
+				// Over the viewer's daily cap: the item is listed with the
+				// reason, as a failed download is, and never starts.
+				s.downloads.Fail(ctx, it, frontend.MsgViewerDownloadLimit)
+			}
 			added = append(added, addedQueueItemModel{ID: it.ID, Key: keyPath(t.Key)})
 		}
 	}
 	s.scheduleDownloads()
 	s.write(w, r, &downloadContainer{Size: len(added), Added: added})
+}
+
+// countDownload records t as one of u's downloads for today (UTC) and reports
+// whether it is within the owner's daily cap. A title already counted today
+// is free: re-queuing or restarting it is not a new download. The tally is
+// kept in memory, so a restart starts the day again.
+func (s *Server) countDownload(u *frontend.User, key frontend.RatingKey) bool {
+	policy, ok := s.policy().(interface {
+		DownloadsPerDay(*frontend.User) int
+	})
+	if !ok || u == nil {
+		return true
+	}
+	limit := policy.DownloadsPerDay(u)
+	if limit <= 0 {
+		return true
+	}
+	day := s.now().UTC().Format("2006-01-02")
+	s.downloadTallyMu.Lock()
+	defer s.downloadTallyMu.Unlock()
+	if s.downloadTallyDay != day {
+		s.downloadTallyDay, s.downloadTally = day, map[int64]map[frontend.RatingKey]bool{}
+	}
+	seen := s.downloadTally[u.ID]
+	if seen == nil {
+		seen = map[frontend.RatingKey]bool{}
+		s.downloadTally[u.ID] = seen
+	}
+	if seen[key] {
+		return true
+	}
+	if len(seen) >= limit {
+		return false
+	}
+	seen[key] = true
+	return true
 }
 
 // addDownloadItem appends an item, or returns the existing one when the
@@ -469,7 +517,28 @@ func (s *Server) handleDownloadQueueItemRestart(w http.ResponseWriter, r *http.R
 	if q == nil {
 		return
 	}
-	s.downloads.Restart(q, parseItemIDs(r), s.sessionRuntime().Downloads().ReleaseDownload)
+	ids := parseItemIDs(r)
+	s.downloads.Restart(q, ids, s.sessionRuntime().Downloads().ReleaseDownload)
+	// A restart must not be a way around the daily cap: an item that was
+	// refused for it is refused again unless today's tally has room.
+	if pr := FromContext(r.Context()); pr != nil && pr.User != nil {
+		var restarted []*downloadItem
+		s.downloads.Lock()
+		for _, it := range q.Items {
+			for _, id := range ids {
+				if it.ID == id {
+					restarted = append(restarted, it)
+					break
+				}
+			}
+		}
+		s.downloads.Unlock()
+		for _, it := range restarted {
+			if !s.countDownload(pr.User, it.Key) {
+				s.downloads.Fail(r.Context(), it, frontend.MsgViewerDownloadLimit)
+			}
+		}
+	}
 	s.scheduleDownloads()
 	w.WriteHeader(http.StatusOK)
 }
@@ -800,6 +869,8 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			s.log.Warn("download preparation failed", "key", it.Key, "err", err)
 			if noRelease(err) {
 				fail("No release available for download at this quality.")
+			} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) && it.Caps.NoVideoTranscode {
+				fail(frontend.MsgViewerDownloadTranscodingOff)
 			} else {
 				fail(playbackMessage(err))
 			}
@@ -813,6 +884,12 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			// Deleted, restarted or shutting down; state already reset.
 		case errors.Is(err, frontend.ErrDownloadNeedsTranscode):
 			fail("This title cannot be downloaded: it cannot be converted to a playable MP4.")
+		case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
+			if it.Caps.NoVideoTranscode {
+				fail(frontend.MsgViewerDownloadTranscodingOff)
+			} else {
+				fail(playbackMessage(err))
+			}
 		case errors.Is(err, frontend.ErrDownloadBudget):
 			fail("Not enough temporary disk space on the server for this download.")
 		default:

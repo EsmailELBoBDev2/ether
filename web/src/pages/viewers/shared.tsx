@@ -568,6 +568,10 @@ export type SafetyPolicy = {
   videoTranscodingDisabled?: boolean;
   /** Owner override for offline downloads; absent follows the server setting. */
   allowDownloads?: boolean | null;
+  /** Downloads only from releases that need no video conversion. */
+  downloadTranscodingDisabled?: boolean;
+  /** Titles this viewer may queue for download per day; 0 is no limit. */
+  downloadsPerDay?: number;
   allowedHours: number[];
   timezone: string;
 };

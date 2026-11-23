@@ -401,6 +401,34 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               }
             />
             <SettingsRow
+              title={t("No converting for downloads")}
+              description={t(
+                "Downloads for this viewer use only a version that needs no video conversion at the chosen quality. Separate from playback: either switch can be on without the other.",
+              )}
+              control={
+                <Switch
+                  aria-label={t("No converting for downloads")}
+                  checked={Boolean(p.downloadTranscodingDisabled)}
+                  onChange={(e) => patchPolicy({ downloadTranscodingDisabled: e.target.checked })}
+                />
+              }
+            />
+            <SettingsRow
+              title={t("Downloads per day")}
+              description={t("How many titles this viewer can download in one day. 0 is no limit.")}
+              control={
+                <NumberInput
+                  aria-label={t("Downloads per day")}
+                  className="w-28"
+                  min={0}
+                  value={p.downloadsPerDay ?? 0}
+                  onChange={(n) =>
+                    patchPolicy({ downloadsPerDay: Math.max(0, Math.min(1000, Math.round(n))) })
+                  }
+                />
+              }
+            />
+            <SettingsRow
               title={t("Maximum bitrate")}
               description={t("In kbps. 0 uses the server default.")}
               control={

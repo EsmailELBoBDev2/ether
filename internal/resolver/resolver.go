@@ -1612,6 +1612,12 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			return nil, fmt.Errorf("%q: %w: %w", t.Title, core.ErrNotAvailable, core.ErrSourceUnavailable)
 		}
 	}
+	// Nothing playable was found and some releases were only ruled out for
+	// needing a video transcode: say so, rather than a bare "not available".
+	// A source that was tried and failed stays a temporary failure above.
+	if videoOff, _ := s.transcodeSettingsFor(req.Client); videoOff && traceHasRejectionReason(&trace, ReasonNeedsVideoTranscode) {
+		return nil, fmt.Errorf("%q: %w: %w", t.Title, core.ErrNotAvailable, core.ErrVideoTranscodingDisabled)
+	}
 	return nil, fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable)
 }
 

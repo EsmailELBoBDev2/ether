@@ -189,6 +189,13 @@ shares are FUSE (`shfs`). Use the pool or disk path instead, for example
 `/mnt/cache/appdata/ether/config:/config`. If the share already lives on that
 pool, no data has to move.
 
+**Choosing a port on Unraid.** The template uses host networking, so Unraid
+port mappings have no effect. To move Ether off 32400, set the `ETHER_PORT`
+**Variable** (the template's *Port* field, or *Add another Path, Port,
+Variable* → *Config Type: Variable*, key `ETHER_PORT`). Adding it as a *Port*
+does nothing. Ether saves the port, so the console, plex.tv and LAN discovery
+all use it.
+
 User and permissions: Ether runs as `PUID`:`PGID` (default 999:999, the
 image's `ether` account). Set them to the user that owns your folders, as
 for other NAS containers (e.g. `PUID=1026 PGID=100` on Synology, `PUID=99

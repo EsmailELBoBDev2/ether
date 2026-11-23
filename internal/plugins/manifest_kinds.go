@@ -237,6 +237,20 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		} else if len(f.Enum) > 0 {
 			add(fbase+".enum", "only enum fields list values")
 		}
+		if len(f.Values) > 0 {
+			if f.Type != "strings" {
+				add(fbase+".values", "only strings fields may declare values")
+			} else {
+				seenValues := map[string]bool{}
+				for _, v := range f.Values {
+					if strings.TrimSpace(v) == "" || seenValues[v] {
+						add(fbase+".values", "values must be non-empty and listed once")
+						break
+					}
+					seenValues[v] = true
+				}
+			}
+		}
 	}
 
 	seenArt := map[string]bool{}
@@ -319,7 +333,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	if !k.Library.IsZero() {
 		declaredIndexed := make(map[string]string, len(k.Fields))
 		for _, f := range k.Fields {
-			if f.Indexed {
+			if f.Indexed || f.Type == "people" {
 				declaredIndexed[f.Key] = f.Type
 			}
 		}
@@ -1045,7 +1059,7 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 	fieldList := make([]KindField, 0, len(fields))
 	for _, f := range fields {
 		fieldList = append(fieldList, f)
-		if f.Indexed {
+		if f.Indexed || f.Type == "people" {
 			declaredIndexed[f.Key] = f.Type
 		}
 	}

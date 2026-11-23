@@ -543,43 +543,132 @@ export function createLibraryTabsMock({
     return getTabs(lib);
   }
 
+  function foldSearch(s: string): string {
+    return s
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  function matchesFoldedPrefix(candidate: string, query: string): boolean {
+    const qFold = foldSearch(query);
+    if (!qFold) return candidate.toLowerCase().includes(query.toLowerCase());
+    const cFold = foldSearch(candidate);
+    const words = cFold.split(" ").filter(Boolean);
+    const qTokens = qFold.split(" ").filter(Boolean);
+    return qTokens.every((qt) => words.some((w) => w.startsWith(qt)));
+  }
+
   function facetValuesFor(
     lib: Record<string, unknown>,
     field: string,
-  ): { field: string; values: { value: string; title?: string; count: number }[] } {
+    opts?: {
+      q?: string;
+      offset?: number;
+      limit?: number;
+      order?: "count" | "name";
+      declared?: boolean;
+    },
+  ): {
+    field: string;
+    values: { value: string; title?: string; count: number }[];
+    truncated?: boolean;
+    more?: boolean;
+  } {
     if (lib.source === "plugin") {
+      const extraAuthors: { value: string; count: number }[] = [
+        "Octavia E. Butler",
+        "N. K. Jemisin",
+        "Iain M. Banks",
+        "Dan Simmons",
+        "Arthur C. Clarke",
+        "Philip K. Dick",
+        "Stanislaw Lem",
+        "Ted Chiang",
+        "Adrian Tchaikovsky",
+        "Becky Chambers",
+        "Arkady Martine",
+        "Ann Leckie",
+        "Martha Wells",
+        "Liu Cixin",
+        "Neal Stephenson",
+        "Kim Stanley Robinson",
+        "Gene Wolfe",
+        "Lois McMaster Bujold",
+        "Alastair Reynolds",
+        "Peter F. Hamilton",
+        "Vernor Vinge",
+        "Greg Egan",
+        "C. J. Cherryh",
+        "Samuel R. Delany",
+        "J. G. Ballard",
+        "Ray Bradbury",
+        "Robert A. Heinlein",
+        "Larry Niven",
+        "Joe Haldeman",
+        "John Scalzi",
+        "Andy Weir",
+        "James S. A. Corey",
+        "Jeff VanderMeer",
+        "China Miéville",
+        "Margaret Atwood",
+        "Kazuo Ishiguro",
+        "Kurt Vonnegut",
+        "Douglas Adams",
+        "Terry Pratchett",
+        "Susanna Clarke",
+        "Robin Hobb",
+        "Brandon Sanderson",
+        "Patrick Rothfuss",
+        "José Saramago",
+      ].map((name, idx) => ({ value: name, count: Math.max(1, 24 - Math.floor(idx / 2)) }));
+
       const pluginBuckets: Record<string, { value: string; title?: string; count: number }[]> = {
         author: [
+          { value: "Ursula K. Le Guin", count: 28 },
+          { value: "Isaac Asimov", count: 25 },
+          { value: "William Gibson", count: 19 },
+          { value: "Frank Herbert", count: 16 },
           { value: "Herbert", count: 1 },
-          { value: "Ursula K. Le Guin", count: 4 },
-          { value: "Isaac Asimov", count: 3 },
-          { value: "William Gibson", count: 2 },
+          ...extraAuthors,
         ],
         narrator: [
-          { value: "Simon Vance", count: 4 },
-          { value: "Scott Brick", count: 3 },
-          { value: "Robin Miles", count: 2 },
+          { value: "Simon Vance", count: 14 },
+          { value: "Scott Brick", count: 11 },
+          { value: "Robin Miles", count: 8 },
+          { value: "Jefferson Mays", count: 7 },
+          { value: "Ray Porter", count: 6 },
         ],
         subject: [
-          { value: "Science Fiction", count: 6 },
-          { value: "Space Opera", count: 4 },
-          { value: "Cyberpunk", count: 2 },
-          { value: "Classic Literature", count: 2 },
+          { value: "Science Fiction", count: 42 },
+          { value: "Space Opera", count: 27 },
+          { value: "Cyberpunk", count: 18 },
+          { value: "Classic Literature", count: 14 },
+          { value: "First Contact", count: 11 },
+          { value: "Speculative Fiction", count: 9 },
+          { value: "Dystopian", count: 7 },
+          { value: "Short Stories", count: 5 },
         ],
         series: [
-          { value: "Dune Chronicles", count: 3 },
-          { value: "Hainish Cycle", count: 3 },
-          { value: "Foundation", count: 2 },
+          { value: "Dune Chronicles", count: 6 },
+          { value: "Hainish Cycle", count: 7 },
+          { value: "Foundation", count: 7 },
+          { value: "Culture", count: 10 },
+          { value: "The Expanse", count: 9 },
         ],
         publisher: [
-          { value: "Ace Books", count: 5 },
-          { value: "Chilton Books", count: 2 },
-          { value: "Spectra", count: 3 },
+          { value: "Ace Books", count: 15 },
+          { value: "Chilton Books", count: 6 },
+          { value: "Spectra", count: 12 },
+          { value: "Tor Books", count: 19 },
+          { value: "Gollancz", count: 14 },
         ],
         format: [
-          { value: "Hardcover", count: 6 },
-          { value: "EPUB", count: 5 },
-          { value: "Audiobook", count: 3 },
+          { value: "Hardcover", count: 31 },
+          { value: "EPUB", count: 24 },
+          { value: "Audiobook", count: 17 },
         ],
         pages: [
           { value: "412", count: 3 },
@@ -600,8 +689,10 @@ export function createLibraryTabsMock({
           { value: "true", title: "Yes", count: 2 },
         ],
         language: [
-          { value: "en", title: "English", count: 11 },
-          { value: "fr", title: "French", count: 2 },
+          { value: "en", title: "English", count: 64 },
+          { value: "fr", title: "French", count: 8 },
+          { value: "ja", title: "Japanese", count: 5 },
+          { value: "de", title: "German", count: 3 },
         ],
         year: [
           { value: "1965", count: 2 },
@@ -621,10 +712,46 @@ export function createLibraryTabsMock({
           { value: "8", title: "8+", count: 6 },
         ],
       };
-      return {
-        field,
-        values: pluginBuckets[field] ?? [{ value: "Herbert", count: 1 }],
-      };
+
+      const rows = [...(pluginBuckets[field] ?? [{ value: "Herbert", count: 1 }])];
+      const kind = lib.kind as
+        { fields?: { key: string; enum?: string[]; values?: string[] }[] } | undefined;
+      const fd = kind?.fields?.find((f) => f.key === field);
+      if (opts?.declared && fd) {
+        const declared = [...(fd.enum ?? []), ...(fd.values ?? [])];
+        const present = new Set(rows.map((r) => r.value.toLowerCase()));
+        for (const dv of declared) {
+          if (!present.has(dv.toLowerCase())) {
+            present.add(dv.toLowerCase());
+            rows.push({ value: dv, count: 0 });
+          }
+        }
+      }
+
+      const q = (opts?.q ?? "").trim();
+      const filtered = q ? rows.filter((r) => matchesFoldedPrefix(r.value, q)) : rows;
+      const order = opts?.order === "name" ? "name" : "count";
+      filtered.sort((a, b) =>
+        order === "name"
+          ? a.value.localeCompare(b.value, undefined, { sensitivity: "base" })
+          : b.count - a.count || a.value.localeCompare(b.value, undefined, { sensitivity: "base" }),
+      );
+
+      if (
+        opts &&
+        (opts.q !== undefined ||
+          opts.offset !== undefined ||
+          opts.limit !== undefined ||
+          opts.declared)
+      ) {
+        const offset = Math.max(0, opts.offset ?? 0);
+        const limit = Math.max(1, Math.min(200, opts.limit ?? 40));
+        const page = filtered.slice(offset, offset + limit);
+        const more = offset + limit < filtered.length;
+        return { field, values: page, truncated: more, more };
+      }
+
+      return { field, values: filtered };
     }
 
     const mediaType = String(lib.mediaType ?? "");

@@ -465,6 +465,7 @@ type KindField struct {
 	Label   string   `json:"label"`
 	Indexed bool     `json:"indexed,omitempty"`
 	Enum    []string `json:"enum,omitempty"`
+	Values  []string `json:"values,omitempty"`
 }
 
 // KindArt declares one artwork role beyond poster/backdrop/thumb/logo.

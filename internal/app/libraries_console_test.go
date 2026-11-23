@@ -680,3 +680,78 @@ func TestLibrariesConsolePresentAppsAndFreshness(t *testing.T) {
 		t.Fatalf("custom library still in Plex after turning Plex switch off: %+v", srv.LibrarySections())
 	}
 }
+
+func TestLibrariesConsoleFieldValuesAPI(t *testing.T) {
+	ctx := context.Background()
+	a := setupTestApp(t, true)
+	decl := plugins.MediaKindMeta{
+		Key:     "book",
+		Label:   "Books",
+		Library: plugins.KindLibraryDecl{Name: "Books"},
+		Levels:  []plugins.KindLevel{{Key: "book", Label: "Book", Playable: true}},
+		Fields: []plugins.KindField{
+			{Key: "tags", Type: "strings", Label: "Tags", Indexed: true, Values: []string{"Sci-Fi", "Unseen", "Café"}},
+		},
+		Browse: plugins.KindBrowseDecl{Sorts: []string{"title"}, Facets: []string{"tags"}},
+		Sync:   plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	lib, err := a.libraries.UpsertPluginLibrary(ctx, "demo.books", "book", libraries.PluginLibraryDecl{Name: "Books"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &librariesConsole{app: a}
+	items, _, err := c.services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := items.UpsertKind(ctx, "demo.books", lib.ID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := items.UpsertItems(ctx, "demo.books", "book", []core.KindItem{
+		{ID: "1", Level: "book", Title: "One", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["Sci-Fi","Extra"]`)}},
+		{ID: "2", Level: "book", Title: "Two", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["Sci-Fi"]`)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := c.handler()
+	get := func(query string) (int, struct {
+		Field     string                   `json:"field"`
+		Values    []pluginitems.FacetCount `json:"values"`
+		More      bool                     `json:"more"`
+		Truncated bool                     `json:"truncated"`
+	}) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/"+strconv.FormatInt(int64(lib.ID), 10)+"/facets/tags?"+query, nil)
+		h.ServeHTTP(w, r)
+		var out struct {
+			Field     string                   `json:"field"`
+			Values    []pluginitems.FacetCount `json:"values"`
+			More      bool                     `json:"more"`
+			Truncated bool                     `json:"truncated"`
+		}
+		if w.Code == 200 {
+			if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return w.Code, out
+	}
+
+	// Count-ordered with declared zero-count values paged 2 at a time.
+	code, p1 := get("order=count&declared=1&limit=2&offset=0")
+	if code != 200 || !p1.More || len(p1.Values) != 2 || p1.Values[0].Value != "Sci-Fi" || p1.Values[0].Count != 2 || p1.Values[1].Value != "Extra" {
+		t.Fatalf("page 1 = %d %+v", code, p1)
+	}
+	code, p2 := get("order=count&declared=1&limit=2&offset=2")
+	if code != 200 || p2.More || len(p2.Values) != 2 || p2.Values[0].Value != "Unseen" || p2.Values[0].Count != 0 || p2.Values[1].Value != "Café" {
+		t.Fatalf("page 2 = %d %+v", code, p2)
+	}
+
+	// Folded search finds diacritic declared value even before any item has it.
+	code, pq := get("order=count&declared=1&q=cafe")
+	if code != 200 || pq.More || len(pq.Values) != 1 || pq.Values[0].Value != "Café" || pq.Values[0].Count != 0 {
+		t.Fatalf("folded query = %d %+v", code, pq)
+	}
+}

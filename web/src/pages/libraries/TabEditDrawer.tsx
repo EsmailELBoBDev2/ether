@@ -1019,6 +1019,8 @@ function TabEditDrawerInner({
         onRemove={remove}
         renderChild={renderCondition}
         kind={isPlugin ? library.kind : undefined}
+        libraryId={isPlugin ? library.id : undefined}
+        level={isPlugin ? draft.level : undefined}
       />
     ) : (
       <RuleRow

@@ -57,7 +57,10 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 ```
 
 Rules that will bite if ignored: at least one level must be
-`playable`; facet fields must be `indexed`; field keys may not reuse
+`playable`; facet fields must be `indexed` (except `people`, which is
+always indexed); `enum` fields declare a closed `enum` list, while
+`strings` fields may declare an optional `values` vocabulary shown in the
+rules editor even before any item carries them; field keys may not reuse
 envelope names (`id`, `title`, …); declarations are **additive across
 versions** — removing or retyping a field/level is refused at upgrade
 unless the owner agrees to replace the library's contents.

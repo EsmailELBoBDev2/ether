@@ -729,6 +729,7 @@ export interface KindField {
   label: string;
   indexed?: boolean;
   enum?: string[];
+  values?: string[];
 }
 
 export interface KindArt {

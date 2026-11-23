@@ -157,7 +157,7 @@ func (s *Service) CompilePolicy(ctx context.Context, lib core.LibraryID, specs [
 	}
 	declared := map[string]string{}
 	for _, field := range rec.Decl.Fields {
-		if field.Indexed {
+		if field.Indexed || field.Type == "people" {
 			declared[field.Key] = field.Type
 		}
 	}

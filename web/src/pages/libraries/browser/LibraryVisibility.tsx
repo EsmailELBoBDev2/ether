@@ -3,6 +3,7 @@ import {
   conditionValue,
   browseFields,
   conditionTitle,
+  formatPluginCondition,
   newBrowseCondition,
 } from "./RuleCondition";
 import { PluginBrowse } from "../PluginBrowse";
@@ -148,6 +149,8 @@ function hideScopeOf(rule: VisibilityRule): "everywhere" | "discovery" | "librar
 }
 
 function conditionLine(rule: Rule, kind?: MediaKind): string {
+  const formattedPlugin = formatPluginCondition(rule, kind);
+  if (formattedPlugin) return formattedPlugin;
   if (rule.field === "group" && Array.isArray(rule.value) && rule.value.length === 0)
     return conditionTitle(rule, kind);
   if (rule.field === "group")
@@ -244,7 +247,7 @@ export function RulesPanel({
       pluginLibrary?.kind?.fields?.some(
         (f) =>
           f.key === k &&
-          f.indexed &&
+          (f.indexed || f.type === "people") &&
           (["runtime", "votes", "popularity"].includes(field)
             ? ["int", "float", "duration"].includes(f.type)
             : ["string", "strings", "enum", "people"].includes(f.type)),
@@ -373,6 +376,7 @@ export function RulesPanel({
         onRemove={remove}
         renderChild={renderCondition}
         kind={pluginLibrary?.kind}
+        libraryId={pluginLibrary?.id}
       />
     ) : (
       <RuleRow
@@ -708,7 +712,11 @@ export function RulesPanel({
         <Drawer
           open={editing != null}
           onClose={closeRuleDrawer}
-          title={editing ? editing.name.trim() || ruleLabel(editing, mediaType) : t("Rule")}
+          title={
+            editing
+              ? editing.name.trim() || ruleLabel(editing, mediaType, pluginLibrary?.kind)
+              : t("Rule")
+          }
           size="lg"
           footer={
             <div className="flex w-full justify-end gap-2">

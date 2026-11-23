@@ -215,6 +215,7 @@ export interface KindField {
   label: string;
   indexed?: boolean;
   enum?: string[];
+  values?: string[];
 }
 export interface MediaKind {
   key: string;
@@ -522,6 +523,34 @@ export const librariesApi = {
       `/libraries/${id}/facets/${encodeURIComponent(field)}${level ? `?level=${encodeURIComponent(level)}` : ""}`,
       { signal },
     ),
+  fieldValues: (
+    id: number,
+    field: string,
+    opts: {
+      q?: string;
+      offset?: number;
+      limit?: number;
+      order?: "count" | "name";
+      declared?: boolean;
+      level?: string;
+    } = {},
+    signal?: AbortSignal,
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.q) p.set("q", opts.q);
+    if (opts.offset && opts.offset > 0) p.set("offset", String(opts.offset));
+    if (opts.limit && opts.limit > 0) p.set("limit", String(opts.limit));
+    if (opts.order) p.set("order", opts.order);
+    if (opts.declared) p.set("declared", "1");
+    if (opts.level) p.set("level", opts.level);
+    const qs = p.toString();
+    return apiFetch<{
+      field: string;
+      values: { value: string; count: number }[];
+      more?: boolean;
+      truncated?: boolean;
+    }>(`/libraries/${id}/facets/${encodeURIComponent(field)}${qs ? `?${qs}` : ""}`, { signal });
+  },
   item: (id: number, ref: string, signal?: AbortSignal) =>
     apiFetch<{
       item: KindItem;

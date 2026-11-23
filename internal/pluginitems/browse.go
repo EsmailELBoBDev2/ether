@@ -2310,17 +2310,13 @@ func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key strin
 	var exactPh []string
 	var exactArgs []any
 	for _, v := range vals {
-		if strings.Contains(v, "..") {
-			parts := strings.SplitN(v, "..", 2)
-			lo, e1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-			hi, e2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-			if e1 == nil && e2 == nil && !math.IsNaN(lo) && !math.IsNaN(hi) && !math.IsInf(lo, 0) && !math.IsInf(hi, 0) && lo <= hi {
-				disjuncts = append(disjuncts, fieldDisjunct{
-					sql:  `f.v_real BETWEEN ? AND ?`,
-					args: []any{lo, hi},
-				})
-				continue
-			}
+		if r, ok := libraryfilter.ParseFloatRange(v); ok {
+			q, rargs := r.SQL(`f.v_real`)
+			disjuncts = append(disjuncts, fieldDisjunct{
+				sql:  q,
+				args: rargs,
+			})
+			continue
 		}
 		n, err := strconv.ParseFloat(v, 64)
 		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
@@ -2352,13 +2348,7 @@ func browseAllIntRanges(vals []string) bool {
 		return false
 	}
 	for _, v := range vals {
-		if !strings.Contains(v, "..") {
-			return false
-		}
-		parts := strings.SplitN(v, "..", 2)
-		lo, e1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-		hi, e2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-		if e1 != nil || e2 != nil || lo > hi {
+		if _, ok := libraryfilter.ParseIntRange(v); !ok {
 			return false
 		}
 	}
@@ -2399,18 +2389,18 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 				continue
 			}
 		}
-		if strings.Contains(v, "..") {
-			parts := strings.SplitN(v, "..", 2)
-			lo, e1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-			hi, e2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-			if e1 == nil && e2 == nil && lo <= hi {
-				disjuncts = append(disjuncts, fieldDisjunct{
-					sql:         `f.v_int BETWEEN ? AND ?`,
-					args:        []any{lo, hi},
-					partialPred: intRangePartialPred(lo, hi),
-				})
-				continue
+		if r, ok := libraryfilter.ParseIntRange(v); ok {
+			q, rargs := r.SQL(`f.v_int`)
+			pred := `(f.v_text = '' OR f.v_int <> 0)`
+			if r.ExcludesZero() {
+				pred = `f.v_int <> 0`
 			}
+			disjuncts = append(disjuncts, fieldDisjunct{
+				sql:         q,
+				args:        rargs,
+				partialPred: pred,
+			})
+			continue
 		}
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {

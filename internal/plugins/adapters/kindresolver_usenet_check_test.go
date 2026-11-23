@@ -827,3 +827,101 @@ func TestBackgroundUsenetCheckSharedVerdictsAndAllowance(t *testing.T) {
 		t.Fatal("negative verdict should expire after 30 min")
 	}
 }
+
+type richUsenetMediaSource struct {
+	id             string
+	delivery       core.SourceDelivery
+	damageAttached bool
+	repairAttached bool
+	analysisCalls  int
+	duration       time.Duration
+}
+
+func (s *richUsenetMediaSource) ReadAt(p []byte, _ int64) (int, error) { return len(p), nil }
+func (s *richUsenetMediaSource) ReadAtAnalysisContext(_ context.Context, p []byte, _ int64) (int, error) {
+	s.analysisCalls++
+	return len(p), nil
+}
+func (s *richUsenetMediaSource) Size() int64       { return 1024 }
+func (s *richUsenetMediaSource) Name() string      { return "zimmer.mkv" }
+func (s *richUsenetMediaSource) ReleaseID() string { return s.id }
+func (s *richUsenetMediaSource) Close() error      { return nil }
+func (s *richUsenetMediaSource) SourceDelivery() core.SourceDelivery {
+	return s.delivery
+}
+func (s *richUsenetMediaSource) SetDamageHandler(func(int64, int64) bool) {
+	s.damageAttached = true
+}
+func (s *richUsenetMediaSource) SetRepairHandler(func(core.RepairEvent) core.RepairWindow) {
+	s.repairAttached = true
+}
+func (s *richUsenetMediaSource) SetPlaybackDuration(d time.Duration) { s.duration = d }
+func (s *richUsenetMediaSource) BufferedAhead() int64                { return 8 << 20 }
+func (s *richUsenetMediaSource) Origin() string                      { return "usenet" }
+func (s *richUsenetMediaSource) MIME() string                        { return "video/x-matroska" }
+
+type archiveUsenetMediaSource struct {
+	*richUsenetMediaSource
+	vols []core.MediaSource
+}
+
+func (a *archiveUsenetMediaSource) ArchiveVolumes() ([]core.MediaSource, string, string) {
+	return a.vols, "rar", "concert.mkv"
+}
+
+func TestWrapUsenetPlaybackSourcePreservesOptionalInterfaces(t *testing.T) {
+	kr := NewKindResolver(KindResolverDeps{})
+	defer kr.Close()
+
+	inner := &richUsenetMediaSource{
+		id:       "nzb-zimmer",
+		delivery: core.SourceDelivery{Bytes: 4 << 20, Fetches: 12, Parallel: 6},
+	}
+	wrapped := kr.wrapUsenetPlaybackSource(inner, "rel-zimmer", "hash-zimmer", "cid-zimmer")
+
+	rep, ok := wrapped.(core.SourceDeliveryReporter)
+	if !ok {
+		t.Fatalf("wrapUsenetPlaybackSource dropped core.SourceDeliveryReporter")
+	}
+	if got := rep.SourceDelivery(); got.Bytes != 4<<20 || got.Parallel != 6 {
+		t.Fatalf("SourceDelivery = %+v, want Bytes=4MiB Parallel=6", got)
+	}
+	wrapped.(core.DamageReporter).SetDamageHandler(func(int64, int64) bool { return true })
+	wrapped.(core.RepairReporter).SetRepairHandler(func(core.RepairEvent) core.RepairWindow { return core.RepairWindow{} })
+	if !inner.damageAttached || !inner.repairAttached {
+		t.Fatalf("damage=%v repair=%v, want both attached", inner.damageAttached, inner.repairAttached)
+	}
+	if _, err := wrapped.(core.AnalysisReaderAt).ReadAtAnalysisContext(context.Background(), make([]byte, 16), 0); err != nil {
+		t.Fatalf("ReadAtAnalysisContext: %v", err)
+	}
+	if inner.analysisCalls != 1 {
+		t.Fatalf("analysisCalls = %d, want 1", inner.analysisCalls)
+	}
+	if got := wrapped.(core.OriginSource).Origin(); got != "usenet" {
+		t.Fatalf("Origin = %q, want usenet", got)
+	}
+	if got := wrapped.(core.MIMESource).MIME(); got != "video/x-matroska" {
+		t.Fatalf("MIME = %q, want video/x-matroska", got)
+	}
+
+	// Archive volumes must also preserve SourceDeliveryReporter on child volumes.
+	child := &richUsenetMediaSource{id: "vol-1", delivery: core.SourceDelivery{Bytes: 1 << 20, Parallel: 2}}
+	archWrapped := kr.wrapUsenetPlaybackSource(&archiveUsenetMediaSource{
+		richUsenetMediaSource: inner,
+		vols:                  []core.MediaSource{child},
+	}, "rel-rar", "hash-rar", "cid-rar")
+	vols, format, member := archWrapped.(core.ArchiveVolumeSource).ArchiveVolumes()
+	if format != "rar" || member != "concert.mkv" || len(vols) != 1 {
+		t.Fatalf("ArchiveVolumes = (%d, %q, %q)", len(vols), format, member)
+	}
+	if vrep, ok := vols[0].(core.SourceDeliveryReporter); !ok || vrep.SourceDelivery().Parallel != 2 {
+		t.Fatalf("archive volume lost SourceDeliveryReporter: ok=%v", ok)
+	}
+
+	// Plain MediaSource without SourceDeliveryReporter must not falsely claim it.
+	plain := &failingReadMediaSource{id: "plain"}
+	plainWrapped := kr.wrapUsenetPlaybackSource(plain, "rel-plain", "hash-plain", "cid-plain")
+	if _, ok := plainWrapped.(core.SourceDeliveryReporter); ok {
+		t.Fatal("wrapUsenetPlaybackSource falsely advertised core.SourceDeliveryReporter")
+	}
+}

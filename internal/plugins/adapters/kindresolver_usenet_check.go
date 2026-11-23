@@ -185,14 +185,37 @@ func (r *KindResolver) wrapUsenetPlaybackSource(ms core.MediaSource, releaseKey,
 	record := func(err error) {
 		r.recordUsenetPlaybackFailure(releaseKey, nzbHash, contentID, err)
 	}
+	return wrapObservedMediaSource(ms, record)
+}
+
+func wrapObservedMediaSource(ms core.MediaSource, record func(error)) core.MediaSource {
 	base := &usenetObservedSource{
 		MediaSource: ms,
 		record:      record,
 	}
 	if avs, ok := ms.(core.ArchiveVolumeSource); ok {
-		return &usenetObservedArchiveSource{
+		arch := &usenetObservedArchiveSource{
 			usenetObservedSource: base,
 			avs:                  avs,
+		}
+		if dr, ok := ms.(core.SourceDeliveryReporter); ok {
+			return &usenetObservedArchiveDeliverySource{
+				usenetObservedArchiveSource: arch,
+				dr:                          dr,
+			}
+		}
+		return arch
+	}
+	if dr, ok := ms.(core.SourceDeliveryReporter); ok {
+		return &usenetObservedDeliverySource{
+			usenetObservedSource: base,
+			dr:                   dr,
+		}
+	}
+	if cr, ok := ms.(core.ConcurrentRangeReaderAt); ok {
+		return &usenetObservedConcurrentSource{
+			usenetObservedSource: base,
+			cr:                   cr,
 		}
 	}
 	return base
@@ -259,6 +282,22 @@ func (s *usenetObservedSource) ReadAtPrefetchContext(ctx context.Context, p []by
 	return n, err
 }
 
+func (s *usenetObservedSource) ReadAtAnalysisContext(ctx context.Context, p []byte, off int64) (int, error) {
+	var (
+		n   int
+		err error
+	)
+	if ar, ok := s.MediaSource.(core.AnalysisReaderAt); ok {
+		n, err = ar.ReadAtAnalysisContext(ctx, p, off)
+	} else {
+		return s.ReadAtPrefetchContext(ctx, p, off)
+	}
+	if err != nil {
+		s.record(err)
+	}
+	return n, err
+}
+
 func (s *usenetObservedSource) BufferedAhead() int64 {
 	if bs, ok := s.MediaSource.(core.BufferedSource); ok {
 		return bs.BufferedAhead()
@@ -272,11 +311,75 @@ func (s *usenetObservedSource) SetPlaybackDuration(d time.Duration) {
 	}
 }
 
+func (s *usenetObservedSource) SetDamageHandler(handler func(int64, int64) bool) {
+	if dr, ok := s.MediaSource.(core.DamageReporter); ok {
+		dr.SetDamageHandler(handler)
+	}
+}
+
+func (s *usenetObservedSource) SetRepairHandler(handler func(core.RepairEvent) core.RepairWindow) {
+	if rr, ok := s.MediaSource.(core.RepairReporter); ok {
+		rr.SetRepairHandler(handler)
+	}
+}
+
+func (s *usenetObservedSource) MediaCapWaitKnown() bool {
+	if mc, ok := s.MediaSource.(core.MediaCapWaitSource); ok {
+		return mc.MediaCapWaitKnown()
+	}
+	return false
+}
+
+func (s *usenetObservedSource) Origin() string {
+	if os, ok := s.MediaSource.(core.OriginSource); ok {
+		return os.Origin()
+	}
+	return ""
+}
+
+func (s *usenetObservedSource) MIME() string {
+	if ms, ok := s.MediaSource.(core.MIMESource); ok {
+		return ms.MIME()
+	}
+	return ""
+}
+
 func (s *usenetObservedSource) ResolvedArchiveMember() bool {
 	if rm, ok := s.MediaSource.(core.ResolvedMemberSource); ok {
 		return rm.ResolvedArchiveMember()
 	}
 	return false
+}
+
+type usenetObservedDeliverySource struct {
+	*usenetObservedSource
+	dr core.SourceDeliveryReporter
+}
+
+func (s *usenetObservedDeliverySource) SourceDelivery() core.SourceDelivery {
+	return s.dr.SourceDelivery()
+}
+
+type usenetObservedConcurrentSource struct {
+	*usenetObservedSource
+	cr core.ConcurrentRangeReaderAt
+}
+
+func (s *usenetObservedConcurrentSource) ReadAtConcurrentContext(ctx context.Context, p []byte, off int64) (int, error) {
+	n, err := s.cr.ReadAtConcurrentContext(ctx, p, off)
+	if err != nil {
+		s.record(err)
+	}
+	return n, err
+}
+
+type usenetObservedArchiveDeliverySource struct {
+	*usenetObservedArchiveSource
+	dr core.SourceDeliveryReporter
+}
+
+func (s *usenetObservedArchiveDeliverySource) SourceDelivery() core.SourceDelivery {
+	return s.dr.SourceDelivery()
 }
 
 type usenetObservedArchiveSource struct {
@@ -288,10 +391,7 @@ func (s *usenetObservedArchiveSource) ArchiveVolumes() ([]core.MediaSource, stri
 	vols, format, member := s.avs.ArchiveVolumes()
 	out := make([]core.MediaSource, len(vols))
 	for i, vol := range vols {
-		out[i] = &usenetObservedSource{
-			MediaSource: vol,
-			record:      s.record,
-		}
+		out[i] = wrapObservedMediaSource(vol, s.record)
 	}
 	return out, format, member
 }

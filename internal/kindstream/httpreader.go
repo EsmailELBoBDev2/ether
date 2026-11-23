@@ -397,6 +397,13 @@ func (r *HTTPReaderAt) ReadAtContext(ctx context.Context, p []byte, off int64) (
 	return r.readAtCtx(ctx, p, off)
 }
 
+// ReadAtConcurrentContext implements core.ConcurrentRangeReaderAt. HTTPReaderAt
+// issues independent ranged GET requests with no shared seek epoch, so parallel
+// direct-play range requests never cancel one another.
+func (r *HTTPReaderAt) ReadAtConcurrentContext(ctx context.Context, p []byte, off int64) (int, error) {
+	return r.readAtCtx(ctx, p, off)
+}
+
 func (r *HTTPReaderAt) readAtCtx(ctx context.Context, p []byte, off int64) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -595,6 +602,16 @@ func (b *seqBufferedReaderAt) ReadAt(p []byte, off int64) (int, error) {
 func (b *seqBufferedReaderAt) rawReadAt(p []byte, off int64) (int, error) {
 	if b.hr != nil {
 		return b.hr.readAtCtx(b.ctx, p, off)
+	}
+	if cr, ok := b.r.(core.ConcurrentRangeReaderAt); ok {
+		return cr.ReadAtConcurrentContext(b.ctx, p, off)
+	}
+	if bs, ok := b.r.(ByteSource); ok {
+		if ms := UnwrapMediaSource(bs); ms != nil {
+			if cr, ok := ms.(core.ConcurrentRangeReaderAt); ok {
+				return cr.ReadAtConcurrentContext(b.ctx, p, off)
+			}
+		}
 	}
 	if cr, ok := b.r.(core.ContextReaderAt); ok {
 		return cr.ReadAtContext(b.ctx, p, off)

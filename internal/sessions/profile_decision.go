@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -1169,7 +1170,7 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 	if rr, ok := b.deps.Playback.(core.RemuxRequirer); ok && rr.RequiresRemux(ps.ID) {
 		requiresRemux = true
 	}
-	if !requiresRemux && req.Protocol == "vela" && req.Channel == "" && req.Intent.Options.DirectPlay && !selectedImageSubtitle(ps.Info, req.Intent.Options.SubtitleStream) && (req.Intent.OriginalPlayback.Supports(ps.Info, req.Intent.Options.AudioStream) || (b.AudioFallbackAvailable() && req.Intent.OriginalPlayback.SupportsAudio("aac") && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) && req.Intent.OriginalPlayback.SupportsVideo(ps.Info))) {
+	if !requiresRemux && req.Protocol == "vela" && req.Channel == "" && req.Intent.Options.DirectPlay && !selectedImageSubtitle(ps.Info, req.Intent.Options.SubtitleStream) && len(b.originalBudgetRejection(ps.Info, req)) == 0 && (req.Intent.OriginalPlayback.Supports(ps.Info, req.Intent.Options.AudioStream) || (b.AudioFallbackAvailable() && req.Intent.OriginalPlayback.SupportsAudio("aac") && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) && req.Intent.OriginalPlayback.SupportsVideo(ps.Info))) {
 		d := core.Decision{Kind: core.DecisionDirectPlay, Reason: "original_runtime", Container: ps.Info.Container, VideoCopy: !ps.Info.AudioOnly(), AudioCopy: true, AudioStream: req.Intent.Options.AudioStream, SubtitleStream: req.Intent.Options.SubtitleStream}
 		if audio := profileStream(ps.Info, "audio", d.AudioStream); audio != nil {
 			d.AudioStream = audio.Index
@@ -1186,7 +1187,7 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		return d, nil
 	}
 
-	rejected := []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}}
+	rejected := []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, req)}}
 
 	// The progressive client renders text outside the video. Keep the user's
 	// selection in the plan, but never ask the video decision to burn it in.
@@ -1546,8 +1547,48 @@ func selectedImageSubtitle(info core.MediaInfo, index int) bool {
 	return false
 }
 
+func (b *Broker) originalBudgetRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
+	var reasons []string
+	if req.Caps.EffectiveAlwaysEncodeVideo() {
+		reasons = append(reasons, "owner policy requires video encoding")
+	}
+	if v := info.Video(); v != nil {
+		if req.Intent.Options.MaxHeight > 0 && v.Height > req.Intent.Options.MaxHeight {
+			reasons = append(reasons, fmt.Sprintf("%dp exceeds client %dp limit", v.Height, req.Intent.Options.MaxHeight))
+		}
+		if req.Intent.Options.MaxWidth > 0 && v.Width > req.Intent.Options.MaxWidth {
+			reasons = append(reasons, fmt.Sprintf("%dpx width exceeds client %dpx limit", v.Width, req.Intent.Options.MaxWidth))
+		}
+		if h := req.Caps.VideoMaxHeights[v.Codec]; h > 0 && v.Height > h {
+			reasons = append(reasons, fmt.Sprintf("%dp exceeds %dp %s decoder limit", v.Height, h, v.Codec))
+		}
+		if req.Caps.MaxHeightSource == "App compatibility override" && req.Caps.MaxHeight > 0 && v.Height > req.Caps.MaxHeight {
+			reasons = append(reasons, fmt.Sprintf("%dp exceeds %dp app compatibility limit", v.Height, req.Caps.MaxHeight))
+		}
+	}
+	bitrateCap := req.Intent.Options.MaxBitrateKbps
+	if req.Caps.Remote {
+		if req.Caps.MaxBitrateKbps > 0 && (bitrateCap == 0 || req.Caps.MaxBitrateKbps < bitrateCap) {
+			bitrateCap = req.Caps.MaxBitrateKbps
+		}
+		if b != nil && b.deps.RemoteBitrateLimit != nil {
+			if limit := b.deps.RemoteBitrateLimit(); limit > 0 && (bitrateCap == 0 || limit < bitrateCap) {
+				bitrateCap = limit
+			}
+		}
+	}
+	sourceKbps := info.BitrateKbps
+	if sourceKbps <= 0 && info.Size > 0 && info.Duration > 0 {
+		sourceKbps = int(float64(info.Size*8) / info.Duration.Seconds() / 1000)
+	}
+	if bitrateCap > 0 && sourceKbps > bitrateCap {
+		reasons = append(reasons, fmt.Sprintf("bitrate %d kbps exceeds %d kbps limit", sourceKbps, bitrateCap))
+	}
+	return reasons
+}
+
 // Diagnostics use only resolved source facts and declarations, never source URLs.
-func originalRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
+func (b *Broker) originalRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
 	var reasons []string
 	if !req.Intent.Options.DirectPlay {
 		reasons = append(reasons, "original playback not allowed")
@@ -1558,6 +1599,7 @@ func originalRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
 	if selectedImageSubtitle(info, req.Intent.Options.SubtitleStream) {
 		reasons = append(reasons, "selected image subtitle requires conversion")
 	}
+	reasons = append(reasons, b.originalBudgetRejection(info, req)...)
 	c := req.Intent.OriginalPlayback
 	if !c.Valid() {
 		reasons = append(reasons, "original decoder capabilities not declared")

@@ -1731,6 +1731,8 @@ func UnwrapMediaSource(bs ByteSource) core.MediaSource {
 			return v.ms
 		case *renamedByteSource:
 			bs = v.ByteSource
+		case interface{ UnwrapByteSource() ByteSource }:
+			bs = v.UnwrapByteSource()
 		default:
 			return nil
 		}

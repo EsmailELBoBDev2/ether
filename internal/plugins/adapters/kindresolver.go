@@ -1626,6 +1626,92 @@ func singleIndexerSkipped(name string, skip, only []string) bool {
 	return hasOnly && !matchedOnly
 }
 
+type resolveSearchStateKey struct{}
+
+type resolveSearchState struct {
+	mu              sync.Mutex
+	oneShotPending  bool
+	pendingBySearch map[string]bool
+	budgetSkipped   bool
+}
+
+func withResolveSearchState(ctx context.Context) (context.Context, *resolveSearchState) {
+	st := &resolveSearchState{}
+	return context.WithValue(ctx, resolveSearchStateKey{}, st), st
+}
+
+func resolveSearchStateFrom(ctx context.Context) *resolveSearchState {
+	if ctx == nil {
+		return nil
+	}
+	st, _ := ctx.Value(resolveSearchStateKey{}).(*resolveSearchState)
+	return st
+}
+
+func noteResolveSearchResult(ctx context.Context, res core.SourceResolveResult) {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil {
+		return
+	}
+	hasPending := len(res.Pending) > 0
+	st.mu.Lock()
+	if res.SearchID != "" {
+		if st.pendingBySearch == nil {
+			st.pendingBySearch = make(map[string]bool)
+		}
+		st.pendingBySearch[res.SearchID] = hasPending
+	} else if hasPending {
+		st.oneShotPending = true
+	}
+	st.mu.Unlock()
+}
+
+func noteResolveSearchCanceled(ctx context.Context, searchID string) {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil || searchID == "" {
+		return
+	}
+	st.mu.Lock()
+	delete(st.pendingBySearch, searchID)
+	st.mu.Unlock()
+}
+
+func noteResolveBudgetSkip(ctx context.Context) {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	st.budgetSkipped = true
+	st.mu.Unlock()
+}
+
+func (s *resolveSearchState) hasPending() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.oneShotPending {
+		return true
+	}
+	for _, pending := range s.pendingBySearch {
+		if pending {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *resolveSearchState) hadBudgetSkip() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.budgetSkipped
+}
+
 func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
 	if q.Stream {
 		return r.startStreamingIndexerSearch(ctx, pluginID, q)
@@ -1644,6 +1730,7 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 		return core.SourceResolveResult{Candidates: []core.SourceCandidate{}}, nil
 	}
 	if r.speculativeSourceBudgetPaused(ctx) {
+		noteResolveBudgetSkip(ctx)
 		var statuses []core.IndexerSearchStatus
 		if dir, ok := r.indexer.(core.IndexerDirectory); ok {
 			statuses = dir.EnabledIndexerStatuses(core.IndexerStatusSkipped)
@@ -1700,6 +1787,7 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 				return core.SourceResolveResult{}, searchCtx.Err()
 			}
 			if errors.Is(err, core.ErrBudgetExhausted) {
+				noteResolveBudgetSkip(ctx)
 				r.noteSpeculativeSourceBudgetExhausted(ctx)
 			}
 			// One broken indexer (a missing site definition, an outage)
@@ -1747,6 +1835,7 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 				return core.SourceResolveResult{}, searchCtx.Err()
 			}
 			if errors.Is(err, core.ErrBudgetExhausted) {
+				noteResolveBudgetSkip(ctx)
 				r.noteSpeculativeSourceBudgetExhausted(ctx)
 			}
 			r.log.Debug("plugin indexer search found nothing; some indexers failed", "query", q.Query, "err", err)
@@ -1804,10 +1893,19 @@ func (r *KindResolver) ResolveSourcesWithResult(ctx context.Context, pluginID st
 	}
 	switch q.Kind {
 	case "indexer_search":
-		return r.resolveIndexerSearch(ctx, pluginID, q)
+		res, err := r.resolveIndexerSearch(ctx, pluginID, q)
+		if err == nil {
+			noteResolveSearchResult(ctx, res)
+		}
+		return res, err
 	case "indexer_search_results":
-		return r.pollStreamingIndexerSearch(ctx, pluginID, q)
+		res, err := r.pollStreamingIndexerSearch(ctx, pluginID, q)
+		if err == nil {
+			noteResolveSearchResult(ctx, res)
+		}
+		return res, err
 	case "indexer_search_cancel":
+		noteResolveSearchCanceled(ctx, q.SearchID)
 		return r.cancelStreamingIndexerSearch(ctx, pluginID, q)
 	case "indexers":
 		return r.resolveIndexersList(), nil
@@ -3121,6 +3219,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 	if err != nil {
 		return nil, err
 	}
+	ctx, searchState := withResolveSearchState(ctx)
 	resp, err := r.mgr.Call(ctx, rec.PluginID, plugins.Request{
 		Method: "POST",
 		Path:   "/ether/v1/kinds/" + rec.KindKey + "/resolve",
@@ -3133,8 +3232,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if errors.Is(err, plugins.ErrBusy) {
 			return nil, fmt.Errorf("%w: %w", core.ErrSourceUnavailable, err)
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, core.ErrNotAvailable
+		var we *wasm.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &we) && we.Status == wasm.StatusTimeout && searchState.hasPending()) {
+			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
 		return nil, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, err)
 	}
@@ -3142,7 +3242,10 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		return nil, parsePreparingReply(resp.Body)
 	}
 	if resp.Status == http.StatusNotFound {
-		if source == "" {
+		if searchState.hasPending() {
+			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
+		}
+		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
 		return nil, core.ErrNotAvailable
@@ -3178,7 +3281,10 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		}
 	}
 	if len(resolved.Sources) == 0 {
-		if source == "" {
+		if searchState.hasPending() {
+			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
+		}
+		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
 		return nil, core.ErrNotAvailable
@@ -3977,6 +4083,10 @@ func (p *partDefaultByteSource) ReadAtContext(ctx context.Context, buf []byte, o
 		return cr.ReadAtContext(ctx, buf, off)
 	}
 	return p.ByteSource.ReadAt(buf, off)
+}
+
+func (p *partDefaultByteSource) UnwrapByteSource() kindstream.ByteSource {
+	return p.ByteSource
 }
 
 func unwrapKindMediaSource(bs kindstream.ByteSource) core.MediaSource {

@@ -1584,7 +1584,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 			mc.Size = len(mc.Metadata)
 			mc.SetPage(min(offset, total), total)
 			if c.RankedTop10 {
-				paintRankedCollection(mc, offset)
+				paintRankedCollection(pr, mc, offset)
 			}
 			s.write(w, r, mc)
 			return
@@ -1610,7 +1610,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 		mc.Size = len(mc.Metadata)
 		mc.SetPage(offset, total)
 		if c.RankedTop10 {
-			paintRankedCollection(mc, offset)
+			paintRankedCollection(pr, mc, offset)
 		}
 		s.write(w, r, mc)
 		return
@@ -1648,7 +1648,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(offset, page.Total)
 	if c.RankedTop10 {
-		paintRankedCollection(mc, offset)
+		paintRankedCollection(pr, mc, offset)
 	}
 	s.write(w, r, mc)
 }
@@ -1680,7 +1680,7 @@ func (s *Server) collectionMemberPage(w http.ResponseWriter, r *http.Request, c 
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(offset, total)
 	if c.RankedTop10 {
-		paintRankedCollection(mc, offset)
+		paintRankedCollection(pr, mc, offset)
 	}
 	s.write(w, r, mc)
 }

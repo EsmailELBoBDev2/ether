@@ -146,7 +146,7 @@ func (s *Server) arrangeHomeRows(ctx context.Context, pr *Request, hc frontend.H
 // stableHomeHubs drops rows a client would draw empty, and keeps the first
 // copy when the same hub was produced twice (promoted and section builders,
 // or a recommender repeating a row the front end already built).
-func stableHomeHubs(rows []model.Hub) []model.Hub {
+func stableHomeHubs(pr *Request, rows []model.Hub) []model.Hub {
 	seen := map[string]bool{}
 	out := make([]model.Hub, 0, len(rows))
 	for _, h := range rows {
@@ -170,7 +170,7 @@ func stableHomeHubs(rows []model.Hub) []model.Hub {
 			h.Size = len(h.Metadata)
 			h.TotalSize = model.Ptr(h.Size)
 			h.More = false
-			h.Meta = &model.Meta{DisplayImage: []model.DisplayImage{{Type: h.Type, ImageType: "coverArt"}}}
+			h.Meta = rankedDisplayImageMeta(pr, h.Type)
 		}
 		out = append(out, h)
 	}

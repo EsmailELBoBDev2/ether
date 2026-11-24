@@ -366,7 +366,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 	}
 	if isPluginKindSection(sec) {
 		hubs, served := s.kindSectionHubs(ctx, pr, sec, visibleCount)
-		mc.Hub = stableHomeHubs(hubs)
+		mc.Hub = stableHomeHubs(pr, hubs)
 		mc.Size = len(mc.Hub)
 		return homeBuild{mc: mc, served: served, section: sec.ID}
 	}
@@ -443,7 +443,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		}
 	}
 	sectionName := "library:" + strconv.Itoa(sec.ID)
-	mc.Hub = stableHomeHubs(s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral))
+	mc.Hub = stableHomeHubs(pr, s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral))
 	if promotedOnly {
 		for i := range mc.Hub {
 			oldID := mc.Hub[i].HubIdentifier
@@ -1007,7 +1007,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 	allRows = append(allRows, playlistRows...)
 
 	mc := hubContainer()
-	mc.Hub = stableHomeHubs(allRows)
+	mc.Hub = stableHomeHubs(pr, allRows)
 	if shelves {
 		secID := allowedSecs[0].ID
 		var renamed map[string]shelfRef

@@ -422,6 +422,11 @@ func (p *Preview) resolve() error {
 			}
 		}
 	}
+	if ScreensUseDocuments(man) {
+		if _, err := CompileScreenDocuments(man, p.files, p.resolvedStrings); err != nil {
+			return err
+		}
+	}
 	if man := p.Manifest; man.Ether != nil {
 		p.Summary = pluginText(p.resolvedStrings, man.Ether.Summary)
 	}

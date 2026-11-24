@@ -393,6 +393,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapLiveEvents) {
 		lines = append(lines, "Provides live event feeds")
 	}
+	if man.HasCapability(CapScreens) {
+		lines = append(lines, screensPermissionLine(man))
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
 	}
@@ -530,6 +533,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
 		added = append(added, "Provides live event feeds")
+	}
+	if !cur.HasCapability(CapScreens) && next.HasCapability(CapScreens) {
+		added = append(added, screensPermissionLine(next))
 	}
 	return added
 }

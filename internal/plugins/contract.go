@@ -74,6 +74,9 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapLiveEvents      Capability = "live_events"
+	// CapScreens lets a plugin contribute screens and surfaces that Vela
+	// draws from documents in the package (docs/plugin-screens.md).
+	CapScreens Capability = "screens"
 )
 
 // Reserved capabilities are known names a manifest may not claim in v1.
@@ -313,6 +316,9 @@ type Contributes struct {
 	// Screens declares generic top-level screens rendered natively by frontends
 	// such as Vela (spec A3).
 	Screens []ScreenMeta `json:"screens,omitempty"`
+	// Surfaces are documents drawn in host slots: player overlays, toasts,
+	// Home rows and title panels (docs/plugin-screens.md, Surfaces).
+	Surfaces []SurfaceMeta `json:"surfaces,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the lowest polling interval (in seconds) a plugin

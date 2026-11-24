@@ -59,11 +59,11 @@ func TestValidateScreens(t *testing.T) {
 			field: "ether.contributes.screens[1].id",
 		},
 		{
-			name: "missing sections",
+			name: "missing pages",
 			mut: func(m *Manifest) {
 				m.Ether.Contributes.Screens[0].Sections = nil
 			},
-			field: "ether.contributes.screens[0].sections",
+			field: "ether.contributes.screens[0].pages",
 		},
 		{
 			name: "unknown section type",

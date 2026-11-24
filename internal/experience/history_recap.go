@@ -246,3 +246,16 @@ func recapStreaks(days map[string]float64, today time.Time) (current, longest in
 func round1(v float64) float64 {
 	return float64(int64(v*10+0.5)) / 10
 }
+
+// PluginDuplicateGroup is one recording with several copies in a library.
+type PluginDuplicateGroup struct {
+	Recording string
+	Count     int
+	Titles    []core.Title
+}
+
+// PluginDuplicates is the plugin catalogue's duplicate review source.
+type PluginDuplicates interface {
+	DuplicateTitles(ctx context.Context, lib core.Library, offset, limit int) ([]PluginDuplicateGroup, int, error)
+	RecordingTitles(ctx context.Context, key core.RatingKey) (core.Library, string, []core.Title, error)
+}

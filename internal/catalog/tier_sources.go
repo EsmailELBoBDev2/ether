@@ -56,6 +56,8 @@ var tierTouchSources = []touchSource{
 	{table: "state_lifetime_events", column: "rating_key"},
 	{table: "state_history_rank", column: "rating_key"},
 	{table: "state_continue_hidden", column: "item_key", tierA: true},
+	{table: "state_recording_pref", column: "preferred_key", tierA: true},
+	{table: "state_recording_hidden", column: "item_key", tierA: true},
 	{table: "personalize_discovery_hidden", column: "item_key", tierA: true},
 	{table: "state_last_source", column: "rating_key", tierA: true},
 	{table: "watchlist_items", column: "item_key", tierA: true},
@@ -166,6 +168,7 @@ var tierTouchSources = []touchSource{
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
 	"transcode_decode_caps", // Device capabilities hold no title references.
+	"loudness_",             // Measured loudness, rebuilt on the next play-through.
 	"personalize_meta",      // One-time migration markers, no titles.
 	// Release identity memory (blocklist links, failed grabs) names releases, not titles.
 	"resolver_content_links",

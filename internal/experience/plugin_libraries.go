@@ -1292,6 +1292,7 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 }
 
 func (s *Service) filterPluginTitles(ctx context.Context, v *core.User, items []core.Title, q frontend.ItemQuery) ([]core.Title, error) {
+	items = s.dropHiddenCopies(ctx, v, items)
 	if len(items) == 0 {
 		return nil, nil
 	}

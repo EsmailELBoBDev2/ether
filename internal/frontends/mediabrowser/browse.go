@@ -724,7 +724,7 @@ func (i *instance) browseRoutes() error {
 		}
 		i.markUnreleased(dto, d.Title)
 		i.applyOpenedDetail(r, v, dto, d.Title)
-		if i.protocol == "jellyfin" && (d.Title.Type == "movie" || d.Title.Type == "episode") {
+		if d.Title.Type == "movie" || d.Title.Type == "episode" {
 			i.subtitleLists.note(v, key, dto["MediaSources"], time.Now())
 		}
 		i.replyItems(w, r, dto)

@@ -431,11 +431,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	listVersions := len(variants) > 0
-	if i.protocol == "jellyfin" && subtitleFromMenu && opts.SubtitleStream < 0 && channel == "" && !i.subtitleLists.shown(v, key, time.Now()) {
-		// Jellyfin Web posts its hidden subtitle menu's "-1" when the detail
-		// page it showed had no subtitle list (the release was not probed
-		// yet). Nobody chose "off" from a list never sent: the viewer's
-		// rules decide.
+	// Jellyfin Web posts its hidden subtitle menu's "-1" when the detail page
+	// it showed had no subtitle list (the release was not probed yet); Emby's
+	// web lineage sends the same menu value as a query parameter. Nobody
+	// chose "off" from a list never sent: the viewer's rules decide. Jellyfin
+	// API clients that send a number keep their explicit choice.
+	menuOff := (i.protocol == "jellyfin" && subtitleFromMenu) || (i.protocol == "emby" && subtitleSet)
+	if menuOff && opts.SubtitleStream < 0 && channel == "" && !i.subtitleLists.shown(v, key, time.Now()) {
 		subtitleSet = false
 		intent.SubtitleSet = false
 	}
@@ -761,14 +763,14 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// the exact release through the returned MediaSource Id.
 	if listVersions && !versionRequested && autoSwitchedRelease == "" {
 		if sources := i.releaseVersionSourcesFor(r, scope, key, variants, source); sources != nil {
-			if i.protocol == "jellyfin" && channel == "" {
+			if channel == "" {
 				i.subtitleLists.note(v, key, sources, time.Now())
 			}
 			jsonReply(w, map[string]any{"MediaSources": sources, "PlaySessionId": playID})
 			return
 		}
 	}
-	if i.protocol == "jellyfin" && channel == "" {
+	if channel == "" {
 		i.subtitleLists.note(v, key, []any{source}, time.Now())
 	}
 	jsonReply(w, map[string]any{"MediaSources": []any{source}, "PlaySessionId": playID})

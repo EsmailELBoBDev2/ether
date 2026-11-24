@@ -579,6 +579,29 @@ func (p *playIdentities) issuedSelected(k playIdentityKey, wireID int64, now tim
 	return false
 }
 
+// listedSubtitles reports whether a stream list issued to this client for k
+// carried any subtitle row. A client that only held the pre-playback
+// estimate (no subtitle tracks) never had a list to pick None from.
+func (p *playIdentities) listedSubtitles(k playIdentityKey, now time.Time) bool {
+	if p == nil || !k.valid() {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e := p.m[k]
+	if e == nil || (!e.frozen && e.admitting == 0 && now.Sub(e.at) > playIdentityTTL) {
+		return false
+	}
+	for _, im := range e.media {
+		for _, is := range im.streams {
+			if is.typ == 3 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // shownSubtitles returns the subtitle each Media's latest stream list for k
 // marked selected. rendered is false when this client holds no current
 // stream list for the title.

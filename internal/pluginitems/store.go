@@ -723,7 +723,8 @@ func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindK
 	stats := UpsertStats{Accepted: len(items)}
 	var undo upsertUndoCapture
 	var totalItems int64
-	for start := 0; start < len(prepared); start += upsertChunkSize {
+	size := upsertChunkFirst
+	for start, end := 0, 0; start < len(prepared); start = end {
 		if err := ctx.Err(); err != nil {
 			return stats, undo, err
 		}
@@ -732,7 +733,7 @@ func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindK
 				return stats, undo, err
 			}
 		}
-		end := min(start+upsertChunkSize, len(prepared))
+		end = min(start+size, len(prepared))
 		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK, pin, captureUndo, snapshotPrevious)
 		if err != nil {
 			// The failed chunk rolled back; only earlier committed
@@ -750,6 +751,7 @@ func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindK
 		if res.totalItems > 0 {
 			totalItems = res.totalItems
 		}
+		size = nextUpsertChunkSize(end-start, res.held)
 	}
 	if notifyStats && totalItems > 0 {
 		s.noteLibraryItems(kind.LibraryID, totalItems, false)
@@ -2457,7 +2459,7 @@ type existingItemMeta struct {
 	hash      string
 }
 
-func lookupExistingItemsTx(ctx context.Context, tx *sql.Tx, items []preparedItem) (map[core.ItemRef]existingItemMeta, error) {
+func lookupExistingItemsTx(ctx context.Context, tx queryer, items []preparedItem) (map[core.ItemRef]existingItemMeta, error) {
 	out := make(map[core.ItemRef]existingItemMeta, len(items))
 	const chunkSize = 250
 	for start := 0; start < len(items); start += chunkSize {

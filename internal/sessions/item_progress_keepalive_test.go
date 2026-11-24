@@ -10,43 +10,43 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-// activityOutput is an HLS output that records the playback states reported
+// progressKeepOutput is an HLS output that records the playback states reported
 // to it; nothing else on it is used.
-type activityOutput struct {
+type progressKeepOutput struct {
 	core.HLSSession
 	mu     sync.Mutex
 	states []string
 }
 
-func (o *activityOutput) PlaybackState(state string) {
+func (o *progressKeepOutput) PlaybackState(state string) {
 	o.mu.Lock()
 	o.states = append(o.states, state)
 	o.mu.Unlock()
 }
 
-type activityTranscoder struct {
+type progressKeepTranscoder struct {
 	fakeBrokerTranscoder
 	mu      sync.Mutex
 	asked   []string
-	outputs map[string]*activityOutput
+	outputs map[string]*progressKeepOutput
 }
 
-func (t *activityTranscoder) Session(id string) (core.HLSSession, bool) {
+func (t *progressKeepTranscoder) Session(id string) (core.HLSSession, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.asked = append(t.asked, id)
 	if t.outputs[id] == nil {
-		t.outputs[id] = &activityOutput{}
+		t.outputs[id] = &progressKeepOutput{}
 	}
 	return t.outputs[id], true
 }
 
-type touchPlayback struct {
+type progressKeepPlayback struct {
 	livenessFakePlayback
 	touched []string
 }
 
-func (p *touchPlayback) Touch(id string) {
+func (p *progressKeepPlayback) Touch(id string) {
 	p.mu.Lock()
 	p.touched = append(p.touched, id)
 	p.mu.Unlock()
@@ -59,12 +59,12 @@ func (p *touchPlayback) Touch(id string) {
 // segment request answered 404.
 func TestReportItemProgressKeepsOpenSessionActive(t *testing.T) {
 	ctx := context.Background()
-	p := &touchPlayback{livenessFakePlayback: livenessFakePlayback{
+	p := &progressKeepPlayback{livenessFakePlayback: livenessFakePlayback{
 		fakePlayback: fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 4},
 		active:       map[string]bool{},
 		stopped:      map[string]bool{},
 	}}
-	tr := &activityTranscoder{outputs: map[string]*activityOutput{}}
+	tr := &progressKeepTranscoder{outputs: map[string]*progressKeepOutput{}}
 	active := func(_ context.Context, id int64) (*core.Viewer, error) {
 		return &core.Viewer{ID: id, IsOwner: true}, nil
 	}

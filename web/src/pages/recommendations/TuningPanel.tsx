@@ -1,29 +1,17 @@
 import { ConfigSection } from "../../components/ConfigSection";
 import { PERSONAL_TOUCHES } from "../settings/schema";
-import { Badge, Button, Switch, cn } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, cn } from "@braedonsaunders/appkit-ui";
 import { Brain, Compass, Layers3, RotateCcw, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DivergingBars } from "../../components/charts";
 import { api } from "../../lib/api";
-import type {
-  HomeLayout,
-  LayoutSection,
-  RankerInsight,
-  TuningDial,
-  Viewer,
-} from "../../lib/contract";
+import type { RankerInsight } from "../../lib/contract";
 import { getLocale, localized, t } from "../../i18n";
 import { formatNumber, relativeTime } from "../../lib/format";
-import {
-  DIAL_DEFAULT,
-  sectionLabelOf,
-  effectiveDedupe,
-  effectiveTuning,
-  setDedupe,
-  setTuning,
-  tuningIn,
-  type LayerKey,
-} from "../../lib/layout";
+import type { PageTuning, TuningDial } from "../../lib/pages";
+
+/** The engine's middle setting for every dial. */
+const DIAL_DEFAULT = 0.5;
 
 const DIALS = localized<
   {
@@ -83,117 +71,87 @@ const word = (words: string[], v: number) =>
   words[Math.min(words.length - 1, Math.floor(v * words.length))] ?? "";
 
 /**
- * The page's dials, Home dedup and the learned model, edited in place. Dials
- * resolve viewer → Everyone → engine default, like every other setting here.
+ * Tuning (Personalized pages): the page's three dials, the server-wide
+ * personal touches and what the learned model has picked up. With a viewer
+ * picked in Editing for, the dials are "changes just for them".
  */
 export function TuningPanel({
-  draft,
+  tuning,
+  inherited,
   onChange,
-  layer,
-  section,
-  viewers,
+  pageName,
+  viewerName,
+  dials,
 }: {
-  draft: HomeLayout;
-  onChange: (d: HomeLayout) => void;
-  layer: LayerKey;
-  section: LayoutSection;
-  viewers: Viewer[];
+  tuning: PageTuning | undefined;
+  /** Everyone's dials, when editing for a viewer. */
+  inherited?: PageTuning;
+  onChange: (t: PageTuning | undefined) => void;
+  pageName: string;
+  viewerName: string | null;
+  dials: boolean;
 }) {
-  const page = sectionLabelOf(section);
-  const who =
-    layer === "global"
-      ? t("everyone")
-      : (viewers.find((v) => v.id === layer)?.title ??
-        viewers.find((v) => v.id === layer)?.username ??
-        t("this viewer"));
-  const dedupe = effectiveDedupe(draft, layer, section);
+  const page = pageName;
+  const valueOf = (dial: TuningDial): { v: number; from: "override" | "global" | "default" } => {
+    const own = tuning?.[dial];
+    if (own !== undefined) return { v: own, from: viewerName ? "override" : "global" };
+    const base = inherited?.[dial];
+    if (base !== undefined) return { v: base, from: "global" };
+    return { v: DIAL_DEFAULT, from: "default" };
+  };
+  const set = (dial: TuningDial, v: number | undefined) => {
+    const next: PageTuning = { ...tuning, [dial]: v };
+    if (v === undefined) delete next[dial];
+    onChange(Object.keys(next).length ? next : undefined);
+  };
+  const layer = viewerName ? 1 : "global";
   return (
     <div className="space-y-5">
-      <section aria-label={t("How {page} picks", { page })} className="space-y-3">
-        <div className="flex items-end justify-between gap-2">
-          <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-              {t("How {page} picks", { page })}
-            </h2>
-            <p className="mt-0.5 text-xs text-fg-muted">
-              {layer === "global"
-                ? t("Dials for {page} for everyone. Viewers can be tuned individually.", { page })
-                : t("Dials for {viewer}'s {page}; unset dials follow Everyone.", {
-                    viewer: who,
-                    page,
-                  })}
-            </p>
+      {dials ? (
+        <section aria-label={t("How {page} picks", { page })} className="space-y-3">
+          <div className="flex items-end justify-between gap-2">
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+                {t("How {page} picks", { page })}
+              </h2>
+              <p className="mt-0.5 text-xs text-fg-muted">
+                {viewerName
+                  ? t("Dials for {viewer}'s {page}; unset dials follow Everyone.", {
+                      viewer: viewerName,
+                      page,
+                    })
+                  : t("How Ether chooses the rows it adds and the titles in them.")}
+              </p>
+            </div>
+            {tuning && Object.keys(tuning).length ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => onChange(undefined)}
+              >
+                <RotateCcw size={12} /> {t("Reset dials")}
+              </Button>
+            ) : null}
           </div>
-          {DIALS.some((d) => tuningIn(draft, layer, section, d.dial) !== undefined) ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => {
-                let next = draft;
-                for (const d of DIALS) next = setTuning(next, layer, section, d.dial, undefined);
-                onChange(next);
-              }}
-            >
-              <RotateCcw size={12} /> {t("Reset dials")}
-            </Button>
-          ) : null}
-        </div>
-        {DIALS.map((d) => (
-          <Dial
-            key={d.dial}
-            spec={d}
-            value={effectiveTuning(draft, layer, section, d.dial)}
-            layer={layer}
-            onChange={(v) => onChange(setTuning(draft, layer, section, d.dial, v))}
-          />
-        ))}
-      </section>
-
-      {section !== "home" ? (
-        <section
-          aria-label={t("Home dedup")}
-          className={cn(
-            "flex items-start gap-3 rounded-xl border bg-surface p-3",
-            dedupe.from === "override" ? "border-info/40" : "border-border",
-          )}
-        >
-          <Switch
-            aria-label={t("Don't repeat what Home shows")}
-            checked={dedupe.on}
-            onChange={(e) => onChange(setDedupe(draft, layer, section, e.currentTarget.checked))}
-          />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-fg">{t("Don't repeat what Home shows")}</p>
-            <p className="text-xs text-fg-muted">
-              {t(
-                "Titles the viewer's Home leads with stay off {page}, so switching tabs always shows something new.",
-                { page },
-              )}
-            </p>
-          </div>
-          {dedupe.from !== "default" ? (
-            <button
-              type="button"
-              aria-label={t("Reset Home dedup")}
-              title={t("Reset")}
-              onClick={() => onChange(setDedupe(draft, layer, section, undefined))}
-              className="text-fg-subtle hover:text-fg"
-            >
-              <RotateCcw size={13} />
-            </button>
-          ) : null}
+          {DIALS.map((d) => (
+            <Dial
+              key={d.dial}
+              spec={d}
+              value={valueOf(d.dial)}
+              layer={layer}
+              onChange={(v) => set(d.dial, v)}
+            />
+          ))}
         </section>
       ) : null}
-
-      {layer === "global" ? (
+      {viewerName ? null : (
         <ConfigSection
           configKey="personalize"
           groups={PERSONAL_TOUCHES}
           label={t("Personal touches")}
         />
-      ) : null}
-
+      )}
       <LearningCard />
     </div>
   );
@@ -207,7 +165,7 @@ function Dial({
 }: {
   spec: (typeof DIALS)[number];
   value: { v: number; from: "override" | "global" | "default" };
-  layer: LayerKey;
+  layer: number | "global";
   onChange: (v: number | undefined) => void;
 }) {
   const pct = Math.round(value.v * 100);
@@ -234,7 +192,7 @@ function Dial({
         ) : value.from === "global" && layer !== "global" ? (
           <Badge variant="secondary">{t("From Everyone")}</Badge>
         ) : value.from === "override" ? (
-          <Badge variant="info">{t("Override")}</Badge>
+          <Badge variant="info">{t("Just this viewer")}</Badge>
         ) : null}
         {own ? (
           <button

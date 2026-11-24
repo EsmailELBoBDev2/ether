@@ -458,8 +458,8 @@ export function resolveRouteTitle(
   }
 
   if (options.registryLoading) {
-    if (descriptors.length === 0 && path === "/home") {
-      return { matched: true, parts: [t("Home")] };
+    if (descriptors.length === 0 && path === "/recommendations") {
+      return { matched: true, parts: [t("Recommendations")] };
     }
     return { matched: false, parts: [] };
   }

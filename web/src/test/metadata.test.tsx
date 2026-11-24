@@ -475,9 +475,14 @@ describe("Metadata artwork studio", () => {
     expect(calls(fake, "PUT", "/config/plex")[0]!.body).toEqual({ usePlexMetadata: true });
   });
 
-  it("opens Home at /home", async () => {
-    renderAppWith("/home", () => undefined);
-    expect(await screen.findByRole("heading", { name: "Home" }, WAIT)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("href", "/home");
+  it("opens Recommendations at /recommendations", async () => {
+    renderAppWith("/recommendations", () => undefined);
+    expect(
+      await screen.findByRole("heading", { name: "Recommendations" }, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Recommendations" })).toHaveAttribute(
+      "href",
+      "/recommendations",
+    );
   });
 });

@@ -46,7 +46,7 @@ describe("resolveRouteTitle", () => {
     expect(titleFor("/collections", "?tab=templates")).toBe("Collections · Templates — Home");
     expect(titleFor("/collections/new")).toBe("Collections · New collection — Home");
     expect(titleFor("/collections/42")).toBe("Collections · Edit collection — Home");
-    expect(titleFor("/home")).toBe("Home — Home");
+    expect(titleFor("/recommendations")).toBe("Recommendations — Home");
     expect(titleFor("/livetv")).toBe("Live TV · Channels — Home");
     expect(titleFor("/livetv/looks")).toBe("Live TV · Styles — Home");
     expect(titleFor("/calendar/week")).toBe("Calendar · Week — Home");
@@ -107,9 +107,9 @@ describe("document.title integration", () => {
       expect(document.title).toBe("Overview — Living Room Ether");
     });
 
-    fireEvent.click(screen.getAllByRole("link", { name: "Home" })[0]!);
+    fireEvent.click(screen.getAllByRole("link", { name: "Recommendations" })[0]!);
     await waitFor(() => {
-      expect(document.title).toBe("Home — Living Room Ether");
+      expect(document.title).toBe("Recommendations — Living Room Ether");
     });
   });
 

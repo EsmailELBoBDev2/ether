@@ -901,7 +901,35 @@ func (c *Catalog) upsertMany(ctx context.Context, titles []core.Title, o upsertO
 	for i, t := range titles {
 		items[i] = upsertItem{t: t, o: o}
 	}
-	return c.upsertItems(ctx, items)
+	return c.upsertSummaryChunks(ctx, items, 0)
+}
+
+// upsertSummaryChunks stores items in transactions sized to hold the
+// writer about backgroundWriteHold (write_hold.go), each with budget (0 for
+// none), then runs after in the last one. Every upsert is idempotent: a
+// failure leaves the earlier chunks stored, and a retry rewrites nothing
+// they hold. Writers waiting on the write gate take their turn between
+// chunks.
+func (c *Catalog) upsertSummaryChunks(ctx context.Context, items []upsertItem, budget time.Duration, after ...func(context.Context, *sql.Tx) error) error {
+	if len(items) == 0 {
+		_, err := c.upsertTx(ctx, nil, budget, after...)
+		return err
+	}
+	for start := 0; start < len(items); {
+		n := min(c.holds.summary.size(summaryHold), len(items)-start)
+		chunk := items[start : start+n]
+		start += n
+		var then []func(context.Context, *sql.Tx) error
+		if start == len(items) {
+			then = after
+		}
+		held, err := c.upsertTx(ctx, chunk, budget, then...)
+		c.holds.summary.observe(summaryHold, len(chunk), held)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // upsertItem is one title and its write options.
@@ -919,14 +947,28 @@ func (c *Catalog) upsertItems(ctx context.Context, items []upsertItem, after ...
 // upsertItemsBudget starts the execution budget only after writer admission.
 // Waiting behind another transaction must not consume our execution allowance.
 func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, budget time.Duration, after ...func(context.Context, *sql.Tx) error) error {
+	_, err := c.upsertTx(ctx, items, budget, after...)
+	return err
+}
+
+// upsertTx is upsertItemsBudget, reporting how long the transaction held
+// the writer (from admission to commit or rollback).
+func (c *Catalog) upsertTx(ctx context.Context, items []upsertItem, budget time.Duration, after ...func(context.Context, *sql.Tx) error) (held time.Duration, err error) {
 	if len(items) == 0 && len(after) == 0 {
-		return nil
+		return 0, nil
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer tx.Rollback()
+	admitted := time.Now()
+	defer func() {
+		_ = tx.Rollback()
+		if held == 0 {
+			held = time.Since(admitted)
+		}
+	}()
+	parent := ctx
 	if budget > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, budget)
@@ -941,7 +983,7 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 	}
 	stored, err := storedKeys(ctx, tx, titles)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Fold the new rows into the title search index (fts_fold.go).
 	var fresh []int64
@@ -964,7 +1006,7 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 	bulk := c.ftsFold && len(fresh) >= ftsFoldMin
 	if bulk {
 		if err := beginBulk(ctx, tx); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	joins := &joinBatch{personFold: c.personFold && anyCredits, bulk: bulk}
@@ -972,38 +1014,42 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 		o := it.o
 		o.region, o.ratingCuts, o.stored, o.joins = region, &cuts, stored, joins
 		if err := upsertOne(ctx, tx, it.t, o, now); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := joins.flush(ctx, tx, now); err != nil {
-		return err
+		return 0, err
 	}
 	if bulk {
 		// With the marker set, the title trigger skipped every new row.
 		if err := foldTitleSearch(ctx, tx, fresh); err != nil {
-			return err
+			return 0, err
 		}
 		if err := endBulk(ctx, tx); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	for _, f := range after {
 		if err := f(ctx, tx); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	// The budget bounds the statements; once they all ran, committing
+	// keeps the work the hold already paid for. A rollback here would
+	// only repeat the same hold on the retry.
+	if err := parent.Err(); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return 0, err
 	}
+	held = time.Since(admitted)
 	c.writeGen.Add(1)
 	c.noteSearchWrites(titles)
 	if len(fresh) > 0 {
 		c.notifyStatus(true)
 	}
-	return nil
+	return held, nil
 }
 
 // materialTitleChangeSQL is true when an upsert changes a user-visible column on

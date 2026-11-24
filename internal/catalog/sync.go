@@ -466,14 +466,15 @@ const syncWriteBatch = 250
 // catalogue on a spinning disk a title's index pages are mostly not cached
 // and each costs a seek, so the batch shrinks until one transaction takes
 // about this long, and grows back when the disk keeps up.
-const syncWriteHold = 500 * time.Millisecond
+const syncWriteHold = backgroundWriteHold
 
 func nextSyncBatch(limit, stored int, took time.Duration) int {
 	return nextBatch(limit, stored, took, syncWriteBatch)
 }
 
 // nextBatch sizes the next write batch so one transaction holds the write
-// lock about syncWriteHold, between 1 and most.
+// lock about syncWriteHold, between 1 and most. It shrinks at once (a long
+// hold stalls every queued writer) and grows by half at most.
 func nextBatch(limit, stored int, took time.Duration, most int) int {
 	if stored <= 0 {
 		return limit
@@ -482,9 +483,7 @@ func nextBatch(limit, stored int, took time.Duration, most int) int {
 	if perTitle <= 0 {
 		return most
 	}
-	want := int(syncWriteHold / perTitle)
-	// Move gradually: halve at most, grow by half at most.
-	want = max(want, limit/2, 1)
+	want := max(int(syncWriteHold/perTitle), 1)
 	want = min(want, limit+limit/2+1, most)
 	return want
 }

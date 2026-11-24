@@ -86,6 +86,8 @@ type listTestHarness struct {
 	mgr  *plugins.Manager
 	reg  *extend.Registry
 	rt   *listChannelFakeRuntime
+	// runtime is the owner's plugin limits the manager reads.
+	runtime *config.Plugins
 }
 
 func newListTestHarness(t *testing.T) *listTestHarness {
@@ -173,13 +175,15 @@ func newListTestHarness(t *testing.T) *listTestHarness {
 	reg := extend.New()
 	rt := &listChannelFakeRuntime{routes: map[string]func(plugins.Request) (plugins.Response, error){}}
 
+	runtime := &config.Plugins{}
 	mgr, err := plugins.New(plugins.Deps{
-		DB:       db,
-		Registry: reg,
-		Tools:    tools.NewCatalogue(),
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		IsLeader: func() bool { return true },
-		Now:      func() time.Time { return time.Now().UTC() },
+		DB:                db,
+		ReadRuntimeConfig: func() config.Plugins { return *runtime },
+		Registry:          reg,
+		Tools:             tools.NewCatalogue(),
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		IsLeader:          func() bool { return true },
+		Now:               func() time.Time { return time.Now().UTC() },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,13 +198,14 @@ func newListTestHarness(t *testing.T) *listTestHarness {
 	adapters.Attach(mgr, cols, pers, nil)
 
 	return &listTestHarness{
-		db:   db,
-		cat:  cat,
-		cols: cols,
-		pers: pers,
-		mgr:  mgr,
-		reg:  reg,
-		rt:   rt,
+		runtime: runtime,
+		db:      db,
+		cat:     cat,
+		cols:    cols,
+		pers:    pers,
+		mgr:     mgr,
+		reg:     reg,
+		rt:      rt,
 	}
 }
 

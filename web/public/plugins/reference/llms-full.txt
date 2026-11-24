@@ -2133,6 +2133,7 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
 | `maxItems` | `int` | may be omitted (see validation for conditions) |  |
+| `listItems` | `int` | may be omitted (see validation for conditions) | ListItems is how many titles one sync of each plugin list reads. Globally it caps what lists ask for; per plugin it replaces it. |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | zero means effectively unlimited |
@@ -2145,15 +2146,18 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 // PluginRuntimeLimits are owner-controlled ceilings, not allocations. Zero
 // inherits the default (globally) or the global ceiling (per plugin).
 type PluginRuntimeLimits struct {
-	FetchBytes           int64  `json:"fetchBytes,omitempty"`
-	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
-	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
-	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
-	MaxItems             int    `json:"maxItems,omitempty"`
-	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
-	Deadline             string `json:"deadline,omitempty"`
-	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
-	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default 4, max 16
+	FetchBytes           int64 `json:"fetchBytes,omitempty"`
+	ArchiveMemberBytes   int64 `json:"archiveMemberBytes,omitempty"`
+	ArchiveExpandedBytes int64 `json:"archiveExpandedBytes,omitempty"`
+	ArchiveMembers       int   `json:"archiveMembers,omitempty"`
+	MaxItems             int   `json:"maxItems,omitempty"`
+	// ListItems is how many titles one sync of each plugin list reads.
+	// Globally it caps what lists ask for; per plugin it replaces it.
+	ListItems   int    `json:"listItems,omitempty"`
+	MemoryBytes uint64 `json:"memoryBytes,omitempty"`
+	Deadline    string `json:"deadline,omitempty"`
+	UnitBudget  int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
+	PoolSize    int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default 4, max 16
 }
 ``````
 
@@ -6564,7 +6568,7 @@ type IntegrationMeta struct {
 | `hint` | `string` | may be omitted (see validation for conditions) |  |
 | `catalog` | `string` | emitted (validation may require a value) |  |
 | `params` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
-| `maxItems` | `int` | may be omitted (see validation for conditions) | ≤ 2000 |
+| `maxItems` | `int` | may be omitted (see validation for conditions) | MaxItems is how many titles one sync of the list reads (≤ 2000; DefaultListItems when omitted). The install review shows it and the owner can lower or raise it in the plugin's limits. |
 | `refresh` | `string` | may be omitted (see validation for conditions) | ≥ 1h |
 
 
@@ -6573,13 +6577,16 @@ type IntegrationMeta struct {
 ``````
 // ListSourceMeta is one contributed list source.
 type ListSourceMeta struct {
-	Key      string          `json:"key"`
-	Label    string          `json:"label"`
-	Hint     string          `json:"hint,omitempty"`
-	Catalog  string          `json:"catalog"`
-	Params   json.RawMessage `json:"params,omitempty"`
-	MaxItems int             `json:"maxItems,omitempty"` // ≤ 2000
-	Refresh  string          `json:"refresh,omitempty"`  // ≥ 1h
+	Key     string          `json:"key"`
+	Label   string          `json:"label"`
+	Hint    string          `json:"hint,omitempty"`
+	Catalog string          `json:"catalog"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	// MaxItems is how many titles one sync of the list reads (≤ 2000;
+	// DefaultListItems when omitted). The install review shows it and the
+	// owner can lower or raise it in the plugin's limits.
+	MaxItems int    `json:"maxItems,omitempty"`
+	Refresh  string `json:"refresh,omitempty"` // ≥ 1h
 }
 ``````
 
@@ -9306,7 +9313,11 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		return []string{"Adds channel styles and licensed artwork. Runs no code."}, false, false
 	}
 	if man.Ether == nil {
-		return []string{"Connects to the add-on address you gave"}, false, false
+		lines = []string{"Connects to the add-on address you gave"}
+		if n := man.ListItemsRequested(); n > 0 {
+			lines = append(lines, listItemsLine(n))
+		}
+		return lines, false, false
 	}
 	if man.Ether.Stremio {
 		lines = append(lines, "Connects to the add-on it was made from")
@@ -9406,6 +9417,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
+	}
+	if n := man.ListItemsRequested(); n > 0 {
+		lines = append(lines, listItemsLine(n))
 	}
 	return lines, needsViewers, needsFolders
 }
@@ -9545,6 +9559,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
 		added = append(added, "Provides live event feeds")
+	}
+	if n := next.ListItemsRequested(); n > cur.ListItemsRequested() {
+		added = append(added, listItemsLine(n))
 	}
 	return added
 }
@@ -25345,8 +25362,8 @@ func validateContributes(m Manifest, add func(string, string)) {
 		if ls.Catalog == "" {
 			add(base+".catalog", "is required")
 		}
-		if ls.MaxItems < 0 || ls.MaxItems > 2000 {
-			add(base+".maxItems", "must be at most 2000")
+		if ls.MaxItems < 0 || ls.MaxItems > MaxListItems {
+			add(base+".maxItems", fmt.Sprintf("must be at most %d", MaxListItems))
 		}
 		if ls.Refresh != "" {
 			if d, err := time.ParseDuration(ls.Refresh); err != nil || d < time.Hour {
@@ -29467,6 +29484,7 @@ type runtimeCeilings struct {
 	fetch, member, expanded int64
 	members                 int
 	maxItems                int
+	listItems               int
 }
 ``````
 
@@ -29475,15 +29493,16 @@ type runtimeCeilings struct {
 ``````
 func defaultRuntimeCeilings() runtimeCeilings {
 	return runtimeCeilings{
-		memory:   2 << 30,
-		deadline: 12 * time.Hour,
-		units:    1 << 60,
-		poolSize: wasm.DefaultPoolCeiling,
-		fetch:    8 << 30,
-		member:   8 << 30,
-		expanded: 32 << 30,
-		members:  65535,
-		maxItems: DefaultMaxPluginItems,
+		memory:    2 << 30,
+		deadline:  12 * time.Hour,
+		units:     1 << 60,
+		poolSize:  wasm.DefaultPoolCeiling,
+		fetch:     8 << 30,
+		member:    8 << 30,
+		expanded:  32 << 30,
+		members:   65535,
+		maxItems:  DefaultMaxPluginItems,
+		listItems: MaxListItems,
 	}
 }
 ``````
@@ -29518,6 +29537,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	}
 	if l.MaxItems > 0 {
 		c.maxItems = l.MaxItems
+	}
+	if l.ListItems > 0 {
+		c.listItems = min(l.ListItems, MaxListItems)
 	}
 	return c
 }
@@ -29676,8 +29698,8 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, and resource limits must not be negative.", wasm.MaxPoolSize), nil)
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 || req.Limits.ListItems < 0 || req.Limits.ListItems > MaxListItems {
+			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, titles per list at most %d, and resource limits must not be negative.", wasm.MaxPoolSize, MaxListItems), nil)
 			return
 		}
 		if req.Limits.Deadline != "" {
@@ -40323,6 +40345,12 @@ returns The Matrix. Replace the generated `/catalog/` branch's empty `metas` wit
 list of `{id:"tt0133093",type:"movie",name:"The Matrix"}`. Keep the listSources
 catalog ID (`featured`) aligned with `/catalog/movie/featured.json`. Full typed
 catalogue/meta handlers: `sdk/examples/hello/typescript/plugin.ts`.
+
+A list source's `maxItems` (at most 2000, default 500) is how many titles one
+sync of the list reads, paging with `skip`. The owner sees it in the install
+review ("Syncs up to 2,000 titles per list") and can lower or raise it under
+**Titles per list** in your plugin's limits; an update that asks for more
+shows in the update review. Declare what the list really holds.
 
 ### 2. A content kind library
 

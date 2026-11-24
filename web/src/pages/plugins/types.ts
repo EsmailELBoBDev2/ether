@@ -235,14 +235,23 @@ export interface RuntimeLimits {
   archiveExpandedBytes?: number;
   archiveMembers?: number;
   maxItems?: number;
+  /** Owner limit on titles one sync of each plugin list reads (config only). */
+  listItems?: number;
   memoryBytes: number;
   deadline: string;
   unitBudget: number;
   poolSize?: number;
 }
 
+/** Titles one sync of each plugin list reads: asked for and allowed. */
+export interface ListItemsGrant {
+  requested: number;
+  granted: number;
+}
+
 export interface PluginDetail extends PluginSummary {
   runtimeLimits?: RuntimeLimits;
+  listItems?: ListItemsGrant;
   manifest: PluginManifest;
   permissions: {
     lines: string[];
@@ -279,6 +288,7 @@ export interface PluginDetail extends PluginSummary {
 
 export interface InstallPreview {
   runtimeLimits?: RuntimeLimits;
+  listItems?: ListItemsGrant;
   manifest: PluginManifest;
   /** Manifest summary with any "$t:" reference resolved by the server. */
   summary?: string;
@@ -443,7 +453,20 @@ const LOCAL_REACH_PREFIX = "May reach on your network: ";
 const CONNECTS_PREFIX = "Connects to ";
 const ADDS_SCREEN_PREFIX = "Adds a screen: ";
 
+const LIST_ITEMS_LINE = /^Syncs up to ([\d,]+) titles per list$/;
+
+/** The review line for a list size, from the server's English line. */
+export function listItemsLine(count: number): string {
+  return t("Syncs up to {count} titles per list", {
+    count: new Intl.NumberFormat(getLocale()).format(count),
+  });
+}
+
 export function translatePermissionLine(line: string): string {
+  const listItems = LIST_ITEMS_LINE.exec(line);
+  if (listItems) {
+    return listItemsLine(Number(listItems[1]!.replace(/,/g, "")));
+  }
   if (line.startsWith(LOCAL_REACH_PREFIX)) {
     return t("May reach on your network: {hosts}", {
       hosts: line.slice(LOCAL_REACH_PREFIX.length),

@@ -524,13 +524,16 @@ type IntegrationMeta struct {
 
 // ListSourceMeta is one contributed list source.
 type ListSourceMeta struct {
-	Key      string          `json:"key"`
-	Label    string          `json:"label"`
-	Hint     string          `json:"hint,omitempty"`
-	Catalog  string          `json:"catalog"`
-	Params   json.RawMessage `json:"params,omitempty"`
-	MaxItems int             `json:"maxItems,omitempty"` // ≤ 2000
-	Refresh  string          `json:"refresh,omitempty"`  // ≥ 1h
+	Key     string          `json:"key"`
+	Label   string          `json:"label"`
+	Hint    string          `json:"hint,omitempty"`
+	Catalog string          `json:"catalog"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	// MaxItems is how many titles one sync of the list reads (≤ 2000;
+	// DefaultListItems when omitted). The install review shows it and the
+	// owner can lower or raise it in the plugin's limits.
+	MaxItems int    `json:"maxItems,omitempty"`
+	Refresh  string `json:"refresh,omitempty"` // ≥ 1h
 }
 
 // RankingStepMeta is one contributed ranking step (hosted only).

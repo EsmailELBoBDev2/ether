@@ -299,9 +299,21 @@ export interface CatalogueSource {
   mediaTypes: string[];
   health: string;
   itemCount?: number;
+  /** Items the last sync read from the list. */
+  listed?: number;
+  /** Most items one sync reads (the plugin's "Titles per list"). */
+  limit?: number;
   pluginId?: string;
   kindKey?: string;
   libraries: { id: number; name: string }[];
+}
+
+/** One catalogue-source sync: titles synced, items read and the most it could read. */
+export interface CatalogueSourceSyncResult {
+  ok: boolean;
+  itemCount: number;
+  listed: number;
+  limit: number;
 }
 
 export interface Library {
@@ -425,9 +437,12 @@ export interface PluginLibrarySource {
 
 export const librariesApi = {
   syncCatalogueSource: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/libraries/catalogue-sources/${encodeURIComponent(id)}/sync`, {
-      method: "POST",
-    }),
+    apiFetch<CatalogueSourceSyncResult>(
+      `/libraries/catalogue-sources/${encodeURIComponent(id)}/sync`,
+      {
+        method: "POST",
+      },
+    ),
   catalogueSources: (signal?: AbortSignal) =>
     apiFetch<{ sources: CatalogueSource[] }>("/libraries/catalogue-sources", { signal }).then(
       (r) => r.sources,

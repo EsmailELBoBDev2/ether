@@ -9,6 +9,12 @@ import (
 )
 
 func init() {
+	// listed and item_limit: how many items the last sync read and the
+	// most it could, so a list cut off at its limit is never silent.
+	const mig14 = `ALTER TABLE libraries_catalogue_state ADD COLUMN listed BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE libraries_catalogue_state ADD COLUMN item_limit BIGINT NOT NULL DEFAULT 0;`
+	store.Register("libraries", 14, mig14)
+	store.RegisterDialect("libraries", 14, store.Postgres, mig14)
 	store.Register("libraries", 7, `ALTER TABLE libraries_catalogue_state ADD COLUMN last_error TEXT NOT NULL DEFAULT '';`)
 	store.RegisterDialect("libraries", 7, store.Postgres, `ALTER TABLE libraries_catalogue_state ADD COLUMN last_error TEXT NOT NULL DEFAULT '';`)
 

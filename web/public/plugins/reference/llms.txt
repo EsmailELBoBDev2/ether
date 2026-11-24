@@ -435,6 +435,12 @@ list of `{id:"tt0133093",type:"movie",name:"The Matrix"}`. Keep the listSources
 catalog ID (`featured`) aligned with `/catalog/movie/featured.json`. Full typed
 catalogue/meta handlers: `sdk/examples/hello/typescript/plugin.ts`.
 
+A list source's `maxItems` (at most 2000, default 500) is how many titles one
+sync of the list reads, paging with `skip`. The owner sees it in the install
+review ("Syncs up to 2,000 titles per list") and can lower or raise it under
+**Titles per list** in your plugin's limits; an update that asks for more
+shows in the update review. Declare what the list really holds.
+
 ### 2. A content kind library
 
 ```sh

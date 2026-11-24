@@ -14,7 +14,7 @@ import { ErrorPanel } from "../../components/feedback";
 import { t } from "../../i18n";
 import { useAsync } from "../../lib/hooks";
 import { librariesApi, type Library } from "./api";
-import { SourceIcon, sourceOwner } from "./CatalogueSources";
+import { SourceIcon, catalogueCapNote, catalogueCountLabel, sourceOwner } from "./CatalogueSources";
 export function TitlesComeFrom({
   library,
   sources,
@@ -32,6 +32,10 @@ export function TitlesComeFrom({
   const ids = sources;
   const attached = registry.data?.filter((source) => ids.includes(source.id)) ?? [];
   const failedAttached = attached.filter((source) => Boolean(source.lastError));
+  // A list cut off at its "Titles per list" limit is never silent.
+  const cappedAttached = attached.filter(
+    (source) => !source.lastError && Boolean(catalogueCapNote(source)),
+  );
   const manageHref =
     ids.length === 1
       ? library.source === "builtin" || attached[0]?.group === "builtin"
@@ -97,6 +101,26 @@ export function TitlesComeFrom({
             {failedAttached.map((source) => (
               <p key={source.id}>
                 {sourceLabel(source)}: {source.lastError}
+              </p>
+            ))}
+          </div>
+        ) : null}
+        {cappedAttached.length ? (
+          <div
+            className="space-y-1 px-5 pb-4 text-sm text-fg-muted"
+            data-testid="catalogue-cap-notes"
+          >
+            {cappedAttached.map((source) => (
+              <p key={source.id}>
+                {sourceLabel(source)}: {catalogueCountLabel(source)}. {catalogueCapNote(source)}{" "}
+                {source.pluginId ? (
+                  <Link
+                    className="text-primary underline-offset-2 hover:underline"
+                    to={`/plugins/installed?plugin=${encodeURIComponent(source.pluginId)}&tab=setup`}
+                  >
+                    {t("Open {plugin}", { plugin: source.owner })}
+                  </Link>
+                ) : null}
               </p>
             ))}
           </div>

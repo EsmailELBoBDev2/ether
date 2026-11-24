@@ -64,7 +64,8 @@ func TestEveryCatalogueListResolvesToARegisteredListSource(t *testing.T) {
 	h.rt.routes["/catalog/series/dubbed"] = func(plugins.Request) (plugins.Response, error) {
 		return plugins.Response{Status: 200, Body: json.RawMessage(`{"metas":[{"id":"tt0903747","type":"series","name":"Breaking Bad"}]}`)}, nil
 	}
-	titles, err := h.cols.GatherCatalogueSource(ctx, extend.PluginID(native.ID, "dubbed"), "Dubbed (Dubs)", string(core.TypeShow))
+	res, err := h.cols.GatherCatalogueSource(ctx, extend.PluginID(native.ID, "dubbed"), "Dubbed (Dubs)", string(core.TypeShow))
+	titles := res.Titles
 	if err != nil || len(titles) != 1 || titles[0].Type != core.TypeShow {
 		t.Fatalf("show gather = %+v, %v", titles, err)
 	}

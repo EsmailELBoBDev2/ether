@@ -207,9 +207,11 @@ export function PluginSetup({
     (detail.pendingOperatorHosts?.length ?? 0) > 0,
   );
   const canReachLocalHosts = detail.manifest.ether?.runtime?.kind !== "data";
-  const hasRuntimeLimits = Boolean(
+  const hasRuntime = Boolean(
     detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data",
   );
+  // Plugins with lists have a list size the owner can change, even plain add-ons.
+  const hasRuntimeLimits = hasRuntime || Boolean(detail.listItems);
   // Updates come from where the plugin was installed; Studio builds and
   // add-ons that always follow their link have nothing to auto-update.
   const updatable = detail.sourceKind !== "studio" && !detail.stremioOnly;
@@ -358,6 +360,8 @@ export function PluginSetup({
                     requested={detail.manifest.ether?.runtime?.limits}
                     storedItems={detail.impact.items}
                     maxItems={detail.impact.maxItems}
+                    listItems={detail.listItems}
+                    listsOnly={!hasRuntime}
                     hasMediaKinds={Boolean(detail.manifest.ether?.contributes?.mediaKinds?.length)}
                     flush
                     onSaved={() => {

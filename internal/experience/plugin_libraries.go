@@ -107,7 +107,6 @@ func (p PluginPresentation) roleLevel(role string) string {
 	return ""
 }
 
-
 // PluginFilteredChildrenLibraries is an optional extension of PluginLibraries
 // that pushes child level and role filtering directly into the store query so
 // filtered /children paging stays O(page).

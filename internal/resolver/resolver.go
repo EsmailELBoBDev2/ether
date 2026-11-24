@@ -549,6 +549,29 @@ func (s *Service) forgetSourceResults(ctx context.Context) {
 	s.log.Info("sources changed: cleared cached searches and unavailable titles")
 }
 
+// VODCatalogChanged is called when an IPTV provider's VOD catalogue changed.
+// VOD items join search results, so cached searches and "not available"
+// answers may be stale; failed grabs, health failures and Usenet verdicts
+// are about indexer and Usenet releases and stay, so a catalogue change does
+// not make Ether re-grab NZBs it already knows are broken.
+func (s *Service) VODCatalogChanged(ctx context.Context) {
+	s.mu.Lock()
+	for k, e := range s.avail {
+		if !e.available {
+			s.forgetAvailabilityEpochLocked(k)
+			delete(s.avail, k)
+		}
+	}
+	clear(s.searchCache)
+	s.mu.Unlock()
+	if s.db != nil {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM resolver_availability WHERE available = 0`); err != nil {
+			s.log.Warn("forget unavailable titles", "err", err)
+		}
+	}
+	s.log.Info("IPTV VOD catalogue changed: cleared cached searches and unavailable titles")
+}
+
 func (s *Service) resolverCfg() config.Resolver {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()

@@ -2577,11 +2577,10 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		}
 	}
 	if err == nil && src.Auth != nil && src.Auth.Type == "xtream" {
+		// The VOD loop refreshes this provider's catalogue now and announces
+		// VODChanged itself, only when the catalogue really changed.
 		_, _ = s.o.DB.ExecContext(ctx, `UPDATE xtream_vod_refresh SET next=0 WHERE provider=?`, src.ID)
 		s.wakeVODLoop()
-		if s.o.VODChanged != nil {
-			s.o.VODChanged()
-		}
 	}
 	src = storedSource(src)
 	src.HasPlaylist = src.Playlist != "" || src.PlaylistURL != ""

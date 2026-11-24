@@ -33,7 +33,7 @@ func (a *App) buildLiveTV() error {
 	}
 	svc, err := livetv.New(livetv.Options{ActivityChanged: a.onair.SetEnabled, SessionsChanged: a.notifySessionsChanged, RemoteUploadCap: a.remoteUploadCap, SourcesChanged: a.publishDashboard, VODChanged: func() {
 		if a.resolver != nil {
-			a.resolver.SourcesChanged(context.Background())
+			a.resolver.VODCatalogChanged(context.Background())
 		}
 	}, BreakInput: a.channelBreakInput, BreakAnalyzer: &markers.BreakAnalyzer{DB: a.db, FFmpeg: ffmpeg, OnEvidence: a.opts.BreakEvidenceObserver, Hardware: func() core.HWAccel {
 		if a.transcoder == nil {

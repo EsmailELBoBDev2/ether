@@ -1285,13 +1285,44 @@ func (s *Server) handlePostplay(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 // Search
 
-// searchHubDefs is PMS's 17-hub set and order for /hubs/search and
-// /hubs/search/voice.
-var searchHubDefs = []struct {
+type searchHubDef struct {
 	id    string
 	typ   string
 	title string
-}{
+}
+
+// emptyHub is the hub as PMS sends it with no results.
+func (hd searchHubDef) emptyHub() model.Hub {
+	return model.Hub{Title: hd.title, Type: hd.typ, HubIdentifier: hd.id, Style: "shelf"}
+}
+
+// emptyHubSearch is PMS's /hubs/search answer with no results: all 17
+// hubs, each empty. PMS never answers a hub search without its hubs.
+func emptyHubSearch() *model.MediaContainer {
+	mc := &model.MediaContainer{Hub: make([]model.Hub, 0, len(searchHubDefs))}
+	for _, hd := range searchHubDefs {
+		mc.Hub = append(mc.Hub, hd.emptyHub())
+	}
+	mc.Size = len(mc.Hub)
+	return mc
+}
+
+// writeSearchErr is writeErr for a search endpoint. A search the client's
+// next keystroke superseded answers with empty: the endpoint's own
+// no-results shape, which every client already parses. PMS never sends a
+// /hubs/search without its hubs; strict clients such as Plex for Roku need
+// not cope with one (W373).
+func (s *Server) writeSearchErr(w http.ResponseWriter, r *http.Request, err error, empty *model.MediaContainer) {
+	if frontend.SearchWasSuperseded(r.Context()) {
+		s.write(w, r, empty)
+		return
+	}
+	s.writeErr(w, r, err)
+}
+
+// searchHubDefs is PMS's 17-hub set and order for /hubs/search and
+// /hubs/search/voice.
+var searchHubDefs = []searchHubDef{
 	{"show", "show", "Shows"},
 	{"artist", "artist", "Artists"},
 	{"album", "album", "Albums"},
@@ -2177,7 +2208,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 	result, err := s.searchExperience().Resolve(searchCtx, pr.User, query, s.searchTypes(pr.User, sectionID), fetch, true)
 	people := <-peopleDone
 	if err != nil {
-		s.writeErr(w, r, err)
+		s.writeSearchErr(w, r, err, emptyHubSearch())
 		return
 	}
 	if scopedSection {
@@ -2253,7 +2284,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			if listDetails != nil {
 				if items, err = listDetails(items); err != nil {
-					s.writeErr(w, r, err)
+					s.writeSearchErr(w, r, err, emptyHubSearch())
 					return
 				}
 			}
@@ -2364,12 +2395,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 				Directory:     dirs,
 			})
 		default:
-			mc.Hub = append(mc.Hub, model.Hub{
-				Title:         hd.title,
-				Type:          hd.typ,
-				HubIdentifier: hd.id,
-				Style:         "shelf",
-			})
+			mc.Hub = append(mc.Hub, hd.emptyHub())
 		}
 		tops = append(tops, top)
 	}
@@ -2424,7 +2450,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.runSearch(ctx, pr, q.Get("query"), 0, limit)
 	if err != nil {
-		s.writeErr(w, r, err)
+		s.writeSearchErr(w, r, err, libraryContainer())
 		return
 	}
 	mc := libraryContainer()
@@ -2587,7 +2613,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		live = <-liveDone
 	}
 	if err != nil {
-		s.writeErr(w, r, err)
+		s.writeSearchErr(w, r, err, &model.MediaContainer{})
 		return
 	}
 	vibe, res, isVibe := result.Collection, mergePluginSearchResults(result.Items, pluginItems, result.AIItems, fetch), result.CollectionSearch

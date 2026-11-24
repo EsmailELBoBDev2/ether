@@ -463,6 +463,13 @@ func containerExpandDedupKey(pluginID, kindKey string, itemRef core.ItemRef) str
 // self-refresh), and timedOut is true when page 1 did not finish within the
 // bounded wait.
 func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, container core.KindItem) (bool, bool) {
+	return c.expandContainer(ctx, rec, lib, container, true)
+}
+
+// expandContainer starts (or joins) a container's expansion. A viewer's open
+// (interactive) may use one slot beyond the background pool; when even that
+// is busy the expansion is queued and retried, never dropped.
+func (c *KindCatalog) expandContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, container core.KindItem, interactive bool) (bool, bool) {
 	if c == nil || c.items == nil || c.mgr == nil || core.NoContainerExpand(ctx) {
 		return false, false
 	}
@@ -518,10 +525,11 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 	var firstOnce sync.Once
 	signal := func() { firstOnce.Do(func() { close(firstPage) }) }
 
-	started, startErr := c.mgr.StartExpandJob(rec.PluginID, routePath, dedupKey, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
+	started, startErr := c.mgr.StartExpandJobPriority(rec.PluginID, routePath, dedupKey, interactive, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
 		defer func() {
 			expandReady.Delete(dedupKey)
 			signal()
+			c.kickDeferredExpansions()
 		}()
 		<-ready
 		return c.runContainerExpansion(jobCtx, run, rec, lib.ID, routePath, container, signal)
@@ -542,6 +550,7 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 		close(ready)
 		expandLaunchMu.Unlock()
 		c.log.Debug("container expansion deferred", "plugin", rec.PluginID, "kind", rec.KindKey, "container", container.ID, "level", container.Level, "err", startErr)
+		c.deferExpansion(dedupKey, rec, lib, container)
 		return false, false
 	}
 	markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

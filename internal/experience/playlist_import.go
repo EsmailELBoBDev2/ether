@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -155,7 +156,7 @@ func (s *Service) StartPlaylistImport(ctx context.Context, viewer *core.Viewer, 
 	j := &importJob{id: newImportID(), viewer: v.ID, library: lib, created: time.Now(), matches: map[int]core.ImportMatch{}, answered: map[int]bool{}}
 	switch {
 	case strings.TrimSpace(req.URL) != "":
-		if len(links) == 0 {
+		if !linkFromSites(req.URL, links) {
 			return "", core.ErrUnsupportedImport
 		}
 		j.state = "reading"
@@ -387,4 +388,20 @@ func (s *Service) SavePlaylistImport(ctx context.Context, viewer *core.Viewer, i
 		name = "Imported playlist"
 	}
 	return s.CreateViewerPlaylist(ctx, viewer, name, keys)
+}
+
+// linkFromSites reports whether a link's host names one of the sites the
+// library reads (deezer.com for "deezer"), so other links fail at once.
+func linkFromSites(raw string, sites []string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, site := range sites {
+		if site != "" && (host == site+".com" || strings.HasSuffix(host, "."+site+".com") || strings.Contains(host, site)) {
+			return true
+		}
+	}
+	return false
 }

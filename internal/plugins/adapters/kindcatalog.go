@@ -1877,6 +1877,10 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 				combined = merged
 			}
 		}
+		// A search that names an artist (or any container the kind expands on
+		// open) gets that container's whole discography, not only what the
+		// search itself happened to store: the same expansion its page runs.
+		combined = c.expandNamedContainer(ctx, rec, lib, query, combined)
 	}
 	refs := make([]core.ItemRef, len(combined))
 	for i, it := range combined {

@@ -13,7 +13,11 @@ async function showRow(title: string) {
   const name = `Row ${title}`;
   await screen.findByRole("group", { name: "Picks for you" }, WAIT);
   if (screen.queryByRole("listitem", { name })) return;
-  for (const group of screen.getAllByRole("group")) {
+  // Only the catalogue's own groups: other controls (Device, layers) also
+  // sit in groups and must not be toggled.
+  const catalogue = document.querySelector<HTMLElement>('[aria-label="Row catalogue"]');
+  if (!catalogue) return;
+  for (const group of within(catalogue).getAllByRole("group")) {
     const toggle = within(group)
       .queryAllByRole("button")
       .find((b) => b.getAttribute("aria-expanded") === "false");

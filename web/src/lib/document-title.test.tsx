@@ -107,9 +107,9 @@ describe("document.title integration", () => {
       expect(document.title).toBe("Overview — Living Room Ether");
     });
 
-    fireEvent.click(screen.getAllByRole("link", { name: "Home" })[0]!);
+    fireEvent.click(screen.getAllByRole("link", { name: "Recommendations" })[0]!);
     await waitFor(() => {
-      expect(document.title).toBe("Home — Living Room Ether");
+      expect(document.title).toBe("Recommendations — Living Room Ether");
     });
   });
 

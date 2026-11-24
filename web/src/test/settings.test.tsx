@@ -764,7 +764,7 @@ describe("Settings", () => {
 
   it("does not keep the old Connectivity URL", async () => {
     renderApp("/remote-access/secure");
-    expect(await screen.findByRole("link", { name: "Home" }, WAIT)).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Recommendations" }, WAIT)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Apps" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Connectivity" })).not.toBeInTheDocument();
   });

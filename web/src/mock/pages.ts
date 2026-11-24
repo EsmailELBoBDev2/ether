@@ -491,7 +491,8 @@ export function createPagesMock(deps: Deps) {
         ]);
       }
       const order = [...flow, ...extra];
-      const sortedPins = [...pinned].sort((a, b) => a.pos - b.pos);
+      // Equal positions: the row listed first in the page wins the slot.
+      const sortedPins = [...pinned].reverse().sort((a, b) => a.pos - b.pos);
       for (const p of sortedPins) {
         const at = Math.min(Math.max(0, p.pos - 1), rows.length);
         while (rows.length < at && order.length) rows.push(...order.shift()!);

@@ -1,5 +1,5 @@
 import { ActionJobs } from "./ActionJobs";
-import { pluginCollectionHref } from "../../collections/links";
+import { addRowHref } from "../../../lib/recommendations";
 import { DashboardPanel } from "@braedonsaunders/appkit-dashboard/primitives";
 import { Badge, Button, Skeleton, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
 import {
@@ -1033,8 +1033,8 @@ function CatalogueNow({
       icon={<Library size={16} />}
       actions={
         <OpenLink
-          to={pluginCollectionHref(current!.id, textOf(current!.label))}
-          label={t("Make a collection")}
+          to={addRowHref(current!.id)}
+          label={t("Add as a row")}
           onClose={onClose}
         />
       }

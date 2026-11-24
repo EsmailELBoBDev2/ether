@@ -558,6 +558,8 @@ export default function Recommendations() {
         });
         setPending({ row, beforeId: null, at });
         setDrawer({ kind: "add", at, picking: false });
+      } else {
+        setDrawer({ kind: "add", at, picking: true });
       }
     }
   }, [draft, sources.data, params, addParam, editingFor]);
@@ -1264,7 +1266,7 @@ export default function Recommendations() {
             aria-label={t("Preview at")}
             type="datetime-local"
             className="h-8 w-48"
-            value={at ? toLocalInput(at) : ""}
+            value={toLocalInput(at ?? new Date())}
             onChange={(e) => {
               const v = e.currentTarget.value;
               setAt(v ? new Date(v) : null);

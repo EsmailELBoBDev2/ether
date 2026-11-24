@@ -5,7 +5,9 @@
 import { Badge, Button, Input, Spinner, Switch, cn } from "@braedonsaunders/appkit-ui";
 import { ChevronDown, ChevronRight, Puzzle, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
+import { pluginCollectionHref } from "../collections/links";
 import { ChipGroup, Segmented } from "../../components/fields";
 import { SubtabNav } from "../../components/layout";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
@@ -1242,6 +1244,14 @@ export function RowDrawer({
                         {t("Change")}
                       </Button>
                     )}
+                    {source && source.group === "plugins" && !source.kind.startsWith("surface") && !viewerOnly ? (
+                      <Link
+                        to={pluginCollectionHref(source.kind, source.title)}
+                        className="text-xs font-medium text-primary hover:underline"
+                      >
+                        {t("Save as a collection")}
+                      </Link>
+                    ) : null}
                   </span>
                 </Line>
                 {source

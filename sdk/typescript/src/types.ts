@@ -841,6 +841,22 @@ export interface MediaKindMeta {
   sync: { mode: "pull" | "push"; refresh?: string; undo?: "snapshots" | "ids" };
   cache?: { maxBytes?: number; ttl?: string };
   match?: { thresholdDefault?: number };
+  /** The catalogue provider implements lyrics() (POST /ether/v1/kinds/{kind}/lyrics). */
+  lyrics?: boolean;
+}
+
+/** One stored playable item whose lyrics Ether wants. */
+export interface KindLyricsRequest {
+  kind: string;
+  item: KindItem;
+}
+
+/** Timed LRC lines ("[mm:ss.xx] words"), plain text, or instrumental; source for attribution. */
+export interface KindLyrics {
+  syncedLyrics?: string;
+  plainLyrics?: string;
+  instrumental?: boolean;
+  source?: string;
 }
 
 export interface FrontendAdapterMeta {

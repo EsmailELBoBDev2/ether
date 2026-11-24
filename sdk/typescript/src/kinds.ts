@@ -16,6 +16,8 @@ import type {
   KindChangePage,
   KindExpandRequest,
   KindExpandResponse,
+  KindLyrics,
+  KindLyricsRequest,
   KindItem,
   KindLivePage,
   KindLiveRequest,
@@ -55,6 +57,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
   /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
   expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
+  /** Optional lyrics for a playable item when the kind declares lyrics; null when there are none. */
+  lyrics?(req: KindLyricsRequest, ctx: PluginContext<S>): MaybePromise<KindLyrics | null>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
@@ -411,6 +415,12 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
     if (!result.job) result.items = result.items ?? [];
     return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "lyrics") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.lyrics) return err(501, "not_implemented", "This provider has no lyrics.");
+    const result = await provider.lyrics({ ...body, kind } as unknown as KindLyricsRequest, ctx);
+    return result ? ok({ ...result }) : err(404, "not_found", "No lyrics for this item.");
   }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);

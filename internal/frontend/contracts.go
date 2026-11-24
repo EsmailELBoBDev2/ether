@@ -831,6 +831,45 @@ type PlaylistContents struct {
 	Entries  []PlaylistEntry
 }
 
+// TitleLyrics reads a playable title's lyrics from its source (a kind
+// plugin that declares them). Asked when a viewer opens the lyrics.
+type TitleLyrics interface {
+	TitleLyrics(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (core.Lyrics, error)
+	// LyricsAvailable reports whether any source can answer at all.
+	LyricsAvailable(ctx context.Context) bool
+}
+
+// FavoriteTitles lists a viewer's liked titles of one role (tracks for Liked
+// Songs, albums, artists they follow, movies…) one page at a time, in the
+// viewer's order. A page reads only that viewer's likes of that role.
+type FavoriteTitles interface {
+	FavoriteTitles(ctx context.Context, viewer *core.Viewer, q FavoriteTitlesQuery) (FavoriteTitlesPage, error)
+}
+
+// FavoriteTitlesQuery names the role ("track", "album", "artist", "movie" …),
+// where to continue and how many to return.
+type FavoriteTitlesQuery struct {
+	Role   string
+	Cursor string
+	Limit  int
+}
+
+// FavoriteTitlesPage is one page; Total counts the viewer's likes of the role.
+type FavoriteTitlesPage struct {
+	Items []LikedTitle
+	Next  string
+	Total int
+}
+
+// LikedTitle is one liked title and when it was liked.
+type LikedTitle struct {
+	Title   Title
+	LikedAt time.Time
+}
+
+// ErrBadFavoritesCursor rejects a cursor this server did not issue.
+var ErrBadFavoritesCursor = errors.New("bad favorites cursor")
+
 // TitlePlaylistMembership reports one viewer playlist and every visible entry
 // identifier within it that references the queried title.
 type TitlePlaylistMembership struct {

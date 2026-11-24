@@ -2111,6 +2111,15 @@ class PluginInstance:
             if not result.get("job"):
                 result.setdefault("items", [])
             return _ok_response(result)
+        if tail == ["lyrics"]:
+            provider = self._kind_catalog().get(kind)
+            lyrics = getattr(provider, "lyrics", None) if provider else None
+            if not callable(lyrics):
+                return _error_response(501, "not_implemented", "This provider has no lyrics.")
+            result = lyrics(ctx, body)
+            if not result:
+                return _error_response(404, "not_found", "No lyrics for this item.")
+            return _ok_response(dict(result))
         if len(tail) == 2 and tail[0] == "items":
             provider = self._kind_catalog().get(kind)
             if provider is None:

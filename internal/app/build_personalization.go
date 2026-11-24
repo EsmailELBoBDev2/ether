@@ -67,6 +67,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 			return a.favoriteTitlesCached(ctx, u, keys, visibility)
 		},
 		PreloadTitles: a.catalog.PreloadStored,
+		TitleRole:     a.favoriteTitleRole,
 		Changed:       func(ctx context.Context, id int64, subject favorites.Subject) { a.favoriteChanged(ctx, id, subject) },
 	})
 	if err != nil {

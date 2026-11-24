@@ -546,6 +546,22 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		return a.favorites.Has(ctx, u, favorites.Subject{Kind: favorites.KindTitle, ID: k.String()})
 	}, IsFavoriteMany: func(ctx context.Context, u *core.User, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
 		return a.favorites.HasTitles(ctx, u, keys)
+	}, FavoritePage: func(ctx context.Context, u *core.User, role, cursor string, limit int) ([]core.RatingKey, []time.Time, string, int, error) {
+		page, err := a.favorites.Page(ctx, u, favorites.PageQuery{Role: role, Cursor: cursor, Limit: limit})
+		if errors.Is(err, favorites.ErrBadCursor) {
+			return nil, nil, "", 0, frontend.ErrBadFavoritesCursor
+		}
+		if err != nil {
+			return nil, nil, "", 0, err
+		}
+		keys := make([]core.RatingKey, 0, len(page.Entries))
+		at := make([]time.Time, 0, len(page.Entries))
+		for _, e := range page.Entries {
+			if k, err := core.ParseRatingKey(e.Subject.ID); err == nil {
+				keys, at = append(keys, k), append(at, e.AddedAt)
+			}
+		}
+		return keys, at, page.Next, page.Total, nil
 	}, FavoriteTitleKeys: func(ctx context.Context, u *core.User, n int) ([]core.RatingKey, bool, error) {
 		return a.favorites.TitleKeys(ctx, u, n)
 	}, IsNotInterestedMany: func(ctx context.Context, u *core.User, keys []core.RatingKey) (map[core.RatingKey]bool, error) {

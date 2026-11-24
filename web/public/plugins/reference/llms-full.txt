@@ -904,6 +904,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
+| `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
@@ -6454,6 +6455,7 @@ type CommandMeta struct {
 | `sync` | `KindSyncDecl` | emitted (validation may require a value) |  |
 | `cache` | `KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `KindMatchDecl` | may be omitted (see validation for conditions) |  |
+| `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics, instrumental, source; 404 when it has none). Ether asks once per item when a viewer opens the lyrics, never ahead of use. |
 
 
 ## Source: internal/plugins/contract.go#MediaKindMeta
@@ -6473,6 +6475,11 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl       `json:"sync"`
 	Cache   KindCacheDecl      `json:"cache,omitempty"`
 	Match   KindMatchDecl      `json:"match,omitempty"`
+	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
+	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
+	// instrumental, source; 404 when it has none). Ether asks once per item
+	// when a viewer opens the lyrics, never ahead of use.
+	Lyrics bool `json:"lyrics,omitempty"`
 }
 ``````
 
@@ -35901,6 +35908,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].value` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].values` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
+| `ether.contributes.mediaKinds[].lyrics` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
 | `ether.contributes.mediaKinds[].media` | `any` | false | {"enum":["video","music","audiobook","book","podcast","photo"]} |
@@ -37436,6 +37444,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                       }
                     },
                     "type": "object"
+                  },
+                  "lyrics": {
+                    "type": "boolean"
                   },
                   "match": {
                     "properties": {
@@ -56635,6 +56646,57 @@ type ExpandProvider interface {
 }
 ``````
 
+## Source: sdk/go/kinds.go#KindLyricsRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `kind` | `string` | emitted (validation may require a value) |  |
+| `item` | `KindItem` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindLyricsRequest
+
+``````
+// KindLyricsRequest asks for one stored playable item's lyrics.
+type KindLyricsRequest struct {
+	Kind string   `json:"kind"`
+	Item KindItem `json:"item"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindLyrics.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `syncedLyrics` | `string` | may be omitted (see validation for conditions) |  |
+| `plainLyrics` | `string` | may be omitted (see validation for conditions) |  |
+| `instrumental` | `bool` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindLyrics
+
+``````
+// KindLyrics is a lyrics answer: timed LRC lines ("[mm:ss.xx] words"), plain
+// text, or instrumental. Source is shown for attribution.
+type KindLyrics struct {
+	SyncedLyrics string `json:"syncedLyrics,omitempty"`
+	PlainLyrics  string `json:"plainLyrics,omitempty"`
+	Instrumental bool   `json:"instrumental,omitempty"`
+	Source       string `json:"source,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#LyricsProvider
+
+``````
+// LyricsProvider serves lyrics for kinds that declare lyrics: true. Return
+// found=false when there are none (Ether answers 404 and remembers the miss).
+type LyricsProvider interface {
+	Lyrics(ctx *Context, req KindLyricsRequest) (lyrics KindLyrics, found bool, err error)
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindResolver
 
 ``````
@@ -57034,6 +57096,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		if res.Job == "" && res.Items == nil {
 			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "lyrics":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		lp, isLyrics := prov.(LyricsProvider)
+		if prov == nil || !isLyrics {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no lyrics.")
+		}
+		var in KindLyricsRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, found, err := lp.Lyrics(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if !found {
+			return errorJSON(http.StatusNotFound, "not_found", "No lyrics for this item.")
 		}
 		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":
@@ -62321,6 +62402,7 @@ type Presentations struct {
 | `sync` | `KindSyncDecl` | emitted (validation may require a value) |  |
 | `cache` | `*KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `*KindMatchDecl` | may be omitted (see validation for conditions) |  |
+| `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics). |
 
 
 ## Source: sdk/go/types.go#MediaKindMeta
@@ -62340,6 +62422,8 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl    `json:"sync"`
 	Cache   *KindCacheDecl  `json:"cache,omitempty"`
 	Match   *KindMatchDecl  `json:"match,omitempty"`
+	// Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics).
+	Lyrics bool `json:"lyrics,omitempty"`
 }
 ``````
 
@@ -66727,6 +66811,15 @@ class PluginInstance:
             if not result.get("job"):
                 result.setdefault("items", [])
             return _ok_response(result)
+        if tail == ["lyrics"]:
+            provider = self._kind_catalog().get(kind)
+            lyrics = getattr(provider, "lyrics", None) if provider else None
+            if not callable(lyrics):
+                return _error_response(501, "not_implemented", "This provider has no lyrics.")
+            result = lyrics(ctx, body)
+            if not result:
+                return _error_response(404, "not_found", "No lyrics for this item.")
+            return _ok_response(dict(result))
         if len(tail) == 2 and tail[0] == "items":
             provider = self._kind_catalog().get(kind)
             if provider is None:
@@ -71411,6 +71504,8 @@ import type {
   KindChangePage,
   KindExpandRequest,
   KindExpandResponse,
+  KindLyrics,
+  KindLyricsRequest,
   KindItem,
   KindLivePage,
   KindLiveRequest,
@@ -71450,6 +71545,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
   /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
   expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
+  /** Optional lyrics for a playable item when the kind declares lyrics; null when there are none. */
+  lyrics?(req: KindLyricsRequest, ctx: PluginContext<S>): MaybePromise<KindLyrics | null>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
@@ -71806,6 +71903,12 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
     if (!result.job) result.items = result.items ?? [];
     return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "lyrics") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.lyrics) return err(501, "not_implemented", "This provider has no lyrics.");
+    const result = await provider.lyrics({ ...body, kind } as unknown as KindLyricsRequest, ctx);
+    return result ? ok({ ...result }) : err(404, "not_found", "No lyrics for this item.");
   }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);
@@ -74958,6 +75061,22 @@ export interface MediaKindMeta {
   sync: { mode: "pull" | "push"; refresh?: string; undo?: "snapshots" | "ids" };
   cache?: { maxBytes?: number; ttl?: string };
   match?: { thresholdDefault?: number };
+  /** The catalogue provider implements lyrics() (POST /ether/v1/kinds/{kind}/lyrics). */
+  lyrics?: boolean;
+}
+
+/** One stored playable item whose lyrics Ether wants. */
+export interface KindLyricsRequest {
+  kind: string;
+  item: KindItem;
+}
+
+/** Timed LRC lines ("[mm:ss.xx] words"), plain text, or instrumental; source for attribution. */
+export interface KindLyrics {
+  syncedLyrics?: string;
+  plainLyrics?: string;
+  instrumental?: boolean;
+  source?: string;
 }
 
 export interface FrontendAdapterMeta {

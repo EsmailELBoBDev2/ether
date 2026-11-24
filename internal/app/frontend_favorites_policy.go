@@ -124,3 +124,33 @@ func (a *App) pluginFavoriteAllowed(ctx context.Context, u *core.User, key core.
 	_, _, err := a.sharedPluginArtworkItem(ctx, u, core.Device{}, key)
 	return err == nil
 }
+
+// favoriteTitleRole names what a liked title is, for role lists (Liked Songs,
+// followed artists): a plugin item's level role from the stored plugin
+// catalogue, a catalogue title's type from its key. Never a provider call.
+func (a *App) favoriteTitleRole(ctx context.Context, key core.RatingKey) string {
+	if !key.IsPluginKey() {
+		switch key.Kind() {
+		case core.KindMovie:
+			return string(core.TypeMovie)
+		case core.KindShow:
+			return string(core.TypeShow)
+		case core.KindSeason:
+			return string(core.TypeSeason)
+		case core.KindEpisode:
+			return string(core.TypeEpisode)
+		}
+		return ""
+	}
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil {
+		return ""
+	}
+	piv, err := a.pluginsRT.kindCatalog.Item(ctx, key)
+	if err != nil {
+		return ""
+	}
+	if piv.Title.MediaRole != "" {
+		return string(piv.Title.MediaRole)
+	}
+	return string(piv.Title.Type)
+}

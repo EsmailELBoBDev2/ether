@@ -337,6 +337,13 @@ func (s *Service) ForgetChoice(ctx context.Context, user int64, key core.RatingK
 	return err
 }
 
+// SubtitleOff reports whether the viewer's remembered subtitle choice for
+// key's title is Off.
+func (s *Service) SubtitleOff(ctx context.Context, user int64, key core.RatingKey) (bool, error) {
+	c, ok, err := s.choice(ctx, user, key, "subtitle")
+	return ok && c.Off, err
+}
+
 func (s *Service) Forget(ctx context.Context, user, show int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM trackprefs_memory WHERE user_id=? AND show_id=?`, user, show)
 	return err
@@ -653,8 +660,11 @@ func (s *Service) serverLanguage() string {
 // list, or user 0's list when the viewer saved none. PreferOriginal ranks the
 // title original first. Otherwise the order is that list, then the catalog
 // language. The title's original language is deliberately NOT a ranked
-// preference: pick falls back to the file's default-flagged track and only
-// then to the original language.
+// preference: a file track in any language of this order wins. When none
+// matches, pick prefers the original language over the file's
+// default-flagged track (on a dubbed release the flag marks a third
+// language's dub); only with an empty order does the default flag win, with
+// the original language next.
 func AudioOrder(audio []string, server, original string, preferOriginal bool) []string {
 	var want []string
 	if preferOriginal {

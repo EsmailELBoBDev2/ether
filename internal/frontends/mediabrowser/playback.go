@@ -454,13 +454,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		variants = i.releaseVariants(r, scope, playbackItem)
 	}
 	listVersions := len(variants) > 0
-	// Jellyfin Web posts its hidden subtitle menu's "-1" when the detail page
-	// it showed had no subtitle list (the release was not probed yet); Emby's
-	// web lineage sends the same menu value as a query parameter. Nobody
-	// chose "off" from a list never sent: the viewer's rules decide. Jellyfin
-	// API clients that send a number keep their explicit choice.
-	menuOff := (i.protocol == "jellyfin" && subtitleFromMenu) || (i.protocol == "emby" && subtitleSet)
-	if menuOff && opts.SubtitleStream < 0 && channel == "" && !i.subtitleLists.shown(v, key, time.Now()) {
+	// Jellyfin Web posts its hidden subtitle menu's "-1" (a quoted body
+	// value) when the detail page it showed had no subtitle list (the release
+	// was not probed yet). Nobody chose "off" from a list never sent: the
+	// viewer's rules decide. Clients that send a number keep their explicit
+	// choice, Emby's included: native Emby apps and Infuse send Off from list
+	// endpoints that never record a list here.
+	if i.protocol == "jellyfin" && subtitleFromMenu && opts.SubtitleStream < 0 && channel == "" && !i.subtitleLists.shown(v, key, time.Now()) {
 		subtitleSet = false
 		intent.SubtitleSet = false
 	}

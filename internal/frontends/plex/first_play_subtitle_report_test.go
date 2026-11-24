@@ -11,7 +11,10 @@ import (
 // TestFirstPlayRuleSubtitleAcrossClients replays a first play: the client
 // holds the pre-playback estimate (no subtitle tracks), then plays once the
 // release is probed and has an English subtitle. The viewer's rules say
-// English, always. It reports what each client is actually given.
+// English, always. It reports what each client is actually given. A rule
+// subtitle the client would need burned is not burned on that first play
+// (#313; owner decision on #782): it starts fast, and the rules apply once
+// the client holds the probed list.
 func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 	android := []string{
 		"X-Plex-Product", "Plex for Android (TV)", "X-Plex-Version", "2026.22.0",
@@ -29,19 +32,20 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 		query     string
 		mustServe bool
 		sidecar   bool
+		burns     bool // the rule's track would have to be burned
 	}
 	base := []cse{
-		{"android-tv-srt", android, srt, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", true, false},
-		{"android-tv-pgs", android, pgs, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", false, false},
-		{"plex-web-srt-auto-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn", false, false},
-		{"plex-web-srt-no-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto", false, false},
+		{"android-tv-srt", android, srt, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", true, false, false},
+		{"android-tv-pgs", android, pgs, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", false, false, true},
+		{"plex-web-srt-auto-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn", false, false, true},
+		{"plex-web-srt-no-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto", false, false, false},
 	}
 	var cases []cse
 	for _, c := range base {
 		cases = append(cases, c)
 		withSidecar := c
 		withSidecar.name += "+opensubtitles-cached"
-		withSidecar.sidecar, withSidecar.mustServe = true, false
+		withSidecar.sidecar, withSidecar.mustServe, withSidecar.burns = true, false, false
 		cases = append(cases, withSidecar)
 	}
 	for _, tc := range cases {
@@ -82,6 +86,15 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 				t.Fatalf("start: %d %s", start.Code, start.Body.String())
 			}
 			hs := f.trans.sessions["fp-"+tc.name]
+			if tc.burns {
+				if selected != "" {
+					t.Fatalf("first play selected a subtitle it would burn: %q", selected)
+				}
+				if hs != nil && (hs.req.Decision.BurnSubtitles || hs.req.Decision.SubtitleStream == tc.sub.Index) {
+					t.Fatalf("first play burns the rule's subtitle: %+v", hs.req.Decision)
+				}
+				return
+			}
 			if streamAttr(selected, "languageCode") != "eng" {
 				t.Fatalf("first play shows no English subtitle selected (decision %q)", selected)
 			}

@@ -29,7 +29,8 @@ import (
 // tracks), then plays. The picture is black and the English subtitle is
 // white, so a frame from the delivered stream shows whether the subtitle
 // reached the viewer (burned) or not; text renditions are checked in the
-// playlist.
+// playlist. A subtitle the client would need burned is not burned on that
+// first play (#313; owner decision on #782).
 func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 	ff, fp := os.Getenv("CHAOS_FFMPEG"), os.Getenv("CHAOS_FFPROBE")
 	if ff == "" || fp == "" {
@@ -48,7 +49,7 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 	}
 	// ffmpeg cannot encode a bitmap subtitle from text, so the burn path is
 	// exercised through Plex Web's burn mode, which burns text subtitles via
-	// the same shown-only rule as image ones.
+	// the same shown-only rule as image ones, and therefore plays None.
 	mkSub("text.mkv", "srt")
 	source := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	defer source.Close()
@@ -65,10 +66,11 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 		name, file string
 		hdr        []string
 		query      string
+		burns      bool
 	}{
-		{"android-tv-text-subtitle", "text.mkv", android, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none"},
-		{"plex-web-text-subtitle-burn-mode", "text.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn"},
-		{"plex-web-text-subtitle-auto", "text.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto"},
+		{"android-tv-text-subtitle", "text.mkv", android, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", false},
+		{"plex-web-text-subtitle-burn-mode", "text.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn", true},
+		{"plex-web-text-subtitle-auto", "text.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := transcode.New(config.Transcode{FFmpegPath: ff, FFprobePath: fp, HWAccel: "none", TempDir: filepath.Join(t.TempDir(), "work")},
@@ -154,6 +156,13 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 			}
 			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v; subtitle fetched from its own endpoint=%v",
 				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, muxed, textRendition, sidecar)
+			if tc.burns {
+				if burned || selected != "" {
+					t.Fatalf("first play burned the rule's subtitle (burned=%v selected=%q)", burned, selected)
+				}
+				f.get(t, "/video/:/transcode/universal/stop?session="+session, tc.hdr...)
+				return
+			}
 			if !burned && !textRendition && !muxed && !sidecar {
 				t.Logf("DEBUG %s selected tag: %s", tc.name, selected)
 				t.Logf("DEBUG %s start playlist:\n%s", tc.name, playlist)

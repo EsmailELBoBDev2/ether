@@ -42,10 +42,34 @@ func (s *subtitleListShown) note(v *frontend.Viewer, key frontend.RatingKey, sou
 	listed := sourcesListSubtitles(sources)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.m == nil || len(s.m) >= subtitleListCap {
+	k := subtitleListKey(v, key)
+	if s.m == nil {
 		s.m = map[string]subtitleListEntry{}
 	}
-	s.m[subtitleListKey(v, key)] = subtitleListEntry{listed: listed, at: now}
+	if _, ok := s.m[k]; !ok && len(s.m) >= subtitleListCap {
+		s.evictLocked(now)
+	}
+	s.m[k] = subtitleListEntry{listed: listed, at: now}
+}
+
+// evictLocked makes room at the cap: expired entries go first, then the
+// oldest one. Everyone else keeps what they were shown.
+func (s *subtitleListShown) evictLocked(now time.Time) {
+	for k, e := range s.m {
+		if now.Sub(e.at) > subtitleListTTL {
+			delete(s.m, k)
+		}
+	}
+	if len(s.m) < subtitleListCap {
+		return
+	}
+	oldest, at := "", time.Time{}
+	for k, e := range s.m {
+		if oldest == "" || e.at.Before(at) {
+			oldest, at = k, e.at
+		}
+	}
+	delete(s.m, oldest)
 }
 
 // shown reports whether the viewer was recently sent a subtitle list for key.

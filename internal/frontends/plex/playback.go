@@ -970,7 +970,8 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		// rules pick the embedded track (often an image subtitle the client
 		// was never shown) and the shown-only burn rule then plays None.
 		// An embedded text track of the same language still wins: it needs
-		// no burn and plays as before.
+		// no burn and plays as before. A remembered Off wins over the shown
+		// sidecar: the viewer turned subtitles off for this title.
 		if !p.subNamed && !p.subSet {
 			if shown, _ := s.playIDs.shownSubtitles(ik, s.now()); len(shown) > 0 {
 				for i := range shown {
@@ -983,7 +984,9 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 					}) {
 						continue
 					}
-					p.subStream, p.subSel, p.subSet = &want, -1, true
+					if !s.rememberedSubtitleOff(ctx, pr, p.key) {
+						p.subStream, p.subSel, p.subSet = &want, -1, true
+					}
 					break
 				}
 			}

@@ -181,8 +181,10 @@ func resolveSelection(sel selection, info frontend.MediaInfo) selection {
 // the track turned a remux into a full transcode the viewer could not turn
 // off. Such a selection plays as None, which is what the client shows. A
 // track the viewer picks, or one the client was shown selected, is burned
-// as before, and so is the rule's track when the client never held a list
-// with any subtitle row.
+// as before. A client that only ever held the pre-playback estimate (no
+// subtitle rows) is not shown the rule's track either: its first play of an
+// unprobed release starts fast as a copy, and the rules apply once the
+// release is probed (owner decision on #782).
 func (s *Server) burnOnlyShownSubtitle(pr *Request, p *playRequest, info frontend.MediaInfo) {
 	if p.subNamed || !p.subSet || p.opts.SubtitleStream < 0 || p.subSel < 0 || p.subSel >= len(info.Streams) {
 		return
@@ -193,13 +195,6 @@ func (s *Server) burnOnlyShownSubtitle(pr *Request, p *playRequest, info fronten
 	}
 	ik := s.playIdentityFor(pr, p.key)
 	if !ik.valid() {
-		return
-	}
-	// A client that was only ever sent stream lists without a subtitle row
-	// (the pre-playback estimate) shows no subtitle menu at all, not None for
-	// this track. Burn the rule's subtitle: the decision lists it selected,
-	// so the client shows it and can turn it off.
-	if !s.playIDs.listedSubtitles(ik, s.now()) {
 		return
 	}
 	shown, _ := s.playIDs.shownSubtitles(ik, s.now())

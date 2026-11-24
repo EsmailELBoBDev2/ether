@@ -47,6 +47,33 @@ func TestSubtitleListShown(t *testing.T) {
 	}
 }
 
+// At the cap, expired entries go first, then the oldest; everyone else
+// keeps what they were shown.
+func TestSubtitleListShownCapEvictsOldest(t *testing.T) {
+	var s subtitleListShown
+	listed := []any{map[string]any{"MediaStreams": []any{map[string]any{"Type": "Subtitle"}}}}
+	now := time.Now()
+	for i := range subtitleListCap {
+		s.note(&frontend.Viewer{ID: int64(i + 1)}, 42, listed, now.Add(time.Duration(i)*time.Second))
+	}
+	at := now.Add(subtitleListCap * time.Second)
+	s.note(&frontend.Viewer{ID: 0x7fff}, 42, listed, at)
+	if s.shown(&frontend.Viewer{ID: 1}, 42, at) {
+		t.Fatal("the oldest entry survived the cap")
+	}
+	for _, id := range []int64{2, subtitleListCap, 0x7fff} {
+		if !s.shown(&frontend.Viewer{ID: id}, 42, at) {
+			t.Fatalf("viewer %d lost its list at the cap", id)
+		}
+	}
+	// Expired entries make room before any live one goes.
+	later := now.Add(subtitleListTTL + 2*time.Hour)
+	s.note(&frontend.Viewer{ID: 0x8000}, 42, listed, later)
+	if len(s.m) != 1 || !s.shown(&frontend.Viewer{ID: 0x8000}, 42, later) {
+		t.Fatalf("expired entries kept: %d", len(s.m))
+	}
+}
+
 // Jellyfin Web posts its menu value quoted; a number is an API client's
 // deliberate choice and is never second-guessed.
 func TestPlaybackBodyMarksMenuSubtitleIndex(t *testing.T) {

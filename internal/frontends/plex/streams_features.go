@@ -53,6 +53,20 @@ func (s *Server) preferredSelection(ctx context.Context, u *frontend.Viewer, key
 	sel.subtitle, sel.subtitleSet = selected.Subtitle, selected.SubtitleSet
 	return sel
 }
+
+// rememberedSubtitleOff reports a viewer who turned subtitles off for key's
+// title. An unavailable store reads as no remembered choice.
+func (s *Server) rememberedSubtitleOff(ctx context.Context, pr *Request, key frontend.RatingKey) bool {
+	if s.svc().trackPrefs == nil || pr == nil || pr.User == nil {
+		return false
+	}
+	off, err := s.svc().trackPrefs.SubtitleOff(ctx, pr.User.ID, key)
+	if err != nil {
+		s.log.Warn("remembered subtitle choice unavailable", "error", err)
+	}
+	return off
+}
+
 func (s *Server) applyStreamPreferences(ctx context.Context, pr *Request, p *playRequest, t *frontend.Title, info frontend.MediaInfo) {
 	sel := selection{audio: p.audioSel, audioSet: p.audioSel >= 0, subtitle: p.subSel, subtitleSet: p.subSet}
 	sel = s.preferredSelection(ctx, pr.User, p.key, info, t.Language, sel)

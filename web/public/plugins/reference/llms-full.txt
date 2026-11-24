@@ -1615,6 +1615,16 @@ Hosted JS, all scoped to the adapter viewer and your own items of one kind:
 | `ether.kinds.playlistUpdate(kind, id, {title?, summary?, remove?, add?})` | `remove` takes whole-playlist positions and runs before `add` |
 | `ether.kinds.playlistDelete(kind, id)` | |
 
+A pull-synced kind takes no pushes, so an adapter never stores catalogue
+items itself. When its viewer opens something Ether has no children for yet,
+or searches for something Ether has not seen, ask Ether to do what an Ether
+app would, then read the result with `kinds.browse`:
+
+| Call | Returns |
+|---|---|
+| `ether.kinds.expand(kind, id)` | `{pending}`. Opens the container the way an app's open does: Ether runs your `/expand` (or hydrates the level) on the interactive path, stores the children, and waits as long as an open does. `pending: true` means children are still arriving; browse again shortly. A container the viewer may not see is `not_found`. |
+| `ether.kinds.search(kind, query, {limit?})` | `{found}`. Runs the kind's search the way an app's search does, your live `/search` included (bounded), and stores what it finds; read the matches with `kinds.browse({query})`. `limit` defaults to 50, at most 200. |
+
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already
 evicted ref succeeds), so large temporary downloads or extracts do not evict
@@ -17164,8 +17174,13 @@ type KindBackends struct {
 	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
-	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
-	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	KindVisible func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse  func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	// KindExpand and KindLiveSearch open a container and search for a
+	// frontend-adapter viewer the way an Ether app does (kinds.expand /
+	// kinds.search): Ether fetches from the plugin and stores the items.
+	KindExpand     func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (pending bool, err error)
+	KindLiveSearch func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (found int, err error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	// ResolveSourcesResult, when set, is preferred over ResolveSources and
 	// carries per-indexer search status alongside candidates (#733).
@@ -17207,6 +17222,8 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.KindVisible = b.KindVisible
 	m.deps.Backends.KindBrowse = b.KindBrowse
+	m.deps.Backends.KindExpand = b.KindExpand
+	m.deps.Backends.KindLiveSearch = b.KindLiveSearch
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
 	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
@@ -17239,6 +17256,8 @@ func (m *Manager) kindBackends() KindBackends {
 		KindItemCount:              m.deps.Backends.KindItemCount,
 		KindVisible:                m.deps.Backends.KindVisible,
 		KindBrowse:                 m.deps.Backends.KindBrowse,
+		KindExpand:                 m.deps.Backends.KindExpand,
+		KindLiveSearch:             m.deps.Backends.KindLiveSearch,
 		ResolveSources:             m.deps.Backends.ResolveSources,
 		ResolveSourcesResult:       m.deps.Backends.ResolveSourcesResult,
 		PeekUsenetCheck:            m.deps.Backends.PeekUsenetCheck,
@@ -32750,6 +32769,8 @@ globalThis.ether = (() => {
              items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
              visible: (kind, ids) => call("kinds.visible", [kind, ids == null ? [] : ids]),
              browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]),
+             expand: (kind, id) => call("kinds.expand", [kind, id]),
+             search: (kind, query, opts) => call("kinds.search", [kind, query, opts == null ? {} : opts]),
              get: (kind, ids) => call("kinds.get", [kind, ids == null ? [] : ids]),
              state: (kind, ids) => call("kinds.state", [kind, ids == null ? [] : ids]),
              favorite: (kind, ids, on) => call("kinds.favorite", [kind, ids == null ? [] : ids, on !== false]),
@@ -34069,7 +34090,7 @@ var DefaultCosts = map[string]int64{
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"kinds.get": 15, "kinds.state": 15, "kinds.favorite": 20, "kinds.played": 20, "kinds.rate": 20, "kinds.favorites": 20,
-	"kinds.playlists": 20, "kinds.playlist": 20, "kinds.playlistCreate": 50, "kinds.playlistUpdate": 50, "kinds.playlistDelete": 20,
+	"kinds.playlists": 20, "kinds.playlist": 20, "kinds.playlistCreate": 50, "kinds.playlistUpdate": 50, "kinds.playlistDelete": 20, "kinds.expand": 50, "kinds.search": 50,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
 	"ai.complete": 200, "media.probe": 100,
@@ -39988,6 +40009,11 @@ built-in protocol projectors:
   `kinds.state`, `kinds.favorite`, `kinds.played`, `kinds.rate`,
   `kinds.favorites`, `kinds.playlists`, `kinds.playlist`, `kinds.playlistCreate`,
   `kinds.playlistUpdate`, `kinds.playlistDelete`. See docs/plugin-kinds.md › Host services.
+- `kinds.expand(kind, id)` and `kinds.search(kind, query, {limit?})` (hosted JS) ask
+  Ether to open a container or search the way an Ether app does, so a pull-synced
+  kind gets its children or live-search finds stored without the adapter pushing
+  anything; then read them with `kinds.browse`. `expand` answers `{pending}`,
+  `search` answers `{found}`.
 - Adapter auth `query_credentials` (Subsonic `u` + `p`/`t`+`s`) authenticates
   Ether-issued per-viewer app logins; failed requests are relayed to
   `/ether/v1/frontend/{key}/.unauthenticated/…` without a viewer so you can answer
@@ -39996,7 +40022,7 @@ built-in protocol projectors:
 
 **Security guard:** Only viewer-authenticated frontend adapter requests
 (`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
-`kinds.visible`, `kinds.browse` or the viewer-state calls above. Any other route (catalogue browse, jobs,
+`kinds.visible`, `kinds.browse`, `kinds.expand`, `kinds.search` or the viewer-state calls above. Any other route (catalogue browse, jobs,
 views, actions, unauthenticated requests) receives a permission error. The
 viewer identity always comes from Ether's authenticated request context (and the
 host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin

@@ -1229,3 +1229,44 @@ func (c *KindCatalog) runContainerHydration(
 
 	finish(pluginitems.ExpansionStateDone, totalAdded, "")
 }
+
+// FillChildren opens a container for a frontend adapter's viewer
+// (kinds.expand) exactly as opening it in an Ether app does: an expanding
+// level starts or joins its expansion on the interactive path and waits as
+// long as an open does; any other level hydrates missing children. pending
+// reports children still arriving.
+func (c *KindCatalog) FillChildren(ctx context.Context, lib core.Library, externalID string) (bool, error) {
+	if c == nil || c.items == nil {
+		return false, plugins.ErrUnavailable
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return false, err
+	}
+	item, libID, err := c.items.GetByExternal(ctx, lib.PluginID, lib.KindKey, externalID)
+	if err != nil {
+		return false, err
+	}
+	if libID != lib.ID {
+		return false, core.ErrNotFound
+	}
+	if core.NoContainerExpand(ctx) {
+		return false, nil
+	}
+	if rec.Decl.Browse.Expand.ExpandsLevel(item.Level) {
+		_, pending := c.maybeExpandContainer(ctx, rec, lib, item)
+		return pending, nil
+	}
+	if _, levelIdx, ok := rec.Decl.Level(item.Level); ok {
+		c.maybeHydrateContainer(ctx, rec, lib, item, levelIdx)
+	}
+	return false, nil
+}
+
+// SearchCount runs an app's search of lib for a frontend adapter's viewer
+// (kinds.search): local matches plus the kind's bounded live search, whose
+// finds Ether stores. It returns how many matches the library holds.
+func (c *KindCatalog) SearchCount(ctx context.Context, lib core.Library, query string, limit int) (int, error) {
+	titles, err := c.Search(ctx, lib, query, frontend.ItemQuery{}, limit)
+	return len(titles), err
+}

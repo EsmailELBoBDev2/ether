@@ -752,6 +752,11 @@ built-in protocol projectors:
   `kinds.state`, `kinds.favorite`, `kinds.played`, `kinds.rate`,
   `kinds.favorites`, `kinds.playlists`, `kinds.playlist`, `kinds.playlistCreate`,
   `kinds.playlistUpdate`, `kinds.playlistDelete`. See docs/plugin-kinds.md › Host services.
+- `kinds.expand(kind, id)` and `kinds.search(kind, query, {limit?})` (hosted JS) ask
+  Ether to open a container or search the way an Ether app does, so a pull-synced
+  kind gets its children or live-search finds stored without the adapter pushing
+  anything; then read them with `kinds.browse`. `expand` answers `{pending}`,
+  `search` answers `{found}`.
 - Adapter auth `query_credentials` (Subsonic `u` + `p`/`t`+`s`) authenticates
   Ether-issued per-viewer app logins; failed requests are relayed to
   `/ether/v1/frontend/{key}/.unauthenticated/…` without a viewer so you can answer
@@ -760,7 +765,7 @@ built-in protocol projectors:
 
 **Security guard:** Only viewer-authenticated frontend adapter requests
 (`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
-`kinds.visible`, `kinds.browse` or the viewer-state calls above. Any other route (catalogue browse, jobs,
+`kinds.visible`, `kinds.browse`, `kinds.expand`, `kinds.search` or the viewer-state calls above. Any other route (catalogue browse, jobs,
 views, actions, unauthenticated requests) receives a permission error. The
 viewer identity always comes from Ether's authenticated request context (and the
 host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin

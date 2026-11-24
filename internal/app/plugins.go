@@ -526,6 +526,8 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		KindItemCount:              itemsSvc.PluginItemCount,
 		KindVisible:                a.adapterKindVisible(),
 		KindBrowse:                 a.adapterKindBrowse(),
+		KindExpand:                 a.adapterKindExpand(),
+		KindLiveSearch:             a.adapterKindLiveSearch(),
 		ResolveSources:             kindResolver.ResolveSources,
 		ResolveSourcesResult:       kindResolver.ResolveSourcesWithResult,
 		PeekUsenetCheck:            kindResolver.PeekUsenetCheck,

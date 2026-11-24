@@ -276,9 +276,29 @@ func buildArgs(s runSpec) []string {
 		// HLS muxer wrote the init before any audio arrived
 		// (fmp4_codec_config.go).
 		a := findStream(s.Info, s.Decision.AudioStream, "audio")
-		args = append(args, "-map", fmt.Sprintf("0:%d", a.Index), "-c:a", "copy", "-frames:a", "1", "-flush_packets", "1", "-f", "adts", path)
+		args = append(args, "-map", inputStream(s, a), "-c:a", "copy", "-frames:a", "1", "-flush_packets", "1", "-f", "adts", path)
 	}
 	return appendSoftSubtitleOutput(args, s)
+}
+
+// inputStream is the stream specifier mapping st from input 0. A live HLS
+// input is numbered by what FFmpeg's demuxer meets: subtitle renditions,
+// PIDs a provider's encoder declares but never fills, programs that change
+// at an ad break or encoder switch. The probe's absolute index can then name
+// a different stream, or none, in the next run ("[0:3] matches no streams"
+// looped a relay's re-encode for minutes), so such an input is mapped by
+// its position among the streams of its type.
+func inputStream(s runSpec, st *core.StreamInfo) string {
+	if !s.LiveInput || s.Info.Container != "hls" || (st.Type != "video" && st.Type != "audio") {
+		return fmt.Sprintf("0:%d", st.Index)
+	}
+	n := 0
+	for _, o := range s.Info.Streams {
+		if o.Type == st.Type && o.Index < st.Index {
+			n++
+		}
+	}
+	return fmt.Sprintf("0:%s:%d", st.Type[:1], n)
 }
 
 // adtsAAC reports AAC whose packets carry ADTS headers and no out-of-band
@@ -569,14 +589,14 @@ func buildCodecArgs(s runSpec) []string {
 		if transcodeVideo && vp.graph != "" {
 			args = append(args, "-filter_complex", vp.graph, "-map", "[vout]")
 		} else {
-			args = append(args, "-map", fmt.Sprintf("0:%d", v.Index))
+			args = append(args, "-map", inputStream(s, v))
 		}
 	}
 	if a != nil {
 		if s.SilenceAudio {
 			args = append(args, "-map", fmt.Sprintf("%d:a:0", silenceInput))
 		} else {
-			args = append(args, "-map", fmt.Sprintf("0:%d", a.Index))
+			args = append(args, "-map", inputStream(s, a))
 		}
 	} else if androidGap {
 		args = append(args, "-map", fmt.Sprintf("%d:a:0", silenceInput))
@@ -1898,7 +1918,7 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	}
 	finish := func(c []string) []string { return format(size(c)) }
 
-	in := fmt.Sprintf("[0:%d]", v.Index)
+	in := "[" + inputStream(s, v) + "]"
 	chainInput, chain, hwFrames := planFilterChain(s, v, pic, accel, burn, size, format)
 	p.hwFrames = hwFrames
 	bitmapHW := false

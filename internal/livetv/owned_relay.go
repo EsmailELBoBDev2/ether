@@ -1111,7 +1111,6 @@ func (p *relayProducer) recover(ctx context.Context, why string) {
 	// Nothing opened: slate continues; the next deadline tries again.
 	p.mu.Lock()
 	p.startedAt = time.Now()
-	p.tl.producerStarted(p.startedAt)
 	p.mu.Unlock()
 }
 

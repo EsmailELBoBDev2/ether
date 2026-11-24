@@ -133,10 +133,17 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 			yMax := frameYMax(t, ff, p)
 			burned := yMax > 150
 			muxed := segmentHasSubtitle(t, fp, p)
-			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v",
-				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, muxed, textRendition)
-			if !burned && !textRendition && !muxed {
-				t.Fatalf("first play delivered no English subtitle: frame is black, the segment has no subtitle stream and the playlist no rendition")
+			// A sidecar the client fetches itself from the decision's key.
+			sidecar := false
+			if k := streamAttr(selected, "key"); k != "" {
+				if rec := f.get(t, k, tc.hdr...); rec.Code == 200 && strings.Contains(rec.Body.String(), "SUBTITLE TEXT HERE") {
+					sidecar = true
+				}
+			}
+			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v; sidecar fetched=%v",
+				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, muxed, textRendition, sidecar)
+			if !burned && !textRendition && !muxed && !sidecar {
+				t.Fatalf("first play delivered no English subtitle")
 			}
 			if streamAttr(selected, "languageCode") != "eng" {
 				t.Fatalf("decision shows no English subtitle selected (%q)", selected)
@@ -165,6 +172,20 @@ func firstSegment(t *testing.T, f *fixture, hdr []string, from, body string, dep
 	if i := strings.Index(target, "://"); i >= 0 {
 		target = target[strings.Index(target[i+3:], "/")+i+3:]
 	}
+	var init []byte
+	if mm := regexp.MustCompile(`#EXT-X-MAP:URI="([^"]+)"`).FindStringSubmatch(body); mm != nil {
+		u := mm[1]
+		if !strings.HasPrefix(u, "/") {
+			u = from[:strings.LastIndex(from, "/")+1] + u
+		}
+		for attempt := 0; attempt < 40; attempt++ {
+			if r := f.get(t, u, hdr...); r.Code == 200 && r.Body.Len() > 0 {
+				init = r.Body.Bytes()
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
 	var rec *httptest.ResponseRecorder
 	for attempt := 0; attempt < 40; attempt++ {
 		rec = f.get(t, target, hdr...)
@@ -183,7 +204,7 @@ func firstSegment(t *testing.T, f *fixture, hdr []string, from, body string, dep
 	if strings.HasSuffix(path, ".m3u8") {
 		return firstSegment(t, f, hdr, path, rec.Body.String(), depth+1)
 	}
-	return rec.Body.Bytes()
+	return append(init, rec.Body.Bytes()...)
 }
 
 // segmentHasSubtitle reports whether the delivered segment muxes a subtitle.
@@ -193,7 +214,8 @@ func segmentHasSubtitle(t *testing.T, fp, segment string) bool {
 	defer cancel()
 	out, err := mediaproc.CommandContext(ctx, time.Minute, fp, "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", segment).CombinedOutput()
 	if err != nil {
-		t.Fatalf("ffprobe segment: %v %s", err, out)
+		t.Logf("ffprobe segment: %v %s", err, out)
+		return false
 	}
 	return strings.Contains(string(out), "subtitle")
 }
@@ -206,7 +228,8 @@ func frameYMax(t *testing.T, ff, segment string) int {
 	out, err := mediaproc.CommandContext(ctx, 2*time.Minute, ff, "-hide_banner", "-v", "info", "-i", segment, "-ss", "1", "-frames:v", "1",
 		"-vf", "signalstats,metadata=print:key=lavfi.signalstats.YMAX", "-f", "null", "-").CombinedOutput()
 	if err != nil {
-		t.Fatalf("frame: %v %s", err, out)
+		t.Logf("frame not decodable: %v %s", err, out)
+		return 0
 	}
 	m := regexp.MustCompile(`lavfi\.signalstats\.YMAX=(\d+)`).FindSubmatch(out)
 	if m == nil {

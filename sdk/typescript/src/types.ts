@@ -857,6 +857,47 @@ export interface MediaKindMeta {
   lyrics?: boolean;
   /** The catalogue provider implements related() for these purposes (POST /ether/v1/kinds/{kind}/related). */
   related?: { similar?: boolean; continuation?: boolean };
+  /** Playlist import: the catalogue provider reads playlist links from these sites (importLink(), POST /ether/v1/kinds/{kind}/import) and identifies tracks (identify(), POST .../identify; needed for M3U/CSV files). */
+  import?: { links?: string[]; identify?: boolean };
+}
+
+/** One track of a playlist being imported, as the link or file gave it. */
+export interface ImportTrack {
+  title: string;
+  artist: string;
+  album?: string;
+  isrc?: string;
+  durationSec?: number;
+}
+
+/** A playlist link to read (one of the sites the kind declares). Answer 404 for a link you do not read. */
+export interface KindImportRequest {
+  kind: string;
+  url: string;
+}
+
+/** The link's playlist: its name and tracks in order (at most 500 are used). */
+export interface KindImport {
+  name: string;
+  description?: string;
+  tracks: ImportTrack[];
+}
+
+/** Tracks to find among your items (ISRC first, then artist + title + duration). */
+export interface KindIdentifyRequest {
+  kind: string;
+  tracks: ImportTrack[];
+}
+
+/**
+ * Items to store (parents before children, like live-search results) and one match per track you
+ * answered, by its index: the matched item's id and how ("isrc" or "title"), or candidates when
+ * several releases fit equally, or neither when you found nothing. Leave out tracks you ran out of
+ * time for; Ether asks for them again.
+ */
+export interface KindIdentify {
+  items: KindItem[];
+  matches: Array<{ index: number; id?: string; by?: "isrc" | "title"; candidates?: string[] }>;
 }
 
 /** Items related to one stored item: "similar" (a detail row) or "continuation" (what plays after it). */

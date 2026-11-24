@@ -606,6 +606,11 @@ type MediaKindMeta struct {
 	// plays after a queue ends (radio). Items are stored like live search
 	// results. Asked when a viewer opens the item or nears a queue's end.
 	Related *KindRelatedDecl `json:"related,omitempty"`
+	// Import: the plugin turns playlist links into track lists (POST
+	// /ether/v1/kinds/{kind}/import, for the sites named in links) and finds
+	// its own items for described tracks (POST .../identify), so viewers can
+	// import playlists from a link or an M3U/CSV file.
+	Import *KindImportDecl `json:"import,omitempty"`
 	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
 	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
 	// instrumental, source; 404 when it has none). Ether asks once per item
@@ -1106,6 +1111,15 @@ func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
 		}
 	}
 	return false
+}
+
+// KindImportDecl declares a kind's playlist import support.
+type KindImportDecl struct {
+	// Links names the sites whose playlist links the plugin reads (for apps
+	// to show, e.g. "deezer", "spotify"); empty when it reads none.
+	Links []string `json:"links,omitempty"`
+	// Identify: the plugin answers /identify, which file imports need.
+	Identify bool `json:"identify,omitempty"`
 }
 
 // KindRelatedDecl names which relation purposes a kind's plugin answers.

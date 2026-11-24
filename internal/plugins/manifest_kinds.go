@@ -39,6 +39,9 @@ var kindSorts = map[string]bool{
 	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true, "lastViewed": true,
 }
 
+// importSiteName is a playlist link site a kind reads ("deezer").
+var importSiteName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
 var kindLibraryCards = map[string]bool{
 	"poster": true, "landscape": true, "square": true,
 }
@@ -146,6 +149,19 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
 			add(base+".library.dateDisplay", "must be year or date")
+		}
+		if k.Import != nil {
+			if len(k.Import.Links) > 8 {
+				add(base+".import.links", "at most 8 sites may be named")
+			}
+			for i, site := range k.Import.Links {
+				if !importSiteName.MatchString(site) {
+					add(fmt.Sprintf("%s.import.links[%d]", base, i), "must be a short lowercase site name such as deezer")
+				}
+			}
+			if len(k.Import.Links) > 0 && !k.Import.Identify {
+				add(base+".import.identify", "link imports need identify")
+			}
 		}
 		if k.Library.Experience != "" && !core.ValidLibraryExperience(k.Library.Experience) {
 			add(base+".library.experience", "must be an experience id such as watch, listen, read, gallery or live")

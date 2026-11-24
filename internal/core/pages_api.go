@@ -175,7 +175,8 @@ type PagePreview struct {
 	Context     HubContext `json:"context"`
 }
 
-// PreviewCounts feeds "8 of up to 9 rows · 4 pinned · 2 shown · 2 chosen by Ether".
+// PreviewCounts feeds the preview's summary line: the rows that count
+// toward the length, the length, and how they were placed.
 type PreviewCounts struct {
 	Rows   int `json:"rows"`
 	Length int `json:"length"`
@@ -185,6 +186,13 @@ type PreviewCounts struct {
 	Auto int `json:"auto"`
 	// Picks is how many of Ether's picks the page could still use.
 	Picks int `json:"picks"`
+	// PicksOn is whether the page lets Ether add its picks.
+	PicksOn bool `json:"picksOn"`
+	// Chosen counts the page's own rows on it (Rows less Ether's picks).
+	Chosen int `json:"chosen"`
+	// AppOnly counts rows only some apps draw (plugin rows Vela draws);
+	// they are not in Rows and don't count toward the length.
+	AppOnly int `json:"appOnly"`
 }
 
 // PreviewPick is one of Ether's picks not on the page right now.

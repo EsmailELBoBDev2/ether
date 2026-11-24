@@ -3,6 +3,8 @@ package personalize
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -45,7 +47,7 @@ func arrangePage(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubConte
 	}
 	// Rows no page rule covers get the engine's defaults: Continue Watching
 	// first, then top picks, new releases and trending discovery.
-	lead, defaults := leadDefaults(activeRows, pl, maxRows)
+	_, defaults := leadDefaults(activeRows, pl, maxRows)
 	var pool []arrangeCandidate
 	hidden := []core.HomeRow{}
 	counts := map[string]int{}
@@ -70,11 +72,8 @@ func arrangePage(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubConte
 		cp := p
 		if cp == nil {
 			if cp = defaults[row.HubID]; cp != nil {
-				if row.HubID == lead {
-					row.Why = "Ether leads with it"
-				} else {
-					row.Why = "Ether placed it after Continue Watching"
-				}
+				// Worded from its real neighbour once placed (etherPlacedWhy).
+				row.Why = whyEtherLeads
 			}
 		}
 		pool = append(pool, arrangeCandidate{row, cp, 0, explicitAlways})
@@ -99,6 +98,7 @@ func arrangePage(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubConte
 	}
 	sort.SliceStable(pool, func(i, j int) bool { return pool[i].rank > pool[j].rank })
 	out := []core.HomeRow{}
+	var placed []*rule
 	used := make([]bool, len(pool))
 	needsExplicitAlways := func(c arrangeCandidate, tally map[string]int) bool {
 		if !c.explicitAlways || c.p == nil {
@@ -210,7 +210,15 @@ func arrangePage(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubConte
 			counts[c.p.Row]++
 		}
 		out = append(out, c.r)
+		placed = append(placed, c.p)
 	}
+	orderFanOuts(out, placed)
+	for i, p := range placed {
+		if p != nil && p.Mode == core.PlacementPinned && p.Slot > 0 && p.Slot != i+1 {
+			out[i].Why = pinMovedWhy(p, i+1, out)
+		}
+	}
+	etherPlacedWhy(out)
 	for i, c := range pool {
 		if !used[i] {
 			c.r.Hidden = true
@@ -280,6 +288,98 @@ func arrangeCurated(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubCo
 	return append(out, hidden...)
 }
 
+// whyEtherLeads and whyEtherAfter word where Ether put a row the page
+// leaves to it, from the row really above it.
+const (
+	whyEtherLeads = "Ether leads with it"
+	whyEtherAfter = "Ether placed it after "
+)
+
+// etherPlacedWhy rewords the "Why here" of rows Ether placed from their
+// real neighbour, once the order is final.
+func etherPlacedWhy(rows []core.HomeRow) {
+	prev := ""
+	for i := range rows {
+		if rows[i].Hidden {
+			continue
+		}
+		if rows[i].Why == whyEtherLeads || strings.HasPrefix(rows[i].Why, whyEtherAfter) {
+			if prev == "" {
+				rows[i].Why = whyEtherLeads
+			} else {
+				rows[i].Why = whyEtherAfter + prev
+			}
+		}
+		prev = rows[i].Title
+	}
+}
+
+// orderFanOuts keeps the rows of a one-row-per-library row in the order
+// of its libraries, within the places the arrangement gave them.
+func orderFanOuts(out []core.HomeRow, placed []*rule) {
+	groups := map[string][]int{}
+	for i, p := range placed {
+		if p != nil && p.row != nil && p.row.Scope.PerLibrary && out[i].Library != 0 {
+			groups[p.RowID] = append(groups[p.RowID], i)
+		}
+	}
+	for _, idx := range groups {
+		if len(idx) < 2 {
+			continue
+		}
+		rows := make([]core.HomeRow, len(idx))
+		rules := make([]*rule, len(idx))
+		for j, i := range idx {
+			rows[j], rules[j] = out[i], placed[i]
+		}
+		order := make([]int, len(idx))
+		for j := range order {
+			order[j] = j
+		}
+		row := rules[0].row
+		sort.SliceStable(order, func(a, b int) bool {
+			return fanOutIndex(row, rows[order[a]].Library) < fanOutIndex(row, rows[order[b]].Library)
+		})
+		for j, i := range idx {
+			out[i], placed[i] = rows[order[j]], rules[order[j]]
+			out[i].Slot = i + 1
+		}
+	}
+}
+
+// fanOutIndex is a library's place in a one-row-per-library row: its
+// chosen order, or library order when the row draws from any library.
+func fanOutIndex(row *core.Row, lib core.LibraryID) int {
+	if len(row.Scope.Libraries) > 0 {
+		if i := slices.Index(row.Scope.Libraries, lib); i >= 0 {
+			return i
+		}
+		return len(row.Scope.Libraries) + int(lib)
+	}
+	return int(lib)
+}
+
+// pinMovedWhy explains a pinned row that isn't at its position: which row
+// holds the place and why, or that the page has fewer rows above it.
+func pinMovedWhy(p *rule, at int, rows []core.HomeRow) string {
+	base := p.why(p.Slot)
+	if p.Slot >= 1 && p.Slot <= len(rows) && p.Slot != at {
+		taker := rows[p.Slot-1]
+		switch {
+		case taker.Pinned && taker.Layer == core.RowLayerViewer && p.Layer != core.RowLayerViewer:
+			return fmt.Sprintf("%s; %s is pinned there just for this viewer, so it's at #%d", base, taker.Title, at)
+		case taker.Pinned:
+			return fmt.Sprintf("%s; %s is pinned there too, so it's at #%d", base, taker.Title, at)
+		default:
+			return fmt.Sprintf("%s; %s holds #%d, so it's at #%d", base, taker.Title, p.Slot, at)
+		}
+	}
+	if at <= 1 {
+		return fmt.Sprintf("%s; nothing else shows above it, so it's at #1", base)
+	}
+	return fmt.Sprintf("%s; only %d rows show above it, so it's at #%d", base, at-1, at)
+}
+
 // isAppAnchor reports a row an app builds and places itself (Continue
 // Watching); with picks off it still shows unless the page hides it.
 func isAppAnchor(row core.HomeRow) bool { return row.Kind == KindContinue }
@@ -296,7 +396,7 @@ func applyRule(row *core.HomeRow, p *rule) {
 	if row.Kind == KindTop10 || row.Kind == KindTop10Today {
 		row.Hub.RankedTop10 = true
 	}
-	row.Personal = isPersonalKind(row.Kind)
+	row.Personal = personalBadge(row.Kind)
 	if p == nil {
 		return
 	}
@@ -634,7 +734,9 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 // withSurfaceRows inserts the page's plugin surface rows (stubs Vela draws
 // from the plugin's document) at their page positions. They are not
 // counted toward the page length and nothing dedupes or filters them; the
-// apps drop the ones a viewer or app may not see.
+// apps drop the ones a viewer or app may not see. On a Personalized page
+// every pinned row, the page's own and the surfaces, then sits at exactly
+// its position (settlePins), so one numbering holds for the whole page.
 func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubContext, existing map[string]core.NeutralHomeRow) []core.HomeRow {
 	if pl == nil || e.opts.Surfaces == nil || !pl.listed[SourceSurface] {
 		return rows
@@ -643,6 +745,7 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 	for _, s := range e.opts.Surfaces(ctx) {
 		byKey[s.Plugin+":"+s.ID] = s
 	}
+	var pins []pinnedRow
 	for _, r := range pl.rules {
 		if r.Source != SourceSurface || r.row == nil || !r.active(user, hc) {
 			continue
@@ -663,23 +766,98 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 		row := core.HomeRow{HubID: id, RowID: r.RowID, Kind: SourceSurface, Title: title, Source: core.RowSourceOwner,
 			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Why: r.why(r.Slot), Hub: core.Hub{ID: id, Title: title},
 			Present: core.RowPresentation{RowID: r.RowID, Surface: &core.RowSurface{Plugin: info.Plugin, Surface: info.WireID}}}
-		at := len(rows)
 		switch {
 		case pl.curated:
-			at = 0
+			at := 0
 			for i, x := range rows {
 				if p := pl.match(x); p != nil && p.Order < r.Order {
 					at = i + 1
 				}
 			}
-		case r.Mode == core.PlacementPinned:
-			at = min(max(r.Slot-1, 0), len(rows))
+			rows = slices.Insert(rows, at, row)
+		case r.Mode == core.PlacementPinned && r.Slot > 0:
+			row.Pinned = true
+			pins = append(pins, pinnedRow{row: row, rule: r})
 		default:
-			at = min(1, len(rows))
+			rows = slices.Insert(rows, min(1, len(rows)), row)
 		}
-		rows = append(rows[:at], append([]core.HomeRow{row}, rows[at:]...)...)
 	}
-	return rows
+	if pl.curated {
+		return rows
+	}
+	return settlePins(rows, pins, pl)
+}
+
+type pinnedRow struct {
+	row  core.HomeRow
+	rule *rule
+}
+
+// settlePins puts every pinned row (the arranged page's and extra) at
+// exactly its position among all the rows; the others keep their order in
+// the places left. Two pins on one position: the first keeps it, the next
+// takes the next place and says why.
+func settlePins(rows []core.HomeRow, extra []pinnedRow, pl *pagePlan) []core.HomeRow {
+	var pins []pinnedRow
+	var rest []core.HomeRow
+	for _, x := range rows {
+		if p := pl.match(x); p != nil && x.Pinned && p.Slot > 0 {
+			pins = append(pins, pinnedRow{row: x, rule: p})
+		} else {
+			rest = append(rest, x)
+		}
+	}
+	pins = append(pins, extra...)
+	n := len(pins) + len(rest)
+	out := make([]core.HomeRow, 0, n)
+	var outRules []*rule
+	used := make([]bool, len(pins))
+	next := 0
+	for pos := 1; pos <= n; pos++ {
+		pick := -1
+		for i, p := range pins {
+			if !used[i] && p.rule.Slot == pos {
+				pick = i
+				break
+			}
+		}
+		if pick < 0 {
+			for i, p := range pins {
+				if !used[i] && p.rule.Slot < pos {
+					pick = i
+					break
+				}
+			}
+		}
+		if pick < 0 && next < len(rest) {
+			out = append(out, rest[next])
+			outRules = append(outRules, nil)
+			next++
+			continue
+		}
+		if pick < 0 {
+			for i, p := range pins {
+				if !used[i] && (pick < 0 || p.rule.Slot < pins[pick].rule.Slot) {
+					pick = i
+				}
+			}
+		}
+		used[pick] = true
+		out = append(out, pins[pick].row)
+		outRules = append(outRules, pins[pick].rule)
+	}
+	for i := range out {
+		out[i].Slot = i + 1
+		if p := outRules[i]; p != nil {
+			if p.Slot != i+1 {
+				out[i].Why = pinMovedWhy(p, i+1, out)
+			} else {
+				out[i].Why = p.why(p.Slot)
+			}
+		}
+	}
+	etherPlacedWhy(out)
+	return out
 }
 
 // presentationFor is how apps should draw an arranged row.

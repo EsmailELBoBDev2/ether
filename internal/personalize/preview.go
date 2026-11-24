@@ -55,18 +55,32 @@ func (e *Engine) PreviewPage(ctx context.Context, viewer *core.User, key core.Pa
 			}
 			out.NotShown = append(out.NotShown, ns)
 		case r.HiddenCode == "page_full":
-			out.Picks = append(out.Picks, core.PreviewPick{Kind: r.Kind, Title: r.Title, Personal: isPersonalKind(r.Kind), Why: "Ether may use it when there's room"})
+			out.Picks = append(out.Picks, core.PreviewPick{Kind: r.Kind, Title: r.Title, Personal: personalBadge(r.Kind), Why: "Ether may use it when there's room"})
 		}
 	}
 	def := e.opts.MaxHomeRows
 	if key != core.PageHome {
 		def = e.opts.MaxSectionRows
 	}
-	out.Summary = core.PreviewCounts{Rows: len(out.Rows), Length: pl.maxRows(hc.Device, def), Picks: len(out.Picks)}
+	length := pl.maxRows(hc.Device, def)
+	if length <= 0 {
+		length = 14 // arrangePage's own fallback
+	}
+	out.Summary = core.PreviewCounts{Length: length, Picks: len(out.Picks), PicksOn: pl.picks}
 	if pl.curated {
 		out.Summary.Length = 0
 	}
 	for _, r := range out.Rows {
+		// App-only rows (plugin surfaces Vela draws) don't count toward
+		// the page length; the summary says so separately.
+		if r.Present.Surface != nil {
+			out.Summary.AppOnly++
+			continue
+		}
+		out.Summary.Rows++
+		if r.RowID != "" {
+			out.Summary.Chosen++
+		}
 		switch r.Mode {
 		case core.PlacementPinned:
 			out.Summary.Pinned++

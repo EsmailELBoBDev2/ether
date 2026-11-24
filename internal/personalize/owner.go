@@ -152,6 +152,18 @@ func isPersonalKind(kind string) bool {
 	return false
 }
 
+// personalBadge reports a row whose titles differ per viewer, for the
+// Personal/Shared badge: the personal kinds, plus rows Ether fits to the
+// viewer's habits or taste that still serve cold viewers (so they aren't
+// gated like isPersonalKind).
+func personalBadge(kind string) bool {
+	switch kind {
+	case KindShortOnTime, KindBinge, KindLimited:
+		return true
+	}
+	return isPersonalKind(kind)
+}
+
 // pageRowIdentity names a page row that isn't on the page, for the
 // "Not shown right now" list: its hub id, kind, title and source.
 func (e *Engine) pageRowIdentity(ctx context.Context, r *rule, user *core.User, hc core.HubContext, section core.MediaType, pl *pagePlan) (hubID, kind, title, source string) {
@@ -253,7 +265,7 @@ func (e *Engine) appendAbsentPageRows(ctx context.Context, rows []core.HomeRow, 
 			HubID: hubID, RowID: r.RowID, Title: title, Kind: kind, Source: source,
 			Items: []core.Title{}, Hub: core.Hub{ID: hubID, Title: title},
 			Hidden: true, HiddenCode: code, HiddenReason: reason,
-			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Personal: isPersonalKind(kind), Why: r.why(r.Slot),
+			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Personal: personalBadge(kind), Why: r.why(r.Slot),
 		})
 	}
 	return rows

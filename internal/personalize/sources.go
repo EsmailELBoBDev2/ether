@@ -133,7 +133,7 @@ func sourceForKind(k kindInfo) core.RowSourceInfo {
 	}
 	info := core.RowSourceInfo{
 		Kind: k.kind, Title: title, Description: plainDescription(k.description), Group: group,
-		Personal: isPersonalKind(k.kind), Needs: kindNeeds(k), Split: chartKinds[k.kind] || k.kind == KindPopularServer,
+		Personal: personalBadge(k.kind), Needs: kindNeeds(k), Split: chartKinds[k.kind] || k.kind == KindPopularServer,
 	}
 	switch k.kind {
 	case KindTrending:

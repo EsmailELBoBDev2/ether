@@ -188,6 +188,10 @@ export interface MockHostState {
   lastStreamUrlPart?: number;
   /** PlayableSource.id of the most recent source-scoped frontend.streamUrl call (#661). */
   lastStreamUrlSource?: string;
+  /** Whether the most recent frontend.streamUrl call requested an absolute URL (#772). */
+  lastStreamUrlAbsolute?: boolean;
+  /** Optional origin prepended to mock stream URLs when `{ absolute: true }` (defaults to `"http://ether.test"`). */
+  streamOrigin?: string;
 }
 
 export interface MockHostClient extends EtherHost {
@@ -234,6 +238,7 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       })),
     aiHandler: initial?.aiHandler,
     mediaProbeHandler: initial?.mediaProbeHandler,
+    streamOrigin: initial?.streamOrigin,
   };
 
   return {
@@ -588,8 +593,14 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         state.lastStreamUrl = [viewerId, itemRef];
         state.lastStreamUrlPart = opts.partIndex;
         state.lastStreamUrlSource = opts.source;
+        state.lastStreamUrlAbsolute = opts.absolute;
         const base = `/ether/v1/kind-media/mock-${viewerId}`;
-        return opts.partIndex === undefined ? base : `${base}?part=${opts.partIndex}`;
+        const rel = opts.partIndex === undefined ? base : `${base}?part=${opts.partIndex}`;
+        if (opts.absolute) {
+          const origin = (state.streamOrigin ?? "http://ether.test").replace(/\/+$/, "");
+          return `${origin}${rel}`;
+        }
+        return rel;
       },
     },
     events: {

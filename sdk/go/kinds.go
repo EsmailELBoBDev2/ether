@@ -585,10 +585,13 @@ type KindResolveRequest struct {
 }
 
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
-// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661) and
+// optionally asks Ether to return an absolute URL using the client-visible
+// request origin or the adapter's first published address (#772).
 type StreamURLOptions struct {
 	PartIndex *int   `json:"partIndex,omitempty"`
 	Source    string `json:"source,omitempty"`
+	Absolute  bool   `json:"absolute,omitempty"`
 }
 
 // KindResolveResponse is a resolver's ordered sources.
@@ -813,7 +816,8 @@ func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
 
 // StreamURLWithOptions mints a short-lived, scoped ticket for one of this
 // plugin's own kind items, optionally pinned to a zero-based part and/or a
-// specific resolver PlayableSource.ID (#576, #661).
+// specific resolver PlayableSource.ID (#576, #661) and optionally resolved to
+// an absolute URL (#772).
 func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
 	if c.Ether == nil {
 		return "", errors.New("stream url: no host service available")
@@ -828,17 +832,24 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 	if err != nil || viewerID <= 0 {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
+	ctx := c.Context
+	if tok := c.viewerToken(); tok != "" {
+		ctx = WithViewerToken(ctx, tok)
+	}
 	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
-		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
+		return oh.StreamURLWithOptions(ctx, viewerID, itemRef, opts)
 	}
 	if opts.Source != "" {
 		return "", errors.New("stream url: host does not support source-scoped stream tickets")
 	}
+	if opts.Absolute {
+		return "", errors.New("stream url: host does not support absolute stream URLs")
+	}
 	if opts.PartIndex != nil {
 		if ph, ok := c.Ether.(PartStreamHost); ok {
-			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+			return ph.StreamPartURL(ctx, viewerID, itemRef, *opts.PartIndex)
 		}
-		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		u, err := c.Ether.StreamURL(ctx, viewerID, itemRef)
 		if err != nil {
 			return "", err
 		}
@@ -848,7 +859,7 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 		}
 		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
-	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+	return c.Ether.StreamURL(ctx, viewerID, itemRef)
 }
 
 // ResolveSourcesWithResult runs sources.resolve and returns both the candidate

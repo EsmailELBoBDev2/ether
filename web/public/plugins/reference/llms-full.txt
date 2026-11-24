@@ -447,13 +447,14 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Frontend stream tickets & visibility
 
-Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL (accepting an optional positional partIndex or { partIndex?, source? } to pin a zero-based part and/or an exact resolver PlayableSource.id with no failover), and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
+Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL (accepting an optional positional partIndex or { partIndex?, source?, absolute? } to pin a zero-based part, pin an exact resolver PlayableSource.id with no failover, or return an absolute URL using the request's X-Ether-Origin with fallback to the adapter's first published address), and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. Authenticated adapter requests also receive X-Ether-Origin (scheme://host[:port][/prefix], honouring trusted proxies only with inbound client values stripped) alongside X-Ether-Viewer. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
 
 ```ts
 const page = ether.kinds.browse("comic", { limit: 50 });
 const allowed = ether.kinds.visible("comic", ["c1", "c2"]);
 const url = ether.frontend.streamURL("item-ref");
 const exact = ether.frontend.streamURL("item-ref", { source: "epub" });
+const abs = ether.frontend.streamURL("item-ref", { absolute: true });
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -910,7 +911,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers, `X-Ether-Origin` (`scheme://host[:port][/prefix]` derived from the request using Ether's trusted proxy policy, with any client-supplied `X-Ether-Origin` stripped), and a request-scoped `X-Ether-Viewer-Token` for `kinds.visible`, `kinds.browse`, and remote `frontend.streamURL` callbacks — never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -1394,15 +1395,27 @@ part:
   without a part selector) resolve `partIndex: 0` for single-part items and
   deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
   parts (`0 .. N-1`).
-- **Per-part and per-source opens** let frontend adapters and multi-file clients
-  fetch a specific file or a specific resolver `PlayableSource.id`:
-  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+- **Per-part, per-source, and absolute stream URLs** let frontend adapters and
+  multi-file or native clients fetch a specific file, pin a resolver
+  `PlayableSource.id`, or embed an absolute URL (`<origin>/ether/v1/kind-media/{ticket}`):
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source?, absolute? }).url`
     (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
-    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
-    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
+    `streamUrl(ctx, itemRef, { partIndex?, source?, absolute? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source, Absolute})` /
     `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
-    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
-    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+    `ctx.stream_url(item_ref, part_index=..., source=..., absolute=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?, "absolute"?}`
+    (forwarding `X-Ether-Viewer-Token` from remote adapters so Ether can resolve the active request origin and adapter key).
+  - By default stream URLs stay root-relative (`/ether/v1/kind-media/{ticket}`).
+    When `absolute: true` is set, Ether prepends the request's `X-Ether-Origin`
+    (`scheme://host[:port][/prefix]`, honouring trusted proxies only and omitting
+    container bridge hosts), falling back to the adapter's first published
+    address (`frontends["plugin:<id>:<adapter>"].publishedAddresses`, preserving
+    any path prefix) when the request carries none, and finally to the
+    root-relative path if neither is available. HTTP redirects (`Location`)
+    still require root-relative paths; use `{ absolute: true }` for protocol
+    documents handed to native clients (such as Kodi or Subsonic players) that
+    open URLs verbatim.
   - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
     to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
     with no failover to other sources and without clobbering the shared default resolution
@@ -8036,16 +8049,20 @@ type AICompleteBackendRequest struct {
 |---|---|---|---|
 | `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
 | `source` | `string` | may be omitted (see validation for conditions) |  |
+| `absolute` | `bool` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/plugins/contract.go#StreamURLOptions
 
 ``````
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
-// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661) and
+// optionally asks Ether to return an absolute URL using the client-visible
+// request origin or the adapter's first published address (#772).
 type StreamURLOptions struct {
 	PartIndex *int   `json:"partIndex,omitempty"`
 	Source    string `json:"source,omitempty"`
+	Absolute  bool   `json:"absolute,omitempty"`
 }
 ``````
 
@@ -17157,6 +17174,10 @@ const (
 	// frontend adapter calls so remote plugins can prove the authenticated
 	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
 	HeaderAdapterViewerToken = "X-Ether-Viewer-Token"
+	// HeaderAdapterOrigin carries the client-visible origin
+	// ("scheme://host[:port][/prefix]") derived by Ether on an authenticated
+	// frontend adapter request (#772).
+	HeaderAdapterOrigin = "X-Ether-Origin"
 )
 ``````
 
@@ -17983,6 +18004,68 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#adapterOriginContextKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_kinds.go#adapterOriginContextKey
+
+``````
+type adapterOriginContextKey struct{}
+``````
+
+## Source: internal/plugins/host_kinds.go#WithAdapterOrigin
+
+``````
+// WithAdapterOrigin attaches the host-derived client-visible origin
+// ("scheme://host[:port][/prefix]") for an active frontend adapter request (#772).
+func WithAdapterOrigin(ctx context.Context, origin string) context.Context {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, adapterOriginContextKey{}, origin)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#AdapterOriginFromContext
+
+``````
+// AdapterOriginFromContext returns the origin attached by WithAdapterOrigin, if any.
+func AdapterOriginFromContext(ctx context.Context) (string, bool) {
+	origin, ok := ctx.Value(adapterOriginContextKey{}).(string)
+	return origin, ok && origin != ""
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#AdapterKeyFromPath
+
+``````
+// AdapterKeyFromPath extracts the adapter key from a plugin-side frontend
+// adapter route ("/ether/v1/frontend/<key>/...").
+func AdapterKeyFromPath(path string) string {
+	rest, ok := strings.CutPrefix(path, "/ether/v1/frontend/")
+	if !ok || rest == "" {
+		return ""
+	}
+	key, _, _ := strings.Cut(rest, "/")
+	return key
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#AdapterKeyFromContext
+
+``````
+// AdapterKeyFromContext returns the adapter key of the active frontend adapter
+// call path attached to ctx, if any.
+func AdapterKeyFromContext(ctx context.Context) (string, bool) {
+	key := AdapterKeyFromPath(callPathFromContext(ctx))
+	return key, key != ""
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#AdapterCallInfo.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -17993,12 +18076,13 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 
 ``````
 // AdapterCallInfo identifies the active /ether/v1/frontend/* call that minted
-// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer and
-// route policies as hosted plugins.
+// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer,
+// origin, and route policies as hosted plugins.
 type AdapterCallInfo struct {
 	ViewerID    int64
 	Path        string
 	SearchQuery string
+	Origin      string
 }
 ``````
 
@@ -18016,6 +18100,7 @@ type adapterViewerGrant struct {
 	viewerID    int64
 	path        string
 	searchQuery string
+	origin      string
 	expires     time.Time
 }
 ``````
@@ -18056,6 +18141,10 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		return ctx, func() {}
 	}
 	ctx = WithViewer(ctx, id)
+	origin := strings.TrimRight(strings.TrimSpace(req.Headers[HeaderAdapterOrigin]), "/")
+	if origin != "" {
+		ctx = WithAdapterOrigin(ctx, origin)
+	}
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return ctx, func() {}
@@ -18083,6 +18172,7 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		viewerID:    id,
 		path:        req.Path,
 		searchQuery: extractCallSearchQuery(*req),
+		origin:      origin,
 		expires:     now.Add(ttl),
 	}
 	m.adapterViewerMu.Unlock()
@@ -18136,6 +18226,7 @@ func (m *Manager) ResolveAdapterCallToken(pluginID, token string) (AdapterCallIn
 		ViewerID:    grant.viewerID,
 		Path:        grant.path,
 		SearchQuery: grant.searchQuery,
+		Origin:      grant.origin,
 	}, true
 }
 ``````
@@ -18234,7 +18325,7 @@ func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts St
 	if backends.StreamURLOptions != nil {
 		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
 	}
-	if opts.Source != "" {
+	if opts.Source != "" || opts.Absolute {
 		return "", ErrUnavailable
 	}
 	if backends.StreamPartURL != nil {
@@ -19384,7 +19475,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 					dec := json.NewDecoder(bytes.NewReader(rawArg))
 					dec.DisallowUnknownFields()
 					if err := dec.Decode(&opts); err != nil {
-						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source?, absolute? }"}
 					}
 					if opts.PartIndex != nil && *opts.PartIndex < 0 {
 						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
@@ -27767,18 +27858,54 @@ func (h *HostHandler) cacheDelete(w http.ResponseWriter, r *http.Request) {
 }
 ``````
 
+## Source: internal/plugins/remote/host.go#streamViewerTokenKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/remote/host.go#streamViewerTokenKey
+
+``````
+type streamViewerTokenKey struct{}
+``````
+
+## Source: internal/plugins/remote/host.go#withStreamViewerToken
+
+``````
+func withStreamViewerToken(ctx context.Context, token string) context.Context {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, streamViewerTokenKey{}, token)
+}
+``````
+
+## Source: internal/plugins/remote/host.go#streamViewerToken
+
+``````
+func streamViewerToken(ctx context.Context) string {
+	tok, _ := ctx.Value(streamViewerTokenKey{}).(string)
+	return tok
+}
+``````
+
 ## Source: internal/plugins/remote/host.go#*HostHandler.frontendStreamURL
 
 ``````
 // frontendStreamURL mints a scoped stream ticket for one of the plugin's
 // own kind items and returns the Ether stream URL (spec §6.5). The viewer
-// id is the one the adapter proxied the request for.
+// id is the one the adapter proxied the request for; when X-Ether-Viewer-Token
+// is forwarded, Ether also binds the active adapter route and request origin
+// for absolute stream URLs (#772).
 func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ViewerID  int64  `json:"viewerId"`
 		ItemRef   string `json:"itemRef"`
 		PartIndex *int   `json:"partIndex,omitempty"`
 		Source    string `json:"source,omitempty"`
+		Absolute  bool   `json:"absolute,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
@@ -27791,33 +27918,35 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		writeHostError(w, http.StatusBadRequest, "bad_arguments", "source must not be blank")
 		return
 	}
+	ctx := withStreamViewerToken(r.Context(), r.Header.Get(HeaderViewerToken))
 	var (
 		u   string
 		err error
 	)
-	if body.Source != "" {
+	if body.Source != "" || body.Absolute {
 		oh, ok := h.host.(interface {
 			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
 		})
 		if !ok {
-			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support source-scoped stream URLs")
+			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support stream URL options")
 			return
 		}
-		u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
+		u, err = oh.StreamURLWithOptions(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
 			PartIndex: body.PartIndex,
 			Source:    body.Source,
+			Absolute:  body.Absolute,
 		})
 	} else if body.PartIndex != nil {
 		if oh, ok := h.host.(interface {
 			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
 		}); ok {
-			u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
+			u, err = oh.StreamURLWithOptions(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
 		} else if ph, ok := h.host.(interface {
 			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 		}); ok {
-			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
+			u, err = ph.StreamPartURL(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
 		} else {
-			u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+			u, err = h.host.StreamURL(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef)
 			if err == nil {
 				sep := "?"
 				if strings.Contains(u, "?") {
@@ -27827,7 +27956,7 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	} else {
-		u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+		u, err = h.host.StreamURL(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef)
 	}
 	if !h.finishErr(w, err) {
 		return
@@ -39661,9 +39790,14 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
+Authenticated frontend adapter requests carry `X-Ether-Origin`
+(`scheme://host[:port][/prefix]`, derived from trusted proxies only with any
+inbound client `X-Ether-Origin` stripped) alongside `X-Ether-Viewer`.
+
 Hosted adapters can return a redirect to a host-minted item stream URL, a
-specific zero-based part when an item declares `hints.parts`, and/or a specific
-resolver `PlayableSource.id`:
+specific zero-based part when an item declares `hints.parts`, a specific
+resolver `PlayableSource.id`, or an absolute URL (`{ absolute: true }`) for
+native clients (such as Kodi or Subsonic apps) that play URLs verbatim:
 
 ```js
 // Whole item (concatenated sequence for multi-part items):
@@ -39672,13 +39806,19 @@ return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
 // Specific resolver source (and optional partIndex) with no failover:
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, {partIndex, source: "epub"}).url}};
+// Absolute URL for protocol documents (falls back to the adapter's first published address):
+const playUrl = ether.frontend.streamURL(itemRef, {absolute: true}).url;
 ```
 
 In the SDKs, call `streamUrl(ctx, itemRef, partIndexOrOpts?)` (TypeScript),
-`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` or
+`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source, Absolute})` or
 `ctx.StreamPartURL(itemRef, partIndex)` (Go), or
-`ctx.stream_url(item_ref, part_index=..., source=...)` (Python); an unpinned
-item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Multi-file
+`ctx.stream_url(item_ref, part_index=..., source=..., absolute=...)` (Python); an unpinned
+item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Default stream
+URLs remain root-relative; `{ absolute: true }` prepends the request's
+`X-Ether-Origin` (falling back to the adapter's first published address in
+`frontends["plugin:<id>:<adapter>"].publishedAddresses`, preserving any path
+prefix, when the request has none). Multi-file
 items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]` (or a
 declared `parts` field) so Ether resolves and caches each part with its
 zero-based `KindResolveRequest.partIndex`; playable items with no declared parts
@@ -54029,6 +54169,10 @@ const (
 	// HeaderViewerToken carries the host-minted, request-scoped adapter viewer
 	// proof header on frontend adapter calls (#615).
 	HeaderViewerToken = "X-Ether-Viewer-Token"
+	// HeaderOrigin carries the client-visible origin
+	// ("scheme://host[:port][/prefix]") injected by Ether on authenticated
+	// frontend adapter calls (#772).
+	HeaderOrigin = "X-Ether-Origin"
 )
 ``````
 
@@ -55104,7 +55248,8 @@ func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, it
 ``````
 // StreamURLWithOptions mints a scoped stream ticket for one of this plugin's
 // own kind items, optionally pinned to a zero-based part and/or resolver
-// PlayableSource.ID (#576, #661).
+// PlayableSource.ID (#576, #661) and optionally resolved to an absolute URL
+// using the active request origin or the adapter's first published address (#772).
 func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
 	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", fmt.Errorf("stream url: partIndex must be non-negative")
@@ -55119,10 +55264,17 @@ func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID in
 	if opts.Source != "" {
 		payload["source"] = opts.Source
 	}
+	if opts.Absolute {
+		payload["absolute"] = true
+	}
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
 	var out struct {
 		URL string `json:"url"`
 	}
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", payload, &out, false)
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", headers, payload, &out, false)
 	if err != nil {
 		return "", err
 	}
@@ -56413,16 +56565,20 @@ type KindResolveRequest struct {
 |---|---|---|---|
 | `partIndex` | `*int` | may be omitted (see validation for conditions) |  |
 | `source` | `string` | may be omitted (see validation for conditions) |  |
+| `absolute` | `bool` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#StreamURLOptions
 
 ``````
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
-// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661) and
+// optionally asks Ether to return an absolute URL using the client-visible
+// request origin or the adapter's first published address (#772).
 type StreamURLOptions struct {
 	PartIndex *int   `json:"partIndex,omitempty"`
 	Source    string `json:"source,omitempty"`
+	Absolute  bool   `json:"absolute,omitempty"`
 }
 ``````
 
@@ -56891,7 +57047,8 @@ func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
 ``````
 // StreamURLWithOptions mints a short-lived, scoped ticket for one of this
 // plugin's own kind items, optionally pinned to a zero-based part and/or a
-// specific resolver PlayableSource.ID (#576, #661).
+// specific resolver PlayableSource.ID (#576, #661) and optionally resolved to
+// an absolute URL (#772).
 func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
 	if c.Ether == nil {
 		return "", errors.New("stream url: no host service available")
@@ -56906,17 +57063,24 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 	if err != nil || viewerID <= 0 {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
+	ctx := c.Context
+	if tok := c.viewerToken(); tok != "" {
+		ctx = WithViewerToken(ctx, tok)
+	}
 	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
-		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
+		return oh.StreamURLWithOptions(ctx, viewerID, itemRef, opts)
 	}
 	if opts.Source != "" {
 		return "", errors.New("stream url: host does not support source-scoped stream tickets")
 	}
+	if opts.Absolute {
+		return "", errors.New("stream url: host does not support absolute stream URLs")
+	}
 	if opts.PartIndex != nil {
 		if ph, ok := c.Ether.(PartStreamHost); ok {
-			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+			return ph.StreamPartURL(ctx, viewerID, itemRef, *opts.PartIndex)
 		}
-		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		u, err := c.Ether.StreamURL(ctx, viewerID, itemRef)
 		if err != nil {
 			return "", err
 		}
@@ -56926,7 +57090,7 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 		}
 		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
-	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+	return c.Ether.StreamURL(ctx, viewerID, itemRef)
 }
 ``````
 
@@ -64766,6 +64930,7 @@ TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
 MAX_KIND_VISIBLE_IDS = 500
 HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
+HEADER_ORIGIN = "X-Ether-Origin"
 HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key"
 
 ALLOWED_SETTING_KINDS = frozenset(
@@ -65794,8 +65959,13 @@ def _check_stream_source(source: Optional[str]) -> Optional[str]:
 
 
 class _FrontendClient:
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
 
     def stream_url(
         self,
@@ -65803,19 +65973,38 @@ class _FrontendClient:
         item_ref: str,
         part_index: Optional[int] = None,
         source: Optional[str] = None,
+        absolute: bool = False,
+        viewer_token: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
         checked_source = _check_stream_source(source)
+        if not isinstance(absolute, bool):
+            raise ValueError("stream url: absolute must be a bool")
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
         if checked_source is not None:
             payload["source"] = checked_source
-        result = self._call(
-            "POST",
-            "/ether/plugin-host/frontend/stream-url",
-            payload,
-        )
+        if absolute:
+            payload["absolute"] = True
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        if tok:
+            result = self._call(
+                "POST",
+                "/ether/plugin-host/frontend/stream-url",
+                payload,
+                extra_headers={HEADER_VIEWER_TOKEN: tok},
+            )
+        else:
+            result = self._call(
+                "POST",
+                "/ether/plugin-host/frontend/stream-url",
+                payload,
+            )
         return str((result or {}).get("url") or "")
 
 
@@ -65849,7 +66038,7 @@ class RemoteHostClient:
         self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
-        self.frontend = _FrontendClient(self._call_json)
+        self.frontend = _FrontendClient(self._call_json, lambda: self.viewer_token)
 
     class _Cache:
         def __init__(self, parent: "RemoteHostClient") -> None:
@@ -66014,16 +66203,20 @@ class PluginContext:
         item_ref: str,
         part_index: Optional[int] = None,
         source: Optional[str] = None,
+        absolute: bool = False,
     ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
-        a resolver PlayableSource.id (#661). The viewer is the one Ether
-        authenticated on this request (X-Ether-Viewer); bytes are served by
-        Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576), a
+        resolver PlayableSource.id (#661), and/or resolved to an absolute URL
+        using the active request origin or the adapter's first published
+        address (#772). The viewer is the one Ether authenticated on this
+        request (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
         checked_source = _check_stream_source(source)
+        if not isinstance(absolute, bool):
+            raise ValueError("stream url: absolute must be a bool")
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -66031,9 +66224,14 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        kwargs: Dict[str, Any] = {}
         if checked_source is not None:
+            kwargs["source"] = checked_source
+        if absolute:
+            kwargs["absolute"] = True
+        if kwargs:
             return self.ether.frontend.stream_url(
-                viewer_id, str(item_ref), checked, source=checked_source
+                viewer_id, str(item_ref), checked, **kwargs
             )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
@@ -67498,6 +67696,8 @@ class MockHostClient:
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
         self.last_stream_url_source: Optional[str] = None
+        self.last_stream_url_absolute: bool = False
+        self.stream_origin: str = "http://ether.test"
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -67558,14 +67758,22 @@ class MockHostClient:
             item_ref: str,
             part_index: Optional[int] = None,
             source: Optional[str] = None,
+            absolute: bool = False,
         ) -> str:
             checked = _check_part_index(part_index)
             checked_source = _check_stream_source(source)
+            if not isinstance(absolute, bool):
+                raise ValueError("stream url: absolute must be a bool")
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
             self._p.last_stream_url_source = checked_source
+            self._p.last_stream_url_absolute = absolute
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
-            return base if checked is None else f"{base}?part={checked}"
+            rel = base if checked is None else f"{base}?part={checked}"
+            if absolute:
+                origin = (self._p.stream_origin or "http://ether.test").rstrip("/")
+                return f"{origin}{rel}"
+            return rel
 
     class _Kinds:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -68820,12 +69028,13 @@ def stream_url(
     item_ref: str,
     part_index: Optional[int] = None,
     source: Optional[str] = None,
+    absolute: bool = False,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
-    resolver PlayableSource.id (#661). Kept as a thin wrapper over
-    PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index, source=source)
+    (spec §6.5), optionally pinned to a zero-based part (#576), a resolver
+    PlayableSource.id (#661), and/or resolved to an absolute URL (#772). Kept
+    as a thin wrapper over PluginContext.stream_url."""
+    return ctx.stream_url(item_ref, part_index=part_index, source=source, absolute=absolute)
 
 
 def kinds_visible(
@@ -69682,6 +69891,7 @@ export const MaxBadgeLabelLen = 16;
 export const PosterBadgeQuotaTitles = 200_000;
 export const MAX_KIND_VISIBLE_IDS = 500;
 export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
+export const HEADER_ORIGIN = "X-Ether-Origin";
 export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
 export const DefaultAICompletePerMin = 20;
@@ -69824,7 +70034,7 @@ export function normalizeStreamUrlOptions(
     return { partIndex: partIndexOrOpts };
   }
   if (partIndexOrOpts === null || typeof partIndexOrOpts !== "object" || Array.isArray(partIndexOrOpts)) {
-    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source? }");
+    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source?, absolute? }");
   }
   checkPartIndex(partIndexOrOpts.partIndex);
   if (partIndexOrOpts.source !== undefined) {
@@ -69835,9 +70045,13 @@ export function normalizeStreamUrlOptions(
       throw new Error("stream url: source must not be blank");
     }
   }
+  if (partIndexOrOpts.absolute !== undefined && typeof partIndexOrOpts.absolute !== "boolean") {
+    throw new Error("stream url: absolute must be a boolean");
+  }
   const out: import("./types.ts").StreamUrlOptions = {};
   if (partIndexOrOpts.partIndex !== undefined) out.partIndex = partIndexOrOpts.partIndex;
   if (partIndexOrOpts.source) out.source = partIndexOrOpts.source;
+  if (partIndexOrOpts.absolute) out.absolute = true;
   return out;
 }
 
@@ -70652,7 +70866,7 @@ export function createHostedClient(): EtherHost {
         void viewerId;
         const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         let args: unknown[];
-        if (opts.source !== undefined) {
+        if (opts.source !== undefined || opts.absolute) {
           args = [itemRef, opts];
         } else if (opts.partIndex !== undefined) {
           args = [itemRef, opts.partIndex];
@@ -71027,13 +71241,21 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     },
     frontend: {
       async streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): Promise<string> {
-        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
-        const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
-          viewerId,
-          itemRef,
-          ...(opts.partIndex === undefined ? {} : { partIndex: opts.partIndex }),
-          ...(opts.source === undefined ? {} : { source: opts.source }),
-        });
+        const streamOpts = normalizeStreamUrlOptions(partIndexOrOpts);
+        const tok = (opts.viewerToken ?? "").trim();
+        const r = await callJson<{ url: string }>(
+          "POST",
+          "/ether/plugin-host/frontend/stream-url",
+          {
+            viewerId,
+            itemRef,
+            ...(streamOpts.partIndex === undefined ? {} : { partIndex: streamOpts.partIndex }),
+            ...(streamOpts.source === undefined ? {} : { source: streamOpts.source }),
+            ...(streamOpts.absolute ? { absolute: true } : {}),
+          },
+          false,
+          tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
+        );
         return r?.url ?? "";
       },
     },
@@ -71388,6 +71610,7 @@ export {
   PosterBadgeQuotaTitles,
   MAX_KIND_VISIBLE_IDS,
   HEADER_VIEWER_TOKEN,
+  HEADER_ORIGIN,
   HEADER_IDEMPOTENCY_KEY,
   DefaultAICompletePerMin,
   DefaultAISearchCompletePerMin,
@@ -71651,7 +71874,7 @@ export async function streamUrl<S = Record<string, unknown>>(
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  if (opts.source !== undefined) {
+  if (opts.source !== undefined || opts.absolute) {
     return ctx.ether.frontend.streamUrl(viewerId, itemRef, opts);
   }
   return opts.partIndex === undefined
@@ -75492,10 +75715,12 @@ export interface KindResolveRequest {
   client?: Record<string, unknown>;
 }
 
-/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+/** Options for minting a scoped frontend adapter stream URL (#576, #661, #772). */
 export interface StreamUrlOptions {
   partIndex?: number;
   source?: string;
+  /** Return an absolute URL (`<origin>/ether/v1/kind-media/<token>`) using the active request origin or the adapter's first published address; default stays root-relative. */
+  absolute?: boolean;
 }
 
 export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }

@@ -38,6 +38,7 @@ TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
 MAX_KIND_VISIBLE_IDS = 500
 HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
+HEADER_ORIGIN = "X-Ether-Origin"
 HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key"
 
 ALLOWED_SETTING_KINDS = frozenset(
@@ -1066,8 +1067,13 @@ def _check_stream_source(source: Optional[str]) -> Optional[str]:
 
 
 class _FrontendClient:
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
 
     def stream_url(
         self,
@@ -1075,19 +1081,38 @@ class _FrontendClient:
         item_ref: str,
         part_index: Optional[int] = None,
         source: Optional[str] = None,
+        absolute: bool = False,
+        viewer_token: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
         checked_source = _check_stream_source(source)
+        if not isinstance(absolute, bool):
+            raise ValueError("stream url: absolute must be a bool")
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
         if checked_source is not None:
             payload["source"] = checked_source
-        result = self._call(
-            "POST",
-            "/ether/plugin-host/frontend/stream-url",
-            payload,
-        )
+        if absolute:
+            payload["absolute"] = True
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        if tok:
+            result = self._call(
+                "POST",
+                "/ether/plugin-host/frontend/stream-url",
+                payload,
+                extra_headers={HEADER_VIEWER_TOKEN: tok},
+            )
+        else:
+            result = self._call(
+                "POST",
+                "/ether/plugin-host/frontend/stream-url",
+                payload,
+            )
         return str((result or {}).get("url") or "")
 
 
@@ -1121,7 +1146,7 @@ class RemoteHostClient:
         self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
-        self.frontend = _FrontendClient(self._call_json)
+        self.frontend = _FrontendClient(self._call_json, lambda: self.viewer_token)
 
     class _Cache:
         def __init__(self, parent: "RemoteHostClient") -> None:
@@ -1286,16 +1311,20 @@ class PluginContext:
         item_ref: str,
         part_index: Optional[int] = None,
         source: Optional[str] = None,
+        absolute: bool = False,
     ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
-        a resolver PlayableSource.id (#661). The viewer is the one Ether
-        authenticated on this request (X-Ether-Viewer); bytes are served by
-        Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576), a
+        resolver PlayableSource.id (#661), and/or resolved to an absolute URL
+        using the active request origin or the adapter's first published
+        address (#772). The viewer is the one Ether authenticated on this
+        request (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
         checked_source = _check_stream_source(source)
+        if not isinstance(absolute, bool):
+            raise ValueError("stream url: absolute must be a bool")
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -1303,9 +1332,14 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        kwargs: Dict[str, Any] = {}
         if checked_source is not None:
+            kwargs["source"] = checked_source
+        if absolute:
+            kwargs["absolute"] = True
+        if kwargs:
             return self.ether.frontend.stream_url(
-                viewer_id, str(item_ref), checked, source=checked_source
+                viewer_id, str(item_ref), checked, **kwargs
             )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
@@ -2770,6 +2804,8 @@ class MockHostClient:
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
         self.last_stream_url_source: Optional[str] = None
+        self.last_stream_url_absolute: bool = False
+        self.stream_origin: str = "http://ether.test"
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -2830,14 +2866,22 @@ class MockHostClient:
             item_ref: str,
             part_index: Optional[int] = None,
             source: Optional[str] = None,
+            absolute: bool = False,
         ) -> str:
             checked = _check_part_index(part_index)
             checked_source = _check_stream_source(source)
+            if not isinstance(absolute, bool):
+                raise ValueError("stream url: absolute must be a bool")
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
             self._p.last_stream_url_source = checked_source
+            self._p.last_stream_url_absolute = absolute
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
-            return base if checked is None else f"{base}?part={checked}"
+            rel = base if checked is None else f"{base}?part={checked}"
+            if absolute:
+                origin = (self._p.stream_origin or "http://ether.test").rstrip("/")
+                return f"{origin}{rel}"
+            return rel
 
     class _Kinds:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -4092,12 +4136,13 @@ def stream_url(
     item_ref: str,
     part_index: Optional[int] = None,
     source: Optional[str] = None,
+    absolute: bool = False,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
-    resolver PlayableSource.id (#661). Kept as a thin wrapper over
-    PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index, source=source)
+    (spec §6.5), optionally pinned to a zero-based part (#576), a resolver
+    PlayableSource.id (#661), and/or resolved to an absolute URL (#772). Kept
+    as a thin wrapper over PluginContext.stream_url."""
+    return ctx.stream_url(item_ref, part_index=part_index, source=source, absolute=absolute)
 
 
 def kinds_visible(

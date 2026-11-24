@@ -131,12 +131,16 @@ type MockHost struct {
 	FetchHandler      func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
 	AIHandler         func(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 	MediaProbeHandler func(ctx context.Context, src PlayableSource) (MediaProbeResult, error)
-	// LastStreamURLViewer/Item/Part/Source record the most recent StreamURL,
-	// StreamPartURL, or StreamURLWithOptions call.
-	LastStreamURLViewer int64
-	LastStreamURLItem   string
-	LastStreamURLPart   *int
-	LastStreamURLSource string
+	// LastStreamURLViewer/Item/Part/Source/Absolute record the most recent
+	// StreamURL, StreamPartURL, or StreamURLWithOptions call.
+	LastStreamURLViewer   int64
+	LastStreamURLItem     string
+	LastStreamURLPart     *int
+	LastStreamURLSource   string
+	LastStreamURLAbsolute bool
+	// StreamOrigin is prepended to mock stream URLs when Absolute is true
+	// (defaults to "http://ether.test").
+	StreamOrigin string
 }
 
 // NewMockHost creates an initialized MockHost.
@@ -878,9 +882,17 @@ func (m *MockHost) StreamURLWithOptions(_ context.Context, viewerID int64, itemR
 		m.LastStreamURLPart = nil
 	}
 	m.LastStreamURLSource = opts.Source
+	m.LastStreamURLAbsolute = opts.Absolute
 	u := "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10)
 	if opts.PartIndex != nil {
 		u += "?part=" + strconv.Itoa(*opts.PartIndex)
+	}
+	if opts.Absolute {
+		origin := strings.TrimRight(strings.TrimSpace(m.StreamOrigin), "/")
+		if origin == "" {
+			origin = "http://ether.test"
+		}
+		return origin + u, nil
 	}
 	return u, nil
 }

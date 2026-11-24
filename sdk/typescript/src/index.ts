@@ -32,6 +32,7 @@ export {
   PosterBadgeQuotaTitles,
   MAX_KIND_VISIBLE_IDS,
   HEADER_VIEWER_TOKEN,
+  HEADER_ORIGIN,
   HEADER_IDEMPOTENCY_KEY,
   DefaultAICompletePerMin,
   DefaultAISearchCompletePerMin,

@@ -1460,10 +1460,13 @@ type AICompleteBackendRequest struct {
 }
 
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
-// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661) and
+// optionally asks Ether to return an absolute URL using the client-visible
+// request origin or the adapter's first published address (#772).
 type StreamURLOptions struct {
 	PartIndex *int   `json:"partIndex,omitempty"`
 	Source    string `json:"source,omitempty"`
+	Absolute  bool   `json:"absolute,omitempty"`
 }
 
 // FetchRequest is one plugin outbound HTTP call.

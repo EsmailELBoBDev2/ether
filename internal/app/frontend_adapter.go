@@ -179,14 +179,58 @@ func (a *App) adapterStreamURLOptions(issuer *frontendadapter.TicketIssuer) func
 		if err != nil {
 			return "", err
 		}
-		return issuer.StreamURL(frontendadapter.StreamGrant{
+		u, err := issuer.StreamURL(frontendadapter.StreamGrant{
 			ViewerID:  viewerID,
 			ItemID:    ref.String(),
 			Adapter:   pluginID,
 			PartIndex: opts.PartIndex,
 			Source:    opts.Source,
 		})
+		if err != nil || !opts.Absolute {
+			return u, err
+		}
+		if origin := a.adapterStreamOrigin(ctx, pluginID); origin != "" {
+			return strings.TrimRight(origin, "/") + u, nil
+		}
+		return u, nil
 	}
+}
+
+// adapterStreamOrigin resolves the origin ("scheme://host[:port][/prefix]") for
+// an absolute frontend.streamURL call (#772). It uses the client-visible origin
+// Ether derived from the active adapter request, falling back to the adapter's
+// first configured published address (config.Frontends["plugin:<id>:<adapter>"])
+// when the request carried none.
+func (a *App) adapterStreamOrigin(ctx context.Context, pluginID string) string {
+	if origin, ok := plugins.AdapterOriginFromContext(ctx); ok && origin != "" {
+		return origin
+	}
+	if a.cfg == nil {
+		return ""
+	}
+	cfg := a.cfg.Get()
+	if adapterKey, ok := plugins.AdapterKeyFromContext(ctx); ok && adapterKey != "" {
+		if origin, ok := frontendPublishedOrigin(cfg, string(frontendadapter.AdapterID(pluginID, adapterKey)), false); ok {
+			return origin
+		}
+		return ""
+	}
+	prefix := "plugin:" + pluginID + ":"
+	var matched string
+	for id := range cfg.Frontends {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		origin, ok := frontendPublishedOrigin(cfg, id, false)
+		if !ok {
+			continue
+		}
+		if matched != "" {
+			return ""
+		}
+		matched = origin
+	}
+	return matched
 }
 
 // adapterItemAccess is the shared authorization behind stream tickets and

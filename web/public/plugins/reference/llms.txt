@@ -665,9 +665,14 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
+Authenticated frontend adapter requests carry `X-Ether-Origin`
+(`scheme://host[:port][/prefix]`, derived from trusted proxies only with any
+inbound client `X-Ether-Origin` stripped) alongside `X-Ether-Viewer`.
+
 Hosted adapters can return a redirect to a host-minted item stream URL, a
-specific zero-based part when an item declares `hints.parts`, and/or a specific
-resolver `PlayableSource.id`:
+specific zero-based part when an item declares `hints.parts`, a specific
+resolver `PlayableSource.id`, or an absolute URL (`{ absolute: true }`) for
+native clients (such as Kodi or Subsonic apps) that play URLs verbatim:
 
 ```js
 // Whole item (concatenated sequence for multi-part items):
@@ -676,13 +681,19 @@ return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
 // Specific resolver source (and optional partIndex) with no failover:
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, {partIndex, source: "epub"}).url}};
+// Absolute URL for protocol documents (falls back to the adapter's first published address):
+const playUrl = ether.frontend.streamURL(itemRef, {absolute: true}).url;
 ```
 
 In the SDKs, call `streamUrl(ctx, itemRef, partIndexOrOpts?)` (TypeScript),
-`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` or
+`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source, Absolute})` or
 `ctx.StreamPartURL(itemRef, partIndex)` (Go), or
-`ctx.stream_url(item_ref, part_index=..., source=...)` (Python); an unpinned
-item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Multi-file
+`ctx.stream_url(item_ref, part_index=..., source=..., absolute=...)` (Python); an unpinned
+item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Default stream
+URLs remain root-relative; `{ absolute: true }` prepends the request's
+`X-Ether-Origin` (falling back to the adapter's first published address in
+`frontends["plugin:<id>:<adapter>"].publishedAddresses`, preserving any path
+prefix, when the request has none). Multi-file
 items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]` (or a
 declared `parts` field) so Ether resolves and caches each part with its
 zero-based `KindResolveRequest.partIndex`; playable items with no declared parts

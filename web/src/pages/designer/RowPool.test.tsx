@@ -79,6 +79,7 @@ describe("plugin Home row sources", () => {
         </Routes>
       </MemoryRouter>,
     );
+    openGroup("Collections");
     fireEvent.click(screen.getByRole("button", { name: "Create collection" }));
     const state = JSON.parse(screen.getByText(/plugin:fixture/).textContent!);
     expect(state.spec).toMatchObject({
@@ -122,6 +123,16 @@ function Harness({
   );
 }
 
+/** Opens a folded group of the row catalogue, as the owner would. */
+function openGroup(name: string) {
+  const group = screen.queryByRole("group", { name });
+  if (!group) return;
+  const toggle = within(group)
+    .getAllByRole("button")
+    .find((b) => b.getAttribute("aria-expanded") !== null);
+  if (toggle && toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
+}
+
 const picks: AvailableRow[] = [
   { hubId: "trending", title: "Trending", kind: "trending", description: "", group: "picks" },
   { hubId: "top-10", title: "Top 10", kind: "top-10", description: "", group: "picks" },
@@ -140,6 +151,7 @@ describe("bulk row editing", () => {
   it("sets the status of every selected row at once", () => {
     let last: HomeLayout | undefined;
     render(<Harness initial={EMPTY_LAYOUT} available={picks} onDraft={(d) => (last = d)} />);
+    openGroup("Picks for you");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Fresh" }));
     fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
@@ -173,6 +185,7 @@ describe("bulk row editing", () => {
         />
       </MemoryRouter>,
     );
+    openGroup("Picks for you");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
     const bar = screen.getByRole("region", { name: "Selected rows" });
     const aside = screen.getByRole("complementary", { name: "Designer controls" });
@@ -192,11 +205,33 @@ describe("bulk row editing", () => {
 
   it("does not clear the selection on Escape while a drawer is open", () => {
     render(<Harness initial={EMPTY_LAYOUT} available={picks} />);
+    openGroup("Picks for you");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
     fireEvent.click(screen.getByRole("button", { name: "Add custom pattern" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.getByRole("region", { name: "Selected rows" })).toBeTruthy();
+  });
+
+  it("starts every Home group folded and selects all rows from the master checkbox", () => {
+    let last: HomeLayout | undefined;
+    render(<Harness initial={EMPTY_LAYOUT} available={picks} onDraft={(d) => (last = d)} />);
+    // Folded: group headers show, their rows do not.
+    expect(screen.getByRole("group", { name: "Picks for you" })).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Select Trending" })).toBeNull();
+    // The master checkbox reaches every row in every group, folded or not.
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Master: select all rows in every group" }),
+    );
+    expect(screen.getByRole("region", { name: "Selected rows" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
+    const rows = rowsOf(last!);
+    expect(rows.length).toBe(picks.length);
+    expect(rows.every((r) => r.status === "off")).toBe(true);
+    // Opening one group shows only its rows.
+    openGroup("Picks for you");
+    expect(screen.getByRole("checkbox", { name: "Select Trending" })).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Select Collection 0" })).toBeNull();
   });
 
   it("selects a whole group and resets it to default", () => {
@@ -211,6 +246,7 @@ describe("bulk row editing", () => {
   it("changes a row's status inline, without opening it", () => {
     let last: HomeLayout | undefined;
     render(<Harness initial={EMPTY_LAYOUT} available={picks} onDraft={(d) => (last = d)} />);
+    openGroup("Picks for you");
     const status = screen.getByRole("radiogroup", { name: "Status of Top 10" });
     fireEvent.click(within(status).getByRole("radio", { name: "Always" }));
     expect(rowsOf(last!)).toEqual([{ row: "top-10", status: "always" }]);
@@ -218,6 +254,7 @@ describe("bulk row editing", () => {
 
   it("clears the selection when the layer or what the list shows changes", () => {
     const { rerender } = render(<Harness initial={EMPTY_LAYOUT} available={picks} />);
+    openGroup("Picks for you");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
     expect(screen.getByRole("region", { name: "Selected rows" })).toBeTruthy();
     const filter = screen.getByRole("radiogroup", { name: "Show rows by status" });
@@ -225,6 +262,7 @@ describe("bulk row editing", () => {
     expect(screen.queryByRole("region", { name: "Selected rows" })).toBeNull();
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
     rerender(<Harness initial={EMPTY_LAYOUT} available={picks} layer={7} />);
+    openGroup("Picks for you");
     expect(screen.queryByRole("region", { name: "Selected rows" })).toBeNull();
   });
 
@@ -237,6 +275,7 @@ describe("bulk row editing", () => {
       maxPerPage: 1,
     });
     render(<Harness initial={initial} available={picks} layer={7} onDraft={(d) => (last = d)} />);
+    openGroup("Picks for you");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Top 10" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Fresh" }));
     fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
@@ -279,6 +318,7 @@ describe("collection rows", () => {
 
   it("deselects a group's rows when it is folded", () => {
     render(<Harness initial={EMPTY_LAYOUT} available={picks} />);
+    openGroup("Picks for you");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
     fireEvent.click(screen.getByRole("button", { name: /^Picks for you/ }));
     expect(screen.queryByRole("region", { name: "Selected rows" })).toBeNull();
@@ -305,6 +345,8 @@ describe("collection rows", () => {
         available={collections.slice(0, 3)}
       />,
     );
+    openGroup("Collections");
+    openGroup("Custom patterns");
     const c2 = screen.getByRole("listitem", { name: "Row Collection 2" });
     expect(within(c2).getByText("via collection:*")).toBeTruthy();
     expect(within(c2).getByRole("radio", { name: "Off" }).getAttribute("aria-checked")).toBe(
@@ -321,6 +363,8 @@ describe("collection rows", () => {
         onDraft={(d) => (last = d)}
       />,
     );
+    openGroup("Custom patterns");
+    openGroup("Collections");
     const rule = screen.getByRole("listitem", { name: "Row collection:*" });
     expect(within(rule).getByText("Applies to 20 rows")).toBeTruthy();
     fireEvent.click(within(rule).getByRole("button", { name: "Remove the rule collection:*" }));
@@ -348,6 +392,8 @@ describe("pattern constraint inheritance", () => {
         onDraft={(d) => (last = d)}
       />,
     );
+    openGroup("Custom patterns");
+    openGroup("Collections");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Collection 0" }));
     fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
     const pages = layer === "global" ? last!.global : last!.viewers[0]!.pages;
@@ -366,6 +412,8 @@ describe("pattern constraint inheritance", () => {
         onDraft={(d) => (last = d)}
       />,
     );
+    openGroup("Collections");
+    openGroup("Custom patterns");
     const row = screen.getByRole("listitem", { name: "Row Collection 0" });
     fireEvent.click(within(row).getByRole("radio", { name: "Off" }));
     expect(rowsOf(last!).find((r) => r.row === "collection:c0")).toEqual({
@@ -415,6 +463,7 @@ describe("large catalogues", () => {
 
 it("does not bulk edit a selected row hidden by an inline status change", () => {
   render(<Harness initial={EMPTY_LAYOUT} available={picks} />);
+  openGroup("Picks for you");
   const filter = screen.getByRole("radiogroup", { name: "Show rows by status" });
   fireEvent.click(within(filter).getByRole("radio", { name: "Eligible" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
@@ -430,6 +479,7 @@ describe("row drawer Settings and Content subtabs", () => {
         <RowPoolWithPreview />
       </MemoryRouter>,
     );
+    openGroup("Picks for you");
     const card = screen.getByRole("listitem", { name: "Row Top 10" });
     fireEvent.click(within(card).getByText("Top 10"));
 

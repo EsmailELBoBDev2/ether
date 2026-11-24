@@ -5,6 +5,29 @@ import { calls, renderApp } from "./harness";
 
 const WAIT = { timeout: 4000 };
 
+/**
+ * Every Home group starts folded: opens the group that holds a row, the way
+ * an owner looking for it would (groups that do not hold it are closed again).
+ */
+async function showRow(title: string) {
+  const name = `Row ${title}`;
+  await screen.findByRole("group", { name: "Picks for you" }, WAIT);
+  if (screen.queryByRole("listitem", { name })) return;
+  // Only the catalogue's own groups: other controls (Device, layers) also
+  // sit in groups and must not be toggled.
+  const catalogue = document.querySelector<HTMLElement>('[aria-label="Row catalogue"]');
+  if (!catalogue) return;
+  for (const group of within(catalogue).getAllByRole("group")) {
+    const toggle = within(group)
+      .queryAllByRole("button")
+      .find((b) => b.getAttribute("aria-expanded") === "false");
+    if (!toggle) continue;
+    fireEvent.click(toggle);
+    if (screen.queryByRole("listitem", { name })) return;
+    fireEvent.click(toggle);
+  }
+}
+
 type PreviewBody = {
   viewerId: number | null;
   layout?: HomeLayout;
@@ -37,6 +60,7 @@ async function pickLayer(name: RegExp) {
 }
 async function setStatus(title: string, value: "Always" | "Eligible" | "Off") {
   fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+  await showRow(title);
   fireEvent.click(screen.getByRole("button", { name: `Constraints for ${title}` }));
   const editor = await screen.findByRole("dialog", { name: title });
   fireEvent.click(
@@ -97,6 +121,7 @@ describe("Home", () => {
       status: "off",
     });
     expect(screen.getByText("Previewing unsaved changes")).toBeInTheDocument();
+    await showRow("Top 10 Today");
     expect(
       within(screen.getByRole("listitem", { name: "Row Top 10 Today" })).getByText(
         "Affects 4 viewers",
@@ -159,6 +184,7 @@ describe("Home", () => {
       userId: 2,
       pages: [{ section: "home", rows: [{ row: "hidden-gems", status: "off" }] }],
     });
+    await showRow("Hidden Gems for You");
     expect(
       within(screen.getByRole("listitem", { name: "Row Hidden Gems for You" })).getByText(
         "Override",
@@ -176,6 +202,7 @@ describe("Home", () => {
 
     // Reset to global: the row comes back, the override is gone.
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    await showRow("Hidden Gems for You");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Hidden Gems for You" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset to Everyone: Hidden Gems for You" }));
     await closeEditor();
@@ -190,6 +217,7 @@ describe("Home", () => {
 
     // An override that sticks: always show it for Sam, anchored to slot 2.
     await setStatus("Hidden Gems for You", "Always");
+    await showRow("Hidden Gems for You");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Hidden Gems for You" }));
     fireEvent.change(screen.getByLabelText("Anchor slot for Hidden Gems for You"), {
       target: { value: "2" },
@@ -211,6 +239,7 @@ describe("Home", () => {
     const { fake } = renderApp("/home");
     await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    await showRow("Weeknight wind-down");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Weeknight wind-down" }));
     const editor = await screen.findByRole("dialog", { name: "Weeknight wind-down" });
     expect(editor).toHaveTextContent("The collection's schedule, also set in Collections.");
@@ -239,6 +268,7 @@ describe("Home", () => {
     ).toEqual([]);
     await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
     // The saved document reads the schedule back from the collection.
+    await showRow("Weeknight wind-down");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Weeknight wind-down" }));
     const again = await screen.findByRole("dialog", { name: "Weeknight wind-down" });
     const pressed = within(
@@ -294,6 +324,7 @@ describe("Home", () => {
     expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
 
     // Clicking the row item opens its drawer directly with Settings and Content subtabs.
+    await showRow("Top 10 Today");
     const topCard = screen.getByRole("listitem", { name: "Row Top 10 Today" });
     fireEvent.click(within(topCard).getByText("Top 10 Today"));
     const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
@@ -336,6 +367,7 @@ describe("Home", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Custom row pattern" })).toBeNull(),
     );
+    await showRow("because.*");
     expect(await screen.findByRole("listitem", { name: "Row because.*" })).toBeInTheDocument();
     expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
   });
@@ -347,12 +379,14 @@ describe("Home", () => {
     expect(screen.queryByText("Create a Home row from a Stremio catalog")).toBeNull();
 
     // Open row editor drawer: Cancel reverts edits, Done keeps edits.
+    await showRow("Top 10 Today");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Top 10 Today" }));
     const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
     expect(within(drawer).getByPlaceholderText("Every day")).toBeInTheDocument();
     expect(
       within(drawer).getByRole("button", { name: "From hour for Top 10 Today" }),
     ).toHaveTextContent("Any time");
+    await showRow("Top 10 Today");
     fireEvent.click(
       within(within(drawer).getByRole("radiogroup", { name: "Status of Top 10 Today" })).getByRole(
         "radio",
@@ -363,8 +397,10 @@ describe("Home", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByText("Unsaved changes")).toBeNull();
 
+    await showRow("Top 10 Today");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Top 10 Today" }));
     const drawerAgain = await screen.findByRole("dialog", { name: "Top 10 Today" });
+    await showRow("Top 10 Today");
     fireEvent.click(
       within(
         within(drawerAgain).getByRole("radiogroup", { name: "Status of Top 10 Today" }),
@@ -414,6 +450,7 @@ describe("Home", () => {
     // Setting a personal row to Always on Everyone explains why Typical viewer hides it,
     // both on the RowPool card and in the preview's Not on this page list.
     await setStatus("Top 10 for You", "Always");
+    await showRow("Top 10 for You");
     const top10Card = screen.getByRole("listitem", { name: "Row Top 10 for You" });
     await waitFor(
       () =>
@@ -435,6 +472,7 @@ describe("Home", () => {
 
     // Setting a disabled collection to Always explains why it is absent.
     await setStatus("Family Movie Night", "Always");
+    await showRow("Family Movie Night");
     const familyCard = screen.getByRole("listitem", { name: "Row Family Movie Night" });
     await waitFor(
       () =>
@@ -456,9 +494,11 @@ describe("Home", () => {
     expect(screen.getByRole("region", { name: "Slot 1: Continue Watching" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    await showRow("Top 10 for You");
     expect(screen.getByRole("listitem", { name: "Row Top 10 for You" })).not.toHaveTextContent(
       /Hidden for/,
     );
+    await showRow("Family Movie Night");
     expect(screen.getByRole("listitem", { name: "Row Family Movie Night" })).toHaveTextContent(
       "Hidden for Sam Rivera: collection is disabled in Collections",
     );

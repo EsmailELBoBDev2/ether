@@ -73,11 +73,6 @@ func schemaType(typ reflect.Type) map[string]any {
 			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}
 		case reflect.TypeFor[plugins.KindSyncDecl]():
 			props["undo"] = map[string]any{"enum": []string{"snapshots", "ids"}}
-		case reflect.TypeFor[plugins.ScreenSection]():
-			props["type"] = map[string]any{"enum": []string{"hero", "events", "table", "schedule", "leagues", "entities"}}
-		case reflect.TypeFor[plugins.ScreenEventQuery]():
-			props["state"] = map[string]any{"type": "array", "items": map[string]any{"enum": []string{"pre", "in", "post", "delayed", "postponed", "canceled"}}}
-			props["window"] = map[string]any{"enum": []string{"today", "week", "recent"}}
 		}
 		return map[string]any{"type": "object", "properties": props}
 	case reflect.Slice, reflect.Array:

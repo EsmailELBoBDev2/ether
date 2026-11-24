@@ -121,7 +121,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil, CapScreens: nil,
 }
 
 var knownKinds = map[Kind]bool{
@@ -333,7 +333,7 @@ func (m Manifest) Validate() error {
 }
 
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents || c == CapScreens
 }
 
 func unsafePath(p string) bool {
@@ -587,9 +587,6 @@ func contributesUseT(c Contributes) bool {
 	}
 	for _, sc := range c.Screens {
 		check(sc.Title)
-		for _, sec := range sc.Sections {
-			check(sec.Title)
-		}
 	}
 	return any
 }
@@ -965,6 +962,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
 	validateScreens(m, add, label)
+	validateSurfaces(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")

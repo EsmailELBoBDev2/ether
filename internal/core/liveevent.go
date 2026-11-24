@@ -228,6 +228,9 @@ type LiveEvent struct {
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
 	Spoiler     bool                   `json:"spoiler"`             // set by Ether, never by plugins
 	UpdatedAt   string                 `json:"updatedAt,omitempty"` // RFC3339
+	// Prominence optionally ranks events for featured ordering (0..1, the
+	// plugin's sense of how big the event is); absent counts as 0.
+	Prominence float64 `json:"prominence,omitempty"`
 }
 
 // MarshalJSON guarantees spec-required array fields (competitors) encode as []
@@ -291,6 +294,9 @@ type LiveEventTable struct {
 	Title   string     `json:"title"`
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+	// RowEntityIDs optionally names the entity (a team) each row is about,
+	// in row order, so Ether can mark a viewer's favourites exactly.
+	RowEntityIDs []string `json:"rowEntityIds,omitempty"`
 }
 
 // MarshalJSON guarantees columns and rows encode as [] rather than null.
@@ -309,6 +315,9 @@ func (t LiveEventTable) MarshalJSON() ([]byte, error) {
 // Clone returns a deep copy of t.
 func (t LiveEventTable) Clone() LiveEventTable {
 	out := LiveEventTable{Title: t.Title}
+	if len(t.RowEntityIDs) > 0 {
+		out.RowEntityIDs = append([]string(nil), t.RowEntityIDs...)
+	}
 	if len(t.Columns) > 0 {
 		out.Columns = append([]string(nil), t.Columns...)
 	} else {
@@ -336,6 +345,11 @@ type LiveEventPlay struct {
 	Text         string `json:"text"`
 	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
 	CompetitorID string `json:"competitorId,omitempty"`
+	// At is the wall-clock time of the play (RFC3339), so a timeshifted
+	// viewer's overlay can show the score as of the picture.
+	At string `json:"at,omitempty"`
+	// Score is every competitor's score after the play, by competitor id.
+	Score map[string]string `json:"score,omitempty"`
 }
 
 // LiveEventProbabilityTime holds the x-axis value of a probability sample:
@@ -457,7 +471,16 @@ func (d LiveEventDetail) Clone() LiveEventDetail {
 		}
 	}
 	if d.Plays != nil {
-		out.Plays = append([]LiveEventPlay(nil), d.Plays...)
+		out.Plays = make([]LiveEventPlay, len(d.Plays))
+		for i, p := range d.Plays {
+			out.Plays[i] = p
+			if p.Score != nil {
+				out.Plays[i].Score = make(map[string]string, len(p.Score))
+				for k, v := range p.Score {
+					out.Plays[i].Score[k] = v
+				}
+			}
+		}
 	}
 	if d.ProbabilitySeries != nil {
 		out.ProbabilitySeries = make([]LiveEventProbabilityPoint, len(d.ProbabilitySeries))

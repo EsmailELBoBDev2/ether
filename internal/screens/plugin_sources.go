@@ -624,6 +624,7 @@ func (s *Service) PluginAction(ctx context.Context, viewer *core.User, req Actio
 	if nav := validNavigate(ans.Navigate); nav != nil {
 		out.Navigate = nav
 	}
+	s.Touched(t.plugin.pluginID, viewer.ID)
 	return out, nil
 }
 

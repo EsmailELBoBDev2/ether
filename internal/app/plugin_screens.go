@@ -352,6 +352,11 @@ func (s surfaceScreens) ScreenAction(ctx context.Context, viewer *frontend.Viewe
 	if err != nil {
 		return nil, mapScreensError(err)
 	}
+	if t, ok := s.docs().FindScreen(ctx, viewer, s.surface, req.ID); ok && req.Kind == "screen" {
+		svc.Touched(t.PluginID, viewer.ID)
+	} else if t, ok := s.docs().FindSurface(ctx, viewer, s.surface, req.ID); ok && req.Kind == "surface" {
+		svc.Touched(t.PluginID, viewer.ID)
+	}
 	return json.Marshal(map[string]any{"records": res.Records, "sources": res.Sources})
 }
 

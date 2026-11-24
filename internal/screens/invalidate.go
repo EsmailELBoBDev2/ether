@@ -21,23 +21,28 @@ type pluginSignal struct {
 type pluginWatch struct {
 	mu       sync.Mutex
 	next     int
-	watchers map[string]map[int]chan pluginSignal
+	watchers map[string]map[int]watcher
 }
 
-func (s *Service) watchPlugins(pluginIDs []string) (<-chan pluginSignal, func()) {
+type watcher struct {
+	ch     chan pluginSignal
+	viewer int64
+}
+
+func (s *Service) watchPlugins(pluginIDs []string, viewerID int64) (<-chan pluginSignal, func()) {
 	ch := make(chan pluginSignal, 4)
 	w := &s.pushes
 	w.mu.Lock()
 	if w.watchers == nil {
-		w.watchers = map[string]map[int]chan pluginSignal{}
+		w.watchers = map[string]map[int]watcher{}
 	}
 	w.next++
 	id := w.next
 	for _, p := range pluginIDs {
 		if w.watchers[p] == nil {
-			w.watchers[p] = map[int]chan pluginSignal{}
+			w.watchers[p] = map[int]watcher{}
 		}
-		w.watchers[p][id] = ch
+		w.watchers[p][id] = watcher{ch: ch, viewer: viewerID}
 	}
 	w.mu.Unlock()
 	return ch, func() {
@@ -53,13 +58,22 @@ func (s *Service) watchPlugins(pluginIDs []string) (<-chan pluginSignal, func())
 }
 
 func (s *Service) signal(pluginID string, sig pluginSignal) int {
+	return s.signalViewer(pluginID, 0, sig)
+}
+
+// signalViewer reaches the open streams of pluginID's pages; viewerID 0
+// means every viewer's.
+func (s *Service) signalViewer(pluginID string, viewerID int64, sig pluginSignal) int {
 	w := &s.pushes
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n := 0
-	for _, ch := range w.watchers[pluginID] {
+	for _, wt := range w.watchers[pluginID] {
+		if viewerID != 0 && wt.viewer != viewerID {
+			continue
+		}
 		select {
-		case ch <- sig:
+		case wt.ch <- sig:
 			n++
 		default:
 			// A stream already has a re-read pending; one is enough.
@@ -78,6 +92,14 @@ func pluginsOf(topics []openTopic) []string {
 		}
 	}
 	return out
+}
+
+// Touched makes viewer's other open streams on pluginID's pages read again
+// after the viewer changed something (an action), so every device shows it.
+func (s *Service) Touched(pluginID string, viewerID int64) {
+	if s != nil && pluginID != "" && viewerID > 0 {
+		s.signalViewer(pluginID, viewerID, pluginSignal{})
+	}
 }
 
 // Invalidate drops pluginID's cached source answers and makes every open

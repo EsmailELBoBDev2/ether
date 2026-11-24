@@ -17,28 +17,31 @@ import (
 
 // EventView is the value of an event:<id> record.
 type EventView struct {
-	ID          string           `json:"id"`
-	Feed        string           `json:"feed"`
-	Category    string           `json:"category,omitempty"`
-	Phase       string           `json:"phase"`
-	State       string           `json:"state"`
-	Detail      string           `json:"detail,omitempty"`
-	Clock       string           `json:"clock,omitempty"`
-	Period      int              `json:"period,omitempty"`
-	Spoiler     bool             `json:"spoiler"`
-	Close       bool             `json:"close"`
-	Scored      bool             `json:"scored"`
-	Favourite   bool             `json:"favourite"`
-	Start       string           `json:"start"`
-	League      LeagueView       `json:"league"`
-	Title       string           `json:"title,omitempty"`
-	Venue       string           `json:"venue,omitempty"`
-	Sides       []SideView       `json:"sides,omitempty"`
-	Ranking     []RankView       `json:"ranking,omitempty"`
-	Situation   []LabelValue     `json:"situation"`
-	Probability *ProbabilityView `json:"probability,omitempty"`
-	Watch       WatchView        `json:"watch"`
-	UpdatedAt   string           `json:"updatedAt,omitempty"`
+	ID        string     `json:"id"`
+	Feed      string     `json:"feed"`
+	Category  string     `json:"category,omitempty"`
+	Phase     string     `json:"phase"`
+	State     string     `json:"state"`
+	Detail    string     `json:"detail,omitempty"`
+	Clock     string     `json:"clock,omitempty"`
+	Period    int        `json:"period,omitempty"`
+	Spoiler   bool       `json:"spoiler"`
+	Close     bool       `json:"close"`
+	Scored    bool       `json:"scored"`
+	Favourite bool       `json:"favourite"`
+	Start     string     `json:"start"`
+	League    LeagueView `json:"league"`
+	Title     string     `json:"title,omitempty"`
+	Venue     string     `json:"venue,omitempty"`
+	Sides     []SideView `json:"sides,omitempty"`
+	// PossessionLabel is the sport's own word for the possession line moved
+	// into sides[].possession ("Possession", "Serving", "Batting").
+	PossessionLabel string           `json:"possessionLabel,omitempty"`
+	Ranking         []RankView       `json:"ranking,omitempty"`
+	Situation       []LabelValue     `json:"situation"`
+	Probability     *ProbabilityView `json:"probability,omitempty"`
+	Watch           WatchView        `json:"watch"`
+	UpdatedAt       string           `json:"updatedAt,omitempty"`
 }
 
 // DetailView is the value of a detail:<event id> record: what only the game
@@ -383,6 +386,7 @@ func buildEventView(ev core.LiveEvent, favs favourites, entityKind string) Event
 				if namesSide(val, v.Sides[i]) {
 					v.Sides[i].Possession = true
 					possessionKey = k
+					v.PossessionLabel = strings.TrimSpace(k)
 				}
 			}
 			if possessionKey != "" {

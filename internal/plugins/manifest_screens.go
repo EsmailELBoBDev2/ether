@@ -228,18 +228,12 @@ func ScreensUseDocuments(m Manifest) bool {
 }
 
 func screensPermissionLine(m Manifest) string {
-	var names []string
-	if m.Ether != nil {
-		for _, sc := range m.Ether.Contributes.Screens {
-			if len(sc.Pages) > 0 && !strings.HasPrefix(sc.Title, "$t:") {
-				names = append(names, sc.Title)
-			}
-		}
+	// Each screen already has its own "Adds a screen" line; this one is
+	// for what plugins draw inside Ether's own pages.
+	if m.Ether != nil && len(m.Ether.Contributes.Surfaces) > 0 {
+		return "Adds overlays, alerts or rows to your apps"
 	}
-	if len(names) == 0 {
-		return "Adds screens and player overlays to your apps"
-	}
-	return "Adds screens to your apps: " + strings.Join(names, ", ")
+	return "Draws its screens in your apps"
 }
 
 func validateSurfaces(m Manifest, add func(string, string), label func(string, string, int)) {

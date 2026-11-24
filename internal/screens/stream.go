@@ -177,7 +177,7 @@ func (s *Service) Stream(ctx context.Context, viewer *core.User, tokens []string
 		if !push() {
 			return
 		}
-		signals, unwatch := s.watchPlugins(pluginsOf(topics))
+		signals, unwatch := s.watchPlugins(pluginsOf(topics), viewer.ID)
 		defer unwatch()
 		for {
 			var refreshC <-chan time.Time

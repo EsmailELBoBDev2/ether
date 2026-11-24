@@ -25,3 +25,8 @@ export function libraryRowsHref(libraryId: number, tabKey: string): string {
 export function addToPageHref(collectionId: string): string {
   return `/recommendations?${new URLSearchParams({ add: `collection:${collectionId}` })}`;
 }
+
+/** The designer's New row drawer with a row source preselected (a plugin list); it asks which page. */
+export function addRowHref(sourceKind: string): string {
+  return `/recommendations?${new URLSearchParams({ add: sourceKind })}`;
+}

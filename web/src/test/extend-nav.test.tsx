@@ -39,7 +39,7 @@ describe("registry navigation", () => {
     expect(groups[1]!.items.map((i) => i.href)).toEqual([
       "/libraries",
       "/collections",
-      "/home",
+      "/recommendations",
       "/livetv",
       "/calendar",
       "/metadata",

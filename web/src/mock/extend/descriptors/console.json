@@ -582,18 +582,18 @@
   },
   {
     "kind": "navItem",
-    "id": "home",
+    "id": "recommendations",
     "owner": "builtin",
     "label": {
-      "source": "Home"
+      "source": "Recommendations"
     },
     "hint": {},
     "icon": "LayoutTemplate",
     "group": "library",
     "order": 30,
     "meta": {
-      "route": "/home",
-      "page": "home"
+      "route": "/recommendations",
+      "page": "recommendations"
     }
   },
   {
@@ -1084,21 +1084,21 @@
   },
   {
     "kind": "page",
-    "id": "home",
+    "id": "recommendations",
     "owner": "builtin",
     "label": {
-      "source": "Home"
+      "source": "Recommendations"
     },
     "hint": {},
     "icon": "LayoutTemplate",
     "group": "library",
     "order": 30,
     "meta": {
-      "route": "/home",
+      "route": "/recommendations",
       "navGroup": "library",
       "inNav": true,
       "keywords": {
-        "source": "designer rows layout overrides plex home"
+        "source": "home rows pages designer layout personalized curated library recommended plex"
       }
     }
   },

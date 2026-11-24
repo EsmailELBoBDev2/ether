@@ -175,3 +175,32 @@ func TestShareIgnoresSeatsWhenFeatureOff(t *testing.T) {
 		t.Fatalf("share with extra servers off = %v, want the main server's own error", err)
 	}
 }
+
+// A change that arrives through the config (another cluster node removing a
+// server, or the feature turned off) stops a running server here without a
+// restart. A fake runtime stands in for a started server.
+func TestConfigChangeStopsServerWithoutRestart(t *testing.T) {
+	e := routingEnv(t)
+	ps := e.app.plexExtras
+	ctx := context.Background()
+	store := &plexServerStore{base: e.app.cfg, id: "p2"}
+	stopped := false
+	ps.mu.Lock()
+	ps.running["p2"] = &plexServerRuntime{id: "p2", store: store, cancel: func() { stopped = true }}
+	ps.mu.Unlock()
+	ps.syncWithConfig(ctx) // p2 is started in config: it keeps running
+	if ps.runtime("p2") == nil || stopped {
+		t.Fatal("a started server was stopped")
+	}
+	// Another node removed p2: the shared config no longer lists it.
+	if err := e.app.cfg.Update(func(c *config.Config) error {
+		c.PlexExtraServers = c.PlexExtraServers[1:]
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ps.syncWithConfig(ctx)
+	if ps.runtime("p2") != nil || !stopped || !store.stopped.Load() {
+		t.Fatal("a removed server is still running")
+	}
+}

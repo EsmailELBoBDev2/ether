@@ -146,6 +146,33 @@ export function installMockBackend(): void {
       });
     };
   }
+  // `?health=problems|warn|setup` previews the health pill's other verdicts.
+  const healthPreview = params.get("health");
+  if (healthPreview) {
+    const original = fake.fetch;
+    fake.fetch = async (input, init) => {
+      const response = await original(input, init);
+      const path = new URL(String(input), window.location.origin).pathname;
+      if (!path.endsWith("/dashboard")) return response;
+      const body = await response.json();
+      const sections = body.sections;
+      if (healthPreview === "problems") {
+        sections.remote.cert.notAfter = "2020-01-01T00:00:00Z";
+        sections.remote.tokenRejected = true;
+      } else if (healthPreview === "warn") {
+        sections.remote.cert.notBefore = "2999-01-01T00:00:00Z";
+      } else if (healthPreview === "setup") {
+        body.plexEnabled = false;
+        sections.providers = [];
+        sections.debrid = { enabled: false };
+        sections.indexers = [{ indexer: "Torrentio", enabled: true, hitsLimit: 0 }];
+        sections.catalog = { movies: 0, shows: 0 };
+      }
+      return new Response(JSON.stringify(body), {
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+  }
   // Owner screenshot fixtures: opt in with ?review. Switch availability/sync
   // scenarios through sessionStorage["ether.review.state"] (done/running/empty/failed/pin).
   if (params.has("review")) {

@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/plugins"
 	"net/http"
 	"strings"
 )
@@ -98,24 +97,19 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 					out = append(out, src)
 				}
 			}
-			if !rec.Manifest.HasCapability(plugins.CapListSource) {
-				continue
-			}
-			for _, cat := range rec.Manifest.Stremio().Catalogs {
-				if !cat.Standalone() {
-					continue
-				}
+			// Offer exactly the lists the plugin registers as list sources, so
+			// every source listed here syncs (resolveCatalogueSource).
+			for _, cl := range rec.Manifest.CatalogueLists() {
+				cat := cl.Catalog
 				typ := "movie"
 				if cat.Type == "series" {
 					typ = "show"
-				} else if cat.Type != "movie" {
-					continue
 				}
 				name := cat.Name
 				if name == "" {
-					name = cat.ID
+					name = c.catalogueLabel(r.Context(), rec.ID, cl.Label, cat.ID)
 				}
-				out = append(out, catalogueSource{ID: "stremio:" + rec.ID + ":" + plugins.StremioCatalogKey(cat), Name: name, Owner: rec.Name, Group: "stremio", PluginID: rec.ID, MediaTypes: []string{typ}, Logo: rec.Manifest.Logo, Health: "unknown", Libraries: []catalogueLibrary{}})
+				out = append(out, catalogueSource{ID: "stremio:" + rec.ID + ":" + cl.Key, Name: name, Owner: rec.Name, Group: "stremio", PluginID: rec.ID, MediaTypes: []string{typ}, Logo: rec.Manifest.Logo, Health: "unknown", Libraries: []catalogueLibrary{}})
 			}
 		}
 	}

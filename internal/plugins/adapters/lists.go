@@ -107,7 +107,7 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 			meta:       ls,
 			fields:     plugins.ParseListParamFields(ls.Params),
 		}
-		kind.catalog, kind.declared = listCatalog(r.Manifest.Stremio(), ls)
+		kind.catalog, kind.declared = plugins.ListCatalog(r.Manifest.Stremio(), ls)
 		if b.cols != nil {
 			_ = b.cols.RegisterSourceKind(kind)
 		}
@@ -175,29 +175,6 @@ type listSourceKind struct {
 	// declaration and it pages only when it declares skip.
 	catalog  stremio.Catalog
 	declared bool
-}
-
-// listCatalog reads a list source's catalog ("movie/top", or an id alone)
-// and its declaration in the manifest. A plugin's own list that the
-// manifest does not declare pages with skip, as the plugin contract says.
-func listCatalog(m stremio.Manifest, ls plugins.ListSourceMeta) (stremio.Catalog, bool) {
-	spec := strings.TrimSuffix(strings.TrimPrefix(strings.Trim(strings.TrimSpace(ls.Catalog), "/"), "catalog/"), ".json")
-	typ, id, ok := strings.Cut(spec, "/")
-	if !ok {
-		typ, id = "", spec
-	}
-	typ, id = strings.ToLower(strings.TrimSpace(typ)), strings.TrimSpace(id)
-	if id == "" {
-		id = ls.Key
-	}
-	switch typ {
-	case "show", "tv":
-		typ = stremio.TypeSeries
-	}
-	if c, ok := m.CatalogNamed(typ, id); ok {
-		return c, true
-	}
-	return stremio.Catalog{Type: typ, ID: id, Extra: []stremio.Extra{{Name: "skip"}}}, false
 }
 
 func (k *listSourceKind) MinRefresh() time.Duration {
@@ -323,7 +300,7 @@ func (k *listSourceKind) catalogs(kinds []string) []stremio.Catalog {
 func (k *listSourceKind) Gather(g *collections.Gather) {
 	if k.mgr == nil {
 		if g.Strict {
-			g.Fail(fmt.Errorf("catalogue source unavailable"))
+			g.Fail(fmt.Errorf("%s can't be read because plugins are not running on this server", k.label()))
 			return
 		}
 		g.Warn("%s is unavailable", k.label())

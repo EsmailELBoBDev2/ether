@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/catalog"
@@ -22,19 +21,15 @@ type ViewerCatalogRules interface {
 	LibraryPolicies() catalog.LibraryPolicies
 }
 
-// Personalization is the engine behind the viewers, Home Designer and
-// insights endpoints. Implemented by internal/personalize.Engine.
+// Personalization is the engine behind the viewers, Recommendations pages
+// and insights endpoints. Implemented by internal/personalize.Engine.
 type Personalization interface {
+	RecommendationPages
 	ViewerStats(ctx context.Context, userIDs []int64) (map[int64]core.ViewerStats, error)
 	RecentActivity(ctx context.Context, userID int64, limit int) ([]core.ViewerActivity, error)
 	Taste(ctx context.Context, user *core.User) (*core.TasteProfile, error)
 	SetTasteOverrides(ctx context.Context, user *core.User, overrides []core.TasteOverride) (*core.TasteProfile, error)
-	// PreviewHome is what Home (/hubs) or a library's Recommended page
-	// ("library:<id>") serves the viewer in the context.
-	PreviewHome(ctx context.Context, user *core.User, hc core.HubContext, section string, limit int) (*core.HomePreview, error)
 	Refresh(ctx context.Context, user *core.User) error
-	// LayoutDefaults is the default row count per page kind (home, library).
-	LayoutDefaults() map[string]int
 	RowInsights(ctx context.Context, days int) ([]core.RowInsight, error)
 	// RankerInsight describes the learned ranking model.
 	RankerInsight(ctx context.Context) (core.RankerInsight, error)
@@ -47,7 +42,7 @@ type invalidFields interface {
 	InvalidFields() [][2]string
 }
 
-// personalizationRoutes registers the viewers, layout and insights API.
+// personalizationRoutes registers the viewers, Recommendations pages and insights API.
 func (h *Handler) personalizationRoutes(api func(pattern string, fn http.HandlerFunc)) {
 	api("GET /api/viewers", h.handleViewers)
 	api("GET /api/viewers/{id}/catalog-rules", h.handleViewerCatalogRules)
@@ -55,12 +50,12 @@ func (h *Handler) personalizationRoutes(api func(pattern string, fn http.Handler
 	api("GET /api/viewers/{id}", h.handleViewer)
 	api("GET /api/viewers/{id}/taste", h.handleViewerTaste)
 	api("PUT /api/viewers/{id}/taste/overrides", h.handleViewerOverrides)
-	api("GET /api/viewers/{id}/home", h.handleViewerHome)
 	api("POST /api/viewers/{id}/refresh", h.handleViewerRefresh)
 	api("GET /api/viewers/{id}/trakt", h.handleTraktStatus)
 	api("POST /api/viewers/{id}/trakt/device", h.handleTraktStart)
 	api("POST /api/viewers/{id}/trakt/poll", h.handleTraktPoll)
 	api("POST /api/viewers/{id}/trakt/disconnect", h.handleTraktDisconnect)
+	h.pageRoutes(api)
 	api("GET /api/insights/rows", h.handleInsightRows)
 	api("GET /api/insights/ranker", h.handleInsightRanker)
 	api("GET /api/insights/activity", h.handleInsightActivity)
@@ -266,102 +261,6 @@ func (h *Handler) handleViewerOverrides(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
-}
-
-// homeRow is the HomeRow shape of the contract.
-type homeRow struct {
-	HubID        string            `json:"hubId"`
-	Layer        string            `json:"layer,omitempty"`
-	Slot         int               `json:"slot,omitempty"`
-	AnchorSlot   int               `json:"anchorSlot,omitempty"`
-	Placement    string            `json:"placement,omitempty"`
-	HiddenCode   string            `json:"hiddenCode,omitempty"`
-	HiddenReason string            `json:"hiddenReason,omitempty"`
-	Policy       *core.RowPolicy   `json:"policy,omitempty"`
-	PolicyLayer  string            `json:"policyLayer,omitempty"`
-	Title        string            `json:"title"`
-	Kind         string            `json:"kind"`
-	Reason       string            `json:"reason"`
-	Score        float64           `json:"score"`
-	Pinned       bool              `json:"pinned,omitempty"`
-	Hidden       bool              `json:"hidden,omitempty"`
-	Source       string            `json:"source"`
-	Items        []homeTitleCard   `json:"items"`
-	ItemReasons  map[string]string `json:"itemReasons,omitempty"`
-}
-
-func (h *Handler) handleViewerHome(w http.ResponseWriter, r *http.Request) {
-	u, ok := h.viewerByID(w, r)
-	if !ok {
-		return
-	}
-	q := r.URL.Query()
-	device := strings.ToLower(strings.TrimSpace(q.Get("device")))
-	if device == "" {
-		device = core.DeviceTV
-	}
-	switch device {
-	case core.DeviceTV, core.DeviceMobile, core.DeviceWeb, core.DeviceDesktop:
-	default:
-		writeValidationError(w, []FieldError{{Field: "device", Message: "must be tv, mobile, web or desktop"}})
-		return
-	}
-	at := time.Now()
-	if v := q.Get("at"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeValidationError(w, []FieldError{{Field: "at", Message: "must be an RFC 3339 time"}})
-			return
-		}
-		at = t
-	}
-	limit := 12
-	if v := q.Get("count"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > 100 {
-			writeValidationError(w, []FieldError{{Field: "count", Message: "must be 1-100"}})
-			return
-		}
-		limit = n
-	}
-	hc := core.NewHubContext(at.Local(), "", "", "")
-	hc.Device = device
-	p, err := h.deps.Personalization.PreviewHome(r.Context(), &u.User, hc, q.Get("section"), limit)
-	if err != nil {
-		writeEngineError(w, err)
-		return
-	}
-	h.writeHomePreview(w, p, nil)
-}
-
-func (h *Handler) writeHomePreview(w http.ResponseWriter, p *core.HomePreview, viewer any) {
-	rows := make([]homeRow, 0, len(p.Rows))
-	for _, row := range p.Rows {
-		hr := homeRow{HubID: row.HubID, Title: row.Title, Kind: row.Kind, Reason: row.Reason, Score: row.Score,
-			Layer: row.Layer, Slot: row.Slot, AnchorSlot: row.AnchorSlot, Placement: row.Placement, HiddenCode: row.HiddenCode, HiddenReason: row.HiddenReason, Policy: row.Policy, PolicyLayer: row.PolicyLayer, Pinned: row.Pinned, Hidden: row.Hidden, Source: row.Source, Items: make([]homeTitleCard, 0, len(row.Items))}
-		for _, t := range row.Items {
-			hr.Items = append(hr.Items, homeCard(t))
-		}
-		if len(row.ItemReasons) > 0 {
-			hr.ItemReasons = make(map[string]string, len(row.ItemReasons))
-			for k, v := range row.ItemReasons {
-				hr.ItemReasons[k.String()] = v
-			}
-		}
-		rows = append(rows, hr)
-	}
-	body := map[string]any{
-		"rows":        rows,
-		"viewer":      viewer,
-		"generatedAt": p.GeneratedAt.UTC(),
-		"context":     map[string]any{"device": p.Context.Device, "daypart": p.Context.Daypart, "weekend": p.Context.Weekend},
-	}
-	if p.HomeDeduped > 0 {
-		// Titles kept off a Movies/TV Shows page because the Home leads
-		// with them (DedupeHome).
-		body["homeDeduped"] = p.HomeDeduped
-	}
-	writeJSON(w, http.StatusOK, body)
 }
 
 func (h *Handler) handleViewerRefresh(w http.ResponseWriter, r *http.Request) {

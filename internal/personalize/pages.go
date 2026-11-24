@@ -25,6 +25,27 @@ const pagesBackupMeta = "rows-pages-v1-backup"
 
 func init() {
 	store.Register("personalize", 5, `CREATE TABLE personalize_pages (page TEXT PRIMARY KEY, document TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1);`)
+	// The Home layout document becomes Recommendations pages: keep it for
+	// the one-time rows-pages-v1 migration, then drop its table.
+	store.Register("personalize", 6, `
+INSERT INTO personalize_meta(k, v) SELECT 'rows-pages-v1-backup', document FROM personalize_home_layout WHERE id = 1;
+DROP TABLE personalize_home_layout;`)
+}
+
+// MigrationState reads a one-time migration's state ("" not run).
+func (e *Engine) MigrationState(ctx context.Context, key string) (string, error) {
+	var v string
+	err := e.store.db.QueryRowContext(ctx, `SELECT v FROM personalize_meta WHERE k=?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetMigrationState records a one-time migration's state.
+func (e *Engine) SetMigrationState(ctx context.Context, key, value string) error {
+	_, err := e.store.db.ExecContext(ctx, `INSERT INTO personalize_meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, key, value)
+	return err
 }
 
 // ErrPageConflict reports a save over a newer revision.
@@ -243,6 +264,11 @@ func (e *Engine) NormalizePage(ctx context.Context, p core.RowPage) (core.RowPag
 	}
 	for i, r := range p.Rows {
 		src, ok := e.sourceInfo(r.Source.Kind)
+		if !ok && strings.HasPrefix(r.Source.Kind, "plugin:") {
+			// A plugin's list that isn't loaded (or was uninstalled): kept on
+			// the page, served again when the plugin is back.
+			continue
+		}
 		if !ok {
 			return p, &ValidationError{Problems: []Problem{{fmt.Sprintf("rows[%d].source", i), fmt.Sprintf("%q is not a row source", r.Source.Kind)}}}
 		}

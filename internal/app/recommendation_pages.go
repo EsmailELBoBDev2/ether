@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/admin"
@@ -179,3 +180,37 @@ func pluginLibraryCaps(experience string, decl plugins.MediaKindMeta) []string {
 
 // The engine is the admin API's Recommendations backend.
 var _ admin.Personalization = (*personalize.Engine)(nil)
+
+// pluginPageCandidates returns a plugin library's candidate shelves (before
+// the page arranges them) for Recommendations previews.
+func (a *App) pluginPageCandidates(ctx context.Context, viewer *core.User, id core.LibraryID, tab string) []core.HomeRow {
+	var svc *surfaceExperience
+	if a.frontends != nil && a.frontends.siloExperience != nil {
+		svc = a.frontends.siloExperience
+	} else if a.pluginsRT != nil && a.pluginsRT.kindCatalog != nil {
+		if raw, err := a.newSurfaceExperience("silo"); err == nil {
+			svc, _ = raw.(*surfaceExperience)
+		}
+	}
+	if svc == nil || svc.Service == nil {
+		return nil
+	}
+	v := viewer
+	if v == nil || v.ID <= 0 {
+		if owner, err := a.users.Owner(ctx); err == nil && owner != nil {
+			v = owner
+		} else {
+			v = &core.User{ID: 1, IsOwner: true}
+		}
+	}
+	cands, err := svc.Service.PluginLibraryCandidateRows(ctx, v, strconv.FormatInt(int64(id), 10))
+	if err != nil {
+		return nil
+	}
+	rows := make([]core.HomeRow, 0, len(cands))
+	for _, r := range cands {
+		rows = append(rows, core.HomeRow{HubID: r.ID, Title: r.Title, Kind: r.Kind, Source: core.RowSourcePrecomposed, Items: r.Items,
+			Hub: core.Hub{ID: r.ID, Title: r.Title, Items: r.Items, ItemCount: len(r.Items)}})
+	}
+	return rows
+}

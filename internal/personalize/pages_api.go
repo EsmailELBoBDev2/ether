@@ -2,7 +2,6 @@ package personalize
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -15,8 +14,6 @@ import (
 // Owner API for Recommendations pages (internal/admin serves these, design
 // §7). Every method is safe for concurrent use.
 
-// ErrPageNotReady is returned by previews until the page engine serves them.
-var ErrPageNotReady = errors.New("personalize: page previews are not available yet")
 
 // PageDocument returns the page (saved, or the seeded default), the
 // library behind it and the viewers with changes.
@@ -90,6 +87,21 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 			}
 		}
 		ps.Available = len(ps.Libraries) > 0 || len(s.Needs) == 0
+		if key == core.PageHome && slices.Contains(s.Needs, core.CapLive) {
+			// Live TV is its own section, not a library: Home can always
+			// show what's on (the row is empty without channels).
+			ps.Available = true
+		}
+		if s.Kind == SourceSurface && e.opts.Surfaces != nil {
+			for _, sf := range e.opts.Surfaces(ctx) {
+				name := sf.Title
+				if sf.PluginName != "" {
+					name = sf.PluginName + " · " + sf.Title
+				}
+				ps.Refs = append(ps.Refs, core.ParamOption{Value: sf.Plugin + ":" + sf.ID, Label: name})
+			}
+			ps.Available = len(ps.Refs) > 0
+		}
 		if !ps.Available {
 			ps.Unavailable = "No library here has what this row needs"
 		}
@@ -111,23 +123,6 @@ func hasCaps(have, need []string) bool {
 		}
 	}
 	return true
-}
-
-// PreviewPage assembles a page for a viewer at a moment under a draft (or
-// the saved page), without changing anything persisted.
-func (e *Engine) PreviewPage(ctx context.Context, viewer *core.User, key core.PageKey, req core.PagePreviewRequest) (*core.PagePreview, error) {
-	return nil, ErrPageNotReady
-}
-
-// PreviewPageRow returns one draft row's titles (per library for a
-// one-row-per-library row) for the drawer's Content tab.
-func (e *Engine) PreviewPageRow(ctx context.Context, viewer *core.User, key core.PageKey, req core.RowPreviewRequest) (*core.RowPreview, error) {
-	return nil, ErrPageNotReady
-}
-
-// PageImpact counts the viewers a draft page changes.
-func (e *Engine) PageImpact(ctx context.Context, key core.PageKey, draft core.RowPage, device string, at time.Time) (core.PageImpact, error) {
-	return core.PageImpact{}, ErrPageNotReady
 }
 
 // CollectionUsage lists where a collection is a row ("Used on" in

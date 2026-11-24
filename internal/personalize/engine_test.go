@@ -509,4 +509,3 @@ func TestScoreTitles(t *testing.T) {
 		t.Fatalf("a sci-fi fan should score sci-fi higher: %v", scores)
 	}
 }
-

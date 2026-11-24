@@ -24,6 +24,10 @@ import (
 const pagesBackupMeta = "rows-pages-v1-backup"
 
 func init() {
+	// 2 and 4 are the pre-pages Home layout table and the meta table;
+	// migration 6 retires the former.
+	store.Register("personalize", 2, `CREATE TABLE personalize_home_layout (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL);`)
+	store.Register("personalize", 4, `CREATE TABLE personalize_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');`)
 	store.Register("personalize", 5, `CREATE TABLE personalize_pages (page TEXT PRIMARY KEY, document TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1);`)
 	// The Home layout document becomes Recommendations pages: keep it for
 	// the one-time rows-pages-v1 migration, then drop its table.
@@ -137,10 +141,15 @@ func (e *Engine) Pages(ctx context.Context) []core.RowPage {
 func (e *Engine) Page(ctx context.Context, key core.PageKey) (core.RowPage, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if p, ok := e.pages[key]; ok {
+	p, ok := e.pages[key]
+	e.mu.Unlock()
+	if ok {
+		e.mu.Lock()
 		return clonePage(p), true
 	}
-	return DefaultPage(key), false
+	d := e.defaultPage(ctx, key)
+	e.mu.Lock()
+	return d, false
 }
 
 // SavePage validates and stores a page. Rows without an id get one. The

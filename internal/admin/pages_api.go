@@ -80,8 +80,6 @@ func writePageError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, personalize.ErrPageConflict):
 		writeError(w, http.StatusConflict, "conflict", "Someone else saved this page. Reload it to see their changes.")
-	case errors.Is(err, personalize.ErrPageNotReady):
-		writeError(w, http.StatusServiceUnavailable, "not_ready", "Previews are not available yet")
 	default:
 		writeEngineError(w, err)
 	}

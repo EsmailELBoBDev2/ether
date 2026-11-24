@@ -763,6 +763,8 @@ type KindImport struct {
 	Name        string        `json:"name"`
 	Description string        `json:"description,omitempty"`
 	Tracks      []ImportTrack `json:"tracks"`
+	Total       int           `json:"total,omitempty"`     // the source playlist's track count, when known
+	Truncated   bool          `json:"truncated,omitempty"` // the source shared fewer tracks than it has
 }
 
 // KindIdentifyRequest asks a kind to find its items for tracks (POST

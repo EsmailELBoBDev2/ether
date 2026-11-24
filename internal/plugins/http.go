@@ -1062,13 +1062,6 @@ func (m *Manager) localizedKindLibraries(ctx context.Context, id string, man Man
 		screens := append([]ScreenMeta(nil), c.Screens...)
 		for i := range screens {
 			resolveField(&screens[i].Title)
-			if len(screens[i].Sections) > 0 {
-				secs := append([]ScreenSection(nil), screens[i].Sections...)
-				for j := range secs {
-					resolveField(&secs[j].Title)
-				}
-				screens[i].Sections = secs
-			}
 		}
 		ether.Contributes.Screens = screens
 	}

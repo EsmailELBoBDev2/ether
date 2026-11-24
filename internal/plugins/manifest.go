@@ -587,9 +587,6 @@ func contributesUseT(c Contributes) bool {
 	}
 	for _, sc := range c.Screens {
 		check(sc.Title)
-		for _, sec := range sc.Sections {
-			check(sec.Title)
-		}
 	}
 	return any
 }

@@ -493,7 +493,6 @@ type Host struct {
 	TrackPreferences   TrackPreferenceService
 	LiveTV             LiveTV
 	LiveEventLink      LiveEventLinker
-	LiveEventTicker    LiveEventTicker
 	LibraryLive        LibraryLive
 	LiveEvents         LiveEvents
 	Screens            Screens

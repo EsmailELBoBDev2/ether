@@ -288,49 +288,13 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 		declaredScreens = rec.Manifest.Ether.Contributes.Screens
 	}
 
-	// Collect optional static league declarations from contributed screens as a
-	// fallback when a feed has no cached events yet.
+	// Static league chips came from 0.3.19 sections; documents carry none,
+	// so a feed shows leagues once the hub has cached events.
 	staticLeaguesByFeed := map[string][]liveevents.FeedLeagueSummary{}
 	defaultFeed := ""
 	if len(declaredFeeds) == 1 {
 		defaultFeed = declaredFeeds[0].ID
 	}
-	for _, sc := range declaredScreens {
-		scFeed := sc.Feed
-		if scFeed == "" {
-			scFeed = defaultFeed
-		}
-		for _, sec := range sc.Sections {
-			if len(sec.Leagues) == 0 {
-				continue
-			}
-			feedID := sec.Feed
-			if feedID == "" && sec.Query != nil {
-				feedID = sec.Query.Feed
-			}
-			if feedID == "" {
-				feedID = scFeed
-			}
-			if feedID == "" {
-				continue
-			}
-			seen := map[string]bool{}
-			for _, existing := range staticLeaguesByFeed[feedID] {
-				seen[existing.ID] = true
-			}
-			for _, l := range sec.Leagues {
-				if l.ID == "" || seen[l.ID] {
-					continue
-				}
-				seen[l.ID] = true
-				staticLeaguesByFeed[feedID] = append(staticLeaguesByFeed[feedID], liveevents.FeedLeagueSummary{
-					ID:   l.ID,
-					Name: resolve(l.Name, l.ID),
-				})
-			}
-		}
-	}
-
 	feeds := make([]liveevents.FeedOverview, 0, max(len(declaredFeeds), len(hubFeeds)))
 	seenFeed := make(map[string]bool, len(declaredFeeds))
 	for _, decl := range declaredFeeds {
@@ -398,10 +362,7 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 			}
 			feOut = append(feOut, entry)
 		}
-		scFeed := sc.Feed
-		if scFeed == "" {
-			scFeed = defaultFeed
-		}
+		scFeed := defaultFeed
 		screensOut = append(screensOut, pluginScreenOverview{
 			ID:        sc.ID,
 			Title:     resolve(sc.Title, sc.ID),

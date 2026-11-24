@@ -1852,6 +1852,8 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		return nil, err
 	}
 	combined := localPage.Items
+	var namedKey core.RatingKey
+	var discography map[core.RatingKey]bool
 	if rec.Decl.Browse.LiveSearch && c.mgr != nil && c.IsPluginLibraryActive(ctx, lib) {
 		liveItems := c.runLiveSearch(ctx, rec, query, limit)
 		if len(liveItems) > 0 {
@@ -1880,7 +1882,7 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		// A search that names an artist (or any container the kind expands on
 		// open) gets that container's whole discography, not only what the
 		// search itself happened to store: the same expansion its page runs.
-		combined = c.expandNamedContainer(ctx, rec, lib, query, combined)
+		combined, namedKey, discography = c.expandNamedContainer(ctx, rec, lib, query, combined)
 	}
 	refs := make([]core.ItemRef, len(combined))
 	for i, it := range combined {
@@ -1904,8 +1906,21 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 			}
 		}
 	}
+	namedScore := 0.0
 	for i := range projected {
 		projected[i].SearchScore = scorePluginSearchHit(projected[i], allowed[i], query)
+		if projected[i].Key == namedKey {
+			namedScore = projected[i].SearchScore
+		}
+	}
+	// The named artist's discography ranks right after the artist, ahead of
+	// tracks that merely mention the name.
+	if namedScore > 0 {
+		for i := range projected {
+			if discography[projected[i].Key] {
+				projected[i].SearchScore = max(projected[i].SearchScore, namedScore*0.98)
+			}
+		}
 	}
 	sort.SliceStable(projected, func(i, j int) bool {
 		if projected[i].SearchScore != projected[j].SearchScore {

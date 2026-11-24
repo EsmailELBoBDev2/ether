@@ -102,13 +102,13 @@ func (c *KindCatalog) kickDeferredExpansions() {
 
 // expandNamedContainer expands the one result container whose name is the
 // query (an artist search) and adds its stored children to the results.
-func (c *KindCatalog) expandNamedContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, query string, items []core.KindItem) []core.KindItem {
+func (c *KindCatalog) expandNamedContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, query string, items []core.KindItem) ([]core.KindItem, core.RatingKey, map[core.RatingKey]bool) {
 	if rec.Decl.Browse.Expand == nil {
-		return items
+		return items, 0, nil
 	}
 	want := searchName(query)
 	if want == "" {
-		return items
+		return items, 0, nil
 	}
 	var hit *core.KindItem
 	for i := range items {
@@ -118,24 +118,30 @@ func (c *KindCatalog) expandNamedContainer(ctx context.Context, rec pluginitems.
 		}
 	}
 	if hit == nil {
-		return items
+		return items, 0, nil
 	}
-	c.expandContainer(ctx, rec, lib, *hit, true)
-	page, err := c.items.Children(ctx, hit.Ref, "", 200)
+	named := *hit
+	c.expandContainer(ctx, rec, lib, named, true)
+	page, err := c.items.Children(ctx, named.Ref, "", 200)
 	if err != nil || len(page.Items) == 0 {
-		return items
+		return items, 0, nil
 	}
+	discography := make(map[core.RatingKey]bool, len(page.Items))
 	seen := make(map[core.RatingKey]bool, len(items)+len(page.Items))
 	for _, it := range items {
 		seen[it.Key] = true
 	}
 	for _, it := range page.Items {
-		if it.Key != 0 && !seen[it.Key] {
+		if it.Key == 0 {
+			continue
+		}
+		discography[it.Key] = true
+		if !seen[it.Key] {
 			seen[it.Key] = true
 			items = append(items, it)
 		}
 	}
-	return items
+	return items, named.Key, discography
 }
 
 // searchName folds a name for "is this exactly what was searched": case,

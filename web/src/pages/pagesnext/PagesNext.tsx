@@ -1,7 +1,8 @@
 // Mock-only prototype of the Rows & Pages designer, built from the real console
 // components for the owner's design review (rows-redesign/design.md). The route
 // exists only in `vite --mode mock`. Screens are chosen by query parameters so
-// screenshots are deterministic: ?page=&drawer=add|row&as=luca&editing=luca.
+// screenshots are deterministic: ?page=&drawer=add&at=&source=|drawer=row&row=&as=luca&editing=luca.
+// One list of rows, ever: the preview is the editor; + inserts in place; one drawer adds and edits.
 import { Badge, Button, Input, Switch, cn } from "@braedonsaunders/appkit-ui";
 import {
   AlertTriangle,
@@ -17,6 +18,7 @@ import {
   Save,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Undo2,
   User,
@@ -77,129 +79,6 @@ function KindChip({ personal }: { personal: boolean }) {
 }
 
 // ---------------------------------------------------------------- row list (left)
-
-function RowListItem({ row, onOpen, curated, index }: { row: Row; onOpen: () => void; curated: boolean; index: number }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="group flex w-full items-start gap-2 rounded-lg border border-border bg-surface px-2.5 py-2 text-left transition hover:border-border-strong"
-    >
-      <GripVertical size={14} className="mt-1 shrink-0 text-fg-subtle" />
-      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded bg-bg-subtle text-[11px] font-semibold tabular-nums text-fg-muted">
-        {index}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex flex-wrap items-center gap-1.5">
-          <span className="truncate text-sm font-medium text-fg">{row.group ?? row.title}</span>
-          {curated ? null : <PlacementChip row={row} />}
-          <KindChip personal={row.personal} />
-        </span>
-        <span className="mt-0.5 block truncate text-xs text-fg-muted">
-          {row.source}
-          {row.libraries !== "—" && row.libraries !== "This library" ? ` · ${row.libraries}` : ""}
-        </span>
-        {row.when || row.audience || row.plugin ? (
-          <span className="mt-1 flex flex-wrap gap-1">
-            {row.when ? (
-              <Badge variant="outline" className="gap-1 font-normal">
-                <CalendarClock size={11} /> {row.when}
-              </Badge>
-            ) : null}
-            {row.audience ? (
-              <Badge variant="outline" className="gap-1 font-normal">
-                <Users size={11} /> {row.audience}
-              </Badge>
-            ) : null}
-            {row.layout === "surface" ? (
-              <Badge variant="outline" className="gap-1 font-normal">
-                <Puzzle size={11} /> Only in Vela
-              </Badge>
-            ) : null}
-          </span>
-        ) : null}
-      </span>
-      <ChevronRight size={14} className="mt-1 shrink-0 text-fg-subtle opacity-0 group-hover:opacity-100" />
-    </button>
-  );
-}
-
-function RowList({
-  rows,
-  curated,
-  onOpen,
-  onAdd,
-}: {
-  rows: Row[];
-  curated: boolean;
-  onOpen: (id: string) => void;
-  onAdd: () => void;
-}) {
-  // Fan-out rows collapse to one list entry (the row the owner made).
-  const entries = rows.filter((r, i) => !r.group || rows.findIndex((x) => x.group === r.group) === i);
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">On this page</h2>
-          <p className="text-xs text-fg-muted">
-            {curated ? "Exactly these rows, in this order. Drag to reorder." : "Your rows. Ether fills the rest up to the page length."}
-          </p>
-        </div>
-        <Button size="sm" onClick={onAdd}>
-          <Plus size={14} /> Add row
-        </Button>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle" />
-          <Input className="h-8 pl-8 text-sm" placeholder="Filter rows…" />
-        </div>
-        <Segmented
-          ariaLabel="Show"
-          size="sm"
-          value="all"
-          onChange={() => {}}
-          options={[
-            { value: "all", label: "All" },
-            { value: "changed", label: "Changed" },
-          ]}
-        />
-      </div>
-      <div className="space-y-1.5">
-        {entries.map((r, i) => (
-          <RowListItem key={r.id} row={r} index={i + 1} curated={curated} onOpen={() => onOpen(r.id)} />
-        ))}
-      </div>
-      {curated ? null : (
-        <>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between rounded-lg border border-dashed border-border px-3 py-2 text-left text-sm text-fg-muted hover:text-fg"
-          >
-            <span>
-              <Sparkles size={13} className="mr-1.5 inline" />
-              Ether may also choose from <b className="text-fg">24 more rows</b>
-            </span>
-            <ChevronRight size={14} />
-          </button>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between rounded-lg border border-dashed border-border px-3 py-2 text-left text-sm text-fg-muted hover:text-fg"
-          >
-            <span>
-              <EyeOff size={13} className="mr-1.5 inline" />
-              Hidden on this page: <b className="text-fg">2 rows</b>
-            </span>
-            <ChevronRight size={14} />
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------- preview (right)
 
 function SquareCard({ item, round }: { item: TitleCard; round?: boolean }) {
   return (
@@ -299,54 +178,6 @@ function RowBody({ row, showRating }: { row: Row; showRating: boolean }) {
   );
 }
 
-function PreviewRow({ row, index, curated, showRating, onEdit }: { row: Row; index: number; curated: boolean; showRating: boolean; onEdit: () => void }) {
-  return (
-    <section className="group/row rounded-xl px-2 py-3 hover:bg-surface/60">
-      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <GripVertical size={14} className="text-fg-subtle" />
-        <span className={cn("grid size-6 place-items-center rounded-md text-xs font-semibold tabular-nums", row.placement === "pinned" ? "bg-success-subtle text-success" : "bg-bg-subtle text-fg-muted")}>
-          {index}
-        </span>
-        <h3 className="text-base font-semibold text-fg">{row.title}</h3>
-        {curated ? null : <PlacementChip row={row} />}
-        <KindChip personal={row.personal} />
-        {row.audience ? (
-          <Badge variant="outline" className="gap-1 font-normal">
-            <Users size={11} /> {row.audience}
-          </Badge>
-        ) : null}
-        {row.when ? (
-          <Badge variant="outline" className="gap-1 font-normal">
-            <CalendarClock size={11} /> {row.when}
-          </Badge>
-        ) : null}
-        <div className="ml-auto flex gap-0.5 opacity-0 group-hover/row:opacity-100">
-          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs">
-            <Pin size={13} /> Pin here
-          </Button>
-          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs">
-            <EyeOff size={13} /> Hide
-          </Button>
-          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" onClick={onEdit}>
-            Edit
-          </Button>
-        </div>
-      </div>
-      <p className="mb-2 max-w-3xl text-xs text-fg-muted">
-        <span className="font-medium text-fg">Why here: </span>
-        {row.why}
-        {row.note ? <span className="ml-2 text-fg-subtle">· {row.note}</span> : null}
-      </p>
-      {row.flag ? (
-        <p className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-warning-subtle px-2 py-1 text-xs text-warning">
-          <AlertTriangle size={12} /> {row.flag}
-        </p>
-      ) : null}
-      <RowBody row={row} showRating={showRating} />
-    </section>
-  );
-}
-
 function AccessStrip() {
   return (
     <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-primary/30 bg-primary-subtle/40 px-4 py-3 text-sm">
@@ -362,34 +193,6 @@ function AccessStrip() {
     </div>
   );
 }
-
-function NotShown({ kid }: { kid: boolean }) {
-  const items = kid
-    ? [
-        ["Horror Night", "Nothing within Luca's PG limit"],
-        ["Trending Anime Shows", "Luca can't see Anime Shows"],
-        ["Christmas Movies", "Shows Dec 1–26 (Christmas season)"],
-      ]
-    : [
-        ["Christmas Movies", "Shows Dec 1–26 (Christmas season). Preview at Dec 20 ›"],
-        ["Top 10 today", "Ether left it out: the page is full (9 of 9)"],
-      ];
-  return (
-    <section className="mt-4 rounded-xl border border-dashed border-border p-3">
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-fg-subtle">Not shown right now</h3>
-      <ul className="space-y-1.5 text-sm">
-        {items.map(([t, why]) => (
-          <li key={t} className="flex flex-wrap gap-x-2">
-            <span className="font-medium text-fg">{t}</span>
-            <span className="text-fg-muted">{why}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------- drawers
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -437,10 +240,10 @@ function LibraryScope({ perLibrary, onPerLibrary }: { perLibrary: boolean; onPer
         onChange={() => {}}
         options={LIBS.filter((l) => l.experience === "watch" && !l.plugin).map((l) => ({ value: l.id, label: l.name }))}
       />
-      <p className="text-xs text-fg-muted">Music, Audiobooks and Sports Replays don't have TMDB trending titles, so Trending can't use them.</p>
+      <p className="text-xs text-fg-muted">Music, Audiobooks and Sports Replays don't have TMDB titles, so this row can't draw from them.</p>
       <Line
         label="Show as"
-        hint={perLibrary ? "Two rows, kept together: Trending Movies, then Trending TV Shows. Up to 6 libraries." : "One row mixing both libraries."}
+        hint={perLibrary ? "Two rows, kept together: one for Movies, then one for TV Shows. Up to 6 libraries." : "One row mixing both libraries."}
       >
         <Segmented
           ariaLabel="Show as"
@@ -582,14 +385,211 @@ function PlacementSection() {
   );
 }
 
-function MiniShelf({ title, items }: { title: string; items: TitleCard[] }) {
+
+// ---------------------------------------------------------------- the preview IS the row list
+
+/** A thin gap between rows: "+" inserts a new row at exactly this position. */
+function InsertGap({ at, onAdd, active }: { at: number; onAdd: (at: number) => void; active?: boolean }) {
   return (
-    <div>
-      <p className="mb-1.5 text-sm font-semibold text-fg">{title}</p>
-      <div className="shelf flex gap-2 overflow-x-auto pb-1">
-        {items.slice(0, 7).map((it) => (
-          <div key={it.key} className="w-20 shrink-0">
-            <PosterCard item={it} showMeta={false} />
+    <div className="group/gap relative flex h-6 items-center pl-1">
+      <button
+        type="button"
+        aria-label={`Add a row at position ${at}`}
+        onClick={() => onAdd(at)}
+        className={cn(
+          "mr-2 inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs font-medium transition",
+          active
+            ? "border-primary bg-primary text-primary-fg"
+            : "border-border bg-surface text-fg-muted hover:border-primary hover:text-primary",
+        )}
+      >
+        <Plus size={12} /> {active ? `New row at #${at}` : ""}
+      </button>
+      <div className={cn("h-px flex-1 transition", active ? "bg-primary" : "bg-transparent group-hover/gap:bg-border-strong")} />
+    </div>
+  );
+}
+
+function PreviewRow({
+  row,
+  index,
+  curated,
+  showRating,
+  selected,
+  fresh,
+  onEdit,
+}: {
+  row: Row;
+  index: number;
+  curated: boolean;
+  showRating: boolean;
+  selected?: boolean;
+  fresh?: boolean;
+  onEdit: () => void;
+}) {
+  return (
+    <section
+      className={cn(
+        "group/row rounded-xl px-2 py-3 transition-colors hover:bg-surface/60",
+        selected && "bg-surface/70 ring-2 ring-primary/70",
+        fresh && "border border-dashed border-primary/70 bg-primary-subtle/20",
+      )}
+    >
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="cursor-grab text-fg-subtle" title="Drag to move; drop to pin there">
+          <GripVertical size={14} />
+        </span>
+        <span
+          className={cn(
+            "grid size-6 place-items-center rounded-md text-xs font-semibold tabular-nums",
+            row.placement === "pinned" ? "bg-success-subtle text-success" : "bg-bg-subtle text-fg-muted",
+          )}
+        >
+          {index}
+        </span>
+        <button type="button" onClick={onEdit} className="text-left text-base font-semibold text-fg hover:underline">
+          {row.title}
+        </button>
+        {fresh ? <Badge variant="info">New · in the draft</Badge> : null}
+        {curated ? null : <PlacementChip row={row} />}
+        <KindChip personal={row.personal} />
+        {row.layout === "surface" ? (
+          <Badge variant="outline" className="gap-1 font-normal">
+            <Puzzle size={11} /> Only in Vela
+          </Badge>
+        ) : null}
+        {row.audience ? (
+          <Badge variant="outline" className="gap-1 font-normal">
+            <Users size={11} /> {row.audience}
+          </Badge>
+        ) : null}
+        {row.when ? (
+          <Badge variant="outline" className="gap-1 font-normal">
+            <CalendarClock size={11} /> {row.when}
+          </Badge>
+        ) : null}
+        <div className="ml-auto flex gap-0.5 opacity-0 group-hover/row:opacity-100">
+          {curated ? null : (
+            <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs">
+              <Pin size={13} /> Pin here
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs">
+            <EyeOff size={13} /> Hide
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" onClick={onEdit}>
+            <SlidersHorizontal size={13} /> Edit
+          </Button>
+        </div>
+      </div>
+      <p className="mb-2 max-w-3xl text-xs text-fg-muted">
+        <span className="font-medium text-fg">Why here: </span>
+        {row.why}
+        <span className="ml-1 text-fg-subtle">· {row.source}{row.libraries !== "—" && row.libraries !== "This library" ? ` · ${row.libraries}` : ""}</span>
+        {row.note ? <span className="ml-1 text-fg-subtle">· {row.note}</span> : null}
+      </p>
+      {row.flag ? (
+        <p className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-warning-subtle px-2 py-1 text-xs text-warning">
+          <AlertTriangle size={12} /> {row.flag}
+        </p>
+      ) : null}
+      <RowBody row={row} showRating={showRating} />
+    </section>
+  );
+}
+
+/** Fan-out rows stay one block: a bracket labels the row the owner made. */
+function Block({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="relative rounded-2xl border border-border-subtle pl-1">
+      <span className="absolute -top-2.5 left-4 bg-bg px-1.5 text-[11px] font-medium text-fg-subtle">
+        One row you made · {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function Folded({ icon, title, hint }: { icon: ReactNode; title: ReactNode; hint: string }) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-border px-4 py-3 text-left hover:border-border-strong"
+    >
+      <span className="flex items-center gap-2 text-sm text-fg">
+        {icon}
+        <span>
+          {title}
+          <span className="block text-xs text-fg-muted">{hint}</span>
+        </span>
+      </span>
+      <ChevronRight size={16} className="text-fg-subtle" />
+    </button>
+  );
+}
+
+function PageFooter({ kid, curated }: { kid: boolean; curated: boolean }) {
+  return (
+    <div className="mt-2 space-y-2">
+      {curated ? null : (
+        <Folded
+          icon={<Sparkles size={15} className="text-primary" />}
+          title={<b>Ether's picks · 24 more rows it may choose from</b>}
+          hint="Rows you haven't added that fit this page. Ether uses them to fill up to the page length. Hide any you never want."
+        />
+      )}
+      <Folded
+        icon={<EyeOff size={15} className="text-fg-muted" />}
+        title={<b>Not shown right now · 3</b>}
+        hint={
+          kid
+            ? "Horror Night: nothing within Luca's PG limit · Trending Anime Shows: Luca can't see Anime Shows · Christmas Movies: shows Dec 1–26"
+            : "Family Movie Night: only for Luca and Mia (preview as Luca ›) · Christmas Movies: shows Dec 1–26 (preview at Dec 20 ›) · Top 10 today: hidden on this page"
+        }
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- one drawer: add and edit
+
+function SourcePicker({ onPick }: { onPick: (title: string) => void }) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-base font-semibold text-fg">What fills this row?</h3>
+        <p className="text-sm text-fg-muted">Built-in rows, your collections and plugin rows that fit this page. Pick one to set it up.</p>
+      </div>
+      <div className="relative">
+        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle" />
+        <Input className="h-9 pl-8" placeholder="Search: trending, anime, playlists, family…" />
+      </div>
+      <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+        {SOURCE_GROUPS.map((g) => (
+          <div key={g.name}>
+            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">{g.name}</h4>
+            <div className="space-y-0.5">
+              {g.items.map((s) => (
+                <button
+                  type="button"
+                  key={s.title}
+                  onClick={() => onPick(s.title)}
+                  className="block w-full rounded-lg border border-transparent px-2.5 py-1.5 text-left hover:border-border hover:bg-surface"
+                >
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-sm font-medium text-fg">{s.title}</span>
+                    <KindChip personal={s.personal} />
+                    {s.only ? (
+                      <Badge variant="outline" className="gap-1 font-normal">
+                        <Puzzle size={11} /> {s.only}
+                      </Badge>
+                    ) : null}
+                    {s.used ? <span className="text-[11px] text-fg-subtle">already on this page</span> : null}
+                  </span>
+                  <span className="block text-xs text-fg-muted">{s.desc}</span>
+                </button>
+              ))}
+            </div>
           </div>
         ))}
       </div>
@@ -597,190 +597,205 @@ function MiniShelf({ title, items }: { title: string; items: TitleCard[] }) {
   );
 }
 
-function AddRowDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [perLibrary, setPerLibrary] = useState(true);
-  return (
-    <Drawer
-      open={open}
-      onClose={onClose}
-      title="Add a row to Home"
-      description="Pick what fills it, then where its titles come from. It lands in the draft; nothing is saved yet."
-      size="xl"
-      footer={
-        <div className="flex w-full items-center justify-between gap-2">
-          <span className="text-sm text-fg-muted">Adds 2 rows: Trending Movies, Trending TV Shows</span>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button>Add to Home</Button>
-          </div>
-        </div>
-      }
-    >
-      <div className="grid gap-5 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-        <div className="space-y-3">
-          <div className="relative">
-            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle" />
-            <Input className="h-9 pl-8" placeholder="Search rows, collections and plugins…" />
-          </div>
-          <div className="space-y-4">
-            {SOURCE_GROUPS.slice(0, 6).map((g) => (
-              <div key={g.name}>
-                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">{g.name}</h4>
-                <div className="space-y-1">
-                  {g.items.map((s) => {
-                    const on = s.title === "Trending";
-                    return (
-                      <div
-                        key={s.title}
-                        className={cn(
-                          "rounded-lg border px-2.5 py-1.5",
-                          on ? "border-primary/50 bg-primary-subtle/50" : "border-transparent hover:border-border",
-                        )}
-                      >
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-sm font-medium text-fg">{s.title}</span>
-                          <KindChip personal={s.personal} />
-                          {s.used ? <span className="text-[11px] text-fg-subtle">{s.used}</span> : null}
-                        </div>
-                        <p className="text-xs text-fg-muted">{s.desc}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-            <p className="text-xs text-fg-muted">More below: Your collections · From plugins (English Dubs, Sports, Cinemeta) · Live</p>
-          </div>
-        </div>
-        <div className="space-y-5">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-lg font-semibold text-fg">Trending</h3>
-              <KindChip personal={false} />
-            </div>
-            <p className="text-sm text-fg-muted">What's trending on TMDB. The same list for everyone; titles you don't have yet are left out.</p>
-          </div>
-          <Section title="Options">
-            <Line label="Window">
-              <Segmented
-                ariaLabel="Window"
-                size="sm"
-                value="week"
-                onChange={() => {}}
-                options={[
-                  { value: "day", label: "Today" },
-                  { value: "week", label: "This week" },
-                ]}
-              />
-            </Line>
-          </Section>
-          <LibraryScope perLibrary={perLibrary} onPerLibrary={setPerLibrary} />
-          <section className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">Preview</h3>
-            {perLibrary ? (
-              <>
-                <MiniShelf title="Trending Movies" items={TRENDING_MOVIES} />
-                <MiniShelf title="Trending TV Shows" items={TRENDING_SHOWS} />
-              </>
-            ) : (
-              <MiniShelf title="Trending" items={[...TRENDING_MOVIES.slice(0, 4), ...TRENDING_SHOWS.slice(0, 4)]} />
-            )}
-          </section>
-        </div>
-      </div>
-    </Drawer>
-  );
-}
-
-function RowDrawer({ open, onClose, row }: { open: boolean; onClose: () => void; row?: Row }) {
-  const [tab, setTab] = useState("settings");
+function RowDrawer({
+  open,
+  onClose,
+  row,
+  addAt,
+  source,
+  onPick,
+  onChangeSource,
+}: {
+  open: boolean;
+  onClose: () => void;
+  row?: Row;
+  addAt?: number;
+  source?: string;
+  onPick: (s: string) => void;
+  onChangeSource: () => void;
+}) {
+  const adding = addAt !== undefined;
+  const topRated = source === "Top rated";
+  const picking = adding && !source;
   const [style, setStyle] = useState(row?.layout === "hero" ? "hero" : "standard");
   const [perLibrary, setPerLibrary] = useState(true);
+  const [tab, setTab] = useState("settings");
+  const title = adding ? (source ? `New row at #${addAt} · ${source}` : `New row at #${addAt}`) : (row?.group ?? row?.title ?? "");
   return (
     <Drawer
       open={open}
       onClose={onClose}
-      title={row?.group ?? row?.title ?? ""}
-      description="Edits go straight into the draft and show in the preview. Save the page when you're done."
-      size="lg"
+      title={title}
+      description={
+        adding
+          ? "It goes into the draft at this position and shows in the preview as you set it up."
+          : "Edits go straight into the draft and show in the preview. Save the page when you're done."
+      }
+      size="md"
       footer={
-        <div className="flex w-full items-center justify-between">
-          <Button variant="ghost" className="text-destructive">
-            Remove from page
-          </Button>
-          <Button onClick={onClose}>Close</Button>
-        </div>
+        adding ? (
+          <div className="flex w-full items-center justify-between gap-2">
+            <span className="text-sm text-fg-muted">{source ? `Adds 2 rows at #${addAt}: ${source === "Top rated" ? "Top Rated Movies, Top Rated TV Shows" : `${source} Movies, ${source} TV Shows`}` : "Pick what fills the row"}</span>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button disabled={!source}>Add to page</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex w-full items-center justify-between">
+            <Button variant="ghost" className="text-destructive">
+              Remove from page
+            </Button>
+            <Button onClick={onClose}>Close</Button>
+          </div>
+        )
       }
     >
-      <SubtabNav
-        ariaLabel="Row"
-        active={tab}
-        onSelect={setTab}
-        tabs={[
-          { key: "settings", label: "Settings" },
-          { key: "content", label: "Content", count: 24 },
-        ]}
-      />
-      <div className="space-y-5">
-        <Section title="Source">
-          <Line label="Trending" hint="What's trending on TMDB. Same list for everyone.">
-            <KindChip personal={false} />
-          </Line>
-          <Line label="Window">
-            <Segmented
-              ariaLabel="Window"
-              size="sm"
-              value="week"
-              onChange={() => {}}
-              options={[
-                { value: "day", label: "Today" },
-                { value: "week", label: "This week" },
+      {picking ? (
+        <SourcePicker onPick={onPick} />
+      ) : (
+        <>
+          {adding ? null : (
+            <SubtabNav
+              ariaLabel="Row"
+              active={tab}
+              onSelect={setTab}
+              tabs={[
+                { key: "settings", label: "Settings" },
+                { key: "content", label: "Content", count: 24 },
               ]}
             />
-          </Line>
-          <Line label="Name" hint="Use {library} for the library name in each row.">
-            <Input className="h-8 w-56" defaultValue="Trending {library}" />
-          </Line>
-        </Section>
-        <LibraryScope perLibrary={perLibrary} onPerLibrary={setPerLibrary} />
-        <LookSection style={style} onStyle={setStyle} />
-        <PlacementSection />
-      </div>
+          )}
+          <div className="space-y-5">
+            <Section title="What fills it">
+              <Line
+                label={topRated ? "Top rated" : "Trending"}
+                hint={
+                  topRated
+                    ? "TMDB's top rated with enough votes to trust. The same list for everyone; titles you don't have are left out."
+                    : "What's trending on TMDB. The same list for everyone; titles you don't have yet are left out."
+                }
+              >
+                <span className="flex items-center gap-2">
+                  <KindChip personal={false} />
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onChangeSource}>
+                    Change
+                  </Button>
+                </span>
+              </Line>
+              {topRated ? (
+                <Line label="Genre">
+                  <Segmented
+                    ariaLabel="Genre"
+                    size="sm"
+                    value="any"
+                    onChange={() => {}}
+                    options={[
+                      { value: "any", label: "Any genre" },
+                      { value: "pick", label: "Pick one…" },
+                    ]}
+                  />
+                </Line>
+              ) : (
+                <Line label="Window">
+                  <Segmented
+                    ariaLabel="Window"
+                    size="sm"
+                    value="week"
+                    onChange={() => {}}
+                    options={[
+                      { value: "day", label: "Today" },
+                      { value: "week", label: "This week" },
+                    ]}
+                  />
+                </Line>
+              )}
+              <Line label="Name" hint="{library} becomes each library's name.">
+                <Input className="h-8 w-48" defaultValue={topRated ? "Top Rated {library}" : "Trending {library}"} />
+              </Line>
+            </Section>
+            <LibraryScope perLibrary={perLibrary} onPerLibrary={setPerLibrary} />
+            <LookSection style={style} onStyle={setStyle} />
+            <PlacementSection />
+          </div>
+        </>
+      )}
     </Drawer>
   );
 }
 
 // ---------------------------------------------------------------- page
 
+function Dial({ label, low, high, value }: { label: string; low: string; high: string; value: number }) {
+  return (
+    <div className="space-y-1">
+      <span className="font-medium text-fg">{label}</span>
+      <input type="range" min={0} max={100} defaultValue={value} className="w-full accent-[var(--color-primary)]" aria-label={label} />
+      <div className="flex justify-between text-xs text-fg-muted">
+        <span>{low}</span>
+        <span>{high}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function PagesNext() {
   const [params, setParams] = useSearchParams();
   const page = params.get("page") ?? "home";
   const drawer = params.get("drawer");
+  const addAtRaw = params.get("at");
+  const addAt = drawer === "add" ? Number(addAtRaw ?? "7") : undefined;
+  const source = params.get("source") ?? undefined;
   const editing = params.get("editing") ?? "everyone";
   const as = params.get("as") ?? (editing !== "everyone" ? editing : "typical");
   const kid = as === "luca";
   const isMusic = page.startsWith("library:5");
+  const isLibrary = page !== "home";
   const pageInfo = PAGES.find((p) => p.key === page) ?? PAGES[0]!;
   const curated = pageInfo.mode === "curated";
-  const rows = useMemo(() => (isMusic ? musicRows() : homeRows(kid)), [isMusic, kid]);
-  const visible = kid ? rows.filter((r) => r.id !== "r7") : rows;
-  const [tab, setTab] = useState(params.get("tab") ?? "rows");
-  const set = (k: string, v: string | null) => {
+  const base = useMemo(() => (isMusic ? musicRows() : homeRows(kid)), [isMusic, kid]);
+  const rows = kid ? base.filter((r) => r.id !== "r7") : base.filter((r) => r.id !== "r6");
+  const [tab, setTab] = useState(params.get("tab") ?? "page");
+  const set = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
-    if (v === null) next.delete(k);
-    else next.set(k, v);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) next.delete(k);
+      else next.set(k, v);
+    }
     setParams(next, { replace: true });
   };
-  const editRow = rows.find((r) => r.id === (params.get("row") ?? "r3"));
+  const editRow = rows.find((r) => r.id === params.get("row"));
   const editingViewer = editing !== "everyone";
+
+  // While adding Trending, the new rows appear in place in the preview.
+  const display: { row: Row; fresh?: boolean }[] = rows.map((r) => ({ row: r }));
+  if (addAt !== undefined && source) {
+    const fresh: Row[] = [
+      { id: "n1", source: "Top rated", title: "Top Rated Movies", group: "Top rated · one row per library", personal: false, placement: "pinned", position: addAt, libraries: "Movies, TV Shows · one row per library", layout: "standard", why: `New: pinned to #${addAt}`, items: TRENDING_MOVIES.slice().reverse() },
+      { id: "n2", source: "Top rated", title: "Top Rated TV Shows", group: "Top rated · one row per library", personal: false, placement: "pinned", position: addAt + 1, libraries: "Movies, TV Shows · one row per library", layout: "standard", why: "Same row, next library", items: TRENDING_SHOWS.slice().reverse() },
+    ];
+    display.splice(addAt - 1, 0, ...fresh.map((row) => ({ row, fresh: true })));
+  }
+
+  // Group consecutive fan-out rows into one block.
+  const blocks: { label?: string; items: { row: Row; fresh?: boolean; index: number }[] }[] = [];
+  display.forEach((d, i) => {
+    const last = blocks[blocks.length - 1];
+    const item = { ...d, index: i + 1 };
+    if (d.row.group && last?.label === d.row.group) last.items.push(item);
+    else blocks.push({ label: d.row.group, items: [item] });
+  });
+
+  const openAdd = (at: number) => set({ drawer: "add", at: String(at), source: null, row: null });
+  const openRow = (id: string) => set({ drawer: "row", row: id, at: null, source: null });
 
   const pagePicker = (
     <ToolbarPicker
       ariaLabel="Page"
       value={page}
-      onChange={(v) => set("page", v)}
+      onChange={(v) => set({ page: v })}
       searchable
       matchWidth
       className="w-full justify-start text-left"
@@ -790,6 +805,21 @@ export default function PagesNext() {
         group: p.group,
         icon: p.key === "home" ? <Sparkles size={14} /> : <Library size={14} />,
         hint: `${p.rows} rows · ${p.mode === "curated" ? "Curated" : "Personalized"}`,
+      }))}
+    />
+  );
+  const editingPicker = (
+    <ToolbarPicker
+      ariaLabel="Editing for"
+      value={editing}
+      onChange={(v) => set({ editing: v })}
+      matchWidth
+      className={cn("w-full justify-start text-left", editingViewer && "border-primary text-primary")}
+      options={VIEWERS.map((v) => ({
+        value: v.id,
+        label: v.id === "everyone" ? "Everyone" : `Just ${v.label}`,
+        hint: v.id === "everyone" ? "Changes apply to every viewer" : v.hint,
+        icon: v.id === "everyone" ? <Users size={14} /> : <User size={14} />,
       }))}
     />
   );
@@ -806,6 +836,12 @@ export default function PagesNext() {
     </div>
   );
 
+  const summary = curated
+    ? `${display.length} rows · in your order`
+    : kid
+      ? "8 rows · 3 pinned · 3 shown · 2 chosen by Ether · 3 not shown"
+      : "8 of up to 9 rows · 4 pinned · 2 shown · 2 chosen by Ether";
+
   return (
     <>
       <Workspace
@@ -813,29 +849,37 @@ export default function PagesNext() {
         subtitle="Home and every library's rows, in one place"
         actions={actions}
         asideLabel="Page controls"
-        mainLabel="Page preview"
+        mainLabel="The page: edit rows right here"
         mainClassName="p-3 sm:p-6"
         aside={
           <>
             <PanelHead>
-              <div className="flex min-w-0 flex-col gap-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">Page</span>
-                {pagePicker}
+              <div className="grid gap-2 pb-1">
+                <label className="grid gap-1">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">Page</span>
+                  {pagePicker}
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">Editing for</span>
+                  {editingPicker}
+                </label>
               </div>
               <SubtabNav
                 ariaLabel="Page tools"
                 active={tab}
                 onSelect={setTab}
-                tabs={[
-                  { key: "rows", label: "Rows" },
-                  { key: "page", label: "Page" },
-                  ...(curated ? [] : [{ key: "tuning", label: "Tuning" }]),
-                ]}
+                tabs={[{ key: "page", label: "Page" }, ...(curated ? [] : [{ key: "tuning", label: "Tuning" }])]}
               />
             </PanelHead>
             <div className="space-y-5 p-3 sm:p-4">
-              {tab === "page" ? (
-                <div className="space-y-5">
+              {tab === "tuning" && !curated ? (
+                <Section title="Tuning" hint="How Ether chooses the rows it adds and the titles in them.">
+                  <Dial label="Discovery" low="Proven favourites" high="New territory" value={50} />
+                  <Dial label="Freshness" low="Timeless" high="New and trending" value={60} />
+                  <Dial label="Variety" low="Focused" high="Wide-ranging" value={45} />
+                </Section>
+              ) : (
+                <>
                   <Section title="Mode">
                     <Segmented
                       ariaLabel="Mode"
@@ -847,22 +891,41 @@ export default function PagesNext() {
                       ]}
                     />
                     <p className="text-fg-muted">
-                      Curated: exactly your rows, in your order. Personalized: Ether fills around your pinned and shown rows, up to the length below.
+                      {curated
+                        ? "Exactly your rows, in your order. Ether adds nothing."
+                        : "Your pinned and shown rows always appear. Ether fills the rest from your Auto rows and its picks."}
                     </p>
                   </Section>
-                  <Section title="Length">
-                    <Line label="Up to" hint="Pinned and Show rows always appear, even past this.">
-                      <span className="flex items-center gap-2">
-                        <Input className="h-8 w-16" defaultValue="9" /> rows
-                      </span>
-                    </Line>
-                    <Line label="Let Ether also choose rows you haven't added">
-                      <Switch aria-label="Suggestions" checked onChange={() => {}} />
-                    </Line>
+                  {curated ? null : (
+                    <Section title="Length">
+                      <Line label="Up to" hint="Pinned and Show rows always appear, even past this.">
+                        <span className="flex items-center gap-2">
+                          <Input className="h-8 w-16" defaultValue="9" /> rows
+                        </span>
+                      </Line>
+                      <button type="button" className="flex w-full items-center justify-between border-t border-border-subtle pt-3 text-left text-fg-muted">
+                        Different length per device <ChevronRight size={14} />
+                      </button>
+                      <Line label="Let Ether add its picks" hint="Off: only the rows you added.">
+                        <Switch aria-label="Ether's picks" checked onChange={() => {}} />
+                      </Line>
+                    </Section>
+                  )}
+                  {isLibrary ? (
+                    <Section title="This library">
+                      <Line label="Skip titles Home already shows">
+                        <Switch aria-label="Skip Home titles" checked={!isMusic} onChange={() => {}} />
+                      </Line>
+                    </Section>
+                  ) : null}
+                  <Section title="Shown in">
+                    <p className="text-fg-muted">
+                      {isMusic
+                        ? "Vela's Listen app (Music › Home). Plex and Jellyfin show these rows on Music's Recommended page."
+                        : "Home in Plex, Jellyfin, Emby, Vela and Silo. Each app draws what it can; rows marked Only in Vela are skipped elsewhere."}
+                    </p>
                   </Section>
-                </div>
-              ) : (
-                <RowList rows={rows} curated={curated} onOpen={(id) => { set("row", id); set("drawer", "row"); }} onAdd={() => set("drawer", "add")} />
+                </>
               )}
             </div>
           </>
@@ -870,24 +933,15 @@ export default function PagesNext() {
         main={
           <div>
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <ToolbarPicker
-                ariaLabel="Editing for"
-                value={editing}
-                onChange={(v) => set("editing", v)}
-                className={cn(editingViewer && "border-primary text-primary")}
-                trigger={
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="text-fg-muted">Editing for</span>
-                    <b>{VIEWERS.find((v) => v.id === editing)?.label}</b>
-                  </span>
-                }
-                options={VIEWERS.map((v) => ({ value: v.id, label: v.label, hint: v.hint, icon: v.id === "everyone" ? <Users size={14} /> : <User size={14} /> }))}
-              />
-              {editingViewer ? null : (
+              {editingViewer ? (
+                <Badge variant="info" className="h-8 gap-1.5 px-3 text-sm">
+                  <Eye size={13} /> Previewing Luca
+                </Badge>
+              ) : (
                 <ToolbarPicker
                   ariaLabel="Preview as"
                   value={as}
-                  onChange={(v) => set("as", v)}
+                  onChange={(v) => set({ as: v })}
                   trigger={
                     <span className="inline-flex items-center gap-1.5">
                       <Eye size={13} className="text-fg-muted" />
@@ -900,45 +954,56 @@ export default function PagesNext() {
               )}
               <ToolbarPicker ariaLabel="Device" value="tv" onChange={() => {}} options={[{ value: "tv", label: "TV" }, { value: "mobile", label: "Phone" }]} />
               <ToolbarPicker ariaLabel="When" value="fri" onChange={() => {}} options={[{ value: "fri", label: "Fri 28 Nov · 9 PM" }]} />
+              <span className="ml-auto text-sm text-fg-muted">{summary}</span>
             </div>
             <p className={cn("mb-3 text-sm", editingViewer ? "font-medium text-primary" : "text-fg-muted")}>
               {editingViewer
-                ? "Editing Luca's page only. 2 changes from Everyone. Rows you add here are for Luca only."
+                ? "Editing Luca's page only: 2 changes from Everyone. Rows you add here are for Luca only."
                 : kid
-                  ? "Editing everyone's Home · previewing as Luca. Your changes apply to everyone."
-                  : isMusic
-                    ? "Music › Home in Vela's Listen app. Plex and Jellyfin show these rows on Music's Recommended page."
-                    : "Editing everyone's Home. Drag a row to pin it to that position."}
+                  ? "Editing everyone's Home, previewing as Luca. Your changes apply to everyone."
+                  : "This is the page. Click a row to change it, drag it to move or pin it, or use + to add a row right there."}
             </p>
             {kid ? <AccessStrip /> : null}
-            <p className="mb-2 text-sm text-fg-muted">
-              {curated
-                ? `${visible.length} rows · in your order`
-                : kid
-                  ? "8 rows · 3 pinned · 3 shown · 2 chosen by Ether · 3 not shown ↓"
-                  : "9 rows · 4 pinned · 3 shown · 2 chosen by Ether · 2 not shown ↓"}
-            </p>
-            <div className="space-y-1">
-              {visible.map((r, i) => (
-                <PreviewRow
-                  key={r.id}
-                  row={r}
-                  index={i + 1}
-                  curated={curated}
-                  showRating={kid}
-                  onEdit={() => {
-                    set("row", r.id);
-                    set("drawer", "row");
-                  }}
-                />
-              ))}
+            <div>
+              <InsertGap at={1} onAdd={openAdd} active={addAt === 1} />
+              {blocks.map((b, bi) => {
+                const body = b.items.map((it) => (
+                  <div key={it.row.id}>
+                    <PreviewRow
+                      row={it.row}
+                      index={it.index}
+                      curated={curated}
+                      showRating={kid}
+                      fresh={it.fresh}
+                      selected={drawer === "row" && editRow?.group ? editRow.group === it.row.group : editRow?.id === it.row.id}
+                      onEdit={() => openRow(it.row.id)}
+                    />
+                  </div>
+                ));
+                const last = b.items[b.items.length - 1]!.index;
+                const fresh = b.items.some((x) => x.fresh);
+                return (
+                  <div key={bi}>
+                    {b.label && b.items.length > 1 ? <div className="pt-3"><Block label={b.label}>{body}</Block></div> : body}
+                    <InsertGap at={last + 1} onAdd={openAdd} active={!fresh && addAt === last + 1 && !source} />
+                  </div>
+                );
+              })}
             </div>
-            {isMusic ? null : <NotShown kid={kid} />}
+            <PageFooter kid={kid} curated={curated} />
           </div>
         }
       />
-      <AddRowDrawer open={drawer === "add"} onClose={() => set("drawer", null)} />
-      <RowDrawer key={editRow?.id} open={drawer === "row"} onClose={() => set("drawer", null)} row={editRow} />
+      <RowDrawer
+        key={`${drawer}-${params.get("row")}-${addAt}`}
+        open={drawer === "row" || drawer === "add"}
+        onClose={() => set({ drawer: null, row: null, at: null, source: null })}
+        row={editRow}
+        addAt={addAt}
+        source={source}
+        onPick={(s) => set({ source: s })}
+        onChangeSource={() => set({ source: null })}
+      />
     </>
   );
 }

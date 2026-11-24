@@ -108,7 +108,7 @@ export function homeRows(kid: boolean): Row[] {
     { id: "r3b", source: "Trending · This week", title: "Trending TV Shows", group: "Trending · one row per library", personal: false, placement: "pinned", position: 4, libraries: "Movies, TV Shows · one row per library", layout: "standard", why: "Same row, next library", items: kid ? kidRated(pick(shows, 20), "TV-PG") : pick(shows, 10) },
     { id: "r4", source: "New · Released recently", title: "New Movies", group: "New · one row per library", personal: false, placement: "show", libraries: "Movies, TV Shows · one row per library", layout: "standard", why: "You chose Show; Ether placed it here", items: kid ? kidRated(pick(movies, 60), "G") : pick(movies, 40) },
     { id: "r4b", source: "New · Released recently", title: "New TV Shows", group: "New · one row per library", personal: false, placement: "show", libraries: "Movies, TV Shows · one row per library", layout: "standard", why: "Same row, next library", items: kid ? kidRated(pick(shows, 60), "TV-Y7") : pick(shows, 30) },
-    { id: "r5", source: "Because you watched", title: kid ? "Because Luca watched Paper Boats" : "Because you watched The Long Shore", personal: true, placement: "auto", libraries: "Any library", layout: "standard", why: "Ether chose it: Luca plays these most on weekday evenings", items: kid ? kidRated(pick(movies, 80), "PG") : pick(movies, 70) },
+    { id: "r5", source: "Because you watched", title: kid ? "Because Luca watched Paper Boats" : "Because you watched The Long Shore", personal: true, placement: "auto", libraries: "Any library", layout: "standard", why: kid ? "Ether chose it: Luca plays these most on weekday evenings" : "Ether chose it for each viewer from what they finished recently", items: kid ? kidRated(pick(movies, 80), "PG") : pick(movies, 70) },
     { id: "r6", source: "Collection", title: "Family Movie Night", personal: false, placement: "show", libraries: "Movies", when: "Fri–Sat evenings", audience: "Only Luca, Mia", layout: "wide", card: "landscape", why: "Shown Fri–Sat evenings", items: kidRated(pick(movies, 100), "PG"), flag: kid ? "1 unrated title (hidden for Luca)" : undefined },
     { id: "r7", source: "Jump back in", title: "Jump back in · Music", personal: true, placement: "auto", libraries: "Music", layout: "standard", card: "square", why: "Ether chose it", items: ALBUMS.slice(0, 8) },
   ];
@@ -116,12 +116,12 @@ export function homeRows(kid: boolean): Row[] {
 
 export function musicRows(): Row[] {
   return [
-    { id: "m1", source: "Jump back in", title: "Jump back in", personal: true, placement: "show", libraries: "This library", layout: "tiles", card: "square", why: "1 · in your order", items: PLAYLISTS.slice(0, 6) },
-    { id: "m2", source: "Music · New releases", title: "New releases", personal: false, placement: "show", libraries: "This library", layout: "standard", card: "square", why: "2 · in your order", items: ALBUMS, plugin: "Music" },
-    { id: "m3", source: "Playlists", title: "Your playlists", personal: true, placement: "show", libraries: "This library", layout: "standard", card: "square", why: "3 · in your order", items: PLAYLISTS },
-    { id: "m4", source: "Music · Top songs", title: "Top songs this week", personal: false, placement: "show", libraries: "This library", layout: "tracks", why: "4 · in your order", items: [], plugin: "Music" },
-    { id: "m5", source: "Music · Artists you play", title: "Artists you play", personal: true, placement: "show", libraries: "This library", layout: "standard", card: "round", why: "5 · in your order", items: ARTISTS, plugin: "Music" },
-    { id: "m6", source: "Recently added", title: "Recently added", personal: false, placement: "show", when: "Weekends", libraries: "This library", layout: "standard", card: "square", why: "6 · in your order", items: ALBUMS.slice(4) },
+    { id: "m1", source: "Jump back in", title: "Jump back in", personal: true, placement: "show", libraries: "This library", layout: "tiles", card: "square", why: "Curated: in your order", items: PLAYLISTS.slice(0, 6) },
+    { id: "m2", source: "Music · New releases", title: "New releases", personal: false, placement: "show", libraries: "This library", layout: "standard", card: "square", why: "Curated: in your order", items: ALBUMS, plugin: "Music" },
+    { id: "m3", source: "Playlists", title: "Your playlists", personal: true, placement: "show", libraries: "This library", layout: "standard", card: "square", why: "Curated: in your order", items: PLAYLISTS },
+    { id: "m4", source: "Music · Top songs", title: "Top songs this week", personal: false, placement: "show", libraries: "This library", layout: "tracks", why: "Curated: in your order", items: [], plugin: "Music" },
+    { id: "m5", source: "Music · Artists you play", title: "Artists you play", personal: true, placement: "show", libraries: "This library", layout: "standard", card: "round", why: "Curated: in your order", items: ARTISTS, plugin: "Music" },
+    { id: "m6", source: "Recently added", title: "Recently added", personal: false, placement: "show", when: "Weekends", libraries: "This library", layout: "standard", card: "square", why: "Curated: in your order", items: ALBUMS.slice(4) },
   ];
 }
 export const BOOK_ROWS_HINT = BOOKS;

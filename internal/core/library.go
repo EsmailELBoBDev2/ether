@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -493,33 +494,46 @@ type Library struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
-// Library experiences: how an app built around a media class presents a
-// library. Standard is the app's ordinary library pages; audio is a listening
-// app (a library sidebar, a now-playing bar, a queue and Now Playing).
+// Library experiences name how an app presents a library: watch (films and
+// TV), listen (a listening app: music, audiobooks, podcasts), read (books and
+// comics), gallery (photos and home videos) and live (a guide, multiview,
+// sports). The set is open: a plugin may name another id, and an app that
+// does not know an id presents the library as watch.
 const (
-	LibraryExperienceStandard = "standard"
-	LibraryExperienceAudio    = "audio"
+	LibraryExperienceWatch   = "watch"
+	LibraryExperienceListen  = "listen"
+	LibraryExperienceRead    = "read"
+	LibraryExperienceGallery = "gallery"
+	LibraryExperienceLive    = "live"
 )
 
-// LibraryExperiences lists every library experience, in the order apps are
-// told about them.
-var LibraryExperiences = []string{LibraryExperienceAudio, LibraryExperienceStandard}
+// LibraryExperiences lists the experiences Ether itself assigns.
+var LibraryExperiences = []string{LibraryExperienceWatch, LibraryExperienceListen, LibraryExperienceRead, LibraryExperienceGallery, LibraryExperienceLive}
 
-// ValidLibraryExperience reports whether s names a library experience.
+var libraryExperienceID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// ValidLibraryExperience reports whether s is a well-formed experience id
+// (lowercase letters, digits and dashes, up to 32 characters).
 func ValidLibraryExperience(s string) bool {
-	return s == LibraryExperienceStandard || s == LibraryExperienceAudio
+	return libraryExperienceID.MatchString(s)
 }
 
 // EffectiveLibraryExperience is the experience a library asks for: the
-// declared one, else audio for music libraries and standard for the rest.
+// declared one, else its media class's: listen for music, audiobooks and
+// podcasts, read for books, gallery for photos, watch for the rest.
 func EffectiveLibraryExperience(declared string, class MediaClass) string {
 	if ValidLibraryExperience(declared) {
 		return declared
 	}
-	if class == MediaClassMusic {
-		return LibraryExperienceAudio
+	switch class {
+	case MediaClassMusic, MediaClassAudiobook, MediaClassPodcast:
+		return LibraryExperienceListen
+	case MediaClassBook:
+		return LibraryExperienceRead
+	case MediaClassPhoto:
+		return LibraryExperienceGallery
 	}
-	return LibraryExperienceStandard
+	return LibraryExperienceWatch
 }
 
 // EffectiveCardShape resolves the library's card shape: the owner's CardShape

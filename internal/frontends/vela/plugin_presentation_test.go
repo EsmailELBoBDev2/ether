@@ -491,18 +491,27 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	if plugLib["presentation"].(map[string]any)["card"] != "landscape" {
 		t.Fatalf("plugin presentation = %v", plugLib["presentation"])
 	}
-	if catLib["presentation"].(map[string]any)["experience"] != "standard" || plugLib["presentation"].(map[string]any)["experience"] != "standard" {
-		t.Fatalf("experience: catalogue %v, plugin %v", catLib["presentation"], plugLib["presentation"])
+	if catLib["experience"] != "watch" || plugLib["experience"] != "watch" {
+		t.Fatalf("experience: catalogue %v, plugin %v", catLib["experience"], plugLib["experience"])
 	}
-	// Music asks for the audio experience unless the library declares otherwise.
-	if got := (frontend.View{Media: frontend.MediaClassMusic}).EffectiveExperience(); got != "audio" {
-		t.Fatalf("music experience = %q", got)
-	}
-	if got := (frontend.View{Media: frontend.MediaClassMusic, Experience: "standard"}).EffectiveExperience(); got != "standard" {
-		t.Fatalf("declared experience = %q", got)
-	}
-	if got := (frontend.View{Media: frontend.MediaClassPodcast, Experience: "audio"}).EffectiveExperience(); got != "audio" {
-		t.Fatalf("podcast asking for audio = %q", got)
+	// Each media class has its experience unless the library declares one.
+	for _, c := range []struct {
+		view frontend.View
+		want string
+	}{
+		{frontend.View{Media: frontend.MediaClassMusic}, "listen"},
+		{frontend.View{Media: frontend.MediaClassAudiobook}, "listen"},
+		{frontend.View{Media: frontend.MediaClassPodcast}, "listen"},
+		{frontend.View{Media: frontend.MediaClassBook}, "read"},
+		{frontend.View{Media: frontend.MediaClassPhoto}, "gallery"},
+		{frontend.View{Media: frontend.MediaClassVideo}, "watch"},
+		{frontend.View{Media: frontend.MediaClassMusic, Experience: "watch"}, "watch"},
+		{frontend.View{Media: frontend.MediaClassVideo, Experience: "live"}, "live"},
+		{frontend.View{Media: frontend.MediaClassVideo, Experience: "arcade"}, "arcade"},
+	} {
+		if got := c.view.EffectiveExperience(); got != c.want {
+			t.Fatalf("%+v experience = %q, want %q", c.view, got, c.want)
+		}
 	}
 	plugTabs := plugLib["tabs"].([]any)
 	if len(plugTabs) != 5 {

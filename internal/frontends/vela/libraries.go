@@ -212,7 +212,8 @@ func libraryWire(view frontend.View) object {
 		"kind":         kind,
 		"artwork":      []object{},
 		"dateDisplay":  dateDisplay,
-		"presentation": object{"card": card, "experience": view.EffectiveExperience()},
+		"presentation": object{"card": card},
+		"experience":   view.EffectiveExperience(),
 		"tabs":         tabs,
 		"browse":       object{"sorts": sorts, "defaultSort": defaultSort, "defaultDirection": defaultDirection, "filters": filters},
 	}

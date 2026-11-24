@@ -5,17 +5,41 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // upsertChunkSize bounds one write transaction inside an upsert batch
-// (#646). The per-kind lock is held across chunks, so a batch still looks
-// atomic to the kind's own writers, but the database write gate is
-// released between chunks and unrelated writers interleave instead of
-// timing out behind a minutes-long republish.
+// (#646), and one keyset batch of a kind reindex. The per-kind lock is held
+// across chunks, so a batch still looks atomic to the kind's own writers,
+// but the database write gate is released between chunks and unrelated
+// writers interleave instead of timing out behind a minutes-long republish.
 const upsertChunkSize = 200
+
+// An upsert batch sizes its chunks by how long the previous chunk held the
+// writer, aiming for upsertChunkTarget. What a chunk costs varies by two
+// orders of magnitude: re-seeing unchanged items is a few microseconds each,
+// while a new item writes its row, ~10 field rows across five indexes, FTS
+// tokens and tallies, and on a cold cache costs ~3 ms. A fixed 200 held the
+// writer 0.6-3 s for new items on the lab, so playback and session writes
+// queued behind it.
+const (
+	upsertChunkTarget = 25 * time.Millisecond
+	upsertChunkFirst  = 16
+	upsertChunkMin    = 4
+)
+
+// nextUpsertChunkSize scales the chunk that held the writer for held toward
+// upsertChunkTarget, at most doubling per step.
+func nextUpsertChunkSize(n int, held time.Duration) int {
+	if held <= 0 {
+		return min(2*n, upsertChunkSize)
+	}
+	next := int(float64(n) * float64(upsertChunkTarget) / float64(held))
+	return max(upsertChunkMin, min(next, 2*n, upsertChunkSize))
+}
 
 type upsertChunkResult struct {
 	added      int
@@ -25,6 +49,8 @@ type upsertChunkResult struct {
 	addedIDs   []string
 	updatedIDs []string
 	previous   []core.KindItem
+	// held is how long the transaction held the writer.
+	held time.Duration
 }
 
 // writeUpsertChunk writes one chunk of prepared items in a single
@@ -36,11 +62,15 @@ type upsertChunkResult struct {
 // true, pre-write copies are loaded only for items whose content hash changed.
 func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen, markOK, pin, captureUndo, snapshotPrevious bool) (upsertChunkResult, error) {
 	var res upsertChunkResult
+	if store.DialectOf(s.db) == store.SQLite {
+		s.prewarmUpsertChunk(ctx, kind.LibraryID, chunk)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return res, err
 	}
 	defer tx.Rollback()
+	began := time.Now()
 
 	existing, err := lookupExistingItemsTx(ctx, tx, chunk)
 	if err != nil {
@@ -131,6 +161,7 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 		}
 	}
 	var oldFieldsByRef map[core.ItemRef][]existingTextField
+	var oldRowsByRef map[core.ItemRef][]existingFieldRow
 	if len(changedExisting) > 0 {
 		if captureUndo && snapshotPrevious {
 			prev, err := queryItemsByRefTx(ctx, tx, changedExisting)
@@ -139,13 +170,17 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 			}
 			res.previous = prev
 		}
-		oldFields, err := lookupExistingTextFieldsTx(ctx, tx, changedExisting)
+		oldRowsByRef, err = lookupExistingFieldRowsTx(ctx, tx, changedExisting)
 		if err != nil {
 			return res, err
 		}
-		oldFieldsByRef = make(map[core.ItemRef][]existingTextField, len(changedExisting))
-		for _, of := range oldFields {
-			oldFieldsByRef[of.ref] = append(oldFieldsByRef[of.ref], of)
+		oldFieldsByRef = make(map[core.ItemRef][]existingTextField, len(oldRowsByRef))
+		for ref, rows := range oldRowsByRef {
+			for _, r := range rows {
+				if r.key.text != "" {
+					oldFieldsByRef[ref] = append(oldFieldsByRef[ref], existingTextField{ref: ref, field: r.key.field, text: r.key.text, intV: r.key.intV})
+				}
+			}
 		}
 	}
 
@@ -313,23 +348,24 @@ INSERT INTO plugin_items(
 			); err != nil {
 				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}
-			if err := sqliteIndexFTS(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields, v.SearchPeople); err != nil {
+			ftsErr := sqliteIndexFTS
+			if isExisting {
+				ftsErr = sqliteReindexFTSIfChanged
+			}
+			if err := ftsErr(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields, v.SearchPeople); err != nil {
 				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}
 		}
 
-		// Replace indexed fields for this item.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
+		// Replace indexed fields for this item. An existing item's rows are
+		// diffed against what is stored: a typical republish changes few or
+		// no indexed values, and rewriting every row churned five indexes
+		// per field inside the write transaction.
+		if err := writeItemFieldsTx(ctx, tx, isPG, it.ID, it.Ref, isExisting, oldRowsByRef[it.Ref], v.IndexedFields, fieldConflictCols); err != nil {
+			return res, err
 		}
 		var itemPersonHasThumb map[int64]bool
 		for _, fv := range v.IndexedFields {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(`+fieldConflictCols+`) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
-				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
-				return res, fmt.Errorf("pluginitems: kind item %q field %q: %w", it.ID, fv.Field, err)
-			}
 			if fv.HasThumb && core.IsPluginPersonID(fv.Int) {
 				if itemPersonHasThumb == nil {
 					itemPersonHasThumb = map[int64]bool{}
@@ -490,6 +526,7 @@ INSERT INTO plugin_items(
 	if err := tx.Commit(); err != nil {
 		return upsertChunkResult{}, err
 	}
+	res.held = time.Since(began)
 	if res.added > 0 || res.updated > 0 {
 		s.noteWrite()
 	}
@@ -570,4 +607,207 @@ func queryItemsByRefTx(ctx context.Context, tx *sql.Tx, refs []core.ItemRef) ([]
 		}
 	}
 	return ordered, nil
+}
+
+// queryer is a read handle: the pool, or a transaction.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// prewarmUpsertChunk runs the chunk's reads on the pool before the write
+// transaction opens. SQLite has one writer, and a cold read of an item's
+// stored row, field rows, FTS row, art, parent or tally rows faults pages
+// in from disk while every other writer (playback, sessions) queues behind
+// it; on the lab a 200-item chunk held the writer for 1-9 s that way. The
+// transaction repeats the same reads against the now-warm page cache
+// (shared through mmap and the OS cache), so its result is unchanged and
+// the writer is held mostly for in-memory work. Best effort: a failed
+// warm-up only means the transaction reads cold.
+func (s *Service) prewarmUpsertChunk(ctx context.Context, libraryID core.LibraryID, chunk []preparedItem) {
+	existing, err := lookupExistingItemsTx(ctx, s.db, chunk)
+	if err != nil {
+		return
+	}
+	var refs, seqs, parents []any
+	seenParent := map[string]bool{}
+	tallies := map[fieldTallyKey]bool{}
+	people := map[personTallyKey]bool{}
+	for i := range chunk {
+		p := &chunk[i]
+		ex, ok := existing[p.validated.Item.Ref]
+		if ok && ex.hash != "" && ex.hash == p.hash {
+			continue
+		}
+		if ok {
+			refs = append(refs, string(p.validated.Item.Ref))
+			seqs = append(seqs, ex.seq)
+		}
+		if p.parentRef != "" && !seenParent[p.parentRef] {
+			seenParent[p.parentRef] = true
+			parents = append(parents, p.parentRef)
+		}
+		for _, fv := range p.validated.IndexedFields {
+			if fv.Text == "" {
+				continue
+			}
+			tallies[fieldTallyKey{level: p.validated.Item.Level, field: fv.Field, text: fv.Text}] = true
+			if core.IsPluginPersonID(fv.Int) {
+				people[personTallyKey{level: p.validated.Item.Level, field: fv.Field, vInt: fv.Int}] = true
+			}
+		}
+	}
+	drain := func(q string, args ...any) bool {
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return false
+		}
+		for rows.Next() {
+		}
+		rows.Close()
+		return true
+	}
+	if len(refs) > 0 {
+		itemRefs := make([]core.ItemRef, len(refs))
+		for i, r := range refs {
+			itemRefs[i] = core.ItemRef(r.(string))
+		}
+		if _, err := lookupExistingFieldRowsTx(ctx, s.db, itemRefs); err != nil {
+			return
+		}
+		if !drain(`SELECT rowid, title, fields, people FROM plugin_item_fts WHERE rowid IN (`+store.Placeholders(len(seqs))+`)`, seqs...) ||
+			!drain(`SELECT item_ref, role, url FROM plugin_item_art WHERE item_ref IN (`+store.Placeholders(len(refs))+`)`, refs...) {
+			return
+		}
+	}
+	if len(parents) > 0 {
+		if !drain(`SELECT item_ref, parent_ref, level FROM plugin_items WHERE item_ref IN (`+store.Placeholders(len(parents))+`)`, parents...) ||
+			!drain(`SELECT parent_ref, leaf_count FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref IN (`+store.Placeholders(len(parents))+`)`, append([]any{int64(libraryID)}, parents...)...) {
+			return
+		}
+	}
+	for k := range tallies {
+		if !drain(`SELECT cnt FROM plugin_item_field_tally WHERE library_id = ? AND level IN (?, '') AND field = ? AND v_text = ?`, int64(libraryID), k.level, k.field, k.text) {
+			return
+		}
+	}
+	for k := range people {
+		if !drain(`SELECT cnt FROM plugin_item_person_tally WHERE library_id = ? AND level IN (?, '') AND field = ? AND v_int = ?`, int64(libraryID), k.level, k.field, k.vInt) {
+			return
+		}
+	}
+}
+
+type fieldRowKey struct {
+	field string
+	text  string
+	intV  int64
+}
+
+// existingFieldRow is one stored plugin_item_fields row of an item being
+// rewritten.
+type existingFieldRow struct {
+	key  fieldRowKey
+	real float64
+	fold string
+}
+
+// lookupExistingFieldRowsTx loads every stored indexed field row for refs,
+// grouped by item, in primary-key order.
+func lookupExistingFieldRowsTx(ctx context.Context, tx queryer, refs []core.ItemRef) (map[core.ItemRef][]existingFieldRow, error) {
+	out := make(map[core.ItemRef][]existingFieldRow, len(refs))
+	const chunkSize = 250
+	for start := 0; start < len(refs); start += chunkSize {
+		end := min(start+chunkSize, len(refs))
+		chunk := refs[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, r := range chunk {
+			placeholders[i] = "?"
+			args[i] = string(r)
+		}
+		rows, err := tx.QueryContext(ctx,
+			`SELECT item_ref, field, v_text, v_int, v_real, v_fold FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`) ORDER BY item_ref, field, v_text, v_int`,
+			args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var refStr string
+			var r existingFieldRow
+			if err := rows.Scan(&refStr, &r.key.field, &r.key.text, &r.key.intV, &r.real, &r.fold); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[core.ItemRef(refStr)] = append(out[core.ItemRef(refStr)], r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// writeItemFieldsTx leaves exactly fields stored for ref. A new item's rows
+// are inserted; an existing item's stored rows (old) are diffed so only
+// removed keys are deleted and new or changed keys written. Duplicate keys
+// in fields resolve as the upsert did: the last occurrence wins.
+func writeItemFieldsTx(ctx context.Context, tx *sql.Tx, isPG bool, id string, ref core.ItemRef, isExisting bool, old []existingFieldRow, fields []IndexedFieldValue, conflictCols string) error {
+	refStr := string(ref)
+	insert := func(fv IndexedFieldValue) error {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(`+conflictCols+`) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+			refStr, fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
+			return fmt.Errorf("pluginitems: kind item %q field %q: %w", id, fv.Field, err)
+		}
+		return nil
+	}
+	if !isExisting {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, refStr); err != nil {
+			return fmt.Errorf("pluginitems: kind item %q: %w", id, err)
+		}
+		for _, fv := range fields {
+			if err := insert(fv); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	last := make(map[fieldRowKey]int, len(fields))
+	for i, fv := range fields {
+		last[fieldRowKey{field: fv.Field, text: fv.Text, intV: fv.Int}] = i
+	}
+	stored := make(map[fieldRowKey]existingFieldRow, len(old))
+	for _, r := range old {
+		stored[r.key] = r
+		if _, keep := last[r.key]; keep {
+			continue
+		}
+		var err error
+		if isPG {
+			_, err = tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND md5(v_text) = ? AND v_text = ? AND v_int = ?`,
+				refStr, r.key.field, pgTextMD5(r.key.text), r.key.text, r.key.intV)
+		} else {
+			_, err = tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
+				refStr, r.key.field, r.key.text, r.key.intV)
+		}
+		if err != nil {
+			return fmt.Errorf("pluginitems: kind item %q field %q: %w", id, r.key.field, err)
+		}
+	}
+	for i, fv := range fields {
+		k := fieldRowKey{field: fv.Field, text: fv.Text, intV: fv.Int}
+		if last[k] != i {
+			continue
+		}
+		if r, ok := stored[k]; ok && r.real == fv.Real && r.fold == fv.Fold {
+			continue
+		}
+		if err := insert(fv); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package pluginitems
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -21,6 +22,28 @@ func sqliteIndexFTS(ctx context.Context, tx *sql.Tx, seq int64, ref core.ItemRef
 	_, err := tx.ExecContext(ctx, `INSERT INTO plugin_item_fts(rowid, item_ref, library_id, title, fields, people) VALUES(?, ?, ?, ?, ?, ?)`,
 		seq, string(ref), int64(libraryID), title, fieldsText, peopleText)
 	return err
+}
+
+// sqliteReindexFTSIfChanged rewrites an existing item's FTS row only when
+// its stored text differs. Replacing an unchanged row deletes and re-adds
+// every one of its tokens in the FTS index inside the write transaction.
+func sqliteReindexFTSIfChanged(ctx context.Context, tx *sql.Tx, seq int64, ref core.ItemRef, libraryID core.LibraryID, title, fieldsText, peopleText string) error {
+	var oldRef, oldTitle, oldFields, oldPeople string
+	var oldLib int64
+	err := tx.QueryRowContext(ctx, `SELECT item_ref, library_id, title, fields, people FROM plugin_item_fts WHERE rowid = ?`, seq).
+		Scan(&oldRef, &oldLib, &oldTitle, &oldFields, &oldPeople)
+	title, fieldsText, peopleText = strings.TrimSpace(title), strings.TrimSpace(fieldsText), strings.TrimSpace(peopleText)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if title == "" && fieldsText == "" && peopleText == "" {
+			return nil
+		}
+	case err != nil:
+		return err
+	case oldRef == string(ref) && oldLib == int64(libraryID) && oldTitle == title && oldFields == fieldsText && oldPeople == peopleText:
+		return nil
+	}
+	return sqliteIndexFTS(ctx, tx, seq, ref, libraryID, title, fieldsText, peopleText)
 }
 
 func sqliteDeleteFTS(ctx context.Context, tx *sql.Tx, seq int64) error {

@@ -248,41 +248,66 @@ func (ps *plexExtras) start(ctx context.Context) {
 	ps.mu.Unlock()
 	// Extra servers run only while the owner has them turned on, and they
 	// start only when the owner starts them: nothing starts on its own.
-	// Turning the feature off stops the running ones; turning it back on
-	// runs again the ones the owner had started.
-	ps.app.cfg.Subscribe(func(c config.Config) {
-		go ps.applyEnabled(ctx, c.Plex.ExtraServersEnabled)
+	// Every config change, local or from another cluster node, brings the
+	// running servers in line with the config without a restart.
+	ps.app.cfg.Subscribe(func(config.Config) {
+		go ps.syncWithConfig(ctx)
 	})
-	ps.applyEnabled(ctx, ps.app.cfg.Get().Plex.ExtraServersEnabled)
+	ps.syncWithConfig(ctx)
 }
 
-// applyEnabled stops every extra server when the feature is off, and runs
-// the started ones that are not running when it is on.
+// applyEnabled brings the running extra servers in line with the config:
+// with the feature on, every started server runs; a server removed (on this
+// node or, in a cluster, on another one whose change arrived through the
+// shared config) or the feature turned off stops. It runs on every config
+// change, so no restart is needed. Turning the feature off also withdraws
+// what the extra servers shared.
 func (ps *plexExtras) applyEnabled(ctx context.Context, on bool) {
 	ps.lifeMu.Lock()
 	defer ps.lifeMu.Unlock()
-	// Every config save notifies; act only when the setting changed, so a
-	// start the owner just made (activate) is never doubled here.
-	if ps.toggleSeen && on == ps.toggleOn {
-		return
-	}
+	ps.applyLocked(ctx, on)
+}
+
+// syncWithConfig is applyEnabled for the current setting, read under the
+// lock: config notifications can arrive out of order, so the value they
+// carry is not trusted.
+func (ps *plexExtras) syncWithConfig(ctx context.Context) {
+	ps.lifeMu.Lock()
+	defer ps.lifeMu.Unlock()
+	ps.applyLocked(ctx, ps.app.cfg.Get().Plex.ExtraServersEnabled)
+}
+
+func (ps *plexExtras) applyLocked(ctx context.Context, on bool) {
+	turnedOff := !on && (!ps.toggleSeen || ps.toggleOn)
 	ps.toggleSeen, ps.toggleOn = true, on
-	if !on {
-		ps.mu.Lock()
-		ids := make([]string, 0, len(ps.running))
-		for id := range ps.running {
-			ids = append(ids, id)
+	cfg := ps.app.cfg.Get()
+	want := map[string]bool{}
+	var order []string
+	if on {
+		for _, s := range activePlexOrder(cfg) {
+			want[s.ID] = true
+			order = append(order, s.ID)
 		}
-		ps.mu.Unlock()
-		for _, id := range ids {
-			ps.stop(id)
+	}
+	ps.mu.Lock()
+	var stopIDs []string
+	for id := range ps.running {
+		if !want[id] {
+			stopIDs = append(stopIDs, id)
 		}
+	}
+	ps.mu.Unlock()
+	for _, id := range stopIDs {
+		ps.stop(id)
+		ps.log.Info("extra plex server stopped", "server", id)
+	}
+	if turnedOff {
 		// A server that is off shares with no one: its tokens and
 		// memberships go, and the main server's next sync switches off
 		// viewers only it shared with. Its next start syncs them back.
 		withdrawn := 0
 		if ps.app.users != nil {
-			for _, s := range ps.app.cfg.Get().PlexExtraServers {
+			for _, s := range cfg.PlexExtraServers {
 				if err := ps.app.users.RemoveServer(ctx, s.ID); err != nil {
 					ps.log.Warn("extra plex server access not withdrawn", "server", s.ID, "err", err)
 					continue
@@ -295,17 +320,17 @@ func (ps *plexExtras) applyEnabled(ctx context.Context, on bool) {
 				ps.log.Warn("plex friend sync after turning extra servers off", "err", err)
 			}
 		}
-		if len(ids) > 0 || withdrawn > 0 {
-			ps.log.Info("extra plex servers turned off", "stopped", len(ids))
+		if len(stopIDs) > 0 || withdrawn > 0 {
+			ps.log.Info("extra plex servers turned off", "stopped", len(stopIDs))
 		}
 		return
 	}
-	for _, s := range activePlexOrder(ps.app.cfg.Get()) {
-		if ps.runtime(s.ID) != nil {
+	for _, id := range order {
+		if ps.runtime(id) != nil {
 			continue
 		}
-		if err := ps.run(ctx, s.ID); err != nil {
-			ps.log.Warn("extra plex server did not start", "server", s.ID, "err", err)
+		if err := ps.run(ctx, id); err != nil {
+			ps.log.Warn("extra plex server did not start", "server", id, "err", err)
 		}
 	}
 }
@@ -423,10 +448,18 @@ func (ps *plexExtras) stop(id string) {
 	if rt == nil {
 		return
 	}
-	rt.store.stopped.Store(true)
-	rt.cancel()
-	rt.registrar.Stop()
-	rt.certs.Close()
+	if rt.store != nil {
+		rt.store.stopped.Store(true)
+	}
+	if rt.cancel != nil {
+		rt.cancel()
+	}
+	if rt.registrar != nil {
+		rt.registrar.Stop()
+	}
+	if rt.certs != nil {
+		rt.certs.Close()
+	}
 }
 
 func (ps *plexExtras) close() {

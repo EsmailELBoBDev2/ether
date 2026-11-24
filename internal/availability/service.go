@@ -640,6 +640,9 @@ func (s *Service) verify(parent context.Context) error {
 				verified = s.now().Unix()
 				reason = "Source health checked for this title and quality policy"
 			case errors.Is(e, core.ErrBudgetExhausted):
+				// Refused by another allowance: no candidate was decided, so
+				// the check unit goes back for the retry.
+				s.refund(parent, "checks", 1)
 				state, reason = "unknown", safeReason(e)
 				retry = s.now().Add(time.Hour).Unix()
 			default:

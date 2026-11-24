@@ -447,18 +447,20 @@ func (f *Fetcher) bodyChain(ctx context.Context, id string, groups []string, pri
 	rprio := routePriority(ctx, prio)
 	req := routeReq{prio: rprio, joinable: func(p *pool) bool { return p.joinable(id, groups, rprio) }}
 	err := f.each(ctx, id, "fetch-body", req, func(ctx context.Context, p *pool) error {
-		var e error
 		if core.IsBackgroundCheck(ctx) {
 			prio = core.PriorityPrefetch
-			if e = core.SpendBackground(ctx, "bytes", "usenet", 2*p.o.MaxArticleSize+(64<<10)); e != nil {
-				return e
-			}
+		}
+		settle, e := p.reserveBackgroundBody(ctx)
+		if e != nil {
+			return e
 		}
 		if serving != nil {
 			serving.Store(p)
 		}
 		start := time.Now()
-		part, e = p.body(ctx, id, groups, prio)
+		var wire int64
+		part, wire, e = p.body(ctx, id, groups, prio)
+		settle(wire)
 		if e == nil && prio == core.PriorityLive {
 			p.noteLiveFetch(time.Since(start))
 		}
@@ -1092,12 +1094,17 @@ func (f *Fetcher) CheckBodyPart(ctx context.Context, messageID string, groups []
 	return f.each(ctx, id, "body", routeReq{prio: routePriority(ctx, prio)}, func(ctx context.Context, p *pool) error {
 		if core.IsBackgroundCheck(ctx) {
 			prio = core.PriorityPrefetch
-			if err := core.SpendBackground(ctx, "bytes", "usenet", 2*p.o.MaxArticleSize+(64<<10)); err != nil {
-				return err
-			}
+		}
+		settle, err := p.reserveBackgroundBody(ctx)
+		if err != nil {
+			return err
 		}
 		var bodyStarted bool
-		err := p.withConn(ctx, prio, func(c *Conn) error {
+		var used int64
+		defer func() { settle(used) }()
+		err = p.withConn(ctx, prio, func(c *Conn) error {
+			before := c.wireBytes()
+			defer func() { used += c.wireBytes() - before }()
 			if p.o.UseGroup && len(groups) > 0 && !slices.Contains(groups, c.CurrentGroup()) {
 				if err := c.Group(ctx, groups[0]); err != nil && !errors.Is(err, ErrNoSuchGroup) {
 					return err
@@ -1106,7 +1113,9 @@ func (f *Fetcher) CheckBodyPart(ctx context.Context, messageID string, groups []
 			reader, err := c.Body(ctx, id)
 			bodyStarted = c.bodyStarted
 			if err == nil {
-				err = probeBodyHeader(c, reader, p.o.MaxArticleSize, want)
+				var unread int64
+				unread, err = probeBodyHeader(c, reader, p.o.MaxArticleSize, want)
+				used += unread
 			}
 			if errors.Is(err, ErrNoSuchArticle) {
 				p.bodyMisses.Add(1)
@@ -1128,31 +1137,51 @@ func (f *Fetcher) CheckBodyPart(ctx context.Context, messageID string, groups []
 
 // probeBodyHeader validates the yEnc header at the start of an open BODY
 // response and leaves the connection either drained (reusable) or closed.
-func probeBodyHeader(c *Conn, reader *BodyReader, maxPart int64, want core.ArticlePart) error {
+// unread bounds what the provider may still have sent for a body abandoned
+// by closing the connection: the worst-case encoding of the announced part,
+// or of the largest article when the header was never validated.
+func probeBodyHeader(c *Conn, reader *BodyReader, maxPart int64, want core.ArticlePart) (unread int64, err error) {
 	hdr, err := readYencHeader(c)
 	if err != nil {
 		// Not the expected article (or the wire failed): never reuse a
 		// connection whose body position is unknown.
 		_ = c.Close()
 		reader.finish(nil)
-		return err
+		return maxEncodedBody(maxPart), err
 	}
 	if err := validateYencHeader(hdr, maxPart, want); err != nil {
 		_ = c.Close()
 		reader.finish(nil)
-		return err
+		return maxEncodedBody(maxPart), err
 	}
 	if hdr.PartSize() <= checkBodyDrainMax {
 		// Small remainder: drain it (bounded by a generous estimate of
 		// the encoded size) so this connection serves the next request.
-		if derr := drainBodyBounded(c, reader, 2*hdr.PartSize()+(64<<10)); derr != nil {
-			return derr
-		}
-		return nil
+		return 0, drainBodyBounded(c, reader, maxEncodedBody(hdr.PartSize()))
 	}
 	_ = c.Close()
 	reader.finish(nil)
-	return nil
+	return maxEncodedBody(hdr.PartSize()), nil
+}
+
+// maxEncodedBody bounds the wire size of a BODY reply carrying a decoded
+// part of n bytes: yEnc at most doubles it, plus headers and line endings.
+func maxEncodedBody(n int64) int64 { return 2*n + (64 << 10) }
+
+// reserveBackgroundBody admits one background BODY read against the daily
+// byte allowance before it goes out. The cost is unknown until the reply
+// arrives, so it reserves the worst case for the provider's largest article;
+// the returned settle hands back what the read did not move. Foreground
+// reads are not metered.
+func (p *pool) reserveBackgroundBody(ctx context.Context) (settle func(used int64), err error) {
+	if !core.IsBackgroundCheck(ctx) {
+		return func(int64) {}, nil
+	}
+	reserved := maxEncodedBody(p.o.MaxArticleSize)
+	if err := core.SpendBackground(ctx, "bytes", "usenet", reserved); err != nil {
+		return nil, err
+	}
+	return func(used int64) { core.SettleBackground(ctx, "bytes", "usenet", reserved, used) }, nil
 }
 
 // readBoundedLine reads one CRLF line straight from the connection buffer,

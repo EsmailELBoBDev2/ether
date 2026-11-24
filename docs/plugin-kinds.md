@@ -841,8 +841,9 @@ surface; you never check viewer permissions yourself.
 `contributes.frontendAdapters[].icon` names the adapter's own mark: a
 path to an SVG or PNG inside the package (a PNG at most 512 KB and
 1024 px on a side). The Apps page shows it on the adapter's tab and
-cards, the way it shows Plex or Jellyfin. Without one, the plugin's
-`ether.icon` stands in, and then a generic plug. Ether serves it from
+cards, the way it shows Plex or Jellyfin. Without one, a `subsonic`
+adapter shows the OpenSubsonic mark Ether ships; any other adapter
+falls back to the plugin's `ether.icon`, and then a generic plug. Ether serves it from
 the plugin's icon route (`/ether/api/plugins/{id}/icon?adapter={key}`),
 cache-busted per version, and the conformance kit fails a package whose
 adapter icon is missing or cannot be rendered.

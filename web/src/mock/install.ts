@@ -54,10 +54,18 @@ export function installMockBackend(): void {
       .filter(Boolean),
   );
   fake.state.config.frontends = Object.fromEntries(
-    ["plex", "jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream", "dlna"].map((id) => [
-      id,
-      { enabled: !offApps.has(id) },
-    ]),
+    [
+      "plex",
+      "jellyfin",
+      "emby",
+      "silo",
+      "stremio",
+      "webdav",
+      "m3u",
+      "xtream",
+      "dlna",
+      "plugin:ether.music:subsonic",
+    ].map((id) => [id, { enabled: !offApps.has(id) }]),
   );
   if (params.get("catalogKey") === "missing") fake.state.config.catalog.tmdbKey = "";
   // Deterministic account workspaces for owner-console visual review.

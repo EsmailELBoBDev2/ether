@@ -4348,11 +4348,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
         "m3u",
         "xtream",
       ].filter((id) => state.config.frontends?.[id]?.enabled);
-      const adapters: Record<string, { name: string; logo?: string; auth?: string }> = {};
+      const adapters: Record<
+        string,
+        { name: string; logo?: string; auth?: string; protocolHint?: string }
+      > = {};
       for (const [id, entry] of Object.entries(state.config.frontends ?? {})) {
         if (!id.startsWith("plugin:") || !entry?.enabled) continue;
         enabled.push(id);
-        adapters[id] = { name: id.split(":").at(-1) || id, auth: "ether_token" };
+        adapters[id] = {
+          name: id.split(":").at(-1) || id,
+          auth: "ether_token",
+          protocolHint: id.endsWith(":subsonic") ? "subsonic" : undefined,
+        };
       }
       if (method === "GET" && seg.length === appsOffset + 1)
         return json(Object.keys(adapters).length ? { apps: enabled, adapters } : { apps: enabled });
@@ -4694,6 +4701,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
       { id: "webdav", name: "Files (WebDAV)", settingsSchema: accountSchema("files") },
       { id: "m3u", name: "M3U & XMLTV", settingsSchema: accountSchema("playlist") },
       { id: "xtream", name: "IPTV apps (Xtream)", settingsSchema: accountSchema("xtream") },
+      // A plugin adapter (ether.music) that has not shipped its own icon yet.
+      // Plugins install after first-run setup, so the setup chooser never lists it.
+      ...(state.config.setupComplete
+        ? [
+            {
+              id: "plugin:ether.music:subsonic",
+              name: "Subsonic",
+              auth: "query_credentials",
+              protocolHint: "subsonic",
+              pathPrefix: "/subsonic",
+            },
+          ]
+        : []),
     ];
     if (seg[0] === "frontends" && seg.length === 1 && method === "GET") {
       return json(

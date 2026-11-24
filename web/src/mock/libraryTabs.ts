@@ -9,7 +9,8 @@ import type {
 } from "../pages/libraries/api";
 import { COLLECTIONS, KEYWORDS, NETWORKS, PEOPLE, STUDIOS, type FakeTitle } from "./data";
 
-const SCOPE_NOTE = "Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs.";
+const SCOPE_NOTE =
+  "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page.";
 
 const VALID_KINDS = new Set<LibraryTabKind>([
   "recommended",

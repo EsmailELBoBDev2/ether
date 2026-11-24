@@ -39,7 +39,6 @@ import { ErrorPanel } from "../../components/feedback";
 import { Segmented } from "../../components/fields";
 import { SubtabNav } from "../../components/layout";
 import { useViewers, viewerName } from "../../components/pickers";
-import { useUnsavedGuard } from "../../components/SaveBar";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { PanelHead, Workspace } from "../../components/workspace";
 import { t, tn } from "../../i18n";
@@ -61,6 +60,7 @@ import {
   insertRow,
   loadDraft,
   moveRow,
+  peekDraft,
   removeRow,
   replaceRow,
   rowForSource,
@@ -261,6 +261,7 @@ function PageRowView({
   pageRow,
   curated,
   showRating,
+  personal,
   selected,
   fresh,
   justViewer,
@@ -280,6 +281,8 @@ function PageRowView({
   pageRow: PageRow | undefined;
   curated: boolean;
   showRating: boolean;
+  /** The source's Personal flag (titles differ per viewer). */
+  personal: boolean;
   selected: boolean;
   fresh: boolean;
   justViewer: string | null;
@@ -313,6 +316,10 @@ function PageRowView({
         : "";
   const when = pageRow ? scheduleSummary(pageRow.placement.when, pageRow.placement.devices) : "";
   const draggable = Boolean(r.rowId) && !r.ghost;
+  const misplaced =
+    mode === "pinned" &&
+    Boolean(pageRow?.placement.position && item.position) &&
+    pageRow!.placement.position !== item.position;
   return (
     <section
       aria-label={
@@ -353,7 +360,11 @@ function PageRowView({
         {draggable ? (
           <span
             className="cursor-grab text-fg-subtle"
-            title={curated ? t("Drag to move") : t("Drag to move; drop to pin it there")}
+            title={
+              curated && mode !== "pinned"
+                ? t("Drag to move")
+                : t("Drag to move; drop to pin it there")
+            }
             aria-hidden
           >
             <GripVertical size={14} />
@@ -364,8 +375,20 @@ function PageRowView({
         <span
           className={cn(
             "grid size-6 place-items-center rounded-md text-xs font-semibold tabular-nums",
-            mode === "pinned" ? "bg-success-subtle text-success" : "bg-bg-subtle text-fg-muted",
+            misplaced
+              ? "bg-warning-subtle text-warning"
+              : mode === "pinned"
+                ? "bg-success-subtle text-success"
+                : "bg-bg-subtle text-fg-muted",
           )}
+          title={
+            misplaced
+              ? t("Pinned to #{pin}, shown at #{at}: see Why here", {
+                  pin: pageRow!.placement.position!,
+                  at: item.position!,
+                })
+              : undefined
+          }
         >
           {item.position ?? "–"}
         </span>
@@ -384,15 +407,13 @@ function PageRowView({
           </Badge>
         ) : null}
         {r.rowId ? (
-          curated ? null : (
-            <PlacementChip mode={mode} position={pageRow?.placement.position} curated={curated} />
-          )
+          <PlacementChip mode={mode} position={pageRow?.placement.position} curated={curated} />
         ) : (
           <Badge variant="secondary" className="gap-1">
             <Sparkles size={11} /> {t("Ether's pick")}
           </Badge>
         )}
-        <KindChip personal={r.personal} />
+        <KindChip personal={personal} />
         {r.present.surface ? <VelaOnlyChip /> : null}
         {audienceText ? (
           <Badge variant="outline" className="gap-1 font-normal">
@@ -418,7 +439,7 @@ function PageRowView({
           </Badge>
         ) : null}
         <div className="ml-auto flex gap-0.5 opacity-100 sm:opacity-0 sm:group-focus-within/row:opacity-100 sm:group-hover/row:opacity-100">
-          {curated || !r.rowId || r.ghost ? null : (
+          {!r.rowId || r.ghost ? null : (
             <Button
               variant="ghost"
               size="sm"
@@ -498,6 +519,12 @@ interface Pending {
   row: PageRow;
   beforeId: string | null;
   at: number;
+  /**
+   * A row Ether adds (or may add) opened from the page: nothing changes
+   * until the owner edits it or presses the drawer's action.
+   */
+  ether?: { title: string; onPage: boolean };
+  touched?: boolean;
 }
 
 export default function Recommendations() {
@@ -555,7 +582,8 @@ export default function Recommendations() {
     if (!draft || !saved) return;
     storeDraft(dirty ? draft : null, saved.key, saved.revision);
   }, [draft, saved, dirty]);
-  useUnsavedGuard(dirty);
+  // No "Leave site?" prompt: the draft is kept in local storage, which is
+  // what "kept if you leave" promises.
 
   const [pending, setPending] = useState<Pending | null>(null);
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
@@ -586,7 +614,12 @@ export default function Recommendations() {
           position: at,
           editingFor,
         });
-        setPending({ row, beforeId: null, at });
+        // "Add to a page…" only said which page: Ether places it (Show), at the end.
+        setPending({
+          row: { ...row, placement: withMode(row.placement, "show") },
+          beforeId: null,
+          at,
+        });
         setDrawer({ kind: "add", at, picking: false });
       } else {
         setDrawer({ kind: "add", at, picking: true });
@@ -594,9 +627,22 @@ export default function Recommendations() {
     }
   }, [draft, sources.data, params, addParam, editingFor]);
 
+  // An Ether row opened just to look at it changes nothing until it's
+  // edited, and a row still missing a required choice (which collection)
+  // never goes to the preview.
+  const pendingSource = pending
+    ? sources.data?.sources.find((s) => s.kind === pending.row.source.kind)
+    : undefined;
+  const pendingComplete = Boolean(
+    pending &&
+    !(pendingSource?.params ?? []).some((p) => p.required && !pending.row.source.params?.[p.key]),
+  );
+  const pendingShown =
+    pending && pendingComplete && !(pending.ether && !pending.touched) ? pending : null;
   const previewPage = useMemo(
-    () => (draft && pending ? insertRow(draft, pending.row, pending.beforeId) : draft),
-    [draft, pending],
+    () =>
+      draft && pendingShown ? insertRow(draft, pendingShown.row, pendingShown.beforeId) : draft,
+    [draft, pendingShown],
   );
 
   // ---- the live preview -------------------------------------------------------
@@ -607,7 +653,7 @@ export default function Recommendations() {
   const atIso = (at ?? null)?.toISOString() ?? null;
   const previewSig = previewPage
     ? JSON.stringify({
-        p: dirty || pending ? previewPage : null,
+        p: dirty || pendingShown ? previewPage : null,
         k: previewPage.key,
         r: previewPage.revision,
         v: previewAs,
@@ -624,7 +670,7 @@ export default function Recommendations() {
         .previewPage(
           previewPage.key,
           {
-            page: dirty || pending ? previewPage : undefined,
+            page: dirty || pendingShown ? previewPage : undefined,
             viewer: previewAs ?? undefined,
             device,
             at: atIso ?? new Date().toISOString(),
@@ -707,7 +753,7 @@ export default function Recommendations() {
   const updateRow = (row: PageRow) => {
     if (!draft) return;
     if (pending && pending.row.id === row.id) {
-      setPending({ ...pending, row });
+      setPending({ ...pending, row, touched: true });
       return;
     }
     if (editingFor != null) {
@@ -745,7 +791,7 @@ export default function Recommendations() {
     kind: string,
     at: number,
     beforeIndex: number | null,
-    opts: { library?: number; show?: boolean } = {},
+    opts: { library?: number; show?: boolean; ether?: Pending["ether"] } = {},
   ) => {
     if (!draft) return;
     const source = sourceByKind.get(kind);
@@ -756,7 +802,8 @@ export default function Recommendations() {
       {
         page: draft,
         position: at,
-        editingFor,
+        // One of Ether's rows is everyone's row; edits for a viewer go in their variant.
+        editingFor: opts.ether ? null : editingFor,
         libraries: opts.library && !pageLibrary ? [opts.library] : undefined,
       },
     );
@@ -764,6 +811,7 @@ export default function Recommendations() {
       row: opts.show ? { ...row, placement: withMode(row.placement, "show") } : row,
       beforeId: beforeIndex == null ? null : rowIdAtOrAfter(beforeIndex),
       at,
+      ether: opts.ether,
     });
     setDrawer({ kind: "add", at, picking: false });
   };
@@ -777,7 +825,10 @@ export default function Recommendations() {
       return;
     }
     const at = d.position ?? display.slice(0, d.index).filter((x) => !x.row.ghost).length + 1;
-    openUnstored(d.row.kind, at, d.index, { library: d.row.library });
+    openUnstored(d.row.kind, at, d.index, {
+      library: d.row.library,
+      ether: { title: d.row.title, onPage: true },
+    });
   };
   const pickSource = (source: PageSource, params: Record<string, string>) => {
     if (!draft || drawer?.kind !== "add") return;
@@ -815,9 +866,35 @@ export default function Recommendations() {
     setDrawer(null);
     if (params.get("row") || params.get("add")) setQuery({ row: null, add: null });
   };
+  /**
+   * Keeps one of Ether's rows (a pick, Continue Watching…) on the page.
+   * Editing for one viewer, the page gets Ether's own row (Auto, for
+   * everyone, as if Ether picked it) and the change goes into that viewer's
+   * variant, so nobody else's page changes.
+   */
+  const keepEtherRow = (row: PageRow, beforeId: string | null) => {
+    if (editingFor == null) {
+      update((p) => insertRow(p, row, beforeId));
+      return;
+    }
+    const everyone = { mode: "everyone" as const };
+    const base: PageRow = {
+      ...row,
+      name: undefined,
+      look: {},
+      placement: { mode: "auto", audience: everyone },
+    };
+    update((p) =>
+      setOverride(insertRow(p, base, beforeId), editingFor, row.id, {
+        look: row.look,
+        placement: { ...row.placement, audience: everyone },
+      }),
+    );
+  };
   const commitAdd = () => {
-    if (!pending) return;
-    update((p) => insertRow(p, pending.row, pending.beforeId));
+    if (!pending || !pendingComplete) return;
+    if (pending.ether) keepEtherRow(pending.row, pending.beforeId);
+    else update((p) => insertRow(p, pending.row, pending.beforeId));
     setPending(null);
     setDrawer(null);
     if (params.get("add")) setQuery({ add: null });
@@ -841,14 +918,14 @@ export default function Recommendations() {
     }
     const source = sourceByKind.get(r.kind);
     if (!source || !draft) return;
-    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor });
-    update((p) => insertRow(p, { ...row, placement: withMode(row.placement, "hide") }, null));
+    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor: null });
+    keepEtherRow({ ...row, placement: withMode(row.placement, "hide") }, null);
   };
   const addPick = (kind: string) => {
     const source = sourceByKind.get(kind);
     if (!source || !draft) return;
-    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor });
-    update((p) => insertRow(p, { ...row, placement: withMode(row.placement, "show") }, null));
+    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor: null });
+    keepEtherRow({ ...row, placement: withMode(row.placement, "show") }, null);
   };
 
   // Drag and drop: the dropped order stays put until the next preview arrives.
@@ -863,7 +940,23 @@ export default function Recommendations() {
     const block = display.filter((d) => d.row.rowId === rowId).map((d) => d.row.hubId);
     const rest = display.map((d) => d.row.hubId).filter((h) => !block.includes(h));
     const targetHub = targetIndex == null ? null : display[targetIndex]?.row.hubId;
-    if (targetHub && block.includes(targetHub)) return;
+    if (targetHub && block.includes(targetHub)) {
+      // Inside a one-row-per-library block: the drop reorders its libraries.
+      const pr = rowOf(rowId);
+      const from = dragged?.library;
+      const to = display[targetIndex!]?.row.library;
+      if (!pr || !from || !to || from === to || editingFor != null) return;
+      const supported = sourceByKind.get(pr.source.kind)?.libraries;
+      const base = pr.scope.libraries?.length
+        ? [...pr.scope.libraries]
+        : (supported ?? display.filter((d) => d.row.rowId === rowId).map((d) => d.row.library!));
+      const order = base.filter((id) => id !== from);
+      const at = order.indexOf(to);
+      order.splice(at < 0 ? order.length : at, 0, from);
+      setLocalOrder(null);
+      update((p) => replaceRow(p, { ...pr, scope: { ...pr.scope, libraries: order } }));
+      return;
+    }
     let insertAt = targetHub ? rest.indexOf(targetHub) : rest.length;
     if (insertAt < 0) insertAt = rest.length;
     const order = [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)];
@@ -878,7 +971,9 @@ export default function Recommendations() {
       }
     }
     const position = order.slice(0, insertAt).filter((h) => !byHub.get(h)?.ghost).length + 1;
-    if (curated) {
+    if (curated && effective(rowId)?.placement.mode !== "pinned") {
+      // Curated: the list order is the page order. A pinned row keeps its
+      // pin and takes the new position, as on a Personalized page.
       if (editingFor == null) update((p) => moveRow(p, rowId, beforeId));
       return;
     }
@@ -924,19 +1019,9 @@ export default function Recommendations() {
       });
       return;
     }
-    // Curated keeps on/off only: pinned and auto rows become shown.
-    update((p) => ({
-      ...p,
-      mode: m,
-      rows:
-        m === "curated"
-          ? p.rows.map((r) =>
-              r.placement.mode === "pinned" || r.placement.mode === "auto"
-                ? { ...r, placement: withMode(r.placement, "show") }
-                : r,
-            )
-          : p.rows,
-    }));
+    // Rows keep their placement: a Curated page shows them in its order and
+    // ignores Pinned/Show/Auto, so switching back restores every pin.
+    update((p) => ({ ...p, mode: m }));
   };
   const [perDevice, setPerDevice] = useState(false);
 
@@ -993,18 +1078,37 @@ export default function Recommendations() {
   };
 
   // ---- pickers -----------------------------------------------------------------------
+  // The picker counts the draft where there is one: this page's from the
+  // designer, other pages' from their kept drafts. This page also shows
+  // what its preview shows, so the two never disagree.
+  const onPage = preview?.summary ? preview.summary.rows + (preview.summary.appOnly ?? 0) : null;
   const pageOptions = useMemo(
     () =>
-      (pages.data ?? []).map((p) => ({
-        value: p.key,
-        label: p.name,
-        group: p.key === PAGE_HOME ? t("Everywhere") : experienceLabel(p.experience),
-        icon: p.key === PAGE_HOME ? <Sparkles size={14} /> : <Library size={14} />,
-        hint: `${tn(p.rowCount, "{count} row", "{count} rows")} · ${
-          p.mode === "curated" ? t("Curated") : t("Personalized")
-        }`,
-      })),
-    [pages.data, locale],
+      (pages.data ?? []).map((p) => {
+        const current = p.key === pageKey;
+        const kept = current ? draft : peekDraft(p.key);
+        const edited = current ? dirty : Boolean(kept);
+        const set = kept ? kept.rows.length : p.rowCount;
+        const pageMode = kept ? kept.mode : p.mode;
+        return {
+          value: p.key,
+          label: edited ? `${p.name} •` : p.name,
+          group: p.key === PAGE_HOME ? t("Everywhere") : experienceLabel(p.experience),
+          icon: p.key === PAGE_HOME ? <Sparkles size={14} /> : <Library size={14} />,
+          hint: [
+            current && onPage != null
+              ? tn(onPage, "{count} row on the page", "{count} rows on the page")
+              : null,
+            tn(set, "{count} row you set", "{count} rows you set"),
+            pageMode === "curated" ? t("Curated") : t("Personalized"),
+            edited ? t("unsaved changes") : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pages.data, locale, pageKey, draft, dirty, onPage],
   );
   const changedViewers = useMemo(() => {
     const counts = new Map<number, number>();
@@ -1017,6 +1121,11 @@ export default function Recommendations() {
       )
       .map((v) => ({ v, changes: counts.get(v.id) ?? 0 }));
   }, [draft, viewers]);
+  /** A viewer's name, with their age limit when they have one ("Luca · up to PG"). */
+  const viewerLabel = (v: Viewer) =>
+    v.ageLimit
+      ? t("{viewer} · up to {limit}", { viewer: viewerName(v), limit: v.ageLimit })
+      : viewerName(v);
   const editingOptions = [
     {
       value: "everyone",
@@ -1026,7 +1135,7 @@ export default function Recommendations() {
     },
     ...changedViewers.map(({ v, changes }) => ({
       value: String(v.id),
-      label: t("Just {viewer}", { viewer: viewerName(v) }),
+      label: t("Just {viewer}", { viewer: viewerLabel(v) }),
       hint: changes ? tn(changes, "{count} change", "{count} changes") : t("No changes"),
       icon: <User size={14} />,
     })),
@@ -1036,25 +1145,50 @@ export default function Recommendations() {
   const pageName = summary?.name ?? (pageKey === PAGE_HOME ? t("Home") : t("This page"));
   const viewerChanges = editingFor != null && draft ? changeCount(draft, editingFor) : 0;
   const counts = preview?.summary;
+  // The configured length and Ether's fill are separate; app-only rows
+  // (plugin rows Vela draws) never count toward the length.
   const summaryLine = !counts
     ? ""
-    : curated
-      ? tn(counts.rows, "{count} row · in your order", "{count} rows · in your order")
-      : t(
-          "{rows} of up to {length} rows · {pinned} pinned · {shown} shown · {auto} chosen by Ether",
-          {
-            rows: counts.rows,
-            length: counts.length,
-            pinned: counts.pinned,
-            shown: counts.shown,
-            auto: counts.auto,
-          },
-        );
+    : [
+        curated
+          ? tn(counts.rows, "{count} row · in your order", "{count} rows · in your order")
+          : counts.picksOn === false || (counts.picksOn == null && !draft?.picks)
+            ? tn(
+                counts.chosen ?? counts.rows,
+                "{count} chosen row · Ether's picks off",
+                "{count} chosen rows · Ether's picks off",
+              )
+            : t(
+                "{rows} rows · length {length} · {pinned} pinned · {shown} shown · {auto} filled in by Ether",
+                {
+                  rows: counts.rows,
+                  length: counts.length,
+                  pinned: counts.pinned,
+                  shown: counts.shown,
+                  auto: counts.auto,
+                },
+              ),
+        counts.appOnly
+          ? tn(
+              counts.appOnly,
+              "+ {count} only in Vela (not counted)",
+              "+ {count} only in Vela (not counted)",
+            )
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
       {dirty ? <Badge variant="warning">{t("Unsaved changes · kept if you leave")}</Badge> : null}
-      {dirty && impact ? (
+      {dirty && editingFor != null ? (
+        <span className="text-xs text-fg-muted">
+          {t("Affects only {viewer}", {
+            viewer: editingViewer ? viewerName(editingViewer) : "",
+          })}
+        </span>
+      ) : dirty && impact ? (
         <span className="text-xs text-fg-muted">
           {t("Affects {viewers} viewers · {changes} have changes", {
             viewers: impact.viewers,
@@ -1198,7 +1332,15 @@ export default function Recommendations() {
               <Section title={t("Length")}>
                 <Line
                   label={t("Up to")}
-                  hint={t("Pinned and shown rows always appear, even past this.")}
+                  hint={
+                    draft.picks
+                      ? t(
+                          "Pinned and shown rows always appear, even past this. Ether fills the rest up to this length.",
+                        )
+                      : t(
+                          "Pinned and shown rows always appear. With Ether's picks off, the length only limits your Auto rows.",
+                        )
+                  }
                 >
                   <span className="flex items-center gap-2">
                     <LengthInput
@@ -1313,14 +1455,20 @@ export default function Recommendations() {
     else
       groups.push({
         rowId: fan ? d.row.rowId : undefined,
-        label:
-          fan && pr
-            ? t("One row you made · {source} · one row per library", {
-                source: sourceByKind.get(pr.source.kind)?.title ?? pr.source.kind,
-              })
-            : undefined,
+        label: fan && pr ? (sourceByKind.get(pr.source.kind)?.title ?? pr.source.kind) : undefined,
         items: [d],
       });
+  }
+  // The bracket names the row and its libraries in their order.
+  for (const g of groups) {
+    if (!g.label) continue;
+    g.label = t("One row you made · {source} · one row per library: {libraries}", {
+      source: g.label,
+      libraries: g.items
+        .map((d) => libraryName(d.row.library))
+        .filter(Boolean)
+        .join(" → "),
+    });
   }
 
   const pageView = (
@@ -1329,7 +1477,7 @@ export default function Recommendations() {
         {editingFor != null ? (
           <Badge variant="info" className="h-8 gap-1.5 px-3 text-sm">
             <Eye size={13} />{" "}
-            {t("Previewing {viewer}", { viewer: editingViewer ? viewerName(editingViewer) : "" })}
+            {t("Previewing {viewer}", { viewer: editingViewer ? viewerLabel(editingViewer) : "" })}
           </Badge>
         ) : (
           <ToolbarPicker
@@ -1340,12 +1488,12 @@ export default function Recommendations() {
               <span className="inline-flex items-center gap-1.5">
                 <Eye size={13} className="text-fg-muted" />
                 <span className="text-fg-muted">{t("Preview as")}</span>
-                <b>{previewViewer ? viewerName(previewViewer) : t("Typical viewer")}</b>
+                <b>{previewViewer ? viewerLabel(previewViewer) : t("Typical viewer")}</b>
               </span>
             }
             options={[
               { value: "typical", label: t("Typical viewer") },
-              ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerName(v) })),
+              ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerLabel(v) })),
             ]}
           />
         )}
@@ -1491,6 +1639,7 @@ export default function Recommendations() {
                   pageRow={eff}
                   curated={curated}
                   showRating={Boolean(preview.access)}
+                  personal={source?.personal ?? d.row.personal}
                   selected={Boolean(editingRowId && d.row.rowId === editingRowId)}
                   fresh={fresh}
                   justViewer={
@@ -1564,8 +1713,9 @@ export default function Recommendations() {
                         type="button"
                         className="font-medium text-fg hover:underline"
                         onClick={() =>
-                          openUnstored(p.kind, (counts?.rows ?? display.length) + 1, null, {
+                          openUnstored(p.kind, display.length + 1, null, {
                             show: true,
+                            ether: { title: p.title, onPage: false },
                           })
                         }
                       >
@@ -1724,6 +1874,7 @@ export default function Recommendations() {
           sourcesError: sources.error,
           viewers: viewers ?? [],
           editingFor: editingViewer,
+          rows: draft?.rows,
           preview: {
             viewer: previewAs ?? undefined,
             device,
@@ -1737,11 +1888,17 @@ export default function Recommendations() {
         onRemove={removeOpen}
         onChangeSource={changeSource}
         onTab={(tab) => drawer && setDrawer({ ...drawer, tab })}
+        ether={drawer?.kind === "add" ? pending?.ether : undefined}
       />
     </>
   );
 }
 
+/**
+ * Which apps show the page. A library page is a tab in Vela; the other apps
+ * show the library's first rows tab as their own Recommended page (the same
+ * sentence as the library's Tabs settings).
+ */
 function appsLine(apps: string[] | undefined, home: boolean): string {
   const names: Record<string, string> = {
     plex: "Plex",
@@ -1752,7 +1909,18 @@ function appsLine(apps: string[] | undefined, home: boolean): string {
   const list = (apps ?? []).map((a) => names[a] ?? a);
   if (list.length === 0)
     return home ? t("Home in every app.") : t("This library's rows in every app.");
-  return t("{apps}. Each app draws what it can; rows marked Only in Vela are skipped elsewhere.", {
-    apps: list.join(", "),
-  });
+  if (home)
+    return t(
+      "{apps}. Each app draws what it can; rows marked Only in Vela are skipped elsewhere.",
+      {
+        apps: list.join(", "),
+      },
+    );
+  const others = (apps ?? []).filter((a) => a !== "vela").map((a) => names[a] ?? a);
+  if (others.length === 0)
+    return t("Vela shows these rows as a tab. Other apps don't show this tab.");
+  return t(
+    "Vela shows these rows as a tab; {apps} show them as the library's Recommended page. Rows marked Only in Vela are skipped elsewhere.",
+    { apps: others.join(", ") },
+  );
 }

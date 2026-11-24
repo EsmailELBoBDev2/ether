@@ -296,7 +296,12 @@ export default function CollectionEditor() {
                 }),
           },
         );
-        if (!id && saved.id)
+        // "New collection…" from a Recommendations row picker: back to the
+        // page, with the new collection as the row's source.
+        const back = search.get("returnTo");
+        if (!id && saved.id && back?.startsWith("/recommendations?"))
+          navigate(`${back}${encodeURIComponent(saved.id)}`, { replace: true });
+        else if (!id && saved.id)
           navigate(`/collections/${encodeURIComponent(saved.id)}`, { replace: true });
       } catch (e) {
         toast.error(t("Couldn't save"), { description: errorMessage(e) });
@@ -304,7 +309,7 @@ export default function CollectionEditor() {
         setSaving(false);
       }
     },
-    [spec, id, dKey, history, navigate],
+    [spec, id, dKey, history, navigate, search],
   );
 
   const rebuild = async () => {

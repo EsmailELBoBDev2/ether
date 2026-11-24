@@ -357,3 +357,28 @@ func TestMigrateRowsPagesFromTheOldLayout(t *testing.T) {
 		t.Fatalf("movies = %+v", movies)
 	}
 }
+
+// Two pins on one position: the first keeps it, the next says which row
+// holds the place; Ether's own rows say what they really follow.
+func TestPinCollisionAndNeighbourWhy(t *testing.T) {
+	a := prow(KindPopular, core.PlacementPinned, 2)
+	b := prow(KindTrending, core.PlacementPinned, 2)
+	p := rpage(core.PageHome, a, b)
+	rows := []core.HomeRow{
+		pageServedRow("home.popular", KindPopular, 12),
+		pageServedRow("home.trending", KindTrending, 12),
+		pageServedRow("home.top10", KindTop10, 10),
+	}
+	var got []core.HomeRow
+	for _, r := range arrangePage(rows, compilePage(p, true, 1, nil), 1, hubContext(testNow, core.DeviceTV), 8) {
+		if !r.Hidden {
+			got = append(got, r)
+		}
+	}
+	if len(got) != 3 || got[1].HubID != "home.popular" || got[2].HubID != "home.trending" {
+		t.Fatalf("order = %v", pageVisibleIDs(got))
+	}
+	if want := "Pinned to #2 for everyone; home.popular is pinned there too, so it's at #3"; got[2].Why != want {
+		t.Fatalf("collision why = %q", got[2].Why)
+	}
+}

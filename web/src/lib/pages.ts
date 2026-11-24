@@ -255,6 +255,12 @@ export interface PreviewSummary {
   auto: number;
   /** How many of Ether's picks the page could still use. */
   picks: number;
+  /** Whether the page lets Ether add its picks. */
+  picksOn?: boolean;
+  /** The page's own rows on it (rows less Ether's picks). */
+  chosen?: number;
+  /** Rows only some apps draw (plugin rows in Vela): not in rows, not counted toward the length. */
+  appOnly?: number;
 }
 export interface PagePreview {
   summary: PreviewSummary;
@@ -407,6 +413,22 @@ export function loadDraft(key: PageKey, revision: number): RowPage | null {
   } catch {
     return null;
   }
+}
+
+/** Any kept draft of a page (whatever its revision), for the page picker's counts. */
+export function peekDraft(key: PageKey): RowPage | null {
+  try {
+    const prefix = `${DRAFT_PREFIX}${key}@`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(prefix)) continue;
+      const page = JSON.parse(localStorage.getItem(k) ?? "null") as RowPage | null;
+      if (page && page.key === key && Array.isArray(page.rows)) return page;
+    }
+  } catch {
+    // Unreadable storage: no draft.
+  }
+  return null;
 }
 
 export function storeDraft(page: RowPage | null, key: PageKey, revision: number): void {

@@ -72,6 +72,11 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 		used[r.Source.Kind]++
 	}
 	out := core.PageSources{Sources: []core.PageSource{}, Libraries: libs}
+	for _, sp := range e.collectionSpecs(ctx) {
+		if sp.OwnerUserID == 0 {
+			out.Collections = append(out.Collections, core.CollectionRef{ID: sp.ID, Name: sp.Name, Count: sp.ItemCount})
+		}
+	}
 	for _, s := range e.SourceInfos() {
 		if s.HomeOnly && key != core.PageHome {
 			continue
@@ -105,12 +110,17 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 			ps.Unavailable = "No library here has what this row needs"
 		}
 		e.pluginSourceRefs(ctx, &ps, pageLibs)
-		out.Sources = append(out.Sources, ps)
-	}
-	for _, sp := range e.collectionSpecs(ctx) {
-		if sp.OwnerUserID == 0 {
-			out.Collections = append(out.Collections, core.CollectionRef{ID: sp.ID, Name: sp.Name, Count: sp.ItemCount})
+		if s.Kind == SourceCollection {
+			// The picker lists each collection by its name.
+			for _, c := range out.Collections {
+				name := c.Name
+				if name == "" {
+					name = "Untitled collection"
+				}
+				ps.Refs = append(ps.Refs, core.ParamOption{Value: c.ID, Label: name})
+			}
 		}
+		out.Sources = append(out.Sources, ps)
 	}
 	return out, nil
 }

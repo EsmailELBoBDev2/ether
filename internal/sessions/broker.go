@@ -1039,6 +1039,11 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 		}
 		return frontend.Session{}, core.ErrNotAvailable
 	}
+	if reused, ok := b.reuseDirectFileSession(v, req, p, ps); ok {
+		// The deferred release drops the plan's own source reference; the
+		// kept session holds its own.
+		return reused, nil
+	}
 	if remote, ok := b.deps.Playback.(interface {
 		OpenRemoteSource(context.Context, string) error
 	}); ok {

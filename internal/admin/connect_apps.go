@@ -141,7 +141,13 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 				if name == "" {
 					name = id
 				}
-				adapters[id] = connectAdapterMeta{Name: name, Logo: d.Logo, Auth: auth}
+				logo := d.Logo
+				// Package icons are served on the owner API, which a
+				// viewer's browser cannot load; the chooser's glyph stands in.
+				if strings.HasPrefix(logo, "/ether/api/plugins/") {
+					logo = ""
+				}
+				adapters[id] = connectAdapterMeta{Name: name, Logo: logo, Auth: auth}
 			}
 			resp["adapters"] = adapters
 		}

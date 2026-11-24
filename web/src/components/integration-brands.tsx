@@ -3,7 +3,7 @@ import xrdb from "../assets/brands/xrdb.png?no-inline";
 import betterposters from "../assets/brands/betterposters.png?no-inline";
 import rpdb from "../assets/brands/rpdb.jpg?no-inline";
 import { Cast, FolderOpen, ListVideo, Plug } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import emby from "../assets/brands/emby.svg?no-inline";
 import jellyfin from "../assets/brands/jellyfin.svg?no-inline";
 import plex from "../assets/brands/plex.svg?no-inline";
@@ -55,6 +55,25 @@ export function SiloMark() {
 /** Vela's app icon, from the Vela brand kit. */
 export function VelaMark() {
   return <img src={vela} alt="" aria-hidden className="block size-7 rounded-md" />;
+}
+
+/**
+ * A plugin adapter's mark, served by Ether from the plugin package (its
+ * declared adapter icon, else the plugin's icon). Drawn like Silo and Vela;
+ * the plug stands in when there is none or it fails to load.
+ */
+export function PluginAdapterMark({ src }: { src?: string }) {
+  const [failed, setFailed] = useState<string>();
+  if (!src || !/^(https?:|\/)/.test(src) || failed === src) return <Plug size={22} aria-hidden />;
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden
+      className="block size-7 rounded-md object-contain"
+      onError={() => setFailed(src)}
+    />
+  );
 }
 
 /** DLNA, Files, M3U, and plugin adapters have no vendored mark. These are icons, not letter tiles. */

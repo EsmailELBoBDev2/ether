@@ -836,6 +836,28 @@ unless the plugin explicitly declares a custom mapping.
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.
 
+### Frontend adapter icon
+
+`contributes.frontendAdapters[].icon` names the adapter's own mark: a
+path to an SVG or PNG inside the package (a PNG at most 512 KB and
+1024 px on a side). The Apps page shows it on the adapter's tab and
+cards, the way it shows Plex or Jellyfin. Without one, the plugin's
+`ether.icon` stands in, and then a generic plug. Ether serves it from
+the plugin's icon route (`/ether/api/plugins/{id}/icon?adapter={key}`),
+cache-busted per version, and the conformance kit fails a package whose
+adapter icon is missing or cannot be rendered.
+
+```json
+"frontendAdapters": [
+  { "key": "subsonic", "label": "Subsonic", "protocolHint": "subsonic",
+    "pathPrefix": "/rest", "auth": "query_credentials",
+    "icon": "assets/opensubsonic.svg" }
+]
+```
+
+Use a protocol's or app's own logo only to identify it, and record its
+source and licence in your package's NOTICE.
+
 ### Frontend adapter authentication
 
 `contributes.frontendAdapters[].auth` picks how Ether authenticates the

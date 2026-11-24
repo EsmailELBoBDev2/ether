@@ -1587,6 +1587,28 @@ unless the plugin explicitly declares a custom mapping.
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.
 
+### Frontend adapter icon
+
+`contributes.frontendAdapters[].icon` names the adapter's own mark: a
+path to an SVG or PNG inside the package (a PNG at most 512 KB and
+1024 px on a side). The Apps page shows it on the adapter's tab and
+cards, the way it shows Plex or Jellyfin. Without one, the plugin's
+`ether.icon` stands in, and then a generic plug. Ether serves it from
+the plugin's icon route (`/ether/api/plugins/{id}/icon?adapter={key}`),
+cache-busted per version, and the conformance kit fails a package whose
+adapter icon is missing or cannot be rendered.
+
+```json
+"frontendAdapters": [
+  { "key": "subsonic", "label": "Subsonic", "protocolHint": "subsonic",
+    "pathPrefix": "/rest", "auth": "query_credentials",
+    "icon": "assets/opensubsonic.svg" }
+]
+```
+
+Use a protocol's or app's own logo only to identify it, and record its
+source and licence in your package's NOTICE.
+
 ### Frontend adapter authentication
 
 `contributes.frontendAdapters[].auth` picks how Ether authenticates the
@@ -7750,6 +7772,7 @@ type KindMatchDecl struct {
 | `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan\|query_credentials |
 | `libraries` | `[]string` | may be omitted (see validation for conditions) | Libraries lists the plugin's media-kind keys this adapter publishes. Ether resolves each key to the library the kind created and admits a viewer only to the libraries they may see; a viewer who sees none of them is answered 404. Empty means the adapter is not library-scoped. |
 | `searchPaths` | `[]string` | may be omitted (see validation for conditions) | SearchPaths optionally lists adapter subpaths (such as "/search", "/rest/search3", or "/graphql") that handle interactive viewer searches and may call ai.complete when permissions.ai is "complete+search" (#702). When omitted, conventional search subpaths (ending in /search, /search2, or /search3, with optional .json/.xml/.view suffix) are recognized. |
+| `icon` | `string` | may be omitted (see validation for conditions) | Icon is the adapter's own mark on the Apps page: a path to an SVG or PNG inside the package. Without one the plugin's icon stands in. |
 
 
 ## Source: internal/plugins/contract.go#FrontendAdapterMeta
@@ -7776,6 +7799,9 @@ type FrontendAdapterMeta struct {
 	// When omitted, conventional search subpaths (ending in /search, /search2,
 	// or /search3, with optional .json/.xml/.view suffix) are recognized.
 	SearchPaths []string `json:"searchPaths,omitempty"`
+	// Icon is the adapter's own mark on the Apps page: a path to an SVG or
+	// PNG inside the package. Without one the plugin's icon stands in.
+	Icon string `json:"icon,omitempty"`
 }
 ``````
 
@@ -20174,6 +20200,7 @@ func Check(ctx context.Context, pkg *Package) (rep Report) {
 
 	// 4. Validate SVG icon if present (rasterize and check legibility on light and dark).
 	checkIcon(&rep, ctx, man, pkg.Files)
+	checkAdapterIcons(&rep, ctx, man, pkg.Files)
 
 	// 5. Runtime checks (hosted WASM/JS/TS or remote with local entry).
 	if man.Ether.Runtime.Kind == "hosted" {
@@ -20550,6 +20577,40 @@ func checkIcon(rep *Report, ctx context.Context, man plugins.Manifest, files map
 	// Check contrast/legibility on light (#f8fafc) and dark (#0f172a) backgrounds.
 	if !iconLegibleOnBoth(data) {
 		rep.addErr("icon", "ether.icon", "icon is not legible on both light and dark backgrounds")
+	}
+}
+``````
+
+## Source: internal/plugins/kit/check.go#checkAdapterIcons
+
+``````
+// checkAdapterIcons checks each frontend adapter's own mark: the file must
+// ship in the package and render as a bounded SVG or PNG. A brand mark keeps
+// its own colours, so it is not held to the plugin icon's legibility rule.
+func checkAdapterIcons(rep *Report, ctx context.Context, man plugins.Manifest, files map[string][]byte) {
+	rast := artwork.NewSVGRasterizer()
+	for i, a := range man.Ether.Contributes.FrontendAdapters {
+		if a.Icon == "" {
+			continue
+		}
+		field := fmt.Sprintf("ether.contributes.frontendAdapters[%d].icon", i)
+		if !plugins.ValidAdapterIconPath(a.Icon) {
+			rep.addErr("icon", field, "adapter icon must be an SVG or PNG file inside the package")
+			continue
+		}
+		data, ok := files[a.Icon]
+		if !ok {
+			rep.addErr("icon", field, fmt.Sprintf("missing adapter icon file %q", a.Icon))
+			continue
+		}
+		isPNG := strings.HasSuffix(strings.ToLower(a.Icon), ".png")
+		if isPNG != artwork.IsPNG(data) {
+			rep.addErr("icon", field, "adapter icon contents do not match its file extension")
+			continue
+		}
+		if _, _, err := rast.RasterizeIcon(ctx, "kit-adapter:"+man.ID+":"+a.Key, data, artwork.RasterOptions{Width: 64, Height: 64, Format: "png"}); err != nil {
+			rep.addErr("icon", field, fmt.Sprintf("adapter icon cannot be rendered safely (SVG or PNG up to 512 KB and %d px): %v", artwork.MaxIconPNGDimension, err))
+		}
 	}
 }
 ``````
@@ -26486,7 +26547,21 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 			}
 			seenSearch[norm] = true
 		}
+		if a.Icon != "" && !ValidAdapterIconPath(a.Icon) {
+			add(base+".icon", "must be an SVG or PNG file inside the package")
+		}
 	}
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#ValidAdapterIconPath
+
+``````
+// ValidAdapterIconPath reports whether p names an SVG or PNG file inside
+// the package; the conformance kit checks the file itself.
+func ValidAdapterIconPath(p string) bool {
+	lower := strings.ToLower(p)
+	return !unsafePath(p) && !isHTTPURL(p) && (strings.HasSuffix(lower, ".svg") || strings.HasSuffix(lower, ".png"))
 }
 ``````
 
@@ -36472,6 +36547,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.frontendAdapters[].auth` | `string` | false | {} |
 | `ether.contributes.frontendAdapters[].clients` | `array` | false | {} |
 | `ether.contributes.frontendAdapters[].defaultPort` | `integer` | false | {} |
+| `ether.contributes.frontendAdapters[].icon` | `string` | false | {} |
 | `ether.contributes.frontendAdapters[].key` | `string` | false | {} |
 | `ether.contributes.frontendAdapters[].label` | `string` | false | {} |
 | `ether.contributes.frontendAdapters[].libraries` | `array` | false | {} |
@@ -37217,6 +37293,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                   },
                   "defaultPort": {
                     "type": "integer"
+                  },
+                  "icon": {
+                    "type": "string"
                   },
                   "key": {
                     "type": "string"
@@ -39953,7 +40032,7 @@ be overwritten or deleted by a plugin.
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |
-| frontend_adapter | authenticated protocol routes | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
+| frontend_adapter | authenticated protocol routes; optional `frontendAdapters[].icon` (package SVG/PNG) as its Apps page mark | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
@@ -64156,6 +64235,7 @@ type KindMatchDecl struct {
 | `auth` | `string` | may be omitted (see validation for conditions) | ether_token (default)\|basic\|none_lan\|query_credentials |
 | `libraries` | `[]string` | may be omitted (see validation for conditions) |  |
 | `searchPaths` | `[]string` | may be omitted (see validation for conditions) | SearchPaths optionally lists adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". |
+| `icon` | `string` | may be omitted (see validation for conditions) | Icon is the adapter's own mark on the Apps page: a path to an SVG or PNG inside the package. Without one the plugin's icon stands in. |
 
 
 ## Source: sdk/go/types.go#FrontendAdapterMeta
@@ -64175,6 +64255,9 @@ type FrontendAdapterMeta struct {
 	// "/rest/search3", or "/graphql") allowed to call ai.complete when
 	// permissions.ai is "complete+search".
 	SearchPaths []string `json:"searchPaths,omitempty"`
+	// Icon is the adapter's own mark on the Apps page: a path to an SVG or
+	// PNG inside the package. Without one the plugin's icon stands in.
+	Icon string `json:"icon,omitempty"`
 }
 ``````
 
@@ -70340,6 +70423,23 @@ class KindLiveProvider:
 
     def resolve_live(self, ctx: PluginContext, req: Dict[str, Any]) -> Dict[str, Any]:
         raise NotImplementedError
+
+
+class FrontendAdapterMeta(TypedDict, total=False):
+    """One ``contributes.frontendAdapters[]`` manifest entry."""
+
+    key: str
+    label: str
+    protocolHint: Literal["opds", "subsonic", "custom"]
+    pathPrefix: str
+    defaultPort: int
+    clients: List[str]
+    auth: Literal["ether_token", "basic", "none_lan", "query_credentials"]
+    libraries: List[str]
+    searchPaths: List[str]
+    # Path to an SVG or PNG inside the package, shown as the adapter's mark
+    # on the Apps page. Without one the plugin's icon stands in.
+    icon: str
 
 
 class FrontendAdapter:
@@ -76831,6 +76931,8 @@ export interface FrontendAdapterMeta {
   libraries?: string[];
   /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
   searchPaths?: string[];
+  /** Path to an SVG or PNG inside the package, shown as the adapter's mark on the Apps page. Without one the plugin's icon stands in. */
+  icon?: string;
 }
 
 export interface SetupStep {

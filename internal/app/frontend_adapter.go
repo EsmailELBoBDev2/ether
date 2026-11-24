@@ -50,7 +50,7 @@ func (c adapterCatalog) EnabledAdapters(ctx context.Context) ([]frontendadapter.
 				PluginID:       rec.ID,
 				Meta:           meta,
 				Name:           strings.TrimSpace(meta.Label),
-				Icon:           rec.Manifest.Logo,
+				Icon:           c.app.pluginsRT.mgr.AdapterIconURL(ctx, rec, meta.Key),
 				Version:        rec.Version,
 				DocsURL:        rec.Manifest.Ether.Repo,
 				SettingsSchema: rec.Manifest.Ether.Settings,

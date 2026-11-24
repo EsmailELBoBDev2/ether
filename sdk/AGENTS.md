@@ -127,7 +127,7 @@ be overwritten or deleted by a plugin.
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |
-| frontend_adapter | authenticated protocol routes | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
+| frontend_adapter | authenticated protocol routes; optional `frontendAdapters[].icon` (package SVG/PNG) as its Apps page mark | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.

@@ -944,6 +944,8 @@ export interface FrontendAdapterMeta {
   libraries?: string[];
   /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
   searchPaths?: string[];
+  /** Path to an SVG or PNG inside the package, shown as the adapter's mark on the Apps page. Without one the plugin's icon stands in. */
+  icon?: string;
 }
 
 export interface SetupStep {

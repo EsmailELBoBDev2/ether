@@ -450,6 +450,9 @@
                   "defaultPort": {
                     "type": "integer"
                   },
+                  "icon": {
+                    "type": "string"
+                  },
                   "key": {
                     "type": "string"
                   },

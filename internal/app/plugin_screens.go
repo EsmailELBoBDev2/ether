@@ -429,4 +429,8 @@ func (p screenPushes) PutRecords(ctx context.Context, pluginID string, raw json.
 	return p.svc.PutRecords(ctx, pluginID, recs)
 }
 
+func (s surfaceScreens) ScreenPreviewValid(ctx context.Context) bool {
+	return s.docs().IsPreview(ctx)
+}
+
 var _ frontend.PluginScreens = surfaceScreens{}

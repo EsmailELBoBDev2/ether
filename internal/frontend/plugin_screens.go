@@ -104,6 +104,8 @@ type PluginScreens interface {
 	// ToastSurface returns the wire id of pluginID's published toast surface
 	// for viewer, or "".
 	ToastSurface(ctx context.Context, viewer *Viewer, c ScreenClient, pluginID string) string
+	// ScreenPreviewValid reports whether ctx's Studio preview token is live.
+	ScreenPreviewValid(ctx context.Context) bool
 }
 
 type screenPreviewKey struct{}

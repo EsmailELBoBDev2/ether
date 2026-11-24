@@ -115,6 +115,54 @@
             }
           ]
         }
+      ],
+      "surfaces": [
+        {
+          "id": "scorebug",
+          "presentation": "playerOverlay",
+          "title": "$t:surface_scorebug",
+          "anchor": "topLeft",
+          "visibility": "always",
+          "setting": {
+            "id": "scorebug",
+            "label": "$t:setting_scorebug",
+            "default": true
+          },
+          "when": {
+            "event": {
+              "feed": "sports"
+            }
+          },
+          "document": "surfaces/scorebug.json"
+        },
+        {
+          "id": "ticker",
+          "presentation": "playerOverlay",
+          "title": "$t:surface_ticker",
+          "anchor": "bottom",
+          "visibility": "toggle",
+          "setting": {
+            "id": "ticker",
+            "label": "$t:setting_ticker",
+            "default": false
+          },
+          "when": {
+            "kind": "channel"
+          },
+          "document": "surfaces/ticker.json"
+        },
+        {
+          "id": "alert",
+          "presentation": "toast",
+          "title": "$t:surface_alert",
+          "document": "surfaces/alert.json"
+        },
+        {
+          "id": "tonight",
+          "presentation": "homeRow",
+          "title": "$t:surface_tonight",
+          "document": "surfaces/tonight.json"
+        }
       ]
     }
   }

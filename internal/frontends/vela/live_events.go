@@ -241,6 +241,9 @@ func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
 			problem(w, 404, "not-found", "not_found")
 			return
 		}
+		if i.previewExpired(w, r, ps) {
+			return
+		}
 		ss, err := ps.ScreenStream(r.Context(), v, topics, since, i.newLiveImages(r, token))
 		if err != nil {
 			screenFail(w, r, err)

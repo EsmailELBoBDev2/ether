@@ -19,6 +19,17 @@ func (i *instance) pluginScreens() (frontend.PluginScreens, bool) {
 	return ps, ok && ps != nil
 }
 
+// previewExpired answers 403 preview_expired when a request carries a Studio
+// preview token that is no longer live, so Vela can say so instead of
+// silently showing the installed documents.
+func (i *instance) previewExpired(w http.ResponseWriter, r *http.Request, ps frontend.PluginScreens) bool {
+	if frontend.ScreenPreviewFrom(r.Context()) == "" || ps.ScreenPreviewValid(r.Context()) {
+		return false
+	}
+	problemMessage(w, 403, "forbidden", "preview_expired", "this preview has expired; reload it from Studio")
+	return true
+}
+
 // screenClient reads the client's renderer and locale. The renderer comes
 // from X-Vela-Screen-Renderer; a request without it draws no documents.
 func screenClient(r *http.Request) frontend.ScreenClient {
@@ -82,6 +93,9 @@ func (i *instance) serveScreenDocument(w http.ResponseWriter, r *http.Request, k
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	if i.previewExpired(w, r, ps) {
+		return
+	}
 	q := r.URL.Query()
 	for name, vals := range q {
 		if (name != "v" && name != "r" && name != "l") || len(vals) != 1 {
@@ -143,6 +157,9 @@ func (i *instance) serveScreenData(w http.ResponseWriter, r *http.Request, kind,
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	if i.previewExpired(w, r, ps) {
+		return
+	}
 	req := frontend.ScreenDataRequest{Kind: kind, ID: id, Page: page, Params: map[string]string{}, Client: screenClient(r), Images: i.newLiveImages(r, token)}
 	for name, vals := range r.URL.Query() {
 		if len(vals) != 1 || !utf8.ValidString(vals[0]) || len(vals[0]) > maxScreenParamBytes {
@@ -193,6 +210,9 @@ func (i *instance) serveScreenAction(w http.ResponseWriter, r *http.Request, kin
 	ps, ok := i.pluginScreens()
 	if !ok {
 		problem(w, 404, "not-found", "not_found")
+		return
+	}
+	if i.previewExpired(w, r, ps) {
 		return
 	}
 	var in struct {

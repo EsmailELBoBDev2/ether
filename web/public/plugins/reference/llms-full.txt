@@ -27067,6 +27067,32 @@ func (m *Manager) clearBlockedOperatorHosts(pluginID string) {
 const ResolverTotal = 25 * time.Second
 ``````
 
+## Source: internal/plugins/pending.go#resolveSliceHookKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/pending.go#resolveSliceHookKey
+
+``````
+type resolveSliceHookKey struct{}
+``````
+
+## Source: internal/plugins/pending.go#WithResolveSliceHook
+
+``````
+// WithResolveSliceHook attaches a callback invoked immediately before each
+// resolve/match slice inside Manager.Call so the caller can track per-slice
+// host source progress.
+func WithResolveSliceHook(ctx context.Context, fn func()) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, resolveSliceHookKey{}, fn)
+}
+``````
+
 ## Source: internal/plugins/pending.go#PendingReply.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -27144,6 +27170,9 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	var lastRetryMS int64
 	var job *actionJob
 	for {
+		if onSlice, _ := ctx.Value(resolveSliceHookKey{}).(func()); onSlice != nil {
+			onSlice()
+		}
 		resp, err := m.callOnce(ctx, pluginID, req)
 		if err != nil {
 			if parent.Err() != nil {

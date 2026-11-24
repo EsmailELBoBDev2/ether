@@ -1568,11 +1568,23 @@ func (s *Service) ensureParentTallies(ctx context.Context) {
 		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil || len(decl.Levels) < 2 {
 			continue
 		}
-		rootLevel := decl.Levels[0].Key
+		// Items at a level with a parent level are the ones the tally
+		// counts as children. Levels[0] is not the only root: a members
+		// level (playlists) has no parent either, and counting it as a
+		// child made every startup see drift and rebuild the whole tally.
+		var childLevels []any
+		for _, lv := range decl.Levels {
+			if decl.LevelParent(lv.Key) != "" {
+				childLevels = append(childLevels, lv.Key)
+			}
+		}
+		if len(childLevels) == 0 {
+			continue
+		}
 		var nonRootCount, talliedChildren int64
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ? AND level <> ?`,
-			int64(k.libraryID), rootLevel).Scan(&nonRootCount); err != nil {
+			`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ? AND level IN (`+store.Placeholders(len(childLevels))+`)`,
+			append([]any{int64(k.libraryID)}, childLevels...)...).Scan(&nonRootCount); err != nil {
 			continue
 		}
 		if err := s.db.QueryRowContext(ctx,
@@ -1583,15 +1595,13 @@ func (s *Service) ensureParentTallies(ctx context.Context) {
 		if nonRootCount == talliedChildren {
 			continue
 		}
+		// Real drift (orphaned children, a restore, an older binary) is
+		// repaired row by row in short transactions; only differing rows
+		// are written.
 		mu := s.kindLock(k.pluginID, k.kindKey)
 		mu.Lock()
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err == nil {
-			if rErr := rebuildKindParentTallyForKindTx(ctx, tx, k.pluginID, k.kindKey, k.libraryID, decl); rErr == nil {
-				_ = tx.Commit()
-			} else {
-				_ = tx.Rollback()
-			}
+		if err := s.repairKindParentTallyLocked(ctx, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
+			s.log.Warn("parent tally repair failed", "plugin", k.pluginID, "kind", k.kindKey, "err", err)
 		}
 		mu.Unlock()
 	}
@@ -1731,16 +1741,16 @@ func (s *Service) reindexKindChunked(ctx context.Context, isPG bool, pluginID, k
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
+	if s.hasTable(ctx, dialect, "plugin_item_parent_tally") {
+		if err := s.repairKindParentTallyLocked(ctx, pluginID, kindKey, fallbackLibID, decl); err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if hasTableTx(ctx, tx, dialect, "plugin_item_parent_tally") {
-		if err := rebuildKindParentTallyForKindTx(ctx, tx, pluginID, kindKey, fallbackLibID, decl); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
 		currentFTSVersion, pluginID, kindKey); err != nil {

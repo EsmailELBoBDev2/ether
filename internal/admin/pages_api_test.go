@@ -81,7 +81,7 @@ func (f *fakePages) PageSources(context.Context, core.PageKey) (core.PageSources
 	return core.PageSources{Sources: []core.PageSource{}, Libraries: fakeLibraries}, nil
 }
 func (f *fakePages) PreviewPage(context.Context, *core.User, core.PageKey, core.PagePreviewRequest) (*core.PagePreview, error) {
-	return nil, personalize.ErrPageNotReady
+	return &core.PagePreview{Rows: []core.HomeRow{}, Picks: []core.PreviewPick{}, NotShown: []core.NotShownRow{}}, nil
 }
 func (f *fakePages) PreviewPageRow(_ context.Context, _ *core.User, _ core.PageKey, req core.RowPreviewRequest) (*core.RowPreview, error) {
 	return &core.RowPreview{Rows: []core.HomeRow{{HubID: "h", Title: req.Row.Name, Items: []core.Title{poster}}}, Total: 1}, nil
@@ -149,8 +149,8 @@ func TestPagesAPI(t *testing.T) {
 		t.Fatalf("invalid save: %d %s", rec.Code, rec.Body)
 	}
 
-	if rec := serve(h, req(http.MethodPost, kids+"/preview", `{"device":"tv"}`)); rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("preview before the engine switch: %d %s", rec.Code, rec.Body)
+	if rec := serve(h, req(http.MethodPost, kids+"/preview", `{"device":"tv"}`)); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"summary"`) {
+		t.Fatalf("preview: %d %s", rec.Code, rec.Body)
 	}
 	rec = serve(h, req(http.MethodPost, kids+"/rows/preview", `{"row":{"id":"","name":"Picks","source":{"kind":"trending"}},"device":"fridge"}`))
 	if rec.Code != http.StatusBadRequest {

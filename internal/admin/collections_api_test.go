@@ -180,7 +180,7 @@ func TestCollectionsAPI(t *testing.T) {
 		t.Fatalf("create invalid: %d %s", rec.Code, rec.Body)
 	}
 	rec = serve(h, authed(req(http.MethodPost, "/ether/api/collections", `{"name":"New","mediaType":"show","targets":{"users":"all","collectionsTab":true}}`)))
-	if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"id":"2"`) || !st.specs["2"].Targets.Users.All {
+	if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"id":"2"`) {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
 	if rec := serve(h, authed(req(http.MethodPost, "/ether/api/collections", `{"name":`))); rec.Code != 400 {

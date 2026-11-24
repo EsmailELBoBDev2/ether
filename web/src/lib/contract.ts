@@ -170,18 +170,6 @@ export type Refresh = "live" | "hourly" | "daily" | "weekly";
 export type ArtworkMode = "auto" | "collage" | "backdrop" | "tmdb" | "custom";
 export type DeviceClass = "tv" | "mobile" | "web" | "desktop";
 
-/** A row schedule (layout types). */
-export interface TargetSchedule {
-  days?: number[];
-  fromHour?: number;
-  toHour?: number;
-  devices?: DeviceClass[];
-  dayparts?: Daypart[];
-  months?: number[];
-  startDate?: string;
-  endDate?: string;
-}
-
 export interface CollectionSpec {
   localOnly?: boolean;
   releaseMode?: "released" | "upcoming" | "mixed";

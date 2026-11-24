@@ -14,7 +14,6 @@ func TestLastChanceMatchesActualNextRotationAndViewerTargets(t *testing.T) {
 			e := newEnv(t, withOpts(collections.WithNow(func() time.Time { return now })))
 			sp := spec("Rotating picks", "movie", catalogSource(), rl("votes", "gte", 1000))
 			sp.Rotate = &core.CollectionRotate{Size: 5, Every: every}
-			sp.Targets.Users = core.UserTargets{IDs: []int64{owner.ID}}
 			created, err := e.svc.CreateSpec(e.ctx, sp)
 			if err != nil {
 				t.Fatal(err)
@@ -36,10 +35,6 @@ func TestLastChanceMatchesActualNextRotationAndViewerTargets(t *testing.T) {
 					t.Fatal(err)
 				}
 				deadlines[title.Key] = at
-				other, err := e.svc.LastChance(e.ctx, guest, title.Key)
-				if err != nil || !other.IsZero() {
-					t.Fatal("targeted deadline leaked to another viewer")
-				}
 			}
 			now = boundary
 			next, err := e.svc.Items(e.ctx, owner, key, 0, 100)

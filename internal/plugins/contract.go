@@ -791,7 +791,7 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 		return out
 	}
 	return []KindLibraryTab{
-		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "recommended", Label: "Recommendations", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
 	}
 }

@@ -160,7 +160,7 @@ func (s *Service) parseDraft(ctx context.Context, content, mediaType string) (*c
 	sp := core.CollectionSpec{
 		Name: firstNonEmpty(d.Name, d.Title), Description: d.Description, MediaType: strings.ToLower(d.MediaType),
 		Match: strings.ToLower(d.Match), Sort: d.Sort, Refresh: RefreshDaily, Enabled: true,
-		Artwork: core.CollectionArtwork{Mode: "auto"},
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
 		BrowseInApps: true,
 	}
 	if sp.Name == "" {

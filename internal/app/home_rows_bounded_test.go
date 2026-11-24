@@ -187,7 +187,7 @@ func TestHomeRowsBoundedAcrossRowGrowth(t *testing.T) {
 		extraSpecs = append(extraSpecs, core.CollectionSpec{
 			Name:    fmt.Sprintf("Home Extra %d", i+1),
 			Enabled: true, MediaType: mt,
-			Sources: []core.CollectionSource{{Kind: "titles", Keys: keys}},
+			Sources:      []core.CollectionSource{{Kind: "titles", Keys: keys}},
 			BrowseInApps: true,
 		})
 	}

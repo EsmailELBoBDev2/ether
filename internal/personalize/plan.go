@@ -210,6 +210,12 @@ func compilePage(p core.RowPage, saved bool, viewer int64, libs map[core.Library
 		_, param := sourceParam(row.Source)
 		skey := sourceKey(row.Source.Kind, param)
 		plain := plainParams(row.Source) && len(row.Scope.Libraries) == 0 && !row.Scope.PerLibrary
+		if strings.HasPrefix(row.Source.Kind, "plugin:") {
+			// A plugin list row comes back from LayoutRow under its full row
+			// id, options included ("plugin:x/y?genre=Action").
+			skey = core.PluginListRowID(row.Source.Kind, row.Source.Params)
+			plain = len(row.Scope.Libraries) == 0 && !row.Scope.PerLibrary
+		}
 		if plain && pl.bySrc[skey] == nil {
 			pl.bySrc[skey] = r
 		} else {

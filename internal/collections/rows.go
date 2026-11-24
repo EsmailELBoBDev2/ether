@@ -49,6 +49,10 @@ func rowPageKeys(keys []core.RatingKey, mediaType string) ([]core.RatingKey, boo
 	return out, dropped
 }
 
+// homeIndexWait bounds how long a page waits for the catalogue index's
+// first build before it serves a live row from its last build.
+const homeIndexWait = 300 * time.Millisecond
+
 // homeRowWait bounds how long a single collection row may block a page's
 // row assembly before its build finishes in the background.
 const homeRowWait = 500 * time.Millisecond
@@ -70,7 +74,14 @@ func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubCon
 		return nil, core.ErrNotFound
 	}
 	rctx, rcancel := context.WithTimeout(ctx, homeRowWait)
-	keys, err := s.serve(rctx, row, user, true)
+	// A live row is evaluated on request, but a page does not wait out the
+	// catalogue index's first build (it reads the whole catalogue): past
+	// homeIndexWait it serves the row's last build until the index is ready.
+	live := true
+	if row.spec.Refresh == RefreshLive {
+		live = s.idx.readyWithin(ctx, homeIndexWait) != nil
+	}
+	keys, err := s.serve(rctx, row, user, live)
 	rcancel()
 	if err != nil {
 		return nil, err

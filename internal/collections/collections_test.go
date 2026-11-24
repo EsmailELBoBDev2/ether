@@ -287,8 +287,8 @@ func TestDamagedStoredRuleSkipsAndWarnsWithoutBreakingHomeRows(t *testing.T) {
 		Rules: []core.CollectionRule{
 			{Field: "genre", Op: "in", Value: json.RawMessage(`["Science Fiction"]`)},
 		},
-		Refresh: "live",
-		Enabled: true,
+		Refresh:      "live",
+		Enabled:      true,
 		BrowseInApps: true,
 	})
 	if err != nil {
@@ -306,7 +306,7 @@ func TestDamagedStoredRuleSkipsAndWarnsWithoutBreakingHomeRows(t *testing.T) {
 	if len(got.Rules) != 1 || len(got.Warnings) == 0 || !strings.Contains(got.Warnings[0], `Rule "year" has a damaged value`) {
 		t.Fatalf("expected damaged rule to be skipped with warning, got rules=%+v warnings=%+v", got.Rules, got.Warnings)
 	}
-	rows, err := svc.HomeRowsFor(ctx, &core.User{ID: 1, IsOwner: true}, core.HubContext{Now: time.Now()})
+	rows, err := collections.PageRowsForTest(ctx, svc, &core.User{ID: 1, IsOwner: true})
 	if err != nil {
 		t.Fatal(err)
 	}

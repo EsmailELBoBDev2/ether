@@ -341,7 +341,7 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 		Sort:    "source",
 		Refresh: "daily",
 		Enabled: true,
-		Targets: core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	}
 
 	prev, err := h.cols.Preview(ctx, spec, 10)
@@ -402,7 +402,7 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 	if _, ok := h.cols.KindRegistry().Lookup(kindID); ok {
 		t.Fatal("expected collection SourceKind to be unregistered on disable")
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(kindID); ok {
+	if _, ok := h.pers.RowKindRegistry().Source(kindID); ok {
 		t.Fatal("expected RowSourceKind to be unregistered on disable")
 	}
 
@@ -419,7 +419,7 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 	if _, ok := h.cols.KindRegistry().Lookup(kindID); ok {
 		t.Fatal("expected collection SourceKind to be unregistered on remove")
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(kindID); ok {
+	if _, ok := h.pers.RowKindRegistry().Source(kindID); ok {
 		t.Fatal("expected RowSourceKind to be unregistered on remove")
 	}
 }
@@ -545,7 +545,7 @@ func TestCollectionViewerUsesSnapshot(t *testing.T) {
 	h.rt.routes["/catalog/movie/staff_picks/genre=scifi.json"] = func(plugins.Request) (plugins.Response, error) {
 		return plugins.Response{Status: 200, Body: json.RawMessage(`{"metas":[{"id":"tmdb:101"}],"hasMore":false}`)}, nil
 	}
-	created, err := h.cols.CreateSpec(ctx, core.CollectionSpec{Name: "Snapshot", MediaType: "movie", Refresh: "daily", Enabled: true, Sources: []core.CollectionSource{{Kind: extend.PluginID(rec.ID, "staff_picks"), Params: map[string]string{"genre": "scifi"}}}, Targets: core.CollectionTargets{CollectionsTab: true, HomeRow: true, Users: core.AllUsers()}})
+	created, err := h.cols.CreateSpec(ctx, core.CollectionSpec{Name: "Snapshot", MediaType: "movie", Refresh: "daily", Enabled: true, Sources: []core.CollectionSource{{Kind: extend.PluginID(rec.ID, "staff_picks"), Params: map[string]string{"genre": "scifi"}}}, BrowseInApps: true})
 	if err != nil {
 		t.Fatal(err)
 	}

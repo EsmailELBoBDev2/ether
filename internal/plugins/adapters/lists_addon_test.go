@@ -69,7 +69,7 @@ func TestAddonCatalogMatchesByIDAndCountsUnmatched(t *testing.T) {
 	}
 	sp := core.CollectionSpec{
 		Name: "Action picks", MediaType: "movie", Sort: "source", Refresh: "daily", Enabled: true,
-		Sources: []core.CollectionSource{{Kind: movies, Params: map[string]string{"genre": "Action"}}},
+		Sources:      []core.CollectionSource{{Kind: movies, Params: map[string]string{"genre": "Action"}}},
 		BrowseInApps: true,
 	}
 	prev, err := h.cols.Preview(ctx, sp, 20)

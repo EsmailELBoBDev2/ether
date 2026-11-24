@@ -649,7 +649,7 @@ func specFromFilter(c core.Collection) core.CollectionSpec {
 		Name: c.Title, Description: c.Summary, MediaType: MediaMixed,
 		Sources: []core.CollectionSource{{Kind: "catalog"}}, Match: MatchAll,
 		Refresh: RefreshLive, Enabled: true, Sort: string(c.Sort), SortDesc: c.Sort != core.SortTitle,
-		Artwork: core.CollectionArtwork{Mode: "auto"},
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
 		BrowseInApps: true,
 	}
 	if f.Topic != "" {

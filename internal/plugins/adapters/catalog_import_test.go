@@ -324,7 +324,7 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 			Refresh:        collections.RefreshDaily,
 			MaxItems:       250,
 			Enabled:        true,
-			BrowseInApps: true,
+			BrowseInApps:   true,
 			Items: []core.AddonCatalogImportItem{
 				{Key: popMovieKey},
 				{Key: popSeriesKey},
@@ -608,12 +608,12 @@ func TestScheduledRunDueRespectsPerAddonBuildBudget(t *testing.T) {
 		items = append(items, core.AddonCatalogImportItem{Key: c.Key})
 	}
 	res, err := h.importer.Apply(ctx, core.AddonCatalogImportRequest{
-		URL:     h.srv.URL + "/bulk/manifest.json",
-		Folder:  "Bulk",
-		Refresh: collections.RefreshDaily,
-		Enabled: true,
+		URL:          h.srv.URL + "/bulk/manifest.json",
+		Folder:       "Bulk",
+		Refresh:      collections.RefreshDaily,
+		Enabled:      true,
 		BrowseInApps: true,
-		Items:   items,
+		Items:        items,
 	})
 	if err != nil || res.Created != 6 {
 		t.Fatalf("bulk apply = %+v err=%v", res, err)

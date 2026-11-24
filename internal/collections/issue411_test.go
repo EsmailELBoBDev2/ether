@@ -48,12 +48,12 @@ func TestMixedCollectionRowKeepsMoviesBehindShows(t *testing.T) {
 		t.Fatal(err)
 	}
 	sp, err := s.CreateSpec(ctx, core.CollectionSpec{
-		Name:      "Mixed MDBList",
-		MediaType: MediaMixed,
-		Sources:   []core.CollectionSource{{Kind: "titles", Keys: keys}},
-		Sort:      "source",
-		Refresh:   "daily",
-		Enabled:   true,
+		Name:         "Mixed MDBList",
+		MediaType:    MediaMixed,
+		Sources:      []core.CollectionSource{{Kind: "titles", Keys: keys}},
+		Sort:         "source",
+		Refresh:      "daily",
+		Enabled:      true,
 		BrowseInApps: true,
 	})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestMixedCollectionRowKeepsMoviesBehindShows(t *testing.T) {
 	}
 
 	owner := &core.User{ID: 1, IsOwner: true}
-	rows, err := s.HomeRowsFor(ctx, owner, core.HubContext{})
+	rows, err := pageRows(ctx, s, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,12 +125,12 @@ func TestItemsPagingFiltersInvalidMembersBeforeSlicing(t *testing.T) {
 		t.Fatal(err)
 	}
 	sp, err := s.CreateSpec(ctx, core.CollectionSpec{
-		Name:      "Filtered Paging",
-		MediaType: MediaMovie,
-		Sources:   []core.CollectionSource{{Kind: "titles", Keys: keyStrings(validKeys)}},
-		Sort:      "source",
-		Refresh:   "daily",
-		Enabled:   true,
+		Name:         "Filtered Paging",
+		MediaType:    MediaMovie,
+		Sources:      []core.CollectionSource{{Kind: "titles", Keys: keyStrings(validKeys)}},
+		Sort:         "source",
+		Refresh:      "daily",
+		Enabled:      true,
 		BrowseInApps: true,
 	})
 	if err != nil {
@@ -187,12 +187,12 @@ func TestBuiltCollectionServesWhileIndexIsBuilding(t *testing.T) {
 		t.Fatal(err)
 	}
 	sp, err := s.CreateSpec(ctx, core.CollectionSpec{
-		Name:      "Pinned Built Collection",
-		MediaType: MediaMovie,
-		Sources:   []core.CollectionSource{{Kind: "titles", Keys: []string{mk.String()}}},
-		Sort:      "source",
-		Refresh:   "daily",
-		Enabled:   true,
+		Name:         "Pinned Built Collection",
+		MediaType:    MediaMovie,
+		Sources:      []core.CollectionSource{{Kind: "titles", Keys: []string{mk.String()}}},
+		Sort:         "source",
+		Refresh:      "daily",
+		Enabled:      true,
 		BrowseInApps: true,
 	})
 	if err != nil {
@@ -242,12 +242,12 @@ func TestRepairMemberTiersPromotesSearchTierMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	sp, err := s.CreateSpec(ctx, core.CollectionSpec{
-		Name:      "Promotes Tail Members",
-		MediaType: MediaMovie,
-		Sources:   []core.CollectionSource{{Kind: "titles", Keys: []string{mk.String()}}},
-		Sort:      "source",
-		Refresh:   "daily",
-		Enabled:   true,
+		Name:         "Promotes Tail Members",
+		MediaType:    MediaMovie,
+		Sources:      []core.CollectionSource{{Kind: "titles", Keys: []string{mk.String()}}},
+		Sort:         "source",
+		Refresh:      "daily",
+		Enabled:      true,
 		BrowseInApps: true,
 	})
 	if err != nil {

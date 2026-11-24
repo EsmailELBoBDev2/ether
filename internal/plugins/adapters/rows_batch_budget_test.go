@@ -141,8 +141,9 @@ func TestPluginLibraryRowsBatchesShelvesAndDeduplicatesRequestReads(t *testing.T
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}
-	if len(rows) != 28 {
-		t.Fatalf("PluginLibraryRows len = %d, want 28", len(rows))
+	// 28 declared shelves, then the library's own Newest and Recently Added.
+	if len(rows) != 30 {
+		t.Fatalf("PluginLibraryRows len = %d, want 30", len(rows))
 	}
 
 	var keys []core.RatingKey

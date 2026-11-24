@@ -189,6 +189,8 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		// membership — the same filter its All browse runs (#549).
 		LibraryMembers:  a.libraryRecommendationMembers,
 		LibrarySections: librarySections,
+		LibraryRowsTab:  a.libraryRowsTab,
+		PageLibraries:   a.pageLibraries,
 		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,

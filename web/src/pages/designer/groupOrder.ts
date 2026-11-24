@@ -19,7 +19,10 @@ export function saveGroupOrder<K extends string>(order: K[]) {
 }
 
 /** Groups in the saved order; groups the order does not name keep their place after it. */
-export function orderGroups<K extends string, T extends { key: K }>(groups: T[], order: K[]): T[] {
+export function orderGroups<T extends { key: string }>(
+  groups: T[],
+  order: readonly T["key"][],
+): T[] {
   const rank = new Map(order.map((k, i) => [k, i]));
   return groups
     .map((g, i) => ({ g, i }))

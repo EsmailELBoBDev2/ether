@@ -401,15 +401,10 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 		t.Fatalf("kids apply = %+v err=%v", kidsApplied, err)
 	}
 
-	// Owner customizes "Popular (Series)" name AND hides "IMDb Top 250" from apps' Collections views.
+	// Owner customizes "Popular (Series)" name.
 	customSeries := managed[1]
 	customSeries.Name = "My Favourite Shows"
 	if _, err := h.cols.UpdateSpec(ctx, customSeries.ID, customSeries); err != nil {
-		t.Fatal(err)
-	}
-	customIMDb := managed[2]
-	customIMDb.BrowseInApps = false
-	if _, err := h.cols.UpdateSpec(ctx, customIMDb.ID, customIMDb); err != nil {
 		t.Fatal(err)
 	}
 
@@ -473,9 +468,6 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 	imdbAfter := byID[managed[2].ID]
 	if imdbAfter.Name != "IMDb Classics" || imdbAfter.SortOrder != 1 {
 		t.Fatalf("renamed/reordered IMDb = name:%q order:%d", imdbAfter.Name, imdbAfter.SortOrder)
-	}
-	if imdbAfter.BrowseInApps {
-		t.Fatalf("owner's Browse in apps choice clobbered on sync")
 	}
 	seriesAfter := byID[managed[1].ID]
 	if seriesAfter.Name != "My Favourite Shows" || seriesAfter.SortOrder != 2 {

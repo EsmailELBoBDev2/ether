@@ -133,3 +133,25 @@ func (s *Service) TakeLegacyPlacements(ctx context.Context) ([]LegacyPlacement, 
 	s.forgetRowMemo(ctx)
 	return out, nil
 }
+
+// DeleteRetired removes built-in collections that became built-in row
+// sources (the Ether-managed discovery collections), with their members.
+func (s *Service) DeleteRetired(ctx context.Context, slugs []string) error {
+	if len(slugs) == 0 {
+		return nil
+	}
+	args := make([]any, len(slugs))
+	marks := make([]string, len(slugs))
+	for i, id := range slugs {
+		args[i], marks[i] = id, "?"
+	}
+	in := strings.Join(marks, ",")
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id IN (SELECT id FROM collections_specs WHERE builtin=1 AND slug IN (`+in+`))`, args...); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM collections_specs WHERE builtin=1 AND slug IN (`+in+`)`, args...); err != nil {
+		return err
+	}
+	s.forgetRowMemo(ctx)
+	return nil
+}

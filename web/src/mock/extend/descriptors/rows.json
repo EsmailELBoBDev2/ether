@@ -970,5 +970,23 @@
       "rowKind": "shelf",
       "source": "engine"
     }
+  },
+  {
+    "kind": "rowSource",
+    "id": "library-playlists",
+    "owner": "builtin",
+    "label": {
+      "source": "Playlists"
+    },
+    "hint": {
+      "source": "The library's playlists."
+    },
+    "group": "keep",
+    "order": 550,
+    "meta": {
+      "hubId": "library-playlists",
+      "rowKind": "library-playlists",
+      "source": "engine"
+    }
   }
 ]

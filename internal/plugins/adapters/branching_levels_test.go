@@ -302,8 +302,10 @@ func TestBranchingLevelsVideoChildrenTabsAndPlayback(t *testing.T) {
 			t.Fatalf("Music recommended tab must not show video concert Continue Watching row: %+v", row)
 		}
 	}
+	// Without the Recommendations engine every candidate comes back: the
+	// declared shelf first, then the library's own rows the page may add.
 	wantDefaultShelfID := "plugin:" + viewID + ":shelf:recent-albums"
-	if len(defaultRows) != 1 || defaultRows[0].ID != wantDefaultShelfID || len(defaultRows[0].Items) != 2 {
+	if len(defaultRows) == 0 || defaultRows[0].ID != wantDefaultShelfID || len(defaultRows[0].Items) != 2 {
 		t.Fatalf("recommended rows = %+v, want single legacy shelf %q with 2 albums", defaultRows, wantDefaultShelfID)
 	}
 
@@ -313,8 +315,9 @@ func TestBranchingLevelsVideoChildrenTabsAndPlayback(t *testing.T) {
 	}
 	wantConcertContinueID := "plugin:" + viewID + ":tab:concerts:continue"
 	wantConcertShelfID := "plugin:" + viewID + ":tab:concerts:shelf:recent-concerts"
-	if len(concertRows) != 2 {
-		t.Fatalf("concerts tab rows = %+v, want [continue, recent-concerts]", concertRows)
+	// Continue and the declared shelf lead; the library's own rows follow.
+	if len(concertRows) < 2 {
+		t.Fatalf("concerts tab rows = %+v, want [continue, recent-concerts, …]", concertRows)
 	}
 	if concertRows[0].ID != wantConcertContinueID || concertRows[0].Title != "Continue Watching" || len(concertRows[0].Items) != 1 || concertRows[0].Items[0].Key != con1.Key {
 		t.Fatalf("concerts continue row = %+v, want %q with con-1", concertRows[0], wantConcertContinueID)

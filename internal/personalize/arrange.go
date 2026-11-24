@@ -470,10 +470,8 @@ func (e *Engine) pluginDefaultPlan(pl *pagePlan, rows []core.HomeRow) *pagePlan 
 	if pl == nil || pl.saved || pl.key == core.PageHome {
 		return pl
 	}
-	id, _, _ := pl.key.Library()
-	if lib, ok := pl.libraries[id]; !ok || lib.Plugin == "" {
-		return pl
-	}
+	// Only plugin libraries declare shelves, so their rows tell the page
+	// apart from a catalogue library's.
 	page := core.RowPage{Key: pl.key, Mode: core.PageCurated, Rows: []core.Row{}}
 	shelves := false
 	for _, r := range rows {
@@ -578,6 +576,18 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 		pl := e.planFor(ctx, user.ID, section)
 		fillPlan := *pl
 		fillPlan.picks, fillPlan.curated = true, false
+		// Every candidate the page doesn't cover is an Auto row of the band,
+		// so the default lead slots (Recently Added from #8) never apply.
+		fillPlan.bySrc = make(map[string]*rule, len(pl.bySrc)+len(rows))
+		for k, v := range pl.bySrc {
+			fillPlan.bySrc[k] = v
+		}
+		for _, row := range rows {
+			if fillPlan.match(row) == nil && !fillPlan.suppressed(row) {
+				src, param := sourceOf(row.HubID, row.Kind)
+				fillPlan.bySrc[sourceKey(src, param)] = &rule{Row: row.HubID, Source: src, Mode: core.PlacementAuto, Status: "eligible", Layer: core.RowLayerEther}
+			}
+		}
 		for _, row := range arrangePage(rows, &fillPlan, user.ID, hc, e.opts.MaxHomeRows) {
 			if !row.Hidden {
 				arranged = append(arranged, row)

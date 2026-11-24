@@ -10,6 +10,7 @@ import type {
   CollectionTemplateBundle,
   CollectionTemplateBundleApplyResult,
   CollectionTemplateBundlePreview,
+  CollectionUsage,
   FacetName,
   FacetValue,
   HomeLayout,
@@ -540,6 +541,13 @@ export const api = {
     apiFetch<null>(`/collections/${encodeURIComponent(id)}`, { method: "DELETE" }),
   previewCollection: (spec: CollectionSpec, signal?: AbortSignal, n?: number) =>
     post<CollectionPreview>(`/collections/preview${qs({ n })}`, spec, signal),
+  /** The Recommendations pages and rows that show this collection ("Used on"). */
+  collectionUsage: async (id: string, signal?: AbortSignal) =>
+    (
+      await apiFetch<CollectionUsage | null>(`/collections/${encodeURIComponent(id)}/usage`, {
+        signal,
+      })
+    )?.uses ?? [],
   rebuildCollection: (id: string) =>
     post<{ itemCount: number; lastBuiltAt: string }>(
       `/collections/${encodeURIComponent(id)}/rebuild`,

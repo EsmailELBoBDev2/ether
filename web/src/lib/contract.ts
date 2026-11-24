@@ -170,21 +170,7 @@ export type Refresh = "live" | "hourly" | "daily" | "weekly";
 export type ArtworkMode = "auto" | "collage" | "backdrop" | "tmdb" | "custom";
 export type DeviceClass = "tv" | "mobile" | "web" | "desktop";
 
-/** A collection's row schedule: the one schedule for its rows, edited in Collections and the Home designer. */
-export interface TargetSchedule {
-  days?: number[];
-  fromHour?: number;
-  toHour?: number;
-  devices?: DeviceClass[];
-  dayparts?: Daypart[];
-  months?: number[];
-  startDate?: string;
-  endDate?: string;
-}
-
 export interface CollectionSpec {
-  previewOnFocus?: boolean;
-  rankedTop10?: boolean;
   localOnly?: boolean;
   releaseMode?: "released" | "upcoming" | "mixed";
   lookaheadDays?: number;
@@ -202,12 +188,10 @@ export interface CollectionSpec {
   refresh: Refresh;
   rotate?: { size: number; every: "daily" | "weekly" } | null;
   artwork: { mode: ArtworkMode; url?: string; accent?: string };
+  /** Where the collection is browseable. Rows that show it live on Recommendations pages. */
   targets: {
+    /** Browse in apps: listed in its library's Collections view. */
     collectionsTab: boolean;
-    homeRow: boolean;
-    sectionRow: boolean;
-    users: number[] | "all";
-    schedule?: TargetSchedule | null;
   };
   enabled: boolean;
   templateId?: string;
@@ -215,8 +199,6 @@ export interface CollectionSpec {
   lastBuiltAt?: string;
   itemCount?: number;
   warnings?: string[];
-  /** Set by the server on built-in collections (read-only in the studio). */
-  builtIn?: boolean;
   /** Optional folder name grouping collections in the console and frontends. */
   folder?: string;
   /** Optional 1-based display order within a folder or add-on import. */
@@ -368,6 +350,28 @@ export interface AddonCatalogImportResult {
   skipped?: AddonImportSkippedItem[];
   collectionIds?: string[];
   subscription: AddonCatalogSubscription;
+}
+
+/** How a row shows on its page: Pinned to a position, Show, Auto or Hide. */
+export type RowPlacementMode = "pinned" | "show" | "auto" | "hide";
+
+/** One row on a Recommendations page that draws from a collection. */
+export interface CollectionUse {
+  /** The page key: "home" or "library:<id>/<tab>". */
+  page: string;
+  /** The page in words: "Home", "Movies › Recommendations". */
+  pageName: string;
+  rowId: string;
+  rowName: string;
+  placement: RowPlacementMode;
+  /** 1-based position when the row is pinned. */
+  position?: number;
+  /** The row's schedule in plain words, when it has one. */
+  schedule?: string;
+}
+
+export interface CollectionUsage {
+  uses: CollectionUse[];
 }
 
 export interface CollectionPreview {

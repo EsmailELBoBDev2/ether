@@ -670,8 +670,7 @@ export const api = {
 
   // ---- Recommendations: pages of rows ------------------------------------------
   pages: () => apiFetch<PageSummary[]>("/pages"),
-  page: (key: PageKey, signal?: AbortSignal) =>
-    apiFetch<PageDoc>(`${pagePath(key)}`, { signal }),
+  page: (key: PageKey, signal?: AbortSignal) => apiFetch<PageDoc>(`${pagePath(key)}`, { signal }),
   /** Saves the whole page; the server answers 409 when someone else saved it first. */
   putPage: (page: RowPage) =>
     apiFetch<PageDoc>(pagePath(page.key), {
@@ -679,8 +678,7 @@ export const api = {
       body: JSON.stringify(page),
       headers: { "If-Match": String(page.revision) },
     }),
-  resetPage: (key: PageKey) =>
-    apiFetch<PageDoc>(`${pagePath(key)}`, { method: "DELETE" }),
+  resetPage: (key: PageKey) => apiFetch<PageDoc>(`${pagePath(key)}`, { method: "DELETE" }),
   pageSources: (key: PageKey, signal?: AbortSignal) =>
     apiFetch<SourcesDoc>(`${pagePath(key)}/sources`, { signal }),
   previewPage: (key: PageKey, body: PreviewRequest, signal?: AbortSignal) =>

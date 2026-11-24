@@ -49,7 +49,12 @@ import {
 import { KindChip, RowBody, VelaOnlyChip } from "./RowVisuals";
 
 export type DrawerState =
-  | { kind: "add"; at: number; picking: boolean; preset?: { source: string; params: Record<string, string> } }
+  | {
+      kind: "add";
+      at: number;
+      picking: boolean;
+      preset?: { source: string; params: Record<string, string> };
+    }
   | { kind: "edit"; rowId: string; tab?: "settings" | "content" };
 
 export interface DrawerContext {
@@ -196,7 +201,8 @@ function SourcePicker({
     return [...byGroup.entries()]
       .sort(
         ([a], [b]) =>
-          (SOURCE_GROUP_ORDER.indexOf(a) + 100) % 100 - (SOURCE_GROUP_ORDER.indexOf(b) + 100) % 100,
+          ((SOURCE_GROUP_ORDER.indexOf(a) + 100) % 100) -
+          ((SOURCE_GROUP_ORDER.indexOf(b) + 100) % 100),
       )
       .map(([g, items]) => ({ group: g, label: sourceGroupLabel(g), items }));
   }, [sources, q, locale]);
@@ -207,7 +213,9 @@ function SourcePicker({
       <div>
         <h3 className="text-base font-semibold text-fg">{t("What fills this row?")}</h3>
         <p className="text-sm text-fg-muted">
-          {t("Built-in rows, your collections and plugin rows that fit this page. Pick one to set it up.")}
+          {t(
+            "Built-in rows, your collections and plugin rows that fit this page. Pick one to set it up.",
+          )}
         </p>
       </div>
       <div className="relative">
@@ -325,7 +333,8 @@ function FacetPicker({
         <div className="space-y-2">
           {value ? (
             <p className="text-sm">
-              {t("Pinned to:")} <Badge variant="info">{values?.find((v) => v.value === value)?.label ?? value}</Badge>
+              {t("Pinned to:")}{" "}
+              <Badge variant="info">{values?.find((v) => v.value === value)?.label ?? value}</Badge>
             </p>
           ) : null}
           <Input
@@ -454,9 +463,7 @@ function LibrariesSection({
   onChange: (r: PageRow) => void;
   disabled?: boolean;
 }) {
-  const supported = libraries.filter(
-    (l) => !source.libraries || source.libraries.includes(l.id),
-  );
+  const supported = libraries.filter((l) => !source.libraries || source.libraries.includes(l.id));
   const unsupported = libraries.filter((l) => !supported.includes(l));
   const chosen = row.scope.libraries ?? [];
   const these = chosen.length > 0;
@@ -567,7 +574,8 @@ function LookSection({
   experience: Experience;
   onChange: (l: RowLook) => void;
 }) {
-  const listen = experience === "listen" || source.look.style === "tiles" || source.look.style === "tracks";
+  const listen =
+    experience === "listen" || source.look.style === "tiles" || source.look.style === "tracks";
   const styles: { value: RowStyle; label: string }[] = [
     { value: "", label: t("Source default") },
     { value: "standard", label: t("Standard") },
@@ -599,7 +607,9 @@ function LookSection({
     <Section title={t("Look")} hint={t("Changes show in the page as you make them.")}>
       <Line
         label={t("Style")}
-        hint={t("Plex, Vela and Silo show Hero and Wide. Jellyfin and Emby keep their own look. Tiles and Track list are Vela's listening layouts.")}
+        hint={t(
+          "Plex, Vela and Silo show Hero and Wide. Jellyfin and Emby keep their own look. Tiles and Track list are Vela's listening layouts.",
+        )}
       >
         <ToolbarPicker
           ariaLabel={t("Style")}
@@ -608,7 +618,10 @@ function LookSection({
           options={styles}
         />
       </Line>
-      <Line label={t("Cards")} hint={t("Plex and Vela follow the card shape; other apps use the library's.")}>
+      <Line
+        label={t("Cards")}
+        hint={t("Plex and Vela follow the card shape; other apps use the library's.")}
+      >
         <ToolbarPicker
           ariaLabel={t("Cards")}
           value={look.card ?? ""}
@@ -752,7 +765,9 @@ function ScheduleEditor({
               <ChipGroup
                 ariaLabel={holidayGroupLabel(g)}
                 size="sm"
-                value={(s.holidays ?? []).filter((h) => all.some((x) => x.id === h && x.group === g))}
+                value={(s.holidays ?? []).filter((h) =>
+                  all.some((x) => x.id === h && x.group === g),
+                )}
                 onChange={(v) =>
                   set({
                     holidays: [
@@ -763,7 +778,9 @@ function ScheduleEditor({
                     ],
                   })
                 }
-                options={all.filter((h) => h.group === g).map((h) => ({ value: h.id, label: h.label }))}
+                options={all
+                  .filter((h) => h.group === g)
+                  .map((h) => ({ value: h.id, label: h.label }))}
               />
             </div>
           ))}
@@ -808,7 +825,13 @@ function ScheduleEditor({
               onChange={(e) =>
                 set({
                   dates: e.currentTarget.value
-                    ? [{ from: e.currentTarget.value, to: range?.to ? dateInput(range.to) : e.currentTarget.value, yearly: range?.yearly }].map(yearlyRange)
+                    ? [
+                        {
+                          from: e.currentTarget.value,
+                          to: range?.to ? dateInput(range.to) : e.currentTarget.value,
+                          yearly: range?.yearly,
+                        },
+                      ].map(yearlyRange)
                     : [],
                 })
               }
@@ -822,7 +845,13 @@ function ScheduleEditor({
               onChange={(e) =>
                 set({
                   dates: e.currentTarget.value
-                    ? [{ from: range?.from ? dateInput(range.from) : e.currentTarget.value, to: e.currentTarget.value, yearly: range?.yearly }].map(yearlyRange)
+                    ? [
+                        {
+                          from: range?.from ? dateInput(range.from) : e.currentTarget.value,
+                          to: e.currentTarget.value,
+                          yearly: range?.yearly,
+                        },
+                      ].map(yearlyRange)
                     : [],
                 })
               }
@@ -878,7 +907,9 @@ function PlacementSection({
   lockAudience?: boolean;
 }) {
   const [more, setMore] = useState(
-    Boolean(placement.notAbove || placement.notBelow || placement.daysPerWeek || placement.priority),
+    Boolean(
+      placement.notAbove || placement.notBelow || placement.daysPerWeek || placement.priority,
+    ),
   );
   const modes: { value: PlacementMode; label: string }[] = curated
     ? [
@@ -899,8 +930,12 @@ function PlacementSection({
         label={t("On this page")}
         hint={
           curated
-            ? t("Curated: the page shows its rows in your order. Rows with nothing to show are skipped.")
-            : t("Pinned: always at this position. Show: always on the page, Ether picks where. Auto: Ether decides by what each viewer plays.")
+            ? t(
+                "Curated: the page shows its rows in your order. Rows with nothing to show are skipped.",
+              )
+            : t(
+                "Pinned: always at this position. Show: always on the page, Ether picks where. Auto: Ether decides by what each viewer plays.",
+              )
         }
       >
         <Segmented
@@ -950,7 +985,11 @@ function PlacementSection({
           </div>
           <Line
             label={t("Who sees it")}
-            hint={lockAudience ? t("A row you add while editing for one viewer is just for them.") : undefined}
+            hint={
+              lockAudience
+                ? t("A row you add while editing for one viewer is just for them.")
+                : undefined
+            }
           >
             <Segmented
               ariaLabel={t("Who sees it")}
@@ -1040,7 +1079,15 @@ function PlacementSection({
 
 // ---------------------------------------------------------------- content tab
 
-function ContentTab({ ctx, row, source }: { ctx: DrawerContext; row: PageRow; source?: PageSource }) {
+function ContentTab({
+  ctx,
+  row,
+  source,
+}: {
+  ctx: DrawerContext;
+  row: PageRow;
+  source?: PageSource;
+}) {
   const [result, setResult] = useState<{ rows: PreviewRow[]; total: number } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const key = JSON.stringify({ row, p: ctx.preview });
@@ -1062,7 +1109,11 @@ function ContentTab({ ctx, row, source }: { ctx: DrawerContext; row: PageRow; so
   return (
     <div className="space-y-4">
       <p className="text-sm text-fg-muted">
-        {tn(result.total, "{count} title for this viewer right now.", "{count} titles for this viewer right now.")}
+        {tn(
+          result.total,
+          "{count} title for this viewer right now.",
+          "{count} titles for this viewer right now.",
+        )}
       </p>
       {result.rows.map((r) => (
         <section key={r.hubId} className="space-y-2" aria-label={r.title}>
@@ -1167,14 +1218,20 @@ export function RowDrawer({
             ? t("Changes here are just for {viewer}: only the look and placement change.", {
                 viewer: viewerName(ctx.editingFor!),
               })
-            : t("Edits go straight into the draft and show in the page. Save the page when you're done.")
+            : t(
+                "Edits go straight into the draft and show in the page. Save the page when you're done.",
+              )
       }
       size="md"
       footer={
         adding ? (
           <div className="flex w-full flex-wrap items-center justify-between gap-2">
             <span className="text-sm text-fg-muted">
-              {row && source ? (fanOut.length > 1 ? addSummary : t("Adds one row at #{at}", { at: state.at })) : addSummary}
+              {row && source
+                ? fanOut.length > 1
+                  ? addSummary
+                  : t("Adds one row at #{at}", { at: state.at })
+                : addSummary}
             </span>
             <div className="flex gap-2">
               <Button variant="ghost" onClick={onClose}>
@@ -1244,7 +1301,10 @@ export function RowDrawer({
                         {t("Change")}
                       </Button>
                     )}
-                    {source && source.group === "plugins" && !source.kind.startsWith("surface") && !viewerOnly ? (
+                    {source &&
+                    source.group === "plugins" &&
+                    !source.kind.startsWith("surface") &&
+                    !viewerOnly ? (
                       <Link
                         to={pluginCollectionHref(source.kind, source.title)}
                         className="text-xs font-medium text-primary hover:underline"

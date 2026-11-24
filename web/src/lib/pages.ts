@@ -581,7 +581,12 @@ export function holidays(): HolidayInfo[] {
       group: "seasons",
       when: t("The week up to the second Monday of October"),
     },
-    { id: "easter", label: t("Easter"), group: "christian", when: t("Palm Sunday to Easter Monday") },
+    {
+      id: "easter",
+      label: t("Easter"),
+      group: "christian",
+      when: t("Palm Sunday to Easter Monday"),
+    },
     {
       id: "easter-orthodox",
       label: t("Orthodox Easter"),
@@ -603,8 +608,18 @@ export function holidays(): HolidayInfo[] {
       when: t("The eve and both days"),
     },
     { id: "ramadan", label: t("Ramadan"), group: "islamic", when: t("The whole month") },
-    { id: "eid-al-fitr", label: t("Eid al-Fitr"), group: "islamic", when: t("The eve and three days") },
-    { id: "eid-al-adha", label: t("Eid al-Adha"), group: "islamic", when: t("The eve and four days") },
+    {
+      id: "eid-al-fitr",
+      label: t("Eid al-Fitr"),
+      group: "islamic",
+      when: t("The eve and three days"),
+    },
+    {
+      id: "eid-al-adha",
+      label: t("Eid al-Adha"),
+      group: "islamic",
+      when: t("The eve and four days"),
+    },
     {
       id: "lunar-new-year",
       label: t("Lunar New Year"),
@@ -619,8 +634,18 @@ export function holidays(): HolidayInfo[] {
     },
     { id: "diwali", label: t("Diwali"), group: "asian", when: t("Five days around Lakshmi Puja") },
     { id: "holi", label: t("Holi"), group: "asian", when: t("Holika Dahan and Holi") },
-    { id: "vesak", label: t("Vesak"), group: "asian", when: t("The full moon and a day either side") },
-    { id: "dia-de-muertos", label: t("Día de los Muertos"), group: "more", when: t("Oct 31–Nov 2") },
+    {
+      id: "vesak",
+      label: t("Vesak"),
+      group: "asian",
+      when: t("The full moon and a day either side"),
+    },
+    {
+      id: "dia-de-muertos",
+      label: t("Día de los Muertos"),
+      group: "more",
+      when: t("Oct 31–Nov 2"),
+    },
     { id: "nowruz", label: t("Nowruz"), group: "more", when: t("Mar 20–Apr 2") },
   ];
 }

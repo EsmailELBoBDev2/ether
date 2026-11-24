@@ -3,7 +3,16 @@
 // the page itself is the only list of rows, and it is the live preview.
 // One drawer adds and edits rows. Every edit goes into one page draft, kept
 // in local storage until Save or Discard.
-import { Badge, Button, EmptyState, Input, Spinner, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Input,
+  Spinner,
+  Switch,
+  cn,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import {
   AlertTriangle,
   CalendarClock,
@@ -296,7 +305,9 @@ function PageRowView({
   const draggable = Boolean(r.rowId) && !r.ghost;
   return (
     <section
-      aria-label={item.position ? t("#{n}: {title}", { n: item.position, title: r.title }) : r.title}
+      aria-label={
+        item.position ? t("#{n}: {title}", { n: item.position, title: r.title }) : r.title
+      }
       draggable={draggable}
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = "move";
@@ -453,7 +464,11 @@ function PageRowView({
 /** Fan-out rows stay one block: a bracket names the row the owner made. */
 function Block({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="relative mt-3 rounded-2xl border border-border-subtle pl-1" role="group" aria-label={label}>
+    <div
+      className="relative mt-3 rounded-2xl border border-border-subtle pl-1"
+      role="group"
+      aria-label={label}
+    >
       <span className="absolute -top-2.5 left-4 bg-bg px-1.5 text-[11px] font-medium text-fg-subtle">
         {label}
       </span>
@@ -681,7 +696,9 @@ export default function Recommendations() {
       return;
     }
     if (editingFor != null) {
-      update((p) => setOverride(p, editingFor, row.id, { look: row.look, placement: row.placement }));
+      update((p) =>
+        setOverride(p, editingFor, row.id, { look: row.look, placement: row.placement }),
+      );
     } else update((p) => replaceRow(p, row));
   };
   const rowOf = (id: string | undefined) =>
@@ -802,8 +819,7 @@ export default function Recommendations() {
         break;
       }
     }
-    const position =
-      order.slice(0, insertAt).filter((h) => !byHub.get(h)?.ghost).length + 1;
+    const position = order.slice(0, insertAt).filter((h) => !byHub.get(h)?.ghost).length + 1;
     if (curated) {
       if (editingFor == null) update((p) => moveRow(p, rowId, beforeId));
       return;
@@ -876,7 +892,9 @@ export default function Recommendations() {
       doc.setData(next);
       void pages.reload();
       setConflict(false);
-      toast.success(t("Page saved"), { description: t("Apps pick it up the next time they load it.") });
+      toast.success(t("Page saved"), {
+        description: t("Apps pick it up the next time they load it."),
+      });
     } catch (e) {
       if (e instanceof ApiError && (e.status === 409 || e.status === 412)) {
         setConflict(true);
@@ -933,9 +951,13 @@ export default function Recommendations() {
   const changedViewers = useMemo(() => {
     const counts = new Map<number, number>();
     for (const v of draft?.variants ?? []) counts.set(v.viewer, changeCount(draft!, v.viewer));
-    return [...(viewers ?? [])].sort(
-      (a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0) || viewerName(a).localeCompare(viewerName(b)),
-    ).map((v) => ({ v, changes: counts.get(v.id) ?? 0 }));
+    return [...(viewers ?? [])]
+      .sort(
+        (a, b) =>
+          (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0) ||
+          viewerName(a).localeCompare(viewerName(b)),
+      )
+      .map((v) => ({ v, changes: counts.get(v.id) ?? 0 }));
   }, [draft, viewers]);
   const editingOptions = [
     {
@@ -960,19 +982,20 @@ export default function Recommendations() {
     ? ""
     : curated
       ? tn(counts.rows, "{count} row · in your order", "{count} rows · in your order")
-      : t("{rows} of up to {length} rows · {pinned} pinned · {shown} shown · {auto} chosen by Ether", {
-          rows: counts.rows,
-          length: counts.length,
-          pinned: counts.pinned,
-          shown: counts.shown,
-          auto: counts.auto,
-        });
+      : t(
+          "{rows} of up to {length} rows · {pinned} pinned · {shown} shown · {auto} chosen by Ether",
+          {
+            rows: counts.rows,
+            length: counts.length,
+            pinned: counts.pinned,
+            shown: counts.shown,
+            auto: counts.auto,
+          },
+        );
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
-      {dirty ? (
-        <Badge variant="warning">{t("Unsaved changes · kept if you leave")}</Badge>
-      ) : null}
+      {dirty ? <Badge variant="warning">{t("Unsaved changes · kept if you leave")}</Badge> : null}
       {dirty && impact ? (
         <span className="text-xs text-fg-muted">
           {t("Affects {viewers} viewers · {changes} have changes", {
@@ -1105,8 +1128,12 @@ export default function Recommendations() {
               />
               <p className="text-fg-muted">
                 {curated
-                  ? t("Exactly your rows, in your order. Rows with nothing to show are skipped. Ether adds nothing.")
-                  : t("Your pinned and shown rows always appear. Ether fills the rest from your Auto rows and its picks.")}
+                  ? t(
+                      "Exactly your rows, in your order. Rows with nothing to show are skipped. Ether adds nothing.",
+                    )
+                  : t(
+                      "Your pinned and shown rows always appear. Ether fills the rest from your Auto rows and its picks.",
+                    )}
               </p>
             </Section>
             {curated ? null : (
@@ -1132,7 +1159,11 @@ export default function Recommendations() {
                   className="flex w-full items-center justify-between border-t border-border-subtle pt-3 text-left text-fg-muted"
                 >
                   {t("Different length per device")}
-                  {perDevice || length.byDevice ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  {perDevice || length.byDevice ? (
+                    <ChevronDown size={14} />
+                  ) : (
+                    <ChevronRight size={14} />
+                  )}
                 </button>
                 {perDevice || length.byDevice
                   ? DEVICES.map((d) => (
@@ -1148,7 +1179,10 @@ export default function Recommendations() {
                       </Line>
                     ))
                   : null}
-                <Line label={t("Let Ether add its picks")} hint={t("Off: only the rows you added.")}>
+                <Line
+                  label={t("Let Ether add its picks")}
+                  hint={t("Off: only the rows you added.")}
+                >
                   <Switch
                     aria-label={t("Let Ether add its picks")}
                     checked={draft.picks}
@@ -1165,7 +1199,9 @@ export default function Recommendations() {
               <Section title={t("This library")}>
                 <Line
                   label={t("Skip titles Home already shows")}
-                  hint={t("Titles the viewer's Home leads with stay off this page, so switching tabs always shows something new.")}
+                  hint={t(
+                    "Titles the viewer's Home leads with stay off this page, so switching tabs always shows something new.",
+                  )}
                 >
                   <Switch
                     aria-label={t("Skip titles Home already shows")}
@@ -1180,9 +1216,7 @@ export default function Recommendations() {
               </Section>
             ) : null}
             <Section title={t("Shown in")}>
-              <p className="text-fg-muted">
-                {appsLine(summary?.apps, pageKey === PAGE_HOME)}
-              </p>
+              <p className="text-fg-muted">{appsLine(summary?.apps, pageKey === PAGE_HOME)}</p>
             </Section>
             {doc.data?.saved && editingFor == null ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -1214,17 +1248,19 @@ export default function Recommendations() {
   const groups: { rowId?: string; label?: string; items: DisplayRow[] }[] = [];
   for (const d of display) {
     const last = groups.at(-1);
-    const pr = rowOf(d.row.rowId) ?? (pending && pending.row.id === d.row.rowId ? pending.row : undefined);
+    const pr =
+      rowOf(d.row.rowId) ?? (pending && pending.row.id === d.row.rowId ? pending.row : undefined);
     const fan = Boolean(pr?.scope.perLibrary);
     if (fan && last && last.rowId === d.row.rowId) last.items.push(d);
     else
       groups.push({
         rowId: fan ? d.row.rowId : undefined,
-        label: fan && pr
-          ? t("One row you made · {source} · one row per library", {
-              source: sourceByKind.get(pr.source.kind)?.title ?? pr.source.kind,
-            })
-          : undefined,
+        label:
+          fan && pr
+            ? t("One row you made · {source} · one row per library", {
+                source: sourceByKind.get(pr.source.kind)?.title ?? pr.source.kind,
+              })
+            : undefined,
         items: [d],
       });
   }
@@ -1234,7 +1270,8 @@ export default function Recommendations() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {editingFor != null ? (
           <Badge variant="info" className="h-8 gap-1.5 px-3 text-sm">
-            <Eye size={13} /> {t("Previewing {viewer}", { viewer: editingViewer ? viewerName(editingViewer) : "" })}
+            <Eye size={13} />{" "}
+            {t("Previewing {viewer}", { viewer: editingViewer ? viewerName(editingViewer) : "" })}
           </Badge>
         ) : (
           <ToolbarPicker
@@ -1273,7 +1310,12 @@ export default function Recommendations() {
             }}
           />
           {at ? (
-            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setAt(null)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setAt(null)}
+            >
               {t("Now")}
             </Button>
           ) : null}
@@ -1297,11 +1339,16 @@ export default function Recommendations() {
               { viewer: editingViewer ? viewerName(editingViewer) : "" },
             )
           : previewViewer
-            ? t("Editing everyone's {page}, previewing as {viewer}. Your changes apply to everyone.", {
-                page: pageName,
-                viewer: viewerName(previewViewer),
-              })
-            : t("This is the page. Click a row to change it, drag it to move or pin it, or use + to add a row right there.")}
+            ? t(
+                "Editing everyone's {page}, previewing as {viewer}. Your changes apply to everyone.",
+                {
+                  page: pageName,
+                  viewer: viewerName(previewViewer),
+                },
+              )
+            : t(
+                "This is the page. Click a row to change it, drag it to move or pin it, or use + to add a row right there.",
+              )}
       </p>
       {conflict ? (
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-warning/40 bg-warning-subtle px-4 py-3 text-sm">
@@ -1329,7 +1376,9 @@ export default function Recommendations() {
               : preview.access.name}
           </span>
           <span className="text-fg-muted">
-            {preview.access.unrated === "hidden" ? t("Unrated titles hidden") : t("Unrated titles shown")}
+            {preview.access.unrated === "hidden"
+              ? t("Unrated titles hidden")
+              : t("Unrated titles shown")}
           </span>
           <span className="text-fg-muted">
             {preview.access.hiddenLibraries?.length
@@ -1371,7 +1420,9 @@ export default function Recommendations() {
           ) : null}
           {groups.map((g, gi) => {
             const body = g.items.map((d) => {
-              const pr = rowOf(d.row.rowId) ?? (pending && pending.row.id === d.row.rowId ? pending.row : undefined);
+              const pr =
+                rowOf(d.row.rowId) ??
+                (pending && pending.row.id === d.row.rowId ? pending.row : undefined);
               const eff = pr && draft ? effectiveRow(draft, pr, editingFor) : pr;
               const source = pr ? sourceByKind.get(pr.source.kind) : sourceByKind.get(d.row.kind);
               const fresh = Boolean(d.row.rowId && !savedIds.has(d.row.rowId));
@@ -1385,7 +1436,10 @@ export default function Recommendations() {
                   selected={Boolean(editingRowId && d.row.rowId === editingRowId)}
                   fresh={fresh}
                   justViewer={
-                    editingFor != null && d.row.rowId && draft && hasOverride(draft, editingFor, d.row.rowId)
+                    editingFor != null &&
+                    d.row.rowId &&
+                    draft &&
+                    hasOverride(draft, editingFor, d.row.rowId)
                       ? editingViewer
                         ? viewerName(editingViewer)
                         : ""
@@ -1404,7 +1458,9 @@ export default function Recommendations() {
                   onPin={() => d.row.rowId && d.position && pinAt(d.row.rowId, d.position)}
                   onHide={() => hideRow(d.row)}
                   onReset={() =>
-                    d.row.rowId && editingFor != null && update((p) => clearOverride(p, editingFor, d.row.rowId!))
+                    d.row.rowId &&
+                    editingFor != null &&
+                    update((p) => clearOverride(p, editingFor, d.row.rowId!))
                   }
                   onDragStart={() => (dragging.current = d.row.hubId)}
                   onDragEnd={() => (dragging.current = null)}
@@ -1439,7 +1495,9 @@ export default function Recommendations() {
                 )}
                 hint={
                   draft?.picks
-                    ? t("Rows you haven't added that fit this page. Ether uses them to fill up to the page length. Hide any you never want.")
+                    ? t(
+                        "Rows you haven't added that fit this page. Ether uses them to fill up to the page length. Hide any you never want.",
+                      )
                     : t("Ether's picks are off for this page, so it adds none of these.")
                 }
               >
@@ -1454,16 +1512,19 @@ export default function Recommendations() {
                     <span className="ml-auto flex gap-1">
                       {sourceByKind.has(p.kind) ? (
                         <>
-                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => addPick(p.kind)}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => addPick(p.kind)}
+                          >
                             <Plus size={13} /> {t("Add to page")}
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
                             className="h-7 px-2 text-xs"
-                            onClick={() =>
-                              hideRow({ kind: p.kind } as PreviewRow)
-                            }
+                            onClick={() => hideRow({ kind: p.kind } as PreviewRow)}
                             aria-label={t("Hide {row}", { row: p.title })}
                           >
                             <EyeOff size={13} /> {t("Hide")}
@@ -1479,8 +1540,8 @@ export default function Recommendations() {
               <Folded
                 icon={<EyeOff size={15} className="text-fg-muted" />}
                 title={t("Not shown right now · {count}", { count: preview.notShown!.length })}
-                hint={preview.notShown!
-                  .slice(0, 3)
+                hint={preview
+                  .notShown!.slice(0, 3)
                   .map((n) => `${n.title}: ${n.reason}`)
                   .join(" · ")}
               >
@@ -1515,7 +1576,9 @@ export default function Recommendations() {
                           className="h-7 px-2 text-xs"
                           onClick={() => setAt(new Date(n.previewAt!))}
                         >
-                          {t("Preview at {when} ›", { when: formatPreviewAt(new Date(n.previewAt)) })}
+                          {t("Preview at {when} ›", {
+                            when: formatPreviewAt(new Date(n.previewAt)),
+                          })}
                         </Button>
                       ) : null}
                       {n.row && rowOf(n.row) ? (
@@ -1604,7 +1667,8 @@ function appsLine(apps: string[] | undefined, home: boolean): string {
     silo: "Silo",
   };
   const list = (apps ?? []).map((a) => names[a] ?? a);
-  if (list.length === 0) return home ? t("Home in every app.") : t("This library's rows in every app.");
+  if (list.length === 0)
+    return home ? t("Home in every app.") : t("This library's rows in every app.");
   return t("{apps}. Each app draws what it can; rows marked Only in Vela are skipped elsewhere.", {
     apps: list.join(", "),
   });

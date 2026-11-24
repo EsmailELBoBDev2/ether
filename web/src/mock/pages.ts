@@ -55,27 +55,273 @@ const CHOICE = (key: string, label: string, choices: [string, string][], def?: s
 function builtinSources(): Omit<PageSource, "available" | "used" | "libraries">[] {
   const watch = ["charts"];
   return [
-    { kind: "continue", title: "Continue", description: "What each viewer is part-way through, in any library", group: "keep", personal: true, needs: ["progress"], split: true, purpose: "continue", look: {} },
-    { kind: "up-next", title: "Up Next", description: "The next episode of shows they're watching", group: "keep", personal: true, needs: ["episodes"], purpose: "nextUp", look: {} },
-    { kind: "favorites", title: "Favorites", description: "Titles this viewer marked as favorites", group: "keep", personal: true, needs: ["added"], split: true, look: {} },
-    { kind: "trending", title: "Trending", description: "What's trending on TMDB today or this week", group: "trending", personal: false, needs: watch, split: true, params: [CHOICE("window", "Window", [["week", "This week"], ["day", "Today"]])], look: {} },
-    { kind: "popular", title: "Popular", description: "TMDB's most popular right now", group: "trending", personal: false, needs: watch, split: true, look: {} },
-    { kind: "top-10-today", title: "Top 10 today", description: "Trending, popularity and what viewers here watch, numbered", group: "trending", personal: false, needs: watch, look: { numbered: true } },
-    { kind: "popular-here", title: "Popular on this server", description: "What viewers here played most in 30 days", group: "trending", personal: false, needs: ["popularity"], split: true, look: {} },
-    { kind: "new", title: "New", description: "Newest releases, or newly playable here", group: "new", personal: false, needs: ["released"], split: true, params: [CHOICE("by", "Which", [["released", "Released recently"], ["available", "Newly available"]])], look: {} },
-    { kind: "recently-added", title: "Recently added", description: "Newest additions to a library", group: "new", personal: false, needs: ["added"], split: true, look: {} },
-    { kind: "airing-today", title: "Airing today", description: "Shows with an episode out today", group: "new", personal: false, needs: ["episodes"], look: {} },
-    { kind: "upcoming", title: "Upcoming", description: "Coming soon, weeks or months ahead", group: "new", personal: false, needs: watch, split: true, params: [CHOICE("ahead", "How far ahead", [["2w", "2 weeks"], ["1m", "A month"], ["3m", "3 months"]], "1m")], look: {} },
-    { kind: "because-you-watched", title: "Because you watched", description: "Like something they just finished · up to 3 rows", group: "foryou", personal: true, needs: ["taste"], params: [{ key: "count", label: "How many rows", type: "count" as const, min: 1, max: 3, default: "1" }], look: {} },
-    { kind: "top-10", title: "Top 10 for you", description: "The ten titles the taste model rates highest", group: "foryou", personal: true, needs: ["taste"], look: { numbered: true } },
-    { kind: "hidden-gems", title: "Hidden gems", description: "Little-known titles that fit their taste", group: "foryou", personal: true, needs: ["taste"], look: {} },
-    { kind: "top-rated", title: "Top rated", description: "TMDB's top rated, optionally in one genre", group: "top", personal: false, needs: watch, split: true, params: [{ key: "genre", label: "Genre", type: "facetValue" as const, facet: "genre" }, CHOICE("votes", "Minimum votes", [["", "Ether decides"], ["1000", "1,000"], ["10000", "10,000"]], ""), ].map((p, i) => (i === 1 ? { ...p, more: true } : p)), look: {} },
-    { kind: "by-genre", title: "By genre", description: "Ether picks a genre per viewer, or pin one (Anime, Horror…)", group: "browse", personal: false, needs: ["facet:genre"], split: true, params: [{ key: "genre", label: "Genre", type: "facetValue" as const, facet: "genre" }], look: {} },
-    { kind: "by-decade", title: "By decade", description: "Ether picks, or pin one (1990s…)", group: "browse", personal: false, needs: ["facet:decade"], split: true, params: [{ key: "decade", label: "Decade", type: "facetValue" as const, facet: "decade" }], look: {} },
-    { kind: "collection", title: "Collection", description: "One of your collections", group: "collections", personal: false, needs: ["catalogue"], split: true, params: [{ key: "collection", label: "Collection", type: "ref" as const, required: true }], look: {} },
-    { kind: "surface:sports:tonight", title: "Tonight", description: "Live and upcoming games", group: "plugins", personal: false, plugin: "Sports", homeOnly: true, look: {} },
-    { kind: "shelf", title: "Plugin shelf", description: "Rows the library's plugin declares", group: "plugins", personal: false, needs: ["shelves"], params: [{ key: "shelf", label: "Shelf", type: "ref" as const, required: true }], look: {} },
-    { kind: "live-now", title: "Live now", description: "What's on your channels right now", group: "live", personal: false, homeOnly: true, purpose: "live", params: [CHOICE("group", "Channel group", [["", "All channels"], ["favourites", "Favourites"]], "")], look: { style: "wide" } },
+    {
+      kind: "continue",
+      title: "Continue",
+      description: "What each viewer is part-way through, in any library",
+      group: "keep",
+      personal: true,
+      needs: ["progress"],
+      split: true,
+      purpose: "continue",
+      look: {},
+    },
+    {
+      kind: "up-next",
+      title: "Up Next",
+      description: "The next episode of shows they're watching",
+      group: "keep",
+      personal: true,
+      needs: ["episodes"],
+      purpose: "nextUp",
+      look: {},
+    },
+    {
+      kind: "favorites",
+      title: "Favorites",
+      description: "Titles this viewer marked as favorites",
+      group: "keep",
+      personal: true,
+      needs: ["added"],
+      split: true,
+      look: {},
+    },
+    {
+      kind: "trending",
+      title: "Trending",
+      description: "What's trending on TMDB today or this week",
+      group: "trending",
+      personal: false,
+      needs: watch,
+      split: true,
+      params: [
+        CHOICE("window", "Window", [
+          ["week", "This week"],
+          ["day", "Today"],
+        ]),
+      ],
+      look: {},
+    },
+    {
+      kind: "popular",
+      title: "Popular",
+      description: "TMDB's most popular right now",
+      group: "trending",
+      personal: false,
+      needs: watch,
+      split: true,
+      look: {},
+    },
+    {
+      kind: "top-10-today",
+      title: "Top 10 today",
+      description: "Trending, popularity and what viewers here watch, numbered",
+      group: "trending",
+      personal: false,
+      needs: watch,
+      look: { numbered: true },
+    },
+    {
+      kind: "popular-here",
+      title: "Popular on this server",
+      description: "What viewers here played most in 30 days",
+      group: "trending",
+      personal: false,
+      needs: ["popularity"],
+      split: true,
+      look: {},
+    },
+    {
+      kind: "new",
+      title: "New",
+      description: "Newest releases, or newly playable here",
+      group: "new",
+      personal: false,
+      needs: ["released"],
+      split: true,
+      params: [
+        CHOICE("by", "Which", [
+          ["released", "Released recently"],
+          ["available", "Newly available"],
+        ]),
+      ],
+      look: {},
+    },
+    {
+      kind: "recently-added",
+      title: "Recently added",
+      description: "Newest additions to a library",
+      group: "new",
+      personal: false,
+      needs: ["added"],
+      split: true,
+      look: {},
+    },
+    {
+      kind: "airing-today",
+      title: "Airing today",
+      description: "Shows with an episode out today",
+      group: "new",
+      personal: false,
+      needs: ["episodes"],
+      look: {},
+    },
+    {
+      kind: "upcoming",
+      title: "Upcoming",
+      description: "Coming soon, weeks or months ahead",
+      group: "new",
+      personal: false,
+      needs: watch,
+      split: true,
+      params: [
+        CHOICE(
+          "ahead",
+          "How far ahead",
+          [
+            ["2w", "2 weeks"],
+            ["1m", "A month"],
+            ["3m", "3 months"],
+          ],
+          "1m",
+        ),
+      ],
+      look: {},
+    },
+    {
+      kind: "because-you-watched",
+      title: "Because you watched",
+      description: "Like something they just finished · up to 3 rows",
+      group: "foryou",
+      personal: true,
+      needs: ["taste"],
+      params: [
+        {
+          key: "count",
+          label: "How many rows",
+          type: "count" as const,
+          min: 1,
+          max: 3,
+          default: "1",
+        },
+      ],
+      look: {},
+    },
+    {
+      kind: "top-10",
+      title: "Top 10 for you",
+      description: "The ten titles the taste model rates highest",
+      group: "foryou",
+      personal: true,
+      needs: ["taste"],
+      look: { numbered: true },
+    },
+    {
+      kind: "hidden-gems",
+      title: "Hidden gems",
+      description: "Little-known titles that fit their taste",
+      group: "foryou",
+      personal: true,
+      needs: ["taste"],
+      look: {},
+    },
+    {
+      kind: "top-rated",
+      title: "Top rated",
+      description: "TMDB's top rated, optionally in one genre",
+      group: "top",
+      personal: false,
+      needs: watch,
+      split: true,
+      params: [
+        { key: "genre", label: "Genre", type: "facetValue" as const, facet: "genre" },
+        CHOICE(
+          "votes",
+          "Minimum votes",
+          [
+            ["", "Ether decides"],
+            ["1000", "1,000"],
+            ["10000", "10,000"],
+          ],
+          "",
+        ),
+      ].map((p, i) => (i === 1 ? { ...p, more: true } : p)),
+      look: {},
+    },
+    {
+      kind: "by-genre",
+      title: "By genre",
+      description: "Ether picks a genre per viewer, or pin one (Anime, Horror…)",
+      group: "browse",
+      personal: false,
+      needs: ["facet:genre"],
+      split: true,
+      params: [{ key: "genre", label: "Genre", type: "facetValue" as const, facet: "genre" }],
+      look: {},
+    },
+    {
+      kind: "by-decade",
+      title: "By decade",
+      description: "Ether picks, or pin one (1990s…)",
+      group: "browse",
+      personal: false,
+      needs: ["facet:decade"],
+      split: true,
+      params: [{ key: "decade", label: "Decade", type: "facetValue" as const, facet: "decade" }],
+      look: {},
+    },
+    {
+      kind: "collection",
+      title: "Collection",
+      description: "One of your collections",
+      group: "collections",
+      personal: false,
+      needs: ["catalogue"],
+      split: true,
+      params: [{ key: "collection", label: "Collection", type: "ref" as const, required: true }],
+      look: {},
+    },
+    {
+      kind: "surface:sports:tonight",
+      title: "Tonight",
+      description: "Live and upcoming games",
+      group: "plugins",
+      personal: false,
+      plugin: "Sports",
+      homeOnly: true,
+      look: {},
+    },
+    {
+      kind: "shelf",
+      title: "Plugin shelf",
+      description: "Rows the library's plugin declares",
+      group: "plugins",
+      personal: false,
+      needs: ["shelves"],
+      params: [{ key: "shelf", label: "Shelf", type: "ref" as const, required: true }],
+      look: {},
+    },
+    {
+      kind: "live-now",
+      title: "Live now",
+      description: "What's on your channels right now",
+      group: "live",
+      personal: false,
+      homeOnly: true,
+      purpose: "live",
+      params: [
+        CHOICE(
+          "group",
+          "Channel group",
+          [
+            ["", "All channels"],
+            ["favourites", "Favourites"],
+          ],
+          "",
+        ),
+      ],
+      look: { style: "wide" },
+    },
   ];
 }
 
@@ -84,7 +330,17 @@ function capsOf(l: PageLibrary): string[] {
   if (l.experience === "listen") return ["progress", "added", "released", "shelves", "popularity"];
   if (l.experience === "read") return ["progress", "added", "released", "popularity"];
   if (l.plugin) return ["progress", "added", "released", "popularity", "shelves"];
-  const base = ["charts", "taste", "progress", "added", "released", "popularity", "catalogue", "facet:genre", "facet:decade"];
+  const base = [
+    "charts",
+    "taste",
+    "progress",
+    "added",
+    "released",
+    "popularity",
+    "catalogue",
+    "facet:genre",
+    "facet:decade",
+  ];
   return l.mediaType === "show" ? [...base, "episodes"] : [...base, "movies"];
 }
 
@@ -92,7 +348,8 @@ function scheduleAllows(s: Schedule | null | undefined, at: Date): boolean {
   if (!s) return true;
   const day = at.getDay();
   const hour = at.getHours();
-  const part = hour >= 22 || hour < 5 ? "late" : hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+  const part =
+    hour >= 22 || hour < 5 ? "late" : hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
   if (s.days?.length && !s.days.includes(day)) return false;
   if (s.dayparts?.length && !s.dayparts.includes(part as never)) return false;
   if (s.months?.length && !s.months.includes(at.getMonth() + 1)) return false;
@@ -130,7 +387,10 @@ export function createPagesMock(deps: Deps) {
     const m = /^library:(\d+)\/([a-z0-9_-]+)$/.exec(key);
     return m ? libs().find((l) => l.id === Number(m[1])) : undefined;
   };
-  const tabsOf = (l: PageLibrary) => l.rowsTabs ?? [{ key: l.experience === "listen" ? "home" : "recommended", label: "Recommendations" }];
+  const tabsOf = (l: PageLibrary) =>
+    l.rowsTabs ?? [
+      { key: l.experience === "listen" ? "home" : "recommended", label: "Recommendations" },
+    ];
   const pageKeys = () => [
     "home",
     ...libs().flatMap((l) => tabsOf(l).map((t) => `library:${l.id}/${t.key}`)),
@@ -160,8 +420,12 @@ export function createPagesMock(deps: Deps) {
         length: { rows: 9 },
         picks: true,
         rows: [
-          row("continue", { placement: { mode: "pinned", position: 1, audience: { mode: "everyone" } } }),
-          row("surface:sports:tonight", { placement: { mode: "pinned", position: 2, audience: { mode: "everyone" } } }),
+          row("continue", {
+            placement: { mode: "pinned", position: 1, audience: { mode: "everyone" } },
+          }),
+          row("surface:sports:tonight", {
+            placement: { mode: "pinned", position: 2, audience: { mode: "everyone" } },
+          }),
           row("trending", {
             source: { kind: "trending", params: { window: "week" } },
             scope: { libraries: [1, 2], perLibrary: true },
@@ -173,7 +437,9 @@ export function createPagesMock(deps: Deps) {
             scope: { libraries: [1, 2], perLibrary: true },
             placement: { mode: "show", audience: { mode: "everyone" } },
           }),
-          row("because-you-watched", { placement: { mode: "auto", audience: { mode: "everyone" } } }),
+          row("because-you-watched", {
+            placement: { mode: "auto", audience: { mode: "everyone" } },
+          }),
           ...(col
             ? [
                 row("collection", {
@@ -191,7 +457,12 @@ export function createPagesMock(deps: Deps) {
           row("top-rated", {
             name: "Christmas Movies",
             scope: { libraries: [1] },
-            placement: { mode: "pinned", position: 2, when: { holidays: ["christmas"] }, audience: { mode: "everyone" } },
+            placement: {
+              mode: "pinned",
+              position: 2,
+              when: { holidays: ["christmas"] },
+              audience: { mode: "everyone" },
+            },
           }),
           row("top-10-today", { placement: { mode: "hide", audience: { mode: "everyone" } } }),
         ],
@@ -218,7 +489,12 @@ export function createPagesMock(deps: Deps) {
           row("shelf", { source: { kind: "shelf", params: { shelf: "new" } } }),
           row("recently-added", { look: { card: lib.experience === "listen" ? "square" : "" } }),
           ...(lib.experience === "listen"
-            ? [row("shelf", { source: { kind: "shelf", params: { shelf: "top-songs" } }, look: { style: "tracks" } })]
+            ? [
+                row("shelf", {
+                  source: { kind: "shelf", params: { shelf: "top-songs" } },
+                  look: { style: "tracks" },
+                }),
+              ]
             : []),
         ],
         revision: 0,
@@ -230,7 +506,9 @@ export function createPagesMock(deps: Deps) {
       length: { rows: 8 },
       picks: true,
       rows: [
-        row("recently-added", { placement: { mode: "pinned", position: 1, audience: { mode: "everyone" } } }),
+        row("recently-added", {
+          placement: { mode: "pinned", position: 1, audience: { mode: "everyone" } },
+        }),
         row("new"),
         row("trending", { source: { kind: "trending", params: { window: "week" } } }),
         row("top-rated", { placement: { mode: "auto", audience: { mode: "everyone" } } }),
@@ -258,7 +536,11 @@ export function createPagesMock(deps: Deps) {
       library: lib ? { ...lib, caps: capsOf(lib) } : undefined,
       libraries: key === "home" ? libs().map((l) => ({ ...l, caps: capsOf(l) })) : undefined,
       viewersWithChanges: (page.variants ?? [])
-        .map((v) => ({ id: v.viewer, name: names.get(v.viewer) ?? "", changes: v.rows.length + (v.mode ? 1 : 0) + (v.length ? 1 : 0) }))
+        .map((v) => ({
+          id: v.viewer,
+          name: names.get(v.viewer) ?? "",
+          changes: v.rows.length + (v.mode ? 1 : 0) + (v.length ? 1 : 0),
+        }))
         .filter((v) => v.changes > 0)
         .sort((a, b) => b.changes - a.changes),
       defaultLength: key === "home" ? 10 : 8,
@@ -297,7 +579,9 @@ export function createPagesMock(deps: Deps) {
     return {
       sources,
       libraries: pageLibs.map((l) => ({ ...l, caps: capsOf(l) })),
-      collections: deps.collections().map((c, i) => ({ id: String(c.id ?? i + 1), name: c.name, count: 24 })),
+      collections: deps
+        .collections()
+        .map((c, i) => ({ id: String(c.id ?? i + 1), name: c.name, count: 24 })),
     };
   }
 
@@ -310,20 +594,30 @@ export function createPagesMock(deps: Deps) {
     let base = info?.title ?? r.source.kind;
     if (r.source.kind === "collection") {
       base =
-        deps.collections().find((c, i) => String(c.id ?? i + 1) === r.source.params?.collection)?.name ??
-        "Collection";
+        deps.collections().find((c, i) => String(c.id ?? i + 1) === r.source.params?.collection)
+          ?.name ?? "Collection";
     }
     if (r.source.kind === "shelf") {
-      base = sourcesFor(key).sources.find((s) => s.kind === "shelf")?.refs?.find((x) => x.value === r.source.params?.shelf)?.label ?? base;
+      base =
+        sourcesFor(key)
+          .sources.find((s) => s.kind === "shelf")
+          ?.refs?.find((x) => x.value === r.source.params?.shelf)?.label ?? base;
     }
     if (r.source.kind === "continue") base = "Continue Watching";
-    if (r.name) return libName ? r.name.replaceAll("{library}", libName) : r.name.replaceAll(" {library}", "").replaceAll("{library}", "");
+    if (r.name)
+      return libName
+        ? r.name.replaceAll("{library}", libName)
+        : r.name.replaceAll(" {library}", "").replaceAll("{library}", "");
     return libName ? `${base} ${libName}` : base;
   }
 
   function items(seed: string, lib: PageLibrary | undefined, kid: boolean, n = 12): TitleCard[] {
     const pool = deps.catalog.filter((t) =>
-      !lib || lib.experience !== "watch" || lib.plugin ? true : lib.mediaType === "show" ? t.type === "show" : t.type === "movie",
+      !lib || lib.experience !== "watch" || lib.plugin
+        ? true
+        : lib.mediaType === "show"
+          ? t.type === "show"
+          : t.type === "movie",
     );
     const start = hash(seed) % Math.max(1, pool.length - n);
     return pool.slice(start, start + n).map((t) => {
@@ -343,7 +637,10 @@ export function createPagesMock(deps: Deps) {
     const kid = viewer === KID;
     const variant = page.variants?.find((v) => v.viewer === viewer);
     const mode = variant?.mode ?? page.mode;
-    const length = (variant?.length ?? page.length).byDevice?.[device as "tv"] ?? (variant?.length ?? page.length).rows ?? (key === "home" ? 10 : 8);
+    const length =
+      (variant?.length ?? page.length).byDevice?.[device as "tv"] ??
+      (variant?.length ?? page.length).rows ??
+      (key === "home" ? 10 : 8);
     const pageLib = libOf(key);
     const names = new Map(deps.viewers().map((v) => [v.id, v.title]));
     const out: PreviewRow[] = [];
@@ -353,7 +650,11 @@ export function createPagesMock(deps: Deps) {
     const auto: PreviewRow[][] = [];
     for (const base of page.rows) {
       const o = variant?.rows.find((x) => x.row === base.id);
-      const r: PageRow = { ...base, look: o?.look ?? base.look, placement: o?.placement ?? base.placement };
+      const r: PageRow = {
+        ...base,
+        look: o?.look ?? base.look,
+        placement: o?.placement ?? base.placement,
+      };
       const pl = r.placement;
       const title = titleFor(r, undefined, key);
       if (pl.mode === "hide") {
@@ -362,11 +663,20 @@ export function createPagesMock(deps: Deps) {
       }
       const aud = pl.audience;
       if (viewer && aud?.mode === "only" && !aud.viewers?.includes(viewer)) {
-        notShown.push({ row: r.id, title, reason: `Not for ${names.get(viewer) ?? "this viewer"}`, previewAs: aud.viewers?.[0] });
+        notShown.push({
+          row: r.id,
+          title,
+          reason: `Not for ${names.get(viewer) ?? "this viewer"}`,
+          previewAs: aud.viewers?.[0],
+        });
         continue;
       }
       if (viewer && aud?.mode === "except" && aud.viewers?.includes(viewer)) {
-        notShown.push({ row: r.id, title, reason: `Not for ${names.get(viewer) ?? "this viewer"}` });
+        notShown.push({
+          row: r.id,
+          title,
+          reason: `Not for ${names.get(viewer) ?? "this viewer"}`,
+        });
         continue;
       }
       if (!viewer && aud?.mode === "only") {
@@ -386,13 +696,19 @@ export function createPagesMock(deps: Deps) {
       const surface = r.source.kind.startsWith("surface:");
       const scopeLibs = pageLib
         ? [pageLib]
-        : (r.scope.libraries?.length
+        : ((r.scope.libraries?.length
             ? r.scope.libraries.map((id) => libs().find((l) => l.id === id)).filter(Boolean)
-            : libs().filter((l) => (info?.needs ?? []).every((n) => capsOf(l).includes(n)))) as PageLibrary[];
+            : libs().filter((l) =>
+                (info?.needs ?? []).every((n) => capsOf(l).includes(n)),
+              )) as PageLibrary[]);
       const visibleLibs = kid ? scopeLibs.filter((l) => l.id !== KID_HIDDEN_LIBRARY) : scopeLibs;
       const fan = !pageLib && r.scope.perLibrary ? visibleLibs.slice(0, 6) : [undefined];
       if (kid && r.source.kind === "top-rated" && r.name?.includes("Horror")) {
-        notShown.push({ row: r.id, title, reason: `Nothing within ${names.get(viewer)}'s ${KID_LIMIT} limit` });
+        notShown.push({
+          row: r.id,
+          title,
+          reason: `Nothing within ${names.get(viewer)}'s ${KID_LIMIT} limit`,
+        });
         continue;
       }
       if (!scheduleAllows(pl.when, at)) {
@@ -400,7 +716,9 @@ export function createPagesMock(deps: Deps) {
         notShown.push({
           row: r.id,
           title,
-          reason: pl.when?.holidays?.length ? "Shows in its holiday season" : "Scheduled for another time",
+          reason: pl.when?.holidays?.length
+            ? "Shows in its holiday season"
+            : "Scheduled for another time",
           previewAt: when?.toISOString(),
         });
         out.push({
@@ -426,7 +744,10 @@ export function createPagesMock(deps: Deps) {
           library: l?.id,
           mode: pl.mode as never,
           why: "",
-          note: !info?.personal && !r.look.keepWhole && out.length > 1 ? "2 skipped (shown above)" : undefined,
+          note:
+            !info?.personal && !r.look.keepWhole && out.length > 1
+              ? "2 skipped (shown above)"
+              : undefined,
           look: r.look,
           personal: Boolean(info?.personal),
           flags:
@@ -445,14 +766,23 @@ export function createPagesMock(deps: Deps) {
           },
           title: titleFor(r, libName, key),
           kind: r.source.kind,
-          items: surface ? [] : items(`${r.id}${r.source.kind}${JSON.stringify(r.source.params)}${l?.id ?? ""}`, l ?? pageLib, kid),
+          items: surface
+            ? []
+            : items(
+                `${r.id}${r.source.kind}${JSON.stringify(r.source.params)}${l?.id ?? ""}`,
+                l ?? pageLib,
+                kid,
+              ),
         };
       });
       if (mode === "curated") {
         built.forEach((b) => (b.why = "Curated: in your order"));
         shown.push(built);
       } else if (pl.mode === "pinned") {
-        built.forEach((b, i) => (b.why = i === 0 ? `Pinned to #${pl.position} for everyone` : "Same row, next library"));
+        built.forEach(
+          (b, i) =>
+            (b.why = i === 0 ? `Pinned to #${pl.position} for everyone` : "Same row, next library"),
+        );
         pinned.push({ pos: pl.position ?? 1, rows: built });
       } else if (pl.mode === "show") {
         built.forEach((b) => (b.why = "You chose Show; Ether placed it here"));
@@ -468,7 +798,10 @@ export function createPagesMock(deps: Deps) {
     if (mode === "curated") rows = shown.flat();
     else {
       const flow = [...shown];
-      let room = Math.max(0, length - pinned.reduce((n, p) => n + p.rows.length, 0) - flow.flat().length);
+      let room = Math.max(
+        0,
+        length - pinned.reduce((n, p) => n + p.rows.length, 0) - flow.flat().length,
+      );
       for (const a of auto) {
         if (room <= 0) break;
         flow.push(a);
@@ -523,9 +856,24 @@ export function createPagesMock(deps: Deps) {
         mode === "curated"
           ? []
           : [
-              { kind: "popular", title: "Popular", personal: false, why: "Fits this page; not on it yet" },
-              { kind: "hidden-gems", title: "Hidden gems", personal: true, why: "Strong for viewers who explore" },
-              { kind: "by-genre", title: "By genre", personal: false, why: "Ether picks a genre per viewer" },
+              {
+                kind: "popular",
+                title: "Popular",
+                personal: false,
+                why: "Fits this page; not on it yet",
+              },
+              {
+                kind: "hidden-gems",
+                title: "Hidden gems",
+                personal: true,
+                why: "Strong for viewers who explore",
+              },
+              {
+                kind: "by-genre",
+                title: "By genre",
+                personal: false,
+                why: "Ether picks a genre per viewer",
+              },
             ],
       notShown,
       access: kidViewer
@@ -536,17 +884,21 @@ export function createPagesMock(deps: Deps) {
             unrated: "hidden",
             librariesSeen: libs().length - 1,
             librariesTotal: libs().length,
-            hiddenLibraries: libs().filter((l) => l.id === KID_HIDDEN_LIBRARY).map((l) => l.name),
+            hiddenLibraries: libs()
+              .filter((l) => l.id === KID_HIDDEN_LIBRARY)
+              .map((l) => l.name),
           }
         : null,
     };
   }
 
   function validate(page: RowPage): string | null {
-    if (page.mode !== "curated" && page.mode !== "personalized") return "mode: must be curated or personalized";
+    if (page.mode !== "curated" && page.mode !== "personalized")
+      return "mode: must be curated or personalized";
     const seen = new Set<string>();
     for (const [i, r] of page.rows.entries()) {
-      if (!/^r[a-z0-9]{8}$/.test(r.id) || seen.has(r.id)) return `rows[${i}]: id is missing, malformed or repeated`;
+      if (!/^r[a-z0-9]{8}$/.test(r.id) || seen.has(r.id))
+        return `rows[${i}]: id is missing, malformed or repeated`;
       seen.add(r.id);
       if (page.mode === "curated" && (r.placement.mode === "pinned" || r.placement.mode === "auto"))
         return `rows[${i}]: placement: a curated page uses show or hide`;
@@ -562,8 +914,26 @@ export function createPagesMock(deps: Deps) {
       const values =
         facet === "decade"
           ? ["1970s", "1980s", "1990s", "2000s", "2010s", "2020s"]
-          : ["Action", "Animation", "Anime", "Comedy", "Documentary", "Drama", "Family", "Horror", "Romance", "Science Fiction", "Thriller"];
-      return ok({ values: values.map((v) => ({ value: v.toLowerCase(), label: v, count: 10 + (hash(v) % 90) })) });
+          : [
+              "Action",
+              "Animation",
+              "Anime",
+              "Comedy",
+              "Documentary",
+              "Drama",
+              "Family",
+              "Horror",
+              "Romance",
+              "Science Fiction",
+              "Thriller",
+            ];
+      return ok({
+        values: values.map((v) => ({
+          value: v.toLowerCase(),
+          label: v,
+          count: 10 + (hash(v) % 90),
+        })),
+      });
     }
     if (seg[0] !== "pages") return null;
     if (seg.length === 1 && method === "GET") {
@@ -579,7 +949,10 @@ export function createPagesMock(deps: Deps) {
           mode: page.mode,
           rowCount: page.rows.length,
           saved: isSaved,
-          apps: l?.experience === "listen" ? ["vela", "plex", "mediaBrowser"] : ["plex", "mediaBrowser", "vela", "silo"],
+          apps:
+            l?.experience === "listen"
+              ? ["vela", "plex", "mediaBrowser"]
+              : ["plex", "mediaBrowser", "vela", "silo"],
         };
       });
       return ok(out);
@@ -600,10 +973,19 @@ export function createPagesMock(deps: Deps) {
         if (ifMatch === null) return fail(428, "precondition_required", "If-Match is required");
         const cur = current(key).page;
         if (Number(ifMatch) !== cur.revision)
-          return fail(409, "conflict", "Someone else saved this page. Reload it to see their changes.");
+          return fail(
+            409,
+            "conflict",
+            "Someone else saved this page. Reload it to see their changes.",
+          );
         const problem = validate(page);
         if (problem) return fail(400, "validation", problem);
-        saved.set(key, { ...structuredClone(page), key, revision: cur.revision + 1, updatedAt: new Date().toISOString() });
+        saved.set(key, {
+          ...structuredClone(page),
+          key,
+          revision: cur.revision + 1,
+          updatedAt: new Date().toISOString(),
+        });
         return ok(docFor(key));
       }
     }
@@ -618,7 +1000,17 @@ export function createPagesMock(deps: Deps) {
     }
     if (sub === "rows" && seg[3] === "preview" && method === "POST") {
       const b = body as { row: PageRow; viewer?: number; device?: string; at?: string };
-      const page = { ...current(key).page, mode: "curated" as const, picks: false, rows: [{ ...b.row, placement: { mode: "show" as const, audience: { mode: "everyone" as const } } }] };
+      const page = {
+        ...current(key).page,
+        mode: "curated" as const,
+        picks: false,
+        rows: [
+          {
+            ...b.row,
+            placement: { mode: "show" as const, audience: { mode: "everyone" as const } },
+          },
+        ],
+      };
       const p = preview(key, { page, viewer: b.viewer, device: b.device, at: b.at });
       const rows = p.rows?.filter((r) => !r.ghost) ?? [];
       return ok({ rows, total: rows.reduce((n, r) => n + (r.items?.length ?? 0), 0) });
@@ -627,7 +1019,8 @@ export function createPagesMock(deps: Deps) {
       const page = (body as { page?: RowPage }).page;
       return ok({
         viewers: deps.viewers().length,
-        withChanges: (page?.variants ?? []).filter((v) => v.rows.length || v.mode || v.length).length,
+        withChanges: (page?.variants ?? []).filter((v) => v.rows.length || v.mode || v.length)
+          .length,
       });
     }
     return fail(404, "not_found", "no such API endpoint");

@@ -1286,7 +1286,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   // ---- Homes (layered Home Designer) ---------------------------------------------------
 
-
   function activity(): ActivityDay[] {
     const out: ActivityDay[] = [];
     for (let i = 29; i >= 0; i--) {

@@ -477,7 +477,9 @@ describe("Metadata artwork studio", () => {
 
   it("opens Recommendations at /recommendations", async () => {
     renderAppWith("/recommendations", () => undefined);
-    expect(await screen.findByRole("heading", { name: "Recommendations" }, WAIT)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Recommendations" }, WAIT),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Recommendations" })).toHaveAttribute(
       "href",
       "/recommendations",

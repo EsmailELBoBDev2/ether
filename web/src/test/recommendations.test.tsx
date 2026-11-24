@@ -30,7 +30,9 @@ describe("Recommendations designer", () => {
     // Trending, one row per library, sits in one bracket.
     const block = screen.getByRole("group", { name: /One row you made · Trending/ });
     expect(within(block).getByRole("region", { name: "#3: Trending Movies" })).toBeInTheDocument();
-    expect(within(block).getByRole("region", { name: "#4: Trending TV Shows" })).toBeInTheDocument();
+    expect(
+      within(block).getByRole("region", { name: "#4: Trending TV Shows" }),
+    ).toBeInTheDocument();
     // The saved page is previewed (no draft), for the typical viewer.
     const body = lastPreview(fake);
     expect(body.page).toBeUndefined();
@@ -50,10 +52,13 @@ describe("Recommendations designer", () => {
     const drawer = await screen.findByRole("dialog", {}, WAIT);
     expect(within(drawer).getByText("What fills this row?")).toBeInTheDocument();
     fireEvent.click(await within(drawer).findByRole("button", { name: "Top rated" }, WAIT));
-    expect(await within(drawer).findByRole("region", { name: "Libraries" }, WAIT)).toBeInTheDocument();
+    expect(
+      await within(drawer).findByRole("region", { name: "Libraries" }, WAIT),
+    ).toBeInTheDocument();
     // The new rows preview in place, outlined as new, before anything is added.
     await waitFor(
-      () => expect(screen.getByRole("region", { name: "#3: Top rated Movies" })).toBeInTheDocument(),
+      () =>
+        expect(screen.getByRole("region", { name: "#3: Top rated Movies" })).toBeInTheDocument(),
       WAIT,
     );
     expect(
@@ -93,7 +98,10 @@ describe("Recommendations designer", () => {
       expect(cw?.look.hideWatched).toBe(true);
     }, WAIT);
     fireEvent.click(within(drawer).getByRole("tab", { name: "Content" }));
-    await waitFor(() => expect(calls(fake, "POST", "/pages/home/rows/preview").length).toBe(1), WAIT);
+    await waitFor(
+      () => expect(calls(fake, "POST", "/pages/home/rows/preview").length).toBe(1),
+      WAIT,
+    );
     fireEvent.click(within(drawer).getByRole("button", { name: "Remove from page" }));
     await waitFor(() => {
       const page = lastPreview(fake).page;
@@ -104,22 +112,26 @@ describe("Recommendations designer", () => {
   it("keeps the draft when you leave and restores it, then Discard drops it", async () => {
     await home();
     fireEvent.click(screen.getByRole("button", { name: "Hide Continue Watching" }));
-    expect(await screen.findByText("Unsaved changes · kept if you leave", {}, WAIT)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Unsaved changes · kept if you leave", {}, WAIT),
+    ).toBeInTheDocument();
     await waitFor(() =>
-      expect(Object.keys(localStorage).some((k) => k.startsWith("ether.recommendations.draft:home@"))).toBe(
-        true,
-      ),
+      expect(
+        Object.keys(localStorage).some((k) => k.startsWith("ether.recommendations.draft:home@")),
+      ).toBe(true),
     );
     cleanup();
     renderApp("/recommendations");
-    expect(await screen.findByText("Unsaved changes · kept if you leave", {}, WAIT)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Unsaved changes · kept if you leave", {}, WAIT),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Discard/ }));
     await waitFor(() =>
       expect(screen.queryByText("Unsaved changes · kept if you leave")).toBeNull(),
     );
-    expect(Object.keys(localStorage).some((k) => k.startsWith("ether.recommendations.draft:"))).toBe(
-      false,
-    );
+    expect(
+      Object.keys(localStorage).some((k) => k.startsWith("ether.recommendations.draft:")),
+    ).toBe(false);
   });
 
   it("says when someone else saved the page first", async () => {
@@ -130,7 +142,14 @@ describe("Recommendations designer", () => {
     await fake.fetch("/ether/api/pages/home", {
       method: "PUT",
       headers: { "If-Match": "0" },
-      body: JSON.stringify({ key: "home", mode: "curated", length: {}, picks: false, rows: [], revision: 0 }),
+      body: JSON.stringify({
+        key: "home",
+        mode: "curated",
+        length: {},
+        picks: false,
+        rows: [],
+        revision: 0,
+      }),
     });
     fireEvent.click(screen.getByRole("button", { name: /Save page/ }));
     expect(
@@ -162,8 +181,10 @@ describe("Recommendations designer", () => {
 
   it("opens the page and row a link names", async () => {
     renderApp("/recommendations?page=library:9/home");
-    expect(await screen.findByRole("button", { name: "Page" }, WAIT)).toHaveTextContent(
-      "Field Recordings",
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: "Page" })).toHaveTextContent("Field Recordings"),
+      WAIT,
     );
     expect(await screen.findByText(/rows · in your order/, {}, WAIT)).toBeInTheDocument();
   });

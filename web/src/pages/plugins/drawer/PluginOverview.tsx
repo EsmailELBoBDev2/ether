@@ -1032,11 +1032,7 @@ function CatalogueNow({
       })}
       icon={<Library size={16} />}
       actions={
-        <OpenLink
-          to={addRowHref(current!.id)}
-          label={t("Add as a row")}
-          onClose={onClose}
-        />
+        <OpenLink to={addRowHref(current!.id)} label={t("Add as a row")} onClose={onClose} />
       }
     >
       {lists.length > 1 ? (

@@ -231,7 +231,11 @@ export function RowBody({
           ) : shape === "square" || shape === "round" ? (
             <SquareCard item={it} round={shape === "round"} />
           ) : (
-            <RatedPoster item={it} showRating={showRating} rank={ranked && i < 10 ? i + 1 : undefined} />
+            <RatedPoster
+              item={it}
+              showRating={showRating}
+              rank={ranked && i < 10 ? i + 1 : undefined}
+            />
           )}
         </li>
       ))}

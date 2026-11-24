@@ -1105,6 +1105,42 @@
       }
     },
     {
+      "id": "plex-no-coverart-display-image",
+      "role": "quirk",
+      "notes": "Plex Web and desktop/HTML clients built on Plex's web-client bundle overwrite server-supplied Image arrays during metadata normalization and drop coverArt, leaving only coverPoster. Sending Meta.DisplayImage with coverArt makes them size wide cards and resolve an undefined image URL (blank cards); omitting Meta.DisplayImage lets them render ranked portrait posters from thumb.",
+      "quirks": ["plex-no-coverart-display-image"],
+      "match": {
+        "any": [
+          {"field": "product", "op": "contains", "value": "plex web"},
+          {"field": "product", "op": "contains", "value": "plex for mac"},
+          {"field": "product", "op": "contains", "value": "plex for windows"},
+          {"field": "product", "op": "contains", "value": "plex for linux"},
+          {"field": "product", "op": "contains", "value": "plex desktop"},
+          {"field": "product", "op": "contains", "value": "plex htpc"},
+          {"field": "product", "op": "contains", "value": "plex media player"},
+          {"field": "product", "op": "contains", "value": "plex for lg"},
+          {"field": "product", "op": "contains", "value": "plex for samsung"},
+          {"field": "product", "op": "contains", "value": "plex for vizio"},
+          {"field": "product", "op": "contains", "value": "plex for xbox"},
+          {"field": "product", "op": "contains", "value": "plex for playstation"},
+          {
+            "all": [
+              {
+                "any": [
+                  {"field": "platform", "op": "equals", "value": "webos"},
+                  {"field": "platform", "op": "equals", "value": "tizen"},
+                  {"field": "platform", "op": "equals", "value": "vidaa"},
+                  {"field": "platform", "op": "equals", "value": "xbox"},
+                  {"field": "platform", "op": "equals", "value": "playstation"}
+                ]
+              },
+              {"field": "product", "op": "contains", "value": "plex"}
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "native-player-dynamic-range",
       "role": "quirk",
       "quirks": ["native-player-dynamic-range"],

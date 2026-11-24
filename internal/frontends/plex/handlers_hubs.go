@@ -627,7 +627,7 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 		},
 	}
 	rows, served := assembly.Rows(hubs, includeContinue, promotedOnly, true, frontend.HomePurpose)
-	mc.Hub = heroReadyHomeHubs(stableHomeHubs(rows))
+	mc.Hub = heroReadyHomeHubs(stableHomeHubs(pr, rows))
 	if pr.HasPage {
 		total := len(mc.Hub)
 		lo, hi := pr.window(total)
@@ -965,6 +965,7 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 	if rawDir != "" {
 		sections = s.allowedSectionIDs(pr.User, sections)
 	}
+	var ranked bool
 	if (rawDir == "" || len(sections) > 0) && id != "" {
 		if hs, ok := s.findHub(ctx, pr, id, sections, q.Get("metadataID"), count); ok {
 			hc := hubCtx{}
@@ -974,7 +975,9 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 			if k, err := frontend.ParseRatingKey(q.Get("metadataID")); err == nil {
 				hc.related = k
 			}
-			mc.Metadata = s.renderHub(ctx, pr, hs, hc).Metadata
+			mh := s.renderHub(ctx, pr, hs, hc)
+			mc.Metadata = mh.Metadata
+			ranked = mh.RankedTop10
 		}
 	}
 	total := len(mc.Metadata)
@@ -986,6 +989,9 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 	mc.Metadata = mc.Metadata[start:end]
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(start, total)
+	if ranked {
+		paintRankedCollection(pr, mc, start)
+	}
 	s.log.Debug("shelf items rendered", "id", id, "user", pr.User.ID, "start", pr.Start, "requested", pr.Size, "size", mc.Size, "total", total)
 	s.write(w, r, mc)
 }

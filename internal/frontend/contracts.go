@@ -41,6 +41,8 @@ const (
 	RowRecommendation   RowPurpose = "recommendation"
 	RowLive             RowPurpose = "live"
 	RowWatchlist        RowPurpose = "watchlist"
+	RowRecentContexts   RowPurpose = core.PurposeRecentContexts
+	RowLiked            RowPurpose = core.PurposeLiked
 )
 
 type View struct {
@@ -303,6 +305,10 @@ type RowLayout struct {
 	HideWatched bool
 	Paint       RowPaint
 	Always      bool
+	// Present is the page row's presentation (Recommendations): layout,
+	// card, role, personal, library, experience, surface. Wire adapters
+	// copy it; unknown values draw as a standard shelf.
+	Present core.RowPresentation
 }
 
 // RowPaint carries optional presentation colors and artwork references.

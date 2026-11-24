@@ -788,6 +788,13 @@ function languageOptions(): { value: string; label: string }[] {
   return LANGUAGE_CODES.map((code) => ({ value: code, label: names?.of(code) ?? code }));
 }
 
+interface RawFieldOption {
+  value: string;
+  label: string;
+  hint?: string;
+  description?: string;
+}
+
 interface RawField {
   key?: string;
   name?: string;
@@ -807,9 +814,10 @@ interface RawField {
   step?: number;
   unit?: string;
   numeric?: boolean;
-  options?: { value: string; label: string }[];
+  options?: RawFieldOption[];
   enum?: string[];
   fields?: RawField[];
+  search?: boolean;
 }
 
 /**
@@ -829,7 +837,9 @@ export function selectFieldsNeedingOptions(schema: Record<string, unknown>): str
       if (
         key &&
         (f.kind === "select" || f.kind === "multiSelect") &&
-        (!Array.isArray(f.options) || f.options.length === 0)
+        !f.search &&
+        (!Array.isArray(f.options) || f.options.length === 0) &&
+        (!Array.isArray(f.enum) || f.enum.length === 0)
       ) {
         out.push(key);
       }
@@ -842,7 +852,7 @@ export function selectFieldsNeedingOptions(schema: Record<string, unknown>): str
 
 function toFieldDef(
   raw: RawField,
-  dynamicOptions: Record<string, { value: string; label: string }[]>,
+  dynamicOptions: Record<string, RawFieldOption[]>,
   viewers: Viewer[] | null,
   currentValue: unknown,
 ): FieldDef | null {
@@ -921,7 +931,6 @@ function toFieldDef(
       return { key, label, help, kind: "hidden" };
     case "list":
     case "orderedList":
-    case "multiSelect":
       return {
         key,
         label,
@@ -930,6 +939,32 @@ function toFieldDef(
         placeholder: raw.placeholder,
         numeric: raw.numeric,
       };
+    case "multiSelect": {
+      const baseOpts =
+        raw.options && raw.options.length > 0
+          ? raw.options.map((o) => ({
+              value: String(o.value),
+              label: String(o.label),
+              description: o.hint ?? o.description,
+            }))
+          : raw.enum
+            ? raw.enum.map((e) => ({ value: String(e), label: String(e) }))
+            : (dynamicOptions[key] ?? []).map((o) => ({
+                value: String(o.value),
+                label: String(o.label),
+                description: o.hint ?? o.description,
+              }));
+      return {
+        key,
+        label,
+        help,
+        kind: "multiSelect",
+        options: baseOpts,
+        placeholder: raw.placeholder,
+        search: raw.search,
+        numeric: raw.numeric,
+      };
+    }
     case "language": {
       const opts = languageOptions();
       if (
@@ -1012,7 +1047,7 @@ function toFieldDef(
 export function schemaToFieldGroups(
   schema: Record<string, unknown>,
   values: Record<string, unknown>,
-  dynamicOptions: Record<string, { value: string; label: string }[]>,
+  dynamicOptions: Record<string, RawFieldOption[]>,
   viewers: Viewer[] | null,
 ): FieldGroup[] {
   if (!schema || Object.keys(schema).length === 0) return [];
@@ -1021,15 +1056,20 @@ export function schemaToFieldGroups(
     return (
       schema.groups as {
         id?: string;
+        key?: string;
         title?: string;
+        label?: string;
         description?: string;
+        hint?: string;
+        advanced?: boolean;
         fields?: RawField[];
       }[]
     )
       .map((g, idx) => ({
-        id: g.id ?? `group-${idx}`,
-        title: g.title,
-        description: g.description,
+        id: g.id ?? g.key ?? `group-${idx}`,
+        title: g.title ?? g.label,
+        description: g.description ?? g.hint,
+        advanced: Boolean(g.advanced),
         fields: (g.fields ?? [])
           .map((f) => toFieldDef(f, dynamicOptions, viewers, values[f.key ?? f.name ?? ""]))
           .filter((x): x is FieldDef => x !== null),

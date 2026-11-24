@@ -580,6 +580,13 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, core.ErrNotFound
 		}
 		if lib.Source == core.LibraryPlugin {
+			// A catalogue (TMDB) person is credited on no plugin item: plugin
+			// people carry their own ids. Answer empty instead of the whole
+			// library, which put every audiobook on an actor's page and merged
+			// a plugin movie library into their filmography.
+			if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
+				return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+			}
 			return s.pluginLibraryItems(ctx, v, lib, s.sanitizePluginLibraryQuery(ctx, lib, q))
 		}
 		if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {

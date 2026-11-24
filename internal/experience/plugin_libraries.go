@@ -717,9 +717,6 @@ func (s *Service) pluginItemAllowed(ctx context.Context, v *core.User, piv Plugi
 // not declared so undeclared caller parameters are ignored gracefully instead
 // of returning empty pages or errors.
 func (s *Service) sanitizePluginLibraryQuery(ctx context.Context, lib core.Library, q frontend.ItemQuery) frontend.ItemQuery {
-	if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
-		q.Filter.Person = 0
-	}
 	pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
 	if !ok {
 		return q

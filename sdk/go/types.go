@@ -378,6 +378,14 @@ type MediaKindMeta struct {
 	Match   *KindMatchDecl  `json:"match,omitempty"`
 	// Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics).
 	Lyrics bool `json:"lyrics,omitempty"`
+	// Related: the provider implements RelatedProvider (POST /ether/v1/kinds/{kind}/related).
+	Related *KindRelatedDecl `json:"related,omitempty"`
+}
+
+// KindRelatedDecl names which relation purposes a kind answers.
+type KindRelatedDecl struct {
+	Similar      bool `json:"similar,omitempty"`
+	Continuation bool `json:"continuation,omitempty"`
 }
 
 // MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.

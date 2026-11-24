@@ -904,6 +904,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
+| `/ether/v1/kinds/{kind}/related` | A viewer opens an item (purpose `similar`), or a queue of the kind's items nears its end (purpose `continuation`), only for purposes declared in `related: {similar, continuation}` | `{item, purpose, limit}` → `{label?, items, order?}`. `items` are stored like live-search results (send any parents a playable item needs); `order` names the external ids to show, in order (default: items at the same level for `similar`, playable items for `continuation`). One call per item and purpose at a time; answers are remembered for six hours (empty ones for one). `similar` becomes the item's detail row (Vela `GET /rows?placement=detail`); `continuation` is Vela `GET /titles/{id}/continuation` (autoplay). |
 | `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
@@ -6455,6 +6456,7 @@ type CommandMeta struct {
 | `sync` | `KindSyncDecl` | emitted (validation may require a value) |  |
 | `cache` | `KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `KindMatchDecl` | may be omitted (see validation for conditions) |  |
+| `related` | `*KindRelatedDecl` | may be omitted (see validation for conditions) | Related: the plugin serves POST /ether/v1/kinds/{kind}/related for its items ({item, purpose, limit} -> {label?, items: KindItem[]}): "similar" for a detail row (an artist's "Fans also like"), "continuation" for what plays after a queue ends (radio). Items are stored like live search results. Asked when a viewer opens the item or nears a queue's end. |
 | `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics, instrumental, source; 404 when it has none). Ether asks once per item when a viewer opens the lyrics, never ahead of use. |
 
 
@@ -6475,6 +6477,12 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl       `json:"sync"`
 	Cache   KindCacheDecl      `json:"cache,omitempty"`
 	Match   KindMatchDecl      `json:"match,omitempty"`
+	// Related: the plugin serves POST /ether/v1/kinds/{kind}/related for its
+	// items ({item, purpose, limit} -> {label?, items: KindItem[]}): "similar"
+	// for a detail row (an artist's "Fans also like"), "continuation" for what
+	// plays after a queue ends (radio). Items are stored like live search
+	// results. Asked when a viewer opens the item or nears a queue's end.
+	Related *KindRelatedDecl `json:"related,omitempty"`
 	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
 	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
 	// instrumental, source; 404 when it has none). Ether asks once per item
@@ -7280,6 +7288,42 @@ func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
 		if lv == level {
 			return true
 		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/contract.go#KindRelatedDecl.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `similar` | `bool` | may be omitted (see validation for conditions) |  |
+| `continuation` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#KindRelatedDecl
+
+``````
+// KindRelatedDecl names which relation purposes a kind's plugin answers.
+type KindRelatedDecl struct {
+	Similar      bool `json:"similar,omitempty"`
+	Continuation bool `json:"continuation,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#*KindRelatedDecl.Answers
+
+``````
+// Answers reports whether purpose is declared.
+func (d *KindRelatedDecl) Answers(purpose string) bool {
+	if d == nil {
+		return false
+	}
+	switch purpose {
+	case "similar":
+		return d.Similar
+	case "continuation":
+		return d.Continuation
 	}
 	return false
 }
@@ -35961,6 +36005,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].present.xtream` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.xtream.category` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].present.xtream.default` | `boolean` | false | {} |
+| `ether.contributes.mediaKinds[].related` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].related.continuation` | `boolean` | false | {} |
+| `ether.contributes.mediaKinds[].related.similar` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].sync` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].sync.mode` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].sync.refresh` | `string` | false | {} |
@@ -37570,6 +37617,17 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                           }
                         },
                         "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "related": {
+                    "properties": {
+                      "continuation": {
+                        "type": "boolean"
+                      },
+                      "similar": {
+                        "type": "boolean"
                       }
                     },
                     "type": "object"
@@ -56725,6 +56783,61 @@ type LyricsProvider interface {
 }
 ``````
 
+## Source: sdk/go/kinds.go#KindRelatedRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `kind` | `string` | emitted (validation may require a value) |  |
+| `item` | `KindItem` | emitted (validation may require a value) |  |
+| `purpose` | `string` | emitted (validation may require a value) |  |
+| `limit` | `int` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindRelatedRequest
+
+``````
+// KindRelatedRequest asks for items related to one stored item: "similar"
+// (a detail row such as an artist's "Fans also like") or "continuation" (what
+// plays after it when a queue ends).
+type KindRelatedRequest struct {
+	Kind    string   `json:"kind"`
+	Item    KindItem `json:"item"`
+	Purpose string   `json:"purpose"`
+	Limit   int      `json:"limit"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindRelated.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `label` | `string` | may be omitted (see validation for conditions) |  |
+| `items` | `[]KindItem` | emitted (validation may require a value) |  |
+| `order` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindRelated
+
+``````
+// KindRelated is a relation answer: items to store (with any parents they
+// need), Order naming the ones to show (default: same level for similar,
+// playable for continuation), and an optional row label.
+type KindRelated struct {
+	Label string     `json:"label,omitempty"`
+	Items []KindItem `json:"items"`
+	Order []string   `json:"order,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#RelatedProvider
+
+``````
+// RelatedProvider serves relations for kinds that declare related.
+type RelatedProvider interface {
+	Related(ctx *Context, req KindRelatedRequest) (KindRelated, error)
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindResolver
 
 ``````
@@ -57123,6 +57236,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 			return toRouteErrorResponse(err)
 		}
 		if res.Job == "" && res.Items == nil {
+			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "related":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		rp, isRelated := prov.(RelatedProvider)
+		if prov == nil || !isRelated {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no related items.")
+		}
+		var in KindRelatedRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := rp.Related(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Items == nil {
 			res.Items = []KindItem{}
 		}
 		return okJSON(res, http.StatusOK)
@@ -62431,6 +62563,7 @@ type Presentations struct {
 | `cache` | `*KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `*KindMatchDecl` | may be omitted (see validation for conditions) |  |
 | `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics). |
+| `related` | `*KindRelatedDecl` | may be omitted (see validation for conditions) | Related: the provider implements RelatedProvider (POST /ether/v1/kinds/{kind}/related). |
 
 
 ## Source: sdk/go/types.go#MediaKindMeta
@@ -62452,6 +62585,26 @@ type MediaKindMeta struct {
 	Match   *KindMatchDecl  `json:"match,omitempty"`
 	// Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics).
 	Lyrics bool `json:"lyrics,omitempty"`
+	// Related: the provider implements RelatedProvider (POST /ether/v1/kinds/{kind}/related).
+	Related *KindRelatedDecl `json:"related,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#KindRelatedDecl.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `similar` | `bool` | may be omitted (see validation for conditions) |  |
+| `continuation` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#KindRelatedDecl
+
+``````
+// KindRelatedDecl names which relation purposes a kind answers.
+type KindRelatedDecl struct {
+	Similar      bool `json:"similar,omitempty"`
+	Continuation bool `json:"continuation,omitempty"`
 }
 ``````
 
@@ -66838,6 +66991,14 @@ class PluginInstance:
             result = dict(expand(ctx, body) or {})
             if not result.get("job"):
                 result.setdefault("items", [])
+            return _ok_response(result)
+        if tail == ["related"]:
+            provider = self._kind_catalog().get(kind)
+            related = getattr(provider, "related", None) if provider else None
+            if not callable(related):
+                return _error_response(501, "not_implemented", "This provider has no related items.")
+            result = dict(related(ctx, body) or {})
+            result.setdefault("items", [])
             return _ok_response(result)
         if tail == ["lyrics"]:
             provider = self._kind_catalog().get(kind)
@@ -71534,6 +71695,8 @@ import type {
   KindExpandResponse,
   KindLyrics,
   KindLyricsRequest,
+  KindRelated,
+  KindRelatedRequest,
   KindItem,
   KindLivePage,
   KindLiveRequest,
@@ -71573,6 +71736,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
   /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
   expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
+  /** Optional related items when the kind declares related. */
+  related?(req: KindRelatedRequest, ctx: PluginContext<S>): MaybePromise<KindRelated>;
   /** Optional lyrics for a playable item when the kind declares lyrics; null when there are none. */
   lyrics?(req: KindLyricsRequest, ctx: PluginContext<S>): MaybePromise<KindLyrics | null>;
 }
@@ -71930,6 +72095,13 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!provider?.expand) return err(501, "not_implemented", "This provider does not expand facets.");
     const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
     if (!result.job) result.items = result.items ?? [];
+    return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "related") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.related) return err(501, "not_implemented", "This provider has no related items.");
+    const result = { ...(await provider.related({ ...body, kind } as unknown as KindRelatedRequest, ctx)) };
+    result.items = result.items ?? [];
     return ok(result);
   }
   if (tail.length === 1 && tail[0] === "lyrics") {
@@ -75091,6 +75263,23 @@ export interface MediaKindMeta {
   match?: { thresholdDefault?: number };
   /** The catalogue provider implements lyrics() (POST /ether/v1/kinds/{kind}/lyrics). */
   lyrics?: boolean;
+  /** The catalogue provider implements related() for these purposes (POST /ether/v1/kinds/{kind}/related). */
+  related?: { similar?: boolean; continuation?: boolean };
+}
+
+/** Items related to one stored item: "similar" (a detail row) or "continuation" (what plays after it). */
+export interface KindRelatedRequest {
+  kind: string;
+  item: KindItem;
+  purpose: "similar" | "continuation";
+  limit: number;
+}
+
+/** Items to store (with any parents they need), `order` naming those to show, and a row label. */
+export interface KindRelated {
+  label?: string;
+  items: KindItem[];
+  order?: string[];
 }
 
 /** One stored playable item whose lyrics Ether wants. */

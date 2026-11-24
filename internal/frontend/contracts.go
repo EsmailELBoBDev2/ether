@@ -857,6 +857,13 @@ type RecentPlayContext struct {
 	PlayedAt time.Time
 }
 
+// TitleContinuations say what plays after a playable title when a queue
+// ends (radio), from the title's source. Asked as the queue nears its end.
+type TitleContinuations interface {
+	PluginContinuation(ctx context.Context, viewer *core.Viewer, key core.RatingKey, limit int) ([]Title, error)
+	ContinuationAvailable() bool
+}
+
 // TitleLyrics reads a playable title's lyrics from its source (a kind
 // plugin that declares them). Asked when a viewer opens the lyrics.
 type TitleLyrics interface {

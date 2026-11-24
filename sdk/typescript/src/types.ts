@@ -843,6 +843,23 @@ export interface MediaKindMeta {
   match?: { thresholdDefault?: number };
   /** The catalogue provider implements lyrics() (POST /ether/v1/kinds/{kind}/lyrics). */
   lyrics?: boolean;
+  /** The catalogue provider implements related() for these purposes (POST /ether/v1/kinds/{kind}/related). */
+  related?: { similar?: boolean; continuation?: boolean };
+}
+
+/** Items related to one stored item: "similar" (a detail row) or "continuation" (what plays after it). */
+export interface KindRelatedRequest {
+  kind: string;
+  item: KindItem;
+  purpose: "similar" | "continuation";
+  limit: number;
+}
+
+/** Items to store (with any parents they need), `order` naming those to show, and a row label. */
+export interface KindRelated {
+  label?: string;
+  items: KindItem[];
+  order?: string[];
 }
 
 /** One stored playable item whose lyrics Ether wants. */

@@ -1479,6 +1479,17 @@
                     },
                     "type": "object"
                   },
+                  "related": {
+                    "properties": {
+                      "continuation": {
+                        "type": "boolean"
+                      },
+                      "similar": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "sync": {
                     "properties": {
                       "mode": {

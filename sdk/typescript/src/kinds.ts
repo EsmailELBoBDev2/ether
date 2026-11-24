@@ -18,6 +18,8 @@ import type {
   KindExpandResponse,
   KindLyrics,
   KindLyricsRequest,
+  KindRelated,
+  KindRelatedRequest,
   KindItem,
   KindLivePage,
   KindLiveRequest,
@@ -57,6 +59,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
   /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
   expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
+  /** Optional related items when the kind declares related. */
+  related?(req: KindRelatedRequest, ctx: PluginContext<S>): MaybePromise<KindRelated>;
   /** Optional lyrics for a playable item when the kind declares lyrics; null when there are none. */
   lyrics?(req: KindLyricsRequest, ctx: PluginContext<S>): MaybePromise<KindLyrics | null>;
 }
@@ -414,6 +418,13 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!provider?.expand) return err(501, "not_implemented", "This provider does not expand facets.");
     const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
     if (!result.job) result.items = result.items ?? [];
+    return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "related") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.related) return err(501, "not_implemented", "This provider has no related items.");
+    const result = { ...(await provider.related({ ...body, kind } as unknown as KindRelatedRequest, ctx)) };
+    result.items = result.items ?? [];
     return ok(result);
   }
   if (tail.length === 1 && tail[0] === "lyrics") {

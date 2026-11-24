@@ -432,6 +432,15 @@ func buildCodecArgs(s runSpec) []string {
 	}
 	if s.BigProbe || (bitmap && (sub.Width <= 0 || sub.Height <= 0)) {
 		args = append(args, "-probesize", "50000000", "-analyzeduration", "10000000")
+	} else if s.LiveInput && s.Info.Container == "hls" {
+		// FFmpeg's HLS demuxer reads a separate audio rendition a whole
+		// segment at a time, so 2 s of analysis can end inside the first
+		// audio segment before any video packet: "Could not find codec
+		// parameters ... unspecified size", the muxer refuses its header and
+		// every restart fails alike (Pluto's demuxed 5 s renditions, 3 of 3).
+		// The bounds only cap the analysis; it stops once every stream is
+		// known.
+		args = append(args, "-probesize", "20000000", "-analyzeduration", "12000000")
 	} else {
 		// Persisted probe metadata is not passed to the demuxer. Even a known
 		// video size/format does not prove ffmpeg can recover every mapped

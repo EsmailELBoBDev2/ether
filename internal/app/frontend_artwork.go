@@ -77,6 +77,7 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	source.LibraryLiveThumb = func(ctx context.Context, viewer *core.Viewer, viewID string, path string) (string, error) {
 		return surfaceLibraryLive{app: a}.AuthorizeLibraryLiveThumb(ctx, viewer, viewID, path)
 	}
+	source.PluginImage = pluginImages{app: a}.AuthorizePluginImage
 	source.ViewerAvatar = func(ctx context.Context, viewer *core.Viewer) ([]byte, string, error) {
 		if viewer == nil || viewer.ID <= 0 || viewer.PlexID <= 0 || strings.TrimSpace(viewer.Thumb) == "" {
 			return nil, "", core.ErrNotFound

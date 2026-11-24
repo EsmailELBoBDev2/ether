@@ -2,7 +2,6 @@ package vela
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,7 +54,7 @@ func parseCSVParam(raw string, maxItems int) ([]string, bool) {
 
 // GET /vela/v0/live/events?ids=
 func (i *instance) liveEventsSnapshot(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -77,12 +76,17 @@ func (i *instance) liveEventsSnapshot(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []frontend.LiveEvent{}
 	}
-	send(w, http.StatusOK, object{"events": events})
+	signed, err := i.newLiveImages(r, token).sign(object{"events": events}, "")
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	send(w, http.StatusOK, signed)
 }
 
 // GET /vela/v0/live/events/{id}
 func (i *instance) liveEventDetail(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -105,7 +109,12 @@ func (i *instance) liveEventDetail(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
-	send(w, http.StatusOK, detail)
+	signed, err := i.newLiveImages(r, token).sign(detail, "")
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	send(w, http.StatusOK, signed)
 }
 
 // POST /vela/v0/live/events/{id}/reveal
@@ -178,7 +187,7 @@ func (i *instance) liveEventsPreferencesSet(w http.ResponseWriter, r *http.Reque
 
 // GET /vela/v0/live/stream?events=&screens=&alerts=1
 func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -224,8 +233,11 @@ func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	writeTimeout := i.streamWriteTimeout()
 
+	// One signer per stream: a crest is signed once and reused by every
+	// later frame, and no frame carries an upstream image URL.
+	images := i.newLiveImages(r, token)
 	writeEvent := func(eventName string, payload any) error {
-		b, err := json.Marshal(payload)
+		b, err := images.sign(payload, "")
 		if err != nil {
 			return err
 		}

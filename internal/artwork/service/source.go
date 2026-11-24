@@ -47,8 +47,11 @@ type Source struct {
 	VirtualSeason    func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
 	PluginItem       func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)
 	LibraryLiveThumb func(context.Context, *core.Viewer, string, string) (string, error)
-	ViewerAvatar     func(context.Context, *core.Viewer) ([]byte, string, error)
-	URLImages        interface {
+	// PluginImage authorizes a plugin-named image (frontend.PluginImagePrefix)
+	// for viewer and returns the upstream URL to fetch.
+	PluginImage  func(context.Context, *core.Viewer, string, string) (string, error)
+	ViewerAvatar func(context.Context, *core.Viewer) ([]byte, string, error)
+	URLImages    interface {
 		GetUntrustedURL(context.Context, string) ([]byte, string, error)
 	}
 	Raster   frontend.SVGRasterizer

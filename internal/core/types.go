@@ -362,12 +362,15 @@ func (e *PreparingError) Unwrap() error {
 
 // PreparingFromPending constructs an ErrPreparing carrying a retry delay from
 // a plugin's PendingReply.RetryInMS hint, defaulting to 5s when unspecified.
+// A sub-second hint is kept (floored at 250ms): a server-side wait polls a
+// staged resolve at the plugin's pace, while the HTTP Retry-After still
+// rounds up to whole seconds.
 func PreparingFromPending(retryInMS int64) error {
 	d := 5 * time.Second
 	if retryInMS > 0 {
 		d = time.Duration(retryInMS) * time.Millisecond
-		if d < time.Second {
-			d = time.Second
+		if d < 250*time.Millisecond {
+			d = 250 * time.Millisecond
 		} else if d > 60*time.Second {
 			d = 60 * time.Second
 		}

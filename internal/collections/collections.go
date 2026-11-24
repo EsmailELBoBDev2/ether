@@ -71,15 +71,15 @@ type Service struct {
 	auth     core.Auth
 	chat     Chatter
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
-	describeMu      sync.Mutex
-	describeJobs    map[string]*describeJob
-	describeDrafts  map[string]*describeDraft
-	describeActive  int
-	describeAgent   CollectionDraftAgent
-	vibe            *vibeRegistry
+	describeMu     sync.Mutex
+	describeJobs   map[string]*describeJob
+	describeDrafts map[string]*describeDraft
+	describeActive int
+	describeAgent  CollectionDraftAgent
+	vibe           *vibeRegistry
 	// Plugin list rows placed directly on pages (plugin_list_rows.go).
-	listRowsOnce sync.Once
-	listRows     *listRows
+	listRowsOnce    sync.Once
+	listRows        *listRows
 	vibeTTL         time.Duration
 	vibeMax         int
 	scorer          atomic.Pointer[scorerBox]

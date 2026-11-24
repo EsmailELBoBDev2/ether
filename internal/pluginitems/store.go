@@ -58,7 +58,7 @@ type SyncState struct {
 	LastOutcome *SyncOutcome     `json:"lastOutcome,omitempty"`
 }
 
-const itemCols = `item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx, title, sort_title, summary, year, released, rating, playable, child_count, leaf_count, hints, fields, etag, unavailable, added_at`
+const itemCols = `item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx, title, sort_title, summary, year, released, rating, playable, child_count, leaf_count, hints, fields, etag, unavailable, added_at, recording`
 
 func prefixedItemCols(prefix string) string {
 	parts := strings.Split(itemCols, ", ")
@@ -94,11 +94,11 @@ func scanItemRowExtra(sc rowScanner, extra ...any) (core.KindItem, core.LibraryI
 		fieldsRaw      string
 		unavailableRaw string
 	)
-	dest := make([]any, 0, 23+len(extra))
+	dest := make([]any, 0, 24+len(extra))
 	dest = append(dest,
 		&refStr, &seq, &pluginID, &kindKey, &libID, &it.ID, &parentRef, &it.Level, &idx,
 		&it.Title, &it.SortTitle, &it.Summary, &year, &it.Released, &it.Rating,
-		&playable, &childCount, &leafCount, &hintsRaw, &fieldsRaw, &it.ETag, &unavailableRaw, &it.AddedAt,
+		&playable, &childCount, &leafCount, &hintsRaw, &fieldsRaw, &it.ETag, &unavailableRaw, &it.AddedAt, &it.Recording,
 	)
 	dest = append(dest, extra...)
 	if err := sc.Scan(dest...); err != nil {

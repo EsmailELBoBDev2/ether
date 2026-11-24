@@ -235,11 +235,11 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 INSERT INTO plugin_items(
 	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
 	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
-	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash, search_tsv
+	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash, recording, search_tsv
 ) VALUES(
 	?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, 0, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
 	setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
 ) ON CONFLICT(item_ref) DO UPDATE SET
 	parent_ref   = excluded.parent_ref,
@@ -264,10 +264,11 @@ INSERT INTO plugin_items(
 	missed_walks = 0,
 	pinned       = CASE WHEN plugin_items.pinned <> 0 OR excluded.pinned <> 0 THEN 1 ELSE 0 END,
 	content_hash = excluded.content_hash,
+	recording    = excluded.recording,
 	search_tsv   = excluded.search_tsv`,
 				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, p.parentRef, it.Level, it.Index,
 				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, contentRatingLevel(it.Fields), p.playableInt, it.ChildCount, it.LeafCount,
-				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash,
+				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash, it.Recording,
 				it.Title, v.SearchFields, v.SearchPeople,
 			); err != nil {
 				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
@@ -277,11 +278,11 @@ INSERT INTO plugin_items(
 INSERT INTO plugin_items(
 	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
 	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
-	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash
+	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash, recording
 ) VALUES(
 	?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, 0, ?, ?
+	?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?
 ) ON CONFLICT(item_ref) DO UPDATE SET
 	parent_ref   = excluded.parent_ref,
 	level        = excluded.level,
@@ -304,10 +305,11 @@ INSERT INTO plugin_items(
 	seen_at      = excluded.seen_at,
 	missed_walks = 0,
 	pinned       = CASE WHEN plugin_items.pinned <> 0 OR excluded.pinned <> 0 THEN 1 ELSE 0 END,
-	content_hash = excluded.content_hash`,
+	content_hash = excluded.content_hash,
+	recording    = excluded.recording`,
 				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, p.parentRef, it.Level, it.Index,
 				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, contentRatingLevel(it.Fields), p.playableInt, it.ChildCount, it.LeafCount,
-				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash,
+				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash, it.Recording,
 			); err != nil {
 				return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 			}

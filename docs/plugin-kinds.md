@@ -139,7 +139,11 @@ optional `summary/year/released/rating`, `playable`, counts, `art`
 against your declaration; unknown keys are dropped, wrong types
 reject the item), `hints` (an opaque JSON object ≤16 KiB, stored and
 handed back to your resolver verbatim — put ids and locators there,
-never secrets), and an `etag` for cheap re-syncs.
+never secrets), an optional `recording` (≤200 characters: the work the item
+is a copy of, identical on every release that carries it, e.g.
+`"isrc:GBDUW0000053"` for a song on its album, single and compilations;
+apps use it to group duplicates and Vela receives it as
+`media.recordingId`), and an `etag` for cheap re-syncs.
 
 Caps: title 500 characters, summary 20k, each field 4k, 16 art roles.
 

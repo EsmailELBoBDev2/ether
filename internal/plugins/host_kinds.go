@@ -175,6 +175,9 @@ func ValidExternalID(id string) bool { return externalIDRe.MatchString(id) }
 // MaxKindItemMembers bounds one list item's members.
 const MaxKindItemMembers = 500
 
+// MaxKindItemRecording bounds an item's recording identity.
+const MaxKindItemRecording = 200
+
 func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	switch {
 	case !ValidExternalID(it.ID):
@@ -215,6 +218,9 @@ func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 		if !ValidExternalID(m) || m == it.ID {
 			return "members must be valid external ids of other items"
 		}
+	}
+	if len(it.Recording) > MaxKindItemRecording || strings.ContainsAny(it.Recording, "\x00\n\r") {
+		return "recording must be at most 200 characters on one line"
 	}
 	if it.Playable && !lv.Playable {
 		return "level " + it.Level + " is not declared playable"

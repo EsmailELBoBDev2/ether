@@ -46,6 +46,9 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
 	Hints       json.RawMessage            `json:"hints,omitempty"` // opaque JSON object, echoed to the resolver
+	// Recording: the work this item is a copy of, the same on every release
+	// that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it.
+	Recording string `json:"recording,omitempty"`
 	// Members: a list item's ordered children (external ids of other items of
 	// the kind, at most 500). Only on a level declared members: true.
 	Members []string `json:"members,omitempty"`

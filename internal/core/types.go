@@ -118,6 +118,7 @@ type Title struct {
 	// (docs/plugin-kinds.md, additive). Never serialized to catalogue caches.
 	MediaClass   MediaClass    `json:"-"`
 	MediaRole    MediaRole     `json:"-"`
+	RecordingID  string        `json:"-"` // shared by every release of one recording (KindItem.Recording)
 	IndexDisplay string        `json:"-"` // optional display string for fractional/non-integer series index (e.g. "1.5")
 	Disc         int           `json:"-"` // disc / volume number for multi-disc albums
 	MediaParents []TitleParent `json:"-"` // ancestors nearest first

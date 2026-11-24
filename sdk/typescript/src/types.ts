@@ -925,6 +925,8 @@ export interface KindItem {
   art?: Array<{ role: string; url: string; width?: number; height?: number }>;
   fields?: Record<string, unknown>;
   hints?: Record<string, unknown>;
+  /** The work this item is a copy of, the same on every release that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it. */
+  recording?: string;
   /** A list item's ordered children: external ids of other items of the kind (at most 500). Only on a members level. */
   members?: string[];
   etag?: string;

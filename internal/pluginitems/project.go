@@ -136,6 +136,7 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		Key:               item.Key,
 		Type:              mediaType,
 		MBItemType:        mbItemType,
+		RecordingID:       item.Recording,
 		KindLevel:         item.Level,
 		PrimaryChildLevel: primaryChildLevel,
 		ItemIndex:         effIndex,

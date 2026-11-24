@@ -889,7 +889,11 @@ optional `summary/year/released/rating`, `playable`, counts, `art`
 against your declaration; unknown keys are dropped, wrong types
 reject the item), `hints` (an opaque JSON object ≤16 KiB, stored and
 handed back to your resolver verbatim — put ids and locators there,
-never secrets), and an `etag` for cheap re-syncs.
+never secrets), an optional `recording` (≤200 characters: the work the item
+is a copy of, identical on every release that carries it, e.g.
+`"isrc:GBDUW0000053"` for a song on its album, single and compilations;
+apps use it to group duplicates and Vela receives it as
+`media.recordingId`), and an `etag` for cheap re-syncs.
 
 Caps: title 500 characters, summary 20k, each field 4k, 16 art roles.
 
@@ -2219,6 +2223,7 @@ type ItemUnavailable struct {
 | `art` | `[]KindArtRef` | may be omitted (see validation for conditions) |  |
 | `fields` | `map[string]json.RawMessage` | may be omitted (see validation for conditions) | validated against the kind declaration |
 | `hints` | `json.RawMessage` | may be omitted (see validation for conditions) | opaque; stored and echoed to the resolver verbatim |
+| `recording` | `string` | may be omitted (see validation for conditions) | Recording identifies the work an item is a copy of, shared by every release that carries it (for music, "isrc:<ISRC>"). Apps group the same recording across albums and compilations by it; empty when unknown. |
 | `members` | `[]string` | may be omitted (see validation for conditions) | Members: a list item's ordered members (external ids of other items of the kind), its children. Only on a level declared members: true. |
 | `etag` | `string` | may be omitted (see validation for conditions) |  |
 
@@ -2248,6 +2253,10 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"` // validated against the kind declaration
 	Hints       json.RawMessage            `json:"hints,omitempty"`  // opaque; stored and echoed to the resolver verbatim
+	// Recording identifies the work an item is a copy of, shared by every
+	// release that carries it (for music, "isrc:<ISRC>"). Apps group the same
+	// recording across albums and compilations by it; empty when unknown.
+	Recording string `json:"recording,omitempty"`
 	// Members: a list item's ordered members (external ids of other items of
 	// the kind), its children. Only on a level declared members: true.
 	Members []string `json:"members,omitempty"`
@@ -17248,6 +17257,13 @@ func ValidExternalID(id string) bool { return externalIDRe.MatchString(id) }
 const MaxKindItemMembers = 500
 ``````
 
+## Source: internal/plugins/host_kinds.go#MaxKindItemRecording
+
+``````
+// MaxKindItemRecording bounds an item's recording identity.
+const MaxKindItemRecording = 200
+``````
+
 ## Source: internal/plugins/host_kinds.go#CheckKindItem
 
 ``````
@@ -17291,6 +17307,9 @@ func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 		if !ValidExternalID(m) || m == it.ID {
 			return "members must be valid external ids of other items"
 		}
+	}
+	if len(it.Recording) > MaxKindItemRecording || strings.ContainsAny(it.Recording, "\x00\n\r") {
+		return "recording must be at most 200 characters on one line"
 	}
 	if it.Playable && !lv.Playable {
 		return "level " + it.Level + " is not declared playable"
@@ -55495,6 +55514,7 @@ type ItemUnavailable struct {
 | `art` | `[]KindArtRef` | may be omitted (see validation for conditions) |  |
 | `fields` | `map[string]json.RawMessage` | may be omitted (see validation for conditions) |  |
 | `hints` | `json.RawMessage` | may be omitted (see validation for conditions) | opaque JSON object, echoed to the resolver |
+| `recording` | `string` | may be omitted (see validation for conditions) | Recording: the work this item is a copy of, the same on every release that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it. |
 | `members` | `[]string` | may be omitted (see validation for conditions) | Members: a list item's ordered children (external ids of other items of the kind, at most 500). Only on a level declared members: true. |
 | `etag` | `string` | may be omitted (see validation for conditions) |  |
 
@@ -55522,6 +55542,9 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
 	Hints       json.RawMessage            `json:"hints,omitempty"` // opaque JSON object, echoed to the resolver
+	// Recording: the work this item is a copy of, the same on every release
+	// that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it.
+	Recording string `json:"recording,omitempty"`
 	// Members: a list item's ordered children (external ids of other items of
 	// the kind, at most 500). Only on a level declared members: true.
 	Members []string `json:"members,omitempty"`
@@ -75441,6 +75464,8 @@ export interface KindItem {
   art?: Array<{ role: string; url: string; width?: number; height?: number }>;
   fields?: Record<string, unknown>;
   hints?: Record<string, unknown>;
+  /** The work this item is a copy of, the same on every release that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it. */
+  recording?: string;
   /** A list item's ordered children: external ids of other items of the kind (at most 500). Only on a members level. */
   members?: string[];
   etag?: string;

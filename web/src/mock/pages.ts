@@ -787,10 +787,10 @@ export function createPagesMock(deps: Deps) {
         );
         pinned.push({ pos: pl.position ?? 1, rows: built });
       } else if (pl.mode === "show") {
-        built.forEach((b) => (b.why = "You chose Show; Ether placed it here"));
+        built.forEach((b) => (b.why = "Always shown; its place follows what this viewer plays"));
         shown.push(built);
       } else {
-        built.forEach((b) => (b.why = "Ether chose it from what this viewer plays"));
+        built.forEach((b) => (b.why = "Fits what this viewer plays"));
         auto.push(built);
       }
     }
@@ -816,7 +816,7 @@ export function createPagesMock(deps: Deps) {
         extra.push([
           {
             hubId: "ether.top-10-today",
-            why: "Ether's pick: the server's Top 10 today",
+            why: "Fits this page: the server's Top 10 today",
             look: {},
             personal: false,
             present: { numbered: true },
@@ -831,7 +831,7 @@ export function createPagesMock(deps: Deps) {
         extra.push([
           {
             hubId: "ether.popular-here",
-            why: "Ether's pick: what viewers here play most",
+            why: "Fits this page: what viewers here play most",
             look: {},
             personal: false,
             present: {},

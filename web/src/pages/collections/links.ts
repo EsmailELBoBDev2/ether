@@ -10,6 +10,21 @@ export function newCollectionHref(params: Record<string, string> = {}): string {
   return `/collections/new?${q}`;
 }
 
+/**
+ * An existing collection in Collection Studio; `back` (a Recommendations
+ * link) is where closing or saving returns to.
+ */
+export function editCollectionHref(id: string, back?: string): string {
+  const q = back ? `?${new URLSearchParams({ back })}` : "";
+  return `/collections/${encodeURIComponent(id)}${q}`;
+}
+
+/** Where Collection Studio returns to: a Recommendations page, or nowhere. */
+export function studioBackLink(search: URLSearchParams): string | null {
+  const back = search.get("back");
+  return back?.startsWith("/recommendations?") ? back : null;
+}
+
 /** Carry the exact catalogue selected in a plugin drawer into its new collection. */
 export function pluginCollectionHref(kind: string, label: string): string {
   return newCollectionHref({ pluginSource: kind, name: label });

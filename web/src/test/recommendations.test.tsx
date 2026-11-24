@@ -28,7 +28,7 @@ describe("Recommendations designer", () => {
     const tonight = screen.getByRole("region", { name: "#2: Tonight" });
     expect(within(tonight).getByText("Only in Vela")).toBeInTheDocument();
     // Trending, one row per library, sits in one bracket.
-    const block = screen.getByRole("group", { name: /One row you made · Trending/ });
+    const block = screen.getByRole("group", { name: /^Trending · one row per library/ });
     expect(within(block).getByRole("region", { name: "#3: Trending Movies" })).toBeInTheDocument();
     expect(
       within(block).getByRole("region", { name: "#4: Trending TV Shows" }),
@@ -40,7 +40,7 @@ describe("Recommendations designer", () => {
     expect(body.device).toBe("tv");
     // Folded sections close the page.
     expect(screen.getByRole("button", { name: /Not shown right now · 3/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Ether's picks · 3 more rows/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /More rows you can add · 3/ })).toBeInTheDocument();
     // No row list outside the page.
     expect(screen.queryByRole("tab", { name: "Overrides" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Recommendations" })).toBeInTheDocument();

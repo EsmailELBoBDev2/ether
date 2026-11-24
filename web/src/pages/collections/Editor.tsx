@@ -51,7 +51,7 @@ import { useAsync, useDebouncedValue, useMediaQuery } from "../../lib/hooks";
 import { blankSpec, normalizeSpec, previewableSpec, specProblems } from "../../lib/rules";
 import { BuildPanel } from "./BuildPanel";
 import { DescribeDialog } from "./DescribeDialog";
-import { isBlankCollectionSpec, newCollectionHref } from "./links";
+import { isBlankCollectionSpec, newCollectionHref, studioBackLink } from "./links";
 import { ArtworkPanel, ArtworkPreview, SchedulePanel, UsedOnPanel } from "./SettingsPanels";
 import { useCollectionUsage, usedOnSummary } from "./UsedOn";
 
@@ -303,6 +303,8 @@ export default function CollectionEditor() {
           navigate(`${back}${encodeURIComponent(saved.id)}`, { replace: true });
         else if (!id && saved.id)
           navigate(`/collections/${encodeURIComponent(saved.id)}`, { replace: true });
+        // "Edit collection" from a Recommendations row: back to that row.
+        else if (studioBackLink(search)) navigate(studioBackLink(search)!);
       } catch (e) {
         toast.error(t("Couldn't save"), { description: errorMessage(e) });
       } finally {

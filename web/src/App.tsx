@@ -98,6 +98,7 @@ import { theme } from "./theme";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Startup, { isStarting } from "./pages/Startup";
+import { studioBackLink } from "./pages/collections/links";
 
 const loadRecommendations = () => import("./pages/recommendations/Recommendations");
 const CollectionsGallery = lazy(() => import("./pages/collections/Gallery"));
@@ -388,10 +389,12 @@ function CollectionDrawer({ fresh = false }: { fresh?: boolean }) {
   const { close } = useOutletContext<{ close: () => void }>();
   const { id } = useParams();
   const [search] = useSearchParams();
+  const navigate = useNavigate();
+  const back = studioBackLink(search);
   return (
     <Drawer
       open
-      onClose={close}
+      onClose={back ? () => navigate(back) : close}
       title={fresh ? t("New collection") : t("Edit collection")}
       size="2xl"
       bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"

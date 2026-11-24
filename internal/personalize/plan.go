@@ -420,11 +420,11 @@ func (r *rule) why(slot int) string {
 		}
 		return fmt.Sprintf("Pinned to #%d %s", r.Slot, who)
 	case core.PlacementShow:
-		return "You chose Show " + who + "; Ether placed it here"
+		return "Always shown " + who + "; its place follows what this viewer plays"
 	case core.PlacementAuto:
-		return "Auto: Ether chose it for this viewer"
+		return "Auto: shown when it fits what this viewer plays"
 	}
-	return "Ether chose it"
+	return "Fits what this viewer plays"
 }
 
 // placedCollections lists the collections a page places for a viewer,

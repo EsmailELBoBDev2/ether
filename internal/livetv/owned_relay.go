@@ -162,6 +162,10 @@ func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.C
 	tl := newOwnedTimeline(ss.info.ID, log, nil, max(s.stabilityReserve(c), 2*cut), s.slateFor(c))
 	policy := s.latencyPolicy()
 	tl.windowSpan, tl.startBehind = policy.PlaylistWindow(), policy.TargetLatency()
+	// Ether cut these segments, so their media time is made the session's:
+	// a dropped opening cut or a restarted producer must not leave the
+	// first published segment's media seconds away from its playlist place.
+	tl.rebaseMedia = true
 	output := liveRelayInfo(info, dec)
 	container := "ts"
 	if dec.Container == transcode.ContainerFMP4 {

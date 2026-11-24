@@ -983,7 +983,13 @@
                             "label": {
                               "type": "string"
                             },
+                            "layout": {
+                              "type": "string"
+                            },
                             "level": {
+                              "type": "string"
+                            },
+                            "purpose": {
                               "type": "string"
                             },
                             "sort": {
@@ -1356,7 +1362,13 @@
                                   "label": {
                                     "type": "string"
                                   },
+                                  "layout": {
+                                    "type": "string"
+                                  },
                                   "level": {
+                                    "type": "string"
+                                  },
+                                  "purpose": {
                                     "type": "string"
                                   },
                                   "sort": {

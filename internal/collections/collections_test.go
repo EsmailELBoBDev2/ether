@@ -327,7 +327,7 @@ func TestDamagedStoredRuleSkipsAndWarnsWithoutBreakingHomeRows(t *testing.T) {
 		},
 		Refresh: "live",
 		Enabled: true,
-		Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)

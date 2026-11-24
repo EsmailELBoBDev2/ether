@@ -54,7 +54,7 @@ func TestMixedCollectionRowKeepsMoviesBehindShows(t *testing.T) {
 		Sort:      "source",
 		Refresh:   "daily",
 		Enabled:   true,
-		Targets:   core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestItemsPagingFiltersInvalidMembersBeforeSlicing(t *testing.T) {
 		Sort:      "source",
 		Refresh:   "daily",
 		Enabled:   true,
-		Targets:   core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestBuiltCollectionServesWhileIndexIsBuilding(t *testing.T) {
 		Sort:      "source",
 		Refresh:   "daily",
 		Enabled:   true,
-		Targets:   core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestRepairMemberTiersPromotesSearchTierMembers(t *testing.T) {
 		Sort:      "source",
 		Refresh:   "daily",
 		Enabled:   true,
-		Targets:   core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -35,7 +35,6 @@ import type {
   AddonCatalogPreviewItem,
   AddonCatalogSubscription,
   AddonImportNameMode,
-  CollectionSpec,
   Refresh,
 } from "../../lib/contract";
 import { invalidateRegistry } from "../../lib/extend";
@@ -123,7 +122,7 @@ export function StremioImportDrawer({
   const [refresh, setRefresh] = useState<Exclude<Refresh, "live">>("daily");
   const [maxItems, setMaxItems] = useState(500);
   const [enabled, setEnabled] = useState(true);
-  const [targets, setTargets] = useState<CollectionSpec["targets"]>({ collectionsTab: true });
+  const [browseInApps, setBrowseInApps] = useState(true);
 
   // Catalogue selection & extra pinning
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -147,7 +146,7 @@ export function StremioImportDrawer({
     );
     setMaxItems(sub?.maxItems && sub.maxItems > 0 ? sub.maxItems : 500);
     setEnabled(sub ? sub.enabled : true);
-    setTargets({ collectionsTab: sub?.targets.collectionsTab ?? true });
+    setBrowseInApps(sub?.browseInApps ?? true);
 
     const anyImported = p.catalogs.some((c) => c.imported);
     const nextSelected: Record<string, boolean> = {};
@@ -294,7 +293,7 @@ export function StremioImportDrawer({
         refresh,
         maxItems: Math.max(1, Math.min(2000, Math.round(maxItems || 500))),
         enabled,
-        targets,
+        browseInApps,
         items: selectedItems.map((c) => {
           const p = paramsByKey[c.key];
           return {
@@ -845,10 +844,9 @@ export function StremioImportDrawer({
                     <label className="inline-flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
-                        checked={targets.collectionsTab}
+                        checked={browseInApps}
                         onChange={(e) => {
-                          const collectionsTab = e.currentTarget.checked;
-                          setTargets({ collectionsTab });
+                          setBrowseInApps(e.currentTarget.checked);
                         }}
                         className="accent-primary"
                       />

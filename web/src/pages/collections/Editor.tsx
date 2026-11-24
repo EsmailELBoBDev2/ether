@@ -663,7 +663,7 @@ export default function CollectionEditor() {
                     <p className="line-clamp-2 text-sm text-fg-muted">{spec.description}</p>
                   ) : null}
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    {spec.targets.collectionsTab ? (
+                    {spec.browseInApps ? (
                       <Badge variant="default">{t("Browse in apps")}</Badge>
                     ) : null}
                     {spec.id ? (

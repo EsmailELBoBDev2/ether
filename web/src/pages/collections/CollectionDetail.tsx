@@ -198,7 +198,7 @@ export function CollectionDetail({
           <Readout
             icon={<Layers size={13} />}
             label={t("Browse in apps")}
-            value={spec.targets.collectionsTab ? t("On") : t("Off")}
+            value={spec.browseInApps ? t("On") : t("Off")}
             detail={
               template
                 ? t("Customise before publishing")

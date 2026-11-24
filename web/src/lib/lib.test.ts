@@ -119,8 +119,8 @@ describe("rules", () => {
   });
 
   it("normalizes partial specs from the server", () => {
-    const s = normalizeSpec({ name: "N", targets: {} as never });
-    expect(s.targets).toEqual({ collectionsTab: true });
+    const s = normalizeSpec({ name: "N" });
+    expect(s.browseInApps).toBe(true);
     expect(s.rules).toEqual([]);
     expect(s.sources).toEqual([{ kind: "catalog" }]);
   });

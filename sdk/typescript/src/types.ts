@@ -832,6 +832,10 @@ export interface KindLibraryShelf {
   values?: string[];
   /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
   filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
+  /** What the shelf is for, so apps draw it their own way and keep its titles out of other rows: "recentContexts" (Jump back in) or "liked" (Liked songs). */
+  purpose?: "recentContexts" | "liked";
+  /** The shelf's default look; an owner's look on a Recommendations page wins. "tracks" draws a track list. */
+  layout?: "standard" | "hero" | "wide" | "tiles" | "tracks";
 }
 
 export interface KindLibraryDecl {

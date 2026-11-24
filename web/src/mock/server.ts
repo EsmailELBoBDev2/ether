@@ -934,9 +934,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       ...t.spec,
       // One seeded collection is only a row (not browseable in apps), renamed
       // so it does not share a name with the built-in Short on Time source.
-      ...(id === "short-under-90"
-        ? { name: "Weeknight wind-down", targets: { collectionsTab: false } }
-        : {}),
+      ...(id === "short-under-90" ? { name: "Weeknight wind-down", browseInApps: false } : {}),
       id: `c${seq++}`,
       enabled: id !== "family-night",
       updatedAt: NOW().toISOString(),
@@ -5366,7 +5364,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             rules: [],
             limit: sel.maxItems ?? req.maxItems ?? 100,
             refresh: req.refresh ?? "daily",
-            targets: req.targets ?? { collectionsTab: true, users: "all" },
+            browseInApps: req.browseInApps ?? true,
             folder,
             sortOrder: idx + 1,
             enabled: req.enabled ?? true,
@@ -5416,7 +5414,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           refresh: req.refresh ?? "daily",
           maxItems: req.maxItems ?? 100,
           enabled: req.enabled ?? true,
-          targets: req.targets ?? { collectionsTab: true, users: "all" },
+          browseInApps: req.browseInApps ?? true,
           catalogCount: addonId === "cinemeta" ? 4 : 6,
           managedCount: state.collections.filter((c) => c.addonSync?.addonId === addonId).length,
           removedCount: 0,

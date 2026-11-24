@@ -189,10 +189,8 @@ export interface CollectionSpec {
   rotate?: { size: number; every: "daily" | "weekly" } | null;
   artwork: { mode: ArtworkMode; url?: string; accent?: string };
   /** Where the collection is browseable. Rows that show it live on Recommendations pages. */
-  targets: {
-    /** Browse in apps: listed in its library's Collections view. */
-    collectionsTab: boolean;
-  };
+  /** Browse in apps: listed in its library's Collections view. */
+  browseInApps: boolean;
   enabled: boolean;
   templateId?: string;
   updatedAt?: string;
@@ -281,7 +279,7 @@ export interface AddonCatalogSubscription {
   refresh: Refresh;
   maxItems: number;
   enabled: boolean;
-  targets: CollectionSpec["targets"];
+  browseInApps: boolean;
   catalogCount: number;
   managedCount: number;
   removedCount: number;
@@ -335,7 +333,7 @@ export interface AddonCatalogImportRequest {
   refresh?: Refresh;
   maxItems?: number;
   enabled: boolean;
-  targets: CollectionSpec["targets"];
+  browseInApps: boolean;
   items: AddonCatalogImportItem[];
 }
 

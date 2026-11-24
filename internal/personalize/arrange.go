@@ -619,7 +619,13 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 		candidate.Style = row.Look.Style
 		candidate.HideWatched = row.Look.HideWatched
 		candidate.Title = row.Title
+		own := candidate.Present
 		candidate.Present = presentationFor(row, libs, situation.LibraryID)
+		// The row's own default look (a plugin shelf's declared layout)
+		// applies when the page leaves the look to the source.
+		if candidate.Present.Layout == "" {
+			candidate.Present.Layout = own.Layout
+		}
 		out = append(out, candidate)
 	}
 	return out, nil

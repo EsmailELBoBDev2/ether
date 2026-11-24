@@ -899,7 +899,8 @@ unless the owner agrees to replace the library's contents.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
     ```json
     "shelves": [
-      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "purpose": "recentContexts", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "recently-played", "label": "Recently played", "level": "track", "sort": "lastViewed", "layout": "tracks" },
       { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
       { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
       { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
@@ -912,6 +913,8 @@ unless the owner agrees to replace the library's contents.
     - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`, `lastViewed`.
     - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
     - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters` as either a legacy facet map (`{ "<facet>": ["..."] }`, AND across facets, OR within each facet), a `TabFilter` object (`{ match?, rules, exclude? }`), a single rule object, or a list of rules (`[{ "field": "viewer", "value": { "history": true } }]`; omitted `"op"` on `"viewer"` rules defaults to `"is"`). Every referenced field must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`, or `"viewer"`). Viewer history filters and `lastViewed` ordering roll descendant playback up to ancestor containers (so playing a track surfaces its album on an `album`-level `lastViewed` shelf without ever leaking unviewed items).
+    - `purpose` (optional): what the shelf is for, so apps can draw it their own way and keep its titles out of other rows: `recentContexts` (a "Jump back in" of albums, playlists and artists the viewer played) or `liked` (the viewer's liked items, such as Liked songs with `filters: [{ "field": "viewer", "value": { "favorite": true } }]`). Omitted, the shelf is a plain recommendation.
+    - `layout` (optional): the shelf's default look, `standard`, `hero`, `wide`, `tiles` or `tracks` (a track list, for track-level shelves in listening libraries). An owner's look for the row on a Recommendations page wins.
 
 ## The item envelope
 
@@ -7179,7 +7182,7 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 		return out
 	}
 	return []KindLibraryTab{
-		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "recommended", Label: "Recommendations", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
 	}
 }
@@ -7409,6 +7412,8 @@ func normalizeShelfRuleOps(rules []core.CollectionRule) {
 | `value` | `string` | may be omitted (see validation for conditions) | single value for facet |
 | `values` | `[]string` | may be omitted (see validation for conditions) | OR values for facet |
 | `filters` | `*KindLibraryShelfFilters` | may be omitted (see validation for conditions) | facet map, TabFilter, or rule/rules list |
+| `purpose` | `string` | may be omitted (see validation for conditions) | Purpose tells apps what the shelf is for, so they can draw it their own way and keep its titles out of other rows: recentContexts ("Jump back in") or liked (Liked songs). |
+| `layout` | `string` | may be omitted (see validation for conditions) | Layout is the shelf's default look (standard, hero, wide, tiles or tracks); an owner's look on a Recommendations page wins. |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryShelf
@@ -7427,6 +7432,13 @@ type KindLibraryShelf struct {
 	Value     string                   `json:"value,omitempty"`     // single value for facet
 	Values    []string                 `json:"values,omitempty"`    // OR values for facet
 	Filters   *KindLibraryShelfFilters `json:"filters,omitempty"`   // facet map, TabFilter, or rule/rules list
+	// Purpose tells apps what the shelf is for, so they can draw it their
+	// own way and keep its titles out of other rows: recentContexts ("Jump
+	// back in") or liked (Liked songs).
+	Purpose string `json:"purpose,omitempty"`
+	// Layout is the shelf's default look (standard, hero, wide, tiles or
+	// tracks); an owner's look on a Recommendations page wins.
+	Layout string `json:"layout,omitempty"`
 }
 ``````
 
@@ -27102,6 +27114,12 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 		}
 		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
 			add(sbase+".direction", "must be asc or desc")
+		}
+		if sh.Purpose != "" && sh.Purpose != string(core.PurposeRecentContexts) && sh.Purpose != string(core.PurposeLiked) {
+			add(sbase+".purpose", "must be recentContexts or liked")
+		}
+		if sh.Layout != "" && !core.ValidRowStyle(sh.Layout) {
+			add(sbase+".layout", "must be standard, hero, wide, tiles or tracks")
 		}
 		if sh.Facet != "" && !sh.Filters.IsEmpty() {
 			add(sbase+".filters", "cannot be combined with facet")
@@ -48397,7 +48415,7 @@ export function handle(req:any) {
  if(req.path==='/ether/test') return ok({ok:true,message:'17 Halloween films; annual October schedule.'});
  if(req.path.startsWith('/catalog/')) return ok({metas:ITEMS});
  if(req.path==='/ether/action/syncShelf') {
-  ether.collections.upsert({id:'october-after-dark',name:'October After Dark',description:'Halloween favourites. Appears every October 1–31, then disappears until next year.',mediaType:'movie',sources:[{kind:'plugin:community.october.halloween/halloween',maxItems:100}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,targets:{collectionsTab:true,homeRow:true,sectionRow:true,users:'all',schedule:{months:[10]}}});
+  ether.collections.upsert({id:'october-after-dark',name:'October After Dark',description:'Halloween favourites. Add it to a Recommendations page with the Halloween schedule.',mediaType:'movie',sources:[{kind:'plugin:community.october.halloween/halloween',maxItems:100}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,browseInApps:true});
   return ok({toast:'October collection published. Its viewer surfaces are hidden outside October.',refresh:true});
  }
  if(req.path==='/ether/view/shelf') return ok({title:'October After Dark',spec:{specVersion:1,layout:'detail',header:[{kind:'page-header',title:{$:'title'},description:{$:'subtitle'}}],body:[{kind:'stat-tile',iconKey:'calendar',accent:'primary',label:'$t:schedule',value:'$t:window'},{kind:'stat-tile',iconKey:'film',accent:'primary',label:'$t:films',value:{$:'count'}},{kind:'panel',title:'$t:manage',blocks:[{kind:'widget',widget:'ether.actionButton',props:{label:'$t:sync',action:'syncShelf'}}]}]},data:{title:'October After Dark',subtitle:'A seasonal collection for movie nights. The collection and Home row appear only in October; this management page stays available all year.',count:String(ITEMS.length)}});
@@ -54274,7 +54292,7 @@ export function handle(req:any){
  if(req.path==='/ether/test'){const s=fetchJSON('/shows/1');return ok({ok:!!s.id,message:'TVmaze public API connected: '+s.name});}
  if(req.path.startsWith('/catalog/')){const list=shows(req.path.includes('/canada')?'canada':'acclaimed');return ok({metas:list.map((s:any)=>({id:'tvmaze:'+s.id,type:'series',name:s.name,poster:s.image?.medium,description:(s.summary||'').replace(/<[^>]*>/g,''),year:Number((s.premiered||'').slice(0,4)),imdb_id:s.externals?.imdb,tvdb_id:s.externals?.thetvdb}))});}
  if(req.path==='/ether/metadata/resolve'){const s=resolve(req.body.id);const title:any={type:'show',title:s.name,ids:{imdb:s.externals?.imdb||'',tvdb:s.externals?.thetvdb||0},summary:(s.summary||'').replace(/<[^>]*>/g,''),year:Number((s.premiered||'').slice(0,4)),genres:s.genres||[],rating:s.rating?.average||0,posterPath:s.image?.original||'',runtime:(s.averageRuntime||s.runtime||0)*60000000000,status:s.status};if(s.premiered)title.released=s.premiered+'T00:00:00Z';return ok({title});}
- if(req.path==='/ether/action/publish'){ether.collections.upsert({id:'tvmaze-acclaimed',name:'TVmaze acclaimed series',description:'A TVmaze-powered shelf. Show data: TVmaze, CC BY-SA. https://www.tvmaze.com',mediaType:'show',sources:[{kind:'plugin:community.tvmaze.catalog/acclaimed',maxItems:Number(ether.settings.get().maxItems||30)}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,targets:{collectionsTab:true,homeRow:true,users:'all'}});return ok({toast:'TVmaze acclaimed series published.',refresh:true});}
+ if(req.path==='/ether/action/publish'){ether.collections.upsert({id:'tvmaze-acclaimed',name:'TVmaze acclaimed series',description:'A TVmaze-powered shelf. Show data: TVmaze, CC BY-SA. https://www.tvmaze.com',mediaType:'show',sources:[{kind:'plugin:community.tvmaze.catalog/acclaimed',maxItems:Number(ether.settings.get().maxItems||30)}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,browseInApps:true});return ok({toast:'TVmaze acclaimed series published.',refresh:true});}
  if(req.path==='/ether/view/catalog')return ok({title:'TVmaze Native Catalog',spec:{specVersion:1,layout:'detail',header:[{kind:'page-header',title:{$:'title'},description:{$:'subtitle'}}],body:[{kind:'stat-tile',iconKey:'tv',accent:'primary',label:'$t:count',value:{$:'count'}},{kind:'stat-tile',iconKey:'database',accent:'primary',label:'$t:source',value:'$t:provider'},{kind:'panel',title:'$t:publish',blocks:[{kind:'widget',widget:'ether.actionButton',props:{label:'$t:sync',action:'publish'}}]}]},data:{title:'TVmaze Native Catalog',subtitle:'Show data from TVmaze (CC BY-SA, tvmaze.com). Supplies independent metadata plus acclaimed-series and Canadian-airing lists. Ether matches external IDs to its canonical catalogue.',count:String(shows('acclaimed').length)}});
  return {status:404,body:{error:{code:'not_found',message:'Route not found.'}}};
 }
@@ -64863,6 +64881,8 @@ const MaxKindLibraryShelves = 40
 | `value` | `string` | may be omitted (see validation for conditions) | single value for facet |
 | `values` | `[]string` | may be omitted (see validation for conditions) | OR values for facet |
 | `filters` | `any` | may be omitted (see validation for conditions) | map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule |
+| `purpose` | `string` | may be omitted (see validation for conditions) | recentContexts (Jump back in) \| liked (Liked songs) |
+| `layout` | `string` | may be omitted (see validation for conditions) | default look: standard\|hero\|wide\|tiles\|tracks |
 
 
 ## Source: sdk/go/types.go#KindLibraryShelf
@@ -64883,6 +64903,8 @@ type KindLibraryShelf struct {
 	Value     string   `json:"value,omitempty"`     // single value for facet
 	Values    []string `json:"values,omitempty"`    // OR values for facet
 	Filters   any      `json:"filters,omitempty"`   // map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule
+	Purpose   string   `json:"purpose,omitempty"`   // recentContexts (Jump back in) | liked (Liked songs)
+	Layout    string   `json:"layout,omitempty"`    // default look: standard|hero|wide|tiles|tracks
 }
 ``````
 
@@ -71019,6 +71041,8 @@ class KindLibraryShelf(TypedDict, total=False):
     value: str
     values: List[str]
     filters: Any
+    purpose: Literal["recentContexts", "liked"]
+    layout: Literal["standard", "hero", "wide", "tiles", "tracks"]
 
 
 class KindLibraryTab(TypedDict, total=False):
@@ -77964,6 +77988,10 @@ export interface KindLibraryShelf {
   values?: string[];
   /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
   filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
+  /** What the shelf is for, so apps draw it their own way and keep its titles out of other rows: "recentContexts" (Jump back in) or "liked" (Liked songs). */
+  purpose?: "recentContexts" | "liked";
+  /** The shelf's default look; an owner's look on a Recommendations page wins. "tracks" draws a track list. */
+  layout?: "standard" | "hero" | "wide" | "tiles" | "tracks";
 }
 
 export interface KindLibraryDecl {

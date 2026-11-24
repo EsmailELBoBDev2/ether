@@ -218,6 +218,80 @@ func subtitlePrefix(raw string) string {
 	return prefix
 }
 
+// possessiveCreditStem returns the rest of a title that opens with a named
+// person's possessive credit, which release names usually leave out:
+// "Seol Min-seok's Naked World History" -> "Naked World History",
+// "Tom Clancy's Jack Ryan" -> "Jack Ryan", "설민석의 벌거벗은 세계사" ->
+// "벌거벗은 세계사". It returns "" for titles whose possessive is part of the
+// name itself ("Grey's Anatomy", "Hell's Kitchen", "The Handmaid's Tale",
+// "사랑의 불시착"): the possessor must be a two- or three-word capitalised
+// name (or a Hangul name ending in 의 that is not a pronoun) and the rest must
+// still be distinctive on its own.
+func possessiveCreditStem(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	for _, sep := range []string{"'s ", "’s ", "'S ", "’S "} {
+		idx := strings.Index(s, sep)
+		if idx <= 0 {
+			continue
+		}
+		owner := strings.Fields(s[:idx])
+		rest := strings.TrimSpace(s[idx+len(sep):])
+		if len(owner) < 2 || len(owner) > 3 {
+			return ""
+		}
+		switch strings.ToLower(owner[0]) {
+		case "the", "a", "an":
+			return ""
+		}
+		for _, w := range owner {
+			r := []rune(w)
+			if !unicode.IsUpper(r[0]) {
+				return ""
+			}
+		}
+		words := strings.Fields(NormalizeTitle(rest))
+		letters := 0
+		for _, w := range words {
+			letters += len([]rune(w))
+		}
+		if len(words) < 2 || letters < 8 {
+			return ""
+		}
+		return rest
+	}
+	fields := strings.Fields(s)
+	if len(fields) < 2 {
+		return ""
+	}
+	owner := []rune(fields[0])
+	if len(owner) < 3 || len(owner) > 5 || owner[len(owner)-1] != '의' {
+		return ""
+	}
+	for _, r := range owner {
+		if !unicode.In(r, unicode.Hangul) {
+			return ""
+		}
+	}
+	switch fields[0] {
+	case "당신의", "우리의", "우리들의", "그녀의", "그들의", "너희의", "자네의":
+		return ""
+	}
+	rest := strings.Join(fields[1:], " ")
+	syllables := 0
+	for _, r := range rest {
+		if unicode.In(r, unicode.Hangul) {
+			syllables++
+		}
+	}
+	if syllables < 4 {
+		return ""
+	}
+	return rest
+}
+
 // splitAKA splits a title on whole-word "AKA" or "A.K.A." into its
 // alternative names, or returns nil when no AKA separator is present.
 func splitAKA(s string) []string {
@@ -337,6 +411,15 @@ func TitlesMatch(a, b string) bool {
 			return true
 		}
 	}
+	// A presenter's or creator's possessive credit that the release name
+	// leaves out ("Seol Min-seok's Naked World History" vs
+	// "Naked.World.History.E150", "설민석의 벌거벗은 세계사" vs "벌거벗은 세계사").
+	if sa := possessiveCreditStem(a); sa != "" && TitlesMatch(sa, b) {
+		return true
+	}
+	if sb := possessiveCreditStem(b); sb != "" && TitlesMatch(a, sb) {
+		return true
+	}
 	return false
 }
 
@@ -385,6 +468,9 @@ func TitleAliases(title string) []string {
 		}
 	}
 	if p := subtitlePrefix(raw); p != "" {
+		add(p)
+	}
+	if p := possessiveCreditStem(raw); p != "" {
 		add(p)
 	}
 	if parts := splitAKA(raw); len(parts) > 0 {

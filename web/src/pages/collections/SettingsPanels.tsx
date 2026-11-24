@@ -586,8 +586,8 @@ export function UsedOnPanel({
         <ToggleRow
           title={t("Browse in apps")}
           description={t("Show it as a collection in its library's Collections view.")}
-          checked={spec.targets.collectionsTab}
-          onChange={(collectionsTab) => update({ targets: { ...spec.targets, collectionsTab } })}
+          checked={spec.browseInApps}
+          onChange={(browseInApps) => update({ browseInApps })}
         />
       </section>
     </div>

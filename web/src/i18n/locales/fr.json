@@ -800,6 +800,7 @@
   "m_0252376271ce67": "Unités de travail",
   "m_0253e1d5d02e1c": "En attente du retour d’Ether…",
   "m_02551559011b7c": "Résultats des flux",
+  "m_02564dad02cd01": "Rien pour ce spectateur pour l'instant.",
   "m_025788feadfaf4": "Léger",
   "m_0257d2a1550c16": "Approuvé, mais la modification n’a pas pu être effectuée.",
   "m_02584daabbdb78": "Une chaîne programmée à partir de votre catalogue.",
@@ -1051,6 +1052,7 @@
   "m_030e042c756ea8": "Commencé mais non terminé",
   "m_030ed3e2347b98": "Inverser ce groupe",
   "m_030edd32ab4736": "Titres populaires diffusés sur Disney+ dans votre région.",
+  "m_030f82fac1633e": "Ajouter une rangée ici",
   "m_031004cdaa8c37": {
     "many": "{source} {duration} ({count} de lectures)",
     "one": "{source} {duration} ({count} lecture)",
@@ -1137,6 +1139,11 @@
   "m_03471851e684eb": "URL de la source {number}",
   "m_03479e5fc5b88c": "Décalage de sortie vidéo (jours)",
   "m_0347c9a3c79c2c": "S'applique au prochain démarrage d'une chaîne.",
+  "m_0349534866c71e": {
+    "one": "{count} titre · les {shown} premiers affichés",
+    "many": "{count} titres · les {shown} premiers affichés",
+    "other": "{count} titres · les {shown} premiers affichés"
+  },
   "m_034a20a010fdb9": "Heures entre deux diffusions",
   "m_034b6538fa4d0f": "Les rapports en file d’attente apparaissent dans l’historique des envois.",
   "m_034c71471f0c91": "Fournisseur indisponible",
@@ -2347,6 +2354,11 @@
   "m_06dae4134ad80d": "Bon après-midi",
   "m_06daee10a7d943": "Flux direct",
   "m_06db1db5e3ffe9": "le profil ou le niveau vidéo",
+  "m_06dbf5595dccde": {
+    "one": "{count} titre sur {rows} rangées",
+    "many": "{count} titres sur {rows} rangées",
+    "other": "{count} titres sur {rows} rangées"
+  },
   "m_06dc2e2fd1555c": "Peut joindre sur votre réseau : {hosts}",
   "m_06dc5804d9c769": "Téléverser un fichier",
   "m_06dd435866d846": "Services de diffusion en continu",
@@ -6963,6 +6975,7 @@
   "m_1443a813d2e1d2": "Cette période compte plus de sorties que le calendrier ne peut en afficher à la fois. Affinez avec les filtres ci-dessus.",
   "m_14448bcd27e65d": "Impossible de reconstruire les rangées",
   "m_1444ffab6ddb7b": "{state} · {movies} films, {shows} séries, {episodes} épisodes mis à l'écart · dernière vérification {when}",
+  "m_1445132da670dd": "Ajouter cette rangée à la page et la modifier",
   "m_14471a0f879228": "Règle supprimée",
   "m_1448c9a0577eb1": "Afficher l’aperçu de la collection",
   "m_1448f4befa194a": "{hours} h de crédit de rediffusion",
@@ -7734,11 +7747,6 @@
     "many": "{exhausted} indexeur(s) sur {count} d’indexeurs n’ont plus de recherches aujourd’hui",
     "one": "{exhausted} indexeur sur {count} n’a plus de recherches aujourd’hui",
     "other": "{exhausted} indexeurs sur {count} n’ont plus de recherches aujourd’hui"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} titre pour ce spectateur en ce moment.",
-    "many": "{count} titres pour ce spectateur en ce moment.",
-    "other": "{count} titres pour ce spectateur en ce moment."
   },
   "m_16877e6139737d": "Icône carrée personnalisée",
   "m_16879d9e8bfab8": "Utiliser sur des chaînes…",
@@ -10674,6 +10682,7 @@
   "m_1f10beec585266": "Modifier le canal de notification",
   "m_1f1134cfe45987": "Où elle apparaît",
   "m_1f11939961d412": "Titres",
+  "m_1f14c31457a033": "Modifier cette rangée",
   "m_1f154b775704d6": "Accent · toutes les informations disponibles",
   "m_1f15c6af8ae4f6": "Chaîne policière feutrée de soirée pluvieuse avec titres classiques à empattements",
   "m_1f16593a684b20": "Ajoutez cette machine à l’aide d’un jeton à usage unique provenant d’un autre nœud. Elle adopte l’identité du serveur du cluster et ses paramètres partagés.",
@@ -10692,6 +10701,11 @@
   "m_1f1bf17b31e6a2": "Détails du titre",
   "m_1f1c4641ce1dd0": "qui obtient quoi spectateur application appareil résolution hdr débit",
   "m_1f1c60a240ec46": "Remplacer le fichier",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} titre sur {rows} rangées · les {limit} premiers de chacune",
+    "many": "{count} titres sur {rows} rangées · les {limit} premiers de chacune",
+    "other": "{count} titres sur {rows} rangées · les {limit} premiers de chacune"
+  },
   "m_1f1d0eade48c2d": "Indexeurs Prowlarr importés",
   "m_1f1d729a4ccc7d": "Ajouter les quatre chaînes par décennie",
   "m_1f1db71e3b33d3": "Ether redémarre pour terminer. Cela prend généralement environ une minute, et cette page suit la progression.",

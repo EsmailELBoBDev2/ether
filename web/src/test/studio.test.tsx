@@ -72,9 +72,7 @@ describe("Collection Studio editor", () => {
       () =>
         expect(
           calls(fake, "PUT", "/collections/c1").some(
-            (c) =>
-              JSON.stringify((c.body as CollectionSpec).targets) ===
-              JSON.stringify({ collectionsTab: false }),
+            (c) => (c.body as CollectionSpec).browseInApps === false,
           ),
         ).toBe(true),
       WAIT,

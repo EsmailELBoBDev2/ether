@@ -30,6 +30,9 @@ type liveImages struct {
 }
 
 func (i *instance) newLiveImages(r *http.Request, token string) *liveImages {
+	// One access decision per plugin and host for everything this signer
+	// signs (fetching an image still checks again).
+	r = r.WithContext(frontend.WithPluginImageMemo(r.Context()))
 	return &liveImages{i: i, r: r, token: token, issued: map[string]string{}}
 }
 

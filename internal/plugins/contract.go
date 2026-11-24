@@ -974,6 +974,13 @@ type KindLibraryShelf struct {
 	Value     string                   `json:"value,omitempty"`     // single value for facet
 	Values    []string                 `json:"values,omitempty"`    // OR values for facet
 	Filters   *KindLibraryShelfFilters `json:"filters,omitempty"`   // facet map, TabFilter, or rule/rules list
+	// Purpose tells apps what the shelf is for, so they can draw it their
+	// own way and keep its titles out of other rows: recentContexts ("Jump
+	// back in") or liked (Liked songs).
+	Purpose string `json:"purpose,omitempty"`
+	// Layout is the shelf's default look (standard, hero, wide, tiles or
+	// tracks); an owner's look on a Recommendations page wins.
+	Layout string `json:"layout,omitempty"`
 }
 
 // EffectiveSort returns the shelf's sort field ("released" by default).

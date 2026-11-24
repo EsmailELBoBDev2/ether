@@ -145,7 +145,11 @@ function LengthInput({
   );
 }
 
-/** A thin gap between rows: "+" inserts a new row at exactly this position. */
+/**
+ * The gap between two rows: "+" inserts a new row at exactly this position.
+ * It has its own height in the flow, so it never covers a row's posters or
+ * text; on wide screens the label shows on hover, on touch screens always.
+ */
 function InsertGap({
   at,
   onAdd,
@@ -158,9 +162,15 @@ function InsertGap({
   onDrop?: () => void;
 }) {
   const [over, setOver] = useState(false);
+  const line = cn(
+    "h-px flex-1 transition-colors",
+    active || over
+      ? "h-0.5 bg-primary"
+      : "bg-border-subtle group-hover/gap:bg-primary/50 group-focus-within/gap:bg-primary/50",
+  );
   return (
     <div
-      className="group/gap relative flex h-6 items-center pl-1"
+      className="group/gap flex h-10 items-center gap-2 px-2"
       onDragOver={(e) => {
         if (!onDrop) return;
         e.preventDefault();
@@ -173,25 +183,28 @@ function InsertGap({
         onDrop?.();
       }}
     >
+      <div className={line} />
       <button
         type="button"
         aria-label={t("Add a row at position {at}", { at })}
         onClick={() => onAdd(at)}
         className={cn(
-          "mr-2 inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs font-medium transition",
+          "inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition-colors",
           active
             ? "border-primary bg-primary text-primary-fg"
-            : "border-border bg-surface text-fg-muted hover:border-primary hover:text-primary",
+            : "border-dashed border-border bg-bg text-fg-muted hover:border-solid hover:border-primary hover:text-primary focus-visible:border-primary focus-visible:text-primary",
         )}
       >
-        <Plus size={12} /> {active ? t("New row at #{at}", { at }) : ""}
-      </button>
-      <div
-        className={cn(
-          "h-px flex-1 transition",
-          active || over ? "h-0.5 bg-primary" : "bg-transparent group-hover/gap:bg-border-strong",
+        <Plus size={12} />
+        {active ? (
+          t("New row at #{at}", { at })
+        ) : (
+          <span className="sm:hidden sm:group-hover/gap:inline sm:group-focus-within/gap:inline">
+            {t("Add a row here")}
+          </span>
         )}
-      />
+      </button>
+      <div className={line} />
     </div>
   );
 }
@@ -330,7 +343,13 @@ function PageRowView({
         over && "border-t-2 border-primary",
       )}
     >
-      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+      {/* The whole header opens the row's drawer; its own buttons keep their job. */}
+      <div
+        className="mb-1.5 flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1"
+        onClick={(e) => {
+          if (!(e.target as HTMLElement).closest("button, a, input")) onEdit();
+        }}
+      >
         {draggable ? (
           <span
             className="cursor-grab text-fg-subtle"
@@ -353,6 +372,7 @@ function PageRowView({
         <button
           type="button"
           onClick={onEdit}
+          title={r.rowId ? t("Edit this row") : t("Add this row to the page and change it")}
           className="text-left text-base font-semibold text-fg hover:underline"
         >
           {r.title}
@@ -418,17 +438,15 @@ function PageRowView({
           >
             <EyeOff size={13} /> {t("Hide")}
           </Button>
-          {r.rowId ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 gap-1 px-2 text-xs"
-              onClick={onEdit}
-              aria-label={t("Edit {row}", { row: r.title })}
-            >
-              <SlidersHorizontal size={13} /> {t("Edit")}
-            </Button>
-          ) : null}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 px-2 text-xs"
+            onClick={onEdit}
+            aria-label={t("Edit {row}", { row: r.title })}
+          >
+            <SlidersHorizontal size={13} /> {t("Edit")}
+          </Button>
         </div>
       </div>
       <p className="mb-2 max-w-3xl text-xs text-fg-muted">
@@ -462,7 +480,7 @@ function PageRowView({
 function Block({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div
-      className="relative mt-3 rounded-2xl border border-border-subtle pl-1"
+      className="relative mt-2.5 rounded-2xl border border-border-subtle pl-1"
       role="group"
       aria-label={label}
     >
@@ -717,6 +735,49 @@ export default function Recommendations() {
   const openAdd = (at: number) => {
     setPending(null);
     setDrawer({ kind: "add", at, picking: true });
+  };
+  /**
+   * Opens the drawer for a row that isn't on the page yet (one of Ether's
+   * picks): that source, prefilled, at `at`. Adding stores it there, pinned
+   * (or shown on a Curated page, or when it has no position).
+   */
+  const openUnstored = (
+    kind: string,
+    at: number,
+    beforeIndex: number | null,
+    opts: { library?: number; show?: boolean } = {},
+  ) => {
+    if (!draft) return;
+    const source = sourceByKind.get(kind);
+    if (!source) return openAdd(at);
+    const row = rowForSource(
+      source,
+      {},
+      {
+        page: draft,
+        position: at,
+        editingFor,
+        libraries: opts.library && !pageLibrary ? [opts.library] : undefined,
+      },
+    );
+    setPending({
+      row: opts.show ? { ...row, placement: withMode(row.placement, "show") } : row,
+      beforeId: beforeIndex == null ? null : rowIdAtOrAfter(beforeIndex),
+      at,
+    });
+    setDrawer({ kind: "add", at, picking: false });
+  };
+  /** Every row on the page opens its drawer: stored rows to edit, the rest to add. */
+  const openRow = (d: DisplayRow) => {
+    const id = d.row.rowId;
+    if (id && pending?.row.id === id) return;
+    if (id && rowOf(id)) {
+      setPending(null);
+      setDrawer({ kind: "edit", rowId: id });
+      return;
+    }
+    const at = d.position ?? display.slice(0, d.index).filter((x) => !x.row.ghost).length + 1;
+    openUnstored(d.row.kind, at, d.index, { library: d.row.library });
   };
   const pickSource = (source: PageSource, params: Record<string, string>) => {
     if (!draft || drawer?.kind !== "add") return;
@@ -1446,12 +1507,7 @@ export default function Recommendations() {
                   pluginName={source?.plugin}
                   libraryName={d.row.library ? libraryName(d.row.library) : undefined}
                   viewers={viewers ?? []}
-                  onEdit={() => {
-                    if (!d.row.rowId) return;
-                    if (pending?.row.id === d.row.rowId) return;
-                    setPending(null);
-                    setDrawer({ kind: "edit", rowId: d.row.rowId });
-                  }}
+                  onEdit={() => openRow(d)}
                   onPin={() => d.row.rowId && d.position && pinAt(d.row.rowId, d.position)}
                   onHide={() => hideRow(d.row)}
                   onReset={() =>
@@ -1503,7 +1559,21 @@ export default function Recommendations() {
                     key={p.kind + p.title}
                     className="flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-surface"
                   >
-                    <span className="font-medium text-fg">{p.title}</span>
+                    {sourceByKind.has(p.kind) ? (
+                      <button
+                        type="button"
+                        className="font-medium text-fg hover:underline"
+                        onClick={() =>
+                          openUnstored(p.kind, (counts?.rows ?? display.length) + 1, null, {
+                            show: true,
+                          })
+                        }
+                      >
+                        {p.title}
+                      </button>
+                    ) : (
+                      <span className="font-medium text-fg">{p.title}</span>
+                    )}
                     <KindChip personal={p.personal} />
                     <span className="text-xs text-fg-muted">{p.why}</span>
                     <span className="ml-auto flex gap-1">
@@ -1547,7 +1617,20 @@ export default function Recommendations() {
                     key={`${n.row ?? n.title}-${i}`}
                     className="flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-surface"
                   >
-                    <span className="font-medium text-fg">{n.title}</span>
+                    {n.row && rowOf(n.row) ? (
+                      <button
+                        type="button"
+                        className="font-medium text-fg hover:underline"
+                        onClick={() => {
+                          setPending(null);
+                          setDrawer({ kind: "edit", rowId: n.row! });
+                        }}
+                      >
+                        {n.title}
+                      </button>
+                    ) : (
+                      <span className="font-medium text-fg">{n.title}</span>
+                    )}
                     <span className="text-xs text-fg-muted">{n.reason}</span>
                     <span className="ml-auto flex gap-1">
                       {n.previewAs ? (
@@ -1583,7 +1666,10 @@ export default function Recommendations() {
                           variant="ghost"
                           size="sm"
                           className="h-7 px-2 text-xs"
-                          onClick={() => setDrawer({ kind: "edit", rowId: n.row! })}
+                          onClick={() => {
+                            setPending(null);
+                            setDrawer({ kind: "edit", rowId: n.row! });
+                          }}
                           aria-label={t("Edit {row}", { row: n.title })}
                         >
                           <SlidersHorizontal size={13} /> {t("Edit")}
@@ -1650,7 +1736,7 @@ export default function Recommendations() {
         onAdd={commitAdd}
         onRemove={removeOpen}
         onChangeSource={changeSource}
-        onTab={(tabKey) => drawer?.kind === "edit" && setDrawer({ ...drawer, tab: tabKey })}
+        onTab={(tab) => drawer && setDrawer({ ...drawer, tab })}
       />
     </>
   );

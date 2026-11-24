@@ -86,7 +86,9 @@ func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, _ []Li
 	indices := make(map[string]int, len(rows))
 	for i, row := range rows {
 		indices[row.ID] = i
-		n := core.NeutralHomeRow{ID: row.ID, Title: row.Title, Kind: row.Kind, Purpose: row.Purpose, ItemCount: len(row.Entries), Always: row.Layout.Always, PreviewOnFocus: row.PreviewOnFocus, RankedTop10: row.RankedTop10}
+		// Present carries the row's own defaults (a plugin shelf's declared
+		// layout) into the arrangement.
+		n := core.NeutralHomeRow{ID: row.ID, Title: row.Title, Kind: row.Kind, Purpose: row.Purpose, ItemCount: len(row.Entries), Always: row.Layout.Always, PreviewOnFocus: row.PreviewOnFocus, RankedTop10: row.RankedTop10, Present: row.Layout.Present}
 		for _, entry := range row.Entries {
 			if entry.Title != nil {
 				n.Items = append(n.Items, *entry.Title)

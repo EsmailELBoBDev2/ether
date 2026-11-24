@@ -1147,6 +1147,12 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
 			add(sbase+".direction", "must be asc or desc")
 		}
+		if sh.Purpose != "" && sh.Purpose != string(core.PurposeRecentContexts) && sh.Purpose != string(core.PurposeLiked) {
+			add(sbase+".purpose", "must be recentContexts or liked")
+		}
+		if sh.Layout != "" && !core.ValidRowStyle(sh.Layout) {
+			add(sbase+".layout", "must be standard, hero, wide, tiles or tracks")
+		}
 		if sh.Facet != "" && !sh.Filters.IsEmpty() {
 			add(sbase+".filters", "cannot be combined with facet")
 		}

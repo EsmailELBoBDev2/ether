@@ -797,7 +797,7 @@ export function blankSpec(mediaType: CollectionSpec["mediaType"] = "movie"): Col
     refresh: "daily",
     rotate: null,
     artwork: { mode: "auto" },
-    targets: { collectionsTab: true },
+    browseInApps: true,
     enabled: false,
   };
 }
@@ -812,7 +812,7 @@ export function normalizeSpec(spec: Partial<CollectionSpec>): CollectionSpec {
     rules: Array.isArray(spec.rules) ? spec.rules : [],
     exclude: Array.isArray(spec.exclude) ? spec.exclude : [],
     artwork: { ...base.artwork, ...(spec.artwork ?? {}) },
-    targets: { collectionsTab: spec.targets?.collectionsTab ?? base.targets.collectionsTab },
+    browseInApps: spec.browseInApps ?? base.browseInApps,
   };
 }
 
@@ -831,8 +831,7 @@ export function previewableSpec(spec: CollectionSpec): CollectionSpec {
 export function specProblems(spec: CollectionSpec): string[] {
   const out: string[] = [];
   if (spec.releaseMode === "upcoming" || spec.releaseMode === "mixed") {
-    if (!spec.targets.collectionsTab)
-      out.push(t("Upcoming collections must be browseable in apps."));
+    if (!spec.browseInApps) out.push(t("Upcoming collections must be browseable in apps."));
     if (spec.localOnly || spec.sources.length !== 1 || spec.sources[0]?.kind !== "catalog")
       out.push(t("Upcoming titles require the whole catalogue source and remote TMDB discovery."));
     if (

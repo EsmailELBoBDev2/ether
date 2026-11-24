@@ -43,7 +43,28 @@ func (i *instance) titleLyrics(w http.ResponseWriter, r *http.Request) {
 	}
 	lines := make([]object, len(lyrics.Lines))
 	for n, line := range lyrics.Lines {
-		lines[n] = object{"startMs": line.Start.Milliseconds(), "text": line.Text}
+		wire := object{"startMs": line.Start.Milliseconds(), "text": line.Text}
+		if line.End > line.Start {
+			wire["endMs"] = line.End.Milliseconds()
+		}
+		if len(line.Words) > 0 {
+			words := make([]object, len(line.Words))
+			for k, w := range line.Words {
+				word := object{"startMs": w.Start.Milliseconds(), "text": w.Text}
+				if w.End > w.Start {
+					word["endMs"] = w.End.Milliseconds()
+				}
+				words[k] = word
+			}
+			wire["words"] = words
+		}
+		if line.Translation != "" {
+			wire["translation"] = line.Translation
+		}
+		if line.Romanization != "" {
+			wire["romanization"] = line.Romanization
+		}
+		lines[n] = wire
 	}
 	out := object{"lines": lines, "instrumental": lyrics.Instrumental}
 	if lyrics.Plain != "" {

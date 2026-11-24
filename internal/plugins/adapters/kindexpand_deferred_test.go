@@ -17,3 +17,17 @@ func TestSearchNameFolding(t *testing.T) {
 		t.Fatal("a shorter name matched")
 	}
 }
+
+func TestLyricsLinesFromWire(t *testing.T) {
+	lines := linesFromWire([]wireLyricsLine{
+		{StartMs: 5000, EndMs: 7000, Words: []wireLyricWord{{StartMs: 5000, EndMs: 5600, Text: "Hello"}, {StartMs: 5600, EndMs: 7000, Text: "world"}}, Translation: "Hola mundo", Romanization: "harō wārudo"},
+		{StartMs: 1000, Text: "First"},
+		{StartMs: 9000},
+	})
+	if len(lines) != 2 || lines[0].Text != "First" || lines[1].Text != "Hello world" || len(lines[1].Words) != 2 {
+		t.Fatalf("lines %+v", lines)
+	}
+	if lines[1].Translation != "Hola mundo" || lines[1].Romanization != "harō wārudo" || lines[1].Words[1].End.Milliseconds() != 7000 {
+		t.Fatalf("line %+v", lines[1])
+	}
+}

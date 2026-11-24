@@ -735,6 +735,27 @@ type KindLyrics struct {
 	PlainLyrics  string `json:"plainLyrics,omitempty"`
 	Instrumental bool   `json:"instrumental,omitempty"`
 	Source       string `json:"source,omitempty"`
+	// Lines are structured timed lines; when present Ether uses them instead
+	// of SyncedLyrics (word timing, translation and romanization lines).
+	Lines []KindLyricsLine `json:"lines,omitempty"`
+}
+
+// KindLyricsLine is one timed line (milliseconds), optionally with per-word
+// timing, a translation and a romanization.
+type KindLyricsLine struct {
+	StartMs      int64            `json:"startMs"`
+	EndMs        int64            `json:"endMs,omitempty"`
+	Text         string           `json:"text"`
+	Words        []KindLyricsWord `json:"words,omitempty"`
+	Translation  string           `json:"translation,omitempty"`
+	Romanization string           `json:"romanization,omitempty"`
+}
+
+// KindLyricsWord is one sung word of a line (milliseconds).
+type KindLyricsWord struct {
+	StartMs int64  `json:"startMs"`
+	EndMs   int64  `json:"endMs,omitempty"`
+	Text    string `json:"text"`
 }
 
 // LyricsProvider serves lyrics for kinds that declare lyrics: true. Return

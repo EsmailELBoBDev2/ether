@@ -915,7 +915,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/import` | A viewer imports a playlist link from one of the sites in `import.links` (for example `deezer`, `spotify`) | `{url}` → `{name, description?, tracks: [{title, artist, album?, isrc?, durationSec?}], total?, truncated?}`; answer 404 for a link you do not read. Set `truncated` when the source shared fewer tracks than the playlist has (with `total` when it says how many), so apps can tell the viewer instead of silently importing part of it. At most 500 tracks are used. 10 s deadline. |
 | `/ether/v1/kinds/{kind}/identify` | Ether matches an imported playlist's tracks (from a link or an M3U/CSV file) to your items, in batches, only when `import.identify` is true | `{tracks}` → `{items, matches: [{index, id?, by?, candidates?}]}`. `items` are stored like live-search results (parents first). One match per track you answered: `id` and `by` (`isrc` or `title`), or `candidates` (external ids) when several releases fit equally, or neither when nothing matched. Leave out tracks you ran out of time for; Ether asks for them again (up to three times). Viewers see matched and unmatched tracks honestly and pick a release for ambiguous ones. 10 s deadline. |
 | `/ether/v1/kinds/{kind}/related` | A viewer opens an item (purpose `similar`), or a queue of the kind's items nears its end (purpose `continuation`), only for purposes declared in `related: {similar, continuation}` | `{item, purpose, limit}` → `{label?, items, order?}`. `items` are stored like live-search results (send any parents a playable item needs); `order` names the external ids to show, in order (default: items at the same level for `similar`, playable items for `continuation`). One call per item and purpose at a time; answers are remembered for six hours (empty ones for one). `similar` becomes the item's detail row (Vela `GET /rows?placement=detail`); `continuation` is Vela `GET /titles/{id}/continuation` (autoplay). |
-| `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
+| `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?, lines?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`; enhanced `<mm:ss.xx>word` stamps give word timing). `lines` (optional, used instead of `syncedLyrics`) are structured `{startMs, endMs?, text, words?: [{startMs, endMs?, text}], translation?, romanization?}` for providers with per-word timing, translations or romanization; Vela receives them on `GET /titles/{id}/lyrics` (`features.lyrics.words`/`romanization`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
@@ -1592,8 +1592,9 @@ surface; you never check viewer permissions yourself.
 `contributes.frontendAdapters[].icon` names the adapter's own mark: a
 path to an SVG or PNG inside the package (a PNG at most 512 KB and
 1024 px on a side). The Apps page shows it on the adapter's tab and
-cards, the way it shows Plex or Jellyfin. Without one, the plugin's
-`ether.icon` stands in, and then a generic plug. Ether serves it from
+cards, the way it shows Plex or Jellyfin. Without one, a `subsonic`
+adapter shows the OpenSubsonic mark Ether ships; any other adapter
+falls back to the plugin's `ether.icon`, and then a generic plug. Ether serves it from
 the plugin's icon route (`/ether/api/plugins/{id}/icon?adapter={key}`),
 cache-busted per version, and the conformance kit fails a package whose
 adapter icon is missing or cannot be rendered.
@@ -57810,6 +57811,7 @@ type KindLyricsRequest struct {
 | `plainLyrics` | `string` | may be omitted (see validation for conditions) |  |
 | `instrumental` | `bool` | may be omitted (see validation for conditions) |  |
 | `source` | `string` | may be omitted (see validation for conditions) |  |
+| `lines` | `[]KindLyricsLine` | may be omitted (see validation for conditions) | Lines are structured timed lines; when present Ether uses them instead of SyncedLyrics (word timing, translation and romanization lines). |
 
 
 ## Source: sdk/go/kinds.go#KindLyrics
@@ -57822,6 +57824,56 @@ type KindLyrics struct {
 	PlainLyrics  string `json:"plainLyrics,omitempty"`
 	Instrumental bool   `json:"instrumental,omitempty"`
 	Source       string `json:"source,omitempty"`
+	// Lines are structured timed lines; when present Ether uses them instead
+	// of SyncedLyrics (word timing, translation and romanization lines).
+	Lines []KindLyricsLine `json:"lines,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindLyricsLine.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `startMs` | `int64` | emitted (validation may require a value) |  |
+| `endMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `text` | `string` | emitted (validation may require a value) |  |
+| `words` | `[]KindLyricsWord` | may be omitted (see validation for conditions) |  |
+| `translation` | `string` | may be omitted (see validation for conditions) |  |
+| `romanization` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindLyricsLine
+
+``````
+// KindLyricsLine is one timed line (milliseconds), optionally with per-word
+// timing, a translation and a romanization.
+type KindLyricsLine struct {
+	StartMs      int64            `json:"startMs"`
+	EndMs        int64            `json:"endMs,omitempty"`
+	Text         string           `json:"text"`
+	Words        []KindLyricsWord `json:"words,omitempty"`
+	Translation  string           `json:"translation,omitempty"`
+	Romanization string           `json:"romanization,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindLyricsWord.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `startMs` | `int64` | emitted (validation may require a value) |  |
+| `endMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `text` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindLyricsWord
+
+``````
+// KindLyricsWord is one sung word of a line (milliseconds).
+type KindLyricsWord struct {
+	StartMs int64  `json:"startMs"`
+	EndMs   int64  `json:"endMs,omitempty"`
+	Text    string `json:"text"`
 }
 ``````
 
@@ -76927,12 +76979,21 @@ export interface KindLyricsRequest {
   item: KindItem;
 }
 
-/** Timed LRC lines ("[mm:ss.xx] words"), plain text, or instrumental; source for attribution. */
+/** Timed LRC lines ("[mm:ss.xx] words", enhanced "<mm:ss.xx>word" stamps for word timing), plain text, or instrumental; source for attribution. */
 export interface KindLyrics {
   syncedLyrics?: string;
   plainLyrics?: string;
   instrumental?: boolean;
   source?: string;
+  /** Structured timed lines (milliseconds); used instead of syncedLyrics when present: word timing, translation and romanization lines. */
+  lines?: Array<{
+    startMs: number;
+    endMs?: number;
+    text: string;
+    words?: Array<{ startMs: number; endMs?: number; text: string }>;
+    translation?: string;
+    romanization?: string;
+  }>;
 }
 
 export interface FrontendAdapterMeta {

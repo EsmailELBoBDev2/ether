@@ -925,12 +925,21 @@ export interface KindLyricsRequest {
   item: KindItem;
 }
 
-/** Timed LRC lines ("[mm:ss.xx] words"), plain text, or instrumental; source for attribution. */
+/** Timed LRC lines ("[mm:ss.xx] words", enhanced "<mm:ss.xx>word" stamps for word timing), plain text, or instrumental; source for attribution. */
 export interface KindLyrics {
   syncedLyrics?: string;
   plainLyrics?: string;
   instrumental?: boolean;
   source?: string;
+  /** Structured timed lines (milliseconds); used instead of syncedLyrics when present: word timing, translation and romanization lines. */
+  lines?: Array<{
+    startMs: number;
+    endMs?: number;
+    text: string;
+    words?: Array<{ startMs: number; endMs?: number; text: string }>;
+    translation?: string;
+    romanization?: string;
+  }>;
 }
 
 export interface FrontendAdapterMeta {

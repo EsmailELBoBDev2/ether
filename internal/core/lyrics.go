@@ -17,17 +17,35 @@ type Lyrics struct {
 	Source string
 }
 
-// LyricLine is one line and when it starts.
+// LyricLine is one line: when it starts and ends (End is zero when unknown),
+// its words with their own timing when the source has them, and optional
+// translation and romanization lines.
 type LyricLine struct {
+	Start        time.Duration
+	End          time.Duration
+	Text         string
+	Words        []LyricWord
+	Translation  string
+	Romanization string
+}
+
+// LyricWord is one word of a line and when it is sung (End zero when unknown).
+type LyricWord struct {
 	Start time.Duration
+	End   time.Duration
 	Text  string
 }
+
+// lrcWord is an enhanced-LRC word stamp ("<mm:ss.xx>").
+var lrcWord = regexp.MustCompile(`<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>`)
 
 var lrcLine = regexp.MustCompile(`^((?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\])+)(.*)$`)
 var lrcStamp = regexp.MustCompile(`\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]`)
 
 // ParseLRC reads LRC timed lyrics ("[mm:ss.xx] words"), one line per stamp,
-// in time order. Metadata tags and untimed lines are dropped.
+// in time order. Metadata tags and untimed lines are dropped. Enhanced LRC
+// word stamps ("<mm:ss.xx>word") become the line's words. Each line ends
+// where the next begins; each word where the next word begins.
 func ParseLRC(lrc string) []LyricLine {
 	var out []LyricLine
 	for _, raw := range strings.Split(lrc, "\n") {
@@ -44,7 +62,16 @@ func ParseLRC(lrc string) []LyricLine {
 				digits, _ := strconv.Atoi(stamp[3])
 				fraction = time.Duration(digits) * time.Second / time.Duration(pow10(len(stamp[3])))
 			}
-			out = append(out, LyricLine{Start: time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second + fraction, Text: text})
+			line := LyricLine{Start: time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second + fraction, Text: text}
+			if lrcWord.MatchString(text) {
+				line.Words = parseLRCWords(text)
+				parts := make([]string, 0, len(line.Words))
+				for _, w := range line.Words {
+					parts = append(parts, w.Text)
+				}
+				line.Text = strings.Join(parts, " ")
+			}
+			out = append(out, line)
 		}
 	}
 	for i := 1; i < len(out); i++ { // stable insertion sort: lines repeat stamps out of order
@@ -52,7 +79,44 @@ func ParseLRC(lrc string) []LyricLine {
 			out[j], out[j-1] = out[j-1], out[j]
 		}
 	}
+	for i := range out {
+		if i+1 < len(out) {
+			out[i].End = out[i+1].Start
+		}
+		if n := len(out[i].Words); n > 0 && out[i].Words[n-1].End == 0 {
+			out[i].Words[n-1].End = out[i].End
+		}
+	}
 	return out
+}
+
+// parseLRCWords splits an enhanced-LRC line into its stamped words.
+func parseLRCWords(text string) []LyricWord {
+	locs := lrcWord.FindAllStringSubmatchIndex(text, -1)
+	var words []LyricWord
+	for n, loc := range locs {
+		end := len(text)
+		if n+1 < len(locs) {
+			end = locs[n+1][0]
+		}
+		word := strings.TrimSpace(text[loc[1]:end])
+		if word == "" {
+			continue
+		}
+		minutes, _ := strconv.Atoi(text[loc[2]:loc[3]])
+		seconds, _ := strconv.Atoi(text[loc[4]:loc[5]])
+		fraction := time.Duration(0)
+		if loc[6] >= 0 {
+			digits, _ := strconv.Atoi(text[loc[6]:loc[7]])
+			fraction = time.Duration(digits) * time.Second / time.Duration(pow10(loc[7]-loc[6]))
+		}
+		start := time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second + fraction
+		if k := len(words); k > 0 && words[k-1].End == 0 {
+			words[k-1].End = start
+		}
+		words = append(words, LyricWord{Start: start, Text: word})
+	}
+	return words
 }
 
 func pow10(n int) int {

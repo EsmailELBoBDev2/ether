@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -110,19 +111,74 @@ func (c *KindCatalog) Lyrics(ctx context.Context, key core.RatingKey) (core.Lyri
 		return core.Lyrics{}, core.ErrNotAvailable
 	}
 	var answer struct {
-		SyncedLyrics string `json:"syncedLyrics"`
-		PlainLyrics  string `json:"plainLyrics"`
-		Instrumental bool   `json:"instrumental"`
-		Source       string `json:"source"`
+		SyncedLyrics string           `json:"syncedLyrics"`
+		PlainLyrics  string           `json:"plainLyrics"`
+		Instrumental bool             `json:"instrumental"`
+		Source       string           `json:"source"`
+		Lines        []wireLyricsLine `json:"lines"`
 	}
 	if err := json.Unmarshal(resp.Body, &answer); err != nil {
 		return core.Lyrics{}, core.ErrNotAvailable
 	}
-	lyrics := core.Lyrics{Lines: core.ParseLRC(answer.SyncedLyrics), Plain: strings.TrimSpace(answer.PlainLyrics), Instrumental: answer.Instrumental, Source: strings.TrimSpace(answer.Source)}
+	lines := linesFromWire(answer.Lines)
+	if len(lines) == 0 {
+		lines = core.ParseLRC(answer.SyncedLyrics)
+	}
+	lyrics := core.Lyrics{Lines: lines, Plain: strings.TrimSpace(answer.PlainLyrics), Instrumental: answer.Instrumental, Source: strings.TrimSpace(answer.Source)}
 	found := len(lyrics.Lines) > 0 || lyrics.Plain != "" || lyrics.Instrumental
 	kindLyrics.put(key, lyricsMemo{at: time.Now(), found: found, lyrics: lyrics})
 	if !found {
 		return core.Lyrics{}, core.ErrNotFound
 	}
 	return lyrics, nil
+}
+
+// wireLyricsLine is a plugin's structured line: times in milliseconds,
+// optional per-word timing, translation and romanization.
+type wireLyricsLine struct {
+	StartMs      int64           `json:"startMs"`
+	EndMs        int64           `json:"endMs"`
+	Text         string          `json:"text"`
+	Words        []wireLyricWord `json:"words"`
+	Translation  string          `json:"translation"`
+	Romanization string          `json:"romanization"`
+}
+
+type wireLyricWord struct {
+	StartMs int64  `json:"startMs"`
+	EndMs   int64  `json:"endMs"`
+	Text    string `json:"text"`
+}
+
+// maxLyricLines bounds a plugin's structured lyrics.
+const maxLyricLines = 2000
+
+func linesFromWire(in []wireLyricsLine) []core.LyricLine {
+	if len(in) > maxLyricLines {
+		in = in[:maxLyricLines]
+	}
+	out := make([]core.LyricLine, 0, len(in))
+	ms := func(v int64) time.Duration { return time.Duration(max(v, 0)) * time.Millisecond }
+	for _, l := range in {
+		text := strings.TrimSpace(l.Text)
+		if text == "" && len(l.Words) == 0 {
+			continue
+		}
+		line := core.LyricLine{Start: ms(l.StartMs), End: ms(l.EndMs), Text: text, Translation: strings.TrimSpace(l.Translation), Romanization: strings.TrimSpace(l.Romanization)}
+		for _, w := range l.Words {
+			if t := strings.TrimSpace(w.Text); t != "" {
+				line.Words = append(line.Words, core.LyricWord{Start: ms(w.StartMs), End: ms(w.EndMs), Text: t})
+			}
+		}
+		if line.Text == "" {
+			parts := make([]string, len(line.Words))
+			for i, w := range line.Words {
+				parts[i] = w.Text
+			}
+			line.Text = strings.Join(parts, " ")
+		}
+		out = append(out, line)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	return out
 }

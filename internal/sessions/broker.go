@@ -1564,6 +1564,30 @@ func (b *Broker) recordItemTimeline(ctx context.Context, a frontend.SessionAcces
 
 // ReportItemProgress records a Jellyfin or Emby timeline that names an item
 // instead of a broker session.
+// keepItemSessionsActive is what Report does for a session's own timeline:
+// the open sessions of this viewer, device and title stay active, and their
+// output learns the player is playing or paused. Jellyfin Web reports
+// progress without a PlaySessionId, so its reports arrive here; without this
+// a player that buffered ahead (or paused) for longer than the idle timeout
+// had its stream closed as idle, and its next segment request got a 404.
+func (b *Broker) keepItemSessionsActive(viewerID int64, a frontend.SessionAccess, item core.RatingKey, state string) {
+	b.mu.Lock()
+	var active []*brokerSession
+	for _, s := range b.sessions {
+		if s.public.ViewerID == viewerID && s.public.Protocol == a.Protocol && s.public.Device.ID == a.Device.ID && s.public.Item == item {
+			active = append(active, s)
+		}
+	}
+	b.mu.Unlock()
+	toucher, _ := b.deps.Playback.(interface{ Touch(string) })
+	for _, s := range active {
+		if toucher != nil {
+			toucher.Touch(s.playID)
+		}
+		NotifyTranscodeActivity(b.deps.Transcoder, s.public.ID, state)
+	}
+}
+
 func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAccess, item core.RatingKey, t frontend.Timeline) error {
 	if !b.policy(a.Protocol).DistributedBindings {
 		return core.ErrUnauthorized
@@ -1595,6 +1619,9 @@ func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAcces
 	}
 	if b.deps.OnTimeline != nil {
 		b.deps.OnTimeline(viewer, item, t.Position, t.Duration, t.State)
+	}
+	if t.State == "playing" || t.State == "paused" {
+		b.keepItemSessionsActive(viewer.ID, a, item, t.State)
 	}
 	if t.State == "stopped" {
 		clientID := clientKey(a.Protocol, a.Device)

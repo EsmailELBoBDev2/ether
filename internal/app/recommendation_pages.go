@@ -211,7 +211,7 @@ func (a *App) pluginPageCandidates(ctx context.Context, viewer *core.User, id co
 	}
 	rows := make([]core.HomeRow, 0, len(cands))
 	for _, r := range cands {
-		rows = append(rows, core.HomeRow{HubID: r.ID, Title: r.Title, Kind: r.Kind, Source: core.RowSourcePrecomposed, Items: r.Items,
+		rows = append(rows, core.HomeRow{HubID: r.ID, Title: r.Title, Kind: r.Kind, Source: core.RowSourcePrecomposed, Items: r.Items, Present: core.RowPresentation{Personal: r.Layout.Present.Personal},
 			Hub: core.Hub{ID: r.ID, Title: r.Title, Items: r.Items, ItemCount: len(r.Items)}})
 	}
 	return rows

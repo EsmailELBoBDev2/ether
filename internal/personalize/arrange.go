@@ -337,7 +337,7 @@ func applyRule(row *core.HomeRow, p *rule) {
 	if row.Kind == KindTop10 || row.Kind == KindTop10Today {
 		row.Hub.RankedTop10 = true
 	}
-	row.Personal = isPersonalKind(row.Kind)
+	row.Personal = isPersonalKind(row.Kind) || row.Present.Personal
 	if p == nil {
 		return
 	}
@@ -667,6 +667,9 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 		if candidate.Present.Layout == "" {
 			candidate.Present.Layout = own.Layout
 		}
+		// A shelf that is the viewer's own (Jump back in, Liked, Recently
+		// played) is personal whatever the page says.
+		candidate.Present.Personal = candidate.Present.Personal || own.Personal || candidate.Purpose == core.PurposeRecentContexts || candidate.Purpose == core.PurposeLiked
 		out = append(out, candidate)
 	}
 	return out, nil

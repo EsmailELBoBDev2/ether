@@ -626,7 +626,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 					dec := json.NewDecoder(bytes.NewReader(rawArg))
 					dec.DisallowUnknownFields()
 					if err := dec.Decode(&opts); err != nil {
-						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source?, absolute? }"}
 					}
 					if opts.PartIndex != nil && *opts.PartIndex < 0 {
 						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}

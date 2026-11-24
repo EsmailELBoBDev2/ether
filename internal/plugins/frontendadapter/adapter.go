@@ -131,6 +131,7 @@ func (f *Frontend) Mount(ctx context.Context, host frontend.Host) (frontend.Inst
 	}
 	inst := &instance{
 		frontend: f,
+		host:     host,
 		auth:     auth,
 		limits:   newLimiters(f.decl),
 	}

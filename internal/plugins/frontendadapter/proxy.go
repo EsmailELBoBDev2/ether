@@ -21,6 +21,7 @@ import (
 // frontend's Host seams.
 type instance struct {
 	frontend *Frontend
+	host     frontend.Host
 	auth     *authenticator
 	handler  http.Handler
 	limits   *limiters
@@ -91,7 +92,7 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			Path:          pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
 			Query:         firstValues(f.pluginQuery(r)),
 			RepeatedQuery: repeatedValues(f.pluginQuery(r)),
-			Headers:       outboundHeaders(r, auth),
+			Headers:       outboundHeaders(r, auth, requestOrigin(r, inst.host)),
 		}
 		if len(body) > 0 {
 			// The exact bytes always ride along base64-encoded so a plugin

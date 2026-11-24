@@ -599,6 +599,27 @@ func (a HostAdapter) StreamPartURL(ctx context.Context, pluginID string, viewerI
 }
 
 func (a HostAdapter) StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
+	if tok := streamViewerToken(ctx); tok != "" {
+		if a.ResolveAdapterCallToken == nil {
+			return "", ErrPermissionDenied
+		}
+		info, ok := a.ResolveAdapterCallToken(pluginID, tok)
+		if !ok {
+			return "", ErrPermissionDenied
+		}
+		if viewerID > 0 && info.ViewerID > 0 && info.ViewerID != viewerID {
+			return "", ErrPermissionDenied
+		}
+		if viewerID == 0 && info.ViewerID > 0 {
+			viewerID = info.ViewerID
+		}
+		if info.Path != "" {
+			ctx = plugins.WithCallContext(ctx, info.Path, info.SearchQuery)
+		}
+		if info.Origin != "" {
+			ctx = plugins.WithAdapterOrigin(ctx, info.Origin)
+		}
+	}
 	h, err := a.host(pluginID)
 	if err != nil {
 		return "", err

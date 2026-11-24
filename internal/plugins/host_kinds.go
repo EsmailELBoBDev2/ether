@@ -158,6 +158,10 @@ const (
 	// frontend adapter calls so remote plugins can prove the authenticated
 	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
 	HeaderAdapterViewerToken = "X-Ether-Viewer-Token"
+	// HeaderAdapterOrigin carries the client-visible origin
+	// ("scheme://host[:port][/prefix]") derived by Ether on an authenticated
+	// frontend adapter request (#772).
+	HeaderAdapterOrigin = "X-Ether-Origin"
 )
 
 var externalIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
@@ -856,13 +860,50 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
+type adapterOriginContextKey struct{}
+
+// WithAdapterOrigin attaches the host-derived client-visible origin
+// ("scheme://host[:port][/prefix]") for an active frontend adapter request (#772).
+func WithAdapterOrigin(ctx context.Context, origin string) context.Context {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, adapterOriginContextKey{}, origin)
+}
+
+// AdapterOriginFromContext returns the origin attached by WithAdapterOrigin, if any.
+func AdapterOriginFromContext(ctx context.Context) (string, bool) {
+	origin, ok := ctx.Value(adapterOriginContextKey{}).(string)
+	return origin, ok && origin != ""
+}
+
+// AdapterKeyFromPath extracts the adapter key from a plugin-side frontend
+// adapter route ("/ether/v1/frontend/<key>/...").
+func AdapterKeyFromPath(path string) string {
+	rest, ok := strings.CutPrefix(path, "/ether/v1/frontend/")
+	if !ok || rest == "" {
+		return ""
+	}
+	key, _, _ := strings.Cut(rest, "/")
+	return key
+}
+
+// AdapterKeyFromContext returns the adapter key of the active frontend adapter
+// call path attached to ctx, if any.
+func AdapterKeyFromContext(ctx context.Context) (string, bool) {
+	key := AdapterKeyFromPath(callPathFromContext(ctx))
+	return key, key != ""
+}
+
 // AdapterCallInfo identifies the active /ether/v1/frontend/* call that minted
-// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer and
-// route policies as hosted plugins.
+// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer,
+// origin, and route policies as hosted plugins.
 type AdapterCallInfo struct {
 	ViewerID    int64
 	Path        string
 	SearchQuery string
+	Origin      string
 }
 
 type adapterViewerGrant struct {
@@ -870,6 +911,7 @@ type adapterViewerGrant struct {
 	viewerID    int64
 	path        string
 	searchQuery string
+	origin      string
 	expires     time.Time
 }
 
@@ -902,6 +944,10 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		return ctx, func() {}
 	}
 	ctx = WithViewer(ctx, id)
+	origin := strings.TrimRight(strings.TrimSpace(req.Headers[HeaderAdapterOrigin]), "/")
+	if origin != "" {
+		ctx = WithAdapterOrigin(ctx, origin)
+	}
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return ctx, func() {}
@@ -929,6 +975,7 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		viewerID:    id,
 		path:        req.Path,
 		searchQuery: extractCallSearchQuery(*req),
+		origin:      origin,
 		expires:     now.Add(ttl),
 	}
 	m.adapterViewerMu.Unlock()
@@ -974,6 +1021,7 @@ func (m *Manager) ResolveAdapterCallToken(pluginID, token string) (AdapterCallIn
 		ViewerID:    grant.viewerID,
 		Path:        grant.path,
 		SearchQuery: grant.searchQuery,
+		Origin:      grant.origin,
 	}, true
 }
 
@@ -1048,7 +1096,7 @@ func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts St
 	if backends.StreamURLOptions != nil {
 		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
 	}
-	if opts.Source != "" {
+	if opts.Source != "" || opts.Absolute {
 		return "", ErrUnavailable
 	}
 	if backends.StreamPartURL != nil {

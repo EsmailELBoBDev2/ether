@@ -1244,10 +1244,12 @@ export interface KindResolveRequest {
   client?: Record<string, unknown>;
 }
 
-/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+/** Options for minting a scoped frontend adapter stream URL (#576, #661, #772). */
 export interface StreamUrlOptions {
   partIndex?: number;
   source?: string;
+  /** Return an absolute URL (`<origin>/ether/v1/kind-media/<token>`) using the active request origin or the adapter's first published address; default stays root-relative. */
+  absolute?: boolean;
 }
 
 export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }

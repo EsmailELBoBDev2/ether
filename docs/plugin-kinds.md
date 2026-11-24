@@ -160,7 +160,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers, `X-Ether-Origin` (`scheme://host[:port][/prefix]` derived from the request using Ether's trusted proxy policy, with any client-supplied `X-Ether-Origin` stripped), and a request-scoped `X-Ether-Viewer-Token` for `kinds.visible`, `kinds.browse`, and remote `frontend.streamURL` callbacks — never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -644,15 +644,27 @@ part:
   without a part selector) resolve `partIndex: 0` for single-part items and
   deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
   parts (`0 .. N-1`).
-- **Per-part and per-source opens** let frontend adapters and multi-file clients
-  fetch a specific file or a specific resolver `PlayableSource.id`:
-  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+- **Per-part, per-source, and absolute stream URLs** let frontend adapters and
+  multi-file or native clients fetch a specific file, pin a resolver
+  `PlayableSource.id`, or embed an absolute URL (`<origin>/ether/v1/kind-media/{ticket}`):
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source?, absolute? }).url`
     (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
-    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
-    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
+    `streamUrl(ctx, itemRef, { partIndex?, source?, absolute? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source, Absolute})` /
     `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
-    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
-    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+    `ctx.stream_url(item_ref, part_index=..., source=..., absolute=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?, "absolute"?}`
+    (forwarding `X-Ether-Viewer-Token` from remote adapters so Ether can resolve the active request origin and adapter key).
+  - By default stream URLs stay root-relative (`/ether/v1/kind-media/{ticket}`).
+    When `absolute: true` is set, Ether prepends the request's `X-Ether-Origin`
+    (`scheme://host[:port][/prefix]`, honouring trusted proxies only and omitting
+    container bridge hosts), falling back to the adapter's first published
+    address (`frontends["plugin:<id>:<adapter>"].publishedAddresses`, preserving
+    any path prefix) when the request carries none, and finally to the
+    root-relative path if neither is available. HTTP redirects (`Location`)
+    still require root-relative paths; use `{ absolute: true }` for protocol
+    documents handed to native clients (such as Kodi or Subsonic players) that
+    open URLs verbatim.
   - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
     to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
     with no failover to other sources and without clobbering the shared default resolution

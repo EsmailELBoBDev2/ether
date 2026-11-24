@@ -909,6 +909,8 @@ type DecisionArms interface {
 	Armed(pr DecisionOwner, key core.RatingKey) bool
 	Disarm(pr DecisionOwner, key core.RatingKey)
 	Current(pr DecisionOwner, key core.RatingKey) bool
+	// Stopped reports that pr.Generation of key was ended by a player stop.
+	Stopped(pr DecisionOwner, key core.RatingKey) bool
 	Refresh(now time.Time)
 	ClearOwn()
 }

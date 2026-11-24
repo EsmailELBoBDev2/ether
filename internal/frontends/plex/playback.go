@@ -1902,6 +1902,9 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	if s.handleExtraPlayback(w, r) {
 		return
 	}
+	if !s.admitStart(w, r) {
+		return
+	}
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	unlockOwner, locked := s.lockPlaybackRequest(w, r)
@@ -1921,14 +1924,9 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logPlaybackStart(r, p)
 	if !s.decisionArmed(pr, p.key) {
-		if tt := chi.URLParam(r, "ttype"); tt == "audio" || tt == "music" {
-			owner := decisionOwner(pr)
-			owner.Generation = p.sessionID
-			s.decisionArms.Arm(owner, p.key)
-		} else {
-			writePlaybackStatus(w, http.StatusBadRequest)
-			return
-		}
+		// admitStart decided; a stop since then ended this delivery.
+		writePlaybackStatus(w, http.StatusBadRequest)
+		return
 	}
 	unlockEncoder, lockErr := s.lockEncoder(ctx, p.sessionID)
 	if lockErr != nil {

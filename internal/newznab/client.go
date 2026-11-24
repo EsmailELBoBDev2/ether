@@ -1779,17 +1779,17 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 				}
 			}
 			if !req.Released.IsZero() && (nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
-				yymmdd := req.Released.UTC().Format("060102")
-				yyyyDot := req.Released.UTC().Format("2006.01.02")
-				for _, title := range append(slices.Clone(altTitles), titles...) {
-					vShort := base()
-					vShort.Set("t", "search")
-					vShort.Set("q", fmt.Sprintf("%s %s", title, yymmdd))
-					add(vShort)
-					vFull := base()
-					vFull.Set("t", "search")
-					vFull.Set("q", fmt.Sprintf("%s %s", title, yyyyDot))
-					add(vFull)
+				// Every title's broadcast-style YYMMDD date before any
+				// YYYY.MM.DD form, so the capped rescue reaches the date
+				// form Korean releases use for each title.
+				for _, layout := range []string{"060102", "2006.01.02"} {
+					date := req.Released.UTC().Format(layout)
+					for _, title := range append(slices.Clone(altTitles), titles...) {
+						v := base()
+						v.Set("t", "search")
+						v.Set("q", fmt.Sprintf("%s %s", title, date))
+						add(v)
+					}
 				}
 			}
 		}
@@ -1846,6 +1846,18 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 		add(v)
 	}
 	return out
+}
+
+// rescueAttemptLimit bounds Play's second-pass queries per indexer. Weekly
+// and daily broadcast shows numbered by bare episode or air date (long single
+// seasons, non-Latin originals) need each title's episode and date forms on
+// top of the retried primary queries, so they get a few more.
+func rescueAttemptLimit(req core.SearchRequest) int {
+	if isTVRequest(req) && req.Season > 0 && req.Episode > 0 && !req.Released.IsZero() &&
+		(hasNonLatinRune(req.OriginalTitle) || (req.Season == 1 && req.Episode > 20)) {
+		return 12
+	}
+	return 8
 }
 
 func hasNonLatinRune(s string) bool {
@@ -2010,8 +2022,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	if len(attempts) == 0 {
 		return nil, nil
 	}
-	if len(attempts) > 8 {
-		attempts = attempts[:8]
+	if limit := rescueAttemptLimit(req); len(attempts) > limit {
+		attempts = attempts[:limit]
 	}
 	var merged []core.Release
 	seen := map[string]bool{}

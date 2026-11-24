@@ -205,6 +205,9 @@ type instance struct {
 	anon                    *anonIndex
 	keyReveals              apiKeyRevealStore
 	unsupportedPolicyLogged sync.Map
+	// subtitleLists records whether the last item source sent to a viewer
+	// listed subtitle tracks (see subtitle_lists.go).
+	subtitleLists subtitleListShown
 }
 
 func (i *instance) Handler() http.Handler {

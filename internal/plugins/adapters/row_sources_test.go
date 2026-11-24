@@ -48,7 +48,7 @@ func TestAddonCatalogsAreRowSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(addonCatalogKind(cal, "series", "calendar-videos")); ok {
+	if _, ok := h.pers.RowKindRegistry().Source(addonCatalogKind(cal, "series", "calendar-videos")); ok {
 		t.Fatal("a catalogue that needs client ids must not be a row source")
 	}
 }

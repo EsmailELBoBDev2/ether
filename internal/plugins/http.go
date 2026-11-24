@@ -266,7 +266,9 @@ type Detail struct {
 	Summary
 	Manifest      Manifest       `json:"manifest"`
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
-	Permissions   struct {
+	// ListItems is how many titles one sync of each of its lists reads.
+	ListItems   *ListItemsGrant `json:"listItems,omitempty"`
+	Permissions struct {
 		Lines              []string    `json:"lines"`
 		Declared           Permissions `json:"declared"`
 		Grants             Grants      `json:"grants"`
@@ -412,6 +414,7 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 		d.Impact.Items, _ = fn(r.Context(), id)
 	}
 	d.Impact.MaxItems = m.grantedMaxItems(rec.Manifest, m.runtimeCeilings(id))
+	d.ListItems = m.ListItemsGrant(id, rec.Manifest)
 	if rec.UpdateVersion != "" && rec.updateManifest != "" {
 		if next, err := ParseManifest([]byte(rec.updateManifest)); err == nil {
 			d.AddedPermissions = PermissionDiff(rec.Manifest, next)

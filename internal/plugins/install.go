@@ -46,6 +46,8 @@ type Source struct {
 type Preview struct {
 	Manifest      Manifest       `json:"manifest"`
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
+	// ListItems is how many titles one sync of each of its lists reads.
+	ListItems *ListItemsGrant `json:"listItems,omitempty"`
 	// Summary is the manifest summary with any "$t:" reference resolved
 	// from the package's own strings.
 	Summary string `json:"summary,omitempty"`
@@ -585,6 +587,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		return nil, fmt.Errorf("plugins: manifest version %q does not match catalogue version %q", man.Version, src.Version)
 	}
 	p := &Preview{Manifest: man, RuntimeLimits: m.grantedRuntimeLimits(man), source: src, files: files, manifestRaw: raw, Verified: src.Verified, StremioOnly: man.IsStremioOnly()}
+	p.ListItems = m.ListItemsGrant(man.ID, man)
 	p.PermissionLines, p.NeedsViewers, p.NeedsFolders = PermissionSheet(man)
 	p.LocalHosts = DeclaredLocalHosts(man)
 	if err := p.resolve(); err != nil {

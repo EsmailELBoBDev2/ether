@@ -23,11 +23,11 @@ import (
 )
 
 // MaxPluginListItems bounds the maximum items an explicit source config may request.
-const MaxPluginListItems = stremio.MaxCatalogItems
+const MaxPluginListItems = plugins.MaxListItems
 
-// DefaultPluginListItems bounds an unbounded list refresh per run so multi-thousand-item
-// Stremio/MDBList catalogues page incrementally without exhausting runtime timeouts.
-const DefaultPluginListItems = 500
+// DefaultPluginListItems is what a list that declares no size reads per
+// refresh (shown in the install review, owner-adjustable).
+const DefaultPluginListItems = plugins.DefaultListItems
 
 // Bridge tracks the source kinds registered for each plugin so enable,
 // disable, update and uninstall cleanly replace or remove them.
@@ -251,20 +251,25 @@ func catalogExtras(params map[string]string) map[string]string {
 	return out
 }
 
-// maxItems is how many items one refresh reads: the source's own limit,
-// within the list's, within DefaultPluginListItems when neither sets one.
-func (k *listSourceKind) maxItems(src core.CollectionSource) int {
-	if k.meta.MaxItems <= 0 && src.MaxItems <= 0 {
-		return DefaultPluginListItems
+// maxItems is how many items one refresh reads: the list's granted size
+// (what it declares, or what the owner set in the plugin's limits). A
+// collection that sets its own size reads that many, within what the
+// list declares and the owner's limits; the default size for a list that
+// declares none does not cut it short. granted reports whether the grant,
+// not the collection, is the bound.
+func (k *listSourceKind) maxItems(src core.CollectionSource) (n int, granted bool) {
+	meta := k.meta
+	if src.MaxItems > 0 && meta.MaxItems <= 0 {
+		meta.MaxItems = MaxPluginListItems
 	}
-	n := MaxPluginListItems
-	if k.meta.MaxItems > 0 && k.meta.MaxItems < n {
-		n = k.meta.MaxItems
+	n = meta.RequestedItems()
+	if k.mgr != nil {
+		n = k.mgr.GrantedListItems(k.pluginID, meta)
 	}
 	if src.MaxItems > 0 && src.MaxItems < n {
-		n = src.MaxItems
+		return src.MaxItems, false
 	}
-	return n
+	return n, true
 }
 
 // catalogs are the catalogs one gather reads: the list's own, or for a
@@ -322,7 +327,7 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 			return
 		}
 	}
-	limit := k.maxItems(g.Src)
+	limit, granted := k.maxItems(g.Src)
 	if preview && limit > collections.PreviewItems {
 		limit = collections.PreviewItems
 	}
@@ -393,6 +398,12 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 	}
 	if !read {
 		return
+	}
+	if !preview {
+		g.Paged(total, limit)
+		if granted && total >= limit {
+			g.Warn("%s: synced the first %d titles; raise Titles per list in the plugin's limits to sync more", k.label(), limit)
+		}
 	}
 	if total == 0 {
 		g.Warn("%s is empty", k.label())

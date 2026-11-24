@@ -3639,7 +3639,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
             owner: "Cinemeta",
             group: "stremio",
             mediaTypes: ["movie"],
-            health: "unknown",
+            health: "ok",
+            // Cut off at the default 500 titles per list.
+            itemCount: 468,
+            listed: 500,
+            limit: 500,
             pluginId: "cinemeta",
             libraries: [],
           },

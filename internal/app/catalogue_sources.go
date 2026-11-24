@@ -8,18 +8,23 @@ import (
 )
 
 type catalogueSource struct {
-	ID         string             `json:"id"`
-	Logo       string             `json:"logo,omitempty"`
-	LastError  string             `json:"lastError,omitempty"`
-	Name       string             `json:"name"`
-	Owner      string             `json:"owner"`
-	Group      string             `json:"group"`
-	MediaTypes []string           `json:"mediaTypes"`
-	ItemCount  *int               `json:"itemCount,omitempty"`
-	Health     string             `json:"health"`
-	PluginID   string             `json:"pluginId,omitempty"`
-	KindKey    string             `json:"kindKey,omitempty"`
-	Libraries  []catalogueLibrary `json:"libraries"`
+	ID         string   `json:"id"`
+	Logo       string   `json:"logo,omitempty"`
+	LastError  string   `json:"lastError,omitempty"`
+	Name       string   `json:"name"`
+	Owner      string   `json:"owner"`
+	Group      string   `json:"group"`
+	MediaTypes []string `json:"mediaTypes"`
+	ItemCount  *int     `json:"itemCount,omitempty"`
+	// Listed is how many items the last sync read from the list and
+	// Limit the most it could read; Listed reaching Limit means the list
+	// was cut off at the plugin's "Titles per list" limit.
+	Listed    int                `json:"listed,omitempty"`
+	Limit     int                `json:"limit,omitempty"`
+	Health    string             `json:"health"`
+	PluginID  string             `json:"pluginId,omitempty"`
+	KindKey   string             `json:"kindKey,omitempty"`
+	Libraries []catalogueLibrary `json:"libraries"`
 }
 type catalogueLibrary struct {
 	ID   core.LibraryID `json:"id"`
@@ -117,7 +122,7 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 		if out[i].Group == "stremio" {
 			var count int
 			var refreshed int64
-			if err := c.app.db.QueryRowContext(r.Context(), `SELECT item_count,refreshed,last_error FROM libraries_catalogue_state WHERE source_id=?`, out[i].ID).Scan(&count, &refreshed, &out[i].LastError); err == nil {
+			if err := c.app.db.QueryRowContext(r.Context(), `SELECT item_count,refreshed,last_error,listed,item_limit FROM libraries_catalogue_state WHERE source_id=?`, out[i].ID).Scan(&count, &refreshed, &out[i].LastError, &out[i].Listed, &out[i].Limit); err == nil {
 				if refreshed > 0 {
 					out[i].ItemCount = &count
 					out[i].Health = "ok"
@@ -167,7 +172,17 @@ func (c *librariesConsole) handleCatalogueSourceSync(w http.ResponseWriter, r *h
 		libError(w, 502, err.Error())
 		return
 	}
-	libJSON(w, 200, map[string]bool{"ok": true})
+	// The result says how many titles synced and whether the list was cut
+	// off at its limit, so a capped sync is never silent.
+	var res struct {
+		OK        bool `json:"ok"`
+		ItemCount int  `json:"itemCount"`
+		Listed    int  `json:"listed"`
+		Limit     int  `json:"limit"`
+	}
+	res.OK = true
+	_ = c.app.db.QueryRowContext(r.Context(), `SELECT item_count,listed,item_limit FROM libraries_catalogue_state WHERE source_id=?`, id).Scan(&res.ItemCount, &res.Listed, &res.Limit)
+	libJSON(w, 200, res)
 }
 
 // Resolve plugin-owned catalogue copy at the owner API boundary; missing

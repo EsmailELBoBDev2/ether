@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AddAddonDrawer } from "../../components/addons/AddAddonDrawer";
 import { Drawer } from "../../components/Drawer";
-import { t } from "../../i18n";
+import { getLocale, t, tn } from "../../i18n";
 
 export function AddCatalogueSource({
   onClose,
@@ -125,4 +125,37 @@ export function catalogueGroups(sources: CatalogueSource[]) {
       ],
     };
   });
+}
+
+type SyncCounts = { itemCount?: number; listed?: number; limit?: number };
+
+const formatCount = (n: number) => new Intl.NumberFormat(getLocale()).format(n);
+
+/** The last sync stopped at the plugin's "Titles per list" limit. */
+export function catalogueCapped(source: SyncCounts): boolean {
+  return Boolean(source.limit && (source.listed ?? 0) >= source.limit);
+}
+
+/** "248 of 2,000 titles synced", or "248 titles" when every listed title synced. */
+export function catalogueCountLabel(source: SyncCounts): string {
+  const count = source.itemCount ?? 0;
+  const listed = source.listed ?? 0;
+  return listed > count
+    ? t("{count} of {listed} titles synced", {
+        count: formatCount(count),
+        listed: formatCount(listed),
+      })
+    : tn(count, "{count} title", "{count} titles");
+}
+
+/** Says a sync was cut off at its limit and where to raise it; empty otherwise. */
+export function catalogueCapNote(source: SyncCounts): string {
+  return catalogueCapped(source)
+    ? t(
+        "Only the first {limit} titles in this list sync. Raise Titles per list in the plugin's limits to sync more.",
+        {
+          limit: formatCount(source.limit ?? 0),
+        },
+      )
+    : "";
 }

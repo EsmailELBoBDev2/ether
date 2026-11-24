@@ -829,8 +829,8 @@ func validateContributes(m Manifest, add func(string, string)) {
 		if ls.Catalog == "" {
 			add(base+".catalog", "is required")
 		}
-		if ls.MaxItems < 0 || ls.MaxItems > 2000 {
-			add(base+".maxItems", "must be at most 2000")
+		if ls.MaxItems < 0 || ls.MaxItems > MaxListItems {
+			add(base+".maxItems", fmt.Sprintf("must be at most %d", MaxListItems))
 		}
 		if ls.Refresh != "" {
 			if d, err := time.ParseDuration(ls.Refresh); err != nil || d < time.Hour {

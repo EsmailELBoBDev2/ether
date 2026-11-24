@@ -50,6 +50,7 @@ interface PluginHealth {
 }
 
 interface PluginDetail extends PluginSummary {
+  listItems?: { requested: number; granted: number };
   manifest: Record<string, unknown>;
   permissions: {
     lines: string[];
@@ -428,6 +429,7 @@ function fixturePlugins(): Fixture[] {
     },
   };
   const wrapped: PluginDetail = {
+    listItems: { requested: 100, granted: 100 },
     id: "community.example.wrapped",
     name: "Ether Wrapped",
     version: "1.0.1",
@@ -479,6 +481,7 @@ function fixturePlugins(): Fixture[] {
         "Reads watch history",
         "Creates and updates collections",
         "Gets play and new-release events",
+        "Syncs up to 100 titles per list",
       ],
       declared: {
         catalog: "read",
@@ -1351,6 +1354,40 @@ export function createPluginsMock(): {
         stremioOnly: false,
       };
     }
+    if (rawUrl.includes("lists")) {
+      // A list plugin: the review shows how many titles each list syncs.
+      return {
+        manifest: {
+          id: "community.example.anime-dubs",
+          version: "1.2.0",
+          name: "Anime dubs",
+          ether: {
+            protocol: 1,
+            kind: "extension",
+            summary: "Anime with an English dub, as lists for your libraries",
+            author: { name: "Community author", url: rawUrl },
+            capabilities: ["list_source"],
+            permissions: { network: ["api.example-anime.org"] },
+            contributes: {
+              listSources: [
+                {
+                  key: "dubbed",
+                  label: "Anime with an English dub",
+                  catalog: "dubbed",
+                  maxItems: 2000,
+                },
+              ],
+            },
+          },
+        },
+        permissions: ["Connects to api.example-anime.org", "Syncs up to 2,000 titles per list"],
+        listItems: { requested: 2000, granted: 2000 },
+        needsViewers: false,
+        needsFolders: false,
+        verified: false,
+        stremioOnly: false,
+      };
+    }
     const isFolderUrl = rawUrl.includes("folder");
     const isViewerUrl = rawUrl.includes("viewer");
     const isOperatorUrl = rawUrl.includes("operator");
@@ -1397,6 +1434,11 @@ export function createPluginsMock(): {
       stremioOnly: rawUrl.includes("stremio"),
     };
   }
+
+  const runtimePolicy: {
+    runtimeLimits: Record<string, unknown>;
+    runtimeOverrides: Record<string, Record<string, unknown>>;
+  } = { runtimeLimits: {}, runtimeOverrides: {} };
 
   const handle: ExtendHandler = (method, seg, q, body) => {
     if (seg[0] !== "plugins") return null;
@@ -1486,6 +1528,14 @@ export function createPluginsMock(): {
       f.detail.capabilities = f.detail.roles.filter((r) => r.on).map((r) => r.role);
       bump();
       return json({ roles: f.detail.roles });
+    }
+    if (seg[1] === "runtime-limits" && seg.length === 2) {
+      if (method === "PUT") {
+        const req = (body ?? {}) as { plugin?: string; limits?: Record<string, unknown> };
+        if (req.plugin) runtimePolicy.runtimeOverrides[req.plugin] = req.limits ?? {};
+        else runtimePolicy.runtimeLimits = req.limits ?? {};
+      }
+      return json(runtimePolicy);
     }
     if (method === "POST" && seg[1] === "install" && seg[2] === "preview") {
       const req = (body && typeof body === "object" ? body : {}) as { url?: string };

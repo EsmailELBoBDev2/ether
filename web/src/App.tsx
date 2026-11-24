@@ -4,7 +4,6 @@ import {
   Button,
   ConfirmRoot,
   DrawerTextProvider,
-  Popover,
   PromptRoot,
   Spinner,
   ThemeProvider,
@@ -63,9 +62,8 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
-import { hasExemptDiagnostic } from "./lib/health";
 import { useMediaQuery } from "./lib/hooks";
-import { t, tn } from "./i18n";
+import { t } from "./i18n";
 import { I18nProvider, LanguagePicker } from "./i18n/react";
 import { Brand, BrandSplash, EtherMark } from "./components/brand";
 import { CommandSearch } from "./components/CommandSearch";
@@ -76,7 +74,7 @@ import { ErrorPanel } from "./components/feedback";
 import { SaveBarHost } from "./components/SaveBar";
 import { SettingFocus } from "./components/SettingFocus";
 import { UpdateReady } from "./components/UpdateReady";
-import { LEVEL_LABEL, LevelBadge, StatusDot } from "./components/status";
+import { HealthPill, useServerVerdict } from "./components/HealthPill";
 import { useOwnerViewerPath } from "./components/pickers";
 import { api, getToken, setToken } from "./lib/api";
 import { BUILTIN, textOf, useRegistry, type Descriptor } from "./lib/extend";
@@ -256,100 +254,25 @@ function closeMobileDrawer(el: HTMLElement | null) {
   el?.closest('[role="dialog"]')?.querySelector<HTMLButtonElement>("header button")?.click();
 }
 
+/** The server's health pill: the same one the Overview shows, on every page. */
 function HealthIndicator({ mobile = false }: { mobile?: boolean } = {}) {
-  const { health, overall, dashboard, dashboardError, boot } = useApp();
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  // Before setup finishes, unconfigured sources and an unclaimed server are
-  // expected, not problems: show progress instead of a red verdict.
-  const settingUp = !boot.setupComplete;
-  const setupGaps = health.filter((item) => item.setupGap);
-  const gettingStarted =
-    !settingUp && setupGaps.length > 0 && (overall === "ok" || overall === "off");
-  // "Operational" means no participating failure. It does not mean TLS was verified.
-  const label = settingUp
-    ? t("Setting up")
-    : gettingStarted
-      ? t("Getting started")
-      : overall === "ok" || overall === "off"
-        ? hasExemptDiagnostic(health)
-          ? t("Operational")
-          : t("All systems normal")
-        : overall === "unknown"
-          ? dashboard
-            ? t("Status incomplete")
-            : t("Checking…")
-          : LEVEL_LABEL[overall];
+  const { health } = useApp();
+  const verdict = useServerVerdict();
+  const ref = useRef<HTMLSpanElement>(null);
   return (
-    <Popover
-      open={open}
-      onOpenChange={setOpen}
-      side={mobile ? "top" : "bottom"}
-      align={mobile ? "start" : "end"}
-      trigger={
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-label={t("Server health: {status}", { status: label })}
-          className={
-            mobile
-              ? "inline-flex h-9 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              : "inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-          }
-        >
-          <StatusDot
-            level={settingUp || gettingStarted ? "unknown" : overall === "off" ? "ok" : overall}
-            pulse
-          />
-          <span className={mobile ? "truncate" : "hidden md:inline"}>{label}</span>
-        </button>
+    <span
+      ref={ref}
+      className={
+        mobile ? "inline-flex h-9 items-center px-2" : "inline-flex h-9 items-center px-1.5"
       }
     >
-      <div className="w-80 max-w-[calc(100vw-2rem)] p-1">
-        <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-          {t("Server health")}
-        </p>
-        {settingUp ? (
-          <p className="px-2 pb-2 text-sm text-fg-muted">
-            {t("Finish setup to bring everything online. Items below fill in as you go.")}
-          </p>
-        ) : gettingStarted ? (
-          <p className="px-2 pb-2 text-sm text-fg-muted">
-            {tn(setupGaps.length, "{count} thing to set up", "{count} things to set up")}
-          </p>
-        ) : null}
-        {dashboardError && !dashboard ? (
-          <p className="px-2 pb-2 text-sm text-danger">{t("Status is unavailable right now.")}</p>
-        ) : null}
-        <ul className="space-y-0.5">
-          {health.map((h) => (
-            <li key={h.id}>
-              <Link
-                to={h.href}
-                onClick={() => {
-                  setOpen(false);
-                  if (mobile) closeMobileDrawer(triggerRef.current);
-                }}
-                className="flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-hover"
-              >
-                <StatusDot level={h.level} className="mt-1.5" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center justify-between gap-2 text-sm font-medium text-fg">
-                    {h.label}
-                    <LevelBadge level={h.level} label={h.statusLabel} />
-                  </span>
-                  <span className="block text-pretty text-xs text-fg-muted">{h.summary}</span>
-                  {h.note ? (
-                    <span className="mt-1 block text-xs text-fg-subtle">{h.note}</span>
-                  ) : null}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Popover>
+      <HealthPill
+        items={health}
+        verdict={verdict}
+        label={(status) => t("Server health: {status}", { status })}
+        onNavigate={mobile ? () => closeMobileDrawer(ref.current) : undefined}
+      />
+    </span>
   );
 }
 

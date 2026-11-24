@@ -23,7 +23,6 @@ import {
   HeartPulse,
   MonitorPlay,
   PlayCircle,
-  RefreshCw,
   Table2,
   TrendingUp,
   X,
@@ -35,21 +34,21 @@ import { Artwork } from "../components/Artwork";
 import { SessionArtwork } from "../components/SessionArtwork";
 import { Meter, TimeBars } from "../components/charts";
 import { ErrorPanel, LoadingRows, MutationError } from "../components/feedback";
+import {
+  HealthPill,
+  healthProblems,
+  healthVerdict,
+  useServerVerdict,
+  type HealthVerdict,
+} from "../components/HealthPill";
 import { ServerPanel } from "../components/ServerPanel";
-import { LevelBadge, StatusDot } from "../components/status";
+import { StatusDot } from "../components/status";
 import { getLocale, localized, t, tn } from "../i18n";
 import { api } from "../lib/api";
 import type { ActivityDay, RowInsight, Viewer } from "../lib/contract";
 import { formatNumber, formatPercent, formatRate, relativeTime } from "../lib/format";
-import {
-  channelLabel,
-  countsOverall,
-  hasExemptDiagnostic,
-  isPausedSession,
-  type HealthItem,
-  type NowPlaying,
-} from "../lib/health";
-import { useAsync } from "../lib/hooks";
+import { channelLabel, isPausedSession, type HealthItem, type NowPlaying } from "../lib/health";
+import { useAsync, useInterval } from "../lib/hooks";
 import { fetchLiveSessions, useLiveSessionsRefresh } from "../lib/sessions";
 import { useStreamEvent } from "../lib/stream";
 import { useTitle } from "../lib/titles";
@@ -203,86 +202,42 @@ function SetupNotice() {
   );
 }
 
-function greeting(now = new Date()): string {
-  const h = now.getHours();
-  return h < 5
-    ? t("Good night")
-    : h < 12
-      ? t("Good morning")
-      : h < 17
-        ? t("Good afternoon")
-        : t("Good evening");
-}
+/** How often the slow-moving panels (30-day activity, best rows) re-read. */
+const OVERVIEW_POLL_MS = 30_000;
 
 /**
- * Overview lays out Now playing, Activity, Server, Health and Best rows at
- * their natural heights so cards never clip rows inside short scrollboxes.
+ * Overview keeps itself current: the dashboard and the live streams arrive
+ * over the console stream, and the slower panels re-read quietly while the
+ * tab is visible. On a desktop window the page fits the height and each
+ * panel scrolls inside itself; narrower screens stack and scroll the page.
  */
 export default function Home() {
   useLiveDashboard();
   const { boot, dashboard, dashboardError, refreshDashboard, health } = useApp();
+  const verdict = useServerVerdict();
   const activity = useAsync((_s) => api.activity(), []);
   const rows = useAsync((_s) => api.rowInsights(), []);
   const { locale } = useLocale();
   // Now playing reads the same live list as Activity, under the same rule.
   const live = useAsync((signal) => fetchLiveSessions(signal), [locale]);
   useLiveSessionsRefresh(live.reload);
-  useStreamEvent("sessions.changed", () => {
+  const reloadSlow = () => {
     void activity.reload();
     void rows.reload();
-  });
+  };
+  useStreamEvent("sessions.changed", reloadSlow);
+  useInterval(reloadSlow, OVERVIEW_POLL_MS);
   const [playId, openPlay] = usePlayParam();
   const sessions = live.data ?? [];
   const activeSession = playId ? (sessions.find((s) => (s.id || s.key) === playId) ?? null) : null;
   const hw = dashboard?.sections.hwaccel as
     { hwaccel?: { name?: string }; ffmpeg?: string; error?: string } | undefined;
-  const problems = health.filter((h) => !h.setupGap && (h.level === "error" || h.level === "warn"));
-  const setupGaps = health.filter((h) => h.setupGap);
-
-  const status = !dashboard
-    ? null
-    : problems.length
-      ? tn(problems.length, "{count} thing needs attention", "{count} things need attention")
-      : setupGaps.length
-        ? tn(setupGaps.length, "{count} thing to set up", "{count} things to set up")
-        : health.some((h) => h.level === "unknown" && countsOverall(h))
-          ? t("Status incomplete")
-          : hasExemptDiagnostic(health)
-            ? t("Operational")
-            : t("Everything is healthy");
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
       <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
-        <div className="reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-col gap-4 p-4 sm:p-6 @5xl:max-w-none">
-          <header className="flex shrink-0 flex-wrap items-end justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="text-xl font-semibold text-fg">{t("Overview")}</h1>
-              <p className="truncate text-sm text-fg-muted">
-                {t("{greeting}. {server}", {
-                  greeting: greeting(),
-                  server: boot.serverName || "Ether",
-                })}
-                {status ? ` · ${status}` : ""}
-                {sessions.length
-                  ? ` · ${tn(sessions.length, "{count} stream live", "{count} streams live")}`
-                  : ""}
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void refreshDashboard();
-                void live.reload();
-                void activity.reload();
-                void rows.reload();
-              }}
-            >
-              <RefreshCw size={14} /> {t("Refresh")}
-            </Button>
-          </header>
-
+        <div className="reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-col gap-4 p-4 sm:p-6 @5xl:h-full @5xl:min-h-[41rem] @5xl:max-w-none">
+          <h1 className="sr-only">{t("Overview")}</h1>
           {!boot.setupComplete ? <SetupNotice /> : <GettingStarted sessions={sessions} />}
           {dashboardError && !dashboard ? (
             <div className="shrink-0">
@@ -290,8 +245,8 @@ export default function Home() {
             </div>
           ) : null}
 
-          <div className="grid items-start gap-4 @3xl:grid-cols-2 @5xl:grid-cols-12">
-            <div className="flex min-w-0 flex-col gap-4 @3xl:col-span-2 @5xl:col-span-5">
+          <div className="grid items-start gap-4 @3xl:grid-cols-2 @5xl:min-h-0 @5xl:flex-1 @5xl:grid-cols-12 @5xl:grid-rows-[minmax(0,1fr)] @5xl:items-stretch">
+            <div className="flex min-h-0 min-w-0 flex-col gap-4 @3xl:col-span-2 @5xl:col-span-5">
               <NowPlayingPanel
                 loading={!live.data && !live.error}
                 error={live.data ? null : live.error}
@@ -299,14 +254,17 @@ export default function Home() {
                 sessions={sessions}
                 onSelect={openPlay}
               />
-              <ActivityPanel state={activity} />
+              <ActivityPanel state={activity} className="@5xl:min-h-72 @5xl:flex-1 @5xl:basis-0" />
             </div>
             <ServerPanel hwaccel={hw?.hwaccel?.name} className="@5xl:col-span-4" />
-            <div className="flex min-w-0 flex-col gap-4 @5xl:col-span-3">
-              <HealthPanel loading={!dashboard} items={health} />
-              <RowsPanel state={rows} />
+            <div className="flex min-h-0 min-w-0 flex-col gap-4 @5xl:col-span-3">
+              <HealthPanel loading={!dashboard} items={health} verdict={verdict} />
+              <RowsPanel state={rows} className="@5xl:min-h-56 @5xl:flex-1 @5xl:basis-0" />
             </div>
           </div>
+        </div>
+        {/* Plugin panels sit below the fold so the built-in view always fits. */}
+        <div className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 pb-4 empty:hidden sm:px-6 sm:pb-6 @5xl:max-w-none">
           <PanelSlots slot="dashboard.panel" />
         </div>
       </div>
@@ -338,6 +296,7 @@ function NowPlayingPanel({
       title={t("Now playing")}
       icon={<PlayCircle size={16} />}
       className={className}
+      bodyClassName="@5xl:overflow-y-auto"
       actions={
         <span className="flex items-center gap-2">
           {activeSessions.length ? (
@@ -471,55 +430,46 @@ function SessionCard({ s, onOpen }: { s: NowPlaying; onOpen: () => void }) {
   );
 }
 
-/** Health: anything that needs attention first, each one link from its fix. */
+/**
+ * Health at a glance: the verdict pill, anything that needs attention with
+ * its reason and fix, then one line per healthy item. The pill opens the
+ * full detail in a drawer.
+ */
 export function HealthPanel({
   loading,
   items,
+  verdict,
   className,
 }: {
   loading: boolean;
   items: HealthItem[];
+  /** Defaults to the verdict these items give on their own. */
+  verdict?: HealthVerdict;
   className?: string;
 }) {
-  const problems = items.filter((h) => !h.setupGap && (h.level === "error" || h.level === "warn"));
-  const setupGaps = items.filter((h) => h.setupGap);
-  const rest = items.filter((h) => !problems.includes(h) && !h.setupGap);
+  const problems = healthProblems(items);
+  const rest = items.filter((h) => !problems.includes(h));
   const severe = problems.some((h) => h.level === "error");
   return (
     <DashboardPanel
       title={t("Health")}
       icon={<HeartPulse size={16} />}
       className={className}
-      bodyClassName="px-3 py-2"
-      actions={null}
+      bodyClassName="px-2 py-2 @5xl:overflow-y-auto"
+      actions={
+        <HealthPill items={items} verdict={verdict ?? healthVerdict(items, { pending: loading })} />
+      }
     >
       {loading ? (
         <LoadingRows rows={4} />
       ) : (
         <>
-          <div className="mb-2">
-            {problems.length ? (
-              <Badge variant={severe ? "destructive" : "warning"} className="whitespace-nowrap">
-                {tn(problems.length, "{count} to fix", "{count} to fix")}
-              </Badge>
-            ) : setupGaps.length ? (
-              <Badge variant="secondary" className="whitespace-nowrap">
-                {tn(setupGaps.length, "{count} thing to set up", "{count} things to set up")}
-              </Badge>
-            ) : items.some((h) => h.level === "unknown" && countsOverall(h)) ? (
-              <LevelBadge level="unknown" label={t("Status incomplete")} />
-            ) : hasExemptDiagnostic(items) ? (
-              <LevelBadge level="ok" label={t("Operational")} />
-            ) : (
-              <LevelBadge level="ok" label={t("All healthy")} />
-            )}
-          </div>
           {problems.length ? (
             <section
               role="region"
               aria-label={t("Needs attention")}
               className={cn(
-                "mb-2 rounded-lg p-1",
+                "mb-1.5 rounded-lg p-1",
                 severe ? "bg-danger-subtle" : "bg-warning-subtle",
               )}
             >
@@ -530,14 +480,7 @@ export function HealthPanel({
               </ul>
             </section>
           ) : null}
-          {setupGaps.length ? (
-            <ul className="mb-2 space-y-0.5">
-              {setupGaps.map((h) => (
-                <HealthRow key={h.id} h={h} />
-              ))}
-            </ul>
-          ) : null}
-          <ul className="space-y-0.5">
+          <ul>
             {rest.map((h) => (
               <HealthRow key={h.id} h={h} />
             ))}
@@ -564,42 +507,47 @@ const LEVEL_TONE: Record<HealthItem["level"], string> = {
   unknown: "text-fg-subtle",
 };
 
+/**
+ * One health item. A healthy one is a single line; anything else also says
+ * why. The whole row leads to the page that manages it.
+ */
 function HealthRow({ h, fix = false }: { h: HealthItem; fix?: boolean }) {
+  const explain = fix || (h.level !== "ok" && h.level !== "off");
+  const more = [explain ? "" : h.summary, ...h.details].filter(Boolean).join("\n");
   return (
-    <li className="relative flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-hover">
-      <StatusDot level={h.level} pulse={fix} className="mt-1.5" />
-      <span className="min-w-0 flex-1" title={h.details.join("\n") || undefined}>
-        <span className="flex items-center gap-2">
+    <li className="relative rounded-md px-2 py-1 hover:bg-surface-hover" title={more || undefined}>
+      <span className="flex items-center gap-2.5">
+        <StatusDot level={h.level} pulse={fix} />
+        <Link
+          to={h.href}
+          className="shrink-0 text-sm font-medium text-fg after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring/50"
+        >
+          {h.label}
+        </Link>
+        <span className="min-w-0 flex-1">
+          {h.fill !== undefined ? (
+            <Meter
+              value={h.fill}
+              tone={h.fill > 0.95 && h.id !== "cache" ? "warning" : "primary"}
+            />
+          ) : null}
+        </span>
+        {fix ? (
           <Link
             to={h.href}
-            className="shrink-0 text-sm font-medium text-fg after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring/50"
+            className="relative z-10 shrink-0 text-xs font-medium text-primary hover:underline"
           >
-            {h.label}
+            {t("Fix")}
           </Link>
-          <span className="min-w-0 flex-1">
-            {h.fill !== undefined ? (
-              <Meter
-                value={h.fill}
-                tone={h.fill > 0.95 && h.id !== "cache" ? "warning" : "primary"}
-              />
-            ) : null}
+        ) : (
+          <span className={cn("shrink-0 text-xs font-medium", LEVEL_TONE[h.level])}>
+            {h.statusLabel ?? LEVEL_TEXT[h.level]}
           </span>
-          {fix ? (
-            <Link
-              to={h.href}
-              className="relative z-10 shrink-0 text-xs font-medium text-primary hover:underline"
-            >
-              {t("Fix")}
-            </Link>
-          ) : (
-            <span className={cn("shrink-0 text-xs font-medium", LEVEL_TONE[h.level])}>
-              {h.statusLabel ?? LEVEL_TEXT[h.level]}
-            </span>
-          )}
-        </span>
-        <span className="block text-pretty text-xs text-fg-muted">{h.summary}</span>
-        {h.note ? <span className="mt-1 block text-xs text-fg-subtle">{h.note}</span> : null}
+        )}
       </span>
+      {explain ? (
+        <span className="block text-pretty pl-5 text-xs text-fg-muted">{h.summary}</span>
+      ) : null}
     </li>
   );
 }
@@ -648,7 +596,9 @@ function ActivityPanel({
         ? `${t("{hours} h", { hours: formatNumber(d.hours, 1) })} · ${tn(d.uniqueViewers, "{count} viewer", "{count} viewers")}`
         : `${tn(d.plays, "{count} play", "{count} plays")} · ${tn(d.uniqueViewers, "{count} viewer", "{count} viewers")}`,
   }));
-  const na = state.error ? "—" : undefined;
+  // A failed quiet refresh keeps the last good figures instead of an error.
+  const error = state.data ? null : state.error;
+  const na = error ? "—" : undefined;
   return (
     <DashboardPanel
       title={t("Activity · last 30 days")}
@@ -716,8 +666,8 @@ function ActivityPanel({
               detail={t("Peak in one day")}
             />
           </dl>
-          {state.error ? (
-            <ErrorPanel error={state.error} onRetry={() => void state.reload()} />
+          {error ? (
+            <ErrorPanel error={error} onRetry={() => void state.reload()} />
           ) : days.length === 0 ? (
             <EmptyState
               icon={<Activity />}
@@ -726,7 +676,7 @@ function ActivityPanel({
               className="py-6"
             />
           ) : asTable ? (
-            <Table containerClassName="overflow-visible rounded-none border-0 shadow-none">
+            <Table containerClassName="overflow-visible rounded-none border-0 shadow-none @5xl:min-h-0 @5xl:flex-1 @5xl:overflow-y-auto">
               <TableHeader className="sticky top-0 z-10 bg-surface">
                 <TableRow>
                   <TableHead>{t("Day")}</TableHead>
@@ -750,8 +700,9 @@ function ActivityPanel({
             </Table>
           ) : (
             <TimeBars
+              fill
               height={176}
-              className="h-44"
+              className="h-44 @5xl:h-auto @5xl:min-h-24 @5xl:flex-1"
               data={data}
               ariaLabel={
                 metric === "plays"
@@ -787,6 +738,9 @@ function effectivePlayRate(r: RowInsight): number | null {
   return Math.min(1, Math.max(0, r.playRate));
 }
 
+/** The most Best rows the fitted layout can show; a stacked page stops at six. */
+const ROWS_SHOWN_FITTED = 12;
+
 function RowsPanel({
   state,
   className,
@@ -802,20 +756,21 @@ function RowsPanel({
       if (ra !== null && rb !== null && rb !== ra) return rb - ra;
       return b.plays7d - a.plays7d;
     })
-    .slice(0, 6);
+    .slice(0, ROWS_SHOWN_FITTED);
   const maxRate = Math.max(0.0001, ...rows.map((r) => effectivePlayRate(r) ?? 0));
   return (
     <DashboardPanel
       title={t("Best rows")}
       icon={<TrendingUp size={16} />}
       className={className}
+      bodyClassName="flex flex-col"
       actions={
         <Link to="/recommendations" className="text-xs font-medium text-primary hover:underline">
           {t("Recommendations")}
         </Link>
       }
     >
-      {state.error ? (
+      {state.error && !state.data ? (
         <ErrorPanel error={state.error} onRetry={() => void state.reload()} />
       ) : state.loading && !state.data ? (
         <LoadingRows rows={4} />
@@ -829,12 +784,20 @@ function RowsPanel({
           className="py-6"
         />
       ) : (
-        <ol className="space-y-2.5">
+        // Fitted to the window, the list shows as many whole rows as there is
+        // room for: a row that would be cut off wraps out of sight instead.
+        <ol
+          className={cn(
+            "flex flex-col gap-y-2.5 @max-5xl:[&>li:nth-child(n+7)]:hidden",
+            "@5xl:min-h-0 @5xl:flex-1 @5xl:flex-wrap @5xl:content-start @5xl:gap-x-8 @5xl:overflow-hidden",
+          )}
+        >
           {rows.map((r, i) => {
             const rate = effectivePlayRate(r);
             return (
               <li
                 key={r.hubId}
+                className="w-full"
                 title={tn(
                   r.plays7d,
                   "{count} play from {impressions} impressions in 7 days",

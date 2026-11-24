@@ -1015,31 +1015,33 @@ func (s *Server) sectionFromHubID(id string) (Section, bool) {
 }
 
 func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections []int, metadataID string, count int) (hubSpec, bool) {
+	// A library block's hub id is <rowID>@<lib>; Plex's own rows resolve by row id.
+	native := rowHubID(id)
 	switch {
-	case id == "tv.upnext":
+	case native == "tv.upnext":
 		k, err := frontend.ParseRatingKey(metadataID)
 		if err != nil || !s.relatedSourceVisible(ctx, pr, k) {
 			return hubSpec{}, false
 		}
 		return s.upNextHub(ctx, pr, k)
-	case id == "home.continue":
+	case native == "home.continue":
 		return s.continueHub(ctx, pr, cwHome, Section{}, count), true
-	case id == "continueWatching":
+	case native == "continueWatching":
 		return s.continueHub(ctx, pr, cwGlobal, Section{}, count), true
-	case strings.HasPrefix(id, "movie.inprogress.") || strings.HasPrefix(id, "tv.inprogress."):
-		if sec, ok := s.sectionFromHubID(id); ok && s.canSeeSection(pr.User, sec.ID) {
+	case strings.HasPrefix(native, "movie.inprogress.") || strings.HasPrefix(native, "tv.inprogress."):
+		if sec, ok := s.sectionFromHubID(native); ok && s.canSeeSection(pr.User, sec.ID) {
 			return s.continueHub(ctx, pr, cwSection, sec, count), true
 		}
 		return hubSpec{}, false
-	case strings.HasPrefix(id, "movie.recentlyviewed.") || strings.HasPrefix(id, "tv.recentlyviewed."):
-		if sec, ok := s.sectionFromHubID(id); ok && s.canSeeSection(pr.User, sec.ID) {
+	case strings.HasPrefix(native, "movie.recentlyviewed.") || strings.HasPrefix(native, "tv.recentlyviewed."):
+		if sec, ok := s.sectionFromHubID(native); ok && s.canSeeSection(pr.User, sec.ID) {
 			if hs, err := s.recentlyWatchedHub(ctx, pr, sec, count); err == nil {
 				return hs, true
 			}
 		}
 		return hubSpec{}, false
-	case strings.HasPrefix(id, "movie.recentlyadded.") || strings.HasPrefix(id, "tv.recentlyadded."):
-		if sec, ok := s.sectionFromHubID(id); ok && s.canSeeSection(pr.User, sec.ID) {
+	case strings.HasPrefix(native, "movie.recentlyadded.") || strings.HasPrefix(native, "tv.recentlyadded."):
+		if sec, ok := s.sectionFromHubID(native); ok && s.canSeeSection(pr.User, sec.ID) {
 			if hs, err := s.recentlyAddedHub(ctx, pr, sec, count); err == nil {
 				return hs, true
 			}
@@ -1058,7 +1060,7 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		(remembered.related == 0 || (metadataID == "" || metadataID == remembered.related.String()) && s.relatedSourceVisible(ctx, pr, remembered.related)) {
 		return remembered.spec, true
 	}
-	candidates := s.candidateHubIDs(id, sections)
+	candidates := candidateHubIDs(id)
 	singleKindSection := false
 	if len(sections) == 1 {
 		if sec, ok := s.sectionByID(sections[0]); ok && isKindSection(sec) {
@@ -1105,8 +1107,8 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		if len(sections) > 0 && !containsInt(sections, sec.ID) {
 			continue
 		}
-		if isPluginKindSection(sec) && !isKindMusicSection(sec) {
-			_, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
+		if isPluginKindSection(sec) {
+			_, kindServed := s.pluginSectionHubs(ctx, pr, sec, count)
 			for hid, h := range kindServed {
 				if matchHubID(hid, candidates) {
 					h.ID = id

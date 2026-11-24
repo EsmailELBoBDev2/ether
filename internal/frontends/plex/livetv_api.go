@@ -743,11 +743,22 @@ func (s *Server) handleLiveWatchNow(w http.ResponseWriter, r *http.Request) {
 	}
 	s.write(w, r, &model.MediaContainer{Size: len(types), Identifier: frontend.LiveTVProvider, Type: types, Directory: dirs})
 }
+
+// liveHomeHubID is the Home row of the one Live source ("live"), the same
+// id every app serves; the Live TV provider's own hub list keeps
+// livetv.onnow. Both carry Plex's hub.livetv.onnow context.
+const liveHomeHubID = "live"
+
+// liveTVHub is the Live TV provider's On Now hub.
 func (s *Server) liveTVHub(r *http.Request) *model.Hub {
 	h, _ := s.liveTVHubProjection(r)
+	if h != nil {
+		h.HubIdentifier = "livetv.onnow"
+	}
 	return h
 }
 
+// liveTVHubProjection is the Home row of the Live source.
 func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row) {
 	items, channels, err := s.liveDiscoveryItems(r, "all", 96)
 	if err != nil || len(items) == 0 {
@@ -757,8 +768,8 @@ func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row)
 		items = items[:24]
 	}
 	md := s.liveDiscoveryToMetadata(r, items, channels)
-	h := &model.Hub{Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: "livetv.onnow", Context: "hub.livetv.onnow", Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
-	row := frontend.Row{ID: "livetv.onnow", Title: "On Now", Purpose: frontend.RowLive, Style: "shelf", Promoted: true}
+	h := &model.Hub{Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: liveHomeHubID, Context: "hub.livetv.onnow", Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
+	row := frontend.Row{ID: liveHomeHubID, Title: "On Now", Purpose: frontend.RowLive, Style: "shelf", Promoted: true}
 	for _, item := range items {
 		c := channels[item.ChannelID]
 		entry := &frontend.RowLiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Logo: liveLogo(c), GuideReference: c.GuideID}

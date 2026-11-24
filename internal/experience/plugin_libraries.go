@@ -107,69 +107,6 @@ func (p PluginPresentation) roleLevel(role string) string {
 	return ""
 }
 
-// RowCaps are the library capabilities a plugin library advertises to
-// Recommendations row sources (core.RowSourceInfo.Needs).
-func (p PluginPresentation) RowCaps() []string {
-	caps := []string{core.CapAdded, core.CapReleased}
-	if resolvePluginContinueScope(p, nil).allow {
-		caps = append(caps, core.CapProgress)
-	}
-	if len(p.Shelves) > 0 || len(p.TabShelves) > 0 {
-		caps = append(caps, core.CapShelves)
-	}
-	seen := map[string]bool{}
-	for _, r := range p.LevelRoles {
-		if r != "" && !seen[r] {
-			seen[r] = true
-			caps = append(caps, core.CapRole(r))
-		}
-	}
-	for _, f := range p.Facets {
-		caps = append(caps, core.CapFacet(f.ID))
-	}
-	return caps
-}
-
-// PluginPageLibrary describes a plugin library for Recommendations pages:
-// its experience, capabilities, card, rows tabs and declared shelves.
-func (s *Service) PluginPageLibrary(ctx context.Context, lib core.Library) (core.PageLibrary, bool) {
-	pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
-	if !ok || lib.Source != core.LibraryPlugin {
-		return core.PageLibrary{}, false
-	}
-	p, ok := pres.Presentation(ctx, lib)
-	if !ok {
-		return core.PageLibrary{}, false
-	}
-	out := core.PageLibrary{ID: lib.ID, Name: lib.Name, Experience: core.EffectiveLibraryExperience(p.Experience, p.Media), Caps: p.RowCaps(), Card: p.Card}
-	seen := map[string]bool{}
-	addShelves := func(shelves []PluginShelf) {
-		for _, sh := range shelves {
-			if sh.Key == "" || seen[sh.Key] {
-				continue
-			}
-			seen[sh.Key] = true
-			out.Shelves = append(out.Shelves, core.ParamOption{Value: sh.Key, Label: firstNonEmptyString(sh.Label, sh.Key)})
-		}
-	}
-	addShelves(p.Shelves)
-	for _, t := range p.Tabs {
-		if t.Kind == core.TabRecommended {
-			out.RowsTabs = append(out.RowsTabs, core.PageTab{Key: t.ID, Label: t.Label})
-			addShelves(p.TabShelves[t.ID])
-		}
-	}
-	return out, true
-}
-
-func firstNonEmptyString(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
 
 // PluginFilteredChildrenLibraries is an optional extension of PluginLibraries
 // that pushes child level and role filtering directly into the store query so

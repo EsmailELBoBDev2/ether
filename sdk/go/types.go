@@ -240,12 +240,10 @@ type Contributes struct {
 
 // ScreenMeta declares one generic top-level screen contributed by a plugin.
 type ScreenMeta struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Icon      string          `json:"icon,omitempty"`
-	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections,omitempty"`
-	Frontends []string        `json:"frontends,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Icon      string   `json:"icon,omitempty"`
+	Frontends []string `json:"frontends,omitempty"`
 	// Pages are the screen's documents by page id ("index" first); each is
 	// a package file or a list of renderer variants (docs/plugin-screens.md).
 	Pages         map[string]any          `json:"pages,omitempty"`
@@ -301,37 +299,6 @@ type SurfaceWhen struct {
 	} `json:"event,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 	TitleKind string `json:"titleKind,omitempty"`
-}
-
-// ScreenSection declares one generic section inside a contributed screen.
-type ScreenSection struct {
-	ID         string            `json:"id,omitempty"`
-	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
-	Title      string            `json:"title,omitempty"`
-	Feed       string            `json:"feed,omitempty"`
-	League     string            `json:"league,omitempty"`
-	EntityKind string            `json:"entityKind,omitempty"`
-	Limit      int               `json:"limit,omitempty"`
-	Query      *ScreenEventQuery `json:"query,omitempty"`
-	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
-}
-
-// ScreenEventQuery filters live events for an events, hero, or schedule section.
-type ScreenEventQuery struct {
-	Feed      string   `json:"feed,omitempty"`
-	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
-	League    string   `json:"league,omitempty"`
-	Favorites bool     `json:"favorites,omitempty"`
-	Window    string   `json:"window,omitempty"` // today|week|recent
-	Category  string   `json:"category,omitempty"`
-}
-
-// ScreenLeague optionally declares one static league filter chip on a leagues section.
-type ScreenLeague struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Abbr string `json:"abbr,omitempty"`
-	Logo string `json:"logo,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the minimum polling interval a live feed may declare.

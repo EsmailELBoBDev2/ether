@@ -52,3 +52,47 @@ func loudnessWire(l frontend.Loudness) object {
 	}
 	return out
 }
+
+// losslessAudio names codecs that keep every sample.
+var losslessAudio = map[string]bool{"flac": true, "alac": true, "wavpack": true, "ape": true, "tta": true, "truehd": true, "mlp": true}
+
+// audioQualityWire describes the audio stream a plan plays (media.quality,
+// PlaybackPlan.audioQuality): {codec, bitDepth?, sampleRateHz?, bitrateKbps?, lossless?}.
+func audioQualityWire(m frontend.MediaInfo) object {
+	for _, st := range m.Streams {
+		if st.Type != "audio" || st.Codec == "" {
+			continue
+		}
+		codec := st.Codec
+		out := object{"codec": codec}
+		lossless := losslessAudio[codec] || len(codec) > 4 && codec[:4] == "pcm_"
+		if lossless {
+			out["lossless"] = true
+		}
+		if st.BitsPerRawSample != nil && *st.BitsPerRawSample > 0 {
+			out["bitDepth"] = *st.BitsPerRawSample
+		} else if bits := sampleFormatBits(st.SampleFormat); bits > 0 && lossless {
+			out["bitDepth"] = bits
+		}
+		if st.SampleRate > 0 {
+			out["sampleRateHz"] = st.SampleRate
+		}
+		if st.BitrateKbps > 0 {
+			out["bitrateKbps"] = st.BitrateKbps
+		} else if m.BitrateKbps > 0 {
+			out["bitrateKbps"] = m.BitrateKbps
+		}
+		return out
+	}
+	return nil
+}
+
+func sampleFormatBits(f string) int {
+	switch f {
+	case "s16", "s16p":
+		return 16
+	case "s32", "s32p":
+		return 24 // ffmpeg decodes 24-bit lossless into 32-bit samples
+	}
+	return 0
+}

@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -27,3 +28,12 @@ const (
 	LoudnessMeasured = core.LoudnessMeasured
 	LoudnessProvider = core.LoudnessProvider
 )
+
+// LoudnessSource keys a loudness measurement to one file of an item: its byte
+// size, known to both the opened media and the playback plan.
+func LoudnessSource(size int64) string {
+	if size <= 0 {
+		return ""
+	}
+	return "size:" + strconv.FormatInt(size, 10)
+}

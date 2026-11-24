@@ -2,14 +2,11 @@ package loudness
 
 import (
 	"context"
-	"crypto/sha1"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
 	"math"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -323,16 +320,12 @@ func toLoudness(r Result) core.Loudness {
 	}
 }
 
-// SourceID names the exact file a measurement belongs to: the release and the
-// file within it.
+// SourceID names the exact file a measurement belongs to within its item:
+// its byte size, which the opened media and every playback plan both know
+// (two different files of one song practically never match to the byte).
 func SourceID(media *frontend.KindMedia) string {
 	if media == nil {
 		return ""
 	}
-	rel := media.Release.ContentID
-	if rel == "" {
-		rel = media.Release.ID
-	}
-	h := sha1.Sum([]byte(rel + "\x00" + media.Name + "\x00" + strconv.FormatInt(media.Size, 10)))
-	return hex.EncodeToString(h[:12])
+	return frontend.LoudnessSource(media.Size)
 }

@@ -387,6 +387,14 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	p := object{"sessionId": s.ID, "revision": uint64(1), "sourceGeneration": uint64(1), "seekGeneration": uint64(1), "state": "ready", "positionSeconds": pos.Seconds(), "durationSeconds": plan.Media.Duration.Seconds(), "paths": []object{path}, "selectedPathId": "primary", "audioTracks": audio, "subtitleTracks": subs, "selectedSubtitleTrackId": selectedSub, "chapters": chapters(plan.Media), "fallback": object{"state": "unsupported"}}
 	if audioOnly {
 		p["media"] = "audio"
+		if q := audioQualityWire(plan.Media); q != nil {
+			p["audioQuality"] = q
+		}
+		if i.host.Loudness != nil && s.Item != 0 {
+			if l, ok := i.host.Loudness.ForSource(r.Context(), s.Item, frontend.LoudnessSource(plan.Media.Size)); ok {
+				p["loudness"] = loudnessWire(l)
+			}
+		}
 	}
 	if plan.Media.Duration <= 0 {
 		delete(p, "durationSeconds")

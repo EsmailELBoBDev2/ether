@@ -368,6 +368,12 @@ type hlsList struct {
 	stalled     bool
 	failed      bool
 	initialized bool
+	// cut is the provider discontinuity the reader's playlist ends before
+	// (-1 none); cutServed is set once a reader was handed that ended
+	// window. The next reader after the old one fetched up to the cut
+	// resumes exactly at it.
+	cut       int64
+	cutServed bool
 }
 
 func (g *inputGrant) hlsIfAny() *hlsInput {
@@ -469,7 +475,7 @@ func (h *hlsInput) getStartupCache(raw string, consume bool) (hlsCachedResource,
 func (h *hlsInput) ensureListLocked(raw string) *hlsList {
 	l := h.lists[raw]
 	if l == nil {
-		l = &hlsList{raw: raw, served: -1, firstServed: -1, floor: -1}
+		l = &hlsList{raw: raw, served: -1, firstServed: -1, floor: -1, cut: -1}
 		h.lists[raw] = l
 	}
 	return l
@@ -504,6 +510,12 @@ func (h *hlsInput) recordListLocked(l *hlsList, m *hlsMedia, now time.Time) {
 // and returns the playlist to serve (trimmed to the reserve window for a
 // Steady grant, or to an aligned demuxed floor).
 func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []UpstreamEvent) {
+	return h.mediaFor(raw, body, base, true)
+}
+
+// mediaFor is media; reader is false for the relay's own health poll, whose
+// rendering no reader sees.
+func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool) ([]byte, []UpstreamEvent) {
 	m := parseHLSMedia(body, base)
 	if !m.live() {
 		return body, nil
@@ -523,7 +535,9 @@ func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []Upst
 			l.floor = m.segs[m.startFor(h.g.joinDepth())].seq
 		}
 	}
-	if l.floor >= 0 && l.served >= 0 && l.served-1 > l.floor {
+	if reader && h.resumeAtCutLocked(l) {
+		// A new reader after the old one stopped at a program change.
+	} else if l.floor >= 0 && l.served >= 0 && l.served-1 > l.floor {
 		l.floor = l.served - 1
 	}
 	l.initialized = true
@@ -531,6 +545,14 @@ func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []Upst
 	h.prefetchLocked(l)
 	h.publishLocked()
 	floor := l.floor
+	var ended []byte
+	if reader && floor >= 0 && h.g.splitPrograms.Load() {
+		if cut := m.programCut(floor); cut >= 0 {
+			if ended = m.windowCut(floor, cut); ended != nil {
+				l.cut, l.cutServed = cut, true
+			}
+		}
+	}
 	startPoll := reserve > 0 && !h.polling[raw]
 	if startPoll {
 		h.polling[raw] = true
@@ -539,12 +561,68 @@ func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []Upst
 	if startPoll {
 		go h.poll(raw)
 	}
+	if ended != nil {
+		return ended, events
+	}
 	if floor >= 0 {
 		if out := m.window(floor); out != nil {
 			return out, events
 		}
 	}
 	return body, events
+}
+
+// resumeAtCutLocked moves l's floor to the program change its previous
+// reader was stopped before, once that reader fetched everything up to it:
+// the next reader starts on the new program's first segment, with nothing
+// repeated or skipped.
+func (h *hlsInput) resumeAtCutLocked(l *hlsList) bool {
+	if !l.cutServed || l.cut < 0 || l.served < l.cut-1 {
+		return false
+	}
+	l.floor, l.cut, l.cutServed = l.cut, -1, false
+	return true
+}
+
+// programCut is the first segment after floor that opens a new
+// discontinuity span (a provider's program change: an ad, a new encoder,
+// often new PIDs and a restarted clock), or -1. A provider that tags
+// (nearly) every segment with a discontinuity is not split.
+func (m *hlsMedia) programCut(floor int64) int64 {
+	discs := 0
+	for _, sg := range m.segs {
+		if sg.disc {
+			discs++
+		}
+	}
+	if discs*2 > len(m.segs) {
+		return -1
+	}
+	for _, sg := range m.segs {
+		if sg.seq > floor && sg.disc {
+			return sg.seq
+		}
+	}
+	return -1
+}
+
+// windowCut renders the segments from floor up to, not including, cut and
+// ends the playlist there, so its reader drains the program and exits.
+func (m *hlsMedia) windowCut(floor, cut int64) []byte {
+	n := 0
+	for _, sg := range m.segs {
+		if sg.seq >= floor && sg.seq < cut {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	out := m.windowLimit(floor, n)
+	if out == nil {
+		return nil
+	}
+	return append(out, "\n#EXT-X-ENDLIST\n"...)
 }
 
 const (
@@ -838,7 +916,19 @@ func (h *hlsInput) applyDemuxedPair(
 	vMaxSegs, aMaxSegs := 0, 0
 	aligned := false
 	var alignedSkew time.Duration
-	if haveTimes {
+	atCut := func(l *hlsList) bool { return l.cutServed && l.cut >= 0 && l.served >= l.cut-1 }
+	if atCut(vl) && atCut(al) {
+		// The previous reader drained both renditions up to the program
+		// change: start each on the new program's first segment (the
+		// provider marks the change in both at the same media time).
+		h.resumeAtCutLocked(vl)
+		h.resumeAtCutLocked(al)
+		aligned = true
+		source = "program"
+		if i := segIndex(vm, vl.floor); i >= 0 && vm.segs[i].hasPDT {
+			h.demux.anchorPDT, h.demux.hasAnchor = vm.segs[i].pdt, true
+		}
+	} else if haveTimes {
 		vMin, vMax, vOK := timelineSpan(vm, vTimes, vHas)
 		aMin, aMax, aOK := timelineSpan(am, aTimes, aHas)
 		if vOK && aOK {
@@ -969,7 +1059,29 @@ func (h *hlsInput) applyDemuxedPair(
 			aOut = out
 		}
 	}
+	if h.g.splitPrograms.Load() && vFloor >= 0 && aFloor >= 0 {
+		vCut, aCut := vm.programCut(vFloor), am.programCut(aFloor)
+		if vCut >= 0 && aCut >= 0 {
+			v, a := vm.windowCut(vFloor, vCut), am.windowCut(aFloor, aCut)
+			if v != nil && a != nil {
+				h.mu.Lock()
+				vl.cut, vl.cutServed = vCut, true
+				al.cut, al.cutServed = aCut, true
+				h.mu.Unlock()
+				vOut, aOut = v, a
+			}
+		}
+	}
 	return vOut, aOut, events
+}
+
+func segIndex(m *hlsMedia, seq int64) int {
+	for i, sg := range m.segs {
+		if sg.seq == seq {
+			return i
+		}
+	}
+	return -1
 }
 
 // failedFetch records a playlist fetch that failed.
@@ -1148,7 +1260,7 @@ func (h *hlsInput) poll(raw string) {
 			base := res.Request.URL
 			res.Body.Close()
 			if rerr == nil && len(b) <= relayManifestLimit {
-				_, events = h.media(raw, b, base)
+				_, events = h.mediaFor(raw, b, base, false)
 			} else {
 				events = h.failedFetch(raw)
 			}

@@ -953,7 +953,18 @@ func (s *Session) recoverLiveLocked(r *run, err error) {
 	}
 	stopped := s.stoppedAt.Load() != 0
 	idle := stopped || (s.m.opts.idleTimeout > 0 && now.Sub(s.LastAccess()) >= s.m.opts.idleTimeout)
-	delay, allowed := s.liveRecoveryDelay(now, r)
+	var delay time.Duration
+	var allowed bool
+	if err == nil && r.produced > 0 && !idle {
+		// A live input that ended cleanly after delivering media reached a
+		// program boundary (the input relay ends each reader's playlist at
+		// the provider's next discontinuity): the next run continues on
+		// the new program at once, and it is not a failure.
+		reason = "program change"
+		allowed = s.liveRestarts.take(now, 28, 30*time.Second)
+	} else {
+		delay, allowed = s.liveRecoveryDelay(now, r)
+	}
 	if idle || !allowed {
 		endReason := "restart limit reached"
 		if stopped {

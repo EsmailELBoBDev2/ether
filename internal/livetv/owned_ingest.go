@@ -289,7 +289,10 @@ func (in *hlsIngest) fetch(ctx context.Context, s playlistSegment, target time.D
 	if s.mapURI != "" {
 		mapKey := fmt.Sprintf("%s|%d|%d", s.mapURI, s.mapLen, s.mapOff)
 		res, ok := in.maps[mapKey]
-		if !ok {
+		// After a discontinuity the map applies anew (RFC 8216 4.3.2.5),
+		// and a local producer serves its restarted run's init under the
+		// same URI: fetch it again rather than reuse the old program's.
+		if !ok || s.disc {
 			data, err := in.origin.get(ctx, s.mapURI, s.mapLen, s.mapOff)
 			if err != nil {
 				return nil, fmt.Errorf("init section: %w", err)

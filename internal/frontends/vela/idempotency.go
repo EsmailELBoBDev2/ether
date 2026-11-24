@@ -37,7 +37,11 @@ func (i *instance) claim(ctx context.Context, key, digest string) (*savedRespons
 		return nil, false, errors.New("mutation persistence unavailable")
 	}
 	now := time.Now().UnixMilli()
-	_, e := i.db.ExecContext(ctx, `DELETE FROM vela_replays WHERE key IN (SELECT key FROM vela_replays WHERE expires<=? LIMIT 100)`, now)
+	// ORDER BY expires pins the sweep to vela_replays_expiry. Without it the
+	// planner, estimating from statistics gathered when today's rows had not
+	// yet expired, scanned the whole table (stored responses inline, ~75 MB
+	// on the lab) to find nothing, holding the writer 0.7-5 s per mutation.
+	_, e := i.db.ExecContext(ctx, `DELETE FROM vela_replays WHERE key IN (SELECT key FROM vela_replays WHERE expires<=? ORDER BY expires LIMIT 100)`, now)
 	if e != nil {
 		return nil, false, e
 	}

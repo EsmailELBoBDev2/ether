@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -342,6 +343,12 @@ func (s *Service) Data(ctx context.Context, viewer *core.User, req DataRequest) 
 			}()
 			select {
 			case r := <-done:
+				// A source that failed because its budget ran out (an
+				// interrupted query, a cancelled plugin call) is a timeout,
+				// not an outage: the hub keeps the late answer for the retry.
+				if r.err != nil && sctx.Err() != nil && ctx.Err() == nil {
+					r.err = context.DeadlineExceeded
+				}
 				results <- r
 			case <-sctx.Done():
 				results <- result{src.ID, nil, context.DeadlineExceeded}
@@ -352,6 +359,9 @@ func (s *Service) Data(ctx context.Context, viewer *core.User, req DataRequest) 
 		r := <-results
 		if r.err != nil {
 			out.Errors = setErr(out.Errors, r.id, r.err)
+			if out.Errors[r.id].Code == "unavailable" {
+				slog.Warn("screen source unavailable", "plugin", t.plugin.pluginID, "source", r.id, "from", t.doc.Sources[r.id].From, "err", r.err)
+			}
 			continue
 		}
 		raw, _ := json.Marshal(r.value)

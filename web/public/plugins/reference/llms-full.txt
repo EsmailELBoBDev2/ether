@@ -36874,7 +36874,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].library.shelves[].filters` | `any` | false | {"anyOf":[{"additionalProperties":{"items":{"type":"string"},"type":"array"},"type":"object"},{"properties":{"exclude":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"groups":{"items":{"properties":{"action":{"type":"string"},"match":{"type":"string"},"mediaType":{"type":"string"},"name":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"scope":{"type":"string"}},"type":"object"},"type":"array"},"match":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"visibilityDefault":{"type":"string"}},"type":"object"},{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"}]} |
 | `ether.contributes.mediaKinds[].library.shelves[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].layout` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].level` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].purpose` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].library.shelves[].value` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].values` | `array` | false | {} |
@@ -36923,7 +36925,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].filters` | `any` | false | {"anyOf":[{"additionalProperties":{"items":{"type":"string"},"type":"array"},"type":"object"},{"properties":{"exclude":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"groups":{"items":{"properties":{"action":{"type":"string"},"match":{"type":"string"},"mediaType":{"type":"string"},"name":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"scope":{"type":"string"}},"type":"object"},"type":"array"},"match":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"visibilityDefault":{"type":"string"}},"type":"object"},{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"}]} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].layout` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].level` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].shelves[].purpose` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].value` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].values` | `array` | false | {} |
@@ -38061,7 +38065,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                             "label": {
                               "type": "string"
                             },
+                            "layout": {
+                              "type": "string"
+                            },
                             "level": {
+                              "type": "string"
+                            },
+                            "purpose": {
                               "type": "string"
                             },
                             "sort": {
@@ -38434,7 +38444,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                                   "label": {
                                     "type": "string"
                                   },
+                                  "layout": {
+                                    "type": "string"
+                                  },
                                   "level": {
+                                    "type": "string"
+                                  },
+                                  "purpose": {
                                     "type": "string"
                                   },
                                   "sort": {

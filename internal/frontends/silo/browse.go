@@ -401,6 +401,11 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 	used := map[string]bool{}
 	partial := false
 	for _, row := range rows {
+		// Plugin surface rows are drawn by Vela from the plugin's document;
+		// Silo has no documents and the rows carry no titles.
+		if row.Layout.Present.Surface != nil {
+			continue
+		}
 		var items []any
 		var e error
 		if row.Purpose == frontend.RowLive {
@@ -438,16 +443,18 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		// so a library whose rows were all promoted rendered as "Movies is
 		// empty". Featured is a Home distinction.
 		featured := row.Promoted && placement != frontend.PlacementLibrary
-		// The owner's row style: a Hero row is featured (drawn in the hero),
-		// Standard and Wide rows are ordinary sections.
-		switch row.Layout.StylePolicy {
-		case frontend.RowStyleHero:
+		// The row's Look: a Hero row is featured (drawn in the hero). Every
+		// other layout (Standard, Wide, Tiles, Track list) is a plain
+		// section; "" leaves the app's own choice.
+		switch row.Layout.Present.Layout {
+		case "":
+		case "hero":
 			featured = true
-		case frontend.RowStyleStandard, frontend.RowStyleWide:
+		default:
 			featured = false
 		}
 		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
-		if !row.More {
+		if !row.More || row.RankedTop10 {
 			section["total_count"] = len(items)
 		}
 		sections = append(sections, section)

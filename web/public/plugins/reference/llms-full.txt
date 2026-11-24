@@ -125,6 +125,35 @@ Reserved capability names cannot be claimed in EPP/1. Ranking and condition hot 
 
 See the complete content-kind guide below. Start with a bounded browse page, stable external IDs, and a playable leaf. Use [Resolvers](/plugins/reference/resolvers) for bytes and [Folders](/plugins/reference/host-folders) for local files.
 
+## Screens and surfaces
+
+Give Vela a screen of your own (a sports desk, a news front page) or fill a host slot: a player overlay, an alert toast, a Home row or a title panel. You ship **documents**: JSON files in your package that Vela draws natively on TV, phone and web in the viewer's skin. The full contract is `docs/plugin-screens.md`; the document schema is `schemas/plugin-screen.v1.json`.
+
+## Declare
+Add the `screens` capability and `contributes.screens: [{id, title, icon, pages: {index: "screens/x.json"}, actions?}]` or `contributes.surfaces: [{id, presentation, anchor?, setting?, when?, document}]`. `when` may only name your own feeds and kinds.
+
+## Write a document
+`{schema: 1, kind: "screen", renderer: 19, params, sources, strings, tree}`. The tree is Vela's node language. `params` are typed page inputs; `sources` name data Ether resolves per viewer: `liveEvents`, `liveSchedule`, `liveEvent`, `liveTables`, `liveEntities`, `liveLeagues`, `watch`, `viewer` and `plugin`. Arguments may hold `{param.x}`, `{viewer.tz}` and, on surfaces, `{context.event}` style holes; never another source. Documents never contain URLs: write `asset:path` for package files.
+
+## Answer a plugin source
+```ts
+p.onScreenSource("desk", "front", async ({ args }) => ({
+  value: { lead: record("story", "s1") },
+  records: [{ type: "story", id: "s1", value: { title: "…", hero: image("https://cdn.example.com/a.jpg"), url: link("https://example.com/s1") } }],
+  maxAgeSec: 120, nextRefreshSec: 60,
+}));
+```
+Wrap images (`image`, `asset`), links (`link`), records (`record`), events (`event`) and entities (`entity`). Ether signs images only on your `permissions.network` hosts and drops bare URL strings. `scope: "viewer"` sources receive the viewer like a frontend adapter call.
+
+## Actions
+Declare typed `actions` on the screen; answer `onScreenAction` with `{records?, sources?, refresh?, toast?, navigate?}`. Ether's own `ether.favorite`, `ether.reveal` and `ether.spoilerFree` need no code.
+
+## Live
+While a viewer has a page open, Ether re-reads it on live feed changes, on your `nextRefreshSec`, and when you call `ether.screens.invalidate()`. `ether.screens.putRecords([{type, id, value}])` patches records already on screen. Nobody watching costs nothing.
+
+## Check
+`ether plugin check` compiles every document exactly as install does and reports each problem by file and JSON pointer.
+
 ## Catalogue sources
 
 A Stremio catalogue returns `{metas:[...]}` for `/catalog/{type}/{id}.json`. The catalogue ID must match `manifest.catalogs` and `ether.contributes.listSources[].catalog`. A list source can appear in collections and home rows; it is different from the signed **plugin marketplace catalogue** described in [Publishing](/plugins/reference/publishing).
@@ -416,6 +445,10 @@ const filtered = ether.kinds.browse("recordings", { query: "live", limit: 50 });
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
+
+## Screens pushes
+
+`ether.screens.invalidate()` makes your open screens and surfaces read their sources again now; `ether.screens.putRecords([{type, id, value}])` (at most 100) sends new values for your records to open screens already showing them. Both need the `screens` capability, return `{streams}` (how many open streams heard them) and do nothing when nobody is watching. Remote plugins call `POST /ether/plugin-host/screens/invalidate` and `POST /ether/plugin-host/screens/records {records}`. Go: `ctx.InvalidateScreens()`, `ctx.PutScreenRecords(...)`; Python: `host.screens.invalidate()`, `host.screens.put_records(...)`.
 
 ## Source discovery
 
@@ -4143,6 +4176,7 @@ func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
 | `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
 | `spoiler` | `bool` | emitted (validation may require a value) | set by Ether, never by plugins |
 | `updatedAt` | `string` | may be omitted (see validation for conditions) | RFC3339 |
+| `prominence` | `float64` | may be omitted (see validation for conditions) | Prominence optionally ranks events for featured ordering (0..1, the plugin's sense of how big the event is); absent counts as 0. |
 
 
 ## Source: internal/core/liveevent.go#LiveEvent
@@ -4168,6 +4202,9 @@ type LiveEvent struct {
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
 	Spoiler     bool                   `json:"spoiler"`             // set by Ether, never by plugins
 	UpdatedAt   string                 `json:"updatedAt,omitempty"` // RFC3339
+	// Prominence optionally ranks events for featured ordering (0..1, the
+	// plugin's sense of how big the event is); absent counts as 0.
+	Prominence float64 `json:"prominence,omitempty"`
 }
 ``````
 
@@ -4241,6 +4278,7 @@ func (e LiveEvent) Clone() LiveEvent {
 | `title` | `string` | emitted (validation may require a value) |  |
 | `columns` | `[]string` | emitted (validation may require a value) |  |
 | `rows` | `[][]string` | emitted (validation may require a value) |  |
+| `rowEntityIds` | `[]string` | may be omitted (see validation for conditions) | RowEntityIDs optionally names the entity (a team) each row is about, in row order, so Ether can mark a viewer's favourites exactly. |
 
 
 ## Source: internal/core/liveevent.go#LiveEventTable
@@ -4252,6 +4290,9 @@ type LiveEventTable struct {
 	Title   string     `json:"title"`
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+	// RowEntityIDs optionally names the entity (a team) each row is about,
+	// in row order, so Ether can mark a viewer's favourites exactly.
+	RowEntityIDs []string `json:"rowEntityIds,omitempty"`
 }
 ``````
 
@@ -4278,6 +4319,9 @@ func (t LiveEventTable) MarshalJSON() ([]byte, error) {
 // Clone returns a deep copy of t.
 func (t LiveEventTable) Clone() LiveEventTable {
 	out := LiveEventTable{Title: t.Title}
+	if len(t.RowEntityIDs) > 0 {
+		out.RowEntityIDs = append([]string(nil), t.RowEntityIDs...)
+	}
 	if len(t.Columns) > 0 {
 		out.Columns = append([]string(nil), t.Columns...)
 	} else {
@@ -4308,6 +4352,8 @@ func (t LiveEventTable) Clone() LiveEventTable {
 | `text` | `string` | emitted (validation may require a value) |  |
 | `emphasis` | `string` | may be omitted (see validation for conditions) | score\|key\|normal |
 | `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+| `at` | `string` | may be omitted (see validation for conditions) | At is the wall-clock time of the play (RFC3339), so a timeshifted viewer's overlay can show the score as of the picture. |
+| `score` | `map[string]string` | may be omitted (see validation for conditions) | Score is every competitor's score after the play, by competitor id. |
 
 
 ## Source: internal/core/liveevent.go#LiveEventPlay
@@ -4320,6 +4366,11 @@ type LiveEventPlay struct {
 	Text         string `json:"text"`
 	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
 	CompetitorID string `json:"competitorId,omitempty"`
+	// At is the wall-clock time of the play (RFC3339), so a timeshifted
+	// viewer's overlay can show the score as of the picture.
+	At string `json:"at,omitempty"`
+	// Score is every competitor's score after the play, by competitor id.
+	Score map[string]string `json:"score,omitempty"`
 }
 ``````
 
@@ -4517,7 +4568,16 @@ func (d LiveEventDetail) Clone() LiveEventDetail {
 		}
 	}
 	if d.Plays != nil {
-		out.Plays = append([]LiveEventPlay(nil), d.Plays...)
+		out.Plays = make([]LiveEventPlay, len(d.Plays))
+		for i, p := range d.Plays {
+			out.Plays[i] = p
+			if p.Score != nil {
+				out.Plays[i].Score = make(map[string]string, len(p.Score))
+				for k, v := range p.Score {
+					out.Plays[i].Score[k] = v
+				}
+			}
+		}
 	}
 	if d.ProbabilitySeries != nil {
 		out.ProbabilitySeries = make([]LiveEventProbabilityPoint, len(d.ProbabilitySeries))
@@ -5615,6 +5675,9 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapLiveEvents      Capability = "live_events"
+	// CapScreens lets a plugin contribute screens and surfaces that Vela
+	// draws from documents in the package (docs/plugin-screens.md).
+	CapScreens Capability = "screens"
 )
 ``````
 
@@ -6063,6 +6126,7 @@ type PackStyle struct {
 | `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) | LiveFeeds declares live event feeds this plugin serves under /ether/v1/live/{feed}/* when it declares the live_events capability. |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) | Setup declares guided setup steps for any plugin kind (§8). |
 | `screens` | `[]ScreenMeta` | may be omitted (see validation for conditions) | Screens declares generic top-level screens rendered natively by frontends such as Vela (spec A3). |
+| `surfaces` | `[]SurfaceMeta` | may be omitted (see validation for conditions) | Surfaces are documents drawn in host slots: player overlays, toasts, Home rows and title panels (docs/plugin-screens.md, Surfaces). |
 
 
 ## Source: internal/plugins/contract.go#Contributes
@@ -6104,6 +6168,9 @@ type Contributes struct {
 	// Screens declares generic top-level screens rendered natively by frontends
 	// such as Vela (spec A3).
 	Screens []ScreenMeta `json:"screens,omitempty"`
+	// Surfaces are documents drawn in host slots: player overlays, toasts,
+	// Home rows and title panels (docs/plugin-screens.md, Surfaces).
+	Surfaces []SurfaceMeta `json:"surfaces,omitempty"`
 }
 ``````
 
@@ -8283,6 +8350,15 @@ type Host interface {
 	// and rate-limited.
 	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// ScreensInvalidate makes every open screen and surface of this plugin
+	// read its sources again now (screens capability). It returns how many
+	// open streams heard it; nobody watching means nothing happens.
+	ScreensInvalidate(ctx context.Context) (int, error)
+	// ScreensPutRecords pushes new values for the plugin's own records
+	// ([{type, id, value}], at most 100) to open screens already showing
+	// them (screens capability).
+	ScreensPutRecords(ctx context.Context, records json.RawMessage) (int, error)
+
 	// AIComplete runs a bounded text or JSON-Schema-validated completion against
 	// the owner's configured language model (Settings -> Integrations -> Language
 	// model). Requires permissions.ai: "complete" (or "complete+search" to also
@@ -9415,6 +9491,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapLiveEvents) {
 		lines = append(lines, "Provides live event feeds")
 	}
+	if man.HasCapability(CapScreens) {
+		lines = append(lines, screensPermissionLine(man))
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
 	}
@@ -9559,6 +9638,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
 		added = append(added, "Provides live event feeds")
+	}
+	if !cur.HasCapability(CapScreens) && next.HasCapability(CapScreens) {
+		added = append(added, screensPermissionLine(next))
 	}
 	if n := next.ListItemsRequested(); n > cur.ListItemsRequested() {
 		added = append(added, listItemsLine(n))
@@ -12257,7 +12339,7 @@ func extractCallSearchQuery(req Request) string {
 		}
 		return ""
 	}
-	if isFrontendAdapterPath(req.Path) {
+	if isFrontendAdapterRoute(req.Path) {
 		return queryParamFromRequest(req, "q", "query", "search")
 	}
 	return ""
@@ -13027,7 +13109,7 @@ func (h *host) AIComplete(ctx context.Context, req AICompleteRequest) (AIComplet
 		if searchQuery == "" {
 			if q, ok := stremioCatalogSearchQuery(path); ok {
 				searchQuery = q
-			} else if isFrontendAdapterPath(path) {
+			} else if isFrontendAdapterRoute(path) {
 				searchQuery = queryParamFromRequest(Request{Path: path}, "q", "query", "search")
 			}
 		}
@@ -18575,7 +18657,27 @@ type adapterViewerGrant struct {
 
 ``````
 func isFrontendAdapterPath(path string) bool {
+	return isFrontendAdapterRoute(path) || isViewerScreenPath(path)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isFrontendAdapterRoute
+
+``````
+// isFrontendAdapterRoute is strictly a frontend adapter's own traffic.
+func isFrontendAdapterRoute(path string) bool {
 	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isViewerScreenPath
+
+``````
+// isViewerScreenPath is a screen's viewer-scoped source or action call: like
+// an adapter call, it carries the authenticated viewer so the plugin can use
+// the viewer-bound host services (kinds.visible, kinds.state, its KV).
+func isViewerScreenPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/screens/") && len(path) > len("/ether/v1/screens/")
 }
 ``````
 
@@ -20075,6 +20177,16 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "screens.invalidate":
+		n, err := b.h.ScreensInvalidate(ctx)
+		return result(map[string]int{"streams": n}, err)
+	case "screens.putRecords":
+		var raw json.RawMessage = json.RawMessage(`[]`)
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 {
+			raw = args[0]
+		}
+		n, err := b.h.ScreensPutRecords(ctx, raw)
+		return result(map[string]int{"streams": n}, err)
 	case "ai.complete":
 		var req AICompleteRequest
 		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
@@ -20249,6 +20361,22 @@ func Check(ctx context.Context, pkg *Package) (rep Report) {
 
 	// 3a. Content-kind conformance notes beyond Validate (spec §9.4).
 	checkMediaKinds(&rep, man)
+
+	// 3b. Screen and surface documents compile exactly as install compiles
+	// them (limits, sources, no URLs, Vela's document schema).
+	if plugins.ScreensUseDocuments(man) {
+		english := func(k string) (string, bool) { t, ok := stringsByLocale["en"][k]; return t, ok }
+		if _, err := plugins.CompileScreenDocuments(man, pkg.Files, english); err != nil {
+			var ve *plugins.ValidationError
+			if errors.As(err, &ve) {
+				for _, fe := range ve.Fields {
+					rep.addErr("screens", fe.Field, fe.Message)
+				}
+			} else {
+				rep.addErr("screens", "screens", err.Error())
+			}
+		}
+	}
 
 	// 4. Validate SVG icon if present (rasterize and check legibility on light and dark).
 	checkIcon(&rep, ctx, man, pkg.Files)
@@ -24586,7 +24714,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil, CapScreens: nil,
 }
 ``````
 
@@ -24822,7 +24950,7 @@ func (m Manifest) Validate() error {
 
 ``````
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents || c == CapScreens
 }
 ``````
 
@@ -25116,9 +25244,6 @@ func contributesUseT(c Contributes) bool {
 	}
 	for _, sc := range c.Screens {
 		check(sc.Title)
-		for _, sec := range sc.Sections {
-			check(sec.Title)
-		}
 	}
 	return any
 }
@@ -25498,6 +25623,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
 	validateScreens(m, add, label)
+	validateSurfaces(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")
@@ -27788,6 +27914,11 @@ type Host interface {
 
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// ScreensInvalidate and ScreensPutRecords are the screens pushes
+	// (docs/plugin-screens.md); both need the screens capability.
+	ScreensInvalidate(ctx context.Context, pluginID string) (int, error)
+	ScreensPutRecords(ctx context.Context, pluginID string, records json.RawMessage) (int, error)
+
 	// AIComplete runs a bounded completion against the owner's configured
 	// language model (requires permissions.ai: "complete", or "complete+search"
 	// when viewerToken identifies an active frontend-adapter search call; #702).
@@ -27909,6 +28040,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
+	mux.HandleFunc("POST /ether/plugin-host/screens/invalidate", h.screensInvalidate)
+	mux.HandleFunc("POST /ether/plugin-host/screens/records", h.screensPutRecords)
 	h.mux = mux
 	return h
 }
@@ -28661,6 +28794,36 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.screensInvalidate
+
+``````
+func (h *HostHandler) screensInvalidate(w http.ResponseWriter, r *http.Request) {
+	n, err := h.host.ScreensInvalidate(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.screensPutRecords
+
+``````
+func (h *HostHandler) screensPutRecords(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Records json.RawMessage `json:"records"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	n, err := h.host.ScreensPutRecords(r.Context(), pluginIDOf(r), body.Records)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
 }
 ``````
 
@@ -32814,7 +32977,8 @@ func ViewerRequestPath(path string) bool {
 		}
 	}
 	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
-		strings.HasPrefix(path, "/ether/v1/live/")
+		strings.HasPrefix(path, "/ether/v1/live/") ||
+		strings.HasPrefix(path, "/ether/v1/screens/")
 }
 ``````
 
@@ -32990,6 +33154,12 @@ func DeadlineFor(path string) time.Duration {
 		return 10 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/live/"):
 		return 15 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/screens/"):
+		// A screen's data read or action: a viewer is waiting on it.
+		if strings.Contains(p, "/actions/") {
+			return 8 * time.Second
+		}
+		return 4 * time.Second
 	default:
 		return 30 * time.Second
 	}
@@ -33339,6 +33509,8 @@ globalThis.ether = (() => {
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
                setWatchState: (v) => call("viewers.setWatchState", [v]) },
     collections: { upsert: (c) => call("collections.upsert", [c]) },
+    screens: { invalidate: () => call("screens.invalidate", []),
+               putRecords: (records) => call("screens.putRecords", [records == null ? [] : records]) },
     kinds: { upsert: (kind, items) => call("kinds.upsert", [kind, items == null ? [] : items]),
              delete: (kind, ids) => call("kinds.delete", [kind, ids == null ? [] : ids]),
              items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
@@ -34668,7 +34840,7 @@ var DefaultCosts = map[string]int64{
 	"kinds.playlists": 20, "kinds.playlist": 20, "kinds.playlistCreate": 50, "kinds.playlistUpdate": 50, "kinds.playlistDelete": 20, "kinds.expand": 50, "kinds.search": 50,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
-	"ai.complete": 200, "media.probe": 100,
+	"ai.complete": 200, "media.probe": 100, "screens.invalidate": 10, "screens.putRecords": 20,
 }
 ``````
 
@@ -36805,30 +36977,15 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.ruleConditions[].label` | `string` | true | {"maxLength":40} |
 | `ether.contributes.ruleConditions[].operators` | `array` | false | {} |
 | `ether.contributes.screens` | `array` | false | {} |
-| `ether.contributes.screens[].feed` | `string` | false | {} |
+| `ether.contributes.screens[].actions` | `object` | false | {"additionalProperties":{"properties":{"args":{"additionalProperties":{"properties":{"enum":{"items":{"type":"string"},"type":"array"},"max":{"type":"integer"},"min":{"type":"integer"},"required":{"type":"boolean"},"type":{"type":"string"}},"type":"object"},"type":"object"},"confirm":{"type":"string"},"rate":{"type":"string"}},"type":"object"}} |
+| `ether.contributes.screens[].contentRating` | `string` | false | {} |
+| `ether.contributes.screens[].default` | `boolean` | false | {} |
 | `ether.contributes.screens[].frontends` | `array` | false | {} |
 | `ether.contributes.screens[].icon` | `string` | false | {} |
 | `ether.contributes.screens[].id` | `string` | false | {} |
-| `ether.contributes.screens[].sections` | `array` | false | {} |
-| `ether.contributes.screens[].sections[].entityKind` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].feed` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].id` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].league` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].leagues` | `array` | false | {} |
-| `ether.contributes.screens[].sections[].leagues[].abbr` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].leagues[].id` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].leagues[].logo` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].leagues[].name` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].limit` | `integer` | false | {} |
-| `ether.contributes.screens[].sections[].query` | `object` | false | {} |
-| `ether.contributes.screens[].sections[].query.category` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].query.favorites` | `boolean` | false | {} |
-| `ether.contributes.screens[].sections[].query.feed` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].query.league` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].query.state` | `array` | false | {} |
-| `ether.contributes.screens[].sections[].query.window` | `any` | false | {"enum":["today","week","recent"]} |
-| `ether.contributes.screens[].sections[].title` | `string` | false | {} |
-| `ether.contributes.screens[].sections[].type` | `any` | false | {"enum":["hero","events","table","schedule","leagues","entities"]} |
+| `ether.contributes.screens[].pages` | `object` | false | {"additionalProperties":{"items":{"type":"string"},"type":"array"}} |
+| `ether.contributes.screens[].placement` | `string` | false | {} |
+| `ether.contributes.screens[].sections` | `any` | false | {} |
 | `ether.contributes.screens[].title` | `string` | false | {} |
 | `ether.contributes.slots` | `array` | false | {} |
 | `ether.contributes.slots[].action` | `string` | false | {"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"} |
@@ -36974,7 +37131,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
               "kind_resolver",
               "frontend_adapter",
               "matcher",
-              "live_events"
+              "live_events",
+              "screens"
             ]
           },
           "type": "array",
@@ -38642,8 +38800,51 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
             "screens": {
               "items": {
                 "properties": {
-                  "feed": {
+                  "actions": {
+                    "additionalProperties": {
+                      "properties": {
+                        "args": {
+                          "additionalProperties": {
+                            "properties": {
+                              "enum": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "max": {
+                                "type": "integer"
+                              },
+                              "min": {
+                                "type": "integer"
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "type": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "object"
+                        },
+                        "confirm": {
+                          "type": "string"
+                        },
+                        "rate": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "object"
+                  },
+                  "contentRating": {
                     "type": "string"
+                  },
+                  "default": {
+                    "type": "boolean"
                   },
                   "frontends": {
                     "items": {
@@ -38657,99 +38858,19 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                   "id": {
                     "type": "string"
                   },
-                  "sections": {
-                    "items": {
-                      "properties": {
-                        "entityKind": {
-                          "type": "string"
-                        },
-                        "feed": {
-                          "type": "string"
-                        },
-                        "id": {
-                          "type": "string"
-                        },
-                        "league": {
-                          "type": "string"
-                        },
-                        "leagues": {
-                          "items": {
-                            "properties": {
-                              "abbr": {
-                                "type": "string"
-                              },
-                              "id": {
-                                "type": "string"
-                              },
-                              "logo": {
-                                "type": "string"
-                              },
-                              "name": {
-                                "type": "string"
-                              }
-                            },
-                            "type": "object"
-                          },
-                          "type": "array"
-                        },
-                        "limit": {
-                          "type": "integer"
-                        },
-                        "query": {
-                          "properties": {
-                            "category": {
-                              "type": "string"
-                            },
-                            "favorites": {
-                              "type": "boolean"
-                            },
-                            "feed": {
-                              "type": "string"
-                            },
-                            "league": {
-                              "type": "string"
-                            },
-                            "state": {
-                              "items": {
-                                "enum": [
-                                  "pre",
-                                  "in",
-                                  "post",
-                                  "delayed",
-                                  "postponed",
-                                  "canceled"
-                                ]
-                              },
-                              "type": "array"
-                            },
-                            "window": {
-                              "enum": [
-                                "today",
-                                "week",
-                                "recent"
-                              ]
-                            }
-                          },
-                          "type": "object"
-                        },
-                        "title": {
-                          "type": "string"
-                        },
-                        "type": {
-                          "enum": [
-                            "hero",
-                            "events",
-                            "table",
-                            "schedule",
-                            "leagues",
-                            "entities"
-                          ]
-                        }
+                  "pages": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
                       },
-                      "type": "object"
+                      "type": "array"
                     },
-                    "type": "array"
+                    "type": "object"
                   },
+                  "placement": {
+                    "type": "string"
+                  },
+                  "sections": {},
                   "title": {
                     "type": "string"
                   }
@@ -48030,6 +48151,155 @@ export function handle(req:any){
 
 ``````
 
+## Source: sdk/examples/news-desk/README.md
+
+# News desk
+
+The smallest complete plugin screen: a front page of stories by topic and the topics a viewer follows, with no live feed. Read [`docs/plugin-screens.md`](../../../docs/plugin-screens.md) first.
+
+- `screens/desk.json`: the document. Its `sources` are `front` (a `plugin` source, shared by every viewer, cached 2 minutes and refreshed every minute while open) and `mine` (a `plugin` source with `scope: "viewer"`, loaded lazily).
+- `plugin.ts`: answers both sources with `onScreenSource` and runs the `follow-topic` action with `onScreenAction`. Pictures come from the package with `asset()`; a remote picture would use `image(url)` on one of your `permissions.network` hosts.
+- `manifest.json`: the `screens` capability, the screen with its page, and the typed `follow-topic` action.
+
+Check it with `ether plugin check sdk/examples/news-desk`, or open it in Studio to watch the live preview while you edit `screens/desk.json`.
+
+
+## Source: sdk/examples/news-desk/manifest.json
+
+``````
+{
+  "id": "org.ether.examples.newsdesk",
+  "version": "1.0.0",
+  "name": "News desk",
+  "description": "A front page of stories by topic, with topics a viewer follows: a plugin screen with no live feed.",
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "capabilities": ["screens"],
+    "summary": "$t:summary",
+    "runtime": { "kind": "hosted", "entry": "plugin.ts" },
+    "permissions": { "viewers": { "identity": "all" } },
+    "strings": { "en": "i18n/en.json" },
+    "contributes": {
+      "screens": [
+        {
+          "id": "desk",
+          "title": "$t:screen_title",
+          "icon": "newspaper",
+          "pages": { "index": "screens/desk.json" },
+          "actions": {
+            "follow-topic": {
+              "args": {
+                "topic": { "type": "string", "enum": ["top", "local", "tech"], "required": true },
+                "on": { "type": "bool", "required": true }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
+``````
+
+## Source: sdk/examples/news-desk/plugin.ts
+
+``````
+/**
+ * News desk: the smallest complete plugin screen (docs/plugin-screens.md).
+ *
+ * - screens/desk.json is the screen: Vela's node language plus two sources,
+ *   `front` (shared by every viewer) and `mine` (this viewer's follows).
+ * - The `follow-topic` action is declared in the manifest; Ether checks its
+ *   arguments and the viewer before calling us.
+ * - Pictures go through `asset()` (a file in this package) or `image()` (a
+ *   URL on one of your permissions.network hosts): never as a bare URL.
+ *
+ * A real desk would fetch a feed with ether.http and keep stories as
+ * records it updates with ether.screens.putRecords; this one is static so it
+ * runs offline.
+ */
+import { asset, plugin, type PluginContext } from "../../typescript/src/index.ts";
+import manifest from "./manifest.json" with { type: "json" };
+
+type Topic = "top" | "local" | "tech";
+
+const TOPICS: { id: Topic; name: string }[] = [
+  { id: "top", name: "Top stories" },
+  { id: "local", name: "Local" },
+  { id: "tech", name: "Technology" },
+];
+
+const STORIES: Record<Topic, { title: string; section: string; published: string }[]> = {
+  top: [
+    { title: "Council approves the new river crossing", section: "City", published: "2026-11-24T09:10:00Z" },
+    { title: "Winter storm watch for the weekend", section: "Weather", published: "2026-11-24T08:30:00Z" },
+  ],
+  local: [{ title: "Library extends evening hours", section: "Community", published: "2026-11-24T07:45:00Z" }],
+  tech: [{ title: "A smaller, faster media server, explained", section: "Software", published: "2026-11-23T18:00:00Z" }],
+};
+
+function topicOf(raw: unknown): Topic {
+  return raw === "local" || raw === "tech" ? raw : "top";
+}
+
+// Follows are per viewer: viewer-scoped sources and actions carry the viewer
+// (X-Ether-Viewer), so they key the plugin's KV store by viewer.
+function followKey(ctx: PluginContext): string {
+  const viewer = ctx.headers["x-ether-viewer"] ?? ctx.headers["X-Ether-Viewer"] ?? "0";
+  return `follows:${Array.isArray(viewer) ? viewer[0] : viewer}`;
+}
+
+function follows(ctx: PluginContext): Topic[] {
+  const raw = ctx.ether.kv.get(followKey(ctx)) as string | null | undefined;
+  return raw ? (JSON.parse(raw) as Topic[]) : [];
+}
+
+export function createPlugin() {
+  const p = plugin({ manifest: manifest as never, routes: {} });
+
+  p.onScreenSource("desk", "front", ({ args }) => {
+    const topic = topicOf(args.topic);
+    return {
+      value: {
+        topics: TOPICS,
+        topicName: TOPICS.find((t) => t.id === topic)?.name ?? "",
+        breaking: topic === "top" ? { title: "Storm watch issued for Saturday" } : null,
+        stories: STORIES[topic].map((s) => ({ ...s, image: asset("assets/story.svg") })),
+      },
+      // Every viewer shares this answer for two minutes; while someone has
+      // the desk open, Ether asks again every minute.
+      maxAgeSec: 120,
+      nextRefreshSec: 60,
+    };
+  });
+
+  p.onScreenSource("desk", "following", (req, ctx) => {
+    const topic = topicOf(req.args.topic);
+    return { value: { followsTopic: follows(ctx).includes(topic), topics: follows(ctx) }, maxAgeSec: 5 };
+  });
+
+  p.onScreenAction("desk", "follow-topic", ({ args }, ctx) => {
+    const topic = topicOf(args.topic);
+    const on = args.on === true;
+    const next = follows(ctx).filter((t) => t !== topic);
+    if (on) next.push(topic);
+    ctx.ether.kv.put(followKey(ctx), JSON.stringify(next));
+    // Patch the viewer's `mine` source at once; the toast is plain text.
+    return {
+      sources: { mine: { followsTopic: on, topics: next } },
+      toast: on ? "Following" : "Unfollowed",
+    };
+  });
+
+  return p;
+}
+
+export const handle = createPlugin().handle;
+
+``````
+
 ## Source: sdk/examples/october-after-dark/README.md
 
 # October After Dark
@@ -49124,14 +49394,15 @@ Follow this recipe to open, inspect, customize, and install `org.ether.sports` i
 ``````
 {
   "id": "org.ether.sports",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": "Sports",
   "description": "Live scores, standings and schedules across 17 leagues from ESPN.",
   "ether": {
     "protocol": 1,
     "kind": "extension",
     "capabilities": [
-      "live_events"
+      "live_events",
+      "screens"
     ],
     "summary": "$t:summary",
     "icon": "assets/icon.svg",
@@ -49172,67 +49443,58 @@ Follow this recipe to open, inspect, customize, and install `org.ether.sports` i
           "id": "sports",
           "title": "$t:screen_title",
           "icon": "trophy",
-          "sections": [
-            {
-              "id": "leagues",
-              "type": "leagues",
+          "pages": {
+            "index": "screens/sports.json",
+            "game": "screens/game.json"
+          }
+        }
+      ],
+      "surfaces": [
+        {
+          "id": "scorebug",
+          "presentation": "playerOverlay",
+          "title": "$t:surface_scorebug",
+          "anchor": "topLeft",
+          "visibility": "always",
+          "setting": {
+            "id": "scorebug",
+            "label": "$t:setting_scorebug",
+            "default": true
+          },
+          "when": {
+            "event": {
               "feed": "sports"
-            },
-            {
-              "id": "hero",
-              "type": "hero",
-              "feed": "sports"
-            },
-            {
-              "id": "live",
-              "type": "events",
-              "title": "$t:section_live_now",
-              "feed": "sports",
-              "query": {
-                "state": [
-                  "in"
-                ]
-              }
-            },
-            {
-              "id": "your-teams",
-              "type": "events",
-              "title": "$t:section_your_teams",
-              "feed": "sports",
-              "query": {
-                "favorites": true,
-                "window": "week"
-              }
-            },
-            {
-              "id": "today",
-              "type": "events",
-              "title": "$t:section_today",
-              "feed": "sports",
-              "query": {
-                "window": "today"
-              }
-            },
-            {
-              "id": "schedule",
-              "type": "schedule",
-              "title": "$t:section_schedule",
-              "feed": "sports"
-            },
-            {
-              "id": "standings",
-              "type": "table",
-              "title": "$t:section_standings",
-              "feed": "sports"
-            },
-            {
-              "id": "teams",
-              "type": "entities",
-              "title": "$t:section_teams",
-              "feed": "sports",
-              "entityKind": "team"
             }
-          ]
+          },
+          "document": "surfaces/scorebug.json"
+        },
+        {
+          "id": "ticker",
+          "presentation": "playerOverlay",
+          "title": "$t:surface_ticker",
+          "anchor": "bottom",
+          "visibility": "toggle",
+          "setting": {
+            "id": "ticker",
+            "label": "$t:setting_ticker",
+            "default": false
+          },
+          "when": {
+            "kind": "channel"
+          },
+          "document": "surfaces/ticker.json"
+        },
+        {
+          "id": "alert",
+          "presentation": "toast",
+          "title": "$t:surface_alert",
+          "document": "surfaces/alert.json"
+        },
+        {
+          "id": "tonight",
+          "presentation": "homeRow",
+          "title": "$t:surface_tonight",
+          "document": "surfaces/tonight.json"
         }
       ]
     }
@@ -49542,9 +49804,7 @@ import type {
   LiveEventStatus,
   LiveEventTable,
   LiveFeedMeta,
-  ScreenEventQuery,
   ScreenMeta,
-  ScreenSectionMeta,
 } from "../../../typescript/src/index.ts";
 
 export type {
@@ -49571,9 +49831,7 @@ export type {
   LiveEventStatus,
   LiveEventTable,
   LiveFeedMeta,
-  ScreenEventQuery,
   ScreenMeta,
-  ScreenSectionMeta,
 };
 
 // Short aliases used throughout the Sports plugin sources.
@@ -49592,8 +49850,6 @@ export type EventsResponse = LiveEventsResponse;
 export type EntitiesResponse = LiveEventEntitiesResponse;
 export type StandingsResponse = LiveEventStandingsResponse;
 export type LiveFeedContribution = LiveFeedMeta;
-export type ScreenSectionQuery = ScreenEventQuery;
-export type ScreenSection = ScreenSectionMeta;
 export type ScreenContribution = ScreenMeta;
 export type HostFetchBatchResult = HostFetchManyResult;
 
@@ -51064,6 +51320,9 @@ interface RawEspnScoreboard {
 
 interface RawEspnPlay {
   id?: string;
+  wallclock?: string;
+  homeScore?: number;
+  awayScore?: number;
   text?: string;
   shortText?: string;
   scoringPlay?: boolean;
@@ -52148,7 +52407,37 @@ function mapScoreboardEvent(
   if (matchHints.terms.length > 0 || matchHints.callsigns.length > 0) {
     event.matchHints = matchHints;
   }
+  const prominence = eventProminence(league, competitors, broadcasts);
+  if (prominence > 0) event.prominence = prominence;
   return event;
+}
+
+const LEAGUE_WEIGHT: Record<string, number> = {
+  nfl: 0.35,
+  nba: 0.25,
+  epl: 0.25,
+  ucl: 0.25,
+  mlb: 0.2,
+  nhl: 0.2,
+  ncaaf: 0.2,
+  f1: 0.2,
+};
+
+/**
+ * How big an event is, 0..1, for Ether's featured order: the league, ranked
+ * teams, and a national TV broadcast. Ether puts favourites and close games
+ * first on its own; this only orders the rest.
+ */
+export function eventProminence(
+  league: LeagueConfig,
+  competitors: Competitor[],
+  broadcasts: { kind?: string }[],
+): number {
+  let p = LEAGUE_WEIGHT[league.id] ?? 0.1;
+  const ranked = competitors.filter((c) => typeof c.rank === "number" && c.rank > 0 && c.rank <= 25);
+  p += ranked.length >= 2 ? 0.3 : ranked.length === 1 ? 0.15 : 0;
+  if (broadcasts.some((b) => b.kind === "tv")) p += 0.15;
+  return Math.round(Math.min(1, p) * 100) / 100;
 }
 
 function buildLineScoreTable(
@@ -52223,10 +52512,16 @@ function buildSummaryTables(
       }
     }
     const rows: string[][] = [];
+    // ESPN can list two stats under one label (a total and an average
+    // both called "Points Against"); show each label once.
+    const seenLabels = new Set<string>();
     for (const s of awayStats.slice(0, 12)) {
       if (!s.name || !s.label) continue;
       const hv = homeByName.get(s.name);
       if (hv === undefined) continue;
+      const label = s.label.trim().toLowerCase();
+      if (seenLabels.has(label)) continue;
+      seenLabels.add(label);
       rows.push([s.label, s.displayValue ?? "-", hv]);
     }
     if (rows.length > 0) {
@@ -52291,10 +52586,17 @@ function classifyPlayEmphasis(play: RawEspnPlay): "score" | "key" | "normal" {
   return "normal";
 }
 
+/** The home and away competitor ids, for a play's score after it. */
+interface PlaySides {
+  home?: string;
+  away?: string;
+}
+
 function mapRawPlay(
   _league: LeagueConfig,
   play: RawEspnPlay,
   fallbackTeamId?: string,
+  sides?: PlaySides,
 ): EventPlay | null {
   const text = (play.text || play.shortText || "").trim();
   if (!text) return null;
@@ -52312,18 +52614,36 @@ function mapRawPlay(
   if (rawTeam) {
     out.competitorId = formatEntityId(_league.id, String(rawTeam));
   }
+  // Wall-clock time and the score after the play let a timeshifted overlay
+  // show the score of the picture on screen.
+  if (play.wallclock && !Number.isNaN(Date.parse(play.wallclock))) {
+    out.at = new Date(Date.parse(play.wallclock)).toISOString();
+  }
+  if (
+    sides?.home &&
+    sides.away &&
+    typeof play.homeScore === "number" &&
+    typeof play.awayScore === "number"
+  ) {
+    out.score = { [sides.home]: String(play.homeScore), [sides.away]: String(play.awayScore) };
+  }
   return out;
 }
 
 function extractSummaryPlays(
   league: LeagueConfig,
   summary: RawEspnSummary,
+  competitors: Competitor[] = [],
 ): EventPlay[] {
   const out: EventPlay[] = [];
+  const sides: PlaySides = {
+    home: competitors.find((c) => c.home)?.id,
+    away: competitors.find((c) => !c.home)?.id,
+  };
 
   if (league.category === "soccer" && Array.isArray(summary.keyEvents)) {
     for (const ke of summary.keyEvents) {
-      const mapped = mapRawPlay(league, ke);
+      const mapped = mapRawPlay(league, ke, undefined, sides);
       if (mapped) out.push(mapped);
     }
   } else if (summary.drives) {
@@ -52333,19 +52653,19 @@ function extractSummaryPlays(
     ];
     for (const drive of allDrives) {
       for (const p of drive.plays || []) {
-        const mapped = mapRawPlay(league, p, drive.team?.id);
+        const mapped = mapRawPlay(league, p, drive.team?.id, sides);
         if (mapped) out.push(mapped);
       }
     }
     if (out.length === 0 && Array.isArray(summary.scoringPlays)) {
       for (const sp of summary.scoringPlays) {
-        const mapped = mapRawPlay(league, { ...sp, scoringPlay: true });
+        const mapped = mapRawPlay(league, { ...sp, scoringPlay: true }, undefined, sides);
         if (mapped) out.push(mapped);
       }
     }
   } else if (Array.isArray(summary.plays)) {
     for (const p of summary.plays) {
-      const mapped = mapRawPlay(league, p);
+      const mapped = mapRawPlay(league, p, undefined, sides);
       if (mapped) out.push(mapped);
     }
   }
@@ -52591,7 +52911,28 @@ function sortStandingsEntries(
   });
 }
 
+/**
+ * A standings table whose rows name their entity (team or driver), so Ether
+ * can light a viewer's favourites by identity rather than by name.
+ */
 function mapStandingsTable(
+  league: LeagueConfig,
+  title: string,
+  rawEntries: RawEspnStandingEntry[],
+): GenericTable | null {
+  const table = mapStandingsRows(league, title, rawEntries);
+  if (!table) return null;
+  const ids = sortStandingsEntries(league, rawEntries).map((e) => {
+    const raw = e.team?.id || e.athlete?.id;
+    return raw ? formatEntityId(league.id, String(raw)) : "";
+  });
+  if (ids.length === table.rows.length && ids.some((id) => id !== "")) {
+    table.rowEntityIds = ids;
+  }
+  return table;
+}
+
+function mapStandingsRows(
   league: LeagueConfig,
   title: string,
   rawEntries: RawEspnStandingEntry[],
@@ -53051,7 +53392,7 @@ export class EspnSportsProvider implements SportsProvider {
         rawStatus?.clock,
       );
       const tables = buildSummaryTables(league, summary, rawCompetitors, competitors);
-      const plays = extractSummaryPlays(league, summary);
+      const plays = extractSummaryPlays(league, summary, competitors);
       const links = extractLinks(summary.header?.links);
 
       const detail: LiveEventDetail = {
@@ -58187,6 +58528,9 @@ type kindHandlers struct {
 	liveFeeds map[string]LiveFeedProvider
 	frontend  map[string]FrontendAdapter
 	setup     SetupTester
+	// screen sources and actions by "<screen>/<name>" ("*" matches any screen).
+	screenSources map[string]ScreenSourceHandler
+	screenActions map[string]ScreenActionHandler
 }
 ``````
 
@@ -58449,6 +58793,10 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 3 && parts[0] == "live":
 		feed, _ := url.PathUnescape(parts[1])
 		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
+	case len(parts) == 4 && (parts[0] == "screens" || parts[0] == "surfaces") && (parts[2] == "sources" || parts[2] == "actions"):
+		screen, _ := url.PathUnescape(parts[1])
+		name, _ := url.PathUnescape(parts[3])
+		return p.dispatchScreen(pctx, method, screen, parts[2], name, req), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true
@@ -60007,6 +60355,7 @@ type LiveEventWatchTarget struct {
 | `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
 | `spoiler` | `bool` | may be omitted (see validation for conditions) |  |
 | `updatedAt` | `string` | may be omitted (see validation for conditions) |  |
+| `prominence` | `float64` | may be omitted (see validation for conditions) | Prominence ranks featured lists: how big the event is, 0..1. |
 
 
 ## Source: sdk/go/liveevents.go#LiveEvent
@@ -60031,6 +60380,8 @@ type LiveEvent struct {
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
 	Spoiler     bool                   `json:"spoiler,omitempty"`
 	UpdatedAt   string                 `json:"updatedAt,omitempty"`
+	// Prominence ranks featured lists: how big the event is, 0..1.
+	Prominence float64 `json:"prominence,omitempty"`
 }
 ``````
 
@@ -60041,6 +60392,7 @@ type LiveEvent struct {
 | `title` | `string` | emitted (validation may require a value) |  |
 | `columns` | `[]string` | emitted (validation may require a value) |  |
 | `rows` | `[][]string` | emitted (validation may require a value) |  |
+| `rowEntityIds` | `[]string` | may be omitted (see validation for conditions) | RowEntityIDs names the entity each row is about, in row order. |
 
 
 ## Source: sdk/go/liveevents.go#LiveEventTable
@@ -60051,6 +60403,8 @@ type LiveEventTable struct {
 	Title   string     `json:"title"`
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+	// RowEntityIDs names the entity each row is about, in row order.
+	RowEntityIDs []string `json:"rowEntityIds,omitempty"`
 }
 ``````
 
@@ -60063,6 +60417,8 @@ type LiveEventTable struct {
 | `text` | `string` | emitted (validation may require a value) |  |
 | `emphasis` | `string` | may be omitted (see validation for conditions) | score\|key\|normal |
 | `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+| `at` | `string` | may be omitted (see validation for conditions) | At is the play's wall-clock time (RFC3339). |
+| `score` | `map[string]string` | may be omitted (see validation for conditions) | Score is every competitor's score after the play, by competitor id. |
 
 
 ## Source: sdk/go/liveevents.go#LiveEventPlay
@@ -60075,6 +60431,10 @@ type LiveEventPlay struct {
 	Text         string `json:"text"`
 	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
 	CompetitorID string `json:"competitorId,omitempty"`
+	// At is the play's wall-clock time (RFC3339).
+	At string `json:"at,omitempty"`
+	// Score is every competitor's score after the play, by competitor id.
+	Score map[string]string `json:"score,omitempty"`
 }
 ``````
 
@@ -62129,6 +62489,341 @@ func defaultHostForRuntime(opts RemoteHostOptions) Host {
 }
 ``````
 
+## Source: sdk/go/screens.go#ScreenSourceRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `page` | `string` | emitted (validation may require a value) |  |
+| `args` | `map[string]string` | emitted (validation may require a value) |  |
+| `locale` | `string` | emitted (validation may require a value) |  |
+| `tz` | `string` | emitted (validation may require a value) | TZ is the viewer's IANA time zone. |
+
+
+## Source: sdk/go/screens.go#ScreenSourceRequest
+
+``````
+// ScreenSourceRequest is what Ether sends a screen source.
+type ScreenSourceRequest struct {
+	Screen string            `json:"-"`
+	Route  string            `json:"-"`
+	Page   string            `json:"page"`
+	Args   map[string]string `json:"args"`
+	Locale string            `json:"locale"`
+	// TZ is the viewer's IANA time zone.
+	TZ string `json:"tz"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenRecord.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `type` | `string` | emitted (validation may require a value) |  |
+| `id` | `string` | emitted (validation may require a value) |  |
+| `value` | `any` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/screens.go#ScreenRecord
+
+``````
+// ScreenRecord is one of the plugin's records ({type, id, value}).
+type ScreenRecord struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Value any    `json:"value"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenSourceAnswer.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `value` | `any` | emitted (validation may require a value) |  |
+| `records` | `[]ScreenRecord` | may be omitted (see validation for conditions) |  |
+| `maxAgeSec` | `int` | may be omitted (see validation for conditions) | MaxAgeSec is how long Ether may reuse the answer (5..3600, default 60; viewer-scoped answers at most 60). |
+| `nextRefreshSec` | `int` | may be omitted (see validation for conditions) | NextRefreshSec asks Ether to read again this soon while a viewer has the page open (at least 10). |
+
+
+## Source: sdk/go/screens.go#ScreenSourceAnswer
+
+``````
+// ScreenSourceAnswer is a source's answer.
+type ScreenSourceAnswer struct {
+	Value   any            `json:"value"`
+	Records []ScreenRecord `json:"records,omitempty"`
+	// MaxAgeSec is how long Ether may reuse the answer (5..3600, default 60;
+	// viewer-scoped answers at most 60).
+	MaxAgeSec int `json:"maxAgeSec,omitempty"`
+	// NextRefreshSec asks Ether to read again this soon while a viewer has
+	// the page open (at least 10).
+	NextRefreshSec int `json:"nextRefreshSec,omitempty"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenActionRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `page` | `string` | emitted (validation may require a value) |  |
+| `args` | `map[string]json.RawMessage` | emitted (validation may require a value) |  |
+| `params` | `map[string]string` | emitted (validation may require a value) |  |
+| `locale` | `string` | emitted (validation may require a value) |  |
+| `tz` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/screens.go#ScreenActionRequest
+
+``````
+// ScreenActionRequest is one call of a declared action.
+type ScreenActionRequest struct {
+	Screen string                     `json:"-"`
+	Action string                     `json:"-"`
+	Page   string                     `json:"page"`
+	Args   map[string]json.RawMessage `json:"args"`
+	Params map[string]string          `json:"params"`
+	Locale string                     `json:"locale"`
+	TZ     string                     `json:"tz"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenActionAnswer.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `records` | `[]ScreenRecord` | may be omitted (see validation for conditions) |  |
+| `sources` | `map[string]any` | may be omitted (see validation for conditions) |  |
+| `refresh` | `[]string` | may be omitted (see validation for conditions) | Refresh names sources Ether reads again before answering. |
+| `toast` | `string` | may be omitted (see validation for conditions) | Toast is plain text, at most 200 characters. |
+| `navigate` | `map[string]any` | may be omitted (see validation for conditions) | Navigate is a Vela navigate action: {"action": "navigate", "args": {...}}. |
+
+
+## Source: sdk/go/screens.go#ScreenActionAnswer
+
+``````
+// ScreenActionAnswer patches the client at once.
+type ScreenActionAnswer struct {
+	Records []ScreenRecord `json:"records,omitempty"`
+	Sources map[string]any `json:"sources,omitempty"`
+	// Refresh names sources Ether reads again before answering.
+	Refresh []string `json:"refresh,omitempty"`
+	// Toast is plain text, at most 200 characters.
+	Toast string `json:"toast,omitempty"`
+	// Navigate is a Vela navigate action: {"action": "navigate", "args": {...}}.
+	Navigate map[string]any `json:"navigate,omitempty"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenSourceHandler
+
+``````
+// ScreenSourceHandler answers a "plugin" source.
+type ScreenSourceHandler func(ctx *Context, req ScreenSourceRequest) (ScreenSourceAnswer, error)
+``````
+
+## Source: sdk/go/screens.go#ScreenActionHandler
+
+``````
+// ScreenActionHandler runs a declared screen action.
+type ScreenActionHandler func(ctx *Context, req ScreenActionRequest) (ScreenActionAnswer, error)
+``````
+
+## Source: sdk/go/screens.go#*Plugin.OnScreenSource
+
+``````
+// OnScreenSource registers a source handler; screen is the screen or surface
+// id, or "*" for any.
+func (p *Plugin) OnScreenSource(screen, route string, h ScreenSourceHandler) {
+	k := p.kinds()
+	if k.screenSources == nil {
+		k.screenSources = map[string]ScreenSourceHandler{}
+	}
+	k.screenSources[screen+"/"+route] = h
+}
+``````
+
+## Source: sdk/go/screens.go#*Plugin.OnScreenAction
+
+``````
+// OnScreenAction registers an action handler; screen may be "*".
+func (p *Plugin) OnScreenAction(screen, action string, h ScreenActionHandler) {
+	k := p.kinds()
+	if k.screenActions == nil {
+		k.screenActions = map[string]ScreenActionHandler{}
+	}
+	k.screenActions[screen+"/"+action] = h
+}
+``````
+
+## Source: sdk/go/screens.go#*Plugin.dispatchScreen
+
+``````
+func (p *Plugin) dispatchScreen(pctx *Context, method, screen, kind, name string, req RawRequest) RawResponse {
+	if method != http.MethodPost {
+		return errorJSON(http.StatusMethodNotAllowed, "method_not_allowed", "Screen routes use POST.")
+	}
+	k := p.kindHandlers
+	if kind == "sources" {
+		var h ScreenSourceHandler
+		if k != nil {
+			if h = k.screenSources[screen+"/"+name]; h == nil {
+				h = k.screenSources["*/"+name]
+			}
+		}
+		if h == nil {
+			return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No screen source %q is registered for %q.", name, screen))
+		}
+		var in ScreenSourceRequest
+		if len(req.Body) > 0 {
+			if err := json.Unmarshal(req.Body, &in); err != nil {
+				return errorJSON(http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			}
+		}
+		in.Screen, in.Route = screen, name
+		out, err := h(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		return okJSON(out, http.StatusOK)
+	}
+	var h ScreenActionHandler
+	if k != nil {
+		if h = k.screenActions[screen+"/"+name]; h == nil {
+			h = k.screenActions["*/"+name]
+		}
+	}
+	if h == nil {
+		return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No screen action %q is registered for %q.", name, screen))
+	}
+	var in ScreenActionRequest
+	if len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &in); err != nil {
+			return errorJSON(http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+		}
+	}
+	in.Screen, in.Action = screen, name
+	out, err := h(pctx, in)
+	if err != nil {
+		return toRouteErrorResponse(err)
+	}
+	return okJSON(out, http.StatusOK)
+}
+``````
+
+## Source: sdk/go/screens.go#Image
+
+``````
+// Image is a picture on one of the plugin's permissions.network hosts,
+// served to viewers through Ether's signed image proxy.
+func Image(url string) map[string]string { return map[string]string{"$image": url} }
+``````
+
+## Source: sdk/go/screens.go#Asset
+
+``````
+// Asset is a file in the plugin package.
+func Asset(path string) map[string]string {
+	return map[string]string{"$image": "asset:" + strings.TrimLeft(path, "/")}
+}
+``````
+
+## Source: sdk/go/screens.go#Link
+
+``````
+// Link is an https page a viewer may open on a phone or the web.
+func Link(url string) map[string]string { return map[string]string{"$link": url} }
+``````
+
+## Source: sdk/go/screens.go#Record
+
+``````
+// Record references one of the plugin's records (send its value in Records).
+func Record(typ, id string) map[string]map[string]string {
+	return map[string]map[string]string{"$record": {"type": typ, "id": id}}
+}
+``````
+
+## Source: sdk/go/screens.go#Event
+
+``````
+// Event references one of the plugin's live events.
+func Event(feed, id string) map[string]map[string]string {
+	return map[string]map[string]string{"$event": {"feed": feed, "id": id}}
+}
+``````
+
+## Source: sdk/go/screens.go#Entity
+
+``````
+// Entity references one of the plugin's live entities.
+func Entity(feed, kind, id string) map[string]map[string]string {
+	return map[string]map[string]string{"$entity": {"feed": feed, "kind": kind, "id": id}}
+}
+``````
+
+## Source: sdk/go/screens.go#ScreensHost
+
+``````
+// ScreensHost pushes screen updates (screens capability). RemoteHostClient
+// implements it; Context.InvalidateScreens and Context.PutScreenRecords use it.
+type ScreensHost interface {
+	ScreensInvalidate(ctx context.Context) (int, error)
+	ScreensPutRecords(ctx context.Context, records []ScreenRecord) (int, error)
+}
+``````
+
+## Source: sdk/go/screens.go#*RemoteHostClient.ScreensInvalidate
+
+``````
+// ScreensInvalidate makes open screens and surfaces read their sources again
+// through POST /ether/plugin-host/screens/invalidate.
+func (c *RemoteHostClient) ScreensInvalidate(ctx context.Context) (int, error) {
+	var out struct {
+		Streams int `json:"streams"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/screens/invalidate", map[string]any{}, &out, false)
+	return out.Streams, err
+}
+``````
+
+## Source: sdk/go/screens.go#*RemoteHostClient.ScreensPutRecords
+
+``````
+// ScreensPutRecords sends new values for the plugin's records to open screens
+// showing them through POST /ether/plugin-host/screens/records.
+func (c *RemoteHostClient) ScreensPutRecords(ctx context.Context, records []ScreenRecord) (int, error) {
+	var out struct {
+		Streams int `json:"streams"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/screens/records", map[string]any{"records": records}, &out, false)
+	return out.Streams, err
+}
+``````
+
+## Source: sdk/go/screens.go#*Context.InvalidateScreens
+
+``````
+// InvalidateScreens makes this plugin's open screens read their sources
+// again now. It returns how many open streams heard it.
+func (c *Context) InvalidateScreens() (int, error) {
+	if sh, ok := c.Ether.(ScreensHost); ok {
+		return sh.ScreensInvalidate(c.Context)
+	}
+	return 0, fmt.Errorf("screens.invalidate is not supported by this host")
+}
+``````
+
+## Source: sdk/go/screens.go#*Context.PutScreenRecords
+
+``````
+// PutScreenRecords sends new values for records open screens are showing.
+func (c *Context) PutScreenRecords(records ...ScreenRecord) (int, error) {
+	if sh, ok := c.Ether.(ScreensHost); ok {
+		return sh.ScreensPutRecords(c.Context, records)
+	}
+	return 0, fmt.Errorf("screens.putRecords is not supported by this host")
+}
+``````
+
 ## Source: sdk/go/settings.go#allowedSettingKinds
 
 ``````
@@ -63576,6 +64271,7 @@ type FieldOption struct {
 | `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) |  |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) |  |
 | `screens` | `[]ScreenMeta` | may be omitted (see validation for conditions) |  |
+| `surfaces` | `[]SurfaceMeta` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#Contributes
@@ -63604,6 +64300,7 @@ type Contributes struct {
 	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
 	Screens          []ScreenMeta          `json:"screens,omitempty"`
+	Surfaces         []SurfaceMeta         `json:"surfaces,omitempty"`
 }
 ``````
 
@@ -63614,9 +64311,12 @@ type Contributes struct {
 | `id` | `string` | emitted (validation may require a value) |  |
 | `title` | `string` | emitted (validation may require a value) |  |
 | `icon` | `string` | may be omitted (see validation for conditions) |  |
-| `feed` | `string` | may be omitted (see validation for conditions) |  |
-| `sections` | `[]ScreenSection` | emitted (validation may require a value) |  |
 | `frontends` | `[]string` | may be omitted (see validation for conditions) |  |
+| `pages` | `map[string]any` | may be omitted (see validation for conditions) | Pages are the screen's documents by page id ("index" first); each is a package file or a list of renderer variants (docs/plugin-screens.md). |
+| `placement` | `string` | may be omitted (see validation for conditions) | navigation\|hidden |
+| `contentRating` | `string` | may be omitted (see validation for conditions) |  |
+| `default` | `*bool` | may be omitted (see validation for conditions) |  |
+| `actions` | `map[string]ScreenAction` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#ScreenMeta
@@ -63624,92 +64324,143 @@ type Contributes struct {
 ``````
 // ScreenMeta declares one generic top-level screen contributed by a plugin.
 type ScreenMeta struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Icon      string          `json:"icon,omitempty"`
-	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections"`
-	Frontends []string        `json:"frontends,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Icon      string   `json:"icon,omitempty"`
+	Frontends []string `json:"frontends,omitempty"`
+	// Pages are the screen's documents by page id ("index" first); each is
+	// a package file or a list of renderer variants (docs/plugin-screens.md).
+	Pages         map[string]any          `json:"pages,omitempty"`
+	Placement     string                  `json:"placement,omitempty"` // navigation|hidden
+	ContentRating string                  `json:"contentRating,omitempty"`
+	Default       *bool                   `json:"default,omitempty"`
+	Actions       map[string]ScreenAction `json:"actions,omitempty"`
 }
 ``````
 
-## Source: sdk/go/types.go#ScreenSection.fields.md
+## Source: sdk/go/types.go#ScreenAction.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `id` | `string` | may be omitted (see validation for conditions) |  |
-| `type` | `string` | emitted (validation may require a value) | hero\|events\|table\|schedule\|leagues\|entities |
-| `title` | `string` | may be omitted (see validation for conditions) |  |
-| `feed` | `string` | may be omitted (see validation for conditions) |  |
-| `league` | `string` | may be omitted (see validation for conditions) |  |
-| `entityKind` | `string` | may be omitted (see validation for conditions) |  |
-| `limit` | `int` | may be omitted (see validation for conditions) |  |
-| `query` | `*ScreenEventQuery` | may be omitted (see validation for conditions) |  |
-| `leagues` | `[]ScreenLeague` | may be omitted (see validation for conditions) |  |
+| `args` | `map[string]ScreenActionArg` | may be omitted (see validation for conditions) |  |
+| `confirm` | `string` | may be omitted (see validation for conditions) |  |
+| `rate` | `string` | may be omitted (see validation for conditions) | normal\|low |
 
 
-## Source: sdk/go/types.go#ScreenSection
+## Source: sdk/go/types.go#ScreenAction
 
 ``````
-// ScreenSection declares one generic section inside a contributed screen.
-type ScreenSection struct {
-	ID         string            `json:"id,omitempty"`
-	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
-	Title      string            `json:"title,omitempty"`
-	Feed       string            `json:"feed,omitempty"`
-	League     string            `json:"league,omitempty"`
-	EntityKind string            `json:"entityKind,omitempty"`
-	Limit      int               `json:"limit,omitempty"`
-	Query      *ScreenEventQuery `json:"query,omitempty"`
-	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
+// ScreenAction declares a plugin-handled action documents call.
+type ScreenAction struct {
+	Args    map[string]ScreenActionArg `json:"args,omitempty"`
+	Confirm string                     `json:"confirm,omitempty"`
+	Rate    string                     `json:"rate,omitempty"` // normal|low
 }
 ``````
 
-## Source: sdk/go/types.go#ScreenEventQuery.fields.md
+## Source: sdk/go/types.go#ScreenActionArg.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `feed` | `string` | may be omitted (see validation for conditions) |  |
-| `state` | `[]string` | may be omitted (see validation for conditions) | pre\|in\|post\|delayed\|postponed\|canceled |
-| `league` | `string` | may be omitted (see validation for conditions) |  |
-| `favorites` | `bool` | may be omitted (see validation for conditions) |  |
-| `window` | `string` | may be omitted (see validation for conditions) | today\|week\|recent |
-| `category` | `string` | may be omitted (see validation for conditions) |  |
+| `type` | `string` | emitted (validation may require a value) | string\|int\|bool\|date\|ref\|strings |
+| `max` | `int` | may be omitted (see validation for conditions) |  |
+| `min` | `int` | may be omitted (see validation for conditions) |  |
+| `enum` | `[]string` | may be omitted (see validation for conditions) |  |
+| `required` | `bool` | may be omitted (see validation for conditions) |  |
 
 
-## Source: sdk/go/types.go#ScreenEventQuery
+## Source: sdk/go/types.go#ScreenActionArg
 
 ``````
-// ScreenEventQuery filters live events for an events, hero, or schedule section.
-type ScreenEventQuery struct {
-	Feed      string   `json:"feed,omitempty"`
-	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
-	League    string   `json:"league,omitempty"`
-	Favorites bool     `json:"favorites,omitempty"`
-	Window    string   `json:"window,omitempty"` // today|week|recent
-	Category  string   `json:"category,omitempty"`
+// ScreenActionArg is one typed action argument.
+type ScreenActionArg struct {
+	Type     string   `json:"type"` // string|int|bool|date|ref|strings
+	Max      int      `json:"max,omitempty"`
+	Min      int      `json:"min,omitempty"`
+	Enum     []string `json:"enum,omitempty"`
+	Required bool     `json:"required,omitempty"`
 }
 ``````
 
-## Source: sdk/go/types.go#ScreenLeague.fields.md
+## Source: sdk/go/types.go#SurfaceMeta.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `id` | `string` | emitted (validation may require a value) |  |
-| `name` | `string` | emitted (validation may require a value) |  |
-| `abbr` | `string` | may be omitted (see validation for conditions) |  |
-| `logo` | `string` | may be omitted (see validation for conditions) |  |
+| `presentation` | `string` | emitted (validation may require a value) | playerOverlay\|toast\|homeRow\|titlePanel |
+| `title` | `string` | emitted (validation may require a value) |  |
+| `anchor` | `string` | may be omitted (see validation for conditions) |  |
+| `visibility` | `string` | may be omitted (see validation for conditions) |  |
+| `setting` | `*SurfaceSetting` | may be omitted (see validation for conditions) |  |
+| `when` | `*SurfaceWhen` | may be omitted (see validation for conditions) |  |
+| `ttl` | `int` | may be omitted (see validation for conditions) |  |
+| `contentRating` | `string` | may be omitted (see validation for conditions) |  |
+| `default` | `*bool` | may be omitted (see validation for conditions) |  |
+| `document` | `any` | emitted (validation may require a value) |  |
+| `frontends` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
-## Source: sdk/go/types.go#ScreenLeague
+## Source: sdk/go/types.go#SurfaceMeta
 
 ``````
-// ScreenLeague optionally declares one static league filter chip on a leagues section.
-type ScreenLeague struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Abbr string `json:"abbr,omitempty"`
-	Logo string `json:"logo,omitempty"`
+// SurfaceMeta declares a document drawn in a host slot.
+type SurfaceMeta struct {
+	ID            string          `json:"id"`
+	Presentation  string          `json:"presentation"` // playerOverlay|toast|homeRow|titlePanel
+	Title         string          `json:"title"`
+	Anchor        string          `json:"anchor,omitempty"`
+	Visibility    string          `json:"visibility,omitempty"`
+	Setting       *SurfaceSetting `json:"setting,omitempty"`
+	When          *SurfaceWhen    `json:"when,omitempty"`
+	TTL           int             `json:"ttl,omitempty"`
+	ContentRating string          `json:"contentRating,omitempty"`
+	Default       *bool           `json:"default,omitempty"`
+	Document      any             `json:"document"`
+	Frontends     []string        `json:"frontends,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SurfaceSetting.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `default` | `bool` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/types.go#SurfaceSetting
+
+``````
+// SurfaceSetting is a player overlay's player-menu switch.
+type SurfaceSetting struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+``````
+
+## Source: sdk/go/types.go#SurfaceWhen.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `event` | `*struct {
+		Feed string `json:"feed"`
+	}` | may be omitted (see validation for conditions) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) |  |
+| `titleKind` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#SurfaceWhen
+
+``````
+// SurfaceWhen limits where a surface applies.
+type SurfaceWhen struct {
+	Event *struct {
+		Feed string `json:"feed"`
+	} `json:"event,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	TitleKind string `json:"titleKind,omitempty"`
 }
 ``````
 
@@ -67219,6 +67970,53 @@ class _CollectionsClient:
         self._call("POST", "/ether/plugin-host/collections/upsert", collection)
 
 
+class _ScreensClient:
+    """Pushes to open screens and surfaces (screens capability)."""
+
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def invalidate(self) -> Dict[str, int]:
+        """Open screens of this plugin read their sources again now."""
+        return self._call("POST", "/ether/plugin-host/screens/invalidate", {}) or {"streams": 0}
+
+    def put_records(self, records: List[Dict[str, Any]]) -> Dict[str, int]:
+        """New values for records open screens show: ``[{type, id, value}]``, at most 100."""
+        return self._call("POST", "/ether/plugin-host/screens/records", {"records": records}) or {"streams": 0}
+
+    putRecords = put_records
+
+
+def image(url: str) -> Dict[str, str]:
+    """A picture on one of your permissions.network hosts, served through Ether's image proxy."""
+    return {"$image": url}
+
+
+def asset(path: str) -> Dict[str, str]:
+    """A file in your plugin package."""
+    return {"$image": "asset:" + path.lstrip("/")}
+
+
+def link(url: str) -> Dict[str, str]:
+    """An https page viewers may open on phones and the web."""
+    return {"$link": url}
+
+
+def record(type_: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """A reference to one of your records; send its value in ``records``."""
+    return {"$record": {"type": type_, "id": id_}}
+
+
+def event(feed: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's events."""
+    return {"$event": {"feed": feed, "id": id_}}
+
+
+def entity(feed: str, kind: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's entities (a team, a driver)."""
+    return {"$entity": {"feed": feed, "kind": kind, "id": id_}}
+
+
 class EventEnumOption(TypedDict, total=False):
     value: str
     label: str
@@ -67530,6 +68328,7 @@ class RemoteHostClient:
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
+        self.screens = _ScreensClient(self._call_json)
         self.events = _EventsClient(self._call_json)
         self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
         self.media = _MediaClient(self._call_json, lambda: self.viewer_token)
@@ -68469,12 +69268,40 @@ class PluginInstance:
     def on_setup_test(self, tester: Any) -> None:
         self._setup_tester = tester
 
+    def on_screen_source(self, screen: str, route: str, handler: Callable[..., Any]) -> None:
+        """Answer a document's ``plugin`` source; ``screen`` may be ``"*"``.
+
+        ``handler(ctx, req)`` gets ``{screen, route, page, args, locale, tz}``
+        and returns ``{value, records?, maxAgeSec?, nextRefreshSec?}``. Wrap
+        images, links, records, events and entities with :func:`image`,
+        :func:`asset`, :func:`link`, :func:`record`, :func:`event` and
+        :func:`entity`; Ether drops bare URL strings.
+        """
+        self._screen_sources()[f"{screen}/{route}"] = handler
+
+    def on_screen_action(self, screen: str, action: str, handler: Callable[..., Any]) -> None:
+        """Run a manifest-declared screen action.
+
+        ``handler(ctx, req)`` gets ``{screen, action, page, args, params,
+        locale, tz}`` and returns ``{records?, sources?, refresh?, toast?,
+        navigate?}``.
+        """
+        self._screen_actions()[f"{screen}/{action}"] = handler
+
+    def _screen_sources(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_source_handlers", {})
+
+    def _screen_actions(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_action_handlers", {})
+
     onCatalog = on_catalog
     onResolve = on_resolve
     onMatch = on_match
     onLive = on_live
     onFrontend = on_frontend
     onSetupTest = on_setup_test
+    onScreenSource = on_screen_source
+    onScreenAction = on_screen_action
 
     def _kind_catalog(self) -> Dict[str, Any]:
         return self.__dict__.setdefault("_catalog_providers", {})
@@ -68540,6 +69367,18 @@ class PluginInstance:
             body = _parse_json_body(req.get("body"))
         except Exception:
             return _error_response(400, "invalid_json", "Request body must be valid JSON.")
+
+        if len(parts) == 4 and parts[0] in ("screens", "surfaces") and parts[2] in ("sources", "actions"):
+            if method != "POST":
+                return _error_response(405, "method_not_allowed", "Screen routes use POST.")
+            screen, name = parts[1], parts[3]
+            table = self._screen_sources() if parts[2] == "sources" else self._screen_actions()
+            handler = table.get(f"{screen}/{name}") or table.get(f"*/{name}")
+            if handler is None:
+                return _error_response(404, "not_found", f'No screen {parts[2][:-1]} "{name}" is registered for "{screen}".')
+            body["screen"] = screen
+            body["route" if parts[2] == "sources" else "action"] = name
+            return _ok_response(handler(ctx, body) or {})
 
         if len(parts) == 3 and parts[0] == "setup" and parts[2] == "test":
             tester = getattr(self, "_setup_tester", None)
@@ -71921,6 +72760,13 @@ export interface EtherHost {
   collections: {
     upsert(collection: Record<string, unknown>): MaybePromise<void>;
   };
+  /** Screens and surfaces (screens capability): tell open screens that your data changed. */
+  screens?: {
+    /** Open screens and surfaces of this plugin read their sources again now. */
+    invalidate(): MaybePromise<{ streams: number }>;
+    /** New values for your records, sent to open screens already showing them (at most 100). */
+    putRecords(records: Array<{ type: string; id: string; value: unknown }>): MaybePromise<{ streams: number }>;
+  };
   folders: {
     list(root: string, path?: string): MaybePromise<FolderEntry[]>;
     stat(root: string, path: string): MaybePromise<FolderEntry>;
@@ -72320,6 +73166,14 @@ export function createHostedClient(): EtherHost {
         callHost("collections.upsert", [collection]);
       },
     },
+    screens: {
+      invalidate(): { streams: number } {
+        return callHost("screens.invalidate", []) as { streams: number };
+      },
+      putRecords(records: Array<{ type: string; id: string; value: unknown }>): { streams: number } {
+        return callHost("screens.putRecords", [records]) as { streams: number };
+      },
+    },
     folders: {
       list(root: string, path = ""): FolderEntry[] {
         if (g.ether?.folders) return g.ether.folders.list(root, path) ?? [];
@@ -72692,6 +73546,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     collections: {
       async upsert(collection: Record<string, unknown>): Promise<void> {
         await callJson("POST", "/ether/plugin-host/collections/upsert", collection);
+      },
+    },
+    screens: {
+      async invalidate(): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/invalidate", {})) as { streams: number };
+      },
+      async putRecords(records: Array<{ type: string; id: string; value: unknown }>): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/records", { records })) as { streams: number };
       },
     },
     folders: {
@@ -73152,6 +74014,14 @@ export function lintCopy(raw: string, max = 0): string {
 
 ``````
 export type * from "./types.ts";
+export { asset, entity, event, image, link, record } from "./screens.ts";
+export type {
+  ScreenActionAnswer,
+  ScreenActionRequest,
+  ScreenRecord,
+  ScreenSourceAnswer,
+  ScreenSourceRequest,
+} from "./kinds.ts";
 export { PluginHttpError } from "./types.ts";
 export {
   plugin,
@@ -73521,8 +74391,72 @@ export interface KindHandlers<S = Record<string, unknown>> {
   live: Map<string, KindLiveProvider<S>>;
   liveFeeds: Map<string, LiveFeedProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
+  /** Screen and surface sources and actions, keyed "<screen>/<name>" (docs/plugin-screens.md). */
+  screenSources?: Map<string, ScreenSourceHandler<S>>;
+  screenActions?: Map<string, ScreenActionHandler<S>>;
   setup?: SetupTester<S>;
 }
+
+/** What Ether sends a screen source: the document's arguments with their holes filled. */
+export interface ScreenSourceRequest {
+  /** The screen (or surface) id and its page. */
+  screen: string;
+  route: string;
+  page: string;
+  args: Record<string, string>;
+  locale: string;
+  /** The viewer's IANA time zone. */
+  tz: string;
+}
+
+/** A source answer. Images, links, records, events and entities go through the envelope helpers. */
+export interface ScreenSourceAnswer {
+  value: unknown;
+  records?: ScreenRecord[];
+  /** How long Ether may reuse this answer (5..3600 s, default 60; viewer-scoped answers at most 60). */
+  maxAgeSec?: number;
+  /** While a viewer has the page open, ask again after this many seconds (at least 10). */
+  nextRefreshSec?: number;
+}
+
+export interface ScreenRecord {
+  type: string;
+  id: string;
+  value: unknown;
+}
+
+export interface ScreenActionRequest {
+  screen: string;
+  action: string;
+  page: string;
+  args: Record<string, unknown>;
+  params: Record<string, string>;
+  locale: string;
+  tz: string;
+}
+
+/** An action answer: patches the client applies at once. */
+export interface ScreenActionAnswer {
+  records?: ScreenRecord[];
+  /** Whole-source replacements, by source id. */
+  sources?: Record<string, unknown>;
+  /** Sources Ether reads again before answering. */
+  refresh?: string[];
+  /** Plain text, at most 200 characters. */
+  toast?: string;
+  /** A Vela navigate action: { action: "navigate", args: { page, ...params } }. */
+  navigate?: { action: "navigate"; args: Record<string, string> };
+}
+
+export type ScreenSourceHandler<S = Record<string, unknown>> = (
+  req: ScreenSourceRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenSourceAnswer>;
+
+export type ScreenActionHandler<S = Record<string, unknown>> = (
+  req: ScreenActionRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenActionAnswer | void>;
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
   return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
@@ -73648,6 +74582,27 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length === 4 && (parts[0] === "screens" || parts[0] === "surfaces") && (parts[2] === "sources" || parts[2] === "actions")) {
+    if (method !== "POST") return err(405, "method_not_allowed", "Screen routes use POST.");
+    const screen = parts[1] ?? "";
+    const name = parts[3] ?? "";
+    const key = `${screen}/${name}`;
+    const page = String(body.page ?? "");
+    const locale = String(body.locale ?? "en");
+    const tz = String(body.tz ?? "UTC");
+    if (parts[2] === "sources") {
+      const handler = handlers.screenSources?.get(key) ?? handlers.screenSources?.get(`*/${name}`);
+      if (!handler) return err(404, "not_found", `No screen source "${name}" is registered for "${screen}".`);
+      const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, string>;
+      return ok(await handler({ screen, route: name, page, args, locale, tz }, ctx));
+    }
+    const handler = handlers.screenActions?.get(key) ?? handlers.screenActions?.get(`*/${name}`);
+    if (!handler) return err(404, "not_found", `No screen action "${name}" is registered for "${screen}".`);
+    const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, unknown>;
+    const params = (body.params && typeof body.params === "object" ? body.params : {}) as Record<string, string>;
+    return ok((await handler({ screen, action: name, page, args, params, locale, tz }, ctx)) ?? {});
   }
 
   if (parts.length >= 3 && parts[0] === "live") {
@@ -74282,6 +75237,10 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onLive(kind: string, provider: KindLiveProvider<S>): void;
   onLiveFeed(feed: string, provider: LiveFeedProvider<S>): void;
   onFrontend(key: string, adapter: FrontendAdapter<S>): void;
+  /** Answers a document's `plugin` source: `screen` is the screen or surface id ("*" for any). */
+  onScreenSource(screen: string, route: string, handler: import("./kinds.ts").ScreenSourceHandler<S>): void;
+  /** Runs a manifest-declared screen action. */
+  onScreenAction(screen: string, action: string, handler: import("./kinds.ts").ScreenActionHandler<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
 
@@ -75015,6 +75974,12 @@ export function plugin<S = Record<string, unknown>>(
     onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
     onLiveFeed: (feed, provider) => { kindHandlers.liveFeeds.set(feed, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
+    onScreenSource: (screen, route, handler) => {
+      (kindHandlers.screenSources ??= new Map()).set(`${screen}/${route}`, handler);
+    },
+    onScreenAction: (screen, action, handler) => {
+      (kindHandlers.screenActions ??= new Map()).set(`${screen}/${action}`, handler);
+    },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };
 
@@ -75026,6 +75991,65 @@ export function plugin<S = Record<string, unknown>>(
   }
 
   return instance;
+}
+
+``````
+
+## Source: sdk/typescript/src/screens.ts
+
+``````
+/**
+ * Plugin screens and surfaces (docs/plugin-screens.md): helpers for the
+ * answers of `plugin` sources and actions. A plugin never puts a URL or an
+ * Ether key in its data directly; it wraps them in envelopes, and Ether
+ * rewrites each one for the viewer who opened the screen:
+ *
+ * - image(url): a picture on one of your permissions.network hosts, served
+ *   to the client through Ether's signed image proxy (asset("icons/x.svg")
+ *   for a file in your package);
+ * - link(url): an https page the viewer may open on a phone or the web;
+ * - record(type, id): a reference to one of your records (sent once,
+ *   patched live by screens.putRecords);
+ * - event(feed, id) and entity(feed, kind, id): your live events and
+ *   entities, resolved and filtered by Ether.
+ *
+ * A string that is a bare URL is dropped by Ether, so use the helpers.
+ */
+
+export interface ImageEnvelope { $image: string }
+export interface LinkEnvelope { $link: string }
+export interface RecordEnvelope { $record: { type: string; id: string } }
+export interface EventEnvelope { $event: { feed: string; id: string } }
+export interface EntityEnvelope { $entity: { feed: string; kind: string; id: string } }
+
+/** A picture on one of your permissions.network hosts. */
+export function image(url: string): ImageEnvelope {
+  return { $image: url };
+}
+
+/** A file in your plugin package (icons, artwork). */
+export function asset(path: string): ImageEnvelope {
+  return { $image: `asset:${path.replace(/^\/+/, "")}` };
+}
+
+/** An https page; Vela offers it on phones and the web, never on TV. */
+export function link(url: string): LinkEnvelope {
+  return { $link: url };
+}
+
+/** A reference to one of your records; send its value in `records`. */
+export function record(type: string, id: string): RecordEnvelope {
+  return { $record: { type, id } };
+}
+
+/** One of your live feed's events. */
+export function event(feed: string, id: string): EventEnvelope {
+  return { $event: { feed, id } };
+}
+
+/** One of your live feed's entities (a team, a driver). */
+export function entity(feed: string, kind: string, id: string): EntityEnvelope {
+  return { $entity: { feed, kind, id } };
 }
 
 ``````
@@ -76543,48 +77567,68 @@ export interface Contributes {
   liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
   screens?: ScreenMeta[];
+  surfaces?: SurfaceMeta[];
 }
 
-export type ScreenSectionType = "hero" | "events" | "table" | "schedule" | "leagues" | "entities";
 
-export type ScreenEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
 
-export type ScreenEventWindow = "today" | "week" | "recent";
-
-export interface ScreenEventQuery {
-  feed?: string;
-  state?: ScreenEventState[];
-  league?: string;
-  favorites?: boolean;
-  window?: ScreenEventWindow;
-  category?: string;
-}
-
-export interface ScreenLeagueMeta {
-  id: string;
-  name: string;
-  abbr?: string;
-  logo?: string;
-}
-
-export interface ScreenSectionMeta {
-  id?: string;
-  type: ScreenSectionType;
-  title?: string;
-  feed?: string;
-  league?: string;
-  entityKind?: string;
-  limit?: number;
-  query?: ScreenEventQuery;
-  leagues?: ScreenLeagueMeta[];
-}
 
 export interface ScreenMeta {
   id: string;
   title: string;
   icon?: string;
-  feed?: string;
-  sections: ScreenSectionMeta[];
+  frontends?: string[];
+  /**
+   * The screen's documents by page id: "index" is the landing page; each
+   * names a package file, or variants for older Vela renderers. See
+   * docs/plugin-screens.md.
+   */
+  pages?: Record<string, string | string[]>;
+  /** "navigation" (a top-level section, default) or "hidden" (reachable by navigate only). */
+  placement?: "navigation" | "hidden";
+  /** Hidden from viewers whose maximum content rating is lower. */
+  contentRating?: string;
+  /** Suggests the owner's per-app switch; omitted means shown. */
+  default?: boolean;
+  /** Plugin-handled actions the documents call. */
+  actions?: Record<string, ScreenActionMeta>;
+}
+
+export interface ScreenActionArgMeta {
+  type: "string" | "int" | "bool" | "date" | "ref" | "strings";
+  max?: number;
+  min?: number;
+  enum?: string[];
+  required?: boolean;
+}
+
+export interface ScreenActionMeta {
+  args?: Record<string, ScreenActionArgMeta>;
+  /** Asked before the action is sent ($t: keys allowed). */
+  confirm?: string;
+  /** normal: 10 calls per 10 s per viewer; low: 2. */
+  rate?: "normal" | "low";
+}
+
+/** A document drawn in a host slot: a player overlay, a toast, a Home row or a title panel. */
+export interface SurfaceMeta {
+  id: string;
+  presentation: "playerOverlay" | "toast" | "homeRow" | "titlePanel";
+  title: string;
+  /** playerOverlay only. */
+  anchor?: "topLeft" | "topRight" | "bottom";
+  /** playerOverlay only: always shown, only with the player controls, or a viewer switch. */
+  visibility?: "always" | "chrome" | "toggle";
+  /** The overlay's switch in the player menu (required for player overlays). */
+  setting?: { id: string; label: string; default: boolean };
+  /** Where it applies; may only name this plugin's feeds and kinds. */
+  when?: { event?: { feed: string }; kind?: "channel" | "programme" | "title"; titleKind?: string };
+  /** toast only: seconds on screen, 8..30. */
+  ttl?: number;
+  contentRating?: string;
+  default?: boolean;
+  /** A package file, or variants for older renderers. */
+  document: string | string[];
   frontends?: string[];
 }
 
@@ -76699,12 +77743,16 @@ export interface LiveEvent {
   spoiler?: boolean;
   /** RFC3339 timestamp. */
   updatedAt?: string;
+  /** How big the event is (0..1); ranks featured lists. Optional. */
+  prominence?: number;
 }
 
 export interface LiveEventTable {
   title: string;
   columns: string[];
   rows: string[][];
+  /** The entity (a team) each row is about, in row order, so Ether can mark favourites. */
+  rowEntityIds?: string[];
 }
 
 export interface LiveEventPlay {
@@ -76713,6 +77761,10 @@ export interface LiveEventPlay {
   text: string;
   emphasis?: "score" | "key" | "normal";
   competitorId?: string;
+  /** Wall-clock time of the play (RFC3339), so a timeshifted overlay shows the score of the picture. */
+  at?: string;
+  /** Every competitor's score after the play, by competitor id. */
+  score?: Record<string, string>;
 }
 
 export interface LiveEventProbabilityPoint {

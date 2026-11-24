@@ -810,8 +810,8 @@ function RowsPanel({
       icon={<TrendingUp size={16} />}
       className={className}
       actions={
-        <Link to="/home" className="text-xs font-medium text-primary hover:underline">
-          {t("Home")}
+        <Link to="/recommendations" className="text-xs font-medium text-primary hover:underline">
+          {t("Recommendations")}
         </Link>
       }
     >

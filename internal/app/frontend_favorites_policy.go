@@ -65,9 +65,6 @@ func (a *App) favoriteEntityAllowed(ctx context.Context, viewer *core.User, rawK
 	if a == nil || viewer == nil || a.pluginsRT == nil {
 		return false, nil
 	}
-	if a.pluginsRT.screens != nil {
-		return a.pluginsRT.screens.Registry().EntityAllowed(ctx, viewer, rawKey), nil
-	}
 	if a.pluginsRT.mgr == nil {
 		return false, nil
 	}

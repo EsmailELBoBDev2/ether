@@ -429,7 +429,7 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 		send(w, http.StatusUnprocessableEntity, object{"error": object{"class": "source", "code": "archive_unstreamable", "message": frontend.ErrArchiveUnstreamable.Error(), "retry": object{"allowed": false}}})
 	case errors.Is(err, frontend.ErrInvalidMultiview):
 		problem(w, 400, "request", "invalid_multiview")
-	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit), errors.Is(err, frontend.ErrInvalidScreenDate), errors.Is(err, frontend.ErrInvalidEntityKey):
+	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit):
 		problem(w, 400, "request", "invalid_request")
 	case errors.Is(err, frontend.ErrPreferencesLimit), errors.Is(err, frontend.ErrDownloadBudget):
 		problem(w, 429, "capacity", "resource_capacity")
@@ -669,14 +669,17 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			ctx = frontend.WithRequestMemo(ctx)
 		}
 	}
+	if token := strings.TrimSpace(r.Header.Get("X-Vela-Screen-Preview")); token != "" && len(token) <= 128 {
+		// A Studio preview: this request sees the draft documents.
+		ctx = frontend.WithScreenPreview(ctx, token)
+	}
 	r = r.WithContext(ctx)
 	// Authentication/idempotency can fail before ServeMux dispatches. Record
 	// only its registered route template for those warnings too. Unknown routes
 	// and unsupported methods dispatch straight to ServeMux so they answer 404
 	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
-	isLivePreferencesWrite := (r.Method == http.MethodPut || r.Method == http.MethodPatch) && r.URL.Path == "/vela/v0/live/preferences"
-	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (!isLivePreferencesWrite && r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") || (r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/vela/v0/favorites/entities/")) {
+	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") {
 		i.mux.ServeHTTP(w, r)
 		return
 	}
@@ -687,9 +690,9 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	var raw json.RawMessage
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err := dec.Decode(&raw); err != nil {
-		// POST /vela/v0/live/events/{id}/reveal and DELETE /vela/v0/multiview/{groupId}
-		// are naturally idempotent and may be called with an empty body.
-		if errors.Is(err, io.EOF) && ((r.Method == "POST" && r.Pattern == "POST /vela/v0/live/events/{id}/reveal") || (r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/vela/v0/multiview/"))) {
+		// DELETE /vela/v0/multiview/{groupId} is naturally idempotent and may
+		// be called with an empty body.
+		if errors.Is(err, io.EOF) && r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/vela/v0/multiview/") {
 			r.Body = http.NoBody
 			i.mux.ServeHTTP(w, r)
 			return
@@ -720,20 +723,11 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		} `json:"client"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
-		if isLivePreferencesWrite {
-			problem(w, 400, "request", "invalid_request")
-			return
-		}
 		problem(w, 400, "request", "idempotency_key_required")
 		return
 	}
-	if (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "") && r.Method == "POST" && r.Pattern == "POST /vela/v0/live/events/{id}/reveal" {
-		r.Body = http.NoBody
-		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
-		return
-	}
 	optionalReplanIdem := r.Method == http.MethodPost && r.Pattern == "POST /vela/v0/sessions/{id}/commands" && envelope.Kind == "replan"
-	if ((optionalMultiviewIdem || optionalReplanIdem) && envelope.IdempotencyKey == nil) || (isLivePreferencesWrite && (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "")) {
+	if (optionalMultiviewIdem || optionalReplanIdem) && envelope.IdempotencyKey == nil {
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")
@@ -742,6 +736,10 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.NoBody
 		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
 		return
+	}
+	if h := strings.TrimSpace(r.Header.Get("Idempotency-Key")); h != "" {
+		// The header wins over body.idempotencyKey when a client sends both.
+		envelope.IdempotencyKey = &h
 	}
 	if envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "" || len(*envelope.IdempotencyKey) > 256 {
 		problem(w, 400, "request", "idempotency_key_required")
@@ -984,16 +982,15 @@ func (i *instance) routes() {
 	i.route("GET", "/live/channels", i.channels)
 	i.route("GET", "/live/guide", i.guide)
 	i.route("POST", "/live/guide/window", i.guideWindow)
-	i.route("GET", "/live/events", i.liveEventsSnapshot)
-	i.route("GET", "/live/events/{id}", i.liveEventDetail)
-	i.route("POST", "/live/events/{id}/reveal", i.liveEventReveal)
 	i.route("GET", "/live/stream", i.liveEventsStream)
-	i.route("GET", "/live/preferences", i.liveEventsPreferencesGet)
-	i.route("PUT", "/live/preferences", i.liveEventsPreferencesSet)
-	i.route("PATCH", "/live/preferences", i.liveEventsPreferencesSet)
-	i.route("GET", "/live/entities", i.liveEntities)
-	i.route("GET", "/live/ticker", i.liveTicker)
-	i.route("GET", "/screens/{id}", i.screen)
+	i.route("GET", "/screens/{id}/pages/{page}/document", i.screenDocument)
+	i.route("GET", "/screens/{id}/pages/{page}/data", i.screenData)
+	i.route("POST", "/screens/{id}/actions/{action}", i.screenAction)
+	i.route("GET", "/surfaces/{id}/document", i.surfaceDocument)
+	i.route("GET", "/surfaces/{id}/data", i.surfaceData)
+	i.route("POST", "/surfaces/{id}/actions/{action}", i.surfaceAction)
+	i.route("PUT", "/surfaces/{id}/setting", i.surfaceSetting)
+	i.route("GET", "/screen-assets/{plugin}/{version}/{path...}", i.screenAsset)
 	i.route("GET", "/favorites/titles", i.favoriteTitles)
 	i.route("GET", "/history/recap", i.historyRecap)
 	i.route("GET", "/libraries/{id}/duplicates", i.libraryDuplicates)
@@ -1003,8 +1000,6 @@ func (i *instance) routes() {
 	i.route("GET", "/playlists/import/{id}", i.playlistImport)
 	i.route("POST", "/playlists/import/{id}/save", i.savePlaylistImport)
 	i.route("GET", "/recent", i.recentPlayContexts)
-	i.route("PUT", "/favorites/entities/{key}", i.favoriteEntity)
-	i.route("DELETE", "/favorites/entities/{key}", i.favoriteEntity)
 	i.route("POST", "/titles/{id}/watch", i.watch)
 	i.route("POST", "/titles/{id}/read", i.read)
 	i.route("GET", "/read/{ticket}", i.readFile)

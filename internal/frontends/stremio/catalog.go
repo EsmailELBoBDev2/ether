@@ -168,11 +168,17 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 		titles, err = i.libraryPage(r, viewer, device, typ, q)
 	} else if purpose != "" {
 		var rows []frontend.Row
-		rows, err = i.homeRows(r.Context(), frontend.RowRequest{Viewer: viewer, Device: device, Placement: frontend.PlacementHome, Purpose: purpose, Limit: 100})
+		req := frontend.RowRequest{Viewer: viewer, Device: device, Placement: frontend.PlacementHome, Purpose: purpose, Limit: 100}
+		if purpose == frontend.RowRecommendation {
+			// Recommendations is the Home page's watch rows, flattened in
+			// page order; the request takes every row, not one purpose.
+			req.Purpose = ""
+		}
+		rows, err = i.homeRows(r.Context(), req)
 		if err == nil {
 			seen := map[frontend.RatingKey]bool{}
 			for _, row := range rows {
-				if row.Purpose != purpose {
+				if !catalogRow(purpose, row) {
 					continue
 				}
 				items := row.Items
@@ -347,6 +353,27 @@ func (i *instance) libraryPage(r *http.Request, viewer *frontend.Viewer, device 
 		offset = max(0, offset-page.Total)
 	}
 	return titles, nil
+}
+
+// catalogRow reports whether a Home row feeds the catalogue for purpose.
+// Continue Watching reads the Continue row. Recommendations reads every
+// watch row on the Home page except the ones other catalogues or apps
+// own (Continue, Next Up, Live, listening rows) and plugin surfaces.
+func catalogRow(purpose frontend.RowPurpose, row frontend.Row) bool {
+	if purpose != frontend.RowRecommendation {
+		return row.Purpose == purpose
+	}
+	if row.Layout.Present.Surface != nil {
+		return false
+	}
+	if experience := row.Layout.Present.Experience; experience != "" && experience != "watch" {
+		return false
+	}
+	switch row.Purpose {
+	case frontend.RowContinue, frontend.RowNextUp, frontend.RowLive, frontend.RowRecentContexts, frontend.RowLiked:
+		return false
+	}
+	return true
 }
 
 type rowSnapshot interface {

@@ -124,6 +124,8 @@ type Deps struct {
 
 // Manager is the plugin host. It is safe for concurrent use.
 type Manager struct {
+	screenPushMu sync.RWMutex
+	screenPush   ScreenPush
 	// viewerState backs the kinds.state / kinds.favorite / kinds.played /
 	// kinds.rate / kinds.favorites / kinds.playlist* host services.
 	viewerState        atomic.Pointer[KindViewerState]

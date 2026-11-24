@@ -199,6 +199,9 @@ type instance struct {
 	// Emby and when the host supplies no clients directory.
 	webClient *webclient.Installer
 	anon      *anonIndex
+	// subtitleLists records whether the last item source sent to a viewer
+	// listed subtitle tracks (see subtitle_lists.go).
+	subtitleLists subtitleListShown
 }
 
 func (i *instance) Handler() http.Handler {

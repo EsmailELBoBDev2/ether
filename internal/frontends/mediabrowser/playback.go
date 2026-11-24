@@ -421,10 +421,11 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	listVersions := len(variants) > 0
-	if i.protocol == "jellyfin" && subtitleSet && opts.SubtitleStream < 0 && !versionRequested && subtitlesUnlisted(variants) {
+	if i.protocol == "jellyfin" && subtitleSet && opts.SubtitleStream < 0 && channel == "" && !i.subtitleLists.shown(v, key, time.Now()) {
 		// Jellyfin Web posts its hidden subtitle menu's "-1" when the detail
-		// page had no subtitle list to choose from (the release was not
-		// probed yet). That is no choice: the viewer's rules decide.
+		// page it showed had no subtitle list (the release was not probed
+		// yet). Nobody chose "off" from a list never sent: the viewer's
+		// rules decide.
 		subtitleSet = false
 		intent.SubtitleSet = false
 	}
@@ -750,9 +751,15 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// the exact release through the returned MediaSource Id.
 	if listVersions && !versionRequested && autoSwitchedRelease == "" {
 		if sources := i.releaseVersionSourcesFor(r, scope, key, variants, source); sources != nil {
+			if i.protocol == "jellyfin" && channel == "" {
+				i.subtitleLists.note(v, key, sources, time.Now())
+			}
 			jsonReply(w, map[string]any{"MediaSources": sources, "PlaySessionId": playID})
 			return
 		}
+	}
+	if i.protocol == "jellyfin" && channel == "" {
+		i.subtitleLists.note(v, key, []any{source}, time.Now())
 	}
 	jsonReply(w, map[string]any{"MediaSources": []any{source}, "PlaySessionId": playID})
 }
@@ -1625,21 +1632,3 @@ func embedsSubtitle(profiles []caps.SubtitleProfile, codec string) bool {
 	return false
 }
 
-// subtitlesUnlisted reports whether the Auto source a detail page offered
-// listed no subtitle track: its release was not probed yet, or it has none.
-// A client could not have picked "off" from a list it never received.
-func subtitlesUnlisted(variants []frontend.ReleaseVariant) bool {
-	if len(variants) == 0 {
-		return false
-	}
-	info := variants[0].Info
-	if info.Estimated {
-		return true
-	}
-	for _, st := range info.Streams {
-		if st.Type == "subtitle" {
-			return false
-		}
-	}
-	return true
-}

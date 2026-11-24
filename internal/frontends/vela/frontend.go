@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -269,6 +271,7 @@ type instance struct {
 	themes          map[string]themeGrant
 	sessions        map[string]*playSession
 	replayMu        sync.Mutex
+	replaySwept     atomic.Int64
 	replays         map[string]*replay
 	plexSelMu       sync.Mutex
 	plexSels        map[string]*plexSelection
@@ -806,12 +809,40 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	i.replays[key] = entry
 	i.replayMu.Unlock()
 	r.Body = http.NoBody
-	r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw))
-	persisted, conflict, claimErr := i.claim(r.Context(), key, digest)
+	ctx = context.WithValue(r.Context(), bodyKey{}, raw)
+	detached := strings.HasPrefix(r.URL.Path, "/vela/v0/auth/")
+	if detached {
+		// Sign-in, refresh and pairing are short identity mutations. Finish
+		// them even if the caller gives up, so the retry with the same key
+		// replays the committed tokens rather than finding a half-done claim.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), authMutationBound)
+		defer cancel()
+	}
+	r = r.WithContext(ctx)
+	pctx, pcancel := persistContext(r)
+	defer pcancel()
 	out := httptest.NewRecorder()
+	claimed := false
+	defer func() {
+		// A panicking handler must not strand the key: release it and wake
+		// waiters before the panic propagates.
+		if p := recover(); p != nil {
+			if claimed {
+				_ = i.release(pctx, key)
+			}
+			entry.status = http.StatusInternalServerError
+			close(entry.done)
+			i.replayMu.Lock()
+			delete(i.replays, key)
+			i.replayMu.Unlock()
+			panic(p)
+		}
+	}()
+	persisted, conflict, claimErr := i.claim(pctx, key, digest)
 	if claimErr != nil {
 		if errors.Is(claimErr, errPending) {
-			problem(out, 409, "conflict", "mutation_outcome_unknown")
+			pendingProblem(out, claimErr)
 		} else {
 			fail(out, claimErr, r)
 		}
@@ -826,20 +857,14 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = out.Write(persisted.Body)
 		}
 	} else {
+		claimed = true
 		i.mux.ServeHTTP(out, r)
-		var saveErr error
-		if (out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback") ||
-			((out.Code == http.StatusServiceUnavailable || out.Code == http.StatusBadGateway) && (r.URL.Path == "/vela/v0/playback" || r.Pattern == "POST /vela/v0/libraries/{id}/live/play") && out.Header().Get("Retry-After") != "") ||
-			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/read") && out.Header().Get("Retry-After") != "") ||
-			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/commands") && out.Header().Get("Retry-After") != "") ||
-			(out.Code == http.StatusTooManyRequests && strings.HasSuffix(r.URL.Path, "/approve") && out.Header().Get("Retry-After") != "") {
-			_, saveErr = i.db.ExecContext(r.Context(), `DELETE FROM vela_replays WHERE key=? AND response IS NULL`, key)
-		} else {
-			saveErr = i.save(r.Context(), key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()})
-		}
-		if saveErr != nil {
-			out = httptest.NewRecorder()
-			problem(out, 503, "transient", "mutation_outcome_unknown")
+		if releasable(r, out, r.Context().Err() != nil) {
+			_ = i.release(pctx, key)
+		} else if err := i.save(pctx, key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()}, time.Time{}); err != nil {
+			// The mutation's result is in hand: deliver it. The claim stays
+			// pending only until replayLease lapses, then the key runs again.
+			slog.Warn("vela replay not recorded", "route", r.Pattern, "status", out.Code, "err", err)
 		}
 	}
 
@@ -857,6 +882,34 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	if len(entry.body) > 0 {
 		_, _ = w.Write(entry.body)
 	}
+}
+
+// authMutationBound caps an auth mutation that runs on after its caller
+// disconnected. Well under replayLease.
+const authMutationBound = 15 * time.Second
+
+// releasable reports a response that is not an outcome worth replaying, so
+// the key is freed for the retry instead of pinned to it:
+//   - an accepted-but-unfinished playback admission;
+//   - any refusal carrying Retry-After: the server asked for that retry, so
+//     it must run again rather than replay the refusal (rate limits included);
+//   - any 5xx on an auth route: Vela derives a refresh's key from its
+//     token, so a stored server error would lock the device out for a day
+//     (elsewhere a 5xx without Retry-After stays the key's final answer);
+//   - a non-2xx answer from a handler whose context ended mid-flight: the
+//     cancellation, not the request, produced it.
+func releasable(r *http.Request, out *httptest.ResponseRecorder, cancelled bool) bool {
+	switch {
+	case out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback":
+		return true
+	case (out.Code < 200 || out.Code > 299) && out.Header().Get("Retry-After") != "":
+		return true
+	case out.Code >= 500 && strings.HasPrefix(r.URL.Path, "/vela/v0/auth/"):
+		return true
+	case cancelled && (out.Code < 200 || out.Code > 299):
+		return true
+	}
+	return false
 }
 
 type bodyKey struct{}

@@ -104,3 +104,27 @@ func (i *instance) screen(w http.ResponseWriter, r *http.Request) {
 	varyLanguage(w)
 	cache(w, r, signed)
 }
+
+// withSurfaceRows places the homeRow surfaces among the Home rows, after the
+// first row (Continue Watching when there is one). An empty surface row is
+// hidden by the client.
+func (i *instance) withSurfaceRows(r *http.Request, v *frontend.Viewer, shelves []object) []object {
+	ps, ok := i.pluginScreens()
+	c := screenClient(r)
+	if !ok || v == nil || c.Renderer == 0 {
+		return shelves
+	}
+	raw, err := ps.ScreenHomeRows(r.Context(), v, c)
+	if err != nil {
+		return shelves
+	}
+	var rows []object
+	if json.Unmarshal(raw, &rows) != nil || len(rows) == 0 {
+		return shelves
+	}
+	at := min(1, len(shelves))
+	out := make([]object, 0, len(shelves)+len(rows))
+	out = append(out, shelves[:at]...)
+	out = append(out, rows...)
+	return append(out, shelves[at:]...)
+}

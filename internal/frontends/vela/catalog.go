@@ -743,6 +743,7 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	if err != nil {
 		return nil, err
 	}
+	shelves = i.withSurfaceRows(r, v, shelves)
 	out := object{
 		"viewer":        viewer,
 		"capabilities":  i.requestCapabilitiesFor(r, v),
@@ -812,6 +813,7 @@ func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
 	if more {
 		continuation = "unknown"
 	}
+	rows = i.withSurfaceRows(r, v, rows)
 	varyLanguage(w)
 	cache(w, r, object{"items": rows, "continuation": continuation})
 }

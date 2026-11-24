@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -17,9 +18,12 @@ import (
 // One signer serves one response (or one stream), so a crest repeated across a
 // screen is signed once.
 type liveImages struct {
-	i      *instance
-	r      *http.Request
-	token  string
+	i     *instance
+	r     *http.Request
+	token string
+	// mu guards issued: one signer can be shared by concurrent readers of one
+	// response (screen data sources resolve in parallel).
+	mu     sync.Mutex
 	issued map[string]string
 }
 
@@ -36,6 +40,8 @@ func (s *liveImages) plugin(pluginID, raw string) string {
 		return raw
 	}
 	key := "p\x00" + pluginID + "\x00" + raw
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if got, ok := s.issued[key]; ok {
 		return got
 	}
@@ -62,6 +68,8 @@ func (s *liveImages) channel(channelID string) string {
 		return ""
 	}
 	key := "c\x00" + channelID
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if got, ok := s.issued[key]; ok {
 		return got
 	}

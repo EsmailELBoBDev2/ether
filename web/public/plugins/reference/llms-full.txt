@@ -5025,6 +5025,17 @@ func (m *Manager) IsExpandJobRunning(pluginID, dedupKey string) bool {
 // it returns started=false, err=nil. If two background jobs are already running
 // for pluginID, it returns ErrJobsBusy.
 func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(ctx context.Context, run *ExpandJobRunner) error) (bool, error) {
+	return m.StartExpandJobPriority(pluginID, routePath, dedupKey, false, fn)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*Manager.StartExpandJobPriority
+
+``````
+// StartExpandJobPriority is StartExpandJob for an expansion a viewer is
+// waiting on (an artist page being opened): it may use one slot beyond the
+// background pool, so a viewer's open never waits behind background work.
+func (m *Manager) StartExpandJobPriority(pluginID, routePath, dedupKey string, interactive bool, fn func(ctx context.Context, run *ExpandJobRunner) error) (bool, error) {
 	if m == nil {
 		return false, ErrUnavailable
 	}
@@ -5055,7 +5066,11 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 		}
 		return true
 	})
-	if activeAction >= ActionJobConcurrency {
+	limit := ActionJobConcurrency
+	if interactive {
+		limit++
+	}
+	if activeAction >= limit {
 		return false, &core.JobsBusyError{Message: "Two background jobs are already running; wait for one to finish."}
 	}
 	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {

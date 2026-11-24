@@ -1405,7 +1405,14 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 		if offset+limit < total {
 			next = strconv.Itoa(offset + limit)
 		}
-		return experience.PluginBrowsePage{Items: c.projectItems(ctx, rec, lib, members), Total: total, TotalExact: false, NextCursor: next}, nil
+		titles := c.projectItems(ctx, rec, lib, members)
+		// Inside a list a member's number is its place in the list, so apps
+		// that order a container by disc and track number keep the list's order.
+		for i := range titles {
+			titles[i].ItemIndex = offset + i + 1
+			titles[i].Disc = 0
+		}
+		return experience.PluginBrowsePage{Items: titles, Total: total, TotalExact: false, NextCursor: next}, nil
 	}
 	_, parentRole := pluginitems.ResolveMediaClassAndRole(parentItem.Level, rec.Decl, lib.Present)
 	if cursor == "" && !core.NoContainerExpand(ctx) {

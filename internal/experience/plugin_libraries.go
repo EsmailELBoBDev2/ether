@@ -1931,13 +1931,13 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 
 // PluginLibraryCandidateRows builds the candidate shelves (20 items each) for a
 // plugin library's Recommended tab before per-library layout policies run.
-func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.Viewer, viewID string) ([]frontend.Row, error) {
+func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.Viewer, viewID, tab string) ([]frontend.Row, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
 	}
-	rows, _, _, err := s.pluginLibraryCandidateRowsForTab(ctx, v, core.Device{}, viewID, "")
+	rows, _, _, err := s.pluginLibraryCandidateRowsForTab(ctx, v, core.Device{}, viewID, tab)
 	return rows, err
 }
 

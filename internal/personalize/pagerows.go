@@ -36,13 +36,14 @@ func (e *Engine) pageRows(ctx context.Context, pl *pagePlan, m *userModel, owner
 		return nil
 	}
 	var out []*candRow
+	plugin := e.pluginRowsMemo(user)
 	for _, r := range pl.derived {
 		if r.Status == "off" || r.Gate != "" || r.row == nil {
 			continue
 		}
 		row := r.row
 		if row.Source.Kind == SourceShelf && pl.key == core.PageHome {
-			out = append(out, e.homeShelfRows(ctx, pl, r, user)...)
+			out = append(out, e.homeShelfRows(ctx, pl, r, user, plugin)...)
 			continue
 		}
 		base := e.pageRowBase(ctx, row, m, owner)
@@ -61,7 +62,7 @@ func (e *Engine) pageRows(ctx context.Context, pl *pagePlan, m *userModel, owner
 				if i >= core.MaxRowsPerLibraryRow {
 					break
 				}
-				items := e.libraryItems(ctx, base, lib)
+				items := e.libraryItems(ctx, base, lib, row.Source.Kind, plugin)
 				if len(items) == 0 {
 					continue
 				}
@@ -72,7 +73,7 @@ func (e *Engine) pageRows(ctx context.Context, pl *pagePlan, m *userModel, owner
 		var items []candItem
 		seen := map[core.RatingKey]bool{}
 		for _, lib := range libs {
-			for _, it := range e.libraryItems(ctx, base, lib) {
+			for _, it := range e.libraryItems(ctx, base, lib, row.Source.Kind, plugin) {
 				if !seen[it.t.Key] {
 					seen[it.t.Key] = true
 					items = append(items, it)
@@ -131,7 +132,23 @@ func (pl *pagePlan) scopeLibraries(row *core.Row, user *core.User, needs []strin
 // libraryItems keeps a pool's titles that belong to a library: its media
 // type's list, then the library's own membership (a rule-split catalogue
 // library), checked over at most the pool's few hundred keys.
-func (e *Engine) libraryItems(ctx context.Context, base *pageRowBase, lib core.PageLibrary) []candItem {
+func (e *Engine) libraryItems(ctx context.Context, base *pageRowBase, lib core.PageLibrary, kind string, plugin func(context.Context, core.LibraryID) []core.HomeRow) []candItem {
+	if lib.Plugin != "" {
+		// A plugin library's titles are its own: the matching row of its
+		// page (Newest, Recently added, Continue), never catalogue films
+		// and series.
+		for _, cand := range plugin(ctx, lib.ID) {
+			if src, _ := sourceOf(cand.HubID, cand.Kind); src != kind {
+				continue
+			}
+			items := make([]candItem, 0, len(cand.Items))
+			for i, t := range cand.Items {
+				items = append(items, candItem{t: t, base: 1 - float64(i)/float64(len(cand.Items)+1)})
+			}
+			return items
+		}
+		return nil
+	}
 	var pool []candItem
 	if lib.MediaType != "" {
 		if typed := base.typed[lib.MediaType]; len(typed) > 0 {
@@ -179,7 +196,12 @@ func (e *Engine) pageRowBase(ctx context.Context, row *core.Row, m *userModel, o
 		}
 		for _, c := range m.rows {
 			if c.kind == kind {
-				return &pageRowBase{kind: kind, title: c.title, reason: c.reason, items: c.items, typed: c.typed, keepOrder: c.keepOrder, source: c.source}
+				items, typed := c.items, c.typed
+				if c.relaxed != nil {
+					// A row the owner placed: the language gate only re-ranks it.
+					items, typed = c.relaxed, c.relaxedTyped
+				}
+				return &pageRowBase{kind: kind, title: c.title, reason: c.reason, items: items, typed: typed, keepOrder: c.keepOrder, source: c.source}
 			}
 		}
 		return nil
@@ -252,11 +274,8 @@ func (e *Engine) pageRowBase(ctx context.Context, row *core.Row, m *userModel, o
 	keep := func(items []candItem) []candItem {
 		var out []candItem
 		for _, it := range items {
-			for _, g := range it.t.Genres {
-				if strings.EqualFold(g, genre) {
-					out = append(out, it)
-					break
-				}
+			if genreMatches(&it.t, genre) {
+				out = append(out, it)
 			}
 		}
 		return out
@@ -266,6 +285,27 @@ func (e *Engine) pageRowBase(ctx context.Context, row *core.Row, m *userModel, o
 		filtered.typed[t] = keep(items)
 	}
 	return filtered
+}
+
+// GenreAnime is the genre choice for Ether's anime classification (the
+// catalogue's anime keyword), offered beside the catalogue's genres.
+const GenreAnime = "anime"
+
+// genreMatches reports whether a title is in a row's chosen genre.
+func genreMatches(t *core.Title, genre string) bool {
+	if strings.EqualFold(genre, GenreAnime) {
+		for _, kw := range t.Keywords {
+			if strings.EqualFold(kw, GenreAnime) {
+				return true
+			}
+		}
+	}
+	for _, g := range t.Genres {
+		if strings.EqualFold(g, genre) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) sourceTitle(kind string) string {
@@ -282,10 +322,27 @@ func (e *Engine) sourceNeeds(kind string) []string {
 	return nil
 }
 
+// pluginRowsMemo reads each plugin library's candidate rows at most once
+// per page build.
+func (e *Engine) pluginRowsMemo(user *core.User) func(context.Context, core.LibraryID) []core.HomeRow {
+	seen := map[core.LibraryID][]core.HomeRow{}
+	return func(ctx context.Context, id core.LibraryID) []core.HomeRow {
+		if e.opts.PageCandidates == nil {
+			return nil
+		}
+		rows, ok := seen[id]
+		if !ok {
+			rows = e.opts.PageCandidates(ctx, user, id, "")
+			seen[id] = rows
+		}
+		return rows
+	}
+}
+
 // homeShelfRows builds a plugin shelf placed on Home from its library's
 // candidate shelves (the same rows the library's own page arranges): one
 // row, or one per library when the row asks for it.
-func (e *Engine) homeShelfRows(ctx context.Context, pl *pagePlan, r *rule, user *core.User) []*candRow {
+func (e *Engine) homeShelfRows(ctx context.Context, pl *pagePlan, r *rule, user *core.User, plugin func(context.Context, core.LibraryID) []core.HomeRow) []*candRow {
 	if e.opts.PageCandidates == nil {
 		return nil
 	}
@@ -295,7 +352,7 @@ func (e *Engine) homeShelfRows(ctx context.Context, pl *pagePlan, r *rule, user 
 	seen := map[core.RatingKey]bool{}
 	title := r.Name
 	for _, lib := range pl.scopeLibraries(r.row, user, []string{core.CapShelves}) {
-		for _, cand := range e.opts.PageCandidates(ctx, user, lib.ID, "") {
+		for _, cand := range plugin(ctx, lib.ID) {
 			if src, param := sourceOf(cand.HubID, cand.Kind); src != SourceShelf || param != key {
 				continue
 			}

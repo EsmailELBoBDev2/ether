@@ -126,11 +126,24 @@ func (a *assembly) holdBackHomeLead(c *candRow, items []candItem) (kept, held []
 	if a.lead == nil || len(a.lead.keys) == 0 && len(a.lead.same[c.id]) == 0 || !behaviorForRowSource(c.source).participatesInLead {
 		return items, nil, false
 	}
-	// Each page must offer its best picks and timely discovery even when
-	// Home already shows them. Cross-page dedupe must not erase New or
-	// Trending from a library. Within-page dedupe and row floors still apply.
-	if c.kind == KindTop10 || c.kind == KindTop10Today || c.kind == KindNewReleases || c.kind == KindTrending {
+	// A ranked Top 10 keeps its order. New and Trending keep every title
+	// (dedupe never erases timely discovery from a library) but open with
+	// titles Home is not already showing: Home's follow after.
+	if c.kind == KindTop10 || c.kind == KindTop10Today {
 		return items, nil, false
+	}
+	if c.kind == KindNewReleases || c.kind == KindTrending {
+		for _, it := range items {
+			if a.lead.holds(c.id, tasteKey(it.t.Key)) {
+				held = append(held, it)
+			} else {
+				kept = append(kept, it)
+			}
+		}
+		if len(held) == 0 || len(kept) == 0 {
+			return items, nil, false
+		}
+		return kept, held, true
 	}
 	if a.demoted == nil {
 		a.demoted = map[*candRow]bool{}

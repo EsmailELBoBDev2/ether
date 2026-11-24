@@ -588,6 +588,13 @@ func (a *assembly) typeOK(t *core.Title) bool {
 // them for the context and orders them (MMR-diversified unless the row's
 // order is meaningful).
 func (a *assembly) contextItems(c *candRow) []candItem {
+	if c.relaxed != nil && a.ownerAlways(c, a.hubID(c)) {
+		// The owner placed this row: the language gate re-ranks it, never
+		// empties it.
+		relaxed := *c
+		relaxed.items, relaxed.typed, relaxed.relaxed, relaxed.relaxedTyped = c.relaxed, c.relaxedTyped, nil, nil
+		c = &relaxed
+	}
 	target := a.model.taste.targetMinutes(a.hc)
 	src := c.items
 	if l, ok := c.typed[a.section]; ok && a.section != "" {

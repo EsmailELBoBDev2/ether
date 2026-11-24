@@ -144,8 +144,12 @@ func (s *Service) Stream(ctx context.Context, viewer *core.User, tokens []string
 				}
 				changed := map[string]RecordEntry{}
 				for k, e := range res.Records {
-					if e.Rev > floor && e.Rev > sent["r:"+k] {
-						changed[k] = e
+					if e.Rev > sent["r:"+k] {
+						// What the client already had (rev <= since) is
+						// remembered too, so it is not sent later unchanged.
+						if e.Rev > floor {
+							changed[k] = e
+						}
 						sent["r:"+k] = e.Rev
 					}
 				}
@@ -155,10 +159,13 @@ func (s *Service) Stream(ctx context.Context, viewer *core.User, tokens []string
 				for id, v := range res.Sources {
 					rev := s.revs.stampSource(ot.target.plugin.pluginID+"\x00"+ot.target.wireID+"\x00"+ot.target.page+"\x00"+id+"\x00"+canonicalBindings(mustBind(ot), ot.target.doc.Sources[id].Deps), v)
 					key := "s:" + ot.topic.Key() + "\x00" + id
-					if rev <= floor || rev <= sent[key] {
+					if rev <= sent[key] {
 						continue
 					}
 					sent[key] = rev
+					if rev <= floor {
+						continue
+					}
 					frame := map[string]any{"source": id, "rev": rev, "value": v}
 					if ot.target.kind == "surface" {
 						frame["surface"] = ot.target.wireID

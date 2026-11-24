@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -1195,8 +1196,14 @@ func newRevStore(now func() time.Time) *revStore {
 	return &revStore{byKey: map[string]revEntry{}, now: now}
 }
 
+// signedImageRe matches a signed image URL. Grants are sealed per request,
+// so the same picture signs differently each time; content revisions ignore
+// the grant, or every read would look like a change.
+var signedImageRe = regexp.MustCompile(`"/vela/v0/images/[^"]*"`)
+
 func (r *revStore) revFor(key string, value any) int64 {
 	raw, _ := json.Marshal(value)
+	raw = signedImageRe.ReplaceAll(raw, []byte(`"img"`))
 	sum := sha256.Sum256(raw)
 	h := hex.EncodeToString(sum[:12])
 	r.mu.Lock()

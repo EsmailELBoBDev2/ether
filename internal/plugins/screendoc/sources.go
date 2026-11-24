@@ -51,7 +51,7 @@ var eventQuery = map[string]argSpec{
 	"state":     {kind: argList, values: []string{"pre", "in", "post", "delayed", "postponed", "canceled"}, max: 6},
 	"league":    {kind: argText},
 	"favorites": {kind: argBool},
-	"window":    {kind: argEnum, values: []string{"today", "week", "recent"}},
+	"window":    {kind: argEnum, values: []string{"today", "week", "recent", "ticker"}},
 	"category":  {kind: argText},
 	"date":      {kind: argText},
 	"ids":       {kind: argList, max: 50},

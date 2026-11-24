@@ -79,6 +79,9 @@ type SideView struct {
 	Loser     bool   `json:"loser"`
 	Share     *int   `json:"share,omitempty"`
 	Leads     bool   `json:"leads,omitempty"`
+	// Possession marks the side with the ball, serve or bat, read from the
+	// plugin's situation (that line then leaves situation).
+	Possession bool `json:"possession,omitempty"`
 }
 
 // RankView is a leaderboard row.
@@ -347,6 +350,23 @@ func buildEventView(ev core.LiveEvent, favs favourites, entityKind string) Event
 			}
 		}
 	}
+	possessionKey := ""
+	if !ev.Spoiler && len(v.Sides) == 2 {
+		for k, val := range ev.Situation {
+			if !possessionRe.MatchString(strings.TrimSpace(k)) {
+				continue
+			}
+			for i := range v.Sides {
+				if namesSide(val, v.Sides[i]) {
+					v.Sides[i].Possession = true
+					possessionKey = k
+				}
+			}
+			if possessionKey != "" {
+				break
+			}
+		}
+	}
 	if !ev.Spoiler {
 		shown := map[string]bool{strings.TrimSpace(ev.Status.Detail): true, strings.TrimSpace(ev.Status.Clock): true}
 		keys := make([]string, 0, len(ev.Situation))
@@ -355,6 +375,9 @@ func buildEventView(ev core.LiveEvent, favs favourites, entityKind string) Event
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			if k == possessionKey {
+				continue
+			}
 			val := strings.TrimSpace(ev.Situation[k])
 			if val == "" || shown[val] {
 				continue
@@ -409,6 +432,25 @@ func tableView(t core.LiveEventTable, favs favourites, pluginID, feed, entityKin
 		tv.Rows = append(tv.Rows, rv)
 	}
 	return tv
+}
+
+var possessionRe = regexp.MustCompile(`(?i)^(possession|ball|serving|serve|batting|at bat)$`)
+
+// namesSide reports whether a situation value names side: its abbreviation,
+// short name, name or id, alone or leading the value ("PHI ball").
+func namesSide(value string, side SideView) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return false
+	}
+	first := strings.Fields(v)[0]
+	for _, n := range []string{side.Abbr, side.Short, side.Name, side.ID} {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n != "" && (v == n || first == n) {
+			return true
+		}
+	}
+	return false
 }
 
 func round3(f float64) float64 { return math.Round(f*1000) / 1000 }

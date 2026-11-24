@@ -630,6 +630,12 @@ func (rc *readCtx) liveEvents(ctx context.Context, src screendoc.Source) (any, e
 		window = "today"
 	}
 	from, to := rc.window(window, q.states)
+	ticker := window == "ticker"
+	if ticker {
+		// In progress, finals that started under 30 h ago, and events
+		// starting within 6 h: what a live ticker runs through.
+		from, to = rc.now.Add(-30*time.Hour), rc.now.Add(6*time.Hour)
+	}
 	if q.date != "" {
 		d, err := time.ParseInLocation("2006-01-02", q.date, rc.loc)
 		if err != nil {
@@ -647,14 +653,18 @@ func (rc *readCtx) liveEvents(ctx context.Context, src screendoc.Source) (any, e
 		if ev.ID == exclude {
 			continue
 		}
-		if rc.keep(ev, feed, kind, q, from, to, q.date == "" && (window == "today" || window == "week")) {
-			events = append(events, ev)
+		if !rc.keep(ev, feed, kind, q, from, to, q.date == "" && (window == "today" || window == "week" || ticker)) {
+			continue
 		}
+		if ticker && !tickerMember(ev, rc.now) {
+			continue
+		}
+		events = append(events, ev)
 	}
 	sortKey, _ := src.Args["sort"].(string)
 	fav := func(ev core.LiveEvent) bool { return rc.favs.matchesEvent(rc.t.plugin.pluginID, feed, kind, ev) }
 	switch {
-	case sortKey == "featured":
+	case sortKey == "featured" || ticker:
 		sort.SliceStable(events, func(i, j int) bool { return featuredBefore(events[i], events[j], fav) })
 	case window == "recent" || (len(q.states) == 1 && q.states[0] == core.LiveEventStatePost):
 		sort.SliceStable(events, func(i, j int) bool {
@@ -683,6 +693,21 @@ func (rc *readCtx) liveEvents(ctx context.Context, src screendoc.Source) (any, e
 		events = events[:limit]
 	}
 	return map[string]any{"events": rc.eventRecords(ctx, events, kind)}, nil
+}
+
+// tickerMember keeps what a ticker shows: events in progress, finals that
+// started under 30 h ago, and upcoming events starting within 6 h.
+func tickerMember(ev core.LiveEvent, now time.Time) bool {
+	start := parseEventStart(ev.Start)
+	switch ev.Status.State {
+	case core.LiveEventStateIn:
+		return true
+	case core.LiveEventStatePost:
+		return !start.IsZero() && now.Sub(start) < 30*time.Hour
+	case core.LiveEventStatePre, core.LiveEventStateDelayed:
+		return !start.IsZero() && start.Sub(now) <= 6*time.Hour && start.After(now.Add(-6*time.Hour))
+	}
+	return false
 }
 
 // featuredBefore is the generic featured order: a favourite in progress,

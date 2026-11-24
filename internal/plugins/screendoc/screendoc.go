@@ -328,7 +328,22 @@ func (c *compiler) compile(raw []byte) (*Compiled, error) {
 	}{body, out.Params, sourcesWire(out), out.Strings})
 	sum := sha256.Sum256(canon)
 	out.Hash = hex.EncodeToString(sum[:12])
+	if len(c.errs) == 0 {
+		served, err := out.Serve(ServeMeta{Screen: "screen", Page: "index", Version: "0.0.0", Title: "Title", Presentation: c.presentation()})
+		if err != nil {
+			c.fail("", "%v", err)
+		} else {
+			c.checkSchema(served)
+		}
+	}
 	return out, nil
+}
+
+func (c *compiler) presentation() string {
+	if c.opts.Presentation == "" {
+		return PresentSection
+	}
+	return c.opts.Presentation
 }
 
 func (c *compiler) walk(v any, ptr string, depth int) any {

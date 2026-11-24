@@ -645,6 +645,9 @@ func (i *instance) resolvedRedirectPrefix(r *http.Request) string {
 	return ""
 }
 func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
+	if (strings.HasPrefix(r.URL.Path, "/vela/v0/") || strings.HasPrefix(r.URL.Path, "/sessions/media/")) && cors(w, r) {
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/sessions/media/") {
 		w.Header().Set("Cache-Control", "no-store")
 		// Media elements cannot attach the API bearer/device headers. The

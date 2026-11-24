@@ -36,8 +36,22 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 			s.Touch()
 		}
 	}
-	if warm := s.resumeSession(n); warm != nil {
+	warm := s.resumeSession(n)
+	if r != nil && r.Method == http.MethodGet {
+		s.mu.Lock()
+		s.resumePlayhead = warm != nil
+		s.mu.Unlock()
+	}
+	if warm != nil {
 		warm.serveSegment(w, r, t, n)
+		// The resume session serves this session's player. Its delivered
+		// output is this session's evidence, and stays so after the child
+		// is retired (#780: Plex dropped every timeline of a resumed copy).
+		if warm.PlaybackDelivered() {
+			s.mu.Lock()
+			s.playbackDelivered = true
+			s.mu.Unlock()
+		}
 		return
 	}
 	if t < 0 || t >= len(s.done) || n < 0 || (s.total > 0 && n >= s.total) {

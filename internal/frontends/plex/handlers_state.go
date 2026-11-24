@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"net/http"
 	"slices"
@@ -216,9 +217,19 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	// A failed start cannot write a resume point or consume the completion latch.
 	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
 	stalled := s.checkStartStall(pr, key, state, offset, tids)
-	if impossible || failedProgressive || stalled != "" || s.playbackNeverDelivered(ps, tids) {
+	undelivered := !impossible && !failedProgressive && stalled == "" && s.playbackNeverDelivered(ps, tids)
+	if impossible || failedProgressive || stalled != "" || undelivered {
 		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
+		reported := offset
 		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
+		if undelivered {
+			// Never silent: a session that ends here saved no progress (#780).
+			level := slog.LevelDebug
+			if state == "stopped" {
+				level = slog.LevelInfo
+			}
+			s.log.Log(ctx, level, "timeline not saved: no playback delivered", "key", key, "session", tid, "state", state, "position", reported, "kept", offset)
+		}
 	}
 	if ps != nil && state == "stopped" {
 		// EOF after a decoder crash is not a played position. The last nonterminal

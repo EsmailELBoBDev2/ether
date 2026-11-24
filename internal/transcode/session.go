@@ -38,6 +38,7 @@ type Session struct {
 	resumeWarm              *Session
 	resumeWarmAt            int
 	resumeWarmUsed          bool
+	resumePlayhead          bool // the player's latest media GET went to resumeWarm
 	speculative             bool
 	androidMatroskaHLS      bool // immutable client HLS contract, retained across source swaps
 	healTimestamps          bool // positively sampled MPEG-TS clock discontinuity
@@ -532,10 +533,20 @@ func (s *Session) SegmentDuration() time.Duration { return s.segDur }
 
 // RequestedPosition is the title position of the player's latest segment
 // request. Source reads can be far ahead or at the container's tail index.
+// While the warm resume session serves the player, its playhead is this
+// session's (#780).
 func (s *Session) RequestedPosition() time.Duration {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.segStart(s.lastReq)
+	child := s.resumeWarm
+	if !s.resumePlayhead {
+		child = nil
+	}
+	at := s.segStart(s.lastReq)
+	s.mu.Unlock()
+	if child != nil {
+		return child.RequestedPosition()
+	}
+	return at
 }
 
 // Container is "mpegts", "fmp4", or explicitly negotiated "mkv".
@@ -605,6 +616,7 @@ func (s *Session) Close() error {
 }
 
 // PlaybackDelivered distinguishes actual output from ffmpeg input/read-ahead.
+// Output delivered through the warm resume session counts (#780).
 func (s *Session) PlaybackDelivered() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

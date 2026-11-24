@@ -48,7 +48,9 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 	if viewer == nil || viewer.ID <= 0 || device.ID == "" || protocol == "" || len(subjects) == 0 || len(subjects) > s.opts.MaxPerDevice {
 		return nil, ErrReceipt
 	}
-	if proof := bootstrapProofFor(ctx, viewer.ID); proof != nil && proof.epoch != epoch {
+	// An unrestricted viewer's Home revision carries no policy epoch (0):
+	// policy changes don't reach it, so it has nothing to fence.
+	if proof := bootstrapProofFor(ctx, viewer.ID); proof != nil && proof.epoch != 0 && proof.epoch != epoch {
 		return nil, viewerpolicy.ErrChanged
 	}
 	snapshots := make([]string, len(subjects))

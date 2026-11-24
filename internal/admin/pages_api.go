@@ -461,6 +461,10 @@ func (h *Handler) handleRowSourceFacets(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "no such facet")
 		return
 	}
+	if r.PathValue("facet") == "genre" {
+		// Ether's anime classification is a genre choice too.
+		vals = append([]core.FacetValue{{Key: personalize.GenreAnime, Title: "Anime"}}, vals...)
+	}
 	needle := strings.ToLower(strings.TrimSpace(q.Get("q")))
 	picks := make([]core.FacetPick, 0, limit)
 	seen := 0

@@ -52,6 +52,9 @@ type frontendRuntime struct {
 	app            *App
 	registry       *frontend.Registry
 	siloExperience *surfaceExperience
+	// velaExperience serves plugin library pages to the Recommendations
+	// engine: every plugin library is presented to Vela.
+	velaExperience *surfaceExperience
 	plex           plex.Frontend
 	control        *frontendControl
 	events         *sessions.EventBus
@@ -144,7 +147,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 	}
 
 	experiences := make(map[frontend.Protocol]frontend.Experience)
-	for _, protocol := range []frontend.Protocol{"plex", "jellyfin", "emby", "silo"} {
+	for _, protocol := range []frontend.Protocol{"plex", "jellyfin", "emby", "silo", "vela"} {
 		surfaceArtwork := artwork
 		if source, ok := artwork.(interface {
 			WithLandscapeThumb(bool) frontend.Artwork
@@ -159,8 +162,11 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 			scoped.playability = func(ctx context.Context, req frontend.ItemRequest) *bool {
 				return detailCanPlay(ctx, req, protocol, surfaceCapabilities{app: a, surface: protocol, policy: frontendHostPolicy(protocol)}, r.broker)
 			}
-			if protocol == "silo" {
+			switch protocol {
+			case "silo":
 				r.siloExperience = scoped
+			case "vela":
+				r.velaExperience = scoped
 			}
 		}
 		experiences[protocol] = experience

@@ -271,7 +271,9 @@ func arrangeCurated(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubCo
 			continue
 		}
 		count[p.RowID]++
-		row.Why = "In your order"
+		if p.Mode != core.PlacementPinned || p.Slot <= 0 {
+			row.Why = "In your order"
+		}
 		keep = append(keep, placed{row: row, order: p.Order, sub: pl.libraryIndex(p.row, p.Library)*1000 + i})
 	}
 	sort.SliceStable(keep, func(i, j int) bool {
@@ -281,11 +283,50 @@ func arrangeCurated(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubCo
 		return keep[i].sub < keep[j].sub
 	})
 	out := make([]core.HomeRow, 0, len(keep)+len(hidden))
-	for i, k := range keep {
-		k.row.Slot = i + 1
+	for _, k := range keep {
 		out = append(out, k.row)
 	}
+	out = pinToPositions(out, pl)
+	for i := range out {
+		out[i].Slot = i + 1
+	}
 	return append(out, hidden...)
+}
+
+// pinToPositions moves the rows pinned to a position onto it, counting every
+// row shown (plugin surface rows too), lowest position first; the other
+// rows keep their order around them.
+func pinToPositions(rows []core.HomeRow, pl *pagePlan) []core.HomeRow {
+	type pin struct {
+		row core.HomeRow
+		at  int
+	}
+	var pins []pin
+	rest := make([]core.HomeRow, 0, len(rows))
+	for _, r := range rows {
+		at := 0
+		if r.Present.Surface != nil {
+			if p := pl.byRow[r.RowID]; p != nil && p.Mode == core.PlacementPinned {
+				at = p.Slot
+			}
+		} else if p := pl.match(r); p != nil && p.Mode == core.PlacementPinned && !r.Hidden {
+			at = p.Slot
+		}
+		if at > 0 {
+			pins = append(pins, pin{r, at})
+			continue
+		}
+		rest = append(rest, r)
+	}
+	if len(pins) == 0 {
+		return rows
+	}
+	sort.SliceStable(pins, func(i, j int) bool { return pins[i].at < pins[j].at })
+	for _, p := range pins {
+		at := min(p.at-1, len(rest))
+		rest = append(rest[:at], append([]core.HomeRow{p.row}, rest[at:]...)...)
+	}
+	return rest
 }
 
 // whyEtherLeads and whyEtherAfter word where Ether put a row the page
@@ -396,7 +437,7 @@ func applyRule(row *core.HomeRow, p *rule) {
 	if row.Kind == KindTop10 || row.Kind == KindTop10Today {
 		row.Hub.RankedTop10 = true
 	}
-	row.Personal = personalBadge(row.Kind)
+	row.Personal = personalBadge(row.Kind) || row.Present.Personal
 	if p == nil {
 		return
 	}
@@ -726,6 +767,9 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 		if candidate.Present.Layout == "" {
 			candidate.Present.Layout = own.Layout
 		}
+		// A shelf that is the viewer's own (Jump back in, Liked, Recently
+		// played) is personal whatever the page says.
+		candidate.Present.Personal = candidate.Present.Personal || own.Personal || candidate.Purpose == core.PurposeRecentContexts || candidate.Purpose == core.PurposeLiked
 		out = append(out, candidate)
 	}
 	return out, nil
@@ -779,7 +823,8 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 		}
 		rows = append(rows[:at], append([]core.HomeRow{row}, rows[at:]...)...)
 	}
-	return rows
+	// Pinned positions count the surface rows too.
+	return pinToPositions(rows, pl)
 }
 
 // presentationFor is how apps should draw an arranged row.

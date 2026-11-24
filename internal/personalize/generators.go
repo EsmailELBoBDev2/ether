@@ -1269,20 +1269,50 @@ func (b *builder) genNewReleases() []*candRow {
 	src := b.both(func(t core.MediaType) []core.Title {
 		return b.browse(core.BrowseQuery{Filter: core.Filter{Type: t}, Sort: core.SortReleased, Desc: true, Limit: 400})
 	})
-	var recent []core.Title
+	var recent, recentAll []core.Title
 	for _, t := range src {
-		if !t.Released.IsZero() && !t.Released.After(b.now) && b.now.Sub(t.Released) <= recentDays*24*time.Hour && b.watchesLanguage(&t) {
-			recent = append(recent, t)
+		if !t.Released.IsZero() && !t.Released.After(b.now) && b.now.Sub(t.Released) <= recentDays*24*time.Hour {
+			recentAll = append(recentAll, t)
+			if b.watchesLanguage(&t) {
+				recent = append(recent, t)
+			}
 		}
 	}
 	// rank keeps only notable releases (as popular as the median new
 	// release, or already well rated by enough people).
-	items := b.rank(recent, func(t *core.Title, _, _ int, fit float64, _ string) (float64, string) {
+	score := func(t *core.Title, _, _ int, fit float64, _ string) (float64, string) {
 		return 0.4*recency(t, b.now) + 0.35*popularity(t) + 0.1*quality(t) + 0.15*fit, "New " + releasedPhrase(t.Released, b.now)
-	})
+	}
+	items := b.rank(recent, score)
 	r := withTyped(newRow(KindNewReleases, "newreleases", "New & Noteworthy", "Notable releases of the last few months, newest and most talked-about first.", capItems(items, 40)), items)
 	r.minItems = 5
+	if len(recentAll) > len(recent) {
+		b.relaxLanguage(r, recentAll, score)
+	}
 	return []*candRow{r}
+}
+
+// relaxLanguage keeps a row's titles without the viewer's language gate,
+// in-language first, for the times the owner placed the row (see
+// candRow.relaxed).
+func (b *builder) relaxLanguage(r *candRow, titles []core.Title, score scorer) {
+	// The gated pass already tallied what its filters removed.
+	tally := b.tally
+	b.tally = nil
+	ranked := b.rank(titles, score)
+	b.tally = tally
+	in := make([]candItem, 0, len(ranked))
+	var out []candItem
+	for _, it := range ranked {
+		if b.taste.watchesLanguage(it.t.Language) {
+			in = append(in, it)
+		} else {
+			out = append(out, it)
+		}
+	}
+	all := append(in, out...)
+	r.relaxed = capItems(all, 40)
+	r.relaxedTyped = splitTyped(all, 40)
 }
 
 func releasedPhrase(rel, now time.Time) string {
@@ -1373,17 +1403,20 @@ func (b *builder) genTop10Today() []*candRow {
 	for _, n := range here {
 		maxHere = max(maxHere, n)
 	}
-	var ok []core.Title
+	var ok, okAll []core.Title
 	for _, t := range src {
 		// Vote-floored: a tenth of the floor and a decent weighted rating,
 		// so a week-old blockbuster qualifies and an obscure title with a
 		// burst of traffic does not.
-		if b.acclaimed(&t, 0.1, 6.0) && b.watchesLanguage(&t) {
-			ok = append(ok, t)
+		if b.acclaimed(&t, 0.1, 6.0) {
+			okAll = append(okAll, t)
+			if b.watchesLanguage(&t) {
+				ok = append(ok, t)
+			}
 		}
 	}
 	bz := b.buzz() // trending lists plus Trakt's public lists when set up
-	items := b.rank(ok, func(t *core.Title, _, _ int, fit float64, _ string) (float64, string) {
+	score := func(t *core.Title, _, _ int, fit float64, _ string) (float64, string) {
 		h := 0.0
 		if maxHere > 0 {
 			h = float64(here[tasteKey(t.Key)]) / float64(maxHere)
@@ -1399,10 +1432,14 @@ func (b *builder) genTop10Today() []*candRow {
 			reason = bz.reason(t.Key)
 		}
 		return 0.45*trend + 0.25*popularity(t) + 0.15*quality(t) + 0.1*h + 0.05*fit, reason
-	})
+	}
+	items := b.rank(ok, score)
 	r := newRow(KindTop10Today, "top10.today", "Top 10 on "+b.e.serverName()+" Today",
 		"Today's most watched and talked-about titles with a trustworthy rating: trending now, catalogue popularity and what viewers here are watching.", capItems(items, 40))
 	r.maxItems, r.minItems = 10, 5
+	if len(okAll) > len(ok) {
+		b.relaxLanguage(r, okAll, score)
+	}
 	return []*candRow{r}
 }
 

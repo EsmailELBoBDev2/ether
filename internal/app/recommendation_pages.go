@@ -184,11 +184,13 @@ var _ admin.Personalization = (*personalize.Engine)(nil)
 // pluginPageCandidates returns a plugin library's candidate shelves (before
 // the page arranges them) for Recommendations previews.
 func (a *App) pluginPageCandidates(ctx context.Context, viewer *core.User, id core.LibraryID, tab string) []core.HomeRow {
+	// Vela presents every plugin library (Silo only those given a Silo
+	// type), so its experience reads the page's shelves.
 	var svc *surfaceExperience
-	if a.frontends != nil && a.frontends.siloExperience != nil {
-		svc = a.frontends.siloExperience
+	if a.frontends != nil && a.frontends.velaExperience != nil {
+		svc = a.frontends.velaExperience
 	} else if a.pluginsRT != nil && a.pluginsRT.kindCatalog != nil {
-		if raw, err := a.newSurfaceExperience("silo"); err == nil {
+		if raw, err := a.newSurfaceExperience("vela"); err == nil {
 			svc, _ = raw.(*surfaceExperience)
 		}
 	}
@@ -203,13 +205,13 @@ func (a *App) pluginPageCandidates(ctx context.Context, viewer *core.User, id co
 			v = &core.User{ID: 1, IsOwner: true}
 		}
 	}
-	cands, err := svc.Service.PluginLibraryCandidateRows(ctx, v, strconv.FormatInt(int64(id), 10))
+	cands, err := svc.Service.PluginLibraryCandidateRows(ctx, v, strconv.FormatInt(int64(id), 10), tab)
 	if err != nil {
 		return nil
 	}
 	rows := make([]core.HomeRow, 0, len(cands))
 	for _, r := range cands {
-		rows = append(rows, core.HomeRow{HubID: r.ID, Title: r.Title, Kind: r.Kind, Source: core.RowSourcePrecomposed, Items: r.Items,
+		rows = append(rows, core.HomeRow{HubID: r.ID, Title: r.Title, Kind: r.Kind, Source: core.RowSourcePrecomposed, Items: r.Items, Present: core.RowPresentation{Personal: r.Layout.Present.Personal},
 			Hub: core.Hub{ID: r.ID, Title: r.Title, Items: r.Items, ItemCount: len(r.Items)}})
 	}
 	return rows

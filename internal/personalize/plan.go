@@ -43,6 +43,8 @@ type rule struct {
 	Gate string
 	// Order is the row's place in the page's own order (Curated pages).
 	Order int
+	// audience is who the row is for (the "Why here" wording).
+	audience core.Audience
 	// Name is the owner's row title ("" = the source's own).
 	Name string
 	// Derived rows are built for the page (parameters or libraries the
@@ -181,7 +183,7 @@ func compilePage(p core.RowPage, saved bool, viewer int64, libs map[core.Library
 		}
 		r := &rule{Row: row.ID, RowID: row.ID, Source: row.Source.Kind, Mode: place.Mode, Slot: place.Position,
 			MinSlot: place.NotAbove, MaxSlot: place.NotBelow, MaxDaysPerWeek: place.DaysPerWeek, When: place.When,
-			Devices: place.Devices, Look: look, Layer: layer, Order: i, Name: row.Name, row: &p.Rows[i]}
+			Devices: place.Devices, Look: look, Layer: layer, Order: i, Name: row.Name, row: &p.Rows[i], audience: place.Audience}
 		switch place.Mode {
 		case core.PlacementPinned, core.PlacementShow:
 			r.Status = "always"
@@ -191,7 +193,12 @@ func compilePage(p core.RowPage, saved bool, viewer int64, libs map[core.Library
 			r.Status = "eligible"
 		}
 		if pl.curated && r.Status != "off" {
-			r.Status, r.Slot = "always", 0
+			// A Curated page shows its rows in its order; a pinned row
+			// keeps its position.
+			r.Status = "always"
+			if place.Mode != core.PlacementPinned {
+				r.Slot = 0
+			}
 		}
 		switch place.Priority {
 		case 1:
@@ -398,11 +405,19 @@ func deviceLabel(d string) string {
 // why is the "Why here" line for a row a rule placed at slot.
 func (r *rule) why(slot int) string {
 	who := "for everyone"
-	if r.Layer == core.RowLayerViewer {
+	switch {
+	case r.Layer == core.RowLayerViewer, r.audience.Mode == core.AudienceOnly && len(r.audience.Viewers) == 1:
 		who = "just for this viewer"
+	case r.audience.Mode == core.AudienceOnly:
+		who = "for the chosen viewers"
+	case r.audience.Mode == core.AudienceExcept:
+		who = "for everyone but the viewers you left out"
 	}
 	switch r.Mode {
 	case core.PlacementPinned:
+		if r.Slot <= 0 {
+			return "Pinned " + who
+		}
 		return fmt.Sprintf("Pinned to #%d %s", r.Slot, who)
 	case core.PlacementShow:
 		return "You chose Show " + who + "; Ether placed it here"

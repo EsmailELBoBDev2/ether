@@ -1931,13 +1931,13 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 
 // PluginLibraryCandidateRows builds the candidate shelves (20 items each) for a
 // plugin library's Recommended tab before per-library layout policies run.
-func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.Viewer, viewID string) ([]frontend.Row, error) {
+func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.Viewer, viewID, tab string) ([]frontend.Row, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
 	}
-	rows, _, _, err := s.pluginLibraryCandidateRowsForTab(ctx, v, core.Device{}, viewID, "")
+	rows, _, _, err := s.pluginLibraryCandidateRowsForTab(ctx, v, core.Device{}, viewID, tab)
 	return rows, err
 }
 
@@ -2093,6 +2093,8 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 		}
 		// A shelf's declared look is its default; a page's look wins.
 		row.Layout.Present.Layout = layout
+		// Continue, Jump back in and Liked are this viewer's own titles.
+		row.Layout.Present.Personal = purpose == frontend.RowContinue || purpose == core.PurposeRecentContexts || purpose == core.PurposeLiked
 		rows = append(rows, row)
 	}
 
@@ -2236,6 +2238,10 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			idx := (i + len(generic)) % len(queries) // shelves, then the library's own rows
 			cq := queries[idx]
 			appendRow(cq.id, cq.title, cq.purpose, cq.layout, cq.kind, results[idx])
+			if n := len(rows); n > 0 && rows[n-1].ID == cq.id && cq.q.Sort.IsLastViewed() {
+				// A viewer-history shelf (Recently played) is personal too.
+				rows[n-1].Layout.Present.Personal = true
+			}
 		}
 		if rows == nil {
 			return []frontend.Row{}, true, isDefaultTab, nil

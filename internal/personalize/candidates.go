@@ -48,6 +48,12 @@ type candRow struct {
 	// at all is its kind's surfaces (kinds.go, surfaces.go); owner
 	// collection rows carry their own targeting.
 	typed map[core.MediaType][]candItem
+	// relaxed (and relaxedTyped) are the row's titles without the viewer's
+	// language gate, in-language first: a row the owner pins, shows or
+	// lists on a Curated page uses them, so the gate re-ranks the row
+	// instead of emptying it. Nil when the gate removed nothing.
+	relaxed      []candItem
+	relaxedTyped map[core.MediaType][]candItem
 	// hub is set for rows that arrive as finished hubs (owner collections,
 	// Continue Watching); assembly keeps their identity.
 	hub *core.Hub

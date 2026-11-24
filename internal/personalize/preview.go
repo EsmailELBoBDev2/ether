@@ -2,6 +2,7 @@ package personalize
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"time"
@@ -295,8 +296,10 @@ func (e *Engine) PreviewPageRow(ctx context.Context, viewer *core.User, key core
 	return out, nil
 }
 
-// PageImpact counts the viewers a draft page changes: each viewer's served
-// row order under the saved page and under the draft, at one moment.
+// PageImpact counts the viewers a draft page changes and the viewers who
+// have changes of their own in it. A change to the page itself reaches
+// every viewer its rows' audiences include; a change made just for one
+// viewer reaches only that viewer.
 func (e *Engine) PageImpact(ctx context.Context, key core.PageKey, draft core.RowPage, device string, at time.Time) (core.PageImpact, error) {
 	if !key.Valid() {
 		return core.PageImpact{}, &ValidationError{Problems: []Problem{{"page", "must be home or library:<id>/<tab>"}}}
@@ -308,13 +311,30 @@ func (e *Engine) PageImpact(ctx context.Context, key core.PageKey, draft core.Ro
 	if err != nil {
 		return core.PageImpact{}, err
 	}
-	saved, _ := e.Page(ctx, key)
+	saved, _ := e.pageForContext(ctx, key)
+	shared := func(p core.RowPage) string {
+		p.Variants, p.Revision, p.UpdatedAt, p.Offered = nil, 0, time.Time{}, nil
+		b, _ := json.Marshal(p)
+		return string(b)
+	}
+	baseChanged := shared(saved) != shared(draft)
+	variant := func(p core.RowPage, viewer int64) string {
+		v := p.VariantFor(viewer)
+		if v == nil || len(v.Rows) == 0 && v.Mode == "" && v.Length == nil {
+			return ""
+		}
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
 	out := core.PageImpact{}
 	for i := range users {
-		u := users[i]
-		out.Viewers++
-		if saved.VariantFor(u.ID) != nil {
+		id := users[i].ID
+		mine := variant(draft, id)
+		if mine != "" {
 			out.WithChanges++
+		}
+		if baseChanged || mine != variant(saved, id) {
+			out.Viewers++
 		}
 	}
 	return out, nil

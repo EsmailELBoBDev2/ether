@@ -652,8 +652,11 @@ func buildCodecArgs(s runSpec) []string {
 			}
 			// The HLS muxer's nested MP4 writer does not auto-insert the
 			// ADTS-to-ASC filter. Preserve compressed audio while moving its
-			// configuration into the initialization segment.
-			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && a.Codec == "aac" && (s.Info.Container == "mpegts" || s.Info.Container == "aac") {
+			// configuration into the initialization segment. A live HLS input
+			// is usually MPEG-TS (ADTS) underneath; without the filter its
+			// init carries no AudioSpecificConfig and MSE players refuse it.
+			// The filter passes audio that already has a config through.
+			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && a.Codec == "aac" && (s.Info.Container == "mpegts" || s.Info.Container == "aac" || s.Info.Container == "hls") {
 				audioFilters = append(audioFilters, "aac_adtstoasc")
 			}
 			if len(audioFilters) > 0 {

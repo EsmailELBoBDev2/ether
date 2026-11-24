@@ -3,6 +3,7 @@ package collections
 import (
 	"context"
 	"fmt"
+
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -13,13 +14,19 @@ const MaxCatalogueSourceItems = 250
 
 // GatherCatalogueSource reuses the installed list-source adapter, including its
 // paging limits and external-ID matching. Only an opened library invokes it.
-func (s *Service) GatherCatalogueSource(ctx context.Context, kind, mediaType string) ([]core.Title, error) {
+// kind is the list-source kind id, label names the list for the owner, and
+// mediaType is "movie" or "show".
+func (s *Service) GatherCatalogueSource(ctx context.Context, kind, label, mediaType string) ([]core.Title, error) {
 	k, ok := s.kindRegistry().Lookup(kind)
 	if !ok {
-		return nil, fmt.Errorf("catalogue source unavailable")
+		return nil, fmt.Errorf("%s isn't loaded on this server yet; turn its plugin off and on again in Plugins, or restart Ether", label)
+	}
+	gatherKind := "movie"
+	if mediaType == string(core.TypeShow) {
+		gatherKind = "tv"
 	}
 	src := core.CollectionSource{Kind: kind, MaxItems: MaxCatalogueSourceItems}
-	g := &Gather{Strict: true, Ctx: ctx, Svc: s, Spec: &core.CollectionSpec{}, Src: src, Want: MaxCatalogueSourceItems, Kinds: []string{mediaType}}
+	g := &Gather{Strict: true, Ctx: ctx, Svc: s, Spec: &core.CollectionSpec{}, Src: src, Want: MaxCatalogueSourceItems, Kinds: []string{gatherKind}}
 	k.Gather(g)
 	if err := ctx.Err(); err != nil {
 		return nil, err

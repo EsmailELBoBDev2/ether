@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
-	"strings"
-	"time"
+	"github.com/braedonsaunders/ether/internal/stremio"
 )
 
 type forceCatalogueSyncKey struct{}
@@ -22,42 +25,78 @@ func isForceCatalogueSync(ctx context.Context) bool {
 }
 
 func (a *App) catalogueSourceType(ctx context.Context, id string) (string, error) {
+	ref, err := a.resolveCatalogueSource(ctx, id)
+	return ref.typ, err
+}
+
+// catalogueSourceRef is what a catalogue source id resolves to: its media
+// type and, for a plugin list, the list-source kind it syncs through and
+// the name the owner knows it by.
+type catalogueSourceRef struct {
+	typ   string
+	kind  string
+	label string
+}
+
+// resolveCatalogueSource resolves a catalogue source id. A plugin list
+// ("stremio:<plugin>:<catalog key>") resolves through the plugin's
+// CatalogueLists, the same list the console offers, so a source the owner
+// can attach always syncs through a list-source kind the plugin registers.
+// Errors name the source and say why it can't be used.
+func (a *App) resolveCatalogueSource(ctx context.Context, id string) (catalogueSourceRef, error) {
 	if id == "tmdb-movies" {
-		return "movie", nil
+		return catalogueSourceRef{typ: "movie"}, nil
 	}
 	if id == "tmdb-tv" {
-		return "show", nil
+		return catalogueSourceRef{typ: "show"}, nil
 	}
 	parts := strings.SplitN(id, ":", 3)
-	if len(parts) != 3 || a.pluginsRT == nil || a.pluginsRT.mgr == nil {
-		return "", fmt.Errorf("unknown catalogue source")
+	if len(parts) != 3 || (parts[0] != "plugin" && parts[0] != "stremio") {
+		return catalogueSourceRef{}, fmt.Errorf("unknown catalogue source %q", id)
+	}
+	if a.pluginsRT == nil || a.pluginsRT.mgr == nil {
+		return catalogueSourceRef{}, fmt.Errorf("catalogue source %q can't be used because plugins are not running on this server", id)
 	}
 	rec, err := a.pluginsRT.mgr.Get(ctx, parts[1])
-	if err != nil || !rec.Enabled {
-		return "", fmt.Errorf("catalogue source is unavailable")
+	if errors.Is(err, plugins.ErrNotFound) {
+		return catalogueSourceRef{}, fmt.Errorf("the plugin %q that provided this catalogue source is not installed", parts[1])
+	}
+	if err != nil {
+		return catalogueSourceRef{}, fmt.Errorf("couldn't read the plugin %q: %w", parts[1], err)
+	}
+	if !rec.Enabled {
+		return catalogueSourceRef{}, fmt.Errorf("%s is turned off; turn it on in Plugins to use its catalogue sources", rec.Name)
 	}
 	if parts[0] == "plugin" {
 		if e := rec.Manifest.EffectiveEther(); e != nil {
 			for _, k := range e.Contributes.MediaKinds {
 				if k.Key == parts[2] {
-					return "plugin:" + id, nil
+					return catalogueSourceRef{typ: "plugin:" + id}, nil
 				}
 			}
 		}
+		return catalogueSourceRef{}, fmt.Errorf("%s no longer offers the content kind %q; it may have changed in an update", rec.Name, parts[2])
 	}
-	if parts[0] == "stremio" && rec.Manifest.HasCapability(plugins.CapListSource) {
-		for _, cat := range rec.Manifest.Stremio().Catalogs {
-			if cat.Standalone() && plugins.StremioCatalogKey(cat) == parts[2] {
-				if cat.Type == "movie" {
-					return "movie", nil
-				}
-				if cat.Type == "series" {
-					return "show", nil
-				}
-			}
+	cl, ok := rec.Manifest.CatalogueList(parts[2])
+	if !ok {
+		return catalogueSourceRef{}, fmt.Errorf("%s no longer offers this list; it may have changed in an update", rec.Name)
+	}
+	typ := "movie"
+	if cl.Catalog.Type == stremio.TypeSeries {
+		typ = "show"
+	}
+	name := cl.Catalog.Name
+	if name == "" {
+		name = cl.Label
+		if key, ok := strings.CutPrefix(name, "$t:"); ok {
+			name, _ = a.pluginsRT.mgr.ResolveText(ctx, rec.ID, key, "en")
 		}
 	}
-	return "", fmt.Errorf("unknown catalogue source")
+	label := rec.Name
+	if name = strings.TrimSpace(name); name != "" {
+		label = fmt.Sprintf("%s (%s)", name, rec.Name)
+	}
+	return catalogueSourceRef{typ: typ, kind: extend.PluginID(rec.ID, cl.List), label: label}, nil
 }
 func (a *App) validateCatalogueSources(ctx context.Context, lib core.Library, ids []string) error {
 	if len(ids) == 0 || len(ids) > 32 {
@@ -126,7 +165,8 @@ func (a *App) wireCatalogueSources() {
 				continue
 			}
 			itemCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			typ, err := a.catalogueSourceType(itemCtx, id)
+			ref, err := a.resolveCatalogueSource(itemCtx, id)
+			typ := ref.typ
 			if err != nil {
 				cancel()
 				recordError(ctx, id, err)
@@ -161,8 +201,7 @@ func (a *App) wireCatalogueSources() {
 				if a.collections == nil {
 					return fmt.Errorf("catalogue sources unavailable")
 				}
-				parts := strings.SplitN(id, ":", 3)
-				titles, err := a.collections.GatherCatalogueSource(itemCtx, extend.PluginID(parts[1], parts[2]), typ)
+				titles, err := a.collections.GatherCatalogueSource(itemCtx, ref.kind, ref.label, typ)
 				if err != nil {
 					failures[id] = sourceFailure{at: time.Now(), err: err}
 					return err

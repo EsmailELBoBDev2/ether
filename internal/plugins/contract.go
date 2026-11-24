@@ -351,6 +351,70 @@ type SourceMeta struct {
 	Class     string          `json:"class"` // debrid|usenet|indexer|direct
 	Abilities []string        `json:"abilities,omitempty"`
 	Limits    json.RawMessage `json:"limits,omitempty"`
+	// Search opts a stream_source plugin in to category searches (#792).
+	// Without it the plugin is asked by title id only and category
+	// searches refuse it.
+	Search *SourceSearchMeta `json:"search,omitempty"`
+}
+
+// SourceSearchMeta declares the category searches a stream_source plugin
+// answers on GET /ether/search: free text plus a Newznab category, and
+// optionally typed lookups. Ether routes a category search to the plugin
+// only when one of the requested categories is declared; a declared top
+// category (3000) covers its subcategories (3010, 3040).
+type SourceSearchMeta struct {
+	Categories []int    `json:"categories"`
+	Lookups    []string `json:"lookups,omitempty"`
+}
+
+// MaxSourceSearchCategories and MaxSourceSearchLookups bound a declaration.
+const (
+	MaxSourceSearchCategories = 16
+	MaxSourceSearchLookups    = 8
+)
+
+// AnswersCategories reports whether the declaration covers any of cats.
+func (s *SourceSearchMeta) AnswersCategories(cats []int) bool {
+	return len(s.MatchCategories(cats)) > 0
+}
+
+// MatchCategories returns the requested categories the declaration covers,
+// in request order.
+func (s *SourceSearchMeta) MatchCategories(cats []int) []int {
+	if s == nil {
+		return nil
+	}
+	var out []int
+	for _, c := range cats {
+		for _, d := range s.Categories {
+			if c == d || (d%1000 == 0 && c/1000 == d/1000) {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// AnswersLookup reports whether the declaration lists the lookup type.
+func (s *SourceSearchMeta) AnswersLookup(typ string) bool {
+	if s == nil || typ == "" {
+		return false
+	}
+	for _, l := range s.Lookups {
+		if l == typ {
+			return true
+		}
+	}
+	return false
+}
+
+// SourceSearch returns the plugin's category-search declaration, or nil.
+func (m Manifest) SourceSearch() *SourceSearchMeta {
+	if m.Ether == nil || m.Ether.Stremio || !m.HasCapability(CapStreamSource) || m.Ether.Contributes.Source == nil {
+		return nil
+	}
+	return m.Ether.Contributes.Source.Search
 }
 
 // ChannelsMeta is mandatory for livetv_channels.

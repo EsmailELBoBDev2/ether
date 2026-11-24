@@ -1266,9 +1266,16 @@ URL-safe origin-confined tokens), and Ether re-attaches credentials only at
 fetch time on the originating indexer's origin when the candidate is handed
 back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
 keyed on the key-less link, so plugins can persist candidates in KV without
-storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio/addon sources do
-not support category filters and reject scoped searches. Omit `category` for
-the default media search. Results and acquired files are cached separately by
+storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio add-ons and
+source plugins are asked by title id only, so they reject scoped searches,
+unless a source plugin declared the category (see "Source plugins that answer
+category searches" below). Omit `category` for the default media search.
+On a category search, `lookup: {type, fields}` (for example
+`{type: "album", fields: {artist: "Air", title: "Moon Safari"}}`) adds a typed
+lookup for source plugins that declared that type; every other indexer
+searches `query` alone, so keep `query` meaningful. A lookup needs a
+`category`, a simple `type` key and at most 8 camelCase fields of up to 256
+bytes. Results and acquired files are cached separately by
 category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
@@ -1324,6 +1331,57 @@ file to your item by name, then return the release with `release.file` or
 to `source.size`, and setting `release.fileHint` to an exact member path from
 `members` or `release.track` when matching by disc/track/title); the choice is
 honoured on Usenet as on debrid.
+
+A candidate with `pluginRelease: {plugin, id}` came from a source plugin's
+category search (below). It has no `infoHash` or `nzbUrl`: hand the candidate
+back to `release_files` (Ether asks the plugin for its files) and return it in
+a `release` source with `release.file` or `release.fileIndex`; Ether opens it
+through that plugin. It is never cached on debrid, so skip `debrid_check` and
+`usenet_check` for it.
+
+### Source plugins that answer category searches
+
+A `stream_source` plugin is asked by title id (`/stream/{type}/{id}.json`). To
+also answer the category searches content kinds make (Music searches
+`category: "3000"`, Books `"7000"`), it declares them:
+
+```json
+"contributes": {
+  "source": {
+    "class": "indexer",
+    "search": { "categories": [3000, 7000], "lookups": ["album"] }
+  }
+}
+```
+
+`categories` lists 1 to 16 Newznab categories; a top category (`3000`) covers
+its subcategories (`3010`, `3040`), a subcategory covers only itself.
+`lookups` lists up to 8 typed lookups the plugin understands. Ether then calls
+the plugin for an `indexer_search` whose category it declared, and only then;
+every other add-on keeps refusing scoped searches:
+
+- `GET /ether/search?query=&category=3000[&purpose=][&lookup=album&lookup.artist=&lookup.title=]`
+  (10 s route deadline, bounded by the caller's search deadline). `category`
+  holds the requested categories the plugin declared, `purpose` why Ether
+  searches (`playback`, `detail`, `warmup`, ...), and the lookup appears only
+  for a declared type. Answer in the stream route's shape,
+  `{streams: [...]}`: a lazy stream (`ether: {lazy: true, id, releaseName,
+  size?, languages?}`) becomes a candidate with `pluginRelease`; a torrent
+  (`infoHash`) or NZB stream becomes an ordinary torrent or Usenet candidate.
+  Plain `url` streams and owner-folder `file` streams are skipped there. The
+  answer goes through Ether's search cache, the plugin's search limits and
+  the caller's quality profile like any indexer result.
+- `GET /ether/files/{id}` answers `release_files` for a lazy release:
+  `{files: [{path, size?}]}` in the order `fileIndex` counts (at most 2,000).
+- `GET /ether/open/{id}?file=&fileIndex=` opens the chosen file, answering
+  `{url, headers?}` (or `{file}` inside an owner-granted folder) as a lazy
+  stream does. Ether reads the URL with HTTP Range requests; the URL and every
+  redirect must be on the plugin's `permissions.network` hosts (or an
+  owner-granted local host), so a plugin cannot point Ether at an arbitrary
+  host. Header values may use `{secret:name}` with the plugin's own secrets.
+
+A `pluginRelease` handed back by a caller is honoured only for an enabled
+plugin that declares `source.search`.
 
 `ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
 NZB's article availability before your resolver offers it, returning a single
@@ -2784,6 +2842,7 @@ type KindMatchResponse struct {
 | `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
+| `lookup` | `*SourceLookup` | may be omitted (see validation for conditions) | Lookup, on an indexer_search with a Category, adds a typed lookup (e.g. {type: "album", fields: {artist, title}}) for plugin sources that declared it. Every other indexer searches Query alone. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
@@ -2814,6 +2873,10 @@ type SourceQuery struct {
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
 	Category string `json:"category,omitempty"`
+	// Lookup, on an indexer_search with a Category, adds a typed lookup
+	// (e.g. {type: "album", fields: {artist, title}}) for plugin sources that
+	// declared it. Every other indexer searches Query alone.
+	Lookup *SourceLookup `json:"lookup,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile    string   `json:"profile,omitempty"`
@@ -3220,6 +3283,7 @@ type DebridServiceRef struct {
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query: the files inside this candidate release. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount is the torrent's known file count when reported by an indexer or release_files query, allowing zip-only debrid caches to be probed by cached-only add even when Files is omitted. |
 | `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query: the sampled article availability verdict and any recorded playback failure for this NZB release. |
+| `pluginRelease` | `*PluginReleaseRef` | may be omitted (see validation for conditions) | PluginRelease names a release a stream_source plugin answered for a category search it declared (ether.contributes.source.search). It has no info hash, magnet or NZB: release_files asks that plugin for the files and a release source opens it through the plugin's open route. |
 
 
 ## Source: internal/core/kinditem.go#SourceCandidate
@@ -3274,6 +3338,51 @@ type SourceCandidate struct {
 	// article availability verdict and any recorded playback failure for
 	// this NZB release.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
+	// PluginRelease names a release a stream_source plugin answered for a
+	// category search it declared (ether.contributes.source.search). It has
+	// no info hash, magnet or NZB: release_files asks that plugin for the
+	// files and a release source opens it through the plugin's open route.
+	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#PluginReleaseRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `plugin` | `string` | emitted (validation may require a value) |  |
+| `id` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/kinditem.go#PluginReleaseRef
+
+``````
+// PluginReleaseRef identifies one release of a stream_source plugin: the
+// plugin's id and the lazy stream id it answered the search with.
+type PluginReleaseRef struct {
+	Plugin string `json:"plugin"`
+	ID     string `json:"id"`
+}
+``````
+
+## Source: internal/core/kinditem.go#SourceLookup.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `type` | `string` | emitted (validation may require a value) |  |
+| `fields` | `map[string]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/kinditem.go#SourceLookup
+
+``````
+// SourceLookup is a typed lookup on a category search, such as an album by
+// artist and title. Type is a key the answering plugin source declared in
+// ether.contributes.source.search.lookups; Fields are its named values.
+// Indexers that do not declare the lookup search the free-text query only.
+type SourceLookup struct {
+	Type   string            `json:"type"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 ``````
 
@@ -6017,6 +6126,7 @@ type PosterBadgeSetMeta struct {
 | `class` | `string` | emitted (validation may require a value) | debrid\|usenet\|indexer\|direct |
 | `abilities` | `[]string` | may be omitted (see validation for conditions) |  |
 | `limits` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
+| `search` | `*SourceSearchMeta` | may be omitted (see validation for conditions) | Search opts a stream_source plugin in to category searches (#792). Without it the plugin is asked by title id only and category searches refuse it. |
 
 
 ## Source: internal/plugins/contract.go#SourceMeta
@@ -6027,6 +6137,102 @@ type SourceMeta struct {
 	Class     string          `json:"class"` // debrid|usenet|indexer|direct
 	Abilities []string        `json:"abilities,omitempty"`
 	Limits    json.RawMessage `json:"limits,omitempty"`
+	// Search opts a stream_source plugin in to category searches (#792).
+	// Without it the plugin is asked by title id only and category
+	// searches refuse it.
+	Search *SourceSearchMeta `json:"search,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#SourceSearchMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `categories` | `[]int` | emitted (validation may require a value) |  |
+| `lookups` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#SourceSearchMeta
+
+``````
+// SourceSearchMeta declares the category searches a stream_source plugin
+// answers on GET /ether/search: free text plus a Newznab category, and
+// optionally typed lookups. Ether routes a category search to the plugin
+// only when one of the requested categories is declared; a declared top
+// category (3000) covers its subcategories (3010, 3040).
+type SourceSearchMeta struct {
+	Categories []int    `json:"categories"`
+	Lookups    []string `json:"lookups,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#MaxSourceSearchCategories
+
+``````
+// MaxSourceSearchCategories and MaxSourceSearchLookups bound a declaration.
+const (
+	MaxSourceSearchCategories = 16
+	MaxSourceSearchLookups    = 8
+)
+``````
+
+## Source: internal/plugins/contract.go#*SourceSearchMeta.AnswersCategories
+
+``````
+// AnswersCategories reports whether the declaration covers any of cats.
+func (s *SourceSearchMeta) AnswersCategories(cats []int) bool {
+	return len(s.MatchCategories(cats)) > 0
+}
+``````
+
+## Source: internal/plugins/contract.go#*SourceSearchMeta.MatchCategories
+
+``````
+// MatchCategories returns the requested categories the declaration covers,
+// in request order.
+func (s *SourceSearchMeta) MatchCategories(cats []int) []int {
+	if s == nil {
+		return nil
+	}
+	var out []int
+	for _, c := range cats {
+		for _, d := range s.Categories {
+			if c == d || (d%1000 == 0 && c/1000 == d/1000) {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/contract.go#*SourceSearchMeta.AnswersLookup
+
+``````
+// AnswersLookup reports whether the declaration lists the lookup type.
+func (s *SourceSearchMeta) AnswersLookup(typ string) bool {
+	if s == nil || typ == "" {
+		return false
+	}
+	for _, l := range s.Lookups {
+		if l == typ {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/contract.go#Manifest.SourceSearch
+
+``````
+// SourceSearch returns the plugin's category-search declaration, or nil.
+func (m Manifest) SourceSearch() *SourceSearchMeta {
+	if m.Ether == nil || m.Ether.Stremio || !m.HasCapability(CapStreamSource) || m.Ether.Contributes.Source == nil {
+		return nil
+	}
+	return m.Ether.Contributes.Source.Search
 }
 ``````
 
@@ -8844,8 +9050,11 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 		add(extend.KindMarkerSource, "markers", textOf(id, man.Name), map[string]any{"kinds": c.Markers.Kinds})
 	}
 	if man.HasCapability(CapStreamSource) && c.Source != nil {
-		add(extend.KindSourceKind, "stream", textOf(id, man.Name), map[string]any{
-			"class": c.Source.Class, "abilities": c.Source.Abilities, "limits": c.Source.Limits})
+		cfg := map[string]any{"class": c.Source.Class, "abilities": c.Source.Abilities, "limits": c.Source.Limits}
+		if c.Source.Search != nil {
+			cfg["search"] = c.Source.Search
+		}
+		add(extend.KindSourceKind, "stream", textOf(id, man.Name), cfg)
 	}
 	if man.HasCapability(CapDebridProvider) && c.Source != nil {
 		add(extend.KindSourceKind, "debrid", textOf(id, man.Name), map[string]any{"class": "debrid", "abilities": c.Source.Abilities})
@@ -17763,6 +17972,52 @@ const DefaultUsenetCheckPerMin = 20
 type backgroundCallKey struct{}
 ``````
 
+## Source: internal/plugins/host_kinds.go#MaxSourceLookupFields
+
+``````
+// Bounds of an indexer_search typed lookup.
+const (
+	MaxSourceLookupFields     = 8
+	MaxSourceLookupFieldBytes = 256
+)
+``````
+
+## Source: internal/plugins/host_kinds.go#lookupFieldRe
+
+``````
+var lookupFieldRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,31}$`)
+``````
+
+## Source: internal/plugins/host_kinds.go#ValidateSourceLookup
+
+``````
+// ValidateSourceLookup checks an indexer_search lookup: it rides on a
+// category search, names a simple type, and carries a few short fields.
+func ValidateSourceLookup(q core.SourceQuery) *FieldError {
+	l := q.Lookup
+	if l == nil {
+		return nil
+	}
+	switch {
+	case strings.TrimSpace(q.Category) == "":
+		return &FieldError{Field: "lookup", Message: "lookup needs a category: plugin sources answer typed lookups on category searches"}
+	case !keyRe.MatchString(l.Type):
+		return &FieldError{Field: "lookup.type", Message: "lookup.type must be a simple key such as album or book"}
+	case len(l.Fields) > MaxSourceLookupFields:
+		return &FieldError{Field: "lookup.fields", Message: fmt.Sprintf("at most %d lookup fields allowed", MaxSourceLookupFields)}
+	}
+	for k, v := range l.Fields {
+		if !lookupFieldRe.MatchString(k) {
+			return &FieldError{Field: "lookup.fields", Message: fmt.Sprintf("lookup field %q must be a simple camelCase name", k)}
+		}
+		if len(v) > MaxSourceLookupFieldBytes {
+			return &FieldError{Field: "lookup.fields." + k, Message: fmt.Sprintf("must be at most %d bytes", MaxSourceLookupFieldBytes)}
+		}
+	}
+	return nil
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#SourcesPermissionAllowsSearch
 
 ``````
@@ -17899,6 +18154,9 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				Field:   "onlyIndexers",
 				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
 			}}}
+		}
+		if fe := ValidateSourceLookup(q); fe != nil {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{*fe}}
 		}
 	case "indexer_search_results":
 		if strings.TrimSpace(q.SearchID) == "" {
@@ -18718,7 +18976,8 @@ func ValidateMediaProbeSource(src core.PlayableSource) error {
 			hasTarget = strings.TrimSpace(c.InfoHash) != "" ||
 				strings.TrimSpace(c.Magnet) != "" ||
 				strings.TrimSpace(c.TorrentURL) != "" ||
-				strings.TrimSpace(c.NZBURL) != ""
+				strings.TrimSpace(c.NZBURL) != "" ||
+				(c.PluginRelease != nil && strings.TrimSpace(c.PluginRelease.Plugin) != "" && strings.TrimSpace(c.PluginRelease.ID) != "")
 		}
 		if !hasTarget {
 			return &ValidationError{Fields: []FieldError{{Field: "release", Message: "release source requires infoHash, magnet, torrentUrl, nzbUrl, or candidate"}}}
@@ -24752,6 +25011,9 @@ func validateContributes(m Manifest, add func(string, string)) {
 			add("ether.contributes.source.class", "must be debrid, usenet, indexer or direct")
 		}
 	}
+	if c.Source != nil && c.Source.Search != nil {
+		validateSourceSearch(c.Source.Search, m.HasCapability(CapStreamSource), e.Stremio, add)
+	}
 	if m.HasCapability(CapDebridProvider) && (c.Source == nil || c.Source.Class != "debrid") {
 		add("ether.contributes.source.class", "must be debrid for debrid_provider")
 	}
@@ -25262,6 +25524,48 @@ func CompareSemVer(a, b string) int {
 		return 1
 	}
 	return 0
+}
+``````
+
+## Source: internal/plugins/manifest.go#validateSourceSearch
+
+``````
+// validateSourceSearch checks ether.contributes.source.search: the Newznab
+// categories (1000-8999, no duplicates) and typed lookups a stream_source
+// plugin answers on GET /ether/search.
+func validateSourceSearch(ss *SourceSearchMeta, streamSource, stremioMode bool, add func(field, msg string)) {
+	const base = "ether.contributes.source.search"
+	if !streamSource {
+		add(base, "needs the stream_source capability")
+	}
+	if stremioMode {
+		add(base, "is not available to plugins that answer Stremio add-on routes")
+	}
+	if len(ss.Categories) == 0 {
+		add(base+".categories", "must list at least one Newznab category (for example 3000 for audio, 7000 for books)")
+	}
+	if len(ss.Categories) > MaxSourceSearchCategories {
+		add(base+".categories", fmt.Sprintf("must list at most %d categories", MaxSourceSearchCategories))
+	}
+	seen := map[int]bool{}
+	for i, c := range ss.Categories {
+		if c < 1000 || c > 8999 {
+			add(fmt.Sprintf("%s.categories[%d]", base, i), "must be a Newznab category between 1000 and 8999")
+		} else if seen[c] {
+			add(fmt.Sprintf("%s.categories[%d]", base, i), "is listed twice")
+		}
+		seen[c] = true
+	}
+	if len(ss.Lookups) > MaxSourceSearchLookups {
+		add(base+".lookups", fmt.Sprintf("must list at most %d lookups", MaxSourceSearchLookups))
+	}
+	seenLookup := map[string]bool{}
+	for i, l := range ss.Lookups {
+		if !keyRe.MatchString(l) || seenLookup[l] {
+			add(fmt.Sprintf("%s.lookups[%d]", base, i), "must be a unique simple key such as album or book")
+		}
+		seenLookup[l] = true
+	}
 }
 ``````
 
@@ -32323,13 +32627,24 @@ func ensureUICap(etherObj map[string]any) {
 // Administrative actions, setup, catalogue sync and background jobs use
 // owner-granted limits.
 func ViewerRequestPath(path string) bool {
-	for _, prefix := range []string{"/stream/", "/catalog/", "/meta/", "/subtitles/", "/ether/open", "/ether/metadata/", "/ether/subtitles/", "/ether/markers"} {
+	for _, prefix := range []string{"/stream/", "/catalog/", "/meta/", "/subtitles/", "/ether/open", "/ether/search", "/ether/files/", "/ether/metadata/", "/ether/subtitles/", "/ether/markers"} {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
 	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
 		strings.HasPrefix(path, "/ether/v1/live/")
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#IsSourceSearchPath
+
+``````
+// IsSourceSearchPath identifies a stream_source plugin's category search
+// (/ether/search) and release file listing (/ether/files/{id}) routes (#792).
+func IsSourceSearchPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	return p == "/ether/search" || strings.HasPrefix(p, "/ether/files/")
 }
 ``````
 
@@ -32402,7 +32717,7 @@ func BackgroundPoolPath(path string) bool {
 // frontend-adapter requests or background jobs cannot starve playback.
 func ResolvePoolPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
-	if strings.HasPrefix(p, "/ether/open") || strings.HasPrefix(p, "/stream/") {
+	if strings.HasPrefix(p, "/ether/open") || strings.HasPrefix(p, "/stream/") || IsSourceSearchPath(p) {
 		return true
 	}
 	return strings.HasPrefix(p, "/ether/v1/kinds/") &&
@@ -32471,6 +32786,10 @@ func DeadlineFor(path string) time.Duration {
 		return 2 * time.Second
 	case strings.HasPrefix(p, "/ether/open"), strings.HasPrefix(p, "/stream/"):
 		return 3 * time.Second
+	case IsSourceSearchPath(p):
+		// A category search or file listing asks the plugin's own tracker
+		// or engine live; the caller's search deadline still bounds it.
+		return 10 * time.Second
 	case strings.HasPrefix(p, "/ether/tool"):
 		return 15 * time.Second
 	case strings.HasPrefix(p, "/ether/job"):
@@ -36333,6 +36652,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.source` | `object` | false | {"required":["class"]} |
 | `ether.contributes.source.abilities` | `array` | false | {} |
 | `ether.contributes.source.class` | `any` | true | {"enum":["debrid","usenet","indexer","direct"]} |
+| `ether.contributes.source.search` | `object` | false | {"additionalProperties":false,"description":"Opt a stream_source plugin in to category searches (GET /ether/search). Ether routes an indexer_search with a category only to source plugins that declared one of the requested Newznab categories; a top category (3000) covers its subcategories (3010, 3040). Answers use the stream route's shape: lazy releases are listed on GET /ether/files/{id} and opened on GET /ether/open/{id}?file=\u0026fileIndex=; the bytes stream as a Range source on the plugin's permissions.network hosts.","required":["categories"]} |
+| `ether.contributes.source.search.categories` | `array` | true | {"maxItems":16,"minItems":1,"uniqueItems":true} |
+| `ether.contributes.source.search.lookups` | `array` | false | {"description":"Typed lookups the plugin answers (for example album or book); a caller's lookup fields reach the plugin as lookup.\u003cfield\u003e query parameters.","maxItems":8,"uniqueItems":true} |
 | `ether.contributes.subtitles` | `object` | false | {} |
 | `ether.contributes.subtitles.formats` | `array` | false | {} |
 | `ether.contributes.tools` | `array` | false | {} |
@@ -38313,7 +38635,38 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                     "direct"
                   ]
                 },
-                "limits": true
+                "limits": true,
+                "search": {
+                  "additionalProperties": false,
+                  "description": "Opt a stream_source plugin in to category searches (GET /ether/search). Ether routes an indexer_search with a category only to source plugins that declared one of the requested Newznab categories; a top category (3000) covers its subcategories (3010, 3040). Answers use the stream route's shape: lazy releases are listed on GET /ether/files/{id} and opened on GET /ether/open/{id}?file=\u0026fileIndex=; the bytes stream as a Range source on the plugin's permissions.network hosts.",
+                  "properties": {
+                    "categories": {
+                      "items": {
+                        "maximum": 8999,
+                        "minimum": 1000,
+                        "type": "integer"
+                      },
+                      "maxItems": 16,
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "lookups": {
+                      "description": "Typed lookups the plugin answers (for example album or book); a caller's lookup fields reach the plugin as lookup.\u003cfield\u003e query parameters.",
+                      "items": {
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+                        "type": "string"
+                      },
+                      "maxItems": 8,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "categories"
+                  ],
+                  "type": "object"
+                }
               },
               "required": [
                 "class"
@@ -38690,7 +39043,31 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases. Stremio add-ons and source plugins are asked only when the plugin declared one of the categories in ether.contributes.source.search."
+        },
+        "lookup": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+            },
+            "fields": {
+              "type": "object",
+              "maxProperties": 8,
+              "propertyNames": {
+                "pattern": "^[a-z][a-zA-Z0-9_]{0,31}$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          },
+          "description": "indexer_search with category only. A typed lookup (for example {type: \"album\", fields: {artist, title}}) passed to source plugins that declared its type in ether.contributes.source.search.lookups; every other indexer searches query alone."
         },
         "profile": {
           "type": "string",
@@ -39117,6 +39494,23 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "usenetCheck": {
           "$ref": "#/$defs/usenetCheckResult",
           "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
+        },
+        "pluginRelease": {
+          "type": "object",
+          "required": [
+            "plugin",
+            "id"
+          ],
+          "properties": {
+            "plugin": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "description": "A release a stream_source plugin answered for a category it declared (ether.contributes.source.search): the plugin id and its lazy stream id. It has no infoHash, magnet or nzbUrl; release_files asks the plugin for the files and a release source opens it through the plugin's open route with the chosen file."
         }
       }
     },
@@ -39484,7 +39878,7 @@ be overwritten or deleted by a plugin.
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
 | catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open/Delete; sources permission |
-| stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
+| stream_source / debrid_provider | Stremio stream; lazy open (`GET /ether/open/{id}`) / debrid routes; opt-in category search (`source.search` → `GET /ether/search`, `GET /ether/files/{id}`) | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
 | notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
 | flow_actions | `contributes.flowActions` + `POST /ether/v1/flow-actions/{key}` (with `X-Ether-Idempotency-Key`) | KV (idempotency deduplication), HTTPFetch, PublishEvent |
@@ -39690,6 +40084,7 @@ than billed as guest wall time):
 | Route group | Effective deadline | Effective unit budget |
 |---|---|---|
 | `/stream/*`, `/ether/open*` | 3 s (20 s for Stremio add-ons) | 30,000 units (200,000 for Stremio) |
+| `/ether/search`, `/ether/files/*` (source category search) | 10 s | 100,000 units |
 | `/subtitles/*`, `/ether/subtitles/*` | 5 s (10 s for Stremio add-ons) | 50,000 units (100,000 for Stremio) |
 | `/ether/v1/kinds/*/resolve`, `/ether/v1/kinds/*/match` | 5 s | 50,000 units |
 | `/catalog/*`, `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`, `/ether/v1/kinds/*/items/*` | 10 s (20 s for Stremio `/catalog/*`) | 100,000 units (200,000 for Stremio `/catalog/*`) |
@@ -39771,6 +40166,14 @@ Fill `/stream/{type}/{id}.json` with `{streams:[{url:"https://YOUR_HOST/video.mp
 using an owner-configured source, not hard-coded credentials. Declare YOUR_HOST
 in network permissions if the plugin fetches it. Return lazy stream descriptors
 for work that should happen only on a viewer pick. See `sdk/examples/easydebrid`.
+
+To serve Music or Books searches too, declare
+`contributes.source.search: {categories: [3000, 7000]}` and add the
+`sourceSearch` / `SourceSearch` / `source_search` handler (lazy streams with
+`ether.id` and `ether.releaseName`), `releaseFiles` (the release's
+`{files: [{path, size}]}`) and `openStream` with `file` / `fileIndex`. Declare
+the host the opened URL lives on in `permissions.network`. See
+"Source plugins that answer category searches" in docs/plugin-kinds.md.
 
 ### 4. Notification channel
 
@@ -47800,6 +48203,168 @@ export function createPlugin(host?: EtherHost) {
       },
       test(ctx) {
         return { ok: getChannels(ctx).length > 0 };
+      },
+    },
+  });
+}
+export const handle = createPlugin().handle;
+
+``````
+
+## Source: sdk/examples/release-server/README.md
+
+# Release server
+
+A `stream_source` plugin that answers category searches, so content kinds
+such as Music (`category: "3000"`) and Books (`"7000"`) can find and play
+releases from the owner's own release server.
+
+- `manifest.json` declares `contributes.source.search` with the categories
+  (and the `album` lookup) the plugin answers. Ether asks it for nothing else
+  on a category search, and every add-on without the declaration keeps
+  refusing scoped searches.
+- `stream` answers movie and show lookups by title, as any source plugin does.
+- `sourceSearch` (`GET /ether/search`) answers lazy releases for the declared
+  categories.
+- `releaseFiles` (`GET /ether/files/{id}`) lists a release's files.
+- `openStream` (`GET /ether/open/{id}?file=&fileIndex=`) returns the file's
+  URL. Ether reads it with Range requests and only on hosts the owner
+  approved for the plugin (`permissions.network: ["operator"]`).
+
+A Music or Books plugin then sees candidates with
+`pluginRelease: {plugin, id}` in its `indexer_search` results, lists their
+files with `release_files`, and returns a `release` source with
+`release.file` or `release.fileIndex`.
+
+See "Source plugins that answer category searches" in
+[docs/plugin-kinds.md](../../../docs/plugin-kinds.md).
+
+
+## Source: sdk/examples/release-server/manifest.json
+
+``````
+{
+  "id": "tv.ether.examples.release-server",
+  "version": "1.0.0",
+  "name": "Release server",
+  "description": "Search and stream releases from your own release server, including music and book searches.",
+  "types": ["movie", "series"],
+  "idPrefixes": ["tt"],
+  "resources": ["stream"],
+  "ether": {
+    "protocol": 1,
+    "kind": "source",
+    "capabilities": ["stream_source"],
+    "summary": "$t:summary",
+    "runtime": { "kind": "hosted", "entry": "plugin.ts" },
+    "license": "MIT",
+    "permissions": { "network": ["operator"] },
+    "strings": { "en": "i18n/en.json" },
+    "settings": {
+      "fields": [
+        { "key": "server", "kind": "url", "label": "$t:server", "hint": "$t:serverHint" }
+      ]
+    },
+    "contributes": {
+      "source": {
+        "class": "indexer",
+        "abilities": ["search"],
+        "search": { "categories": [3000, 7000], "lookups": ["album"] }
+      }
+    }
+  }
+}
+
+``````
+
+## Source: sdk/examples/release-server/plugin.ts
+
+``````
+// A stream_source plugin that answers Music and Books searches (#792).
+//
+// It fronts an owner-run release server with a small JSON API:
+//   GET {server}/api/search?q=&cat=      -> [{id, name, size}]
+//   GET {server}/api/releases/{id}       -> {files: [{path, size}]}
+//   GET {server}/stream/{id}/{fileIndex} -> the file's bytes, with Range
+// Adapt the three fetches to your server; the Ether side stays the same.
+//
+// Ether calls sourceSearch only for the categories declared in
+// manifest.json (contributes.source.search), lists a release's files with
+// releaseFiles, and opens the chosen file with openStream. The URL openStream
+// returns must be on an owner-approved host (permissions.network "operator").
+import {
+  plugin,
+  type EtherHost,
+  type HostFetchResponse,
+  type Manifest,
+  type PluginContext,
+  type SourceSearchRequest,
+} from "../../typescript/src/index.ts";
+import manifest from "./manifest.json" with { type: "json" };
+import en from "./i18n/en.json" with { type: "json" };
+
+type Settings = { server?: string };
+type Release = { id: string; name: string; size?: number };
+
+function base(ctx: PluginContext<Settings>): string {
+  const server = (ctx.settings.server ?? "").trim().replace(/\/+$/, "");
+  if (!server) throw new Error("Set the release server address in the plugin settings.");
+  return server;
+}
+
+function getJSON<T>(ctx: PluginContext<Settings>, path: string): T {
+  const res = ctx.ether.http.fetch({ url: base(ctx) + path }) as HostFetchResponse;
+  if (res.status !== 200) throw new Error(`Release server returned HTTP ${res.status}`);
+  return JSON.parse(res.body) as T;
+}
+
+// An album lookup sharpens the text query when the caller sent one.
+function searchText(req: SourceSearchRequest): string {
+  const f = req.lookup?.type === "album" ? req.lookup.fields ?? {} : {};
+  const typed = [f.artist, f.title].filter(Boolean).join(" ");
+  return typed || req.query;
+}
+
+// Lazy releases: Ether lists their files and opens them only on a pick.
+function lazy(found: Release[]) {
+  return found.slice(0, 100).map((r) => ({
+    name: "Release server",
+    ether: { lazy: true, id: r.id, releaseName: r.name, size: r.size },
+  }));
+}
+
+export function createPlugin(host?: EtherHost) {
+  return plugin<Settings>({
+    manifest: manifest as Manifest,
+    strings: { en },
+    host,
+    routes: {
+      // Movies and shows: Ether asks by title id and passes title hints.
+      stream(req, ctx) {
+        const title = ctx.query.title;
+        if (!title) return { streams: [] };
+        const q = encodeURIComponent([title, ctx.query.year].filter(Boolean).join(" "));
+        const cat = req.type === "movie" ? 2000 : 5000;
+        return { streams: lazy(getJSON<Release[]>(ctx, `/api/search?q=${q}&cat=${cat}`)) };
+      },
+      // Music and books: only the categories manifest.json declares.
+      sourceSearch(req, ctx) {
+        const q = encodeURIComponent(searchText(req));
+        const cat = encodeURIComponent(req.categories.join(","));
+        return { streams: lazy(getJSON<Release[]>(ctx, `/api/search?q=${q}&cat=${cat}`)) };
+      },
+      releaseFiles(req, ctx) {
+        return getJSON<{ files: { path: string; size?: number }[] }>(ctx, `/api/releases/${encodeURIComponent(req.id)}`);
+      },
+      openStream(req, ctx) {
+        // Ether passes the file its caller picked from releaseFiles.
+        let index = req.fileIndex ?? 0;
+        if (req.file) {
+          const { files } = getJSON<{ files: { path: string }[] }>(ctx, `/api/releases/${encodeURIComponent(req.streamId)}`);
+          index = files.findIndex((f) => f.path === req.file);
+          if (index < 0) throw new Error("That file is not in the release.");
+        }
+        return { url: `${base(ctx)}/stream/${encodeURIComponent(req.streamId)}/${index}` };
       },
     },
   });
@@ -55977,7 +56542,8 @@ type KindChangesRequest struct {
 |---|---|---|---|
 | `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
-| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. |
+| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. Source plugins that declared the category answer it too. |
+| `lookup` | `*SourceLookup` | may be omitted (see validation for conditions) | Lookup (indexer_search with Category) adds a typed lookup, such as an album by artist and title, for source plugins that declared its type. Other indexers search Query alone. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `stream` | `bool` | may be omitted (see validation for conditions) | Stream (indexer_search only), when true, starts the fan-out and returns immediately with a SearchID handle to poll via indexer_search_results or stop via indexer_search_cancel (#733). |
 | `searchId` | `string` | may be omitted (see validation for conditions) | SearchID identifies a streaming search started by indexer_search with Stream: true; required on indexer_search_results and indexer_search_cancel. |
@@ -56006,7 +56572,12 @@ type SourceQuery struct {
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
+	// Source plugins that declared the category answer it too.
 	Category string `json:"category,omitempty"`
+	// Lookup (indexer_search with Category) adds a typed lookup, such as an
+	// album by artist and title, for source plugins that declared its type.
+	// Other indexers search Query alone.
+	Lookup *SourceLookup `json:"lookup,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile string `json:"profile,omitempty"`
@@ -56385,6 +56956,7 @@ type DebridServiceRef struct {
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount is the torrent's known file count when reported by an indexer or release_files query. |
 | `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query. |
+| `pluginRelease` | `*PluginReleaseRef` | may be omitted (see validation for conditions) | PluginRelease names a release a source plugin answered for a declared category search. It has no infoHash or nzbUrl: hand the candidate back to release_files to list its files and in a release source to open it. |
 
 
 ## Source: sdk/go/kinds.go#SourceCandidate
@@ -56426,6 +56998,10 @@ type SourceCandidate struct {
 	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
+	// PluginRelease names a release a source plugin answered for a declared
+	// category search. It has no infoHash or nzbUrl: hand the candidate back
+	// to release_files to list its files and in a release source to open it.
+	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -56449,9 +57025,30 @@ func (c SourceCandidate) CandidateRef() string {
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
+	case c.PluginRelease != nil:
+		return "plugin:" + c.PluginRelease.Plugin + ":" + c.PluginRelease.ID
 	default:
 		return c.Title
 	}
+}
+``````
+
+## Source: sdk/go/kinds.go#PluginReleaseRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `plugin` | `string` | emitted (validation may require a value) |  |
+| `id` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#PluginReleaseRef
+
+``````
+// PluginReleaseRef identifies a source plugin's release: the plugin and the
+// lazy stream id it answered the search with.
+type PluginReleaseRef struct {
+	Plugin string `json:"plugin"`
+	ID     string `json:"id"`
 }
 ``````
 
@@ -59878,6 +60475,8 @@ type Routes struct {
 	Meta             func(ctx *Context, req MetaRequest) (MetaResponse, error)
 	Stream           func(ctx *Context, req StreamRequest) (StreamResponse, error)
 	OpenStream       func(ctx *Context, req OpenStreamRequest) (OpenStreamResponse, error)
+	SourceSearch     func(ctx *Context, req SourceSearchRequest) (SourceSearchResponse, error)
+	ReleaseFiles     func(ctx *Context, req ReleaseFilesRequest) (ReleaseFilesResponse, error)
 	Subtitles        func(ctx *Context, req SubtitlesRequest) (SubtitlesResponse, error)
 	SubtitleDownload func(ctx *Context, req SubtitleDownloadRequest) (SubtitleDownloadResponse, error)
 	Markers          func(ctx *Context, req MarkersRequest) (MarkersResponse, error)
@@ -60481,6 +61080,53 @@ func (p *Plugin) Dispatch(ctx context.Context, req RawRequest) RawResponse {
 		return okJSON(res, http.StatusOK)
 	}
 
+	if method == http.MethodGet && strings.HasPrefix(path, "/ether/open/") {
+		if p.routes.OpenStream == nil {
+			return errorJSON(http.StatusNotFound, "not_found", "Stream open handler is not registered.")
+		}
+		streamID, _ := url.PathUnescape(strings.TrimPrefix(path, "/ether/open/"))
+		open := OpenStreamRequest{StreamID: streamID, File: query["file"]}
+		if raw, ok := query["fileIndex"]; ok {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+				open.FileIndex = &n
+			}
+		}
+		res, err := p.routes.OpenStream(pctx, open)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		return okJSON(res, http.StatusOK)
+	}
+
+	if method == http.MethodGet && path == "/ether/search" {
+		if p.routes.SourceSearch == nil {
+			return errorJSON(http.StatusNotFound, "not_found", "Source search handler is not registered.")
+		}
+		res, err := p.routes.SourceSearch(pctx, sourceSearchRequest(query))
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Streams == nil {
+			res.Streams = []StreamItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	}
+
+	if method == http.MethodGet && strings.HasPrefix(path, "/ether/files/") {
+		if p.routes.ReleaseFiles == nil {
+			return errorJSON(http.StatusNotFound, "not_found", "Release files handler is not registered.")
+		}
+		id, _ := url.PathUnescape(strings.TrimPrefix(path, "/ether/files/"))
+		res, err := p.routes.ReleaseFiles(pctx, ReleaseFilesRequest{ID: id})
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Files == nil {
+			res.Files = []PluginReleaseFile{}
+		}
+		return okJSON(res, http.StatusOK)
+	}
+
 	if method == http.MethodGet && strings.HasPrefix(path, "/ether/markers/") && strings.HasSuffix(path, ".json") {
 		if p.routes.Markers == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Markers handler is not registered.")
@@ -60852,6 +61498,30 @@ func (p *Plugin) Dispatch(ctx context.Context, req RawRequest) RawResponse {
 	}
 
 	return errorJSON(http.StatusNotFound, "not_found", "No route matched "+method+" "+path+".")
+}
+``````
+
+## Source: sdk/go/plugin.go#sourceSearchRequest
+
+``````
+// sourceSearchRequest decodes GET /ether/search: query, category (comma
+// separated Newznab ids), purpose, lookup and lookup.<field>.
+func sourceSearchRequest(query map[string]string) SourceSearchRequest {
+	req := SourceSearchRequest{Query: query["query"], Purpose: query["purpose"], Categories: []int{}}
+	for _, raw := range strings.Split(query["category"], ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			req.Categories = append(req.Categories, n)
+		}
+	}
+	if typ := query["lookup"]; typ != "" {
+		req.Lookup = &SourceLookup{Type: typ, Fields: map[string]string{}}
+		for k, v := range query {
+			if field, ok := strings.CutPrefix(k, "lookup."); ok && field != "" {
+				req.Lookup.Fields[field] = v
+			}
+		}
+	}
+	return req
 }
 ``````
 
@@ -63367,6 +64037,7 @@ type SetupStep struct {
 | `class` | `string` | emitted (validation may require a value) |  |
 | `abilities` | `[]string` | may be omitted (see validation for conditions) |  |
 | `limits` | `map[string]any` | may be omitted (see validation for conditions) |  |
+| `search` | `*SourceSearchMeta` | may be omitted (see validation for conditions) | Search opts a stream_source plugin in to category searches: Ether asks GET /ether/search (Routes.SourceSearch) for the declared Newznab categories, such as 3000 (audio) or 7000 (books). |
 
 
 ## Source: sdk/go/types.go#SourceMeta
@@ -63377,6 +64048,31 @@ type SourceMeta struct {
 	Class     string         `json:"class"`
 	Abilities []string       `json:"abilities,omitempty"`
 	Limits    map[string]any `json:"limits,omitempty"`
+	// Search opts a stream_source plugin in to category searches: Ether
+	// asks GET /ether/search (Routes.SourceSearch) for the declared Newznab
+	// categories, such as 3000 (audio) or 7000 (books).
+	Search *SourceSearchMeta `json:"search,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SourceSearchMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `categories` | `[]int` | emitted (validation may require a value) |  |
+| `lookups` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#SourceSearchMeta
+
+``````
+// SourceSearchMeta declares the category searches a source plugin answers.
+// A top category (3000) covers its subcategories (3010, 3040). Lookups name
+// typed lookups (e.g. "album") whose fields Ether passes when a caller
+// sends one.
+type SourceSearchMeta struct {
+	Categories []int    `json:"categories"`
+	Lookups    []string `json:"lookups,omitempty"`
 }
 ``````
 
@@ -64178,14 +64874,126 @@ type StreamResponse struct {
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `streamId` | `string` | emitted (validation may require a value) |  |
+| `file` | `string` | may be omitted (see validation for conditions) |  |
+| `fileIndex` | `*int` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#OpenStreamRequest
 
 ``````
-// OpenStreamRequest is passed to an OpenStream route handler.
+// OpenStreamRequest is passed to an OpenStream route handler
+// (GET /ether/open/{streamId}). For a release answered on a category search,
+// File or FileIndex name the file to open (from ReleaseFiles); both empty
+// lets the plugin choose.
 type OpenStreamRequest struct {
-	StreamID string `json:"streamId"`
+	StreamID  string `json:"streamId"`
+	File      string `json:"file,omitempty"`
+	FileIndex *int   `json:"fileIndex,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SourceLookup.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `type` | `string` | emitted (validation may require a value) |  |
+| `fields` | `map[string]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#SourceLookup
+
+``````
+// SourceLookup is a typed lookup on a category search, such as
+// {Type: "album", Fields: {"artist": "...", "title": "..."}}.
+type SourceLookup struct {
+	Type   string            `json:"type"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SourceSearchRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `query` | `string` | emitted (validation may require a value) |  |
+| `categories` | `[]int` | emitted (validation may require a value) |  |
+| `lookup` | `*SourceLookup` | may be omitted (see validation for conditions) |  |
+| `purpose` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#SourceSearchRequest
+
+``````
+// SourceSearchRequest is passed to a SourceSearch route handler
+// (GET /ether/search). Categories are the requested ones the plugin
+// declared; Lookup is set only for a lookup type the plugin declared.
+// Purpose says why Ether searches (playback, detail, warmup, ...) when known.
+type SourceSearchRequest struct {
+	Query      string        `json:"query"`
+	Categories []int         `json:"categories"`
+	Lookup     *SourceLookup `json:"lookup,omitempty"`
+	Purpose    string        `json:"purpose,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SourceSearchResponse
+
+``````
+// SourceSearchResponse answers a category search in the stream route's
+// shape. Return releases as lazy streams (Ether.Lazy with Ether.ID and
+// Ether.ReleaseName) that ReleaseFiles lists and OpenStream opens, or as
+// torrents (InfoHash) Ether opens through debrid.
+type SourceSearchResponse = StreamResponse
+``````
+
+## Source: sdk/go/types.go#ReleaseFilesRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/types.go#ReleaseFilesRequest
+
+``````
+// ReleaseFilesRequest is passed to a ReleaseFiles route handler
+// (GET /ether/files/{id}) for a lazy release a search answered.
+type ReleaseFilesRequest struct {
+	ID string `json:"id"`
+}
+``````
+
+## Source: sdk/go/types.go#PluginReleaseFile.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `path` | `string` | emitted (validation may require a value) |  |
+| `size` | `int64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#PluginReleaseFile
+
+``````
+// PluginReleaseFile is one file inside a plugin release.
+type PluginReleaseFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#ReleaseFilesResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `files` | `[]PluginReleaseFile` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/types.go#ReleaseFilesResponse
+
+``````
+// ReleaseFilesResponse lists a release's files in the order FileIndex counts.
+type ReleaseFilesResponse struct {
+	Files []PluginReleaseFile `json:"files"`
 }
 ``````
 
@@ -66642,6 +67450,23 @@ def _error_response(status: int, code: str, message: str) -> Dict[str, Any]:
     }
 
 
+def _source_search_request(query: Dict[str, str]) -> Dict[str, Any]:
+    """Decode GET /ether/search: query, category (comma-separated Newznab ids),
+    purpose, lookup and lookup.<field> (stream_source category searches)."""
+    cats = []
+    for raw in (query.get("category") or "").split(","):
+        raw = raw.strip()
+        if raw.isdigit():
+            cats.append(int(raw))
+    req: Dict[str, Any] = {"query": query.get("query", ""), "categories": cats}
+    if query.get("purpose"):
+        req["purpose"] = query["purpose"]
+    if query.get("lookup"):
+        fields = {k[len("lookup.") :]: v for k, v in query.items() if k.startswith("lookup.") and len(k) > len("lookup.")}
+        req["lookup"] = {"type": query["lookup"], "fields": fields}
+    return req
+
+
 def _match_stremio_route(path: str, query: Dict[str, str]) -> Optional[Dict[str, Any]]:
     if not path.endswith(".json"):
         return None
@@ -66903,6 +67728,36 @@ class PluginInstance:
                 return _error_response(404, "not_found", "Stream open handler is not registered.")
             body_obj = _parse_json_body(req.get("body"))
             return _ok_response(fn({"streamId": str(body_obj.get("streamId") or "")}, ctx))
+
+        if method == "GET" and path.startswith("/ether/open/"):
+            fn = self.routes.get("open_stream") or self.routes.get("openStream")
+            if not fn:
+                return _error_response(404, "not_found", "Stream open handler is not registered.")
+            open_req: Dict[str, Any] = {"streamId": urllib.parse.unquote(path[len("/ether/open/") :])}
+            if query.get("file"):
+                open_req["file"] = query["file"]
+            raw_index = query.get("fileIndex", "")
+            if raw_index.isdigit():
+                open_req["fileIndex"] = int(raw_index)
+            return _ok_response(fn(open_req, ctx))
+
+        if method == "GET" and path == "/ether/search":
+            fn = self.routes.get("source_search") or self.routes.get("sourceSearch")
+            if not fn:
+                return _error_response(404, "not_found", "Source search handler is not registered.")
+            res = fn(_source_search_request(query), ctx) or {}
+            if isinstance(res, dict) and res.get("streams") is None:
+                res = {**res, "streams": []}
+            return _ok_response(res)
+
+        if method == "GET" and path.startswith("/ether/files/"):
+            fn = self.routes.get("release_files") or self.routes.get("releaseFiles")
+            if not fn:
+                return _error_response(404, "not_found", "Release files handler is not registered.")
+            res = fn({"id": urllib.parse.unquote(path[len("/ether/files/") :])}, ctx) or {}
+            if isinstance(res, dict) and res.get("files") is None:
+                res = {**res, "files": []}
+            return _ok_response(res)
 
         if method == "GET" and path.startswith("/ether/markers/") and path.endswith(".json"):
             fn = self.routes.get("markers")
@@ -69926,7 +70781,8 @@ export default hello;
 
 - `catalog` (`GET /catalog/{type}/{id}[/{extra}].json`)
 - `meta` (`GET /meta/{type}/{id}.json`)
-- `stream` (`GET /stream/{type}/{id}[/{extra}].json`) and `openStream` (`POST /ether/stream/open`)
+- `stream` (`GET /stream/{type}/{id}[/{extra}].json`) and `openStream` (`GET /ether/open/{streamId}[?file=&fileIndex=]`, also `POST /ether/stream/open`)
+- `sourceSearch` (`GET /ether/search`, for a `contributes.source.search` declaration) and `releaseFiles` (`GET /ether/files/{id}`)
 - `subtitles` (`GET /subtitles/{type}/{id}[/{extra}].json`, requires `X-Ether-Pick` header)
 - `markers` (`GET /ether/markers/{type}/{id}.json`)
 - `channels` (`GET /ether/channels.json`) and `guide` (`GET /ether/guide/{channelId}.json`)
@@ -70068,8 +70924,8 @@ Viewer request-path calls derive their unit budget directly from each route's
 deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s (30,000 units;
 20 s / 200,000 units for Stremio add-ons), `/subtitles/*`, `/ether/subtitles/*` and
 `/ether/v1/kinds/*/resolve` or `/match` get 5 s (50,000 units), and `/catalog/*`,
-`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search` and
-`/items/*` get 10 s (100,000 units), further shortened only if the owner sets a
+`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`,
+`/items/*`, `/ether/search` and `/ether/files/*` get 10 s (100,000 units), further shortened only if the owner sets a
 lower ceiling. Ranking stays at its existing 2 ms per-candidate and 50 ms
 per-batch defaults. Background kind sync and on-demand facet expansion (`/ether/v1/kinds/*/browse`,
 `/changes` and `/expand`), administrative setup, actions, tools, events and jobs use the
@@ -72888,6 +73744,10 @@ import type {
   NotifyResponse,
   OpenStreamRequest,
   OpenStreamResponse,
+  ReleaseFilesRequest,
+  ReleaseFilesResponse,
+  SourceSearchRequest,
+  SourceSearchResponse,
   RankKeyFn,
   RawRequest,
   RawResponse,
@@ -72960,6 +73820,8 @@ export interface PluginRoutes<S = Record<string, unknown>> {
   meta?: (req: MetaRequest, ctx: PluginContext<S>) => MaybePromise<MetaResponse>;
   stream?: (req: StreamRequest, ctx: PluginContext<S>) => MaybePromise<StreamResponse>;
   openStream?: (req: OpenStreamRequest, ctx: PluginContext<S>) => MaybePromise<OpenStreamResponse>;
+  sourceSearch?: (req: SourceSearchRequest, ctx: PluginContext<S>) => MaybePromise<SourceSearchResponse>;
+  releaseFiles?: (req: ReleaseFilesRequest, ctx: PluginContext<S>) => MaybePromise<ReleaseFilesResponse>;
   subtitles?: (req: SubtitlesRequest, ctx: PluginContext<S>) => MaybePromise<SubtitlesResponse>;
   subtitlesDownload?: (req: { id: string; lang: string; format: string }, ctx: PluginContext<S>) => MaybePromise<{ format: string; encoding: "utf8" | "base64"; data: string }>;
   markers?: (req: MarkersRequest, ctx: PluginContext<S>) => MaybePromise<MarkersResponse>;
@@ -73128,6 +73990,26 @@ function parseExtraSegment(rawExtra: string | undefined): Record<string, string>
     out[k] = v;
   });
   return out;
+}
+
+/** Decodes GET /ether/search: query, category (comma-separated Newznab ids), purpose, lookup and lookup.<field>. */
+function sourceSearchRequest(query: Record<string, string>): SourceSearchRequest {
+  const req: SourceSearchRequest = {
+    query: query.query ?? "",
+    categories: (query.category ?? "")
+      .split(",")
+      .map((c) => Number.parseInt(c.trim(), 10))
+      .filter((n) => Number.isInteger(n)),
+  };
+  if (query.purpose) req.purpose = query.purpose;
+  if (query.lookup) {
+    const fields: Record<string, string> = {};
+    for (const [k, v] of Object.entries(query)) {
+      if (k.startsWith("lookup.") && k.length > "lookup.".length) fields[k.slice("lookup.".length)] = v;
+    }
+    req.lookup = { type: query.lookup, fields };
+  }
+  return req;
 }
 
 function matchStremioRoute(path: string, query: Record<string, string>): ParsedStremioRoute | null {
@@ -73359,6 +74241,31 @@ export function plugin<S = Record<string, unknown>>(
       return mapResult(
         routes.openStream({ streamId: String(bodyObj.streamId ?? "") }, ctx),
       );
+    }
+
+    if (method === "GET" && path.startsWith("/ether/open/")) {
+      if (!routes.openStream) {
+        return errorResponse(404, "not_found", "Stream open handler is not registered.");
+      }
+      const open: OpenStreamRequest = { streamId: decodeURIComponent(path.slice("/ether/open/".length)) };
+      if (query.file) open.file = query.file;
+      const fileIndex = Number.parseInt(query.fileIndex ?? "", 10);
+      if (Number.isInteger(fileIndex) && fileIndex >= 0) open.fileIndex = fileIndex;
+      return mapResult(routes.openStream(open, ctx));
+    }
+
+    if (method === "GET" && path === "/ether/search") {
+      if (!routes.sourceSearch) {
+        return errorResponse(404, "not_found", "Source search handler is not registered.");
+      }
+      return mapResult(routes.sourceSearch(sourceSearchRequest(query), ctx));
+    }
+
+    if (method === "GET" && path.startsWith("/ether/files/")) {
+      if (!routes.releaseFiles) {
+        return errorResponse(404, "not_found", "Release files handler is not registered.");
+      }
+      return mapResult(routes.releaseFiles({ id: decodeURIComponent(path.slice("/ether/files/".length)) }, ctx));
     }
 
     if (method === "GET" && path.startsWith("/ether/markers/") && path.endsWith(".json")) {
@@ -75065,6 +75972,14 @@ export interface SourceMeta {
   class: "debrid" | "usenet" | "indexer" | "direct";
   abilities?: string[];
   limits?: Record<string, unknown>;
+  /** Opts a stream_source plugin in to category searches answered by the `sourceSearch` route (GET /ether/search). */
+  search?: SourceSearchMeta;
+}
+
+/** Newznab categories (3000 audio, 7000 books; a top category covers its subcategories) and optional typed lookups ("album") a source plugin answers. */
+export interface SourceSearchMeta {
+  categories: number[];
+  lookups?: string[];
 }
 
 export interface ChannelsMeta {
@@ -75810,8 +76725,10 @@ export interface SourceQuery {
     | "release_files"
     | "usenet_check";
   query?: string;
-  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
+  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. Source plugins that declared the category answer it too. */
   category?: string;
+  /** indexer_search with category: a typed lookup (e.g. `{type: "album", fields: {artist, title}}`) for source plugins that declared its type; other indexers search `query` alone. */
+  lookup?: SourceLookup;
   /** Quality profile name to score video release names against on indexer_search; empty uses default. */
   profile?: string;
   /** indexer_search only: when true, start the fan-out and return immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. */
@@ -75967,6 +76884,20 @@ export interface SourceCandidate {
   fileCount?: number;
   /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
   usenetCheck?: UsenetCheckResult;
+  /** A release a source plugin answered for a declared category search. No infoHash or nzbUrl: hand the candidate back to release_files to list its files and in a release source to open it. */
+  pluginRelease?: PluginReleaseRef;
+}
+
+/** A source plugin's release: the plugin id and the lazy stream id it answered the search with. */
+export interface PluginReleaseRef {
+  plugin: string;
+  id: string;
+}
+
+/** A typed lookup on a category search. */
+export interface SourceLookup {
+  type: string;
+  fields?: Record<string, string>;
 }
 
 export interface KindMatchRequest {
@@ -76269,8 +77200,37 @@ export interface StreamResponse {
   streams: StreamItem[];
 }
 
+/** GET /ether/open/{streamId}. For a release answered on a category search, `file` or `fileIndex` name the file to open (from `releaseFiles`); neither lets the plugin choose. */
 export interface OpenStreamRequest {
   streamId: string;
+  file?: string;
+  fileIndex?: number;
+}
+
+/** GET /ether/search: the requested categories the plugin declared, the lookup only for a declared type, and why Ether searches (playback, detail, warmup, ...) when known. */
+export interface SourceSearchRequest {
+  query: string;
+  categories: number[];
+  lookup?: SourceLookup;
+  purpose?: string;
+}
+
+/** Answers in the stream route's shape: lazy streams (`ether.lazy`, `ether.id`, `ether.releaseName`) or torrents (`infoHash`). */
+export type SourceSearchResponse = StreamResponse;
+
+/** GET /ether/files/{id} for a lazy release a search answered. */
+export interface ReleaseFilesRequest {
+  id: string;
+}
+
+export interface PluginReleaseFile {
+  path: string;
+  size?: number;
+}
+
+/** A release's files in the order `fileIndex` counts. */
+export interface ReleaseFilesResponse {
+  files: PluginReleaseFile[];
 }
 
 export interface OpenStreamResponse {

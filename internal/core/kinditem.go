@@ -471,6 +471,10 @@ type SourceQuery struct {
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
 	Category string `json:"category,omitempty"`
+	// Lookup, on an indexer_search with a Category, adds a typed lookup
+	// (e.g. {type: "album", fields: {artist, title}}) for plugin sources that
+	// declared it. Every other indexer searches Query alone.
+	Lookup *SourceLookup `json:"lookup,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile    string   `json:"profile,omitempty"`
@@ -779,6 +783,27 @@ type SourceCandidate struct {
 	// article availability verdict and any recorded playback failure for
 	// this NZB release.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
+	// PluginRelease names a release a stream_source plugin answered for a
+	// category search it declared (ether.contributes.source.search). It has
+	// no info hash, magnet or NZB: release_files asks that plugin for the
+	// files and a release source opens it through the plugin's open route.
+	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
+}
+
+// PluginReleaseRef identifies one release of a stream_source plugin: the
+// plugin's id and the lazy stream id it answered the search with.
+type PluginReleaseRef struct {
+	Plugin string `json:"plugin"`
+	ID     string `json:"id"`
+}
+
+// SourceLookup is a typed lookup on a category search, such as an album by
+// artist and title. Type is a key the answering plugin source declared in
+// ether.contributes.source.search.lookups; Fields are its named values.
+// Indexers that do not declare the lookup search the free-text query only.
+type SourceLookup struct {
+	Type   string            `json:"type"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns

@@ -96,12 +96,15 @@ const (
 
 // KindResolverDeps configures a KindResolver.
 type KindResolverDeps struct {
-	Manager       *plugins.Manager
-	Libraries     *libraries.Service
-	Items         *pluginitems.Service
-	Blobs         *blobcache.Cache
-	Catalog       *KindCatalog
-	Indexer       core.Indexer
+	Manager   *plugins.Manager
+	Libraries *libraries.Service
+	Items     *pluginitems.Service
+	Blobs     *blobcache.Cache
+	Catalog   *KindCatalog
+	Indexer   core.Indexer
+	// Sources, when set, accounts plugin-release opens (#792) against the
+	// source plugin's grab limits.
+	Sources       *StreamSources
 	Resolver      *resolver.Service
 	Debrid        DebridSourceBackend
 	Engine        core.Engine
@@ -159,6 +162,7 @@ type KindResolver struct {
 	blobs                *blobcache.Cache
 	catalog              *KindCatalog
 	indexer              core.Indexer
+	sources              *StreamSources
 	resolver             *resolver.Service
 	debrid               DebridSourceBackend
 	engine               core.Engine
@@ -267,6 +271,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		blobs:                deps.Blobs,
 		catalog:              deps.Catalog,
 		indexer:              deps.Indexer,
+		sources:              deps.Sources,
 		resolver:             deps.Resolver,
 		debrid:               deps.Debrid,
 		engine:               deps.Engine,
@@ -1870,6 +1875,7 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 	searchReq := core.SearchRequest{
 		Title:    query,
 		Category: category,
+		Lookup:   q.Lookup,
 	}
 	opts := core.IndexerSearchOptions{
 		FirstResults:      q.FirstResults,
@@ -2170,6 +2176,11 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			if q.TorrentURL != "" {
 				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
 			}
+		}
+		if cand.PluginRelease != nil && cand.InfoHash == "" && cand.Magnet == "" && cand.TorrentURL == "" && cand.NZBURL == "" {
+			cand.FileIndex = nil
+			cand.Files = nil
+			return r.pluginReleaseFiles(ctx, cand)
 		}
 		// The listing answers for the whole release; any file choice the
 		// candidate already carries does not narrow it.
@@ -3659,6 +3670,10 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		}
 	case rel.NZBURL != "":
 		rel.Protocol = core.ProtocolUsenet
+	case pluginReleaseOf(&hint) != nil:
+		ref := hint.Candidate.PluginRelease
+		rel.Protocol = "direct"
+		rel.GUID = fmt.Sprintf("plugin:%s:lazy:%s", ref.Plugin, ref.ID)
 	}
 	rel.ID = releaseIDWithTarget(rel)
 	if rel.Name == "" {
@@ -3668,7 +3683,7 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 }
 
 func releaseIDWithTarget(rel core.Release) string {
-	id := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+	id := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
 	if rel.Target != nil {
 		selection, _ := json.Marshal(rel.Target)
 		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
@@ -3901,6 +3916,9 @@ func (r *KindResolver) openReleaseWithCategory(ctx context.Context, hint core.Re
 	if err != nil {
 		return nil, err
 	}
+	if ref := pluginReleaseOf(&hint); ref != nil && rel.Protocol == "direct" {
+		return r.openPluginRelease(ctx, *ref, rel, "")
+	}
 	if rel.Category == 0 && fallbackCategory != 0 {
 		rel.Category = fallbackCategory
 	}
@@ -3921,6 +3939,9 @@ func (r *KindResolver) openReleaseForSourceWithCategory(ctx context.Context, src
 	rel, err := releaseFromSource(src, "", fallbackMIME)
 	if err != nil {
 		return nil, err
+	}
+	if ref := pluginReleaseOf(src.Release); ref != nil && rel.Protocol == "direct" {
+		return r.openPluginRelease(ctx, *ref, rel, firstNonEmpty(src.MIME, fallbackMIME))
 	}
 	if rel.Category == 0 && fallbackCategory != 0 {
 		rel.Category = fallbackCategory

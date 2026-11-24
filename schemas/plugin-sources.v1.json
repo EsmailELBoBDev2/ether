@@ -27,7 +27,31 @@
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases. Stremio add-ons and source plugins are asked only when the plugin declared one of the categories in ether.contributes.source.search."
+        },
+        "lookup": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+            },
+            "fields": {
+              "type": "object",
+              "maxProperties": 8,
+              "propertyNames": {
+                "pattern": "^[a-z][a-zA-Z0-9_]{0,31}$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          },
+          "description": "indexer_search with category only. A typed lookup (for example {type: \"album\", fields: {artist, title}}) passed to source plugins that declared its type in ether.contributes.source.search.lookups; every other indexer searches query alone."
         },
         "profile": {
           "type": "string",
@@ -454,6 +478,23 @@
         "usenetCheck": {
           "$ref": "#/$defs/usenetCheckResult",
           "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
+        },
+        "pluginRelease": {
+          "type": "object",
+          "required": [
+            "plugin",
+            "id"
+          ],
+          "properties": {
+            "plugin": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "description": "A release a stream_source plugin answered for a category it declared (ether.contributes.source.search): the plugin id and its lazy stream id. It has no infoHash, magnet or nzbUrl; release_files asks the plugin for the files and a release source opens it through the plugin's open route with the chosen file."
         }
       }
     },

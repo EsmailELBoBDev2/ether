@@ -118,7 +118,7 @@ be overwritten or deleted by a plugin.
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
 | catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open/Delete; sources permission |
-| stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
+| stream_source / debrid_provider | Stremio stream; lazy open (`GET /ether/open/{id}`) / debrid routes; opt-in category search (`source.search` → `GET /ether/search`, `GET /ether/files/{id}`) | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
 | notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
 | flow_actions | `contributes.flowActions` + `POST /ether/v1/flow-actions/{key}` (with `X-Ether-Idempotency-Key`) | KV (idempotency deduplication), HTTPFetch, PublishEvent |
@@ -324,6 +324,7 @@ than billed as guest wall time):
 | Route group | Effective deadline | Effective unit budget |
 |---|---|---|
 | `/stream/*`, `/ether/open*` | 3 s (20 s for Stremio add-ons) | 30,000 units (200,000 for Stremio) |
+| `/ether/search`, `/ether/files/*` (source category search) | 10 s | 100,000 units |
 | `/subtitles/*`, `/ether/subtitles/*` | 5 s (10 s for Stremio add-ons) | 50,000 units (100,000 for Stremio) |
 | `/ether/v1/kinds/*/resolve`, `/ether/v1/kinds/*/match` | 5 s | 50,000 units |
 | `/catalog/*`, `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`, `/ether/v1/kinds/*/items/*` | 10 s (20 s for Stremio `/catalog/*`) | 100,000 units (200,000 for Stremio `/catalog/*`) |
@@ -405,6 +406,14 @@ Fill `/stream/{type}/{id}.json` with `{streams:[{url:"https://YOUR_HOST/video.mp
 using an owner-configured source, not hard-coded credentials. Declare YOUR_HOST
 in network permissions if the plugin fetches it. Return lazy stream descriptors
 for work that should happen only on a viewer pick. See `sdk/examples/easydebrid`.
+
+To serve Music or Books searches too, declare
+`contributes.source.search: {categories: [3000, 7000]}` and add the
+`sourceSearch` / `SourceSearch` / `source_search` handler (lazy streams with
+`ether.id` and `ether.releaseName`), `releaseFiles` (the release's
+`{files: [{path, size}]}`) and `openStream` with `file` / `fileIndex`. Declare
+the host the opened URL lives on in `permissions.network`. See
+"Source plugins that answer category searches" in docs/plugin-kinds.md.
 
 ### 4. Notification channel
 

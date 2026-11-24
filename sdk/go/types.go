@@ -579,6 +579,19 @@ type SourceMeta struct {
 	Class     string         `json:"class"`
 	Abilities []string       `json:"abilities,omitempty"`
 	Limits    map[string]any `json:"limits,omitempty"`
+	// Search opts a stream_source plugin in to category searches: Ether
+	// asks GET /ether/search (Routes.SourceSearch) for the declared Newznab
+	// categories, such as 3000 (audio) or 7000 (books).
+	Search *SourceSearchMeta `json:"search,omitempty"`
+}
+
+// SourceSearchMeta declares the category searches a source plugin answers.
+// A top category (3000) covers its subcategories (3010, 3040). Lookups name
+// typed lookups (e.g. "album") whose fields Ether passes when a caller
+// sends one.
+type SourceSearchMeta struct {
+	Categories []int    `json:"categories"`
+	Lookups    []string `json:"lookups,omitempty"`
 }
 
 // ChannelsMeta describes a Live TV channel contribution.
@@ -889,9 +902,55 @@ type StreamResponse struct {
 	Streams []StreamItem `json:"streams"`
 }
 
-// OpenStreamRequest is passed to an OpenStream route handler.
+// OpenStreamRequest is passed to an OpenStream route handler
+// (GET /ether/open/{streamId}). For a release answered on a category search,
+// File or FileIndex name the file to open (from ReleaseFiles); both empty
+// lets the plugin choose.
 type OpenStreamRequest struct {
-	StreamID string `json:"streamId"`
+	StreamID  string `json:"streamId"`
+	File      string `json:"file,omitempty"`
+	FileIndex *int   `json:"fileIndex,omitempty"`
+}
+
+// SourceLookup is a typed lookup on a category search, such as
+// {Type: "album", Fields: {"artist": "...", "title": "..."}}.
+type SourceLookup struct {
+	Type   string            `json:"type"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// SourceSearchRequest is passed to a SourceSearch route handler
+// (GET /ether/search). Categories are the requested ones the plugin
+// declared; Lookup is set only for a lookup type the plugin declared.
+// Purpose says why Ether searches (playback, detail, warmup, ...) when known.
+type SourceSearchRequest struct {
+	Query      string        `json:"query"`
+	Categories []int         `json:"categories"`
+	Lookup     *SourceLookup `json:"lookup,omitempty"`
+	Purpose    string        `json:"purpose,omitempty"`
+}
+
+// SourceSearchResponse answers a category search in the stream route's
+// shape. Return releases as lazy streams (Ether.Lazy with Ether.ID and
+// Ether.ReleaseName) that ReleaseFiles lists and OpenStream opens, or as
+// torrents (InfoHash) Ether opens through debrid.
+type SourceSearchResponse = StreamResponse
+
+// ReleaseFilesRequest is passed to a ReleaseFiles route handler
+// (GET /ether/files/{id}) for a lazy release a search answered.
+type ReleaseFilesRequest struct {
+	ID string `json:"id"`
+}
+
+// PluginReleaseFile is one file inside a plugin release.
+type PluginReleaseFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size,omitempty"`
+}
+
+// ReleaseFilesResponse lists a release's files in the order FileIndex counts.
+type ReleaseFilesResponse struct {
+	Files []PluginReleaseFile `json:"files"`
 }
 
 // OpenStreamResponse is returned by an OpenStream route handler.

@@ -515,9 +515,16 @@ URL-safe origin-confined tokens), and Ether re-attaches credentials only at
 fetch time on the originating indexer's origin when the candidate is handed
 back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
 keyed on the key-less link, so plugins can persist candidates in KV without
-storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio/addon sources do
-not support category filters and reject scoped searches. Omit `category` for
-the default media search. Results and acquired files are cached separately by
+storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio add-ons and
+source plugins are asked by title id only, so they reject scoped searches,
+unless a source plugin declared the category (see "Source plugins that answer
+category searches" below). Omit `category` for the default media search.
+On a category search, `lookup: {type, fields}` (for example
+`{type: "album", fields: {artist: "Air", title: "Moon Safari"}}`) adds a typed
+lookup for source plugins that declared that type; every other indexer
+searches `query` alone, so keep `query` meaningful. A lookup needs a
+`category`, a simple `type` key and at most 8 camelCase fields of up to 256
+bytes. Results and acquired files are cached separately by
 category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
@@ -573,6 +580,57 @@ file to your item by name, then return the release with `release.file` or
 to `source.size`, and setting `release.fileHint` to an exact member path from
 `members` or `release.track` when matching by disc/track/title); the choice is
 honoured on Usenet as on debrid.
+
+A candidate with `pluginRelease: {plugin, id}` came from a source plugin's
+category search (below). It has no `infoHash` or `nzbUrl`: hand the candidate
+back to `release_files` (Ether asks the plugin for its files) and return it in
+a `release` source with `release.file` or `release.fileIndex`; Ether opens it
+through that plugin. It is never cached on debrid, so skip `debrid_check` and
+`usenet_check` for it.
+
+### Source plugins that answer category searches
+
+A `stream_source` plugin is asked by title id (`/stream/{type}/{id}.json`). To
+also answer the category searches content kinds make (Music searches
+`category: "3000"`, Books `"7000"`), it declares them:
+
+```json
+"contributes": {
+  "source": {
+    "class": "indexer",
+    "search": { "categories": [3000, 7000], "lookups": ["album"] }
+  }
+}
+```
+
+`categories` lists 1 to 16 Newznab categories; a top category (`3000`) covers
+its subcategories (`3010`, `3040`), a subcategory covers only itself.
+`lookups` lists up to 8 typed lookups the plugin understands. Ether then calls
+the plugin for an `indexer_search` whose category it declared, and only then;
+every other add-on keeps refusing scoped searches:
+
+- `GET /ether/search?query=&category=3000[&purpose=][&lookup=album&lookup.artist=&lookup.title=]`
+  (10 s route deadline, bounded by the caller's search deadline). `category`
+  holds the requested categories the plugin declared, `purpose` why Ether
+  searches (`playback`, `detail`, `warmup`, ...), and the lookup appears only
+  for a declared type. Answer in the stream route's shape,
+  `{streams: [...]}`: a lazy stream (`ether: {lazy: true, id, releaseName,
+  size?, languages?}`) becomes a candidate with `pluginRelease`; a torrent
+  (`infoHash`) or NZB stream becomes an ordinary torrent or Usenet candidate.
+  Plain `url` streams and owner-folder `file` streams are skipped there. The
+  answer goes through Ether's search cache, the plugin's search limits and
+  the caller's quality profile like any indexer result.
+- `GET /ether/files/{id}` answers `release_files` for a lazy release:
+  `{files: [{path, size?}]}` in the order `fileIndex` counts (at most 2,000).
+- `GET /ether/open/{id}?file=&fileIndex=` opens the chosen file, answering
+  `{url, headers?}` (or `{file}` inside an owner-granted folder) as a lazy
+  stream does. Ether reads the URL with HTTP Range requests; the URL and every
+  redirect must be on the plugin's `permissions.network` hosts (or an
+  owner-granted local host), so a plugin cannot point Ether at an arbitrary
+  host. Header values may use `{secret:name}` with the plugin's own secrets.
+
+A `pluginRelease` handed back by a caller is honoured only for an enabled
+plugin that declares `source.search`.
 
 `ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
 NZB's article availability before your resolver offers it, returning a single

@@ -98,6 +98,14 @@ type Backend interface {
 	ResolveTorrent(ctx context.Context, r core.Release, reserve func(context.Context, string) error) (core.Release, error)
 }
 
+// CategoryBackend is a Backend that answers some category searches: an
+// installed source plugin that declared them (#792). Every other add-on
+// and Stremio source refuses a category search, the honest answer for a
+// source that is asked by title id only (#478).
+type CategoryBackend interface {
+	AnswersCategories(ctx context.Context, cats []int) bool
+}
+
 // RecentBackend is a Backend that can list a site's latest releases, the
 // release feed of a site with no Newznab API.
 type RecentBackend interface {
@@ -853,6 +861,20 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	}
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
+		if req.Lookup != nil && c.Config().IsAddon() {
+			// Only plugin sources read a typed lookup; other indexers
+			// search the text alone and keep sharing its cache entry.
+			keys := make([]string, 0, len(req.Lookup.Fields))
+			for k := range req.Lookup.Fields {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			fmt.Fprintf(h, "lookup:%s", req.Lookup.Type)
+			for _, k := range keys {
+				fmt.Fprintf(h, ":%s=%s", k, req.Lookup.Fields[k])
+			}
+			fmt.Fprint(h, "|")
+		}
 	}
 	if req.Type == core.TypeEpisode && req.Season == 0 && (c.Config().IsStremio() || c.Config().IsAddon()) {
 		// Previously these routes cached empty answers without asking season 0.
@@ -1445,11 +1467,12 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 const primaryMissKey = "|primary-miss"
 
 func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
-	if _, err := core.SearchCategories(req.Category); err != nil {
+	cats, err := core.SearchCategories(req.Category)
+	if err != nil {
 		return nil, err
 	}
 	cfg := c.Config()
-	if req.Category != "" && (cfg.IsStremio() || cfg.IsAddon()) {
+	if req.Category != "" && (cfg.IsStremio() || cfg.IsAddon()) && !c.backendAnswersCategories(ctx, cfg, cats) {
 		return nil, fmt.Errorf("indexer %q does not support category searches", c.Name())
 	}
 	if !cfg.Enabled {
@@ -2352,6 +2375,20 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 	body = nzb
 	c.keepNZB(ctx, r, body)
 	return body, true, nil
+}
+
+// backendAnswersCategories reports whether an add-on row's backend
+// declared one of the requested categories. Stremio rows never do.
+func (c *Client) backendAnswersCategories(ctx context.Context, cfg config.Indexer, cats []int) bool {
+	if !cfg.IsAddon() || len(cats) == 0 {
+		return false
+	}
+	b, err := c.backend()
+	if err != nil {
+		return false
+	}
+	cb, ok := b.(CategoryBackend)
+	return ok && cb.AnswersCategories(ctx, cats)
 }
 
 // backend returns the search backend of a built-in site or addon.

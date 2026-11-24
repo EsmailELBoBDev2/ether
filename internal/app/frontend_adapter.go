@@ -364,6 +364,48 @@ func (a *App) adapterKindVisible() func(ctx context.Context, pluginID string, vi
 	}
 }
 
+// adapterKindExpand backs kinds.expand: a frontend-adapter viewer opening a
+// container they may see fills it the way opening it in an Ether app does.
+func (a *App) adapterKindExpand() func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (bool, error) {
+	visible := a.adapterKindVisible()
+	return func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (bool, error) {
+		viewer, lib, ok, err := a.adapterKindLibrary(ctx, pluginID, viewerID, kindKey)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, core.ErrNotFound
+		}
+		if a.pluginsRT.kindCatalog == nil {
+			return false, plugins.ErrUnavailable
+		}
+		ids, err := visible(ctx, pluginID, viewerID, kindKey, []string{parentID})
+		if err != nil {
+			return false, err
+		}
+		if len(ids) == 0 {
+			return false, core.ErrNotFound
+		}
+		return a.pluginsRT.kindCatalog.FillChildren(core.WithCatalogViewer(ctx, viewer), lib, parentID)
+	}
+}
+
+// adapterKindLiveSearch backs kinds.search: a frontend-adapter viewer's
+// search runs the kind's search the way an Ether app's does, live plugin
+// search included, so what it finds is stored for kinds.browse to read.
+func (a *App) adapterKindLiveSearch() func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (int, error) {
+	return func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (int, error) {
+		viewer, lib, ok, err := a.adapterKindLibrary(ctx, pluginID, viewerID, kindKey)
+		if err != nil || !ok {
+			return 0, err
+		}
+		if a.pluginsRT.kindCatalog == nil {
+			return 0, plugins.ErrUnavailable
+		}
+		return a.pluginsRT.kindCatalog.SearchCount(core.WithCatalogViewer(ctx, viewer), lib, query, limit)
+	}
+}
+
 // adapterKindBrowse builds the host backend behind Host.KindBrowse (#615):
 // it executes the same pluginitems Browse/Search + LibraryPolicy path the
 // console uses, scoped to the requesting frontend-adapter viewer.

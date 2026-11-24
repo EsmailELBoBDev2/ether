@@ -63,8 +63,13 @@ type KindBackends struct {
 	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
-	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
-	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	KindVisible func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse  func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	// KindExpand and KindLiveSearch open a container and search for a
+	// frontend-adapter viewer the way an Ether app does (kinds.expand /
+	// kinds.search): Ether fetches from the plugin and stores the items.
+	KindExpand     func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (pending bool, err error)
+	KindLiveSearch func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (found int, err error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	// ResolveSourcesResult, when set, is preferred over ResolveSources and
 	// carries per-indexer search status alongside candidates (#733).
@@ -102,6 +107,8 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.KindVisible = b.KindVisible
 	m.deps.Backends.KindBrowse = b.KindBrowse
+	m.deps.Backends.KindExpand = b.KindExpand
+	m.deps.Backends.KindLiveSearch = b.KindLiveSearch
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
 	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
@@ -130,6 +137,8 @@ func (m *Manager) kindBackends() KindBackends {
 		KindItemCount:              m.deps.Backends.KindItemCount,
 		KindVisible:                m.deps.Backends.KindVisible,
 		KindBrowse:                 m.deps.Backends.KindBrowse,
+		KindExpand:                 m.deps.Backends.KindExpand,
+		KindLiveSearch:             m.deps.Backends.KindLiveSearch,
 		ResolveSources:             m.deps.Backends.ResolveSources,
 		ResolveSourcesResult:       m.deps.Backends.ResolveSourcesResult,
 		PeekUsenetCheck:            m.deps.Backends.PeekUsenetCheck,

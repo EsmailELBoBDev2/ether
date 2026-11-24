@@ -353,5 +353,5 @@ func (h *host) callViewerState(ctx context.Context, name string, args []json.Raw
 		}
 		return nil, svc.DeletePlaylist(ctx, h.plugin, viewer, kind, str(1)), true
 	}
-	return nil, nil, false
+	return h.callKindFill(ctx, name, args)
 }

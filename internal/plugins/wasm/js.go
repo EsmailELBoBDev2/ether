@@ -288,6 +288,8 @@ globalThis.ether = (() => {
              items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
              visible: (kind, ids) => call("kinds.visible", [kind, ids == null ? [] : ids]),
              browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]),
+             expand: (kind, id) => call("kinds.expand", [kind, id]),
+             search: (kind, query, opts) => call("kinds.search", [kind, query, opts == null ? {} : opts]),
              get: (kind, ids) => call("kinds.get", [kind, ids == null ? [] : ids]),
              state: (kind, ids) => call("kinds.state", [kind, ids == null ? [] : ids]),
              favorite: (kind, ids, on) => call("kinds.favorite", [kind, ids == null ? [] : ids, on !== false]),

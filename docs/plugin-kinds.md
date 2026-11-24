@@ -958,6 +958,16 @@ Hosted JS, all scoped to the adapter viewer and your own items of one kind:
 | `ether.kinds.playlistUpdate(kind, id, {title?, summary?, remove?, add?})` | `remove` takes whole-playlist positions and runs before `add` |
 | `ether.kinds.playlistDelete(kind, id)` | |
 
+A pull-synced kind takes no pushes, so an adapter never stores catalogue
+items itself. When its viewer opens something Ether has no children for yet,
+or searches for something Ether has not seen, ask Ether to do what an Ether
+app would, then read the result with `kinds.browse`:
+
+| Call | Returns |
+|---|---|
+| `ether.kinds.expand(kind, id)` | `{pending}`. Opens the container the way an app's open does: Ether runs your `/expand` (or hydrates the level) on the interactive path, stores the children, and waits as long as an open does. `pending: true` means children are still arriving; browse again shortly. A container the viewer may not see is `not_found`. |
+| `ether.kinds.search(kind, query, {limit?})` | `{found}`. Runs the kind's search the way an app's search does, your live `/search` included (bounded), and stores what it finds; read the matches with `kinds.browse({query})`. `limit` defaults to 50, at most 200. |
+
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already
 evicted ref succeeds), so large temporary downloads or extracts do not evict

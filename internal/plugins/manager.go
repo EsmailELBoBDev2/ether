@@ -61,6 +61,8 @@ type Backends struct {
 	KindItemCount        func(ctx context.Context, pluginID string) (int, error)
 	KindVisible          func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
 	KindBrowse           func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	KindExpand           func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (pending bool, err error)
+	KindLiveSearch       func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (found int, err error)
 	ResolveSources       func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
 	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL

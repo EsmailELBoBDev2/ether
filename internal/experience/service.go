@@ -3266,6 +3266,16 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	}
 	if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
 		found := containsMediaType(q.Types, t.Type)
+		// A plugin level answers the type its declared role or MediaBrowser
+		// type names (Plex type=8/9/10 ask artist/album/track), the same
+		// mapping the plugin store applied when it chose levels; a music
+		// artist projects as core "show", so the core type alone emptied
+		// every typed plugin listing that is re-checked here (#777).
+		for _, want := range q.Types {
+			if t.MediaRole != "" && strings.EqualFold(string(want), string(t.MediaRole)) || t.MBItemType != "" && strings.EqualFold(string(want), t.MBItemType) {
+				found = true
+			}
+		}
 		for _, kind := range q.UnservedTypes {
 			if strings.EqualFold(kind, string(t.Type)) || strings.EqualFold(kind, t.MBItemType) {
 				found = true

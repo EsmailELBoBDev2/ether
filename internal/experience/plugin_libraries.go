@@ -167,7 +167,6 @@ var (
 	_ frontend.LibraryFacetCollections    = (*Service)(nil)
 	_ frontend.LibraryFacetPeople         = (*Service)(nil)
 	_ frontend.PluginLibraryRowsReader    = (*Service)(nil)
-	_ frontend.PluginLibraryTabRowsReader = (*Service)(nil)
 )
 
 const maxPluginCursorEntries = 512
@@ -2300,35 +2299,25 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	return rows, false, isDefaultTab, nil
 }
 
-// PluginLibraryRows implements frontend.PluginLibraryRowsReader: shelves built
-// from the plugin library's stored items, arranged by that library's own
-// "library:<id>" layout page (defaulting to 8 shelves for auto-generated rows
-// when uncustomised; declared shelves are not clamped to 8).
-func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID string) ([]frontend.Row, error) {
-	return s.PluginLibraryTabRows(ctx, viewer, dev, viewID, "")
-}
-
-// PluginLibraryTabRows implements frontend.PluginLibraryTabRowsReader: builds
-// shelves for a specific recommended tab of a plugin library. When tabID is
-// empty or names the first recommended tab, the primary library layout page
-// applies as before; additional recommended tabs return their declared shelves
-// directly with tab-scoped row IDs.
-func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID, tabID string) ([]frontend.Row, error) {
-	const defaultMaxRows = 8
+// PluginLibraryRows implements frontend.PluginLibraryRowsReader: the plugin
+// library's candidate shelves for tab, arranged by the Recommendations page
+// "library:<id>/<tab>" exactly like a catalogue library's page (Curated or
+// Personalized, length, devices, Look). tab "" is the first rows tab.
+func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID, tab string) ([]frontend.Row, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
 	}
-	rows, declaredShelves, isDefaultTab, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tabID)
+	rows, declaredShelves, isDefaultTab, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tab)
 	if err != nil {
 		return nil, err
 	}
-	if s.d.Layout == nil || !isDefaultTab {
-		if !declaredShelves && len(rows) > defaultMaxRows {
-			rows = rows[:defaultMaxRows]
-		}
+	if s.d.Layout == nil {
 		return rows, nil
+	}
+	if isDefaultTab {
+		tab = ""
 	}
 	id, _ := strconv.Atoi(viewID)
 	now := time.Now()
@@ -2341,6 +2330,7 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 		Device:    dev,
 		Placement: frontend.PlacementLibrary,
 		ViewID:    viewID,
+		Tab:       strings.TrimSpace(tab),
 	}
 	sit := core.HomeSituation{
 		LibraryID: id,
@@ -2354,15 +2344,11 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 	}
 	// The page's own length applies; an unsaved page shows its declared
 	// shelves (Curated) or up to eight automatic rows.
-	sit.DefaultMaxRows = defaultMaxRows
+	sit.DefaultMaxRows = 8
 	if declaredShelves && len(rows) > 0 {
 		sit.DefaultMaxRows = len(rows)
 	}
-	arranged, err := LayoutRows(ctx, s.d.Layout, nil, req, sit, rows)
-	if err != nil {
-		return nil, err
-	}
-	return arranged, nil
+	return LayoutRows(ctx, s.d.Layout, nil, req, sit, rows)
 }
 
 const (

@@ -93,6 +93,10 @@ func heroesFromRows(rows []object, provenance ...map[string]heroSource) ([]objec
 	}
 	shelves := make([]object, 0, len(rows))
 	for _, row := range rows {
+		if row["kind"] == "surface" {
+			shelves = append(shelves, row)
+			continue
+		}
 		entries, _ := row["items"].([]object)
 		kept := make([]object, 0, len(entries))
 		for _, entry := range entries {
@@ -274,7 +278,7 @@ func (i *instance) heroFallback(r *http.Request, viewer *frontend.Viewer, token 
 				entries = append(entries, object{"kind": "title", "title": title, "receiptToken": entry.Handle})
 			}
 		}
-		sources[row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, hero: row.Layout.StylePolicy == frontend.RowStyleHero, previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
+		sources[row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, hero: row.Layout.Present.Layout == "hero", previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
 		out = append(out, object{"id": row.ID, "purpose": row.Purpose, "previewOnFocus": row.PreviewOnFocus, "items": entries, "continuation": "exhausted"})
 	}
 	return out, nil

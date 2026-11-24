@@ -106,9 +106,6 @@ type PluginScreens interface {
 	ToastSurface(ctx context.Context, viewer *Viewer, c ScreenClient, pluginID string) string
 	// ScreenPreviewValid reports whether ctx's Studio preview token is live.
 	ScreenPreviewValid(ctx context.Context) bool
-	// ScreenHomeRows returns the homeRow surfaces as Home rows (a JSON array
-	// of {kind: "surface", id: "surface:<pluginID>:<id>", surface}).
-	ScreenHomeRows(ctx context.Context, viewer *Viewer, c ScreenClient) (json.RawMessage, error)
 }
 
 type screenPreviewKey struct{}

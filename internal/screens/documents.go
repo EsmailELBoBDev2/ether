@@ -397,6 +397,38 @@ func (r *DocRegistry) Surfaces(ctx context.Context, viewer *core.User, frontendI
 	return out
 }
 
+// HomeRowSurfaces lists the homeRow surfaces published for Vela, whatever
+// the viewer: the sources Recommendations pages can place as rows. Apps gate
+// each viewer and client when they serve the row.
+func (r *DocRegistry) HomeRowSurfaces(ctx context.Context) []SurfaceTarget {
+	if r == nil {
+		return nil
+	}
+	var out []SurfaceTarget
+	seen := map[string]bool{}
+	for _, e := range r.snapshot(ctx) {
+		if e.draft || !e.active() {
+			continue
+		}
+		for _, sf := range e.contrib.Surfaces {
+			if sf.Presentation != screendoc.PresentHomeRow || len(e.docs.Surfaces[sf.ID]) == 0 {
+				continue
+			}
+			if !r.published(ctx, e, "surface", sf.ID, sf.Frontends, sf.Default, "vela") {
+				continue
+			}
+			sf.Title = e.localise("", sf.Title)
+			t := SurfaceTarget{WireID: pluginShort(e.pluginID) + "." + sf.ID, PluginID: e.pluginID, Meta: sf, plugin: e}
+			if seen[t.WireID] {
+				t.WireID = t.PluginID + "." + sf.ID
+			}
+			seen[t.WireID] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // FindSurface resolves a surface wire id.
 func (r *DocRegistry) FindSurface(ctx context.Context, viewer *core.User, frontendID, id string) (SurfaceTarget, bool) {
 	for _, t := range r.Surfaces(ctx, viewer, frontendID) {

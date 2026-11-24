@@ -243,7 +243,7 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 			entries = append(entries, ref)
 		}
 		snap.Entries = entries[:min(len(entries), 1000)]
-		if len(snap.Entries) == 0 {
+		if len(snap.Entries) == 0 && !IsSurfaceRow(snap.Row) {
 			continue
 		}
 		normalized = append(normalized, snap)

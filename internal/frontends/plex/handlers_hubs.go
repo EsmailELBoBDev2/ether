@@ -902,12 +902,17 @@ func (s *Server) handleContinueWatchingItems(w http.ResponseWriter, r *http.Requ
 	hs := s.continueHub(ctx, pr, v, sec, 200)
 	if raw := r.URL.Query().Get("contentDirectoryID"); raw != "" && v != cwSection {
 		allowed := map[int]bool{}
-		for _, id := range parseSectionList(raw) {
+		ids := parseSectionList(raw)
+		for _, id := range ids {
 			allowed[id] = true
 		}
+		// The filter and the section each row then reports agree: a title
+		// the named sections list is attributed to them.
+		ctx = withPreferredSections(ctx, ids...)
+		secs := s.sectionsForTitles(ctx, hs.Items)
 		filtered := hs.Items[:0]
 		for _, item := range hs.Items {
-			if section, ok := s.sectionFor(item.Type); ok && allowed[section.ID] {
+			if section, ok := secs[item.Key]; ok && allowed[section.ID] {
 				filtered = append(filtered, item)
 			}
 		}
@@ -1204,7 +1209,7 @@ func (s *Server) handleMetadataHubs(w http.ResponseWriter, r *http.Request) {
 	}
 	mc := hubContainer()
 	if title, lookupErr := s.metadataTitle(ctx, pr, k); lookupErr == nil {
-		if sec, ok := s.sectionFor(title.Type); ok {
+		if sec, ok := s.sectionForTitle(ctx, title); ok {
 			mc.LibrarySectionID = model.Ptr(sec.ID)
 			mc.LibrarySectionTitle = sec.Title
 			mc.LibrarySectionUUID = sec.UUID
@@ -1677,6 +1682,13 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 		}
 	}
 	personTagKeys := s.plexPeopleByTMDB(ctx, walkedIDs)
+	// The section a credited title counts under is the one that lists it,
+	// resolved for every walked person's titles in one pass.
+	var credited []frontend.Title
+	for _, p := range byPerson {
+		credited = append(credited, p.titles...)
+	}
+	titleSecs := s.sectionsForTitles(ctx, credited)
 	var actorTitles, directorTitles []reasonedTitle
 	for ci, cand := range walked {
 		titles, browsable, role := byPerson[ci].titles, byPerson[ci].browsable, byPerson[ci].role
@@ -1705,7 +1717,7 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 			if !s.visibleTitleWith(ctx, vis, pr.User, &t) {
 				continue
 			}
-			sec, hasSec := s.sectionFor(t.Type)
+			sec, hasSec := titleSecs[t.Key]
 			secBrowsable := hasSec && t.Type == sec.Type && browsable(t.Key) && (browseVis == nil || browseVis.DiscoveryVisibleForViewer(pr.User, &t))
 			if p, ok := role(&t, "cast"); ok {
 				if secBrowsable {
@@ -2132,6 +2144,10 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sectionID, _ := strconv.Atoi(q.Get("sectionId"))
+	if sectionID > 0 {
+		// A title the searched section lists is reported in it.
+		ctx = withPreferredSections(ctx, sectionID)
+	}
 	var scopedSec Section
 	scopedSection := false
 	fetch := max(limit*2, s.saferFetchCount(pr.User, limit))

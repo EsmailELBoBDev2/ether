@@ -512,6 +512,7 @@ func (i *instance) browseRoutes() error {
 			}
 			i.fillSeriesTitles(r, v, page)
 			i.prefetchParentArtwork(r, page)
+			i.primeTitleLibraries(r, v, page)
 			for _, title := range page {
 				if purpose == frontend.RowNextUp && title.Type == "episode" && i.host.Experience != nil {
 					if stored, ok := i.storedListTitle(r, v, title.Key); ok && stored.Type == "episode" {
@@ -632,6 +633,7 @@ func (i *instance) browseRoutes() error {
 			return
 		}
 		dto := i.itemDTO(d.Title, d.UserData)
+		i.attachTitleLibrary(r, v, dto, d.Title)
 		if mbIsBookItem(d.Title) && !i.bookReadable(d) {
 			dto["CanDownload"] = false
 			delete(dto, "Path")
@@ -1073,6 +1075,7 @@ func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *fron
 	r = i.pageEditions(r, v, keys)
 	r = i.noteLocalUnplayedCounts(r, v, page.Items)
 	i.fillSeriesTitles(r, v, page.Items)
+	i.primeTitleLibraries(r, v, page.Items)
 	for _, title := range page.Items {
 		var editions []jellyfinEdition
 		if !mbIsBookItem(title) {
@@ -1669,6 +1672,7 @@ func (i *instance) ancestors(w http.ResponseWriter, r *http.Request) {
 	items := make([]any, 0, len(titles))
 	paths := i.virtualPaths(r, v, keys)
 	ratingFacts := i.pageRatingFacts(r, v, titles)
+	i.primeTitleLibraries(r, v, titles)
 	for _, t := range titles {
 		item := i.itemDTO(t, state[t.Key])
 		if p := paths[t.Key]; p != "" {

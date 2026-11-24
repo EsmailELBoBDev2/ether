@@ -666,7 +666,7 @@ func (s *Server) handleDownloadItemDecision(w http.ResponseWriter, r *http.Reque
 	m := itemModel(it)
 	status, size, dur, vCodec, aCodec := it.Status, it.Size, it.Duration, it.VideoCodec, it.AudioCodec
 	s.downloads.Unlock()
-	mc := s.itemContainer(t.Type)
+	mc := s.titleContainer(ctx, t)
 	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true, session: true})
 	decisionItem(&md)
 	if len(md.Media) > 0 {

@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -535,6 +536,14 @@ func (s *Server) WatchStateChanged(userID int64, key frontend.RatingKey) {
 // is a processing hint, not the completed invalidation native detail pages need.
 func (s *Server) notifyTimeline(key frontend.RatingKey, t frontend.MediaType, title string, userID int64) {
 	sec, _ := s.sectionFor(t)
+	switch key.Kind() {
+	case frontend.KindMovie, frontend.KindShow, frontend.KindSeason, frontend.KindEpisode:
+		// The section that lists the title, so a client refreshes the
+		// library it shows the title in (#788).
+		if listed, ok := s.sectionForKey(context.Background(), key); ok && !key.IsPluginKey() {
+			sec = listed
+		}
+	}
 	typeNum := map[frontend.MediaType]int{frontend.TypeMovie: 1, frontend.TypeShow: 2, frontend.TypeSeason: 3, frontend.TypeEpisode: 4}[t]
 	// PMS names an episode's season and show, and a season's show, so a
 	// client can refresh the show's rows (Continue Watching, On Deck).

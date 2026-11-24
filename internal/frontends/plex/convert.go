@@ -313,12 +313,12 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	if len(t.Studios) > 0 {
 		m.Studio = t.Studios[0]
 	}
-	sec, secOK := s.sectionForCtx(ctx, t.Type)
-	if t.Key.IsPluginKey() && t.LibraryID != 0 {
-		sec, secOK = s.sectionForLibraryCtx(ctx, t.LibraryID)
-	}
+	var sec Section
+	var secOK bool
 	if o.section != nil && o.section.ID != 0 {
 		sec, secOK = *o.section, true
+	} else if !o.inSection && t.Key.Kind() != frontend.KindCollection {
+		sec, secOK = s.sectionForTitle(ctx, t)
 	}
 	if secOK && !o.inSection && t.Key.Kind() != frontend.KindCollection {
 		m.LibrarySectionID = sec.ID
@@ -1660,6 +1660,11 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	ts = s.openableTitlesWith(ctx, vis, pr.User, ts, o.availabilityInSQL || shelfContainsAll(ctx, ts))
 	if len(ts) == 0 {
 		return nil
+	}
+	if !o.inSection && (o.section == nil || o.section.ID == 0) {
+		// One membership read per candidate library for the page; each
+		// row's metadata reads the attribution from the request memo.
+		s.sectionsForTitles(ctx, ts)
 	}
 	s.warmTitleDetails(ts, o.storedOnly)
 	if d := s.discovery(); d != nil {

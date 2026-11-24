@@ -347,6 +347,7 @@ func (i *instance) writeListedTitles(w http.ResponseWriter, r *http.Request, vie
 	ratingFacts := i.pageRatingFacts(r, viewer, titles)
 	i.fillSeriesTitles(r, viewer, titles)
 	r = i.pageEditions(r, viewer, keys)
+	i.primeTitleLibraries(r, viewer, titles)
 	items := make([]any, 0, len(titles))
 	for _, title := range titles {
 		item := i.itemDTO(title, states[title.Key])

@@ -125,6 +125,35 @@ Reserved capability names cannot be claimed in EPP/1. Ranking and condition hot 
 
 See the complete content-kind guide below. Start with a bounded browse page, stable external IDs, and a playable leaf. Use [Resolvers](/plugins/reference/resolvers) for bytes and [Folders](/plugins/reference/host-folders) for local files.
 
+## Screens and surfaces
+
+Give Vela a screen of your own (a sports desk, a news front page) or fill a host slot: a player overlay, an alert toast, a Home row or a title panel. You ship **documents**: JSON files in your package that Vela draws natively on TV, phone and web in the viewer's skin. The full contract is `docs/plugin-screens.md`; the document schema is `schemas/plugin-screen.v1.json`.
+
+## Declare
+Add the `screens` capability and `contributes.screens: [{id, title, icon, pages: {index: "screens/x.json"}, actions?}]` or `contributes.surfaces: [{id, presentation, anchor?, setting?, when?, document}]`. `when` may only name your own feeds and kinds.
+
+## Write a document
+`{schema: 1, kind: "screen", renderer: 19, params, sources, strings, tree}`. The tree is Vela's node language. `params` are typed page inputs; `sources` name data Ether resolves per viewer: `liveEvents`, `liveSchedule`, `liveEvent`, `liveTables`, `liveEntities`, `liveLeagues`, `watch`, `viewer` and `plugin`. Arguments may hold `{param.x}`, `{viewer.tz}` and, on surfaces, `{context.event}` style holes; never another source. Documents never contain URLs: write `asset:path` for package files.
+
+## Answer a plugin source
+```ts
+p.onScreenSource("desk", "front", async ({ args }) => ({
+  value: { lead: record("story", "s1") },
+  records: [{ type: "story", id: "s1", value: { title: "…", hero: image("https://cdn.example.com/a.jpg"), url: link("https://example.com/s1") } }],
+  maxAgeSec: 120, nextRefreshSec: 60,
+}));
+```
+Wrap images (`image`, `asset`), links (`link`), records (`record`), events (`event`) and entities (`entity`). Ether signs images only on your `permissions.network` hosts and drops bare URL strings. `scope: "viewer"` sources receive the viewer like a frontend adapter call.
+
+## Actions
+Declare typed `actions` on the screen; answer `onScreenAction` with `{records?, sources?, refresh?, toast?, navigate?}`. Ether's own `ether.favorite`, `ether.reveal` and `ether.spoilerFree` need no code.
+
+## Live
+While a viewer has a page open, Ether re-reads it on live feed changes, on your `nextRefreshSec`, and when you call `ether.screens.invalidate()`. `ether.screens.putRecords([{type, id, value}])` patches records already on screen. Nobody watching costs nothing.
+
+## Check
+`ether plugin check` compiles every document exactly as install does and reports each problem by file and JSON pointer.
+
 ## Catalogue sources
 
 A Stremio catalogue returns `{metas:[...]}` for `/catalog/{type}/{id}.json`. The catalogue ID must match `manifest.catalogs` and `ether.contributes.listSources[].catalog`. A list source can appear in collections and home rows; it is different from the signed **plugin marketplace catalogue** described in [Publishing](/plugins/reference/publishing).
@@ -416,6 +445,10 @@ const filtered = ether.kinds.browse("recordings", { query: "live", limit: 50 });
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
+
+## Screens pushes
+
+`ether.screens.invalidate()` makes your open screens and surfaces read their sources again now; `ether.screens.putRecords([{type, id, value}])` (at most 100) sends new values for your records to open screens already showing them. Both need the `screens` capability, return `{streams}` (how many open streams heard them) and do nothing when nobody is watching. Remote plugins call `POST /ether/plugin-host/screens/invalidate` and `POST /ether/plugin-host/screens/records {records}`. Go: `ctx.InvalidateScreens()`, `ctx.PutScreenRecords(...)`; Python: `host.screens.invalidate()`, `host.screens.put_records(...)`.
 
 ## Source discovery
 

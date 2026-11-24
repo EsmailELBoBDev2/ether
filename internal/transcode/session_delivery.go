@@ -410,23 +410,36 @@ func (s *Session) endFetchLocked(n int) {
 
 // blockedSeekLocked reports that fetch n is where the player now is,
 // although the encoder-head rule would hold the playhead: no track has
-// published n, nothing older is open, and n is past the playhead's restart
-// window. A seek that lands inside a copy's lead is served from disk and
-// leaves the playhead behind; the first segment the paused run has not
-// written is then the one the player waits on. Holding the playhead there
-// keeps the throttle pausing the run that must write it, and the fetch
-// never completes. A published head fetch (the client still on an earlier
-// segment) does not qualify, so it still cannot evict the playhead.
+// published n, no older open fetch waits on the encoder, and n is past the
+// playhead's restart window. A seek that lands inside a copy's lead is
+// served from disk and leaves the playhead behind; the first segment the
+// paused run has not written is then the one the player waits on. Holding
+// the playhead there keeps the throttle pausing the run that must write it,
+// and the fetch never completes. An older fetch of published media is
+// delivery, not a wait: AVPlayer stops reading the body of the newest
+// segment once its forward buffer is full and already asks for the next one
+// (#778). A published head fetch (the client still on an earlier segment)
+// does not qualify, so it still cannot evict the playhead.
 func (s *Session) blockedSeekLocked(n int) bool {
-	if n <= s.lastReq+s.restartLimit() || n != s.oldestFetchLocked() {
+	if n <= s.lastReq+s.restartLimit() || s.publishedAnyLocked(n) {
 		return false
 	}
-	for t := range s.done {
-		if s.segmentPublishedLocked(t, n) {
+	for m, c := range s.inflight {
+		if c > 0 && m < n && !s.publishedAnyLocked(m) {
 			return false
 		}
 	}
 	return true
+}
+
+// publishedAnyLocked reports that some track has published segment n.
+func (s *Session) publishedAnyLocked(n int) bool {
+	for t := range s.done {
+		if s.segmentPublishedLocked(t, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // notePlayheadLocked follows the oldest fetch still open. A segment the

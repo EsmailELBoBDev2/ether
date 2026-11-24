@@ -85,6 +85,9 @@ export function HomeCanvas({
   const [home, setHome] = useState<ViewerHome | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
+  // The order the owner just dropped, shown until the server preview of the
+  // edited draft arrives, so a dragged row does not snap back meanwhile.
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const at = useMemo(() => atFor(ctx.day, ctx.hour).toISOString(), [ctx.day, ctx.hour]);
 
   useEffect(() => {
@@ -114,6 +117,7 @@ export function HomeCanvas({
       .then((h) => {
         if (!ctl.signal.aborted) {
           setHome(h);
+          setPendingOrder(null);
           onPreviewChange?.(h);
           setError(null);
         }
@@ -132,7 +136,14 @@ export function HomeCanvas({
   const hiddenWho = viewer ? viewerName(viewer) : t("Typical viewer");
   const visible = (home?.rows ?? []).filter((r) => !r.hidden);
   const hidden = (home?.rows ?? []).filter((r) => r.hidden);
-  const arranged = visible.filter((r) => r.slot);
+  const placed = visible.filter((r) => r.slot);
+  const arranged = pendingOrder
+    ? [...placed].sort((a, b) => {
+        const ai = pendingOrder.indexOf(a.hubId);
+        const bi = pendingOrder.indexOf(b.hubId);
+        return (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) - (bi < 0 ? Number.MAX_SAFE_INTEGER : bi);
+      })
+    : placed;
   const fixed = visible.filter((r) => !r.slot);
   const stale = key !== request || loading || !ready;
   const editingLayer = <strong className="font-medium text-fg">{layerName}</strong>;
@@ -306,9 +317,11 @@ export function HomeCanvas({
             <SortableList
               items={arranged}
               getId={(r) => r.hubId}
-              onReorder={(_next, { from, to }) => {
+              onReorder={(next, { from, to }) => {
                 const moved = arranged[from];
-                if (moved) actions.anchor(moved, arranged[to]?.slot ?? to + 1);
+                if (!moved) return;
+                setPendingOrder(next.map((r) => r.hubId));
+                actions.anchor(moved, arranged[to]?.slot ?? to + 1);
               }}
               className="space-y-1"
               renderItem={(r, handle) => (

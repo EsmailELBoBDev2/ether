@@ -63,7 +63,9 @@ func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
 		}
 		if err := reg.Sync(r, files, text); err != nil {
 			a.log.Warn("plugin screens: documents rejected", "plugin", r.ID, "err", err)
+			return
 		}
+		a.offerHomeRowSurfaces(ctx, reg, r.ID)
 	}
 	mgr.OnSync(sync)
 	mgr.OnRemove(func(_ context.Context, id string) { reg.Remove(id) })

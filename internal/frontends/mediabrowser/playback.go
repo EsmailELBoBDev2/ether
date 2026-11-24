@@ -417,7 +417,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		target, kind, tag, e := i.resolveSource(r, scope, version)
+		target, kind, tag, e := i.resolveSourceFor(r, scope, key, version)
 		if e != nil || target != key || (versionFromItem != "" && !sameVersionHandle(version, versionFromItem)) {
 			if versionFromItem == "" {
 				if staleItem, ok := i.resolveStaleSource(r, scope, version); ok && staleItem == key {
@@ -1630,7 +1630,7 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 					http.NotFound(w, r)
 					return
 				}
-				target, kind, tag, e := i.resolveSource(r, versionScope, sourceIDs[0])
+				target, kind, tag, e := i.resolveSourceFor(r, versionScope, key, sourceIDs[0])
 				if e != nil || target != key {
 					if staleItem, ok := i.resolveStaleSource(r, versionScope, sourceIDs[0]); ok && staleItem == key {
 						// Stale MediaSourceId for this item and viewer: map to

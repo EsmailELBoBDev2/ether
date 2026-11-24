@@ -382,7 +382,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		if id == "jellyfin" || id == "emby" {
 			viewerAdmin = a.viewerAdmin(local, grants)
 		}
-		return frontend.Host{Support: a.support, IDs: ids.Codecs{Allocator: compact}, DirectProxy: egress.ProxyFunc(egress.CapExtras), MetadataHTTP: metadataHTTP, Experience: experience, KindStreams: kindStreams, Loudness: a.frontendLoudness(), LastPlayedSource: surfaceLastPlayedSource{experience: experience, state: a.state}, VersionHandles: versionHandles, SourceOffers: sourceOffers, Editions: surfaceEditions{app: a, surface: string(id)}, VirtualPaths: surfaceVirtualPaths{experience: experience, index: &pathIndex{}, stamp: func(v *core.Viewer) string {
+		return frontend.Host{Support: a.support, IDs: ids.Codecs{Allocator: compact}, DirectProxy: egress.ProxyFunc(egress.CapExtras), MetadataHTTP: metadataHTTP, Experience: experience, KindStreams: kindStreams, Loudness: a.frontendLoudness(), LastPlayedSource: surfaceLastPlayedSource{experience: experience, state: a.state}, VersionHandles: versionHandles, SourceOffers: sourceOffers, Editions: surfaceEditions{app: a, surface: string(id)}, TitleRefresh: a.appTitleRefresher(), VirtualPaths: surfaceVirtualPaths{experience: experience, index: &pathIndex{}, stamp: func(v *core.Viewer) string {
 			if v == nil || a.catalog == nil || a.cfg == nil {
 				return ""
 			}

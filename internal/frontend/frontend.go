@@ -504,9 +504,12 @@ type Host struct {
 	VersionHandles     VersionHandles
 	// Editions lists locally probed copies of one title. It is empty when the
 	// process has no local media manifest, and it must not search the network.
-	Editions    Editions
-	LazyStreams LazyStreams
-	LANStreams  LANLazyStreams
+	Editions Editions
+	// TitleRefresh refreshes one title's metadata for an owner's app request.
+	// Nil answers the request without refreshing.
+	TitleRefresh TitleRefresher
+	LazyStreams  LazyStreams
+	LANStreams   LANLazyStreams
 	// KindStreams opens byte-addressable media and lists playable leaves for
 	// plugin-provided content kinds. Nil means plugin kind media is unavailable.
 	KindStreams KindStreams

@@ -76,6 +76,13 @@ directly or remux for the device, trying up to three next-ranked releases
 before it accepts a video transcode; an audio-only conversion does not count
 as a reason to switch.
 
+Jellyfin library rows list the same menu: **Auto**, then each version set under
+**Quality › Profiles › Version menu** (by default one same-quality version).
+Infuse builds its movie and episode pages from those rows, so its version
+button lists them. Infuse's own **Play Version** setting (Auto, Highest
+Quality, Lowest Quality or Ask) decides whether it asks; long-press Play to
+pick another version later.
+
 ## Silo apps
 
 Silo support is in development. Ether's Silo surface uses port 8090 by default;
@@ -1237,6 +1244,11 @@ no playable media. Unknown dates and wholly future seasons stay hidden. Autoplay
 Continue Watching and alternate episode-order lists keep their released episodes.
 Turning the option off removes access to these placeholders and their artwork.
 **Show upcoming movies**, also off by default, lists movies before their release date.
+
+An app's **Refresh metadata** (Infuse: **Update Metadata**) refreshes that one
+title from TMDB when the owner asks; a season or episode refreshes its show.
+Other viewers get the same refusal Plex and Jellyfin give non-administrators.
+Repeat requests for the same title within 10 minutes do nothing new.
 
 ## Metadata artwork
 

@@ -187,7 +187,7 @@ func withJellyfinListFiles(r *http.Request) *http.Request {
 	}
 	// Lists join stored artwork facts and let hashing finish behind the read.
 	// A 100ms hashing wait alone would consume the entire home-row budget.
-	ctx := frontend.WithoutSynchronousArtworkMetadata(r.Context())
+	ctx := withListVersionScope(frontend.WithoutSynchronousArtworkMetadata(r.Context()))
 	return r.WithContext(context.WithValue(ctx, jellyfinListFileKey{}, true))
 }
 
@@ -401,7 +401,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 		source := i.defaultMediaSource(r, viewer, authhdr.MediaBrowserToken(r), title.Key)
 		jellyfinMediaSourceShape(source, title.Title)
 		i.presentJellyfinFile(item, source, title)
-		item["MediaSources"] = []any{source}
+		item["MediaSources"] = append([]any{source}, i.listedVersionSources(r, viewer, item, source, title)...)
 	}
 	if title.Type == "season" || title.Type == "show" {
 		i.attachUnplayedCount(r, viewer, item, title)

@@ -1614,6 +1614,13 @@ func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAcces
 		}
 		return core.ErrNotFound
 	}
+	// No session names this report, so its duration is the client's. One far
+	// shorter than the title's runtime is a trailer, theme or preview the
+	// client attributed to the title: it neither writes the title's progress
+	// nor stops the title's own playback.
+	if frontend.ForeignMediaDuration(title.Runtime, t.Duration) {
+		return nil
+	}
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: a.Protocol, SessionID: t.PlaybackID, ClientID: a.Device.ID})
 	if err := RecordProgress(ctx, b.deps.Progress, viewer.ID, item, t.Position, t.Duration, t.State); err != nil {
 		return err

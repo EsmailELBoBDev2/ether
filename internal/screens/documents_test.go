@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
@@ -226,5 +227,40 @@ func TestPluginSourceEnvelopes(t *testing.T) {
 	read()
 	if caller.calls != 1 {
 		t.Fatalf("shared source asked %d times, want 1", caller.calls)
+	}
+}
+
+// A Studio preview token swaps in the draft's documents for requests that
+// carry it, and only those; drafts are never cached.
+func TestStudioPreviewSwapsDraftDocuments(t *testing.T) {
+	ctx := context.Background()
+	reg := NewDocRegistry(DocRegistryOptions{})
+	rec, files := sportsDocsRecord(t)
+	if err := reg.Sync(rec, files, nil); err != nil {
+		t.Fatal(err)
+	}
+	draftFiles := map[string][]byte{}
+	for k, v := range files {
+		draftFiles[k] = v
+	}
+	draftFiles["screens/sports.json"] = []byte(`{"schema":1,"kind":"screen","renderer":19,"strings":{"x":"Draft"},"tree":{"type":"text","text":"{s:x}"}}`)
+	token, _, err := reg.CreatePreview(rec.Manifest, draftFiles, nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := &core.User{ID: 7}
+	client := ClientInfo{Frontend: "vela", Renderer: 19}
+	installed, _, _ := reg.Document(ctx, viewer, DocumentRequest{Kind: "screen", ID: "sports", Page: "index", ClientInfo: client})
+	pctx := frontend.WithScreenPreview(ctx, token)
+	draft, _, err := reg.Document(pctx, viewer, DocumentRequest{Kind: "screen", ID: "sports", Page: "index", ClientInfo: client})
+	if err != nil || !strings.Contains(string(draft), `"Draft"`) || strings.Contains(string(installed), `"Draft"`) {
+		t.Fatalf("draft=%v installed has draft=%v err=%v", strings.Contains(string(draft), `"Draft"`), strings.Contains(string(installed), `"Draft"`), err)
+	}
+	if !reg.IsPreview(pctx) || reg.IsPreview(frontend.WithScreenPreview(ctx, "forged")) {
+		t.Fatal("preview token check")
+	}
+	bad := map[string][]byte{"screens/sports.json": []byte(`{"schema":1,"kind":"screen","renderer":19,"tree":{"type":"image","src":"https://x.example/a.png"}}`), "screens/game.json": files["screens/game.json"], "surfaces/scorebug.json": files["surfaces/scorebug.json"]}
+	if _, _, err := reg.CreatePreview(rec.Manifest, bad, nil, time.Now()); err == nil {
+		t.Fatal("a draft with a URL compiled")
 	}
 }

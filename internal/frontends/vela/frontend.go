@@ -666,6 +666,10 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			ctx = frontend.WithRequestMemo(ctx)
 		}
 	}
+	if token := strings.TrimSpace(r.Header.Get("X-Vela-Screen-Preview")); token != "" && len(token) <= 128 {
+		// A Studio preview: this request sees the draft documents.
+		ctx = frontend.WithScreenPreview(ctx, token)
+	}
 	r = r.WithContext(ctx)
 	// Authentication/idempotency can fail before ServeMux dispatches. Record
 	// only its registered route template for those warnings too. Unknown routes

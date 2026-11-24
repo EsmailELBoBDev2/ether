@@ -105,3 +105,20 @@ type PluginScreens interface {
 	// for viewer, or "".
 	ToastSurface(ctx context.Context, viewer *Viewer, c ScreenClient, pluginID string) string
 }
+
+type screenPreviewKey struct{}
+
+// WithScreenPreview carries a Studio preview token (X-Vela-Screen-Preview):
+// the request sees that draft's documents in place of the installed ones.
+func WithScreenPreview(ctx context.Context, token string) context.Context {
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, screenPreviewKey{}, token)
+}
+
+// ScreenPreviewFrom returns the request's preview token, if any.
+func ScreenPreviewFrom(ctx context.Context) string {
+	t, _ := ctx.Value(screenPreviewKey{}).(string)
+	return t
+}

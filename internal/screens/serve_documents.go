@@ -245,11 +245,13 @@ func (r *DocRegistry) Document(ctx context.Context, viewer *core.User, req Docum
 	}
 	tag := docVersion(e, d)
 	key := strings.Join([]string{e.pluginID, req.Kind, screenID, page, strconv.Itoa(d.Renderer), req.Locale, tag}, "\x00")
-	r.servedMu.Lock()
-	body, ok := r.served[key]
-	r.servedMu.Unlock()
-	if ok {
-		return body, tag, nil
+	if !e.draft {
+		r.servedMu.Lock()
+		body, ok := r.served[key]
+		r.servedMu.Unlock()
+		if ok {
+			return body, tag, nil
+		}
 	}
 	acts := map[string]string{}
 	for id, a := range actions {
@@ -278,6 +280,9 @@ func (r *DocRegistry) Document(ctx context.Context, viewer *core.User, req Docum
 	})
 	if err != nil {
 		return nil, "", err
+	}
+	if e.draft {
+		return body, tag, nil
 	}
 	r.servedMu.Lock()
 	if len(r.served) >= maxServedDocuments {

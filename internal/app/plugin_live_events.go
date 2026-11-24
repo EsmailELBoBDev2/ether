@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"net/http"
 	"sort"
 	"strconv"
@@ -84,6 +85,10 @@ func (a *App) wrapPluginLiveEventsHandler(next http.Handler) http.Handler {
 		}
 		if len(parts) == 2 && parts[1] == "screen-publish" && parts[0] != "" {
 			a.handleScreenPublish(w, r, parts[0])
+			return
+		}
+		if len(parts) == 4 && parts[0] == "studio" && parts[1] == "projects" && parts[3] == "screen-preview" && parts[2] != "" {
+			a.handleScreenPreview(w, r, parts[2])
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -594,4 +599,97 @@ func (a *App) handleScreenPublish(w http.ResponseWriter, r *http.Request, plugin
 		docs.Bump()
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleScreenPreview compiles a Studio project's screens and surfaces and
+// mints a two-hour preview token: POST /api/plugins/studio/projects/{id}/
+// screen-preview. A Vela client sending X-Vela-Screen-Preview: <token> sees
+// the draft in place of the installed documents. Compile problems come back
+// as {diagnostics: [{field, message}]} with 422.
+func (a *App) handleScreenPreview(w http.ResponseWriter, r *http.Request, projectID string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		httpjson.Write(w, http.StatusMethodNotAllowed, map[string]any{"code": "method_not_allowed", "message": "use POST"})
+		return
+	}
+	docs := (surfaceScreens{app: a}).docs()
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.studio == nil || docs == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "studio unavailable"})
+		return
+	}
+	proj, err := a.pluginsRT.studio.GetProject(r.Context(), projectID)
+	if err != nil || proj == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "project not found"})
+		return
+	}
+	man, err := plugins.ParseManifest([]byte(proj.Files["manifest.json"]))
+	if err != nil || man.Ether == nil {
+		httpjson.Write(w, http.StatusUnprocessableEntity, map[string]any{"code": "invalid", "diagnostics": []plugins.FieldError{{Field: "manifest.json", Message: "the manifest does not parse"}}})
+		return
+	}
+	files := make(map[string][]byte, len(proj.Files))
+	for k, v := range proj.Files {
+		files[k] = []byte(v)
+	}
+	// Draft strings come from the working copy's strings files.
+	text := draftText(man, files)
+	token, expires, err := docs.CreatePreview(man, files, text, time.Now())
+	if err != nil {
+		var ve *plugins.ValidationError
+		if errors.As(err, &ve) {
+			httpjson.Write(w, http.StatusUnprocessableEntity, map[string]any{"code": "invalid", "diagnostics": ve.Fields})
+			return
+		}
+		httpjson.Write(w, http.StatusUnprocessableEntity, map[string]any{"code": "invalid", "diagnostics": []plugins.FieldError{{Field: "screens", Message: err.Error()}}})
+		return
+	}
+	type pageList struct {
+		ID    string   `json:"id"`
+		Title string   `json:"title"`
+		Pages []string `json:"pages"`
+	}
+	type surfaceItem struct {
+		ID           string `json:"id"`
+		Presentation string `json:"presentation"`
+	}
+	var screensOut []pageList
+	for _, sc := range man.Ether.Contributes.Screens {
+		if len(sc.Pages) == 0 {
+			continue
+		}
+		pl := pageList{ID: sc.ID, Title: sc.Title}
+		for p := range sc.Pages {
+			pl.Pages = append(pl.Pages, p)
+		}
+		sort.Strings(pl.Pages)
+		screensOut = append(screensOut, pl)
+	}
+	var surfacesOut []surfaceItem
+	for _, sf := range man.Ether.Contributes.Surfaces {
+		surfacesOut = append(surfacesOut, surfaceItem{ID: sf.ID, Presentation: sf.Presentation})
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"token": token, "expires": expires.UTC().Format(time.RFC3339), "screens": screensOut, "surfaces": surfacesOut})
+}
+
+// draftText looks up a working copy's own strings files.
+func draftText(man plugins.Manifest, files map[string][]byte) screens.TextFunc {
+	byLocale := map[string]map[string]string{}
+	for loc, raw := range man.Ether.Strings {
+		var path string
+		var doc map[string]string
+		if json.Unmarshal(raw, &path) == nil {
+			_ = json.Unmarshal(files[path], &doc)
+		} else {
+			_ = json.Unmarshal(raw, &doc)
+		}
+		byLocale[loc] = doc
+	}
+	return func(locale, key string) (string, bool) {
+		for _, loc := range []string{locale, strings.SplitN(locale, "-", 2)[0], "en"} {
+			if t, ok := byLocale[loc][key]; ok {
+				return t, true
+			}
+		}
+		return "", false
+	}
 }

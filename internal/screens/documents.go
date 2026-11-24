@@ -53,6 +53,8 @@ type docPlugin struct {
 	docs        plugins.ScreenDocuments
 	text        TextFunc
 	fingerprint string
+	// draft marks a Studio preview: never cached.
+	draft bool
 }
 
 // DocRegistry indexes every installed plugin's document screens and surfaces.
@@ -64,6 +66,8 @@ type DocRegistry struct {
 
 	servedMu sync.Mutex
 	served   map[string][]byte
+
+	previews previews
 }
 
 // NewDocRegistry returns an empty registry.
@@ -191,13 +195,20 @@ func (e *docPlugin) active() bool {
 	return e.enabled && !e.shadow && !e.screensOff
 }
 
-func (r *DocRegistry) snapshot() []*docPlugin {
+func (r *DocRegistry) snapshot(ctx context.Context) []*docPlugin {
+	draft := r.previewFor(ctx)
 	r.mu.RLock()
-	out := make([]*docPlugin, 0, len(r.byID))
-	for _, e := range r.byID {
+	out := make([]*docPlugin, 0, len(r.byID)+1)
+	for id, e := range r.byID {
+		if draft != nil && id == draft.pluginID {
+			continue
+		}
 		out = append(out, e)
 	}
 	r.mu.RUnlock()
+	if draft != nil {
+		out = append(out, draft)
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].installedAt != out[j].installedAt {
 			return out[i].installedAt < out[j].installedAt
@@ -282,7 +293,7 @@ func (r *DocRegistry) Screens(ctx context.Context, viewer *core.User, frontendID
 		return nil
 	}
 	var out []ScreenTarget
-	for _, e := range r.snapshot() {
+	for _, e := range r.snapshot(ctx) {
 		for _, sc := range e.contrib.Screens {
 			pages, ok := e.docs.Screens[sc.ID]
 			if !ok || len(pages) == 0 {
@@ -337,7 +348,7 @@ func (r *DocRegistry) Surfaces(ctx context.Context, viewer *core.User, frontendI
 		return nil
 	}
 	var all []SurfaceTarget
-	for _, e := range r.snapshot() {
+	for _, e := range r.snapshot(ctx) {
 		for _, sf := range e.contrib.Surfaces {
 			docs := e.docs.Surfaces[sf.ID]
 			if len(docs) == 0 {

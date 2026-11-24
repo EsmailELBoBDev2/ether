@@ -107,7 +107,9 @@ func (i *instance) serveScreenDocument(w http.ResponseWriter, r *http.Request, k
 	etag := `"` + tag + `"`
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", etag)
-	if q.Get("v") == tag {
+	if frontend.ScreenPreviewFrom(r.Context()) != "" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else if q.Get("v") == tag {
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	} else {
 		// An old link still answers, but never as an immutable copy.

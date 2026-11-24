@@ -192,6 +192,18 @@ type KindResolver struct {
 	streamMaxWait      time.Duration
 	streamCeiling      time.Duration
 	streamWG           sync.WaitGroup
+
+	sourceFlightMu      sync.Mutex
+	sourceFlights       map[string]*sourceWorkFlight
+	sourceFlightsClosed bool
+	sourceFlightWG      sync.WaitGroup
+
+	releaseFilesMu    sync.Mutex
+	releaseFilesCache map[string]cachedReleaseFiles
+	sourceHandoffs    map[string]sourceHandoffEntry
+
+	progressMu      sync.Mutex
+	resolveProgress map[resolveFlightKey]*resolveProgressEntry
 }
 
 var (
@@ -315,6 +327,7 @@ func (r *KindResolver) InvalidatePlugin(pluginID string) {
 	}
 	r.candMu.Unlock()
 
+	r.clearPluginResolveProgress(pluginID)
 	r.cancelPluginStreamingSearches(pluginID)
 }
 
@@ -1634,10 +1647,13 @@ func singleIndexerSkipped(name string, skip, only []string) bool {
 type resolveSearchStateKey struct{}
 
 type resolveSearchState struct {
-	mu              sync.Mutex
-	oneShotPending  bool
-	pendingBySearch map[string]bool
-	budgetSkipped   bool
+	mu               sync.Mutex
+	oneShotPending   bool
+	pendingBySearch  map[string]bool
+	budgetSkipped    bool
+	inFlight         int
+	sliceSourceCalls int
+	sliceWorkKeys    map[string]struct{}
 }
 
 func withResolveSearchState(ctx context.Context) (context.Context, *resolveSearchState) {
@@ -1651,6 +1667,84 @@ func resolveSearchStateFrom(ctx context.Context) *resolveSearchState {
 	}
 	st, _ := ctx.Value(resolveSearchStateKey{}).(*resolveSearchState)
 	return st
+}
+
+func (s *resolveSearchState) beginSlice() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.sliceSourceCalls = 0
+	s.sliceWorkKeys = nil
+	s.mu.Unlock()
+}
+
+func beginResolveSourceWork(ctx context.Context, workKey string) func() {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil {
+		return func() {}
+	}
+	st.mu.Lock()
+	st.inFlight++
+	st.sliceSourceCalls++
+	if workKey != "" {
+		if st.sliceWorkKeys == nil {
+			st.sliceWorkKeys = make(map[string]struct{})
+		}
+		st.sliceWorkKeys[workKey] = struct{}{}
+	}
+	st.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			st.mu.Lock()
+			if st.inFlight > 0 {
+				st.inFlight--
+			}
+			st.mu.Unlock()
+		})
+	}
+}
+
+func noteResolveSourceWork(ctx context.Context, workKey string, cached bool) {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	st.sliceSourceCalls++
+	if !cached && workKey != "" {
+		if st.sliceWorkKeys == nil {
+			st.sliceWorkKeys = make(map[string]struct{})
+		}
+		st.sliceWorkKeys[workKey] = struct{}{}
+	}
+	st.mu.Unlock()
+}
+
+func (s *resolveSearchState) timeoutProgressSnapshot() (hasPending, hasActivity bool, workKeys []string) {
+	if s == nil {
+		return false, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hasPending = s.oneShotPending
+	if !hasPending {
+		for _, pending := range s.pendingBySearch {
+			if pending {
+				hasPending = true
+				break
+			}
+		}
+	}
+	hasActivity = s.inFlight > 0 || s.sliceSourceCalls > 0
+	if len(s.sliceWorkKeys) > 0 {
+		workKeys = make([]string, 0, len(s.sliceWorkKeys))
+		for wk := range s.sliceWorkKeys {
+			workKeys = append(workKeys, wk)
+		}
+	}
+	return hasPending, hasActivity, workKeys
 }
 
 func noteResolveSearchResult(ctx context.Context, res core.SourceResolveResult) {
@@ -1898,15 +1992,24 @@ func (r *KindResolver) ResolveSourcesWithResult(ctx context.Context, pluginID st
 	}
 	switch q.Kind {
 	case "indexer_search":
+		workKey := fmt.Sprintf("indexer_search:%s|%s|%t", strings.TrimSpace(q.Query), strings.TrimSpace(q.Category), q.Stream)
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
 		res, err := r.resolveIndexerSearch(ctx, pluginID, q)
 		if err == nil {
 			noteResolveSearchResult(ctx, res)
 		}
 		return res, err
 	case "indexer_search_results":
+		endWork := beginResolveSourceWork(ctx, "")
+		defer endWork()
 		res, err := r.pollStreamingIndexerSearch(ctx, pluginID, q)
 		if err == nil {
 			noteResolveSearchResult(ctx, res)
+			if len(res.Candidates) > 0 {
+				first := res.Candidates[0]
+				noteResolveSourceWork(ctx, fmt.Sprintf("indexer_search_results:%s:%s:%s:%s:%d", res.SearchID, first.NZBURL, first.InfoHash, first.Title, len(res.Candidates)), false)
+			}
 		}
 		return res, err
 	case "indexer_search_cancel":
@@ -1941,8 +2044,6 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		return res.Candidates, nil
 
 	case "debrid_check":
-		ctx, cancel := withHardTimeout(ctx, sourceDebridCheckTimeout)
-		defer cancel()
 		if r.debrid == nil {
 			return []core.SourceCandidate{}, nil
 		}
@@ -1962,31 +2063,64 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		if len(hashes) == 0 {
 			return []core.SourceCandidate{}, nil
 		}
-		out := make([]core.SourceCandidate, len(hashes))
-		if byBackend, ok := r.debrid.(debridCachedByBackend); ok {
-			by, _ := byBackend.CheckCachedBy(ctx, hashes)
+		sortedHashes := slices.Clone(hashes)
+		slices.Sort(sortedHashes)
+		workKey := "debrid_check:" + strings.Join(sortedHashes, ",")
+		reorder := func(in []core.SourceCandidate) []core.SourceCandidate {
+			byHash := make(map[string]core.SourceCandidate, len(in))
+			for _, c := range in {
+				byHash[c.InfoHash] = c
+			}
+			out := make([]core.SourceCandidate, len(hashes))
 			for i, h := range hashes {
-				services := by[h]
+				if c, ok := byHash[h]; ok {
+					out[i] = c
+				} else {
+					out[i] = core.SourceCandidate{InfoHash: h}
+				}
+			}
+			return out
+		}
+		if handed, ok := r.takeSourceHandoff(workKey); ok {
+			noteResolveSourceWork(ctx, workKey, true)
+			return reorder(handed), nil
+		}
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
+		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceDebridCheckTimeout, func(workCtx context.Context) (any, error) {
+			out := make([]core.SourceCandidate, len(sortedHashes))
+			if byBackend, ok := r.debrid.(debridCachedByBackend); ok {
+				by, _ := byBackend.CheckCachedBy(workCtx, sortedHashes)
+				for i, h := range sortedHashes {
+					services := by[h]
+					out[i] = core.SourceCandidate{
+						InfoHash: h,
+						Cached:   len(services) > 0,
+						CachedBy: services,
+					}
+				}
+				return out, nil
+			}
+			cached, _ := r.debrid.CheckCached(workCtx, sortedHashes)
+			for i, h := range sortedHashes {
 				out[i] = core.SourceCandidate{
 					InfoHash: h,
-					Cached:   len(services) > 0,
-					CachedBy: services,
+					Cached:   cached[h],
 				}
 			}
 			return out, nil
-		}
-		cached, _ := r.debrid.CheckCached(ctx, hashes)
-		for i, h := range hashes {
-			out[i] = core.SourceCandidate{
-				InfoHash: h,
-				Cached:   cached[h],
+		}, func(res any) {
+			if cands, ok := res.([]core.SourceCandidate); ok {
+				r.storeSourceHandoff(workKey, cands)
 			}
+		})
+		if err != nil {
+			return nil, err
 		}
-		return out, nil
+		cands, _ := raw.([]core.SourceCandidate)
+		return reorder(cloneSourceCandidates(cands)), nil
 
 	case "release_files":
-		ctx, cancel := withHardTimeout(ctx, sourceReleaseFilesTimeout)
-		defer cancel()
 		cand := core.SourceCandidate{
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
@@ -2023,69 +2157,112 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			if r.indexer == nil {
 				return []core.SourceCandidate{cand}, nil
 			}
-			// Fetching through the originating indexer is the same call
-			// playback makes, so the NZB lands in the vault and playback
-			// does not fetch it again.
-			data, err := r.indexer.FetchNZB(ctx, rel)
-			if err != nil {
-				return nil, err
+			releaseKey := normalizeNZBKey(cand.NZBURL)
+			workKey := "release_files:" + releaseKey
+			if files, ok := r.lookupUsenetReleaseFiles(releaseKey); ok {
+				noteResolveSourceWork(ctx, workKey, true)
+				cand.Files = files
+				return []core.SourceCandidate{cand}, nil
 			}
-			files, err := r.listNZBFiles(ctx, rel.ID, data)
-			if err != nil {
-				return nil, err
-			}
-			cand.Files = files
-			if lister, ok := r.engine.(interface {
-				ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
-			}); ok && lister != nil {
-				if byVol, lerr := lister.ListArchiveMembers(ctx, data); lerr == nil && len(byVol) > 0 {
-					for idx, members := range byVol {
-						if idx >= 0 && idx < len(cand.Files) {
-							cand.Files[idx].Members = members
+			endWork := beginResolveSourceWork(ctx, workKey)
+			defer endWork()
+			raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceReleaseFilesTimeout, func(workCtx context.Context) (any, error) {
+				// Fetching through the originating indexer is the same call
+				// playback makes, so the NZB lands in the vault and playback
+				// does not fetch it again.
+				data, err := r.indexer.FetchNZB(workCtx, rel)
+				if err != nil {
+					return nil, err
+				}
+				files, err := r.listNZBFiles(workCtx, rel.ID, data)
+				if err != nil {
+					return nil, err
+				}
+				archiveOK := true
+				if lister, ok := r.engine.(interface {
+					ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+				}); ok && lister != nil {
+					byVol, lerr := lister.ListArchiveMembers(workCtx, data)
+					if lerr != nil {
+						archiveOK = false
+					} else if len(byVol) > 0 {
+						for idx, members := range byVol {
+							if idx >= 0 && idx < len(files) {
+								files[idx].Members = members
+							}
 						}
 					}
 				}
+				if archiveOK && workCtx.Err() == nil && len(files) > 0 {
+					r.storeUsenetReleaseFiles(releaseKey, files)
+				}
+				return files, nil
+			}, nil)
+			if err != nil {
+				return nil, err
 			}
+			files, _ := raw.([]core.ReleaseFile)
+			cand.Files = cloneReleaseFiles(files)
 			return []core.SourceCandidate{cand}, nil
 		}
 		if rel.Protocol != core.ProtocolTorrent {
 			return []core.SourceCandidate{cand}, nil
 		}
-		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
-			resolved, err := r.resolveTorrent(ctx, rel)
-			if err != nil {
-				return nil, err
-			}
-			rel = resolved
-			if rel.InfoHash != "" {
-				cand.InfoHash = rel.InfoHash
-			}
-			if rel.MagnetURL != "" {
-				cand.Magnet = rel.MagnetURL
-			}
+		workKey := "release_files:torrent:" + rel.ID
+		if handed, ok := r.takeSourceHandoff(workKey); ok {
+			noteResolveSourceWork(ctx, workKey, true)
+			return handed, nil
 		}
-		if r.debrid != nil {
-			files, err := r.debrid.ListReleaseFiles(ctx, rel)
-			if err == nil {
-				cand.Cached = true
-				if knownLookup, ok := r.debrid.(debridKnownCachedByBackend); ok && cand.InfoHash != "" {
-					cand.CachedBy = knownLookup.KnownCachedBy(cand.InfoHash, nil)
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
+		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceReleaseFilesTimeout, func(workCtx context.Context) (any, error) {
+			outCand := cand
+			outRel := rel
+			if outRel.InfoHash == "" && outRel.MagnetURL == "" && outRel.NZBURL != "" {
+				resolved, err := r.resolveTorrent(workCtx, outRel)
+				if err != nil {
+					return nil, err
 				}
-				cand.Files = files
-				cand.FileCount = len(files)
-				return []core.SourceCandidate{cand}, nil
+				outRel = resolved
+				if outRel.InfoHash != "" {
+					outCand.InfoHash = outRel.InfoHash
+				}
+				if outRel.MagnetURL != "" {
+					outCand.Magnet = outRel.MagnetURL
+				}
 			}
-			if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
-				return nil, err
+			if r.debrid != nil {
+				files, err := r.debrid.ListReleaseFiles(workCtx, outRel)
+				if err == nil {
+					outCand.Cached = true
+					if knownLookup, ok := r.debrid.(debridKnownCachedByBackend); ok && outCand.InfoHash != "" {
+						outCand.CachedBy = knownLookup.KnownCachedBy(outCand.InfoHash, nil)
+					}
+					outCand.Files = files
+					outCand.FileCount = len(files)
+					return []core.SourceCandidate{outCand}, nil
+				}
+				if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
+					return nil, err
+				}
+				outCand.Cached = false
+				outCand.CachedBy = nil
 			}
-			cand.Cached = false
-			cand.CachedBy = nil
+			if len(outRel.TorrentFiles) > 0 {
+				outCand.Files = slices.Clone(outRel.TorrentFiles)
+				outCand.FileCount = len(outCand.Files)
+			}
+			return []core.SourceCandidate{outCand}, nil
+		}, func(res any) {
+			if cands, ok := res.([]core.SourceCandidate); ok {
+				r.storeSourceHandoff(workKey, cands)
+			}
+		})
+		if err != nil {
+			return nil, err
 		}
-		if len(rel.TorrentFiles) > 0 {
-			cand.Files = slices.Clone(rel.TorrentFiles)
-			cand.FileCount = len(cand.Files)
-		}
-		return []core.SourceCandidate{cand}, nil
+		cands, _ := raw.([]core.SourceCandidate)
+		return cloneSourceCandidates(cands), nil
 
 	case "usenet_check":
 		cand := core.SourceCandidate{
@@ -2107,8 +2284,6 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		return []core.SourceCandidate{cand}, nil
 
 	case "debrid_acquire":
-		ctx, cancel := withHardTimeout(ctx, sourceDebridAcquireTimeout)
-		defer cancel()
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
 		}
@@ -2139,34 +2314,53 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			return nil, err
 		}
 		rel.Protocol = core.ProtocolTorrent
-		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
-			resolved, err := r.resolveTorrent(ctx, rel)
+		workKey := "debrid_acquire:" + rel.ID
+		if handed, ok := r.takeSourceHandoff(workKey); ok {
+			noteResolveSourceWork(ctx, workKey, true)
+			return handed, nil
+		}
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
+		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceDebridAcquireTimeout, func(workCtx context.Context) (any, error) {
+			outRel := rel
+			if outRel.InfoHash == "" && outRel.MagnetURL == "" && outRel.NZBURL != "" {
+				resolved, err := r.resolveTorrent(workCtx, outRel)
+				if err != nil {
+					return nil, err
+				}
+				outRel = resolved
+			}
+			payloadBytes, err := r.debrid.Acquire(workCtx, outRel)
 			if err != nil {
 				return nil, err
 			}
-			rel = resolved
-		}
-		payloadBytes, err := r.debrid.Acquire(ctx, rel)
+			var cachedBy []core.DebridServiceRef
+			if p, err := debrid.DecodePayload(payloadBytes); err == nil && p.Provider != "" {
+				if refLookup, ok := r.debrid.(debridServiceRefBackend); ok {
+					if ref, ok := refLookup.ServiceRef(p.Provider, p.Kind); ok {
+						cachedBy = []core.DebridServiceRef{ref}
+					}
+				} else {
+					cachedBy = []core.DebridServiceRef{{ID: p.Provider, Name: p.Provider}}
+				}
+			}
+			return []core.SourceCandidate{{
+				InfoHash:   outRel.InfoHash,
+				Magnet:     outRel.MagnetURL,
+				TorrentURL: cand.TorrentURL,
+				Cached:     true,
+				CachedBy:   cachedBy,
+			}}, nil
+		}, func(res any) {
+			if cands, ok := res.([]core.SourceCandidate); ok {
+				r.storeSourceHandoff(workKey, cands)
+			}
+		})
 		if err != nil {
 			return nil, err
 		}
-		var cachedBy []core.DebridServiceRef
-		if p, err := debrid.DecodePayload(payloadBytes); err == nil && p.Provider != "" {
-			if refLookup, ok := r.debrid.(debridServiceRefBackend); ok {
-				if ref, ok := refLookup.ServiceRef(p.Provider, p.Kind); ok {
-					cachedBy = []core.DebridServiceRef{ref}
-				}
-			} else {
-				cachedBy = []core.DebridServiceRef{{ID: p.Provider, Name: p.Provider}}
-			}
-		}
-		return []core.SourceCandidate{{
-			InfoHash:   rel.InfoHash,
-			Magnet:     rel.MagnetURL,
-			TorrentURL: cand.TorrentURL,
-			Cached:     true,
-			CachedBy:   cachedBy,
-		}}, nil
+		cands, _ := raw.([]core.SourceCandidate)
+		return cloneSourceCandidates(cands), nil
 
 	default:
 		return nil, fmt.Errorf("kindresolver: unknown source query kind %q", q.Kind)
@@ -3224,7 +3418,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 	if err != nil {
 		return nil, err
 	}
+	fk := flightKeyForItemSource(item.Ref, partIdx, source)
 	ctx, searchState := withResolveSearchState(ctx)
+	ctx = plugins.WithResolveSliceHook(ctx, searchState.beginSlice)
 	resp, err := r.mgr.Call(ctx, rec.PluginID, plugins.Request{
 		Method: "POST",
 		Path:   "/ether/v1/kinds/" + rec.KindKey + "/resolve",
@@ -3238,7 +3434,10 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 			return nil, fmt.Errorf("%w: %w", core.ErrSourceUnavailable, err)
 		}
 		var we *wasm.Error
-		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &we) && we.Status == wasm.StatusTimeout && searchState.hasPending()) {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
+		}
+		if errors.As(err, &we) && we.Status == wasm.StatusTimeout && r.allowTimeoutPreparing(fk, searchState) {
 			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
 		return nil, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, err)
@@ -3253,6 +3452,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
+		r.clearResolveProgress(fk)
 		return nil, core.ErrNotAvailable
 	}
 	if resp.Status != http.StatusOK {
@@ -3292,6 +3492,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
+		r.clearResolveProgress(fk)
 		return nil, core.ErrNotAvailable
 	}
 	if err := r.validateNoRawSecretsInHeaders(ctx, pr.ID, pr.Manifest.Ether.Permissions.Secrets, resolved.Sources); err != nil {
@@ -3305,6 +3506,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 			}
 		}
 	}
+	r.clearResolveProgress(fk)
 	return resolved.Sources, nil
 }
 

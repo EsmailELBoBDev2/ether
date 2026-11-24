@@ -82,6 +82,7 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 		return core.UsenetCheckResult{}, fmt.Errorf("kindresolver: usenet_check requires an nzbUrl")
 	}
 	if cached, ok := r.lookupUsenetCheck(releaseKey, "", ""); ok {
+		noteResolveSourceWork(ctx, "usenet_check:"+releaseKey, true)
 		return cached, nil
 	}
 	if r.usenetServing != nil && !r.usenetServing() {
@@ -107,33 +108,42 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 	rel.Protocol = core.ProtocolUsenet
 	rel.Target = nil
 
-	checkCtx := ctx
-	if !core.IsBackgroundCheck(checkCtx) {
-		checkCtx = core.WithBackgroundBudget(checkCtx, func(context.Context, string, string, int64) error { return nil })
-	}
-	var cancel context.CancelFunc
-	if deadline, hasDeadline := checkCtx.Deadline(); !hasDeadline || time.Until(deadline) > usenetCheckTimeout {
-		checkCtx, cancel = context.WithTimeout(checkCtx, usenetCheckTimeout)
-		defer cancel()
+	baseCtx := ctx
+	if !core.IsBackgroundCheck(baseCtx) {
+		baseCtx = core.WithBackgroundBudget(baseCtx, func(context.Context, string, string, int64) error { return nil })
 	}
 
-	data, err := r.indexer.FetchNZB(checkCtx, rel)
+	workKey := "usenet_check:" + releaseKey
+	endWork := beginResolveSourceWork(ctx, workKey)
+	defer endWork()
+
+	raw, joined, err := r.runDetachedSourceFlight(baseCtx, workKey, usenetCheckTimeout, func(checkCtx context.Context) (any, error) {
+		data, err := r.indexer.FetchNZB(checkCtx, rel)
+		if err != nil {
+			return core.UsenetCheckResult{}, err
+		}
+		nzbHash := hashNZBBytes(data)
+		contentID, _, _, _ := nzb.InspectContent(data)
+		if cached, ok := r.lookupUsenetCheck(releaseKey, nzbHash, contentID); ok {
+			return cached, nil
+		}
+
+		res, err := checker.CheckArticles(checkCtx, rel.ID, data)
+		if err != nil {
+			return core.UsenetCheckResult{}, err
+		}
+		res.Cached = false
+		res.CheckedAt = r.now().Unix()
+		return r.storeUsenetCheck(releaseKey, nzbHash, contentID, res), nil
+	}, nil)
 	if err != nil {
 		return core.UsenetCheckResult{}, err
 	}
-	nzbHash := hashNZBBytes(data)
-	contentID, _, _, _ := nzb.InspectContent(data)
-	if cached, ok := r.lookupUsenetCheck(releaseKey, nzbHash, contentID); ok {
-		return cached, nil
+	res, _ := raw.(core.UsenetCheckResult)
+	if joined {
+		res.Cached = true
 	}
-
-	res, err := checker.CheckArticles(checkCtx, rel.ID, data)
-	if err != nil {
-		return core.UsenetCheckResult{}, err
-	}
-	res.Cached = false
-	res.CheckedAt = r.now().Unix()
-	return r.storeUsenetCheck(releaseKey, nzbHash, contentID, res), nil
+	return res, nil
 }
 
 func (r *KindResolver) lookupUsenetCheck(releaseKey, nzbHash, contentID string) (core.UsenetCheckResult, bool) {

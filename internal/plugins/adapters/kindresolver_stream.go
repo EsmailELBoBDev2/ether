@@ -178,6 +178,7 @@ func (r *KindResolver) Close() {
 		sess.abort(now)
 	}
 	r.streamWG.Wait()
+	r.closeSourceFlights()
 }
 
 func (r *KindResolver) cancelPluginStreamingSearches(pluginID string) {

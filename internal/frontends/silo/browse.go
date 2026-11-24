@@ -443,7 +443,7 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		switch row.Layout.StylePolicy {
 		case frontend.RowStyleHero:
 			featured = true
-		case frontend.RowStyleShelf, frontend.RowStyleWide:
+		case frontend.RowStyleStandard, frontend.RowStyleWide:
 			featured = false
 		}
 		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}

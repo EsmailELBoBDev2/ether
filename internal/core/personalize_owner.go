@@ -76,21 +76,30 @@ const (
 	RowSourcePlex   = "plex"   // built by the Plex front end (Continue Watching, playlists)
 )
 
-// HomeRow is one row of a viewer's Home or section as Plex receives it,
-// with the engine's explanation. Items are catalogue titles; the admin API
-// turns them into TitleCards.
+// HomeRow is one row of a page as the engine arranged it, with the
+// explanation the Recommendations designer shows. Items are catalogue
+// titles; the admin API turns them into TitleCards.
 type HomeRow struct {
 	HubID string `json:"hubId"`
 	// RowID is the page row this row came from; "" is one of Ether's picks.
 	RowID string `json:"rowId,omitempty"`
 	// Library is the library of a one-row-per-library row.
 	Library LibraryID `json:"library,omitempty"`
+	// Layer says whose placement applied: everyone, viewer or ether.
+	Layer string `json:"layer,omitempty"`
 	// Mode is the effective placement (pinned, show, auto) of a page row.
 	Mode string `json:"mode,omitempty"`
+	Slot int    `json:"slot,omitempty"`
+	// Pinned rows were held at their position.
+	Pinned bool `json:"pinned,omitempty"`
 	// Why is the plain-English "Why here"; Note a second line ("3 skipped:
 	// shown above").
 	Why  string `json:"why,omitempty"`
 	Note string `json:"note,omitempty"`
+	// HiddenCode and HiddenReason explain a row that isn't on the page.
+	HiddenCode   string `json:"hiddenCode,omitempty"`
+	HiddenReason string `json:"hiddenReason,omitempty"`
+	Hidden       bool   `json:"hidden,omitempty"`
 	// Look is the effective look; Personal marks rows whose titles differ
 	// per viewer.
 	Look     RowLook `json:"look"`
@@ -100,25 +109,15 @@ type HomeRow struct {
 	// Ghost marks a scheduled-away row shown faintly in the preview.
 	Ghost bool `json:"ghost,omitempty"`
 	// Present is the presentation apps receive.
-	Present      RowPresentation      `json:"present"`
-	Layer        string               `json:"layer,omitempty"`
-	Slot         int                  `json:"slot,omitempty"`
-	AnchorSlot   int                  `json:"anchorSlot,omitempty"`
-	Placement    string               `json:"placement,omitempty"`
-	HiddenCode   string               `json:"hiddenCode,omitempty"`
-	HiddenReason string               `json:"hiddenReason,omitempty"`
-	Policy       *RowPolicy           `json:"policy,omitempty"`
-	PolicyLayer  string               `json:"policyLayer,omitempty"`
-	Title        string               `json:"title"`
-	Kind         string               `json:"kind"` // e.g. "because-you-watched", "collection:<id>"
-	Reason       string               `json:"reason"`
-	Score        float64              `json:"score"` // predicted engagement used for ordering
-	Pinned       bool                 `json:"pinned,omitempty"`
-	Hidden       bool                 `json:"hidden,omitempty"` // hidden by a layout rule: not sent to Plex
-	Source       string               `json:"source"`
-	Items        []Title              `json:"items"`
-	ItemReasons  map[RatingKey]string `json:"itemReasons,omitempty"`
-	// Hub is the row as handed to the Plex front end.
+	Present     RowPresentation      `json:"present"`
+	Title       string               `json:"title"`
+	Kind        string               `json:"kind"` // e.g. "because-you-watched", "collection:<id>"
+	Reason      string               `json:"reason"`
+	Score       float64              `json:"score"` // predicted engagement used for ordering
+	Source      string               `json:"source"`
+	Items       []Title              `json:"items"`
+	ItemReasons map[RatingKey]string `json:"itemReasons,omitempty"`
+	// Hub is the row as handed to the front ends.
 	Hub Hub `json:"-"`
 }
 
@@ -127,38 +126,9 @@ type HomePreview struct {
 	Rows        []HomeRow  `json:"rows"`
 	GeneratedAt time.Time  `json:"generatedAt"`
 	Context     HubContext `json:"context"`
-	// HomeDeduped counts the titles kept off a Movies or TV Shows page
-	// because the viewer's Home leads with them (DedupeHome).
+	// HomeDeduped counts the titles kept off a library page because the
+	// viewer's Home leads with them (RowPage.SkipHome).
 	HomeDeduped int `json:"homeDeduped,omitempty"`
-}
-
-// LayoutWhen restricts a Home layout row to days (0 = Sunday … 6 =
-// Saturday), an hour window [FromHour, ToHour) in server local time (wraps
-// past midnight when FromHour > ToHour) and device classes.
-type LayoutWhen struct {
-	Days      []int    `json:"days,omitempty"`
-	Dayparts  []string `json:"dayparts,omitempty"`
-	Months    []int    `json:"months,omitempty"`
-	StartDate string   `json:"startDate,omitempty"`
-	EndDate   string   `json:"endDate,omitempty"`
-	FromHour  *int     `json:"fromHour,omitempty"`
-	ToHour    *int     `json:"toHour,omitempty"`
-	Devices   []string `json:"devices,omitempty"`
-}
-
-// RowDescriptor describes a kind of row the owner can place in the Home
-// layout.
-type RowDescriptor struct {
-	HubID       string `json:"hubId"`
-	Title       string `json:"title"`
-	Kind        string `json:"kind"`
-	Description string `json:"description"`
-	// Sections lists the pages this row can appear on ("home", "movies",
-	// "shows"); empty means every page.
-	Sections []string `json:"sections,omitempty"`
-	// Group is the designer's category: "picks", "explore", "shows",
-	// "household", "collections" or "plex".
-	Group string `json:"group,omitempty"`
 }
 
 // RankerInsight describes the learned ranking model for the owner UI.

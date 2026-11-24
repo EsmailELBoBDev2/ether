@@ -2300,39 +2300,6 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	return rows, false, isDefaultTab, nil
 }
 
-func pluginLibraryHasCustomMaxRows(source core.NeutralHomeLayoutSource, ctx context.Context, userID int64, section, device string) bool {
-	reader, ok := source.(interface {
-		HomeLayout(context.Context) (core.HomeLayout, error)
-	})
-	if !ok {
-		return false
-	}
-	d, err := reader.HomeLayout(ctx)
-	if err != nil {
-		return false
-	}
-	check := func(pages []core.LayoutPage) bool {
-		for _, p := range pages {
-			if p.Section != section {
-				continue
-			}
-			if p.MaxRows > 0 || (device != "" && p.DeviceMaxRows[device] > 0) {
-				return true
-			}
-		}
-		return false
-	}
-	if check(d.Global) {
-		return true
-	}
-	for _, vl := range d.Viewers {
-		if vl.UserID == userID && check(vl.Pages) {
-			return true
-		}
-	}
-	return false
-}
-
 // PluginLibraryRows implements frontend.PluginLibraryRowsReader: shelves built
 // from the plugin library's stored items, arranged by that library's own
 // "library:<id>" layout page (defaulting to 8 shelves for auto-generated rows
@@ -2385,24 +2352,15 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 		Platform:  dev.Platform,
 		ClientID:  dev.ID,
 	}
+	// The page's own length applies; an unsaved page shows its declared
+	// shelves (Curated) or up to eight automatic rows.
+	sit.DefaultMaxRows = defaultMaxRows
 	if declaredShelves && len(rows) > 0 {
 		sit.DefaultMaxRows = len(rows)
 	}
 	arranged, err := LayoutRows(ctx, s.d.Layout, nil, req, sit, rows)
 	if err != nil {
 		return nil, err
-	}
-	section := "library:" + strconv.Itoa(id)
-	if !declaredShelves && !pluginLibraryHasCustomMaxRows(s.d.Layout, ctx, v.ID, section, hc.Device) && len(arranged) > defaultMaxRows {
-		kept := make([]frontend.Row, 0, defaultMaxRows)
-		for _, r := range arranged {
-			if len(kept) < defaultMaxRows || r.Layout.Always {
-				r.Rank = len(kept)
-				r.Layout.Order = len(kept)
-				kept = append(kept, r)
-			}
-		}
-		arranged = kept
 	}
 	return arranged, nil
 }

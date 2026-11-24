@@ -33,16 +33,8 @@ type Personalization interface {
 	// ("library:<id>") serves the viewer in the context.
 	PreviewHome(ctx context.Context, user *core.User, hc core.HubContext, section string, limit int) (*core.HomePreview, error)
 	Refresh(ctx context.Context, user *core.User) error
-	// HomeLayout is the saved Home layout document; SetHomeLayout
-	// validates and replaces it, applying from the next /hubs request.
-	HomeLayout(ctx context.Context) (core.HomeLayout, error)
-	SetHomeLayout(ctx context.Context, d core.HomeLayout) (core.HomeLayout, error)
-	// PreviewLayout assembles what the viewer would see under a draft
-	// document without saving it.
-	PreviewLayout(ctx context.Context, user *core.User, hc core.HubContext, section string, limit int, d core.HomeLayout) (*core.HomePreview, error)
-	// LayoutDefaults is the default row count per surface (home, library).
+	// LayoutDefaults is the default row count per page kind (home, library).
 	LayoutDefaults() map[string]int
-	AvailableRows(ctx context.Context) ([]core.RowDescriptor, error)
 	RowInsights(ctx context.Context, days int) ([]core.RowInsight, error)
 	// RankerInsight describes the learned ranking model.
 	RankerInsight(ctx context.Context) (core.RankerInsight, error)
@@ -69,13 +61,6 @@ func (h *Handler) personalizationRoutes(api func(pattern string, fn http.Handler
 	api("POST /api/viewers/{id}/trakt/device", h.handleTraktStart)
 	api("POST /api/viewers/{id}/trakt/poll", h.handleTraktPoll)
 	api("POST /api/viewers/{id}/trakt/disconnect", h.handleTraktDisconnect)
-	api("GET /api/layout", h.handleGetLayout)
-	api("PUT /api/layout", h.handlePutLayout)
-	api("GET /api/layout/libraries/{id}", h.handleGetLibraryLayout)
-	api("PUT /api/layout/libraries/{id}", h.handlePutLibraryLayout)
-	api("DELETE /api/layout/libraries/{id}", h.handleResetLibraryLayout)
-	api("POST /api/layout/preview", h.handleLayoutPreview)
-	api("POST /api/layout/impact", h.handleLayoutImpact)
 	api("GET /api/insights/rows", h.handleInsightRows)
 	api("GET /api/insights/ranker", h.handleInsightRanker)
 	api("GET /api/insights/activity", h.handleInsightActivity)

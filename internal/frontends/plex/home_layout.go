@@ -161,7 +161,7 @@ func ownerRowPolicy(h model.Hub, row frontend.NeutralHomeRow) model.Hub {
 	switch row.Style {
 	case frontend.RowStyleHero:
 		h.Style = "hero"
-	case frontend.RowStyleShelf, frontend.RowStyleWide:
+	case frontend.RowStyleStandard, frontend.RowStyleWide:
 		h.Style = "shelf"
 	}
 	return h

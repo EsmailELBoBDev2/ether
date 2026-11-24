@@ -286,9 +286,6 @@ type Deps struct {
 	// LayoutLibraries lists libraries that have Recommended layouts
 	// ("library:<id>"). Optional.
 	LayoutLibraries func(context.Context) ([]LayoutLibrary, error)
-	// PluginLibraryRows lists candidate row descriptors and live shelves for a
-	// plugin library's Recommended tab. Optional.
-	PluginLibraryRows func(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error)
 
 	// Collections backs /api/collections* (Collection Studio).
 	Collections CollectionStudio

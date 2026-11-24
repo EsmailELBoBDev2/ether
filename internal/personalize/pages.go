@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -291,4 +293,24 @@ func (e *Engine) pageKeyFor(ctx context.Context, section string) core.PageKey {
 		return core.LibraryPage(core.LibraryID(id), tab)
 	}
 	return core.PageHome
+}
+
+// parseLibrarySection parses "library:<id>" (an app's library request).
+func parseLibrarySection(s string) (int, bool) {
+	raw, ok := strings.CutPrefix(s, "library:")
+	if !ok || raw == "" || strings.Contains(raw, "/") {
+		return 0, false
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 || strconv.Itoa(id) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func librarySectionName(id int) string {
+	if id <= 0 {
+		return ""
+	}
+	return "library:" + strconv.Itoa(id)
 }

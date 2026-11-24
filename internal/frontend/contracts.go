@@ -298,7 +298,7 @@ type RowLayout struct {
 	PreviewOnFocusPolicy *bool
 	Order                int
 	Style                string
-	// StylePolicy is the owner's row style (RowStyleShelf, RowStyleHero,
+	// StylePolicy is the owner's row style (RowStyleStandard, RowStyleHero,
 	// RowStyleWide), "" when the owner left the app's default.
 	StylePolicy string
 	// HideWatched drops the viewer's fully watched titles from the row.

@@ -75,3 +75,28 @@ func (a *App) historyPlays() func(context.Context, int64, time.Time, time.Time, 
 	}
 	return a.state.PluginHistoryPlays
 }
+
+type recordingPrefs struct{ a *App }
+
+func (a *App) recordingPrefs() recordingPrefs { return recordingPrefs{a: a} }
+
+func (p recordingPrefs) get(ctx context.Context, uid int64, lib core.LibraryID, recs []string) (map[string]core.RatingKey, error) {
+	if p.a.state == nil {
+		return nil, core.ErrNotAvailable
+	}
+	return p.a.state.RecordingPreferences(ctx, uid, lib, recs)
+}
+
+func (p recordingPrefs) set(ctx context.Context, uid int64, lib core.LibraryID, rec string, preferred core.RatingKey, hide []core.RatingKey) error {
+	if p.a.state == nil {
+		return core.ErrNotAvailable
+	}
+	return p.a.state.SetRecordingPreference(ctx, uid, lib, rec, preferred, hide)
+}
+
+func (p recordingPrefs) hidden(ctx context.Context, uid int64) ([]core.RatingKey, error) {
+	if p.a.state == nil {
+		return nil, nil
+	}
+	return p.a.state.HiddenRecordingCopies(ctx, uid)
+}

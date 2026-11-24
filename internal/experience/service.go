@@ -199,10 +199,15 @@ type ServiceDeps struct {
 	// HistoryPlays lists a viewer's completed plugin plays in [from, to),
 	// oldest first (listening recaps). Optional.
 	HistoryPlays func(ctx context.Context, userID int64, from, to time.Time, limit int) ([]core.HistoryPlay, error)
-	Search       Search
-	Rows         *RowsService
-	Layout       core.NeutralHomeLayoutSource
-	Protocol     core.Protocol
+	// Per-viewer duplicate preferences (optional): a preferred release per
+	// recording and the releases the viewer hid in its favour.
+	RecordingPreferences   func(ctx context.Context, userID int64, library core.LibraryID, recordings []string) (map[string]core.RatingKey, error)
+	SetRecordingPreference func(ctx context.Context, userID int64, library core.LibraryID, recording string, preferred core.RatingKey, hide []core.RatingKey) error
+	HiddenRecordingCopies  func(ctx context.Context, userID int64) ([]core.RatingKey, error)
+	Search                 Search
+	Rows                   *RowsService
+	Layout                 core.NeutralHomeLayoutSource
+	Protocol               core.Protocol
 	// Favorites manages the stable, per-viewer Favorites playlist mapping.
 	Favorites      func(context.Context, *core.User, core.RatingKey, bool) (bool, error)
 	IsFavorite     func(context.Context, *core.User, core.RatingKey) (bool, error)

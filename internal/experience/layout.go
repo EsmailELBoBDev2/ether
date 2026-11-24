@@ -112,6 +112,7 @@ func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, _ []Li
 		row.Layout.PreviewOnFocusPolicy = arranged.PreviewOnFocusPolicy
 		row.RankedTop10 = arranged.RankedTop10
 		row.Layout.RankedTop10 = arranged.RankedTop10
+		row.Layout.Present = arranged.Present
 		out = append(out, row)
 	}
 	return out, nil

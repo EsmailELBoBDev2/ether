@@ -2,8 +2,11 @@ package personalize
 
 import (
 	"context"
-	"github.com/braedonsaunders/ether/internal/core"
+	"fmt"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // The high end of the SmartKey payload namespace is reserved for virtual
@@ -49,7 +52,12 @@ func (c *reviewCollections) review(ctx context.Context, u *core.User, year int, 
 	if u == nil {
 		return nil, nil, core.ErrUnauthorized
 	}
-	hub, e := c.d.YearInReview(ctx, u, year, 10000)
+	// A listing builds the review for each media type and then probes the
+	// listed collection's items; share one build per viewer and year for the
+	// rest of the read request.
+	hub, e := reqmemo.Do(ctx, fmt.Sprintf("personalize:review:%p:%d:%#v", c.d, year, u), func() (core.Hub, error) {
+		return c.d.YearInReview(ctx, u, year, 10000)
+	})
 	if e != nil {
 		return nil, nil, e
 	}

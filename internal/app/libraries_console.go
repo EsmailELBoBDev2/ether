@@ -1496,7 +1496,7 @@ func (c *librariesConsole) handleCachePut(w http.ResponseWriter, r *http.Request
 	// Owner quota overrides are session-lived; the kind's declared cap (or
 	// the 2 GiB default) applies again at restart.
 	ns.SetQuota(blobcache.Quota{MaxBytes: body.MaxBytes, TTL: time.Duration(body.TTLSeconds) * time.Second})
-	ns.Sweep()
+	ns.Sweep(0)
 	libJSON(w, http.StatusOK, cacheDTO(lib, ns))
 }
 
@@ -1509,7 +1509,7 @@ func (c *librariesConsole) handleCacheSweep(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	ns.Sweep()
+	ns.Sweep(0)
 	libJSON(w, http.StatusOK, cacheDTO(lib, ns))
 }
 

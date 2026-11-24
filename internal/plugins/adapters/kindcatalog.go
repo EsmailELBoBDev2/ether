@@ -3558,6 +3558,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		Media:        kindMedia,
 		Card:         lib.EffectiveCardShape(decl.Library.EffectiveCard()),
 		DateDisplay:  decl.Library.EffectiveDateDisplay(),
+		Experience:   decl.Library.Experience,
 		Tabs:         tabs,
 		Sorts:        sorts,
 		Facets:       facets,

@@ -491,6 +491,19 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	if plugLib["presentation"].(map[string]any)["card"] != "landscape" {
 		t.Fatalf("plugin presentation = %v", plugLib["presentation"])
 	}
+	if catLib["presentation"].(map[string]any)["experience"] != "standard" || plugLib["presentation"].(map[string]any)["experience"] != "standard" {
+		t.Fatalf("experience: catalogue %v, plugin %v", catLib["presentation"], plugLib["presentation"])
+	}
+	// Music asks for the audio experience unless the library declares otherwise.
+	if got := (frontend.View{Media: frontend.MediaClassMusic}).EffectiveExperience(); got != "audio" {
+		t.Fatalf("music experience = %q", got)
+	}
+	if got := (frontend.View{Media: frontend.MediaClassMusic, Experience: "standard"}).EffectiveExperience(); got != "standard" {
+		t.Fatalf("declared experience = %q", got)
+	}
+	if got := (frontend.View{Media: frontend.MediaClassPodcast, Experience: "audio"}).EffectiveExperience(); got != "audio" {
+		t.Fatalf("podcast asking for audio = %q", got)
+	}
 	plugTabs := plugLib["tabs"].([]any)
 	if len(plugTabs) != 5 {
 		t.Fatalf("expected 5 plugin tabs, got %v", plugTabs)

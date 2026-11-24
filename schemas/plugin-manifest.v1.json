@@ -773,6 +773,12 @@
                           "date"
                         ]
                       },
+                      "experience": {
+                        "enum": [
+                          "standard",
+                          "audio"
+                        ]
+                      },
                       "icon": {
                         "type": "string"
                       },

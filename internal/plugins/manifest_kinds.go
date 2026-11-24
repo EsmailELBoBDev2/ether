@@ -147,6 +147,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
 			add(base+".library.dateDisplay", "must be year or date")
 		}
+		if k.Library.Experience != "" && !core.ValidLibraryExperience(k.Library.Experience) {
+			add(base+".library.experience", "must be standard or audio")
+		}
 		if len(k.Library.Tabs) > MaxKindLibraryTabs {
 			add(base+".library.tabs", fmt.Sprintf("at most %d tabs may be declared", MaxKindLibraryTabs))
 		}

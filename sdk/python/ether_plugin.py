@@ -3814,6 +3814,7 @@ class KindLibraryDecl(TypedDict, total=False):
     icon: str
     card: Literal["poster", "landscape", "square"]
     dateDisplay: Literal["year", "date"]
+    experience: Literal["standard", "audio"]
     tabs: List[KindLibraryTab]
     shelves: List[KindLibraryShelf]
 

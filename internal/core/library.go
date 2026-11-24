@@ -493,6 +493,35 @@ type Library struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
+// Library experiences: how an app built around a media class presents a
+// library. Standard is the app's ordinary library pages; audio is a listening
+// app (a library sidebar, a now-playing bar, a queue and Now Playing).
+const (
+	LibraryExperienceStandard = "standard"
+	LibraryExperienceAudio    = "audio"
+)
+
+// LibraryExperiences lists every library experience, in the order apps are
+// told about them.
+var LibraryExperiences = []string{LibraryExperienceAudio, LibraryExperienceStandard}
+
+// ValidLibraryExperience reports whether s names a library experience.
+func ValidLibraryExperience(s string) bool {
+	return s == LibraryExperienceStandard || s == LibraryExperienceAudio
+}
+
+// EffectiveLibraryExperience is the experience a library asks for: the
+// declared one, else audio for music libraries and standard for the rest.
+func EffectiveLibraryExperience(declared string, class MediaClass) string {
+	if ValidLibraryExperience(declared) {
+		return declared
+	}
+	if class == MediaClassMusic {
+		return LibraryExperienceAudio
+	}
+	return LibraryExperienceStandard
+}
+
 // EffectiveCardShape resolves the library's card shape: the owner's CardShape
 // choice first, then pluginDefault (for plugin libraries), falling back to
 // "poster".

@@ -84,8 +84,8 @@ func TestVelaLibraryWireDateDisplayAndTitleAirDate(t *testing.T) {
 		t.Fatalf("libraryWire dateDisplay = %v, want date", libDate["dateDisplay"])
 	}
 	pres := libDate["presentation"].(object)
-	if len(pres) != 1 || pres["card"] != "landscape" {
-		t.Fatalf("presentation must stay card-only: %+v", pres)
+	if len(pres) != 2 || pres["card"] != "landscape" || pres["experience"] != "standard" {
+		t.Fatalf("presentation must carry only card and experience: %+v", pres)
 	}
 	tabs := libDate["tabs"].([]object)
 	if len(tabs) != 2 || tabs[0]["kind"] != "live" || tabs[0]["card"] != "landscape" || tabs[0]["search"] != true || tabs[0]["searchPlaceholder"] != "Filter streams" {

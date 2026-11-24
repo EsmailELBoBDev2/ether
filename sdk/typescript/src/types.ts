@@ -804,6 +804,8 @@ export interface KindLibraryDecl {
   card?: "poster" | "landscape" | "square";
   /** How item release dates are rendered on cards and detail headers: "year" (default) or "date" (YYYY-MM-DD). */
   dateDisplay?: "year" | "date";
+  /** How apps present the library: "audio" (a listening app with a library sidebar, now-playing bar and queue) or "standard" (ordinary library pages). Defaults to "audio" for music, "standard" otherwise. */
+  experience?: "standard" | "audio";
   /** Up to 50 sub-tabs shown inside the library; defaults to Recommended + Library. */
   tabs?: KindLibraryTab[];
   /** Up to 40 default Recommended shelves evaluated in order when present. */

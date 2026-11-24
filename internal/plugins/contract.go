@@ -558,6 +558,7 @@ type KindLibraryDecl struct {
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
+	Experience  string             `json:"experience,omitempty"`  // standard|audio; defaults to audio for music, standard otherwise
 	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
 }
@@ -629,7 +630,7 @@ func (t KindLibraryTab) EffectiveCard() string {
 
 // IsZero reports whether every field of the library declaration is empty.
 func (d KindLibraryDecl) IsZero() bool {
-	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && len(d.Tabs) == 0 && len(d.Shelves) == 0
+	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && d.Experience == "" && len(d.Tabs) == 0 && len(d.Shelves) == 0
 }
 
 // EffectiveCard returns the library's card aspect ("poster" by default).

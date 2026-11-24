@@ -208,6 +208,10 @@ type ServiceDeps struct {
 	// whether that is all of them, so a favorites filter seeks those titles
 	// instead of walking the library. Optional.
 	FavoriteTitleKeys func(context.Context, *core.User, int) ([]core.RatingKey, bool, error)
+	// FavoritePage reads one page of a viewer's liked titles of one role:
+	// keys in order, when each was liked, the next cursor and the total.
+	// Optional; without it FavoriteTitles is unavailable.
+	FavoritePage func(ctx context.Context, viewer *core.User, role, cursor string, limit int) (keys []core.RatingKey, likedAt []time.Time, next string, total int, err error)
 	// CountWatched counts the titles matching a filter that a viewer has
 	// played, from their watch rows. Optional; without it a played filter's
 	// total is counted over the whole type.

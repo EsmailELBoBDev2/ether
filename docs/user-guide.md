@@ -1245,6 +1245,11 @@ Continue Watching and alternate episode-order lists keep their released episodes
 Turning the option off removes access to these placeholders and their artwork.
 **Show upcoming movies**, also off by default, lists movies before their release date.
 
+An app's **Refresh metadata** (Infuse: **Update Metadata**) refreshes that one
+title from TMDB when the owner asks; a season or episode refreshes its show.
+Other viewers get the same refusal Plex and Jellyfin give non-administrators.
+Repeat requests for the same title within 10 minutes do nothing new.
+
 ## Metadata artwork
 
 **Metadata → Artwork** previews real catalogue posters with your unsaved design.

@@ -208,11 +208,14 @@ type App struct {
 	// (heartbeated; see rolling.go).
 	draining atomic.Bool
 
-	tmdb        *tmdb.Client
-	libraries   *libraries.Service
-	catalog     *catalog.Catalog
-	collections *collections.Service
-	images      *artwork.Images
+	tmdb      *tmdb.Client
+	libraries *libraries.Service
+	catalog   *catalog.Catalog
+	// titleRefresh serves app "Refresh metadata" requests (title_refresh.go).
+	titleRefresh     *titleRefresher
+	titleRefreshOnce sync.Once
+	collections      *collections.Service
+	images           *artwork.Images
 	// titlePosterRenderer draws generated posters (titlePosters).
 	titlePosterOnce     sync.Once
 	titlePosterRenderer *artwork.Renderer

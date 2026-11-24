@@ -1188,7 +1188,14 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 	}
 	// Album and audiobook track/part lists naturally follow disc/track order,
 	// including Jellyfin Web's Album Play query (SortBy=SortName ascending).
-	if (piv.Title.MediaRole == core.MediaRoleAlbum || piv.Title.MBItemType == "MusicAlbum" ||
+	// A list (a playlist) keeps its own order: the store returns its members in
+	// list order, numbered by position. The default, title and index orders all
+	// mean that order (apps that open it as an album ask for index or title);
+	// sorting by index here would group members by their own albums.
+	if piv.Title.MediaRole == core.MediaRolePlaylist &&
+		(q.Sort == "" || q.Sort == core.SortIndex || (q.Sort == core.SortTitle && !q.Desc)) {
+		q.Sort = ""
+	} else if (piv.Title.MediaRole == core.MediaRoleAlbum || piv.Title.MBItemType == "MusicAlbum" ||
 		piv.Title.MediaRole == core.MediaRoleAudiobook || piv.Title.MBItemType == "AudioBook") &&
 		(q.Sort == "" || (q.Sort == core.SortTitle && !q.Desc)) {
 		q.Sort = core.SortIndex

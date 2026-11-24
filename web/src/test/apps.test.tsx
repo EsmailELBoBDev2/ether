@@ -172,6 +172,18 @@ describe("Apps connection hub", () => {
     const plain = render(<>{appBrandMark("plugin:ether.music:subsonic")}</>);
     expect(plain.container.querySelector("img")).toBeNull();
     expect(plain.container.querySelector("svg")).not.toBeNull();
+    plain.unmount();
+    // A Subsonic adapter without its own icon shows the OpenSubsonic mark, not the plugin's icon.
+    const proto = render(
+      <>
+        {appBrandMark(
+          "plugin:ether.music:subsonic",
+          "/ether/api/plugins/ether.music/icon?v=1",
+          "subsonic",
+        )}
+      </>,
+    );
+    expect(proto.container.querySelector("img")?.getAttribute("src")).toMatch(/opensubsonic/);
   });
 
   it("always prioritizes dedicated listener ports over shared-port paths", () => {

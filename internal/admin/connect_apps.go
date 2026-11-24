@@ -25,6 +25,8 @@ type connectAdapterMeta struct {
 	Name string `json:"name"`
 	Logo string `json:"logo,omitempty"`
 	Auth string `json:"auth,omitempty"`
+	// ProtocolHint lets the chooser draw a known protocol's mark (Subsonic).
+	ProtocolHint string `json:"protocolHint,omitempty"`
 }
 
 func isConnectablePluginAdapter(d frontend.Descriptor) bool {
@@ -147,7 +149,7 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 				if strings.HasPrefix(logo, "/ether/api/plugins/") {
 					logo = ""
 				}
-				adapters[id] = connectAdapterMeta{Name: name, Logo: logo, Auth: auth}
+				adapters[id] = connectAdapterMeta{Name: name, Logo: logo, Auth: auth, ProtocolHint: d.ProtocolHint}
 			}
 			resp["adapters"] = adapters
 		}

@@ -30,11 +30,14 @@ type CertifiedApp struct {
 
 type Descriptor struct {
 	// Auth declares the authentication mode; none_lan requires an owner-selected viewer.
-	Auth           string         `json:"auth,omitempty"`
-	PathPrefix     string         `json:"pathPrefix,omitempty"`
-	ID             Protocol       `json:"id"`
-	Name           string         `json:"name"`
-	Logo           string         `json:"logo,omitempty"`
+	Auth       string   `json:"auth,omitempty"`
+	PathPrefix string   `json:"pathPrefix,omitempty"`
+	ID         Protocol `json:"id"`
+	Name       string   `json:"name"`
+	Logo       string   `json:"logo,omitempty"`
+	// ProtocolHint is a plugin adapter's declared protocol (opds|subsonic|custom),
+	// so the console can show the protocol's mark when the adapter has none.
+	ProtocolHint   string         `json:"protocolHint,omitempty"`
 	Version        string         `json:"version,omitempty"`
 	DocsURL        string         `json:"docsUrl,omitempty"`
 	DefaultPort    int            `json:"defaultPort,omitempty"`

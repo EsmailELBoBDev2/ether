@@ -2,9 +2,14 @@ import postersplus from "../assets/brands/postersplus.png?no-inline";
 import xrdb from "../assets/brands/xrdb.png?no-inline";
 import betterposters from "../assets/brands/betterposters.png?no-inline";
 import rpdb from "../assets/brands/rpdb.jpg?no-inline";
-import { Cast, FolderOpen, ListVideo, Plug } from "lucide-react";
+import { Plug } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import dlna from "../assets/brands/dlna.svg?no-inline";
 import emby from "../assets/brands/emby.svg?no-inline";
+import m3u from "../assets/brands/m3u.svg?no-inline";
+import opensubsonic from "../assets/brands/opensubsonic.svg?no-inline";
+import webdav from "../assets/brands/webdav.svg?no-inline";
+import xtream from "../assets/brands/xtream.svg?no-inline";
 import jellyfin from "../assets/brands/jellyfin.svg?no-inline";
 import plex from "../assets/brands/plex.svg?no-inline";
 import silo from "../assets/brands/silo.png?no-inline";
@@ -62,9 +67,10 @@ export function VelaMark() {
  * declared adapter icon, else the plugin's icon). Drawn like Silo and Vela;
  * the plug stands in when there is none or it fails to load.
  */
-export function PluginAdapterMark({ src }: { src?: string }) {
+export function PluginAdapterMark({ src, fallback }: { src?: string; fallback?: ReactNode }) {
   const [failed, setFailed] = useState<string>();
-  if (!src || !/^(https?:|\/)/.test(src) || failed === src) return <Plug size={22} aria-hidden />;
+  if (!src || !/^(https?:|\/)/.test(src) || failed === src)
+    return fallback ?? <Plug size={22} aria-hidden />;
   return (
     <img
       src={src}
@@ -76,16 +82,54 @@ export function PluginAdapterMark({ src }: { src?: string }) {
   );
 }
 
-/** DLNA, Files, M3U, and plugin adapters have no vendored mark. These are icons, not letter tiles. */
+export function DlnaMark() {
+  return <BrandMark src={dlna} color="#48a842" />;
+}
+/** WebDAV has no official logo; Ether's own badge (cloud + DAV), not a folder. */
+export function WebdavMark() {
+  return <BrandMark src={webdav} color="#3d8bfd" />;
+}
+/** M3U has no official logo; Ether's own playlist-file badge. */
+export function M3uMark() {
+  return <BrandMark src={m3u} color="#f08c2e" />;
+}
+/** Xtream has no usable logo; Ether's own IPTV badge. */
+export function XtreamMark() {
+  return <BrandMark src={xtream} color="#17a9a0" />;
+}
+/** The OpenSubsonic logo on its own tile, the same mark ether.music declares. */
+export function SubsonicMark() {
+  return <img src={opensubsonic} alt="" aria-hidden className="block size-7 rounded-md" />;
+}
+
+/** Marks for protocols a plugin adapter can declare (`protocolHint`). */
+export function protocolMark(protocolHint?: string): ReactNode | undefined {
+  return protocolHint === "subsonic" ? <SubsonicMark /> : undefined;
+}
+
+/**
+ * A plugin adapter's mark: the adapter's own declared icon first, then the
+ * mark of the protocol it declares (so Subsonic looks like Subsonic before
+ * its plugin ships an icon), then the plugin's icon, then the plug.
+ * `logo` is an adapter's own icon when Ether serves it with `adapter=`.
+ */
+export function pluginAdapterLogo(logo?: string, protocolHint?: string): ReactNode {
+  const mark = protocolMark(protocolHint);
+  if (mark && !(logo && /[?&]adapter=/.test(logo))) return mark;
+  return <PluginAdapterMark src={logo} fallback={mark} />;
+}
+
+/** Built-in household apps without a vendored client brand (Plex & co. draw their own). */
 export function householdIcon(id: string): ReactNode | undefined {
   switch (id) {
     case "dlna":
-      return <Cast size={22} aria-hidden />;
+      return <DlnaMark />;
     case "webdav":
-      return <FolderOpen size={22} aria-hidden />;
-    case "xtream":
+      return <WebdavMark />;
     case "m3u":
-      return <ListVideo size={22} aria-hidden />;
+      return <M3uMark />;
+    case "xtream":
+      return <XtreamMark />;
     default:
       return id.startsWith("plugin:") ? <Plug size={22} aria-hidden /> : undefined;
   }

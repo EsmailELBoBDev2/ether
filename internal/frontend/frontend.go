@@ -510,9 +510,11 @@ type Host struct {
 	// KindStreams opens byte-addressable media and lists playable leaves for
 	// plugin-provided content kinds. Nil means plugin kind media is unavailable.
 	KindStreams KindStreams
-	Identity    SurfaceIdentity
-	IDs         ids.Codecs
-	Events      Subscriber
+	// Loudness answers measured loudness for audio titles; nil sends none.
+	Loudness LoudnessReader
+	Identity SurfaceIdentity
+	IDs      ids.Codecs
+	Events   Subscriber
 	// WatchRefresh subscribes a mounted frontend to committed watch-state changes.
 	WatchRefresh WatchRefreshSubscriber
 	// HomeInvalidation subscribes a mounted frontend to committed state changes

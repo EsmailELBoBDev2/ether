@@ -55,6 +55,9 @@ func titleMediaWire(t frontend.Title) object {
 	if t.Disc > 0 {
 		media["disc"] = t.Disc
 	}
+	if t.RecordingID != "" {
+		media["recordingId"] = t.RecordingID
+	}
 	if len(t.MediaParents) > 0 {
 		parents := make([]object, 0, len(t.MediaParents))
 		for _, p := range t.MediaParents {

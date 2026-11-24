@@ -69,3 +69,53 @@ func TestListLevelSyncStoresMembersInOrder(t *testing.T) {
 		t.Fatal("members on a non-list level were accepted")
 	}
 }
+
+// A recording identity is stored with the item, read back with it, carried
+// onto the projected title, and a change to it alone is a change.
+func TestRecordingStoredAndProjected(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestService(t, Options{})
+	defer s.Close()
+	const pluginID, kindKey, libID = "test.music", "music", core.LibraryID(93)
+	decl := branchingMusicDecl()
+	if _, err := s.UpsertKind(ctx, pluginID, libID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	recording := "isrc:GBDUW0000053"
+	caller := callerFunc(func(_ context.Context, _ string, req plugins.Request) (plugins.Response, error) {
+		var br core.KindBrowseRequest
+		_ = json.Unmarshal(req.Body, &br)
+		var items []core.KindItem
+		if br.Level == "artist" {
+			items = []core.KindItem{
+				{ID: "art-1", Level: "artist", Title: "Daft Punk"},
+				{ID: "alb-1", Level: "album", ParentID: "art-1", Title: "Discovery"},
+				{ID: "trk-1", Level: "track", ParentID: "alb-1", Title: "One More Time", Playable: true, Recording: recording},
+			}
+		}
+		body, _ := json.Marshal(core.KindPage{Items: items})
+		return plugins.Response{Status: http.StatusOK, Body: body}, nil
+	})
+	read := func() core.KindItem {
+		t.Helper()
+		ref := core.NewItemRef(pluginID, kindKey, "trk-1")
+		it, _, err := s.GetByRef(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+	if _, err := s.SyncKind(ctx, pluginID, kindKey, SyncOptions{Caller: caller}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Recording != recording || Project(got, decl, core.Presentations{}).RecordingID != recording {
+		t.Fatalf("recording = %q", got.Recording)
+	}
+	recording = "isrc:GBDUW0000059"
+	if _, err := s.SyncKind(ctx, pluginID, kindKey, SyncOptions{Caller: caller, FullWalk: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Recording != recording {
+		t.Fatalf("changed recording not stored: %q", got.Recording)
+	}
+}

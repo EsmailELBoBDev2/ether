@@ -274,9 +274,15 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 		ratings = source.PageCachedRatings(r.Context(), v, ts)
 	}
 	regions := i.preferredRatingRegions(r)
+	loud := i.pageLoudness(r, ts)
 	out := []object{}
 	for _, t := range ts {
 		item := titleWireForRegions(t, regions)
+		if l, ok := loud[t.Key]; ok {
+			if media, ok := item["media"].(object); ok {
+				media["loudness"] = loudnessWire(l)
+			}
+		}
 		scores := append([]frontend.RatingScore(nil), ratings[t.Key]...)
 		if t.VoteCount > 0 && t.Rating >= 0 && t.Rating <= 10 && !math.IsNaN(t.Rating) {
 			scores = append(scores, frontend.RatingScore{Source: "tmdb", Kind: "audience", Value: t.Rating, Scale: 10, Votes: int64(t.VoteCount)})

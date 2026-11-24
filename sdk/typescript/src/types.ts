@@ -804,8 +804,8 @@ export interface KindLibraryDecl {
   card?: "poster" | "landscape" | "square";
   /** How item release dates are rendered on cards and detail headers: "year" (default) or "date" (YYYY-MM-DD). */
   dateDisplay?: "year" | "date";
-  /** How apps present the library: "audio" (a listening app with a library sidebar, now-playing bar and queue) or "standard" (ordinary library pages). Defaults to "audio" for music, "standard" otherwise. */
-  experience?: "standard" | "audio";
+  /** How apps present the library: "watch" (films and TV), "listen" (a listening app: library sidebar, now-playing bar, queue), "read", "gallery", "live", or another id (apps that do not know it present it as watch). Defaults by media class: listen for music, audiobooks and podcasts; read for books; gallery for photos; watch otherwise. */
+  experience?: "watch" | "listen" | "read" | "gallery" | "live" | (string & {});
   /** Up to 50 sub-tabs shown inside the library; defaults to Recommended + Library. */
   tabs?: KindLibraryTab[];
   /** Up to 40 default Recommended shelves evaluated in order when present. */
@@ -925,6 +925,8 @@ export interface KindItem {
   art?: Array<{ role: string; url: string; width?: number; height?: number }>;
   fields?: Record<string, unknown>;
   hints?: Record<string, unknown>;
+  /** The work this item is a copy of, the same on every release that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it. */
+  recording?: string;
   /** A list item's ordered children: external ids of other items of the kind (at most 500). Only on a members level. */
   members?: string[];
   etag?: string;

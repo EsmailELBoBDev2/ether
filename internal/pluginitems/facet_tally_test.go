@@ -413,6 +413,8 @@ func TestMigration17BackfillFromPre17Schema(t *testing.T) {
 			PRIMARY KEY (library_id, level, field, v_text)
 		)`,
 		`CREATE INDEX plugin_item_field_tally_count ON plugin_item_field_tally(library_id, level, field, cnt DESC, v_text)`,
+		`DROP INDEX IF EXISTS plugin_items_recording`,
+		`ALTER TABLE plugin_items DROP COLUMN recording`,
 		`DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version >= 17`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {

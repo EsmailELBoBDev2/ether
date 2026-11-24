@@ -22,6 +22,14 @@ CREATE TABLE IF NOT EXISTS plugin_item_members (
 );`)
 }
 
+// An item's recording identity (the same song on an album, a single and a
+// compilation), indexed per library for duplicate lookups.
+func init() {
+	store.Register("pluginitems", 21, `
+ALTER TABLE plugin_items ADD COLUMN recording TEXT NOT NULL DEFAULT '';
+CREATE INDEX plugin_items_recording ON plugin_items(library_id, recording) WHERE recording <> '';`)
+}
+
 func replaceMembersTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, it core.KindItem) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_members WHERE item_ref = ?`, string(it.Ref)); err != nil {
 		return err

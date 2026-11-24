@@ -924,13 +924,22 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		// Cached sidecars omit a language the file embeds, so without this the
 		// rules pick the embedded track (often an image subtitle the client
 		// was never shown) and the shown-only burn rule then plays None.
+		// An embedded text track of the same language still wins: it needs
+		// no burn and plays as before.
 		if !p.subNamed && !p.subSet {
 			if shown, _ := s.playIDs.shownSubtitles(ik, s.now()); len(shown) > 0 {
 				for i := range shown {
-					if want := shown[i]; want.External && want.ExternalURL != "" && !frontend.IsImageSubtitle(want.Codec) {
-						p.subStream, p.subSel, p.subSet = &want, -1, true
-						break
+					want := shown[i]
+					if !want.External || want.ExternalURL == "" || frontend.IsImageSubtitle(want.Codec) {
+						continue
 					}
+					if slices.ContainsFunc(ps.Info.Streams, func(st frontend.StreamInfo) bool {
+						return st.Type == "subtitle" && !st.External && !frontend.IsImageSubtitle(st.Codec) && sameLanguage(st.Language, want.Language)
+					}) {
+						continue
+					}
+					p.subStream, p.subSel, p.subSet = &want, -1, true
+					break
 				}
 			}
 		}

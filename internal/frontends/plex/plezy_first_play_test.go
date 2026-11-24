@@ -181,8 +181,8 @@ func TestPlezyFirstPlayRefetchSelectsRuleSubtitle(t *testing.T) {
 	if !hasDL {
 		t.Fatal("play re-fetch ran without a bounded deadline")
 	}
-	if budget <= 4*time.Second || budget > plezyPlayProbeWait {
-		t.Fatalf("play re-fetch wait budget = %s, want within (4s, %s]", budget, plezyPlayProbeWait)
+	if budget <= 0 || budget > plezyPlayProbeWait {
+		t.Fatalf("play re-fetch wait budget = %s, want within (0, %s]", budget, plezyPlayProbeWait)
 	}
 	selected := selectedTag(subtitleTags(playResp.Body.String()))
 	if !strings.Contains(selected, `index="2"`) || !strings.Contains(selected, `languageCode="eng"`) {

@@ -28,7 +28,7 @@ func (s *Service) ListOwnedComplete(ctx context.Context, user *core.User, typ co
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
 	out := make([]core.Collection, 0)
 	for _, row := range rows {
-		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, typ) {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, typ) {
 			continue
 		}
 		keys, err := s.serve(ctx, row, user, true)
@@ -59,7 +59,7 @@ func (s *Service) listCompleteUntil(ctx context.Context, user *core.User, typ co
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
 	out := make([]core.Collection, 0)
 	for _, row := range rows {
-		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, typ) {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, typ) {
 			continue
 		}
 		keys, err := s.serve(ctx, row, user, true)

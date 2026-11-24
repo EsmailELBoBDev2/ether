@@ -93,8 +93,7 @@ func (a *App) pluginCollectionUpsert(ctx context.Context, raw json.RawMessage) (
 			doc.Enabled = true
 		}
 		if _, explicit := fields["targets"]; !explicit {
-			doc.Targets.CollectionsTab = true
-			doc.Targets.Users = core.AllUsers()
+			doc.BrowseInApps = true
 		}
 	} else if len(doc.Sources) == 0 {
 		return nil, collectionInput("collection must declare items, itemIds, or sources")

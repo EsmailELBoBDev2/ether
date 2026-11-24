@@ -516,27 +516,17 @@ type rowSourceKind struct {
 	list *listSourceKind
 }
 
-func (r *rowSourceKind) Kind() string { return r.list.ID() }
-
-func (r *rowSourceKind) Descriptor() core.RowDescriptor {
-	id := r.list.ID()
-	title := r.list.label()
-	desc := resolvePlainText(r.list.mgr, r.list.pluginID, r.list.meta.Hint, "")
-	sections := []string{"home"}
-	for _, mt := range r.list.mediaTypes() {
-		switch mt {
-		case "movie":
-			sections = append(sections, "movies")
-		case "show":
-			sections = append(sections, "shows")
-		}
-	}
-	return core.RowDescriptor{
-		HubID:       id,
-		Title:       title,
-		Kind:        id,
-		Description: desc,
-		Sections:    sections,
-		Group:       "collections",
+// Info describes the list as a Recommendations row source ("From
+// plugins" in the designer); its rows are served by collections.LayoutRow.
+func (r *rowSourceKind) Info() core.RowSourceInfo {
+	needs := []string{core.CapCatalogue}
+	return core.RowSourceInfo{
+		Kind:        r.list.ID(),
+		Title:       r.list.label(),
+		Description: resolvePlainText(r.list.mgr, r.list.pluginID, r.list.meta.Hint, ""),
+		Group:       "plugins",
+		Needs:       needs,
+		Split:       true,
+		Plugin:      r.list.pluginName,
 	}
 }

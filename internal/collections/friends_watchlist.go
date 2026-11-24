@@ -120,12 +120,7 @@ func friendsWatchlistDefaultSpec() core.CollectionSpec {
 		Refresh:     RefreshHourly,
 		Enabled:     true,
 		Artwork:     core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{
-			CollectionsTab: true,
-			HomeRow:        true,
-			SectionRow:     true,
-			Users:          core.AllUsers(),
-		},
+		BrowseInApps: true,
 	}
 	Normalize(&sp)
 	return sp

@@ -4,7 +4,9 @@ import (
 	"context"
 	"slices"
 
+	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/personalize"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
@@ -146,3 +148,6 @@ func pluginLibraryCaps(experience string, decl plugins.MediaKindMeta) []string {
 	}
 	return caps
 }
+
+// The engine is the admin API's Recommendations backend.
+var _ admin.Personalization = (*personalize.Engine)(nil)

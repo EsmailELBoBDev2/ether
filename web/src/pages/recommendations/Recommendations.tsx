@@ -1670,4 +1670,3 @@ function appsLine(apps: string[] | undefined, home: boolean): string {
     apps: list.join(", "),
   });
 }
-

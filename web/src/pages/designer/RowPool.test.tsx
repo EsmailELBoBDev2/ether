@@ -203,16 +203,6 @@ describe("bulk row editing", () => {
     expect(screen.queryByRole("region", { name: "Selected rows" })).toBeNull();
   });
 
-  it("does not clear the selection on Escape while a drawer is open", () => {
-    render(<Harness initial={EMPTY_LAYOUT} available={picks} />);
-    openGroup("Picks for you");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Trending" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add custom pattern" }));
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.getByRole("region", { name: "Selected rows" })).toBeTruthy();
-  });
-
   it("starts every Home group folded and selects all rows from the master checkbox", () => {
     let last: HomeLayout | undefined;
     render(<Harness initial={EMPTY_LAYOUT} available={picks} onDraft={(d) => (last = d)} />);

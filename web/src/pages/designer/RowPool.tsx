@@ -212,8 +212,6 @@ export function RowPool({
   const onLibraryTab = isLibrarySection(section);
   const collectionKinds = useRegistry<CollectionSourceMeta>("collectionSource");
   const [q, setQ] = useState("");
-  const [custom, setCustom] = useState("");
-  const [patternOpen, setPatternOpen] = useState(false);
   const [addonPickerOpen, setAddonPickerOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
@@ -352,48 +350,43 @@ export function RowPool({
           <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
             {onLibraryTab ? t("Available rows") : t("Row catalogue")}
           </h2>
-          <ActionMenu
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1 px-2 text-xs"
-            label={t("Add row")}
-            items={[
-              ...(mediaSection === null
-                ? []
-                : [
-                    {
-                      key: "collection",
-                      label: t("New collection row…"),
-                      icon: Layers,
-                      onSelect: () => {
-                        const spec = blankSpec(effectiveMedia);
-                        spec.targets = {
-                          ...spec.targets,
-                          collectionsTab: false,
-                          homeRow: section === "home",
-                          sectionRow: section !== "home",
-                        };
-                        navigate(newCollectionHref(), { state: { spec } });
+          {mediaSection === null ? null : (
+            <ActionMenu
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs"
+              label={t("Add row")}
+              items={[
+                ...(mediaSection === null
+                  ? []
+                  : [
+                      {
+                        key: "collection",
+                        label: t("New collection row…"),
+                        icon: Layers,
+                        onSelect: () => {
+                          const spec = blankSpec(effectiveMedia);
+                          spec.targets = {
+                            ...spec.targets,
+                            collectionsTab: false,
+                            homeRow: section === "home",
+                            sectionRow: section !== "home",
+                          };
+                          navigate(newCollectionHref(), { state: { spec } });
+                        },
                       },
-                    },
-                    {
-                      key: "addon-catalog",
-                      label: t("From a Stremio catalog…"),
-                      icon: Puzzle,
-                      onSelect: () => setAddonPickerOpen(true),
-                    },
-                    { key: "sep", separator: true as const },
-                  ]),
-              {
-                key: "pattern",
-                label: t("Custom row pattern…"),
-                icon: SlidersHorizontal,
-                onSelect: () => setPatternOpen(true),
-              },
-            ]}
-          >
-            <Plus size={13} /> {t("Add row")}
-          </ActionMenu>
+                      {
+                        key: "addon-catalog",
+                        label: t("From a Stremio catalog…"),
+                        icon: Puzzle,
+                        onSelect: () => setAddonPickerOpen(true),
+                      },
+                    ]),
+              ]}
+            >
+              <Plus size={13} /> {t("Add row")}
+            </ActionMenu>
+          )}
         </div>
         <p className="mt-0.5 text-xs text-fg-muted">
           {onLibraryTab
@@ -574,14 +567,6 @@ export function RowPool({
       {shown.length === 0 ? (
         <p className="px-1 py-3 text-center text-xs text-fg-muted">{t("No rows match.")}</p>
       ) : null}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-8 text-xs text-fg-muted"
-        onClick={() => setPatternOpen(true)}
-      >
-        <Plus size={14} /> {t("Add custom pattern")}
-      </Button>
       {pickedRows.length ? (
         <BulkBar
           count={pickedRows.length}
@@ -640,47 +625,6 @@ export function RowPool({
           }}
         />
       ) : null}
-      <Drawer
-        open={patternOpen}
-        onClose={() => {
-          setPatternOpen(false);
-          setCustom("");
-        }}
-        title={t("Custom row pattern")}
-        description={t("Advanced: target row IDs, kinds or glob patterns.")}
-        size="md"
-      >
-        <form
-          className="flex gap-2"
-          onSubmit={(ev) => {
-            ev.preventDefault();
-            const row = custom.trim();
-            if (!row) return;
-            if (!policyIn(draft, layer, section, row))
-              onChange(setPolicy(draft, layer, section, { row, status: "eligible" }));
-            setCustom("");
-            setPatternOpen(false);
-            onFocusRow(row);
-          }}
-        >
-          <Input
-            value={custom}
-            onChange={(e) => setCustom(e.currentTarget.value)}
-            placeholder={t("Pattern, e.g. because.*")}
-            aria-label={t("Custom row pattern")}
-            className="h-8 flex-1 font-mono text-xs"
-          />
-          <Button
-            type="submit"
-            variant="outline"
-            size="sm"
-            className="h-8"
-            disabled={!custom.trim()}
-          >
-            <Plus size={14} /> {t("Add")}
-          </Button>
-        </form>
-      </Drawer>
     </section>
   );
 }

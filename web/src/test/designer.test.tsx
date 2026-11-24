@@ -353,25 +353,6 @@ describe("Home", () => {
     expect(home).toMatchObject({ tuning: { discovery: 0.8 } });
   });
 
-  it("adds a custom row pattern from a drawer", async () => {
-    renderApp("/home");
-    expect(await screen.findByRole("heading", { name: "Home" }, WAIT)).toBeInTheDocument();
-    await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
-    fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add custom pattern" }));
-    const drawer = await screen.findByRole("dialog", { name: "Custom row pattern" });
-    fireEvent.change(within(drawer).getByLabelText("Custom row pattern"), {
-      target: { value: "because.*" },
-    });
-    fireEvent.click(within(drawer).getByRole("button", { name: "Add" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Custom row pattern" })).toBeNull(),
-    );
-    await showRow("because.*");
-    expect(await screen.findByRole("listitem", { name: "Row because.*" })).toBeInTheDocument();
-    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
-  });
-
   it("reverts row drawer edits on Cancel, keeps them on Done, and opens the Stremio catalog picker from + Add row without leaving Home", async () => {
     renderApp("/home");
     await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);

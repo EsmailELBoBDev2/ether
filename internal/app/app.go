@@ -45,6 +45,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/loudness"
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/mdblist"
 	"github.com/braedonsaunders/ether/internal/migrate"
@@ -329,6 +330,7 @@ type App struct {
 	extendRT           *extendRuntime
 	streamRT           *consoleStreamRuntime
 	pluginsRT          *pluginRuntime
+	loudness           *loudness.Service
 	agentRT            *agentRuntime
 	eventBus           *events.Bus
 	eventRegistry      *events.Registry

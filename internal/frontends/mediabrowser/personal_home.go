@@ -1469,6 +1469,7 @@ func (i *instance) recommendations(w http.ResponseWriter, r *http.Request, want 
 		images := i.gridImagesFor(withRankedRow(r, shelf.row.RankedTop10, titles, 0), titles)
 		i.prefetchParentArtwork(r, titles)
 		ratingFacts := i.pageRatingFacts(r, v, titles)
+		i.primeTitleLibraries(r, v, titles)
 		for _, title := range titles {
 			item := i.itemDTO(title, states[title.Key])
 			for key, value := range images[title.Key] {

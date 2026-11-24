@@ -230,7 +230,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if err != nil && q.Get("collection") == "" {
 				if future, e := s.scheduledEpisode(ctx, pr, k); e == nil {
 					md = s.scheduledMetadata(ctx, pr, future)
-					mc = s.itemContainer(future.Type)
+					mc = s.titleContainer(ctx, future)
 					mc.Metadata = append(mc.Metadata, md)
 					continue
 				}
@@ -238,7 +238,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				if t, ck, e := s.lookupPlaceholder(ctx, pr, k, q.Get("collection")); e == nil {
 					md = s.placeholderMetadata(ctx, pr, t, ck)
-					mc = s.itemContainer(t.Type)
+					mc = s.titleContainer(ctx, t)
 					mc.Metadata = append(mc.Metadata, md)
 					continue
 				}
@@ -321,7 +321,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			}
 			applyRelatedCountCap(&md, q)
 			if mc == nil {
-				mc = s.itemContainer(t.Type)
+				mc = s.titleContainer(ctx, t)
 			}
 		}
 		mc.Metadata = append(mc.Metadata, md)
@@ -459,6 +459,7 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 	var uniqueTitles []frontend.Title
 	seenUnique := make(map[frontend.RatingKey]bool, len(slots))
 	hasShowOrSeason := false
+	var firstTitle *frontend.Title
 	kept := slots[:0]
 	for _, slot := range slots {
 		if !slot.isTitle {
@@ -475,7 +476,9 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 			return nil, false
 		}
 		s.rememberTitle(slot.title)
-		ensureContainer(slot.title.Type, false)
+		if firstTitle == nil {
+			firstTitle = slot.title
+		}
 		if slot.title.Type == frontend.TypeShow || slot.title.Type == frontend.TypeSeason {
 			hasShowOrSeason = true
 		}
@@ -486,6 +489,12 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 		kept = append(kept, slot)
 	}
 	slots = kept
+	if mc == nil && firstTitle != nil {
+		// Resolve the page's sections together; the container and each
+		// row read the result.
+		s.sectionsForTitles(ctx, uniqueTitles)
+		mc = s.titleContainer(ctx, firstTitle)
+	}
 
 	includeChildren := metadataOptionOn(q.Get("includeChildren"))
 	includeOnDeck := metadataOptionOn(q.Get("includeOnDeck"))
@@ -680,7 +689,7 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 				if extras {
 					items[0].Extras = &model.Extras{}
 					for _, e := range s.extrasFor(ctx, pr, ep, extraTypes) {
-						items[0].Extras.Metadata = append(items[0].Extras.Metadata, s.extraMetadata(e, ep, true))
+						items[0].Extras.Metadata = append(items[0].Extras.Metadata, s.extraMetadata(ctx, e, ep, true))
 					}
 					items[0].Extras.Size = len(items[0].Extras.Metadata)
 				}
@@ -699,7 +708,7 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 		list := s.extrasFor(ctx, pr, t, extraTypes)
 		ex := &model.Extras{}
 		for _, e := range list {
-			ex.Metadata = append(ex.Metadata, s.extraMetadata(e, t, true))
+			ex.Metadata = append(ex.Metadata, s.extraMetadata(ctx, e, t, true))
 		}
 		if pluginExtras := s.pluginVideoExtras(ctx, pr, t); len(pluginExtras) > 0 {
 			ex.Metadata = append(ex.Metadata, pluginExtras...)
@@ -904,7 +913,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.revealDetail(pr, parent)
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	mc.Key = parent.Key.String()
 	mc.Nocache = model.Ptr(true)
 	mc.Thumb = s.thumbURL(parent)
@@ -1108,7 +1117,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	mc.Key = parent.Key.String()
 	mc.Title1 = parent.Title
 	mc.Title2 = "All Episodes"
@@ -1235,7 +1244,7 @@ func (s *Server) handleSubscriptionModes(w http.ResponseWriter, r *http.Request)
 		Size:            1,
 		Extra:           []model.Attr{model.A("type", md.Type)},
 	}
-	if sec, ok := s.sectionFor(t.Type); ok {
+	if sec, ok := s.sectionForTitle(ctx, t); ok {
 		mc.LibrarySectionID = model.Ptr(sec.ID)
 	}
 	s.write(w, r, mc)
@@ -1253,7 +1262,7 @@ func (s *Server) renderSingle(w http.ResponseWriter, r *http.Request, k frontend
 		s.writeErr(w, r, err)
 		return
 	}
-	mc := s.itemContainer(t.Type)
+	mc := s.titleContainer(ctx, t)
 	mc.Metadata = []model.Metadata{s.detail(ctx, pr, t, false, false, false, false, "")}
 	mc.Size = 1
 	s.write(w, r, mc)

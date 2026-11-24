@@ -1315,7 +1315,7 @@ func (s *Server) decisionError(ctx context.Context, pr *Request, t *frontend.Tit
 	s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), msg)
 	mc := libraryContainer()
 	if t != nil {
-		mc = s.itemContainer(t.Type)
+		mc = s.titleContainer(ctx, t)
 		md := s.metadata(ctx, pr, t, renderOpts{detail: true})
 		decisionItem(&md) // shaped and typed like a successful decision's item
 		mc.Metadata = []model.Metadata{md}
@@ -1364,7 +1364,7 @@ func decisionItem(md *model.Metadata) {
 }
 
 func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *frontend.Title, ps *frontend.PlaySession, dec frontend.Decision, p playRequest) *model.MediaContainer {
-	mc := s.itemContainer(t.Type)
+	mc := s.titleContainer(ctx, t)
 	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true})
 	decisionItem(&md)
 	// With hasMDE=1 and direct play allowed, the client's own decision

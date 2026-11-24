@@ -300,8 +300,15 @@ func jellyfinMediaSourceShape(source map[string]any, name string) {
 // shapeJellyfinItem adds the list-item shell recorded from Jellyfin 12.4 and
 // the optional fields the client asked for. Unknown file facts stay empty
 // strings or null rather than invented containers, dates or image tags.
+//
+// Both protocols' movies and shows name the library that lists them here,
+// so every list row that is shaped carries it.
 func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, item map[string]any, title frontend.Title) {
-	if i == nil || i.protocol != "jellyfin" || item == nil {
+	if i == nil || item == nil {
+		return
+	}
+	i.attachTitleLibrary(r, viewer, item, title)
+	if i.protocol != "jellyfin" {
 		return
 	}
 	setMissing(item, "ChannelId", nil)
@@ -318,16 +325,12 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 		}
 		setMissing(item, "VideoType", "VideoFile")
 		setMissing(item, "Container", "")
-		if title.Type == "movie" {
-			i.attachLibraryParent(r, viewer, item, "movie")
-		}
 	case "show":
 		if nonVideo {
 			break
 		}
 		setMissing(item, "AirDays", []string{})
 		setMissing(item, "MediaType", "Unknown")
-		i.attachLibraryParent(r, viewer, item, "show")
 		if title.Status != "" {
 			setMissing(item, "Status", jellyfinSeriesStatus(title.Status))
 		}
@@ -636,44 +639,6 @@ func (i *instance) boxSetDTO(collection frontend.Collection) map[string]any {
 		i.embyItemDTO(item, frontend.Title{Key: collection.Key, Title: name, Summary: collection.Summary}, frontend.WatchStatus{})
 	}
 	return item
-}
-
-// attachLibraryParent sets ParentId to the one visible library of viewType.
-// A missing or ambiguous library leaves the field absent. Episodes and
-// seasons already name their season or show.
-func (i *instance) attachLibraryParent(r *http.Request, viewer *frontend.Viewer, item map[string]any, viewType frontend.MediaType) {
-	if r == nil || viewer == nil || i.host.Experience == nil || viewType == "" {
-		return
-	}
-	if _, ok := item["ParentId"]; ok {
-		return
-	}
-	views, err := i.host.Experience.Views(r.Context(), viewer)
-	if err != nil {
-		return
-	}
-	var libraryID string
-	for _, view := range views {
-		if view.Type != viewType {
-			continue
-		}
-		if libraryID != "" {
-			return
-		}
-		libraryID = view.ID
-	}
-	if libraryID == "" {
-		return
-	}
-	viewNum, err := ids.ParseDecimal(libraryID)
-	if err != nil {
-		return
-	}
-	viewID, err := ids.GUID(ids.View, viewNum)
-	if err != nil {
-		return
-	}
-	item["ParentId"] = viewID
 }
 
 // fillSeriesTitles copies each episode or season's show title onto the row

@@ -1884,7 +1884,7 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 		mc.Metadata = s.onDeckItems(ctx, pr, page.Items, state)
 		if r.URL.Path == "/hubs/home/onDeck" {
 			for i := range mc.Metadata {
-				if sec, ok := s.sectionFor(page.Items[i].Type); ok {
+				if sec, ok := s.sectionForTitle(ctx, &page.Items[i]); ok {
 					mc.Metadata[i].LibrarySectionKey = "/library/sections/" + strconv.Itoa(sec.ID)
 					mc.Metadata[i].LibrarySectionUUID = ""
 				}
@@ -1929,7 +1929,7 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 	mc.Metadata = s.onDeckItems(ctx, pr, items, state)
 	if r.URL.Path == "/hubs/home/onDeck" {
 		for i := range mc.Metadata {
-			if sec, ok := s.sectionFor(items[i].Type); ok {
+			if sec, ok := s.sectionForTitle(ctx, &items[i]); ok {
 				mc.Metadata[i].LibrarySectionKey = "/library/sections/" + strconv.Itoa(sec.ID)
 				mc.Metadata[i].LibrarySectionUUID = ""
 			}
@@ -1962,7 +1962,7 @@ func (s *Server) onDeckItems(ctx context.Context, pr *Request, items []frontend.
 		md[i].SetOnDeckOrder()
 		md[i].LibrarySectionKey = ""
 		md[i].AllowSync = model.Ptr(s.downloadsAllowed(pr.User) && isPlayable(items[i].Type))
-		if sec, ok := s.sectionFor(items[i].Type); ok {
+		if sec, ok := s.sectionForTitle(ctx, &items[i]); ok {
 			md[i].LibrarySectionUUID = sec.UUID
 		}
 	}

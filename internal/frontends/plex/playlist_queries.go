@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -156,6 +157,18 @@ func (s *Server) writePlaylistListing(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, r, err)
 			return
 		}
+		// A sectionID filter keeps playlists with an entry the named
+		// sections list, resolved for every entry at once.
+		var entrySecs map[frontend.RatingKey]Section
+		if section := q.Get("sectionID"); section != "" {
+			var keys []frontend.RatingKey
+			for i := range pls {
+				if pls[i].UserID == pr.User.ID {
+					keys = append(keys, pls[i].Items...)
+				}
+			}
+			entrySecs = s.keySections(withPreferredSections(ctx, sectionIDList(section)...), keys)
+		}
 		for i := range pls {
 			pl := &pls[i]
 			if pl.UserID != pr.User.ID {
@@ -176,7 +189,7 @@ func (s *Server) writePlaylistListing(w http.ResponseWriter, r *http.Request) {
 			if section := q.Get("sectionID"); section != "" {
 				found := len(pl.Items) == 0 && pl.SmartURI == ""
 				for _, key := range pl.Items {
-					if sec, ok := s.sectionFor(playlistKeyMediaType(key)); ok && strconv.Itoa(sec.ID) == section {
+					if sec, ok := entrySecs[key]; ok && slices.Contains(strings.Split(section, ","), strconv.Itoa(sec.ID)) {
 						found = true
 						break
 					}

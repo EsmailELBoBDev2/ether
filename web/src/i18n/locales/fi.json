@@ -784,6 +784,7 @@
   "m_0252376271ce67": "Työyksiköt",
   "m_0253e1d5d02e1c": "Odotetaan, että Ether palaa…",
   "m_02551559011b7c": "Syötetulokset",
+  "m_02564dad02cd01": "Tälle katsojalle ei nyt ole mitään.",
   "m_025788feadfaf4": "Hieman",
   "m_0257d2a1550c16": "Hyväksytty, mutta muutosta ei voitu tehdä.",
   "m_02584daabbdb78": "Kanava, jonka ohjelma koostuu luettelostasi.",
@@ -1029,6 +1030,7 @@
   "m_030e042c756ea8": "Aloitettu mutta ei katsottu loppuun",
   "m_030ed3e2347b98": "Käännä tämä ryhmä",
   "m_030edd32ab4736": "Alueesi Disney+ -palvelussa striimaavat suositut elokuvat.",
+  "m_030f82fac1633e": "Lisää rivi tähän",
   "m_031004cdaa8c37": {
     "one": "{source} {duration} ({count} toisto)",
     "other": "{source} {duration} ({count} toistoa)"
@@ -1111,6 +1113,10 @@
   "m_03471851e684eb": "Lähteen {number} URL-osoite",
   "m_03479e5fc5b88c": "Kotijulkaisun viive tai aikaistus (päivää)",
   "m_0347c9a3c79c2c": "Tulee voimaan, kun kanava seuraavan kerran käynnistyy.",
+  "m_0349534866c71e": {
+    "one": "{count} nimike · näytetään {shown} ensimmäistä",
+    "other": "{count} nimikettä · näytetään {shown} ensimmäistä"
+  },
   "m_034a20a010fdb9": "Tunteja toistojen välillä",
   "m_034b6538fa4d0f": "Jonossa olevat raportit näkyvät Toimitushistoriassa.",
   "m_034c71471f0c91": "Palveluntarjoaja ei saatavilla",
@@ -2299,6 +2305,10 @@
   "m_06dae4134ad80d": "Hyvää päivää",
   "m_06daee10a7d943": "Suora suoratoisto",
   "m_06db1db5e3ffe9": "videoprofiili tai -taso",
+  "m_06dbf5595dccde": {
+    "one": "{count} nimike {rows} rivillä",
+    "other": "{count} nimikettä {rows} rivillä"
+  },
   "m_06dc2e2fd1555c": "Voi tavoittaa verkossasi: {hosts}",
   "m_06dc5804d9c769": "Lataa tiedosto",
   "m_06dd435866d846": "Suoratoistopalvelut",
@@ -6790,6 +6800,7 @@
   "m_1443a813d2e1d2": "Tällä ajanjaksolla on enemmän julkaisuja kuin kalenteri voi näyttää kerralla. Rajaa näkymää yllä olevilla suodattimilla.",
   "m_14448bcd27e65d": "Rivien uudelleenrakennus epäonnistui",
   "m_1444ffab6ddb7b": "{state} · {movies} elokuvaa, {shows} sarjaa, {episodes} jaksoa väistetty · viimeksi tarkistettu {when}",
+  "m_1445132da670dd": "Lisää rivi sivulle ja muokkaa sitä",
   "m_14471a0f879228": "Sääntö poistettu",
   "m_1448c9a0577eb1": "Näytä kokoelman esikatselu",
   "m_1448f4befa194a": "{hours} h uusintakredittiä",
@@ -7542,10 +7553,6 @@
   "m_1686b0370e575f": {
     "one": "{exhausted} / {count} indeksoijasta haut loppu tänään",
     "other": "{exhausted} / {count} indeksoijasta haut loppu tänään"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} nimike tälle katsojalle juuri nyt.",
-    "other": "{count} nimikettä tälle katsojalle juuri nyt."
   },
   "m_16877e6139737d": "Mukautettu neliökuvake",
   "m_16879d9e8bfab8": "Käytä kanavilla…",
@@ -10416,6 +10423,7 @@
   "m_1f10beec585266": "Muokkaa ilmoituskanavaa",
   "m_1f1134cfe45987": "Missä se näkyy",
   "m_1f11939961d412": "Nimikkeet",
+  "m_1f14c31457a033": "Muokkaa tätä riviä",
   "m_1f154b775704d6": "Korostus · kaikki saatavilla olevat tiedot",
   "m_1f15c6af8ae4f6": "Tunnelmallinen sadeillan mysteerikanava klassisilla päätteellisillä otsikoilla",
   "m_1f16593a684b20": "Lisää tämä kone toisen solmun kertakäyttöisellä tokenilla. Se omaksuu klusterin palvelimen identiteetin ja jaetut asetukset.",
@@ -10434,6 +10442,10 @@
   "m_1f1bf17b31e6a2": "Nimikkeen tiedot",
   "m_1f1c4641ce1dd0": "kuka saa mitä katselija sovellus laite tarkkuus hdr bitrate viewer device",
   "m_1f1c60a240ec46": "Korvaa tiedosto",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} nimike {rows} rivillä · näytetään kunkin {limit} ensimmäistä",
+    "other": "{count} nimikettä {rows} rivillä · näytetään kunkin {limit} ensimmäistä"
+  },
   "m_1f1d0eade48c2d": "Prowlarr-indeksoijat tuotu",
   "m_1f1d729a4ccc7d": "Lisää neljä vuosikymmenkanavaa",
   "m_1f1db71e3b33d3": "Ether käynnistyy uudelleen viimeistelläkseen palautuksen. Se kestää yleensä noin minuutin, ja tämä sivu seuraa etenemistä.",

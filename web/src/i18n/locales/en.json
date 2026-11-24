@@ -784,6 +784,7 @@
   "m_0252376271ce67": "Work units",
   "m_0253e1d5d02e1c": "Waiting for Ether to come back…",
   "m_02551559011b7c": "Feed results",
+  "m_02564dad02cd01": "Nothing for this viewer right now.",
   "m_025788feadfaf4": "Mild",
   "m_0257d2a1550c16": "Approved, but the change could not be carried out.",
   "m_02584daabbdb78": "A channel programmed from your catalogue.",
@@ -1029,6 +1030,7 @@
   "m_030e042c756ea8": "Started but not finished",
   "m_030ed3e2347b98": "Invert this group",
   "m_030edd32ab4736": "Popular titles streaming on Disney+ in your region.",
+  "m_030f82fac1633e": "Add a row here",
   "m_031004cdaa8c37": {
     "one": "{source} {duration} ({count} play)",
     "other": "{source} {duration} ({count} plays)"
@@ -1111,6 +1113,10 @@
   "m_03471851e684eb": "Source {number} URL",
   "m_03479e5fc5b88c": "Home-release offset (days)",
   "m_0347c9a3c79c2c": "Applies the next time a channel starts.",
+  "m_0349534866c71e": {
+    "one": "{count} title · showing the first {shown}",
+    "other": "{count} titles · showing the first {shown}"
+  },
   "m_034a20a010fdb9": "Hours between plays",
   "m_034b6538fa4d0f": "Queued reports appear in Delivery history.",
   "m_034c71471f0c91": "Provider unavailable",
@@ -2302,6 +2308,10 @@
   "m_06dae4134ad80d": "Good afternoon",
   "m_06daee10a7d943": "Direct stream",
   "m_06db1db5e3ffe9": "the video profile or level",
+  "m_06dbf5595dccde": {
+    "one": "{count} title across {rows} rows",
+    "other": "{count} titles across {rows} rows"
+  },
   "m_06dc2e2fd1555c": "May reach on your network: {hosts}",
   "m_06dc5804d9c769": "Upload file",
   "m_06dd435866d846": "Streaming services",
@@ -6797,6 +6807,7 @@
   "m_1443a813d2e1d2": "This period has more releases than the calendar shows at once. Narrow it with the filters above.",
   "m_14448bcd27e65d": "Couldn't rebuild rows",
   "m_1444ffab6ddb7b": "{state} · {movies} movies, {shows} shows, {episodes} episodes stepped aside · last checked {when}",
+  "m_1445132da670dd": "Add this row to the page and change it",
   "m_14471a0f879228": "Rule removed",
   "m_1448c9a0577eb1": "Show collection preview",
   "m_1448f4befa194a": "{hours} h replay credit",
@@ -7549,10 +7560,6 @@
   "m_1686b0370e575f": {
     "one": "{exhausted} of {count} indexer out of searches today",
     "other": "{exhausted} of {count} indexers out of searches today"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} title for this viewer right now.",
-    "other": "{count} titles for this viewer right now."
   },
   "m_16877e6139737d": "Custom square icon",
   "m_16879d9e8bfab8": "Use on channels…",
@@ -10434,6 +10441,7 @@
   "m_1f10beec585266": "Edit notification channel",
   "m_1f1134cfe45987": "Where it appears",
   "m_1f11939961d412": "Titles",
+  "m_1f14c31457a033": "Edit this row",
   "m_1f154b775704d6": "Accent · all available facts",
   "m_1f15c6af8ae4f6": "Cosy rainy-evening mystery channel with classic serif titles",
   "m_1f16593a684b20": "Add this machine using a one-time token from another node. It adopts the cluster’s server identity and shared settings.",
@@ -10452,6 +10460,10 @@
   "m_1f1bf17b31e6a2": "Title details",
   "m_1f1c4641ce1dd0": "who gets what viewer app device resolution hdr bitrate",
   "m_1f1c60a240ec46": "Replace file",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} title across {rows} rows · showing the first {limit} of each",
+    "other": "{count} titles across {rows} rows · showing the first {limit} of each"
+  },
   "m_1f1d0eade48c2d": "Prowlarr indexers imported",
   "m_1f1d729a4ccc7d": "Add the four decade channels",
   "m_1f1db71e3b33d3": "Ether restarts to finish. It usually takes about a minute, and this page follows along.",

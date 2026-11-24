@@ -816,6 +816,7 @@
   "m_0252376271ce67": "Jednostki pracy",
   "m_0253e1d5d02e1c": "Czekanie na powrót Ether…",
   "m_02551559011b7c": "Wyniki z kanałów",
+  "m_02564dad02cd01": "Na razie nic dla tego widza.",
   "m_025788feadfaf4": "Lekko",
   "m_0257d2a1550c16": "Zatwierdzono, ale nie udało się wprowadzić zmiany.",
   "m_02584daabbdb78": "Kanał zaprogramowany na podstawie Twojego katalogu.",
@@ -1073,6 +1074,7 @@
   "m_030e042c756ea8": "Rozpoczęte, ale nieukończone",
   "m_030ed3e2347b98": "Odwróć tę grupę",
   "m_030edd32ab4736": "Popularne tytuły przesyłane strumieniowo w Disney+ w Twoim regionie.",
+  "m_030f82fac1633e": "Dodaj tu rząd",
   "m_031004cdaa8c37": {
     "few": "{source} {duration} ({count} odtworzenia)",
     "many": "{source} {duration} ({count} odtworzeń)",
@@ -1163,6 +1165,12 @@
   "m_03471851e684eb": "Adres URL źródła {number}",
   "m_03479e5fc5b88c": "Przesunięcie premiery domowej (dni)",
   "m_0347c9a3c79c2c": "Obowiązuje od następnego uruchomienia kanału.",
+  "m_0349534866c71e": {
+    "one": "{count} tytuł · pokazano pierwsze {shown}",
+    "few": "{count} tytuły · pokazano pierwsze {shown}",
+    "many": "{count} tytułów · pokazano pierwsze {shown}",
+    "other": "{count} tytułu · pokazano pierwsze {shown}"
+  },
   "m_034a20a010fdb9": "Godzin między odtworzeniami",
   "m_034b6538fa4d0f": "Raporty w kolejce pojawiają się w Historii dostarczania.",
   "m_034c71471f0c91": "Dostawca niedostępny",
@@ -2395,6 +2403,12 @@
   "m_06dae4134ad80d": "Dzień dobry",
   "m_06daee10a7d943": "Strumień bezpośredni",
   "m_06db1db5e3ffe9": "profil lub poziom wideo",
+  "m_06dbf5595dccde": {
+    "one": "{count} tytuł w {rows} rzędach",
+    "few": "{count} tytuły w {rows} rzędach",
+    "many": "{count} tytułów w {rows} rzędach",
+    "other": "{count} tytułu w {rows} rzędach"
+  },
   "m_06dc2e2fd1555c": "Może łączyć się w twojej sieci z: {hosts}",
   "m_06dc5804d9c769": "Prześlij plik",
   "m_06dd435866d846": "Usługi transmisji strumieniowej",
@@ -7138,6 +7152,7 @@
   "m_1443a813d2e1d2": "W tym okresie jest więcej premier, niż kalendarz może pokazać naraz. Zawęź go filtrami powyżej.",
   "m_14448bcd27e65d": "Nie udało się przebudować wierszy",
   "m_1444ffab6ddb7b": "{state} · {movies} filmów, {shows} seriali, {episodes} odcinków ustąpionych · ostatnio sprawdzono {when}",
+  "m_1445132da670dd": "Dodaj ten rząd do strony i zmień go",
   "m_14471a0f879228": "Reguła usunięta",
   "m_1448c9a0577eb1": "Pokaż podgląd kolekcji",
   "m_1448f4befa194a": "{hours} godz. kredytu powtórzeń",
@@ -7928,12 +7943,6 @@
     "many": "{exhausted} z {count} indeksatorów wyczerpało dziś wyszukiwania",
     "one": "{exhausted} z {count} indeksatora wyczerpał dziś wyszukiwania",
     "other": "{exhausted} z {count} indeksatora wyczerpało dziś wyszukiwania"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "Teraz dostępny jest {count} tytuł dla tego widza.",
-    "few": "Teraz dostępne są {count} tytuły dla tego widza.",
-    "many": "Teraz dostępnych jest {count} tytułów dla tego widza.",
-    "other": "Teraz dostępnych jest {count} tytułu dla tego widza."
   },
   "m_16877e6139737d": "Własna kwadratowa ikona",
   "m_16879d9e8bfab8": "Zastosuj na kanałach…",
@@ -10943,6 +10952,7 @@
   "m_1f10beec585266": "Edytuj kanał powiadomień",
   "m_1f1134cfe45987": "Gdzie jest wyświetlana",
   "m_1f11939961d412": "Tytuły",
+  "m_1f14c31457a033": "Edytuj ten rząd",
   "m_1f154b775704d6": "Akcent · wszystkie dostępne informacje",
   "m_1f15c6af8ae4f6": "Kameralny kanał kryminalny na deszczowe wieczory z klasycznymi tytułami szeryfowymi",
   "m_1f16593a684b20": "Dodaj tę maszynę za pomocą jednorazowego tokenu z innego węzła. Przejmuje tożsamość serwera klastra i ustawienia współdzielone.",
@@ -10961,6 +10971,12 @@
   "m_1f1bf17b31e6a2": "Szczegóły tytułu",
   "m_1f1c4641ce1dd0": "who gets what viewer app device resolution hdr bitrate kto co dostaje widz aplikacja urządzenie rozdzielczość przepływność",
   "m_1f1c60a240ec46": "Zastąp plik",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} tytuł w {rows} rzędach · pokazano pierwsze {limit} z każdego",
+    "few": "{count} tytuły w {rows} rzędach · pokazano pierwsze {limit} z każdego",
+    "many": "{count} tytułów w {rows} rzędach · pokazano pierwsze {limit} z każdego",
+    "other": "{count} tytułu w {rows} rzędach · pokazano pierwsze {limit} z każdego"
+  },
   "m_1f1d0eade48c2d": "Zaimportowano indeksatory Prowlarr",
   "m_1f1d729a4ccc7d": "Dodaj cztery kanały według dekad",
   "m_1f1db71e3b33d3": "Aby zakończyć, Ether uruchomi się ponownie. Zwykle trwa to około minuty, a ta strona będzie śledzić postęp.",

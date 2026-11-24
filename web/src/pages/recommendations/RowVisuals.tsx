@@ -4,7 +4,7 @@
 import { Badge, cn } from "@braedonsaunders/appkit-ui";
 import { Eye, EyeOff, Pin, Puzzle, Sparkles, User, Users } from "lucide-react";
 import { Artwork } from "../../components/Artwork";
-import { PosterCard } from "../../components/Poster";
+import { PosterCard, PosterGrid } from "../../components/Poster";
 import { t } from "../../i18n";
 import type { TitleCard } from "../../lib/contract";
 import type { PlacementMode, PreviewRow, RowCard, RowStyle } from "../../lib/pages";
@@ -240,5 +240,114 @@ export function RowBody({
         </li>
       ))}
     </ul>
+  );
+}
+
+function RankBadge({ rank }: { rank: number }) {
+  return (
+    <span className="grid size-6 place-items-center rounded-full bg-primary text-xs font-bold text-primary-fg shadow">
+      {rank}
+    </span>
+  );
+}
+
+/**
+ * Every title of one previewed row as a grid, in the row's card shape: the
+ * row drawer's Content tab. Shelves scroll sideways on the page; here the
+ * whole row is visible at once.
+ */
+export function RowGrid({
+  row,
+  style,
+  card,
+  numbered,
+  pluginName,
+}: {
+  row: Pick<PreviewRow, "items" | "present" | "ghost">;
+  style?: RowStyle;
+  card?: RowCard;
+  numbered?: boolean;
+  pluginName?: string;
+}) {
+  const items = row.items ?? [];
+  const layout = style || row.present.layout || "standard";
+  const shape = card || row.present.card || "";
+  const ranked = numbered ?? row.present.numbered ?? false;
+  if (row.present.surface || items.length === 0) {
+    return <RowBody row={row} showRating={false} pluginName={pluginName} />;
+  }
+  if (layout === "tracks" || layout === "tiles") {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border">
+        {items.map((it, i) => (
+          <div
+            key={`${it.key}-${i}`}
+            className="flex items-center gap-3 border-b border-border-subtle px-3 py-2 text-sm last:border-0"
+          >
+            <span className="w-5 text-right tabular-nums text-fg-subtle">{i + 1}</span>
+            <Artwork src={it.poster} alt="" title={it.title} className="size-9 shrink-0 rounded" />
+            <span className="min-w-0 flex-1 truncate font-medium text-fg">{it.title}</span>
+            {it.year ? <span className="tabular-nums text-fg-muted">{it.year}</span> : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (layout === "hero" || layout === "wide" || shape === "landscape") {
+    return (
+      <ul className="grid grid-cols-2 gap-x-2 gap-y-4 sm:grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] sm:gap-x-3">
+        {items.map((it, i) => (
+          <li key={`${it.key}-${i}`} className="min-w-0">
+            <div className="relative aspect-video overflow-hidden rounded-lg shadow-sm ring-1 ring-border-subtle">
+              <Artwork
+                src={it.backdrop ?? it.poster}
+                alt={it.title}
+                title={it.title}
+                className="size-full"
+              />
+              {ranked && i < 10 ? (
+                <span className="absolute left-1.5 top-1.5">
+                  <RankBadge rank={i + 1} />
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1.5 truncate text-xs font-medium text-fg">{it.title}</p>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (shape === "square" || shape === "round") {
+    return (
+      <ul className="grid grid-cols-3 gap-x-2 gap-y-4 sm:grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] sm:gap-x-3">
+        {items.map((it, i) => (
+          <li key={`${it.key}-${i}`} className="min-w-0">
+            <div
+              className={cn(
+                "aspect-square overflow-hidden shadow-sm ring-1 ring-border-subtle",
+                shape === "round" ? "rounded-full" : "rounded-md",
+              )}
+            >
+              <Artwork src={it.poster} alt={it.title} title={it.title} className="size-full" />
+            </div>
+            <p
+              className={cn(
+                "mt-1.5 truncate text-xs font-medium text-fg",
+                shape === "round" && "text-center",
+              )}
+            >
+              {it.title}
+            </p>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return (
+    <PosterGrid
+      className="grid-cols-3 gap-x-2 sm:grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] sm:gap-x-3"
+      items={items}
+      badge={ranked ? (_, i) => (i < 10 ? <RankBadge rank={i + 1} /> : undefined) : undefined}
+    />
   );
 }

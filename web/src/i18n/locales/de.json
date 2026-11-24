@@ -784,6 +784,7 @@
   "m_0252376271ce67": "Arbeitseinheiten",
   "m_0253e1d5d02e1c": "Warten, bis Ether wieder da ist…",
   "m_02551559011b7c": "Feed-Ergebnisse",
+  "m_02564dad02cd01": "Für diesen Zuschauer gerade nichts.",
   "m_025788feadfaf4": "Leicht",
   "m_0257d2a1550c16": "Zugestimmt, aber die Änderung konnte nicht ausgeführt werden.",
   "m_02584daabbdb78": "Ein Kanal mit Programm aus deinem Katalog.",
@@ -1029,6 +1030,7 @@
   "m_030e042c756ea8": "Angefangen, aber nicht zu Ende geschaut",
   "m_030ed3e2347b98": "Diese Gruppe umkehren",
   "m_030edd32ab4736": "Beliebte Titel, die in Ihrer Region auf Disney+ gestreamt werden.",
+  "m_030f82fac1633e": "Hier eine Reihe hinzufügen",
   "m_031004cdaa8c37": {
     "one": "{source} {duration} ({count} Wiedergabe)",
     "other": "{source} {duration} ({count} Wiedergaben)"
@@ -1111,6 +1113,10 @@
   "m_03471851e684eb": "URL von Quelle {number}",
   "m_03479e5fc5b88c": "Heimkino-Versatz (Tage)",
   "m_0347c9a3c79c2c": "Gilt ab dem nächsten Senderstart.",
+  "m_0349534866c71e": {
+    "one": "{count} Titel · die ersten {shown} werden gezeigt",
+    "other": "{count} Titel · die ersten {shown} werden gezeigt"
+  },
   "m_034a20a010fdb9": "Stunden zwischen Wiedergaben",
   "m_034b6538fa4d0f": "Eingereihte Berichte erscheinen im Zustellverlauf.",
   "m_034c71471f0c91": "Anbieter nicht erreichbar",
@@ -2299,6 +2305,10 @@
   "m_06dae4134ad80d": "Guten Tag",
   "m_06daee10a7d943": "Direktes Streaming",
   "m_06db1db5e3ffe9": "das Videoprofil oder -level",
+  "m_06dbf5595dccde": {
+    "one": "{count} Titel in {rows} Reihen",
+    "other": "{count} Titel in {rows} Reihen"
+  },
   "m_06dc2e2fd1555c": "Darf in deinem Netzwerk erreichen: {hosts}",
   "m_06dc5804d9c769": "Datei hochladen",
   "m_06dd435866d846": "Streaming-Dienste",
@@ -6790,6 +6800,7 @@
   "m_1443a813d2e1d2": "In diesem Zeitraum gibt es mehr Veröffentlichungen, als der Kalender auf einmal zeigen kann. Grenze ihn mit den Filtern oben ein.",
   "m_14448bcd27e65d": "Reihen konnten nicht neu erstellt werden",
   "m_1444ffab6ddb7b": "{state} · {movies} Filme, {shows} Serien, {episodes} Folgen beiseitegetreten · zuletzt geprüft {when}",
+  "m_1445132da670dd": "Reihe zur Seite hinzufügen und bearbeiten",
   "m_14471a0f879228": "Regel entfernt",
   "m_1448c9a0577eb1": "Sammlungsvorschau anzeigen",
   "m_1448f4befa194a": "{hours} h Wiederholungsguthaben",
@@ -7542,10 +7553,6 @@
   "m_1686b0370e575f": {
     "one": "{exhausted} von {count} Indexer hat heute keine Suchen mehr",
     "other": "{exhausted} von {count} Indexern haben heute keine Suchen mehr"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} Titel für diesen Zuschauer im Moment.",
-    "other": "{count} Titel für diesen Zuschauer im Moment."
   },
   "m_16877e6139737d": "Eigenes quadratisches Symbol",
   "m_16879d9e8bfab8": "Auf Kanälen verwenden…",
@@ -10416,6 +10423,7 @@
   "m_1f10beec585266": "Benachrichtigungskanal bearbeiten",
   "m_1f1134cfe45987": "Wo es erscheint",
   "m_1f11939961d412": "Titel",
+  "m_1f14c31457a033": "Diese Reihe bearbeiten",
   "m_1f154b775704d6": "Akzent · alle verfügbaren Fakten",
   "m_1f15c6af8ae4f6": "Gemütlicher Krimi-Sender für verregnete Abende mit klassischen Serifentiteln",
   "m_1f16593a684b20": "Füge diesen Rechner mit einem Einmal-Token eines anderen Knotens hinzu. Er übernimmt die Server-Identität und die gemeinsamen Einstellungen des Clusters.",
@@ -10434,6 +10442,10 @@
   "m_1f1bf17b31e6a2": "Titeldetails",
   "m_1f1c4641ce1dd0": "wer was bekommt zuschauer app gerät auflösung hdr bitrate viewer device",
   "m_1f1c60a240ec46": "Datei ersetzen",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} Titel in {rows} Reihen · die ersten {limit} je Reihe",
+    "other": "{count} Titel in {rows} Reihen · die ersten {limit} je Reihe"
+  },
   "m_1f1d0eade48c2d": "Prowlarr-Indexer importiert",
   "m_1f1d729a4ccc7d": "Die vier Jahrzehnt-Kanäle hinzufügen",
   "m_1f1db71e3b33d3": "Zum Abschluss startet Ether neu. Das dauert meist etwa eine Minute, und diese Seite verfolgt den Fortschritt.",

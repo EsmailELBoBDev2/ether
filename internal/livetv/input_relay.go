@@ -96,6 +96,10 @@ type inputGrant struct {
 	reserve time.Duration
 	lead    time.Duration // extra join depth for a start window (grantSteadyInputLead); immutable
 	steady  bool          // feeds a real-time consumer (grantSteadyInput); immutable
+	// splitPrograms ends each reader's playlist at the provider's next
+	// discontinuity, so one ffmpeg run never crosses a program change
+	// (an owned relay producer; see hlsMedia.programCut).
+	splitPrograms atomic.Bool
 	// histChannel/histSrc name the source in its history (the session's
 	// original source entry, not the resolved URL); immutable.
 	histChannel string
@@ -797,7 +801,7 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		// Health, and for Steady the reserve window (reserve_hls.go).
 		var events []UpstreamEvent
 		h := g.hlsState()
-		b, events = h.media(raw, b, base)
+		b, events = h.mediaFor(raw, b, base, true)
 		h.deliver(events)
 	}
 	s.writeRelayManifest(w, g, base, b, hls)

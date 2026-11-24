@@ -243,6 +243,16 @@ func (p *relayProducer) launch(ctx context.Context, info core.MediaInfo, dec cor
 	// An HLS input on a reserve-trimmed grant starts at the reserve depth:
 	// the relay races through that backlog and the timeline holds it.
 	backlog := info.Container == "hls" && !newFormat && p.s.stabilityReserve(ss.info.Channel) > 0
+	if info.Container == "hls" {
+		// FFmpeg cannot follow a provider's program change inside one run:
+		// a new encoder's PIDs become new streams the run never mapped, so
+		// it stops cutting (Pluto: "New video stream with index 4", then
+		// slate). The relay ends each run's playlist at the next
+		// discontinuity; the session's next run resumes exactly there.
+		if g := p.s.sessionGrant(ss); g != nil {
+			g.splitPrograms.Store(true)
+		}
+	}
 	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog, Info: info, Decision: dec, SegmentDuration: cut, MultiviewGroup: ss.caps.MultiviewGroup})
 	return id, hls, cancel, err
 }

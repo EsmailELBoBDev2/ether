@@ -4626,25 +4626,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
     };
     // Settings schemas mirror internal/frontend (WS1d): keep beside the
     // descriptors so the Apps page renders from the same shape.
-    const rowKindOptions = [
-      "because-you-watched",
-      "trending",
-      "top-10",
-      "fans-also-loved",
-      "new-releases",
-      "hidden-gems",
-      "more-from-person",
-      "popular-on-server",
-    ];
     const mediaBrowserSchema = (quickConnect: boolean) => ({
       signInHelp: true,
       sections: [
         {
           key: "home",
           fields: [
-            { key: "homeRows", kind: "bool" },
-            { key: "homeRowCount", kind: "number", more: true, min: 0, max: 12 },
-            { key: "homeRowKinds", kind: "rowKinds", more: true, options: rowKindOptions },
+            { key: "homeRowCount", kind: "number", min: 0, max: 12 },
           ],
         },
         {

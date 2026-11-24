@@ -6,18 +6,7 @@ import { t } from "../../i18n";
 import { api } from "../../lib/api";
 import type { CollectionUse, RowPlacementMode } from "../../lib/contract";
 import { useAsync, type AsyncState } from "../../lib/hooks";
-
-/** The Recommendations designer at one page, with one row's drawer open. */
-export function designerRowHref(page: string, rowId?: string): string {
-  const q = new URLSearchParams({ page });
-  if (rowId) q.set("row", rowId);
-  return `/recommendations?${q}`;
-}
-
-/** The designer's New row drawer with this collection as the source; it asks which page. */
-export function addToPageHref(collectionId: string): string {
-  return `/recommendations?${new URLSearchParams({ add: `collection:${collectionId}` })}`;
-}
+import { addToPageHref, designerHref } from "../../lib/recommendations";
 
 const PLACEMENT: Record<RowPlacementMode, () => string> = {
   pinned: () => t("Pinned"),
@@ -74,7 +63,7 @@ export function UsedOn({
           {usage.data.map((u) => (
             <li key={`${u.page}/${u.rowId}`}>
               <Link
-                to={designerRowHref(u.page, u.rowId)}
+                to={designerHref(u.page, u.rowId)}
                 aria-label={t("Edit the {row} row on {page}", { row: u.rowName, page: u.pageName })}
                 className="flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
               >

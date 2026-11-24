@@ -43,11 +43,11 @@ import { t, tn } from "../../i18n";
 import { relativeTime } from "../../lib/format";
 import { clearDraft, draftKey, listDrafts } from "../../lib/history";
 import { useAsync } from "../../lib/hooks";
+import { addToPageHref } from "../../lib/recommendations";
 import { normalizeSpec } from "../../lib/rules";
 import { CollectionDetail } from "./CollectionDetail";
 import { DescribeDialog } from "./DescribeDialog";
 import { StremioImportDrawer } from "./StremioImportDrawer";
-import { addToPageHref } from "./UsedOn";
 import { isBlankCollectionSpec, newCollectionHref } from "./links";
 import { bundleDescription, bundleTitle } from "../setup/StarterBundlesCard";
 

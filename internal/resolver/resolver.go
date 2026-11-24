@@ -2957,10 +2957,8 @@ func packCoversSeasonCour(info core.ReleaseInfo, sreq core.SearchRequest) bool {
 	if _, _, ok := packNumbers(info, sreq); !ok {
 		return false
 	}
-	if info.Cour > 1 && sreq.Cour > 0 && info.Cour != sreq.Cour {
-		return false
-	}
-	if info.Cour > 1 && (sreq.Cour == 0 || sreq.CourEpisode <= 0) {
+	if info.Cour > 1 && (sreq.Cour != info.Cour || sreq.CourEpisode <= 0) &&
+		!releaseparse.SeasonNumberingUnderCour(info.Cour, info.CourRelative, sreq.Cour, sreq.Anime) {
 		return false
 	}
 	if info.Cour == 1 && sreq.Cour > 1 {
@@ -3360,7 +3358,7 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 			target.ShowTitles, target.SpecialTitles = specialShowTitles(sreq), sreq.SpecialTitles
 		}
 		target.AbsoluteEpisode = releaseparse.AnimeSearchEpisode(sreq)
-		target.Cour, target.CourEpisode = sreq.Cour, sreq.CourEpisode
+		target.Cour, target.CourEpisode, target.Anime = sreq.Cour, sreq.CourEpisode, sreq.Anime
 		if alternate {
 			target.Cour, target.CourEpisode = 0, 0
 		}
@@ -3372,7 +3370,7 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 	if !sreq.Released.IsZero() {
 		airDate = sreq.Released.UTC().Format("2006-01-02")
 	}
-	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, AirDate: airDate, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Anime: sreq.Anime, Season: targetSeason, Episode: targetEpisode, AirDate: airDate, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
 	if alternate || len(aliases) > 0 {
 		target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
 	}

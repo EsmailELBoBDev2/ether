@@ -75,6 +75,9 @@ type ReleaseInfo struct {
 	Proper     bool   `json:"proper,omitempty"`
 	Repack     bool   `json:"repack,omitempty"`
 	Container  string `json:"container,omitempty"`
+	// CourRelative marks episodes counted within Cour ("S3 Part 2 - 03"),
+	// not within the season ("S04.Part.2.S04E09") (additive).
+	CourRelative bool `json:"courRelative,omitempty"`
 }
 
 // Release is an indexer search result for a title.

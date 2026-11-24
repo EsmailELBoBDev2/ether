@@ -1036,6 +1036,10 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			candCour = 0
 		}
 		sizeGate := episodeSizeGateForSeason(videos, cand.Season, candCour)
+		// seasonCounted is a file in the target's cour numbered within the
+		// season ("S04.Part.2/S04E17"), used only when no file carries the
+		// cour-relative number.
+		var seasonCounted *File
 		// Pass 1: explicit season + episode match on base name, or on full path
 		// when the base name carries no episode number of its own.
 		for _, f := range videos {
@@ -1045,9 +1049,9 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			normPath := strings.ReplaceAll(f.Path, "\\", "/")
 			baseInfo := releaseparse.Parse(path.Base(normPath))
 			fullInfo := releaseparse.Parse(strings.ReplaceAll(normPath, "/", " "))
-			fileCour := baseInfo.Cour
+			fileCour, courRelative := baseInfo.Cour, baseInfo.CourRelative
 			if fileCour == 0 {
-				fileCour = fullInfo.Cour
+				fileCour, courRelative = fullInfo.Cour, fullInfo.CourRelative
 			}
 			if candCour > 0 && target.CourEpisode > 0 && fileCour > 0 {
 				seasonOK := (len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) == 0) ||
@@ -1058,9 +1062,13 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 						releaseparse.EpisodeMatchesAbsolute(baseInfo, target.CourEpisode)) {
 					return f, nil
 				}
+				if seasonCounted == nil && fileCour == candCour && seasonOK && !baseInfo.CourRelative &&
+					slices.Contains(baseInfo.Episodes, cand.Episode) {
+					seasonCounted = &f
+				}
 				continue
 			}
-			if fileCour > 1 && target.Cour != fileCour {
+			if !releaseparse.SeasonNumberingUnderCour(fileCour, courRelative, target.Cour, target.Anime) {
 				continue
 			}
 			// Absolute anime numbers are authoritative file identities. Never let
@@ -1084,6 +1092,9 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 				(cand.Season > 0 && len(baseInfo.Episodes) == 0 && len(baseInfo.AbsoluteEpisodes) == 0 && releaseparse.EpisodeMatchesAirDateString(baseInfo, target.AirDate)) {
 				return f, nil
 			}
+		}
+		if seasonCounted != nil {
+			return *seasonCounted, nil
 		}
 		// Pass 2: classic pack numbering ("Season 2/05 - Title.mkv", "205 - Title.avi",
 		// or miniseries "Part 2 - Title.mkv") when no standard SxxExx matched.
@@ -1185,14 +1196,16 @@ func fileCourMatchesTarget(filePath string, target *core.ReleaseTarget) bool {
 	norm := strings.ReplaceAll(filePath, "\\", "/")
 	base := releaseparse.Parse(path.Base(norm))
 	full := releaseparse.Parse(strings.ReplaceAll(norm, "/", " "))
-	cour := base.Cour
+	cour, courRelative := base.Cour, base.CourRelative
 	if cour == 0 {
-		cour = full.Cour
+		cour, courRelative = full.Cour, full.CourRelative
 	}
 	if cour == 0 {
 		return true
 	}
-	if cour > 1 && (target.Cour != cour || target.CourEpisode <= 0) || cour == 1 && target.Cour > 1 {
+	if cour > 1 && (target.Cour != cour || target.CourEpisode <= 0) &&
+		!releaseparse.SeasonNumberingUnderCour(cour, courRelative, target.Cour, target.Anime) ||
+		cour == 1 && target.Cour > 1 {
 		return false
 	}
 	return (len(base.Seasons) == 0 || targetAllowsSeason(target, base.Seasons)) &&

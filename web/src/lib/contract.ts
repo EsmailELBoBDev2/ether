@@ -516,31 +516,6 @@ export interface TasteProfile {
   overrides: TasteOverride[];
 }
 
-export interface HomeRow {
-  hubId: string;
-  title: string;
-  kind: string;
-  reason: string;
-  score: number;
-  pinned?: boolean;
-  hidden?: boolean;
-  source: "engine" | "owner" | "plex";
-  items: TitleCard[];
-  itemReasons?: Record<string, string>;
-}
-
-interface HomeContext {
-  device: string;
-  daypart: string;
-  weekend: boolean;
-}
-
-export interface ViewerHome {
-  rows: HomeRow[];
-  generatedAt: string;
-  context: HomeContext;
-}
-
 export type Device = "tv" | "mobile" | "web" | "desktop";
 export type Daypart = "morning" | "afternoon" | "evening" | "late";
 

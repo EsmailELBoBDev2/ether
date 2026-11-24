@@ -24,7 +24,6 @@ import type {
   TitleLibraryStatus,
   Viewer,
   ViewerDetail,
-  ViewerHome,
 } from "./contract";
 import {
   type FacetValueOption,
@@ -667,11 +666,6 @@ export const api = {
   taste: (id: number) => apiFetch<TasteProfile>(`/viewers/${id}/taste`),
   putOverrides: (id: number, overrides: TasteOverride[]) =>
     put<TasteProfile>(`/viewers/${id}/taste/overrides`, { overrides }),
-  viewerHome: (
-    id: number,
-    ctx: { device: string; at: string; section?: string },
-    signal?: AbortSignal,
-  ) => apiFetch<ViewerHome>(`/viewers/${id}/home${qs(ctx)}`, { signal }),
   refreshViewer: (id: number) => post<null>(`/viewers/${id}/refresh`),
 
   // ---- Recommendations: pages of rows ------------------------------------------

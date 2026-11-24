@@ -1211,10 +1211,10 @@ export default function Recommendations() {
 
   const groups: { rowId?: string; label?: string; items: DisplayRow[] }[] = [];
   for (const d of display) {
-    const last = groups[groups.length - 1];
-    const pr = rowOf(d.row.rowId) ?? (pending?.row.id === d.row.rowId ? pending.row : undefined);
+    const last = groups.at(-1);
+    const pr = rowOf(d.row.rowId) ?? (pending && pending.row.id === d.row.rowId ? pending.row : undefined);
     const fan = Boolean(pr?.scope.perLibrary);
-    if (fan && last?.rowId === d.row.rowId) last.items.push(d);
+    if (fan && last && last.rowId === d.row.rowId) last.items.push(d);
     else
       groups.push({
         rowId: fan ? d.row.rowId : undefined,
@@ -1369,7 +1369,7 @@ export default function Recommendations() {
           ) : null}
           {groups.map((g, gi) => {
             const body = g.items.map((d) => {
-              const pr = rowOf(d.row.rowId) ?? (pending?.row.id === d.row.rowId ? pending.row : undefined);
+              const pr = rowOf(d.row.rowId) ?? (pending && pending.row.id === d.row.rowId ? pending.row : undefined);
               const eff = pr && draft ? effectiveRow(draft, pr, editingFor) : pr;
               const source = pr ? sourceByKind.get(pr.source.kind) : sourceByKind.get(d.row.kind);
               const fresh = Boolean(d.row.rowId && !savedIds.has(d.row.rowId));

@@ -222,6 +222,7 @@ export interface PreviewRow {
   kind: string;
   reason?: string;
   items: TitleCard[] | null;
+  itemReasons?: Record<string, string> | null;
 }
 export interface NotShown {
   row?: string;
@@ -346,7 +347,7 @@ export function setOverride(
   const v = variants[i]!;
   const rows = [...v.rows];
   const j = rows.findIndex((r) => r.row === rowId);
-  const next = { ...(j >= 0 ? rows[j] : { row: rowId }), ...patch };
+  const next: RowOverride = { ...(j >= 0 ? rows[j] : undefined), ...patch, row: rowId };
   if (j >= 0) rows[j] = next;
   else rows.push(next);
   variants[i] = { ...v, rows };

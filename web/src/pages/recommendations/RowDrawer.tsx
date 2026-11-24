@@ -10,7 +10,8 @@ import { ChipGroup, Segmented } from "../../components/fields";
 import { SubtabNav } from "../../components/layout";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { viewerName } from "../../components/pickers";
-import { t, tn, useLocale } from "../../i18n";
+import { t, tn } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { api, errorMessage, isAbort } from "../../lib/api";
 import type { Device, Viewer } from "../../lib/contract";
 import {

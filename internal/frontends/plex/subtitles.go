@@ -19,6 +19,7 @@ import (
 	"golang.org/x/text/language"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -204,6 +205,14 @@ func (s *Server) burnOnlyShownSubtitle(pr *Request, p *playRequest, info fronten
 	for i := range shown {
 		want := shown[i]
 		if want.External == st.External && frontend.IsImageSubtitle(want.Codec) == frontend.IsImageSubtitle(st.Codec) && resolveSubtitle(&want, -1, info) == p.subSel {
+			return
+		}
+		// The client shows a cached sidecar of this language selected, and
+		// the probe found the same language embedded (cached sidecars omit
+		// it then). Burning that track is what the client shows: English
+		// selected, not None.
+		if want.External && !slices.ContainsFunc(info.Streams, func(x frontend.StreamInfo) bool { return x.External && x.ExternalURL == want.ExternalURL }) &&
+			sameLanguage(want.Language, st.Language) && want.Forced == st.Forced {
 			return
 		}
 	}

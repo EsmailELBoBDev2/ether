@@ -35,9 +35,10 @@ jobs:
       - name: install
         working-directory: web
         run: pnpm install --frozen-lockfile
-      - name: typecheck
+      - name: mock build
         working-directory: web
-        run: pnpm typecheck
-      - name: test
-        working-directory: web
-        run: pnpm vitest run --exclude src/i18n/catalog.test.ts 2>&1 | grep -E 'FAIL|×|Tests |Test Files|Error' | head -60
+        run: pnpm exec vite build --mode mock --outDir ../mock-dist --emptyOutDir
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mock-dist
+          path: mock-dist

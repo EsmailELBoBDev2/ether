@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -457,8 +458,12 @@ func rankStreamLanguage(t core.StreamInfo, want []string) int {
 	return 0
 }
 
+// nonMainAudioPenalty outweighs every bonus pick can add (language order,
+// default flag, remembered choice), so a main audio track always wins.
+const nonMainAudioPenalty = 1_000_000
+
 func pick(streams []core.StreamInfo, kind string, want []string, style string, forcedOnly bool, memory *Choice, original string) int {
-	best, score := -1, -100000
+	best, score := -1, math.MinInt
 	for i, t := range streams {
 		if t.Type != kind || (forcedOnly && !forced(t)) {
 			continue
@@ -476,12 +481,21 @@ func pick(streams []core.StreamInfo, kind string, want []string, style string, f
 		}
 		if kind == "audio" && matched == 0 && rankStreamLanguage(t, []string{original}) > 0 {
 			// No preference matched this stream: the title's original
-			// language outranks an arbitrary first stream, but not the
-			// file's default flag.
-			n += 2
+			// language outranks an arbitrary first stream. A viewer who
+			// asked for languages this file lacks gets the original over the
+			// file's default flag (on a dubbed release that marks a third
+			// language's dub); with no preference at all the flag still wins.
+			if len(want) > 0 {
+				n += 8
+			} else {
+				n += 2
+			}
 		}
 		if kind == "audio" && langtag.TrackRole(t.Title, t.Commentary, t.VisualImpaired) != langtag.RoleMain {
-			n -= 150
+			// Commentary and audio description play only when the file
+			// has no main audio track: a wanted language, a remembered
+			// choice or the default flag never lifts them above one.
+			n -= nonMainAudioPenalty
 		}
 		if kind == "subtitle" {
 			if (style == "sdh") == sdh(t) {

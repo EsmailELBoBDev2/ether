@@ -1811,6 +1811,9 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 
 // PickAudio selects an audio stream position, or -1 when none exists.
 func PickAudio(info core.MediaInfo, langs []string) int {
+	// A wanted language heard only as commentary/AD is kept as a last
+	// resort: any main track (default-flagged first) plays before it.
+	wantedNonMain := -1
 	for _, lang := range langs {
 		// Within one wanted language, non-commentary/non-AD always beats
 		// commentary/AD; then the best language tier wins (exact before
@@ -1830,8 +1833,11 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 				best, bestTier, bestPenalized = i, tier, penalized
 			}
 		}
-		if best >= 0 {
+		if best >= 0 && !bestPenalized {
 			return best
+		}
+		if best >= 0 && wantedNonMain < 0 {
+			wantedNonMain = best
 		}
 	}
 	first, firstPenalized := -1, -1
@@ -1852,6 +1858,9 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 	}
 	if first >= 0 {
 		return first
+	}
+	if wantedNonMain >= 0 {
+		return wantedNonMain
 	}
 	return firstPenalized
 }

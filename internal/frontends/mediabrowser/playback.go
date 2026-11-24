@@ -32,6 +32,9 @@ type playbackRequest struct {
 	StartTimeTicks      int64              `json:"StartTimeTicks"`
 	AudioStreamIndex    *int               `json:"AudioStreamIndex"`
 	SubtitleStreamIndex *int               `json:"SubtitleStreamIndex"`
+	// SubtitleIndexQuoted marks a SubtitleStreamIndex posted as a string,
+	// the way Jellyfin Web copies its subtitle menu's value.
+	SubtitleIndexQuoted bool `json:"-"`
 }
 
 // UnmarshalJSON decodes a PlaybackInfo body through the caps Flex types
@@ -95,6 +98,7 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		StartTimeTicks:      int64(raw.StartTimeTicks),
 		AudioStreamIndex:    flexInt(raw.AudioStreamIndex),
 		SubtitleStreamIndex: flexInt(raw.SubtitleStreamIndex),
+		SubtitleIndexQuoted: strings.HasPrefix(strings.TrimSpace(string(raw.SubtitleStreamIndex)), `"`),
 	}
 	// Jellyfin's PlaybackInfoDto carries the player's quality choice as its
 	// own MaxStreamingBitrate; Jellyfin Web leaves the device profile's at the
@@ -338,6 +342,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		opts.SubtitleStream = *body.SubtitleStreamIndex
 	}
 	audioSet, subtitleSet := body.AudioStreamIndex != nil, body.SubtitleStreamIndex != nil
+	// A subtitle index Jellyfin Web copied from its menu (a quoted body
+	// value); a query parameter below replaces it with an explicit one.
+	subtitleFromMenu := subtitleSet && body.SubtitleIndexQuoted
 	for _, field := range []struct {
 		name string
 		dest *int
@@ -356,6 +363,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			}
 			*field.dest = n
 			*field.set = true
+			if field.name == "SubtitleStreamIndex" {
+				subtitleFromMenu = false
+			}
 		}
 	}
 	if values := route.Query(r.URL.Query(), "StartTimeTicks"); len(values) > 1 {
@@ -444,6 +454,16 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		variants = i.releaseVariants(r, scope, playbackItem)
 	}
 	listVersions := len(variants) > 0
+	// Jellyfin Web posts its hidden subtitle menu's "-1" when the detail page
+	// it showed had no subtitle list (the release was not probed yet); Emby's
+	// web lineage sends the same menu value as a query parameter. Nobody
+	// chose "off" from a list never sent: the viewer's rules decide. Jellyfin
+	// API clients that send a number keep their explicit choice.
+	menuOff := (i.protocol == "jellyfin" && subtitleFromMenu) || (i.protocol == "emby" && subtitleSet)
+	if menuOff && opts.SubtitleStream < 0 && channel == "" && !i.subtitleLists.shown(v, key, time.Now()) {
+		subtitleSet = false
+		intent.SubtitleSet = false
+	}
 	autoSwitchedRelease := ""
 	planBase := frontend.PlanRequest{Viewer: v, Device: dev, Protocol: i.protocol, Item: key, Channel: channel, Version: version, ResolvedRelease: resolvedRelease, DetailSource: detailSource, ExpectedSourceETag: expectedETag, Caps: capability.Client, Intent: intent}
 	// Auto skips a video transcode: when the automatic pick would re-encode
@@ -823,9 +843,15 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	// the exact release through the returned MediaSource Id.
 	if listVersions && !versionRequested && autoSwitchedRelease == "" {
 		if sources := i.releaseVersionSourcesFor(r, scope, key, titleLanguage, variants, source); sources != nil {
+			if channel == "" {
+				i.subtitleLists.note(v, key, sources, time.Now())
+			}
 			jsonReply(w, map[string]any{"MediaSources": sources, "PlaySessionId": playID})
 			return
 		}
+	}
+	if channel == "" {
+		i.subtitleLists.note(v, key, []any{source}, time.Now())
 	}
 	jsonReply(w, map[string]any{"MediaSources": []any{source}, "PlaySessionId": playID})
 }

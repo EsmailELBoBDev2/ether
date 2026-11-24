@@ -958,7 +958,14 @@ function toFieldDef(
               }));
       if (kind === "orderedList" && baseOpts.length === 0 && !raw.optionsFrom) {
         // An ordered list with no choices to order is a free list of entries.
-        return { key, label, help, kind: "list", placeholder: raw.placeholder, numeric: raw.numeric };
+        return {
+          key,
+          label,
+          help,
+          kind: "list",
+          placeholder: raw.placeholder,
+          numeric: raw.numeric,
+        };
       }
       return {
         key,

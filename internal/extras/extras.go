@@ -120,9 +120,14 @@ type Service struct {
 	themeCtx         context.Context
 	themeCancel      context.CancelFunc
 	themeFFmpeg      func() string
-	themeWork        sync.Mutex
+	themeWG          sync.WaitGroup
 	themeMu          sync.Mutex
-	themeRetry       map[string]time.Time
+	themeEvictMu     sync.Mutex
+	themeWait        time.Duration
+	themeFlights     map[core.RatingKey]*themeFlight
+	themeRetry       map[core.RatingKey]time.Time
+	themeBotUntil    time.Time
+	themeBotStep     time.Duration
 	cacheDir         string
 	cacheHTTP        *http.Client
 	cacheMu          sync.Mutex
@@ -207,7 +212,7 @@ func New(o Options) *Service {
 	themeCtx, themeCancel := context.WithCancel(context.Background())
 	return &Service{
 		db: o.DB, themeCtx: themeCtx, themeCancel: themeCancel, downloadTrailers: downloadTrailers,
-		themeFFmpeg: o.ThemeFFmpeg, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
+		themeFFmpeg: o.ThemeFFmpeg, themeWait: themeFirstOpenWait, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
 		videos: o.Videos, discover: o.Discover, cfgFn: o.Config,
 		log: o.Logger.With("component", "extras"), now: o.Now,
 		ttl: o.CacheTTL, emptyTTL: emptyTTL, coldWait: coldWait,

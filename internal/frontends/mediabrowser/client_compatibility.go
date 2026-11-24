@@ -244,12 +244,23 @@ func (i *instance) themeStream(w http.ResponseWriter, r *http.Request) {
 	i.host.Themes.ServeTheme(w, r, d.Title)
 }
 
-func (i *instance) themeSourceDTO(themeID, path string) map[string]any {
+// themeStreamPath names the static stream with the cached container's
+// extension (mp3 from Plex's theme service, m4a from the fallback).
+func themeStreamPath(themeID, container string) string {
+	return "/Audio/" + themeID + "/stream." + container
+}
+
+func (i *instance) themeSourceDTO(themeID, container string) map[string]any {
+	path := themeStreamPath(themeID, container)
+	codec := "aac"
+	if container == "mp3" {
+		codec = "mp3"
+	}
 	media := frontend.MediaInfo{
-		Container: "m4a",
+		Container: container,
 		Estimated: true,
 		Streams: []frontend.StreamInfo{
-			{Index: 0, Type: "audio", Codec: "aac", Channels: 2, Default: true},
+			{Index: 0, Type: "audio", Codec: codec, Channels: 2, Default: true},
 		},
 	}
 	source := i.mediaSourceDTO(themeID, media)
@@ -277,17 +288,21 @@ func (i *instance) themeMedia(w http.ResponseWriter, r *http.Request) {
 	empty := i.queryResult([]any{}, 0, 0)
 	empty["OwnerId"] = ownerID
 	songs := empty
-	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil && i.host.Themes.Theme(d.Title, true) {
+	container := ""
+	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil {
+		container = i.host.Themes.Theme(d.Title, true)
+	}
+	if container != "" {
 		themeID := themeWireID(d.Title.Key)
-		path := "/Audio/" + themeID + "/stream.m4a"
-		source := i.themeSourceDTO(themeID, path)
+		source := i.themeSourceDTO(themeID, container)
+		path := themeStreamPath(themeID, container)
 		songs = i.queryResult([]any{map[string]any{
 			"Id":                themeID,
 			"ServerId":          i.info.ID,
 			"Name":              d.Title.Title,
 			"Type":              "Audio",
 			"MediaType":         "Audio",
-			"Container":         "m4a",
+			"Container":         container,
 			"IsFolder":          false,
 			"Path":              path,
 			"UserData":          i.userDataDTO(themeID, frontend.WatchStatus{}),
@@ -550,12 +565,15 @@ func (i *instance) themePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if i.host.Themes == nil || !i.host.Themes.Theme(d.Title, false) {
+	container := ""
+	if i.host.Themes != nil {
+		container = i.host.Themes.Theme(d.Title, false)
+	}
+	if container == "" {
 		http.NotFound(w, r)
 		return
 	}
-	path := "/Audio/" + wireID + "/stream.m4a"
-	jsonReply(w, map[string]any{"MediaSources": []any{i.themeSourceDTO(wireID, path)}})
+	jsonReply(w, map[string]any{"MediaSources": []any{i.themeSourceDTO(wireID, container)}})
 }
 
 // Negative item GUIDs reserve a stateless audio identity separate from the

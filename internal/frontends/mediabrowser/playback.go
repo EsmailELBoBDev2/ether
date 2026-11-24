@@ -1511,7 +1511,7 @@ func directFilePath(path string) bool {
 func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 	if themeParentID(r.PathValue("id")) != "" {
 		name := strings.ToLower(r.PathValue("name"))
-		if name != "stream" && name != "stream.m4a" {
+		if name != "stream" && name != "stream.m4a" && name != "stream.mp3" {
 			http.NotFound(w, r)
 			return
 		}

@@ -306,14 +306,14 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				pr.versionFlowKey = t.Key
 			}
 			md = s.detail(ctx, pr, t, metadataOptionOn(q.Get("includeChildren")), metadataOptionOn(q.Get("includeOnDeck")), metadataOptionOn(q.Get("includeRelated")), metadataOptionOn(q.Get("includeExtras")), q.Get("extraTypes"))
-			if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
-				md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
-				if t.Type == frontend.TypeEpisode {
-					md.GrandparentTheme = md.Theme
-					md.ParentTheme = md.Theme
-				}
-				if t.Type == frontend.TypeSeason {
-					md.ParentTheme = md.Theme
+			if url := s.themeURL(*t, true); url != "" {
+				switch t.Type {
+				case frontend.TypeShow:
+					md.Theme = url
+				case frontend.TypeSeason:
+					md.ParentTheme = url
+				case frontend.TypeEpisode:
+					md.GrandparentTheme = url
 				}
 			}
 			if q.Get("includePreferences") == "1" {
@@ -1049,6 +1049,23 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 				allLeaves.LeafCount = model.Ptr(leaves)
 			}
 			mc.Directory = []model.Directory{*allLeaves}
+		}
+	}
+	// PMS repeats the show theme on its children: the container's theme plus
+	// parentTheme on seasons / grandparentTheme on the season's episodes.
+	// Cache-only: the detail open is what fetches.
+	if url := s.themeURL(*parent, false); url != "" {
+		mc.Theme = url
+		if parent.Type == frontend.TypeSeason {
+			mc.Extra = append(mc.Extra, model.A("grandparentTheme", url))
+		}
+		for n := range mc.Metadata {
+			switch mc.Metadata[n].Type {
+			case "season":
+				mc.Metadata[n].ParentTheme = url
+			case "episode":
+				mc.Metadata[n].GrandparentTheme = url
+			}
 		}
 	}
 	mc.Size = len(mc.Metadata) + len(mc.Directory)

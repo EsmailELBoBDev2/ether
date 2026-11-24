@@ -8,15 +8,16 @@ import {
   ChevronLeft,
   ChevronRight,
   GripVertical,
+  Pencil,
   Plus,
   Puzzle,
   Search,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
-import { newCollectionHref, pluginCollectionHref } from "../collections/links";
+import { editCollectionHref, newCollectionHref, pluginCollectionHref } from "../collections/links";
 import { ChipGroup, Segmented } from "../../components/fields";
 import { SubtabNav } from "../../components/layout";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
@@ -796,6 +797,120 @@ function fromTri(v: string): boolean | null {
   return v === "source" ? null : v === "on";
 }
 
+/** One Look choice: the row's style and card shape together. */
+type LookKind = "posters" | "landscape" | "hero" | "squares" | "round" | "tiles" | "tracks";
+const WATCH_LOOKS: LookKind[] = ["posters", "landscape", "hero"];
+const LISTEN_LOOKS: LookKind[] = ["squares", "round", "tiles", "tracks"];
+const LOOK_VALUES: Record<LookKind, Pick<RowLook, "style" | "card">> = {
+  posters: { style: "standard", card: "poster" },
+  landscape: { style: "wide", card: "landscape" },
+  hero: { style: "hero", card: "" },
+  squares: { style: "standard", card: "square" },
+  round: { style: "standard", card: "round" },
+  tiles: { style: "tiles", card: "" },
+  tracks: { style: "tracks", card: "" },
+};
+
+/** Which Look a style and card shape amount to. */
+function lookOf(style: RowStyle, card: RowCard, listen: boolean): LookKind {
+  if (style === "hero") return "hero";
+  if (style === "tiles") return "tiles";
+  if (style === "tracks") return "tracks";
+  if (style === "wide" || card === "landscape") return "landscape";
+  if (card === "round") return "round";
+  if (card === "square") return "squares";
+  if (card === "poster") return "posters";
+  return listen ? "squares" : "posters";
+}
+
+function lookLabel(k: LookKind): string {
+  switch (k) {
+    case "posters":
+      return t("Posters");
+    case "landscape":
+      return t("Landscape");
+    case "hero":
+      return t("Hero");
+    case "squares":
+      return t("Squares");
+    case "round":
+      return t("Round");
+    case "tiles":
+      return t("Tiles");
+    case "tracks":
+      return t("Track list");
+  }
+}
+
+/** A mini sketch of a row in this look. */
+function LookSketch({ look }: { look: LookKind }) {
+  const box = "rounded-[3px] bg-fg-subtle/45";
+  const frame = "flex h-12 items-center gap-1 overflow-hidden rounded-md bg-bg-subtle px-1.5";
+  switch (look) {
+    case "posters":
+      return (
+        <span className={frame} aria-hidden>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <span key={i} className={cn(box, "aspect-[2/3] h-9 shrink-0")} />
+          ))}
+        </span>
+      );
+    case "landscape":
+      return (
+        <span className={frame} aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <span key={i} className={cn(box, "aspect-video h-6 shrink-0")} />
+          ))}
+        </span>
+      );
+    case "hero":
+      return (
+        <span
+          className={cn(frame, "flex-col items-stretch justify-center gap-0.5 py-1")}
+          aria-hidden
+        >
+          <span className={cn(box, "h-6 w-full")} />
+          <span className="flex gap-0.5">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <span key={i} className={cn(box, "h-2.5 flex-1")} />
+            ))}
+          </span>
+        </span>
+      );
+    case "squares":
+    case "round":
+      return (
+        <span className={frame} aria-hidden>
+          {[0, 1, 2, 3].map((i) => (
+            <span
+              key={i}
+              className={cn(box, "aspect-square h-7 shrink-0", look === "round" && "rounded-full")}
+            />
+          ))}
+        </span>
+      );
+    case "tiles":
+      return (
+        <span className={cn(frame, "grid grid-cols-3 gap-1 py-1.5")} aria-hidden>
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <span key={i} className={cn(box, "h-3.5")} />
+          ))}
+        </span>
+      );
+    case "tracks":
+      return (
+        <span className={cn(frame, "flex-col items-stretch justify-center gap-1")} aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <span key={i} className="flex items-center gap-1">
+              <span className={cn(box, "size-2.5 shrink-0")} />
+              <span className="h-1.5 flex-1 rounded-full bg-fg-subtle/30" />
+            </span>
+          ))}
+        </span>
+      );
+  }
+}
+
 function LookSection({
   look,
   source,
@@ -809,25 +924,11 @@ function LookSection({
 }) {
   const listen =
     experience === "listen" || source.look.style === "tiles" || source.look.style === "tracks";
-  const styles: { value: RowStyle; label: string }[] = [
-    { value: "", label: t("Source default") },
-    { value: "standard", label: t("Standard") },
-    { value: "hero", label: t("Hero") },
-    { value: "wide", label: t("Wide") },
-    ...(listen
-      ? [
-          { value: "tiles" as const, label: t("Tiles") },
-          { value: "tracks" as const, label: t("Track list") },
-        ]
-      : []),
-  ];
-  const cards: { value: RowCard; label: string }[] = [
-    { value: "", label: t("Follow the library") },
-    { value: "poster", label: t("Poster") },
-    { value: "landscape", label: t("Landscape") },
-    { value: "square", label: t("Square") },
-    { value: "round", label: t("Round") },
-  ];
+  const usual = lookOf(source.look.style ?? "", source.look.card ?? "", listen);
+  const current =
+    look.style || look.card ? lookOf(look.style ?? "", look.card ?? "", listen) : usual;
+  const choices = [...(listen ? LISTEN_LOOKS : WATCH_LOOKS)];
+  if (!choices.includes(current)) choices.push(current);
   const patch = (p: Partial<RowLook>) => {
     const next: RowLook = { ...look, ...p };
     for (const k of Object.keys(next) as (keyof RowLook)[]) {
@@ -838,30 +939,53 @@ function LookSection({
   };
   return (
     <Section title={t("Look")} hint={t("Changes show in the page as you make them.")}>
-      <Line
-        label={t("Style")}
-        hint={t(
-          "Plex, Vela and Silo show Hero and Wide. Jellyfin and Emby keep their own look. Tiles and Track list are Vela's listening layouts.",
-        )}
-      >
-        <ToolbarPicker
-          ariaLabel={t("Style")}
-          value={look.style ?? ""}
-          onChange={(v) => patch({ style: v })}
-          options={styles}
-        />
-      </Line>
-      <Line
-        label={t("Cards")}
-        hint={t("Plex and Vela follow the card shape; other apps use the library's.")}
-      >
-        <ToolbarPicker
-          ariaLabel={t("Cards")}
-          value={look.card ?? ""}
-          onChange={(v) => patch({ card: v })}
-          options={cards}
-        />
-      </Line>
+      <div className="space-y-2">
+        <div
+          role="radiogroup"
+          aria-label={t("Look")}
+          className={cn(
+            "grid gap-2",
+            choices.length > 3 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3",
+          )}
+        >
+          {choices.map((k) => {
+            const on = k === current;
+            return (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() =>
+                  // The row's usual look follows the source; the others are set.
+                  k === usual ? patch({ style: "", card: "" }) : patch(LOOK_VALUES[k])
+                }
+                className={cn(
+                  "flex flex-col items-stretch gap-1.5 rounded-lg border p-2 text-left transition-colors",
+                  on
+                    ? "border-primary bg-primary-subtle/40"
+                    : "border-border hover:border-primary/60",
+                )}
+              >
+                <LookSketch look={k} />
+                <span className="text-xs font-medium text-fg">{lookLabel(k)}</span>
+                {k === usual ? (
+                  <span className="-mt-1 text-[11px] text-fg-muted">
+                    {t("This row's usual look")}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-fg-muted">
+          {listen
+            ? t(
+                "Plex, Vela and Silo show these looks; Jellyfin and Emby keep their own. Tiles and Track list are Vela's listening layouts.",
+              )
+            : t("Plex, Vela and Silo show these looks; Jellyfin and Emby keep their own.")}
+        </p>
+      </div>
       <Line
         label={hideWatchedLabel(experience)}
         hint={t("Leave out titles the viewer has finished. Every app honours it.")}
@@ -1424,10 +1548,7 @@ export function RowDrawer({
   onRemove,
   onChangeSource,
   onTab,
-  ether,
 }: {
-  /** A row Ether adds (onPage) or may add, opened to look at it. */
-  ether?: { title: string; onPage: boolean };
   state: DrawerState | null;
   /** The row being set up or edited (Everyone's, or the viewer's effective row). */
   row: PageRow | null;
@@ -1442,7 +1563,9 @@ export function RowDrawer({
   onChangeSource: () => void;
   onTab: (tab: "settings" | "content") => void;
 }) {
-  const adding = state?.kind === "add";
+  // A row already on the page (stored or not yet) edits like any other row.
+  const adding = state?.kind === "add" && isNew;
+  const location = useLocation();
   const picking = adding && (state.picking || !row);
   const viewerOnly = Boolean(ctx.editingFor) && !isNew;
   const experience: Experience =
@@ -1458,44 +1581,41 @@ export function RowDrawer({
       ? source?.refs?.find((r) => r.value === row.source.params?.[refParam.key])?.label
       : undefined;
   const sourceTitle = refLabel ?? source?.title ?? row?.source.kind ?? "";
+  // A collection row links to its collection in Collection Studio; closing
+  // or saving there comes back to this row, the page draft kept.
+  const collectionId =
+    source?.kind === "collection" && state?.kind === "edit" && refParam
+      ? row?.source.params?.[refParam.key]
+      : undefined;
+  const editCollection = (() => {
+    if (!collectionId || !row) return null;
+    const back = new URLSearchParams(location.search);
+    back.delete("add");
+    back.set("row", row.id);
+    return editCollectionHref(collectionId, `/recommendations?${back}`);
+  })();
   const pinnedAt = row?.placement.mode === "pinned" ? row.placement.position : undefined;
   const missing = (source?.params ?? []).filter((p) => p.required && !row?.source.params?.[p.key]);
-  const title = ether
-    ? ether.onPage
-      ? t("{row} · Ether adds this row", { row: ether.title })
-      : t("{row} · one of Ether's picks", { row: ether.title })
-    : adding
-      ? source && !picking
-        ? pinnedAt
-          ? t("New row at #{at} · {source}", { at: pinnedAt, source: sourceTitle })
-          : t("New row · {source}", { source: sourceTitle })
-        : t("New row at #{at}", { at: state.at })
-      : row?.name
-        ? fillLibrary(row.name, libraryNames[0] ?? "")
-        : sourceTitle;
+  const title = adding
+    ? source && !picking
+      ? pinnedAt
+        ? t("New row at #{at} · {source}", { at: pinnedAt, source: sourceTitle })
+        : t("New row · {source}", { source: sourceTitle })
+      : t("New row at #{at}", { at: state.at })
+    : row?.name
+      ? fillLibrary(row.name, libraryNames[0] ?? "")
+      : sourceTitle;
   /** The add button names its effect. */
-  const addLabel = !ether
-    ? t("Add to page")
+  const addLabel = t("Add to page");
+  const addNote = missing.length
+    ? t("Choose {param} first", { param: missing[0]!.label.toLowerCase() })
     : row?.placement.mode === "pinned"
-      ? t("Keep this row at #{n}", { n: row.placement.position ?? 1 })
-      : row?.placement.mode === "show"
-        ? t("Always show this row")
-        : row?.placement.mode === "hide"
-          ? t("Never show this row")
-          : t("Keep it as Auto");
-  const addNote = ether
-    ? ether.onPage
-      ? t("Nothing changes until you press the button.")
-      : t("Ether may add it when there's room. Nothing changes until you press the button.")
-    : missing.length
-      ? t("Choose {param} first", { param: missing[0]!.label.toLowerCase() })
-      : row?.placement.mode === "pinned"
-        ? undefined
-        : row?.placement.mode === "hide"
-          ? t("Adds it hidden")
-          : row?.placement.mode === "auto"
-            ? t("Adds one row; Ether decides whether and where")
-            : t("Adds one row; Ether places it");
+      ? undefined
+      : row?.placement.mode === "hide"
+        ? t("Adds it hidden")
+        : row?.placement.mode === "auto"
+          ? t("Adds one row; Ether decides whether and where")
+          : t("Adds one row; Ether places it");
   const facetLibrary =
     ctx.library?.id ?? row?.scope.libraries?.[0] ?? source?.libraries?.[0] ?? null;
   const tab = (state && !picking ? state.tab : undefined) ?? "settings";
@@ -1537,27 +1657,19 @@ export function RowDrawer({
       onClose={onClose}
       title={title}
       description={
-        ether
-          ? ether.onPage
-            ? t(
-                "Ether adds this row to the page right now. Look around: nothing changes until you choose. The button makes it one of your rows with these settings.",
-              )
+        adding
+          ? pinnedAt
+            ? t("It goes into the draft at this position and shows in the page as you set it up.")
+            : t("It goes into the draft and shows in the page as you set it up.")
+          : viewerOnly
+            ? t("Changes here are just for {viewer}: only the look and placement change.", {
+                viewer: viewerName(ctx.editingFor!),
+              })
             : t(
-                "One of Ether's picks: it may add it when there's room. Nothing changes until you choose.",
+                "Edits go straight into the draft and show in the page. Save the page when you're done.",
               )
-          : adding
-            ? pinnedAt
-              ? t("It goes into the draft at this position and shows in the page as you set it up.")
-              : t("It goes into the draft and shows in the page as you set it up.")
-            : viewerOnly
-              ? t("Changes here are just for {viewer}: only the look and placement change.", {
-                  viewer: viewerName(ctx.editingFor!),
-                })
-              : t(
-                  "Edits go straight into the draft and show in the page. Save the page when you're done.",
-                )
       }
-      size={tab === "content" ? "lg" : "md"}
+      size="md"
       footer={
         adding ? (
           <div className="flex w-full flex-wrap items-center justify-between gap-2">
@@ -1642,6 +1754,14 @@ export function RowDrawer({
                         {t("Change")}
                       </Button>
                     )}
+                    {editCollection ? (
+                      <Link
+                        to={editCollection}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                      >
+                        <Pencil size={11} /> {t("Edit collection")}
+                      </Link>
+                    ) : null}
                     {source &&
                     source.group === "plugins" &&
                     !source.kind.startsWith("surface") &&

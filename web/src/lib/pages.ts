@@ -459,6 +459,71 @@ export function insertRow(page: RowPage, row: PageRow, beforeId: string | null):
   return { ...page, rows };
 }
 
+/**
+ * Keeps pinned positions unique, as the server does (core NormalizePins):
+ * two rows that show together (same audience, schedule and devices) never
+ * hold the same position. On a collision the row that just got its pin
+ * (`prefer`) keeps it and the other moves down one, the rows after it
+ * following; a pin pushed past 50 becomes Show. A viewer's overrides are
+ * kept unique among themselves the same way.
+ */
+export function normalizePins(page: RowPage, prefer?: string): RowPage {
+  const order = new Map(page.rows.map((r, i) => [r.id, i]));
+  const settle = (pins: { id: string; pl: RowPlacement }[]): Map<string, RowPlacement> => {
+    const groups = new Map<string, { id: string; pl: RowPlacement }[]>();
+    for (const x of pins) {
+      const a = x.pl.audience ?? { mode: "everyone" };
+      const sig = JSON.stringify([
+        a.mode || "everyone",
+        a.viewers?.length ? a.viewers : null,
+        x.pl.when ?? null,
+        x.pl.devices?.length ? x.pl.devices : null,
+      ]);
+      groups.set(sig, [...(groups.get(sig) ?? []), x]);
+    }
+    const changed = new Map<string, RowPlacement>();
+    for (const g of groups.values()) {
+      g.sort(
+        (a, b) =>
+          a.pl.position! - b.pl.position! ||
+          (a.id === prefer ? -1 : b.id === prefer ? 1 : 0) ||
+          (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0),
+      );
+      let last = 0;
+      for (const x of g) {
+        if (x.pl.position! > last) {
+          last = x.pl.position!;
+          continue;
+        }
+        if (last >= 50) changed.set(x.id, withMode(x.pl, "show"));
+        else changed.set(x.id, { ...x.pl, position: ++last });
+      }
+    }
+    return changed;
+  };
+  const pinned = (pl: RowPlacement | undefined) =>
+    Boolean(pl && pl.mode === "pinned" && (pl.position ?? 0) > 0);
+  const base = settle(
+    page.rows.filter((r) => pinned(r.placement)).map((r) => ({ id: r.id, pl: r.placement })),
+  );
+  let changed = base.size > 0;
+  const rows = base.size
+    ? page.rows.map((r) => (base.has(r.id) ? { ...r, placement: base.get(r.id)! } : r))
+    : page.rows;
+  const variants = page.variants?.map((v) => {
+    const own = settle(
+      v.rows.filter((o) => pinned(o.placement)).map((o) => ({ id: o.row, pl: o.placement! })),
+    );
+    if (!own.size) return v;
+    changed = true;
+    return {
+      ...v,
+      rows: v.rows.map((o) => (own.has(o.row) ? { ...o, placement: own.get(o.row)! } : o)),
+    };
+  });
+  return changed ? { ...page, rows, variants } : page;
+}
+
 export function replaceRow(page: RowPage, row: PageRow): RowPage {
   return { ...page, rows: page.rows.map((r) => (r.id === row.id ? row : r)) };
 }

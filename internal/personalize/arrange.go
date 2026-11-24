@@ -58,7 +58,7 @@ func arrangePage(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubConte
 			continue
 		}
 		if p == nil && pl != nil && !pl.picks && !isAppAnchor(row) {
-			row.Hidden, row.HiddenCode, row.HiddenReason = true, "picks_off", "Ether's picks are off on this page"
+			row.Hidden, row.HiddenCode, row.HiddenReason = true, "picks_off", "This page is Curated"
 			hidden = append(hidden, row)
 			continue
 		}
@@ -73,7 +73,7 @@ func arrangePage(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubConte
 		if cp == nil {
 			if cp = defaults[row.HubID]; cp != nil {
 				// Worded from its real neighbour once placed (etherPlacedWhy).
-				row.Why = whyEtherLeads
+				row.Why = whyFitLeads
 			}
 		}
 		pool = append(pool, arrangeCandidate{row, cp, 0, explicitAlways})
@@ -329,14 +329,14 @@ func pinToPositions(rows []core.HomeRow, pl *pagePlan) []core.HomeRow {
 	return rest
 }
 
-// whyEtherLeads and whyEtherAfter word where Ether put a row the page
-// leaves to it, from the row really above it.
+// whyFitLeads and whyFitAfter word where a row the page leaves to the
+// viewer's taste landed, from the row really above it.
 const (
-	whyEtherLeads = "Ether leads with it"
-	whyEtherAfter = "Ether placed it after "
+	whyFitLeads = "First: the best fit for what this viewer plays"
+	whyFitAfter = ": the next best fit for what this viewer plays"
 )
 
-// etherPlacedWhy rewords the "Why here" of rows Ether placed from their
+// etherPlacedWhy rewords the "Why here" of rows placed by fit from their
 // real neighbour, once the order is final.
 func etherPlacedWhy(rows []core.HomeRow) {
 	prev := ""
@@ -344,11 +344,11 @@ func etherPlacedWhy(rows []core.HomeRow) {
 		if rows[i].Hidden {
 			continue
 		}
-		if rows[i].Why == whyEtherLeads || strings.HasPrefix(rows[i].Why, whyEtherAfter) {
+		if rows[i].Why == whyFitLeads || strings.HasSuffix(rows[i].Why, whyFitAfter) {
 			if prev == "" {
-				rows[i].Why = whyEtherLeads
+				rows[i].Why = whyFitLeads
 			} else {
-				rows[i].Why = whyEtherAfter + prev
+				rows[i].Why = "After " + prev + whyFitAfter
 			}
 		}
 		prev = rows[i].Title
@@ -428,7 +428,7 @@ func isAppAnchor(row core.HomeRow) bool { return row.Kind == KindContinue }
 func resetPlacement(row core.HomeRow) core.HomeRow {
 	row.Hidden, row.HiddenCode, row.HiddenReason = false, "", ""
 	row.Slot, row.Pinned = 0, false
-	row.Layer, row.Mode, row.RowID, row.Why = core.RowLayerEther, "", "", "Ether chose it"
+	row.Layer, row.Mode, row.RowID, row.Why = core.RowLayerEther, "", "", "Fits what this viewer plays"
 	return row
 }
 

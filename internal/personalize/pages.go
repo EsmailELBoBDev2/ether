@@ -268,6 +268,9 @@ func (e *Engine) NormalizePage(ctx context.Context, p core.RowPage) (core.RowPag
 	if p.Rows == nil {
 		p.Rows = []core.Row{}
 	}
+	// No two rows that show together share a pinned position, however the
+	// page arrived (a stale draft, an import, an app over MCP).
+	p.NormalizePins()
 	if err := p.ValidateStructure(); err != nil {
 		return p, &ValidationError{Problems: []Problem{{"page", err.Error()}}}
 	}

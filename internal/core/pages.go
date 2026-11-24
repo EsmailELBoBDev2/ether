@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -443,3 +444,83 @@ const (
 	RowLayerViewer   = "viewer"
 	RowLayerEther    = "ether"
 )
+
+// NormalizePins keeps pinned positions unique: two rows that show together
+// (same audience, schedule and devices) never hold the same position. A
+// collision moves the later row (by position, then list order) down one,
+// and the rows after it follow, as dropping a row into a list does; a pin
+// pushed past 50 becomes Show. Rows with different audiences or schedules
+// may share a position (only one of them shows at a time for most viewers).
+// A viewer's overrides are kept unique among themselves the same way.
+func (p *RowPage) NormalizePins() {
+	type pin struct {
+		pl    *RowPlacement
+		order int
+	}
+	settle := func(pins []pin) {
+		groups := map[string][]pin{}
+		var keys []string
+		for _, x := range pins {
+			a, d := x.pl.Audience, x.pl.Devices
+			if a.Mode == "" {
+				a.Mode = AudienceEveryone
+			}
+			if len(a.Viewers) == 0 {
+				a.Viewers = nil
+			}
+			if len(d) == 0 {
+				d = nil
+			}
+			sig, _ := json.Marshal(struct {
+				A Audience
+				W *Schedule
+				D []string
+			}{a, x.pl.When, d})
+			k := string(sig)
+			if _, ok := groups[k]; !ok {
+				keys = append(keys, k)
+			}
+			groups[k] = append(groups[k], x)
+		}
+		for _, k := range keys {
+			g := groups[k]
+			slices.SortStableFunc(g, func(a, b pin) int {
+				if a.pl.Position != b.pl.Position {
+					return a.pl.Position - b.pl.Position
+				}
+				return a.order - b.order
+			})
+			last := 0
+			for _, x := range g {
+				if x.pl.Position <= last {
+					if last >= 50 {
+						x.pl.Mode, x.pl.Position = PlacementShow, 0
+						continue
+					}
+					x.pl.Position = last + 1
+				}
+				last = x.pl.Position
+			}
+		}
+	}
+	var base []pin
+	for i := range p.Rows {
+		if pl := &p.Rows[i].Placement; pl.Mode == PlacementPinned && pl.Position > 0 {
+			base = append(base, pin{pl, i})
+		}
+	}
+	settle(base)
+	order := map[string]int{}
+	for i, r := range p.Rows {
+		order[r.ID] = i
+	}
+	for v := range p.Variants {
+		var own []pin
+		for j := range p.Variants[v].Rows {
+			if pl := p.Variants[v].Rows[j].Placement; pl != nil && pl.Mode == PlacementPinned && pl.Position > 0 {
+				own = append(own, pin{pl, order[p.Variants[v].Rows[j].Row]})
+			}
+		}
+		settle(own)
+	}
+}

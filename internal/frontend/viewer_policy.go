@@ -17,6 +17,12 @@ type PlaybackAccessPolicy interface {
 	CanPlay(*User, bool, time.Time) bool
 }
 
+// VideoTranscodeAccessPolicy is the optional per-viewer switch an access
+// policy may expose: true means video re-encoding is off for that account.
+type VideoTranscodeAccessPolicy interface {
+	VideoTranscodingDisabled(*User) bool
+}
+
 // PlaybackConfirmationPolicy is the optional live-policy confirmation check an
 // access policy may expose.
 type PlaybackConfirmationPolicy interface {

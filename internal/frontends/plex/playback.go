@@ -870,9 +870,7 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 	if policy, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !policy.CanPlay(pr.User, p.caps.Remote, s.now()) {
 		return nil, nil, frontend.Decision{}, frontend.ErrUnauthorized
 	}
-	if policy, ok := s.policy().(interface {
-		VideoTranscodingDisabled(*frontend.User) bool
-	}); ok && policy.VideoTranscodingDisabled(pr.User) {
+	if policy, ok := s.policy().(frontend.VideoTranscodeAccessPolicy); ok && policy.VideoTranscodingDisabled(pr.User) {
 		// The owner's per-viewer switch: release selection and the decision
 		// both read it from the caps.
 		p.caps.NoVideoTranscode = true
@@ -1182,9 +1180,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	if policy, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !policy.CanPlay(pr.User, p.caps.Remote, s.now()) {
 		return nil, nil
 	}
-	if policy, ok := s.policy().(interface {
-		VideoTranscodingDisabled(*frontend.User) bool
-	}); ok && policy.VideoTranscodingDisabled(pr.User) {
+	if policy, ok := s.policy().(frontend.VideoTranscodeAccessPolicy); ok && policy.VideoTranscodingDisabled(pr.User) {
 		// The owner's per-viewer switch: release selection and the decision
 		// both read it from the caps.
 		p.caps.NoVideoTranscode = true

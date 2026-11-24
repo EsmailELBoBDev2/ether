@@ -479,6 +479,8 @@ type KindLibraryShelf struct {
 	Value     string   `json:"value,omitempty"`     // single value for facet
 	Values    []string `json:"values,omitempty"`    // OR values for facet
 	Filters   any      `json:"filters,omitempty"`   // map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule
+	Purpose   string   `json:"purpose,omitempty"`   // recentContexts (Jump back in) | liked (Liked songs)
+	Layout    string   `json:"layout,omitempty"`    // default look: standard|hero|wide|tiles|tracks
 }
 
 // KindLevel is one hierarchy level of a kind.

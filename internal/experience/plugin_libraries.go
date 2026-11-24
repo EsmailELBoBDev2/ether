@@ -78,6 +78,10 @@ type PluginShelf struct {
 	Direction string // "desc" (default) or "asc"
 	Filters   map[string][]string
 	TabFilter *core.TabFilter
+	// Purpose and Layout are the shelf's declared row purpose
+	// (recentContexts, liked) and default look (tracks, tiles, …).
+	Purpose frontend.RowPurpose
+	Layout  string
 }
 
 // PluginPresentation carries manifest-declared Vela library presentation metadata.
@@ -2065,7 +2069,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	}
 
 	var rows []frontend.Row
-	appendRow := func(id, title string, purpose frontend.RowPurpose, kind string, items []core.Title) {
+	appendRow := func(id, title string, purpose frontend.RowPurpose, layout, kind string, items []core.Title) {
 		if len(items) == 0 || (!declaredShelves && len(rows) >= maxCandidates) {
 			return
 		}
@@ -2078,7 +2082,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 		for i := range copied {
 			entries[i] = frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &copied[i]}
 		}
-		rows = append(rows, frontend.Row{
+		row := frontend.Row{
 			ID:      id,
 			Title:   title,
 			Purpose: purpose,
@@ -2086,7 +2090,10 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			Style:   "shelf",
 			Entries: entries,
 			Items:   copied,
-		})
+		}
+		// A shelf's declared look is its default; a page's look wins.
+		row.Layout.Present.Layout = layout
+		rows = append(rows, row)
 	}
 
 	// 1. Continue shelf (scoped to this tab's shelf levels and media class;
@@ -2119,7 +2126,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 							break
 						}
 					}
-					appendRow(rowPrefix+"continue", pluginContinueTitle(contScope.titleMedia, dev.Language), frontend.RowContinue, "continue", cont)
+					appendRow(rowPrefix+"continue", pluginContinueTitle(contScope.titleMedia, dev.Language), frontend.RowContinue, "", "continue", cont)
 				}
 			}
 		}
@@ -2130,15 +2137,16 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	type candidateQuery struct {
 		id, title, kind string
 		purpose         frontend.RowPurpose
+		layout          string
 		q               frontend.ItemQuery
 	}
 	generic := []candidateQuery{
-		{rowPrefix + "released", "Newest", "recentlyReleased", frontend.RowRecentlyReleased, frontend.ItemQuery{Sort: core.SortReleased, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}},
-		{rowPrefix + "added", "Recently Added", "recentlyAdded", frontend.RowRecentlyAdded, frontend.ItemQuery{Sort: core.SortAdded, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}},
+		{id: rowPrefix + "released", title: "Newest", kind: "recentlyReleased", purpose: frontend.RowRecentlyReleased, q: frontend.ItemQuery{Sort: core.SortReleased, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}},
+		{id: rowPrefix + "added", title: "Recently Added", kind: "recentlyAdded", purpose: frontend.RowRecentlyAdded, q: frontend.ItemQuery{Sort: core.SortAdded, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}},
 	}
 	if lvl := p.roleLevel(core.RolePlaylist); lvl != "" {
-		generic = append(generic, candidateQuery{rowPrefix + "playlists", "Playlists", "playlists", frontend.RowRecommendation,
-			frontend.ItemQuery{Level: lvl, Sort: core.SortAdded, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}})
+		generic = append(generic, candidateQuery{id: rowPrefix + "playlists", title: "Playlists", kind: "playlists", purpose: frontend.RowRecommendation,
+			q: frontend.ItemQuery{Level: lvl, Sort: core.SortAdded, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}})
 	}
 
 	// Plugin-declared shelves (tab-specific or library-level) replace the
@@ -2184,7 +2192,11 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			if strings.TrimSpace(title) == "" {
 				title = sh.Key
 			}
-			queries = append(queries, candidateQuery{rowPrefix + "shelf:" + sh.Key, title, "shelf", frontend.RowRecommendation, q})
+			purpose := sh.Purpose
+			if purpose == "" {
+				purpose = frontend.RowRecommendation
+			}
+			queries = append(queries, candidateQuery{id: rowPrefix + "shelf:" + sh.Key, title: title, kind: "shelf", purpose: purpose, layout: sh.Layout, q: q})
 		}
 		// The library's own rows read first and show after the shelves.
 		queries = append(append([]candidateQuery(nil), generic...), queries...)
@@ -2223,7 +2235,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 		for i := range queries {
 			idx := (i + len(generic)) % len(queries) // shelves, then the library's own rows
 			cq := queries[idx]
-			appendRow(cq.id, cq.title, cq.purpose, cq.kind, results[idx])
+			appendRow(cq.id, cq.title, cq.purpose, cq.layout, cq.kind, results[idx])
 		}
 		if rows == nil {
 			return []frontend.Row{}, true, isDefaultTab, nil
@@ -2234,7 +2246,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	// 2. Newest, Recently added and Playlists.
 	for _, cq := range generic {
 		if page, pErr := s.pluginLibraryItems(ctx, v, lib, cq.q); pErr == nil {
-			appendRow(cq.id, cq.title, cq.purpose, cq.kind, page.Items)
+			appendRow(cq.id, cq.title, cq.purpose, cq.layout, cq.kind, page.Items)
 		}
 	}
 
@@ -2246,7 +2258,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			Limit:   rowLimit,
 			NoTotal: true,
 		}); pErr == nil {
-			appendRow(rowPrefix+"rating", "Top Rated", frontend.RowRecommendation, "topRated", page.Items)
+			appendRow(rowPrefix+"rating", "Top Rated", frontend.RowRecommendation, "", "topRated", page.Items)
 		}
 	}
 
@@ -2300,7 +2312,7 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 					title = "From " + b.Label
 				}
 				before := len(rows)
-				appendRow(rowPrefix+"facet:"+facet.ID+":"+b.ID, title, frontend.RowRecommendation, "facet", page.Items)
+				appendRow(rowPrefix+"facet:"+facet.ID+":"+b.ID, title, frontend.RowRecommendation, "", "facet", page.Items)
 				if len(rows) > before {
 					added++
 				}

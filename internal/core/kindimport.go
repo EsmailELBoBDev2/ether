@@ -23,6 +23,10 @@ type KindImportResponse struct {
 	Description string        `json:"description,omitempty"`
 	Art         string        `json:"art,omitempty"`
 	Tracks      []ImportTrack `json:"tracks"`
+	// Total is how many tracks the source playlist has, when known.
+	Total int `json:"total,omitempty"`
+	// Truncated: the source shared fewer tracks than the playlist has.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // KindIdentifyRequest asks a kind's plugin to find its items for tracks.

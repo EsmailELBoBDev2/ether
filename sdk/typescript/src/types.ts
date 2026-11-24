@@ -873,6 +873,10 @@ export interface KindImport {
   name: string;
   description?: string;
   tracks: ImportTrack[];
+  /** How many tracks the source playlist has, when it says. */
+  total?: number;
+  /** The source shared fewer tracks than the playlist has (Vela tells the viewer). */
+  truncated?: boolean;
 }
 
 /** Tracks to find among your items (ISRC first, then artist + title + duration). */

@@ -135,6 +135,12 @@ func (i *instance) playlistImport(w http.ResponseWriter, r *http.Request) {
 	if imp.Error != "" {
 		out["error"] = imp.Error
 	}
+	if imp.Truncated {
+		out["truncated"] = true
+		if imp.SourceTotal > 0 {
+			out["sourceTotal"] = imp.SourceTotal
+		}
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	send(w, 200, out)
 }

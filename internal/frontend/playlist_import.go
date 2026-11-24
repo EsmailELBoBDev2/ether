@@ -43,6 +43,10 @@ type PlaylistImport struct {
 	Matched     []ImportMatched
 	Unmatched   []ImportUnmatched
 	Error       string
+	// Truncated: the link's source shared fewer tracks than the playlist
+	// has (SourceTotal when the source said how many).
+	Truncated   bool
+	SourceTotal int
 }
 
 // PlaylistImports imports playlists from links and files.

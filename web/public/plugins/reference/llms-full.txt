@@ -911,7 +911,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/browse` with `level` = a list level | Pull sync, after the main tree | A **list level** (`levels[].members: true`, e.g. role `playlist`) is a root of its own: no parent, never playable, and no level names it as parent. Its items carry `members`: up to 500 external ids of other items of the kind, in order, which become its children. A page of a list level may also return those members and their parents (an album and artist a track needs), parents first, so everything is stored together; members not stored are skipped when the list is read. |
-| `/ether/v1/kinds/{kind}/import` | A viewer imports a playlist link from one of the sites in `import.links` (for example `deezer`, `spotify`) | `{url}` → `{name, description?, tracks: [{title, artist, album?, isrc?, durationSec?}]}`; answer 404 for a link you do not read. At most 500 tracks are used. 10 s deadline. |
+| `/ether/v1/kinds/{kind}/import` | A viewer imports a playlist link from one of the sites in `import.links` (for example `deezer`, `spotify`) | `{url}` → `{name, description?, tracks: [{title, artist, album?, isrc?, durationSec?}], total?, truncated?}`; answer 404 for a link you do not read. Set `truncated` when the source shared fewer tracks than the playlist has (with `total` when it says how many), so apps can tell the viewer instead of silently importing part of it. At most 500 tracks are used. 10 s deadline. |
 | `/ether/v1/kinds/{kind}/identify` | Ether matches an imported playlist's tracks (from a link or an M3U/CSV file) to your items, in batches, only when `import.identify` is true | `{tracks}` → `{items, matches: [{index, id?, by?, candidates?}]}`. `items` are stored like live-search results (parents first). One match per track you answered: `id` and `by` (`isrc` or `title`), or `candidates` (external ids) when several releases fit equally, or neither when nothing matched. Leave out tracks you ran out of time for; Ether asks for them again (up to three times). Viewers see matched and unmatched tracks honestly and pick a release for ambiguous ones. 10 s deadline. |
 | `/ether/v1/kinds/{kind}/related` | A viewer opens an item (purpose `similar`), or a queue of the kind's items nears its end (purpose `continuation`), only for purposes declared in `related: {similar, continuation}` | `{item, purpose, limit}` → `{label?, items, order?}`. `items` are stored like live-search results (send any parents a playable item needs); `order` names the external ids to show, in order (default: items at the same level for `similar`, playable items for `continuation`). One call per item and purpose at a time; answers are remembered for six hours (empty ones for one). `similar` becomes the item's detail row (Vela `GET /rows?placement=detail`); `continuation` is Vela `GET /titles/{id}/continuation` (autoplay). |
 | `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
@@ -57006,6 +57006,8 @@ type KindImportRequest struct {
 | `name` | `string` | emitted (validation may require a value) |  |
 | `description` | `string` | may be omitted (see validation for conditions) |  |
 | `tracks` | `[]ImportTrack` | emitted (validation may require a value) |  |
+| `total` | `int` | may be omitted (see validation for conditions) | the source playlist's track count, when known |
+| `truncated` | `bool` | may be omitted (see validation for conditions) | the source shared fewer tracks than it has |
 
 
 ## Source: sdk/go/kinds.go#KindImport
@@ -57016,6 +57018,8 @@ type KindImport struct {
 	Name        string        `json:"name"`
 	Description string        `json:"description,omitempty"`
 	Tracks      []ImportTrack `json:"tracks"`
+	Total       int           `json:"total,omitempty"`     // the source playlist's track count, when known
+	Truncated   bool          `json:"truncated,omitempty"` // the source shared fewer tracks than it has
 }
 ``````
 
@@ -75596,6 +75600,10 @@ export interface KindImport {
   name: string;
   description?: string;
   tracks: ImportTrack[];
+  /** How many tracks the source playlist has, when it says. */
+  total?: number;
+  /** The source shared fewer tracks than the playlist has (Vela tells the viewer). */
+  truncated?: boolean;
 }
 
 /** Tracks to find among your items (ISRC first, then artist + title + duration). */

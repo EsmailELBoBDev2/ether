@@ -46,6 +46,8 @@ type importJob struct {
 	matches   map[int]core.ImportMatch
 	answered  map[int]bool
 	errorCode string
+	truncated bool
+	total     int
 }
 
 type importJobs struct {
@@ -206,8 +208,10 @@ func (s *Service) runImport(ctx context.Context, imp PluginImporter, j *importJo
 			return
 		}
 		tracks := page.Tracks
+		total, truncated := page.Total, page.Truncated
 		if len(tracks) > playlistimport.MaxTracks {
-			tracks = tracks[:playlistimport.MaxTracks]
+			total = max(total, len(tracks))
+			tracks, truncated = tracks[:playlistimport.MaxTracks], true
 		}
 		if len(tracks) == 0 {
 			fail("empty")
@@ -215,6 +219,7 @@ func (s *Service) runImport(ctx context.Context, imp PluginImporter, j *importJo
 		}
 		j.mu.Lock()
 		j.state, j.name, j.desc, j.tracks = "matching", page.Name, page.Description, tracks
+		j.truncated, j.total = truncated || (total > len(tracks)), total
 		j.mu.Unlock()
 	}
 	asks := map[int]int{}
@@ -273,7 +278,7 @@ func (s *Service) PlaylistImport(ctx context.Context, viewer *core.Viewer, id st
 		return frontend.PlaylistImport{}, core.ErrNotFound
 	}
 	j.mu.Lock()
-	out := frontend.PlaylistImport{ID: j.id, State: j.state, Name: j.name, Description: j.desc, Total: len(j.tracks), Done: j.done, Error: j.errorCode}
+	out := frontend.PlaylistImport{ID: j.id, State: j.state, Name: j.name, Description: j.desc, Total: len(j.tracks), Done: j.done, Error: j.errorCode, Truncated: j.truncated, SourceTotal: j.total}
 	tracks := append([]core.ImportTrack(nil), j.tracks...)
 	matches := make(map[int]core.ImportMatch, len(j.matches))
 	for k, m := range j.matches {

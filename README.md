@@ -420,49 +420,6 @@ See [**CONTRIBUTING.md**](CONTRIBUTING.md) for full developer and pull-request i
 
 ---
 
-## Where it stands today
-
-Ether is backed by 9,700+ offline unit, fault-injection, and fuzz tests, a 540k-title CI performance gate (`internal/perfharness`), recorded protocol conformance suites against Plex Media Server (`internal/conform/plex`), Jellyfin 12.4, Emby 4.10.2, and Silo (`internal/conform`), and hardware transcoding verification across Apple VideoToolbox, NVIDIA NVENC (plus optional Windows RTX Video Super Resolution), Intel QuickSync, and VAAPI.
-
-| Capability | Status |
-| :--- | :--- |
-| **Multiview: Up to Four Live TV Channels at Once in Vela** | **New in 0.3.19** |
-| **Live Sports & Event Add-ons in Live TV** | **New in 0.3.18** |
-| **Flows: Automations from 120 Server Events, Drafted by Your AI** | **New in 0.3.17** |
-| **Music, Books & Audiobooks Libraries from Plugins, in Every App** | **New in 0.3.17** |
-| **Permanent Release Library: an NZB Is Never Fetched Twice** | **New in 0.3.16** |
-| **Vela, Ether's Own App (Web, Windows, macOS, Apple TV)** | **New in 0.3.14** |
-| **Plugin Marketplace, Plugin Libraries & Plugin Protocols** | **New in 0.3.14** |
-| **AI Channel Builder & Descriptive Search with Your AI** | **New in 0.3.10** |
-| **Jellyfin Web Served by Ether, Plex Media Server Sync & AI Apps (MCP)** | **New in 0.3.9** |
-| **Libraries Built from Sources and Rules, with Per-Library Home Rows & Tabs** | Working |
-| **On Air Channels, Style Studio, Decade Channels & Personal Channels** | Working |
-| **IPTV Apps (Xtream) Server & Xtream Movies/Series Sources** | Working |
-| **Kubernetes Server Roles (Source, Transcode) with Seamless Node-Loss Recovery** | Working |
-| **Movie and Show Quality Profiles with TRaSH/Profilarr Import & Sync** | Working |
-| **Jellyfin, Emby (Infuse, Swiftfin, Findroid) & Silo Apps** | Working |
-| **Stremio Addon, Read-Only WebDAV, M3U/XMLTV & DLNA** | Working |
-| **Cross-App Progress, Subtitle Preferences, Personalized Views & Watch Party** | Working |
-| **TMDB Catalogue, Browse, Conversational Search & Collections** | Working |
-| **Personalization Engine, Taste Models & Home Designer** | Working |
-| **Usenet Streaming Engine, PAR2 Oracle, Health Checks & Failover** | Working |
-| **Debrid Streaming (Real-Debrid, TorBox, AllDebrid, Premiumize)** | Working |
-| **Debrid Streaming (Debrid-Link, Offcloud)** | Working (built from published APIs) |
-| **Official Plex Apps (TV, Mobile, Desktop, Web)** | Working |
-| **Pure-Go Poster Overlays, Skip Markers & On-Pick Subtitle Alignment** | Working |
-| **Hardware Transcoding & Optional Windows NVIDIA RTX Video VSR** | Working |
-| **Live TV Guide, Paintable Virtual Channels & M3U/XMLTV/Xtream** | Working |
-| **PostgreSQL Active-Active HA Clustering & Shared NAS Cache** | Working |
-
-**Current boundaries:**
-- Usenet archives must be store-mode (`m0`, plain or password-encrypted RAR4/RAR5/7z); compressed archives and RAR-wrapped torrents are skipped during resolution.
-- NVIDIA RTX Video Super Resolution (`nvenc-ngx-vsr`) requires native Windows, an NVIDIA RTX GPU, and `NVEncC64` 9.38 with NGX DLLs (installed automatically when enabled unless a custom path is configured), is off by default, targets SDR H.264 HLS/DASH streams within configured height and concurrency bounds, and falls back to ordinary ABR renditions when bandwidth or concurrency requires it.
-- Emby Web is not served, so Emby apps that wrap a server-hosted Emby Web bundle (such as Emby for TV 2.x on Apple TV) are unsupported. Jellyfin Web is served, so Jellyfin's web-wrapper apps work.
-- No Plex Relay support: remote viewers connect directly via UPnP/NAT-PMP, a port forward, Tailscale, or your reverse proxy.
-- No DVR recording.
-
----
-
 ## Supporting Ether
 
 Ether is free and always will be: no paid tier, no locked features. If it's made your setup better and you'd like to say thanks, you can leave a one-time tip through [GitHub Sponsors](https://github.com/sponsors/braedonsaunders). It helps pay for the test hardware, code signing and services that keep releases coming.

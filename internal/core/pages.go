@@ -385,11 +385,9 @@ func (l RowLook) validate() error {
 
 func (pl RowPlacement) validate(mode string) error {
 	switch pl.Mode {
-	case PlacementShow, PlacementHide:
-	case PlacementPinned, PlacementAuto:
-		if mode == PageCurated {
-			return fmt.Errorf("placement: a curated page uses show or hide")
-		}
+	// A Curated page keeps pins at their position and shows Auto rows in
+	// list order, so switching modes never rewrites a row's placement.
+	case PlacementShow, PlacementHide, PlacementPinned, PlacementAuto:
 	default:
 		return fmt.Errorf("placement: mode must be pinned, show, auto or hide")
 	}

@@ -82,11 +82,15 @@ func TestRowPageValidateStructure(t *testing.T) {
 		func(p *RowPage) { p.Mode = "fixed" },
 		func(p *RowPage) { p.Rows[1].ID = p.Rows[0].ID },
 		func(p *RowPage) { p.Rows[0].Placement.Position = 0 },
-		func(p *RowPage) { p.Mode = PageCurated }, // pinned on a curated page
 		func(p *RowPage) { p.Rows[1].Placement.Audience.Viewers = nil },
 		func(p *RowPage) { p.Rows[0].Look.Style = "carousel" },
 		func(p *RowPage) { p.Variants[0].Rows[0].Row = "rzzzzzzzz" },
 		func(p *RowPage) { p.Rows[0].Placement.Devices = []string{"fridge"} },
+	}
+	curated := good
+	curated.Mode = PageCurated // pins and Auto rows survive a switch to Curated
+	if err := curated.ValidateStructure(); err != nil {
+		t.Fatalf("curated page with a pinned row: %v", err)
 	}
 	for i, m := range mutate {
 		p := good

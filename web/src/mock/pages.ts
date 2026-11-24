@@ -921,8 +921,6 @@ export function createPagesMock(deps: Deps) {
       if (!/^r[a-z0-9]{8}$/.test(r.id) || seen.has(r.id))
         return `rows[${i}]: id is missing, malformed or repeated`;
       seen.add(r.id);
-      if (page.mode === "curated" && (r.placement.mode === "pinned" || r.placement.mode === "auto"))
-        return `rows[${i}]: placement: a curated page uses show or hide`;
       if (r.placement.mode === "pinned" && !(r.placement.position && r.placement.position >= 1))
         return `rows[${i}]: placement: a pinned row needs a position from 1 to 50`;
     }

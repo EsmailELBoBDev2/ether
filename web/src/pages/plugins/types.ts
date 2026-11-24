@@ -702,8 +702,8 @@ export function buildPlacements(
         href = "/collections/new";
         break;
       case "rowSource":
-        area = t("Home rows");
-        href = "/home";
+        area = t("Recommendations");
+        href = "/recommendations";
         break;
       case "liveTVSource":
         area = t("Live TV");

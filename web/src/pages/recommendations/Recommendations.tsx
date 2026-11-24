@@ -1,6 +1,7 @@
-// Recommendations: the designer for every page of rows (design §2.6). The
-// left column picks the page, who it's edited for and the page settings;
-// the page itself is the only list of rows, and it is the live preview.
+// Recommendations: the designer for every page of rows (design §2.6). A slim
+// toolbar picks the page, who it's edited for and how it's previewed; the
+// page settings live in a drawer. The page itself takes the full width: it
+// is the only list of rows, and it is the live preview.
 // One drawer adds and edits rows. Every edit goes into one page draft, kept
 // in local storage until Save or Discard.
 import {
@@ -16,6 +17,7 @@ import {
 import {
   AlertTriangle,
   CalendarClock,
+  Check,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -26,6 +28,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -35,12 +38,11 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { Drawer } from "../../components/Drawer";
 import { ErrorPanel } from "../../components/feedback";
-import { Segmented } from "../../components/fields";
-import { SubtabNav } from "../../components/layout";
 import { useViewers, viewerName } from "../../components/pickers";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
-import { PanelHead, Workspace } from "../../components/workspace";
+import { Workspace } from "../../components/workspace";
 import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { ApiError, api, errorMessage, isAbort } from "../../lib/api";
@@ -589,7 +591,8 @@ export default function Recommendations() {
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [device, setDevice] = useState<Device>("tv");
   const [at, setAt] = useState<Date | null>(null);
-  const [tab, setTab] = useState("page");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tuningOpen, setTuningOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
 
@@ -1235,215 +1238,385 @@ export default function Recommendations() {
     );
   }
 
-  const leftColumn = (
-    <>
-      <PanelHead>
-        <div className="grid gap-2 pb-1">
-          <label className="grid gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
-              {t("Page")}
-            </span>
-            <ToolbarPicker
-              ariaLabel={t("Page")}
-              value={pageKey}
-              onChange={(v) => {
-                setPending(null);
-                setDrawer(null);
-                setQuery({ page: v, row: null, add: null });
-              }}
-              searchable
-              matchWidth
-              className="w-full justify-start text-left"
-              options={
-                pageOptions.length
-                  ? pageOptions
-                  : [{ value: pageKey, label: pageName, group: "", icon: null, hint: "" }]
-              }
-            />
-          </label>
-          <label className="grid gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
-              {t("Editing for")}
-            </span>
-            <ToolbarPicker
-              ariaLabel={t("Editing for")}
-              value={editingFor != null ? String(editingFor) : "everyone"}
-              onChange={(v) => {
-                setDrawer(null);
-                setPending(null);
-                setQuery({ editing: v === "everyone" ? null : v, as: null });
-              }}
-              matchWidth
-              className={cn(
-                "w-full justify-start text-left",
-                editingFor != null && "border-primary text-primary",
-              )}
-              options={editingOptions}
-            />
-          </label>
-        </div>
-        <SubtabNav
-          ariaLabel={t("Page tools")}
-          active={curated && tab === "tuning" ? "page" : tab}
-          onSelect={setTab}
-          tabs={[
-            { key: "page", label: t("Page") },
-            ...(curated ? [] : [{ key: "tuning", label: t("Tuning") }]),
-          ]}
-        />
-      </PanelHead>
-      <div className="space-y-5 p-3 sm:p-4">
-        {!draft ? (
-          <div className="grid place-items-center p-6">
-            <Spinner size={22} label={t("Loading the page")} />
-          </div>
-        ) : tab === "tuning" && !curated ? (
-          <TuningPanel
-            tuning={editingFor != null ? undefined : draft.tuning}
-            inherited={editingFor != null ? draft.tuning : undefined}
-            onChange={(tuning) => editingFor == null && update((p) => ({ ...p, tuning }))}
-            pageName={pageName}
-            viewerName={editingViewer ? viewerName(editingViewer) : null}
-            dials={editingFor == null}
-          />
-        ) : (
-          <>
-            <Section title={t("Mode")}>
-              <Segmented
-                ariaLabel={t("Mode")}
-                value={mode}
-                onChange={setMode}
-                options={[
-                  { value: "curated", label: t("Curated") },
-                  { value: "personalized", label: t("Personalized") },
-                ]}
-              />
-              <p className="text-fg-muted">
-                {curated
-                  ? t(
-                      "Exactly your rows, in your order. Rows with nothing to show are skipped. Ether adds nothing.",
-                    )
-                  : t(
-                      "Your pinned and shown rows always appear. Ether fills the rest from your Auto rows and its picks.",
-                    )}
-              </p>
-            </Section>
-            {curated ? null : (
-              <Section title={t("Length")}>
-                <Line
-                  label={t("Up to")}
-                  hint={
-                    draft.picks
-                      ? t(
-                          "Pinned and shown rows always appear, even past this. Ether fills the rest up to this length.",
-                        )
-                      : t(
-                          "Pinned and shown rows always appear. With Ether's picks off, the length only limits your Auto rows.",
-                        )
-                  }
-                >
-                  <span className="flex items-center gap-2">
-                    <LengthInput
-                      label={t("Up to how many rows")}
-                      value={length.rows}
-                      placeholder={doc.data?.defaultLength}
-                      onChange={(n) => setLength({ ...length, rows: n })}
-                    />
-                    {t("rows")}
-                  </span>
-                </Line>
-                <button
-                  type="button"
-                  aria-expanded={perDevice || Boolean(length.byDevice)}
-                  onClick={() => setPerDevice(!perDevice)}
-                  className="flex w-full items-center justify-between border-t border-border-subtle pt-3 text-left text-fg-muted"
-                >
-                  {t("Different length per device")}
-                  {perDevice || length.byDevice ? (
-                    <ChevronDown size={14} />
-                  ) : (
-                    <ChevronRight size={14} />
-                  )}
-                </button>
-                {perDevice || length.byDevice
-                  ? DEVICES.map((d) => (
-                      <Line key={d} label={deviceLabel(d)}>
-                        <LengthInput
-                          label={t("Rows on {device}", { device: deviceLabel(d) })}
-                          value={length.byDevice?.[d]}
-                          placeholder={length.rows || doc.data?.defaultLength}
-                          onChange={(n) =>
-                            setLength({ ...length, byDevice: { ...length.byDevice, [d]: n } })
-                          }
-                        />
-                      </Line>
-                    ))
-                  : null}
-                <Line
-                  label={t("Let Ether add its picks")}
-                  hint={t("Off: only the rows you added.")}
-                >
-                  <Switch
-                    aria-label={t("Let Ether add its picks")}
-                    checked={draft.picks}
-                    disabled={editingFor != null}
-                    onChange={(e) => {
-                      const picks = e.currentTarget.checked;
-                      update((p) => ({ ...p, picks }));
-                    }}
-                  />
-                </Line>
-              </Section>
-            )}
-            {isLibraryPage ? (
-              <Section title={t("This library")}>
-                <Line
-                  label={t("Skip titles Home already shows")}
-                  hint={t(
-                    "Titles the viewer's Home leads with stay off this page, so switching tabs always shows something new.",
-                  )}
-                >
-                  <Switch
-                    aria-label={t("Skip titles Home already shows")}
-                    checked={draft.skipHome ?? true}
-                    disabled={editingFor != null}
-                    onChange={(e) => {
-                      const skipHome = e.currentTarget.checked;
-                      update((p) => ({ ...p, skipHome: skipHome ? undefined : false }));
-                    }}
-                  />
-                </Line>
-              </Section>
-            ) : null}
-            <Section title={t("Shown in")}>
-              <p className="text-fg-muted">{appsLine(summary?.apps, pageKey === PAGE_HOME)}</p>
-            </Section>
-            {doc.data?.saved && editingFor == null ? (
-              <div className="flex flex-wrap items-center gap-2">
-                {confirmReset ? (
-                  <>
-                    <span className="text-sm text-fg-muted">
-                      {t("Replace this page with its default rows?")}
-                    </span>
-                    <Button size="sm" variant="destructive" onClick={() => void resetPage()}>
-                      {t("Reset page")}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
-                      {t("Cancel")}
-                    </Button>
-                  </>
-                ) : (
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmReset(true)}>
-                    <RotateCcw size={13} /> {t("Reset to default")}
-                  </Button>
+  // ---- page settings drawer ---------------------------------------------------------
+  const modeOptions: { value: PageMode; label: string; line: string; hint: string }[] = [
+    {
+      value: "personalized",
+      label: t("Personalized"),
+      line: t("Your rows plus Ether's picks"),
+      hint: t(
+        "Your pinned and shown rows always appear. Ether fills the rest from your Auto rows and its picks.",
+      ),
+    },
+    {
+      value: "curated",
+      label: t("Curated"),
+      line: t("Exactly your rows, in your order"),
+      hint: t(
+        "Exactly your rows, in your order. Rows with nothing to show are skipped. Ether adds nothing.",
+      ),
+    },
+  ];
+  const settingsBody = draft ? (
+    <div className="space-y-5">
+      <Section title={t("Mode")}>
+        <div role="radiogroup" aria-label={t("Mode")} className="grid gap-2">
+          {modeOptions.map((o) => {
+            const on = mode === o.value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => setMode(o.value)}
+                className={cn(
+                  "flex items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                  on
+                    ? "border-primary bg-primary-subtle/40"
+                    : "border-border hover:border-primary/60",
                 )}
-              </div>
-            ) : null}
+              >
+                <span
+                  className={cn(
+                    "mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border",
+                    on ? "border-primary bg-primary text-primary-fg" : "border-border",
+                  )}
+                  aria-hidden
+                >
+                  {on ? <Check size={10} strokeWidth={3} /> : null}
+                </span>
+                <span className="min-w-0">
+                  <span className="block font-medium text-fg">
+                    {o.label}: <span className="font-normal">{o.line}</span>
+                  </span>
+                  <span className="mt-0.5 block text-xs text-fg-muted">{o.hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </Section>
+      {curated ? null : (
+        <Section title={t("Length")}>
+          <Line
+            label={t("Up to")}
+            hint={
+              draft.picks
+                ? t(
+                    "Pinned and shown rows always appear, even past this. Ether fills the rest up to this length.",
+                  )
+                : t(
+                    "Pinned and shown rows always appear. With Ether's picks off, the length only limits your Auto rows.",
+                  )
+            }
+          >
+            <span className="flex items-center gap-2">
+              <LengthInput
+                label={t("Up to how many rows")}
+                value={length.rows}
+                placeholder={doc.data?.defaultLength}
+                onChange={(n) => setLength({ ...length, rows: n })}
+              />
+              {t("rows")}
+            </span>
+          </Line>
+          <button
+            type="button"
+            aria-expanded={perDevice || Boolean(length.byDevice)}
+            onClick={() => setPerDevice(!perDevice)}
+            className="flex w-full items-center justify-between border-t border-border-subtle pt-3 text-left text-fg-muted"
+          >
+            {t("Different length per device")}
+            {perDevice || length.byDevice ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+          {perDevice || length.byDevice
+            ? DEVICES.map((d) => (
+                <Line key={d} label={deviceLabel(d)}>
+                  <LengthInput
+                    label={t("Rows on {device}", { device: deviceLabel(d) })}
+                    value={length.byDevice?.[d]}
+                    placeholder={length.rows || doc.data?.defaultLength}
+                    onChange={(n) =>
+                      setLength({ ...length, byDevice: { ...length.byDevice, [d]: n } })
+                    }
+                  />
+                </Line>
+              ))
+            : null}
+          <Line label={t("Let Ether add its picks")} hint={t("Off: only the rows you added.")}>
+            <Switch
+              aria-label={t("Let Ether add its picks")}
+              checked={draft.picks}
+              disabled={editingFor != null}
+              onChange={(e) => {
+                const picks = e.currentTarget.checked;
+                update((p) => ({ ...p, picks }));
+              }}
+            />
+          </Line>
+        </Section>
+      )}
+      {isLibraryPage ? (
+        <Section title={t("This library")}>
+          <Line
+            label={t("Skip titles Home already shows")}
+            hint={t(
+              "Titles the viewer's Home leads with stay off this page, so switching tabs always shows something new.",
+            )}
+          >
+            <Switch
+              aria-label={t("Skip titles Home already shows")}
+              checked={draft.skipHome ?? true}
+              disabled={editingFor != null}
+              onChange={(e) => {
+                const skipHome = e.currentTarget.checked;
+                update((p) => ({ ...p, skipHome: skipHome ? undefined : false }));
+              }}
+            />
+          </Line>
+        </Section>
+      ) : null}
+      <Section title={t("Shown in")}>
+        <p className="text-fg-muted">{appsLine(summary?.apps, pageKey === PAGE_HOME)}</p>
+      </Section>
+      {curated ? null : (
+        <section aria-label={t("Tuning")} className="space-y-2">
+          <button
+            type="button"
+            aria-expanded={tuningOpen}
+            onClick={() => setTuningOpen(!tuningOpen)}
+            className="flex w-full items-center justify-between gap-3 rounded-xl border border-border bg-surface px-3.5 py-3 text-left hover:border-primary/60"
+          >
+            <span>
+              <span className="block text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+                {t("Tuning")}
+              </span>
+              <span className="mt-0.5 block text-sm text-fg-muted">
+                {t("How Ether picks: the dials, personal touches and how it learns.")}
+              </span>
+            </span>
+            {tuningOpen ? (
+              <ChevronDown size={16} className="shrink-0 text-fg-subtle" />
+            ) : (
+              <ChevronRight size={16} className="shrink-0 text-fg-subtle" />
+            )}
+          </button>
+          {tuningOpen ? (
+            <TuningPanel
+              tuning={editingFor != null ? undefined : draft.tuning}
+              inherited={editingFor != null ? draft.tuning : undefined}
+              onChange={(tuning) => editingFor == null && update((p) => ({ ...p, tuning }))}
+              pageName={pageName}
+              viewerName={editingViewer ? viewerName(editingViewer) : null}
+              dials={editingFor == null}
+            />
+          ) : null}
+        </section>
+      )}
+    </div>
+  ) : (
+    <div className="grid place-items-center p-6">
+      <Spinner size={22} label={t("Loading the page")} />
+    </div>
+  );
+  const resetControls =
+    doc.data?.saved && editingFor == null ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {confirmReset ? (
+          <>
+            <span className="text-sm text-fg-muted">
+              {t("Replace this page with its default rows?")}
+            </span>
+            <Button size="sm" variant="destructive" onClick={() => void resetPage()}>
+              {t("Reset page")}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
+              {t("Cancel")}
+            </Button>
           </>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={() => setConfirmReset(true)}>
+            <RotateCcw size={13} /> {t("Reset to default")}
+          </Button>
         )}
       </div>
-    </>
+    ) : (
+      <span />
+    );
+  const openSettings = () => {
+    setPending(null);
+    setDrawer(null);
+    setSettingsOpen(true);
+  };
+
+  // ---- the toolbar and the summary strip ------------------------------------------------
+  // "4 you placed": rows the owner put on the page that it shows (not hidden).
+  const placed = draft
+    ? draft.rows.filter((r) => effectiveRow(draft, r, editingFor).placement.mode !== "hide").length
+    : 0;
+  const pageLength = length.rows ?? doc.data?.defaultLength;
+  const settingsLine = !draft
+    ? ""
+    : curated
+      ? [t("Curated"), tn(placed, "{count} row · in your order", "{count} rows · in your order")]
+          .filter(Boolean)
+          .join(" · ")
+      : [
+          t("Personalized"),
+          pageLength ? t("up to {count} rows", { count: pageLength }) : null,
+          length.byDevice ? t("per device") : null,
+          tn(placed, "{count} you placed", "{count} you placed"),
+          draft.picks ? t("Ether adds picks") : t("Ether's picks off"),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+  const toolbar = (
+    <div className="sticky top-0 z-20 border-b border-border bg-bg/95 px-3 py-2 backdrop-blur sm:px-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <ToolbarPicker
+          ariaLabel={t("Page")}
+          value={pageKey}
+          onChange={(v) => {
+            setPending(null);
+            setDrawer(null);
+            setQuery({ page: v, row: null, add: null });
+          }}
+          searchable
+          className="order-1 min-w-0 max-w-[60vw] justify-start text-left font-semibold sm:max-w-xs"
+          trigger={
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              {pageKey === PAGE_HOME ? (
+                <Sparkles size={13} className="shrink-0 text-primary" />
+              ) : (
+                <Library size={13} className="shrink-0 text-primary" />
+              )}
+              <span className="truncate">{dirty ? `${pageName} •` : pageName}</span>
+            </span>
+          }
+          options={
+            pageOptions.length
+              ? pageOptions
+              : [{ value: pageKey, label: pageName, group: "", icon: null, hint: "" }]
+          }
+        />
+        <div className="app-scroll order-3 -mx-3 flex w-[calc(100%+1.5rem)] flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap px-3 [&_button]:shrink-0 [&>*]:shrink-0 sm:order-2 sm:mx-0 sm:w-auto sm:flex-wrap sm:overflow-visible sm:px-0">
+          <ToolbarPicker
+            ariaLabel={t("Editing for")}
+            value={editingFor != null ? String(editingFor) : "everyone"}
+            onChange={(v) => {
+              setDrawer(null);
+              setPending(null);
+              setQuery({ editing: v === "everyone" ? null : v, as: null });
+            }}
+            className={cn(editingFor != null && "border-primary text-primary")}
+            trigger={
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-fg-muted">{t("Editing for")}</span>
+                <b>{editingViewer ? viewerName(editingViewer) : t("Everyone")}</b>
+              </span>
+            }
+            options={editingOptions}
+          />
+          <span className="hidden h-5 w-px bg-border sm:block" aria-hidden />
+          {editingFor != null ? (
+            <Badge variant="info" className="h-8 gap-1.5 px-3 text-sm">
+              <Eye size={13} />{" "}
+              {t("Previewing {viewer}", {
+                viewer: editingViewer ? viewerLabel(editingViewer) : "",
+              })}
+            </Badge>
+          ) : (
+            <ToolbarPicker
+              ariaLabel={t("Preview as")}
+              value={asParam != null ? String(asParam) : "typical"}
+              onChange={(v) => setQuery({ as: v === "typical" ? null : v })}
+              trigger={
+                <span className="inline-flex items-center gap-1.5">
+                  <Eye size={13} className="text-fg-muted" />
+                  <span className="text-fg-muted">{t("Preview as")}</span>
+                  <b>{previewViewer ? viewerLabel(previewViewer) : t("Typical viewer")}</b>
+                </span>
+              }
+              options={[
+                { value: "typical", label: t("Typical viewer") },
+                ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerLabel(v) })),
+              ]}
+            />
+          )}
+          <ToolbarPicker
+            ariaLabel={t("Device")}
+            value={device}
+            onChange={setDevice}
+            options={DEVICES.map((d) => ({ value: d, label: deviceLabel(d) }))}
+          />
+          <label className="inline-flex shrink-0 items-center gap-1.5 text-sm">
+            <span className="sr-only">{t("At")}</span>
+            <Input
+              aria-label={t("Preview at")}
+              type="datetime-local"
+              className="h-8 w-44 sm:w-48"
+              value={toLocalInput(at ?? new Date())}
+              onChange={(e) => {
+                const v = e.currentTarget.value;
+                setAt(v ? new Date(v) : null);
+              }}
+            />
+            {at ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setAt(null)}
+              >
+                {t("Now")}
+              </Button>
+            ) : null}
+          </label>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="order-2 ml-auto h-8 gap-1.5 sm:order-3"
+          onClick={openSettings}
+          aria-haspopup="dialog"
+        >
+          <Settings2 size={14} />
+          <span className="sm:hidden">{t("Settings")}</span>
+          <span className="hidden sm:inline">{t("Page settings")}</span>
+        </Button>
+      </div>
+    </div>
   );
+
+  const strip = draft ? (
+    <button
+      type="button"
+      onClick={openSettings}
+      title={t("Open page settings")}
+      className="group/strip mb-3 flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-border bg-surface px-4 py-2.5 text-left text-sm transition-colors hover:border-primary/60"
+    >
+      {curated ? (
+        <Pin size={14} className="shrink-0 text-fg-muted" />
+      ) : (
+        <Sparkles size={14} className="shrink-0 text-primary" />
+      )}
+      <span className="font-medium text-fg">{settingsLine}</span>
+      {editingFor != null ? (
+        <span className="text-xs text-primary">
+          {t("for {viewer}", { viewer: editingViewer ? viewerName(editingViewer) : "" })}
+        </span>
+      ) : null}
+      <span className="ml-auto inline-flex items-center gap-2 text-xs text-fg-muted">
+        {previewing ? <Spinner size={12} /> : null}
+        <span className="hidden md:inline">{curated ? null : summaryLine}</span>
+        <span className="hidden items-center gap-1 font-medium text-primary group-hover/strip:underline sm:inline-flex">
+          <Settings2 size={12} /> {t("Page settings")}
+        </span>
+      </span>
+    </button>
+  ) : null;
 
   const groups: { rowId?: string; label?: string; items: DisplayRow[] }[] = [];
   for (const d of display) {
@@ -1473,64 +1646,7 @@ export default function Recommendations() {
 
   const pageView = (
     <div>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {editingFor != null ? (
-          <Badge variant="info" className="h-8 gap-1.5 px-3 text-sm">
-            <Eye size={13} />{" "}
-            {t("Previewing {viewer}", { viewer: editingViewer ? viewerLabel(editingViewer) : "" })}
-          </Badge>
-        ) : (
-          <ToolbarPicker
-            ariaLabel={t("Preview as")}
-            value={asParam != null ? String(asParam) : "typical"}
-            onChange={(v) => setQuery({ as: v === "typical" ? null : v })}
-            trigger={
-              <span className="inline-flex items-center gap-1.5">
-                <Eye size={13} className="text-fg-muted" />
-                <span className="text-fg-muted">{t("Preview as")}</span>
-                <b>{previewViewer ? viewerLabel(previewViewer) : t("Typical viewer")}</b>
-              </span>
-            }
-            options={[
-              { value: "typical", label: t("Typical viewer") },
-              ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerLabel(v) })),
-            ]}
-          />
-        )}
-        <ToolbarPicker
-          ariaLabel={t("Device")}
-          value={device}
-          onChange={setDevice}
-          options={DEVICES.map((d) => ({ value: d, label: deviceLabel(d) }))}
-        />
-        <label className="inline-flex items-center gap-1.5 text-sm">
-          <span className="text-fg-muted">{t("At")}</span>
-          <Input
-            aria-label={t("Preview at")}
-            type="datetime-local"
-            className="h-8 w-48"
-            value={toLocalInput(at ?? new Date())}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
-              setAt(v ? new Date(v) : null);
-            }}
-          />
-          {at ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => setAt(null)}
-            >
-              {t("Now")}
-            </Button>
-          ) : null}
-        </label>
-        <span className="ml-auto inline-flex items-center gap-2 text-sm text-fg-muted">
-          {previewing ? <Spinner size={12} /> : null}
-          {summaryLine}
-        </span>
-      </div>
+      {strip}
       <p
         className={cn(
           "mb-3 text-sm",
@@ -1852,14 +1968,55 @@ export default function Recommendations() {
         title={t("Recommendations")}
         subtitle={t("Home and every library's rows, in one place")}
         actions={actions}
-        asideLabel={t("Page controls")}
-        mainLabel={t("The page: edit rows right here")}
-        mainClassName="p-3 sm:p-6"
-        aside={leftColumn}
-        main={draft ? pageView : null}
       >
-        {state}
+        {state ?? (
+          <div
+            data-workspace-scroll=""
+            className="app-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-bg"
+          >
+            {toolbar}
+            <main aria-label={t("The page: edit rows right here")} className="p-3 sm:px-6 sm:py-4">
+              {draft ? (
+                pageView
+              ) : (
+                <div className="grid place-items-center p-10">
+                  <Spinner size={22} label={t("Loading the page")} />
+                </div>
+              )}
+            </main>
+          </div>
+        )}
       </Workspace>
+      <Drawer
+        open={settingsOpen}
+        onClose={() => {
+          setSettingsOpen(false);
+          setConfirmReset(false);
+        }}
+        title={
+          editingViewer
+            ? t("Page settings · just {viewer}", { viewer: viewerName(editingViewer) })
+            : t("Page settings · {page}", { page: pageName })
+        }
+        description={
+          editingFor != null
+            ? t("Mode and length here are just for {viewer}; the rest is everyone's.", {
+                viewer: editingViewer ? viewerName(editingViewer) : "",
+              })
+            : t(
+                "Changes go into the page draft and show in the page. Save the page when you're done.",
+              )
+        }
+        size="md"
+        footer={
+          <div className="flex w-full flex-wrap items-center justify-between gap-2">
+            {resetControls}
+            <Button onClick={() => setSettingsOpen(false)}>{t("Done")}</Button>
+          </div>
+        }
+      >
+        {settingsBody}
+      </Drawer>
       <RowDrawer
         state={drawer}
         row={drawerRow}

@@ -186,6 +186,11 @@ describe("Recommendations designer", () => {
         expect(screen.getByRole("button", { name: "Page" })).toHaveTextContent("Field Recordings"),
       WAIT,
     );
-    expect(await screen.findByText(/rows · in your order/, {}, WAIT)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Page settings/ }));
+    const drawer = await screen.findByRole("dialog", {}, WAIT);
+    expect(within(drawer).getByRole("radio", { name: /Curated/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   });
 });

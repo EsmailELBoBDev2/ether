@@ -255,7 +255,7 @@ export interface PreviewSummary {
   auto: number;
   /** How many of Ether's picks the page could still use. */
   picks: number;
-  /** Whether the page lets Ether add its picks. */
+  /** Whether Ether adds its picks: the console keeps it on for Personalized pages, off for Curated. */
   picksOn?: boolean;
   /** The page's own rows on it (rows less Ether's picks). */
   chosen?: number;

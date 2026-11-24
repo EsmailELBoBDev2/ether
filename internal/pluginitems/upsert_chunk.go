@@ -444,6 +444,12 @@ INSERT INTO plugin_items(
 			}
 		}
 
+		if lv, _, ok := kind.Decl.Level(it.Level); ok && lv.Members {
+			if err := replaceMembersTx(ctx, tx, pluginID, kindKey, *it); err != nil {
+				return res, fmt.Errorf("pluginitems: kind item %q members: %w", it.ID, err)
+			}
+		}
+
 		// Replace artwork rows for this item.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_art WHERE item_ref = ?`, string(it.Ref)); err != nil {
 			return res, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)

@@ -46,7 +46,10 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
 	Hints       json.RawMessage            `json:"hints,omitempty"` // opaque JSON object, echoed to the resolver
-	ETag        string                     `json:"etag,omitempty"`
+	// Members: a list item's ordered children (external ids of other items of
+	// the kind, at most 500). Only on a level declared members: true.
+	Members []string `json:"members,omitempty"`
+	ETag    string   `json:"etag,omitempty"`
 }
 
 // KindItemPart describes one declared or resolve-time file/part on a multi-file

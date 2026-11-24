@@ -547,6 +547,9 @@ const (
 	MediaRoleShow       MediaRole = "show"
 	MediaRoleEpisode    MediaRole = "episode"
 	MediaRoleCollection MediaRole = "collection"
+	// MediaRolePlaylist is a list level (members: true): an ordered list of
+	// other items, such as an editorial playlist.
+	MediaRolePlaylist MediaRole = "playlist"
 )
 
 // ValidMediaRole reports whether s is a supported content kind level role.
@@ -554,7 +557,7 @@ func ValidMediaRole(s string) bool {
 	switch MediaRole(s) {
 	case MediaRoleItem, MediaRoleArtist, MediaRoleAlbum, MediaRoleTrack,
 		MediaRoleSeries, MediaRoleBook, MediaRoleAudiobook, MediaRolePart,
-		MediaRoleShow, MediaRoleEpisode, MediaRoleCollection:
+		MediaRoleShow, MediaRoleEpisode, MediaRoleCollection, MediaRolePlaylist:
 		return true
 	default:
 		return false

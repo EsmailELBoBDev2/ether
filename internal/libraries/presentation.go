@@ -17,6 +17,9 @@ type KindPresentationLevel struct {
 	Role      string // optional free-text semantic role
 	Playable  bool
 	Container bool
+	// Members: a list level (a playlist), a root of its own whose children
+	// are other levels' items.
+	Members bool
 }
 
 // KindPresentationInput supplies the kind-level facts (class, levels, optional
@@ -565,7 +568,7 @@ func levelTreeShape(levels []KindPresentationLevel) (depths []int, isLeaf []bool
 	}
 	parentIdx := make([]int, n)
 	for i, lv := range levels {
-		if i == 0 {
+		if i == 0 || lv.Members {
 			parentIdx[i] = -1
 			continue
 		}

@@ -905,6 +905,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
+| `/ether/v1/kinds/{kind}/browse` with `level` = a list level | Pull sync, after the main tree | A **list level** (`levels[].members: true`, e.g. role `playlist`) is a root of its own: no parent, never playable, and no level names it as parent. Its items carry `members`: up to 500 external ids of other items of the kind, in order, which become its children. A page of a list level may also return those members and their parents (an album and artist a track needs), parents first, so everything is stored together; members not stored are skipped when the list is read. |
 | `/ether/v1/kinds/{kind}/related` | A viewer opens an item (purpose `similar`), or a queue of the kind's items nears its end (purpose `continuation`), only for purposes declared in `related: {similar, continuation}` | `{item, purpose, limit}` → `{label?, items, order?}`. `items` are stored like live-search results (send any parents a playable item needs); `order` names the external ids to show, in order (default: items at the same level for `similar`, playable items for `continuation`). One call per item and purpose at a time; answers are remembered for six hours (empty ones for one). `similar` becomes the item's detail row (Vela `GET /rows?placement=detail`); `continuation` is Vela `GET /titles/{id}/continuation` (autoplay). |
 | `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
@@ -2229,6 +2230,7 @@ type ItemUnavailable struct {
 | `art` | `[]KindArtRef` | may be omitted (see validation for conditions) |  |
 | `fields` | `map[string]json.RawMessage` | may be omitted (see validation for conditions) | validated against the kind declaration |
 | `hints` | `json.RawMessage` | may be omitted (see validation for conditions) | opaque; stored and echoed to the resolver verbatim |
+| `members` | `[]string` | may be omitted (see validation for conditions) | Members: a list item's ordered members (external ids of other items of the kind), its children. Only on a level declared members: true. |
 | `etag` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -2257,7 +2259,10 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"` // validated against the kind declaration
 	Hints       json.RawMessage            `json:"hints,omitempty"`  // opaque; stored and echoed to the resolver verbatim
-	ETag        string                     `json:"etag,omitempty"`
+	// Members: a list item's ordered members (external ids of other items of
+	// the kind), its children. Only on a level declared members: true.
+	Members []string `json:"members,omitempty"`
+	ETag    string   `json:"etag,omitempty"`
 }
 ``````
 
@@ -7170,6 +7175,7 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 | `role` | `string` | may be omitted (see validation for conditions) | free-text semantic role (e.g. artist, album, track, concert) |
 | `playable` | `bool` | may be omitted (see validation for conditions) | leaves the resolver can open; at least one level |
 | `container` | `bool` | may be omitted (see validation for conditions) | item is a container other leaves are extracted from |
+| `members` | `bool` | may be omitted (see validation for conditions) | Members: a list level (a playlist, a chart). Its items are roots of their own (no parent) and carry `members`, an ordered list of other items of the kind (by external id) that are their children. It is never playable and no level names it as parent; a browse of it (level=<key>, no parentId) may return the members and their parents in the same page so they are stored together. |
 
 
 ## Source: internal/plugins/contract.go#KindLevel
@@ -7184,6 +7190,13 @@ type KindLevel struct {
 	Role      string `json:"role,omitempty"`      // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
+	// Members: a list level (a playlist, a chart). Its items are roots of
+	// their own (no parent) and carry `members`, an ordered list of other
+	// items of the kind (by external id) that are their children. It is
+	// never playable and no level names it as parent; a browse of it
+	// (level=<key>, no parentId) may return the members and their parents in
+	// the same page so they are stored together.
+	Members bool `json:"members,omitempty"`
 }
 ``````
 
@@ -17239,7 +17252,7 @@ var externalIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
 func ValidExternalID(id string) bool { return externalIDRe.MatchString(id) }
 ``````
 
-## Source: internal/plugins/host_kinds.go#CheckKindItem
+## Source: internal/plugins/host_kinds.go#MaxKindItemMembers
 
 ``````
 // CheckKindItem validates one item envelope against its kind
@@ -17248,6 +17261,13 @@ func ValidExternalID(id string) bool { return externalIDRe.MatchString(id) }
 // check (spec §3.3); this one is shared by the host and the kit so a
 // plugin is told the same thing everywhere. It returns a plain
 // reason, or "" when the item passes.
+// MaxKindItemMembers bounds one list item's members.
+const MaxKindItemMembers = 500
+``````
+
+## Source: internal/plugins/host_kinds.go#CheckKindItem
+
+``````
 func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	switch {
 	case !ValidExternalID(it.ID):
@@ -17272,8 +17292,22 @@ func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	if at == 0 && it.ParentID != "" {
 		return "a root-level item cannot name a parent"
 	}
-	if at > 0 && it.ParentID == "" {
+	if lv.Members && it.ParentID != "" {
+		return "a list item (" + it.Level + ") cannot name a parent"
+	}
+	if at > 0 && it.ParentID == "" && !lv.Members {
 		return "a " + it.Level + " item needs a parentId"
+	}
+	if len(it.Members) > 0 && !lv.Members {
+		return "only a list level (members: true) carries members"
+	}
+	if len(it.Members) > MaxKindItemMembers {
+		return "a list carries at most 500 members"
+	}
+	for _, m := range it.Members {
+		if !ValidExternalID(m) || m == it.ID {
+			return "members must be valid external ids of other items"
+		}
 	}
 	if it.Playable && !lv.Playable {
 		return "level " + it.Level + " is not declared playable"
@@ -25427,7 +25461,17 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if levelKeys[lv.Key] {
 			add(lbase+".key", "is listed twice")
 		}
-		if lv.Parent != "" {
+		if lv.Members {
+			switch {
+			case j == 0:
+				add(lbase+".members", "the root level cannot be a list level")
+			case lv.Parent != "":
+				add(lbase+".members", "a list level has no parent")
+			case lv.Playable:
+				add(lbase+".members", "a list level cannot be playable")
+			}
+		}
+		if lv.Parent != "" && !lv.Members {
 			switch {
 			case j == 0:
 				add(lbase+".parent", "the root level cannot set parent")
@@ -25451,6 +25495,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	}
 	if len(k.Levels) > 0 && !playable {
 		add(base+".levels", "at least one level must be playable")
+	}
+	for j, lv := range k.Levels {
+		if lv.Parent != "" {
+			if parent, _, ok := k.Level(lv.Parent); ok && parent.Members {
+				add(fmt.Sprintf("%s.levels[%d].parent", base, j), "a list level cannot be a parent (its children are its members)")
+			}
+		}
 	}
 
 	fields := map[string]KindField{}
@@ -26109,7 +26160,7 @@ func (k MediaKindMeta) Level(key string) (KindLevel, int, bool) {
 // level (index 0) and unknown keys return "".
 func (k MediaKindMeta) LevelParent(key string) string {
 	lv, idx, ok := k.Level(key)
-	if !ok || idx == 0 {
+	if !ok || idx == 0 || lv.Members {
 		return ""
 	}
 	if lv.Parent != "" {
@@ -26492,6 +26543,21 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 			}
 		}
 	}
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#MediaKindMeta.ListLevels
+
+``````
+// ListLevels are the kind's list levels (members), roots of their own.
+func (k MediaKindMeta) ListLevels() []KindLevel {
+	var out []KindLevel
+	for _, lv := range k.Levels {
+		if lv.Members {
+			out = append(out, lv)
+		}
+	}
+	return out
 }
 ``````
 
@@ -36041,6 +36107,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].levels[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].media` | `any` | false | {"enum":["video","music","audiobook","book","podcast","photo"]} |
+| `ether.contributes.mediaKinds[].levels[].members` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].parent` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].playable` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].role` | `string` | false | {} |
@@ -37011,6 +37078,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                             "podcast",
                             "photo"
                           ]
+                        },
+                        "members": {
+                          "type": "boolean"
                         },
                         "parent": {
                           "type": "string"
@@ -55563,6 +55633,7 @@ type ItemUnavailable struct {
 | `art` | `[]KindArtRef` | may be omitted (see validation for conditions) |  |
 | `fields` | `map[string]json.RawMessage` | may be omitted (see validation for conditions) |  |
 | `hints` | `json.RawMessage` | may be omitted (see validation for conditions) | opaque JSON object, echoed to the resolver |
+| `members` | `[]string` | may be omitted (see validation for conditions) | Members: a list item's ordered children (external ids of other items of the kind, at most 500). Only on a level declared members: true. |
 | `etag` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -55589,7 +55660,10 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
 	Hints       json.RawMessage            `json:"hints,omitempty"` // opaque JSON object, echoed to the resolver
-	ETag        string                     `json:"etag,omitempty"`
+	// Members: a list item's ordered children (external ids of other items of
+	// the kind, at most 500). Only on a level declared members: true.
+	Members []string `json:"members,omitempty"`
+	ETag    string   `json:"etag,omitempty"`
 }
 ``````
 
@@ -62945,6 +63019,7 @@ type KindLibraryShelf struct {
 | `role` | `string` | may be omitted (see validation for conditions) | free-text semantic role (e.g. artist, album, track, concert) |
 | `playable` | `bool` | may be omitted (see validation for conditions) |  |
 | `container` | `bool` | may be omitted (see validation for conditions) |  |
+| `members` | `bool` | may be omitted (see validation for conditions) | Members: a list level (a playlist): a root of its own whose items name other items of the kind as their ordered children (KindItem.Members). |
 
 
 ## Source: sdk/go/types.go#KindLevel
@@ -62959,6 +63034,9 @@ type KindLevel struct {
 	Role      string `json:"role,omitempty"`   // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
+	// Members: a list level (a playlist): a root of its own whose items name
+	// other items of the kind as their ordered children (KindItem.Members).
+	Members bool `json:"members,omitempty"`
 }
 ``````
 
@@ -68767,6 +68845,7 @@ class KindLevel(TypedDict, total=False):
     role: str
     playable: bool
     container: bool
+    members: bool
 
 
 class KindLibraryShelf(TypedDict, total=False):
@@ -75364,6 +75443,8 @@ export interface KindLevel {
   role?: MediaRole | (string & {});
   playable?: boolean;
   container?: boolean;
+  /** A list level (a playlist): a root of its own whose items name other items as their ordered children. */
+  members?: boolean;
 }
 
 export interface KindField {
@@ -75564,6 +75645,8 @@ export interface KindItem {
   art?: Array<{ role: string; url: string; width?: number; height?: number }>;
   fields?: Record<string, unknown>;
   hints?: Record<string, unknown>;
+  /** A list item's ordered children: external ids of other items of the kind (at most 500). Only on a members level. */
+  members?: string[];
   etag?: string;
 }
 

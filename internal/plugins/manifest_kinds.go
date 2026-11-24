@@ -180,7 +180,17 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if levelKeys[lv.Key] {
 			add(lbase+".key", "is listed twice")
 		}
-		if lv.Parent != "" {
+		if lv.Members {
+			switch {
+			case j == 0:
+				add(lbase+".members", "the root level cannot be a list level")
+			case lv.Parent != "":
+				add(lbase+".members", "a list level has no parent")
+			case lv.Playable:
+				add(lbase+".members", "a list level cannot be playable")
+			}
+		}
+		if lv.Parent != "" && !lv.Members {
 			switch {
 			case j == 0:
 				add(lbase+".parent", "the root level cannot set parent")
@@ -204,6 +214,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	}
 	if len(k.Levels) > 0 && !playable {
 		add(base+".levels", "at least one level must be playable")
+	}
+	for j, lv := range k.Levels {
+		if lv.Parent != "" {
+			if parent, _, ok := k.Level(lv.Parent); ok && parent.Members {
+				add(fmt.Sprintf("%s.levels[%d].parent", base, j), "a list level cannot be a parent (its children are its members)")
+			}
+		}
 	}
 
 	fields := map[string]KindField{}
@@ -838,7 +855,7 @@ func (k MediaKindMeta) Level(key string) (KindLevel, int, bool) {
 // level (index 0) and unknown keys return "".
 func (k MediaKindMeta) LevelParent(key string) string {
 	lv, idx, ok := k.Level(key)
-	if !ok || idx == 0 {
+	if !ok || idx == 0 || lv.Members {
 		return ""
 	}
 	if lv.Parent != "" {
@@ -1173,4 +1190,15 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 			}
 		}
 	}
+}
+
+// ListLevels are the kind's list levels (members), roots of their own.
+func (k MediaKindMeta) ListLevels() []KindLevel {
+	var out []KindLevel
+	for _, lv := range k.Levels {
+		if lv.Members {
+			out = append(out, lv)
+		}
+	}
+	return out
 }

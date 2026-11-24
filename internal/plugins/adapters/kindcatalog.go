@@ -322,6 +322,7 @@ func kindPresentationInput(k plugins.MediaKindMeta) libraries.KindPresentationIn
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
+			Members:   lv.Members,
 		}
 	}
 	return libraries.KindPresentationInput{
@@ -1384,7 +1385,28 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 	if err != nil {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
-	_, levelIdx, _ := rec.Decl.Level(parentItem.Level)
+	parentLevelDecl, levelIdx, _ := rec.Decl.Level(parentItem.Level)
+	if parentLevelDecl.Members {
+		// A list's children are its members, in its order.
+		offset := 0
+		if cursor != "" {
+			if n, err := strconv.Atoi(cursor); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+		if limit <= 0 {
+			limit = 200
+		}
+		members, total, err := c.items.MembersPage(ctx, parentItem.Ref, offset, limit)
+		if err != nil {
+			return experience.PluginBrowsePage{}, err
+		}
+		next := ""
+		if offset+limit < total {
+			next = strconv.Itoa(offset + limit)
+		}
+		return experience.PluginBrowsePage{Items: c.projectItems(ctx, rec, lib, members), Total: total, TotalExact: false, NextCursor: next}, nil
+	}
 	_, parentRole := pluginitems.ResolveMediaClassAndRole(parentItem.Level, rec.Decl, lib.Present)
 	if cursor == "" && !core.NoContainerExpand(ctx) {
 		if rec.Decl.Browse.Expand.ExpandsLevel(parentItem.Level) {

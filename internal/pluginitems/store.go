@@ -2917,6 +2917,7 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			"plugin_item_fields",
 			"plugin_item_art",
 			"plugin_item_parts",
+			"plugin_item_members",
 			"plugin_matches",
 			"plugin_items",
 		} {
@@ -3310,6 +3311,7 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		"plugin_item_fields",
 		"plugin_item_art",
 		"plugin_item_parts",
+		"plugin_item_members",
 		"plugin_matches",
 	} {
 		if _, err := tx.ExecContext(ctx,

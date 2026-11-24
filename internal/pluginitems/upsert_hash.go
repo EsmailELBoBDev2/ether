@@ -123,6 +123,10 @@ func itemContentHash(declHash string, p preparedItem) string {
 		putStr(strconv.FormatUint(math.Float64bits(fv.Real), 10))
 		putStr(fv.Fold)
 	}
+	putInt(int64(len(it.Members)))
+	for _, m := range it.Members {
+		putStr(m)
+	}
 	for _, a := range it.Art {
 		putStr(a.Role)
 		putStr(a.URL)

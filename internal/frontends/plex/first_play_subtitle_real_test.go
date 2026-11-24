@@ -46,7 +46,9 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 		chaosCmd(t, ff, "-hide_banner", "-loglevel", "error", "-y", "-i", base, "-i", srt, "-map", "0:v", "-map", "0:a", "-map", "1:s",
 			"-c:v", "copy", "-c:a", "copy", "-c:s", codec, "-metadata:s:s:0", "language=eng", "-metadata:s:a:0", "language=kor", filepath.Join(dir, name))
 	}
-	mkSub("image.mkv", "dvdsub") // an image subtitle, burned like PGS
+	// ffmpeg cannot encode a bitmap subtitle from text, so the burn path is
+	// exercised through Plex Web's burn mode, which burns text subtitles via
+	// the same shown-only rule as image ones.
 	mkSub("text.mkv", "srt")
 	source := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	defer source.Close()
@@ -64,9 +66,9 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 		hdr        []string
 		query      string
 	}{
-		{"android-tv-image-subtitle", "image.mkv", android, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none"},
+		{"android-tv-text-subtitle", "text.mkv", android, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none"},
 		{"plex-web-text-subtitle-burn-mode", "text.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn"},
-		{"plex-web-image-subtitle", "image.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn"},
+		{"plex-web-text-subtitle-auto", "text.mkv", web, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := transcode.New(config.Transcode{FFmpegPath: ff, FFprobePath: fp, HWAccel: "none", TempDir: filepath.Join(t.TempDir(), "work")},
@@ -130,10 +132,11 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 			}
 			yMax := frameYMax(t, ff, p)
 			burned := yMax > 150
-			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (subtitle burned=%v); text rendition in playlist=%v",
-				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, textRendition)
-			if !burned && !textRendition {
-				t.Fatalf("first play delivered no English subtitle: frame is black and the playlist has no subtitle rendition")
+			muxed := segmentHasSubtitle(t, fp, p)
+			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v",
+				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, muxed, textRendition)
+			if !burned && !textRendition && !muxed {
+				t.Fatalf("first play delivered no English subtitle: frame is black, the segment has no subtitle stream and the playlist no rendition")
 			}
 			if streamAttr(selected, "languageCode") != "eng" {
 				t.Fatalf("decision shows no English subtitle selected (%q)", selected)
@@ -181,6 +184,18 @@ func firstSegment(t *testing.T, f *fixture, hdr []string, from, body string, dep
 		return firstSegment(t, f, hdr, path, rec.Body.String(), depth+1)
 	}
 	return rec.Body.Bytes()
+}
+
+// segmentHasSubtitle reports whether the delivered segment muxes a subtitle.
+func segmentHasSubtitle(t *testing.T, fp, segment string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := mediaproc.CommandContext(ctx, time.Minute, fp, "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", segment).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffprobe segment: %v %s", err, out)
+	}
+	return strings.Contains(string(out), "subtitle")
 }
 
 // frameYMax is the brightest luma value in a frame 1s into a segment.

@@ -243,6 +243,23 @@ type searchCacheEntry struct {
 	refreshed time.Time
 	results   []core.Release
 	expires   time.Time
+	// req is the request the results answer, with the enrichment its
+	// writer applied.
+	req core.SearchRequest
+}
+
+// serves reports whether e answers req. Each part of the enrichment a
+// request carries (release numbering, cour mapping) must be the one the
+// results were searched with; a part it lacks takes what the entry has,
+// because the enriched search only adds queries.
+func (e searchCacheEntry) serves(req core.SearchRequest) bool {
+	if n := numberingEnrichment(req); n != "" && n != numberingEnrichment(e.req) {
+		return false
+	}
+	if c := courEnrichment(req); c != "" && c != courEnrichment(e.req) {
+		return false
+	}
+	return true
 }
 
 type inflight struct {
@@ -1684,12 +1701,55 @@ func titleOriginalLanguage(t *core.Title) string {
 	return strings.TrimSpace(t.Language)
 }
 
+// searchCacheKey names a title's search. It leaves out the enrichment
+// (anime cour mapping, owner-chosen episode group) so that Play, the
+// console, the detail refill, the version picker and Forget, which do
+// not all know it, share one entry; the entry keeps its request
+// (searchCacheEntry.req) so an enriched caller can tell whether it
+// matches (searchCacheEntry.serves). The alias-only numbering search is a different search.
 func searchCacheKey(req core.SearchRequest) string {
-	key := fmt.Sprintf("%s|%v|%s|%d|%d|%d|aliases:%v|packs:%v|known:%t|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, core.EpisodeAliases(req), req.ReleasePackTargets, req.ReleaseNumberingKnown, req.ReleaseAliasesOnly)
-	if req.Cour > 0 || req.CourTVDBSeason > 0 {
-		key += fmt.Sprintf("|cour:%d:%d|tvdb:%d:%d", req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode)
+	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, req.ReleaseAliasesOnly)
+}
+
+// numberingEnrichment and courEnrichment are what a request adds to its
+// title's plain request (searchRequestFor): release numbering aliases
+// (an owner-chosen episode group, XEM) and the anime cour mapping. ""
+// when the request has none.
+func numberingEnrichment(req core.SearchRequest) string {
+	aliases := core.EpisodeAliases(req)
+	if len(aliases) == 0 && len(req.ReleasePackTargets) == 0 && !req.ReleaseNumberingKnown {
+		return ""
 	}
-	return key
+	return fmt.Sprintf("aliases:%v|packs:%v|known:%t", aliases, req.ReleasePackTargets, req.ReleaseNumberingKnown)
+}
+
+func courEnrichment(req core.SearchRequest) string {
+	if req.Cour <= 0 && req.CourTVDBSeason <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("cour:%d:%d|tvdb:%d:%d", req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode)
+}
+
+// withSearchEnrichment copies from's enrichment onto req.
+func withSearchEnrichment(req, from core.SearchRequest) core.SearchRequest {
+	req.AltSeason, req.AltEpisode = from.AltSeason, from.AltEpisode
+	req.ReleaseAliases, req.ReleasePackTargets, req.ReleaseNumberingKnown = from.ReleaseAliases, from.ReleasePackTargets, from.ReleaseNumberingKnown
+	req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode = from.Cour, from.CourEpisode, from.CourTVDBSeason, from.CourTVDBEpisode
+	return req
+}
+
+// cachedSearchRequest is t's plain search request with the enrichment of
+// its cached search, so readers that cannot afford the cour lookup or the
+// episode-group numbering judge the cached results as Play did.
+func (s *Service) cachedSearchRequest(t *core.Title) core.SearchRequest {
+	req := searchRequestFor(t)
+	s.mu.RLock()
+	e, ok := s.searchCache[searchCacheKey(req)]
+	s.mu.RUnlock()
+	if ok && !e.forgotten && s.now().Before(e.expires) {
+		req = withSearchEnrichment(req, e.req)
+	}
+	return req
 }
 
 type rescueSearcher interface {
@@ -1705,7 +1765,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.RLock()
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
-	if ok && s.now().Before(e.expires) {
+	if ok && s.now().Before(e.expires) && e.serves(req) {
 		return append([]core.Release(nil), e.results...), "cache"
 	}
 	rctx, coverage := core.WithSearchCoverage(ctx)
@@ -1725,7 +1785,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.Lock()
 	now := s.now()
 	boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now(), req: req}
 	s.mu.Unlock()
 	// Merge rescued results into the primary search cache entry so Play
 	// Version (Variants) and subsequent resolves see the full candidate set.
@@ -1753,7 +1813,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.RLock()
 		e, ok := s.searchCache[key]
 		s.mu.RUnlock()
-		if ok && s.now().Before(e.expires) {
+		if ok && s.now().Before(e.expires) && e.serves(req) {
 			return append([]core.Release(nil), e.results...)
 		}
 	}
@@ -1773,7 +1833,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.Lock()
 		now := s.now()
 		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
+		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now(), req: req}
 		s.mu.Unlock()
 		s.InvalidateDetailVariants()
 	}
@@ -1833,7 +1893,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 			select {
 			case <-bound:
 			case <-done:
-				if results, ok := s.peekSearchCache(key); ok {
+				if results, ok := s.peekSearchCacheFor(req); ok {
 					return results, true, nil
 				}
 				// A failed detail discovery is not a reason for speculative
@@ -1853,7 +1913,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 	s.mu.RLock()
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
-	if ok && !fresh && s.now().Before(e.expires) {
+	if ok && !fresh && s.now().Before(e.expires) && e.serves(req) {
 		cachedRes := append([]core.Release(nil), e.results...)
 		if ls != nil {
 			s.finishLiveSearch(ls, cachedRes)
@@ -1967,7 +2027,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	if len(results) == 0 && ttl > freshReleaseCooloff {
 		ttl = freshReleaseCooloff
 	}
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now, req: req}
 	s.mu.Unlock()
 	s.notifyLiveWaiters(key)
 	s.InvalidateDetailVariants()

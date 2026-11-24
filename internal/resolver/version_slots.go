@@ -163,14 +163,15 @@ func (s *Service) versionSlotsWithResults(ctx context.Context, req core.ResolveR
 			if hasPlayed {
 				results = withRelease(results, playedRel)
 			}
-			ranked, _, err := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), profile, results, nil, pinID, true)
+			sreq := s.cachedSearchRequest(req.Title)
+			ranked, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, results, nil, pinID, true)
 			if err == nil {
 				strictCands := pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
 				candidates = strictCands
 				matchPool := strictCands
 				if s.resolverCfg().OfferHigherVersions {
 					if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
-						if pool, _, e := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), relaxed, results, nil, pinID, false); e == nil {
+						if pool, _, e := s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, nil, pinID, false); e == nil {
 							candidates = pinFirst(acceptableVariantAudio(clearIdentityVariants(pool)), pinID)
 							matchPool = candidates
 						}

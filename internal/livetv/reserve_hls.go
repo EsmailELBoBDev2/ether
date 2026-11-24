@@ -374,6 +374,15 @@ type hlsList struct {
 	// resumes exactly at it.
 	cut       int64
 	cutServed bool
+	// seqShift is added to the media sequence a reader sees. A demuxed
+	// audio rendition is renumbered onto its video's numbering at the
+	// aligned start: ffmpeg's HLS demuxer takes a live rendition whose
+	// first number is one below the others' to be a segment behind and
+	// skips its first segment, though providers number renditions
+	// independently (Pluto TV lists video 12 and audio 11 for the same
+	// moment). The relay then lost 5 s of audio, dropped its opening cut and
+	// waited a whole segment longer to start.
+	seqShift int64
 }
 
 func (g *inputGrant) hlsIfAny() *hlsInput {
@@ -529,6 +538,9 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 		if h.demux.hasAnchor && h.isDemuxedAudioLocked(raw) {
 			if idx, ok := closestSegmentToPDT(m, h.demux.anchorPDT); ok {
 				l.floor = m.segs[idx].seq
+				if v := h.lists[h.demux.videoURL]; v != nil && v.floor >= 0 && !implicitKeyIV(body) {
+					l.seqShift = v.floor - l.floor
+				}
 			}
 		}
 		if l.floor < 0 && reserve > 0 {
@@ -544,7 +556,7 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 	events := h.transitionsLocked(l, now)
 	h.prefetchLocked(l)
 	h.publishLocked()
-	floor := l.floor
+	floor, shift := l.floor, l.seqShift
 	var ended []byte
 	if reader && floor >= 0 && h.g.splitPrograms.Load() {
 		if cut := m.programCut(floor); cut >= 0 {
@@ -561,15 +573,68 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 	if startPoll {
 		go h.poll(raw)
 	}
+	if !reader {
+		shift = 0
+	}
 	if ended != nil {
-		return ended, events
+		return shiftMediaSequence(ended, shift), events
 	}
 	if floor >= 0 {
 		if out := m.window(floor); out != nil {
-			return out, events
+			return shiftMediaSequence(out, shift), events
 		}
 	}
-	return body, events
+	return shiftMediaSequence(body, shift), events
+}
+
+// shiftMediaSequence adds shift to a media playlist's media sequence (a
+// playlist without the tag starts at 0). A shift that would go negative is
+// not applied.
+func shiftMediaSequence(body []byte, shift int64) []byte {
+	if shift == 0 || len(body) == 0 {
+		return body
+	}
+	lines := strings.Split(string(body), "\n")
+	at, seq := -1, int64(0)
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if v, ok := strings.CutPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"); ok {
+			n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				return body
+			}
+			at, seq = i, n
+			break
+		}
+		if !strings.HasPrefix(line, "#") && line != "" {
+			break
+		}
+	}
+	if seq+shift < 0 {
+		return body
+	}
+	tag := "#EXT-X-MEDIA-SEQUENCE:" + strconv.FormatInt(seq+shift, 10)
+	if at >= 0 {
+		lines[at] = tag
+	} else {
+		if len(lines) == 0 || strings.TrimSpace(lines[0]) != "#EXTM3U" {
+			return body
+		}
+		lines = append(lines[:1], append([]string{tag}, lines[1:]...)...)
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+// implicitKeyIV reports a playlist with an encryption key whose IV is the
+// segment's media sequence number: renumbering it would break decryption.
+func implicitKeyIV(body []byte) bool {
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "#EXT-X-KEY:") && !strings.Contains(line, "METHOD=NONE") && !strings.Contains(line, ",IV=") && !strings.Contains(line, ":IV=") {
+			return true
+		}
+	}
+	return false
 }
 
 // resumeAtCutLocked moves l's floor to the program change its previous
@@ -1020,6 +1085,11 @@ func (h *hlsInput) applyDemuxedPair(
 			}
 		}
 	}
+	al.seqShift = 0
+	if aligned && vl.floor >= 0 && al.floor >= 0 && !implicitKeyIV(aBody) {
+		al.seqShift = vl.floor - al.floor
+	}
+	aShift := al.seqShift
 	vl.initialized = true
 	al.initialized = true
 	events = append(events, h.transitionsLocked(vl, now)...)
@@ -1072,7 +1142,7 @@ func (h *hlsInput) applyDemuxedPair(
 			}
 		}
 	}
-	return vOut, aOut, events
+	return vOut, shiftMediaSequence(aOut, aShift), events
 }
 
 func segIndex(m *hlsMedia, seq int64) int {

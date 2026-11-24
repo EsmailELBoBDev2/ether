@@ -56,13 +56,11 @@ import {
   effectiveMode,
   effectiveRow,
   experienceLabel,
-  fillLibrary,
   formatPreviewAt,
   hasOverride,
   insertRow,
   loadDraft,
   moveRow,
-  newRowId,
   removeRow,
   replaceRow,
   rowForSource,
@@ -71,7 +69,6 @@ import {
   setOverride,
   storeDraft,
   toLocalInput,
-  variantFor,
   withMode,
   type PageDoc,
   type PageLength,
@@ -1674,5 +1671,3 @@ function appsLine(apps: string[] | undefined, home: boolean): string {
   });
 }
 
-// Keep newRowId reachable for the add-row tests' id shape.
-export { newRowId as _newRowId, variantFor as _variantFor, fillLibrary as _fillLibrary };

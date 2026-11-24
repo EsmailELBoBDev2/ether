@@ -338,9 +338,9 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 		Sources: []core.CollectionSource{
 			{Kind: kindID, Params: map[string]string{"genre": "scifi"}},
 		},
-		Sort:    "source",
-		Refresh: "daily",
-		Enabled: true,
+		Sort:         "source",
+		Refresh:      "daily",
+		Enabled:      true,
 		BrowseInApps: true,
 	}
 

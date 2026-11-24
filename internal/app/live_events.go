@@ -104,7 +104,7 @@ func (a *App) buildLiveEvents() {
 	// Wire A7 alert engine and bounded-window scheduler into W255's unified
 	// AlertHub (/vela/v0/live/stream?alerts=1) + Flows bus + ViewerPush.
 	if a.db != nil {
-		favReader := liveevents.NewSQLFavoriteEntitiesReader(a.db)
+		favReader := grantedFavoriteEntities{app: a, inner: liveevents.NewSQLFavoriteEntitiesReader(a.db)}
 		alertEngine := liveevents.NewAlertEngine(liveevents.AlertEngineOptions{
 			Favorites: favReader,
 			Policy:    hubAlertPolicy{hub: hub},
@@ -306,6 +306,9 @@ func (s appTickerSource) TickerEvents(ctx context.Context, viewer *core.User, sc
 		refs = resolved
 	} else {
 		for _, f := range s.hub.Feeds(ctx) {
+			if s.app != nil && !s.app.liveEventPluginAllowed(ctx, viewer, f.PluginID) {
+				continue
+			}
 			refs = append(refs, liveevents.FeedRef{PluginID: f.PluginID, FeedID: f.FeedID})
 		}
 	}
@@ -445,6 +448,10 @@ func (s surfaceLiveEvents) Events(ctx context.Context, viewer *frontend.Viewer, 
 	if hub == nil {
 		return nil, frontend.ErrNotAvailable
 	}
+	ids = s.app.allowedLiveEventIDs(ctx, viewer, ids)
+	if len(ids) == 0 {
+		return []frontend.LiveEvent{}, nil
+	}
 	events, err := hub.GetEvents(ctx, viewer, ids)
 	if err != nil {
 		return nil, mapLiveEventError(err)
@@ -456,6 +463,9 @@ func (s surfaceLiveEvents) Detail(ctx context.Context, viewer *frontend.Viewer, 
 	hub := s.hub()
 	if hub == nil {
 		return nil, frontend.ErrNotAvailable
+	}
+	if !s.app.liveEventPluginAllowed(ctx, viewer, liveEventIDPlugin(id)) {
+		return nil, frontend.ErrNotFound
 	}
 	detail, err := hub.GetDetail(ctx, viewer, id)
 	if err != nil {
@@ -470,7 +480,7 @@ func (s surfaceLiveEvents) Subscribe(ctx context.Context, viewer *frontend.Viewe
 		return nil, frontend.ErrNotAvailable
 	}
 	sub, err := hub.Subscribe(ctx, liveevents.SubscribeRequest{
-		EventIDs:       req.EventIDs,
+		EventIDs:       s.app.allowedLiveEventIDs(ctx, viewer, req.EventIDs),
 		Screens:        req.Screens,
 		Viewer:         viewer,
 		FilterSpoilers: true,
@@ -491,6 +501,9 @@ func (s surfaceLiveEvents) Reveal(ctx context.Context, viewer *frontend.Viewer, 
 	hub := s.hub()
 	if hub == nil {
 		return frontend.ErrNotAvailable
+	}
+	if !s.app.liveEventPluginAllowed(ctx, viewer, liveEventIDPlugin(id)) {
+		return frontend.ErrNotFound
 	}
 	_, err := hub.RevealEvent(ctx, viewer, id)
 	return mapLiveEventError(err)

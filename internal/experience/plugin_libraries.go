@@ -2329,6 +2329,17 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, de
 		return nil, err
 	}
 	if s.d.Layout == nil {
+		// No Recommendations engine: the page's default, its declared
+		// shelves (and Continue) when it declares any.
+		if declaredShelves {
+			kept := rows[:0:0]
+			for _, r := range rows {
+				if r.Kind == "shelf" || r.Purpose == frontend.RowContinue {
+					kept = append(kept, r)
+				}
+			}
+			return kept, nil
+		}
 		return rows, nil
 	}
 	if isDefaultTab {

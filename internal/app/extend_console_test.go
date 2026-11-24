@@ -23,7 +23,7 @@ func TestConsoleDescriptorsRegister(t *testing.T) {
 	wantNav := []struct{ id, group, route string }{
 		{"overview", "", "/"}, {"activity", "", "/activity"}, {"viewers", "", "/viewers"},
 		{"libraries", "library", "/libraries"}, {"collections", "library", "/collections"},
-		{"home", "library", "/home"}, {"livetv", "library", "/livetv"},
+		{"recommendations", "library", "/recommendations"}, {"livetv", "library", "/livetv"},
 		{"calendar", "library", "/calendar"}, {"metadata", "library", "/metadata"},
 		{"sources", "streaming", "/sources"}, {"releases", "streaming", "/quality"},
 		{"cache", "streaming", "/cache"}, {"playback", "streaming", "/playback"},
@@ -45,7 +45,7 @@ func TestConsoleDescriptorsRegister(t *testing.T) {
 	}
 	for group, ids := range map[string][]string{
 		"":          {"overview", "activity", "viewers"},
-		"library":   {"libraries", "collections", "home", "livetv", "calendar", "metadata"},
+		"library":   {"libraries", "collections", "recommendations", "livetv", "calendar", "metadata"},
 		"streaming": {"sources", "playback", "releases", "cache"},
 		"server":    {"general", "apps", "integrations", "plugins", "notifications", "flows", "cluster", "maintenance"},
 	} {

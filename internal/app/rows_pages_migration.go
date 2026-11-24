@@ -2,9 +2,7 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/personalize"
@@ -40,24 +38,10 @@ func (a *App) migrateRowsPages(ctx context.Context) error {
 		return err
 	}
 	// The Ether-managed discovery collections are built-in sources now.
-	ids := personalize.RetiredDiscoveryIDs()
-	if len(ids) > 0 && a.collections != nil {
-		args := make([]any, len(ids))
-		marks := make([]string, len(ids))
-		for i, id := range ids {
-			args[i], marks[i] = id, "?"
-		}
-		in := strings.Join(marks, ",")
-		if _, err := a.db.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id IN (SELECT id FROM collections_specs WHERE builtin=1 AND slug IN (`+in+`))`, args...); err != nil {
-			return fmt.Errorf("collections: delete discovery members: %w", err)
-		}
-		if _, err := a.db.ExecContext(ctx, `DELETE FROM collections_specs WHERE builtin=1 AND slug IN (`+in+`)`, args...); err != nil {
+	if a.collections != nil {
+		if err := a.collections.DeleteRetired(ctx, personalize.RetiredDiscoveryIDs()); err != nil {
 			return fmt.Errorf("collections: delete discovery collections: %w", err)
 		}
-	}
-	// Add-on catalogue imports keep only "Browse in apps".
-	if err := a.migrateAddonImportTargets(ctx); err != nil {
-		return err
 	}
 	// Jellyfin and Emby rows come from Home now: their own row lists go.
 	if err := a.cfg.Update(func(c *config.Config) error {
@@ -78,45 +62,5 @@ func (a *App) migrateRowsPages(ctx context.Context) error {
 		return err
 	}
 	a.log.Info("recommendations: moved Home layout and collection rows onto Recommendations pages", "pages", n, "collections", len(placements))
-	return nil
-}
-
-// migrateAddonImportTargets rewrites each add-on import's stored targets to
-// {"browseInApps": <its old Collections tab switch>}.
-func (a *App) migrateAddonImportTargets(ctx context.Context) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT addon_id, targets_json FROM collections_addon_imports`)
-	if err != nil {
-		// No add-on imports table on this database: nothing to rewrite.
-		return nil
-	}
-	type imp struct{ id, raw string }
-	var all []imp
-	for rows.Next() {
-		var i imp
-		if err := rows.Scan(&i.id, &i.raw); err != nil {
-			rows.Close()
-			return err
-		}
-		all = append(all, i)
-	}
-	rows.Close()
-	for _, i := range all {
-		var old struct {
-			CollectionsTab *bool `json:"collectionsTab"`
-			BrowseInApps   *bool `json:"browseInApps"`
-		}
-		_ = json.Unmarshal([]byte(i.raw), &old)
-		browse := true
-		if old.BrowseInApps != nil {
-			continue // already rewritten
-		}
-		if old.CollectionsTab != nil {
-			browse = *old.CollectionsTab
-		}
-		b, _ := json.Marshal(map[string]bool{"browseInApps": browse})
-		if _, err := a.db.ExecContext(ctx, `UPDATE collections_addon_imports SET targets_json=? WHERE addon_id=?`, string(b), i.id); err != nil {
-			return err
-		}
-	}
 	return nil
 }

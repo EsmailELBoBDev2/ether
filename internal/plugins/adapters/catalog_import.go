@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS collections_addon_imports (
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );`)
+	// Add-on imports keep only "Browse in apps" (their old Collections tab
+	// switch); where their rows show is a Recommendations page now.
+	store.Register("collections_addon_imports", 2, `UPDATE collections_addon_imports SET targets_json = CASE WHEN targets_json LIKE '%"collectionsTab":false%' THEN '{"browseInApps":false}' ELSE '{"browseInApps":true}' END WHERE targets_json NOT LIKE '%browseInApps%';`)
 }
 
 const (

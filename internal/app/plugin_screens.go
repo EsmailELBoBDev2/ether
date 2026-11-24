@@ -25,9 +25,10 @@ import (
 // document registry to plugin lifecycle and policy, and serves frontends.
 
 func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
+	a.screenPublish = screens.NewPublishStore(a.db)
 	reg := screens.NewDocRegistry(screens.DocRegistryOptions{
-		IsPublished: func(_ context.Context, _, _, _, frontendID string, def bool) bool {
-			return def && a.screenFrontendPublished(frontendID)
+		IsPublished: func(ctx context.Context, pluginID, kind, id, frontendID string, def bool) bool {
+			return a.screenFrontendPublished(frontendID) && a.screenPublish.Published(ctx, pluginID, kind, id, frontendID, def)
 		},
 		IsViewerAllowed: func(ctx context.Context, viewer *core.User, pluginID string) bool {
 			return a.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID)

@@ -32,6 +32,9 @@ type pluginScreenFrontendOverview struct {
 	Name      string `json:"name"`
 	Published bool   `json:"published"`
 	Reason    string `json:"reason"`
+	// Enabled is the owner's switch for a document screen or surface in this
+	// app (absent for 0.3.19 section screens, which have none).
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type pluginScreenOverview struct {
@@ -40,6 +43,9 @@ type pluginScreenOverview struct {
 	Icon      string                         `json:"icon,omitempty"`
 	Feed      string                         `json:"feed,omitempty"`
 	Frontends []pluginScreenFrontendOverview `json:"frontends"`
+	// Kind is "screen" or "surface"; Presentation names a surface's slot.
+	Kind         string `json:"kind,omitempty"`
+	Presentation string `json:"presentation,omitempty"`
 }
 
 type pluginLiveEventSummary struct {
@@ -74,6 +80,10 @@ func (a *App) wrapPluginLiveEventsHandler(next http.Handler) http.Handler {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) == 2 && parts[1] == "live-events" && parts[0] != "" {
 			a.handlePluginLiveEvents(w, r, parts[0])
+			return
+		}
+		if len(parts) == 2 && parts[1] == "screen-publish" && parts[0] != "" {
+			a.handleScreenPublish(w, r, parts[0])
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -350,6 +360,13 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 	}
 
 	screensOut := make([]pluginScreenOverview, 0, len(declaredScreens))
+	switchState := func(kind, id, fe string, def *bool) *bool {
+		on := def == nil || *def
+		if a.screenPublish != nil {
+			on = a.screenPublish.Published(ctx, rec.ID, kind, id, fe, on)
+		}
+		return &on
+	}
 	for _, sc := range declaredScreens {
 		frontends := sc.Frontends
 		if len(frontends) == 0 {
@@ -358,12 +375,19 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 		feOut := make([]pluginScreenFrontendOverview, 0, len(frontends))
 		for _, fe := range frontends {
 			pub, reason := a.screenPublishStatus(ctx, a.pluginsRT.mgr, rec, fe)
-			feOut = append(feOut, pluginScreenFrontendOverview{
+			entry := pluginScreenFrontendOverview{
 				ID:        fe,
 				Name:      consoleFrontendLabel(fe),
 				Published: pub,
 				Reason:    reason,
-			})
+			}
+			if len(sc.Pages) > 0 {
+				entry.Enabled = switchState("screen", sc.ID, fe, sc.Default)
+				if pub && !*entry.Enabled {
+					entry.Published, entry.Reason = false, "owner_off"
+				}
+			}
+			feOut = append(feOut, entry)
 		}
 		scFeed := sc.Feed
 		if scFeed == "" {
@@ -376,6 +400,25 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 			Feed:      scFeed,
 			Frontends: feOut,
 		})
+	}
+
+	if rec.Manifest.Ether != nil {
+		for _, sf := range rec.Manifest.Ether.Contributes.Surfaces {
+			frontends := sf.Frontends
+			if len(frontends) == 0 {
+				frontends = []string{"vela"}
+			}
+			feOut := make([]pluginScreenFrontendOverview, 0, len(frontends))
+			for _, fe := range frontends {
+				pub, reason := a.screenPublishStatus(ctx, a.pluginsRT.mgr, rec, fe)
+				entry := pluginScreenFrontendOverview{ID: fe, Name: consoleFrontendLabel(fe), Published: pub, Reason: reason, Enabled: switchState("surface", sf.ID, fe, sf.Default)}
+				if pub && !*entry.Enabled {
+					entry.Published, entry.Reason = false, "owner_off"
+				}
+				feOut = append(feOut, entry)
+			}
+			screensOut = append(screensOut, pluginScreenOverview{ID: sf.ID, Title: resolve(sf.Title, sf.ID), Frontends: feOut, Kind: "surface", Presentation: sf.Presentation})
+		}
 	}
 
 	var liveUpcoming []core.LiveEvent
@@ -497,4 +540,58 @@ func consoleFrontendLabel(id string) string {
 		}
 		return strings.ToUpper(id[:1]) + id[1:]
 	}
+}
+
+// handleScreenPublish sets the owner's per-app switch for one of a plugin's
+// document screens or surfaces: PUT /api/plugins/{id}/screen-publish
+// {kind: "screen"|"surface", id, frontend, enabled}.
+func (a *App) handleScreenPublish(w http.ResponseWriter, r *http.Request, pluginID string) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		httpjson.Write(w, http.StatusMethodNotAllowed, map[string]any{"code": "method_not_allowed", "message": "use PUT"})
+		return
+	}
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.mgr == nil || a.screenPublish == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "plugin not found"})
+		return
+	}
+	var in struct {
+		Kind     string `json:"kind"`
+		ID       string `json:"id"`
+		Frontend string `json:"frontend"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil || in.Enabled == nil || (in.Kind != "screen" && in.Kind != "surface") || in.Frontend != "vela" {
+		httpjson.Write(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "expected {kind: screen|surface, id, frontend: vela, enabled}"})
+		return
+	}
+	rec, err := a.pluginsRT.mgr.Get(r.Context(), pluginID)
+	if err != nil || rec.Manifest.Ether == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "plugin not found"})
+		return
+	}
+	found := false
+	if in.Kind == "screen" {
+		for _, sc := range rec.Manifest.Ether.Contributes.Screens {
+			found = found || (sc.ID == in.ID && len(sc.Pages) > 0)
+		}
+	} else {
+		for _, sf := range rec.Manifest.Ether.Contributes.Surfaces {
+			found = found || sf.ID == in.ID
+		}
+	}
+	if !found {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "no such screen or surface"})
+		return
+	}
+	if err := a.screenPublish.Set(r.Context(), pluginID, in.Kind, in.ID, in.Frontend, *in.Enabled); err != nil {
+		httpjson.Write(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": "could not save"})
+		return
+	}
+	if docs := (surfaceScreens{app: a}).docs(); docs != nil {
+		docs.Bump()
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

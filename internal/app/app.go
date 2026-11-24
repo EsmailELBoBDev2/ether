@@ -66,6 +66,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/remote"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"github.com/braedonsaunders/ether/internal/segcache"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/sessions"
@@ -329,6 +330,7 @@ type App struct {
 	extendRT           *extendRuntime
 	streamRT           *consoleStreamRuntime
 	pluginsRT          *pluginRuntime
+	screenPublish      *screens.PublishStore
 	agentRT            *agentRuntime
 	eventBus           *events.Bus
 	eventRegistry      *events.Registry

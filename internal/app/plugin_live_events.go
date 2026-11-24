@@ -633,7 +633,11 @@ func (a *App) handleScreenPreview(w http.ResponseWriter, r *http.Request, projec
 	}
 	// Draft strings come from the working copy's strings files.
 	text := draftText(man, files)
-	token, expires, err := docs.CreatePreview(man, files, text, time.Now())
+	var in struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&in)
+	token, expires, err := docs.UpdatePreview(strings.TrimSpace(in.Token), man, files, text, time.Now())
 	if err != nil {
 		var ve *plugins.ValidationError
 		if errors.As(err, &ve) {

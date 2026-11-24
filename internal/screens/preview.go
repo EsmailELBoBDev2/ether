@@ -40,6 +40,13 @@ var ErrPreviewInvalid = errors.New("screens: draft does not compile")
 // token. A draft's plugin id is its manifest id; it replaces an installed
 // plugin of that id only for requests carrying the token.
 func (r *DocRegistry) CreatePreview(man plugins.Manifest, files map[string][]byte, text TextFunc, now time.Time) (string, time.Time, error) {
+	return r.UpdatePreview("", man, files, text, now)
+}
+
+// UpdatePreview recompiles a draft into an existing live token (so an open
+// preview keeps its token across saves), or mints a new token when token is
+// empty or no longer live.
+func (r *DocRegistry) UpdatePreview(token string, man plugins.Manifest, files map[string][]byte, text TextFunc, now time.Time) (string, time.Time, error) {
 	if r == nil {
 		return "", time.Time{}, ErrNoDocuments
 	}
@@ -65,11 +72,13 @@ func (r *DocRegistry) CreatePreview(man plugins.Manifest, files map[string][]byt
 		e.enabled, e.shadow, e.screensOff, e.liveOff, e.installedAt = inst.enabled, inst.shadow, inst.screensOff, inst.liveOff, inst.installedAt
 	}
 	r.mu.RUnlock()
-	token := randomHex(24)
 	expires := now.Add(previewTTL)
 	r.previews.mu.Lock()
 	if r.previews.byID == nil {
 		r.previews.byID = map[string]preview{}
+	}
+	if old, ok := r.previews.byID[token]; !ok || now.After(old.expires) || old.plugin.pluginID != man.ID {
+		token = randomHex(24)
 	}
 	for k, p := range r.previews.byID {
 		if now.After(p.expires) {

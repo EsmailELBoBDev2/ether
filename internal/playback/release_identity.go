@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -62,8 +63,13 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	normPath := strings.ReplaceAll(p.Path, "\\", "/")
 	baseInfo := releaseparse.Parse(path.Base(normPath))
 	fullInfo := releaseparse.Parse(strings.ReplaceAll(normPath, "/", " "))
-	if len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) > 0 {
-		baseInfo.Seasons = fullInfo.Seasons
+	// The file's own season, else the one its nearest season folder
+	// names: in a range pack "Show.S01-S05/S02/..." the whole path reads
+	// as seasons 1 to 5 and would accept another season's file.
+	folderSeasons := releaseparse.FolderSeasons(normPath)
+	if len(baseInfo.Seasons) == 0 && len(folderSeasons) > 0 {
+		baseInfo.Seasons = folderSeasons
+		fullInfo.Seasons = folderSeasons
 	}
 	matchesEpisode := func(info core.ReleaseInfo) bool {
 		if releaseparse.AbsoluteConflict(info, absolute) {
@@ -97,6 +103,12 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	}
 	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 || fullInfo.AirDate != "" {
 		return matchesEpisode(fullInfo)
+	}
+	// A classic "Season 1/05 - Title.mkv" carries no episode Parse reads,
+	// but its season folder still has to be the wanted season.
+	if len(baseInfo.Seasons) > 0 {
+		return slices.Contains(baseInfo.Seasons, season) || slices.Contains(baseInfo.Seasons, origSeason) ||
+			p.Target != nil && slices.ContainsFunc(p.Target.Aliases, func(n core.EpisodeNumber) bool { return slices.Contains(baseInfo.Seasons, n.Season) })
 	}
 	return true
 }

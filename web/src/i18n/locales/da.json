@@ -4250,7 +4250,6 @@
     "one": "Sprang {count} indexer med en ikke-understøttet protokol over",
     "other": "Sprang {count} indexere med en ikke-understøttet protokol over"
   },
-  "m_0cd76c9f818f7f": "Kurateret: Siden viser rækkerne i din rækkefølge. Tomme rækker springes over.",
   "m_0cd788aacd464e": "Vurderingskilder gemt",
   "m_0cd7932e4c6001": "Kunne ikke oprette forbindelse til denne udbyder. Tjek vært og port.",
   "m_0cd7f1d83e2048": "Stop synkronisering",

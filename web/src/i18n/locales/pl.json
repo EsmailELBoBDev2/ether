@@ -4460,7 +4460,6 @@
     "one": "Pominięto {count} indeksator z nieobsługiwanym protokołem",
     "other": "Pominięto {count} indeksatora z nieobsługiwanym protokołem"
   },
-  "m_0cd76c9f818f7f": "Ręczny: strona wyświetla wiersze w ustalonej przez Ciebie kolejności. Puste wiersze są pomijane.",
   "m_0cd788aacd464e": "Źródła ocen zapisane",
   "m_0cd7932e4c6001": "Nie udało się połączyć z tym dostawcą. Sprawdź hosta i port.",
   "m_0cd7f1d83e2048": "Zatrzymaj synchronizację",

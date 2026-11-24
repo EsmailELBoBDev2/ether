@@ -4250,7 +4250,6 @@
     "one": "Ohitettiin {count} indeksoija, jonka protokollaa ei tueta",
     "other": "Ohitettiin {count} indeksoijaa, joiden protokollaa ei tueta"
   },
-  "m_0cd76c9f818f7f": "Kuratoitu: sivu näyttää rivit valitsemassasi järjestyksessä. Tyhjät rivit ohitetaan.",
   "m_0cd788aacd464e": "Arvosanalähteet tallennettu",
   "m_0cd7932e4c6001": "Tähän palveluntarjoajaan ei saatu yhteyttä. Tarkista palvelin ja portti.",
   "m_0cd7f1d83e2048": "Lopeta synkronointi",

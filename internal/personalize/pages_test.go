@@ -358,40 +358,27 @@ func TestMigrateRowsPagesFromTheOldLayout(t *testing.T) {
 	}
 }
 
-// Pinned rows sit at exactly their position on the whole page, plugin
-// rows included, and a collision says which row holds the place.
-func TestPinnedPositionsHoldWithPluginRows(t *testing.T) {
-	surface := core.Row{ID: NewRowID(), Source: core.RowSource{Kind: SourceSurface, Params: map[string]string{"surface": "p:s"}},
-		Placement: core.RowPlacement{Mode: core.PlacementPinned, Position: 2, Audience: core.Audience{Mode: core.AudienceEveryone}}}
-	xmas := prow(KindPopular, core.PlacementPinned, 3)
-	other := prow(KindTrending, core.PlacementPinned, 3)
-	p := rpage(core.PageHome, prow(KindContinue, core.PlacementPinned, 1), surface, xmas, other)
-	pl := compilePage(p, true, 1, nil)
+// Two pins on one position: the first keeps it, the next says which row
+// holds the place; Ether's own rows say what they really follow.
+func TestPinCollisionAndNeighbourWhy(t *testing.T) {
+	a := prow(KindPopular, core.PlacementPinned, 2)
+	b := prow(KindTrending, core.PlacementPinned, 2)
+	p := rpage(core.PageHome, a, b)
 	rows := []core.HomeRow{
-		pageServedRow("home.continue", KindContinue, 3),
-		pageServedRow("home.top10", KindTop10, 10),
 		pageServedRow("home.popular", KindPopular, 12),
 		pageServedRow("home.trending", KindTrending, 12),
+		pageServedRow("home.top10", KindTop10, 10),
 	}
-	var visible []core.HomeRow
-	for _, r := range arrangePage(rows, pl, 1, hubContext(testNow, core.DeviceTV), 8) {
+	var got []core.HomeRow
+	for _, r := range arrangePage(rows, compilePage(p, true, 1, nil), 1, hubContext(testNow, core.DeviceTV), 8) {
 		if !r.Hidden {
-			visible = append(visible, r)
+			got = append(got, r)
 		}
 	}
-	stub := core.HomeRow{HubID: "surface:p:s", RowID: surface.ID, Kind: SourceSurface, Title: "Your teams", Mode: core.PlacementPinned, Pinned: true}
-	got := settlePins(visible, []pinnedRow{{row: stub, rule: pl.byRow[surface.ID]}}, pl)
-	var ids []string
-	for _, r := range got {
-		ids = append(ids, r.HubID)
+	if len(got) != 3 || got[1].HubID != "home.popular" || got[2].HubID != "home.trending" {
+		t.Fatalf("order = %v", pageVisibleIDs(got))
 	}
-	if want := []string{"home.continue", "surface:p:s", "home.popular", "home.trending", "home.top10"}; !slices.Equal(ids, want) {
-		t.Fatalf("order = %v, want %v", ids, want)
-	}
-	if got[3].Why != "Pinned to #3 for everyone; home.popular is pinned there too, so it's at #4" {
-		t.Fatalf("collision why = %q", got[3].Why)
-	}
-	if got[4].Why != "Ether placed it after home.trending" && got[4].Why != "Ether chose it" {
-		t.Fatalf("pick why = %q", got[4].Why)
+	if want := "Pinned to #2 for everyone; home.popular is pinned there too, so it's at #3"; got[2].Why != want {
+		t.Fatalf("collision why = %q", got[2].Why)
 	}
 }

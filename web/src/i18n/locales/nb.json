@@ -4250,7 +4250,6 @@
     "one": "Hoppet over {count} indekserer med en protokoll som ikke støttes",
     "other": "Hoppet over {count} indekserere med en protokoll som ikke støttes"
   },
-  "m_0cd76c9f818f7f": "Kuratert: Siden viser radene i din rekkefølge. Tomme rader hoppes over.",
   "m_0cd788aacd464e": "Vurderingskilder lagret",
   "m_0cd7932e4c6001": "Kunne ikke koble til denne leverandøren. Sjekk vert og port.",
   "m_0cd7f1d83e2048": "Stopp synkronisering",

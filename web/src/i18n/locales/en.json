@@ -4134,6 +4134,7 @@
   "m_0c6585291788ed": "Standalone (SQLite)",
   "m_0c6602a4b69b55": "Recent first",
   "m_0c664ba74604a5": "Broadcast",
+  "m_0c6676ea3daea7": "Curated: pinned rows sit at their number; the others follow in your order. Rows with nothing to show are skipped.",
   "m_0c68b5068311c6": "Recording. {seconds}s elapsed.",
   "m_0c6986f5deed1e": "Title / viewer",
   "m_0c6c435b0855a6": "Must differ from your other profiles.",
@@ -4276,7 +4277,6 @@
     "one": "Skipped {count} indexer with an unsupported protocol",
     "other": "Skipped {count} indexers with an unsupported protocol"
   },
-  "m_0cd76c9f818f7f": "Curated: the page shows its rows in your order. Rows with nothing to show are skipped.",
   "m_0cd788aacd464e": "Rating sources saved",
   "m_0cd7932e4c6001": "Could not connect to this provider. Check the host and port.",
   "m_0cd7f1d83e2048": "Stop syncing",

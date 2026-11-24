@@ -4354,7 +4354,6 @@
     "one": "{count} indexador com protocolo não compatível foi ignorado",
     "other": "{count} indexadores com protocolo não compatível foram ignorados"
   },
-  "m_0cd76c9f818f7f": "Manual: a página mostra as linhas na ordem que você definiu. Linhas vazias são ignoradas.",
   "m_0cd788aacd464e": "Fontes de avaliação salvas",
   "m_0cd7932e4c6001": "Não foi possível conectar a este provedor. Verifique o host e a porta.",
   "m_0cd7f1d83e2048": "Parar de sincronizar",

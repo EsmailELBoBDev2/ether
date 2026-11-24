@@ -4250,7 +4250,6 @@
     "one": "{count} Indexer mit nicht unterstütztem Protokoll übersprungen",
     "other": "{count} Indexer mit nicht unterstütztem Protokoll übersprungen"
   },
-  "m_0cd76c9f818f7f": "Kuratiert: Die Seite zeigt die Zeilen in deiner Reihenfolge. Leere Zeilen werden übersprungen.",
   "m_0cd788aacd464e": "Bewertungsquellen gespeichert",
   "m_0cd7932e4c6001": "Verbindung zu diesem Anbieter nicht möglich. Prüfen Sie Host und Port.",
   "m_0cd7f1d83e2048": "Synchronisierung beenden",

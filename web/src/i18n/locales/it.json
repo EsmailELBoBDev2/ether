@@ -4354,7 +4354,6 @@
     "one": "{count} indexer con protocollo non supportato ignorato",
     "other": "{count} indexer con protocollo non supportato ignorati"
   },
-  "m_0cd76c9f818f7f": "Selezione manuale: le righe appaiono nell’ordine che hai scelto. Le righe vuote vengono saltate.",
   "m_0cd788aacd464e": "Fonti di valutazione salvate",
   "m_0cd7932e4c6001": "Impossibile connettersi a questo provider. Controlla host e porta.",
   "m_0cd7f1d83e2048": "Interrompi la sincronizzazione",

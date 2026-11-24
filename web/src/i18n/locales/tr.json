@@ -4244,7 +4244,6 @@
     "one": "Desteklenmeyen protokole sahip {count} dizinleyici atlandı",
     "other": "Desteklenmeyen protokole sahip {count} dizinleyici atlandı"
   },
-  "m_0cd76c9f818f7f": "Elle düzenlenen: Satırlar belirlediğin sırada gösterilir. Boş satırlar atlanır.",
   "m_0cd788aacd464e": "Puan kaynakları kaydedildi",
   "m_0cd7932e4c6001": "Bu sağlayıcıya bağlanılamadı. Ana bilgisayarı ve bağlantı noktasını kontrol edin.",
   "m_0cd7f1d83e2048": "Senkronizasyonu durdur",

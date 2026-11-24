@@ -4354,7 +4354,6 @@
     "one": "{count} indexeur ignoré (protocole non pris en charge)",
     "other": "{count} indexeurs ignorés (protocole non pris en charge)"
   },
-  "m_0cd76c9f818f7f": "Sélection manuelle : les lignes s’affichent dans l’ordre choisi. Les lignes vides sont ignorées.",
   "m_0cd788aacd464e": "Sources de notes enregistrées",
   "m_0cd7932e4c6001": "Impossible de se connecter à ce fournisseur. Vérifiez l’hôte et le port.",
   "m_0cd7f1d83e2048": "Arrêter la synchronisation",

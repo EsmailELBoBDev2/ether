@@ -734,9 +734,7 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 // withSurfaceRows inserts the page's plugin surface rows (stubs Vela draws
 // from the plugin's document) at their page positions. They are not
 // counted toward the page length and nothing dedupes or filters them; the
-// apps drop the ones a viewer or app may not see. On a Personalized page
-// every pinned row, the page's own and the surfaces, then sits at exactly
-// its position (settlePins), so one numbering holds for the whole page.
+// apps drop the ones a viewer or app may not see.
 func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubContext, existing map[string]core.NeutralHomeRow) []core.HomeRow {
 	if pl == nil || e.opts.Surfaces == nil || !pl.listed[SourceSurface] {
 		return rows
@@ -745,7 +743,6 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 	for _, s := range e.opts.Surfaces(ctx) {
 		byKey[s.Plugin+":"+s.ID] = s
 	}
-	var pins []pinnedRow
 	for _, r := range pl.rules {
 		if r.Source != SourceSurface || r.row == nil || !r.active(user, hc) {
 			continue
@@ -766,98 +763,23 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 		row := core.HomeRow{HubID: id, RowID: r.RowID, Kind: SourceSurface, Title: title, Source: core.RowSourceOwner,
 			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Why: r.why(r.Slot), Hub: core.Hub{ID: id, Title: title},
 			Present: core.RowPresentation{RowID: r.RowID, Surface: &core.RowSurface{Plugin: info.Plugin, Surface: info.WireID}}}
+		at := len(rows)
 		switch {
 		case pl.curated:
-			at := 0
+			at = 0
 			for i, x := range rows {
 				if p := pl.match(x); p != nil && p.Order < r.Order {
 					at = i + 1
 				}
 			}
-			rows = slices.Insert(rows, at, row)
-		case r.Mode == core.PlacementPinned && r.Slot > 0:
-			row.Pinned = true
-			pins = append(pins, pinnedRow{row: row, rule: r})
+		case r.Mode == core.PlacementPinned:
+			at = min(max(r.Slot-1, 0), len(rows))
 		default:
-			rows = slices.Insert(rows, min(1, len(rows)), row)
+			at = min(1, len(rows))
 		}
+		rows = append(rows[:at], append([]core.HomeRow{row}, rows[at:]...)...)
 	}
-	if pl.curated {
-		return rows
-	}
-	return settlePins(rows, pins, pl)
-}
-
-type pinnedRow struct {
-	row  core.HomeRow
-	rule *rule
-}
-
-// settlePins puts every pinned row (the arranged page's and extra) at
-// exactly its position among all the rows; the others keep their order in
-// the places left. Two pins on one position: the first keeps it, the next
-// takes the next place and says why.
-func settlePins(rows []core.HomeRow, extra []pinnedRow, pl *pagePlan) []core.HomeRow {
-	var pins []pinnedRow
-	var rest []core.HomeRow
-	for _, x := range rows {
-		if p := pl.match(x); p != nil && x.Pinned && p.Slot > 0 {
-			pins = append(pins, pinnedRow{row: x, rule: p})
-		} else {
-			rest = append(rest, x)
-		}
-	}
-	pins = append(pins, extra...)
-	n := len(pins) + len(rest)
-	out := make([]core.HomeRow, 0, n)
-	var outRules []*rule
-	used := make([]bool, len(pins))
-	next := 0
-	for pos := 1; pos <= n; pos++ {
-		pick := -1
-		for i, p := range pins {
-			if !used[i] && p.rule.Slot == pos {
-				pick = i
-				break
-			}
-		}
-		if pick < 0 {
-			for i, p := range pins {
-				if !used[i] && p.rule.Slot < pos {
-					pick = i
-					break
-				}
-			}
-		}
-		if pick < 0 && next < len(rest) {
-			out = append(out, rest[next])
-			outRules = append(outRules, nil)
-			next++
-			continue
-		}
-		if pick < 0 {
-			for i, p := range pins {
-				if !used[i] && (pick < 0 || p.rule.Slot < pins[pick].rule.Slot) {
-					pick = i
-				}
-			}
-		}
-		used[pick] = true
-		out = append(out, pins[pick].row)
-		outRules = append(outRules, pins[pick].rule)
-	}
-	for i := range out {
-		out[i].Slot = i + 1
-		if p := outRules[i]; p != nil {
-			if p.Slot != i+1 {
-				out[i].Why = pinMovedWhy(p, i+1, out)
-			} else {
-				out[i].Why = p.why(p.Slot)
-			}
-		}
-	}
-	etherPlacedWhy(out)
-	return out
+	return rows
 }
 
 // presentationFor is how apps should draw an arranged row.

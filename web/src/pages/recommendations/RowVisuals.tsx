@@ -10,7 +10,8 @@ import type { TitleCard } from "../../lib/contract";
 import type { PlacementMode, PreviewRow, RowCard, RowStyle } from "../../lib/pages";
 
 export function placementLabel(mode: PlacementMode, curated: boolean): string {
-  if (curated) return mode === "hide" ? t("Hidden") : t("On the page");
+  // Curated: pinned rows keep their number; the others sit in your order.
+  if (curated && mode !== "pinned") return mode === "hide" ? t("Hidden") : t("On the page");
   switch (mode) {
     case "pinned":
       return t("Pinned");

@@ -4354,7 +4354,6 @@
     "one": "Se omitió {count} indexador con un protocolo no compatible",
     "other": "Se omitieron {count} indexadores con un protocolo no compatible"
   },
-  "m_0cd76c9f818f7f": "Selección manual: las filas se muestran en el orden que elijas. Se omiten las filas vacías.",
   "m_0cd788aacd464e": "Fuentes de valoraciones guardadas",
   "m_0cd7932e4c6001": "No se pudo conectar con este proveedor. Comprueba el host y el puerto.",
   "m_0cd7f1d83e2048": "Dejar de sincronizar",

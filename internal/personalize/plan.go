@@ -48,9 +48,6 @@ type rule struct {
 	// Derived rows are built for the page (parameters or libraries the
 	// engine's own row doesn't have); bound by row id only.
 	Derived bool
-	// curated rules belong to a Curated page: the row sits in the page's
-	// order whatever its stored placement (kept for switching back).
-	curated bool
 	row     *core.Row
 }
 
@@ -194,7 +191,7 @@ func compilePage(p core.RowPage, saved bool, viewer int64, libs map[core.Library
 			r.Status = "eligible"
 		}
 		if pl.curated && r.Status != "off" {
-			r.Status, r.Slot, r.curated = "always", 0, true
+			r.Status, r.Slot = "always", 0
 		}
 		switch place.Priority {
 		case 1:
@@ -400,18 +397,12 @@ func deviceLabel(d string) string {
 
 // why is the "Why here" line for a row a rule placed at slot.
 func (r *rule) why(slot int) string {
-	if r.curated {
-		return "In your order"
-	}
 	who := "for everyone"
 	if r.Layer == core.RowLayerViewer {
 		who = "just for this viewer"
 	}
 	switch r.Mode {
 	case core.PlacementPinned:
-		if r.Slot <= 0 {
-			return "Pinned " + who
-		}
 		return fmt.Sprintf("Pinned to #%d %s", r.Slot, who)
 	case core.PlacementShow:
 		return "You chose Show " + who + "; Ether placed it here"

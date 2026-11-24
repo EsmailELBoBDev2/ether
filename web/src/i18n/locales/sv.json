@@ -4250,7 +4250,6 @@
     "one": "Hoppade över {count} indexerare med ett protokoll som inte stöds",
     "other": "Hoppade över {count} indexerare med ett protokoll som inte stöds"
   },
-  "m_0cd76c9f818f7f": "Manuellt: sidan visar raderna i din ordning. Tomma rader hoppas över.",
   "m_0cd788aacd464e": "Betygskällorna sparades",
   "m_0cd7932e4c6001": "Kunde inte ansluta till den här leverantören. Kontrollera värd och port.",
   "m_0cd7f1d83e2048": "Sluta synkronisera",

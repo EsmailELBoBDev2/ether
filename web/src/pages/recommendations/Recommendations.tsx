@@ -317,7 +317,6 @@ function PageRowView({
   const when = pageRow ? scheduleSummary(pageRow.placement.when, pageRow.placement.devices) : "";
   const draggable = Boolean(r.rowId) && !r.ghost;
   const misplaced =
-    !curated &&
     mode === "pinned" &&
     Boolean(pageRow?.placement.position && item.position) &&
     pageRow!.placement.position !== item.position;
@@ -361,7 +360,11 @@ function PageRowView({
         {draggable ? (
           <span
             className="cursor-grab text-fg-subtle"
-            title={curated ? t("Drag to move") : t("Drag to move; drop to pin it there")}
+            title={
+              curated && mode !== "pinned"
+                ? t("Drag to move")
+                : t("Drag to move; drop to pin it there")
+            }
             aria-hidden
           >
             <GripVertical size={14} />
@@ -374,7 +377,7 @@ function PageRowView({
             "grid size-6 place-items-center rounded-md text-xs font-semibold tabular-nums",
             misplaced
               ? "bg-warning-subtle text-warning"
-              : !curated && mode === "pinned"
+              : mode === "pinned"
                 ? "bg-success-subtle text-success"
                 : "bg-bg-subtle text-fg-muted",
           )}
@@ -404,9 +407,7 @@ function PageRowView({
           </Badge>
         ) : null}
         {r.rowId ? (
-          curated ? null : (
-            <PlacementChip mode={mode} position={pageRow?.placement.position} curated={curated} />
-          )
+          <PlacementChip mode={mode} position={pageRow?.placement.position} curated={curated} />
         ) : (
           <Badge variant="secondary" className="gap-1">
             <Sparkles size={11} /> {t("Ether's pick")}
@@ -438,7 +439,7 @@ function PageRowView({
           </Badge>
         ) : null}
         <div className="ml-auto flex gap-0.5 opacity-100 sm:opacity-0 sm:group-focus-within/row:opacity-100 sm:group-hover/row:opacity-100">
-          {curated || !r.rowId || r.ghost ? null : (
+          {!r.rowId || r.ghost ? null : (
             <Button
               variant="ghost"
               size="sm"
@@ -801,7 +802,8 @@ export default function Recommendations() {
       {
         page: draft,
         position: at,
-        editingFor,
+        // One of Ether's rows is everyone's row; edits for a viewer go in their variant.
+        editingFor: opts.ether ? null : editingFor,
         libraries: opts.library && !pageLibrary ? [opts.library] : undefined,
       },
     );
@@ -864,9 +866,35 @@ export default function Recommendations() {
     setDrawer(null);
     if (params.get("row") || params.get("add")) setQuery({ row: null, add: null });
   };
+  /**
+   * Keeps one of Ether's rows (a pick, Continue Watching…) on the page.
+   * Editing for one viewer, the page gets Ether's own row (Auto, for
+   * everyone, as if Ether picked it) and the change goes into that viewer's
+   * variant, so nobody else's page changes.
+   */
+  const keepEtherRow = (row: PageRow, beforeId: string | null) => {
+    if (editingFor == null) {
+      update((p) => insertRow(p, row, beforeId));
+      return;
+    }
+    const everyone = { mode: "everyone" as const };
+    const base: PageRow = {
+      ...row,
+      name: undefined,
+      look: {},
+      placement: { mode: "auto", audience: everyone },
+    };
+    update((p) =>
+      setOverride(insertRow(p, base, beforeId), editingFor, row.id, {
+        look: row.look,
+        placement: { ...row.placement, audience: everyone },
+      }),
+    );
+  };
   const commitAdd = () => {
     if (!pending || !pendingComplete) return;
-    update((p) => insertRow(p, pending.row, pending.beforeId));
+    if (pending.ether) keepEtherRow(pending.row, pending.beforeId);
+    else update((p) => insertRow(p, pending.row, pending.beforeId));
     setPending(null);
     setDrawer(null);
     if (params.get("add")) setQuery({ add: null });
@@ -890,14 +918,14 @@ export default function Recommendations() {
     }
     const source = sourceByKind.get(r.kind);
     if (!source || !draft) return;
-    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor });
-    update((p) => insertRow(p, { ...row, placement: withMode(row.placement, "hide") }, null));
+    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor: null });
+    keepEtherRow({ ...row, placement: withMode(row.placement, "hide") }, null);
   };
   const addPick = (kind: string) => {
     const source = sourceByKind.get(kind);
     if (!source || !draft) return;
-    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor });
-    update((p) => insertRow(p, { ...row, placement: withMode(row.placement, "show") }, null));
+    const row = rowForSource(source, {}, { page: draft, position: 1, editingFor: null });
+    keepEtherRow({ ...row, placement: withMode(row.placement, "show") }, null);
   };
 
   // Drag and drop: the dropped order stays put until the next preview arrives.
@@ -943,7 +971,9 @@ export default function Recommendations() {
       }
     }
     const position = order.slice(0, insertAt).filter((h) => !byHub.get(h)?.ghost).length + 1;
-    if (curated) {
+    if (curated && effective(rowId)?.placement.mode !== "pinned") {
+      // Curated: the list order is the page order. A pinned row keeps its
+      // pin and takes the new position, as on a Personalized page.
       if (editingFor == null) update((p) => moveRow(p, rowId, beforeId));
       return;
     }

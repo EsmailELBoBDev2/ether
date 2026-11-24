@@ -1146,6 +1146,7 @@ function PlacementSection({
   );
   const modes: { value: PlacementMode; label: string }[] = curated
     ? [
+        { value: "pinned", label: t("Pinned") },
         { value: "show", label: t("On the page") },
         { value: "hide", label: t("Hide") },
       ]
@@ -1164,7 +1165,7 @@ function PlacementSection({
         hint={
           curated
             ? t(
-                "Curated: the page shows its rows in your order. Rows with nothing to show are skipped.",
+                "Curated: pinned rows sit at their number; the others follow in your order. Rows with nothing to show are skipped.",
               )
             : t(
                 "Pinned: always at this position. Show: always on the page, Ether picks where. Auto: Ether decides by what each viewer plays.",
@@ -1174,17 +1175,17 @@ function PlacementSection({
         <Segmented
           ariaLabel={t("Placement")}
           size="sm"
-          value={curated ? (placement.mode === "hide" ? "hide" : "show") : placement.mode}
+          value={curated && placement.mode === "auto" ? "show" : placement.mode}
           onChange={(m) => {
-            // On a Curated page "On the page" keeps the row's Pinned/Show/Auto
+            // On a Curated page an Auto row is "On the page"; it stays Auto
             // for when the page is Personalized again.
-            if (curated && m === "show" && placement.mode !== "hide") return;
+            if (curated && m === "show" && placement.mode === "auto") return;
             onChange(withMode(placement, m));
           }}
           options={modes}
         />
       </Line>
-      {placement.mode === "pinned" && !curated ? (
+      {placement.mode === "pinned" ? (
         <Line label={t("Position")}>
           <NumberField
             label={t("Position")}

@@ -4460,7 +4460,6 @@
     "one": "Přeskočen {count} indexer s nepodporovaným protokolem",
     "other": "Přeskočeno {count} indexerů s nepodporovaným protokolem"
   },
-  "m_0cd76c9f818f7f": "Ručně sestavené: řádky se zobrazují ve vámi určeném pořadí. Prázdné řádky se přeskočí.",
   "m_0cd788aacd464e": "Zdroje hodnocení uloženy",
   "m_0cd7932e4c6001": "K tomuto poskytovateli se nepodařilo připojit. Zkontrolujte hostitele a port.",
   "m_0cd7f1d83e2048": "Zastavit synchronizaci",

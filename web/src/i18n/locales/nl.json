@@ -4250,7 +4250,6 @@
     "one": "{count} indexer met een niet-ondersteund protocol overgeslagen",
     "other": "{count} indexers met een niet-ondersteund protocol overgeslagen"
   },
-  "m_0cd76c9f818f7f": "Handmatig: de pagina toont rijen in jouw volgorde. Lege rijen worden overgeslagen.",
   "m_0cd788aacd464e": "Beoordelingsbronnen opgeslagen",
   "m_0cd7932e4c6001": "Kan geen verbinding maken met deze provider. Controleer de host en poort.",
   "m_0cd7f1d83e2048": "Stoppen met synchroniseren",

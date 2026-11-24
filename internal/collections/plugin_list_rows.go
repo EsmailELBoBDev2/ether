@@ -138,7 +138,7 @@ func (s *Service) pluginListRow(ctx context.Context, user *core.User, id string)
 	case MediaShow:
 		hub.Type = core.TypeShow
 	}
-	return &core.CollectionRow{Hub: hub, HomeRow: true, SectionRow: true}, nil
+	return &core.CollectionRow{Hub: hub, CollectionID: sig, HomeRow: true, SectionRow: true}, nil
 }
 
 // readPluginList reads one list in the background and keeps its titles.

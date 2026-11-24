@@ -27,6 +27,14 @@ type RowSourceKind interface {
 	Descriptor() core.RowDescriptor
 }
 
+// RowSourceInfoKind is a runtime kind (a plugin list source, a Stremio
+// add-on catalogue) that describes itself as a Recommendations row source:
+// its plugin, what it needs from a library, and its parameters.
+type RowSourceInfoKind interface {
+	RowSourceKind
+	SourceInfo() core.RowSourceInfo
+}
+
 // builtinRowKind adapts a static kindInfo.
 type builtinRowKind struct{ info kindInfo }
 

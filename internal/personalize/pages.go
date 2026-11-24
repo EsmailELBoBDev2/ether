@@ -253,6 +253,9 @@ func (e *Engine) NormalizePage(ctx context.Context, p core.RowPage) (core.RowPag
 		if src.HomeOnly && p.Key != core.PageHome {
 			return p, &ValidationError{Problems: []Problem{{fmt.Sprintf("rows[%d].source", i), "this row only fits Home"}}}
 		}
+		if err := e.listenLook(ctx, p.Key, r); err != nil {
+			return p, &ValidationError{Problems: []Problem{{fmt.Sprintf("rows[%d].look", i), err.Error()}}}
+		}
 		if p.Key != core.PageHome && len(r.Scope.Libraries) > 0 {
 			return p, &ValidationError{Problems: []Problem{{fmt.Sprintf("rows[%d].scope", i), "a library page's rows draw from that library"}}}
 		}

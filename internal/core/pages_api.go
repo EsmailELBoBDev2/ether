@@ -68,6 +68,9 @@ type PageLibrary struct {
 	Card string `json:"card,omitempty"`
 	// RowsTabs are the library's rows tabs (key and label), in tab order.
 	RowsTabs []PageTab `json:"rowsTabs,omitempty"`
+	// Shelves are a plugin library's declared shelves (key and label), the
+	// choices of the Plugin Shelf source on its pages.
+	Shelves []ParamOption `json:"shelves,omitempty"`
 }
 
 // PageTab is one rows tab of a library.

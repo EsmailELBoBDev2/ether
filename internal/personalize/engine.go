@@ -93,7 +93,11 @@ type Options struct {
 	LibraryRowsTab func(ctx context.Context, id core.LibraryID) string
 	// PageLibraries describes every library for Recommendations pages:
 	// experience, media type, capabilities and rows tabs.
-	PageLibraries   func(ctx context.Context) []core.PageLibrary
+	PageLibraries func(ctx context.Context) []core.PageLibrary
+	// PageSurfaces lists the plugin Home-row surfaces the designer can place
+	// (value "<pluginID>:<surfaceID>", label "<Plugin> · <Surface>"): the
+	// choices of the surface source.
+	PageSurfaces    func(ctx context.Context) []core.ParamOption
 	FilterAvailable func(context.Context, []core.Title) []core.Title
 	// Owner previews use the same effective viewer and title policy as Plex.
 	UserPolicy func(*core.User) *core.User

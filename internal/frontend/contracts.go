@@ -347,8 +347,10 @@ type RowRequest struct {
 	Device           core.Device
 	Placement        Placement
 	ViewID           string
-	Item             core.RatingKey
-	Limit            int
+	// Tab is the library rows tab for PlacementLibrary ("" = the first).
+	Tab   string
+	Item  core.RatingKey
+	Limit int
 	// Purpose asks for one row. The zero value still returns the whole placement.
 	Purpose RowPurpose
 }

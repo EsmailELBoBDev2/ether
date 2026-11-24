@@ -123,6 +123,12 @@ func (s *Server) rememberStreamRequest(r *http.Request, user *frontend.Viewer, k
 		if kind == "subtitle" && r.URL.Path == "/:/timeline" && s.subtitleSelectionEcho(FromContext(r.Context()), key, track) {
 			continue
 		}
+		// The same holds for audio: a timeline report of the track the
+		// server marked selected is that pick repeated, not the viewer's.
+		if kind == "audio" && r.URL.Path == "/:/timeline" && s.playIDs != nil &&
+			s.playIDs.issuedSelected(s.playIdentityFor(FromContext(r.Context()), key), id, s.now()) {
+			continue
+		}
 		if err = s.svc().trackPrefs.Remember(r.Context(), user.ID, key, kind, track); err != nil {
 			s.log.Warn("save stream preference", "error", err)
 		}

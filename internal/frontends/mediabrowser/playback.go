@@ -421,6 +421,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	listVersions := len(variants) > 0
+	if i.protocol == "jellyfin" && subtitleSet && opts.SubtitleStream < 0 && !versionRequested && subtitlesUnlisted(variants) {
+		// Jellyfin Web posts its hidden subtitle menu's "-1" when the detail
+		// page had no subtitle list to choose from (the release was not
+		// probed yet). That is no choice: the viewer's rules decide.
+		subtitleSet = false
+		intent.SubtitleSet = false
+	}
 	autoSwitchedRelease := ""
 	planBase := frontend.PlanRequest{Viewer: v, Device: dev, Protocol: i.protocol, Item: key, Channel: channel, Version: version, ResolvedRelease: resolvedRelease, DetailSource: detailSource, ExpectedSourceETag: expectedETag, Caps: capability.Client, Intent: intent}
 	// Auto skips a video transcode: when the automatic pick would re-encode
@@ -1616,4 +1623,23 @@ func embedsSubtitle(profiles []caps.SubtitleProfile, codec string) bool {
 		}
 	}
 	return false
+}
+
+// subtitlesUnlisted reports whether the Auto source a detail page offered
+// listed no subtitle track: its release was not probed yet, or it has none.
+// A client could not have picked "off" from a list it never received.
+func subtitlesUnlisted(variants []frontend.ReleaseVariant) bool {
+	if len(variants) == 0 {
+		return false
+	}
+	info := variants[0].Info
+	if info.Estimated {
+		return true
+	}
+	for _, st := range info.Streams {
+		if st.Type == "subtitle" {
+			return false
+		}
+	}
+	return true
 }

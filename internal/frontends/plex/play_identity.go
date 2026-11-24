@@ -556,6 +556,29 @@ func (p *playIdentities) pickSubtitle(k playIdentityKey, st *frontend.StreamInfo
 	e.at = now
 }
 
+// issuedSelected reports whether the latest stream list issued to this
+// client for k marked wireID selected: a timeline report of that id repeats
+// the server's own pick rather than choosing a track.
+func (p *playIdentities) issuedSelected(k playIdentityKey, wireID int64, now time.Time) bool {
+	if p == nil || !k.valid() || wireID == 0 {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e := p.m[k]
+	if e == nil || (!e.frozen && e.admitting == 0 && now.Sub(e.at) > playIdentityTTL) {
+		return false
+	}
+	for _, im := range e.media {
+		for _, is := range im.streams {
+			if is.id == wireID && is.selected {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // shownSubtitles returns the subtitle each Media's latest stream list for k
 // marked selected. rendered is false when this client holds no current
 // stream list for the title.

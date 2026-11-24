@@ -210,6 +210,7 @@ var tierUntouchedTables = []string{
 	// title only frees a quota entry and is never a reason to keep it.
 	"safety_download_usage",
 	"collections_addon_imports",
+	"state_play_contexts",
 	// Live sports events are keyed by plugin event ids, never catalogue titles.
 	"live_event_reveals", "viewer_push_liveevent_claims",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",

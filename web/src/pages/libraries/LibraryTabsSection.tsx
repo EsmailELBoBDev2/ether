@@ -291,7 +291,9 @@ export function LibraryTabsSection({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-sm text-fg-muted">
-              {t("Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs.")}
+              {t(
+                "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page.",
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">

@@ -1881,7 +1881,6 @@
   "m_058797d566c836": "Starta den här noden med ETHER_DATABASE_URL som pekar på den tomma databasen och ETHER_DATA_DIR satt till {folder}. Ether importerar säkerhetskopian vid första starten.",
   "m_0589791ce0ef09": "Avbröts innan slutförande",
   "m_0589f047eeab94": "En indexeraråtgärd lyckas efter en varning.",
-  "m_058cdd4f8ef212": "redan på den här sidan",
   "m_058cf7542399a3": "Begränsar bildkvaliteten för den som tittar hemifrån, så att strömmen ryms i anslutningen. 0 betyder ingen gräns.",
   "m_058d624db1b110": "Stremio stöder bara filmer, serier och kanaler.",
   "m_058db896144392": "nov.",
@@ -3480,7 +3479,6 @@
     "many": "{count} objekt",
     "other": "{count} objekt"
   },
-  "m_0a6c41d0dcec87": "Flikar visas i Vela. Plex, Jellyfin och Emby behåller sina egna biblioteksflikar.",
   "m_0a6cd6e2be65bc": "En del av den totala budgeten, inte extra lagring.",
   "m_0a6cd79fe80de1": {
     "one": "Sedd av {count} tittare",
@@ -4091,7 +4089,6 @@
   "m_0c4bc91e859047": "Åtgärda",
   "m_0c4c544058ee92": "Usenet-leverantörer",
   "m_0c4d107cc14dcc": "Dina grupper",
-  "m_0c4e6ff05e2a88": "{rows} av högst {length} rader · {pinned} fästa · {shown} visade · {auto} valda av Ether",
   "m_0c4fbab823e7aa": "Omkodning (ljud)",
   "m_0c509a75b0f2ea": "Filtrera efter titel, profil eller release…",
   "m_0c50e8fd17501b": "Uppladdad {date}",
@@ -4312,7 +4309,6 @@
   "m_0d0317ba7253e1": "synk historik",
   "m_0d05009255dd42": "Delade användare synkroniseras inte",
   "m_0d051488117e57": "Favorit",
-  "m_0d062857e3afa8": "Fästa rader och rader märkta Visa visas även om gränsen överskrids.",
   "m_0d06af9d4c7f60": "Grupp",
   "m_0d0731b2d552df": "Pennbana",
   "m_0d08c9ea5f4337": "Inget i kalendern än",
@@ -5274,10 +5270,6 @@
   "m_0fd145f38dd45b": "Verktyg som Wizarr och Jellyseerr använder API-nycklar för att agera som serverägaren.",
   "m_0fd1b4af557c7f": "Undertexter",
   "m_0fd265e965fa34": "{name} behåller allt — historik, Hem och inställningar — och förblir delad på plex.tv, men loggas ut överallt och kan inte titta förrän du återupptar åtkomsten.",
-  "m_0fd513828cede5": {
-    "one": "{count} rad",
-    "other": "{count} rader"
-  },
   "m_0fd522122afec7": "Behövs inte",
   "m_0fd5df5b289f99": "TLS krypterar trafiken, men det här läget verifierar inte databasserverns identitet.",
   "m_0fd696abd607e8": "Parametervärde för {label}",
@@ -7096,7 +7088,6 @@
   "m_15268f30e4a1fe": "Innehåll",
   "m_1528d7499e0d53": "Linjebredd",
   "m_1529e6b3d3503d": "Sök pre-rolls …",
-  "m_152c3a7cab404d": "Sök: trendande, anime, spellistor, familj…",
   "m_152c6d6f69adef": "Mappsökväg",
   "m_152d7e35d2433f": "Nästa avsnitt",
   "m_152e3f732b733d": "Tittar-ID",
@@ -7771,7 +7762,6 @@
   "m_17269aaeba184d": "Webbplatser som får bädda in den här sidan",
   "m_1726f348cd024a": "Att skapa en ögonblicksbild reparerar inte databasen. Utan en bekräftat fungerande säkerhetskopia bör du bevara datamappen och söka hjälp med resultaten innan du försöker återställa.",
   "m_1727acf91f4dff": "Namngivning",
-  "m_1727b0dadd2133": "En rad som du skapat · {source} · en rad per bibliotek",
   "m_1727fc2d4bf9ac": "Öppna din kontosida och skapa ett applösenord för Filer.",
   "m_1728678a80d846": "Den här videon är längre än 3 minuter. Välj ett kortare klipp.",
   "m_1728dd8efc1315": "Standardfilter",

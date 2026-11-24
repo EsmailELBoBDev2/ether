@@ -77,16 +77,48 @@ export function VelaOnlyChip() {
   );
 }
 
-function SquareCard({ item, round }: { item: TitleCard; round?: boolean }) {
+/** A title's age rating on its card, "Unrated" when it has none. */
+export function RatingBadge({ rating }: { rating?: string }) {
+  return (
+    <span
+      className={cn(
+        "rounded px-1 py-0.5 text-[10px] font-semibold",
+        rating ? "bg-overlay/80 text-on-scrim" : "bg-warning/90 text-on-scrim",
+      )}
+    >
+      {rating || t("Unrated")}
+    </span>
+  );
+}
+
+function SquareCard({
+  item,
+  round,
+  showRating,
+}: {
+  item: TitleCard;
+  round?: boolean;
+  showRating?: boolean;
+}) {
   return (
     <div className="w-28 shrink-0 sm:w-32">
       <div
         className={cn(
-          "aspect-square overflow-hidden shadow-sm ring-1 ring-border-subtle",
+          "relative aspect-square overflow-hidden shadow-sm ring-1 ring-border-subtle",
           round ? "rounded-full" : "rounded-md",
         )}
       >
         <Artwork src={item.poster} alt={item.title} title={item.title} className="size-full" />
+        {showRating ? (
+          <span
+            className={cn(
+              "absolute",
+              round ? "inset-x-0 bottom-2 text-center" : "left-1.5 top-1.5",
+            )}
+          >
+            <RatingBadge rating={item.contentRating} />
+          </span>
+        ) : null}
       </div>
       <p className={cn("mt-1.5 truncate text-xs font-medium text-fg", round && "text-center")}>
         {item.title}
@@ -95,7 +127,15 @@ function SquareCard({ item, round }: { item: TitleCard; round?: boolean }) {
   );
 }
 
-function WideCard({ item, hero }: { item: TitleCard; hero?: boolean }) {
+function WideCard({
+  item,
+  hero,
+  showRating,
+}: {
+  item: TitleCard;
+  hero?: boolean;
+  showRating?: boolean;
+}) {
   return (
     <div className={cn("shrink-0", hero ? "w-80 sm:w-[26rem]" : "w-56 sm:w-64")}>
       <div className="relative aspect-video overflow-hidden rounded-lg shadow-sm ring-1 ring-border-subtle">
@@ -105,6 +145,11 @@ function WideCard({ item, hero }: { item: TitleCard; hero?: boolean }) {
           title={item.title}
           className="size-full"
         />
+        {showRating ? (
+          <span className="absolute left-1.5 top-1.5">
+            <RatingBadge rating={item.contentRating} />
+          </span>
+        ) : null}
         {hero ? (
           <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-overlay/80 to-transparent px-3 pb-2 pt-8">
             <p className="truncate text-sm font-semibold text-on-scrim">{item.title}</p>
@@ -134,13 +179,7 @@ function RatedPoster({
       ) : null}
       <PosterCard
         item={item}
-        badge={
-          showRating && item.contentRating ? (
-            <span className="rounded bg-overlay/80 px-1 py-0.5 text-[10px] font-semibold text-on-scrim">
-              {item.contentRating}
-            </span>
-          ) : undefined
-        }
+        badge={showRating ? <RatingBadge rating={item.contentRating} /> : undefined}
       />
     </div>
   );
@@ -199,6 +238,7 @@ export function RowBody({
             <span className="w-4 text-right tabular-nums text-fg-subtle">{i + 1}</span>
             <Artwork src={it.poster} alt="" title={it.title} className="size-8 shrink-0 rounded" />
             <span className="min-w-0 flex-1 truncate font-medium text-fg">{it.title}</span>
+            {showRating ? <RatingBadge rating={it.contentRating} /> : null}
             {it.year ? <span className="tabular-nums text-fg-muted">{it.year}</span> : null}
           </div>
         ))}
@@ -214,7 +254,14 @@ export function RowBody({
             className="flex items-center gap-2 overflow-hidden rounded-md bg-surface ring-1 ring-border-subtle"
           >
             <Artwork src={it.poster} alt="" title={it.title} className="size-11 shrink-0" />
-            <span className="truncate text-xs font-semibold text-fg">{it.title}</span>
+            <span className="min-w-0 flex-1 truncate text-xs font-semibold text-fg">
+              {it.title}
+            </span>
+            {showRating ? (
+              <span className="mr-1.5 shrink-0">
+                <RatingBadge rating={it.contentRating} />
+              </span>
+            ) : null}
           </div>
         ))}
       </div>
@@ -225,11 +272,11 @@ export function RowBody({
       {items.map((it, i) => (
         <li key={it.key}>
           {layout === "hero" ? (
-            <WideCard item={it} hero />
+            <WideCard item={it} hero showRating={showRating} />
           ) : layout === "wide" || shape === "landscape" ? (
-            <WideCard item={it} />
+            <WideCard item={it} showRating={showRating} />
           ) : shape === "square" || shape === "round" ? (
-            <SquareCard item={it} round={shape === "round"} />
+            <SquareCard item={it} round={shape === "round"} showRating={showRating} />
           ) : (
             <RatedPoster
               item={it}
@@ -262,8 +309,11 @@ export function RowGrid({
   card,
   numbered,
   pluginName,
+  showRating = false,
 }: {
   row: Pick<PreviewRow, "items" | "present" | "ghost">;
+  /** Every card shows its age rating ("Unrated" when it has none). */
+  showRating?: boolean;
   style?: RowStyle;
   card?: RowCard;
   numbered?: boolean;
@@ -287,6 +337,7 @@ export function RowGrid({
             <span className="w-5 text-right tabular-nums text-fg-subtle">{i + 1}</span>
             <Artwork src={it.poster} alt="" title={it.title} className="size-9 shrink-0 rounded" />
             <span className="min-w-0 flex-1 truncate font-medium text-fg">{it.title}</span>
+            {showRating ? <RatingBadge rating={it.contentRating} /> : null}
             {it.year ? <span className="tabular-nums text-fg-muted">{it.year}</span> : null}
           </div>
         ))}
@@ -310,6 +361,11 @@ export function RowGrid({
                   <RankBadge rank={i + 1} />
                 </span>
               ) : null}
+              {showRating ? (
+                <span className="absolute right-1.5 top-1.5">
+                  <RatingBadge rating={it.contentRating} />
+                </span>
+              ) : null}
             </div>
             <p className="mt-1.5 truncate text-xs font-medium text-fg">{it.title}</p>
           </li>
@@ -330,6 +386,11 @@ export function RowGrid({
             >
               <Artwork src={it.poster} alt={it.title} title={it.title} className="size-full" />
             </div>
+            {showRating ? (
+              <p className={cn("mt-1", shape === "round" && "text-center")}>
+                <RatingBadge rating={it.contentRating} />
+              </p>
+            ) : null}
             <p
               className={cn(
                 "mt-1.5 truncate text-xs font-medium text-fg",
@@ -347,7 +408,16 @@ export function RowGrid({
     <PosterGrid
       className="grid-cols-3 gap-x-2 sm:grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] sm:gap-x-3"
       items={items}
-      badge={ranked ? (_, i) => (i < 10 ? <RankBadge rank={i + 1} /> : undefined) : undefined}
+      badge={
+        ranked || showRating
+          ? (it, i) => (
+              <span className="flex items-center gap-1">
+                {ranked && i < 10 ? <RankBadge rank={i + 1} /> : null}
+                {showRating ? <RatingBadge rating={it.contentRating} /> : null}
+              </span>
+            )
+          : undefined
+      }
     />
   );
 }

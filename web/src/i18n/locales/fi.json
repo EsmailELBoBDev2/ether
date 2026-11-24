@@ -1881,7 +1881,6 @@
   "m_058797d566c836": "Käynnistä tämä solmu niin, että ETHER_DATABASE_URL osoittaa tyhjään tietokantaan ja ETHER_DATA_DIR on {folder}. Ether tuo varmuuskopion ensimmäisellä käynnistyskerralla.",
   "m_0589791ce0ef09": "Peruutettu ennen valmistumista",
   "m_0589f047eeab94": "Indeksoijan toiminto onnistuu hälytyksen jälkeen.",
-  "m_058cdd4f8ef212": "jo tällä sivulla",
   "m_058cf7542399a3": "Rajoittaa kuvanlaatua kotoa poissa katsoville, jotta suoratoisto mahtuu yhteyteen. 0 tarkoittaa ei rajaa.",
   "m_058d624db1b110": "Stremio tukee vain elokuvia, sarjoja ja kanavia.",
   "m_058db896144392": "marras",
@@ -3480,7 +3479,6 @@
     "many": "{count} kohdetta",
     "other": "{count} kohdetta"
   },
-  "m_0a6c41d0dcec87": "Välilehdet näkyvät Velassa. Plex, Jellyfin ja Emby säilyttävät omat kirjastovälilehtensä.",
   "m_0a6cd6e2be65bc": "Osa kokonaisbudjetista, ei lisätallennustilaa.",
   "m_0a6cd79fe80de1": {
     "one": "Katsonut {count} katselija",
@@ -4091,7 +4089,6 @@
   "m_0c4bc91e859047": "Korjaa",
   "m_0c4c544058ee92": "Usenet-palveluntarjoajat",
   "m_0c4d107cc14dcc": "Omat ryhmäsi",
-  "m_0c4e6ff05e2a88": "{rows} enintään {length} rivistä · {pinned} kiinnitetty · {shown} näkyy · Etherin valitsema {auto}",
   "m_0c4fbab823e7aa": "Transkoodaus (ääni)",
   "m_0c509a75b0f2ea": "Suodata nimikkeen, profiilin tai julkaisun mukaan…",
   "m_0c50e8fd17501b": "Ladattu {date}",
@@ -4312,7 +4309,6 @@
   "m_0d0317ba7253e1": "synkronointi historia",
   "m_0d05009255dd42": "Jaetut käyttäjät eivät synkronoidu",
   "m_0d051488117e57": "Suosikki",
-  "m_0d062857e3afa8": "Kiinnitetyt ja näytetyt rivit näkyvät aina, jopa tämän jälkeen.",
   "m_0d06af9d4c7f60": "Ryhmä",
   "m_0d0731b2d552df": "Kynäpolku",
   "m_0d08c9ea5f4337": "Kalenterissa ei ole vielä mitään",
@@ -5274,10 +5270,6 @@
   "m_0fd145f38dd45b": "Työkalut kuten Wizarr ja Jellyseerr käyttävät API-avaimia toimiakseen palvelimen omistajana.",
   "m_0fd1b4af557c7f": "Tekstitykset",
   "m_0fd265e965fa34": "{name} säilyttää kaiken — historian, Etusivun ja asetukset — ja pysyy jaettuna plex.tv:ssä, mutta kirjataan ulos kaikkialta eikä voi katsoa, ennen kuin palautat käytön.",
-  "m_0fd513828cede5": {
-    "one": "{count} rivi",
-    "other": "{count} riviä"
-  },
   "m_0fd522122afec7": "Ei tarvita",
   "m_0fd5df5b289f99": "TLS salaa liikenteen, mutta tämä tila ei vahvista tietokantapalvelimen identiteettiä.",
   "m_0fd696abd607e8": "Parametrin arvo: {label}",
@@ -7096,7 +7088,6 @@
   "m_15268f30e4a1fe": "Sisältö",
   "m_1528d7499e0d53": "Viivan leveys",
   "m_1529e6b3d3503d": "Hae pre-rolleja …",
-  "m_152c3a7cab404d": "Haku: trendaavat, anime, soittolistat, perhe…",
   "m_152c6d6f69adef": "Kansion polku",
   "m_152d7e35d2433f": "Seuraavat jaksot",
   "m_152e3f732b733d": "Katsojan tunnus",
@@ -7771,7 +7762,6 @@
   "m_17269aaeba184d": "Sivustot, jotka saavat upottaa tämän sivun",
   "m_1726f348cd024a": "Tilannekuvan luominen ei korjaa tietokantaa. Ilman varmasti ehjää varmuuskopiota säilytä datakansio ja pyydä apua havaintojen perusteella ennen palautusyritystä.",
   "m_1727acf91f4dff": "Nimeäminen",
-  "m_1727b0dadd2133": "Yksi tekemäsi rivi · {source} · yksi rivi kirjastoa kohti",
   "m_1727fc2d4bf9ac": "Avaa tilisivusi ja luo sovellussalasana Tiedostot-sovellukselle.",
   "m_1728678a80d846": "Tämä video on yli 3 minuutin mittainen. Valitse lyhyempi leike.",
   "m_1728dd8efc1315": "Oletussuodatin",

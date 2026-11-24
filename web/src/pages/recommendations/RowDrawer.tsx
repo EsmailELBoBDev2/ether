@@ -3,11 +3,20 @@
 // opens the same drawer to edit it. Every change goes straight into the page
 // draft, so the page behind it previews it as you go.
 import { Badge, Button, Input, Spinner, Switch, cn } from "@braedonsaunders/appkit-ui";
-import { ChevronDown, ChevronRight, Puzzle, Search } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  GripVertical,
+  Plus,
+  Puzzle,
+  Search,
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
-import { pluginCollectionHref } from "../collections/links";
+import { newCollectionHref, pluginCollectionHref } from "../collections/links";
 import { ChipGroup, Segmented } from "../../components/fields";
 import { SubtabNav } from "../../components/layout";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
@@ -71,6 +80,14 @@ export interface DrawerContext {
   /** Editing for one viewer: only Look and Placement change, just for them. */
   editingFor: Viewer | null;
   preview: { viewer?: number; device: Device; at: string };
+  /** The draft's rows, so the picker says what's already on the page. */
+  rows?: PageRow[];
+}
+
+/** "New collection…": Collection Studio, which comes back here with it as a new row. */
+function newCollectionLink(pageKey: string): string {
+  const back = new URLSearchParams({ page: pageKey });
+  return newCollectionHref({ returnTo: `/recommendations?${back}&add=collection:` });
 }
 
 // ---------------------------------------------------------------- layout bits
@@ -146,53 +163,149 @@ function NumberField({
 
 // ---------------------------------------------------------------- source picker
 
+/** A plugin's slug label ("popular-week") in words ("Popular week"). */
+function humanize(label: string): string {
+  if (!/^[a-z0-9]+([-_][a-z0-9]+)+$/.test(label)) return label;
+  const words = label.replace(/[-_]/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 interface PickEntry {
   key: string;
+  /** Plugin entries sit under their library or plugin ("Music", "Cinemeta"). */
+  sub?: string;
+  /** Extra words search matches: genres and other choices, library names. */
+  terms: string;
   source: PageSource;
   title: string;
   description: string;
   params: Record<string, string>;
+  /** Rows of exactly this entry (this collection, this shelf) in the draft. */
+  used: number;
 }
 
-function entriesFor(sources: PageSource[]): PickEntry[] {
+function entriesFor(
+  sources: PageSource[],
+  rows: PageRow[] | undefined,
+  libraryNames: Map<number, string>,
+): PickEntry[] {
   const out: PickEntry[] = [];
+  const usedBy = (kind: string, key?: string, value?: string) =>
+    rows
+      ? rows.filter((r) => r.source.kind === kind && (!key || r.source.params?.[key] === value))
+          .length
+      : 0;
   for (const s of sources) {
     if (!s.available) continue;
     const ref = s.params?.find((p) => p.type === "ref" && p.required);
+    const terms = [
+      s.plugin ?? "",
+      ...(s.params ?? []).flatMap((p) => (p.choices ?? []).map((c) => c.label)),
+      ...(s.libraries ?? []).map((id) => libraryNames.get(id) ?? ""),
+    ].join(" ");
     if (ref && s.refs?.length) {
       for (const r of s.refs) {
+        // A shelf's label is "<Library> › <shelf>" on Home: the shelf is the
+        // title, its library and plugin go under it.
+        const [lib, shelf] = r.label.includes(" › ")
+          ? (r.label.split(" › ", 2) as [string, string])
+          : ["", r.label];
+        const sub = s.group === "plugins" ? lib || s.plugin || undefined : undefined;
         out.push({
           key: `${s.kind}:${r.value}`,
           source: s,
-          title: r.label,
-          description: s.title,
+          sub,
+          terms: `${terms} ${lib}`,
+          title: humanize(shelf),
+          description:
+            s.kind === "collection"
+              ? t("Your collection")
+              : [s.plugin, lib].filter(Boolean).join(" · ") || s.title,
           params: { [ref.key]: r.value },
+          used: rows ? usedBy(s.kind, ref.key, r.value) : s.used,
         });
       }
       continue;
     }
-    out.push({ key: s.kind, source: s, title: s.title, description: s.description, params: {} });
+    if (ref && s.kind === "collection") continue; // no collections yet: "New collection…" covers it
+    out.push({
+      key: s.kind,
+      source: s,
+      sub: s.group === "plugins" ? s.plugin || undefined : undefined,
+      terms,
+      title: humanize(s.title),
+      description: s.description,
+      params: {},
+      used: rows ? usedBy(s.kind) : s.used,
+    });
   }
   return out;
+}
+
+function PickButton({
+  entry: e,
+  heading,
+  pluginGroup,
+  onPick,
+}: {
+  entry: PickEntry;
+  heading?: string;
+  pluginGroup: boolean;
+  onPick: (s: PageSource, params: Record<string, string>) => void;
+}) {
+  return (
+    <>
+      {heading ? (
+        <p className="col-span-full mt-2 text-[11px] font-semibold text-fg-muted first:mt-0">
+          {heading}
+        </p>
+      ) : null}
+      <button
+        type="button"
+        aria-label={e.title}
+        onClick={() => onPick(e.source, e.params)}
+        className="block w-full rounded-lg border border-transparent px-2.5 py-1.5 text-left hover:border-border hover:bg-surface"
+      >
+        <span className="flex flex-wrap items-center gap-1.5">
+          <span className="text-sm font-medium text-fg">{e.title}</span>
+          <KindChip personal={e.source.personal} />
+          {e.source.kind === "surface" || e.source.kind.startsWith("surface:") ? (
+            <VelaOnlyChip />
+          ) : null}
+          {e.used > 0 ? <span className="text-[11px] text-fg-subtle">{t("used here")}</span> : null}
+        </span>
+        <span className="block text-xs text-fg-muted">
+          {pluginGroup && e.source.plugin && !e.description.includes(e.source.plugin)
+            ? `${e.source.plugin} · ${e.description}`
+            : e.description}
+        </span>
+      </button>
+    </>
+  );
 }
 
 function SourcePicker({
   sources,
   error,
   onPick,
+  rows,
+  pageKey,
+  libraries,
 }: {
   sources: PageSource[] | null;
   error: unknown;
   onPick: (s: PageSource, params: Record<string, string>) => void;
+  rows?: PageRow[];
+  pageKey: string;
+  libraries: PageLibrary[];
 }) {
   const [q, setQ] = useState("");
   const { locale } = useLocale();
   const groups = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    const entries = entriesFor(sources ?? []).filter(
-      (e) =>
-        !needle ||
-        `${e.title} ${e.description} ${e.source.plugin ?? ""}`.toLowerCase().includes(needle),
+    const names = new Map(libraries.map((l) => [l.id, l.name]));
+    const entries = entriesFor(sources ?? [], rows, names).filter(
+      (e) => !needle || `${e.title} ${e.description} ${e.terms}`.toLowerCase().includes(needle),
     );
     const byGroup = new Map<string, PickEntry[]>();
     for (const e of entries) {
@@ -205,8 +318,17 @@ function SourcePicker({
           ((SOURCE_GROUP_ORDER.indexOf(a) + 100) % 100) -
           ((SOURCE_GROUP_ORDER.indexOf(b) + 100) % 100),
       )
-      .map(([g, items]) => ({ group: g, label: sourceGroupLabel(g), items }));
-  }, [sources, q, locale]);
+      .map(([g, items]) => ({
+        group: g,
+        label: sourceGroupLabel(g),
+        // Plugin rows sit together under their library or plugin.
+        items:
+          g === "plugins"
+            ? [...items].sort((a, b) => (a.sub ?? "").localeCompare(b.sub ?? ""))
+            : items,
+      }));
+  }, [sources, q, locale, rows, libraries]);
+  const canCollect = (sources ?? []).some((s) => s.kind === "collection" && s.available);
   if (error) return <p className="text-sm text-danger">{errorMessage(error)}</p>;
   if (!sources) return <Spinner size={18} label={t("Loading what can fill a row")} />;
   return (
@@ -228,7 +350,7 @@ function SourcePicker({
         <Input
           aria-label={t("Search rows")}
           className="h-9 pl-8"
-          placeholder={t("Search: trending, anime, playlists, family…")}
+          placeholder={t("Search: trending, a genre, a library, playlists…")}
           value={q}
           onChange={(e) => setQ(e.currentTarget.value)}
         />
@@ -236,39 +358,32 @@ function SourcePicker({
       {groups.length === 0 ? (
         <p className="text-sm text-fg-muted">{t("Nothing matches that search.")}</p>
       ) : null}
-      <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+      <div className="space-y-4">
         {groups.map((g) => (
           <div key={g.group} role="group" aria-label={g.label}>
             <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
               {g.label}
             </h4>
-            <div className="space-y-0.5">
-              {g.items.map((e) => (
-                <button
-                  type="button"
-                  key={e.key}
-                  aria-label={e.title}
-                  onClick={() => onPick(e.source, e.params)}
-                  className="block w-full rounded-lg border border-transparent px-2.5 py-1.5 text-left hover:border-border hover:bg-surface"
+            <div className="grid items-start gap-x-4 gap-y-0.5 sm:grid-cols-2">
+              {g.group === "collections" && canCollect ? (
+                <Link
+                  to={newCollectionLink(pageKey)}
+                  className="col-span-full flex w-full flex-wrap items-baseline gap-x-1.5 rounded-lg border border-transparent px-2.5 py-1.5 text-sm font-medium text-primary hover:border-border hover:bg-surface"
                 >
-                  <span className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-sm font-medium text-fg">{e.title}</span>
-                    <KindChip personal={e.source.personal} />
-                    {e.source.kind === "surface" || e.source.kind.startsWith("surface:") ? (
-                      <VelaOnlyChip />
-                    ) : null}
-                    {e.source.used > 0 ? (
-                      <span className="text-[11px] text-fg-subtle">
-                        {t("already on this page")}
-                      </span>
-                    ) : null}
+                  <Plus size={13} /> {t("New collection…")}
+                  <span className="text-xs font-normal text-fg-muted">
+                    {t("Opens Collection Studio, then comes back here")}
                   </span>
-                  <span className="block text-xs text-fg-muted">
-                    {e.source.plugin && g.group === "plugins"
-                      ? `${e.source.plugin} · ${e.description}`
-                      : e.description}
-                  </span>
-                </button>
+                </Link>
+              ) : null}
+              {g.items.map((e, i) => (
+                <PickButton
+                  key={e.key}
+                  entry={e}
+                  heading={e.sub && e.sub !== g.items[i - 1]?.sub ? e.sub : undefined}
+                  pluginGroup={g.group === "plugins"}
+                  onPick={onPick}
+                />
               ))}
             </div>
           </div>
@@ -501,12 +616,13 @@ function LibrariesSection({
         />
       </Line>
       {these ? (
-        <ChipGroup
-          ariaLabel={t("Libraries")}
-          size="sm"
-          value={chosen}
-          onChange={(v) => !disabled && set({ ...row.scope, libraries: v })}
-          options={offered.map((l) => ({ value: l.id, label: l.name }))}
+        <LibraryOrder
+          chosen={chosen}
+          offered={offered}
+          libraries={libraries}
+          per={per}
+          disabled={disabled}
+          onChange={(v) => set({ ...row.scope, libraries: v })}
         />
       ) : null}
       {these && otherKind.length ? (
@@ -552,6 +668,122 @@ function LibrariesSection({
         </Line>
       ) : null}
     </Section>
+  );
+}
+
+/**
+ * The chosen libraries as an ordered list: drag a chip, or use its arrows,
+ * to set the order (a one-row-per-library row shows its rows in this order).
+ * The libraries not chosen sit below, to add.
+ */
+function LibraryOrder({
+  chosen,
+  offered,
+  libraries,
+  per,
+  disabled,
+  onChange,
+}: {
+  chosen: number[];
+  offered: PageLibrary[];
+  libraries: PageLibrary[];
+  per: boolean;
+  disabled?: boolean;
+  onChange: (ids: number[]) => void;
+}) {
+  const dragFrom = useRef<number | null>(null);
+  const name = (id: number) => libraries.find((l) => l.id === id)?.name ?? String(id);
+  const move = (from: number, to: number) => {
+    if (disabled || from === to || to < 0 || to >= chosen.length) return;
+    const next = [...chosen];
+    const [id] = next.splice(from, 1);
+    next.splice(to, 0, id!);
+    onChange(next);
+  };
+  const addable = offered.filter((l) => !chosen.includes(l.id));
+  return (
+    <div className="space-y-2">
+      <ol className="flex flex-wrap gap-1.5" aria-label={t("Libraries, in order")}>
+        {chosen.map((id, i) => (
+          <li
+            key={id}
+            draggable={!disabled && chosen.length > 1}
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", String(id));
+              dragFrom.current = i;
+            }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragFrom.current != null) move(dragFrom.current, i);
+              dragFrom.current = null;
+            }}
+            className="inline-flex items-center gap-1 rounded-full border border-primary bg-primary-subtle py-0.5 pl-1.5 pr-1 text-xs text-fg"
+          >
+            {chosen.length > 1 ? (
+              <GripVertical size={11} className="cursor-grab text-fg-subtle" aria-hidden />
+            ) : null}
+            {per && chosen.length > 1 ? (
+              <span className="font-semibold tabular-nums text-primary">{i + 1}.</span>
+            ) : null}
+            {name(id)}
+            {chosen.length > 1 ? (
+              <>
+                <button
+                  type="button"
+                  disabled={disabled || i === 0}
+                  onClick={() => move(i, i - 1)}
+                  aria-label={t("Move {library} earlier", { library: name(id) })}
+                  className="rounded p-0.5 hover:bg-surface disabled:opacity-30"
+                >
+                  <ChevronLeft size={11} />
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled || i === chosen.length - 1}
+                  onClick={() => move(i, i + 1)}
+                  aria-label={t("Move {library} later", { library: name(id) })}
+                  className="rounded p-0.5 hover:bg-surface disabled:opacity-30"
+                >
+                  <ChevronRight size={11} />
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              disabled={disabled || chosen.length === 1}
+              onClick={() => onChange(chosen.filter((x) => x !== id))}
+              aria-label={t("Remove {library}", { library: name(id) })}
+              className="rounded p-0.5 hover:bg-surface disabled:opacity-30"
+            >
+              <X size={11} />
+            </button>
+          </li>
+        ))}
+      </ol>
+      {addable.length ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-fg-muted">{t("Add")}</span>
+          {addable.map((l) => (
+            <button
+              key={l.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange([...chosen, l.id])}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-xs text-fg-muted hover:border-primary hover:text-primary"
+            >
+              <Plus size={11} /> {l.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {per && chosen.length > 1 ? (
+        <p className="text-xs text-fg-muted">
+          {t("The rows show in this order. Drag a library, or use its arrows, to change it.")}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -942,12 +1174,17 @@ function PlacementSection({
         <Segmented
           ariaLabel={t("Placement")}
           size="sm"
-          value={placement.mode}
-          onChange={(m) => onChange(withMode(placement, m))}
+          value={curated ? (placement.mode === "hide" ? "hide" : "show") : placement.mode}
+          onChange={(m) => {
+            // On a Curated page "On the page" keeps the row's Pinned/Show/Auto
+            // for when the page is Personalized again.
+            if (curated && m === "show" && placement.mode !== "hide") return;
+            onChange(withMode(placement, m));
+          }}
           options={modes}
         />
       </Line>
-      {placement.mode === "pinned" ? (
+      {placement.mode === "pinned" && !curated ? (
         <Line label={t("Position")}>
           <NumberField
             label={t("Position")}
@@ -1022,7 +1259,7 @@ function PlacementSection({
           ) : null}
         </>
       ) : null}
-      {placement.mode === "auto" ? (
+      {placement.mode === "auto" && !curated ? (
         <>
           <button
             type="button"
@@ -1159,6 +1396,7 @@ function ContentTab({
           ) : null}
           <RowGrid
             row={r}
+            showRating
             style={row.look.style}
             card={row.look.card}
             numbered={row.look.numbered ?? undefined}
@@ -1185,7 +1423,10 @@ export function RowDrawer({
   onRemove,
   onChangeSource,
   onTab,
+  ether,
 }: {
+  /** A row Ether adds (onPage) or may add, opened to look at it. */
+  ether?: { title: string; onPage: boolean };
   state: DrawerState | null;
   /** The row being set up or edited (Everyone's, or the viewer's effective row). */
   row: PageRow | null;
@@ -1210,14 +1451,50 @@ export function RowDrawer({
   const libraryNames = (row?.scope.libraries ?? []).map(
     (id) => ctx.libraries.find((l) => l.id === id)?.name ?? "",
   );
-  const sourceTitle = source?.title ?? row?.source.kind ?? "";
-  const title = adding
-    ? source && !picking
-      ? t("New row at #{at} · {source}", { at: state.at, source: sourceTitle })
-      : t("New row at #{at}", { at: state.at })
-    : row?.name
-      ? fillLibrary(row.name, libraryNames[0] ?? "")
-      : sourceTitle;
+  const refParam = source?.params?.find((p) => p.type === "ref" && p.required);
+  const refLabel =
+    refParam && row?.source.params?.[refParam.key]
+      ? source?.refs?.find((r) => r.value === row.source.params?.[refParam.key])?.label
+      : undefined;
+  const sourceTitle = refLabel ?? source?.title ?? row?.source.kind ?? "";
+  const pinnedAt = row?.placement.mode === "pinned" ? row.placement.position : undefined;
+  const missing = (source?.params ?? []).filter((p) => p.required && !row?.source.params?.[p.key]);
+  const title = ether
+    ? ether.onPage
+      ? t("{row} · Ether adds this row", { row: ether.title })
+      : t("{row} · one of Ether's picks", { row: ether.title })
+    : adding
+      ? source && !picking
+        ? pinnedAt
+          ? t("New row at #{at} · {source}", { at: pinnedAt, source: sourceTitle })
+          : t("New row · {source}", { source: sourceTitle })
+        : t("New row at #{at}", { at: state.at })
+      : row?.name
+        ? fillLibrary(row.name, libraryNames[0] ?? "")
+        : sourceTitle;
+  /** The add button names its effect. */
+  const addLabel = !ether
+    ? t("Add to page")
+    : row?.placement.mode === "pinned"
+      ? t("Keep this row at #{n}", { n: row.placement.position ?? 1 })
+      : row?.placement.mode === "show"
+        ? t("Always show this row")
+        : row?.placement.mode === "hide"
+          ? t("Never show this row")
+          : t("Keep it as Auto");
+  const addNote = ether
+    ? ether.onPage
+      ? t("Nothing changes until you press the button.")
+      : t("Ether may add it when there's room. Nothing changes until you press the button.")
+    : missing.length
+      ? t("Choose {param} first", { param: missing[0]!.label.toLowerCase() })
+      : row?.placement.mode === "pinned"
+        ? undefined
+        : row?.placement.mode === "hide"
+          ? t("Adds it hidden")
+          : row?.placement.mode === "auto"
+            ? t("Adds one row; Ether decides whether and where")
+            : t("Adds one row; Ether places it");
   const facetLibrary =
     ctx.library?.id ?? row?.scope.libraries?.[0] ?? source?.libraries?.[0] ?? null;
   const tab = (state && !picking ? state.tab : undefined) ?? "settings";
@@ -1229,11 +1506,11 @@ export function RowDrawer({
   const addSummary =
     row && source && fanOut.length > 1
       ? tn(fanOut.length, "Adds {count} row at #{at}", "Adds {count} rows at #{at}: {names}", {
-          at: adding ? state.at : 0,
+          at: adding ? (pinnedAt ?? state.at) : 0,
           names: fanOut
             .map((id) =>
               fillLibrary(
-                row.name || `${source.title} {library}`,
+                row.name || `${sourceTitle} {library}`,
                 ctx.libraries.find((l) => l.id === id)?.name ?? "",
               ),
             )
@@ -1246,8 +1523,12 @@ export function RowDrawer({
     if (!v) delete params[k];
     onChange({ ...row, source: { ...row.source, params } });
   };
+  // A collection stays switchable (its picker shows the chosen one); other
+  // picked refs (a shelf, a plugin row) are the source itself.
   const visibleParams = (source?.params ?? []).filter(
-    (p) => !(p.type === "ref" && p.required && source?.refs?.length && row?.source.params?.[p.key]),
+    (p) =>
+      source?.kind === "collection" ||
+      !(p.type === "ref" && p.required && source?.refs?.length && row?.source.params?.[p.key]),
   );
   return (
     <Drawer
@@ -1255,15 +1536,25 @@ export function RowDrawer({
       onClose={onClose}
       title={title}
       description={
-        adding
-          ? t("It goes into the draft at this position and shows in the page as you set it up.")
-          : viewerOnly
-            ? t("Changes here are just for {viewer}: only the look and placement change.", {
-                viewer: viewerName(ctx.editingFor!),
-              })
-            : t(
-                "Edits go straight into the draft and show in the page. Save the page when you're done.",
+        ether
+          ? ether.onPage
+            ? t(
+                "Ether adds this row to the page right now. Look around: nothing changes until you choose. The button makes it one of your rows with these settings.",
               )
+            : t(
+                "One of Ether's picks: it may add it when there's room. Nothing changes until you choose.",
+              )
+          : adding
+            ? pinnedAt
+              ? t("It goes into the draft at this position and shows in the page as you set it up.")
+              : t("It goes into the draft and shows in the page as you set it up.")
+            : viewerOnly
+              ? t("Changes here are just for {viewer}: only the look and placement change.", {
+                  viewer: viewerName(ctx.editingFor!),
+                })
+              : t(
+                  "Edits go straight into the draft and show in the page. Save the page when you're done.",
+                )
       }
       size={tab === "content" ? "lg" : "md"}
       footer={
@@ -1271,17 +1562,18 @@ export function RowDrawer({
           <div className="flex w-full flex-wrap items-center justify-between gap-2">
             <span className="text-sm text-fg-muted">
               {row && source
-                ? fanOut.length > 1
-                  ? addSummary
-                  : t("Adds one row at #{at}", { at: state.at })
+                ? (addNote ??
+                  (fanOut.length > 1
+                    ? addSummary
+                    : t("Adds one row at #{at}", { at: pinnedAt ?? state.at })))
                 : addSummary}
             </span>
             <div className="flex gap-2">
               <Button variant="ghost" onClick={onClose}>
                 {t("Cancel")}
               </Button>
-              <Button disabled={!row || picking} onClick={onAdd}>
-                {t("Add to page")}
+              <Button disabled={!row || picking || missing.length > 0} onClick={onAdd}>
+                {addLabel}
               </Button>
             </div>
           </div>
@@ -1300,7 +1592,14 @@ export function RowDrawer({
       }
     >
       {picking ? (
-        <SourcePicker sources={ctx.sources} error={ctx.sourcesError} onPick={onPick} />
+        <SourcePicker
+          sources={ctx.sources}
+          error={ctx.sourcesError}
+          onPick={onPick}
+          rows={ctx.rows}
+          pageKey={ctx.pageKey}
+          libraries={ctx.library ? [ctx.library] : ctx.libraries}
+        />
       ) : row ? (
         <>
           <SubtabNav
@@ -1370,6 +1669,14 @@ export function RowDrawer({
                         />
                       ))
                   : null}
+                {source?.kind === "collection" && !viewerOnly ? (
+                  <Link
+                    to={newCollectionLink(ctx.pageKey)}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <Plus size={12} /> {t("New collection…")}
+                  </Link>
+                ) : null}
                 {source && visibleParams.some((p) => p.more) ? (
                   <details className="border-t border-border-subtle pt-3">
                     <summary className="cursor-pointer text-fg-muted">{t("More options")}</summary>

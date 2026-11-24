@@ -74,6 +74,9 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapLiveEvents      Capability = "live_events"
+	// CapScreens lets a plugin contribute screens and surfaces that Vela
+	// draws from documents in the package (docs/plugin-screens.md).
+	CapScreens Capability = "screens"
 )
 
 // Reserved capabilities are known names a manifest may not claim in v1.
@@ -313,6 +316,9 @@ type Contributes struct {
 	// Screens declares generic top-level screens rendered natively by frontends
 	// such as Vela (spec A3).
 	Screens []ScreenMeta `json:"screens,omitempty"`
+	// Surfaces are documents drawn in host slots: player overlays, toasts,
+	// Home rows and title panels (docs/plugin-screens.md, Surfaces).
+	Surfaces []SurfaceMeta `json:"surfaces,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the lowest polling interval (in seconds) a plugin
@@ -1503,6 +1509,15 @@ type Host interface {
 	// matching entry in contributes.events.publish; payload is schema-validated
 	// and rate-limited.
 	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
+
+	// ScreensInvalidate makes every open screen and surface of this plugin
+	// read its sources again now (screens capability). It returns how many
+	// open streams heard it; nobody watching means nothing happens.
+	ScreensInvalidate(ctx context.Context) (int, error)
+	// ScreensPutRecords pushes new values for the plugin's own records
+	// ([{type, id, value}], at most 100) to open screens already showing
+	// them (screens capability).
+	ScreensPutRecords(ctx context.Context, records json.RawMessage) (int, error)
 
 	// AIComplete runs a bounded text or JSON-Schema-validated completion against
 	// the owner's configured language model (Settings -> Integrations -> Language

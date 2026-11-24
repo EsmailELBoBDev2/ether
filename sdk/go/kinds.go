@@ -872,6 +872,9 @@ type kindHandlers struct {
 	liveFeeds map[string]LiveFeedProvider
 	frontend  map[string]FrontendAdapter
 	setup     SetupTester
+	// screen sources and actions by "<screen>/<name>" ("*" matches any screen).
+	screenSources map[string]ScreenSourceHandler
+	screenActions map[string]ScreenActionHandler
 }
 
 func (p *Plugin) kinds() *kindHandlers {
@@ -1074,6 +1077,10 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 3 && parts[0] == "live":
 		feed, _ := url.PathUnescape(parts[1])
 		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
+	case len(parts) == 4 && (parts[0] == "screens" || parts[0] == "surfaces") && (parts[2] == "sources" || parts[2] == "actions"):
+		screen, _ := url.PathUnescape(parts[1])
+		name, _ := url.PathUnescape(parts[3])
+		return p.dispatchScreen(pctx, method, screen, parts[2], name, req), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true

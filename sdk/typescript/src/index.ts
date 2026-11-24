@@ -1,4 +1,12 @@
 export type * from "./types.ts";
+export { asset, entity, event, image, link, record } from "./screens.ts";
+export type {
+  ScreenActionAnswer,
+  ScreenActionRequest,
+  ScreenRecord,
+  ScreenSourceAnswer,
+  ScreenSourceRequest,
+} from "./kinds.ts";
 export { PluginHttpError } from "./types.ts";
 export {
   plugin,

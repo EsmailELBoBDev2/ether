@@ -16,7 +16,8 @@ func ViewerRequestPath(path string) bool {
 		}
 	}
 	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
-		strings.HasPrefix(path, "/ether/v1/live/")
+		strings.HasPrefix(path, "/ether/v1/live/") ||
+		strings.HasPrefix(path, "/ether/v1/screens/")
 }
 
 // IsSourceSearchPath identifies a stream_source plugin's category search
@@ -152,6 +153,12 @@ func DeadlineFor(path string) time.Duration {
 		return 10 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/live/"):
 		return 15 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/screens/"):
+		// A screen's data read or action: a viewer is waiting on it.
+		if strings.Contains(p, "/actions/") {
+			return 8 * time.Second
+		}
+		return 4 * time.Second
 	default:
 		return 30 * time.Second
 	}

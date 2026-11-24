@@ -80,7 +80,27 @@ const (
 // with the engine's explanation. Items are catalogue titles; the admin API
 // turns them into TitleCards.
 type HomeRow struct {
-	HubID        string               `json:"hubId"`
+	HubID string `json:"hubId"`
+	// RowID is the page row this row came from; "" is one of Ether's picks.
+	RowID string `json:"rowId,omitempty"`
+	// Library is the library of a one-row-per-library row.
+	Library LibraryID `json:"library,omitempty"`
+	// Mode is the effective placement (pinned, show, auto) of a page row.
+	Mode string `json:"mode,omitempty"`
+	// Why is the plain-English "Why here"; Note a second line ("3 skipped:
+	// shown above").
+	Why  string `json:"why,omitempty"`
+	Note string `json:"note,omitempty"`
+	// Look is the effective look; Personal marks rows whose titles differ
+	// per viewer.
+	Look     RowLook `json:"look"`
+	Personal bool    `json:"personal"`
+	// Flags are viewer-access flags ("3 unrated titles", "Rating not known").
+	Flags []string `json:"flags,omitempty"`
+	// Ghost marks a scheduled-away row shown faintly in the preview.
+	Ghost bool `json:"ghost,omitempty"`
+	// Present is the presentation apps receive.
+	Present      RowPresentation      `json:"present"`
 	Layer        string               `json:"layer,omitempty"`
 	Slot         int                  `json:"slot,omitempty"`
 	AnchorSlot   int                  `json:"anchorSlot,omitempty"`

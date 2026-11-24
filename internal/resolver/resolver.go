@@ -211,6 +211,17 @@ type Trace struct {
 	// Unverified marks a winner played after every health check timed
 	// out without a confirmed failure (unverified.go).
 	Unverified bool `json:"unverified,omitempty"`
+	// Queries are the indexer requests this resolution made (capped),
+	// QueriesDropped counts the ones past the cap. A support capture
+	// exports them with the indexer names replaced.
+	Queries        []core.SearchQuery `json:"queries,omitempty"`
+	QueriesDropped int                `json:"queriesDropped,omitempty"`
+	// ClientID and UserID tie the resolution to the device and viewer
+	// that asked, so a support capture includes only that device's
+	// searches. Speculative marks warm-ups and detail discovery.
+	ClientID    string `json:"clientId,omitempty"`
+	UserID      int64  `json:"userId,omitempty"`
+	Speculative bool   `json:"speculative,omitempty"`
 }
 
 // DiscoveryTrace records only the origin and number of returned releases.
@@ -971,12 +982,18 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// An indexer that was paused or did not answer leaves the search
 	// incomplete; nothing found then does not prove the title unavailable.
 	ctx, coverage := core.WithSearchCoverage(ctx)
+	ctx, queryLog := core.WithSearchLog(ctx)
 	t := req.Title
 	hasExclude := len(req.Exclude) > 0 || len(req.ExcludeReleases) > 0
-	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name, At: s.now(), Failover: hasExclude}
+	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name, At: s.now(), Failover: hasExclude,
+		ClientID: req.Client.ClientID, Speculative: core.IsSpeculative(ctx) || core.SpeculativeIndexerWork(ctx)}
+	if req.User != nil {
+		trace.UserID = req.User.ID
+	}
 	trace.Limits = &TraceLimits{ProfileMinHeight: profile.MinHeight, ProfileMaxHeight: profile.MaxHeight, ProfileConfiguredMaxHeight: traceConfiguredMaxHeight(profile), ClientMaxHeight: req.Client.MaxHeight, ClientMaxBitrateKbps: req.Client.MaxBitrateKbps, AllowHDR: profile.AllowHDR, AllowDolbyVision: profile.AllowDolbyVision}
 	defer func() {
 		trace.TotalDuration = time.Since(started)
+		trace.Queries, trace.QueriesDropped = queryLog.Queries()
 		if resolved != nil {
 			failedReleases = rejectedAttemptedReleaseIDs(&trace, resolved.Release.ID)
 		}

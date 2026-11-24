@@ -434,6 +434,9 @@ type Deps struct {
 	// LogExtract returns structured records. Callers correlate on exact
 	// fields inside [From, Until] and must not match substrings.
 	LogExtract func(q LogQuery) (records []LogRecord, truncated bool, err error)
+	// ReleaseSearch returns the resolver outcomes behind the capture's
+	// play attempts: queries, releases checked and why each was rejected.
+	ReleaseSearch func(q ReleaseSearchQuery) (ReleaseSearchInput, error)
 }
 
 // StartIn opens a capture. DeviceID empty means the device is not known yet.

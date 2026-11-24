@@ -1458,6 +1458,7 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 			At:              now,
 		})
 	}
+	c.noteQuery(ctx, params.Get("t"), params.Get("q"), params, len(out), err)
 	return out, err
 }
 
@@ -1491,6 +1492,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 	}
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
+		c.noteQuery(ctx, "cache", req.Title, nil, len(cached), nil)
 		return cached, nil
 	}
 	speculative := core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
@@ -1925,9 +1927,10 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	cfg := c.Config()
 	catState := c.loadSearchCatState(ctx, searchIdentity(cfg))
 	key := cacheKey(c, req) + "|rescue"
-	ctx = withCacheAge(ctx, req.Released)
+	ctx = withCacheAge(core.WithSearchRescue(ctx), req.Released)
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
+		c.noteQuery(ctx, "cache", req.Title, nil, len(cached), nil)
 		return cached, nil
 	}
 	if c.Exhausted(ctx) {
@@ -2429,6 +2432,14 @@ func (c *Client) backendSearch(ctx context.Context, req core.SearchRequest) ([]c
 	if incomplete {
 		core.NoteSearchIncomplete(ctx)
 	}
+	params := url.Values{}
+	if req.Season > 0 || req.Episode > 0 {
+		params.Set("season", strconv.Itoa(req.Season))
+	}
+	if req.Episode > 0 {
+		params.Set("ep", strconv.Itoa(req.Episode))
+	}
+	c.noteQuery(ctx, "source", req.Title, params, len(rels), err)
 	return rels, incomplete, err
 }
 
@@ -2649,4 +2660,41 @@ func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
 	if _, err := c.vault.Put(ctx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body}); err != nil {
 		c.log.Warn("could not store indexer release in vault", "indexer", r.IndexerID)
 	}
+}
+
+// kindLabel names how the indexer is searched, for diagnostics that must
+// not carry the owner's indexer name.
+func kindLabel(cfg config.Indexer) string {
+	switch {
+	case cfg.IsStremio():
+		return "stremio add-on"
+	case cfg.IsAddon():
+		return "plugin source"
+	case cfg.IsBuiltin():
+		return "built-in site"
+	case cfg.IsZilean():
+		return "zilean"
+	case cfg.IsTorrent():
+		return "torznab"
+	}
+	return "newznab"
+}
+
+// noteQuery adds one indexer request to the resolution's query log.
+func (c *Client) noteQuery(ctx context.Context, mode, query string, params url.Values, results int, err error) {
+	q := core.SearchQuery{Indexer: c.Name(), IndexerKind: kindLabel(c.Config()), Mode: mode, Query: query, Results: results}
+	if params != nil {
+		q.Season, q.Episode = params.Get("season"), params.Get("ep")
+		var ids []string
+		for _, name := range []string{"imdbid", "tmdbid", "tvdbid", "tvmazeid", "rid", "traktid"} {
+			if v := params.Get(name); v != "" {
+				ids = append(ids, name+"="+v)
+			}
+		}
+		q.IDs = strings.Join(ids, " ")
+	}
+	if err != nil {
+		q.Err = err.Error()
+	}
+	core.NoteSearchQuery(ctx, q)
 }

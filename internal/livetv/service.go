@@ -2430,6 +2430,19 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		progress.setProgrammes(len(g.Programmes))
 		progress.setPhase("saving")
 	}
+	// Everything the import compares against is read, decoded and encoded
+	// before it takes the writer; the transaction then checks one epoch
+	// row and writes what changed. Stored channels include virtual ones,
+	// whose programming is megabytes of JSON, so decoding them inside the
+	// transaction held every other writer for seconds.
+	pre, err := readImportSnapshot(ctx, s.o.DB, src.ID)
+	if err != nil {
+		return src, err
+	}
+	progPlan, err := planProgrammes(g.Programmes)
+	if err != nil {
+		return src, err
+	}
 	tx, err := s.o.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return src, err
@@ -2455,7 +2468,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	if err != nil {
 		return src, err
 	}
-	old, err := channels(ctx, tx)
+	old, fresh, err := pre.current(ctx, tx)
 	if err != nil {
 		return src, err
 	}
@@ -2535,7 +2548,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			stored = append(stored, c)
 		}
 	}
-	crossChanged, crossInvalidated, err := s.reconcileImportedMerges(ctx, tx, src, stored, old)
+	crossChanged, crossInvalidated, crossWritten, err := s.reconcileImportedMerges(ctx, tx, src, stored, old)
 	if err != nil {
 		return src, err
 	}
@@ -2550,11 +2563,15 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	if progress != nil {
 		savedChannels, savedProgrammes = progress.setSavedChannels, progress.setSavedProgrammes
 	}
-	writes, err := writeSourceChannels(ctx, tx, dialect, batch, src.ID, ids, encoded, savedChannels)
+	var storedRows map[string][]byte
+	if fresh {
+		storedRows = pre.sourceRows(src.ID)
+	}
+	writes, err := writeSourceChannels(ctx, tx, dialect, batch, src.ID, ids, encoded, storedRows, savedChannels)
 	if err != nil {
 		return src, err
 	}
-	pw, err := writeProgrammes(ctx, tx, batch, src.ID, g.Programmes, savedProgrammes)
+	pw, err := writeProgrammes(ctx, tx, batch, src.ID, progPlan, savedProgrammes)
 	if err != nil {
 		return src, err
 	}
@@ -2564,7 +2581,28 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		return src, err
 	}
 	writes.GuideChannelsWritten, writes.GuideChannelsDeleted = gw.GuideChannelsWritten, gw.GuideChannelsDeleted
-	autoChanged, autoInvalidated, err := s.reconcileAutoBackupsTx(ctx, tx, batch, stored)
+	// Duplicate backups match against the IPTV channels as just written:
+	// on SQLite, when the snapshot held, that is the snapshot with this
+	// import's own writes applied, decoded afresh; otherwise read here.
+	var iptv []Channel
+	if fresh && dialect == store.SQLite {
+		written := make(map[string][]byte, len(ids)+len(crossWritten))
+		for i, id := range ids {
+			written[id] = encoded[i]
+		}
+		for id, b := range crossWritten {
+			written[id] = b
+		}
+		iptv, err = pre.iptvAfter(src.ID, written)
+	} else {
+		var all []Channel
+		all, err = channels(ctx, tx)
+		iptv = iptvOnly(all)
+	}
+	if err != nil {
+		return src, err
+	}
+	autoChanged, autoInvalidated, err := s.reconcileAutoBackupsIn(ctx, tx, batch, stored, iptv)
 	if err != nil {
 		return src, err
 	}

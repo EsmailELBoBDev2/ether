@@ -313,7 +313,7 @@ func DefaultCatalogueTabs() []LibraryTab {
 	searchOff := false
 	searchOn := true
 	return []LibraryTab{
-		{Key: "recommended", Label: "Recommended", Kind: TabRecommended, Search: &searchOff},
+		{Key: "recommended", Label: "Recommendations", Kind: TabRecommended, Search: &searchOff},
 		{Key: "library", Label: "Library", Kind: TabLibrary, Search: &searchOn},
 		{Key: "collections", Label: "Collections", Kind: TabCollections, Search: &searchOn},
 	}

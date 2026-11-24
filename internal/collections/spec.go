@@ -185,7 +185,6 @@ func Normalize(s *core.CollectionSpec) {
 	}
 }
 
-
 // Validate checks a normalized spec. It returns a *ValidationError.
 func Validate(s *core.CollectionSpec) error { return validateWith(defaultKinds, s, nil) }
 
@@ -294,7 +293,6 @@ func validateWith(reg *KindRegistry, s *core.CollectionSpec, allowMissing map[st
 	}
 	return nil
 }
-
 
 func validCustomArt(u string) bool {
 	u = strings.TrimSpace(u)

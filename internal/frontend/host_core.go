@@ -57,8 +57,8 @@ type UncachedError = core.UncachedError
 // Owner row styles (Recommendations page rows).
 const (
 	RowStyleStandard = core.RowStyleStandard
-	RowStyleHero  = core.RowStyleHero
-	RowStyleWide  = core.RowStyleWide
+	RowStyleHero     = core.RowStyleHero
+	RowStyleWide     = core.RowStyleWide
 )
 
 // Playback protocols and media kinds.

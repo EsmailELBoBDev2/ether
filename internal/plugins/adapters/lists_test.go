@@ -338,10 +338,10 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 		Sources: []core.CollectionSource{
 			{Kind: kindID, Params: map[string]string{"genre": "scifi"}},
 		},
-		Sort:    "source",
-		Refresh: "daily",
-		Enabled: true,
-		Targets: core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		Sort:         "source",
+		Refresh:      "daily",
+		Enabled:      true,
+		BrowseInApps: true,
 	}
 
 	prev, err := h.cols.Preview(ctx, spec, 10)
@@ -387,12 +387,12 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 	if err != nil || len(listed) == 0 {
 		t.Fatalf("cached collection browse failed: %+v %v", listed, err)
 	}
-	rows, err := h.cols.HomeRowsFor(ctx, &core.User{ID: 1, IsOwner: true}, core.HubContext{Now: time.Now()})
-	if err != nil || len(rows) != 1 || len(rows[0].Hub.Items) != 3 {
-		t.Fatalf("cached HomeRowsFor failed: rows=%+v err=%v", rows, err)
+	row, err := h.cols.LayoutRow(ctx, &core.User{ID: 1, IsOwner: true}, core.HubContext{Now: time.Now()}, created.ID)
+	if err != nil || row == nil || len(row.Hub.Items) != 3 {
+		t.Fatalf("cached page row failed: row=%+v err=%v", row, err)
 	}
 	if gotCalls := h.rt.paths(); len(gotCalls) != 0 {
-		t.Fatalf("expected zero plugin calls on request-path HomeRowsFor read, got %v (spec id=%s)", gotCalls, created.ID)
+		t.Fatalf("expected zero plugin calls on request-path page row read, got %v (spec id=%s)", gotCalls, created.ID)
 	}
 
 	// Disabling the plugin unregisters both the collection kind and Home row kind.
@@ -402,7 +402,7 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 	if _, ok := h.cols.KindRegistry().Lookup(kindID); ok {
 		t.Fatal("expected collection SourceKind to be unregistered on disable")
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(kindID); ok {
+	if _, ok := h.pers.RowKindRegistry().Source(kindID); ok {
 		t.Fatal("expected RowSourceKind to be unregistered on disable")
 	}
 
@@ -419,7 +419,7 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 	if _, ok := h.cols.KindRegistry().Lookup(kindID); ok {
 		t.Fatal("expected collection SourceKind to be unregistered on remove")
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(kindID); ok {
+	if _, ok := h.pers.RowKindRegistry().Source(kindID); ok {
 		t.Fatal("expected RowSourceKind to be unregistered on remove")
 	}
 }
@@ -545,7 +545,7 @@ func TestCollectionViewerUsesSnapshot(t *testing.T) {
 	h.rt.routes["/catalog/movie/staff_picks/genre=scifi.json"] = func(plugins.Request) (plugins.Response, error) {
 		return plugins.Response{Status: 200, Body: json.RawMessage(`{"metas":[{"id":"tmdb:101"}],"hasMore":false}`)}, nil
 	}
-	created, err := h.cols.CreateSpec(ctx, core.CollectionSpec{Name: "Snapshot", MediaType: "movie", Refresh: "daily", Enabled: true, Sources: []core.CollectionSource{{Kind: extend.PluginID(rec.ID, "staff_picks"), Params: map[string]string{"genre": "scifi"}}}, Targets: core.CollectionTargets{CollectionsTab: true, HomeRow: true, Users: core.AllUsers()}})
+	created, err := h.cols.CreateSpec(ctx, core.CollectionSpec{Name: "Snapshot", MediaType: "movie", Refresh: "daily", Enabled: true, Sources: []core.CollectionSource{{Kind: extend.PluginID(rec.ID, "staff_picks"), Params: map[string]string{"genre": "scifi"}}}, BrowseInApps: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,9 +570,13 @@ func TestCollectionViewerUsesSnapshot(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("browse snapshot: %+v %v", got, err)
 	}
-	rows, err := h.cols.HomeRowsFor(ctx, &core.User{ID: 1, IsOwner: true}, core.HubContext{Now: time.Now()})
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("home snapshot: %+v %v", rows, err)
+	specs, err := h.cols.ListSpecs(ctx)
+	if err != nil || len(specs) == 0 {
+		t.Fatalf("specs: %+v %v", specs, err)
+	}
+	row, err := h.cols.LayoutRow(ctx, &core.User{ID: 1, IsOwner: true}, core.HubContext{Now: time.Now()}, specs[0].ID)
+	if err != nil || row == nil {
+		t.Fatalf("page row snapshot: %+v %v", row, err)
 	}
 	if calls := h.rt.paths(); len(calls) != 0 {
 		t.Fatalf("viewer path called plugin: %v", calls)

@@ -41,6 +41,10 @@ func (e *Engine) pageRows(ctx context.Context, pl *pagePlan, m *userModel, owner
 			continue
 		}
 		row := r.row
+		if row.Source.Kind == SourceShelf && pl.key == core.PageHome {
+			out = append(out, e.homeShelfRows(ctx, pl, r, user)...)
+			continue
+		}
 		base := e.pageRowBase(ctx, row, m, owner)
 		if base == nil || len(base.items) == 0 && len(base.typed) == 0 {
 			continue
@@ -232,8 +236,9 @@ func (e *Engine) pageRowBase(ctx context.Context, row *core.Row, m *userModel, o
 		}
 	default:
 		if strings.HasPrefix(src.Kind, "plugin:") {
+			want := core.PluginListRowID(src.Kind, src.Params)
 			for _, c := range owner {
-				if c.kind == src.Kind {
+				if c.kind == want {
 					base = &pageRowBase{kind: c.kind, title: c.title, reason: c.reason, items: c.items, typed: splitTyped(c.items, 200), keepOrder: true, source: core.RowSourceOwner}
 				}
 			}
@@ -275,4 +280,47 @@ func (e *Engine) sourceNeeds(kind string) []string {
 		return s.Needs
 	}
 	return nil
+}
+
+// homeShelfRows builds a plugin shelf placed on Home from its library's
+// candidate shelves (the same rows the library's own page arranges): one
+// row, or one per library when the row asks for it.
+func (e *Engine) homeShelfRows(ctx context.Context, pl *pagePlan, r *rule, user *core.User) []*candRow {
+	if e.opts.PageCandidates == nil {
+		return nil
+	}
+	key := r.row.Source.Param("shelf", "")
+	var out []*candRow
+	var merged []candItem
+	seen := map[core.RatingKey]bool{}
+	title := r.Name
+	for _, lib := range pl.scopeLibraries(r.row, user, []string{core.CapShelves}) {
+		for _, cand := range e.opts.PageCandidates(ctx, user, lib.ID, "") {
+			if src, param := sourceOf(cand.HubID, cand.Kind); src != SourceShelf || param != key {
+				continue
+			}
+			items := make([]candItem, 0, len(cand.Items))
+			for i, t := range cand.Items {
+				items = append(items, candItem{t: t, base: 1 - float64(i)/float64(len(cand.Items)+1)})
+			}
+			base := &pageRowBase{kind: SourceShelf, reason: cand.Title, keepOrder: true, source: core.RowSourceOwner}
+			if r.row.Scope.PerLibrary {
+				out = append(out, pageCandRow(r, base, items, lib.Name, r.RowID+"@"+strconv.FormatInt(int64(lib.ID), 10), cand.Title))
+				continue
+			}
+			for _, it := range items {
+				if !seen[it.t.Key] {
+					seen[it.t.Key] = true
+					merged = append(merged, it)
+				}
+			}
+			if title == "" {
+				title = cand.Title
+			}
+		}
+	}
+	if len(merged) > 0 {
+		out = append(out, pageCandRow(r, &pageRowBase{kind: SourceShelf, keepOrder: true, source: core.RowSourceOwner}, merged, "", r.RowID, title))
+	}
+	return out
 }

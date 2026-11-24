@@ -110,16 +110,16 @@ func isMissingTableErr(err error) bool {
 
 func friendsWatchlistDefaultSpec() core.CollectionSpec {
 	sp := core.CollectionSpec{
-		Name:        FriendsWatchlistTitle,
-		Description: "Movies and shows from your Plex friends' watchlists.",
-		MediaType:   MediaMixed,
-		Sources:     []core.CollectionSource{{Kind: friendsWatchlistKindID}},
-		Match:       MatchAll,
-		Sort:        "source",
-		Limit:       100,
-		Refresh:     RefreshHourly,
-		Enabled:     true,
-		Artwork:     core.CollectionArtwork{Mode: "auto"},
+		Name:         FriendsWatchlistTitle,
+		Description:  "Movies and shows from your Plex friends' watchlists.",
+		MediaType:    MediaMixed,
+		Sources:      []core.CollectionSource{{Kind: friendsWatchlistKindID}},
+		Match:        MatchAll,
+		Sort:         "source",
+		Limit:        100,
+		Refresh:      RefreshHourly,
+		Enabled:      true,
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
 		BrowseInApps: true,
 	}
 	Normalize(&sp)

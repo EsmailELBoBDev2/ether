@@ -52,7 +52,7 @@ func tpl(name, media string, sources []core.CollectionSource, rules ...core.Coll
 	return core.CollectionSpec{
 		Name: name, MediaType: media, Sources: sources, Match: MatchAll, Rules: rules, Exclude: []core.CollectionRule{},
 		Sort: "popularity", SortDesc: true, Limit: 100, Refresh: RefreshDaily, Enabled: true,
-		Artwork: core.CollectionArtwork{Mode: "auto"},
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
 		BrowseInApps: true,
 	}
 }
@@ -132,7 +132,6 @@ func accent(hex string) func(*core.CollectionSpec) {
 func rotateDaily(n int) func(*core.CollectionSpec) {
 	return func(sp *core.CollectionSpec) { sp.Rotate = &core.CollectionRotate{Size: n, Every: "daily"} }
 }
-
 
 var (
 	wellLiked = []core.CollectionRule{mkRule("rating", "gte", 6.8), mkRule("votes", "gte", 300)}

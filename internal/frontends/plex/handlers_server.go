@@ -153,7 +153,7 @@ func sectionPivots(sec Section) []model.Pivot {
 		playlistType = "photo"
 	}
 	return []model.Pivot{
-		{ID: "recommended", Key: "/hubs/sections/" + id, Type: "hub", Title: "Recommended", Context: "content.discover", Symbol: "star"},
+		{ID: "recommended", Key: "/hubs/sections/" + id, Type: "hub", Title: "Recommendations", Context: "content.discover", Symbol: "star"},
 		{ID: "library", Key: "/library/sections/" + id + "/all?type=" + typeNum, Type: "list", Title: "Library", Context: "content.library", Symbol: "library"},
 		{ID: "collections", Key: "/library/sections/" + id + "/collections", Type: "list", Title: "Collections", Context: "content.collections", Symbol: "stack"},
 		{ID: "playlists", Key: "/playlists?type=15&sectionID=" + id + "&playlistType=" + playlistType, Type: "list", Title: "Playlists", Context: "content.playlists", Symbol: "playlist"},

@@ -92,7 +92,7 @@ func (a *App) pluginCollectionUpsert(ctx context.Context, raw json.RawMessage) (
 		if _, explicit := fields["enabled"]; !explicit {
 			doc.Enabled = true
 		}
-		if _, explicit := fields["targets"]; !explicit {
+		if _, explicit := fields["browseInApps"]; !explicit {
 			doc.BrowseInApps = true
 		}
 	} else if len(doc.Sources) == 0 {

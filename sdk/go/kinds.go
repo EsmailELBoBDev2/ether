@@ -719,6 +719,30 @@ type LyricsProvider interface {
 	Lyrics(ctx *Context, req KindLyricsRequest) (lyrics KindLyrics, found bool, err error)
 }
 
+// KindRelatedRequest asks for items related to one stored item: "similar"
+// (a detail row such as an artist's "Fans also like") or "continuation" (what
+// plays after it when a queue ends).
+type KindRelatedRequest struct {
+	Kind    string   `json:"kind"`
+	Item    KindItem `json:"item"`
+	Purpose string   `json:"purpose"`
+	Limit   int      `json:"limit"`
+}
+
+// KindRelated is a relation answer: items to store (with any parents they
+// need), Order naming the ones to show (default: same level for similar,
+// playable for continuation), and an optional row label.
+type KindRelated struct {
+	Label string     `json:"label,omitempty"`
+	Items []KindItem `json:"items"`
+	Order []string   `json:"order,omitempty"`
+}
+
+// RelatedProvider serves relations for kinds that declare related.
+type RelatedProvider interface {
+	Related(ctx *Context, req KindRelatedRequest) (KindRelated, error)
+}
+
 // KindResolver turns a playable item into ordered playable sources.
 type KindResolver interface {
 	Resolve(ctx *Context, req KindResolveRequest) (KindResolveResponse, error)
@@ -1032,6 +1056,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 			return toRouteErrorResponse(err)
 		}
 		if res.Job == "" && res.Items == nil {
+			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "related":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		rp, isRelated := prov.(RelatedProvider)
+		if prov == nil || !isRelated {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no related items.")
+		}
+		var in KindRelatedRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := rp.Related(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Items == nil {
 			res.Items = []KindItem{}
 		}
 		return okJSON(res, http.StatusOK)

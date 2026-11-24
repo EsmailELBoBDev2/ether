@@ -536,6 +536,12 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl       `json:"sync"`
 	Cache   KindCacheDecl      `json:"cache,omitempty"`
 	Match   KindMatchDecl      `json:"match,omitempty"`
+	// Related: the plugin serves POST /ether/v1/kinds/{kind}/related for its
+	// items ({item, purpose, limit} -> {label?, items: KindItem[]}): "similar"
+	// for a detail row (an artist's "Fans also like"), "continuation" for what
+	// plays after a queue ends (radio). Items are stored like live search
+	// results. Asked when a viewer opens the item or nears a queue's end.
+	Related *KindRelatedDecl `json:"related,omitempty"`
 	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
 	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
 	// instrumental, source; 404 when it has none). Ether asks once per item
@@ -1026,6 +1032,26 @@ func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
 		if lv == level {
 			return true
 		}
+	}
+	return false
+}
+
+// KindRelatedDecl names which relation purposes a kind's plugin answers.
+type KindRelatedDecl struct {
+	Similar      bool `json:"similar,omitempty"`
+	Continuation bool `json:"continuation,omitempty"`
+}
+
+// Answers reports whether purpose is declared.
+func (d *KindRelatedDecl) Answers(purpose string) bool {
+	if d == nil {
+		return false
+	}
+	switch purpose {
+	case "similar":
+		return d.Similar
+	case "continuation":
+		return d.Continuation
 	}
 	return false
 }

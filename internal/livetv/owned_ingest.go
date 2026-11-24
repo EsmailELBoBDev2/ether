@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 // hlsOrigin is where an ingest reads a live media playlist and its
@@ -291,6 +293,14 @@ func (in *hlsIngest) fetch(ctx context.Context, s playlistSegment, target time.D
 			data, err := in.origin.get(ctx, s.mapURI, s.mapLen, s.mapOff)
 			if err != nil {
 				return nil, fmt.Errorf("init section: %w", err)
+			}
+			if in.live {
+				// Ether's own producer must hand players an init they can
+				// configure decoders from (its session completes a late AAC
+				// config before publishing); never pass one on without.
+				if err := transcode.CheckInitCodecConfig(data); err != nil {
+					return nil, fmt.Errorf("init section: %w", err)
+				}
 			}
 			res = "om-" + stableID(string(data)) + ".mp4"
 			in.tl.addResource(res, data, "video/mp4")

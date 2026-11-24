@@ -4,61 +4,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
 const (
 	// MaxPluginScreens bounds screens declared by one plugin.
 	MaxPluginScreens = 8
-	// MaxScreenSections bounds sections declared on one screen.
-	MaxScreenSections = 20
-	// MaxScreenSectionLimit caps per-section item limits.
-	MaxScreenSectionLimit = 100
-	// MaxScreenLeagues bounds static league filter chips declared on one section.
-	MaxScreenLeagues = 64
 )
 
 var screenSlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-
-var validScreenSectionTypes = map[string]bool{
-	"hero":     true,
-	"events":   true,
-	"table":    true,
-	"schedule": true,
-	"leagues":  true,
-	"entities": true,
-}
-
-var validScreenEventStates = map[string]bool{
-	"pre":       true,
-	"in":        true,
-	"post":      true,
-	"delayed":   true,
-	"postponed": true,
-	"canceled":  true,
-}
-
-var validScreenEventWindows = map[string]bool{
-	"today":  true,
-	"week":   true,
-	"recent": true,
-}
 
 var validScreenFrontends = map[string]bool{
 	"vela": true,
 }
 
-// ScreenMeta declares one generic top-level screen contributed by a plugin
-// (spec A3). Published screens appear in frontend navigation and resolve their
-// sections generically on demand.
+// ScreenMeta declares one top-level screen a plugin draws from documents
+// (docs/plugin-screens.md).
 type ScreenMeta struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Icon      string          `json:"icon,omitempty"`
-	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections,omitempty"`
-	Frontends []string        `json:"frontends,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Icon      string   `json:"icon,omitempty"`
+	Frontends []string `json:"frontends,omitempty"`
+	// Sections is the 0.3.19 fixed-section form, refused since documents
+	// replaced it; kept only to say so.
+	Sections json.RawMessage `json:"sections,omitempty"`
 
 	// Pages are the screen's documents by page id ("index" is the landing
 	// page); each names a package file or variants for older renderers.
@@ -338,37 +307,6 @@ func validateSurfaces(m Manifest, add func(string, string), label func(string, s
 	}
 }
 
-// ScreenSection declares one generic section inside a contributed screen.
-type ScreenSection struct {
-	ID         string            `json:"id,omitempty"`
-	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
-	Title      string            `json:"title,omitempty"`
-	Feed       string            `json:"feed,omitempty"`
-	League     string            `json:"league,omitempty"`
-	EntityKind string            `json:"entityKind,omitempty"`
-	Limit      int               `json:"limit,omitempty"`
-	Query      *ScreenEventQuery `json:"query,omitempty"`
-	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
-}
-
-// ScreenEventQuery filters live events for an events, hero, or schedule section.
-type ScreenEventQuery struct {
-	Feed      string   `json:"feed,omitempty"`
-	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
-	League    string   `json:"league,omitempty"`
-	Favorites bool     `json:"favorites,omitempty"`
-	Window    string   `json:"window,omitempty"` // today|week|recent
-	Category  string   `json:"category,omitempty"`
-}
-
-// ScreenLeague optionally declares one static league filter chip on a leagues section.
-type ScreenLeague struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Abbr string `json:"abbr,omitempty"`
-	Logo string `json:"logo,omitempty"`
-}
-
 func validateScreens(m Manifest, add func(string, string), label func(string, string, int)) {
 	screens := m.Ether.Contributes.Screens
 	if len(screens) == 0 {
@@ -388,9 +326,6 @@ func validateScreens(m Manifest, add func(string, string), label func(string, st
 		if sc.Icon != "" && !screenSlugRe.MatchString(sc.Icon) {
 			add(base+".icon", "must be a slug matching ^[a-z][a-z0-9-]{0,31}$")
 		}
-		if sc.Feed != "" && !keyRe.MatchString(sc.Feed) {
-			add(base+".feed", "must be a simple key")
-		}
 		seenFrontends := map[string]bool{}
 		for j, fe := range sc.Frontends {
 			if !validScreenFrontends[fe] || seenFrontends[fe] {
@@ -398,112 +333,36 @@ func validateScreens(m Manifest, add func(string, string), label func(string, st
 			}
 			seenFrontends[fe] = true
 		}
-		if len(sc.Pages) > 0 {
-			if !m.HasCapability(CapScreens) {
-				add(base+".pages", "needs the screens capability")
-			}
-			if _, ok := sc.Pages["index"]; !ok {
-				add(base+".pages", "must include the landing page, index")
-			}
-			if len(sc.Pages) > MaxScreenPages {
-				add(base+".pages", fmt.Sprintf("must declare at most %d pages", MaxScreenPages))
-			}
-			for page, paths := range sc.Pages {
-				if !screenSlugRe.MatchString(page) {
-					add(base+".pages."+page, "page ids are slugs matching ^[a-z][a-z0-9-]{0,31}$")
-				}
-				validateDocumentPaths(base+".pages."+page, paths, add)
-			}
-			switch sc.Placement {
-			case "", "navigation", "hidden":
-			default:
-				add(base+".placement", "must be navigation or hidden")
-			}
-			if len(sc.ContentRating) > 16 {
-				add(base+".contentRating", "must be a content rating such as TV-PG")
-			}
-			validateScreenActions(base+".actions", sc.Actions, add, label)
-		} else if len(sc.Actions) > 0 {
-			add(base+".actions", "are only for document screens (pages)")
+		if len(sc.Sections) > 0 {
+			add(base+".sections", "fixed sections are gone: this plugin was built for an older Ether. Update it; screens are documents (pages) now")
 		}
-		if len(sc.Sections) == 0 {
-			if len(sc.Pages) == 0 {
-				add(base+".pages", "must declare the screen's pages")
-			}
+		if len(sc.Pages) == 0 {
+			add(base+".pages", "must declare the screen's pages")
 			continue
 		}
-		if len(sc.Sections) > MaxScreenSections {
-			add(base+".sections", fmt.Sprintf("must declare at most %d sections", MaxScreenSections))
+		if !m.HasCapability(CapScreens) {
+			add(base+".pages", "needs the screens capability")
 		}
-		seenSections := map[string]bool{}
-		for j, sec := range sc.Sections {
-			sbase := fmt.Sprintf("%s.sections[%d]", base, j)
-			if sec.ID != "" {
-				if !screenSlugRe.MatchString(sec.ID) || seenSections[sec.ID] {
-					add(sbase+".id", "must be a unique slug matching ^[a-z][a-z0-9-]{0,31}$")
-				}
-				seenSections[sec.ID] = true
-			}
-			if !validScreenSectionTypes[sec.Type] {
-				add(sbase+".type", "must be hero, events, table, schedule, leagues or entities")
-			}
-			if sec.Title != "" {
-				label(sbase+".title", sec.Title, 60)
-			}
-			if sec.Feed != "" && !keyRe.MatchString(sec.Feed) {
-				add(sbase+".feed", "must be a simple key")
-			}
-			if sec.EntityKind != "" && !keyRe.MatchString(sec.EntityKind) {
-				add(sbase+".entityKind", "must be a simple key")
-			}
-			if sec.Limit < 0 || sec.Limit > MaxScreenSectionLimit {
-				add(sbase+".limit", fmt.Sprintf("must be between 0 and %d", MaxScreenSectionLimit))
-			}
-			if sec.Query != nil {
-				if sec.Type == "table" || sec.Type == "leagues" || sec.Type == "entities" {
-					add(sbase+".query", "is only allowed on hero, events or schedule sections")
-				} else {
-					validateScreenEventQuery(sbase+".query", sec.Query, add)
-				}
-			}
-			if len(sec.Leagues) > 0 {
-				if sec.Type != "leagues" {
-					add(sbase+".leagues", "is only allowed on leagues sections")
-				}
-				if len(sec.Leagues) > MaxScreenLeagues {
-					add(sbase+".leagues", fmt.Sprintf("must declare at most %d leagues", MaxScreenLeagues))
-				}
-				seenLeagues := map[string]bool{}
-				for k, lg := range sec.Leagues {
-					lbase := fmt.Sprintf("%s.leagues[%d]", sbase, k)
-					id := strings.TrimSpace(lg.ID)
-					if id == "" || seenLeagues[id] {
-						add(lbase+".id", "must be a unique non-empty id")
-					}
-					seenLeagues[id] = true
-					if strings.TrimSpace(lg.Name) == "" {
-						add(lbase+".name", "is required")
-					}
-				}
-			}
+		if _, ok := sc.Pages["index"]; !ok {
+			add(base+".pages", "must include the landing page, index")
 		}
-	}
-}
-
-func validateScreenEventQuery(base string, q *ScreenEventQuery, add func(string, string)) {
-	if q.Feed != "" && !keyRe.MatchString(q.Feed) {
-		add(base+".feed", "must be a simple key")
-	}
-	seenStates := map[string]bool{}
-	for i, st := range q.State {
-		if !validScreenEventStates[st] {
-			add(fmt.Sprintf("%s.state[%d]", base, i), "unknown event state "+strconv.Quote(st))
-		} else if seenStates[st] {
-			add(fmt.Sprintf("%s.state[%d]", base, i), "duplicate event state "+strconv.Quote(st))
+		if len(sc.Pages) > MaxScreenPages {
+			add(base+".pages", fmt.Sprintf("must declare at most %d pages", MaxScreenPages))
 		}
-		seenStates[st] = true
-	}
-	if q.Window != "" && !validScreenEventWindows[q.Window] {
-		add(base+".window", "must be today, week or recent")
+		for page, paths := range sc.Pages {
+			if !screenSlugRe.MatchString(page) {
+				add(base+".pages."+page, "page ids are slugs matching ^[a-z][a-z0-9-]{0,31}$")
+			}
+			validateDocumentPaths(base+".pages."+page, paths, add)
+		}
+		switch sc.Placement {
+		case "", "navigation", "hidden":
+		default:
+			add(base+".placement", "must be navigation or hidden")
+		}
+		if len(sc.ContentRating) > 16 {
+			add(base+".contentRating", "must be a content rating such as TV-PG")
+		}
+		validateScreenActions(base+".actions", sc.Actions, add, label)
 	}
 }

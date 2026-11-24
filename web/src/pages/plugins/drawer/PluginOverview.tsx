@@ -1230,7 +1230,6 @@ function fallbackScreens(detail: PluginDetail): PluginScreenOverview[] {
     id: sc.id,
     title: sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id,
     icon: sc.icon,
-    feed: sc.feed,
     frontends: (sc.frontends?.length ? sc.frontends : ["vela"]).map((id) => ({
       id,
       name: id === "vela" ? "Vela" : id,

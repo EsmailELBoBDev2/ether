@@ -88,16 +88,9 @@ export interface ScreenContribution {
   id: string;
   title: string;
   icon?: string;
-  feed?: string;
   frontends?: string[];
-  sections?: {
-    id?: string;
-    type: string;
-    title?: string;
-    feed?: string;
-    league?: string;
-    leagues?: { id: string; name: string }[];
-  }[];
+  /** Page id to document file (or renderer variants). */
+  pages?: Record<string, string | string[]>;
 }
 
 export interface PluginFeedHealth {

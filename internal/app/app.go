@@ -338,7 +338,6 @@ type App struct {
 	flowsRT            *flowsRuntime
 	liveEvents         *liveevents.Hub
 	liveWatchMatcher   *liveevents.WatchMatcher
-	liveTicker         *liveevents.TickerService
 	liveAlertEngine    *liveevents.AlertEngine
 	liveAlertScheduler *liveevents.AlertScheduler
 	pluginLiveOnce     sync.Once

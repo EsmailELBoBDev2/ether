@@ -3,6 +3,7 @@ package frontend
 import (
 	"context"
 	"strconv"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -28,6 +29,10 @@ const (
 	LoudnessMeasured = core.LoudnessMeasured
 	LoudnessProvider = core.LoudnessProvider
 )
+
+// QueuedHandover is how long an item a queued successor took over may keep
+// playing out (a crossfade) before the server retires its session.
+const QueuedHandover = 15 * time.Second
 
 // LoudnessSource keys a loudness measurement to one file of an item: its byte
 // size, known to both the opened media and the playback plan.

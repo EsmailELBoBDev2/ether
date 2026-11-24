@@ -137,6 +137,10 @@ type brokerSession struct {
 	// queued is a prefetched next item (PlayIntent.Queued) not yet observed
 	// playing: it supersedes nothing until activateQueued.
 	queued bool
+	// outgoing is the item a queued successor took over from, still playing
+	// out (a crossfade) for at most OutgoingHandover: its reads keep serving,
+	// it no longer owns the device, and its reports write nothing.
+	outgoing bool
 	// qualityCapped records that a quality pick turned off copying, so a
 	// later Auto pick turns it back on.
 	qualityCapped          bool
@@ -1438,6 +1442,14 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		}
 		return core.ErrUnauthorized
 	}
+	if s.outgoing {
+		// Playing out after its successor took over: already recorded as
+		// played; its stop ends it, other reports change nothing.
+		if t.State == "stopped" {
+			b.retireOutgoing(ctx, s.public.ID, "")
+		}
+		return nil
+	}
 	if b.cluster != nil && !b.policy(s.public.Protocol).ExternalAdmission {
 		active, err := b.cluster.store.active(ctx, s.public.ID)
 		if err != nil {
@@ -1717,6 +1729,10 @@ func (b *Broker) Stop(ctx context.Context, a frontend.SessionAccess, id string) 
 	s, viewer, err := b.accessSession(ctx, a, id, false)
 	if err != nil {
 		return err
+	}
+	if s.outgoing {
+		b.retireOutgoing(ctx, s.public.ID, "")
+		return nil
 	}
 	if viewer.ID != s.public.ViewerID {
 		viewer, err = b.deps.ActiveViewer(ctx, s.public.ViewerID)

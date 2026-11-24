@@ -110,16 +110,33 @@ export interface PageSummary {
   key: PageKey;
   name: string;
   library?: number;
-  experience: Experience;
   tab?: string;
+  experience: Experience;
   mode: PageMode;
   rowCount: number;
+  saved: boolean;
   apps?: string[];
 }
 
+export interface PageLibrary {
+  id: number;
+  name: string;
+  experience: Experience;
+  mediaType?: "movie" | "show";
+  plugin?: string;
+  caps?: string[];
+  card?: RowCard;
+  rowsTabs?: { key: string; label: string }[];
+}
+
+/** GET /pages/{key}. */
 export interface PageDoc {
   page: RowPage;
-  viewersWithChanges?: { id: number; name: string; changes: number }[];
+  saved: boolean;
+  library?: PageLibrary;
+  libraries?: PageLibrary[];
+  viewersWithChanges?: { id: number; name: string; changes: number }[] | null;
+  defaultLength: number;
 }
 
 export interface ParamOption {
@@ -138,71 +155,73 @@ export interface RowParam {
   more?: boolean;
   required?: boolean;
 }
-export type SourceGroup =
-  | "keep"
-  | "foryou"
-  | "trending"
-  | "new"
-  | "top"
-  | "browse"
-  | "collections"
-  | "plugins"
-  | "live";
 export interface RowSourceInfo {
   kind: string;
   title: string;
   description: string;
-  group: SourceGroup | string;
+  /** keep, trending, new, foryou, top, browse, collections, plugins or live. */
+  group: string;
   personal: boolean;
   needs?: string[];
   homeOnly?: boolean;
+  /** Can be one row per library. */
   split?: boolean;
   params?: RowParam[];
   purpose?: string;
   look: RowLook;
   plugin?: string;
   library?: number;
-  apps?: string[];
-  /** Libraries on this page that can fill the row (Home: those the source supports). */
-  libraries?: number[];
-  /** How many rows of this page already use the source. */
-  used?: number;
 }
-export interface PageLibrary {
-  id: number;
-  name: string;
-  experience: Experience;
+/** One entry of GET /pages/{key}/sources. */
+export interface PageSource extends RowSourceInfo {
+  available: boolean;
+  unavailable?: string;
+  /** The page's libraries (Home: every library) it can draw from. */
+  libraries?: number[];
+  used: number;
+  /** Choices of a ref parameter (collections, shelves): never raw ids. */
+  refs?: ParamOption[];
 }
 export interface SourcesDoc {
-  sources: RowSourceInfo[];
+  sources: PageSource[];
   libraries: PageLibrary[];
+  collections?: { id: string; name: string; count: number }[];
 }
 
-export interface PreviewRow {
-  /** The page row it comes from; absent for Ether's own picks. */
-  row?: string;
-  /** Wire id: "<row>" or "<row>@<library>". */
-  id: string;
+export interface RowPresentation {
+  rowId?: string;
+  layout?: RowStyle;
+  card?: RowCard;
+  role?: string;
+  personal?: boolean;
   library?: number;
+  experience?: Experience;
+  numbered?: boolean;
+  trailer?: boolean;
+  hideWatched?: boolean;
+  surface?: { plugin: string; surface: string };
+}
+
+/** A served row in a preview. */
+export interface PreviewRow {
+  hubId: string;
+  /** The page row it comes from; absent for Ether's own picks. */
+  rowId?: string;
+  library?: number;
+  /** Effective placement of a page row (pinned, show, auto). */
+  mode?: PlacementMode;
+  why?: string;
+  note?: string;
+  look: RowLook;
+  personal: boolean;
+  flags?: string[] | null;
+  /** A scheduled-away row drawn faintly where it would sit. */
+  ghost?: boolean;
+  present: RowPresentation;
   title: string;
   kind: string;
-  /** The source in plain words ("Trending · This week"). */
-  sourceTitle?: string;
-  layer: "everyone" | "viewer" | "ether";
-  placement: PlacementMode;
-  position?: number;
-  personal: boolean;
-  apps?: string[];
-  style?: RowStyle;
-  card?: RowCard;
-  why: string;
-  note?: string;
-  flags?: string[];
-  items: TitleCard[];
-  /** A plugin surface: Vela draws it, Ether never sees its titles. */
-  surface?: { plugin: string };
-  /** A scheduled-away row, drawn as a ghost where it would sit. */
-  ghost?: { reason: string; previewAt?: string };
+  reason?: string;
+  items: TitleCard[] | null;
 }
 export interface NotShown {
   row?: string;
@@ -221,37 +240,38 @@ export interface ViewerAccess {
   viewer: number;
   name: string;
   ageLimit?: string;
-  unrated?: "hidden" | "allowed";
+  unrated: "hidden" | "shown";
   librariesSeen: number;
   librariesTotal: number;
-  hiddenLibraries?: string[];
-  flagged?: number;
+  hiddenLibraries?: string[] | null;
 }
 export interface PreviewSummary {
   rows: number;
-  length?: number;
+  length: number;
   pinned: number;
   shown: number;
+  /** Rows Ether chose (Auto rows and its picks). */
   auto: number;
+  /** How many of Ether's picks the page could still use. */
   picks: number;
-  notShown: number;
 }
 export interface PagePreview {
   summary: PreviewSummary;
-  rows: PreviewRow[];
-  picks: EtherPick[];
-  notShown: NotShown[];
-  access?: ViewerAccess;
+  rows: PreviewRow[] | null;
+  picks: EtherPick[] | null;
+  notShown: NotShown[] | null;
+  access?: ViewerAccess | null;
 }
 export interface PreviewRequest {
   page?: RowPage;
-  viewer?: number | null;
-  editingFor?: number | null;
+  viewer?: number;
   device: Device;
   at: string;
+  count?: number;
 }
 export interface RowPreview {
-  rows: { title: string; library?: number; items: TitleCard[]; total?: number }[];
+  rows: PreviewRow[] | null;
+  total: number;
 }
 export interface PageImpact {
   viewers: number;
@@ -261,6 +281,11 @@ export interface FacetValueOption {
   value: string;
   label: string;
   count?: number;
+}
+
+/** The API path of a page: "/" in a key is written "~" ("/pages/library:4~recommended"). */
+export function pagePath(key: PageKey): string {
+  return `/pages/${key.replaceAll("/", "~")}`;
 }
 
 // ---------------------------------------------------------------- row ids
@@ -427,7 +452,7 @@ export function removeRow(page: RowPage, rowId: string): RowPage {
 
 /** A fresh row for a source, placed for the page's mode. */
 export function rowForSource(
-  source: RowSourceInfo,
+  source: PageSource,
   params: Record<string, string>,
   opts: {
     page: RowPage;

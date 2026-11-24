@@ -1,0 +1,240 @@
+// How a previewed row draws in the console: the same shapes apps draw
+// (standard shelf, hero, wide, tiles, track list, round and square cards),
+// plus the chips every row header and source entry carries.
+import { Badge, cn } from "@braedonsaunders/appkit-ui";
+import { Eye, EyeOff, Pin, Puzzle, Sparkles, User, Users } from "lucide-react";
+import { Artwork } from "../../components/Artwork";
+import { PosterCard } from "../../components/Poster";
+import { t } from "../../i18n";
+import type { TitleCard } from "../../lib/contract";
+import type { PlacementMode, PreviewRow, RowCard, RowStyle } from "../../lib/pages";
+
+export function placementLabel(mode: PlacementMode, curated: boolean): string {
+  if (curated) return mode === "hide" ? t("Hidden") : t("On the page");
+  switch (mode) {
+    case "pinned":
+      return t("Pinned");
+    case "show":
+      return t("Show");
+    case "auto":
+      return t("Auto");
+    default:
+      return t("Hide");
+  }
+}
+
+export function PlacementChip({
+  mode,
+  position,
+  curated,
+}: {
+  mode: PlacementMode;
+  position?: number;
+  curated: boolean;
+}) {
+  const variant =
+    mode === "pinned"
+      ? "success"
+      : mode === "show"
+        ? "info"
+        : mode === "hide"
+          ? "warning"
+          : "secondary";
+  return (
+    <Badge variant={variant} className="gap-1">
+      {mode === "pinned" ? (
+        <Pin size={11} />
+      ) : mode === "auto" ? (
+        <Sparkles size={11} />
+      ) : mode === "hide" ? (
+        <EyeOff size={11} />
+      ) : (
+        <Eye size={11} />
+      )}
+      {placementLabel(mode, curated)}
+      {mode === "pinned" && position ? ` #${position}` : ""}
+    </Badge>
+  );
+}
+
+export function KindChip({ personal }: { personal: boolean }) {
+  return personal ? (
+    <Badge variant="outline" className="gap-1 border-primary/40 font-normal text-primary">
+      <User size={11} /> {t("Personal")}
+    </Badge>
+  ) : (
+    <Badge variant="outline" className="gap-1 font-normal">
+      <Users size={11} /> {t("Shared")}
+    </Badge>
+  );
+}
+
+export function VelaOnlyChip() {
+  return (
+    <Badge variant="outline" className="gap-1 font-normal">
+      <Puzzle size={11} /> {t("Only in Vela")}
+    </Badge>
+  );
+}
+
+function SquareCard({ item, round }: { item: TitleCard; round?: boolean }) {
+  return (
+    <div className="w-28 shrink-0 sm:w-32">
+      <div
+        className={cn(
+          "aspect-square overflow-hidden shadow-sm ring-1 ring-border-subtle",
+          round ? "rounded-full" : "rounded-md",
+        )}
+      >
+        <Artwork src={item.poster} alt={item.title} title={item.title} className="size-full" />
+      </div>
+      <p className={cn("mt-1.5 truncate text-xs font-medium text-fg", round && "text-center")}>
+        {item.title}
+      </p>
+    </div>
+  );
+}
+
+function WideCard({ item, hero }: { item: TitleCard; hero?: boolean }) {
+  return (
+    <div className={cn("shrink-0", hero ? "w-80 sm:w-[26rem]" : "w-56 sm:w-64")}>
+      <div className="relative aspect-video overflow-hidden rounded-lg shadow-sm ring-1 ring-border-subtle">
+        <Artwork
+          src={item.backdrop ?? item.poster}
+          alt={item.title}
+          title={item.title}
+          className="size-full"
+        />
+        {hero ? (
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-overlay/80 to-transparent px-3 pb-2 pt-8">
+            <p className="truncate text-sm font-semibold text-on-scrim">{item.title}</p>
+          </div>
+        ) : null}
+      </div>
+      {hero ? null : <p className="mt-1.5 truncate text-xs font-medium text-fg">{item.title}</p>}
+    </div>
+  );
+}
+
+function RatedPoster({
+  item,
+  showRating,
+  rank,
+}: {
+  item: TitleCard;
+  showRating: boolean;
+  rank?: number;
+}) {
+  return (
+    <div className="relative w-28 shrink-0 sm:w-32">
+      {rank ? (
+        <span className="absolute -left-1 -top-1 z-10 grid size-6 place-items-center rounded-full bg-primary text-xs font-bold text-primary-fg shadow">
+          {rank}
+        </span>
+      ) : null}
+      <PosterCard
+        item={item}
+        badge={
+          showRating && item.contentRating ? (
+            <span className="rounded bg-overlay/80 px-1 py-0.5 text-[10px] font-semibold text-on-scrim">
+              {item.contentRating}
+            </span>
+          ) : undefined
+        }
+      />
+    </div>
+  );
+}
+
+/** The titles of one previewed row, drawn in the row's look. */
+export function RowBody({
+  row,
+  showRating,
+  style,
+  card,
+  numbered,
+  pluginName,
+}: {
+  row: Pick<PreviewRow, "items" | "present" | "ghost">;
+  showRating: boolean;
+  style?: RowStyle;
+  card?: RowCard;
+  numbered?: boolean;
+  pluginName?: string;
+}) {
+  const items = row.items ?? [];
+  const layout = style || row.present.layout || "standard";
+  const shape = card || row.present.card || "";
+  const ranked = numbered ?? row.present.numbered ?? false;
+  if (row.present.surface) {
+    return (
+      <div className="flex items-center gap-3 rounded-xl border border-dashed border-border bg-bg-subtle/60 px-4 py-5 text-sm text-fg-muted">
+        <Puzzle size={18} />
+        <span>
+          {t(
+            "Drawn by {plugin} in Vela. Vela hides it when there's nothing to show, and it doesn't count toward the page length.",
+            { plugin: pluginName || row.present.surface.plugin },
+          )}
+        </span>
+      </div>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-border px-4 py-4 text-sm text-fg-muted">
+        {row.ghost
+          ? t("Not showing at this moment.")
+          : t("Nothing to show for this viewer right now.")}
+      </p>
+    );
+  }
+  if (layout === "tracks") {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border">
+        {items.slice(0, 5).map((it, i) => (
+          <div
+            key={it.key}
+            className="flex items-center gap-3 border-b border-border-subtle px-3 py-2 text-sm last:border-0"
+          >
+            <span className="w-4 text-right tabular-nums text-fg-subtle">{i + 1}</span>
+            <Artwork src={it.poster} alt="" title={it.title} className="size-8 shrink-0 rounded" />
+            <span className="min-w-0 flex-1 truncate font-medium text-fg">{it.title}</span>
+            {it.year ? <span className="tabular-nums text-fg-muted">{it.year}</span> : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (layout === "tiles") {
+    return (
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {items.slice(0, 6).map((it) => (
+          <div
+            key={it.key}
+            className="flex items-center gap-2 overflow-hidden rounded-md bg-surface ring-1 ring-border-subtle"
+          >
+            <Artwork src={it.poster} alt="" title={it.title} className="size-11 shrink-0" />
+            <span className="truncate text-xs font-semibold text-fg">{it.title}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <ul className="shelf flex gap-3 overflow-x-auto pb-1" aria-label={t("Titles")}>
+      {items.map((it, i) => (
+        <li key={it.key}>
+          {layout === "hero" ? (
+            <WideCard item={it} hero />
+          ) : layout === "wide" || shape === "landscape" ? (
+            <WideCard item={it} />
+          ) : shape === "square" || shape === "round" ? (
+            <SquareCard item={it} round={shape === "round"} />
+          ) : (
+            <RatedPoster item={it} showRating={showRating} rank={ranked && i < 10 ? i + 1 : undefined} />
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}

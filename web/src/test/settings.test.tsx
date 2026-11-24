@@ -613,8 +613,8 @@ describe("Settings", () => {
     expect(live().personalize.postPlay).toBe(!upNext);
   });
 
-  it("keeps personal touches on Home › Tuning for everyone, not for one viewer", async () => {
-    renderApp("/home");
+  it("keeps personal touches on Recommendations › Tuning for everyone, not for one viewer", async () => {
+    renderApp("/recommendations");
     fireEvent.click(await screen.findByRole("tab", { name: "Tuning" }, WAIT));
     expect(
       await screen.findByLabelText("Match and finish time on details", {}, WAIT),

@@ -25,18 +25,19 @@ import type {
   ViewerDetail,
   ViewerHome,
 } from "./contract";
-import type {
-  FacetValueOption,
-  PageDoc,
-  PageImpact,
-  PageKey,
-  PagePreview,
-  PageRow,
-  PageSummary,
-  PreviewRequest,
-  RowPage,
-  RowPreview,
-  SourcesDoc,
+import {
+  type FacetValueOption,
+  type PageDoc,
+  type PageImpact,
+  type PageKey,
+  type PagePreview,
+  type PageRow,
+  type PageSummary,
+  type PreviewRequest,
+  type RowPage,
+  type RowPreview,
+  type SourcesDoc,
+  pagePath,
 } from "./pages";
 import type {
   Bootstrap,
@@ -668,27 +669,27 @@ export const api = {
   // ---- Recommendations: pages of rows ------------------------------------------
   pages: () => apiFetch<PageSummary[]>("/pages"),
   page: (key: PageKey, signal?: AbortSignal) =>
-    apiFetch<PageDoc>(`/pages/${encodeURIComponent(key)}`, { signal }),
+    apiFetch<PageDoc>(`${pagePath(key)}`, { signal }),
   /** Saves the whole page; the server answers 409 when someone else saved it first. */
   putPage: (page: RowPage) =>
-    apiFetch<PageDoc>(`/pages/${encodeURIComponent(page.key)}`, {
+    apiFetch<PageDoc>(pagePath(page.key), {
       method: "PUT",
       body: JSON.stringify(page),
       headers: { "If-Match": String(page.revision) },
     }),
   resetPage: (key: PageKey) =>
-    apiFetch<PageDoc>(`/pages/${encodeURIComponent(key)}`, { method: "DELETE" }),
+    apiFetch<PageDoc>(`${pagePath(key)}`, { method: "DELETE" }),
   pageSources: (key: PageKey, signal?: AbortSignal) =>
-    apiFetch<SourcesDoc>(`/pages/${encodeURIComponent(key)}/sources`, { signal }),
+    apiFetch<SourcesDoc>(`${pagePath(key)}/sources`, { signal }),
   previewPage: (key: PageKey, body: PreviewRequest, signal?: AbortSignal) =>
-    post<PagePreview>(`/pages/${encodeURIComponent(key)}/preview`, body, signal),
+    post<PagePreview>(`${pagePath(key)}/preview`, body, signal),
   previewPageRow: (
     key: PageKey,
-    body: Omit<PreviewRequest, "page"> & { row: PageRow; limit?: number },
+    body: Omit<PreviewRequest, "page"> & { row: PageRow },
     signal?: AbortSignal,
-  ) => post<RowPreview>(`/pages/${encodeURIComponent(key)}/rows/preview`, body, signal),
+  ) => post<RowPreview>(`${pagePath(key)}/rows/preview`, body, signal),
   pageImpact: (key: PageKey, page: RowPage, signal?: AbortSignal) =>
-    post<PageImpact>(`/pages/${encodeURIComponent(key)}/impact`, { page }, signal),
+    post<PageImpact>(`${pagePath(key)}/impact`, { page }, signal),
   facetValues: (library: number, facet: string, q: string, signal?: AbortSignal) =>
     apiFetch<{ values: FacetValueOption[] | null }>(
       `/row-sources/facets/${library}/${encodeURIComponent(facet)}${qs({ q })}`,

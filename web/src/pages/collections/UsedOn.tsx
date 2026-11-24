@@ -25,10 +25,7 @@ export function describeUse(u: CollectionUse): string {
 }
 
 export function useCollectionUsage(id: string | undefined) {
-  return useAsync(
-    (signal) => (id ? api.collectionUsage(id, signal) : Promise.resolve([])),
-    [id],
-  );
+  return useAsync((signal) => (id ? api.collectionUsage(id, signal) : Promise.resolve([])), [id]);
 }
 
 /**

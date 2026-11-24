@@ -1,11 +1,4 @@
-import {
-  Badge,
-  Button,
-  Input,
-  Select,
-  Switch,
-  cn,
-} from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Input, Select, Switch, cn } from "@braedonsaunders/appkit-ui";
 import {
   CheckCircle2,
   Filter,
@@ -27,10 +20,7 @@ import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { api } from "../../lib/api";
 import { asObj } from "../settings/SchemaForm";
-import type {
-  Rule,
-  RuleField,
-} from "../../lib/contract";
+import type { Rule, RuleField } from "../../lib/contract";
 import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
 import { libraryRowsHref } from "../../lib/recommendations";

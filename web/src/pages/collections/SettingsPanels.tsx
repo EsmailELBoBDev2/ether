@@ -1,10 +1,4 @@
-import {
-  Button,
-  Input,
-  Switch,
-  cn,
-  toast,
-} from "@braedonsaunders/appkit-ui";
+import { Button, Input, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
 import {
   Check,
   Clapperboard,
@@ -19,12 +13,7 @@ import { useMemo, type ReactNode } from "react";
 import { Artwork } from "../../components/Artwork";
 import { Field, NumberInput, Segmented } from "../../components/fields";
 import { TitleSearch } from "../../components/pickers";
-import type {
-  ArtworkMode,
-  CollectionSpec,
-  CollectionUse,
-  TitleCard,
-} from "../../lib/contract";
+import type { ArtworkMode, CollectionSpec, CollectionUse, TitleCard } from "../../lib/contract";
 import type { AsyncState } from "../../lib/hooks";
 import { localized, t } from "../../i18n";
 import { formatDateTime, relativeTime } from "../../lib/format";

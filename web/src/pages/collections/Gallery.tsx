@@ -602,9 +602,7 @@ export default function CollectionsGallery({
           ) : posterView && items.length ? (
             <section className="p-5 sm:p-6" aria-label={t("Collection posters")}>
               <div className="mb-5 flex flex-wrap items-baseline justify-between gap-2">
-                <h2 className="text-sm font-semibold text-fg">
-                  {t("Your collections")}
-                </h2>
+                <h2 className="text-sm font-semibold text-fg">{t("Your collections")}</h2>
                 <span className="text-xs text-fg-muted">
                   {tn(items.length, "{count} collection", "{count} collections")}
                 </span>

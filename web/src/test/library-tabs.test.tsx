@@ -111,7 +111,9 @@ describe("Library tabs page", () => {
     await settleUi(() => {
       expect(calls(fake, "DELETE", "/libraries/4/tabs")).toHaveLength(1);
     });
-    expect(await screen.findByRole("switch", { name: "Display Recommendations tab" })).toBeChecked();
+    expect(
+      await screen.findByRole("switch", { name: "Display Recommendations tab" }),
+    ).toBeChecked();
     expect(screen.getByRole("switch", { name: "Display Library tab" })).toBeChecked();
   });
 

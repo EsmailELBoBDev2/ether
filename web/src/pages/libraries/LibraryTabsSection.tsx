@@ -139,7 +139,6 @@ export function LibraryTabsSection({
   const [saving, setSaving] = useState(false);
   const [localDrawer, setLocalDrawer] = useState<DrawerMode>({ type: "closed" });
 
-
   const clearTabParams = () => {
     if (
       !searchParams.has("addTab") &&

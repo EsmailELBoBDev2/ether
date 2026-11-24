@@ -55,7 +55,9 @@ describe("Collection Studio editor", () => {
     expect(home).toHaveAttribute("href", "/recommendations?page=home&row=row-edge-of-your-seat");
     expect(within(home).getByText(/Pinned at #3 · Fri–Sat evenings/)).toBeInTheDocument();
     expect(
-      within(drawer).getByRole("link", { name: "Edit the Edge of your seat row on Movies › Recommendations" }),
+      within(drawer).getByRole("link", {
+        name: "Edit the Edge of your seat row on Movies › Recommendations",
+      }),
     ).toHaveAttribute(
       "href",
       "/recommendations?page=library%3A1%2Frecommended&row=row-edge-of-your-seat-movies",

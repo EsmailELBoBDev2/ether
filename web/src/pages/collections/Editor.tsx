@@ -48,12 +48,7 @@ import {
   type StoredDraft,
 } from "../../lib/history";
 import { useAsync, useDebouncedValue, useMediaQuery } from "../../lib/hooks";
-import {
-  blankSpec,
-  normalizeSpec,
-  previewableSpec,
-  specProblems,
-} from "../../lib/rules";
+import { blankSpec, normalizeSpec, previewableSpec, specProblems } from "../../lib/rules";
 import { BuildPanel } from "./BuildPanel";
 import { DescribeDialog } from "./DescribeDialog";
 import { isBlankCollectionSpec, newCollectionHref } from "./links";
@@ -614,9 +609,7 @@ export default function CollectionEditor() {
               />
             </div>
             <div className="min-w-0 p-3 sm:p-5">
-              {tab === "build" ? (
-                <BuildPanel spec={spec} update={update} region={region} />
-              ) : null}
+              {tab === "build" ? <BuildPanel spec={spec} update={update} region={region} /> : null}
               {tab === "schedule" ? (
                 <SchedulePanel
                   spec={spec}

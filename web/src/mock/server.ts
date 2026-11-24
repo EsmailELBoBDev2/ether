@@ -4631,9 +4631,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       sections: [
         {
           key: "home",
-          fields: [
-            { key: "homeRowCount", kind: "number", min: 0, max: 12 },
-          ],
+          fields: [{ key: "homeRowCount", kind: "number", min: 0, max: 12 }],
         },
         {
           key: "find",

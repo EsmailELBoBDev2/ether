@@ -815,6 +815,8 @@ interface RawField {
   unit?: string;
   numeric?: boolean;
   options?: RawFieldOption[];
+  /** Runtime option source (plugin /ether/options) for select-like fields. */
+  optionsFrom?: string;
   enum?: string[];
   fields?: RawField[];
   search?: boolean;
@@ -930,7 +932,6 @@ function toFieldDef(
     case "hidden":
       return { key, label, help, kind: "hidden" };
     case "list":
-    case "orderedList":
       return {
         key,
         label,
@@ -939,6 +940,7 @@ function toFieldDef(
         placeholder: raw.placeholder,
         numeric: raw.numeric,
       };
+    case "orderedList":
     case "multiSelect": {
       const baseOpts =
         raw.options && raw.options.length > 0
@@ -954,12 +956,17 @@ function toFieldDef(
                 label: String(o.label),
                 description: o.hint ?? o.description,
               }));
+      if (kind === "orderedList" && baseOpts.length === 0 && !raw.optionsFrom) {
+        // An ordered list with no choices to order is a free list of entries.
+        return { key, label, help, kind: "list", placeholder: raw.placeholder, numeric: raw.numeric };
+      }
       return {
         key,
         label,
         help,
-        kind: "multiSelect",
+        kind: kind === "orderedList" ? "orderedList" : "multiSelect",
         options: baseOpts,
+        optionsFrom: raw.optionsFrom,
         placeholder: raw.placeholder,
         search: raw.search,
         numeric: raw.numeric,

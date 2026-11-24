@@ -22,4 +22,4 @@ var PluginSources string
 var PluginScreen string
 
 // PluginScreenDigest identifies the vendored copy of PluginScreen.
-const PluginScreenDigest = "2f2337dac00e51333ea56ba64b71a9b9b085d4e405e8b18f8a4db77d2b0d81ee"
+const PluginScreenDigest = "3372c698a71ecf9fa684711d9d2c16d6280830cdef48f1e301e0acbbae220238"

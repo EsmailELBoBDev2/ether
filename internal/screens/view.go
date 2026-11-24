@@ -46,11 +46,34 @@ type EventView struct {
 // one shape everywhere.
 type DetailView struct {
 	ID                string                           `json:"id"`
-	Plays             []core.LiveEventPlay             `json:"plays"`
-	PlaysNewest       []core.LiveEventPlay             `json:"playsNewest"`
+	Plays             []PlayView                       `json:"plays"`
+	PlaysNewest       []PlayView                       `json:"playsNewest"`
 	Tables            []TableView                      `json:"tables"`
 	ProbabilitySeries []core.LiveEventProbabilityPoint `json:"probabilitySeries"`
 	Links             []map[string]string              `json:"links"`
+}
+
+// PlayView is a play with its score projected into the sides' reading
+// order, so a document reads scores.0 and scores.1.
+type PlayView struct {
+	core.LiveEventPlay
+	Scores []string `json:"scores,omitempty"`
+}
+
+func playViews(plays []core.LiveEventPlay, competitors []core.LiveEventCompetitor) []PlayView {
+	out := make([]PlayView, 0, len(plays))
+	for _, p := range plays {
+		v := PlayView{LiveEventPlay: p}
+		if len(p.Score) > 0 && len(competitors) == 2 {
+			a, aok := p.Score[competitors[0].ID]
+			b, bok := p.Score[competitors[1].ID]
+			if aok && bok {
+				v.Scores = []string{a, b}
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // LeagueView names a league; Label is the agreed chip text.
@@ -393,12 +416,12 @@ func buildEventView(ev core.LiveEvent, favs favourites, entityKind string) Event
 // hub has already withheld plays and the series.
 func buildDetailView(d core.LiveEventDetail, favs favourites, entityKind string) DetailView {
 	pluginID, feed := eventPluginFeed(d.LiveEvent)
-	v := DetailView{ID: d.ID, Plays: []core.LiveEventPlay{}, PlaysNewest: []core.LiveEventPlay{}, Tables: []TableView{},
+	v := DetailView{ID: d.ID, Plays: []PlayView{}, PlaysNewest: []PlayView{}, Tables: []TableView{},
 		ProbabilitySeries: []core.LiveEventProbabilityPoint{}, Links: []map[string]string{}}
 	if !d.Spoiler {
 		if len(d.Plays) > 0 {
-			v.Plays = d.Plays
-			v.PlaysNewest = newestFirst(d.Plays)
+			v.Plays = playViews(d.Plays, d.Competitors)
+			v.PlaysNewest = playViews(newestFirst(d.Plays), d.Competitors)
 		}
 		if len(d.ProbabilitySeries) > 0 {
 			v.ProbabilitySeries = d.ProbabilitySeries

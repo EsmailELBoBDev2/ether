@@ -657,6 +657,39 @@ func validNavigate(n map[string]any) map[string]any {
 }
 
 func checkActionArg(spec plugins.ScreenActionArg, raw json.RawMessage) (any, error) {
+	// Documents fill templates into text, so a value may arrive as a string
+	// ("true", "12", "a,b"); coerce it to the declared type.
+	var text string
+	isText := json.Unmarshal(raw, &text) == nil
+	if isText {
+		switch spec.Type {
+		case "bool":
+			switch strings.TrimSpace(text) {
+			case "true", "1":
+				return true, nil
+			case "false", "0":
+				return false, nil
+			}
+			return nil, errors.New("must be true or false")
+		case "int":
+			n, err := strconv.Atoi(strings.TrimSpace(text))
+			if err != nil {
+				return nil, errors.New("must be a whole number")
+			}
+			raw, _ = json.Marshal(n)
+		case "strings":
+			var list []string
+			for _, part := range strings.Split(text, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					list = append(list, p)
+				}
+			}
+			if list == nil {
+				list = []string{}
+			}
+			raw, _ = json.Marshal(list)
+		}
+	}
 	switch spec.Type {
 	case "bool":
 		var b bool

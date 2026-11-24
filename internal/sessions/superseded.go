@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"crypto/subtle"
 	"slices"
 	"time"
 
@@ -42,6 +43,10 @@ func (b *Broker) collectSupersededLocked(replacement *brokerSession) []*brokerSe
 		}
 		delete(b.sessions, id)
 		b.rememberRetiredLocked(s)
+		if r, ok := b.retired[id]; ok {
+			r.grant, r.replacedAt = s.grant, b.deps.Now()
+			b.retired[id] = r
+		}
 		old = append(old, s)
 	}
 	return old
@@ -206,4 +211,24 @@ func (b *Broker) activateQueued(ctx context.Context, id string) {
 	if b.cluster != nil {
 		b.cluster.ownershipChanged(ctx)
 	}
+}
+
+// replacedGrace is how long a superseded session's media URLs answer
+// "replaced, retry" instead of 404.
+const replacedGrace = 30 * time.Second
+
+// replacedMedia reports whether a media request names a session that a newer
+// playback on the same device replaced moments ago. Jellyfin clients switch
+// tracks of a transcode by posting PlaybackInfo and only then load the new
+// URL; the old session ends inside that request, so the player's next
+// segment request on the old URL got a 404. Media3 treats 404 as fatal
+// ("Source error, response code 404": Wholphin paused and then failed on a
+// subtitle switch), but retries other failures. A 409 with Retry-After lets
+// it retry the old URL until the app has swapped to the new one; nothing is
+// served from the retired session.
+func (b *Broker) replacedMedia(id, grant string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	r, ok := b.retired[id]
+	return ok && !r.replacedAt.IsZero() && r.grant != "" && subtle.ConstantTimeCompare([]byte(r.grant), []byte(grant)) == 1 && b.deps.Now().Sub(r.replacedAt) < replacedGrace
 }

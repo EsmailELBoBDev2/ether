@@ -194,12 +194,15 @@ type ServiceDeps struct {
 	Scheduled func(context.Context, core.RatingKey) ([]core.Title, error)
 	// Grouped reports shows whose episode order is not the canonical season
 	// tree. Future episodes stay off those shows.
-	Grouped  func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
-	State    core.State
-	Search   Search
-	Rows     *RowsService
-	Layout   core.NeutralHomeLayoutSource
-	Protocol core.Protocol
+	Grouped func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
+	State   core.State
+	// HistoryPlays lists a viewer's completed plugin plays in [from, to),
+	// oldest first (listening recaps). Optional.
+	HistoryPlays func(ctx context.Context, userID int64, from, to time.Time, limit int) ([]core.HistoryPlay, error)
+	Search       Search
+	Rows         *RowsService
+	Layout       core.NeutralHomeLayoutSource
+	Protocol     core.Protocol
 	// Favorites manages the stable, per-viewer Favorites playlist mapping.
 	Favorites      func(context.Context, *core.User, core.RatingKey, bool) (bool, error)
 	IsFavorite     func(context.Context, *core.User, core.RatingKey) (bool, error)

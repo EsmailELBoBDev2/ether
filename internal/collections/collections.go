@@ -41,8 +41,8 @@ import (
 )
 
 var (
-	_ core.Collections    = (*Service)(nil)
-	_ core.CollectionRows = (*Service)(nil)
+	_ core.Collections            = (*Service)(nil)
+	_ core.CollectionLayoutSource = (*Service)(nil)
 )
 
 // TitleUpserter adds titles to the catalogue mirror; *catalog.Catalog
@@ -801,7 +801,7 @@ func visible(row *specRow, user *core.User) bool {
 	if row.owner != 0 {
 		return user != nil && user.ID == row.owner
 	}
-	return row.spec.Targets.Users.Includes(user)
+	return true
 }
 
 func typeMatches(sp core.CollectionSpec, t core.MediaType) bool {
@@ -1029,7 +1029,7 @@ func (s *Service) list(ctx context.Context, user *core.User, t core.MediaType, w
 	// Built-ins first, as Plex has always listed them.
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
 	for _, row := range rows {
-		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, t) {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, t) {
 			continue
 		}
 		wait := row.spec.Refresh == RefreshLive || time.Now().Before(deadline)
@@ -1406,7 +1406,7 @@ func (s *Service) AllowsPlaceholders(ctx context.Context, user *core.User, colle
 		return false
 	}
 	row, err := s.rowByKey(ctx, collection)
-	return err == nil && visible(row, user) && row.spec.Targets.CollectionsTab && row.spec.Targets.Schedule.Allows(device, s.now()) && (row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed")
+	return err == nil && visible(row, user) && row.spec.BrowseInApps && (row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed")
 }
 
 func (s *Service) Placeholder(ctx context.Context, user *core.User, collection, key core.RatingKey, device string) (*core.Title, error) {
@@ -1419,7 +1419,7 @@ func (s *Service) Placeholder(ctx context.Context, user *core.User, collection, 
 		return nil, core.ErrNotFound
 	}
 	row, err := s.rowByKey(ctx, collection)
-	if err != nil || !visible(row, user) || !row.spec.Targets.CollectionsTab || !row.spec.Targets.Schedule.Allows(device, s.now()) || (row.spec.ReleaseMode != "upcoming" && row.spec.ReleaseMode != "mixed") {
+	if err != nil || !visible(row, user) || !row.spec.BrowseInApps || (row.spec.ReleaseMode != "upcoming" && row.spec.ReleaseMode != "mixed") {
 		return nil, core.ErrNotFound
 	}
 	keys, err := s.serve(ctx, row, user, true)

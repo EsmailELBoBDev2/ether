@@ -322,25 +322,27 @@ func (a *App) supportViewer(userID int64) (diagnostics.ViewerFacts, error) {
 		return v, err
 	}
 	if a.personalize != nil {
-		layout, e := a.personalize.HomeLayout(ctx)
-		if e != nil {
-			return v, e
-		}
-		add := func(layer string, pages []core.LayoutPage) {
-			for _, p := range pages {
-				for _, row := range p.Rows {
+	pages:
+		for _, p := range a.personalize.Pages(ctx) {
+			for _, row := range p.Rows {
+				if len(v.Layout) >= 256 {
+					v.LayoutTruncated = true
+					break pages
+				}
+				v.Layout = append(v.Layout, diagnostics.ViewerLayoutRow{Layer: "everyone", Section: string(p.Key), Row: row.Source.Kind, Status: row.Placement.Mode, Slot: row.Placement.Position})
+			}
+			if variant := p.VariantFor(userID); variant != nil {
+				for _, o := range variant.Rows {
 					if len(v.Layout) >= 256 {
 						v.LayoutTruncated = true
-						return
+						break pages
 					}
-					v.Layout = append(v.Layout, diagnostics.ViewerLayoutRow{Layer: layer, Section: p.Section, Row: row.Row, Status: row.Status, Slot: row.Slot})
+					entry := diagnostics.ViewerLayoutRow{Layer: "viewer", Section: string(p.Key), Row: o.Row}
+					if o.Placement != nil {
+						entry.Status, entry.Slot = o.Placement.Mode, o.Placement.Position
+					}
+					v.Layout = append(v.Layout, entry)
 				}
-			}
-		}
-		add("global", layout.Global)
-		for _, viewer := range layout.Viewers {
-			if viewer.UserID == userID {
-				add("viewer", viewer.Pages)
 			}
 		}
 	}

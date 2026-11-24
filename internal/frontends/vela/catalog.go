@@ -553,14 +553,14 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	if matched != nil {
 		markLandscapeRows(rows, *matched)
 	}
-	out, err := i.rowsToWire(r, v, token, rows, excludedHeroes, useRowViews, rowItemLimit(r), sources...)
+	out, err := i.rowsToWire(r, v, token, rows, matched, excludedHeroes, useRowViews, rowItemLimit(r), sources...)
 	if err != nil {
 		return nil, false, err
 	}
 	return out, outerMore, nil
 }
 
-func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string, rows []frontend.Row, excludedHeroes []string, hasViews bool, itemLimit int, sources ...map[string]heroSource) ([]object, error) {
+func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string, rows []frontend.Row, view *frontend.View, excludedHeroes []string, hasViews bool, itemLimit int, sources ...map[string]heroSource) ([]object, error) {
 	// Share card state, ratings and artwork across all shelves in this page.
 	var pageTitles []frontend.Title
 	seenTitles := map[frontend.RatingKey]bool{}
@@ -594,9 +594,21 @@ func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string,
 	}
 	r = r.WithContext(context.WithValue(r.Context(), homeTitlesKey{}, cardCache))
 	out := []object{}
+	var surfaces map[string]bool
 	for _, row := range rows {
+		if s := row.Layout.Present.Surface; s != nil {
+			// A plugin surface row sits at its page position; the client
+			// draws it from the plugin's document when it may.
+			if surfaces == nil {
+				surfaces = i.surfaceGate(r, v)
+			}
+			if surfaces[s.Surface] {
+				out = append(out, surfaceRowWire(row))
+			}
+			continue
+		}
 		if len(sources) > 0 {
-			sources[0][row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, hero: row.Layout.StylePolicy == frontend.RowStyleHero, previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
+			sources[0][row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, hero: row.Layout.Present.Layout == "hero", previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
 		}
 		offset := 0
 		if old := r.URL.Query().Get("cursor"); old != "" {
@@ -610,6 +622,7 @@ func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string,
 		if e := i.backfillShelf(r, v, token, wire, itemLimit); e != nil {
 			return nil, e
 		}
+		libraryDefaults(wire, view)
 		out = append(out, wire)
 	}
 	return out, nil
@@ -617,11 +630,16 @@ func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string,
 
 // rowWire retains source entry receipts while converting one authorized page.
 func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, row frontend.Row, sourceOffset int, excludedHeroes []string, hasViews bool) (object, error) {
+	if row.Layout.Present.Numbered {
+		row.RankedTop10 = true
+	}
 	if row.RankedTop10 {
 		row.Entries = row.Entries[:min(len(row.Entries), 10)]
 		row.Items = row.Items[:min(len(row.Items), 10)]
 		row.More = false
 	}
+	sourceEntries := len(row.Entries)
+	row = tracksEntries(row)
 	ts := []frontend.Title{}
 	cols := []frontend.Collection{}
 	for _, e := range row.Entries {
@@ -703,20 +721,16 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	if row.More || row.Kind == "truncated" {
 		continuation = "unknown"
 	}
-	style := row.Style
-	if row.Layout.StylePolicy == frontend.RowStyleWide {
-		style = "landscape" // Vela's wide card shape
-	}
-	wire := object{"id": row.ID, "name": row.Title, "purpose": row.Purpose, "receiptToken": row.Handle, "style": style, "items": entries, "continuation": continuation}
-	if row.RankedTop10 {
-		wire["presentation"] = "ranked"
+	wire := object{"id": row.ID, "name": row.Title, "purpose": row.Purpose, "receiptToken": row.Handle, "items": entries, "continuation": continuation}
+	presentRow(wire, row)
+	if wire["presentation"] == "ranked" {
 		wire["continuation"] = "exhausted"
 	}
 	if row.PreviewOnFocus {
 		wire["previewOnFocus"] = true
 	}
 	if row.More && hasViews {
-		offset := sourceOffset + len(row.Entries)
+		offset := sourceOffset + sourceEntries
 		wire["nextCursor"] = i.rowToken(r, v, row.ID, offset, excludedHeroes)
 		wire["continuation"] = "more"
 	}
@@ -753,7 +767,6 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	if err != nil {
 		return nil, err
 	}
-	shelves = i.withSurfaceRows(r, v, shelves)
 	out := object{
 		"viewer":        viewer,
 		"capabilities":  i.requestCapabilitiesFor(r, v),
@@ -823,7 +836,6 @@ func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
 	if more {
 		continuation = "unknown"
 	}
-	rows = i.withSurfaceRows(r, v, rows)
 	varyLanguage(w)
 	cache(w, r, object{"items": rows, "continuation": continuation})
 }

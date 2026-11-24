@@ -1271,7 +1271,7 @@ func (b *builder) genNewReleases() []*candRow {
 	})
 	var recent []core.Title
 	for _, t := range src {
-		if !t.Released.IsZero() && !t.Released.After(b.now) && b.now.Sub(t.Released) <= recentDays*24*time.Hour && b.taste.watchesLanguage(t.Language) {
+		if !t.Released.IsZero() && !t.Released.After(b.now) && b.now.Sub(t.Released) <= recentDays*24*time.Hour && b.watchesLanguage(&t) {
 			recent = append(recent, t)
 		}
 	}
@@ -1378,7 +1378,7 @@ func (b *builder) genTop10Today() []*candRow {
 		// Vote-floored: a tenth of the floor and a decent weighted rating,
 		// so a week-old blockbuster qualifies and an obscure title with a
 		// burst of traffic does not.
-		if b.acclaimed(&t, 0.1, 6.0) && b.taste.watchesLanguage(t.Language) {
+		if b.acclaimed(&t, 0.1, 6.0) && b.watchesLanguage(&t) {
 			ok = append(ok, t)
 		}
 	}

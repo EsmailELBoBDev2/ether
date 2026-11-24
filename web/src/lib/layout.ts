@@ -893,6 +893,14 @@ export function describeHiddenRow(
       return t("Hidden for {who}: nothing in progress", { who });
     case "needs_watch_history":
       return t("Hidden for {who}: needs more watch history", { who });
+    case "filtered_by_history":
+      return t("Hidden for {who}: already watched or in progress", { who });
+    case "filtered_by_language":
+      return t("Hidden for {who}: only titles in languages they rarely watch", { who });
+    case "filtered_by_popularity":
+      return t("Hidden for {who}: only little-known titles left", { who });
+    case "below_minimum":
+      return t("Hidden for {who}: fewer titles left than this row needs", { who });
     case "no_matching_titles":
       return t("Hidden for {who}: no matching titles", { who });
     default:

@@ -469,7 +469,15 @@ func (e *Engine) runGenerator(g generator, b *builder) (rows []*candRow) {
 			rows = nil
 		}
 	}()
-	return g.run(b)
+	stats := &rowFilterStats{}
+	b.tally = stats
+	defer func() { b.tally = nil }()
+	rows = g.run(b)
+	// Counts are only unambiguous for a generator's single row.
+	if len(rows) == 1 && rows[0].filtered == nil {
+		rows[0].filtered = stats
+	}
+	return rows
 }
 
 // buildTaste builds only the taste model (owner views, PersonalScorer).

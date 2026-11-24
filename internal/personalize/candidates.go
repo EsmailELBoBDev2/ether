@@ -60,6 +60,10 @@ type candRow struct {
 	// sectionTitles name the row on the Movies and TV Shows pages when it
 	// differs from its Home title (crowd rows).
 	sectionTitles map[core.MediaType]string
+	// filtered counts what the viewer filters removed while the row was
+	// built (row_filters.go); the designer preview explains an empty row
+	// with it.
+	filtered *rowFilterStats
 }
 
 // userModel is everything precomputed for one viewer: the taste model and
@@ -107,6 +111,9 @@ type builder struct {
 	// policy epoch for shared browses (shared_sources.go), read on first use.
 	epochRead, epochOK bool
 	epoch              int64
+	// tally counts the current generator's filtered candidates
+	// (row_filters.go).
+	tally *rowFilterStats
 }
 
 type fitMemo struct {
@@ -270,7 +277,19 @@ func (b *builder) rankWith(items []core.Title, score scorer, requireNotable bool
 	n := len(items)
 	for i := range items {
 		t := &items[i]
-		if seen[t.Key] || !b.fresh(t) || requireNotable && !b.notable(t) {
+		if seen[t.Key] {
+			continue
+		}
+		if !b.fresh(t) {
+			if c := b.tally.of(t.Type); c != nil && b.watchedOrStarted(t) {
+				c.history++
+			}
+			continue
+		}
+		if requireNotable && !b.notable(t) {
+			if c := b.tally.of(t.Type); c != nil {
+				c.notable++
+			}
 			continue
 		}
 		seen[t.Key] = true

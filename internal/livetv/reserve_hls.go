@@ -538,7 +538,7 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 		if h.demux.hasAnchor && h.isDemuxedAudioLocked(raw) {
 			if idx, ok := closestSegmentToPDT(m, h.demux.anchorPDT); ok {
 				l.floor = m.segs[idx].seq
-				if v := h.lists[h.demux.videoURL]; v != nil && v.floor >= 0 && !implicitKeyIV(body) {
+				if v := h.lists[h.demux.videoURL]; v != nil && v.floor >= 0 {
 					l.seqShift = v.floor - l.floor
 				}
 			}
@@ -589,12 +589,17 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 
 // shiftMediaSequence adds shift to a media playlist's media sequence (a
 // playlist without the tag starts at 0). A shift that would go negative is
-// not applied.
+// not applied. A segment whose key takes its IV from the sequence number
+// (no IV attribute) gets that original IV written out, so decryption does
+// not follow the new numbering.
 func shiftMediaSequence(body []byte, shift int64) []byte {
 	if shift == 0 || len(body) == 0 {
 		return body
 	}
 	lines := strings.Split(string(body), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "#EXTM3U" {
+		return body
+	}
 	at, seq := -1, int64(0)
 	for i, raw := range lines {
 		line := strings.TrimSpace(raw)
@@ -613,28 +618,32 @@ func shiftMediaSequence(body []byte, shift int64) []byte {
 	if seq+shift < 0 {
 		return body
 	}
-	tag := "#EXT-X-MEDIA-SEQUENCE:" + strconv.FormatInt(seq+shift, 10)
-	if at >= 0 {
-		lines[at] = tag
-	} else {
-		if len(lines) == 0 || strings.TrimSpace(lines[0]) != "#EXTM3U" {
-			return body
-		}
-		lines = append(lines[:1], append([]string{tag}, lines[1:]...)...)
+	out := make([]string, 0, len(lines)+8)
+	out = append(out, lines[0])
+	if at < 0 {
+		out = append(out, "#EXT-X-MEDIA-SEQUENCE:"+strconv.FormatInt(seq+shift, 10))
 	}
-	return []byte(strings.Join(lines, "\n"))
-}
-
-// implicitKeyIV reports a playlist with an encryption key whose IV is the
-// segment's media sequence number: renumbering it would break decryption.
-func implicitKeyIV(body []byte) bool {
-	for _, raw := range strings.Split(string(body), "\n") {
+	key := "" // the key in force when its IV is implicit
+	n := seq
+	for i, raw := range lines[1:] {
 		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "#EXT-X-KEY:") && !strings.Contains(line, "METHOD=NONE") && !strings.Contains(line, ",IV=") && !strings.Contains(line, ":IV=") {
-			return true
+		switch {
+		case i+1 == at:
+			raw = "#EXT-X-MEDIA-SEQUENCE:" + strconv.FormatInt(seq+shift, 10)
+		case strings.HasPrefix(line, "#EXT-X-KEY:"):
+			key = ""
+			if !strings.Contains(line, "METHOD=NONE") && !strings.Contains(line, ",IV=") && !strings.Contains(line, ":IV=") {
+				key = line
+			}
+		case line != "" && !strings.HasPrefix(line, "#"):
+			if key != "" {
+				out = append(out, key+",IV="+ivFromSequence(n))
+			}
+			n++
 		}
+		out = append(out, raw)
 	}
-	return false
+	return []byte(strings.Join(out, "\n"))
 }
 
 // resumeAtCutLocked moves l's floor to the program change its previous
@@ -1086,7 +1095,7 @@ func (h *hlsInput) applyDemuxedPair(
 		}
 	}
 	al.seqShift = 0
-	if aligned && vl.floor >= 0 && al.floor >= 0 && !implicitKeyIV(aBody) {
+	if aligned && vl.floor >= 0 && al.floor >= 0 {
 		al.seqShift = vl.floor - al.floor
 	}
 	aShift := al.seqShift

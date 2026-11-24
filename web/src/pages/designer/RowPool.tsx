@@ -99,7 +99,10 @@ interface RowSourceMeta {
 type PoolGroup = RowGroup | "custom";
 type StatusFilter = RowStatus | "all" | "changed";
 
-/** A Collections group longer than this starts folded, so it doesn't bury the other rows. */
+/**
+ * On a library tab, a Collections group longer than this starts folded, so it
+ * doesn't bury the other rows. On Home every group starts folded.
+ */
 const FOLD_AT = 12;
 
 /** Where a row's status comes from in the layer being edited. */
@@ -430,6 +433,38 @@ export function RowPool({
           { value: "changed", label: layer === "global" ? t("Changed") : t("Overridden") },
         ]}
       />
+      {(() => {
+        // Master: one checkbox for every selectable row in every group, so
+        // the owner can act on all rows without opening each group.
+        if (onLibraryTab) return null;
+        const all = shown
+          .filter((e) => !e.collectionSource && GROUPS.some((g) => g.key === e.group))
+          .map((e) => e.row);
+        if (all.length < 2) return null;
+        const count = all.filter((r) => picked.has(r)).length;
+        return (
+          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-bg-subtle px-2 py-1.5">
+            <Checkbox
+              aria-label={t("Master: select all rows in every group")}
+              checked={count === all.length}
+              onChange={(ev) => pick(all, ev.currentTarget.checked)}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] font-semibold uppercase tracking-wider text-fg">
+                {t("Master: select all rows")}
+              </span>
+              <span className="block text-[11px] text-fg-subtle">
+                {count > 0
+                  ? t("{count} of {total} rows selected in every group", {
+                      count,
+                      total: all.length,
+                    })
+                  : t("Every row in every group below ({total} rows)", { total: all.length })}
+              </span>
+            </span>
+          </label>
+        );
+      })()}
       {GROUPS.map((g) => {
         const rows = shown.filter((e) => e.group === g.key);
         if (!rows.length) return null;
@@ -437,7 +472,9 @@ export function RowPool({
         const allPicked = selectable.length > 0 && selectable.every((r) => picked.has(r));
         // A search, a filter or the focused row holds a group open.
         const held = filtering || rows.some((e) => e.row === focusRow);
-        const open = held || !(folded[g.key] ?? (g.key === "collections" && rows.length > FOLD_AT));
+        const open =
+          held ||
+          !(folded[g.key] ?? (!onLibraryTab || (g.key === "collections" && rows.length > FOLD_AT)));
         const off = rows.filter((e) => !e.collectionSource && statusOf(e) === "off").length;
         return (
           <div key={g.key} className="space-y-1.5 pt-1" role="group" aria-label={g.label}>

@@ -2457,6 +2457,7 @@ type existingItemMeta struct {
 	released  int64
 	year      int64
 	hash      string
+	recording string
 }
 
 func lookupExistingItemsTx(ctx context.Context, tx queryer, items []preparedItem) (map[core.ItemRef]existingItemMeta, error) {
@@ -2472,15 +2473,15 @@ func lookupExistingItemsTx(ctx context.Context, tx queryer, items []preparedItem
 			args[i] = string(v.validated.Item.Ref)
 		}
 		rows, err := tx.QueryContext(ctx,
-			`SELECT item_ref, seq, level, parent_ref, added_at, released, year, content_hash FROM plugin_items WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
+			`SELECT item_ref, seq, level, parent_ref, added_at, released, year, content_hash, recording FROM plugin_items WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
 			args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var refStr, lv, parentStr, hash string
+			var refStr, lv, parentStr, hash, rec string
 			var seq, added, released, yr int64
-			if err := rows.Scan(&refStr, &seq, &lv, &parentStr, &added, &released, &yr, &hash); err != nil {
+			if err := rows.Scan(&refStr, &seq, &lv, &parentStr, &added, &released, &yr, &hash, &rec); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -2492,6 +2493,7 @@ func lookupExistingItemsTx(ctx context.Context, tx queryer, items []preparedItem
 				released:  released,
 				year:      yr,
 				hash:      hash,
+				recording: rec,
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -2910,9 +2912,14 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 
 	isSQLite := store.DialectOf(s.db) == store.SQLite
 	tallyDelta := map[string]int64{}
+	recordingDelta := map[string]int64{}
 	for _, r := range targetRefs {
 		t := allTargets[r]
 		tallyDelta[t.level]--
+		var rec string
+		if err := tx.QueryRowContext(ctx, `SELECT recording FROM plugin_items WHERE item_ref = ?`, string(t.ref)).Scan(&rec); err == nil && rec != "" {
+			recordingDelta[rec]--
+		}
 		if isSQLite {
 			if err := sqliteDeleteFTS(ctx, tx, t.seq); err != nil {
 				return err
@@ -2939,6 +2946,9 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 		}
 	}
 	if err := applyTallyDeltaTx(ctx, tx, libraryID, tallyDelta); err != nil {
+		return err
+	}
+	if err := applyRecordingTallyDeltaTx(ctx, tx, libraryID, recordingDelta); err != nil {
 		return err
 	}
 	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, !isSQLite, libraryID, fieldTallyDelta)
@@ -3350,6 +3360,9 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_parent_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_recording_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
+			return err
+		}
 	} else {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM plugin_item_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
@@ -3368,6 +3381,11 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM plugin_item_parent_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
+			args...); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM plugin_item_recording_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
 			args...); err != nil {
 			return err
 		}

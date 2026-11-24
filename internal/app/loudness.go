@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -65,4 +66,12 @@ func (a *App) frontendLoudness() frontend.LoudnessReader {
 		return nil
 	}
 	return a.loudness
+}
+
+// historyPlays reads a viewer's completed plugin plays for recaps.
+func (a *App) historyPlays() func(context.Context, int64, time.Time, time.Time, int) ([]core.HistoryPlay, error) {
+	if a == nil || a.state == nil {
+		return nil
+	}
+	return a.state.PluginHistoryPlays
 }

@@ -546,7 +546,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		return a.favorites.Has(ctx, u, favorites.Subject{Kind: favorites.KindTitle, ID: k.String()})
 	}, IsFavoriteMany: func(ctx context.Context, u *core.User, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
 		return a.favorites.HasTitles(ctx, u, keys)
-	}, FavoritePage: func(ctx context.Context, u *core.User, role, cursor string, limit int) ([]core.RatingKey, []time.Time, string, int, error) {
+	}, HistoryPlays: a.historyPlays(), FavoritePage: func(ctx context.Context, u *core.User, role, cursor string, limit int) ([]core.RatingKey, []time.Time, string, int, error) {
 		page, err := a.favorites.Page(ctx, u, favorites.PageQuery{Role: role, Cursor: cursor, Limit: limit})
 		if errors.Is(err, favorites.ErrBadCursor) {
 			return nil, nil, "", 0, frontend.ErrBadFavoritesCursor

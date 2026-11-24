@@ -1,5 +1,7 @@
 package core
 
+import "time"
+
 // Loudness is how loud an audio item plays and where it starts, ends and
 // fades, so a client can level it (ReplayGain 2.0, reference -18 LUFS) and
 // time a crossfade. Peaks are linear true peak (1.0 = 0 dBTP).
@@ -27,3 +29,9 @@ const (
 	LoudnessMeasured = "measured" // Ether measured the file
 	LoudnessProvider = "provider" // the catalogue's estimate, gain only
 )
+
+// HistoryPlay is one completed play in a viewer's history.
+type HistoryPlay struct {
+	Key RatingKey
+	At  time.Time
+}

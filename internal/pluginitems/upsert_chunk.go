@@ -186,6 +186,7 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 
 	isPG := store.DialectOf(s.db) == store.Postgres
 	tallyDelta := map[string]int64{}
+	recordingDelta := map[string]int64{}
 
 	var parentTally *parentTallyTracker
 	if len(kind.Decl.Levels) >= 2 && kind.LibraryID > 0 {
@@ -248,6 +249,10 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 		v := &p.validated
 		it := &v.Item
 		ex, isExisting := existing[it.Ref]
+		if ex.recording != it.Recording {
+			recordingDelta[ex.recording]--
+			recordingDelta[it.Recording]++
+		}
 		var seq int64
 		var addedAt int64
 		if isExisting {
@@ -501,6 +506,9 @@ INSERT INTO plugin_items(
 		}
 	}
 
+	if err := applyRecordingTallyDeltaTx(ctx, tx, kind.LibraryID, recordingDelta); err != nil {
+		return res, err
+	}
 	if err := applyTallyDeltaTx(ctx, tx, kind.LibraryID, tallyDelta); err != nil {
 		return res, err
 	}

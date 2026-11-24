@@ -68,10 +68,20 @@ type View struct {
 	Media       core.MediaClass `json:"media,omitempty"`
 	Card        string          `json:"card,omitempty"`
 	DateDisplay string          `json:"dateDisplay,omitempty"`
+	Experience  string          `json:"experience,omitempty"` // standard|audio (core.LibraryExperience*)
 	Tabs        []ViewTab       `json:"tabs,omitempty"`
 	Sorts       []string        `json:"sorts,omitempty"`
 	Facets      []ViewFacet     `json:"facets,omitempty"`
 }
+
+// EffectiveExperience is the library experience apps should present the view
+// with: the declared one, else the media class default (audio for music).
+func (v View) EffectiveExperience() string {
+	return core.EffectiveLibraryExperience(v.Experience, v.Media)
+}
+
+// LibraryExperiences lists the library experiences apps may be asked for.
+var LibraryExperiences = core.LibraryExperiences
 
 // ViewTab describes one sub-tab of a library view.
 type ViewTab struct {

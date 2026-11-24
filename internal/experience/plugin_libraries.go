@@ -85,6 +85,7 @@ type PluginPresentation struct {
 	Media        core.MediaClass
 	Card         string
 	DateDisplay  string
+	Experience   string // declared library experience (empty: the class default)
 	Tabs         []frontend.ViewTab
 	Sorts        []string
 	Facets       []frontend.ViewFacet
@@ -370,6 +371,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 					view.Media = p.Media
 					view.Card = lib.EffectiveCardShape(p.Card)
 					view.DateDisplay = p.DateDisplay
+					view.Experience = core.EffectiveLibraryExperience(p.Experience, p.Media)
 					view.Tabs = p.Tabs
 					view.Sorts = p.Sorts
 					view.Facets = p.Facets

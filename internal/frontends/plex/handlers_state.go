@@ -106,13 +106,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		s.writeEmpty(w, r)
 		return
 	}
+	var title *frontend.Title
 	if key.Kind() == frontend.KindPlaylist {
 		if _, err := s.playlist(ctx, pr.User, key); err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
 	} else {
-		title, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
+		var err error
+		title, err = s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
@@ -201,6 +203,11 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			duration = 0
 		}
 	}
+	// When Ether serves this client none of this title's media, the duration
+	// is the client's own. One far shorter than the title's runtime is other
+	// media reported against it (a detail-page trailer, theme or preview): it
+	// never moves the title's resume point, completion or taste.
+	foreign := ps == nil && len(tids) == 0 && title != nil && frontend.ForeignMediaDuration(title.Runtime, duration)
 	// Some clients carry the previous queue item's playhead into the first
 	// timeline for the next item. A position past the item's end is not
 	// evidence of watching it: keep the last real position for this item and
@@ -218,6 +225,12 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
 	stalled := s.checkStartStall(pr, key, state, offset, tids)
 	undelivered := !impossible && !failedProgressive && stalled == "" && s.playbackNeverDelivered(ps, tids)
+	if foreign {
+		// The session still shows what the client reports; only the
+		// title's watch state, history and taste are left untouched.
+		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
+		s.log.Debug("timeline not saved: duration is not this title's media", "key", key, "state", state, "position", offset, "duration", duration, "runtime", title.Runtime)
+	}
 	if impossible || failedProgressive || stalled != "" || undelivered {
 		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
 		reported := offset
@@ -241,7 +254,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, watchErr)
 		return
 	}
-	if !s.reportBrokerTimeline(ctx, pr, key, offset, duration, state, sanitizeSessionID(q.Get("session"))) {
+	// Foreign media is not playback of this title: no progress, prefetch or
+	// session-intent signal reaches the broker for it.
+	if !foreign && !s.reportBrokerTimeline(ctx, pr, key, offset, duration, state, sanitizeSessionID(q.Get("session"))) {
 		s.log.Warn("timeline report", "key", key, "state", state)
 	}
 	if reason := stalled; reason != "" {

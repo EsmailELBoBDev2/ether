@@ -299,6 +299,9 @@ func (r *KindResolver) validateIndexerSearchQuery(ctx context.Context, q core.So
 			Message: err.Error(),
 		}}}
 	}
+	if fe := plugins.ValidateSourceLookup(q); fe != nil {
+		return "", "", &plugins.ValidationError{Fields: []plugins.FieldError{*fe}}
+	}
 	if q.SettleMS != nil && *q.SettleMS < 0 {
 		return "", "", &plugins.ValidationError{Fields: []plugins.FieldError{{
 			Field:   "settleMs",
@@ -355,6 +358,11 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 	knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
 	for i := range scored {
 		scored[i] = r.stripCandidateAuth(scored[i])
+		if plugin, kind, ref, ok := directStream(rels[i].GUID); ok && kind == "lazy" {
+			// A plugin source's category answer: no link of its own, the
+			// plugin lists and opens it (#792).
+			scored[i].PluginRelease = &core.PluginReleaseRef{Plugin: plugin, ID: ref}
+		}
 		if fc := rels[i].KnownFileCount(); fc > scored[i].FileCount {
 			scored[i].FileCount = fc
 		}
@@ -532,6 +540,7 @@ func (r *KindResolver) startStreamingIndexerSearch(ctx context.Context, pluginID
 		searchReq := core.SearchRequest{
 			Title:    query,
 			Category: category,
+			Lookup:   q.Lookup,
 		}
 		onArrived := func(batch []core.Release) {
 			if len(batch) == 0 {

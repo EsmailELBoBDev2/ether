@@ -591,6 +591,40 @@ const DefaultUsenetCheckPerMin = 20
 
 type backgroundCallKey struct{}
 
+// Bounds of an indexer_search typed lookup.
+const (
+	MaxSourceLookupFields     = 8
+	MaxSourceLookupFieldBytes = 256
+)
+
+var lookupFieldRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,31}$`)
+
+// ValidateSourceLookup checks an indexer_search lookup: it rides on a
+// category search, names a simple type, and carries a few short fields.
+func ValidateSourceLookup(q core.SourceQuery) *FieldError {
+	l := q.Lookup
+	if l == nil {
+		return nil
+	}
+	switch {
+	case strings.TrimSpace(q.Category) == "":
+		return &FieldError{Field: "lookup", Message: "lookup needs a category: plugin sources answer typed lookups on category searches"}
+	case !keyRe.MatchString(l.Type):
+		return &FieldError{Field: "lookup.type", Message: "lookup.type must be a simple key such as album or book"}
+	case len(l.Fields) > MaxSourceLookupFields:
+		return &FieldError{Field: "lookup.fields", Message: fmt.Sprintf("at most %d lookup fields allowed", MaxSourceLookupFields)}
+	}
+	for k, v := range l.Fields {
+		if !lookupFieldRe.MatchString(k) {
+			return &FieldError{Field: "lookup.fields", Message: fmt.Sprintf("lookup field %q must be a simple camelCase name", k)}
+		}
+		if len(v) > MaxSourceLookupFieldBytes {
+			return &FieldError{Field: "lookup.fields." + k, Message: fmt.Sprintf("must be at most %d bytes", MaxSourceLookupFieldBytes)}
+		}
+	}
+	return nil
+}
+
 // SourcesPermissionAllowsSearch reports whether the declared permissions.sources
 // level permits indexer search, release inspection, debrid cache checks, and
 // on-demand Usenet checks.
@@ -700,6 +734,9 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				Field:   "onlyIndexers",
 				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
 			}}}
+		}
+		if fe := ValidateSourceLookup(q); fe != nil {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{*fe}}
 		}
 	case "indexer_search_results":
 		if strings.TrimSpace(q.SearchID) == "" {

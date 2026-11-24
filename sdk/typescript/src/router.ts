@@ -27,6 +27,10 @@ import type {
   NotifyResponse,
   OpenStreamRequest,
   OpenStreamResponse,
+  ReleaseFilesRequest,
+  ReleaseFilesResponse,
+  SourceSearchRequest,
+  SourceSearchResponse,
   RankKeyFn,
   RawRequest,
   RawResponse,
@@ -99,6 +103,8 @@ export interface PluginRoutes<S = Record<string, unknown>> {
   meta?: (req: MetaRequest, ctx: PluginContext<S>) => MaybePromise<MetaResponse>;
   stream?: (req: StreamRequest, ctx: PluginContext<S>) => MaybePromise<StreamResponse>;
   openStream?: (req: OpenStreamRequest, ctx: PluginContext<S>) => MaybePromise<OpenStreamResponse>;
+  sourceSearch?: (req: SourceSearchRequest, ctx: PluginContext<S>) => MaybePromise<SourceSearchResponse>;
+  releaseFiles?: (req: ReleaseFilesRequest, ctx: PluginContext<S>) => MaybePromise<ReleaseFilesResponse>;
   subtitles?: (req: SubtitlesRequest, ctx: PluginContext<S>) => MaybePromise<SubtitlesResponse>;
   subtitlesDownload?: (req: { id: string; lang: string; format: string }, ctx: PluginContext<S>) => MaybePromise<{ format: string; encoding: "utf8" | "base64"; data: string }>;
   markers?: (req: MarkersRequest, ctx: PluginContext<S>) => MaybePromise<MarkersResponse>;
@@ -267,6 +273,26 @@ function parseExtraSegment(rawExtra: string | undefined): Record<string, string>
     out[k] = v;
   });
   return out;
+}
+
+/** Decodes GET /ether/search: query, category (comma-separated Newznab ids), purpose, lookup and lookup.<field>. */
+function sourceSearchRequest(query: Record<string, string>): SourceSearchRequest {
+  const req: SourceSearchRequest = {
+    query: query.query ?? "",
+    categories: (query.category ?? "")
+      .split(",")
+      .map((c) => Number.parseInt(c.trim(), 10))
+      .filter((n) => Number.isInteger(n)),
+  };
+  if (query.purpose) req.purpose = query.purpose;
+  if (query.lookup) {
+    const fields: Record<string, string> = {};
+    for (const [k, v] of Object.entries(query)) {
+      if (k.startsWith("lookup.") && k.length > "lookup.".length) fields[k.slice("lookup.".length)] = v;
+    }
+    req.lookup = { type: query.lookup, fields };
+  }
+  return req;
 }
 
 function matchStremioRoute(path: string, query: Record<string, string>): ParsedStremioRoute | null {
@@ -498,6 +524,31 @@ export function plugin<S = Record<string, unknown>>(
       return mapResult(
         routes.openStream({ streamId: String(bodyObj.streamId ?? "") }, ctx),
       );
+    }
+
+    if (method === "GET" && path.startsWith("/ether/open/")) {
+      if (!routes.openStream) {
+        return errorResponse(404, "not_found", "Stream open handler is not registered.");
+      }
+      const open: OpenStreamRequest = { streamId: decodeURIComponent(path.slice("/ether/open/".length)) };
+      if (query.file) open.file = query.file;
+      const fileIndex = Number.parseInt(query.fileIndex ?? "", 10);
+      if (Number.isInteger(fileIndex) && fileIndex >= 0) open.fileIndex = fileIndex;
+      return mapResult(routes.openStream(open, ctx));
+    }
+
+    if (method === "GET" && path === "/ether/search") {
+      if (!routes.sourceSearch) {
+        return errorResponse(404, "not_found", "Source search handler is not registered.");
+      }
+      return mapResult(routes.sourceSearch(sourceSearchRequest(query), ctx));
+    }
+
+    if (method === "GET" && path.startsWith("/ether/files/")) {
+      if (!routes.releaseFiles) {
+        return errorResponse(404, "not_found", "Release files handler is not registered.");
+      }
+      return mapResult(routes.releaseFiles({ id: decodeURIComponent(path.slice("/ether/files/".length)) }, ctx));
     }
 
     if (method === "GET" && path.startsWith("/ether/markers/") && path.endsWith(".json")) {

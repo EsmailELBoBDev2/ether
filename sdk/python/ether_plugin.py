@@ -1452,6 +1452,23 @@ def _error_response(status: int, code: str, message: str) -> Dict[str, Any]:
     }
 
 
+def _source_search_request(query: Dict[str, str]) -> Dict[str, Any]:
+    """Decode GET /ether/search: query, category (comma-separated Newznab ids),
+    purpose, lookup and lookup.<field> (stream_source category searches)."""
+    cats = []
+    for raw in (query.get("category") or "").split(","):
+        raw = raw.strip()
+        if raw.isdigit():
+            cats.append(int(raw))
+    req: Dict[str, Any] = {"query": query.get("query", ""), "categories": cats}
+    if query.get("purpose"):
+        req["purpose"] = query["purpose"]
+    if query.get("lookup"):
+        fields = {k[len("lookup.") :]: v for k, v in query.items() if k.startswith("lookup.") and len(k) > len("lookup.")}
+        req["lookup"] = {"type": query["lookup"], "fields": fields}
+    return req
+
+
 def _match_stremio_route(path: str, query: Dict[str, str]) -> Optional[Dict[str, Any]]:
     if not path.endswith(".json"):
         return None
@@ -1713,6 +1730,36 @@ class PluginInstance:
                 return _error_response(404, "not_found", "Stream open handler is not registered.")
             body_obj = _parse_json_body(req.get("body"))
             return _ok_response(fn({"streamId": str(body_obj.get("streamId") or "")}, ctx))
+
+        if method == "GET" and path.startswith("/ether/open/"):
+            fn = self.routes.get("open_stream") or self.routes.get("openStream")
+            if not fn:
+                return _error_response(404, "not_found", "Stream open handler is not registered.")
+            open_req: Dict[str, Any] = {"streamId": urllib.parse.unquote(path[len("/ether/open/") :])}
+            if query.get("file"):
+                open_req["file"] = query["file"]
+            raw_index = query.get("fileIndex", "")
+            if raw_index.isdigit():
+                open_req["fileIndex"] = int(raw_index)
+            return _ok_response(fn(open_req, ctx))
+
+        if method == "GET" and path == "/ether/search":
+            fn = self.routes.get("source_search") or self.routes.get("sourceSearch")
+            if not fn:
+                return _error_response(404, "not_found", "Source search handler is not registered.")
+            res = fn(_source_search_request(query), ctx) or {}
+            if isinstance(res, dict) and res.get("streams") is None:
+                res = {**res, "streams": []}
+            return _ok_response(res)
+
+        if method == "GET" and path.startswith("/ether/files/"):
+            fn = self.routes.get("release_files") or self.routes.get("releaseFiles")
+            if not fn:
+                return _error_response(404, "not_found", "Release files handler is not registered.")
+            res = fn({"id": urllib.parse.unquote(path[len("/ether/files/") :])}, ctx) or {}
+            if isinstance(res, dict) and res.get("files") is None:
+                res = {**res, "files": []}
+            return _ok_response(res)
 
         if method == "GET" and path.startswith("/ether/markers/") and path.endswith(".json"):
             fn = self.routes.get("markers")

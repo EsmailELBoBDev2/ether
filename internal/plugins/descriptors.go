@@ -139,8 +139,11 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 		add(extend.KindMarkerSource, "markers", textOf(id, man.Name), map[string]any{"kinds": c.Markers.Kinds})
 	}
 	if man.HasCapability(CapStreamSource) && c.Source != nil {
-		add(extend.KindSourceKind, "stream", textOf(id, man.Name), map[string]any{
-			"class": c.Source.Class, "abilities": c.Source.Abilities, "limits": c.Source.Limits})
+		cfg := map[string]any{"class": c.Source.Class, "abilities": c.Source.Abilities, "limits": c.Source.Limits}
+		if c.Source.Search != nil {
+			cfg["search"] = c.Source.Search
+		}
+		add(extend.KindSourceKind, "stream", textOf(id, man.Name), cfg)
 	}
 	if man.HasCapability(CapDebridProvider) && c.Source != nil {
 		add(extend.KindSourceKind, "debrid", textOf(id, man.Name), map[string]any{"class": "debrid", "abilities": c.Source.Abilities})

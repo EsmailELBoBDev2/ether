@@ -163,7 +163,12 @@ type SourceQuery struct {
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
+	// Source plugins that declared the category answer it too.
 	Category string `json:"category,omitempty"`
+	// Lookup (indexer_search with Category) adds a typed lookup, such as an
+	// album by artist and title, for source plugins that declared its type.
+	// Other indexers search Query alone.
+	Lookup *SourceLookup `json:"lookup,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile string `json:"profile,omitempty"`
@@ -432,6 +437,10 @@ type SourceCandidate struct {
 	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
+	// PluginRelease names a release a source plugin answered for a declared
+	// category search. It has no infoHash or nzbUrl: hand the candidate back
+	// to release_files to list its files and in a release source to open it.
+	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -451,9 +460,18 @@ func (c SourceCandidate) CandidateRef() string {
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
+	case c.PluginRelease != nil:
+		return "plugin:" + c.PluginRelease.Plugin + ":" + c.PluginRelease.ID
 	default:
 		return c.Title
 	}
+}
+
+// PluginReleaseRef identifies a source plugin's release: the plugin and the
+// lazy stream id it answered the search with.
+type PluginReleaseRef struct {
+	Plugin string `json:"plugin"`
+	ID     string `json:"id"`
 }
 
 // KindMatchRequest asks a matcher to score candidates for one item.

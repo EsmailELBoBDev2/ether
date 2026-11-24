@@ -497,6 +497,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Blobs:         blobs,
 		Catalog:       kindCatalog,
 		Indexer:       idx,
+		Sources:       a.streamSources(),
 		Resolver:      a.resolver,
 		Debrid:        deb,
 		Engine:        eng,

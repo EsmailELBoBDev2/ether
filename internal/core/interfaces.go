@@ -620,7 +620,10 @@ type Auth interface {
 
 type SearchRequest struct {
 	// Category is an explicit Newznab category list for a generic plugin search.
-	Category      string
+	Category string
+	// Lookup is an optional typed lookup on a category search; only plugin
+	// sources that declared its type read it (additive).
+	Lookup        *SourceLookup
 	Type          MediaType // movie or episode
 	IDs           IDs       // movie ids, or the show's ids for episodes
 	Title         string

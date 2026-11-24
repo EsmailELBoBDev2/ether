@@ -275,6 +275,14 @@ export interface SourceMeta {
   class: "debrid" | "usenet" | "indexer" | "direct";
   abilities?: string[];
   limits?: Record<string, unknown>;
+  /** Opts a stream_source plugin in to category searches answered by the `sourceSearch` route (GET /ether/search). */
+  search?: SourceSearchMeta;
+}
+
+/** Newznab categories (3000 audio, 7000 books; a top category covers its subcategories) and optional typed lookups ("album") a source plugin answers. */
+export interface SourceSearchMeta {
+  categories: number[];
+  lookups?: string[];
 }
 
 export interface ChannelsMeta {
@@ -1020,8 +1028,10 @@ export interface SourceQuery {
     | "release_files"
     | "usenet_check";
   query?: string;
-  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
+  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. Source plugins that declared the category answer it too. */
   category?: string;
+  /** indexer_search with category: a typed lookup (e.g. `{type: "album", fields: {artist, title}}`) for source plugins that declared its type; other indexers search `query` alone. */
+  lookup?: SourceLookup;
   /** Quality profile name to score video release names against on indexer_search; empty uses default. */
   profile?: string;
   /** indexer_search only: when true, start the fan-out and return immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. */
@@ -1177,6 +1187,20 @@ export interface SourceCandidate {
   fileCount?: number;
   /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
   usenetCheck?: UsenetCheckResult;
+  /** A release a source plugin answered for a declared category search. No infoHash or nzbUrl: hand the candidate back to release_files to list its files and in a release source to open it. */
+  pluginRelease?: PluginReleaseRef;
+}
+
+/** A source plugin's release: the plugin id and the lazy stream id it answered the search with. */
+export interface PluginReleaseRef {
+  plugin: string;
+  id: string;
+}
+
+/** A typed lookup on a category search. */
+export interface SourceLookup {
+  type: string;
+  fields?: Record<string, string>;
 }
 
 export interface KindMatchRequest {
@@ -1479,8 +1503,37 @@ export interface StreamResponse {
   streams: StreamItem[];
 }
 
+/** GET /ether/open/{streamId}. For a release answered on a category search, `file` or `fileIndex` name the file to open (from `releaseFiles`); neither lets the plugin choose. */
 export interface OpenStreamRequest {
   streamId: string;
+  file?: string;
+  fileIndex?: number;
+}
+
+/** GET /ether/search: the requested categories the plugin declared, the lookup only for a declared type, and why Ether searches (playback, detail, warmup, ...) when known. */
+export interface SourceSearchRequest {
+  query: string;
+  categories: number[];
+  lookup?: SourceLookup;
+  purpose?: string;
+}
+
+/** Answers in the stream route's shape: lazy streams (`ether.lazy`, `ether.id`, `ether.releaseName`) or torrents (`infoHash`). */
+export type SourceSearchResponse = StreamResponse;
+
+/** GET /ether/files/{id} for a lazy release a search answered. */
+export interface ReleaseFilesRequest {
+  id: string;
+}
+
+export interface PluginReleaseFile {
+  path: string;
+  size?: number;
+}
+
+/** A release's files in the order `fileIndex` counts. */
+export interface ReleaseFilesResponse {
+  files: PluginReleaseFile[];
 }
 
 export interface OpenStreamResponse {

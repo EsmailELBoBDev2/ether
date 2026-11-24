@@ -687,14 +687,71 @@ function fixturePlugins(): Fixture[] {
     streamAddon,
     {
       detail: sports,
-      settings: { leagues: ["nfl", "nba", "nhl", "f1", "epl", "mlb"] },
+      settings: {
+        leagues: ["nfl", "nba", "nhl", "f1", "epl", "mlb"],
+        favoriteTeams: ["nba:bos"],
+        region: "us",
+      },
       schema: {
-        fields: [
+        groups: [
           {
-            key: "leagues",
-            kind: "list",
-            label: "Leagues",
-            help: "Leagues included in the live event feed.",
+            key: "general",
+            label: "Feeds and teams",
+            fields: [
+              {
+                key: "leagues",
+                kind: "multiSelect",
+                label: "Leagues",
+                hint: "Leagues included in the live event feed.",
+                options: [
+                  { value: "nfl", label: "NFL" },
+                  { value: "nba", label: "NBA" },
+                  { value: "nhl", label: "NHL" },
+                  { value: "mlb", label: "MLB" },
+                  { value: "mls", label: "MLS" },
+                  { value: "epl", label: "Premier League" },
+                  { value: "laliga", label: "La Liga" },
+                  { value: "bundesliga", label: "Bundesliga" },
+                  { value: "seriea", label: "Serie A" },
+                  { value: "ligue1", label: "Ligue 1" },
+                  { value: "ucl", label: "UEFA Champions League" },
+                  { value: "ncaaf", label: "College Football" },
+                  { value: "ncaam", label: "Men's College Basketball" },
+                  { value: "wnba", label: "WNBA" },
+                  { value: "f1", label: "Formula 1" },
+                  { value: "ufc", label: "UFC" },
+                  { value: "pga", label: "PGA Tour" },
+                ],
+              },
+              {
+                key: "favoriteTeams",
+                kind: "multiSelect",
+                search: true,
+                label: "Followed teams",
+                hint: "Search teams to follow across leagues.",
+                placeholder: "Search teams…",
+              },
+            ],
+          },
+          {
+            key: "tuning",
+            label: "Broadcast and polling",
+            hint: "Rarely needed; defaults match league schedules.",
+            advanced: true,
+            fields: [
+              {
+                key: "region",
+                kind: "select",
+                label: "Broadcast region",
+                options: [
+                  { value: "us", label: "United States" },
+                  { value: "ca", label: "Canada" },
+                  { value: "gb", label: "United Kingdom" },
+                  { value: "eu", label: "Europe" },
+                  { value: "au", label: "Australia" },
+                ],
+              },
+            ],
           },
         ],
       },
@@ -1656,6 +1713,29 @@ export function createPluginsMock(): {
       return json({ status: "saved" });
     }
     if (method === "GET" && seg[2] === "options") {
+      if (seg[3] === "favoriteTeams") {
+        const needle = (q.get("q") ?? "").trim().toLowerCase();
+        const teams = [
+          { value: "nba:bos", label: "Boston Celtics", hint: "NBA" },
+          { value: "nba:lal", label: "Los Angeles Lakers", hint: "NBA" },
+          { value: "nba:tor", label: "Toronto Raptors", hint: "NBA" },
+          { value: "nhl:bos", label: "Boston Bruins", hint: "NHL" },
+          { value: "nhl:tor", label: "Toronto Maple Leafs", hint: "NHL" },
+          { value: "mlb:bos", label: "Boston Red Sox", hint: "MLB" },
+          { value: "nfl:ne", label: "New England Patriots", hint: "NFL" },
+          { value: "epl:ars", label: "Arsenal", hint: "Premier League" },
+        ];
+        return json({
+          options: needle
+            ? teams.filter(
+                (t) =>
+                  t.label.toLowerCase().includes(needle) ||
+                  t.hint.toLowerCase().includes(needle) ||
+                  t.value.toLowerCase().includes(needle),
+              )
+            : [],
+        });
+      }
       return json({
         options: [
           { value: "us", label: "United States" },

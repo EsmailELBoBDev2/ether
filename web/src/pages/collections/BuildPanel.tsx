@@ -52,15 +52,12 @@ export function BuildPanel({
   spec,
   update,
   region,
-  pickAddonCatalog = false,
 }: {
   spec: CollectionSpec;
   update: SpecUpdate;
   region: string;
-  /** Open the Stremio add-on catalog picker straight away. */
-  pickAddonCatalog?: boolean;
 }) {
-  const [addonCatalogs, setAddonCatalogs] = useState(pickAddonCatalog);
+  const [addonCatalogs, setAddonCatalogs] = useState(false);
   const setRules = (key: "rules" | "exclude", rules: Rule[]) => update({ [key]: rules });
   // Source kinds come from the descriptor registry (built-ins and plugins
   // in one list); the console keeps no kind list of its own.

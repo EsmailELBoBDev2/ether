@@ -19,11 +19,5 @@ export function pluginCollectionHref(kind: string, label: string): string {
 export function isBlankCollectionSpec(spec: CollectionSpec): boolean {
   const normalized = normalizeSpec(spec);
   const base = blankSpec(normalized.mediaType);
-  return (
-    JSON.stringify(normalized) === JSON.stringify(base) ||
-    JSON.stringify({
-      ...normalized,
-      targets: { ...normalized.targets, homeRow: false },
-    }) === JSON.stringify(base)
-  );
+  return JSON.stringify(normalized) === JSON.stringify(base);
 }

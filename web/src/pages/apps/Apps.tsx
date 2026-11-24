@@ -17,7 +17,7 @@ import { MoreOptions } from "../../components/ConfigSection";
 import { DomainPage, useRouteTab } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
-import { t } from "../../i18n";
+import { t, tx } from "../../i18n";
 import { useOwnerViewerPath } from "../../components/pickers";
 import { api, apiBlob, apiFetch, imageNeedsFetch } from "../../lib/api";
 import { usePageTitle } from "../../lib/document-title";
@@ -1011,14 +1011,20 @@ function ProtocolSettings({
         {id === "jellyfin" || id === "emby" ? (
           <SettingsSection
             title={t("Home")}
-            description={t(
-              "{app} apps show the rows from Recommendations › Home, after their own Continue Watching and Next Up.",
-              { app: protocolName(id) },
-            )}
+            description={t("{app} apps show the first rows of Home.", { app: protocolName(id) })}
           >
             <SettingsRow
               title={<label htmlFor={`${id}-home-rows`}>{t("Home rows shown")}</label>}
-              description={t("About four is enough for a home screen. 0 shows none.")}
+              description={tx(
+                "About four is enough for a home screen. Set 0 to show only the app's own sections. Choose the rows in {link}.",
+                {
+                  link: (
+                    <Link to="/recommendations?page=home" className="text-primary hover:underline">
+                      {t("Recommendations")}
+                    </Link>
+                  ),
+                },
+              )}
               control={
                 <Input
                   id={`${id}-home-rows`}

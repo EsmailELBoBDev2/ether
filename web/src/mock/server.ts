@@ -20,6 +20,8 @@ import type {
   AddonImportNameMode,
   AvailableRow,
   CollectionSpec,
+  CollectionUsage,
+  CollectionUse,
   Device,
   HomeLayout,
   HomeRow,
@@ -113,6 +115,38 @@ const MOCK_EQUIVALENTS: Record<string, string[]> = {
 };
 
 const NOW = () => new Date();
+
+/** "Used on" for the seeded collections: the Recommendations rows that show them. */
+const COLLECTION_USAGE: Record<string, CollectionUse[]> = {
+  c1: [
+    {
+      page: "home",
+      pageName: "Home",
+      rowId: "row-edge-of-your-seat",
+      rowName: "Edge of your seat",
+      placement: "pinned",
+      position: 3,
+      schedule: "Fri–Sat evenings",
+    },
+    {
+      page: "library:1/recommended",
+      pageName: "Movies › Recommendations",
+      rowId: "row-edge-of-your-seat-movies",
+      rowName: "Edge of your seat",
+      placement: "auto",
+    },
+  ],
+  c4: [
+    {
+      page: "home",
+      pageName: "Home",
+      rowId: "row-weeknight-wind-down",
+      rowName: "Weeknight wind-down",
+      placement: "show",
+      schedule: "Mon–Thu from 6 PM",
+    },
+  ],
+};
 
 export interface FakeOptions {
   /** Owner-installed Vela client; absent by default. */
@@ -959,19 +993,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const t = TEMPLATES.find((x) => x.id === id)!;
     const spec = normalizeSpec({
       ...t.spec,
-      // One seeded collection is a scheduled Home row, not a Collections-tab
-      // entry, so the Home designer has a collection schedule to edit. It is
-      // renamed so it does not share a name with the built-in Short on Time row.
+      // One seeded collection is only a row (not browseable in apps), renamed
+      // so it does not share a name with the built-in Short on Time source.
       ...(id === "short-under-90"
-        ? {
-            name: "Weeknight wind-down",
-            targets: {
-              ...t.spec.targets,
-              collectionsTab: false,
-              homeRow: true,
-              schedule: { days: [1, 2, 3, 4], fromHour: 18 },
-            },
-          }
+        ? { name: "Weeknight wind-down", targets: { collectionsTab: false } }
         : {}),
       id: `c${seq++}`,
       enabled: id !== "family-night",
@@ -982,18 +1007,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
     Object.assign(spec, { ratingKey: String(20000 + seq) });
     state.collections.push(spec);
   }
-  state.collections.push({
-    ...normalizeSpec({
-      name: "Recently added",
-      description: "Plex's built-in recently added row.",
-      sources: [{ kind: "catalog" }],
-      sort: "added",
-    }),
-    id: "builtin-recent",
-    builtIn: true,
-    enabled: true,
-    itemCount: 120,
-  });
 
   const levels = ["debug", "info", "info", "info", "warn", "error"];
   for (let i = 0; i < 80; i++) {
@@ -7012,6 +7025,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       if (idx < 0) return err(404, "not_found", "no such collection");
       const current = state.collections[idx]!;
+      if (seg[2] === "usage" && method === "GET") {
+        return json({ uses: COLLECTION_USAGE[id] ?? [] } satisfies CollectionUsage);
+      }
       if (seg[2] === "rebuild" && method === "POST") {
         const r = evaluate(current);
         current.itemCount = r.total;
@@ -7020,17 +7036,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       if (method === "GET") return json(current);
       if (method === "PUT") {
-        const input = normalizeSpec(body as CollectionSpec);
-        const spec = current.builtIn
-          ? {
-              ...current,
-              artwork: input.artwork,
-              targets: input.targets,
-              enabled: input.enabled,
-              rotate: input.rotate,
-              limit: input.limit > 0 && input.limit <= 100 ? input.limit : current.limit,
-            }
-          : input;
+        const spec = normalizeSpec(body as CollectionSpec);
         const saved = {
           ...spec,
           id,

@@ -91,6 +91,8 @@ func TestRecordingStoredAndProjected(t *testing.T) {
 				{ID: "art-1", Level: "artist", Title: "Daft Punk"},
 				{ID: "alb-1", Level: "album", ParentID: "art-1", Title: "Discovery"},
 				{ID: "trk-1", Level: "track", ParentID: "alb-1", Title: "One More Time", Playable: true, Recording: recording},
+				{ID: "alb-2", Level: "album", ParentID: "art-1", Title: "Alive 2007"},
+				{ID: "trk-2", Level: "track", ParentID: "alb-2", Title: "One More Time (Live)", Playable: true, Recording: "isrc:GBDUW0000053"},
 			}
 		}
 		body, _ := json.Marshal(core.KindPage{Items: items})
@@ -111,11 +113,20 @@ func TestRecordingStoredAndProjected(t *testing.T) {
 	if got := read(); got.Recording != recording || Project(got, decl, core.Presentations{}).RecordingID != recording {
 		t.Fatalf("recording = %q", got.Recording)
 	}
+	// Two copies of one recording make a duplicate group.
+	groups, total, err := s.Duplicates(ctx, libID, 0, 10)
+	if err != nil || total != 1 || len(groups) != 1 || groups[0].Count != 2 || len(groups[0].Items) != 2 {
+		t.Fatalf("duplicates: %+v total=%d err=%v", groups, total, err)
+	}
 	recording = "isrc:GBDUW0000059"
 	if _, err := s.SyncKind(ctx, pluginID, kindKey, SyncOptions{Caller: caller, FullWalk: true}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(); got.Recording != recording {
 		t.Fatalf("changed recording not stored: %q", got.Recording)
+	}
+	// trk-1 is now another recording: no recording has two copies.
+	if groups, total, err := s.Duplicates(ctx, libID, 0, 10); err != nil || total != 0 || len(groups) != 0 {
+		t.Fatalf("after the change: %+v total=%d err=%v", groups, total, err)
 	}
 }

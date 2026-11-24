@@ -435,48 +435,68 @@ export interface Contributes {
   liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
   screens?: ScreenMeta[];
+  surfaces?: SurfaceMeta[];
 }
 
-export type ScreenSectionType = "hero" | "events" | "table" | "schedule" | "leagues" | "entities";
 
-export type ScreenEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
 
-export type ScreenEventWindow = "today" | "week" | "recent";
-
-export interface ScreenEventQuery {
-  feed?: string;
-  state?: ScreenEventState[];
-  league?: string;
-  favorites?: boolean;
-  window?: ScreenEventWindow;
-  category?: string;
-}
-
-export interface ScreenLeagueMeta {
-  id: string;
-  name: string;
-  abbr?: string;
-  logo?: string;
-}
-
-export interface ScreenSectionMeta {
-  id?: string;
-  type: ScreenSectionType;
-  title?: string;
-  feed?: string;
-  league?: string;
-  entityKind?: string;
-  limit?: number;
-  query?: ScreenEventQuery;
-  leagues?: ScreenLeagueMeta[];
-}
 
 export interface ScreenMeta {
   id: string;
   title: string;
   icon?: string;
-  feed?: string;
-  sections: ScreenSectionMeta[];
+  frontends?: string[];
+  /**
+   * The screen's documents by page id: "index" is the landing page; each
+   * names a package file, or variants for older Vela renderers. See
+   * docs/plugin-screens.md.
+   */
+  pages?: Record<string, string | string[]>;
+  /** "navigation" (a top-level section, default) or "hidden" (reachable by navigate only). */
+  placement?: "navigation" | "hidden";
+  /** Hidden from viewers whose maximum content rating is lower. */
+  contentRating?: string;
+  /** Suggests the owner's per-app switch; omitted means shown. */
+  default?: boolean;
+  /** Plugin-handled actions the documents call. */
+  actions?: Record<string, ScreenActionMeta>;
+}
+
+export interface ScreenActionArgMeta {
+  type: "string" | "int" | "bool" | "date" | "ref" | "strings";
+  max?: number;
+  min?: number;
+  enum?: string[];
+  required?: boolean;
+}
+
+export interface ScreenActionMeta {
+  args?: Record<string, ScreenActionArgMeta>;
+  /** Asked before the action is sent ($t: keys allowed). */
+  confirm?: string;
+  /** normal: 10 calls per 10 s per viewer; low: 2. */
+  rate?: "normal" | "low";
+}
+
+/** A document drawn in a host slot: a player overlay, a toast, a Home row or a title panel. */
+export interface SurfaceMeta {
+  id: string;
+  presentation: "playerOverlay" | "toast" | "homeRow" | "titlePanel";
+  title: string;
+  /** playerOverlay only. */
+  anchor?: "topLeft" | "topRight" | "bottom";
+  /** playerOverlay only: always shown, only with the player controls, or a viewer switch. */
+  visibility?: "always" | "chrome" | "toggle";
+  /** The overlay's switch in the player menu (required for player overlays). */
+  setting?: { id: string; label: string; default: boolean };
+  /** Where it applies; may only name this plugin's feeds and kinds. */
+  when?: { event?: { feed: string }; kind?: "channel" | "programme" | "title"; titleKind?: string };
+  /** toast only: seconds on screen, 8..30. */
+  ttl?: number;
+  contentRating?: string;
+  default?: boolean;
+  /** A package file, or variants for older renderers. */
+  document: string | string[];
   frontends?: string[];
 }
 
@@ -591,12 +611,16 @@ export interface LiveEvent {
   spoiler?: boolean;
   /** RFC3339 timestamp. */
   updatedAt?: string;
+  /** How big the event is (0..1); ranks featured lists. Optional. */
+  prominence?: number;
 }
 
 export interface LiveEventTable {
   title: string;
   columns: string[];
   rows: string[][];
+  /** The entity (a team) each row is about, in row order, so Ether can mark favourites. */
+  rowEntityIds?: string[];
 }
 
 export interface LiveEventPlay {
@@ -605,6 +629,10 @@ export interface LiveEventPlay {
   text: string;
   emphasis?: "score" | "key" | "normal";
   competitorId?: string;
+  /** Wall-clock time of the play (RFC3339), so a timeshifted overlay shows the score of the picture. */
+  at?: string;
+  /** Every competitor's score after the play, by competitor id. */
+  score?: Record<string, string>;
 }
 
 export interface LiveEventProbabilityPoint {

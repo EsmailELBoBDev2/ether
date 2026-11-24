@@ -88,16 +88,9 @@ export interface ScreenContribution {
   id: string;
   title: string;
   icon?: string;
-  feed?: string;
   frontends?: string[];
-  sections?: {
-    id?: string;
-    type: string;
-    title?: string;
-    feed?: string;
-    league?: string;
-    leagues?: { id: string; name: string }[];
-  }[];
+  /** Page id to document file (or renderer variants). */
+  pages?: Record<string, string | string[]>;
 }
 
 export interface PluginFeedHealth {
@@ -138,6 +131,8 @@ export interface PluginScreenFrontendOverview {
   name: string;
   published: boolean;
   reason: string;
+  /** The owner's switch, for document screens and surfaces. */
+  enabled?: boolean;
 }
 
 export interface PluginScreenOverview {
@@ -146,6 +141,9 @@ export interface PluginScreenOverview {
   icon?: string;
   feed?: string;
   frontends: PluginScreenFrontendOverview[];
+  /** "screen" or "surface"; absent on 0.3.19 section screens. */
+  kind?: "screen" | "surface";
+  presentation?: string;
 }
 
 export interface PluginLiveEventCompetitor {

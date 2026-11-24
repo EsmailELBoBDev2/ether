@@ -69,6 +69,11 @@ type Host interface {
 
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// ScreensInvalidate and ScreensPutRecords are the screens pushes
+	// (docs/plugin-screens.md); both need the screens capability.
+	ScreensInvalidate(ctx context.Context, pluginID string) (int, error)
+	ScreensPutRecords(ctx context.Context, pluginID string, records json.RawMessage) (int, error)
+
 	// AIComplete runs a bounded completion against the owner's configured
 	// language model (requires permissions.ai: "complete", or "complete+search"
 	// when viewerToken identifies an active frontend-adapter search call; #702).
@@ -162,6 +167,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
+	mux.HandleFunc("POST /ether/plugin-host/screens/invalidate", h.screensInvalidate)
+	mux.HandleFunc("POST /ether/plugin-host/screens/records", h.screensPutRecords)
 	h.mux = mux
 	return h
 }
@@ -762,6 +769,28 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) screensInvalidate(w http.ResponseWriter, r *http.Request) {
+	n, err := h.host.ScreensInvalidate(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
+}
+
+func (h *HostHandler) screensPutRecords(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Records json.RawMessage `json:"records"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	n, err := h.host.ScreensPutRecords(r.Context(), pluginIDOf(r), body.Records)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
 }
 
 func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {

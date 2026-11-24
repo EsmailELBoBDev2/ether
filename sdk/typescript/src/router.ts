@@ -154,6 +154,10 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onLive(kind: string, provider: KindLiveProvider<S>): void;
   onLiveFeed(feed: string, provider: LiveFeedProvider<S>): void;
   onFrontend(key: string, adapter: FrontendAdapter<S>): void;
+  /** Answers a document's `plugin` source: `screen` is the screen or surface id ("*" for any). */
+  onScreenSource(screen: string, route: string, handler: import("./kinds.ts").ScreenSourceHandler<S>): void;
+  /** Runs a manifest-declared screen action. */
+  onScreenAction(screen: string, action: string, handler: import("./kinds.ts").ScreenActionHandler<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
 
@@ -887,6 +891,12 @@ export function plugin<S = Record<string, unknown>>(
     onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
     onLiveFeed: (feed, provider) => { kindHandlers.liveFeeds.set(feed, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
+    onScreenSource: (screen, route, handler) => {
+      (kindHandlers.screenSources ??= new Map()).set(`${screen}/${route}`, handler);
+    },
+    onScreenAction: (screen, action, handler) => {
+      (kindHandlers.screenActions ??= new Map()).set(`${screen}/${action}`, handler);
+    },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };
 

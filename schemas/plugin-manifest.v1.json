@@ -71,7 +71,8 @@
               "kind_resolver",
               "frontend_adapter",
               "matcher",
-              "live_events"
+              "live_events",
+              "screens"
             ]
           },
           "type": "array",
@@ -1739,8 +1740,51 @@
             "screens": {
               "items": {
                 "properties": {
-                  "feed": {
+                  "actions": {
+                    "additionalProperties": {
+                      "properties": {
+                        "args": {
+                          "additionalProperties": {
+                            "properties": {
+                              "enum": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "max": {
+                                "type": "integer"
+                              },
+                              "min": {
+                                "type": "integer"
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "type": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "object"
+                        },
+                        "confirm": {
+                          "type": "string"
+                        },
+                        "rate": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "object"
+                  },
+                  "contentRating": {
                     "type": "string"
+                  },
+                  "default": {
+                    "type": "boolean"
                   },
                   "frontends": {
                     "items": {
@@ -1754,99 +1798,19 @@
                   "id": {
                     "type": "string"
                   },
-                  "sections": {
-                    "items": {
-                      "properties": {
-                        "entityKind": {
-                          "type": "string"
-                        },
-                        "feed": {
-                          "type": "string"
-                        },
-                        "id": {
-                          "type": "string"
-                        },
-                        "league": {
-                          "type": "string"
-                        },
-                        "leagues": {
-                          "items": {
-                            "properties": {
-                              "abbr": {
-                                "type": "string"
-                              },
-                              "id": {
-                                "type": "string"
-                              },
-                              "logo": {
-                                "type": "string"
-                              },
-                              "name": {
-                                "type": "string"
-                              }
-                            },
-                            "type": "object"
-                          },
-                          "type": "array"
-                        },
-                        "limit": {
-                          "type": "integer"
-                        },
-                        "query": {
-                          "properties": {
-                            "category": {
-                              "type": "string"
-                            },
-                            "favorites": {
-                              "type": "boolean"
-                            },
-                            "feed": {
-                              "type": "string"
-                            },
-                            "league": {
-                              "type": "string"
-                            },
-                            "state": {
-                              "items": {
-                                "enum": [
-                                  "pre",
-                                  "in",
-                                  "post",
-                                  "delayed",
-                                  "postponed",
-                                  "canceled"
-                                ]
-                              },
-                              "type": "array"
-                            },
-                            "window": {
-                              "enum": [
-                                "today",
-                                "week",
-                                "recent"
-                              ]
-                            }
-                          },
-                          "type": "object"
-                        },
-                        "title": {
-                          "type": "string"
-                        },
-                        "type": {
-                          "enum": [
-                            "hero",
-                            "events",
-                            "table",
-                            "schedule",
-                            "leagues",
-                            "entities"
-                          ]
-                        }
+                  "pages": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
                       },
-                      "type": "object"
+                      "type": "array"
                     },
-                    "type": "array"
+                    "type": "object"
                   },
+                  "placement": {
+                    "type": "string"
+                  },
+                  "sections": {},
                   "title": {
                     "type": "string"
                   }

@@ -86,7 +86,14 @@ type Options struct {
 	// sources/rules/membership definition change. scoped is false for the
 	// canonical built-in libraries, whose sections keep type-only behaviour.
 	// Nil leaves every section unscoped (type-only).
-	LibraryMembers  func(ctx context.Context, id core.LibraryID, keys []core.RatingKey) (members map[core.RatingKey]bool, revision int64, scoped bool, err error)
+	LibraryMembers func(ctx context.Context, id core.LibraryID, keys []core.RatingKey) (members map[core.RatingKey]bool, revision int64, scoped bool, err error)
+	// LibraryRowsTab returns the key of a library's first rows tab (a
+	// TabRecommended tab): the page Plex, Jellyfin and Emby show as the
+	// library's Recommended page. "" means "recommended".
+	LibraryRowsTab func(ctx context.Context, id core.LibraryID) string
+	// PageLibraries describes every library for Recommendations pages:
+	// experience, media type, capabilities and rows tabs.
+	PageLibraries   func(ctx context.Context) []core.PageLibrary
 	FilterAvailable func(context.Context, []core.Title) []core.Title
 	// Owner previews use the same effective viewer and title policy as Plex.
 	UserPolicy func(*core.User) *core.User
@@ -244,16 +251,20 @@ type Engine struct {
 	rec     *recorder
 	loc     *time.Location
 
-	mu            sync.Mutex
-	closed        bool
-	coldDeadline  time.Time // non-zero after the first cold-model wait starts
-	models        map[int64]*userModel
-	users         map[int64]core.User
-	lastCtx       map[int64]core.HubContext
-	flights       map[int64]*flight
-	debounce      map[int64]*time.Timer
-	version       uint64
-	homeLayout    core.HomeLayout
+	mu           sync.Mutex
+	closed       bool
+	coldDeadline time.Time // non-zero after the first cold-model wait starts
+	models       map[int64]*userModel
+	users        map[int64]core.User
+	lastCtx      map[int64]core.HubContext
+	flights      map[int64]*flight
+	debounce     map[int64]*time.Timer
+	version      uint64
+	homeLayout   core.HomeLayout
+	// pages are the saved Recommendations pages (pages.go); saveMu
+	// serializes page writes.
+	pages         map[core.PageKey]core.RowPage
+	saveMu        sync.Mutex
 	extraHomeRows func(context.Context, *core.User, core.HubContext, string, int) []core.Hub
 	rowKinds      *RowKindRegistry
 	layoutVer     uint64
@@ -337,6 +348,9 @@ func New(opts Options) (*Engine, error) {
 		return nil, err
 	}
 	var err error
+	if e.pages, err = st.loadPages(context.Background()); err != nil {
+		return nil, err
+	}
 	e.homeLayout, err = st.homeLayout(context.Background())
 	if err != nil {
 		return nil, err

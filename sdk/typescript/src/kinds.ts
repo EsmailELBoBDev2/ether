@@ -207,8 +207,72 @@ export interface KindHandlers<S = Record<string, unknown>> {
   live: Map<string, KindLiveProvider<S>>;
   liveFeeds: Map<string, LiveFeedProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
+  /** Screen and surface sources and actions, keyed "<screen>/<name>" (docs/plugin-screens.md). */
+  screenSources?: Map<string, ScreenSourceHandler<S>>;
+  screenActions?: Map<string, ScreenActionHandler<S>>;
   setup?: SetupTester<S>;
 }
+
+/** What Ether sends a screen source: the document's arguments with their holes filled. */
+export interface ScreenSourceRequest {
+  /** The screen (or surface) id and its page. */
+  screen: string;
+  route: string;
+  page: string;
+  args: Record<string, string>;
+  locale: string;
+  /** The viewer's IANA time zone. */
+  tz: string;
+}
+
+/** A source answer. Images, links, records, events and entities go through the envelope helpers. */
+export interface ScreenSourceAnswer {
+  value: unknown;
+  records?: ScreenRecord[];
+  /** How long Ether may reuse this answer (5..3600 s, default 60; viewer-scoped answers at most 60). */
+  maxAgeSec?: number;
+  /** While a viewer has the page open, ask again after this many seconds (at least 10). */
+  nextRefreshSec?: number;
+}
+
+export interface ScreenRecord {
+  type: string;
+  id: string;
+  value: unknown;
+}
+
+export interface ScreenActionRequest {
+  screen: string;
+  action: string;
+  page: string;
+  args: Record<string, unknown>;
+  params: Record<string, string>;
+  locale: string;
+  tz: string;
+}
+
+/** An action answer: patches the client applies at once. */
+export interface ScreenActionAnswer {
+  records?: ScreenRecord[];
+  /** Whole-source replacements, by source id. */
+  sources?: Record<string, unknown>;
+  /** Sources Ether reads again before answering. */
+  refresh?: string[];
+  /** Plain text, at most 200 characters. */
+  toast?: string;
+  /** A Vela navigate action: { action: "navigate", args: { page, ...params } }. */
+  navigate?: { action: "navigate"; args: Record<string, string> };
+}
+
+export type ScreenSourceHandler<S = Record<string, unknown>> = (
+  req: ScreenSourceRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenSourceAnswer>;
+
+export type ScreenActionHandler<S = Record<string, unknown>> = (
+  req: ScreenActionRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenActionAnswer | void>;
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
   return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
@@ -334,6 +398,27 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length === 4 && (parts[0] === "screens" || parts[0] === "surfaces") && (parts[2] === "sources" || parts[2] === "actions")) {
+    if (method !== "POST") return err(405, "method_not_allowed", "Screen routes use POST.");
+    const screen = parts[1] ?? "";
+    const name = parts[3] ?? "";
+    const key = `${screen}/${name}`;
+    const page = String(body.page ?? "");
+    const locale = String(body.locale ?? "en");
+    const tz = String(body.tz ?? "UTC");
+    if (parts[2] === "sources") {
+      const handler = handlers.screenSources?.get(key) ?? handlers.screenSources?.get(`*/${name}`);
+      if (!handler) return err(404, "not_found", `No screen source "${name}" is registered for "${screen}".`);
+      const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, string>;
+      return ok(await handler({ screen, route: name, page, args, locale, tz }, ctx));
+    }
+    const handler = handlers.screenActions?.get(key) ?? handlers.screenActions?.get(`*/${name}`);
+    if (!handler) return err(404, "not_found", `No screen action "${name}" is registered for "${screen}".`);
+    const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, unknown>;
+    const params = (body.params && typeof body.params === "object" ? body.params : {}) as Record<string, string>;
+    return ok((await handler({ screen, action: name, page, args, params, locale, tz }, ctx)) ?? {});
   }
 
   if (parts.length >= 3 && parts[0] === "live") {

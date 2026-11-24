@@ -12,3 +12,14 @@ var PluginManifest string
 //
 //go:embed plugin-sources.v1.json
 var PluginSources string
+
+// PluginScreen is the plugin screen and surface document schema, generated
+// by Vela (packages/protocol/schemas/plugin-screen.v1.json, from
+// packages/protocol/screen.ts) and vendored verbatim; PluginScreenDigest is
+// the SHA-256 Vela records beside its RENDERER_VERSION.
+//
+//go:embed plugin-screen.v1.json
+var PluginScreen string
+
+// PluginScreenDigest identifies the vendored copy of PluginScreen.
+const PluginScreenDigest = "c0cec85312426cf0c86cedd2693d5ed77048f46118642ebe0c36a162e1406f5b"

@@ -45,6 +45,7 @@ const (
 	MediaRoleShow       = core.MediaRoleShow
 	MediaRoleEpisode    = core.MediaRoleEpisode
 	MediaRoleCollection = core.MediaRoleCollection
+	MediaRolePlaylist   = core.MediaRolePlaylist
 )
 
 type Page = core.Page

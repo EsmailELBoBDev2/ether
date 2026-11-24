@@ -19,9 +19,19 @@ func titleMediaWire(t frontend.Title) object {
 	if role == "" {
 		role = frontend.MediaRoleItem
 	}
+	list := role == frontend.MediaRolePlaylist
+	if list {
+		// A list (an editorial playlist) is an album to a Vela build that
+		// predates lists: a container whose children play in its order.
+		// "list" tells a newer build what it really is.
+		role = frontend.MediaRoleAlbum
+	}
 	media := object{
 		"class": string(t.MediaClass),
 		"role":  string(role),
+	}
+	if list {
+		media["list"] = "playlist"
 	}
 	idx := t.ItemIndex
 	if idx <= 0 {

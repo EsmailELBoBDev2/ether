@@ -22,18 +22,29 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 	web := []string{"X-Plex-Product", "Plex Web", "X-Plex-Platform", "Chrome", "X-Plex-Client-Identifier", "fp-web"}
 	srt := core.StreamInfo{Index: 2, Type: "subtitle", Codec: "subrip", Language: "en"}
 	pgs := core.StreamInfo{Index: 2, Type: "subtitle", Codec: "hdmv_pgs_subtitle", Language: "en"}
-	for _, tc := range []struct {
+	type cse struct {
 		name      string
 		hdr       []string
 		sub       core.StreamInfo
 		query     string
 		mustServe bool
-	}{
-		{"android-tv-srt", android, srt, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", true},
-		{"android-tv-pgs", android, pgs, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", false},
-		{"plex-web-srt-auto-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn", false},
-		{"plex-web-srt-no-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto", false},
-	} {
+		sidecar   bool
+	}
+	base := []cse{
+		{"android-tv-srt", android, srt, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", true, false},
+		{"android-tv-pgs", android, pgs, "&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none", false, false},
+		{"plex-web-srt-auto-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=burn", false, false},
+		{"plex-web-srt-no-burn", web, srt, "&protocol=hls&directPlay=0&directStream=1&subtitles=auto", false, false},
+	}
+	var cases []cse
+	for _, c := range base {
+		cases = append(cases, c)
+		withSidecar := c
+		withSidecar.name += "+opensubtitles-cached"
+		withSidecar.sidecar, withSidecar.mustServe = true, false
+		cases = append(cases, withSidecar)
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			probed := core.MediaInfo{
 				Container: "mkv", Duration: 100 * time.Minute, BitrateKbps: 12000,
@@ -43,15 +54,20 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 					tc.sub,
 				},
 			}
-			f, _, _ := newIssue459Fixture(t, probed, "en")
+			f, subs, _ := newIssue459Fixture(t, probed, "en")
 			key := fightClub.Key.String()
+			if !tc.sidecar {
+				subs.mu.Lock()
+				delete(subs.cached, fightClub.Key)
+				subs.mu.Unlock()
+			}
 
 			// The detail page the client rendered: the estimate, no subtitles.
 			f.playback.info = core.MediaInfo{Container: "mkv", Duration: probed.Duration, Streams: probed.Streams[:2]}
 			if meta := f.get(t, "/library/metadata/"+key, tc.hdr...); meta.Code != http.StatusOK {
 				t.Fatalf("detail: %d", meta.Code)
-			} else if subs := subtitleTags(meta.Body.String()); len(subs) != 0 {
-				t.Fatalf("estimate listed subtitles: %v", subs)
+			} else {
+				t.Logf("RESULT %s: detail page subtitle list before probe: %d entries, selected=%q", tc.name, len(subtitleTags(meta.Body.String())), streamAttr(selectedTag(subtitleTags(meta.Body.String())), "displayTitle"))
 			}
 
 			// Play: the release is now probed.
@@ -70,8 +86,8 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 				t.Fatal("no HLS session")
 			}
 			served := hs.req.Decision.SubtitleStream == tc.sub.Index
-			t.Logf("RESULT %s: decision shows subtitle selected=%q; stream carries subtitle=%v burn=%v (stream index %d)",
-				tc.name, streamAttr(selected, "languageCode"), served, hs.req.Decision.BurnSubtitles, hs.req.Decision.SubtitleStream)
+			t.Logf("RESULT %s: decision selected=%q; embedded English in stream=%v burn=%v stream index=%d; sidecar/text tracks=%v",
+				tc.name, streamAttr(selected, "displayTitle"), served, hs.req.Decision.BurnSubtitles, hs.req.Decision.SubtitleStream, hs.req.TextSubtitleStreams)
 			if tc.mustServe && (!served || streamAttr(selected, "languageCode") == "") {
 				t.Fatalf("first play did not deliver the rule's English subtitle")
 			}

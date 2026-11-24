@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
@@ -34,7 +33,7 @@ func (i *instance) titleLyrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lyrics, err := source.TitleLyrics(r.Context(), v, k)
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, frontend.ErrNotFound) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}

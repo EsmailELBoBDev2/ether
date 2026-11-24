@@ -831,6 +831,11 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 				return
 			}
 		}
+		if b.replacedMedia(parts[0], parts[1]) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "Session replaced", http.StatusConflict)
+			return
+		}
 		b.logMasterFailure(r, parts[0], "session unavailable")
 		http.NotFound(w, r)
 		return

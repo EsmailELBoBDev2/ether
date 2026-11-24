@@ -200,6 +200,10 @@ type retiredSession struct {
 	deviceID string
 	item     core.RatingKey
 	until    time.Time
+	// grant and replacedAt are set only when a newer playback on the same
+	// device superseded the session; see replacedMedia.
+	grant      string
+	replacedAt time.Time
 }
 
 // Broker coordinates playback admission for every protocol, including Plex.

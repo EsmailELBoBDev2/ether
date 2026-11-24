@@ -63,6 +63,13 @@ type ownedTimeline struct {
 	// firstAt for the startup threshold before publishing what exists.
 	// Zero keeps the short passthrough grace (<= ownedTick).
 	startWait time.Duration
+	// startAheadSegs, when set, is how many segments the first playlist
+	// waits for while the producer runs ahead of real time (it is racing
+	// through the input's backlog, so they are moments away). Chrome's own
+	// HLS player fails a live playlist that first lists fewer than three.
+	startAheadSegs int
+	producerAt     time.Time // when the current producer started (startAheadSegs)
+
 	firstAt   time.Time // first ingest, bounds the startup wait
 	window    []*ownedSegment
 	history   []*ownedSegment // slid out of the playlist, still served briefly
@@ -189,6 +196,16 @@ func (t *ownedTimeline) run(ctx context.Context) {
 func (t *ownedTimeline) wakeLocked() {
 	close(t.notify)
 	t.notify = make(chan struct{})
+}
+
+// producerStarted notes when the producer feeding the first playlist
+// started, so a backlog burst can be told from real-time arrival.
+func (t *ownedTimeline) producerStarted(at time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.window) == 0 {
+		t.producerAt = at
+	}
 }
 
 // expectStart sets how many segments the first playlist should carry
@@ -404,6 +421,14 @@ func (t *ownedTimeline) tickLocked(now time.Time) {
 			// ingest and the next publication tick, even with a one-second target.
 			enough = len(t.pending) >= t.startSegs || t.startMedia > 0 && depth >= t.startMedia
 		}
+		// A producer still ahead of real time is racing through the
+		// backlog: its next segments are moments away, so the first
+		// playlist lists startAheadSegs. It waits only while ahead, never
+		// past where a real-time start would be.
+		ahead := t.startAheadSegs > 0 && !t.producerAt.IsZero() && depth-now.Sub(t.producerAt) >= projTarget/2
+		if enough && ahead && len(t.pending) < t.startAheadSegs {
+			enough = false
+		}
 		if !enough && now.Sub(t.firstAt) < t.startWaitLocked() {
 			return
 		}
@@ -412,6 +437,9 @@ func (t *ownedTimeline) tickLocked(now time.Time) {
 		// media to cover minMedia; any further backlog stays pending as the
 		// reserve.
 		n := min(t.startSegs, len(t.pending))
+		if ahead {
+			n = min(max(n, t.startAheadSegs), len(t.pending))
+		}
 		var burst time.Duration
 		for _, s := range t.pending[:n] {
 			burst += s.dur

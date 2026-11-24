@@ -127,6 +127,20 @@ func (i *instance) libraryActivity(w http.ResponseWriter, r *http.Request, lates
 			i.writePersonalActivity(w, r, viewer, n, latest, offset, limit)
 			return
 		}
+		if n, e := strconv.ParseInt(view, 10, 64); e == nil && (n == collectionsViewNumber || n == liveTVViewNumber) {
+			// The Collections and Live TV folders are this frontend's own
+			// views, not libraries: nothing in them is recently added or
+			// resumable (Jellyfin answers an empty list). Findroid asks
+			// Latest for every movies/tvshows/boxsets view on Home and shows
+			// "Invalid HTTP status in response: 404" for the whole page when
+			// one of them fails.
+			if latest {
+				i.replyItems(w, r, []any{})
+			} else {
+				i.replyItems(w, r, i.queryResult([]any{}, 0, offset))
+			}
+			return
+		}
 	}
 	service, ok := i.host.Experience.(frontend.LibraryActivity)
 	if !ok {

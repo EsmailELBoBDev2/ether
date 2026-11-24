@@ -120,7 +120,7 @@ func (s adapterViewerState) State(ctx context.Context, pluginID string, viewerID
 	if err != nil {
 		return nil, err
 	}
-	favs, err := s.app.favorites.HasTitles(ctx, viewer, keys)
+	favs, err := s.app.favorites.TitleMembership(ctx, viewer.ID, keys)
 	if err != nil {
 		return nil, err
 	}

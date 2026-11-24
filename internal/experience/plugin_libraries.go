@@ -2309,7 +2309,7 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, de
 	if err != nil {
 		return nil, err
 	}
-	rows, _, isDefaultTab, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tab)
+	rows, declaredShelves, isDefaultTab, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tab)
 	if err != nil {
 		return nil, err
 	}
@@ -2341,6 +2341,12 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, de
 		Product:   dev.Product,
 		Platform:  dev.Platform,
 		ClientID:  dev.ID,
+	}
+	// The page's own length applies; an unsaved page shows its declared
+	// shelves (Curated) or up to eight automatic rows.
+	sit.DefaultMaxRows = 8
+	if declaredShelves && len(rows) > 0 {
+		sit.DefaultMaxRows = len(rows)
 	}
 	return LayoutRows(ctx, s.d.Layout, nil, req, sit, rows)
 }

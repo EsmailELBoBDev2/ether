@@ -612,6 +612,9 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	if len(rows) != 24 {
 		t.Fatalf("expected 24 uncapped rows (continue + 23 non-empty shelves), got %d", len(rows))
 	}
+	if layout.lastSituation.DefaultMaxRows != 24 {
+		t.Fatalf("expected DefaultMaxRows=24 passed to layout, got %d", layout.lastSituation.DefaultMaxRows)
+	}
 	if rows[0].ID != "plugin:12:continue" || len(rows[0].Items) != 1 || rows[0].Items[0].Key != d2.Key {
 		t.Fatalf("row[0] = %+v, want Continue Watching with d2", rows[0])
 	}

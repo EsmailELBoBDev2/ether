@@ -92,6 +92,9 @@ type runSpec struct {
 	Target      *videoContract
 	PictureCrop *pictureCrop
 	AudioGainDB float64
+	// AudioConfigName is the side file, in Dir, an fMP4 run copying ADTS
+	// AAC writes its first audio frame to (adtsConfigOutput).
+	AudioConfigName string
 }
 
 // segmentExt is the segment file extension for a decision's container.
@@ -266,7 +269,35 @@ func buildArgs(s runSpec) []string {
 			}
 		}
 	}
-	return appendSoftSubtitleOutput(append(args, hlsMuxArgs(s)...), s)
+	args = append(args, hlsMuxArgs(s)...)
+	if path, ok := s.adtsConfigOutput(); ok {
+		// The first copied ADTS frame, flushed as soon as it is muxed: the
+		// session builds the init's AudioSpecificConfig from it when the
+		// HLS muxer wrote the init before any audio arrived
+		// (fmp4_codec_config.go).
+		a := findStream(s.Info, s.Decision.AudioStream, "audio")
+		args = append(args, "-map", fmt.Sprintf("0:%d", a.Index), "-c:a", "copy", "-frames:a", "1", "-flush_packets", "1", "-f", "adts", path)
+	}
+	return appendSoftSubtitleOutput(args, s)
+}
+
+// adtsAAC reports AAC whose packets carry ADTS headers and no out-of-band
+// AudioSpecificConfig (MPEG-TS, HLS, raw AAC).
+func adtsAAC(info core.MediaInfo, a *core.StreamInfo) bool {
+	return a != nil && a.Codec == "aac" && (info.Container == "mpegts" || info.Container == "aac" || info.Container == "hls")
+}
+
+// adtsConfigOutput is the side file a plain HLS fMP4 run copying ADTS AAC
+// writes its first audio frame to (see fmp4_codec_config.go).
+func (s runSpec) adtsConfigOutput() (string, bool) {
+	if s.AudioConfigName == "" || s.Protocol != core.ProtocolHLS || s.Decision.Container != ContainerFMP4 || !s.Decision.AudioCopy || s.ChunkDir != "" {
+		return "", false
+	}
+	a := findStream(s.Info, s.Decision.AudioStream, "audio")
+	if s.SilenceAudio || !adtsAAC(s.Info, a) {
+		return "", false
+	}
+	return filepath.Join(s.Dir, s.AudioConfigName), true
 }
 
 func appendSoftSubtitleOutput(args []string, s runSpec) []string {
@@ -656,7 +687,7 @@ func buildCodecArgs(s runSpec) []string {
 			// is usually MPEG-TS (ADTS) underneath; without the filter its
 			// init carries no AudioSpecificConfig and MSE players refuse it.
 			// The filter passes audio that already has a config through.
-			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && a.Codec == "aac" && (s.Info.Container == "mpegts" || s.Info.Container == "aac" || s.Info.Container == "hls") {
+			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && adtsAAC(s.Info, a) {
 				audioFilters = append(audioFilters, "aac_adtstoasc")
 			}
 			if len(audioFilters) > 0 {

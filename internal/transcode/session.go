@@ -296,6 +296,8 @@ type run struct {
 	mode               SegMode   // plan mode this run produces
 	planEnd            int       // first segment NOT produced by this run (mode change); -1 none
 	track              int       // session track (HLS rung / DASH video rep) encoded
+	initConfigured     bool      // fMP4 init checked (and completed) for decoder configuration
+	initHeld           bool      // fMP4 init waits for its first audio frame (logged once)
 
 	progressMu      sync.Mutex
 	progress        Progress

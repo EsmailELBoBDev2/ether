@@ -94,6 +94,81 @@ type PluginPresentation struct {
 	RootLevel    string                     // root hierarchy level key (index 0)
 	LevelMedia   map[string]core.MediaClass // effective media class per declared level
 	LevelParents map[string]string          // effective parent level key per non-root level
+	LevelRoles   map[string]string          // declared semantic role per level (album, artist, playlist, track…)
+}
+
+// roleLevel returns the first declared level with a role.
+func (p PluginPresentation) roleLevel(role string) string {
+	for lvl, r := range p.LevelRoles {
+		if r == role {
+			return lvl
+		}
+	}
+	return ""
+}
+
+// RowCaps are the library capabilities a plugin library advertises to
+// Recommendations row sources (core.RowSourceInfo.Needs).
+func (p PluginPresentation) RowCaps() []string {
+	caps := []string{core.CapAdded, core.CapReleased}
+	if resolvePluginContinueScope(p, nil).allow {
+		caps = append(caps, core.CapProgress)
+	}
+	if len(p.Shelves) > 0 || len(p.TabShelves) > 0 {
+		caps = append(caps, core.CapShelves)
+	}
+	seen := map[string]bool{}
+	for _, r := range p.LevelRoles {
+		if r != "" && !seen[r] {
+			seen[r] = true
+			caps = append(caps, core.CapRole(r))
+		}
+	}
+	for _, f := range p.Facets {
+		caps = append(caps, core.CapFacet(f.ID))
+	}
+	return caps
+}
+
+// PluginPageLibrary describes a plugin library for Recommendations pages:
+// its experience, capabilities, card, rows tabs and declared shelves.
+func (s *Service) PluginPageLibrary(ctx context.Context, lib core.Library) (core.PageLibrary, bool) {
+	pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
+	if !ok || lib.Source != core.LibraryPlugin {
+		return core.PageLibrary{}, false
+	}
+	p, ok := pres.Presentation(ctx, lib)
+	if !ok {
+		return core.PageLibrary{}, false
+	}
+	out := core.PageLibrary{ID: lib.ID, Name: lib.Name, Experience: core.EffectiveLibraryExperience(p.Experience, p.Media), Caps: p.RowCaps(), Card: p.Card}
+	seen := map[string]bool{}
+	addShelves := func(shelves []PluginShelf) {
+		for _, sh := range shelves {
+			if sh.Key == "" || seen[sh.Key] {
+				continue
+			}
+			seen[sh.Key] = true
+			out.Shelves = append(out.Shelves, core.ParamOption{Value: sh.Key, Label: firstNonEmptyString(sh.Label, sh.Key)})
+		}
+	}
+	addShelves(p.Shelves)
+	for _, t := range p.Tabs {
+		if t.Kind == core.TabRecommended {
+			out.RowsTabs = append(out.RowsTabs, core.PageTab{Key: t.ID, Label: t.Label})
+			addShelves(p.TabShelves[t.ID])
+		}
+	}
+	return out, true
+}
+
+func firstNonEmptyString(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // PluginFilteredChildrenLibraries is an optional extension of PluginLibraries
@@ -2115,14 +2190,31 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 		}
 	}
 
+	// The library's own rows every page can place (Recently added, New,
+	// Playlists): one LIMIT query each, batched with the declared shelves.
+	type candidateQuery struct {
+		id, title, kind string
+		purpose         frontend.RowPurpose
+		q               frontend.ItemQuery
+	}
+	generic := []candidateQuery{
+		{rowPrefix + "released", "Newest", "recentlyReleased", frontend.RowRecentlyReleased, frontend.ItemQuery{Sort: core.SortReleased, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}},
+		{rowPrefix + "added", "Recently Added", "recentlyAdded", frontend.RowRecentlyAdded, frontend.ItemQuery{Sort: core.SortAdded, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}},
+	}
+	if lvl := p.roleLevel(core.RolePlaylist); lvl != "" {
+		generic = append(generic, candidateQuery{rowPrefix + "playlists", "Playlists", "playlists", frontend.RowRecommendation,
+			frontend.ItemQuery{Level: lvl, Sort: core.SortAdded, Desc: true, Limit: rowLimit, NoTotal: true, SuppressExpand: true}})
+	}
+
 	// Plugin-declared shelves (tab-specific or library-level) replace the
-	// auto-generated shelves and are not clamped to the auto candidate cap.
+	// auto-generated facet shelves and are not clamped to the auto
+	// candidate cap.
 	if declaredShelves {
 		if v != nil && core.CatalogViewerID(ctx) == 0 {
 			ctx = core.WithCatalogViewer(ctx, v)
 		}
-		shelfQueries := make([]frontend.ItemQuery, len(activeShelves))
-		for idx, sh := range activeShelves {
+		queries := make([]candidateQuery, 0, len(activeShelves)+len(generic))
+		for _, sh := range activeShelves {
 			sortOrder := sh.Sort
 			if sortOrder == "" {
 				sortOrder = core.SortReleased
@@ -2153,21 +2245,27 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			if sortOrder.IsLastViewed() {
 				q.Filter.TabRules, q.Filter.TabFallback = requireViewerHistoryPolicy(q.Filter.TabRules, q.Filter.TabFallback)
 			}
-			shelfQueries[idx] = q
+			title := sh.Label
+			if strings.TrimSpace(title) == "" {
+				title = sh.Key
+			}
+			queries = append(queries, candidateQuery{rowPrefix + "shelf:" + sh.Key, title, "shelf", frontend.RowRecommendation, q})
 		}
+		// The library's own rows read first and show after the shelves.
+		queries = append(append([]candidateQuery(nil), generic...), queries...)
 
 		var batchPages []PluginBrowsePage
-		batchSlot := make([]int, len(activeShelves))
+		batchSlot := make([]int, len(queries))
 		for i := range batchSlot {
 			batchSlot[i] = -1
 		}
-		if batcher, ok := s.d.PluginLibraries.(PluginBatchBrowseLibraries); ok && len(activeShelves) > 1 {
+		if batcher, ok := s.d.PluginLibraries.(PluginBatchBrowseLibraries); ok && len(queries) > 1 {
 			var batchQs []frontend.ItemQuery
-			for idx, q := range shelfQueries {
-				if q.Sort.IsLastViewed() {
+			for idx, cq := range queries {
+				if cq.q.Sort.IsLastViewed() {
 					continue
 				}
-				if sqlQ, sqlOK := s.pluginBrowseQuery(ctx, v, lib, q); sqlOK && sqlQ.Limit > 0 {
+				if sqlQ, sqlOK := s.pluginBrowseQuery(ctx, v, lib, cq.q); sqlOK && sqlQ.Limit > 0 {
 					batchSlot[idx] = len(batchQs)
 					batchQs = append(batchQs, sqlQ)
 				}
@@ -2179,25 +2277,18 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 			}
 		}
 
-		for idx, sh := range activeShelves {
-			var items []core.Title
+		results := make([][]core.Title, len(queries))
+		for idx, cq := range queries {
 			if slot := batchSlot[idx]; slot >= 0 && batchPages != nil {
-				items = batchPages[slot].Items
-			} else {
-				page, pErr := s.pluginLibraryItems(ctx, v, lib, shelfQueries[idx])
-				if pErr != nil {
-					continue
-				}
-				items = page.Items
+				results[idx] = batchPages[slot].Items
+			} else if page, pErr := s.pluginLibraryItems(ctx, v, lib, cq.q); pErr == nil {
+				results[idx] = page.Items
 			}
-			if len(items) == 0 {
-				continue
-			}
-			title := sh.Label
-			if strings.TrimSpace(title) == "" {
-				title = sh.Key
-			}
-			appendRow(rowPrefix+"shelf:"+sh.Key, title, frontend.RowRecommendation, "shelf", items)
+		}
+		for i := range queries {
+			idx := (i + len(generic)) % len(queries) // shelves, then the library's own rows
+			cq := queries[idx]
+			appendRow(cq.id, cq.title, cq.purpose, cq.kind, results[idx])
 		}
 		if rows == nil {
 			return []frontend.Row{}, true, isDefaultTab, nil
@@ -2205,24 +2296,11 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 		return rows, true, isDefaultTab, nil
 	}
 
-	// 2. Newest.
-	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
-		Sort:    core.SortReleased,
-		Desc:    true,
-		Limit:   rowLimit,
-		NoTotal: true,
-	}); pErr == nil {
-		appendRow(rowPrefix+"released", "Newest", frontend.RowRecentlyReleased, "recentlyReleased", page.Items)
-	}
-
-	// 3. Recently added.
-	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
-		Sort:    core.SortAdded,
-		Desc:    true,
-		Limit:   rowLimit,
-		NoTotal: true,
-	}); pErr == nil {
-		appendRow(rowPrefix+"added", "Recently Added", frontend.RowRecentlyAdded, "recentlyAdded", page.Items)
+	// 2. Newest, Recently added and Playlists.
+	for _, cq := range generic {
+		if page, pErr := s.pluginLibraryItems(ctx, v, lib, cq.q); pErr == nil {
+			appendRow(cq.id, cq.title, cq.purpose, cq.kind, page.Items)
+		}
 	}
 
 	// 4. Top rated (when rating is a declared sort).
@@ -2300,68 +2378,34 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 	return rows, false, isDefaultTab, nil
 }
 
-func pluginLibraryHasCustomMaxRows(source core.NeutralHomeLayoutSource, ctx context.Context, userID int64, section, device string) bool {
-	reader, ok := source.(interface {
-		HomeLayout(context.Context) (core.HomeLayout, error)
-	})
-	if !ok {
-		return false
-	}
-	d, err := reader.HomeLayout(ctx)
-	if err != nil {
-		return false
-	}
-	check := func(pages []core.LayoutPage) bool {
-		for _, p := range pages {
-			if p.Section != section {
-				continue
-			}
-			if p.MaxRows > 0 || (device != "" && p.DeviceMaxRows[device] > 0) {
-				return true
-			}
-		}
-		return false
-	}
-	if check(d.Global) {
-		return true
-	}
-	for _, vl := range d.Viewers {
-		if vl.UserID == userID && check(vl.Pages) {
-			return true
-		}
-	}
-	return false
-}
-
-// PluginLibraryRows implements frontend.PluginLibraryRowsReader: shelves built
-// from the plugin library's stored items, arranged by that library's own
-// "library:<id>" layout page (defaulting to 8 shelves for auto-generated rows
-// when uncustomised; declared shelves are not clamped to 8).
+// PluginLibraryRows implements frontend.PluginLibraryRowsReader: the plugin
+// library's first rows tab.
 func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID string) ([]frontend.Row, error) {
 	return s.PluginLibraryTabRows(ctx, viewer, dev, viewID, "")
 }
 
-// PluginLibraryTabRows implements frontend.PluginLibraryTabRowsReader: builds
-// shelves for a specific recommended tab of a plugin library. When tabID is
-// empty or names the first recommended tab, the primary library layout page
-// applies as before; additional recommended tabs return their declared shelves
-// directly with tab-scoped row IDs.
+// PluginLibraryTabRows implements frontend.PluginLibraryTabRowsReader: the
+// rows of one rows tab of a plugin library, arranged by that tab's
+// Recommendations page ("library:<id>/<tab>") like every other page, with
+// the page's Hide watched applied. The candidates are built from the
+// library's stored items with bounded, indexed queries.
 func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID, tabID string) ([]frontend.Row, error) {
-	const defaultMaxRows = 8
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
 	}
-	rows, declaredShelves, isDefaultTab, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tabID)
+	rows, declaredShelves, _, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tabID)
 	if err != nil {
 		return nil, err
 	}
-	if s.d.Layout == nil || !isDefaultTab {
-		if !declaredShelves && len(rows) > defaultMaxRows {
-			rows = rows[:defaultMaxRows]
-		}
+	if s.d.Layout == nil {
 		return rows, nil
+	}
+	if tabID == "" {
+		if _, _, p, pErr := s.pluginLibraryByViewID(ctx, v, viewID); pErr == nil {
+			tabID = pluginFirstRecommendedTabID(p.Tabs)
+		}
 	}
 	id, _ := strconv.Atoi(viewID)
 	now := time.Now()
@@ -2374,6 +2418,7 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 		Device:    dev,
 		Placement: frontend.PlacementLibrary,
 		ViewID:    viewID,
+		Tab:       tabID,
 	}
 	sit := core.HomeSituation{
 		LibraryID: id,
@@ -2392,19 +2437,7 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 	if err != nil {
 		return nil, err
 	}
-	section := "library:" + strconv.Itoa(id)
-	if !declaredShelves && !pluginLibraryHasCustomMaxRows(s.d.Layout, ctx, v.ID, section, hc.Device) && len(arranged) > defaultMaxRows {
-		kept := make([]frontend.Row, 0, defaultMaxRows)
-		for _, r := range arranged {
-			if len(kept) < defaultMaxRows || r.Layout.Always {
-				r.Rank = len(kept)
-				r.Layout.Order = len(kept)
-				kept = append(kept, r)
-			}
-		}
-		arranged = kept
-	}
-	return arranged, nil
+	return DropWatched(ctx, v, arranged, s.titlesWatched), nil
 }
 
 const (

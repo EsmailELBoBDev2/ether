@@ -517,3 +517,44 @@ func (f screenItemFinder) KindKeys(ctx context.Context, pluginID, kind string, i
 	}
 	return out, nil
 }
+
+// pageSurfaces implements personalize.Options.PageSurfaces: the plugin
+// Home-row surfaces the Recommendations designer can place, as the owner
+// sees them in Vela (value "<pluginID>:<surfaceID>", plain label). It reads
+// the in-memory surface registry only.
+func (a *App) pageSurfaces(ctx context.Context) []core.ParamOption {
+	docs := (surfaceScreens{app: a}).docs()
+	if docs == nil || a.users == nil {
+		return nil
+	}
+	owner, err := a.users.Owner(ctx)
+	if err != nil || owner == nil {
+		return nil
+	}
+	var out []core.ParamOption
+	for _, t := range docs.Surfaces(ctx, owner, "vela") {
+		if t.Meta.Presentation != "homeRow" {
+			continue
+		}
+		label := strings.TrimSpace(t.Meta.Title)
+		if label == "" {
+			label = t.Meta.ID
+		}
+		if name := a.pluginDisplayName(ctx, t.PluginID); name != "" {
+			label = name + " · " + label
+		}
+		out = append(out, core.ParamOption{Value: t.PluginID + ":" + t.Meta.ID, Label: label})
+	}
+	return out
+}
+
+func (a *App) pluginDisplayName(ctx context.Context, pluginID string) string {
+	if a.pluginsRT == nil || a.pluginsRT.mgr == nil {
+		return ""
+	}
+	rec, err := a.pluginsRT.mgr.Get(ctx, pluginID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(rec.Name)
+}

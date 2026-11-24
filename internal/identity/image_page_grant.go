@@ -97,7 +97,7 @@ func validateImageClaims(c imageClaims) bool {
 	if c.Viewer <= 0 || c.Item < 0 {
 		return false
 	}
-	if strings.HasPrefix(c.Path, frontend.LibraryLiveThumbPrefix) {
+	if strings.HasPrefix(c.Path, frontend.LibraryLiveThumbPrefix) || strings.HasPrefix(c.Path, frontend.PluginImagePrefix) {
 		if c.Item != 0 || c.Channel != "" || c.Subject == "" || c.Kind == frontend.ImagePerson {
 			return false
 		}

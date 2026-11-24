@@ -323,6 +323,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		if !frontendHostPolicy(id).ExternalIdentity {
 			imageOptions := identity.ImageGrantOptions{
 				LibraryLiveThumbs: surfaceLibraryLive{app: a, surface: string(id)},
+				PluginImages:      pluginImages{app: a},
 			}
 			if frontendHostPolicy(id).PublicContentTags {
 				imageOptions.Token = authhdr.MediaBrowserToken

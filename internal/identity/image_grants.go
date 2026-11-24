@@ -44,6 +44,8 @@ type ImageGrantOptions struct {
 	Token             func(*http.Request) string
 	PublicContentTags bool
 	LibraryLiveThumbs frontend.LibraryLiveThumbAuthorizer
+	// PluginImages authorizes plugin-named image URLs (frontend.PluginImagePrefix).
+	PluginImages frontend.PluginImageAuthorizer
 }
 
 type ImageGrantService struct {
@@ -127,6 +129,15 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 			return core.ErrNotAvailable
 		}
 		if _, err := s.requestOptions.LibraryLiveThumbs.AuthorizeLibraryLiveThumb(core.WithLiveApp(ctx, string(s.surface)), viewer, image.Subject, image.Path); err != nil {
+			return err
+		}
+		return nil
+	}
+	if strings.HasPrefix(image.Path, frontend.PluginImagePrefix) {
+		if item != 0 || channel != "" || s.requestOptions.PluginImages == nil {
+			return core.ErrNotAvailable
+		}
+		if _, err := s.requestOptions.PluginImages.AuthorizePluginImage(core.WithLiveApp(ctx, string(s.surface)), viewer, image.Subject, image.Path); err != nil {
 			return err
 		}
 		return nil
@@ -259,6 +270,38 @@ func (s *ImageGrantService) Issue(ctx context.Context, req frontend.ImageGrantRe
 		return "", err
 	}
 	return s.sealClaims(claims)
+}
+
+// IssueChannelLogo seals the channel's own artwork descriptor for the
+// credential's viewer. The descriptor comes from the current, policy-filtered
+// channel listing, so a channel the viewer may not see yields no grant.
+func (s *ImageGrantService) IssueChannelLogo(ctx context.Context, credential string, device core.Device, channelID string) (string, error) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" || s.artwork == nil {
+		return "", core.ErrNotAvailable
+	}
+	viewer, _, err := s.resolveCredential(ctx, credential)
+	if err != nil {
+		return "", err
+	}
+	images, complete, err := s.artwork.List(frontend.WithoutArtworkMetadata(core.WithLiveApp(ctx, string(s.surface))), frontend.ArtworkRequest{Viewer: viewer, Device: device, Channel: channelID})
+	if err != nil {
+		return "", err
+	}
+	if !complete {
+		return "", core.ErrNotAvailable
+	}
+	for _, img := range images {
+		if img.Kind != frontend.ImageChannel {
+			continue
+		}
+		claims := imageClaims{Viewer: viewer.ID, Channel: channelID, Kind: img.Kind, Path: img.Path, Tag: img.Tag, Subject: img.Subject, Language: device.Language}
+		if !validateImageClaims(claims) {
+			return "", core.ErrUnauthorized
+		}
+		return s.sealClaims(claims)
+	}
+	return "", core.ErrNotFound
 }
 
 // Revoke is a documented no-op: stateless image grants store no per-grant
@@ -468,6 +511,9 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 		w.Header().Set("ETag", etag)
 		if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
 			w.Header().Set("Cache-Control", "private, max-age=60")
+		} else if strings.HasPrefix(img.Path, frontend.PluginImagePrefix) {
+			// The plugin may replace the image behind the same URL.
+			w.Header().Set("Cache-Control", "private, max-age=86400")
 		} else {
 			w.Header().Set("Cache-Control", immutableImageCacheControl)
 		}
@@ -539,6 +585,7 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 
 var _ frontend.ImageGrants = (*ImageGrantService)(nil)
 var _ frontend.PublicImageServer = (*ImageGrantService)(nil)
+var _ frontend.ChannelLogoIssuer = (*ImageGrantService)(nil)
 
 func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {
 	width, _ := strconv.Atoi(r.URL.Query().Get("w"))

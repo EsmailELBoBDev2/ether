@@ -259,6 +259,45 @@ type LibraryLiveThumbAuthorizer interface {
 	AuthorizeLibraryLiveThumb(ctx context.Context, viewer *Viewer, viewID string, path string) (string, error)
 }
 
+// PluginImagePrefix marks an image a plugin named by URL (a team crest, a
+// league logo). The remainder is the upstream URL; Image.Subject is the
+// plugin ID. The URL travels only inside sealed, encrypted grants, so clients
+// never see it, and every read re-checks the plugin and its network
+// permission before Ether fetches the bytes.
+const PluginImagePrefix = "plugin-image/"
+
+// MaxPluginImageURL bounds a plugin image URL so its grant stays a sane size.
+const MaxPluginImageURL = 1000
+
+// PluginImage returns the descriptor for a plugin-named image URL, or false
+// when raw is not an absolute http(s) URL Ether may proxy.
+func PluginImage(pluginID, raw string) (Image, bool) {
+	pluginID = strings.TrimSpace(pluginID)
+	raw = strings.TrimSpace(raw)
+	if pluginID == "" || len(pluginID) > 256 || raw == "" || len(raw) > MaxPluginImageURL {
+		return Image{}, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return Image{}, false
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return Image{Kind: ImageLogo, Path: PluginImagePrefix + raw, Tag: hex.EncodeToString(sum[:16]), Subject: pluginID}, true
+}
+
+// PluginImageAuthorizer checks that viewer may still see images named by
+// pluginID and returns the upstream URL Ether may fetch for path.
+type PluginImageAuthorizer interface {
+	AuthorizePluginImage(ctx context.Context, viewer *Viewer, pluginID string, path string) (string, error)
+}
+
+// ChannelLogoIssuer issues a grant for one channel's own logo (the channel
+// artwork descriptor), so a payload that names a channel never carries the
+// channel's raw logo URL.
+type ChannelLogoIssuer interface {
+	IssueChannelLogo(ctx context.Context, credential string, device core.Device, channelID string) (string, error)
+}
+
 // ViewerAvatarPrefix marks a viewer's Plex account or Plex Home profile avatar.
 // The remainder is an opaque hash of the avatar URL; the raw upstream URL never
 // appears in wire artwork descriptors or signed grants.

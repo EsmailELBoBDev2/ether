@@ -30,7 +30,7 @@ func (i *instance) screenNavigation(r *http.Request, v *frontend.Viewer) ([]fron
 
 // screen serves GET /vela/v0/screens/{id}?league=&date=.
 func (i *instance) screen(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -62,6 +62,11 @@ func (i *instance) screen(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
+	signed, err := i.newLiveImages(r, token).signRaw(raw, "")
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
 	varyLanguage(w)
-	cache(w, r, raw)
+	cache(w, r, signed)
 }

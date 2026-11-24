@@ -21,7 +21,8 @@
     "permissions": {
       "network": [
         "site.api.espn.com",
-        "site.web.api.espn.com"
+        "site.web.api.espn.com",
+        "a.espncdn.com"
       ]
     },
     "strings": {

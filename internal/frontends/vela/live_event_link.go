@@ -109,7 +109,7 @@ func (i *instance) refreshSessionLiveEvent(ctx context.Context, viewer *frontend
 // liveTicker serves GET /vela/v0/live/ticker?screen= (A6), returning a compact,
 // viewer-scoped, spoiler-filtered list of live events for Vela's overlay ticker.
 func (i *instance) liveTicker(w http.ResponseWriter, r *http.Request) {
-	v, _, e := i.viewer(r)
+	v, token, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)
 		return
@@ -131,5 +131,10 @@ func (i *instance) liveTicker(w http.ResponseWriter, r *http.Request) {
 	if screen != "" {
 		res["screen"] = screen
 	}
-	send(w, 200, res)
+	signed, err := i.newLiveImages(r, token).sign(res, "")
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	send(w, 200, signed)
 }

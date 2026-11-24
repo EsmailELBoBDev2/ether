@@ -317,15 +317,15 @@ Ether never emulates, unlocks, or bypasses Plex Pass, Emby Premiere, or any paid
 </details>
 
 <details>
-<summary><b>Which apps work, and why are some web-wrapper apps unsupported?</b></summary>
+<summary><b>Which apps work, and which web-wrapper apps are unsupported?</b></summary>
 
 - **Plex:** Every official Plex client: **Apple TV, iPhone, iPad, Android, Android TV / Nvidia Shield, Fire TV, Roku, PlayStation, Xbox, Smart TVs (LG, Samsung, VIDAA), Plex Desktop, and Plex Web.** (Plex for LG and Plex for VIDAA receive one automatic media choice so their playback settings remain stable; Play Version is not offered there.)
-- **Jellyfin:** Native clients including **Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin for Android TV, JellyCon, and Jellyfin for Roku.**
+- **Jellyfin:** Native clients including **Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin for Android TV, JellyCon, and Jellyfin for Roku**, plus **Jellyfin Web** and the apps that wrap it.
 - **Emby:** Native Emby clients (**Android TV, iOS, Android, Roku, Smart TVs**) and **Infuse**.
 - **Silo:** Native **Silo** apps for **Apple TV, iOS, macOS, Android, and Android TV**.
 - **Stremio, WebDAV, DLNA, and M3U/XMLTV:** Stremio apps, WebDAV players (Infuse, VLC, Kodi), LAN DLNA TVs, and IPTV clients (Channels DVR, TiviMate).
 
-**Unsupported web-wrapper apps:** Ether does not bundle third-party web clients (`jellyfin-web` or Emby Web). Client apps that are wrappers around a server-hosted web bundle, specifically **Jellyfin for Android phones**, **Jellyfin Desktop**, and **Emby for TV 2.x on Apple TV**, are unsupported. On Android phones use **Findroid** or **Streamyfin**; on Apple TV use **Infuse**, **Swiftfin**, **Silo**, or **Plex**.
+**Web-wrapper apps:** Ether serves the official Jellyfin Web 12.4 build (downloaded once and checksum-verified when you turn Jellyfin on), so Jellyfin's apps that wrap it work: **Jellyfin for Android phones, iPhone/iPad, Desktop, LG webOS and Xbox**. Ether does not serve Emby Web, so Emby apps that need a server-hosted Emby Web bundle, such as **Emby for TV 2.x on Apple TV**, are unsupported; on Apple TV use **Infuse**, **Swiftfin**, **Silo**, **Vela** or **Plex**.
 
 **Emby for Windows:** Compatibility is unverified. The current native Windows app bundles its own UI, but Ether does not serve Emby's `/web` assets; connections that require those assets will not work. Older hash-only Emby sign-in clients are also unsupported: Ether requires the plaintext `Pw` field to verify its stored password hash.
 </details>
@@ -422,17 +422,27 @@ See [**CONTRIBUTING.md**](CONTRIBUTING.md) for full developer and pull-request i
 
 ## Where it stands today
 
-Ether is backed by 5,700+ offline unit, fault-injection, and fuzz tests, a 540k-title CI performance gate (`internal/perfharness`), recorded protocol conformance suites against Plex Media Server (`internal/conform/plex`), Jellyfin 12.4, Emby 4.10.2, and Silo (`internal/conform`), and hardware transcoding verification across Apple VideoToolbox, NVIDIA NVENC (plus optional Windows RTX Video Super Resolution), Intel QuickSync, and VAAPI.
+Ether is backed by 9,700+ offline unit, fault-injection, and fuzz tests, a 540k-title CI performance gate (`internal/perfharness`), recorded protocol conformance suites against Plex Media Server (`internal/conform/plex`), Jellyfin 12.4, Emby 4.10.2, and Silo (`internal/conform`), and hardware transcoding verification across Apple VideoToolbox, NVIDIA NVENC (plus optional Windows RTX Video Super Resolution), Intel QuickSync, and VAAPI.
 
 | Capability | Status |
 | :--- | :--- |
-| **On Air Channels, Style Studio & Personal Channels** | **New in 0.3.5** |
-| **IPTV Apps (Xtream) Server & Xtream Movies/Series Sources** | **New in 0.3.5** |
-| **Kubernetes Server Roles (Source, Transcode) with Seamless Node-Loss Recovery** | **New in 0.3.5** |
-| **Movie and Show Quality Profiles with TRaSH/Profilarr Import & Sync** | **New in 0.3.5** |
-| **Jellyfin, Emby (Infuse, Swiftfin, Findroid) & Silo Apps** | **New in 0.3** |
-| **Stremio Addon, Read-Only WebDAV, M3U/XMLTV & DLNA** | **New in 0.3** |
-| **Cross-App Progress, Subtitle Preferences, Personalized Views & Watch Party** | **New in 0.3** |
+| **Multiview: Up to Four Live TV Channels at Once in Vela** | **New in 0.3.19** |
+| **Live Sports & Event Add-ons in Live TV** | **New in 0.3.18** |
+| **Flows: Automations from 120 Server Events, Drafted by Your AI** | **New in 0.3.17** |
+| **Music, Books & Audiobooks Libraries from Plugins, in Every App** | **New in 0.3.17** |
+| **Permanent Release Library: an NZB Is Never Fetched Twice** | **New in 0.3.16** |
+| **Vela, Ether's Own App (Web, Windows, macOS, Apple TV)** | **New in 0.3.14** |
+| **Plugin Marketplace, Plugin Libraries & Plugin Protocols** | **New in 0.3.14** |
+| **AI Channel Builder & Descriptive Search with Your AI** | **New in 0.3.10** |
+| **Jellyfin Web Served by Ether, Plex Media Server Sync & AI Apps (MCP)** | **New in 0.3.9** |
+| **Libraries Built from Sources and Rules, with Per-Library Home Rows & Tabs** | Working |
+| **On Air Channels, Style Studio, Decade Channels & Personal Channels** | Working |
+| **IPTV Apps (Xtream) Server & Xtream Movies/Series Sources** | Working |
+| **Kubernetes Server Roles (Source, Transcode) with Seamless Node-Loss Recovery** | Working |
+| **Movie and Show Quality Profiles with TRaSH/Profilarr Import & Sync** | Working |
+| **Jellyfin, Emby (Infuse, Swiftfin, Findroid) & Silo Apps** | Working |
+| **Stremio Addon, Read-Only WebDAV, M3U/XMLTV & DLNA** | Working |
+| **Cross-App Progress, Subtitle Preferences, Personalized Views & Watch Party** | Working |
 | **TMDB Catalogue, Browse, Conversational Search & Collections** | Working |
 | **Personalization Engine, Taste Models & Home Designer** | Working |
 | **Usenet Streaming Engine, PAR2 Oracle, Health Checks & Failover** | Working |
@@ -447,7 +457,7 @@ Ether is backed by 5,700+ offline unit, fault-injection, and fuzz tests, a 540k-
 **Current boundaries:**
 - Usenet archives must be store-mode (`m0`, plain or password-encrypted RAR4/RAR5/7z); compressed archives and RAR-wrapped torrents are skipped during resolution.
 - NVIDIA RTX Video Super Resolution (`nvenc-ngx-vsr`) requires native Windows, an NVIDIA RTX GPU, and `NVEncC64` 9.38 with NGX DLLs (installed automatically when enabled unless a custom path is configured), is off by default, targets SDR H.264 HLS/DASH streams within configured height and concurrency bounds, and falls back to ordinary ABR renditions when bandwidth or concurrency requires it.
-- No bundled third-party web clients (`jellyfin-web` or Emby Web); web-wrapper apps (Jellyfin for Android phones, Jellyfin Desktop, Emby for TV 2.x on Apple TV) are unsupported.
+- Emby Web is not served, so Emby apps that wrap a server-hosted Emby Web bundle (such as Emby for TV 2.x on Apple TV) are unsupported. Jellyfin Web is served, so Jellyfin's web-wrapper apps work.
 - No Plex Relay support: remote viewers connect directly via UPnP/NAT-PMP, a port forward, Tailscale, or your reverse proxy.
 - No DVR recording.
 

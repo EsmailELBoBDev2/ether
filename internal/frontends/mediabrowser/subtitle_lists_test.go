@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -43,5 +44,27 @@ func TestSubtitleListShown(t *testing.T) {
 	s.note(v, key, unprobed, now)
 	if s.shown(v, key, now) {
 		t.Fatal("the latest reply listed no subtitles")
+	}
+}
+
+// Jellyfin Web posts its menu value quoted; a number is an API client's
+// deliberate choice and is never second-guessed.
+func TestPlaybackBodyMarksMenuSubtitleIndex(t *testing.T) {
+	for _, tc := range []struct {
+		body   string
+		quoted bool
+	}{
+		{`{"SubtitleStreamIndex":"-1"}`, true},
+		{`{"SubtitleStreamIndex":-1}`, false},
+		{`{"SubtitleStreamIndex":"3"}`, true},
+		{`{}`, false},
+	} {
+		var p playbackRequest
+		if err := json.Unmarshal([]byte(tc.body), &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.SubtitleIndexQuoted != tc.quoted {
+			t.Errorf("%s: quoted=%v want %v", tc.body, p.SubtitleIndexQuoted, tc.quoted)
+		}
 	}
 }

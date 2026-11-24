@@ -784,6 +784,7 @@
   "m_0252376271ce67": "Arbejdsenheder",
   "m_0253e1d5d02e1c": "Venter på, at Ether kommer tilbage…",
   "m_02551559011b7c": "Feedresultater",
+  "m_02564dad02cd01": "Intet for denne seer lige nu.",
   "m_025788feadfaf4": "Lidt",
   "m_0257d2a1550c16": "Godkendt, men ændringen kunne ikke gennemføres.",
   "m_02584daabbdb78": "En kanal med programmer fra dit katalog.",
@@ -1029,6 +1030,7 @@
   "m_030e042c756ea8": "Påbegyndt, men ikke færdig",
   "m_030ed3e2347b98": "Vend denne gruppe om",
   "m_030edd32ab4736": "Populære titler, der streames på Disney+ i dit område.",
+  "m_030f82fac1633e": "Tilføj en række her",
   "m_031004cdaa8c37": {
     "one": "{source} {duration} ({count} afspilning)",
     "other": "{source} {duration} ({count} afspilninger)"
@@ -1111,6 +1113,10 @@
   "m_03471851e684eb": "URL til kilde {number}",
   "m_03479e5fc5b88c": "Forskydning af hjemmeudgivelse (dage)",
   "m_0347c9a3c79c2c": "Gælder næste gang en kanal starter.",
+  "m_0349534866c71e": {
+    "one": "{count} titel · viser de første {shown}",
+    "other": "{count} titler · viser de første {shown}"
+  },
   "m_034a20a010fdb9": "Timer mellem afspilninger",
   "m_034b6538fa4d0f": "Rapporter i kø vises i Leveringshistorik.",
   "m_034c71471f0c91": "Udbyder ikke tilgængelig",
@@ -2299,6 +2305,10 @@
   "m_06dae4134ad80d": "God eftermiddag",
   "m_06daee10a7d943": "Direkte stream",
   "m_06db1db5e3ffe9": "videoprofilen eller -niveauet",
+  "m_06dbf5595dccde": {
+    "one": "{count} titel fordelt på {rows} rækker",
+    "other": "{count} titler fordelt på {rows} rækker"
+  },
   "m_06dc2e2fd1555c": "Kan tilgå på dit netværk: {hosts}",
   "m_06dc5804d9c769": "Upload fil",
   "m_06dd435866d846": "Streamingtjenester",
@@ -6790,6 +6800,7 @@
   "m_1443a813d2e1d2": "Denne periode har flere udgivelser, end kalenderen kan vise på én gang. Indsnævr den med filtrene ovenfor.",
   "m_14448bcd27e65d": "Kunne ikke genopbygge rækker",
   "m_1444ffab6ddb7b": "{state} · {movies} film, {shows} serier, {episodes} episoder trådt til side · senest kontrolleret {when}",
+  "m_1445132da670dd": "Føj rækken til siden og ret den",
   "m_14471a0f879228": "Regel fjernet",
   "m_1448c9a0577eb1": "Vis forhåndsvisning af samling",
   "m_1448f4befa194a": "{hours} t gensynskredit",
@@ -7542,10 +7553,6 @@
   "m_1686b0370e575f": {
     "one": "{exhausted} af {count} indexer er løbet tør for søgninger i dag",
     "other": "{exhausted} af {count} indexere er løbet tør for søgninger i dag"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} titel til denne seer lige nu.",
-    "other": "{count} titler til denne seer lige nu."
   },
   "m_16877e6139737d": "Tilpasset kvadratisk ikon",
   "m_16879d9e8bfab8": "Brug på kanaler…",
@@ -10416,6 +10423,7 @@
   "m_1f10beec585266": "Rediger notifikationskanal",
   "m_1f1134cfe45987": "Hvor den vises",
   "m_1f11939961d412": "Titler",
+  "m_1f14c31457a033": "Rediger denne række",
   "m_1f154b775704d6": "Accent · alle tilgængelige fakta",
   "m_1f15c6af8ae4f6": "Hyggelig krimikanal til regnfulde aftener med klassiske seriftitler",
   "m_1f16593a684b20": "Tilføj denne maskine med et engangstoken fra en anden node. Den overtager clusterens serveridentitet og delte indstillinger.",
@@ -10434,6 +10442,10 @@
   "m_1f1bf17b31e6a2": "Titeldetaljer",
   "m_1f1c4641ce1dd0": "hvem får hvad seer app enhed opløsning hdr bitrate viewer device",
   "m_1f1c60a240ec46": "Erstat fil",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} titel fordelt på {rows} rækker · viser de første {limit} i hver",
+    "other": "{count} titler fordelt på {rows} rækker · viser de første {limit} i hver"
+  },
   "m_1f1d0eade48c2d": "Prowlarr-indexere importeret",
   "m_1f1d729a4ccc7d": "Tilføj de fire årtikanaler",
   "m_1f1db71e3b33d3": "Ether genstarter for at afslutte. Det tager som regel cirka et minut, og denne side følger med.",

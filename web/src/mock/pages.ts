@@ -464,7 +464,7 @@ export function createPagesMock(deps: Deps) {
               audience: { mode: "everyone" },
             },
           }),
-          row("top-10-today", { placement: { mode: "hide", audience: { mode: "everyone" } } }),
+          row("by-decade", { placement: { mode: "hide", audience: { mode: "everyone" } } }),
         ],
         variants: kid
           ? [
@@ -628,8 +628,9 @@ export function createPagesMock(deps: Deps) {
 
   function preview(
     key: string,
-    body: { page?: RowPage; viewer?: number; device?: string; at?: string },
+    body: { page?: RowPage; viewer?: number; device?: string; at?: string; count?: number },
   ): PagePreview {
+    const perRow = body.count ?? 12;
     const page = body.page ?? current(key).page;
     const at = body.at ? new Date(body.at) : new Date();
     const device = body.device ?? "tv";
@@ -772,6 +773,7 @@ export function createPagesMock(deps: Deps) {
                 `${r.id}${r.source.kind}${JSON.stringify(r.source.params)}${l?.id ?? ""}`,
                 l ?? pageLib,
                 kid,
+                perRow,
               ),
         };
       });
@@ -809,6 +811,22 @@ export function createPagesMock(deps: Deps) {
       }
       const picksOn = page.picks;
       const extra: PreviewRow[][] = [];
+      // Like the engine: Top 10 Today leads as one of Ether's picks (no rowId).
+      if (picksOn && room > 0 && !page.rows.some((r) => r.source.kind === "top-10-today")) {
+        extra.push([
+          {
+            hubId: "ether.top-10-today",
+            why: "Ether's pick: the server's Top 10 today",
+            look: {},
+            personal: false,
+            present: { numbered: true },
+            title: "Top 10 on Living Room Ether Today",
+            kind: "top-10-today",
+            items: items("top-10-today", pageLib, kid, 10),
+          },
+        ]);
+        room -= 1;
+      }
       if (picksOn && room > 0 && !page.rows.some((r) => r.source.kind === "popular-here")) {
         extra.push([
           {
@@ -999,7 +1017,13 @@ export function createPagesMock(deps: Deps) {
       return ok(preview(key, body as never));
     }
     if (sub === "rows" && seg[3] === "preview" && method === "POST") {
-      const b = body as { row: PageRow; viewer?: number; device?: string; at?: string };
+      const b = body as {
+        row: PageRow;
+        viewer?: number;
+        device?: string;
+        at?: string;
+        count?: number;
+      };
       const page = {
         ...current(key).page,
         mode: "curated" as const,
@@ -1011,7 +1035,13 @@ export function createPagesMock(deps: Deps) {
           },
         ],
       };
-      const p = preview(key, { page, viewer: b.viewer, device: b.device, at: b.at });
+      const p = preview(key, {
+        page,
+        viewer: b.viewer,
+        device: b.device,
+        at: b.at,
+        count: b.count,
+      });
       const rows = p.rows?.filter((r) => !r.ghost) ?? [];
       return ok({ rows, total: rows.reduce((n, r) => n + (r.items?.length ?? 0), 0) });
     }

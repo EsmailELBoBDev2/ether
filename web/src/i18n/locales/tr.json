@@ -784,6 +784,7 @@
   "m_0252376271ce67": "İş birimleri",
   "m_0253e1d5d02e1c": "Ether'in geri gelmesi bekleniyor…",
   "m_02551559011b7c": "Akış sonuçları",
+  "m_02564dad02cd01": "Şu anda bu izleyici için bir şey yok.",
   "m_025788feadfaf4": "Hafif",
   "m_0257d2a1550c16": "Onaylandı ancak değişiklik uygulanamadı.",
   "m_02584daabbdb78": "Kataloğunuzdan programlanan bir kanal.",
@@ -1029,6 +1030,7 @@
   "m_030e042c756ea8": "Başlandı ama bitirilmedi",
   "m_030ed3e2347b98": "Bu grubu tersine çevir",
   "m_030edd32ab4736": "Bölgenizdeki Disney+'ta yayınlanan popüler içerikler.",
+  "m_030f82fac1633e": "Buraya bir sıra ekle",
   "m_031004cdaa8c37": {
     "one": "{source} {duration} ({count} oynatma)",
     "other": "{source} {duration} ({count} oynatma)"
@@ -1111,6 +1113,10 @@
   "m_03471851e684eb": "Kaynak {number} URL'si",
   "m_03479e5fc5b88c": "Ev sürümü kaydırması (gün)",
   "m_0347c9a3c79c2c": "Bir kanal bir sonraki başladığında geçerli olur.",
+  "m_0349534866c71e": {
+    "one": "{count} başlık · ilk {shown} tanesi gösteriliyor",
+    "other": "{count} başlık · ilk {shown} tanesi gösteriliyor"
+  },
   "m_034a20a010fdb9": "Oynatmalar arası saat",
   "m_034b6538fa4d0f": "Kuyruktaki raporlar Teslimat geçmişinde görünür.",
   "m_034c71471f0c91": "Sağlayıcı kullanılamıyor",
@@ -2299,6 +2305,10 @@
   "m_06dae4134ad80d": "İyi günler",
   "m_06daee10a7d943": "Doğrudan akış",
   "m_06db1db5e3ffe9": "video profili veya seviyesi",
+  "m_06dbf5595dccde": {
+    "one": "{count} başlık {rows} sırada",
+    "other": "{count} başlık {rows} sırada"
+  },
   "m_06dc2e2fd1555c": "Ağınızda ulaşabileceği adresler: {hosts}",
   "m_06dc5804d9c769": "Dosya yükle",
   "m_06dd435866d846": "Akış hizmetleri",
@@ -6781,6 +6791,7 @@
   "m_1443a813d2e1d2": "Bu dönemde takvimin tek seferde gösterebileceğinden fazla çıkış var. Yukarıdaki filtrelerle daraltın.",
   "m_14448bcd27e65d": "Satırlar yeniden oluşturulamadı",
   "m_1444ffab6ddb7b": "{state} · {movies} film, {shows} dizi, {episodes} bölüm kenara çekildi · son kontrol {when}",
+  "m_1445132da670dd": "Bu sırayı sayfaya ekle ve değiştir",
   "m_14471a0f879228": "Kural kaldırıldı",
   "m_1448c9a0577eb1": "Koleksiyon önizlemesini göster",
   "m_1448f4befa194a": "{hours} sa tekrar kredisi",
@@ -7533,10 +7544,6 @@
   "m_1686b0370e575f": {
     "one": "{count} dizinleyiciden {exhausted} tanesinin bugünkü arama hakkı bitti",
     "other": "{count} dizinleyiciden {exhausted} tanesinin bugünkü arama hakkı bitti"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "Bu izleyici için şu anda {count} başlık var.",
-    "other": "Bu izleyici için şu anda {count} başlık var."
   },
   "m_16877e6139737d": "Özel kare simge",
   "m_16879d9e8bfab8": "Kanallarda kullan…",
@@ -10404,6 +10411,7 @@
   "m_1f10beec585266": "Bildirim kanalını düzenle",
   "m_1f1134cfe45987": "Göründüğü yerler",
   "m_1f11939961d412": "Başlıklar",
+  "m_1f14c31457a033": "Bu sırayı düzenle",
   "m_1f154b775704d6": "Vurgu · tüm mevcut bilgiler",
   "m_1f15c6af8ae4f6": "Klasik tırnaklı başlıklarla yağmurlu akşamlara uygun sıcak polisiye kanalı",
   "m_1f16593a684b20": "Başka bir düğümden alınan tek kullanımlık bir belirteçle bu makineyi ekleyin. Kümenin sunucu kimliğini ve paylaşılan ayarlarını devralır.",
@@ -10422,6 +10430,10 @@
   "m_1f1bf17b31e6a2": "Başlık ayrıntıları",
   "m_1f1c4641ce1dd0": "kim ne alır izleyici uygulama cihaz çözünürlük hdr bit hızı",
   "m_1f1c60a240ec46": "Dosyayı değiştir",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} başlık {rows} sırada · her birinin ilk {limit} tanesi gösteriliyor",
+    "other": "{count} başlık {rows} sırada · her birinin ilk {limit} tanesi gösteriliyor"
+  },
   "m_1f1d0eade48c2d": "Prowlarr dizinleyicileri içe aktarıldı",
   "m_1f1d729a4ccc7d": "Dört on yıl kanalını ekle",
   "m_1f1db71e3b33d3": "İşlemi bitirmek için Ether yeniden başlar. Bu genellikle yaklaşık bir dakika sürer; bu sayfa süreci takip eder.",

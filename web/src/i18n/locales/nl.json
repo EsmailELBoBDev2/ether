@@ -784,6 +784,7 @@
   "m_0252376271ce67": "Werkeenheden",
   "m_0253e1d5d02e1c": "Wachten tot Ether terug is…",
   "m_02551559011b7c": "Feedresultaten",
+  "m_02564dad02cd01": "Nu niets voor deze kijker.",
   "m_025788feadfaf4": "Licht",
   "m_0257d2a1550c16": "Goedgekeurd, maar de wijziging kon niet worden uitgevoerd.",
   "m_02584daabbdb78": "Een zender geprogrammeerd vanuit je catalogus.",
@@ -1029,6 +1030,7 @@
   "m_030e042c756ea8": "Begonnen maar niet afgekeken",
   "m_030ed3e2347b98": "Deze groep omkeren",
   "m_030edd32ab4736": "Populaire titels die worden gestreamd op Disney+ in jouw regio.",
+  "m_030f82fac1633e": "Hier een rij toevoegen",
   "m_031004cdaa8c37": {
     "one": "{source} {duration} ({count} keer afgespeeld)",
     "other": "{source} {duration} ({count} keer afgespeeld)"
@@ -1111,6 +1113,10 @@
   "m_03471851e684eb": "URL van bron {number}",
   "m_03479e5fc5b88c": "Verschuiving thuisrelease (dagen)",
   "m_0347c9a3c79c2c": "Geldt vanaf de volgende keer dat een zender start.",
+  "m_0349534866c71e": {
+    "one": "{count} titel · de eerste {shown} getoond",
+    "other": "{count} titels · de eerste {shown} getoond"
+  },
   "m_034a20a010fdb9": "Uren tussen weergaven",
   "m_034b6538fa4d0f": "Rapporten in de wachtrij verschijnen in de Bezorggeschiedenis.",
   "m_034c71471f0c91": "Provider niet beschikbaar",
@@ -2299,6 +2305,10 @@
   "m_06dae4134ad80d": "Goedemiddag",
   "m_06daee10a7d943": "Direct streamen",
   "m_06db1db5e3ffe9": "het videoprofiel of -niveau",
+  "m_06dbf5595dccde": {
+    "one": "{count} titel in {rows} rijen",
+    "other": "{count} titels in {rows} rijen"
+  },
   "m_06dc2e2fd1555c": "Kan op je netwerk bereiken: {hosts}",
   "m_06dc5804d9c769": "Bestand uploaden",
   "m_06dd435866d846": "Streamingdiensten",
@@ -6790,6 +6800,7 @@
   "m_1443a813d2e1d2": "Deze periode heeft meer releases dan de kalender tegelijk toont. Verfijn met de filters hierboven.",
   "m_14448bcd27e65d": "Rijen opnieuw opbouwen mislukt",
   "m_1444ffab6ddb7b": "{state} · {movies} films, {shows} series, {episodes} afleveringen opzij gezet · laatst gecontroleerd {when}",
+  "m_1445132da670dd": "Deze rij aan de pagina toevoegen en aanpassen",
   "m_14471a0f879228": "Regel verwijderd",
   "m_1448c9a0577eb1": "Collectievoorbeeld tonen",
   "m_1448f4befa194a": "{hours} u herspeelkrediet",
@@ -7542,10 +7553,6 @@
   "m_1686b0370e575f": {
     "one": "{exhausted} van {count} indexer heeft vandaag geen zoekopdrachten meer",
     "other": "{exhausted} van {count} indexers hebben vandaag geen zoekopdrachten meer"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "Nu {count} titel voor deze kijker.",
-    "other": "Nu {count} titels voor deze kijker."
   },
   "m_16877e6139737d": "Aangepast vierkant pictogram",
   "m_16879d9e8bfab8": "Op kanalen gebruiken…",
@@ -10416,6 +10423,7 @@
   "m_1f10beec585266": "Meldingskanaal bewerken",
   "m_1f1134cfe45987": "Waar het verschijnt",
   "m_1f11939961d412": "Titels",
+  "m_1f14c31457a033": "Deze rij bewerken",
   "m_1f154b775704d6": "Accent · alle beschikbare gegevens",
   "m_1f15c6af8ae4f6": "Sfeervolle detectivezender voor regenachtige avonden met klassieke schreefletters",
   "m_1f16593a684b20": "Voeg deze machine toe met een eenmalig token van een andere node. Hij neemt de serveridentiteit en gedeelde instellingen van het cluster over.",
@@ -10434,6 +10442,10 @@
   "m_1f1bf17b31e6a2": "Titeldetails",
   "m_1f1c4641ce1dd0": "wie krijgt wat kijker app apparaat resolutie hdr bitrate",
   "m_1f1c60a240ec46": "Bestand vervangen",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} titel in {rows} rijen · de eerste {limit} per rij getoond",
+    "other": "{count} titels in {rows} rijen · de eerste {limit} per rij getoond"
+  },
   "m_1f1d0eade48c2d": "Prowlarr-indexers geïmporteerd",
   "m_1f1d729a4ccc7d": "De vier decenniumkanalen toevoegen",
   "m_1f1db71e3b33d3": "Ether herstart om af te ronden. Dit duurt meestal ongeveer een minuut, en deze pagina volgt de voortgang.",

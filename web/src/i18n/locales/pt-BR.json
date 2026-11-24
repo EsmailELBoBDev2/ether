@@ -800,6 +800,7 @@
   "m_0252376271ce67": "Unidades de trabalho",
   "m_0253e1d5d02e1c": "Aguardando o Ether voltar…",
   "m_02551559011b7c": "Resultados dos feeds",
+  "m_02564dad02cd01": "Nada para este espectador agora.",
   "m_025788feadfaf4": "Leve",
   "m_0257d2a1550c16": "Aprovado, mas não foi possível fazer a alteração.",
   "m_02584daabbdb78": "Um canal programado a partir do seu catálogo.",
@@ -1051,6 +1052,7 @@
   "m_030e042c756ea8": "Iniciado, mas não concluído",
   "m_030ed3e2347b98": "Inverter este grupo",
   "m_030edd32ab4736": "Títulos populares transmitidos no Disney+ em sua região.",
+  "m_030f82fac1633e": "Adicionar uma fileira aqui",
   "m_031004cdaa8c37": {
     "many": "{source} {duration} ({count} reproduções)",
     "one": "{source} {duration} ({count} reprodução)",
@@ -1137,6 +1139,11 @@
   "m_03471851e684eb": "URL da fonte {number}",
   "m_03479e5fc5b88c": "Deslocamento do lançamento doméstico (dias)",
   "m_0347c9a3c79c2c": "Vale a partir da próxima vez que um canal começar.",
+  "m_0349534866c71e": {
+    "one": "{count} título · mostrando os primeiros {shown}",
+    "many": "{count} títulos · mostrando os primeiros {shown}",
+    "other": "{count} títulos · mostrando os primeiros {shown}"
+  },
   "m_034a20a010fdb9": "Horas entre exibições",
   "m_034b6538fa4d0f": "Os relatórios na fila aparecem no Histórico de entregas.",
   "m_034c71471f0c91": "Provedor indisponível",
@@ -2347,6 +2354,11 @@
   "m_06dae4134ad80d": "Boa tarde",
   "m_06daee10a7d943": "Stream direto",
   "m_06db1db5e3ffe9": "o perfil ou nível de vídeo",
+  "m_06dbf5595dccde": {
+    "one": "{count} título em {rows} fileiras",
+    "many": "{count} títulos em {rows} fileiras",
+    "other": "{count} títulos em {rows} fileiras"
+  },
   "m_06dc2e2fd1555c": "Pode acessar na sua rede: {hosts}",
   "m_06dc5804d9c769": "Enviar arquivo",
   "m_06dd435866d846": "Serviços de streaming",
@@ -6963,6 +6975,7 @@
   "m_1443a813d2e1d2": "Este período tem mais lançamentos do que o calendário mostra de uma vez. Refine com os filtros acima.",
   "m_14448bcd27e65d": "Não foi possível recriar as linhas",
   "m_1444ffab6ddb7b": "{state} · {movies} filmes, {shows} séries, {episodes} episódios postos de lado · última verificação {when}",
+  "m_1445132da670dd": "Adicionar esta fileira à página e alterá-la",
   "m_14471a0f879228": "Regra removida",
   "m_1448c9a0577eb1": "Mostrar pré-visualização da coleção",
   "m_1448f4befa194a": "{hours} h de crédito de repetição",
@@ -7734,11 +7747,6 @@
     "many": "{exhausted} de {count} indexadores sem pesquisas hoje",
     "one": "{exhausted} de {count} indexador sem pesquisas hoje",
     "other": "{exhausted} de {count} indexadores sem pesquisas hoje"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} título disponível agora para este espectador.",
-    "many": "{count} títulos disponíveis agora para este espectador.",
-    "other": "{count} títulos disponíveis agora para este espectador."
   },
   "m_16877e6139737d": "Ícone quadrado personalizado",
   "m_16879d9e8bfab8": "Usar em canais…",
@@ -10678,6 +10686,7 @@
   "m_1f10beec585266": "Editar canal de notificação",
   "m_1f1134cfe45987": "Onde aparece",
   "m_1f11939961d412": "Títulos",
+  "m_1f14c31457a033": "Editar esta fileira",
   "m_1f154b775704d6": "Realce · todas as informações disponíveis",
   "m_1f15c6af8ae4f6": "Canal aconchegante de mistério para noites chuvosas com títulos serifados clássicos",
   "m_1f16593a684b20": "Adicione esta máquina usando um token de uso único de outro nó. Ela adota a identidade de servidor e as configurações compartilhadas do cluster.",
@@ -10696,6 +10705,11 @@
   "m_1f1bf17b31e6a2": "Detalhes do título",
   "m_1f1c4641ce1dd0": "quem recebe o quê espectador aplicativo dispositivo resolução hdr bitrate",
   "m_1f1c60a240ec46": "Substituir arquivo",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} título em {rows} fileiras · mostrando os primeiros {limit} de cada",
+    "many": "{count} títulos em {rows} fileiras · mostrando os primeiros {limit} de cada",
+    "other": "{count} títulos em {rows} fileiras · mostrando os primeiros {limit} de cada"
+  },
   "m_1f1d0eade48c2d": "Indexadores do Prowlarr importados",
   "m_1f1d729a4ccc7d": "Adicionar os quatro canais por década",
   "m_1f1db71e3b33d3": "O Ether reinicia para concluir. Isso costuma levar cerca de um minuto, e esta página acompanha o processo.",

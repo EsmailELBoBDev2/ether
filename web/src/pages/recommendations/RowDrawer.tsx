@@ -46,13 +46,14 @@ import {
   type Schedule,
   type SchedulePreset,
 } from "../../lib/pages";
-import { KindChip, RowBody, VelaOnlyChip } from "./RowVisuals";
+import { KindChip, RowGrid, VelaOnlyChip } from "./RowVisuals";
 
 export type DrawerState =
   | {
       kind: "add";
       at: number;
       picking: boolean;
+      tab?: "settings" | "content";
       preset?: { source: string; params: Record<string, string> };
     }
   | { kind: "edit"; rowId: string; tab?: "settings" | "content" };
@@ -1079,6 +1080,9 @@ function PlacementSection({
 
 // ---------------------------------------------------------------- content tab
 
+/** How many titles the Content tab asks for (the preview's cap). */
+const CONTENT_LIMIT = 40;
+
 function ContentTab({
   ctx,
   row,
@@ -1095,7 +1099,7 @@ function ContentTab({
     const ctl = new AbortController();
     setError(null);
     api
-      .previewPageRow(ctx.pageKey, { row, ...ctx.preview, count: 40 }, ctl.signal)
+      .previewPageRow(ctx.pageKey, { row, ...ctx.preview, count: CONTENT_LIMIT }, ctl.signal)
       .then((r) => setResult({ rows: r.rows ?? [], total: r.total }))
       .catch((e) => {
         if (!isAbort(e)) setError(e);
@@ -1105,22 +1109,61 @@ function ContentTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, ctx.pageKey]);
   if (error) return <p className="text-sm text-danger">{errorMessage(error)}</p>;
-  if (!result) return <Spinner size={18} label={t("Loading the titles")} />;
+  if (!result) {
+    return (
+      <div className="grid min-h-48 place-items-center">
+        <Spinner size={18} label={t("Loading the titles")} />
+      </div>
+    );
+  }
+  const fanOut = result.rows.length > 1;
+  const capped = result.rows.some((r) => (r.items?.length ?? 0) >= CONTENT_LIMIT);
+  const shown = result.rows.reduce((n, r) => n + (r.items?.length ?? 0), 0);
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <p className="text-sm text-fg-muted">
-        {tn(
-          result.total,
-          "{count} title for this viewer right now.",
-          "{count} titles for this viewer right now.",
-        )}
+        {result.total === 0
+          ? t("Nothing for this viewer right now.")
+          : fanOut
+            ? capped
+              ? tn(
+                  result.total,
+                  "{count} title across {rows} rows · showing the first {limit} of each",
+                  "{count} titles across {rows} rows · showing the first {limit} of each",
+                  { rows: result.rows.length, limit: CONTENT_LIMIT },
+                )
+              : tn(
+                  result.total,
+                  "{count} title across {rows} rows",
+                  "{count} titles across {rows} rows",
+                  { rows: result.rows.length },
+                )
+            : capped
+              ? tn(
+                  result.total,
+                  "{count} title · showing the first {shown}",
+                  "{count} titles · showing the first {shown}",
+                  { shown },
+                )
+              : tn(result.total, "{count} title", "{count} titles")}
       </p>
       {result.rows.map((r) => (
-        <section key={r.hubId} className="space-y-2" aria-label={r.title}>
-          <h4 className="text-sm font-semibold text-fg">{r.title}</h4>
-          <div className="flex flex-wrap gap-2">
-            <RowBody row={r} showRating={false} pluginName={source?.plugin} />
-          </div>
+        <section key={r.hubId} className="space-y-2.5" aria-label={r.title}>
+          {fanOut ? (
+            <h4 className="sticky -top-5 z-10 -mx-1 flex items-baseline justify-between gap-2 bg-bg/95 px-1 py-1.5 text-sm font-semibold text-fg backdrop-blur">
+              <span className="truncate">{r.title}</span>
+              <span className="shrink-0 text-xs font-normal text-fg-muted">
+                {tn(r.items?.length ?? 0, "{count} title", "{count} titles")}
+              </span>
+            </h4>
+          ) : null}
+          <RowGrid
+            row={r}
+            style={row.look.style}
+            card={row.look.card}
+            numbered={row.look.numbered ?? undefined}
+            pluginName={source?.plugin}
+          />
         </section>
       ))}
     </div>
@@ -1177,7 +1220,7 @@ export function RowDrawer({
       : sourceTitle;
   const facetLibrary =
     ctx.library?.id ?? row?.scope.libraries?.[0] ?? source?.libraries?.[0] ?? null;
-  const tab = state?.kind === "edit" ? (state.tab ?? "settings") : "settings";
+  const tab = (state && !picking ? state.tab : undefined) ?? "settings";
   const fanOut = row?.scope.perLibrary
     ? row.scope.libraries?.length
       ? row.scope.libraries.slice(0, MAX_ROWS_PER_LIBRARY_ROW)
@@ -1222,7 +1265,7 @@ export function RowDrawer({
                 "Edits go straight into the draft and show in the page. Save the page when you're done.",
               )
       }
-      size="md"
+      size={tab === "content" ? "lg" : "md"}
       footer={
         adding ? (
           <div className="flex w-full flex-wrap items-center justify-between gap-2">
@@ -1260,18 +1303,16 @@ export function RowDrawer({
         <SourcePicker sources={ctx.sources} error={ctx.sourcesError} onPick={onPick} />
       ) : row ? (
         <>
-          {adding ? null : (
-            <SubtabNav
-              ariaLabel={t("Row")}
-              active={tab}
-              onSelect={(k) => onTab(k as "settings" | "content")}
-              tabs={[
-                { key: "settings", label: t("Settings") },
-                { key: "content", label: t("Content") },
-              ]}
-            />
-          )}
-          {tab === "content" && !adding ? (
+          <SubtabNav
+            ariaLabel={t("Row")}
+            active={tab}
+            onSelect={(k) => onTab(k as "settings" | "content")}
+            tabs={[
+              { key: "settings", label: t("Settings") },
+              { key: "content", label: t("Content") },
+            ]}
+          />
+          {tab === "content" ? (
             <ContentTab ctx={ctx} row={row} source={source} />
           ) : (
             <div className="space-y-5">

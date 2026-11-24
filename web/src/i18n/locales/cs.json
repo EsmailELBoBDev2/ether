@@ -816,6 +816,7 @@
   "m_0252376271ce67": "Jednotky práce",
   "m_0253e1d5d02e1c": "Čekání na návrat Etheru…",
   "m_02551559011b7c": "Výsledky z kanálů",
+  "m_02564dad02cd01": "Pro tohoto diváka teď nic není.",
   "m_025788feadfaf4": "Mírně",
   "m_0257d2a1550c16": "Schváleno, ale změnu se nepodařilo provést.",
   "m_02584daabbdb78": "Kanál s programem z vašeho katalogu.",
@@ -1073,6 +1074,7 @@
   "m_030e042c756ea8": "Zahájeno, ale nedokončeno",
   "m_030ed3e2347b98": "Obrátit tuto skupinu",
   "m_030edd32ab4736": "Populární tituly streamované na Disney+ ve vašem regionu.",
+  "m_030f82fac1633e": "Přidat řadu sem",
   "m_031004cdaa8c37": {
     "few": "{source} {duration} ({count} přehrání)",
     "many": "{source} {duration} ({count} přehrání)",
@@ -1163,6 +1165,12 @@
   "m_03471851e684eb": "URL zdroje {number}",
   "m_03479e5fc5b88c": "Posun domácího vydání (dny)",
   "m_0347c9a3c79c2c": "Projeví se při příštím spuštění kanálu.",
+  "m_0349534866c71e": {
+    "one": "{count} titul · zobrazeno prvních {shown}",
+    "few": "{count} tituly · zobrazeno prvních {shown}",
+    "many": "{count} titulu · zobrazeno prvních {shown}",
+    "other": "{count} titulů · zobrazeno prvních {shown}"
+  },
   "m_034a20a010fdb9": "Hodin mezi přehráními",
   "m_034b6538fa4d0f": "Reporty ve frontě se zobrazují v Historii doručení.",
   "m_034c71471f0c91": "Poskytovatel nedostupný",
@@ -2395,6 +2403,12 @@
   "m_06dae4134ad80d": "Dobré odpoledne",
   "m_06daee10a7d943": "Přímý stream",
   "m_06db1db5e3ffe9": "profil nebo úroveň videa",
+  "m_06dbf5595dccde": {
+    "one": "{count} titul v {rows} řadách",
+    "few": "{count} tituly v {rows} řadách",
+    "many": "{count} titulu v {rows} řadách",
+    "other": "{count} titulů v {rows} řadách"
+  },
   "m_06dc2e2fd1555c": "Může přistupovat ve vaší síti: {hosts}",
   "m_06dc5804d9c769": "Nahrát soubor",
   "m_06dd435866d846": "Streamovací služby",
@@ -7138,6 +7152,7 @@
   "m_1443a813d2e1d2": "V tomto období je více premiér, než kalendář dokáže zobrazit najednou. Zužte výběr pomocí filtrů výše.",
   "m_14448bcd27e65d": "Řádky se nepodařilo sestavit znovu",
   "m_1444ffab6ddb7b": "{state} · {movies} filmů, {shows} seriálů, {episodes} epizod ustoupilo · naposledy zkontrolováno {when}",
+  "m_1445132da670dd": "Přidat tuto řadu na stránku a upravit ji",
   "m_14471a0f879228": "Pravidlo odebráno",
   "m_1448c9a0577eb1": "Zobrazit náhled kolekce",
   "m_1448f4befa194a": "{hours} h kredit za opakování",
@@ -7928,12 +7943,6 @@
     "many": "{exhausted} z {count} indexeru dnes vyčerpalo hledání",
     "one": "{exhausted} z {count} indexeru dnes vyčerpal hledání",
     "other": "{exhausted} z {count} indexerů dnes vyčerpalo hledání"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} titul pro tohoto diváka právě teď.",
-    "few": "{count} tituly pro tohoto diváka právě teď.",
-    "many": "{count} titulu pro tohoto diváka právě teď.",
-    "other": "{count} titulů pro tohoto diváka právě teď."
   },
   "m_16877e6139737d": "Vlastní čtvercová ikona",
   "m_16879d9e8bfab8": "Použít na kanálech…",
@@ -10943,6 +10952,7 @@
   "m_1f10beec585266": "Upravit kanál oznámení",
   "m_1f1134cfe45987": "Kde se zobrazuje",
   "m_1f11939961d412": "Tituly",
+  "m_1f14c31457a033": "Upravit tuto řadu",
   "m_1f154b775704d6": "Zvýraznění · všechny dostupné údaje",
   "m_1f15c6af8ae4f6": "Útulný detektivní kanál pro deštivé večery s klasickými patkovými titulky",
   "m_1f16593a684b20": "Přidejte tento počítač pomocí jednorázového tokenu z jiného uzlu. Převezme identitu serveru clusteru a sdílená nastavení.",
@@ -10961,6 +10971,12 @@
   "m_1f1bf17b31e6a2": "Podrobnosti titulu",
   "m_1f1c4641ce1dd0": "kdo co dostane divák aplikace zařízení rozlišení hdr bitrate viewer device",
   "m_1f1c60a240ec46": "Nahradit soubor",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} titul v {rows} řadách · zobrazeno prvních {limit} z každé",
+    "few": "{count} tituly v {rows} řadách · zobrazeno prvních {limit} z každé",
+    "many": "{count} titulu v {rows} řadách · zobrazeno prvních {limit} z každé",
+    "other": "{count} titulů v {rows} řadách · zobrazeno prvních {limit} z každé"
+  },
   "m_1f1d0eade48c2d": "Indexery z Prowlarru importovány",
   "m_1f1d729a4ccc7d": "Přidat čtyři kanály podle desetiletí",
   "m_1f1db71e3b33d3": "Pro dokončení se Ether restartuje. Obvykle to trvá asi minutu a tato stránka bude průběh sledovat.",

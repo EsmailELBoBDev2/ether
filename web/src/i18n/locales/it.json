@@ -800,6 +800,7 @@
   "m_0252376271ce67": "Unità di lavoro",
   "m_0253e1d5d02e1c": "In attesa che Ether torni disponibile…",
   "m_02551559011b7c": "Risultati dei feed",
+  "m_02564dad02cd01": "Niente per questo spettatore al momento.",
   "m_025788feadfaf4": "Lieve",
   "m_0257d2a1550c16": "Approvato, ma non è stato possibile apportare la modifica.",
   "m_02584daabbdb78": "Un canale programmato dal tuo catalogo.",
@@ -1051,6 +1052,7 @@
   "m_030e042c756ea8": "Iniziato ma non finito",
   "m_030ed3e2347b98": "Inverti questo gruppo",
   "m_030edd32ab4736": "Titoli popolari in streaming su Disney+ nella tua regione.",
+  "m_030f82fac1633e": "Aggiungi una fila qui",
   "m_031004cdaa8c37": {
     "many": "{source} {duration} ({count} riproduzioni)",
     "one": "{source} {duration} ({count} riproduzione)",
@@ -1137,6 +1139,11 @@
   "m_03471851e684eb": "URL della fonte {number}",
   "m_03479e5fc5b88c": "Scostamento uscita home video (giorni)",
   "m_0347c9a3c79c2c": "Si applica al prossimo avvio di un canale.",
+  "m_0349534866c71e": {
+    "one": "{count} titolo · mostrati i primi {shown}",
+    "many": "{count} titoli · mostrati i primi {shown}",
+    "other": "{count} titoli · mostrati i primi {shown}"
+  },
   "m_034a20a010fdb9": "Ore tra una riproduzione e l'altra",
   "m_034b6538fa4d0f": "I resoconti in coda compaiono nella Cronologia degli invii.",
   "m_034c71471f0c91": "Provider non disponibile",
@@ -2347,6 +2354,11 @@
   "m_06dae4134ad80d": "Buon pomeriggio",
   "m_06daee10a7d943": "Streaming diretto",
   "m_06db1db5e3ffe9": "il profilo o livello video",
+  "m_06dbf5595dccde": {
+    "one": "{count} titolo in {rows} file",
+    "many": "{count} titoli in {rows} file",
+    "other": "{count} titoli in {rows} file"
+  },
   "m_06dc2e2fd1555c": "Può raggiungere sulla tua rete: {hosts}",
   "m_06dc5804d9c769": "Carica file",
   "m_06dd435866d846": "Servizi di streaming",
@@ -6963,6 +6975,7 @@
   "m_1443a813d2e1d2": "Questo periodo ha più uscite di quante il calendario ne mostri insieme. Restringilo con i filtri qui sopra.",
   "m_14448bcd27e65d": "Impossibile ricostruire le righe",
   "m_1444ffab6ddb7b": "{state} · {movies} film, {shows} serie, {episodes} episodi messi da parte · ultimo controllo {when}",
+  "m_1445132da670dd": "Aggiungi questa fila alla pagina e modificala",
   "m_14471a0f879228": "Regola rimossa",
   "m_1448c9a0577eb1": "Mostra l'anteprima delle raccolte",
   "m_1448f4befa194a": "{hours} h di credito per la riproduzione",
@@ -7734,11 +7747,6 @@
     "many": "{exhausted} indexer su {count} senza ricerche rimaste oggi",
     "one": "{exhausted} indexer su {count} senza ricerche rimaste oggi",
     "other": "{exhausted} indexer su {count} senza ricerche rimaste oggi"
-  },
-  "m_1686c5c5d92ae7": {
-    "one": "{count} titolo per questo spettatore in questo momento.",
-    "many": "{count} titoli per questo spettatore in questo momento.",
-    "other": "{count} titoli per questo spettatore in questo momento."
   },
   "m_16877e6139737d": "Icona quadrata personalizzata",
   "m_16879d9e8bfab8": "Usa sui canali…",
@@ -10678,6 +10686,7 @@
   "m_1f10beec585266": "Modifica il canale di notifica",
   "m_1f1134cfe45987": "Dove compare",
   "m_1f11939961d412": "Titoli",
+  "m_1f14c31457a033": "Modifica questa fila",
   "m_1f154b775704d6": "Accento · tutte le informazioni disponibili",
   "m_1f15c6af8ae4f6": "Canale giallo intimo da sera di pioggia con titoli graziati classici",
   "m_1f16593a684b20": "Aggiungi questa macchina usando un token monouso di un altro nodo. Adotta l'identità del server del cluster e le impostazioni condivise.",
@@ -10696,6 +10705,11 @@
   "m_1f1bf17b31e6a2": "Dettagli del titolo",
   "m_1f1c4641ce1dd0": "chi riceve cosa spettatore app dispositivo risoluzione hdr bitrate",
   "m_1f1c60a240ec46": "Sostituisci file",
+  "m_1f1c7e10cec86e": {
+    "one": "{count} titolo in {rows} file · mostrati i primi {limit} di ciascuna",
+    "many": "{count} titoli in {rows} file · mostrati i primi {limit} di ciascuna",
+    "other": "{count} titoli in {rows} file · mostrati i primi {limit} di ciascuna"
+  },
   "m_1f1d0eade48c2d": "Indexer di Prowlarr importati",
   "m_1f1d729a4ccc7d": "Aggiungi i quattro canali per decennio",
   "m_1f1db71e3b33d3": "Ether si riavvia per completare l'operazione. Di solito ci vuole circa un minuto e questa pagina segue l'avanzamento.",

@@ -1097,7 +1097,7 @@ export function ConnectedServices({
                 s.tab === "subsource"
                   ? "/playback/extras"
                   : s.tab === "llm"
-                    ? "/home"
+                    ? "/recommendations"
                     : s.tab === "trakt"
                       ? ownerPath === "/viewers"
                         ? "/viewers"

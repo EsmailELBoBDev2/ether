@@ -4,7 +4,6 @@ import {
   Badge,
   Button,
   Input,
-  MultiSelect,
   SearchSelect,
   Switch,
   cn,
@@ -28,7 +27,6 @@ import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, LoadingRows, MutationError } from "../../components/feedback";
 import { Field, NumberInput, Segmented } from "../../components/fields";
-import { useViewers, viewerName } from "../../components/pickers";
 import { t, tn } from "../../i18n";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api, apiFetch, errorMessage } from "../../lib/api";
@@ -101,7 +99,6 @@ export function StremioImportDrawer({
   const linkId = useId();
   const folderId = useId();
   const affixId = useId();
-  const { viewers } = useViewers();
 
   const imports = useAsync(
     () =>
@@ -126,12 +123,7 @@ export function StremioImportDrawer({
   const [refresh, setRefresh] = useState<Exclude<Refresh, "live">>("daily");
   const [maxItems, setMaxItems] = useState(500);
   const [enabled, setEnabled] = useState(true);
-  const [targets, setTargets] = useState<CollectionSpec["targets"]>({
-    collectionsTab: true,
-    homeRow: false,
-    sectionRow: false,
-    users: "all",
-  });
+  const [targets, setTargets] = useState<CollectionSpec["targets"]>({ collectionsTab: true });
 
   // Catalogue selection & extra pinning
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -155,14 +147,7 @@ export function StremioImportDrawer({
     );
     setMaxItems(sub?.maxItems && sub.maxItems > 0 ? sub.maxItems : 500);
     setEnabled(sub ? sub.enabled : true);
-    setTargets(
-      sub?.targets ?? {
-        collectionsTab: true,
-        homeRow: false,
-        sectionRow: false,
-        users: "all",
-      },
-    );
+    setTargets({ collectionsTab: sub?.targets.collectionsTab ?? true });
 
     const anyImported = p.catalogs.some((c) => c.imported);
     const nextSelected: Record<string, boolean> = {};
@@ -409,7 +394,6 @@ export function StremioImportDrawer({
 
   const activeImports = imports.data?.imports ?? [];
   const availableAddons = (imports.data?.availableAddons ?? []).filter((a) => !a.hasImport);
-  const nowhere = !targets.collectionsTab && !targets.homeRow && !targets.sectionRow;
 
   const footer = !preview ? (
     <div className="flex w-full items-center justify-end gap-2">
@@ -452,7 +436,7 @@ export function StremioImportDrawer({
         ) : null}
         <Button
           onClick={() => void submitImport()}
-          disabled={busy || selectedItems.length === 0 || unpinnedSelectedCount > 0 || nowhere}
+          disabled={busy || selectedItems.length === 0 || unpinnedSelectedCount > 0}
         >
           {busy
             ? t("Importing…")
@@ -857,92 +841,24 @@ export function StremioImportDrawer({
                     </label>
                   </div>
 
-                  <div className="space-y-2.5 border-t border-border-subtle pt-3">
-                    <p className="text-xs font-medium text-fg">
-                      {t("Targets for new collections")}
-                    </p>
-                    <div className="flex flex-wrap items-center gap-4 text-sm">
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={targets.collectionsTab}
-                          onChange={(e) => {
-                            const next = e.currentTarget.checked;
-                            setTargets((cur) => ({
-                              ...cur,
-                              collectionsTab: next,
-                            }));
-                          }}
-                          className="accent-primary"
-                        />
-                        <span>{t("Collections tab")}</span>
-                      </label>
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={targets.homeRow}
-                          onChange={(e) => {
-                            const next = e.currentTarget.checked;
-                            setTargets((cur) => ({ ...cur, homeRow: next }));
-                          }}
-                          className="accent-primary"
-                        />
-                        <span>{t("Home row")}</span>
-                      </label>
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={targets.sectionRow}
-                          onChange={(e) => {
-                            const next = e.currentTarget.checked;
-                            setTargets((cur) => ({
-                              ...cur,
-                              sectionRow: next,
-                            }));
-                          }}
-                          className="accent-primary"
-                        />
-                        <span>{t("Library row")}</span>
-                      </label>
-                    </div>
-                    {nowhere ? (
-                      <p className="text-xs text-warning">
-                        {t("Pick at least one place for imported collections to appear.")}
-                      </p>
-                    ) : null}
-                    <div className="space-y-2 pt-1">
-                      <Segmented
-                        ariaLabel={t("Audience")}
-                        value={targets.users === "all" ? "all" : "some"}
-                        onChange={(v) =>
-                          setTargets((cur) => ({
-                            ...cur,
-                            users: v === "all" ? "all" : [],
-                          }))
-                        }
-                        options={[
-                          { value: "all", label: t("Everyone") },
-                          { value: "some", label: t("Specific viewers") },
-                        ]}
+                  <div className="space-y-1.5 border-t border-border-subtle pt-3">
+                    <label className="inline-flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={targets.collectionsTab}
+                        onChange={(e) => {
+                          const collectionsTab = e.currentTarget.checked;
+                          setTargets({ collectionsTab });
+                        }}
+                        className="accent-primary"
                       />
-                      {targets.users !== "all" ? (
-                        <MultiSelect
-                          value={targets.users.map(String)}
-                          onChange={(v) => setTargets((cur) => ({ ...cur, users: v.map(Number) }))}
-                          ariaLabel={t("Viewers")}
-                          placeholder={viewers ? t("Choose viewers…") : t("Loading viewers…")}
-                          searchPlaceholder={t("Search…")}
-                          noMatchesLabel={t("No matches")}
-                          clearLabel={t("Clear")}
-                          selectAllLabel={t("Select all")}
-                          options={(viewers ?? []).map((v) => ({
-                            value: String(v.id),
-                            label: viewerName(v),
-                            description: v.isOwner ? t("Owner") : v.username,
-                          }))}
-                        />
-                      ) : null}
-                    </div>
+                      <span>{t("Browse in apps")}</span>
+                    </label>
+                    <p className="text-xs text-fg-muted">
+                      {t(
+                        "Each catalogue shows as a collection in its library's Collections view. Add them as rows in Recommendations.",
+                      )}
+                    </p>
                   </div>
                 </section>
 

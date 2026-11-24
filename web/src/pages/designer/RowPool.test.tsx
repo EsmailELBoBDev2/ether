@@ -234,22 +234,6 @@ describe("bulk row editing", () => {
     expect(screen.queryByRole("checkbox", { name: "Select Collection 0" })).toBeNull();
   });
 
-  it("lists the groups in the order saved in this browser, each with a move handle", () => {
-    localStorage.setItem("ether.designer.groupOrder", JSON.stringify(["collections", "picks"]));
-    try {
-      render(<Harness initial={EMPTY_LAYOUT} available={picks} />);
-      const names = screen
-        .getAllByRole("group")
-        .map((g) => g.getAttribute("aria-label"))
-        .filter((n) => n === "Collections" || n === "Picks for you");
-      expect(names).toEqual(["Collections", "Picks for you"]);
-      expect(screen.getByRole("button", { name: "Move Picks for you" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Move Collections" })).toBeTruthy();
-    } finally {
-      localStorage.removeItem("ether.designer.groupOrder");
-    }
-  });
-
   it("selects a whole group and resets it to default", () => {
     let last: HomeLayout | undefined;
     const initial = setStatuses(EMPTY_LAYOUT, "global", "home", ["trending", "top-10"], "always");

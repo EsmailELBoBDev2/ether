@@ -4,8 +4,6 @@ import { AddonCatalogDrawer } from "../collections/AddonCatalogDrawer";
 import { newCollectionHref } from "../collections/links";
 import { BulkBar } from "../../components/BulkBar";
 import { Drawer } from "../../components/Drawer";
-import { DragHandle, SortableList } from "../../components/Sortable";
-import { loadGroupOrder, mergeGroupOrder, orderGroups, saveGroupOrder } from "./groupOrder";
 import { SubtabNav } from "../../components/layout";
 import { PosterGrid } from "../../components/Poster";
 import {
@@ -220,7 +218,6 @@ export function RowPool({
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [folded, setFolded] = useState<Partial<Record<PoolGroup, boolean>>>({});
-  const [groupOrder, setGroupOrder] = useState<PoolGroup[]>(() => loadGroupOrder<PoolGroup>());
   // A selection belongs to what it was made in: switching layer or page, or
   // changing what the list shows, clears it so no hidden row gets a bulk edit.
   const scope = JSON.stringify([layer, section, q, filter]);
@@ -468,127 +465,104 @@ export function RowPool({
           </label>
         );
       })()}
-      {(() => {
-        const ordered = orderGroups(GROUPS, groupOrder);
-        const visible = ordered.filter((g) => shown.some((e) => e.group === g.key));
+      {GROUPS.map((g) => {
+        const rows = shown.filter((e) => e.group === g.key);
+        if (!rows.length) return null;
+        const selectable = rows.filter((e) => !e.collectionSource).map((e) => e.row);
+        const allPicked = selectable.length > 0 && selectable.every((r) => picked.has(r));
+        // A search, a filter or the focused row holds a group open.
+        const held = filtering || rows.some((e) => e.row === focusRow);
+        const open =
+          held ||
+          !(folded[g.key] ?? (!onLibraryTab || (g.key === "collections" && rows.length > FOLD_AT)));
+        const off = rows.filter((e) => !e.collectionSource && statusOf(e) === "off").length;
         return (
-          <SortableList
-            items={visible}
-            getId={(g) => g.key}
-            onReorder={(next) => {
-              const order = mergeGroupOrder(
-                ordered.map((g) => g.key),
-                next.map((g) => g.key),
-              );
-              setGroupOrder(order);
-              saveGroupOrder(order);
-            }}
-            renderItem={(g, handle) => {
-              const rows = shown.filter((e) => e.group === g.key);
-              const selectable = rows.filter((e) => !e.collectionSource).map((e) => e.row);
-              const allPicked = selectable.length > 0 && selectable.every((r) => picked.has(r));
-              // A search, a filter or the focused row holds a group open.
-              const held = filtering || rows.some((e) => e.row === focusRow);
-              const open =
-                held ||
-                !(
-                  folded[g.key] ??
-                  (!onLibraryTab || (g.key === "collections" && rows.length > FOLD_AT))
-                );
-              const off = rows.filter((e) => !e.collectionSource && statusOf(e) === "off").length;
-              return (
-                <div className="space-y-1.5 pt-1" role="group" aria-label={g.label}>
-                  <div className="flex items-center gap-2 px-0.5">
-                    <DragHandle handle={handle} label={t("Move {group}", { group: g.label })} />
-                    {selectable.length ? (
-                      <Checkbox
-                        aria-label={t("Select every row in {group}", { group: g.label })}
-                        checked={allPicked}
-                        onChange={(ev) => pick(selectable, ev.currentTarget.checked)}
-                      />
-                    ) : null}
-                    <button
-                      type="button"
-                      aria-expanded={open}
-                      disabled={held}
-                      onClick={() => {
-                        setFolded({ ...folded, [g.key]: open });
-                        if (open) pick(selectable, false);
-                      }}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:cursor-default"
-                    >
-                      <ChevronRight
-                        size={13}
-                        className={cn(
-                          "shrink-0 text-fg-subtle transition-transform",
-                          open && "rotate-90",
-                        )}
-                      />
-                      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
-                        {g.label}
-                      </h3>
-                      <span className="truncate text-[11px] text-fg-subtle/80">
-                        {off
-                          ? t("{rows} · {off}", {
-                              rows: tn(rows.length, "{count} row", "{count} rows"),
-                              off: tn(off, "{count} off", "{count} off"),
-                            })
-                          : tn(rows.length, "{count} row", "{count} rows")}
-                      </span>
-                    </button>
-                  </div>
-                  {open ? (
-                    <>
-                      <p className="px-0.5 text-[11px] text-fg-subtle/80">{g.hint}</p>
-                      <ul className="space-y-1.5">
-                        {rows.map((e) => (
-                          <PoolItem
-                            key={e.row}
-                            entry={e}
-                            resolved={resolved.get(e.row)!}
-                            matches={e.group === "custom" ? matchesOf(e.row) : undefined}
-                            picked={picked.has(e.row)}
-                            onPick={(on) => pick([e.row], on)}
-                            onCreate={
-                              e.collectionSource
-                                ? () => {
-                                    const descriptor = collectionKinds.descriptors.find(
-                                      (d) => d.id === e.collectionSource,
-                                    );
-                                    if (!descriptor) return;
-                                    const spec = blankSpec(effectiveMedia);
-                                    spec.name = e.title;
-                                    spec.sources = [
-                                      newSourceFromDescriptor(descriptor, effectiveMedia),
-                                    ];
-                                    spec.targets.homeRow = true;
-                                    spec.enabled = true;
-                                    navigate(newCollectionHref(), { state: { spec } });
-                                  }
-                                : undefined
+          <div key={g.key} className="space-y-1.5 pt-1" role="group" aria-label={g.label}>
+            <div className="flex items-center gap-2 px-0.5">
+              {selectable.length ? (
+                <Checkbox
+                  aria-label={t("Select every row in {group}", { group: g.label })}
+                  checked={allPicked}
+                  onChange={(ev) => pick(selectable, ev.currentTarget.checked)}
+                />
+              ) : null}
+              <button
+                type="button"
+                aria-expanded={open}
+                disabled={held}
+                onClick={() => {
+                  setFolded({ ...folded, [g.key]: open });
+                  if (open) pick(selectable, false);
+                }}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:cursor-default"
+              >
+                <ChevronRight
+                  size={13}
+                  className={cn(
+                    "shrink-0 text-fg-subtle transition-transform",
+                    open && "rotate-90",
+                  )}
+                />
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                  {g.label}
+                </h3>
+                <span className="truncate text-[11px] text-fg-subtle/80">
+                  {off
+                    ? t("{rows} · {off}", {
+                        rows: tn(rows.length, "{count} row", "{count} rows"),
+                        off: tn(off, "{count} off", "{count} off"),
+                      })
+                    : tn(rows.length, "{count} row", "{count} rows")}
+                </span>
+              </button>
+            </div>
+            {open ? (
+              <>
+                <p className="px-0.5 text-[11px] text-fg-subtle/80">{g.hint}</p>
+                <ul className="space-y-1.5">
+                  {rows.map((e) => (
+                    <PoolItem
+                      key={e.row}
+                      entry={e}
+                      resolved={resolved.get(e.row)!}
+                      matches={e.group === "custom" ? matchesOf(e.row) : undefined}
+                      picked={picked.has(e.row)}
+                      onPick={(on) => pick([e.row], on)}
+                      onCreate={
+                        e.collectionSource
+                          ? () => {
+                              const descriptor = collectionKinds.descriptors.find(
+                                (d) => d.id === e.collectionSource,
+                              );
+                              if (!descriptor) return;
+                              const spec = blankSpec(effectiveMedia);
+                              spec.name = e.title;
+                              spec.sources = [newSourceFromDescriptor(descriptor, effectiveMedia)];
+                              spec.targets.homeRow = true;
+                              spec.enabled = true;
+                              navigate(newCollectionHref(), { state: { spec } });
                             }
-                            insight={insightFor(insights, e)}
-                            draft={draft}
-                            onChange={onChange}
-                            layer={layer}
-                            section={section}
-                            viewers={viewers}
-                            preview={preview}
-                            previewWho={previewWho}
-                            previewRequest={previewRequest}
-                            open={focusRow === e.row}
-                            onToggle={() => onFocusRow(focusRow === e.row ? null : e.row)}
-                          />
-                        ))}
-                      </ul>
-                    </>
-                  ) : null}
-                </div>
-              );
-            }}
-          />
+                          : undefined
+                      }
+                      insight={insightFor(insights, e)}
+                      draft={draft}
+                      onChange={onChange}
+                      layer={layer}
+                      section={section}
+                      viewers={viewers}
+                      preview={preview}
+                      previewWho={previewWho}
+                      previewRequest={previewRequest}
+                      open={focusRow === e.row}
+                      onToggle={() => onFocusRow(focusRow === e.row ? null : e.row)}
+                    />
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </div>
         );
-      })()}
+      })}
       {registry.error ? (
         <p role="alert" className="px-1 py-2 text-xs text-danger">
           {t("Row kinds could not be loaded.")}{" "}

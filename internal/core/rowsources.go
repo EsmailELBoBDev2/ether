@@ -31,8 +31,12 @@ type RowSourceInfo struct {
 	Purpose RowPurpose `json:"purpose,omitempty"`
 	// Look holds the source's default look.
 	Look RowLook `json:"look"`
-	// Plugin names the plugin that provides it (display name).
+	// Plugin names the plugin that provides it (display name), for
+	// "From plugins › <name>".
 	Plugin string `json:"plugin,omitempty"`
+	// Apps lists the apps that can draw it (nil: every app); plugin
+	// surfaces are ["vela"].
+	Apps []string `json:"apps,omitempty"`
 	// Library pins a plugin shelf to its library.
 	Library LibraryID `json:"library,omitempty"`
 }
@@ -123,3 +127,11 @@ const (
 	CapLive       = "live"       // Live TV
 	CapCatalogue  = "catalogue"  // owner collections (catalogue titles)
 )
+
+// CapRole is the capability of a library with a level of the given role
+// ("role:playlist"); CapFacet of one with the given browse facet.
+func CapRole(role string) string   { return "role:" + role }
+func CapFacet(facet string) string { return "facet:" + facet }
+
+// Level roles the row sources draw on.
+const RolePlaylist = "playlist"

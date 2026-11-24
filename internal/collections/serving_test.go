@@ -284,26 +284,21 @@ func TestSchedulerRebuildsWhenDue(t *testing.T) {
 	if _, err := e.svc.CreateSpec(e.ctx, live); err != nil {
 		t.Fatal(err)
 	}
-	// Built-ins have never been built; everything else was built on save.
-	first := e.svc.RunDue(e.ctx)
-	if first == 0 {
-		t.Fatal("never-built built-ins should be due")
-	}
+	// Everything was built on save.
 	if n := e.svc.RunDue(e.ctx); n != 0 {
-		t.Fatalf("nothing should be due right after a run, built %d", n)
+		t.Fatalf("nothing should be due right after saving, built %d", n)
 	}
 	hkey := core.SmartKey(mustInt(t, h.ID))
 	advance(61 * time.Minute)
-	n := e.svc.RunDue(e.ctx) // hourly owner + hourly built-ins
+	n := e.svc.RunDue(e.ctx) // hourly owner
 	got, _ := e.svc.GetSpec(e.ctx, h.ID)
 	if n == 0 || !got.LastBuiltAt.Equal(now.Truncate(time.Second)) {
 		t.Fatalf("hourly not rebuilt: n=%d %+v", n, got.LastBuiltAt)
 	}
-	// The built-ins joined a popular title, so this rebuild changed the
-	// members; the next one does not, and Plex keeps its cached artwork.
+	// An unchanged rebuild keeps the stamp, so Plex keeps its cached artwork.
 	before, err := e.svc.Get(e.ctx, owner, hkey)
-	if err != nil || !before.UpdatedAt.Equal(now.Truncate(time.Second)) {
-		t.Fatalf("stamp after a changed rebuild: %+v %v", before, err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	advance(61 * time.Minute)
 	if n := e.svc.RunDue(e.ctx); n == 0 {

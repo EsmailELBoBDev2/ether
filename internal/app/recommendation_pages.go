@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -74,6 +75,7 @@ func (a *App) pageLibraries(ctx context.Context) []core.PageLibrary {
 			pl.Experience = core.EffectiveLibraryExperience(decl.Library.Experience, core.MediaClass(decl.Media))
 			pl.Card = lib.EffectiveCardShape(decl.Library.Card)
 			pl.Caps = pluginLibraryCaps(pl.Experience, decl)
+			pl.Shelves = pluginLibraryShelves(decl)
 		} else {
 			pl.MediaType = lib.MediaType
 			pl.Card = lib.EffectiveCardShape("")
@@ -120,6 +122,32 @@ func catalogueLibraryCaps(t core.MediaType) []string {
 
 // pluginLibraryCaps are a plugin library's capabilities from its
 // experience and declaration (design §4.1, §4.2).
+// pluginLibraryShelves are a plugin library's declared shelves (library
+// and rows tabs), the choices of its pages' Plugin Shelf source.
+func pluginLibraryShelves(decl plugins.MediaKindMeta) []core.ParamOption {
+	var out []core.ParamOption
+	seen := map[string]bool{}
+	add := func(key, label string) {
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		if label == "" || strings.HasPrefix(label, "$t:") {
+			label = key
+		}
+		out = append(out, core.ParamOption{Value: key, Label: label})
+	}
+	for _, sh := range decl.Library.Shelves {
+		add(sh.Key, sh.Label)
+	}
+	for _, t := range decl.Library.Tabs {
+		for _, sh := range t.Shelves {
+			add(sh.Key, sh.Label)
+		}
+	}
+	return out
+}
+
 func pluginLibraryCaps(experience string, decl plugins.MediaKindMeta) []string {
 	caps := []string{}
 	switch experience {

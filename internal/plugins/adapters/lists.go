@@ -111,7 +111,7 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 		if b.cols != nil {
 			_ = b.cols.RegisterSourceKind(kind)
 		}
-		if b.pers != nil {
+		if b.pers != nil && kind.rowable() {
 			_ = b.pers.RegisterRowSourceKind(&rowSourceKind{list: kind})
 		}
 		b.listIDs[r.ID] = append(b.listIDs[r.ID], kind.ID())
@@ -516,17 +516,103 @@ type rowSourceKind struct {
 	list *listSourceKind
 }
 
-// Info describes the list as a Recommendations row source ("From
-// plugins" in the designer); its rows are served by collections.LayoutRow.
+// Info describes the list as a Recommendations row source under "From
+// plugins › <plugin>": catalogue titles of the list's type, and a Genre
+// choice when the catalogue takes one. Its rows are served by
+// collections.LayoutRow.
 func (r *rowSourceKind) Info() core.RowSourceInfo {
-	needs := []string{core.CapCatalogue}
-	return core.RowSourceInfo{
-		Kind:        r.list.ID(),
-		Title:       r.list.label(),
-		Description: resolvePlainText(r.list.mgr, r.list.pluginID, r.list.meta.Hint, ""),
+	k := r.list
+	info := core.RowSourceInfo{
+		Kind:        k.ID(),
+		Title:       k.label(),
+		Description: resolvePlainText(k.mgr, k.pluginID, k.meta.Hint, ""),
 		Group:       "plugins",
-		Needs:       needs,
+		Plugin:      firstNonEmpty(k.pluginName, k.pluginID),
+		Needs:       []string{core.CapCatalogue},
 		Split:       true,
-		Plugin:      r.list.pluginName,
+		Params:      k.rowParams(),
 	}
+	switch k.catalog.Type {
+	case stremio.TypeMovie:
+		info.Needs = append(info.Needs, core.CapMovies)
+	case stremio.TypeSeries:
+		info.Needs = append(info.Needs, core.CapEpisodes)
+	}
+	return info
+}
+
+// rowable reports whether the list can fill a row by itself: every value
+// it needs is one the owner picks from a list. Catalogues that need ids
+// only a client has (calendarVideosIds, lastVideosIds) or a free-text
+// value (search) are not offered.
+func (k *listSourceKind) rowable() bool {
+	if k.declared {
+		for _, ex := range k.catalog.Extras() {
+			switch ex.Name {
+			case "calendarVideosIds", "lastVideosIds":
+				return false
+			}
+			if ex.IsRequired && ex.Name != "skip" && len(ex.Options) == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	for _, f := range k.fields {
+		if f.Required && len(f.Options) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// rowParams are the list's options as row parameters: a declared
+// catalogue's extras with options (Genre), or the plugin's own fields
+// with options. Free-text values are not row options.
+func (k *listSourceKind) rowParams() []core.RowParam {
+	var out []core.RowParam
+	add := func(key, label string, required bool, def string, opts []core.ParamOption) {
+		if key == "" || len(opts) == 0 {
+			return
+		}
+		p := core.RowParam{Key: key, Label: label, Type: core.ParamChoice, Required: required, Default: def}
+		if !required {
+			p.Choices = append(p.Choices, core.ParamOption{Value: "", Label: "Any"})
+		}
+		p.Choices = append(p.Choices, opts...)
+		out = append(out, p)
+	}
+	if k.declared {
+		for _, ex := range k.catalog.Extras() {
+			if ex.Name == "skip" || ex.Name == "search" || len(ex.Options) == 0 {
+				continue
+			}
+			opts := make([]core.ParamOption, 0, len(ex.Options))
+			for _, o := range ex.Options {
+				if o = strings.TrimSpace(o); o != "" {
+					opts = append(opts, core.ParamOption{Value: o, Label: o})
+				}
+			}
+			label := strings.ToUpper(ex.Name[:1]) + ex.Name[1:]
+			def := ""
+			if ex.IsRequired && len(opts) > 0 {
+				def = opts[0].Value
+			}
+			add(ex.Name, label, ex.IsRequired, def, opts)
+		}
+		return out
+	}
+	for _, f := range k.fields {
+		key := firstNonEmpty(f.Key, f.Name)
+		opts := make([]core.ParamOption, 0, len(f.Options))
+		for _, o := range f.Options {
+			if strings.TrimSpace(o.Value) != "" {
+				opts = append(opts, core.ParamOption{Value: o.Value, Label: resolvePlainText(k.mgr, k.pluginID, o.Label, o.Value)})
+			}
+		}
+		def, _ := f.Default.(string)
+		label := resolvePlainText(k.mgr, k.pluginID, f.Label, key)
+		add(key, label, f.Required, def, opts)
+	}
+	return out
 }

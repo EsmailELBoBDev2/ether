@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -162,6 +163,25 @@ func TestSearchRecoversMisspellings(t *testing.T) {
 	}
 }
 
+func TestSearchFoldsCaseAndAccents(t *testing.T) {
+	c, ctx := spellTestCatalog(t)
+	for _, group := range [][]string{
+		{"amelie", "Amélie", "AMÉLIE", "Amelie"},
+		{"the gilded age", "The Gilded Age", "THE GILDED AGE"},
+		{"shogun", "Shōgun", "SHŌGUN"},
+	} {
+		want := searchTitles(t, c, ctx, group[0])
+		if len(want) == 0 {
+			t.Fatalf("Search(%q) found nothing", group[0])
+		}
+		for _, q := range group[1:] {
+			if got := searchTitles(t, c, ctx, q); !slices.Equal(got, want) {
+				t.Errorf("Search(%q) = %v, want the order of %q: %v", q, got, group[0], want)
+			}
+		}
+	}
+}
+
 func TestSearchSpellingKeepsLiteralAndShortQueriesPrecise(t *testing.T) {
 	c, ctx := spellTestCatalog(t)
 	for _, tt := range []struct {
@@ -290,6 +310,13 @@ func TestSearchFranchiseNameFindsItsFilms(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitSearchIndex(t, c, ctx)
+	// Case never changes the order: most people type in lower case.
+	lower := searchTitles(t, c, ctx, "james bond")
+	for _, q := range []string{"James Bond", "JAMES BOND", "jAmEs BoNd"} {
+		if got := searchTitles(t, c, ctx, q); !slices.Equal(got, lower) {
+			t.Errorf("Search(%q) = %v, want the order of %q: %v", q, got, "james bond", lower)
+		}
+	}
 	for _, q := range []string{"james bond", "James Bond", "jamesbond", "james bo"} {
 		got := searchTitles(t, c, ctx, q)
 		if len(got) < 3 {

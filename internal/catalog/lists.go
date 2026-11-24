@@ -404,6 +404,12 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 	// every type until the index's first build, from the literal match.
 	var localErr error
 	ix := c.searchIndex(ctx, !noReadWait(ctx))
+	if ix == nil && c.searchIndexBuilding() {
+		// Just after startup the index is still being built: the literal
+		// match answers without franchises, aliases or spelling, so a
+		// client that can ask again (core.WithSearchPending) does.
+		core.SearchPendingFrom(ctx).Mark()
+	}
 	deferredLocal = year == 0 && !wantSeason && !wantEpisode && (unfiltered || (c.visibilityFor(ctx).Passive() && c.config().ReleaseMode != config.ModeDigital))
 	if ix != nil && (wantMovie || wantTV) {
 		keys, scores := c.searchKeys(ix, sq, wantMovie, wantTV, max(limit*3, 30))

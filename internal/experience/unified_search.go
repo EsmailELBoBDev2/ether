@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -64,9 +63,7 @@ func namesTitle(query string, items []core.Title) bool {
 	return false
 }
 
-func foldWords(s string) []string {
-	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
-}
+func foldWords(s string) []string { return core.FoldSearchWords(s) }
 
 func holdsWords(title, words []string) bool {
 	if len(title) == 0 {

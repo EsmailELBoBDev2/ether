@@ -174,6 +174,14 @@ func (c *Catalog) searchIndex(ctx context.Context, wait bool) *titleIndex {
 	return st.ix.Load()
 }
 
+// searchIndexBuilding reports whether an index build is running.
+func (c *Catalog) searchIndexBuilding() bool {
+	st := &c.searchIx
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.building != nil
+}
+
 func (c *Catalog) rebuildSearchIndex(gen uint64, done chan struct{}) {
 	st := &c.searchIx
 	defer close(done)

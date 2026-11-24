@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"slices"
@@ -24,6 +25,10 @@ type ServiceOptions struct {
 	Watch     WatchTargetResolver
 	Favorites FavoriteEntities
 	Now       func() time.Time
+	// Documents indexes document screens and surfaces; nil disables them.
+	Documents *DocRegistry
+	// TopicKey seals stream topics; empty uses a key made at start.
+	TopicKey []byte
 }
 
 // Service resolves plugin-declared screens and live entity searches on demand.
@@ -37,6 +42,11 @@ type Service struct {
 	mu    sync.RWMutex
 	hub   LiveFeedHub
 	watch WatchTargetResolver
+
+	docs     *DocRegistry
+	revs     *revStore
+	extra    ExtraSources
+	topicKey []byte
 }
 
 // NewService constructs a screen resolver service.
@@ -49,13 +59,41 @@ func NewService(opts ServiceOptions) *Service {
 	if reg == nil {
 		reg = NewRegistry(RegistryOptions{})
 	}
+	key := opts.TopicKey
+	if len(key) == 0 {
+		key = make([]byte, 32)
+		_, _ = rand.Read(key)
+	}
 	return &Service{
 		registry:  reg,
 		favorites: opts.Favorites,
 		now:       nowFn,
 		hub:       opts.Hub,
 		watch:     opts.Watch,
+		docs:      opts.Documents,
+		revs:      newRevStore(nowFn),
+		topicKey:  key,
 	}
+}
+
+// Documents returns the document registry (nil when disabled).
+func (s *Service) Documents() *DocRegistry {
+	if s == nil {
+		return nil
+	}
+	return s.docs
+}
+
+// SetExtraSources installs the resolver for app-owned source types.
+func (s *Service) SetExtraSources(x ExtraSources) {
+	if s != nil {
+		s.extra = x
+	}
+}
+
+func (s *Service) hubDeps() LiveFeedHub {
+	h, _ := s.deps()
+	return h
 }
 
 // Registry returns the underlying screen registry for lifecycle hooks.

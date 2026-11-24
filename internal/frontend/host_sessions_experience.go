@@ -1136,7 +1136,7 @@ type SessionRuntime interface {
 	NewVariantIDs(db *sql.DB, now func() time.Time) VariantIDs
 	NewDownloadJob(playback Playback, remuxer DownloadRemuxer) DownloadJob
 	NewDownloadQueuePersistence(queue DownloadQueueStore, db *sql.DB, artifacts DownloadRemuxer, log *slog.Logger, expiry func() time.Duration, storageID func() string, users func(context.Context) ([]core.User, error)) DownloadQueuePersistence
-	PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error)
+	PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error)
 	PartSource(viewer int64, client string, key core.RatingKey, release string) PartSource
 	ServePartSource(w http.ResponseWriter, r *http.Request, sourceID string)
 	ObserveStart(ctx context.Context, source HLSSession, id string) (StartObservation, bool)

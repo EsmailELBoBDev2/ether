@@ -716,9 +716,10 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 			return nil, errDecisionMediaIndex
 		}
 	}
-	releaseID := s.resolveVariantSelection(ctx, pr, p)
-	p.variantRelease = releaseID
-	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.sourceSelectionCaps(), releaseID)
+	p.variantRelease = s.resolveVariantSelection(ctx, pr, p)
+	// A restart after a track change keeps the release being watched.
+	releaseID, exact := s.restartRelease(s.playIdentityFor(pr, p.key), p.variantRelease)
+	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.sourceSelectionCaps(), releaseID, exact)
 	if err != nil {
 		s.endVersionFlow(ctx, s.playIdentityFor(pr, p.key))
 	}
@@ -744,9 +745,9 @@ func (s *Server) admittedMedia(p *playRequest) int64 {
 
 // prepareForRelease prepares a session on a specific release ("" = Auto).
 // When the playback manager cannot target a release, it logs and plays
-// the normal choice instead of failing.
-func (s *Server) prepareForRelease(ctx context.Context, user *frontend.User, key frontend.RatingKey, caps frontend.ClientCaps, releaseID string) (*frontend.PlaySession, error) {
-	return s.plexSources().Prepare(ctx, user, key, caps, releaseID, decisionSourceWait)
+// the normal choice instead of failing. exact opens that release or fails.
+func (s *Server) prepareForRelease(ctx context.Context, user *frontend.User, key frontend.RatingKey, caps frontend.ClientCaps, releaseID string, exact bool) (*frontend.PlaySession, error) {
+	return s.plexSources().Prepare(ctx, user, key, caps, releaseID, exact, decisionSourceWait)
 }
 
 // variantWatchSchedule is when a detail page rendered with a single version

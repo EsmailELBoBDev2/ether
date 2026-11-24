@@ -220,9 +220,7 @@ describe("bulk row editing", () => {
     expect(screen.getByRole("group", { name: "Picks for you" })).toBeTruthy();
     expect(screen.queryByRole("checkbox", { name: "Select Trending" })).toBeNull();
     // The master checkbox reaches every row in every group, folded or not.
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: "Master: select all rows in every group" }),
-    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all rows in every group" }));
     expect(screen.getByRole("region", { name: "Selected rows" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
     const rows = rowsOf(last!);

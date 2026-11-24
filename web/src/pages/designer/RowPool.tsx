@@ -434,7 +434,7 @@ export function RowPool({
         ]}
       />
       {(() => {
-        // Master: one checkbox for every selectable row in every group, so
+        // One checkbox for every selectable row in every group, so
         // the owner can act on all rows without opening each group.
         if (onLibraryTab) return null;
         const all = shown
@@ -445,13 +445,13 @@ export function RowPool({
         return (
           <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-bg-subtle px-2 py-1.5">
             <Checkbox
-              aria-label={t("Master: select all rows in every group")}
+              aria-label={t("Select all rows in every group")}
               checked={count === all.length}
               onChange={(ev) => pick(all, ev.currentTarget.checked)}
             />
             <span className="min-w-0 flex-1">
               <span className="block text-[11px] font-semibold uppercase tracking-wider text-fg">
-                {t("Master: select all rows")}
+                {t("Select all rows")}
               </span>
               <span className="block text-[11px] text-fg-subtle">
                 {count > 0

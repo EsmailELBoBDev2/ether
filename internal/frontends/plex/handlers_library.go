@@ -1506,7 +1506,8 @@ func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Secti
 		search := s.searchExperience()
 		res, err := search.Keyword(ctx, pr.User, query, []frontend.MediaType{t}, fetch)
 		if err != nil {
-			s.writeErr(w, r, err)
+			mc.Title2 = "Search for '" + query + "'"
+			s.writeSearchErr(w, r, err, mc)
 			return
 		}
 		if scoped {

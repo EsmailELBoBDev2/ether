@@ -143,6 +143,8 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v; sidecar fetched=%v",
 				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, muxed, textRendition, sidecar)
 			if !burned && !textRendition && !muxed && !sidecar {
+				t.Logf("DEBUG %s selected tag: %s", tc.name, selected)
+				t.Logf("DEBUG %s start playlist:\n%s", tc.name, playlist)
 				t.Fatalf("first play delivered no English subtitle")
 			}
 			if streamAttr(selected, "languageCode") != "eng" {

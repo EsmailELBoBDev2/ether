@@ -129,7 +129,7 @@ func TestPluginLibraryRowsBatchesShelvesAndDeduplicatesRequestReads(t *testing.T
 	libIDStr := strconv.FormatInt(int64(lib.ID), 10)
 
 	// Warm caches (KindRecord, empty plugin_item_parts) like a steady-state server.
-	if _, err := exp.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, libIDStr); err != nil {
+	if _, err := exp.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, libIDStr, ""); err != nil {
 		t.Fatalf("warmup PluginLibraryRows: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestPluginLibraryRowsBatchesShelvesAndDeduplicatesRequestReads(t *testing.T
 	reqCtx := frontend.WithRequestMemo(reqmemo.With(ctx))
 	reqCtx, stats := store.WithQueryStats(reqCtx)
 
-	rows, err := exp.PluginLibraryRows(reqCtx, owner, core.Device{Product: "Vela"}, libIDStr)
+	rows, err := exp.PluginLibraryRows(reqCtx, owner, core.Device{Product: "Vela"}, libIDStr, "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}

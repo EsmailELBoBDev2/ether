@@ -293,7 +293,7 @@ func TestBranchingLevelsVideoChildrenTabsAndPlayback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defaultRows, err := exp.PluginLibraryTabRows(ctx, h.users[1], core.Device{}, viewID, "recommended")
+	defaultRows, err := exp.PluginLibraryRows(ctx, h.users[1], core.Device{}, viewID, "recommended")
 	if err != nil {
 		t.Fatalf("PluginLibraryTabRows(recommended): %v", err)
 	}
@@ -307,7 +307,7 @@ func TestBranchingLevelsVideoChildrenTabsAndPlayback(t *testing.T) {
 		t.Fatalf("recommended rows = %+v, want single legacy shelf %q with 2 albums", defaultRows, wantDefaultShelfID)
 	}
 
-	concertRows, err := exp.PluginLibraryTabRows(ctx, h.users[1], core.Device{}, viewID, "concerts")
+	concertRows, err := exp.PluginLibraryRows(ctx, h.users[1], core.Device{}, viewID, "concerts")
 	if err != nil {
 		t.Fatalf("PluginLibraryTabRows(concerts): %v", err)
 	}

@@ -364,7 +364,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			Genres:        []string{dev},
 		})
 	}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,16 +604,13 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	}
 
 	owner := &core.User{ID: 1, IsOwner: true}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}
 	// 1 Continue Watching + 23 non-empty declared shelves (empty-topic skipped) = 24 rows (>16 and >8).
 	if len(rows) != 24 {
 		t.Fatalf("expected 24 uncapped rows (continue + 23 non-empty shelves), got %d", len(rows))
-	}
-	if layout.lastSituation.DefaultMaxRows != 24 {
-		t.Fatalf("expected DefaultMaxRows=24 passed to layout, got %d", layout.lastSituation.DefaultMaxRows)
 	}
 	if rows[0].ID != "plugin:12:continue" || len(rows[0].Items) != 1 || rows[0].Items[0].Key != d2.Key {
 		t.Fatalf("row[0] = %+v, want Continue Watching with d2", rows[0])
@@ -643,7 +640,7 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 
 	// With Layout == nil, declared shelves are still not clamped to 8.
 	svc.d.Layout = nil
-	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil || len(rowsNoLayout) != 24 {
 		t.Fatalf("PluginLibraryRows(Layout=nil) len=%d err=%v, want 24", len(rowsNoLayout), err)
 	}

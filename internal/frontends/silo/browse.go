@@ -295,7 +295,7 @@ func (i *instance) pluginLibraryRows(r *http.Request, v *frontend.Viewer, placem
 	if !plugin {
 		return nil, false, nil
 	}
-	rows, err := reader.PluginLibraryRows(r.Context(), v, device(r), view)
+	rows, err := reader.PluginLibraryRows(r.Context(), v, device(r), view, "")
 	if err != nil {
 		return nil, true, err
 	}

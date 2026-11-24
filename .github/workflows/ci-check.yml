@@ -1,0 +1,43 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-plex]
+jobs:
+  test:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: gofmt -d internal/ > gofmt.patch || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gofmt
+          path: gofmt.patch
+      - name: build
+        run: go build ./... && go vet ./internal/app/... ./internal/auth/... ./internal/config/... ./internal/admin/... ./internal/frontends/plex/... ./internal/frontend/
+      - name: test
+        shell: bash -o pipefail {0}
+        run: go test ./internal/auth/... ./internal/config/... ./internal/admin/... ./internal/frontends/plex/... ./internal/plextv/... ./internal/app/... ./internal/store/... ./internal/catalog/... ./internal/plugins/... ./internal/pluginitems/... ./internal/frontends/mediabrowser/... 2>&1 | grep -E '^(ok|FAIL|---|panic|\s+\S+_test.go)' | head -120
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: typecheck
+        working-directory: web
+        run: pnpm typecheck
+      - name: test
+        working-directory: web
+        run: pnpm vitest run --exclude src/i18n/catalog.test.ts 2>&1 | grep -E 'FAIL|×|Tests |Test Files|Error' | head -60

@@ -1926,7 +1926,10 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		if projected[i].SearchScore != projected[j].SearchScore {
 			return projected[i].SearchScore > projected[j].SearchScore
 		}
-		return projected[i].Popularity > projected[j].Popularity
+		if projected[i].Popularity != projected[j].Popularity {
+			return projected[i].Popularity > projected[j].Popularity
+		}
+		return projected[i].Key < projected[j].Key
 	})
 	return projected, nil
 }

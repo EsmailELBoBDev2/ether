@@ -1023,6 +1023,10 @@ func (s *Service) sortTitlesByLastViewed(ctx context.Context, v *core.User, item
 	})
 }
 
+// pluginSearchWindow is how many ranked search hits a library search pages
+// through.
+const pluginSearchWindow = 500
+
 func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
 	if v != nil && core.CatalogViewerID(ctx) == 0 {
 		ctx = core.WithCatalogViewer(ctx, v)
@@ -1032,8 +1036,10 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 		if limit <= 0 {
 			limit = 200
 		}
-		want := max(q.Offset, 0) + limit
-		window := min(max(want*2, 50), 500)
+		// One fixed candidate window for every page: a window that grew with
+		// the offset ranked a different set per page, so pages repeated and
+		// skipped titles. Searches deeper than the window end with it.
+		window := pluginSearchWindow
 		subQ := q
 		subQ.Filter.Query = ""
 		hits, err := s.d.PluginLibraries.Search(ctx, lib, query, subQ, window)
@@ -1070,7 +1076,10 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 			}
 		} else {
 			sort.SliceStable(filtered, func(i, j int) bool {
-				return filtered[i].SearchScore > filtered[j].SearchScore
+				if filtered[i].SearchScore != filtered[j].SearchScore {
+					return filtered[i].SearchScore > filtered[j].SearchScore
+				}
+				return filtered[i].Key < filtered[j].Key
 			})
 		}
 		return slicePluginTitles(filtered, subQ)

@@ -335,9 +335,9 @@ func (s scorecardSessionWrapper) NewDownloadQueuePersistence(queue frontend.Down
 	}
 	return nil
 }
-func (s scorecardSessionWrapper) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error) {
+func (s scorecardSessionWrapper) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error) {
 	if rt := s.runtime(); rt != nil {
-		return rt.PrepareSource(ctx, viewer, key, caps, release, wait)
+		return rt.PrepareSource(ctx, viewer, key, caps, release, exact, wait)
 	}
 	return nil, core.ErrNotAvailable
 }

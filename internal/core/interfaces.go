@@ -553,17 +553,19 @@ type State interface {
 
 // Playlists are user-created lists.
 type Playlist struct {
-	Key       RatingKey   `json:"key"`
-	UserID    int64       `json:"userId"`
-	Title     string      `json:"title"`
-	Smart     bool        `json:"smart"`
-	SmartURI  string      `json:"-"`
-	GUID      string      `json:"-"`
-	Summary   string      `json:"summary,omitempty"`
-	AddedAt   time.Time   `json:"addedAt"`
-	ItemIDs   []int64     `json:"-"`
-	Items     []RatingKey `json:"items"`
-	UpdatedAt time.Time   `json:"updatedAt"`
+	Key      RatingKey `json:"key"`
+	UserID   int64     `json:"userId"`
+	Title    string    `json:"title"`
+	Smart    bool      `json:"smart"`
+	SmartURI string    `json:"-"`
+	GUID     string    `json:"-"`
+	Summary  string    `json:"summary,omitempty"`
+	AddedAt  time.Time `json:"addedAt"`
+	ItemIDs  []int64   `json:"-"`
+	// ItemAddedAt is when each item was added (zero for entries older than the record).
+	ItemAddedAt []time.Time `json:"-"`
+	Items       []RatingKey `json:"items"`
+	UpdatedAt   time.Time   `json:"updatedAt"`
 }
 
 // PlaylistEdit updates only explicitly supplied fields.

@@ -822,6 +822,8 @@ var (
 type PlaylistEntry struct {
 	EntryID string
 	Title   core.Title
+	// AddedAt is when the entry was added; zero when unknown.
+	AddedAt time.Time
 }
 
 // PlaylistContents is a viewer's playlist metadata paired with its visible
@@ -885,6 +887,12 @@ type PlaylistAvailability interface {
 // ViewerPlaylists exposes viewer-owned playlists with stable entry identities,
 // show/season expansion, rename, and per-title membership lookup. All reads
 // and mutations enforce viewer visibility policy before counting or indexing.
+// ViewerPlaylistEditor edits a viewer-owned playlist's name and description
+// (nil leaves a field as it is).
+type ViewerPlaylistEditor interface {
+	EditViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name, summary *string) (*core.Playlist, error)
+}
+
 type ViewerPlaylists interface {
 	PlaylistLibrary
 	ViewerPlaylistContents(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (PlaylistContents, error)

@@ -122,10 +122,15 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		AudioTrackID                string
 		SubtitleTrackID             json.RawMessage
 		Multiview                   *multiviewPlaybackRequest `json:"multiview,omitempty"`
+		// Context: what this play started from (features.playContexts).
+		Context *playContextRequest `json:"context,omitempty"`
 	}
 	if body(r, &b) != nil || b.Client.Device.ID != requestDevice(r).ID {
 		problem(w, 400, "request", "invalid_target")
 		return
+	}
+	if b.Context != nil && b.TitleID != "" {
+		i.recordPlayContext(r, v, *b.Context)
 	}
 	targets := 0
 	for _, id := range []string{b.TitleID, b.ChannelID, b.ExtraID} {

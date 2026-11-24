@@ -833,6 +833,30 @@ type PlaylistContents struct {
 	Entries  []PlaylistEntry
 }
 
+// PlayContexts remembers what a viewer plays *from* (an album, an artist, a
+// playlist, their liked songs) for Recently played, keeping the newest few.
+type PlayContexts interface {
+	RecordPlayContext(ctx context.Context, viewer *core.Viewer, ref PlayContextRef) error
+	RecentPlayContexts(ctx context.Context, viewer *core.Viewer, limit int) ([]RecentPlayContext, error)
+}
+
+// PlayContextRef names a play context: a title (album, artist, show), a
+// playlist, or a liked list by role ("favorites" with Role "track").
+type PlayContextRef struct {
+	Kind string // "title", "playlist", "favorites"
+	Key  core.RatingKey
+	Role string
+}
+
+// RecentPlayContext is one play context resolved for the viewer.
+type RecentPlayContext struct {
+	Kind     string
+	Title    *Title
+	Playlist *core.Playlist
+	Role     string
+	PlayedAt time.Time
+}
+
 // TitleLyrics reads a playable title's lyrics from its source (a kind
 // plugin that declares them). Asked when a viewer opens the lyrics.
 type TitleLyrics interface {

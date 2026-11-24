@@ -775,12 +775,12 @@ func TestPlexampAudioDecisionAndDirectStart(t *testing.T) {
 		t.Errorf("pa-direct Decision.VideoCopy = true, want false")
 	}
 
-	// 5. Video start without prior /decision STILL returns 400 Bad Request.
+	// 5. Video start without prior /decision decides implicitly, as PMS does.
 	vidRec := f.request(t, http.MethodGet,
 		"/video/:/transcode/universal/start?path="+url.QueryEscape("/library/metadata/"+fightClub.Key.String())+"&session=vid-unarmed",
 		plexampHdrs)
-	if vidRec.Code != http.StatusBadRequest {
-		t.Fatalf("unarmed /video/:/transcode/universal/start status = %d, want 400", vidRec.Code)
+	if vidRec.Code != http.StatusOK {
+		t.Fatalf("unarmed /video/:/transcode/universal/start status = %d, want 200: %s", vidRec.Code, vidRec.Body.String())
 	}
 
 	// 6. Explicit URL audioCodec=mp3 overrides musicProfile container=opus&audioCodec=opus without mixing.

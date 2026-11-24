@@ -93,6 +93,10 @@ func heroesFromRows(rows []object, provenance ...map[string]heroSource) ([]objec
 	}
 	shelves := make([]object, 0, len(rows))
 	for _, row := range rows {
+		if row["kind"] == "surface" {
+			shelves = append(shelves, row)
+			continue
+		}
 		entries, _ := row["items"].([]object)
 		kept := make([]object, 0, len(entries))
 		for _, entry := range entries {

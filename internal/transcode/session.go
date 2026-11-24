@@ -47,6 +47,7 @@ type Session struct {
 	qsvMode                 string
 	qsvRetried              bool
 	normalizeNegativeDTS    bool
+	keepSourceRecord        bool // the in-band parameter set filter failed to start; copy without it
 	encoder                 *encoderLifetime
 	mediaGeneration         string // immutable HLS resource namespace for this session instance
 	id                      string

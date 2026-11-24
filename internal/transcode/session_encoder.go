@@ -414,6 +414,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		RampClock:            rampClock,
 		SilenceAudio:         s.silenceAudio,
 		NormalizeNegativeDTS: s.normalizeNegativeDTS,
+		KeepSourceRecord:     s.keepSourceRecord,
 		RTXTimeline:          s.rtxTimeline,
 		AudioGainDB:          s.audioMatch.gain,
 		LiveInput:            s.liveInput,

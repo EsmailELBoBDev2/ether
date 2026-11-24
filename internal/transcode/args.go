@@ -28,13 +28,16 @@ type runSpec struct {
 	SilenceAudio     bool
 	// Only a retry of an initial run whose muxer wrote a wrapped tfdt.
 	NormalizeNegativeDTS bool
-	TextSubtitlePaths    map[int]string
-	SoftSubtitlePath     string
-	SoftSubtitleIndex    int
-	LoopInput            bool
-	LiveInput            bool
-	LiveFromBacklog      bool // live HLS input: start at its first listed segment
-	CopyTimestamps       bool
+	// KeepSourceRecord drops the in-band parameter set rebuild after the
+	// filter failed to start on this session's source record.
+	KeepSourceRecord  bool
+	TextSubtitlePaths map[int]string
+	SoftSubtitlePath  string
+	SoftSubtitleIndex int
+	LoopInput         bool
+	LiveInput         bool
+	LiveFromBacklog   bool // live HLS input: start at its first listed segment
+	CopyTimestamps    bool
 	// RTXTimeline preserves the native session's clock and rendition-local
 	// initialization paths when ordinary FFmpeg takes over.
 	RTXTimeline       bool
@@ -356,6 +359,35 @@ func matroskaCopyParameterSets(d core.Decision, v *core.StreamInfo) string {
 	return ""
 }
 
+// mp4CopyParameterSets returns the bitstream filter that rebuilds the
+// decoder configuration record of a copied stream whose source record lacks
+// its parameter sets (they travel only in-band). The MP4 muxers write the
+// avc1/hvc1 sample entry, which promises a complete record; with an empty one
+// AVPlayer fetches the init and first segment, cannot configure its decoder,
+// and stops. The *_metadata filters parse the stream and publish the in-band
+// parameter sets as new extradata before the muxer writes its header.
+func mp4CopyParameterSets(v *core.StreamInfo) string {
+	if v == nil || !v.InBandParameterSets {
+		return ""
+	}
+	switch v.Codec {
+	case "h264":
+		return "h264_metadata"
+	case "hevc":
+		return "hevc_metadata"
+	}
+	return ""
+}
+
+// rebuildParameterSets is the filter an fMP4 video-copy run uses to rebuild
+// its source's in-band-only decoder configuration record, or "".
+func (s runSpec) rebuildParameterSets() string {
+	if s.Decision.Container != ContainerFMP4 || s.KeepSourceRecord || !s.Decision.VideoCopy {
+		return ""
+	}
+	return mp4CopyParameterSets(s.Info.Video())
+}
+
 // buildCodecArgs is the input, stream mapping and codec part of a run's
 // command line, shared by HLS and DASH.
 func buildCodecArgs(s runSpec) []string {
@@ -643,8 +675,13 @@ func buildCodecArgs(s runSpec) []string {
 				if ps := matroskaCopyParameterSets(d, v); ps != "" {
 					filter += "," + ps
 				}
+				if ps := s.rebuildParameterSets(); ps != "" {
+					filter += "," + ps
+				}
 				args = append(args, "-bsf:v", filter)
 			} else if ps := matroskaCopyParameterSets(d, v); ps != "" {
+				args = append(args, "-bsf:v", ps)
+			} else if ps := s.rebuildParameterSets(); ps != "" {
 				args = append(args, "-bsf:v", ps)
 			}
 			if container == ContainerFMP4 && v.Codec != "hevc" {

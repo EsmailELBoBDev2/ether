@@ -53,6 +53,20 @@ func (s *Server) preferredSelection(ctx context.Context, u *frontend.Viewer, key
 	sel.subtitle, sel.subtitleSet = selected.Subtitle, selected.SubtitleSet
 	return sel
 }
+
+// rememberedSubtitleOff reports a viewer who turned subtitles off for key's
+// title. An unavailable store reads as no remembered choice.
+func (s *Server) rememberedSubtitleOff(ctx context.Context, pr *Request, key frontend.RatingKey) bool {
+	if s.svc().trackPrefs == nil || pr == nil || pr.User == nil {
+		return false
+	}
+	off, err := s.svc().trackPrefs.SubtitleOff(ctx, pr.User.ID, key)
+	if err != nil {
+		s.log.Warn("remembered subtitle choice unavailable", "error", err)
+	}
+	return off
+}
+
 func (s *Server) applyStreamPreferences(ctx context.Context, pr *Request, p *playRequest, t *frontend.Title, info frontend.MediaInfo) {
 	sel := selection{audio: p.audioSel, audioSet: p.audioSel >= 0, subtitle: p.subSel, subtitleSet: p.subSet}
 	sel = s.preferredSelection(ctx, pr.User, p.key, info, t.Language, sel)
@@ -121,6 +135,20 @@ func (s *Server) rememberStreamRequest(r *http.Request, user *frontend.Viewer, k
 		// part-selection endpoint is an explicit command, even for the same
 		// track, and Off (track == nil) must always be remembered.
 		if kind == "subtitle" && r.URL.Path == "/:/timeline" && s.subtitleSelectionEcho(FromContext(r.Context()), key, track) {
+			continue
+		}
+		// A timeline "None" from a client that was only ever sent stream
+		// lists without subtitle rows (the pre-playback estimate) is the app's
+		// empty menu, not a choice: saving it would veto automatic subtitles
+		// for the title. Off sent through the part-selection command stays.
+		if kind == "subtitle" && track == nil && r.URL.Path == "/:/timeline" && s.playIDs != nil &&
+			!s.playIDs.listedSubtitles(s.playIdentityFor(FromContext(r.Context()), key), s.now()) {
+			continue
+		}
+		// The same holds for audio: a timeline report of the track the
+		// server marked selected is that pick repeated, not the viewer's.
+		if kind == "audio" && r.URL.Path == "/:/timeline" && s.playIDs != nil &&
+			s.playIDs.issuedSelected(s.playIdentityFor(FromContext(r.Context()), key), id, s.now()) {
 			continue
 		}
 		if err = s.svc().trackPrefs.Remember(r.Context(), user.ID, key, kind, track); err != nil {

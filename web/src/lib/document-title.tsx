@@ -151,11 +151,7 @@ function resolveBuiltinSubparts(
     case "collections": {
       if (tab === "new") return [t("New collection")];
       if (tab) return [t("Edit collection")];
-      const qTab = query.get("tab");
-      if (qTab === "rows") return [t("Home & library rows")];
-      if (qTab === "templates") return [t("Templates")];
-      if (qTab === "builtin") return [t("Discovery sources")];
-      return [];
+      return query.get("tab") === "templates" ? [t("Templates")] : [];
     }
     case "livetv": {
       if (tab === "library") return [t("Library")];

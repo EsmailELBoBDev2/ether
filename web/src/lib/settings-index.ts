@@ -305,7 +305,7 @@ export function settingsIndex(): SettingHit[] {
     ]),
     ...groupHits(S.UP_NEXT, "/playback/extras", playback),
     // Home
-    ...groupHits(S.PERSONAL_TOUCHES, "/home", t("Home")),
+    ...groupHits(S.PERSONAL_TOUCHES, "/recommendations", t("Recommendations")),
     // Notifications
     ...rows("/notifications/report", t("Weekly report"), [
       ["email-the-weekly-report", t("Email the weekly report")],

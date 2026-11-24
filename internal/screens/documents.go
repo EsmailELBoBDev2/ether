@@ -35,9 +35,9 @@ type DocRegistryOptions struct {
 	// RatingAllowed reports whether a declared content rating is within the
 	// viewer's limit. Nil allows every rating.
 	RatingAllowed func(viewer *core.User, rating string) bool
-	// OverlayOrder returns the owner's order of player overlays by wire id;
-	// unlisted overlays follow in install order.
-	OverlayOrder func(ctx context.Context) []string
+	// OverlayOrder returns the owner's order of player overlays by wire id
+	// for one app; unlisted overlays follow in install order.
+	OverlayOrder func(ctx context.Context, frontendID string) []string
 }
 
 type docPlugin struct {
@@ -372,7 +372,7 @@ func (r *DocRegistry) Surfaces(ctx context.Context, viewer *core.User, frontendI
 	}
 	if r.opts.OverlayOrder != nil {
 		rank := map[string]int{}
-		for i, id := range r.opts.OverlayOrder(ctx) {
+		for i, id := range r.opts.OverlayOrder(ctx, frontendID) {
 			rank[id] = i + 1
 		}
 		sort.SliceStable(all, func(i, j int) bool {

@@ -83,6 +83,10 @@ func (a *App) wrapPluginLiveEventsHandler(next http.Handler) http.Handler {
 			a.handlePluginLiveEvents(w, r, parts[0])
 			return
 		}
+		if len(parts) == 2 && parts[0] == "screens" && parts[1] == "overlay-order" {
+			a.handleOverlayOrder(w, r)
+			return
+		}
 		if len(parts) == 2 && parts[1] == "screen-publish" && parts[0] != "" {
 			a.handleScreenPublish(w, r, parts[0])
 			return
@@ -695,5 +699,42 @@ func draftText(man plugins.Manifest, files map[string][]byte) screens.TextFunc {
 			}
 		}
 		return "", false
+	}
+}
+
+// handleOverlayOrder reads and sets the owner's order of player overlays:
+// GET/PUT /api/plugins/screens/overlay-order {frontend: "vela", ids: [...]}.
+// When more than two overlays share an anchor, the first two in this order
+// show.
+func (a *App) handleOverlayOrder(w http.ResponseWriter, r *http.Request) {
+	if a == nil || a.screenPublish == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "screens unavailable"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		httpjson.Write(w, http.StatusOK, map[string]any{"frontend": "vela", "ids": a.screenPublish.OverlayOrder(r.Context(), "vela")})
+	case http.MethodPut:
+		var in struct {
+			Frontend string   `json:"frontend"`
+			IDs      []string `json:"ids"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&in); err != nil || in.Frontend != "vela" || len(in.IDs) > 64 {
+			httpjson.Write(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "expected {frontend: vela, ids: [surface ids]}"})
+			return
+		}
+		if err := a.screenPublish.SetOverlayOrder(r.Context(), in.Frontend, in.IDs); err != nil {
+			httpjson.Write(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": "could not save"})
+			return
+		}
+		if docs := (surfaceScreens{app: a}).docs(); docs != nil {
+			docs.Bump()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		httpjson.Write(w, http.StatusMethodNotAllowed, map[string]any{"code": "method_not_allowed", "message": "use GET or PUT"})
 	}
 }

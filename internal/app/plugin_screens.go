@@ -34,6 +34,9 @@ func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
 		IsViewerAllowed: func(ctx context.Context, viewer *core.User, pluginID string) bool {
 			return a.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID)
 		},
+		OverlayOrder: func(ctx context.Context, frontendID string) []string {
+			return a.screenPublish.OverlayOrder(ctx, frontendID)
+		},
 		RatingAllowed: func(viewer *core.User, rating string) bool {
 			if viewer == nil || viewer.MaxContentRating == "" {
 				return true

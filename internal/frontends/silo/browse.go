@@ -438,6 +438,14 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		// so a library whose rows were all promoted rendered as "Movies is
 		// empty". Featured is a Home distinction.
 		featured := row.Promoted && placement != frontend.PlacementLibrary
+		// The owner's row style: a Hero row is featured (drawn in the hero),
+		// Standard and Wide rows are ordinary sections.
+		switch row.Layout.StylePolicy {
+		case frontend.RowStyleHero:
+			featured = true
+		case frontend.RowStyleShelf, frontend.RowStyleWide:
+			featured = false
+		}
 		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
 		if !row.More {
 			section["total_count"] = len(items)

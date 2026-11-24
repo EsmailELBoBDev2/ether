@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // titlesWatched reports which titles v has fully watched. Movies, episodes,
@@ -202,4 +203,57 @@ func (s *Service) containersWatchedWithPending(ctx context.Context, v *core.User
 		}
 	}
 	return nil
+}
+
+// TitlesWatched reports which titles v has fully watched, with one batched
+// lookup per kind (see titlesWatched).
+func (s *Service) TitlesWatched(ctx context.Context, v *core.User, titles []core.Title) (map[core.RatingKey]bool, error) {
+	return s.titlesWatched(ctx, v, titles)
+}
+
+// DropWatched removes the viewer's fully watched titles from rows whose owner
+// policy hides them (RowLayout.HideWatched). One lookup covers every such
+// row on the page, so the cost follows the page, never the library. A row
+// left with no entries is dropped. A failed lookup keeps the rows as they
+// were: showing a watched title is better than an empty page.
+func DropWatched(ctx context.Context, v *core.User, rows []frontend.Row, watched func(context.Context, *core.User, []core.Title) (map[core.RatingKey]bool, error)) []frontend.Row {
+	if v == nil || watched == nil {
+		return rows
+	}
+	var titles []core.Title
+	for _, row := range rows {
+		if !row.Layout.HideWatched {
+			continue
+		}
+		for _, entry := range row.Entries {
+			if entry.Kind == frontend.RowEntryTitle && entry.Title != nil {
+				titles = append(titles, *entry.Title)
+			}
+		}
+	}
+	if len(titles) == 0 {
+		return rows
+	}
+	seen, err := watched(ctx, v, titles)
+	if err != nil || len(seen) == 0 {
+		return rows
+	}
+	out := make([]frontend.Row, 0, len(rows))
+	for _, row := range rows {
+		if row.Layout.HideWatched {
+			kept := make([]frontend.RowEntry, 0, len(row.Entries))
+			for _, entry := range row.Entries {
+				if entry.Kind == frontend.RowEntryTitle && entry.Title != nil && seen[entry.Title.Key] {
+					continue
+				}
+				kept = append(kept, entry)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			row.Entries = kept
+		}
+		out = append(out, row)
+	}
+	return out
 }

@@ -596,7 +596,7 @@ func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string,
 	out := []object{}
 	for _, row := range rows {
 		if len(sources) > 0 {
-			sources[0][row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
+			sources[0][row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, hero: row.Layout.StylePolicy == frontend.RowStyleHero, previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
 		}
 		offset := 0
 		if old := r.URL.Query().Get("cursor"); old != "" {
@@ -703,7 +703,11 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	if row.More || row.Kind == "truncated" {
 		continuation = "unknown"
 	}
-	wire := object{"id": row.ID, "name": row.Title, "purpose": row.Purpose, "receiptToken": row.Handle, "style": row.Style, "items": entries, "continuation": continuation}
+	style := row.Style
+	if row.Layout.StylePolicy == frontend.RowStyleWide {
+		style = "landscape" // Vela's wide card shape
+	}
+	wire := object{"id": row.ID, "name": row.Title, "purpose": row.Purpose, "receiptToken": row.Handle, "style": style, "items": entries, "continuation": continuation}
 	if row.RankedTop10 {
 		wire["presentation"] = "ranked"
 		wire["continuation"] = "exhausted"

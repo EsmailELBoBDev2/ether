@@ -443,7 +443,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		}
 	}
 	sectionName := "library:" + strconv.Itoa(sec.ID)
-	mc.Hub = stableHomeHubs(pr, s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral))
+	mc.Hub = ownerHeroHubs(stableHomeHubs(pr, s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral)))
 	if promotedOnly {
 		for i := range mc.Hub {
 			oldID := mc.Hub[i].HubIdentifier

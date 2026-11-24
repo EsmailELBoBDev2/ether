@@ -648,6 +648,8 @@ function tidyPolicy(p: RowPolicy): RowPolicy {
   if (p.previewOnFocus !== undefined) out.previewOnFocus = p.previewOnFocus;
   if (p.rankedTop10 !== undefined) out.rankedTop10 = p.rankedTop10;
   if (p.showRepeats) out.showRepeats = true;
+  if (p.style) out.style = p.style;
+  if (p.hideWatched) out.hideWatched = true;
   if (p.slot) {
     out.slot = p.slot;
     if (out.status !== "off") out.status = "always";

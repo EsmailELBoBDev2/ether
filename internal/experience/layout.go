@@ -104,6 +104,8 @@ func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, _ []Li
 		row.Rank = rank
 		row.Layout.Order = rank
 		row.Layout.Style = row.Style
+		row.Layout.StylePolicy = arranged.Style
+		row.Layout.HideWatched = arranged.HideWatched
 		row.Layout.Always = arranged.Always
 		row.PreviewOnFocus = arranged.PreviewOnFocus
 		row.Layout.PreviewOnFocus = arranged.PreviewOnFocus

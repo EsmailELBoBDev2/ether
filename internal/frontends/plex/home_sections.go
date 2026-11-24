@@ -310,7 +310,7 @@ func (s *Server) kindSectionHubs(ctx context.Context, pr *Request, sec Section, 
 	}
 
 	if reader, ok := exp.(frontend.PluginLibraryRowsReader); ok {
-		rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), id)
+		rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), id, "")
 		if err != nil {
 			s.log.Warn("plugin section rows", "section", sec.ID, "err", err)
 		}

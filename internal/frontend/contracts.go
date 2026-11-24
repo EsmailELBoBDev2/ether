@@ -232,16 +232,11 @@ type CollectionPager interface {
 	ListPage(ctx context.Context, user *User, typ MediaType, offset, limit int) ([]Collection, int, error)
 }
 
-// PluginLibraryRowsReader is an optional Experience capability returning the
-// Recommended tab shelves for a plugin library.
+// PluginLibraryRowsReader is an optional Experience capability returning a
+// plugin library's rows tab (Recommendations page "library:<id>/<tab>";
+// tab "" is the library's first rows tab), arranged by that page.
 type PluginLibraryRowsReader interface {
-	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID string) ([]Row, error)
-}
-
-// PluginLibraryTabRowsReader is an optional Experience capability returning the
-// shelves for a specific recommended tab of a plugin library.
-type PluginLibraryTabRowsReader interface {
-	PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, tabID string) ([]Row, error)
+	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, tab string) ([]Row, error)
 }
 
 // RowEntryKind identifies a neutral entry independently of wire formats.
@@ -347,8 +342,11 @@ type RowRequest struct {
 	Device           core.Device
 	Placement        Placement
 	ViewID           string
-	Item             core.RatingKey
-	Limit            int
+	// Tab is a library's rows tab (page "library:<id>/<tab>"); "" is the
+	// library's first rows tab.
+	Tab   string
+	Item  core.RatingKey
+	Limit int
 	// Purpose asks for one row. The zero value still returns the whole placement.
 	Purpose RowPurpose
 }

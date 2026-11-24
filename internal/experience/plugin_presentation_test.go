@@ -364,7 +364,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			Genres:        []string{dev},
 		})
 	}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	}
 
 	owner := &core.User{ID: 1, IsOwner: true}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 
 	// With Layout == nil, declared shelves are still not clamped to 8.
 	svc.d.Layout = nil
-	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil || len(rowsNoLayout) != 24 {
 		t.Fatalf("PluginLibraryRows(Layout=nil) len=%d err=%v, want 24", len(rowsNoLayout), err)
 	}

@@ -57455,6 +57455,9 @@ type kindHandlers struct {
 	liveFeeds map[string]LiveFeedProvider
 	frontend  map[string]FrontendAdapter
 	setup     SetupTester
+	// screen sources and actions by "<screen>/<name>" ("*" matches any screen).
+	screenSources map[string]ScreenSourceHandler
+	screenActions map[string]ScreenActionHandler
 }
 ``````
 
@@ -57717,6 +57720,10 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 3 && parts[0] == "live":
 		feed, _ := url.PathUnescape(parts[1])
 		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
+	case len(parts) == 4 && (parts[0] == "screens" || parts[0] == "surfaces") && (parts[2] == "sources" || parts[2] == "actions"):
+		screen, _ := url.PathUnescape(parts[1])
+		name, _ := url.PathUnescape(parts[3])
+		return p.dispatchScreen(pctx, method, screen, parts[2], name, req), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true
@@ -61333,6 +61340,341 @@ func (p *Plugin) Serve(ctx context.Context, opts ServeOptions) error {
 ``````
 func defaultHostForRuntime(opts RemoteHostOptions) Host {
 	return NewRemoteHostClient(opts)
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenSourceRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `page` | `string` | emitted (validation may require a value) |  |
+| `args` | `map[string]string` | emitted (validation may require a value) |  |
+| `locale` | `string` | emitted (validation may require a value) |  |
+| `tz` | `string` | emitted (validation may require a value) | TZ is the viewer's IANA time zone. |
+
+
+## Source: sdk/go/screens.go#ScreenSourceRequest
+
+``````
+// ScreenSourceRequest is what Ether sends a screen source.
+type ScreenSourceRequest struct {
+	Screen string            `json:"-"`
+	Route  string            `json:"-"`
+	Page   string            `json:"page"`
+	Args   map[string]string `json:"args"`
+	Locale string            `json:"locale"`
+	// TZ is the viewer's IANA time zone.
+	TZ string `json:"tz"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenRecord.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `type` | `string` | emitted (validation may require a value) |  |
+| `id` | `string` | emitted (validation may require a value) |  |
+| `value` | `any` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/screens.go#ScreenRecord
+
+``````
+// ScreenRecord is one of the plugin's records ({type, id, value}).
+type ScreenRecord struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Value any    `json:"value"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenSourceAnswer.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `value` | `any` | emitted (validation may require a value) |  |
+| `records` | `[]ScreenRecord` | may be omitted (see validation for conditions) |  |
+| `maxAgeSec` | `int` | may be omitted (see validation for conditions) | MaxAgeSec is how long Ether may reuse the answer (5..3600, default 60; viewer-scoped answers at most 60). |
+| `nextRefreshSec` | `int` | may be omitted (see validation for conditions) | NextRefreshSec asks Ether to read again this soon while a viewer has the page open (at least 10). |
+
+
+## Source: sdk/go/screens.go#ScreenSourceAnswer
+
+``````
+// ScreenSourceAnswer is a source's answer.
+type ScreenSourceAnswer struct {
+	Value   any            `json:"value"`
+	Records []ScreenRecord `json:"records,omitempty"`
+	// MaxAgeSec is how long Ether may reuse the answer (5..3600, default 60;
+	// viewer-scoped answers at most 60).
+	MaxAgeSec int `json:"maxAgeSec,omitempty"`
+	// NextRefreshSec asks Ether to read again this soon while a viewer has
+	// the page open (at least 10).
+	NextRefreshSec int `json:"nextRefreshSec,omitempty"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenActionRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `page` | `string` | emitted (validation may require a value) |  |
+| `args` | `map[string]json.RawMessage` | emitted (validation may require a value) |  |
+| `params` | `map[string]string` | emitted (validation may require a value) |  |
+| `locale` | `string` | emitted (validation may require a value) |  |
+| `tz` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/screens.go#ScreenActionRequest
+
+``````
+// ScreenActionRequest is one call of a declared action.
+type ScreenActionRequest struct {
+	Screen string                     `json:"-"`
+	Action string                     `json:"-"`
+	Page   string                     `json:"page"`
+	Args   map[string]json.RawMessage `json:"args"`
+	Params map[string]string          `json:"params"`
+	Locale string                     `json:"locale"`
+	TZ     string                     `json:"tz"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenActionAnswer.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `records` | `[]ScreenRecord` | may be omitted (see validation for conditions) |  |
+| `sources` | `map[string]any` | may be omitted (see validation for conditions) |  |
+| `refresh` | `[]string` | may be omitted (see validation for conditions) | Refresh names sources Ether reads again before answering. |
+| `toast` | `string` | may be omitted (see validation for conditions) | Toast is plain text, at most 200 characters. |
+| `navigate` | `map[string]any` | may be omitted (see validation for conditions) | Navigate is a Vela navigate action: {"action": "navigate", "args": {...}}. |
+
+
+## Source: sdk/go/screens.go#ScreenActionAnswer
+
+``````
+// ScreenActionAnswer patches the client at once.
+type ScreenActionAnswer struct {
+	Records []ScreenRecord `json:"records,omitempty"`
+	Sources map[string]any `json:"sources,omitempty"`
+	// Refresh names sources Ether reads again before answering.
+	Refresh []string `json:"refresh,omitempty"`
+	// Toast is plain text, at most 200 characters.
+	Toast string `json:"toast,omitempty"`
+	// Navigate is a Vela navigate action: {"action": "navigate", "args": {...}}.
+	Navigate map[string]any `json:"navigate,omitempty"`
+}
+``````
+
+## Source: sdk/go/screens.go#ScreenSourceHandler
+
+``````
+// ScreenSourceHandler answers a "plugin" source.
+type ScreenSourceHandler func(ctx *Context, req ScreenSourceRequest) (ScreenSourceAnswer, error)
+``````
+
+## Source: sdk/go/screens.go#ScreenActionHandler
+
+``````
+// ScreenActionHandler runs a declared screen action.
+type ScreenActionHandler func(ctx *Context, req ScreenActionRequest) (ScreenActionAnswer, error)
+``````
+
+## Source: sdk/go/screens.go#*Plugin.OnScreenSource
+
+``````
+// OnScreenSource registers a source handler; screen is the screen or surface
+// id, or "*" for any.
+func (p *Plugin) OnScreenSource(screen, route string, h ScreenSourceHandler) {
+	k := p.kinds()
+	if k.screenSources == nil {
+		k.screenSources = map[string]ScreenSourceHandler{}
+	}
+	k.screenSources[screen+"/"+route] = h
+}
+``````
+
+## Source: sdk/go/screens.go#*Plugin.OnScreenAction
+
+``````
+// OnScreenAction registers an action handler; screen may be "*".
+func (p *Plugin) OnScreenAction(screen, action string, h ScreenActionHandler) {
+	k := p.kinds()
+	if k.screenActions == nil {
+		k.screenActions = map[string]ScreenActionHandler{}
+	}
+	k.screenActions[screen+"/"+action] = h
+}
+``````
+
+## Source: sdk/go/screens.go#*Plugin.dispatchScreen
+
+``````
+func (p *Plugin) dispatchScreen(pctx *Context, method, screen, kind, name string, req RawRequest) RawResponse {
+	if method != http.MethodPost {
+		return errorJSON(http.StatusMethodNotAllowed, "method_not_allowed", "Screen routes use POST.")
+	}
+	k := p.kindHandlers
+	if kind == "sources" {
+		var h ScreenSourceHandler
+		if k != nil {
+			if h = k.screenSources[screen+"/"+name]; h == nil {
+				h = k.screenSources["*/"+name]
+			}
+		}
+		if h == nil {
+			return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No screen source %q is registered for %q.", name, screen))
+		}
+		var in ScreenSourceRequest
+		if len(req.Body) > 0 {
+			if err := json.Unmarshal(req.Body, &in); err != nil {
+				return errorJSON(http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			}
+		}
+		in.Screen, in.Route = screen, name
+		out, err := h(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		return okJSON(out, http.StatusOK)
+	}
+	var h ScreenActionHandler
+	if k != nil {
+		if h = k.screenActions[screen+"/"+name]; h == nil {
+			h = k.screenActions["*/"+name]
+		}
+	}
+	if h == nil {
+		return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No screen action %q is registered for %q.", name, screen))
+	}
+	var in ScreenActionRequest
+	if len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &in); err != nil {
+			return errorJSON(http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+		}
+	}
+	in.Screen, in.Action = screen, name
+	out, err := h(pctx, in)
+	if err != nil {
+		return toRouteErrorResponse(err)
+	}
+	return okJSON(out, http.StatusOK)
+}
+``````
+
+## Source: sdk/go/screens.go#Image
+
+``````
+// Image is a picture on one of the plugin's permissions.network hosts,
+// served to viewers through Ether's signed image proxy.
+func Image(url string) map[string]string { return map[string]string{"$image": url} }
+``````
+
+## Source: sdk/go/screens.go#Asset
+
+``````
+// Asset is a file in the plugin package.
+func Asset(path string) map[string]string {
+	return map[string]string{"$image": "asset:" + strings.TrimLeft(path, "/")}
+}
+``````
+
+## Source: sdk/go/screens.go#Link
+
+``````
+// Link is an https page a viewer may open on a phone or the web.
+func Link(url string) map[string]string { return map[string]string{"$link": url} }
+``````
+
+## Source: sdk/go/screens.go#Record
+
+``````
+// Record references one of the plugin's records (send its value in Records).
+func Record(typ, id string) map[string]map[string]string {
+	return map[string]map[string]string{"$record": {"type": typ, "id": id}}
+}
+``````
+
+## Source: sdk/go/screens.go#Event
+
+``````
+// Event references one of the plugin's live events.
+func Event(feed, id string) map[string]map[string]string {
+	return map[string]map[string]string{"$event": {"feed": feed, "id": id}}
+}
+``````
+
+## Source: sdk/go/screens.go#Entity
+
+``````
+// Entity references one of the plugin's live entities.
+func Entity(feed, kind, id string) map[string]map[string]string {
+	return map[string]map[string]string{"$entity": {"feed": feed, "kind": kind, "id": id}}
+}
+``````
+
+## Source: sdk/go/screens.go#ScreensHost
+
+``````
+// ScreensHost pushes screen updates (screens capability). RemoteHostClient
+// implements it; Context.InvalidateScreens and Context.PutScreenRecords use it.
+type ScreensHost interface {
+	ScreensInvalidate(ctx context.Context) (int, error)
+	ScreensPutRecords(ctx context.Context, records []ScreenRecord) (int, error)
+}
+``````
+
+## Source: sdk/go/screens.go#*RemoteHostClient.ScreensInvalidate
+
+``````
+// ScreensInvalidate makes open screens and surfaces read their sources again
+// through POST /ether/plugin-host/screens/invalidate.
+func (c *RemoteHostClient) ScreensInvalidate(ctx context.Context) (int, error) {
+	var out struct {
+		Streams int `json:"streams"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/screens/invalidate", map[string]any{}, &out, false)
+	return out.Streams, err
+}
+``````
+
+## Source: sdk/go/screens.go#*RemoteHostClient.ScreensPutRecords
+
+``````
+// ScreensPutRecords sends new values for the plugin's records to open screens
+// showing them through POST /ether/plugin-host/screens/records.
+func (c *RemoteHostClient) ScreensPutRecords(ctx context.Context, records []ScreenRecord) (int, error) {
+	var out struct {
+		Streams int `json:"streams"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/screens/records", map[string]any{"records": records}, &out, false)
+	return out.Streams, err
+}
+``````
+
+## Source: sdk/go/screens.go#*Context.InvalidateScreens
+
+``````
+// InvalidateScreens makes this plugin's open screens read their sources
+// again now. It returns how many open streams heard it.
+func (c *Context) InvalidateScreens() (int, error) {
+	if sh, ok := c.Ether.(ScreensHost); ok {
+		return sh.ScreensInvalidate(c.Context)
+	}
+	return 0, fmt.Errorf("screens.invalidate is not supported by this host")
+}
+``````
+
+## Source: sdk/go/screens.go#*Context.PutScreenRecords
+
+``````
+// PutScreenRecords sends new values for records open screens are showing.
+func (c *Context) PutScreenRecords(records ...ScreenRecord) (int, error) {
+	if sh, ok := c.Ether.(ScreensHost); ok {
+		return sh.ScreensPutRecords(c.Context, records)
+	}
+	return 0, fmt.Errorf("screens.putRecords is not supported by this host")
 }
 ``````
 
@@ -66422,6 +66764,53 @@ class _CollectionsClient:
         self._call("POST", "/ether/plugin-host/collections/upsert", collection)
 
 
+class _ScreensClient:
+    """Pushes to open screens and surfaces (screens capability)."""
+
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def invalidate(self) -> Dict[str, int]:
+        """Open screens of this plugin read their sources again now."""
+        return self._call("POST", "/ether/plugin-host/screens/invalidate", {}) or {"streams": 0}
+
+    def put_records(self, records: List[Dict[str, Any]]) -> Dict[str, int]:
+        """New values for records open screens show: ``[{type, id, value}]``, at most 100."""
+        return self._call("POST", "/ether/plugin-host/screens/records", {"records": records}) or {"streams": 0}
+
+    putRecords = put_records
+
+
+def image(url: str) -> Dict[str, str]:
+    """A picture on one of your permissions.network hosts, served through Ether's image proxy."""
+    return {"$image": url}
+
+
+def asset(path: str) -> Dict[str, str]:
+    """A file in your plugin package."""
+    return {"$image": "asset:" + path.lstrip("/")}
+
+
+def link(url: str) -> Dict[str, str]:
+    """An https page viewers may open on phones and the web."""
+    return {"$link": url}
+
+
+def record(type_: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """A reference to one of your records; send its value in ``records``."""
+    return {"$record": {"type": type_, "id": id_}}
+
+
+def event(feed: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's events."""
+    return {"$event": {"feed": feed, "id": id_}}
+
+
+def entity(feed: str, kind: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's entities (a team, a driver)."""
+    return {"$entity": {"feed": feed, "kind": kind, "id": id_}}
+
+
 class EventEnumOption(TypedDict, total=False):
     value: str
     label: str
@@ -66733,6 +67122,7 @@ class RemoteHostClient:
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
+        self.screens = _ScreensClient(self._call_json)
         self.events = _EventsClient(self._call_json)
         self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
         self.media = _MediaClient(self._call_json, lambda: self.viewer_token)
@@ -67625,12 +68015,40 @@ class PluginInstance:
     def on_setup_test(self, tester: Any) -> None:
         self._setup_tester = tester
 
+    def on_screen_source(self, screen: str, route: str, handler: Callable[..., Any]) -> None:
+        """Answer a document's ``plugin`` source; ``screen`` may be ``"*"``.
+
+        ``handler(ctx, req)`` gets ``{screen, route, page, args, locale, tz}``
+        and returns ``{value, records?, maxAgeSec?, nextRefreshSec?}``. Wrap
+        images, links, records, events and entities with :func:`image`,
+        :func:`asset`, :func:`link`, :func:`record`, :func:`event` and
+        :func:`entity`; Ether drops bare URL strings.
+        """
+        self._screen_sources()[f"{screen}/{route}"] = handler
+
+    def on_screen_action(self, screen: str, action: str, handler: Callable[..., Any]) -> None:
+        """Run a manifest-declared screen action.
+
+        ``handler(ctx, req)`` gets ``{screen, action, page, args, params,
+        locale, tz}`` and returns ``{records?, sources?, refresh?, toast?,
+        navigate?}``.
+        """
+        self._screen_actions()[f"{screen}/{action}"] = handler
+
+    def _screen_sources(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_source_handlers", {})
+
+    def _screen_actions(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_action_handlers", {})
+
     onCatalog = on_catalog
     onResolve = on_resolve
     onMatch = on_match
     onLive = on_live
     onFrontend = on_frontend
     onSetupTest = on_setup_test
+    onScreenSource = on_screen_source
+    onScreenAction = on_screen_action
 
     def _kind_catalog(self) -> Dict[str, Any]:
         return self.__dict__.setdefault("_catalog_providers", {})
@@ -67696,6 +68114,18 @@ class PluginInstance:
             body = _parse_json_body(req.get("body"))
         except Exception:
             return _error_response(400, "invalid_json", "Request body must be valid JSON.")
+
+        if len(parts) == 4 and parts[0] in ("screens", "surfaces") and parts[2] in ("sources", "actions"):
+            if method != "POST":
+                return _error_response(405, "method_not_allowed", "Screen routes use POST.")
+            screen, name = parts[1], parts[3]
+            table = self._screen_sources() if parts[2] == "sources" else self._screen_actions()
+            handler = table.get(f"{screen}/{name}") or table.get(f"*/{name}")
+            if handler is None:
+                return _error_response(404, "not_found", f'No screen {parts[2][:-1]} "{name}" is registered for "{screen}".')
+            body["screen"] = screen
+            body["route" if parts[2] == "sources" else "action"] = name
+            return _ok_response(handler(ctx, body) or {})
 
         if len(parts) == 3 and parts[0] == "setup" and parts[2] == "test":
             tester = getattr(self, "_setup_tester", None)

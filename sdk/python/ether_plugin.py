@@ -827,6 +827,53 @@ class _CollectionsClient:
         self._call("POST", "/ether/plugin-host/collections/upsert", collection)
 
 
+class _ScreensClient:
+    """Pushes to open screens and surfaces (screens capability)."""
+
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def invalidate(self) -> Dict[str, int]:
+        """Open screens of this plugin read their sources again now."""
+        return self._call("POST", "/ether/plugin-host/screens/invalidate", {}) or {"streams": 0}
+
+    def put_records(self, records: List[Dict[str, Any]]) -> Dict[str, int]:
+        """New values for records open screens show: ``[{type, id, value}]``, at most 100."""
+        return self._call("POST", "/ether/plugin-host/screens/records", {"records": records}) or {"streams": 0}
+
+    putRecords = put_records
+
+
+def image(url: str) -> Dict[str, str]:
+    """A picture on one of your permissions.network hosts, served through Ether's image proxy."""
+    return {"$image": url}
+
+
+def asset(path: str) -> Dict[str, str]:
+    """A file in your plugin package."""
+    return {"$image": "asset:" + path.lstrip("/")}
+
+
+def link(url: str) -> Dict[str, str]:
+    """An https page viewers may open on phones and the web."""
+    return {"$link": url}
+
+
+def record(type_: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """A reference to one of your records; send its value in ``records``."""
+    return {"$record": {"type": type_, "id": id_}}
+
+
+def event(feed: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's events."""
+    return {"$event": {"feed": feed, "id": id_}}
+
+
+def entity(feed: str, kind: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's entities (a team, a driver)."""
+    return {"$entity": {"feed": feed, "kind": kind, "id": id_}}
+
+
 class EventEnumOption(TypedDict, total=False):
     value: str
     label: str
@@ -1138,6 +1185,7 @@ class RemoteHostClient:
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
+        self.screens = _ScreensClient(self._call_json)
         self.events = _EventsClient(self._call_json)
         self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
         self.media = _MediaClient(self._call_json, lambda: self.viewer_token)
@@ -2030,12 +2078,40 @@ class PluginInstance:
     def on_setup_test(self, tester: Any) -> None:
         self._setup_tester = tester
 
+    def on_screen_source(self, screen: str, route: str, handler: Callable[..., Any]) -> None:
+        """Answer a document's ``plugin`` source; ``screen`` may be ``"*"``.
+
+        ``handler(ctx, req)`` gets ``{screen, route, page, args, locale, tz}``
+        and returns ``{value, records?, maxAgeSec?, nextRefreshSec?}``. Wrap
+        images, links, records, events and entities with :func:`image`,
+        :func:`asset`, :func:`link`, :func:`record`, :func:`event` and
+        :func:`entity`; Ether drops bare URL strings.
+        """
+        self._screen_sources()[f"{screen}/{route}"] = handler
+
+    def on_screen_action(self, screen: str, action: str, handler: Callable[..., Any]) -> None:
+        """Run a manifest-declared screen action.
+
+        ``handler(ctx, req)`` gets ``{screen, action, page, args, params,
+        locale, tz}`` and returns ``{records?, sources?, refresh?, toast?,
+        navigate?}``.
+        """
+        self._screen_actions()[f"{screen}/{action}"] = handler
+
+    def _screen_sources(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_source_handlers", {})
+
+    def _screen_actions(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_action_handlers", {})
+
     onCatalog = on_catalog
     onResolve = on_resolve
     onMatch = on_match
     onLive = on_live
     onFrontend = on_frontend
     onSetupTest = on_setup_test
+    onScreenSource = on_screen_source
+    onScreenAction = on_screen_action
 
     def _kind_catalog(self) -> Dict[str, Any]:
         return self.__dict__.setdefault("_catalog_providers", {})
@@ -2101,6 +2177,18 @@ class PluginInstance:
             body = _parse_json_body(req.get("body"))
         except Exception:
             return _error_response(400, "invalid_json", "Request body must be valid JSON.")
+
+        if len(parts) == 4 and parts[0] in ("screens", "surfaces") and parts[2] in ("sources", "actions"):
+            if method != "POST":
+                return _error_response(405, "method_not_allowed", "Screen routes use POST.")
+            screen, name = parts[1], parts[3]
+            table = self._screen_sources() if parts[2] == "sources" else self._screen_actions()
+            handler = table.get(f"{screen}/{name}") or table.get(f"*/{name}")
+            if handler is None:
+                return _error_response(404, "not_found", f'No screen {parts[2][:-1]} "{name}" is registered for "{screen}".')
+            body["screen"] = screen
+            body["route" if parts[2] == "sources" else "action"] = name
+            return _ok_response(handler(ctx, body) or {})
 
         if len(parts) == 3 and parts[0] == "setup" and parts[2] == "test":
             tester = getattr(self, "_setup_tester", None)

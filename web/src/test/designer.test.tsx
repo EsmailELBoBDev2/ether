@@ -5,6 +5,25 @@ import { calls, renderApp } from "./harness";
 
 const WAIT = { timeout: 4000 };
 
+/**
+ * Every Home group starts folded: opens the group that holds a row, the way
+ * an owner looking for it would (groups that do not hold it are closed again).
+ */
+async function showRow(title: string) {
+  const name = `Row ${title}`;
+  await screen.findByRole("group", { name: "Picks for you" }, WAIT);
+  if (screen.queryByRole("listitem", { name })) return;
+  for (const group of screen.getAllByRole("group")) {
+    const toggle = within(group)
+      .queryAllByRole("button")
+      .find((b) => b.getAttribute("aria-expanded") === "false");
+    if (!toggle) continue;
+    fireEvent.click(toggle);
+    if (screen.queryByRole("listitem", { name })) return;
+    fireEvent.click(toggle);
+  }
+}
+
 type PreviewBody = {
   viewerId: number | null;
   layout?: HomeLayout;
@@ -37,6 +56,7 @@ async function pickLayer(name: RegExp) {
 }
 async function setStatus(title: string, value: "Always" | "Eligible" | "Off") {
   fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+  await showRow(title);
   fireEvent.click(screen.getByRole("button", { name: `Constraints for ${title}` }));
   const editor = await screen.findByRole("dialog", { name: title });
   fireEvent.click(
@@ -211,6 +231,7 @@ describe("Home", () => {
     const { fake } = renderApp("/home");
     await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    await showRow("Weeknight wind-down");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Weeknight wind-down" }));
     const editor = await screen.findByRole("dialog", { name: "Weeknight wind-down" });
     expect(editor).toHaveTextContent("The collection's schedule, also set in Collections.");
@@ -294,6 +315,7 @@ describe("Home", () => {
     expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
 
     // Clicking the row item opens its drawer directly with Settings and Content subtabs.
+    await showRow("Top 10 Today");
     const topCard = screen.getByRole("listitem", { name: "Row Top 10 Today" });
     fireEvent.click(within(topCard).getByText("Top 10 Today"));
     const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
@@ -336,6 +358,7 @@ describe("Home", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Custom row pattern" })).toBeNull(),
     );
+    await showRow("because.*");
     expect(await screen.findByRole("listitem", { name: "Row because.*" })).toBeInTheDocument();
     expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
   });
@@ -347,6 +370,7 @@ describe("Home", () => {
     expect(screen.queryByText("Create a Home row from a Stremio catalog")).toBeNull();
 
     // Open row editor drawer: Cancel reverts edits, Done keeps edits.
+    await showRow("Top 10 Today");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Top 10 Today" }));
     const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
     expect(within(drawer).getByPlaceholderText("Every day")).toBeInTheDocument();

@@ -79,6 +79,7 @@ describe("plugin Home row sources", () => {
         </Routes>
       </MemoryRouter>,
     );
+    openGroup("Collections");
     fireEvent.click(screen.getByRole("button", { name: "Create collection" }));
     const state = JSON.parse(screen.getByText(/plugin:fixture/).textContent!);
     expect(state.spec).toMatchObject({
@@ -124,7 +125,8 @@ function Harness({
 
 /** Opens a folded group of the row catalogue, as the owner would. */
 function openGroup(name: string) {
-  const group = screen.getByRole("group", { name });
+  const group = screen.queryByRole("group", { name });
+  if (!group) return;
   const toggle = within(group)
     .getAllByRole("button")
     .find((b) => b.getAttribute("aria-expanded") !== null);
@@ -224,7 +226,7 @@ describe("bulk row editing", () => {
     expect(screen.getByRole("region", { name: "Selected rows" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
     const rows = rowsOf(last!);
-    expect(rows.length).toBeGreaterThan(3);
+    expect(rows.length).toBe(picks.length);
     expect(rows.every((r) => r.status === "off")).toBe(true);
     // Opening one group shows only its rows.
     openGroup("Picks for you");
@@ -343,6 +345,8 @@ describe("collection rows", () => {
         available={collections.slice(0, 3)}
       />,
     );
+    openGroup("Collections");
+    openGroup("Custom patterns");
     const c2 = screen.getByRole("listitem", { name: "Row Collection 2" });
     expect(within(c2).getByText("via collection:*")).toBeTruthy();
     expect(within(c2).getByRole("radio", { name: "Off" }).getAttribute("aria-checked")).toBe(
@@ -359,6 +363,7 @@ describe("collection rows", () => {
         onDraft={(d) => (last = d)}
       />,
     );
+    openGroup("Custom patterns");
     openGroup("Collections");
     const rule = screen.getByRole("listitem", { name: "Row collection:*" });
     expect(within(rule).getByText("Applies to 20 rows")).toBeTruthy();
@@ -387,6 +392,7 @@ describe("pattern constraint inheritance", () => {
         onDraft={(d) => (last = d)}
       />,
     );
+    openGroup("Custom patterns");
     openGroup("Collections");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Collection 0" }));
     fireEvent.click(screen.getByRole("button", { name: "Set the selected rows to Off" }));
@@ -406,6 +412,8 @@ describe("pattern constraint inheritance", () => {
         onDraft={(d) => (last = d)}
       />,
     );
+    openGroup("Collections");
+    openGroup("Custom patterns");
     const row = screen.getByRole("listitem", { name: "Row Collection 0" });
     fireEvent.click(within(row).getByRole("radio", { name: "Off" }));
     expect(rowsOf(last!).find((r) => r.row === "collection:c0")).toEqual({

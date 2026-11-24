@@ -1,13 +1,14 @@
 {
   "id": "org.ether.sports",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": "Sports",
   "description": "Live scores, standings and schedules across 17 leagues from ESPN.",
   "ether": {
     "protocol": 1,
     "kind": "extension",
     "capabilities": [
-      "live_events"
+      "live_events",
+      "screens"
     ],
     "summary": "$t:summary",
     "icon": "assets/icon.svg",
@@ -48,6 +49,10 @@
           "id": "sports",
           "title": "$t:screen_title",
           "icon": "trophy",
+          "pages": {
+            "index": "screens/sports.json",
+            "game": "screens/game.json"
+          },
           "sections": [
             {
               "id": "leagues",

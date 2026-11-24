@@ -180,7 +180,7 @@ test("manifest, settings schema, i18n, and 17 default leagues satisfy contract a
 
   assert.equal(manifest.id, "org.ether.sports");
   assert.equal(manifest.ether.kind, "extension");
-  assert.deepEqual(manifest.ether.capabilities, ["live_events"]);
+  assert.deepEqual(manifest.ether.capabilities, ["live_events", "screens"]);
   assert.equal(manifest.ether.runtime.kind, "hosted");
   assert.equal(manifest.ether.runtime.entry, "src/plugin.ts");
   assert.equal(manifest.ether.schedule, undefined, "plugin must never declare a background schedule");

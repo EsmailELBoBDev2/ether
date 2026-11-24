@@ -76,6 +76,22 @@ func Check(ctx context.Context, pkg *Package) (rep Report) {
 	// 3a. Content-kind conformance notes beyond Validate (spec §9.4).
 	checkMediaKinds(&rep, man)
 
+	// 3b. Screen and surface documents compile exactly as install compiles
+	// them (limits, sources, no URLs, Vela's document schema).
+	if plugins.ScreensUseDocuments(man) {
+		english := func(k string) (string, bool) { t, ok := stringsByLocale["en"][k]; return t, ok }
+		if _, err := plugins.CompileScreenDocuments(man, pkg.Files, english); err != nil {
+			var ve *plugins.ValidationError
+			if errors.As(err, &ve) {
+				for _, fe := range ve.Fields {
+					rep.addErr("screens", fe.Field, fe.Message)
+				}
+			} else {
+				rep.addErr("screens", "screens", err.Error())
+			}
+		}
+	}
+
 	// 4. Validate SVG icon if present (rasterize and check legibility on light and dark).
 	checkIcon(&rep, ctx, man, pkg.Files)
 

@@ -235,6 +235,7 @@ type Contributes struct {
 	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
 	Screens          []ScreenMeta          `json:"screens,omitempty"`
+	Surfaces         []SurfaceMeta         `json:"surfaces,omitempty"`
 }
 
 // ScreenMeta declares one generic top-level screen contributed by a plugin.
@@ -243,8 +244,63 @@ type ScreenMeta struct {
 	Title     string          `json:"title"`
 	Icon      string          `json:"icon,omitempty"`
 	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections"`
+	Sections  []ScreenSection `json:"sections,omitempty"`
 	Frontends []string        `json:"frontends,omitempty"`
+	// Pages are the screen's documents by page id ("index" first); each is
+	// a package file or a list of renderer variants (docs/plugin-screens.md).
+	Pages         map[string]any          `json:"pages,omitempty"`
+	Placement     string                  `json:"placement,omitempty"` // navigation|hidden
+	ContentRating string                  `json:"contentRating,omitempty"`
+	Default       *bool                   `json:"default,omitempty"`
+	Actions       map[string]ScreenAction `json:"actions,omitempty"`
+}
+
+// ScreenAction declares a plugin-handled action documents call.
+type ScreenAction struct {
+	Args    map[string]ScreenActionArg `json:"args,omitempty"`
+	Confirm string                     `json:"confirm,omitempty"`
+	Rate    string                     `json:"rate,omitempty"` // normal|low
+}
+
+// ScreenActionArg is one typed action argument.
+type ScreenActionArg struct {
+	Type     string   `json:"type"` // string|int|bool|date|ref|strings
+	Max      int      `json:"max,omitempty"`
+	Min      int      `json:"min,omitempty"`
+	Enum     []string `json:"enum,omitempty"`
+	Required bool     `json:"required,omitempty"`
+}
+
+// SurfaceMeta declares a document drawn in a host slot.
+type SurfaceMeta struct {
+	ID            string          `json:"id"`
+	Presentation  string          `json:"presentation"` // playerOverlay|toast|homeRow|titlePanel
+	Title         string          `json:"title"`
+	Anchor        string          `json:"anchor,omitempty"`
+	Visibility    string          `json:"visibility,omitempty"`
+	Setting       *SurfaceSetting `json:"setting,omitempty"`
+	When          *SurfaceWhen    `json:"when,omitempty"`
+	TTL           int             `json:"ttl,omitempty"`
+	ContentRating string          `json:"contentRating,omitempty"`
+	Default       *bool           `json:"default,omitempty"`
+	Document      any             `json:"document"`
+	Frontends     []string        `json:"frontends,omitempty"`
+}
+
+// SurfaceSetting is a player overlay's player-menu switch.
+type SurfaceSetting struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+
+// SurfaceWhen limits where a surface applies.
+type SurfaceWhen struct {
+	Event *struct {
+		Feed string `json:"feed"`
+	} `json:"event,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	TitleKind string `json:"titleKind,omitempty"`
 }
 
 // ScreenSection declares one generic section inside a contributed screen.

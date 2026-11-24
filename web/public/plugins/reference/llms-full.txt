@@ -3984,6 +3984,7 @@ func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
 | `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
 | `spoiler` | `bool` | emitted (validation may require a value) | set by Ether, never by plugins |
 | `updatedAt` | `string` | may be omitted (see validation for conditions) | RFC3339 |
+| `prominence` | `float64` | may be omitted (see validation for conditions) | Prominence optionally ranks events for featured ordering (0..1, the plugin's sense of how big the event is); absent counts as 0. |
 
 
 ## Source: internal/core/liveevent.go#LiveEvent
@@ -4009,6 +4010,9 @@ type LiveEvent struct {
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
 	Spoiler     bool                   `json:"spoiler"`             // set by Ether, never by plugins
 	UpdatedAt   string                 `json:"updatedAt,omitempty"` // RFC3339
+	// Prominence optionally ranks events for featured ordering (0..1, the
+	// plugin's sense of how big the event is); absent counts as 0.
+	Prominence float64 `json:"prominence,omitempty"`
 }
 ``````
 
@@ -4082,6 +4086,7 @@ func (e LiveEvent) Clone() LiveEvent {
 | `title` | `string` | emitted (validation may require a value) |  |
 | `columns` | `[]string` | emitted (validation may require a value) |  |
 | `rows` | `[][]string` | emitted (validation may require a value) |  |
+| `rowEntityIds` | `[]string` | may be omitted (see validation for conditions) | RowEntityIDs optionally names the entity (a team) each row is about, in row order, so Ether can mark a viewer's favourites exactly. |
 
 
 ## Source: internal/core/liveevent.go#LiveEventTable
@@ -4093,6 +4098,9 @@ type LiveEventTable struct {
 	Title   string     `json:"title"`
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+	// RowEntityIDs optionally names the entity (a team) each row is about,
+	// in row order, so Ether can mark a viewer's favourites exactly.
+	RowEntityIDs []string `json:"rowEntityIds,omitempty"`
 }
 ``````
 
@@ -4119,6 +4127,9 @@ func (t LiveEventTable) MarshalJSON() ([]byte, error) {
 // Clone returns a deep copy of t.
 func (t LiveEventTable) Clone() LiveEventTable {
 	out := LiveEventTable{Title: t.Title}
+	if len(t.RowEntityIDs) > 0 {
+		out.RowEntityIDs = append([]string(nil), t.RowEntityIDs...)
+	}
 	if len(t.Columns) > 0 {
 		out.Columns = append([]string(nil), t.Columns...)
 	} else {
@@ -4149,6 +4160,8 @@ func (t LiveEventTable) Clone() LiveEventTable {
 | `text` | `string` | emitted (validation may require a value) |  |
 | `emphasis` | `string` | may be omitted (see validation for conditions) | score\|key\|normal |
 | `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+| `at` | `string` | may be omitted (see validation for conditions) | At is the wall-clock time of the play (RFC3339), so a timeshifted viewer's overlay can show the score as of the picture. |
+| `score` | `map[string]string` | may be omitted (see validation for conditions) | Score is every competitor's score after the play, by competitor id. |
 
 
 ## Source: internal/core/liveevent.go#LiveEventPlay
@@ -4161,6 +4174,11 @@ type LiveEventPlay struct {
 	Text         string `json:"text"`
 	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
 	CompetitorID string `json:"competitorId,omitempty"`
+	// At is the wall-clock time of the play (RFC3339), so a timeshifted
+	// viewer's overlay can show the score as of the picture.
+	At string `json:"at,omitempty"`
+	// Score is every competitor's score after the play, by competitor id.
+	Score map[string]string `json:"score,omitempty"`
 }
 ``````
 
@@ -4358,7 +4376,16 @@ func (d LiveEventDetail) Clone() LiveEventDetail {
 		}
 	}
 	if d.Plays != nil {
-		out.Plays = append([]LiveEventPlay(nil), d.Plays...)
+		out.Plays = make([]LiveEventPlay, len(d.Plays))
+		for i, p := range d.Plays {
+			out.Plays[i] = p
+			if p.Score != nil {
+				out.Plays[i].Score = make(map[string]string, len(p.Score))
+				for k, v := range p.Score {
+					out.Plays[i].Score[k] = v
+				}
+			}
+		}
 	}
 	if d.ProbabilitySeries != nil {
 		out.ProbabilitySeries = make([]LiveEventProbabilityPoint, len(d.ProbabilitySeries))
@@ -5441,6 +5468,9 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapLiveEvents      Capability = "live_events"
+	// CapScreens lets a plugin contribute screens and surfaces that Vela
+	// draws from documents in the package (docs/plugin-screens.md).
+	CapScreens Capability = "screens"
 )
 ``````
 
@@ -5889,6 +5919,7 @@ type PackStyle struct {
 | `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) | LiveFeeds declares live event feeds this plugin serves under /ether/v1/live/{feed}/* when it declares the live_events capability. |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) | Setup declares guided setup steps for any plugin kind (§8). |
 | `screens` | `[]ScreenMeta` | may be omitted (see validation for conditions) | Screens declares generic top-level screens rendered natively by frontends such as Vela (spec A3). |
+| `surfaces` | `[]SurfaceMeta` | may be omitted (see validation for conditions) | Surfaces are documents drawn in host slots: player overlays, toasts, Home rows and title panels (docs/plugin-screens.md, Surfaces). |
 
 
 ## Source: internal/plugins/contract.go#Contributes
@@ -5930,6 +5961,9 @@ type Contributes struct {
 	// Screens declares generic top-level screens rendered natively by frontends
 	// such as Vela (spec A3).
 	Screens []ScreenMeta `json:"screens,omitempty"`
+	// Surfaces are documents drawn in host slots: player overlays, toasts,
+	// Home rows and title panels (docs/plugin-screens.md, Surfaces).
+	Surfaces []SurfaceMeta `json:"surfaces,omitempty"`
 }
 ``````
 
@@ -9101,6 +9135,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapLiveEvents) {
 		lines = append(lines, "Provides live event feeds")
 	}
+	if man.HasCapability(CapScreens) {
+		lines = append(lines, screensPermissionLine(man))
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
 	}
@@ -9242,6 +9279,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
 		added = append(added, "Provides live event feeds")
+	}
+	if !cur.HasCapability(CapScreens) && next.HasCapability(CapScreens) {
+		added = append(added, screensPermissionLine(next))
 	}
 	return added
 }
@@ -19861,6 +19901,22 @@ func Check(ctx context.Context, pkg *Package) (rep Report) {
 	// 3a. Content-kind conformance notes beyond Validate (spec §9.4).
 	checkMediaKinds(&rep, man)
 
+	// 3b. Screen and surface documents compile exactly as install compiles
+	// them (limits, sources, no URLs, Vela's document schema).
+	if plugins.ScreensUseDocuments(man) {
+		english := func(k string) (string, bool) { t, ok := stringsByLocale["en"][k]; return t, ok }
+		if _, err := plugins.CompileScreenDocuments(man, pkg.Files, english); err != nil {
+			var ve *plugins.ValidationError
+			if errors.As(err, &ve) {
+				for _, fe := range ve.Fields {
+					rep.addErr("screens", fe.Field, fe.Message)
+				}
+			} else {
+				rep.addErr("screens", "screens", err.Error())
+			}
+		}
+	}
+
 	// 4. Validate SVG icon if present (rasterize and check legibility on light and dark).
 	checkIcon(&rep, ctx, man, pkg.Files)
 
@@ -24162,7 +24218,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil, CapScreens: nil,
 }
 ``````
 
@@ -24398,7 +24454,7 @@ func (m Manifest) Validate() error {
 
 ``````
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents || c == CapScreens
 }
 ``````
 
@@ -25071,6 +25127,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
 	validateScreens(m, add, label)
+	validateSurfaces(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")
@@ -48313,14 +48370,15 @@ Follow this recipe to open, inspect, customize, and install `org.ether.sports` i
 ``````
 {
   "id": "org.ether.sports",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": "Sports",
   "description": "Live scores, standings and schedules across 17 leagues from ESPN.",
   "ether": {
     "protocol": 1,
     "kind": "extension",
     "capabilities": [
-      "live_events"
+      "live_events",
+      "screens"
     ],
     "summary": "$t:summary",
     "icon": "assets/icon.svg",
@@ -48361,6 +48419,10 @@ Follow this recipe to open, inspect, customize, and install `org.ether.sports` i
           "id": "sports",
           "title": "$t:screen_title",
           "icon": "trophy",
+          "pages": {
+            "index": "screens/sports.json",
+            "game": "screens/game.json"
+          },
           "sections": [
             {
               "id": "leagues",
@@ -50253,6 +50315,9 @@ interface RawEspnScoreboard {
 
 interface RawEspnPlay {
   id?: string;
+  wallclock?: string;
+  homeScore?: number;
+  awayScore?: number;
   text?: string;
   shortText?: string;
   scoringPlay?: boolean;
@@ -51337,7 +51402,37 @@ function mapScoreboardEvent(
   if (matchHints.terms.length > 0 || matchHints.callsigns.length > 0) {
     event.matchHints = matchHints;
   }
+  const prominence = eventProminence(league, competitors, broadcasts);
+  if (prominence > 0) event.prominence = prominence;
   return event;
+}
+
+const LEAGUE_WEIGHT: Record<string, number> = {
+  nfl: 0.35,
+  nba: 0.25,
+  epl: 0.25,
+  ucl: 0.25,
+  mlb: 0.2,
+  nhl: 0.2,
+  ncaaf: 0.2,
+  f1: 0.2,
+};
+
+/**
+ * How big an event is, 0..1, for Ether's featured order: the league, ranked
+ * teams, and a national TV broadcast. Ether puts favourites and close games
+ * first on its own; this only orders the rest.
+ */
+export function eventProminence(
+  league: LeagueConfig,
+  competitors: Competitor[],
+  broadcasts: { kind?: string }[],
+): number {
+  let p = LEAGUE_WEIGHT[league.id] ?? 0.1;
+  const ranked = competitors.filter((c) => typeof c.rank === "number" && c.rank > 0 && c.rank <= 25);
+  p += ranked.length >= 2 ? 0.3 : ranked.length === 1 ? 0.15 : 0;
+  if (broadcasts.some((b) => b.kind === "tv")) p += 0.15;
+  return Math.round(Math.min(1, p) * 100) / 100;
 }
 
 function buildLineScoreTable(
@@ -51480,10 +51575,17 @@ function classifyPlayEmphasis(play: RawEspnPlay): "score" | "key" | "normal" {
   return "normal";
 }
 
+/** The home and away competitor ids, for a play's score after it. */
+interface PlaySides {
+  home?: string;
+  away?: string;
+}
+
 function mapRawPlay(
   _league: LeagueConfig,
   play: RawEspnPlay,
   fallbackTeamId?: string,
+  sides?: PlaySides,
 ): EventPlay | null {
   const text = (play.text || play.shortText || "").trim();
   if (!text) return null;
@@ -51501,18 +51603,36 @@ function mapRawPlay(
   if (rawTeam) {
     out.competitorId = formatEntityId(_league.id, String(rawTeam));
   }
+  // Wall-clock time and the score after the play let a timeshifted overlay
+  // show the score of the picture on screen.
+  if (play.wallclock && !Number.isNaN(Date.parse(play.wallclock))) {
+    out.at = new Date(Date.parse(play.wallclock)).toISOString();
+  }
+  if (
+    sides?.home &&
+    sides.away &&
+    typeof play.homeScore === "number" &&
+    typeof play.awayScore === "number"
+  ) {
+    out.score = { [sides.home]: String(play.homeScore), [sides.away]: String(play.awayScore) };
+  }
   return out;
 }
 
 function extractSummaryPlays(
   league: LeagueConfig,
   summary: RawEspnSummary,
+  competitors: Competitor[] = [],
 ): EventPlay[] {
   const out: EventPlay[] = [];
+  const sides: PlaySides = {
+    home: competitors.find((c) => c.home)?.id,
+    away: competitors.find((c) => !c.home)?.id,
+  };
 
   if (league.category === "soccer" && Array.isArray(summary.keyEvents)) {
     for (const ke of summary.keyEvents) {
-      const mapped = mapRawPlay(league, ke);
+      const mapped = mapRawPlay(league, ke, undefined, sides);
       if (mapped) out.push(mapped);
     }
   } else if (summary.drives) {
@@ -51522,19 +51642,19 @@ function extractSummaryPlays(
     ];
     for (const drive of allDrives) {
       for (const p of drive.plays || []) {
-        const mapped = mapRawPlay(league, p, drive.team?.id);
+        const mapped = mapRawPlay(league, p, drive.team?.id, sides);
         if (mapped) out.push(mapped);
       }
     }
     if (out.length === 0 && Array.isArray(summary.scoringPlays)) {
       for (const sp of summary.scoringPlays) {
-        const mapped = mapRawPlay(league, { ...sp, scoringPlay: true });
+        const mapped = mapRawPlay(league, { ...sp, scoringPlay: true }, undefined, sides);
         if (mapped) out.push(mapped);
       }
     }
   } else if (Array.isArray(summary.plays)) {
     for (const p of summary.plays) {
-      const mapped = mapRawPlay(league, p);
+      const mapped = mapRawPlay(league, p, undefined, sides);
       if (mapped) out.push(mapped);
     }
   }
@@ -51780,7 +51900,28 @@ function sortStandingsEntries(
   });
 }
 
+/**
+ * A standings table whose rows name their entity (team or driver), so Ether
+ * can light a viewer's favourites by identity rather than by name.
+ */
 function mapStandingsTable(
+  league: LeagueConfig,
+  title: string,
+  rawEntries: RawEspnStandingEntry[],
+): GenericTable | null {
+  const table = mapStandingsRows(league, title, rawEntries);
+  if (!table) return null;
+  const ids = sortStandingsEntries(league, rawEntries).map((e) => {
+    const raw = e.team?.id || e.athlete?.id;
+    return raw ? formatEntityId(league.id, String(raw)) : "";
+  });
+  if (ids.length === table.rows.length && ids.some((id) => id !== "")) {
+    table.rowEntityIds = ids;
+  }
+  return table;
+}
+
+function mapStandingsRows(
   league: LeagueConfig,
   title: string,
   rawEntries: RawEspnStandingEntry[],
@@ -52240,7 +52381,7 @@ export class EspnSportsProvider implements SportsProvider {
         rawStatus?.clock,
       );
       const tables = buildSummaryTables(league, summary, rawCompetitors, competitors);
-      const plays = extractSummaryPlays(league, summary);
+      const plays = extractSummaryPlays(league, summary, competitors);
       const links = extractLinks(summary.header?.links);
 
       const detail: LiveEventDetail = {
@@ -58985,6 +59126,7 @@ type LiveEventWatchTarget struct {
 | `watch` | `[]LiveEventWatchTarget` | may be omitted (see validation for conditions) |  |
 | `spoiler` | `bool` | may be omitted (see validation for conditions) |  |
 | `updatedAt` | `string` | may be omitted (see validation for conditions) |  |
+| `prominence` | `float64` | may be omitted (see validation for conditions) | Prominence ranks featured lists: how big the event is, 0..1. |
 
 
 ## Source: sdk/go/liveevents.go#LiveEvent
@@ -59009,6 +59151,8 @@ type LiveEvent struct {
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
 	Spoiler     bool                   `json:"spoiler,omitempty"`
 	UpdatedAt   string                 `json:"updatedAt,omitempty"`
+	// Prominence ranks featured lists: how big the event is, 0..1.
+	Prominence float64 `json:"prominence,omitempty"`
 }
 ``````
 
@@ -59019,6 +59163,7 @@ type LiveEvent struct {
 | `title` | `string` | emitted (validation may require a value) |  |
 | `columns` | `[]string` | emitted (validation may require a value) |  |
 | `rows` | `[][]string` | emitted (validation may require a value) |  |
+| `rowEntityIds` | `[]string` | may be omitted (see validation for conditions) | RowEntityIDs names the entity each row is about, in row order. |
 
 
 ## Source: sdk/go/liveevents.go#LiveEventTable
@@ -59029,6 +59174,8 @@ type LiveEventTable struct {
 	Title   string     `json:"title"`
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+	// RowEntityIDs names the entity each row is about, in row order.
+	RowEntityIDs []string `json:"rowEntityIds,omitempty"`
 }
 ``````
 
@@ -59041,6 +59188,8 @@ type LiveEventTable struct {
 | `text` | `string` | emitted (validation may require a value) |  |
 | `emphasis` | `string` | may be omitted (see validation for conditions) | score\|key\|normal |
 | `competitorId` | `string` | may be omitted (see validation for conditions) |  |
+| `at` | `string` | may be omitted (see validation for conditions) | At is the play's wall-clock time (RFC3339). |
+| `score` | `map[string]string` | may be omitted (see validation for conditions) | Score is every competitor's score after the play, by competitor id. |
 
 
 ## Source: sdk/go/liveevents.go#LiveEventPlay
@@ -59053,6 +59202,10 @@ type LiveEventPlay struct {
 	Text         string `json:"text"`
 	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
 	CompetitorID string `json:"competitorId,omitempty"`
+	// At is the play's wall-clock time (RFC3339).
+	At string `json:"at,omitempty"`
+	// Score is every competitor's score after the play, by competitor id.
+	Score map[string]string `json:"score,omitempty"`
 }
 ``````
 
@@ -62481,6 +62634,7 @@ type FieldOption struct {
 | `liveFeeds` | `[]LiveFeedMeta` | may be omitted (see validation for conditions) |  |
 | `setup` | `*SetupMeta` | may be omitted (see validation for conditions) |  |
 | `screens` | `[]ScreenMeta` | may be omitted (see validation for conditions) |  |
+| `surfaces` | `[]SurfaceMeta` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#Contributes
@@ -62509,6 +62663,7 @@ type Contributes struct {
 	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
 	Screens          []ScreenMeta          `json:"screens,omitempty"`
+	Surfaces         []SurfaceMeta         `json:"surfaces,omitempty"`
 }
 ``````
 
@@ -62520,8 +62675,13 @@ type Contributes struct {
 | `title` | `string` | emitted (validation may require a value) |  |
 | `icon` | `string` | may be omitted (see validation for conditions) |  |
 | `feed` | `string` | may be omitted (see validation for conditions) |  |
-| `sections` | `[]ScreenSection` | emitted (validation may require a value) |  |
+| `sections` | `[]ScreenSection` | may be omitted (see validation for conditions) |  |
 | `frontends` | `[]string` | may be omitted (see validation for conditions) |  |
+| `pages` | `map[string]any` | may be omitted (see validation for conditions) | Pages are the screen's documents by page id ("index" first); each is a package file or a list of renderer variants (docs/plugin-screens.md). |
+| `placement` | `string` | may be omitted (see validation for conditions) | navigation\|hidden |
+| `contentRating` | `string` | may be omitted (see validation for conditions) |  |
+| `default` | `*bool` | may be omitted (see validation for conditions) |  |
+| `actions` | `map[string]ScreenAction` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#ScreenMeta
@@ -62533,8 +62693,141 @@ type ScreenMeta struct {
 	Title     string          `json:"title"`
 	Icon      string          `json:"icon,omitempty"`
 	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections"`
+	Sections  []ScreenSection `json:"sections,omitempty"`
 	Frontends []string        `json:"frontends,omitempty"`
+	// Pages are the screen's documents by page id ("index" first); each is
+	// a package file or a list of renderer variants (docs/plugin-screens.md).
+	Pages         map[string]any          `json:"pages,omitempty"`
+	Placement     string                  `json:"placement,omitempty"` // navigation|hidden
+	ContentRating string                  `json:"contentRating,omitempty"`
+	Default       *bool                   `json:"default,omitempty"`
+	Actions       map[string]ScreenAction `json:"actions,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#ScreenAction.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `args` | `map[string]ScreenActionArg` | may be omitted (see validation for conditions) |  |
+| `confirm` | `string` | may be omitted (see validation for conditions) |  |
+| `rate` | `string` | may be omitted (see validation for conditions) | normal\|low |
+
+
+## Source: sdk/go/types.go#ScreenAction
+
+``````
+// ScreenAction declares a plugin-handled action documents call.
+type ScreenAction struct {
+	Args    map[string]ScreenActionArg `json:"args,omitempty"`
+	Confirm string                     `json:"confirm,omitempty"`
+	Rate    string                     `json:"rate,omitempty"` // normal|low
+}
+``````
+
+## Source: sdk/go/types.go#ScreenActionArg.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `type` | `string` | emitted (validation may require a value) | string\|int\|bool\|date\|ref\|strings |
+| `max` | `int` | may be omitted (see validation for conditions) |  |
+| `min` | `int` | may be omitted (see validation for conditions) |  |
+| `enum` | `[]string` | may be omitted (see validation for conditions) |  |
+| `required` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#ScreenActionArg
+
+``````
+// ScreenActionArg is one typed action argument.
+type ScreenActionArg struct {
+	Type     string   `json:"type"` // string|int|bool|date|ref|strings
+	Max      int      `json:"max,omitempty"`
+	Min      int      `json:"min,omitempty"`
+	Enum     []string `json:"enum,omitempty"`
+	Required bool     `json:"required,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SurfaceMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `presentation` | `string` | emitted (validation may require a value) | playerOverlay\|toast\|homeRow\|titlePanel |
+| `title` | `string` | emitted (validation may require a value) |  |
+| `anchor` | `string` | may be omitted (see validation for conditions) |  |
+| `visibility` | `string` | may be omitted (see validation for conditions) |  |
+| `setting` | `*SurfaceSetting` | may be omitted (see validation for conditions) |  |
+| `when` | `*SurfaceWhen` | may be omitted (see validation for conditions) |  |
+| `ttl` | `int` | may be omitted (see validation for conditions) |  |
+| `contentRating` | `string` | may be omitted (see validation for conditions) |  |
+| `default` | `*bool` | may be omitted (see validation for conditions) |  |
+| `document` | `any` | emitted (validation may require a value) |  |
+| `frontends` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#SurfaceMeta
+
+``````
+// SurfaceMeta declares a document drawn in a host slot.
+type SurfaceMeta struct {
+	ID            string          `json:"id"`
+	Presentation  string          `json:"presentation"` // playerOverlay|toast|homeRow|titlePanel
+	Title         string          `json:"title"`
+	Anchor        string          `json:"anchor,omitempty"`
+	Visibility    string          `json:"visibility,omitempty"`
+	Setting       *SurfaceSetting `json:"setting,omitempty"`
+	When          *SurfaceWhen    `json:"when,omitempty"`
+	TTL           int             `json:"ttl,omitempty"`
+	ContentRating string          `json:"contentRating,omitempty"`
+	Default       *bool           `json:"default,omitempty"`
+	Document      any             `json:"document"`
+	Frontends     []string        `json:"frontends,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#SurfaceSetting.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `default` | `bool` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/types.go#SurfaceSetting
+
+``````
+// SurfaceSetting is a player overlay's player-menu switch.
+type SurfaceSetting struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+``````
+
+## Source: sdk/go/types.go#SurfaceWhen.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `event` | `*struct {
+		Feed string `json:"feed"`
+	}` | may be omitted (see validation for conditions) |  |
+| `kind` | `string` | may be omitted (see validation for conditions) |  |
+| `titleKind` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#SurfaceWhen
+
+``````
+// SurfaceWhen limits where a surface applies.
+type SurfaceWhen struct {
+	Event *struct {
+		Feed string `json:"feed"`
+	} `json:"event,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	TitleKind string `json:"titleKind,omitempty"`
 }
 ``````
 
@@ -75179,6 +75472,7 @@ export interface Contributes {
   liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
   screens?: ScreenMeta[];
+  surfaces?: SurfaceMeta[];
 }
 
 export type ScreenSectionType = "hero" | "events" | "table" | "schedule" | "leagues" | "entities";
@@ -75220,7 +75514,60 @@ export interface ScreenMeta {
   title: string;
   icon?: string;
   feed?: string;
-  sections: ScreenSectionMeta[];
+  /** Legacy fixed sections (0.3.19); document screens use pages. */
+  sections?: ScreenSectionMeta[];
+  frontends?: string[];
+  /**
+   * The screen's documents by page id: "index" is the landing page; each
+   * names a package file, or variants for older Vela renderers. See
+   * docs/plugin-screens.md.
+   */
+  pages?: Record<string, string | string[]>;
+  /** "navigation" (a top-level section, default) or "hidden" (reachable by navigate only). */
+  placement?: "navigation" | "hidden";
+  /** Hidden from viewers whose maximum content rating is lower. */
+  contentRating?: string;
+  /** Suggests the owner's per-app switch; omitted means shown. */
+  default?: boolean;
+  /** Plugin-handled actions the documents call. */
+  actions?: Record<string, ScreenActionMeta>;
+}
+
+export interface ScreenActionArgMeta {
+  type: "string" | "int" | "bool" | "date" | "ref" | "strings";
+  max?: number;
+  min?: number;
+  enum?: string[];
+  required?: boolean;
+}
+
+export interface ScreenActionMeta {
+  args?: Record<string, ScreenActionArgMeta>;
+  /** Asked before the action is sent ($t: keys allowed). */
+  confirm?: string;
+  /** normal: 10 calls per 10 s per viewer; low: 2. */
+  rate?: "normal" | "low";
+}
+
+/** A document drawn in a host slot: a player overlay, a toast, a Home row or a title panel. */
+export interface SurfaceMeta {
+  id: string;
+  presentation: "playerOverlay" | "toast" | "homeRow" | "titlePanel";
+  title: string;
+  /** playerOverlay only. */
+  anchor?: "topLeft" | "topRight" | "bottom";
+  /** playerOverlay only: always shown, only with the player controls, or a viewer switch. */
+  visibility?: "always" | "chrome" | "toggle";
+  /** The overlay's switch in the player menu (required for player overlays). */
+  setting?: { id: string; label: string; default: boolean };
+  /** Where it applies; may only name this plugin's feeds and kinds. */
+  when?: { event?: { feed: string }; kind?: "channel" | "programme" | "title"; titleKind?: string };
+  /** toast only: seconds on screen, 8..30. */
+  ttl?: number;
+  contentRating?: string;
+  default?: boolean;
+  /** A package file, or variants for older renderers. */
+  document: string | string[];
   frontends?: string[];
 }
 
@@ -75335,12 +75682,16 @@ export interface LiveEvent {
   spoiler?: boolean;
   /** RFC3339 timestamp. */
   updatedAt?: string;
+  /** How big the event is (0..1); ranks featured lists. Optional. */
+  prominence?: number;
 }
 
 export interface LiveEventTable {
   title: string;
   columns: string[];
   rows: string[][];
+  /** The entity (a team) each row is about, in row order, so Ether can mark favourites. */
+  rowEntityIds?: string[];
 }
 
 export interface LiveEventPlay {
@@ -75349,6 +75700,10 @@ export interface LiveEventPlay {
   text: string;
   emphasis?: "score" | "key" | "normal";
   competitorId?: string;
+  /** Wall-clock time of the play (RFC3339), so a timeshifted overlay shows the score of the picture. */
+  at?: string;
+  /** Every competitor's score after the play, by competitor id. */
+  score?: Record<string, string>;
 }
 
 export interface LiveEventProbabilityPoint {

@@ -117,6 +117,7 @@ describe("Home", () => {
       status: "off",
     });
     expect(screen.getByText("Previewing unsaved changes")).toBeInTheDocument();
+    await showRow("Top 10 Today");
     expect(
       within(screen.getByRole("listitem", { name: "Row Top 10 Today" })).getByText(
         "Affects 4 viewers",
@@ -179,6 +180,7 @@ describe("Home", () => {
       userId: 2,
       pages: [{ section: "home", rows: [{ row: "hidden-gems", status: "off" }] }],
     });
+    await showRow("Hidden Gems for You");
     expect(
       within(screen.getByRole("listitem", { name: "Row Hidden Gems for You" })).getByText(
         "Override",
@@ -196,6 +198,7 @@ describe("Home", () => {
 
     // Reset to global: the row comes back, the override is gone.
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    await showRow("Hidden Gems for You");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Hidden Gems for You" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset to Everyone: Hidden Gems for You" }));
     await closeEditor();
@@ -210,6 +213,7 @@ describe("Home", () => {
 
     // An override that sticks: always show it for Sam, anchored to slot 2.
     await setStatus("Hidden Gems for You", "Always");
+    await showRow("Hidden Gems for You");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Hidden Gems for You" }));
     fireEvent.change(screen.getByLabelText("Anchor slot for Hidden Gems for You"), {
       target: { value: "2" },
@@ -260,6 +264,7 @@ describe("Home", () => {
     ).toEqual([]);
     await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
     // The saved document reads the schedule back from the collection.
+    await showRow("Weeknight wind-down");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Weeknight wind-down" }));
     const again = await screen.findByRole("dialog", { name: "Weeknight wind-down" });
     const pressed = within(
@@ -377,6 +382,7 @@ describe("Home", () => {
     expect(
       within(drawer).getByRole("button", { name: "From hour for Top 10 Today" }),
     ).toHaveTextContent("Any time");
+    await showRow("Top 10 Today");
     fireEvent.click(
       within(within(drawer).getByRole("radiogroup", { name: "Status of Top 10 Today" })).getByRole(
         "radio",
@@ -387,8 +393,10 @@ describe("Home", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByText("Unsaved changes")).toBeNull();
 
+    await showRow("Top 10 Today");
     fireEvent.click(screen.getByRole("button", { name: "Constraints for Top 10 Today" }));
     const drawerAgain = await screen.findByRole("dialog", { name: "Top 10 Today" });
+    await showRow("Top 10 Today");
     fireEvent.click(
       within(
         within(drawerAgain).getByRole("radiogroup", { name: "Status of Top 10 Today" }),
@@ -438,6 +446,7 @@ describe("Home", () => {
     // Setting a personal row to Always on Everyone explains why Typical viewer hides it,
     // both on the RowPool card and in the preview's Not on this page list.
     await setStatus("Top 10 for You", "Always");
+    await showRow("Top 10 for You");
     const top10Card = screen.getByRole("listitem", { name: "Row Top 10 for You" });
     await waitFor(
       () =>
@@ -459,6 +468,7 @@ describe("Home", () => {
 
     // Setting a disabled collection to Always explains why it is absent.
     await setStatus("Family Movie Night", "Always");
+    await showRow("Family Movie Night");
     const familyCard = screen.getByRole("listitem", { name: "Row Family Movie Night" });
     await waitFor(
       () =>
@@ -480,9 +490,11 @@ describe("Home", () => {
     expect(screen.getByRole("region", { name: "Slot 1: Continue Watching" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    await showRow("Top 10 for You");
     expect(screen.getByRole("listitem", { name: "Row Top 10 for You" })).not.toHaveTextContent(
       /Hidden for/,
     );
+    await showRow("Family Movie Night");
     expect(screen.getByRole("listitem", { name: "Row Family Movie Night" })).toHaveTextContent(
       "Hidden for Sam Rivera: collection is disabled in Collections",
     );

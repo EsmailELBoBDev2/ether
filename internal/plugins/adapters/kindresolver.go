@@ -116,6 +116,10 @@ type KindResolverDeps struct {
 	NZBFetchTimeout      time.Duration
 	EngineOpenTimeout    time.Duration
 	CandidateOpenTimeout time.Duration
+	// PreparingWait bounds how long an open waits server-side while a
+	// plugin's staged resolve answers pending (W348); 0 answers preparing
+	// at once. The app sets DefaultKindPreparingWait.
+	PreparingWait time.Duration
 }
 
 const (
@@ -169,6 +173,10 @@ type KindResolver struct {
 	nzbFetchTimeout      time.Duration
 	engineOpenTimeout    time.Duration
 	candidateOpenTimeout time.Duration
+	preparingWait        time.Duration
+
+	unitMu    sync.Mutex
+	unitGates map[resolveUnitKey]*resolveUnitGate
 
 	flightMu sync.Mutex
 	flights  map[resolveFlightKey]*resolveFlight
@@ -274,6 +282,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		nzbFetchTimeout:      nzbFetchTimeout,
 		engineOpenTimeout:    engineOpenTimeout,
 		candidateOpenTimeout: candidateOpenTimeout,
+		preparingWait:        deps.PreparingWait,
 		flights:              make(map[resolveFlightKey]*resolveFlight),
 		candCache:            make(map[resolveFlightKey]cachedKindCandidates),
 		detailMissUntil:      make(map[resolveFlightKey]time.Time),
@@ -500,6 +509,11 @@ func matchPlayableSource(sources []core.PlayableSource, defaultTitle, sourceID s
 // default winner untouched. A source id not among the current non-expired
 // candidates returns ErrNotAvailable.
 func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindSource(ctx, viewer, key, sourceID, accept)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
@@ -557,6 +571,11 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 // matching PlayableSource.ID from the response, or returns ErrNotAvailable if
 // it is absent.
 func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex *int, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindPartSource(ctx, viewer, key, partIndex, sourceID, accept)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
@@ -948,6 +967,11 @@ func kindReleaseSource(raw string) core.Source {
 // falling back to a fresh plugin re-resolve when exhausted or expired, and
 // respecting provider backoff.
 func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept, exclude []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindExcluding(ctx, viewer, key, accept, exclude)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
@@ -1065,6 +1089,11 @@ func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, ke
 // OpenKindPartExcluding opens one zero-based part of a multi-part plugin kind
 // item while skipping candidate release IDs listed in exclude.
 func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept, exclude []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindPartExcluding(ctx, viewer, key, partIndex, accept, exclude)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
@@ -3421,11 +3450,25 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 	fk := flightKeyForItemSource(item.Ref, partIdx, source)
 	ctx, searchState := withResolveSearchState(ctx)
 	ctx = plugins.WithResolveSliceHook(ctx, searchState.beginSlice)
+	unit := resolveUnitKey{pluginID: rec.PluginID, library: lib.Key, parent: item.ParentID}
+	if !item.Playable {
+		unit.parent = ""
+	}
+	releaseUnit, err := r.acquireResolveUnit(ctx, unit)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		// A sibling's resolve of the same unit outlasted this call's
+		// budget: the unit is still resolving, not unavailable.
+		return nil, &core.PreparingError{RetryAfter: time.Second}
+	}
 	resp, err := r.mgr.Call(ctx, rec.PluginID, plugins.Request{
 		Method: "POST",
 		Path:   "/ether/v1/kinds/" + rec.KindKey + "/resolve",
 		Body:   body,
 	})
+	releaseUnit()
 	if err != nil {
 		if errors.Is(err, core.ErrJobsBusy) {
 			return nil, err

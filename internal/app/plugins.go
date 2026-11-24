@@ -505,9 +505,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 			_, err := a.pluginPlayableTitle(ctx, kindCatalog, viewer, key)
 			return err
 		},
-		ProbeCache:  a.playback,
-		ProbeStream: probeStream,
-		Logger:      a.log,
+		ProbeCache:    a.playback,
+		ProbeStream:   probeStream,
+		Logger:        a.log,
+		PreparingWait: adapters.DefaultKindPreparingWait,
 	})
 	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
 	cachePartial := blobs.HostPartialBackend(kindCatalog.QuotaFor)

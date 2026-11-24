@@ -425,6 +425,12 @@ func normalizeHomeLayout(d core.HomeLayout) (core.HomeLayout, error) {
 				if r.MaxDaysPerWeek < 0 || r.MaxDaysPerWeek > 7 {
 					ve.add(rf+".maxDaysPerWeek", "must be 0-7")
 				}
+				if !core.ValidRowStyle(r.Style) {
+					ve.add(rf+".style", "must be shelf, hero or wide")
+				}
+				if r.HideWatched != nil && !*r.HideWatched {
+					r.HideWatched = nil
+				}
 				if r.Slot > 0 {
 					if slots[r.Slot] {
 						ve.add(rf+".slot", "another row owns this slot")
@@ -1117,6 +1123,10 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 			}
 			candidate.RankedTop10 = row.Hub.RankedTop10
 			candidate.Always = row.Policy != nil && row.Policy.Status == "always"
+			if row.Policy != nil {
+				candidate.Style = row.Policy.Style
+				candidate.HideWatched = row.Policy.HidesWatched()
+			}
 			out = append(out, candidate)
 		}
 	}

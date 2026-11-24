@@ -1,7 +1,7 @@
-import { Input, SearchSelect } from "@braedonsaunders/appkit-ui";
+import { Input, SearchSelect, Switch } from "@braedonsaunders/appkit-ui";
 import type { ReactNode } from "react";
 import { ChipGroup, Field, Segmented } from "../../components/fields";
-import type { Daypart, LayoutWhen, RowPolicy } from "../../lib/contract";
+import type { Daypart, LayoutWhen, RowPolicy, RowStyle } from "../../lib/contract";
 import { t, tx } from "../../i18n";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { WEEKDAYS, formatHour } from "../../lib/format";
@@ -92,6 +92,47 @@ export function PolicyEditor({
         </div>
         <div className="space-y-3.5 rounded-xl border border-border bg-surface p-3.5">
           <div className="space-y-1">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="font-medium text-fg">{t("Row style")}</span>
+              <Segmented
+                ariaLabel={t("Row style")}
+                size="sm"
+                value={
+                  policy.style === "hero" || policy.style === "wide" ? policy.style : "standard"
+                }
+                onChange={(v) =>
+                  onChange({
+                    ...policy,
+                    style: v === "standard" ? undefined : (v as RowStyle),
+                  })
+                }
+                options={[
+                  { value: "standard", label: t("Standard") },
+                  { value: "hero", label: t("Hero") },
+                  { value: "wide", label: t("Wide") },
+                ]}
+              />
+            </div>
+            <p className="text-fg-muted">
+              {t(
+                "Hero shows the row as large featured artwork; Wide uses landscape cards. Plex, Vela and Silo follow it; other apps keep their own look.",
+              )}
+            </p>
+          </div>
+          <div className="space-y-1 border-t border-border-subtle pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="font-medium text-fg">{t("Hide watched")}</span>
+              <Switch
+                aria-label={t("Hide watched")}
+                checked={Boolean(policy.hideWatched)}
+                onChange={(e) =>
+                  onChange({ ...policy, hideWatched: e.currentTarget.checked ? true : undefined })
+                }
+              />
+            </div>
+            <p className="text-fg-muted">{t("Leave out titles the viewer has already watched.")}</p>
+          </div>
+          <div className="space-y-1 border-t border-border-subtle pt-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="font-medium text-fg">{t("Play trailer preview on focus")}</span>
               <Segmented

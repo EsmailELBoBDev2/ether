@@ -256,6 +256,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if err != nil {
 		return nil, err
 	}
+	// watchedTitles is set once the experience service below exists; row
+	// layout runs only on requests, after construction.
+	var watchedTitles func(context.Context, *core.User, []core.Title) (map[core.RatingKey]bool, error)
 	rows, err := experience.NewRowsService(experience.RowServiceDeps{Source: source, Visibility: rowVis, Receipts: receipts, PrefetchTitles: a.catalog.PreloadStored, PrepareRows: entryPolicy.PrepareRows, RankedSource: true, HomeFallback: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 		if protocol == "plex" {
 			return nil, nil
@@ -281,6 +284,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		arranged, err := experience.LayoutRows(ctx, layout, liveLibraries(), req, sit, rows)
+		if err == nil {
+			arranged = experience.DropWatched(ctx, req.Viewer, arranged, watchedTitles)
+		}
 		if !extrasEnabled {
 			for n := range arranged {
 				arranged[n].PreviewOnFocus = false
@@ -758,6 +764,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if err != nil {
 		return nil, err
 	}
+	watchedTitles = service.TitlesWatched
 	var artworkSource frontend.Artwork
 	if len(artwork) > 0 {
 		artworkSource = artwork[0]

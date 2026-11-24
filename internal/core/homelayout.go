@@ -51,7 +51,14 @@ type RowPolicy struct {
 	// ShowRepeats keeps titles that other rows on the page also show (a
 	// Top 10 under a full Trending row). Such a row neither loses titles to
 	// other rows nor takes titles from them. Nil or false: page-wide dedupe.
-	ShowRepeats    *bool       `json:"showRepeats,omitempty"`
+	ShowRepeats *bool `json:"showRepeats,omitempty"`
+	// Style is the owner's row style: "" lets each app choose (the
+	// default), or RowStyleShelf, RowStyleHero or RowStyleWide. Apps that
+	// have no per-row style (Jellyfin, Emby) ignore it.
+	Style string `json:"style,omitempty"`
+	// HideWatched drops titles the viewer has fully watched from the row.
+	// Nil or false keeps them.
+	HideWatched    *bool       `json:"hideWatched,omitempty"`
 	Row            string      `json:"row"`
 	Status         string      `json:"status"`
 	Slot           int         `json:"slot,omitempty"`
@@ -61,4 +68,25 @@ type RowPolicy struct {
 	MaxPerPage     int         `json:"maxPerPage,omitempty"`
 	MaxDaysPerWeek int         `json:"maxDaysPerWeek,omitempty"`
 	When           *LayoutWhen `json:"when,omitempty"`
+}
+
+// Owner row styles (RowPolicy.Style). The empty style is the app default.
+const (
+	RowStyleShelf = "shelf"
+	RowStyleHero  = "hero"
+	RowStyleWide  = "wide"
+)
+
+// ValidRowStyle reports whether s is a row style the owner may choose.
+func ValidRowStyle(s string) bool {
+	switch s {
+	case "", RowStyleShelf, RowStyleHero, RowStyleWide:
+		return true
+	}
+	return false
+}
+
+// HidesWatched reports whether p drops the viewer's watched titles.
+func (p *RowPolicy) HidesWatched() bool {
+	return p != nil && p.HideWatched != nil && *p.HideWatched
 }

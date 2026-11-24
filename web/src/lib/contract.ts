@@ -573,12 +573,19 @@ export interface LayoutWhen {
 
 export type RowStatus = "always" | "eligible" | "off";
 
+/** Owner row styles: Standard ("shelf"), Hero and Wide. */
+export type RowStyle = "shelf" | "hero" | "wide";
+
 /** The owner's policy for a row (or a family of rows) on a page. */
 export interface RowPolicy {
   previewOnFocus?: boolean;
   rankedTop10?: boolean;
   /** Keep titles that other rows on the page also show. */
   showRepeats?: boolean;
+  /** The owner's row style; unset lets each app choose. Plex, Vela and Silo honour it. */
+  style?: RowStyle;
+  /** Drop titles the viewer has fully watched from this row. */
+  hideWatched?: boolean;
   /** Kind ("short-on-time"), "collection:<id>", a hub id, or a glob ("because.*"). */
   row: string;
   status: RowStatus;

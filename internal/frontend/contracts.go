@@ -296,8 +296,13 @@ type RowLayout struct {
 	PreviewOnFocusPolicy *bool
 	Order                int
 	Style                string
-	Paint                RowPaint
-	Always               bool
+	// StylePolicy is the owner's row style (RowStyleShelf, RowStyleHero,
+	// RowStyleWide), "" when the owner left the app's default.
+	StylePolicy string
+	// HideWatched drops the viewer's fully watched titles from the row.
+	HideWatched bool
+	Paint       RowPaint
+	Always      bool
 }
 
 // RowPaint carries optional presentation colors and artwork references.

@@ -539,24 +539,26 @@ type Stream struct {
 
 // Hub is a row of items.
 type Hub struct {
-	Meta           *Meta  `plex:"Meta,object"`
-	RankedTop10    bool   `plex:"-"`
-	PreviewOnFocus bool   `plex:"-"`
-	HubKey         string `plex:"hubKey,omitempty"`
-	UpNext         *bool  `plex:"upNext"`
-	Key            string `plex:"key,omitempty"`
-	Title          string `plex:"title"`
-	Type           string `plex:"type"`
-	HubIdentifier  string `plex:"hubIdentifier"`
-	Context        string `plex:"context"`
-	Size           int    `plex:"size"`
-	TotalSize      *int   `plex:"totalSize"`
-	More           bool   `plex:"more"`
-	Style          string `plex:"style,omitempty"`
-	Promoted       *bool  `plex:"promoted"`
-	Random         *bool  `plex:"random"`
-	Source         string `plex:"source,omitempty"`
-	Identifier     string `plex:"identifier,omitempty"`
+	Meta           *Meta `plex:"Meta,object"`
+	RankedTop10    bool  `plex:"-"`
+	PreviewOnFocus bool  `plex:"-"`
+	// OwnerStyle is the owner's row style from the layout ("" = default).
+	OwnerStyle    string `plex:"-"`
+	HubKey        string `plex:"hubKey,omitempty"`
+	UpNext        *bool  `plex:"upNext"`
+	Key           string `plex:"key,omitempty"`
+	Title         string `plex:"title"`
+	Type          string `plex:"type"`
+	HubIdentifier string `plex:"hubIdentifier"`
+	Context       string `plex:"context"`
+	Size          int    `plex:"size"`
+	TotalSize     *int   `plex:"totalSize"`
+	More          bool   `plex:"more"`
+	Style         string `plex:"style,omitempty"`
+	Promoted      *bool  `plex:"promoted"`
+	Random        *bool  `plex:"random"`
+	Source        string `plex:"source,omitempty"`
+	Identifier    string `plex:"identifier,omitempty"`
 
 	Metadata  []Metadata  `plex:"Metadata"`
 	Directory []Directory `plex:"Directory"`

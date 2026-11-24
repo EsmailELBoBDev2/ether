@@ -54,6 +54,13 @@ type PersonCredit = core.PersonCredit
 type SearchCandidates = core.SearchCandidates
 type UncachedError = core.UncachedError
 
+// Owner row styles (Home designer and library Recommended rows).
+const (
+	RowStyleShelf = core.RowStyleShelf
+	RowStyleHero  = core.RowStyleHero
+	RowStyleWide  = core.RowStyleWide
+)
+
 // Playback protocols and media kinds.
 const (
 	ProtocolDASH    = core.ProtocolDASH

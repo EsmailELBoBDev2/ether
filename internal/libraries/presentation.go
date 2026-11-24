@@ -855,12 +855,32 @@ func inferMediaBrowserItemTypes(class core.MediaClass, levels []KindPresentation
 			continue
 		}
 		effClass := effectiveLevelClass(lv, class)
+		if lv.Members {
+			// A list (a playlist of the kind's own items) is a container whose
+			// children are its members, never a single playable item.
+			out[lv.Key] = listMBItemType(effClass, treeHeight)
+			continue
+		}
 		out[lv.Key] = inferMBItemTypeForLevel(effClass, role, depths[i], isLeaf[i], treeHeight)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// listMBItemType is the MediaBrowser container a list level presents as: the
+// class's folder type, which Jellyfin and Emby open by listing its children.
+func listMBItemType(class core.MediaClass, treeHeight int) string {
+	switch class {
+	case core.MediaClassMusic, core.MediaClassPodcast, core.MediaClassAudiobook:
+		return "MusicAlbum"
+	case core.MediaClassPhoto:
+		return "PhotoAlbum"
+	case core.MediaClassBook:
+		return "Series"
+	}
+	return inferMBItemTypeForLevel(class, "", 0, false, max(treeHeight, 2))
 }
 
 func inferMBItemTypeForLevel(class core.MediaClass, role core.MediaRole, depth int, isLeaf bool, total int) string {

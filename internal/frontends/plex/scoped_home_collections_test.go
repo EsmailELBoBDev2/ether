@@ -142,7 +142,7 @@ func TestScopedHomePromotedIncludesHomeOnlyCollectionRows(t *testing.T) {
 			t.Fatalf("contentDirectoryID=1 leaked show collection %q", r.ID)
 		}
 	}
-	for _, want := range []string{"movie.collection.latest-movies", "movie.collection.trending-movies"} {
+	for _, want := range []string{"collection.latest-movies@1", "collection.trending-movies@1"} {
 		if movieIDs[want] == 0 {
 			t.Fatalf("contentDirectoryID=1 missing %q; got %+v", want, movieRows)
 		}
@@ -160,7 +160,7 @@ func TestScopedHomePromotedIncludesHomeOnlyCollectionRows(t *testing.T) {
 			t.Fatalf("contentDirectoryID=2 leaked movie collection %q", r.ID)
 		}
 	}
-	for _, want := range []string{"tv.collection.latest-series", "tv.collection.trending-series"} {
+	for _, want := range []string{"collection.latest-series@2", "collection.trending-series@2"} {
 		if showIDs[want] == 0 {
 			t.Fatalf("contentDirectoryID=2 missing %q; got %+v", want, showRows)
 		}
@@ -169,7 +169,7 @@ func TestScopedHomePromotedIncludesHomeOnlyCollectionRows(t *testing.T) {
 	// Non-scoped library Recommended (/hubs/sections/1) still respects SectionRow=false.
 	secRes := f.get(t, "/hubs/sections/1?count=20", iosHomeHeaders()...)
 	for _, r := range hubRows(t, secRes.Body.Bytes()) {
-		if r.ID == "movie.collection.latest-movies" || r.ID == "movie.collection.trending-movies" {
+		if r.ID == "collection.latest-movies@1" || r.ID == "collection.trending-movies@1" {
 			t.Fatalf("HomeRow-only collection %q leaked into /hubs/sections/1", r.ID)
 		}
 	}

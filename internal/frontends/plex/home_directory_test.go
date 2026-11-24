@@ -53,10 +53,10 @@ func TestHomeDirectoryPartition(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(pin, "1") && seen["movie.popular"] != "1" {
+		if strings.Contains(pin, "1") && seen["movie.popular@1"] != "1" {
 			t.Fatalf("pin=%s movie placement: %v", pin, seen)
 		}
-		if seen["tv.popular"] != "2" {
+		if seen["tv.popular@2"] != "2" {
 			t.Fatalf("pin=%s TV placement: %v", pin, seen)
 		}
 		if strings.Contains(pin, "playlists") && seen["home.playlists"] != "playlists" {

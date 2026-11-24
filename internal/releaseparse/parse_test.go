@@ -371,6 +371,33 @@ func TestRevisionCourAndAnimeFlags(t *testing.T) {
 	}
 }
 
+// A "Part 2" label decides the episode only when the number is counted
+// within the cour; season-counted SxxEyy keeps its own reading (#796).
+func TestPartLabelReadings(t *testing.T) {
+	ep := func(season, episode int) core.SearchRequest {
+		return core.SearchRequest{Type: core.TypeEpisode, Season: season, Episode: episode}
+	}
+	mapped := core.SearchRequest{Type: core.TypeEpisode, Season: 1, Episode: 12, Anime: true, Cour: 2, CourEpisode: 1}
+	anime := ep(5, 9)
+	anime.Anime = true
+	for _, tc := range []struct {
+		name string
+		req  core.SearchRequest
+		want bool
+	}{
+		{"Show.S05.Part.2.S05E09.1080p.WEB-DL", ep(5, 9), true},
+		{"Show.S05.Part.2.S05E09.1080p.WEB-DL", anime, false},
+		{"[SubsPlease] Eighty-Six S01 Part 2 - 01 (1080p)", ep(1, 1), false},
+		{"[SubsPlease] Eighty-Six S01 Part 2 - 01 (1080p)", mapped, true},
+		{"[SubsPlease] Eighty-Six S01 Part 2 - 12 (1080p)", mapped, false},
+		{"Eighty-Six.S01.Part.2.S01E12.1080p", mapped, true},
+	} {
+		if got := EpisodeMatchesRequest(Parse(tc.name), tc.req); got != tc.want {
+			t.Errorf("%q for %+v = %v, want %v", tc.name, tc.req, got, tc.want)
+		}
+	}
+}
+
 func TestDualAudioVsBareDualParsing(t *testing.T) {
 	for _, tc := range []struct {
 		name string

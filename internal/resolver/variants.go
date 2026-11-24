@@ -50,7 +50,7 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	libProfile := s.libProfileForTitle(ctx, req.Title)
 	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
-	sreq := searchRequestFor(req.Title)
+	sreq := s.cachedSearchRequest(req.Title)
 	results, ok := s.peekSearchCache(searchCacheKey(sreq))
 	titleVC := s.viewerTitleChoiceForResolve(req, nil)
 	showVC := s.viewerShowChoiceForResolve(req)
@@ -280,6 +280,17 @@ func (s *Service) peekSearchCache(key string) ([]core.Release, bool) {
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
 	if !ok || !s.now().Before(e.expires) {
+		return nil, false
+	}
+	return append([]core.Release(nil), e.results...), true
+}
+
+// peekSearchCacheFor is peekSearchCache for an entry that answers req.
+func (s *Service) peekSearchCacheFor(req core.SearchRequest) ([]core.Release, bool) {
+	s.mu.RLock()
+	e, ok := s.searchCache[searchCacheKey(req)]
+	s.mu.RUnlock()
+	if !ok || !s.now().Before(e.expires) || !e.serves(req) {
 		return nil, false
 	}
 	return append([]core.Release(nil), e.results...), true

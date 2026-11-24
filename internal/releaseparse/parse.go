@@ -750,6 +750,7 @@ func parseStandardEpisodes(spaced, upper string, info *core.ReleaseInfo) int {
 			if season >= 1 && season <= 50 && cour >= 1 && cour <= 10 && episode >= 1 {
 				info.Seasons = []int{season}
 				info.Cour = cour
+				info.CourRelative = true
 				info.Episodes = []int{episode}
 				return loc[0]
 			}

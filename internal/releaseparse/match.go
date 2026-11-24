@@ -586,6 +586,27 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 	return false
 }
 
+// SeasonNumberingUnderCour reports whether a release or file labelled with
+// cour (part) cour > 1 may still be matched by its season-counted numbering.
+// "Show.S04.Part.2.S04E09" counts E09 within season 4, so a request without
+// a cour mapping matches it like any S04E09; "[Group] Show S01 Part 2 - 01"
+// (courRelative) counts within the cour and only a cour mapping can place
+// it. Anime without a mapping keeps the cour reading: its "Part 2" releases
+// usually restart numbering. A mapped request reads season numbering only
+// inside its own cour.
+func SeasonNumberingUnderCour(cour int, courRelative bool, reqCour int, anime bool) bool {
+	switch {
+	case cour <= 1:
+		return true
+	case courRelative:
+		return false
+	case reqCour > 0:
+		return reqCour == cour
+	default:
+		return !anime
+	}
+}
+
 // EpisodeMatchesRequest reports whether parsed info matches req's canonical
 // episode, verified absolute count, anime cour mapping, configured release
 // numbering aliases, or exact broadcast air date. Shared by the resolver and
@@ -610,7 +631,9 @@ func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 				(req.CourTVDBSeason > 0 && EpisodeMatches(info, req.CourTVDBSeason, req.CourEpisode))) {
 			return true
 		}
-		return false
+		if !SeasonNumberingUnderCour(info.Cour, info.CourRelative, req.Cour, req.Anime) {
+			return false
+		}
 	}
 	if EpisodeMatchesNumbering(info, req.Season, req.Episode, abs) {
 		return true

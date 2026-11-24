@@ -92,6 +92,18 @@ func TestAnimeMultiCourResolveAndReject(t *testing.T) {
 	if got.Release.Target == nil || got.Release.Target.Cour != 2 || got.Release.Target.CourEpisode != 1 {
 		t.Fatalf("expected Target Cour=2 CourEpisode=1, got %+v", got.Release.Target)
 	}
+	// Play's cour-mapped search is the entry readers holding only the plain
+	// request find (version picker, Forget, refill), with its mapping; a
+	// plain answer never stands in for the mapped search (#797).
+	if results, ok := svc.peekSearchCache(searchCacheKey(searchRequestFor(titleEp13))); !ok || len(results) == 0 {
+		t.Fatal("plain-request readers miss Play's cour-mapped search")
+	}
+	if got := svc.cachedSearchRequest(titleEp13); got.Cour != 2 || got.CourEpisode != 1 {
+		t.Fatalf("cached request lost the cour mapping: %+v", got)
+	}
+	if (searchCacheEntry{req: searchRequestFor(titleEp13)}).serves(svc.searchRequest(context.Background(), titleEp13)) {
+		t.Fatal("a plain search answered the cour-mapped request")
+	}
 
 	// S01E01 (Cour 1) must reject Part 2 Episode 1.
 	titleEp1 := *titleEp13

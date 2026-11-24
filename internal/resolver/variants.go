@@ -122,8 +122,8 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	var vs []core.ReleaseVariant
 	rcfg := s.resolverCfg()
 	wanted := wantedAudio(profile, req.User, s.catalogLanguage())
-	if rcfg.AlternativesPerSource || rcfg.AlternativesPerResolution {
-		vs = pickResolutionVariants(req.Title, profile, autoRel, pool, s.sameQualityAlternatives(), max, allowTaller, rcfg.AlternativesPerResolution, rcfg.AlternativesPerSource, wanted)
+	if _, perSource := rcfg.SourceVersionPlan(); perSource || rcfg.AlternativesPerResolution {
+		vs = slotPlanVariants(req.Title, s.configuredSlots(profile, req.Client, max), pool, autoRel, req, titleVC, wanted)
 	} else {
 		vs = pickVariants(req.Title, req.Client, profile, autoRel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
 	}

@@ -264,13 +264,14 @@ func (s *Service) configuredSlots(profile core.QualityProfile, caps core.ClientC
 	}
 	cfg := s.resolverCfg()
 	alts := max(0, min(cfg.SameQualityAlternatives, maxAlternativesLimit))
+	sources, perSource := cfg.SourceVersionPlan()
 	slots := []versionSlot{{Kind: "auto"}}
 	add := func(v versionSlot) {
 		if len(slots) < limit {
 			slots = append(slots, v)
 		}
 	}
-	if !cfg.AlternativesPerResolution && !cfg.AlternativesPerSource {
+	if !cfg.AlternativesPerResolution && !perSource {
 		for n := 0; n < alts; n++ {
 			add(versionSlot{Kind: "alternative", Ordinal: n})
 		}
@@ -299,26 +300,56 @@ func (s *Service) configuredSlots(profile core.QualityProfile, caps core.ClientC
 	if len(heights) == 0 {
 		heights = []int{min(480, ceiling)}
 	}
-	// Reserve a choice in each tier before another source/alternative can
-	// consume the bounded menu. A busy 4K tier must not crowd out 720p.
-	sources := []string{""}
-	if cfg.AlternativesPerSource {
-		sources = []string{"remux", "disc", "web"}
-	}
-	for _, source := range sources {
-		for _, h := range heights {
-			add(versionSlot{Kind: "tier", Height: h, Source: source})
+	// Menu order is resolution first (4K, then 1080p, then 720p), each tier's
+	// sources as Remux, Blu-ray, WEB, then the per-resolution alternatives.
+	// Which choices fit the bounded menu is decided by priority: Required
+	// source choices, then offered ones (higher resolutions first), then
+	// alternatives. Filling source by source let six Remux and Blu-ray
+	// choices take the whole menu before any WEB release (#309).
+	var tiers, required, offered, extra []versionSlot
+	for _, h := range heights {
+		if !perSource {
+			v := versionSlot{Kind: "tier", Height: h}
+			tiers, offered = append(tiers, v), append(offered, v)
+			continue
+		}
+		for _, class := range versionSourceClasses {
+			v := versionSlot{Kind: "tier", Height: h, Source: class}
+			switch sources.Mode(h, class) {
+			case config.SourceVersionRequired:
+				tiers, required = append(tiers, v), append(required, v)
+			case config.SourceVersionOffer:
+				tiers, offered = append(tiers, v), append(offered, v)
+			}
 		}
 	}
 	if cfg.AlternativesPerResolution {
 		for n := 0; n < alts; n++ {
 			for _, h := range heights {
-				add(versionSlot{Kind: "tier", Height: h, Ordinal: n + 1})
+				extra = append(extra, versionSlot{Kind: "tier", Height: h, Ordinal: n + 1})
 			}
+		}
+	}
+	keep := map[versionSlot]bool{}
+	room := limit - len(slots)
+	for _, v := range slices.Concat(required, offered, extra) {
+		if len(keep) == room {
+			break
+		}
+		keep[v] = true
+	}
+	for _, v := range slices.Concat(tiers, extra) {
+		if keep[v] {
+			add(v)
 		}
 	}
 	return slots
 }
+
+// versionSourceClasses are the reservable source classes in menu order;
+// sourceClass names them from the parsed release source.
+var versionSourceClasses = []string{"remux", "disc", "web"}
+
 func slotLabel(v versionSlot) string {
 	switch v.Kind {
 	case "auto":
@@ -482,6 +513,27 @@ func slotPicks(slots []versionSlot, ranked []candidate, auto core.Release, req c
 				break
 			}
 		}
+	}
+	return out
+}
+
+// slotPlanVariants lists the releases the configured menu shows for these
+// candidates: the same plan and picks VersionSlots uses, minus choices no
+// release fills. Variants uses it in the per-resolution and per-source modes,
+// so Jellyfin and Emby list what Plex, Vela and Silo list.
+func slotPlanVariants(t *core.Title, plan []versionSlot, pool []candidate, auto core.Release, req core.ResolveRequest, titleVC *ViewerChoice, wanted []string) []core.ReleaseVariant {
+	var out []core.ReleaseVariant
+	seen := map[string]bool{}
+	for _, r := range slotPicks(plan, pool, auto, req, titleVC) {
+		if r.ID == "" || seen[r.ID] {
+			continue
+		}
+		seen[r.ID] = true
+		kind := "alt"
+		if len(out) == 0 {
+			kind = "auto"
+		}
+		out = append(out, core.ReleaseVariant{ID: r.ID, Label: variantLabel(r, kind), Edition: r.Info.Edition, Auto: kind == "auto", Release: r, Info: estimateVariantInfo(t, sizedForEpisode(r), wanted)})
 	}
 	return out
 }

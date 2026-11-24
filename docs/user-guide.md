@@ -511,17 +511,35 @@ fails. **Quality › Profiles › Version menu › Same-quality versions to offe
 how many (0 to 3; 1 by default, 0 turns the extra versions off). Choose one with Plex's **Play Version**; otherwise Ether picks the
 best version for the device. Turn on **Offer alternatives at every resolution**
 to distribute that count across the available resolutions instead. With one
-alternative, the menu can show two 4K, two 1080p and two 720p releases when
-eligible results exist. Auto counts as the first release in its resolution,
-stays first in the menu, and the total stays within seven entries. Ether gives
-each resolution a place before filling extra copies, removes duplicate files,
-and preserves profile and device limits. Turn on **Offer each source at every
-resolution** to keep one WEB-DL, Blu-ray and Remux choice at each resolution
-that appears, so a lighter WEB-DL still shows beside a tier full of remuxes;
-Auto is unchanged and still follows your profile. **Offer higher versions**
-remains a
-separate opt-in for choices above the profile's resolution ceiling. The new
-mode is off by default.
+alternative, the menu can list a 4K, a 1080p and a 720p release, then one more
+of each, when eligible results exist. Auto stays first in the menu, and the
+total stays within seven entries. Ether gives each resolution a place before
+filling extra copies, removes duplicate files, and preserves profile and device
+limits. Turn on **Offer each source at every resolution** to add a Remux, a
+Blu-ray encode and a WEB release (WEB-DL or WEBRip) at each resolution, so a
+lighter WEB-DL still shows beside a tier full of remuxes. Higher resolutions
+come first when they do not all fit: on a 4K profile that is Auto plus the 4K
+and 1080p choices. Auto is unchanged and still follows your profile. **Offer
+higher versions** remains a separate opt-in for choices above the profile's
+resolution ceiling. These modes are off by default.
+
+For finer control, `resolver.sourceVersions` in `config.json` sets each source
+at each resolution to `"offer"`, `"required"` or `"off"` (an omitted cell is
+off), and replaces the single switch when present. Restart Ether after editing
+the file:
+
+```json
+"sourceVersions": {
+  "2160": { "remux": "offer", "web": "required" },
+  "1080": { "remux": "offer", "web": "required" }
+}
+```
+
+A **required** choice is listed ahead of every offered choice and alternative,
+so the seven-entry limit never drops it; it is the best release of that source
+at that resolution that your profile and the device allow. Offered choices fill
+the remaining places, higher resolutions first. Every app's version menu
+(Plex, Jellyfin, Emby, Vela and Silo) lists the same choices.
 
 Plex may check whether these versions are available before Play. These checks
 keep the existing 2-second default so slow sources do not hold up detail pages.

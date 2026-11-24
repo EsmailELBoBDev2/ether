@@ -557,6 +557,9 @@ type FrontendAdapterMeta struct {
 	// "/rest/search3", or "/graphql") allowed to call ai.complete when
 	// permissions.ai is "complete+search".
 	SearchPaths []string `json:"searchPaths,omitempty"`
+	// Icon is the adapter's own mark on the Apps page: a path to an SVG or
+	// PNG inside the package. Without one the plugin's icon stands in.
+	Icon string `json:"icon,omitempty"`
 }
 
 // SetupMeta declares guided setup for any plugin kind.

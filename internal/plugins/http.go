@@ -162,11 +162,7 @@ func (m *Manager) resolveIconURL(ctx context.Context, r Record) string {
 			return icon
 		}
 		if icon != "" && !unsafePath(icon) && m.store.hasFile(ctx, r.ID, r.Version, icon) {
-			rev := r.Version
-			if !r.UpdatedAt.IsZero() {
-				rev += "-" + strconv.FormatInt(r.UpdatedAt.Unix(), 10)
-			}
-			return "/ether/api/plugins/" + url.PathEscape(r.ID) + "/icon?v=" + url.QueryEscape(rev)
+			return pluginIconURL(r, "")
 		}
 	} else if logo := strings.TrimSpace(r.Manifest.Logo); isHTTPURL(logo) {
 		return logo
@@ -179,6 +175,49 @@ func (m *Manager) resolveIconURL(ctx context.Context, r Record) string {
 	return ""
 }
 
+// pluginIconURL is the cache-busted icon route for a plugin, or for one of
+// its frontend adapters when adapter is set.
+func pluginIconURL(r Record, adapter string) string {
+	rev := r.Version
+	if !r.UpdatedAt.IsZero() {
+		rev += "-" + strconv.FormatInt(r.UpdatedAt.Unix(), 10)
+	}
+	q := url.Values{}
+	if adapter != "" {
+		q.Set("adapter", adapter)
+	}
+	q.Set("v", rev)
+	return "/ether/api/plugins/" + url.PathEscape(r.ID) + "/icon?" + q.Encode()
+}
+
+// adapterIconPath returns the package path of an adapter's declared icon.
+func adapterIconPath(r Record, key string) (string, bool) {
+	if r.Manifest.Ether == nil {
+		return "", false
+	}
+	for _, a := range r.Manifest.Ether.Contributes.FrontendAdapters {
+		if a.Key == key && ValidAdapterIconPath(a.Icon) {
+			return a.Icon, true
+		}
+	}
+	return "", false
+}
+
+// AdapterIconURL is the mark the Apps page shows for one of a plugin's
+// frontend adapters: the adapter's declared icon, else the plugin's own.
+func (m *Manager) AdapterIconURL(ctx context.Context, r Record, key string) string {
+	if p, ok := adapterIconPath(r, key); ok && m.store.hasFile(ctx, r.ID, r.Version, p) {
+		return pluginIconURL(r, key)
+	}
+	if u := m.resolveIconURL(ctx, r); u != "" {
+		return u
+	}
+	if logo := strings.TrimSpace(r.Manifest.Logo); isHTTPURL(logo) {
+		return logo
+	}
+	return ""
+}
+
 func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
 	rec, err := m.store.record(r.Context(), r.PathValue("id"))
 	if err != nil || rec.Manifest.Ether == nil {
@@ -186,6 +225,15 @@ func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	iconPath := strings.TrimSpace(rec.Manifest.Ether.Icon)
+	ref := "plugin-icon:" + rec.ID
+	if key := r.URL.Query().Get("adapter"); key != "" {
+		p, ok := adapterIconPath(rec, key)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		iconPath, ref = p, "plugin-adapter-icon:"+rec.ID+":"+key
+	}
 	if iconPath == "" || isHTTPURL(iconPath) || unsafePath(iconPath) {
 		http.NotFound(w, r)
 		return
@@ -195,9 +243,9 @@ func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, ct, err := m.iconRaster.Rasterize(
+	data, ct, err := m.iconRaster.RasterizeIcon(
 		r.Context(),
-		"plugin-icon:"+rec.ID+":"+digestOf(raw),
+		ref+":"+digestOf(raw),
 		raw,
 		artwork.RasterOptions{Width: 128, Height: 128, Format: "png"},
 	)

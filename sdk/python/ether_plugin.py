@@ -4154,6 +4154,23 @@ class KindLiveProvider:
         raise NotImplementedError
 
 
+class FrontendAdapterMeta(TypedDict, total=False):
+    """One ``contributes.frontendAdapters[]`` manifest entry."""
+
+    key: str
+    label: str
+    protocolHint: Literal["opds", "subsonic", "custom"]
+    pathPrefix: str
+    defaultPort: int
+    clients: List[str]
+    auth: Literal["ether_token", "basic", "none_lan", "query_credentials"]
+    libraries: List[str]
+    searchPaths: List[str]
+    # Path to an SVG or PNG inside the package, shown as the adapter's mark
+    # on the Apps page. Without one the plugin's icon stands in.
+    icon: str
+
+
 class FrontendAdapter:
     """A plugin-provided protocol surface. Ether authenticates first;
     `handle` receives X-Ether-Viewer headers and never a credential."""

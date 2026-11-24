@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Apps from "../pages/apps/Apps";
 import {
+  appBrandMark,
   classifyAppAddresses,
   ServerAddressPanel,
   type HubFrontendInfo,
@@ -156,6 +157,21 @@ describe("Apps connection hub", () => {
     apiFetch.mockReset();
     apiBlob.mockReset();
     apiBlob.mockRejectedValue(new Error("QR unavailable"));
+  });
+
+  it("draws a plugin adapter's served icon like Silo and Vela, and the plug without one", () => {
+    const icon = "/ether/api/plugins/ether.music/icon?adapter=subsonic&v=1.4.0-1";
+    const { container, unmount } = render(<>{appBrandMark("plugin:ether.music:subsonic", icon)}</>);
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBe(icon);
+    expect(img?.className).toContain("size-7 rounded-md");
+    fireEvent.error(img!);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("svg")).not.toBeNull();
+    unmount();
+    const plain = render(<>{appBrandMark("plugin:ether.music:subsonic")}</>);
+    expect(plain.container.querySelector("img")).toBeNull();
+    expect(plain.container.querySelector("svg")).not.toBeNull();
   });
 
   it("always prioritizes dedicated listener ports over shared-port paths", () => {

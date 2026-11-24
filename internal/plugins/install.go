@@ -238,6 +238,11 @@ func (m *Manager) fetchSiblings(ctx context.Context, manURL string, manRaw []byt
 	if icon := man.Ether.Icon; icon != "" && !strings.HasPrefix(icon, "http://") && !strings.HasPrefix(icon, "https://") {
 		paths = append(paths, icon)
 	}
+	for _, a := range man.Ether.Contributes.FrontendAdapters {
+		if ValidAdapterIconPath(a.Icon) {
+			paths = append(paths, a.Icon)
+		}
+	}
 	if man.Ether.Runtime.Entry != "" {
 		paths = append(paths, man.Ether.Runtime.Entry)
 	}

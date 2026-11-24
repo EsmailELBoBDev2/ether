@@ -1229,6 +1229,9 @@ type FrontendAdapterMeta struct {
 	// When omitted, conventional search subpaths (ending in /search, /search2,
 	// or /search3, with optional .json/.xml/.view suffix) are recognized.
 	SearchPaths []string `json:"searchPaths,omitempty"`
+	// Icon is the adapter's own mark on the Apps page: a path to an SVG or
+	// PNG inside the package. Without one the plugin's icon stands in.
+	Icon string `json:"icon,omitempty"`
 }
 
 // SetupMeta declares guided setup for any plugin kind (spec §8).

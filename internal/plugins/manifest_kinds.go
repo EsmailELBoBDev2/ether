@@ -837,7 +837,17 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 			}
 			seenSearch[norm] = true
 		}
+		if a.Icon != "" && !ValidAdapterIconPath(a.Icon) {
+			add(base+".icon", "must be an SVG or PNG file inside the package")
+		}
 	}
+}
+
+// ValidAdapterIconPath reports whether p names an SVG or PNG file inside
+// the package; the conformance kit checks the file itself.
+func ValidAdapterIconPath(p string) bool {
+	lower := strings.ToLower(p)
+	return !unsafePath(p) && !isHTTPURL(p) && (strings.HasSuffix(lower, ".svg") || strings.HasSuffix(lower, ".png"))
 }
 
 // MediaKindByKey returns the declared kind with this key, if any.

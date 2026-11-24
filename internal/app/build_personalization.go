@@ -191,6 +191,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		LibrarySections: librarySections,
 		LibraryRowsTab:  a.libraryRowsTab,
 		PageLibraries:   a.pageLibraries,
+		Surfaces:        a.recommendationSurfaces,
 		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,

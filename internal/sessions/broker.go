@@ -134,6 +134,9 @@ type brokerPlan struct {
 	baseMaxHeight int
 }
 type brokerSession struct {
+	// queued is a prefetched next item (PlayIntent.Queued) not yet observed
+	// playing: it supersedes nothing until activateQueued.
+	queued bool
 	// qualityCapped records that a quality pick turned off copying, so a
 	// later Auto pick turns it back on.
 	qualityCapped          bool
@@ -1143,10 +1146,20 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 		return frontend.Session{}, core.ErrNotAvailable
 	}
 	b.bindings.Put(&Binding[frontend.PlayIntent]{ID: id, UserID: v.ID, ClientID: s.clientID, Key: session.Item, PlayID: ps.ID, PlaybackID: s.playbackID, Requested: p.request.Intent, Decision: p.decision, Info: ps.Info, Caps: s.caps, Opts: s.opts, UpdatedAt: b.deps.Now()})
-	b.owners.BindFor("broker", v.ID, s.clientID, session.Item, s.playbackID, ps.ID, true, b.deps.Now())
-	superseded := b.collectSupersededLocked(s)
+	// A queued next item opens beside the playing session; it takes over the
+	// device (ownership, supersession) only once it is observed playing.
+	s.queued = p.request.Intent.Queued && !p.live && p.request.Multiview == nil
+	var superseded []*brokerSession
+	if s.queued {
+		superseded = b.collectStaleQueuedLocked(s)
+	} else {
+		b.owners.BindFor("broker", v.ID, s.clientID, session.Item, s.playbackID, ps.ID, true, b.deps.Now())
+		superseded = b.collectSupersededLocked(s)
+	}
 	b.sessions[id] = s
-	b.bumpNonGroupEpochLocked(v.ID, s.clientID)
+	if !s.queued {
+		b.bumpNonGroupEpochLocked(v.ID, s.clientID)
+	}
 	b.transferPlanSourceLocked(ps.ID)
 	transferred = true
 	b.mu.Unlock()
@@ -1398,6 +1411,11 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		return err
 	}
 	defer unlock()
+	// A queued next item observed playing takes over the device now, under
+	// the same owner gate an open holds.
+	if s.queued && (t.State == "playing" || t.State == "paused" || t.State == "buffering") {
+		b.activateQueued(ctx, id)
+	}
 	s, v, err := b.accessSession(ctx, a, id, t.State != "stopped")
 	if err != nil {
 		return err

@@ -524,7 +524,7 @@ func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewR
 			return nil, false, ErrRowViewStale
 		}
 		allRefs = append(allRefs, snap.Entries...)
-		out = append(out, frontend.RowView{ExpiresAt: time.UnixMilli(row.expires), ID: ref.Snapshot, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
+		out = append(out, frontend.RowView{ExpiresAt: time.UnixMilli(row.expires), ID: ref.Snapshot, Key: snap.Row.ID, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
 		snapshots = append(snapshots, snap)
 	}
 	if s.o.PrepareSnapshots != nil && len(snapshots) > 0 {

@@ -18,9 +18,49 @@ import (
 //	library      the library of a one-row-per-library row
 //	experience   watch | listen | read | gallery | live
 //	presentation "ranked" for numbered (Top 10) rows
+//	key          the row's identity across bootstraps (feed rows only)
 //
 // Unknown values draw as a standard shelf (Vela's commitment). The retired
 // "style" field is never sent.
+//
+// A feed row's id names one visit's snapshot: Ether re-mints it whenever the
+// feed is rebuilt (watch progress, favourites, policy), and an old id answers
+// 409 cursor_expired so the client re-reads bootstrap. key is the same for the
+// same row across rebuilds: the page row ("r3k9…", "r3k9…@12" for a
+// one-row-per-library row) or, for Ether's own picks, the row's source
+// ("home.continue", "movies.trending"). A page row that serves several rows
+// (count > 1) numbers the extra ones "#2", "#3" in page order. key is opaque
+// (clients compare it, never parse it), identical for every viewer of the
+// same page, and absent on surface rows, which match by plugin + surface +
+// library.
+
+// assignRowKeys fills each feed row's Key (see the wire notes above) for one
+// page listing, in page order. Surface rows carry none.
+func assignRowKeys(rows []frontend.Row) {
+	seen := map[string]int{}
+	for n := range rows {
+		row := &rows[n]
+		if row.Layout.Present.Surface != nil {
+			row.Key = ""
+			continue
+		}
+		key := row.Key
+		if key == "" {
+			key = row.ID
+		}
+		if p := row.Layout.Present; p.RowID != "" {
+			key = p.RowID
+			if p.Library > 0 {
+				key += "@" + strconv.FormatInt(int64(p.Library), 10)
+			}
+		}
+		seen[key]++
+		if seen[key] > 1 {
+			key += "#" + strconv.Itoa(seen[key])
+		}
+		row.Key = key
+	}
+}
 
 // presentRow writes row's presentation fields onto wire.
 func presentRow(wire object, row frontend.Row) {

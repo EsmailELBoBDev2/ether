@@ -128,3 +128,45 @@ func (b *Broker) retiredAccess(ctx context.Context, a frontend.SessionAccess, id
 	}
 	return r.item, true, nil
 }
+
+// reuseDirectFileSession keeps the device's direct-file session when a new
+// open would direct-play the very same source again. Native players switch
+// audio and subtitle tracks of a direct-played file locally, yet some (Fladder
+// on Android) still post a fresh PlaybackInfo for the switch and keep reading
+// the file URL they already have. Superseding interrupted those reads, so the
+// player paused for good, and its later progress and stop reports named a
+// session that never streamed, so the resume position was lost. Jellyfin
+// never ends a static stream on PlaybackInfo; the same request now updates
+// and returns the session that is playing. The caller holds the owner gate.
+func (b *Broker) reuseDirectFileSession(v *core.Viewer, req frontend.OpenRequest, p brokerPlan, ps *core.PlaySession) (frontend.Session, bool) {
+	if p.external || p.live || p.request.Multiview != nil || p.decision.Kind != core.DecisionDirectPlay || ps == nil {
+		return frontend.Session{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return frontend.Session{}, false
+	}
+	for _, s := range b.sessions {
+		if s.live || s.restored || s.multiviewGroup != "" || s.format != frontend.StreamDirect || s.playID != ps.ID ||
+			s.public.ViewerID != v.ID || s.public.Protocol != req.Protocol || s.clientID != p.request.Caps.ClientID ||
+			s.public.Device.ID != req.Device.ID || s.public.Item != p.request.Item {
+			continue
+		}
+		// A different client playback (its own session or playback id) is a
+		// new play, not a track switch inside this one.
+		if (p.request.Intent.ClientSessionID != "" && p.request.Intent.ClientSessionID != s.deliverySession) ||
+			(p.request.Intent.PlaybackID != "" && p.request.Intent.PlaybackID != s.playbackID) {
+			continue
+		}
+		s.opts = p.request.Intent.Options
+		s.decision = p.decision
+		s.manualSubtitle = s.manualSubtitle || p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle)
+		if entry, ok := b.bindings.Get(s.public.ID); ok {
+			entry.Requested, entry.Opts, entry.Decision, entry.UpdatedAt = p.request.Intent, s.opts, s.decision, b.deps.Now()
+			b.bindings.Put(entry)
+		}
+		return copySession(s.public), true
+	}
+	return frontend.Session{}, false
+}

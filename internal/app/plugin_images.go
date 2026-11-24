@@ -34,11 +34,14 @@ func (p pluginImages) AuthorizePluginImage(ctx context.Context, viewer *core.Vie
 		return "", core.ErrNotFound
 	}
 	mgr := p.app.pluginsRT.mgr
-	if !p.app.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID) {
-		return "", core.ErrUnauthorized
-	}
-	if !mgr.AllowNetworkHost(ctx, pluginID, u.Hostname()) {
-		return "", core.ErrUnauthorized
+	err = frontend.PluginImageMemoFrom(ctx).Decide(viewer.ID, pluginID, u.Hostname(), func() error {
+		if !p.app.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID) || !mgr.AllowNetworkHost(ctx, pluginID, u.Hostname()) {
+			return core.ErrUnauthorized
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	return raw, nil
 }

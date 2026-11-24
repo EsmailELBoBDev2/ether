@@ -919,6 +919,21 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		// The chosen sidecar has to be on this media before track resolution.
 		// Otherwise a language already present in the probe drops it, and the
 		// decision either selects the other track or no subtitle at all.
+		// With no subtitle in the request, a sidecar this client was shown
+		// selected (a cached OpenSubtitles file) is what it expects to see.
+		// Cached sidecars omit a language the file embeds, so without this the
+		// rules pick the embedded track (often an image subtitle the client
+		// was never shown) and the shown-only burn rule then plays None.
+		if !p.subNamed && !p.subSet {
+			if shown, _ := s.playIDs.shownSubtitles(ik, s.now()); len(shown) > 0 {
+				for i := range shown {
+					if want := shown[i]; want.External && want.ExternalURL != "" && !frontend.IsImageSubtitle(want.Codec) {
+						p.subStream, p.subSel, p.subSet = &want, -1, true
+						break
+					}
+				}
+			}
+		}
 		if p.subNamed && p.subStream != nil && p.subStream.External {
 			cp := *ps
 			cp.Info = infoWithExactSidecar(ps.Info, p.subStream)

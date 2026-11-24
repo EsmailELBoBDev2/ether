@@ -82,16 +82,20 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 				t.Fatalf("start: %d %s", start.Code, start.Body.String())
 			}
 			hs := f.trans.sessions["fp-"+tc.name]
+			if streamAttr(selected, "languageCode") != "eng" {
+				t.Fatalf("first play shows no English subtitle selected (decision %q)", selected)
+			}
 			if hs == nil {
-				t.Logf("RESULT %s: decision selected=%q (%s) key=%q; no HLS transcode session (served as direct play/sidecar)",
-					tc.name, streamAttr(selected, "displayTitle"), streamAttr(selected, "codec"), streamAttr(selected, "key"))
+				t.Logf("RESULT %s: decision selected=%q (%s); no HLS transcode session (served as direct play/sidecar)",
+					tc.name, streamAttr(selected, "displayTitle"), streamAttr(selected, "codec"))
 				return
 			}
 			served := hs.req.Decision.SubtitleStream == tc.sub.Index
 			t.Logf("RESULT %s: decision selected=%q; embedded English in stream=%v burn=%v stream index=%d; sidecar/text tracks=%v",
 				tc.name, streamAttr(selected, "displayTitle"), served, hs.req.Decision.BurnSubtitles, hs.req.Decision.SubtitleStream, hs.req.TextSubtitleStreams)
-			if tc.mustServe && (!served || streamAttr(selected, "languageCode") == "") {
-				t.Fatalf("first play did not deliver the rule's English subtitle")
+			external := streamAttr(selected, "external") == "1"
+			if !external && !served {
+				t.Fatalf("decision shows the embedded English subtitle but the stream does not carry it")
 			}
 		})
 	}

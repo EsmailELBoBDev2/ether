@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -3087,20 +3086,16 @@ func searchLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations
 	return matched, true
 }
 
-func searchWords(s string) []string {
-	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-}
+func searchWords(s string) []string { return core.FoldSearchWords(s) }
 
 func normalizeArticleSort(s string) string {
 	return core.TitleSortKey(s)
 }
 
 func scorePluginSearchHit(t core.Title, raw core.KindItem, query string) float64 {
-	qNorm := strings.ToLower(strings.TrimSpace(query))
+	qNorm := core.FoldSearchText(query)
 	qSort := normalizeArticleSort(query)
-	tNorm := strings.ToLower(strings.TrimSpace(t.Title))
+	tNorm := core.FoldSearchText(t.Title)
 	tSort := core.EffectiveSortTitle(t.Title, t.SortTitle)
 
 	var base float64

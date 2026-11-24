@@ -17,6 +17,10 @@ var ErrSearchSuperseded = errors.New("search superseded by a newer search from t
 const (
 	searchTurnIdle = time.Minute
 	searchTurnsMax = 4096
+	// searchGenerationWindow is how recent a client's latest search must be
+	// for a lower generation to read as an older keystroke arriving late; a
+	// client numbers its queries afresh after a relaunch.
+	searchGenerationWindow = 5 * time.Second
 )
 
 type searchTurnKey struct {
@@ -28,6 +32,7 @@ type searchTurnKey struct {
 // it, and a channel closed when a newer query replaces it.
 type searchTurn struct {
 	query      string
+	generation int64
 	superseded chan struct{}
 	running    map[uint64]context.CancelCauseFunc
 	last       time.Time
@@ -54,10 +59,19 @@ type searchTurnCtxKey struct{}
 // superseded and ctx is returned as is. leave must be called when the
 // request finishes; a ctx that already entered a search is returned as is.
 func EnterSearch(ctx context.Context, viewerID int64, client, query string) (context.Context, func()) {
+	return EnterSearchGeneration(ctx, viewerID, client, query, 0)
+}
+
+// EnterSearchGeneration is EnterSearch for a client that numbers its
+// queries (Vela's generation, > 0). Requests can reach this point out of
+// order: an older keystroke whose request arrives after a newer one's is
+// itself superseded at once (it answers empty) instead of superseding the
+// newer search.
+func EnterSearchGeneration(ctx context.Context, viewerID int64, client, query string, generation int64) (context.Context, func()) {
 	if viewerID == 0 || client == "" || ctx.Value(searchTurnCtxKey{}) != nil {
 		return ctx, func() {}
 	}
-	return searchTurns.enter(ctx, searchTurnKey{viewer: viewerID, client: client}, normalizeSearchTurn(query), time.Now())
+	return searchTurns.enter(ctx, searchTurnKey{viewer: viewerID, client: client}, normalizeSearchTurn(query), max(generation, 0), time.Now())
 }
 
 // SearchSuperseded returns a channel closed once a newer search from the
@@ -103,10 +117,19 @@ func normalizeSearchTurn(query string) string {
 	return strings.Join(strings.Fields(strings.ToLower(query)), " ")
 }
 
-func (t *searchTurnTable) enter(ctx context.Context, key searchTurnKey, query string, now time.Time) (context.Context, func()) {
+func (t *searchTurnTable) enter(ctx context.Context, key searchTurnKey, query string, generation int64, now time.Time) (context.Context, func()) {
 	var cancels []context.CancelCauseFunc
 	t.mu.Lock()
 	turn := t.turns[key]
+	if turn != nil && turn.query != query && generation > 0 && generation < turn.generation && now.Sub(turn.last) < searchGenerationWindow {
+		// A keystroke the client already typed past, arriving late.
+		t.mu.Unlock()
+		stale := &searchTurn{query: query, generation: generation, superseded: make(chan struct{})}
+		close(stale.superseded)
+		staleCtx, cancel := context.WithCancelCause(context.WithValue(ctx, searchTurnCtxKey{}, stale))
+		cancel(ErrSearchSuperseded)
+		return staleCtx, func() {}
+	}
 	if turn == nil || turn.query != query {
 		if turn != nil {
 			close(turn.superseded)
@@ -116,9 +139,10 @@ func (t *searchTurnTable) enter(ctx context.Context, key searchTurnKey, query st
 		} else if len(t.turns) >= searchTurnsMax {
 			t.evictLocked(now)
 		}
-		turn = &searchTurn{query: query, superseded: make(chan struct{}), running: map[uint64]context.CancelCauseFunc{}}
+		turn = &searchTurn{query: query, generation: generation, superseded: make(chan struct{}), running: map[uint64]context.CancelCauseFunc{}}
 		t.turns[key] = turn
 	}
+	turn.generation = max(turn.generation, generation)
 	t.seq++
 	id := t.seq
 	turn.last = now

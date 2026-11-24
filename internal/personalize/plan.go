@@ -82,6 +82,14 @@ func sourceKey(kind, param string) string {
 // ("home", "library:<id>", "library:<id>/<tab>").
 func (e *Engine) planFor(ctx context.Context, viewer int64, section string) *pagePlan {
 	key := e.pageKeyFor(ctx, section)
+	if pk, ok := previewKey(ctx); ok && pk != key {
+		// A preview of a library's other rows tab: same library, that tab.
+		if want, _, okW := pk.Library(); okW {
+			if have, _, okH := key.Library(); okH && have == want {
+				key = pk
+			}
+		}
+	}
 	p, saved := e.pageForContext(ctx, key)
 	return e.compilePlan(ctx, p, saved, viewer)
 }

@@ -94,6 +94,9 @@ type Options struct {
 	// Surfaces lists the plugin Home-row surfaces that can be placed as rows
 	// (published for at least one app); the apps gate each viewer and app.
 	Surfaces func(ctx context.Context) []core.SurfaceInfo
+	// PageCandidates returns a plugin library's candidate shelves (before
+	// arrangement) for previews of its pages.
+	PageCandidates func(ctx context.Context, viewer *core.User, id core.LibraryID, tab string) []core.HomeRow
 	// PageLibraries describes every library for Recommendations pages:
 	// experience, media type, capabilities and rows tabs.
 	PageLibraries   func(ctx context.Context) []core.PageLibrary

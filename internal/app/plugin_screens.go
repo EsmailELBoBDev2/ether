@@ -63,7 +63,9 @@ func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
 		}
 		if err := reg.Sync(r, files, text); err != nil {
 			a.log.Warn("plugin screens: documents rejected", "plugin", r.ID, "err", err)
+			return
 		}
+		a.offerHomeRowSurfaces(ctx, reg, r.ID)
 	}
 	mgr.OnSync(sync)
 	mgr.OnRemove(func(_ context.Context, id string) { reg.Remove(id) })
@@ -436,20 +438,6 @@ func (p screenPushes) PutRecords(ctx context.Context, pluginID string, raw json.
 		recs = append(recs, screens.PutRecord{Type: r.Type, ID: r.ID, Value: v})
 	}
 	return p.svc.PutRecords(ctx, pluginID, recs)
-}
-
-func (s surfaceScreens) ScreenHomeRows(ctx context.Context, viewer *frontend.Viewer, c frontend.ScreenClient) (json.RawMessage, error) {
-	docs := s.docs()
-	rows := []map[string]string{}
-	if docs == nil || viewer == nil || c.Renderer <= 0 {
-		return json.Marshal(rows)
-	}
-	for _, t := range docs.Surfaces(ctx, viewer, s.surface) {
-		if t.Meta.Presentation == "homeRow" {
-			rows = append(rows, map[string]string{"kind": "surface", "id": "surface:" + t.PluginID + ":" + t.Meta.ID, "surface": t.WireID})
-		}
-	}
-	return json.Marshal(rows)
 }
 
 func (s surfaceScreens) ScreenPreviewValid(ctx context.Context) bool {

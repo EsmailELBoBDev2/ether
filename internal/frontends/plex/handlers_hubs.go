@@ -1108,7 +1108,7 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 			continue
 		}
 		if isPluginKindSection(sec) {
-			_, kindServed, _ := s.paintPluginRows(ctx, pr, sec, count)
+			_, kindServed := s.pluginSectionHubs(ctx, pr, sec, count)
 			for hid, h := range kindServed {
 				if matchHubID(hid, candidates) {
 					h.ID = id

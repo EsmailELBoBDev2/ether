@@ -54,9 +54,9 @@ type PersonCredit = core.PersonCredit
 type SearchCandidates = core.SearchCandidates
 type UncachedError = core.UncachedError
 
-// Owner row styles (Home designer and library Recommended rows).
+// Owner row styles (Recommendations page rows).
 const (
-	RowStyleShelf = core.RowStyleShelf
+	RowStyleStandard = core.RowStyleStandard
 	RowStyleHero  = core.RowStyleHero
 	RowStyleWide  = core.RowStyleWide
 )

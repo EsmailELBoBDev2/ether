@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
@@ -154,20 +153,13 @@ func (s *Server) arrangeHomeRows(ctx context.Context, pr *Request, hc frontend.H
 // viewer's state already painted on each item: no lookup.
 func presentHub(h model.Hub, row frontend.NeutralHomeRow) model.Hub {
 	p := row.Present
-	if p.HideWatched || row.HideWatched {
+	if p.HideWatched {
 		h = hideWatched(h)
 	}
-	h.PreviewOnFocus = p.Trailer || row.PreviewOnFocus
-	h.RankedTop10 = p.Numbered || row.RankedTop10
+	h.PreviewOnFocus = p.Trailer
+	h.RankedTop10 = p.Numbered
 	h.Library = int64(p.Library)
 	h.Layout = p.Layout
-	switch {
-	case h.Layout != "":
-	case row.Style == frontend.RowStyleShelf:
-		h.Layout = core.RowStyleStandard
-	default:
-		h.Layout = row.Style
-	}
 	switch h.Layout {
 	case "":
 	case frontend.RowStyleHero:

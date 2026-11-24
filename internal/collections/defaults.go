@@ -109,7 +109,7 @@ func (s *Service) separateDiscoveryCollections(ctx context.Context) error {
 			continue
 		}
 		sp := r.spec
-		sp.Targets.CollectionsTab = false
+		sp.BrowseInApps = false
 		raw, err := json.Marshal(sp)
 		if err != nil {
 			return err

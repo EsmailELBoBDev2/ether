@@ -94,7 +94,7 @@ export function createLibraryTabsMock({
     [
       7,
       [
-        { key: "recommended", label: "Recommended", kind: "recommended" },
+        { key: "recommended", label: "Recommendations", kind: "recommended" },
         {
           key: "library",
           label: "All Anime",
@@ -230,7 +230,7 @@ export function createLibraryTabsMock({
       (x) => (!mediaType || mediaType === "mixed" || x.type === mediaType) && Boolean(x.studio),
     );
     const collections: LibraryFacetOption[] = [
-      { id: "", label: "Owner collections", category: "essentials" },
+      { id: "", label: "Your collections", category: "essentials" },
       { id: "genre", label: "Genres", category: "essentials" },
     ];
     if (mediaType === "show") {
@@ -295,7 +295,7 @@ export function createLibraryTabsMock({
     if (lib.source === "plugin") {
       const name = String(lib.name ?? "Items");
       return [
-        { key: "recommended", label: "Recommended", kind: "recommended", search: false },
+        { key: "recommended", label: "Recommendations", kind: "recommended", search: false },
         {
           key: "library",
           label: name,
@@ -328,7 +328,7 @@ export function createLibraryTabsMock({
       ];
     }
     return [
-      { key: "recommended", label: "Recommended", kind: "recommended", search: false },
+      { key: "recommended", label: "Recommendations", kind: "recommended", search: false },
       {
         key: "library",
         label: "Library",

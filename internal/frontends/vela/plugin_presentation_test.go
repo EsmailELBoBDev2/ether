@@ -192,7 +192,7 @@ func (e *pluginPresExperience) AuthorizePersonImage(ctx context.Context, _ *core
 	return nil
 }
 
-func (e *pluginPresExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+func (e *pluginPresExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID, _ string) ([]frontend.Row, error) {
 	return append([]frontend.Row(nil), e.pluginRows[viewID]...), nil
 }
 

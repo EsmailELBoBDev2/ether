@@ -154,6 +154,8 @@ type RowScope struct {
 // Row look values.
 const (
 	RowStyleStandard = "standard"
+	RowStyleHero     = "hero"
+	RowStyleWide     = "wide"
 	RowStyleTiles    = "tiles"
 	RowStyleTracks   = "tracks"
 
@@ -174,9 +176,8 @@ type RowLook struct {
 	KeepWhole bool `json:"keepWhole,omitempty"`
 }
 
-// ValidLookStyle reports whether s is a row style an owner may choose
-// (RowStyleHero and RowStyleWide are declared beside the row styles).
-func ValidLookStyle(s string) bool {
+// ValidRowStyle reports whether s is a row style an owner may choose.
+func ValidRowStyle(s string) bool {
 	switch s {
 	case "", RowStyleStandard, RowStyleHero, RowStyleWide, RowStyleTiles, RowStyleTracks:
 		return true
@@ -371,7 +372,7 @@ func (t *PageTuning) validate() error {
 }
 
 func (l RowLook) validate() error {
-	if !ValidLookStyle(l.Style) {
+	if !ValidRowStyle(l.Style) {
 		return fmt.Errorf("look: style must be standard, hero, wide, tiles or tracks")
 	}
 	switch l.Card {

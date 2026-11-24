@@ -142,8 +142,8 @@ describe("rules", () => {
   });
 
   it("normalizes partial specs from the server", () => {
-    const s = normalizeSpec({ name: "N", targets: { homeRow: true } as never });
-    expect(s.targets).toMatchObject({ homeRow: true, collectionsTab: true, users: "all" });
+    const s = normalizeSpec({ name: "N", targets: {} as never });
+    expect(s.targets).toEqual({ collectionsTab: true });
     expect(s.rules).toEqual([]);
     expect(s.sources).toEqual([{ kind: "catalog" }]);
   });

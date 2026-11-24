@@ -161,7 +161,7 @@ func (s *Service) parseDraft(ctx context.Context, content, mediaType string) (*c
 		Name: firstNonEmpty(d.Name, d.Title), Description: d.Description, MediaType: strings.ToLower(d.MediaType),
 		Match: strings.ToLower(d.Match), Sort: d.Sort, Refresh: RefreshDaily, Enabled: true,
 		Artwork: core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	}
 	if sp.Name == "" {
 		return nil, "", nil, errors.New("the spec has no name")

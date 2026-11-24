@@ -45,7 +45,7 @@ func (b builtin) spec() core.CollectionSpec {
 		Sources: []core.CollectionSource{{Kind: "tmdbList", List: b.list, MediaType: b.media}},
 		Match:   MatchAll, Sort: "source", Limit: 100, Refresh: RefreshHourly, Enabled: true,
 		Artwork: core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{CollectionsTab: false, Users: core.AllUsers()},
+		BrowseInApps: false,
 	}
 	Normalize(&sp)
 	return sp
@@ -88,7 +88,7 @@ func mergeBuiltin(fixed, edited core.CollectionSpec) core.CollectionSpec {
 	out.Enabled = edited.Enabled
 	out.PreviewOnFocus = edited.PreviewOnFocus
 	out.RankedTop10 = edited.RankedTop10
-	out.Targets = edited.Targets
+	out.BrowseInApps = edited.BrowseInApps
 	out.Artwork = edited.Artwork
 	out.Rotate = edited.Rotate
 	if edited.Limit > 0 && edited.Limit <= 100 {

@@ -148,15 +148,16 @@ func (s *Server) sectionHubs(w http.ResponseWriter, r *http.Request, promotedOnl
 	})
 }
 
-// paintPluginRows paints a plugin library's rows (its first rows tab) as
-// hubs with their own row ids, and the facts the page arranges them by.
-func (s *Server) paintPluginRows(ctx context.Context, pr *Request, sec Section, visibleCount int) ([]model.Hub, map[string]frontend.Hub, []frontend.NeutralHomeRow) {
+// pluginSectionHubs paints a plugin library's rows: its first rows tab,
+// already arranged by that page (order, length, Look), with their own row
+// ids, drawn the way each row's Present asks.
+func (s *Server) pluginSectionHubs(ctx context.Context, pr *Request, sec Section, visibleCount int) ([]model.Hub, map[string]frontend.Hub) {
 	exp := s.exp()
 	reader, ok := exp.(frontend.PluginLibraryRowsReader)
 	if !ok || visibleCount <= 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
-	rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), sec.IDString())
+	rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), sec.IDString(), "")
 	if err != nil {
 		s.log.Warn("plugin section rows", "section", sec.ID, "err", err)
 	}
@@ -164,8 +165,10 @@ func (s *Server) paintPluginRows(ctx context.Context, pr *Request, sec Section, 
 	vis := s.sectionVisibility(sec)
 	served := map[string]frontend.Hub{}
 	var hubs []model.Hub
-	var facts []frontend.NeutralHomeRow
 	for _, row := range rows {
+		if row.Layout.Present.Surface != nil {
+			continue
+		}
 		rawItems := row.Items
 		if len(rawItems) == 0 {
 			for _, e := range row.Entries {
@@ -215,13 +218,10 @@ func (s *Server) paintPluginRows(ctx context.Context, pr *Request, sec Section, 
 			Promoted:      model.Ptr(true),
 			Metadata:      md,
 		}
-		_, fact := homeLayoutFacts(mh)
-		fact.Purpose, fact.Kind = row.Purpose, row.Kind
-		hubs = append(hubs, mh)
-		facts = append(facts, fact)
+		hubs = append(hubs, presentHub(mh, frontend.NeutralHomeRow{Present: row.Layout.Present}))
 		served[row.ID] = fh
 	}
-	return hubs, served, facts
+	return hubs, served
 }
 
 // pluginRowContext is the Plex context suffix of a plugin library row
@@ -233,21 +233,6 @@ func pluginRowContext(id string) string {
 		return "recentlyadded"
 	}
 	return strings.ToLower(parts[2])
-}
-
-// pluginSectionHubs paints a plugin library's rows and arranges them by page
-// ("library:<id>" on its library page, "home" in a scoped Home block), so
-// they take that page's order and Look.
-func (s *Server) pluginSectionHubs(ctx context.Context, pr *Request, sec Section, visibleCount int, page string) ([]model.Hub, map[string]frontend.Hub) {
-	hubs, served, facts := s.paintPluginRows(ctx, pr, sec, visibleCount)
-	if len(hubs) == 0 {
-		return nil, served
-	}
-	layoutHubs := make([]frontend.Hub, len(hubs))
-	for i, mh := range hubs {
-		layoutHubs[i], _ = homeLayoutFacts(mh)
-	}
-	return s.arrangeHomeRows(ctx, pr, s.hubContext(pr, sec.ID), page, hubs, layoutHubs, facts), served
 }
 
 func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly bool) homeBuild {
@@ -262,7 +247,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 	mc.LibrarySectionTitle = sec.Title
 	mc.LibrarySectionUUID = sec.UUID
 	if isPluginKindSection(sec) {
-		hubs, served := s.pluginSectionHubs(ctx, pr, sec, visibleCount, "library:"+sec.IDString())
+		hubs, served := s.pluginSectionHubs(ctx, pr, sec, visibleCount)
 		mc.Hub = ownerHeroHubs(stableHomeHubs(pr, hubs))
 		mc.Size = len(mc.Hub)
 		return homeBuild{mc: mc, served: served, section: sec.ID}
@@ -628,7 +613,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 	buildOneSection := func(sec Section, withContinue bool, sel map[string]bool) ([]model.Hub, map[string]frontend.Hub, bool) {
 		secServed := map[string]frontend.Hub{}
 		if isPluginKindSection(sec) {
-			kindHubs, kindServed := s.pluginSectionHubs(ctx, pr, sec, count, "home")
+			kindHubs, kindServed := s.pluginSectionHubs(ctx, pr, sec, count)
 			var out []model.Hub
 			for _, mh := range kindHubs {
 				if !inLibraryBlock(mh, sec) {

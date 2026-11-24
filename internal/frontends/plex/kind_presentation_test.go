@@ -851,7 +851,7 @@ type kindVideoHubRowsExperience struct {
 	*kindVideoHubExperience
 }
 
-func (e *kindVideoHubRowsExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+func (e *kindVideoHubRowsExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID, _ string) ([]frontend.Row, error) {
 	if viewID != "9" {
 		return nil, nil
 	}

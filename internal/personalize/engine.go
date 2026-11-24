@@ -91,6 +91,9 @@ type Options struct {
 	// TabRecommended tab): the page Plex, Jellyfin and Emby show as the
 	// library's Recommended page. "" means "recommended".
 	LibraryRowsTab func(ctx context.Context, id core.LibraryID) string
+	// Surfaces lists the plugin Home-row surfaces that can be placed as rows
+	// (published for at least one app); the apps gate each viewer and app.
+	Surfaces func(ctx context.Context) []core.SurfaceInfo
 	// PageLibraries describes every library for Recommendations pages:
 	// experience, media type, capabilities and rows tabs.
 	PageLibraries   func(ctx context.Context) []core.PageLibrary
@@ -106,7 +109,7 @@ type Options struct {
 	// Users lists viewers for background precompute (core.Auth).
 	Users UserSource
 	// Collections supplies owner-designed collection rows.
-	Collections core.CollectionRows
+	Collections core.CollectionLayoutSource
 	LLM         recommend.LLMSource
 	Trakt       recommend.TraktSource
 	Playlists   core.Playlists
@@ -115,7 +118,7 @@ type Options struct {
 	// Dependencies constructs consumers of this engine's scorer before any
 	// background work starts. This resolves the scorer/row-source construction
 	// cycle without publishing a partially wired engine through setters.
-	Dependencies func(core.PersonalScorer) (core.Recommender, core.CollectionRows, error)
+	Dependencies func(core.PersonalScorer) (core.Recommender, core.CollectionLayoutSource, error)
 	// ExtraHomeRows supplies optional integration rows to owner previews.
 	ExtraHomeRows func(context.Context, *core.User, core.HubContext, string, int) []core.Hub
 	// Sections maps library section ids to their type, for per-user
@@ -260,7 +263,6 @@ type Engine struct {
 	flights      map[int64]*flight
 	debounce     map[int64]*time.Timer
 	version      uint64
-	homeLayout   core.HomeLayout
 	// pages are the saved Recommendations pages (pages.go); saveMu
 	// serializes page writes.
 	pages         map[core.PageKey]core.RowPage
@@ -344,15 +346,8 @@ func New(opts Options) (*Engine, error) {
 		queue: make(chan int64, 1024), events: make(chan state.Event, 4096), evSync: make(chan chan struct{}),
 	}
 	e.rec = newRecorder(st, e.log, opts.ImpressionBuffer, opts.FlushEvery)
-	if err := e.migrateLibraryLayouts(context.Background()); err != nil {
-		return nil, err
-	}
 	var err error
 	if e.pages, err = st.loadPages(context.Background()); err != nil {
-		return nil, err
-	}
-	e.homeLayout, err = st.homeLayout(context.Background())
-	if err != nil {
 		return nil, err
 	}
 	if opts.Dependencies != nil {
@@ -663,7 +658,7 @@ func (e *Engine) enrichRelated(ctx context.Context, user *core.User, key core.Ra
 func (e *Engine) HomeHubsFor(ctx context.Context, user *core.User, hc core.HubContext, limit int) ([]core.Hub, error) {
 	ctx = core.WithCatalogViewer(ctx, user)
 	p := e.home(ctx, user, hc, "", limit, false)
-	p.Rows = arrangeLayoutFor(p.Rows, e.layoutForContext(ctx), userID(user), hc, surfHome, e.opts.MaxHomeRows)
+	p.Rows = arrangePage(p.Rows, e.planFor(ctx, userID(user), surfHome), userID(user), hc, e.opts.MaxHomeRows)
 	return toHubs(p.Rows), nil
 }
 
@@ -676,12 +671,11 @@ func (e *Engine) SectionHubsFor(ctx context.Context, user *core.User, t core.Med
 		hc.SectionID = e.firstSectionID(ctx, t)
 	}
 	p := e.home(ctx, user, hc, t, limit, false)
-	target := layoutTargetForContext(t, hc)
 	def := e.opts.MaxSectionRows
 	if hc.HomeScoped {
 		def = e.opts.MaxHomeRows
 	}
-	p.Rows = arrangeLayoutFor(p.Rows, e.layoutForContext(ctx), userID(user), hc, target, def)
+	p.Rows = arrangePage(p.Rows, e.planFor(ctx, userID(user), e.sectionFor(t, hc)), userID(user), hc, def)
 	return toHubs(p.Rows), nil
 }
 
@@ -698,6 +692,18 @@ func toHubs(rows []core.HomeRow) []core.Hub {
 		out = append(out, h)
 	}
 	return out
+}
+
+// sectionFor is the page section of an engine request: Home for Home and
+// scoped Home requests, else the request's library.
+func (e *Engine) sectionFor(t core.MediaType, hc core.HubContext) string {
+	if t == "" || hc.HomeScoped {
+		return surfHome
+	}
+	if hc.SectionID > 0 {
+		return librarySectionName(hc.SectionID)
+	}
+	return surfHome
 }
 
 // home is the one code path behind /hubs, /hubs/sections/{id} and the
@@ -740,19 +746,22 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 			e.log.Debug("personalize: in progress failed", "err", err)
 		}
 	}
-	layoutDoc := e.layoutForContext(ctx)
-	owner, ownerVer := e.ownerRows(ctx, &u, hc, section, layoutDoc, wait)
+	pl := e.planFor(ctx, u.ID, e.sectionFor(section, hc))
+	owner, ownerVer := e.ownerRows(ctx, &u, hc, section, pl, wait)
+	// Rows the page builds for itself (another window, chosen libraries,
+	// one row per library) join the owner rows: the same gates, dedupe and
+	// ranking apply to them.
+	owner = append(owner, e.pageRows(ctx, pl, m, owner, &u, section)...)
 	layoutVer := e.layoutVersion()
 	day := dayOf(hc.Now, e.loc)
 	intent, intentVer := e.intentFor(u.ID, hc.Now)
-	target := layoutTargetForContext(section, hc)
-	tune := resolveTuning(layoutDoc, u.ID, target)
-	// Library Recommended pages keep what the Home leads with off the page
-	// (the draft layout's switch and Home in a preview). Scoped Home requests
-	// ARE the viewer's Home, so they never dedupe against Home.
+	tune := resolveTuning(pl)
+	// Library pages keep what the Home leads with off the page (the page's
+	// "Skip titles Home already shows"). Scoped Home requests ARE the
+	// viewer's Home, so they never dedupe against Home.
 	var lead *homeLead
-	if section != "" && !hc.HomeScoped && resolveDedupeHome(layoutDoc, u.ID, target) {
-		lead = e.homeLeadFor(ctx, &u, hc, layoutDoc, limit, wait, allow)
+	if section != "" && !hc.HomeScoped && pl.skipHome() {
+		lead = e.homeLeadFor(ctx, &u, hc, limit, wait, allow)
 	}
 	key := memoKey{user: u.ID, section: section, homeScoped: hc.HomeScoped, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
 		layout: layoutVer, stats: stats.at.UnixNano(), owner: ownerVer, cw: progressSig(inprog),
@@ -764,7 +773,7 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	if lead != nil {
 		key.lead = lead.sig
 	}
-	_, draft := ctx.Value(draftLayoutKey{}).(core.HomeLayout)
+	_, draft := ctx.Value(draftPagesKey{}).(core.RowPage)
 	var policyContinue []candItem
 	if allow != nil && section == "" {
 		policyContinue = e.continueFrom(ctx, inprog)
@@ -866,23 +875,26 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	a := &assembly{
 		minRow: max(e.opts.MinRowItems, 0),
 		hidden: hidden, excluded: excluded,
-		layout: &layoutDoc,
-		model:  m, user: u, hc: hc, section: section, limit: limit, owner: owner,
+		plan:  pl,
+		model: m, user: u, hc: hc, section: section, limit: limit, owner: owner,
 		global: stats.global, arms: stats.users[u.ID], allowed: e.allowedFor(&u), explore: e.opts.Exploration, day: day,
 		intent: intent, tune: &tune, lead: lead,
 	}
 	a.explore = clamp(a.explore*tune.exploreScale(), 0, 1)
 	if section == "" {
-		a.pageLen = e.opts.MaxHomeRows
+		a.pageLen = pl.maxRows(hc.Device, e.opts.MaxHomeRows)
 		if allow != nil {
 			a.cw = policyContinue
 		} else {
 			a.cw = e.continueFrom(ctx, inprog)
 		}
 	} else if hc.HomeScoped {
-		a.pageLen = e.opts.MaxHomeRows
+		a.pageLen = pl.maxRows(hc.Device, e.opts.MaxHomeRows)
 	} else {
-		a.pageLen = e.opts.MaxSectionRows
+		a.pageLen = pl.maxRows(hc.Device, e.opts.MaxSectionRows)
+	}
+	if pl.curated {
+		a.pageLen = 0 // a Curated page has no length: every row it lists is kept
 	}
 	// Every row is assembled (the preview explains the ones the page cuts),
 	// but only the rows that survive the page length claim titles (fill).

@@ -129,7 +129,7 @@ func TestVelaRowSizeAndContinuation(t *testing.T) {
 						t.Fatal("shared conversion changed row title or receipt", item)
 					}
 				}
-				if row["receiptToken"] != "row-receipt" || row["style"] != "shelf" || row["previewOnFocus"] != true {
+				if row["receiptToken"] != "row-receipt" || row["style"] != nil || row["role"] != "movie" || row["previewOnFocus"] != true {
 					t.Fatal("row metadata lost", row)
 				}
 				cursor, err := i.readRowToken(r, viewer, row["nextCursor"].(string))

@@ -14,13 +14,16 @@ const (
 	SourceCollection = "collection" // params: collection (public id)
 	SourceShelf      = "shelf"      // params: shelf (a plugin library's declared shelf key)
 	SourceSurface    = "surface"    // params: surface ("<pluginID>:<surfaceID>"); a stub Vela draws
-	KindUpcoming     = "upcoming"
-	KindLive         = "live"
-	KindWatchlist    = "watchlist"
-	KindRediscover   = "rediscover"
-	KindNewlyAvail   = "newly-available"
-	KindYearReview   = "year-in-review"
-	kindPluginFacet  = "plugin-facet" // a plugin library's automatic facet rows (Ether's picks only)
+	// KindLibraryPlaylists is a library's own playlists: the items of its
+	// playlist level (listen libraries).
+	KindLibraryPlaylists = "library-playlists"
+	KindUpcoming         = "upcoming"
+	KindLive             = "live"
+	KindWatchlist        = "watchlist"
+	KindRediscover       = "rediscover"
+	KindNewlyAvail       = "newly-available"
+	KindYearReview       = "year-in-review"
+	kindPluginFacet      = "plugin-facet" // a plugin library's automatic facet rows (Ether's picks only)
 )
 
 // Source picker groups (core.RowSourceInfo.Group).
@@ -107,11 +110,14 @@ func builtinSources() []core.RowSourceInfo {
 			Group: groupYourCollections, Needs: []string{core.CapCatalogue}, Split: true,
 			Params: []core.RowParam{{Key: "collection", Label: "Collection", Type: core.ParamRef, Required: true}}},
 		{Kind: SourceSurface, Title: "Plugin Row", Description: "A row a plugin draws in Vela (Sports Tonight). Only in Vela.",
-			Group: groupPlugins, HomeOnly: true,
+			Group: groupPlugins, HomeOnly: true, Apps: []string{"vela"},
 			Params: []core.RowParam{{Key: "surface", Label: "Row", Type: core.ParamRef, Required: true}}},
 		{Kind: SourceShelf, Title: "Plugin Shelf", Description: "A shelf this library's plugin declares.",
 			Group: groupPlugins, Needs: []string{core.CapShelves},
 			Params: []core.RowParam{{Key: "shelf", Label: "Shelf", Type: core.ParamRef, Required: true}}},
+		{Kind: KindLibraryPlaylists, Title: "Playlists", Description: "The library's playlists.",
+			Group: groupKeep, Needs: []string{core.CapRole(core.RolePlaylist)}, Split: true,
+			Look: core.RowLook{Card: "square"}},
 	}
 	return append(out, extra...)
 }
@@ -147,11 +153,14 @@ func sourceForKind(k kindInfo) core.RowSourceInfo {
 	if k.dynamic && k.cap > 1 {
 		info.Params = append(info.Params, paramCount(k.cap))
 	}
-	if k.kind == KindContinue || k.kind == KindRecentlyAdded {
+	switch k.kind {
+	case KindContinue:
 		info.Needs = []string{core.CapProgress}
-		if k.kind == KindRecentlyAdded {
-			info.Needs = []string{core.CapAdded}
-		}
+	case KindRecentlyAdded:
+		info.Needs = []string{core.CapAdded}
+	case KindNewReleases:
+		// The newest released titles of any library, plugin libraries too.
+		info.Needs = []string{core.CapReleased}
 	}
 	return info
 }
@@ -203,17 +212,21 @@ func sourceOf(hubID, kind string) (source, param string) {
 	case strings.HasPrefix(hubID, "plugin:") && strings.Count(hubID, ":") >= 2:
 		// A plugin library's automatic rows: plugin:<view>:<row>.
 		rest := hubID[strings.Index(hubID[len("plugin:"):], ":")+len("plugin:")+1:]
+		if tab, ok := strings.CutPrefix(rest, "tab:"); ok {
+			// A rows tab's own rows: plugin:<view>:tab:<tab>:<row>.
+			_, rest, _ = strings.Cut(tab, ":")
+		}
 		switch {
 		case rest == "continue":
 			return KindContinue, ""
+		case rest == "playlists":
+			return KindLibraryPlaylists, ""
 		case rest == "added":
 			return KindRecentlyAdded, ""
 		case rest == "released":
 			return KindNewReleases, ""
 		case rest == "rating":
 			return KindTopRated, ""
-		case strings.HasPrefix(rest, "tab:"):
-			return kindPluginFacet, ""
 		default:
 			return kindPluginFacet, ""
 		}

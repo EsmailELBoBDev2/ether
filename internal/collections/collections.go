@@ -71,12 +71,15 @@ type Service struct {
 	auth     core.Auth
 	chat     Chatter
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
-	describeMu      sync.Mutex
-	describeJobs    map[string]*describeJob
-	describeDrafts  map[string]*describeDraft
-	describeActive  int
-	describeAgent   CollectionDraftAgent
-	vibe            *vibeRegistry
+	describeMu     sync.Mutex
+	describeJobs   map[string]*describeJob
+	describeDrafts map[string]*describeDraft
+	describeActive int
+	describeAgent  CollectionDraftAgent
+	vibe           *vibeRegistry
+	// Plugin list rows placed directly on pages (plugin_list_rows.go).
+	listRowsOnce    sync.Once
+	listRows        *listRows
 	vibeTTL         time.Duration
 	vibeMax         int
 	scorer          atomic.Pointer[scorerBox]
@@ -211,11 +214,8 @@ func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Servi
 		s.bases = s.opts.bases.withDefaults()
 	}
 	ctx := context.Background()
-	if err := s.seedBuiltins(ctx); err != nil {
-		return nil, fmt.Errorf("collections: built-ins: %w", err)
-	}
-	if err := s.separateDiscoveryCollections(ctx); err != nil {
-		return nil, err
+	if err := s.purgeSpecs(ctx, `slug LIKE 'plugin:%' AND builtin=0`); err != nil {
+		return nil, fmt.Errorf("collections: retire plugin row collections: %w", err)
 	}
 	if err := s.adoptLibraryDefaultTemplates(ctx); err != nil {
 		return nil, err

@@ -74,6 +74,10 @@ func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, _ []Li
 				section = string(core.LibraryPage(core.LibraryID(sit.LibraryID), req.Tab))
 			}
 		}
+		if req.Tab != "" && section != "home" {
+			// The rows tab's own page: "library:<id>/<tab>".
+			section += "/" + req.Tab
+		}
 	}
 	if req.Placement == frontend.PlacementDetail {
 		return rows, nil
@@ -115,6 +119,7 @@ func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, _ []Li
 		row.Layout.Style = row.Style
 		row.Layout.StylePolicy = arranged.Style
 		row.Layout.HideWatched = arranged.HideWatched
+		row.Layout.Present = arranged.Present
 		row.Layout.Always = arranged.Always
 		row.PreviewOnFocus = arranged.PreviewOnFocus
 		row.Layout.PreviewOnFocus = arranged.PreviewOnFocus

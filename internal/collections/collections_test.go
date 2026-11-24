@@ -147,10 +147,6 @@ func TestCreateAndDeleteSmart(t *testing.T) {
 	if err := svc.DeleteSmart(ctx, created.Key); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("double delete: %v", err)
 	}
-	// Builtins cannot be deleted.
-	if err := svc.DeleteSmart(ctx, collections.BuiltinKey("trending-week-movie")); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("builtin delete: %v", err)
-	}
 }
 
 func TestHideFranchiseCollectionsAppliesWithoutRestart(t *testing.T) {
@@ -228,40 +224,6 @@ func TestFranchiseCollections(t *testing.T) {
 	got, err := svc.Get(ctx, kid, saga.Key)
 	if err != nil || got.ChildCount != 1 {
 		t.Fatalf("saga get kid: %+v %v", got, err)
-	}
-}
-
-func TestBuiltinLiveCollections(t *testing.T) {
-	ctx := context.Background()
-	svc, _ := setup(t)
-	key := collections.BuiltinKey("top-rated-movie")
-	if key == 0 || key.Kind() != core.KindSmart {
-		t.Fatalf("builtin key %v", key)
-	}
-	c, err := svc.Get(ctx, nil, key)
-	if err != nil || c.Title != "Top Rated Movies" {
-		t.Fatalf("builtin get: %+v %v", c, err)
-	}
-	// Offline catalog.List falls back to Browse rating-desc: Lonely (9.0) first.
-	page, err := svc.Items(ctx, nil, key, 0, 2)
-	if err != nil || len(page.Items) != 2 {
-		t.Fatalf("builtin items: %+v %v", page, err)
-	}
-	if page.Items[0].Title != "Lonely Franchise Film" {
-		t.Fatalf("top rated order: %+v", page.Items)
-	}
-	// List by type partitions builtins.
-	shows, err := svc.List(ctx, nil, core.TypeShow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range shows {
-		if c.Type == core.TypeMovie {
-			t.Fatalf("movie collection in show list: %+v", c)
-		}
-	}
-	if _, err := svc.Get(ctx, nil, core.MovieKey(1)); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("movie key Get: %v", err)
 	}
 }
 

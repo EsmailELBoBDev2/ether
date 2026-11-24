@@ -54,17 +54,15 @@ func rowPageKeys(keys []core.RatingKey, mediaType string) ([]core.RatingKey, boo
 const homeRowWait = 500 * time.Millisecond
 
 // LayoutRow serves a collection or plugin list a Recommendations page
-// places as a row. Private ownership and viewer content limits apply; the
-// page row supplies placement and schedule.
+// places as a row: a collection by public id, or a plugin list by
+// core.PluginListRowID, read directly with no collection behind it.
+// Private ownership and viewer content limits apply; the page row supplies
+// placement and schedule.
 func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubContext, id string) (*core.CollectionRow, error) {
-	var row *specRow
-	var err error
-	pluginRow := strings.HasPrefix(strings.TrimSpace(id), "plugin:")
-	if pluginRow {
-		row, err = s.ensurePluginLayoutRow(ctx, strings.TrimSpace(id))
-	} else {
-		row, err = s.rowByID(ctx, id)
+	if strings.HasPrefix(strings.TrimSpace(id), "plugin:") {
+		return s.pluginListRow(ctx, user, id)
 	}
+	row, err := s.rowByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -86,17 +84,7 @@ func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubCon
 	if err != nil {
 		return nil, err
 	}
-	hubID := "collection." + row.publicID()
-	title := row.spec.Name
-	if pluginRow {
-		hubID = row.slug
-		if kind, ok := s.kindRegistry().Lookup(row.slug); ok {
-			if lbl := strings.TrimSpace(kind.Describe().Label.Resolved); lbl != "" {
-				title = lbl
-			}
-		}
-	}
-	hub := core.Hub{ID: hubID, Title: title, Style: "shelf", PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Promoted: true, Items: items, More: dropped || count > len(items), Key: row.key(), Context: "hub.home.collection"}
+	hub := core.Hub{ID: "collection." + row.publicID(), Title: row.spec.Name, Style: "shelf", PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Promoted: true, Items: items, More: dropped || count > len(items), Key: row.key(), Context: "hub.home.collection"}
 	switch row.spec.MediaType {
 	case MediaMovie:
 		hub.Type = core.TypeMovie

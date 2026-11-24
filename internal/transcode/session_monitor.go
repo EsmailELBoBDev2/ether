@@ -216,6 +216,12 @@ func (s *Session) poll(r *run, playlist string, exited bool) {
 		if n < r.startSeg || (n <= r.maxDone && r.produced > 0) {
 			continue
 		}
+		if ready, err := s.initCodecConfigLocked(r, exited); err != nil {
+			s.failRunOutputLocked(r, err)
+			break
+		} else if !ready {
+			break // its segments wait with it
+		}
 		if s.total > 0 && n >= s.total+2 {
 			continue // past any plausible trailing sliver
 		}

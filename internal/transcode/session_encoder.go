@@ -429,6 +429,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		Dir:                  s.runDirLocked(),
 		Playlist:             fmt.Sprintf("run-%d.m3u8", s.runSeq),
 		InitName:             fmt.Sprintf("init-%d.mp4", s.runSeq),
+		AudioConfigName:      fmt.Sprintf("adts-%d.aac", s.runSeq),
 		Accel:                accel,
 		Features:             s.featuresLocked(),
 		BigProbe:             bigProbe,

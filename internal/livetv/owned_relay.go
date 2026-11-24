@@ -172,6 +172,15 @@ func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.C
 	tl.startMinMedia = 2 * cut
 	tl.startMedia = max(2*cut, 4*time.Second)
 	tl.startWait = relayStartWait
+	// Chrome's native HLS player (Vela web on a plain-http origin, a bare
+	// <video>) fails a live playlist that first lists fewer than three
+	// segments (DEMUXER_ERROR_COULD_NOT_PARSE, "Segment queue never had any
+	// data"), however soon it grows; RFC 8216 likewise starts a live client
+	// three target durations from the end. A relay racing through an HLS
+	// input's backlog has three in hand within moments, so its first
+	// playlist waits for them, even when one long copy GOP already covers
+	// the startup media. A real-time producer keeps the bounds above.
+	tl.startAheadSegs = 3
 	p := &relayProducer{s: s, tl: tl, log: log, caps: caps, info: info, dec: dec, cut: cut}
 	p.bind(ss)
 	// The timeline reads only these flags under its lock; input health is
@@ -255,6 +264,7 @@ func (p *relayProducer) adopt(id string, hls core.HLSSession, cancel context.Can
 	p.starved, p.reformat = false, nil
 	p.openedMedia, p.droppedSkewed = false, 0
 	p.startedAt = time.Now()
+	p.tl.producerStarted(p.startedAt)
 	origin := &localRelayOrigin{hls: hls, name: id}
 	if old == nil && steady == nil {
 		p.ingest.origin = origin
@@ -1101,6 +1111,7 @@ func (p *relayProducer) recover(ctx context.Context, why string) {
 	// Nothing opened: slate continues; the next deadline tries again.
 	p.mu.Lock()
 	p.startedAt = time.Now()
+	p.tl.producerStarted(p.startedAt)
 	p.mu.Unlock()
 }
 

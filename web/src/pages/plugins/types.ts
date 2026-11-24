@@ -138,6 +138,8 @@ export interface PluginScreenFrontendOverview {
   name: string;
   published: boolean;
   reason: string;
+  /** The owner's switch, for document screens and surfaces. */
+  enabled?: boolean;
 }
 
 export interface PluginScreenOverview {
@@ -146,6 +148,9 @@ export interface PluginScreenOverview {
   icon?: string;
   feed?: string;
   frontends: PluginScreenFrontendOverview[];
+  /** "screen" or "surface"; absent on 0.3.19 section screens. */
+  kind?: "screen" | "surface";
+  presentation?: string;
 }
 
 export interface PluginLiveEventCompetitor {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/state"
 )
 
 // Caller holds b.mu. Keeping a bounded tombstone makes late progress and
@@ -200,10 +201,63 @@ func (b *Broker) activateQueued(ctx context.Context, id string) {
 	s.queued = false
 	b.owners.BindFor("broker", s.public.ViewerID, s.clientID, s.public.Item, s.playbackID, s.playID, true, b.deps.Now())
 	superseded := b.collectSupersededLocked(s)
+	// The item it follows plays out beside it (a crossfade) for a short while:
+	// it stays, demoted, until its stop or the handover ends.
+	var outgoing, retire []*brokerSession
+	for _, old := range superseded {
+		if !old.live && !old.queued && !old.outgoing && old.multiviewGroup == "" && old.public.Item != s.public.Item {
+			old.outgoing = true
+			delete(b.retired, old.public.ID)
+			b.sessions[old.public.ID] = old
+			outgoing = append(outgoing, old)
+		} else {
+			retire = append(retire, old)
+		}
+	}
 	b.bumpNonGroupEpochLocked(s.public.ViewerID, s.clientID)
 	b.mu.Unlock()
-	b.finishSuperseded(ctx, superseded, s.playID)
+	b.finishSuperseded(ctx, retire, s.playID)
+	for _, old := range outgoing {
+		b.completeOutgoing(ctx, old)
+		id, successor := old.public.ID, s.playID
+		afterHandover(OutgoingHandover, func() { b.retireOutgoing(context.WithoutCancel(ctx), id, successor) })
+	}
 	if b.cluster != nil {
 		b.cluster.ownershipChanged(ctx)
 	}
+}
+
+// OutgoingHandover is how long an item a queued successor took over may keep
+// playing out (a crossfade) before Ether retires it.
+const OutgoingHandover = frontend.QueuedHandover
+
+// afterHandover schedules a handover's end (tests run it by hand).
+var afterHandover = func(d time.Duration, fn func()) { time.AfterFunc(d, fn) }
+
+// completeOutgoing records the item a queued successor took over as played
+// through: the client moved on to the next item at its end.
+func (b *Broker) completeOutgoing(ctx context.Context, s *brokerSession) {
+	duration := time.Duration(0)
+	if source, ok := b.deps.Playback.Session(s.playID); ok && source != nil {
+		duration = source.Info.Duration
+	}
+	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.public.Protocol, SessionID: s.public.ID, ClientID: s.public.Device.ID})
+	if err := RecordProgress(ctx, b.deps.Progress, s.public.ViewerID, s.public.Item, duration, duration, "explicit-complete"); err != nil && b.deps.OnEventError != nil {
+		b.deps.OnEventError(err)
+	}
+}
+
+// retireOutgoing ends a handed-over item still playing out when its handover
+// is over; a stop already ended it.
+func (b *Broker) retireOutgoing(ctx context.Context, id, successor string) {
+	b.mu.Lock()
+	s, ok := b.sessions[id]
+	if !ok || !s.outgoing || b.closed {
+		b.mu.Unlock()
+		return
+	}
+	delete(b.sessions, id)
+	b.rememberRetiredLocked(s)
+	b.mu.Unlock()
+	b.finishSuperseded(ctx, []*brokerSession{s}, successor)
 }

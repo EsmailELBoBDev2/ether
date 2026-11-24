@@ -28,9 +28,6 @@ func (s *Service) ListSpecs(ctx context.Context) ([]core.CollectionSpec, error) 
 	out := make([]core.CollectionSpec, 0, len(rows))
 	var snap *snapshot
 	for _, r := range rows {
-		if strings.HasPrefix(r.slug, "plugin:") {
-			continue
-		}
 		if _, ok := localFacetSpec(r.spec); ok {
 			// A listing waits briefly for the catalogue index's first
 			// build, which reads the whole catalogue; past that the stored
@@ -40,9 +37,6 @@ func (s *Service) ListSpecs(ctx context.Context) ([]core.CollectionSpec, error) 
 		}
 	}
 	for _, r := range rows {
-		if strings.HasPrefix(r.slug, "plugin:") {
-			continue
-		}
 		v := r.view()
 		if key, ok := localFacetSpec(r.spec); ok && snap != nil {
 			v.ItemCount = len(snap.facetKeys(key))
@@ -65,9 +59,6 @@ func (s *Service) ListSpecsLight(ctx context.Context) ([]core.CollectionSpec, er
 	}
 	out := make([]core.CollectionSpec, 0, len(rows))
 	for _, r := range rows {
-		if strings.HasPrefix(r.slug, "plugin:") {
-			continue
-		}
 		out = append(out, r.view())
 	}
 	return out, nil
@@ -122,9 +113,6 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 		return nil, err
 	}
 	Normalize(&sp)
-	if row.builtin {
-		sp = mergeBuiltin(row.spec, sp)
-	}
 	// If the owner swapped away from the synced add-on catalogue source,
 	// detach the add-on sync metadata automatically.
 	if sp.AddonSync != nil {

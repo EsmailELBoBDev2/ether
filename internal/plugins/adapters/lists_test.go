@@ -278,8 +278,10 @@ func TestListSourceLifecycleAndMatching(t *testing.T) {
 	if len(kd.Params) != 1 || kd.Params[0].Name != "genre" || !kd.Params[0].Required {
 		t.Fatalf("unexpected source kind params: %+v", kd.Params)
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(kindID); !ok {
-		t.Fatalf("expected personalize RowSourceKind %s to be registered", kindID)
+	// Its required genre is typed in, so it can't fill a row by itself: it
+	// is a collection source only, never a Recommendations row source.
+	if _, ok := h.pers.RowKindRegistry().Source(kindID); ok {
+		t.Fatalf("a list that needs a typed-in value must not be a row source: %s", kindID)
 	}
 	// Extend descriptors exist for both collectionSource and rowSource.
 	desc, ok := h.reg.Get(extend.KindCollectionSource, kindID)

@@ -3564,12 +3564,17 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	var rootLevel string
 	var levelMedia map[string]core.MediaClass
 	var levelParents map[string]string
+	var levelRoles map[string]string
 	if len(decl.Levels) > 0 {
 		rootLevel = decl.Levels[0].Key
 		levelMedia = make(map[string]core.MediaClass, len(decl.Levels))
 		levelParents = make(map[string]string, len(decl.Levels))
+		levelRoles = make(map[string]string, len(decl.Levels))
 		for _, lv := range decl.Levels {
 			levelMedia[lv.Key] = decl.EffectiveLevelMedia(lv.Key, kindMedia)
+			if lv.Role != "" {
+				levelRoles[lv.Key] = lv.Role
+			}
 			if p := decl.LevelParent(lv.Key); p != "" {
 				levelParents[lv.Key] = p
 			}
@@ -3589,6 +3594,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		RootLevel:    rootLevel,
 		LevelMedia:   levelMedia,
 		LevelParents: levelParents,
+		LevelRoles:   levelRoles,
 	}, true
 }
 

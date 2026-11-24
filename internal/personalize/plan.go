@@ -424,7 +424,7 @@ func (pl *pagePlan) placedCollections(user int64, hc *core.HubContext) []string 
 		case r.Source == SourceCollection:
 			id = r.row.Source.Param("collection", "")
 		case strings.HasPrefix(r.Source, "plugin:"):
-			id = r.Source
+			id = core.PluginListRowID(r.Source, r.row.Source.Params)
 		default:
 			continue
 		}

@@ -14,7 +14,6 @@ import (
 // Owner API for Recommendations pages (internal/admin serves these, design
 // §7). Every method is safe for concurrent use.
 
-
 // PageDocument returns the page (saved, or the seeded default), the
 // library behind it and the viewers with changes.
 func (e *Engine) PageDocument(ctx context.Context, key core.PageKey) (core.PageDocument, error) {
@@ -105,6 +104,7 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 		if !ps.Available {
 			ps.Unavailable = "No library here has what this row needs"
 		}
+		e.pluginSourceRefs(ctx, &ps, pageLibs)
 		out.Sources = append(out.Sources, ps)
 	}
 	for _, sp := range e.collectionSpecs(ctx) {

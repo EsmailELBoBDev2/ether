@@ -900,6 +900,8 @@ func (i *instance) routes() {
 	i.route("GET", "/rows/{id}", i.rows)
 	i.route("GET", "/themes/{secret}/theme.m4a", i.theme)
 	i.route("HEAD", "/themes/{secret}/theme.m4a", i.theme)
+	i.route("GET", "/themes/{secret}/theme.mp3", i.theme)
+	i.route("HEAD", "/themes/{secret}/theme.mp3", i.theme)
 	i.route("GET", "/titles/{id}", i.detail)
 	i.route("GET", "/titles/{id}/children", i.children)
 	i.route("GET", "/titles/{id}/extras", i.detail)

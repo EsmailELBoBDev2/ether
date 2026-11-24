@@ -1,0 +1,357 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"mime"
+	"path"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/contentrating"
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/liveevents"
+	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/screens"
+)
+
+// Document screens and surfaces (docs/plugin-screens.md): the app wires the
+// document registry to plugin lifecycle and policy, and serves frontends.
+
+func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
+	reg := screens.NewDocRegistry(screens.DocRegistryOptions{
+		IsPublished: func(_ context.Context, _, _, _, frontendID string, def bool) bool {
+			return def && a.screenFrontendPublished(frontendID)
+		},
+		IsViewerAllowed: func(ctx context.Context, viewer *core.User, pluginID string) bool {
+			return a.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID)
+		},
+		RatingAllowed: func(viewer *core.User, rating string) bool {
+			if viewer == nil || viewer.MaxContentRating == "" {
+				return true
+			}
+			return !contentrating.EnforceExceeds(rating, viewer.MaxContentRating)
+		},
+	})
+	sync := func(ctx context.Context, r plugins.Record) {
+		if !plugins.ScreensUseDocuments(r.Manifest) {
+			reg.Remove(r.ID)
+			return
+		}
+		files, err := mgr.PackageFiles(ctx, r.ID)
+		if err != nil {
+			a.log.Warn("plugin screens: package files unavailable", "plugin", r.ID, "err", err)
+			reg.Remove(r.ID)
+			return
+		}
+		text := func(locale, key string) (string, bool) {
+			return mgr.ResolveText(ctx, r.ID, key, locale)
+		}
+		if err := reg.Sync(r, files, text); err != nil {
+			a.log.Warn("plugin screens: documents rejected", "plugin", r.ID, "err", err)
+		}
+	}
+	mgr.OnSync(sync)
+	mgr.OnRemove(func(_ context.Context, id string) { reg.Remove(id) })
+	return reg
+}
+
+// Detail and SpoilerFree make the hub adapter the data reads' LiveDetails.
+func (h liveEventsScreenHub) Detail(ctx context.Context, viewer *core.User, eventID string) (*core.LiveEventDetail, error) {
+	if h.hub == nil {
+		return nil, core.ErrNotAvailable
+	}
+	d, err := h.hub.GetDetail(ctx, viewer, eventID)
+	if err != nil {
+		return nil, mapScreenHubError(err)
+	}
+	return d, nil
+}
+
+func (h liveEventsScreenHub) SpoilerFree(ctx context.Context, viewer *core.User) (bool, error) {
+	if h.hub == nil || viewer == nil {
+		return false, nil
+	}
+	return h.hub.SpoilerFree(ctx, viewer.ID)
+}
+
+// screenLiveSubscriber subscribes the hub for a stream's feeds and events.
+type screenLiveSubscriber struct{ hub *liveevents.Hub }
+
+func (s screenLiveSubscriber) Subscribe(ctx context.Context, viewer *core.User, feeds, eventIDs []string) (<-chan struct{}, func(), error) {
+	sub, err := s.hub.Subscribe(ctx, liveevents.SubscribeRequest{Feeds: feeds, EventIDs: eventIDs, Viewer: viewer, FilterSpoilers: true})
+	if err != nil {
+		return nil, nil, mapLiveEventError(err)
+	}
+	out := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case _, ok := <-sub.Updates():
+				if !ok {
+					close(out)
+					return
+				}
+				select {
+				case out <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return out, func() { once.Do(func() { close(done); sub.Close() }) }, nil
+}
+
+func (s surfaceScreens) docs() *screens.DocRegistry {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil {
+		return nil
+	}
+	return s.app.pluginsRT.screens.Documents()
+}
+
+func (s surfaceScreens) client(c frontend.ScreenClient) screens.ClientInfo {
+	return screens.ClientInfo{Frontend: s.surface, Renderer: c.Renderer, Locale: c.Locale}
+}
+
+func mapScreensError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, screens.ErrInvalidParams):
+		return frontend.ErrScreenParams
+	case errors.Is(err, screens.ErrNoVariant):
+		return frontend.ErrScreenNoVariant
+	case errors.Is(err, screens.ErrInvalidTopic):
+		return frontend.ErrScreenTopic
+	case errors.Is(err, screens.ErrTooManyTopics):
+		return frontend.ErrScreenTooManyTopics
+	case errors.Is(err, core.ErrNotFound):
+		return frontend.ErrNotFound
+	}
+	return err
+}
+
+func (s surfaceScreens) ScreenNavigation(ctx context.Context, viewer *frontend.Viewer, c frontend.ScreenClient) (json.RawMessage, error) {
+	docs := s.docs()
+	if docs == nil || viewer == nil {
+		return json.RawMessage("[]"), nil
+	}
+	return json.Marshal(docs.Navigation(ctx, viewer, s.client(c)))
+}
+
+func (s surfaceScreens) ScreenSurfaces(ctx context.Context, viewer *frontend.Viewer, c frontend.ScreenClient) (json.RawMessage, error) {
+	docs := s.docs()
+	if docs == nil || viewer == nil || c.Renderer <= 0 {
+		return json.RawMessage("[]"), nil
+	}
+	settings, err := s.settings().Load(ctx, viewer.ID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(docs.SurfaceEntries(ctx, viewer, s.client(c), func(id string) (bool, bool) {
+		v, ok := settings[id]
+		return v, ok
+	}))
+}
+
+func (s surfaceScreens) settings() screens.SurfaceSettings {
+	return screens.SurfaceSettings{DB: s.app.db}
+}
+
+func (s surfaceScreens) ScreenDocument(ctx context.Context, viewer *frontend.Viewer, kind, id, page string, c frontend.ScreenClient) ([]byte, string, error) {
+	docs := s.docs()
+	if docs == nil {
+		return nil, "", frontend.ErrNotFound
+	}
+	body, tag, err := docs.Document(ctx, viewer, screens.DocumentRequest{Kind: kind, ID: id, Page: page, ClientInfo: s.client(c)})
+	return body, tag, mapScreensError(err)
+}
+
+func (s surfaceScreens) ScreenData(ctx context.Context, viewer *frontend.Viewer, req frontend.ScreenDataRequest) (json.RawMessage, error) {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil {
+		return nil, frontend.ErrNotFound
+	}
+	res, err := s.app.pluginsRT.screens.Data(ctx, viewer, screens.DataRequest{Kind: req.Kind, ID: req.ID, Page: req.Page, Sources: req.Sources, Params: req.Params, TZ: req.TZ, Images: req.Images, ClientInfo: s.client(req.Client)})
+	if err != nil {
+		return nil, mapScreensError(err)
+	}
+	return json.Marshal(res)
+}
+
+func (s surfaceScreens) SetSurfaceSetting(ctx context.Context, viewer *frontend.Viewer, id string, enabled bool) error {
+	docs := s.docs()
+	if docs == nil || viewer == nil {
+		return frontend.ErrNotFound
+	}
+	t, ok := docs.FindSurface(ctx, viewer, s.surface, id)
+	if !ok || t.Meta.Setting == nil {
+		return frontend.ErrNotFound
+	}
+	if err := s.settings().Set(ctx, viewer.ID, t.WireID, enabled); err != nil {
+		return err
+	}
+	// Bootstrap carries the remembered switch; refresh it everywhere.
+	docs.Bump()
+	return nil
+}
+
+func (s surfaceScreens) ScreenAsset(ctx context.Context, pluginID, version, p string) ([]byte, string, error) {
+	docs := s.docs()
+	if docs == nil || s.app.pluginsRT.mgr == nil || !docs.Asset(pluginID, version, p) {
+		return nil, "", frontend.ErrNotFound
+	}
+	files, err := s.app.pluginsRT.mgr.PackageFiles(ctx, pluginID)
+	if err != nil {
+		return nil, "", frontend.ErrNotFound
+	}
+	b, ok := files[p]
+	if !ok {
+		return nil, "", frontend.ErrNotFound
+	}
+	ct := mime.TypeByExtension(path.Ext(p))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return b, ct, nil
+}
+
+func (s surfaceScreens) ToastSurface(ctx context.Context, viewer *frontend.Viewer, c frontend.ScreenClient, pluginID string) string {
+	docs := s.docs()
+	if docs == nil || c.Renderer <= 0 {
+		return ""
+	}
+	for _, t := range docs.Surfaces(ctx, viewer, s.surface) {
+		if t.PluginID == pluginID && t.Meta.Presentation == "toast" {
+			return t.WireID
+		}
+	}
+	return ""
+}
+
+type screenStreamAdapter struct {
+	frames chan frontend.ScreenFrame
+	stop   func()
+}
+
+func (a *screenStreamAdapter) Frames() <-chan frontend.ScreenFrame { return a.frames }
+func (a *screenStreamAdapter) Close()                              { a.stop() }
+
+func (s surfaceScreens) ScreenStream(ctx context.Context, viewer *frontend.Viewer, topics []string, since int64, images frontend.ScreenImages) (frontend.ScreenStream, error) {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil {
+		return nil, frontend.ErrNotFound
+	}
+	in, stop, err := s.app.pluginsRT.screens.Stream(ctx, viewer, topics, since, images)
+	if err != nil {
+		return nil, mapScreensError(err)
+	}
+	out := make(chan frontend.ScreenFrame, 8)
+	go func() {
+		defer close(out)
+		for f := range in {
+			select {
+			case out <- frontend.ScreenFrame{Event: f.Event, Data: f.Data}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return &screenStreamAdapter{frames: out, stop: stop}, nil
+}
+
+// Built-in actions (ether.*) need no declaration; their answer carries the
+// page's sources and records read again after the change, so every card
+// redraws from the answer.
+const screenActionBudget = 8 * time.Second
+
+func (s surfaceScreens) ScreenAction(ctx context.Context, viewer *frontend.Viewer, req frontend.ScreenActionRequest) (json.RawMessage, error) {
+	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
+		return nil, frontend.ErrNotFound
+	}
+	svc := s.app.pluginsRT.screens
+	ctx, cancel := context.WithTimeout(ctx, screenActionBudget)
+	defer cancel()
+	// The page must be one the viewer may use, whatever the action.
+	params := req.Params
+	if req.Kind == "surface" {
+		params = req.Context
+	}
+	read := screens.DataRequest{Kind: req.Kind, ID: req.ID, Page: req.Page, Params: params, TZ: req.TZ, All: true, Images: req.Images, ClientInfo: s.client(req.Client)}
+	if err := svc.Authorize(ctx, viewer, read); err != nil {
+		return nil, mapScreensError(err)
+	}
+	str := func(name string) string {
+		var v string
+		if raw, ok := req.Args[name]; ok {
+			_ = json.Unmarshal(raw, &v)
+		}
+		return strings.TrimSpace(v)
+	}
+	boolean := func(name string) (bool, bool) {
+		var v bool
+		raw, ok := req.Args[name]
+		if !ok || json.Unmarshal(raw, &v) != nil {
+			var sv string
+			if ok && json.Unmarshal(raw, &sv) == nil && (sv == "true" || sv == "false") {
+				return sv == "true", true
+			}
+			return false, false
+		}
+		return v, true
+	}
+	switch req.Action {
+	case "ether.favorite":
+		ref := str("ref")
+		on, ok := boolean("on")
+		if !ok || ref == "" {
+			return nil, frontend.ErrScreenParams
+		}
+		key, isEntity := strings.CutPrefix(ref, "entity:")
+		if !isEntity {
+			return nil, frontend.ErrScreenParams
+		}
+		if _, ok := favorites.ParseEntityKey(key); !ok {
+			return nil, frontend.ErrScreenParams
+		}
+		if err := s.SetFavoriteEntity(ctx, viewer, key, on); err != nil {
+			return nil, err
+		}
+	case "ether.reveal":
+		id := strings.TrimPrefix(str("event"), "event:")
+		if id == "" {
+			return nil, frontend.ErrScreenParams
+		}
+		if err := (surfaceLiveEvents{app: s.app}).Reveal(ctx, viewer, id); err != nil {
+			return nil, err
+		}
+	case "ether.spoilerFree":
+		on, ok := boolean("on")
+		if !ok {
+			return nil, frontend.ErrScreenParams
+		}
+		if err := (surfaceLiveEvents{app: s.app}).SetSpoilerFree(ctx, viewer, on); err != nil {
+			return nil, err
+		}
+	default:
+		return s.pluginAction(ctx, viewer, req)
+	}
+	res, err := svc.Data(ctx, viewer, read)
+	if err != nil {
+		return nil, mapScreensError(err)
+	}
+	return json.Marshal(map[string]any{"records": res.Records, "sources": res.Sources})
+}
+
+// pluginAction runs a plugin-declared action (stage E3).
+func (s surfaceScreens) pluginAction(context.Context, *frontend.Viewer, frontend.ScreenActionRequest) (json.RawMessage, error) {
+	return nil, frontend.ErrNotFound
+}
+
+var _ frontend.PluginScreens = surfaceScreens{}

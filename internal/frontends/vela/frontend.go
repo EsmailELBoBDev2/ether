@@ -740,6 +740,10 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
 		return
 	}
+	if h := strings.TrimSpace(r.Header.Get("Idempotency-Key")); h != "" {
+		// The header wins over body.idempotencyKey when a client sends both.
+		envelope.IdempotencyKey = &h
+	}
 	if envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "" || len(*envelope.IdempotencyKey) > 256 {
 		problem(w, 400, "request", "idempotency_key_required")
 		return
@@ -939,6 +943,14 @@ func (i *instance) routes() {
 	i.route("GET", "/live/entities", i.liveEntities)
 	i.route("GET", "/live/ticker", i.liveTicker)
 	i.route("GET", "/screens/{id}", i.screen)
+	i.route("GET", "/screens/{id}/pages/{page}/document", i.screenDocument)
+	i.route("GET", "/screens/{id}/pages/{page}/data", i.screenData)
+	i.route("POST", "/screens/{id}/actions/{action}", i.screenAction)
+	i.route("GET", "/surfaces/{id}/document", i.surfaceDocument)
+	i.route("GET", "/surfaces/{id}/data", i.surfaceData)
+	i.route("POST", "/surfaces/{id}/actions/{action}", i.surfaceAction)
+	i.route("PUT", "/surfaces/{id}/setting", i.surfaceSetting)
+	i.route("GET", "/screen-assets/{plugin}/{version}/{path...}", i.screenAsset)
 	i.route("GET", "/favorites/titles", i.favoriteTitles)
 	i.route("GET", "/recent", i.recentPlayContexts)
 	i.route("PUT", "/favorites/entities/{key}", i.favoriteEntity)

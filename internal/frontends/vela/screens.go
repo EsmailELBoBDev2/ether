@@ -1,6 +1,7 @@
 package vela
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -14,18 +15,51 @@ func (i *instance) screensGeneration() uint64 {
 	return 0
 }
 
-func (i *instance) screenNavigation(r *http.Request, v *frontend.Viewer) ([]frontend.NavigationScreen, error) {
+func (i *instance) screenNavigation(r *http.Request, v *frontend.Viewer) ([]any, error) {
+	out := []any{}
 	if i.host.Screens == nil || v == nil {
-		return []frontend.NavigationScreen{}, nil
+		return out, nil
+	}
+	// A client that draws documents gets document screens; a screen that
+	// has no document (or a client that draws none) keeps its sections entry.
+	documents := map[string]bool{}
+	c := screenClient(r)
+	if ps, ok := i.pluginScreens(); ok && c.Renderer > 0 {
+		raw, err := ps.ScreenNavigation(r.Context(), v, c)
+		if err != nil {
+			return nil, err
+		}
+		var entries []map[string]any
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if id, _ := e["id"].(string); id != "" {
+				documents[id] = true
+			}
+			out = append(out, e)
+		}
 	}
 	nav, err := i.host.Screens.Navigation(r.Context(), v)
 	if err != nil {
 		return nil, err
 	}
-	if nav == nil {
-		return []frontend.NavigationScreen{}, nil
+	for _, n := range nav {
+		if !documents[n.ID] {
+			out = append(out, n)
+		}
 	}
-	return nav, nil
+	return out, nil
+}
+
+// screenSurfaces lists the surfaces for bootstrap.
+func (i *instance) screenSurfaces(r *http.Request, v *frontend.Viewer) (json.RawMessage, error) {
+	ps, ok := i.pluginScreens()
+	c := screenClient(r)
+	if !ok || v == nil || c.Renderer == 0 {
+		return json.RawMessage("[]"), nil
+	}
+	return ps.ScreenSurfaces(r.Context(), v, c)
 }
 
 // screen serves GET /vela/v0/screens/{id}?league=&date=.

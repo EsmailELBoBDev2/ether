@@ -77,7 +77,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		// Credentials scope the image grants and cursor scope includes the complete
 		// viewer policy. Do not reuse wire responses between refresh families/devices,
 		// certificate-region preferences, or viewer spoiler-free preferences.
-		scope := hashJSON([]any{v, dev, token, avatar, spoilerFree, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.extrasAvailable(), i.extraPlaybackAvailable(), i.previewAvailable(), i.themeAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration()})
+		scope := hashJSON([]any{v, dev, token, avatar, spoilerFree, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.extrasAvailable(), i.extraPlaybackAvailable(), i.previewAvailable(), i.themeAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration(), screenClient(r)})
 		freshness := i.bootstrapFreshness()
 		var before frontend.HomeRevision
 		cacheable := false

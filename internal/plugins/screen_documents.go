@@ -20,15 +20,15 @@ type ScreenDocuments struct {
 // CompileScreenDocuments compiles every document the manifest names from the
 // package files. It is the install-time check and the serving source, so a
 // document that installs is exactly the document clients get.
-func CompileScreenDocuments(man Manifest, files map[string][]byte, text map[string]map[string]string) (ScreenDocuments, error) {
+func CompileScreenDocuments(man Manifest, files map[string][]byte, english func(key string) (string, bool)) (ScreenDocuments, error) {
 	out := ScreenDocuments{Screens: map[string]map[string][]*screendoc.Compiled{}, Surfaces: map[string][]*screendoc.Compiled{}}
 	if man.Ether == nil || !ScreensUseDocuments(man) {
 		return out, nil
 	}
 	c := man.Ether.Contributes
 	opts := screendoc.Options{
-		Asset:   func(p string) bool { _, ok := files[p]; return ok },
-		Strings: text["en"],
+		Asset: func(p string) bool { _, ok := files[p]; return ok },
+		Text:  english,
 	}
 	for _, f := range c.LiveFeeds {
 		opts.Feeds = append(opts.Feeds, f.ID)

@@ -31,6 +31,7 @@ func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
 		Hub:       pluginLiveFeedBridge{mgr: mgr},
 		Favorites: appFavoriteEntities{app: a},
 		Now:       time.Now,
+		Documents: a.buildDocRegistry(mgr),
 	})
 	mgr.OnSync(func(ctx context.Context, r plugins.Record) {
 		reg.Sync(r, func(key string) string {
@@ -356,7 +357,7 @@ func (s surfaceScreens) Generation() uint64 {
 	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil {
 		return 0
 	}
-	return s.app.pluginsRT.screens.Generation()
+	return s.app.pluginsRT.screens.Generation() + s.app.pluginsRT.screens.Documents().Generation()<<32
 }
 
 func (s surfaceScreens) Navigation(ctx context.Context, viewer *frontend.Viewer) ([]frontend.NavigationScreen, error) {

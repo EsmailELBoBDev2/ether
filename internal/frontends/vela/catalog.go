@@ -739,10 +739,15 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	if err != nil {
 		return nil, err
 	}
+	surfaces, err := i.screenSurfaces(r, v)
+	if err != nil {
+		return nil, err
+	}
 	out := object{
 		"viewer":        viewer,
 		"capabilities":  i.requestCapabilitiesFor(r, v),
 		"navigation":    navigation,
+		"surfaces":      surfaces,
 		"defaultSkinId": appDoc.skinID,
 		"branding":      appDoc.branding,
 		"force":         appDoc.force,

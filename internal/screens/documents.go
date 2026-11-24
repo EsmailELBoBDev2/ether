@@ -89,7 +89,7 @@ func (r *DocRegistry) Bump() {
 
 // Sync compiles rec's documents from its package files and indexes them. A
 // plugin with no document screens or surfaces is removed.
-func (r *DocRegistry) Sync(rec plugins.Record, files map[string][]byte, english map[string]string, text TextFunc) error {
+func (r *DocRegistry) Sync(rec plugins.Record, files map[string][]byte, text TextFunc) error {
 	if r == nil || rec.ID == "" {
 		return nil
 	}
@@ -97,7 +97,11 @@ func (r *DocRegistry) Sync(rec plugins.Record, files map[string][]byte, english 
 		r.Remove(rec.ID)
 		return nil
 	}
-	docs, err := plugins.CompileScreenDocuments(rec.Manifest, files, map[string]map[string]string{"en": english})
+	var english func(string) (string, bool)
+	if text != nil {
+		english = func(k string) (string, bool) { return text("en", k) }
+	}
+	docs, err := plugins.CompileScreenDocuments(rec.Manifest, files, english)
 	if err != nil {
 		r.Remove(rec.ID)
 		return err

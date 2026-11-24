@@ -151,9 +151,9 @@ type Options struct {
 	Kinds []string
 	// Asset reports whether the package holds path, for "asset:" values.
 	Asset func(path string) bool
-	// Strings is the plugin's own text (en), used when a document names a
-	// key it does not define itself.
-	Strings map[string]string
+	// Text looks up the plugin's own English text, used when a document
+	// names a key it does not define itself.
+	Text func(key string) (string, bool)
 }
 
 // Compiled is a validated document, ready to serve.
@@ -304,9 +304,11 @@ func (c *compiler) compile(raw []byte) (*Compiled, error) {
 		if _, ok := out.Strings[key]; ok {
 			continue
 		}
-		if t, ok := c.opts.Strings[key]; ok {
-			out.Strings[key] = t
-			continue
+		if c.opts.Text != nil {
+			if t, ok := c.opts.Text(key); ok {
+				out.Strings[key] = t
+				continue
+			}
 		}
 		c.fail(ptr, "{s:%s} has no text: add it to the document's strings or the plugin's English strings", key)
 	}

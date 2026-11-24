@@ -267,7 +267,7 @@ func (r *DocRegistry) Document(ctx context.Context, viewer *core.User, req Docum
 		Presentation: presentation,
 		Actions:      acts,
 		AssetURL: func(p string) string {
-			return "/vela/v0/screens/assets/" + url.PathEscape(e.pluginID) + "/" + url.PathEscape(e.version) + "/" + p
+			return "/vela/v0/screen-assets/" + url.PathEscape(e.pluginID) + "/" + url.PathEscape(e.version) + "/" + p
 		},
 		Text: func(k string) (string, bool) {
 			if e.text == nil {

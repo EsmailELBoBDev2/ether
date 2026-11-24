@@ -31,6 +31,7 @@ type Topic struct {
 	ID       string            `json:"i"`
 	Page     string            `json:"p,omitempty"`
 	Params   map[string]string `json:"b,omitempty"`
+	Sources  []string          `json:"s,omitempty"`
 	TZ       string            `json:"z,omitempty"`
 	Renderer int               `json:"r"`
 	Locale   string            `json:"l,omitempty"`
@@ -49,7 +50,7 @@ func (s *Service) sealTopic(viewer *core.User, req DataRequest, t target, b bind
 	for k, v := range req.Params {
 		params[k] = v
 	}
-	tp := Topic{Viewer: viewer.ID, Frontend: req.Frontend, Kind: t.kind, ID: t.wireID, Page: t.page, Params: params,
+	tp := Topic{Viewer: viewer.ID, Frontend: req.Frontend, Kind: t.kind, ID: t.wireID, Page: t.page, Params: params, Sources: req.Sources,
 		TZ: req.TZ, Renderer: req.Renderer, Locale: req.Locale, Expires: s.now().Add(topicTTL).Unix()}
 	raw, err := json.Marshal(tp)
 	if err != nil {

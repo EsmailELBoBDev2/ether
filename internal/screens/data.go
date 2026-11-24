@@ -58,7 +58,19 @@ type DataRequest struct {
 	// Params are the raw p.* values (page params, or surface context).
 	Params map[string]string
 	TZ     string
+	// All reads every source, lazy ones included (an action's answer).
+	All bool
+	// Images signs image references for the client; nil drops every image,
+	// so no upstream URL can ever reach a client.
+	Images ImageSigner
 	ClientInfo
+}
+
+// ImageSigner turns a plugin-named image URL or a channel into a URL the
+// client may load; "" drops the image.
+type ImageSigner interface {
+	Plugin(pluginID, url string) string
+	Channel(channelID string) string
 }
 
 // LiveDetails is the optional part of the live source the data reads use
@@ -190,6 +202,7 @@ type readCtx struct {
 	loc    *time.Location
 	now    time.Time
 	favs   *favoriteSet
+	images ImageSigner
 
 	mu      sync.Mutex
 	records map[string]any
@@ -202,10 +215,58 @@ type eventFetch struct {
 	err    error
 }
 
+// img signs a plugin-named image of this read's plugin.
+func (rc *readCtx) img(raw string) string {
+	if raw == "" || rc.images == nil {
+		return ""
+	}
+	return rc.images.Plugin(rc.t.plugin.pluginID, raw)
+}
+
+func (rc *readCtx) signEvent(v *EventView) {
+	v.League.Logo = rc.img(v.League.Logo)
+	for i := range v.Sides {
+		v.Sides[i].Logo = rc.img(v.Sides[i].Logo)
+	}
+	for i := range v.Watch.Targets {
+		v.Watch.Targets[i].Logo = rc.channelLogo(v.Watch.Targets[i])
+	}
+	if v.Watch.Primary != nil {
+		p := *v.Watch.Primary
+		p.Logo = rc.channelLogo(p)
+		v.Watch.Primary = &p
+	}
+}
+
+func (rc *readCtx) channelLogo(t WatchTargetView) string {
+	if t.Logo == "" || t.ChannelID == "" || rc.images == nil {
+		return ""
+	}
+	return rc.images.Channel(t.ChannelID)
+}
+
+func (rc *readCtx) signLeagues(ls []LeagueView) []LeagueView {
+	for i := range ls {
+		ls[i].Logo = rc.img(ls[i].Logo)
+	}
+	return ls
+}
+
 func (rc *readCtx) addRecord(key string, value any) {
 	rc.mu.Lock()
 	rc.records[key] = value
 	rc.mu.Unlock()
+}
+
+// Authorize checks that viewer may use the page or surface req names, with
+// valid parameters, without reading any source.
+func (s *Service) Authorize(ctx context.Context, viewer *core.User, req DataRequest) error {
+	t, err := s.findTarget(ctx, viewer, req.Kind, req.ID, req.Page, req.ClientInfo)
+	if err != nil {
+		return err
+	}
+	_, err = bind(t, req.Params, req.TZ)
+	return err
 }
 
 // Data resolves a data read.
@@ -227,7 +288,9 @@ func (s *Service) Data(ctx context.Context, viewer *core.User, req DataRequest) 
 		return DataResponse{}, err
 	}
 	ids := req.Sources
-	if len(ids) == 0 {
+	if req.All {
+		ids = t.doc.SourceIDs()
+	} else if len(ids) == 0 {
 		for _, id := range t.doc.SourceIDs() {
 			if !t.doc.Sources[id].Lazy {
 				ids = append(ids, id)
@@ -243,7 +306,7 @@ func (s *Service) Data(ctx context.Context, viewer *core.User, req DataRequest) 
 	if err != nil {
 		return DataResponse{}, err
 	}
-	rc := &readCtx{ctx: ctx, s: s, viewer: viewer, t: t, b: b, loc: loc, now: s.now(), favs: favs,
+	rc := &readCtx{ctx: ctx, s: s, viewer: viewer, t: t, b: b, loc: loc, now: s.now(), favs: favs, images: req.Images,
 		records: map[string]any{}, events: map[string]*eventFetch{}}
 	out := DataResponse{Sources: map[string]any{}, Records: map[string]RecordEntry{}}
 	type result struct {
@@ -523,7 +586,9 @@ func (rc *readCtx) eventRecords(ctx context.Context, events []core.LiveEvent, ki
 	refs := make([]map[string]string, 0, len(events))
 	for _, ev := range events {
 		key := "event:" + ev.ID
-		rc.addRecord(key, buildEventView(ev, rc.favs, kind))
+		v := buildEventView(ev, rc.favs, kind)
+		rc.signEvent(&v)
+		rc.addRecord(key, v)
 		refs = append(refs, recordRef(key))
 	}
 	return refs
@@ -782,7 +847,9 @@ func (rc *readCtx) liveEvent(ctx context.Context, src screendoc.Source) (any, er
 	if len(d.Watch) == 0 {
 		rc.enrichWatch(ctx, events)
 	}
-	rc.addRecord("event:"+id, buildEventView(events[0], rc.favs, kind))
+	ev := buildEventView(events[0], rc.favs, kind)
+	rc.signEvent(&ev)
+	rc.addRecord("event:"+id, ev)
 	rc.addRecord("detail:"+id, buildDetailView(*d, rc.favs, kind))
 	return map[string]any{"event": recordRef("event:" + id), "detail": recordRef("detail:" + id)}, nil
 }
@@ -865,7 +932,7 @@ func (rc *readCtx) liveLeagues(ctx context.Context, src screendoc.Source) (any, 
 	if leagues == nil {
 		leagues = []LeagueView{}
 	}
-	return map[string]any{"leagues": leagues, "selected": ""}, nil
+	return map[string]any{"leagues": rc.signLeagues(leagues), "selected": ""}, nil
 }
 
 func (rc *readCtx) liveEntities(ctx context.Context, src screendoc.Source) (any, error) {
@@ -956,13 +1023,14 @@ func (rc *readCtx) liveEntities(ctx context.Context, src screendoc.Source) (any,
 	})
 	refs := make([]map[string]string, 0, len(views))
 	for _, v := range views {
+		v.Logo = rc.img(v.Logo)
 		rc.addRecord("entity:"+v.Key, v)
 		refs = append(refs, recordRef("entity:"+v.Key))
 	}
 	if leagues == nil {
 		leagues = []LeagueView{}
 	}
-	return map[string]any{"entities": refs, "leagues": leagues, "opening": opening}, nil
+	return map[string]any{"entities": refs, "leagues": rc.signLeagues(leagues), "opening": opening}, nil
 }
 
 func (rc *readCtx) watch(ctx context.Context, src screendoc.Source) (any, error) {
@@ -983,7 +1051,16 @@ func (rc *readCtx) watch(ctx context.Context, src screendoc.Source) (any, error)
 		if ev.ID == id {
 			list := []core.LiveEvent{ev}
 			rc.enrichWatch(ctx, list)
-			return watchView(list[0]), nil
+			w := watchView(list[0])
+			for i := range w.Targets {
+				w.Targets[i].Logo = rc.channelLogo(w.Targets[i])
+			}
+			if w.Primary != nil {
+				p := *w.Primary
+				p.Logo = rc.channelLogo(p)
+				w.Primary = &p
+			}
+			return w, nil
 		}
 	}
 	return nil, core.ErrNotFound

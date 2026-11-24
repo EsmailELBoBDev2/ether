@@ -50,6 +50,12 @@ func (s *liveImages) plugin(pluginID, raw string) string {
 	return out
 }
 
+// Plugin and Channel make the signer the screens' image signer.
+func (s *liveImages) Plugin(pluginID, raw string) string { return s.plugin(pluginID, raw) }
+
+// Channel signs a channel's own logo.
+func (s *liveImages) Channel(channelID string) string { return s.channel(channelID) }
+
 func (s *liveImages) channel(channelID string) string {
 	channelID = strings.TrimSpace(channelID)
 	if channelID == "" {
@@ -109,7 +115,10 @@ func (s *liveImages) walk(node any, pluginID, parentKey string) any {
 			if k == "logo" {
 				raw, _ := child.(string)
 				var signed string
-				if watchTarget {
+				if strings.HasPrefix(raw, "/vela/v0/images/") {
+					// Already a grant (signed where the data was built).
+					signed = raw
+				} else if watchTarget {
 					// A watch target's logo is its channel's; anything else
 					// (an add-on or plugin target) carries no logo.
 					channelID, _ := n["channelId"].(string)

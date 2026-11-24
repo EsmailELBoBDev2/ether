@@ -44,6 +44,7 @@ type Service struct {
 	watch WatchTargetResolver
 
 	docs     *DocRegistry
+	live     LiveSubscriber
 	revs     *revStore
 	extra    ExtraSources
 	topicKey []byte

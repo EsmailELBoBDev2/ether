@@ -2,8 +2,10 @@ package vela
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -215,6 +217,39 @@ func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
 	alertsParam := strings.TrimSpace(q.Get("alerts"))
 	wantsAlerts := alertsParam == "1" || strings.EqualFold(alertsParam, "true")
 
+	// Plugin screens and surfaces: up to four sealed topics from data reads,
+	// replaying everything newer than since.
+	topics := q["topic"]
+	if len(topics) > frontend.MaxScreenStreamTopics {
+		problem(w, 400, "request", "too_many_topics")
+		return
+	}
+	var since int64
+	if raw := q.Get("since"); raw != "" {
+		n, perr := strconv.ParseInt(raw, 10, 64)
+		if perr != nil || n < 0 {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		since = n
+	}
+	var screenFrames <-chan frontend.ScreenFrame
+	documentClient := len(topics) > 0 || screenClient(r).Renderer > 0
+	if len(topics) > 0 {
+		ps, ok := i.pluginScreens()
+		if !ok {
+			problem(w, 404, "not-found", "not_found")
+			return
+		}
+		ss, err := ps.ScreenStream(r.Context(), v, topics, since, i.newLiveImages(r, token))
+		if err != nil {
+			screenFail(w, r, err)
+			return
+		}
+		defer ss.Close()
+		screenFrames = ss.Frames()
+	}
+
 	stream, err := i.host.LiveEvents.Subscribe(r.Context(), v, frontend.LiveEventStreamRequest{
 		EventIDs: eventIDs,
 		Screens:  screens,
@@ -249,14 +284,25 @@ func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Binding Vela wire contract: send an initial update frame with the current
-	// state immediately on stream connect.
-	initial := stream.Initial()
-	if initial == nil {
-		initial = []frontend.LiveEvent{}
+	// state immediately on stream connect. A stream of plugin-screen topics
+	// only gets records and source frames instead.
+	if len(eventIDs) > 0 || len(screens) > 0 || len(topics) == 0 {
+		initial := stream.Initial()
+		if initial == nil {
+			initial = []frontend.LiveEvent{}
+		}
+		if err := writeEvent("update", object{"events": initial}); err != nil {
+			return
+		}
 	}
-	if err := writeEvent("update", object{"events": initial}); err != nil {
-		return
+	writeRaw := func(eventName string, raw json.RawMessage) error {
+		_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, raw); err != nil {
+			return err
+		}
+		return flushSSE(rc, flush, writeTimeout)
 	}
+	alertSurfaces := map[string]string{}
 
 	var heartbeatC <-chan time.Time
 	if i.liveHeartbeatCh != nil {
@@ -291,7 +337,23 @@ func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
 				alertsC = nil
 				continue
 			}
-			if err := writeEvent("alert", alert); err != nil {
+			var payload any = alert
+			if documentClient {
+				payload = i.alertFrame(r, v, alert, alertSurfaces)
+			}
+			if err := writeEvent("alert", payload); err != nil {
+				return
+			}
+		case f, ok := <-screenFrames:
+			if !ok {
+				// The topics' pages went away for this viewer.
+				return
+			}
+			signed, err := images.signRaw(f.Data, "")
+			if err != nil {
+				continue
+			}
+			if err := writeRaw(f.Event, signed); err != nil {
 				return
 			}
 		case <-heartbeatC:
@@ -304,4 +366,36 @@ func (i *instance) liveEventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// alertFrame is the alert as a document client gets it: the toast surface
+// to draw it with and the event it is about as a record key.
+func (i *instance) alertFrame(r *http.Request, v *frontend.Viewer, alert frontend.LiveEventAlert, surfaces map[string]string) object {
+	pluginID := ""
+	if p, _, ok := strings.Cut(alert.EventID, ":"); ok {
+		pluginID = p
+	}
+	out := object{"id": alert.ID, "kind": alert.Kind, "title": alert.Title, "body": alert.Body, "at": alert.At}
+	if alert.EventID != "" {
+		out["ref"] = "event:" + alert.EventID
+	}
+	if pluginID == "" {
+		return out
+	}
+	out["plugin"] = pluginID
+	surface, seen := surfaces[pluginID]
+	if !seen {
+		if ps, ok := i.pluginScreens(); ok {
+			c := screenClient(r)
+			if c.Renderer == 0 {
+				c.Renderer = 1 << 20
+			}
+			surface = ps.ToastSurface(r.Context(), v, c, pluginID)
+		}
+		surfaces[pluginID] = surface
+	}
+	if surface != "" {
+		out["surface"] = surface
+	}
+	return out
 }

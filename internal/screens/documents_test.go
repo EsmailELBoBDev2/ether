@@ -63,7 +63,7 @@ func TestDocumentScreensServeAndReadSportsData(t *testing.T) {
 	now := time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC)
 	reg := NewDocRegistry(DocRegistryOptions{})
 	rec, files := sportsDocsRecord(t)
-	if err := reg.Sync(rec, files, nil, nil); err != nil {
+	if err := reg.Sync(rec, files, nil); err != nil {
 		t.Fatal(err)
 	}
 	hub := &fakeHub{events: []core.LiveEvent{

@@ -423,7 +423,8 @@ func (p *Preview) resolve() error {
 		}
 	}
 	if ScreensUseDocuments(man) {
-		if _, err := CompileScreenDocuments(man, p.files, p.resolvedStrings); err != nil {
+		english := func(key string) (string, bool) { t, ok := p.resolvedStrings["en"][key]; return t, ok }
+		if _, err := CompileScreenDocuments(man, p.files, english); err != nil {
 			return err
 		}
 	}

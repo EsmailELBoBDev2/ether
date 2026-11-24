@@ -89,6 +89,7 @@ func (a *App) buildLiveEvents() {
 	// Wire W256 screens to W255's hub and W257's watch matcher.
 	if a.pluginsRT.screens != nil {
 		a.pluginsRT.screens.SetHub(liveEventsScreenHub{hub: hub})
+		a.pluginsRT.screens.SetLiveSubscriber(screenLiveSubscriber{hub: hub})
 		a.pluginsRT.screens.SetWatchTargets(watchTargetAdapter{matcher: watchMatcher})
 		hub.SetScreenFeedResolver(func(ctx context.Context, viewer *core.Viewer, screenID string) ([]liveevents.FeedRef, error) {
 			return a.liveScreenFeeds(ctx, viewer, screenID)

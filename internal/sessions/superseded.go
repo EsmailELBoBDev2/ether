@@ -34,7 +34,7 @@ func (b *Broker) rememberRetiredLocked(s *brokerSession) {
 func (b *Broker) collectSupersededLocked(replacement *brokerSession) []*brokerSession {
 	var old []*brokerSession
 	for id, s := range b.sessions {
-		if s.public.ViewerID != replacement.public.ViewerID || s.clientID != replacement.clientID {
+		if id == replacement.public.ID || s.public.ViewerID != replacement.public.ViewerID || s.clientID != replacement.clientID {
 			continue
 		}
 		if replacement.multiviewGroup != "" && s.multiviewGroup == replacement.multiviewGroup && s.multiviewTile != replacement.multiviewTile {
@@ -169,4 +169,41 @@ func (b *Broker) reuseDirectFileSession(v *core.Viewer, req frontend.OpenRequest
 		return copySession(s.public), true
 	}
 	return frontend.Session{}, false
+}
+
+// collectStaleQueuedLocked retires the device's earlier queued item that never
+// played when a newer one is queued; the playing session stays.
+func (b *Broker) collectStaleQueuedLocked(replacement *brokerSession) []*brokerSession {
+	var old []*brokerSession
+	for id, s := range b.sessions {
+		if !s.queued || id == replacement.public.ID || s.public.ViewerID != replacement.public.ViewerID || s.clientID != replacement.clientID {
+			continue
+		}
+		delete(b.sessions, id)
+		b.rememberRetiredLocked(s)
+		old = append(old, s)
+	}
+	return old
+}
+
+// activateQueued makes a queued next item the device's playback once it is
+// observed playing: it takes ownership and supersedes the session that was
+// playing (which has ended by now on a gapless client). A no-op for any other
+// session.
+func (b *Broker) activateQueued(ctx context.Context, id string) {
+	b.mu.Lock()
+	s, ok := b.sessions[id]
+	if !ok || !s.queued || b.closed {
+		b.mu.Unlock()
+		return
+	}
+	s.queued = false
+	b.owners.BindFor("broker", s.public.ViewerID, s.clientID, s.public.Item, s.playbackID, s.playID, true, b.deps.Now())
+	superseded := b.collectSupersededLocked(s)
+	b.bumpNonGroupEpochLocked(s.public.ViewerID, s.clientID)
+	b.mu.Unlock()
+	b.finishSuperseded(ctx, superseded, s.playID)
+	if b.cluster != nil {
+		b.cluster.ownershipChanged(ctx)
+	}
 }

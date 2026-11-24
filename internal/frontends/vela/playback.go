@@ -124,6 +124,9 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		Multiview                   *multiviewPlaybackRequest `json:"multiview,omitempty"`
 		// Context: what this play started from (features.playContexts).
 		Context *playContextRequest `json:"context,omitempty"`
+		// Queued: the next item of the device's play queue, opened ahead of
+		// time for gapless audio (features.queuedPlayback).
+		Queued bool `json:"queued,omitempty"`
 	}
 	if body(r, &b) != nil || b.Client.Device.ID != requestDevice(r).ID {
 		problem(w, 400, "request", "invalid_target")
@@ -261,7 +264,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	plan, e := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Protocol: "vela", Viewer: v, Device: requestDevice(r), Item: item, Channel: b.ChannelID, Multiview: mvTarget, Version: b.VersionID, Caps: declared.Client, Intent: frontend.PlayIntent{Options: options, AudioSet: audioSet, SubtitleSet: subtitleSet, Position: pos, ExactVersion: b.VersionID != "", AllowTranscoding: b.AllowTranscode, DeclaredCaps: true, OriginalPlayback: b.Client.OriginalPlayback}})
+	plan, e := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Protocol: "vela", Viewer: v, Device: requestDevice(r), Item: item, Channel: b.ChannelID, Multiview: mvTarget, Version: b.VersionID, Caps: declared.Client, Intent: frontend.PlayIntent{Options: options, AudioSet: audioSet, SubtitleSet: subtitleSet, Position: pos, ExactVersion: b.VersionID != "", AllowTranscoding: b.AllowTranscode, DeclaredCaps: true, OriginalPlayback: b.Client.OriginalPlayback, Queued: b.Queued && b.TitleID != ""}})
 	if e != nil {
 		if b.VersionID != "" && errors.Is(e, frontend.ErrNotFound) {
 			if _, itemErr := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), item), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: item}); itemErr == nil {

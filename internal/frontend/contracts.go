@@ -1064,6 +1064,11 @@ type PlayIntent struct {
 	// PreferRemux asks for a copy-only remux when source changes would
 	// otherwise disrupt the client. The broker still decides whether it applies.
 	PreferRemux bool
+	// Queued opens the next item of the device's play queue ahead of time
+	// (gapless audio). It plays beside the device's current session and
+	// replaces it only when it is first observed playing; preloading its
+	// media does not. It never counts as a second stream.
+	Queued bool
 	// DeclaredCaps marks Caps built from this request's complete device
 	// declaration (a Jellyfin/Emby PlaybackInfo DeviceProfile, a Silo
 	// capability body). The broker keeps the latest such caps per device so

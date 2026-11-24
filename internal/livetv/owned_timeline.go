@@ -69,6 +69,15 @@ type ownedTimeline struct {
 	// HLS player fails a live playlist that first lists fewer than three.
 	startAheadSegs int
 	producerAt     time.Time // when the current producer started (startAheadSegs)
+	// rebaseMedia, set for Ether's own producers (the relay), rewrites each
+	// published fMP4 segment's decode times so its media time is its place
+	// on the session clock (seg.start, the plan's windowStartSeconds): a
+	// relay whose opening cut was dropped, or a producer or slate spliced
+	// in later, starts its media where the playlist says. Provider bytes
+	// (a passthrough) and transport streams are never rewritten.
+	rebaseMedia  bool
+	spanShift    map[uint32]int64 // the current span's per-track tfdt delta
+	spanMeasured bool             // spanShift was measured for the current span
 
 	firstAt   time.Time // first ingest, bounds the startup wait
 	window    []*ownedSegment
@@ -553,6 +562,7 @@ func (t *ownedTimeline) appendLocked(seg *ownedSegment, at time.Time) {
 	t.elapsed += seg.dur
 	seg.seq = t.nextSeq
 	t.nextSeq++
+	t.rebaseLocked(seg)
 	pdt := t.lastPDT
 	if len(t.window) > 0 {
 		last := t.window[len(t.window)-1]
@@ -582,6 +592,56 @@ func (t *ownedTimeline) appendLocked(seg *ownedSegment, at time.Time) {
 		t.history = t.history[len(t.history)-ownedHistory:]
 		t.collectLocked()
 	}
+}
+
+// rebaseLocked puts a segment's media on the session clock (rebaseMedia).
+// A span's first segment sets the shift: its earliest decode time moves to
+// seg.start, every track by the same time, so A/V offsets are kept. The rest
+// of the span moves with it, keeping its media continuous. A span that
+// cannot be measured, or a segment that cannot be moved, goes out as cut.
+func (t *ownedTimeline) rebaseLocked(seg *ownedSegment) {
+	if !t.rebaseMedia {
+		return
+	}
+	if seg.disc || len(t.window) == 0 && len(t.history) == 0 {
+		t.spanShift, t.spanMeasured = nil, false
+	}
+	if seg.ext != "m4s" || seg.mapRes == "" || seg.key.method != "" {
+		t.spanMeasured = true
+		return
+	}
+	if !t.spanMeasured {
+		t.spanMeasured = true
+		init, ok := t.resources[seg.mapRes]
+		if !ok {
+			return
+		}
+		scales := mp4Timescales(init.data)
+		origin, ok := mp4SegmentStartSeconds(init.data, seg.data)
+		if !ok || len(scales) == 0 {
+			return
+		}
+		shift := map[uint32]int64{}
+		for id, scale := range scales {
+			if d := int64(math.Round(origin*float64(scale))) - int64(math.Round(float64(seg.start)*float64(scale)/float64(time.Second))); d != 0 {
+				shift[id] = d
+			}
+		}
+		if len(shift) == 0 {
+			return
+		}
+		t.spanShift = shift
+		t.log.Info("owned live timeline moved a span's media onto the session clock", "seq", seg.seq, "media_start", time.Duration(origin*float64(time.Second)).Round(time.Millisecond), "session_start", seg.start, "origin", seg.origin)
+	}
+	if t.spanShift == nil {
+		return
+	}
+	data, ok := rebaseFMP4(seg.data, t.spanShift)
+	if !ok {
+		t.log.Warn("owned live timeline could not move a segment's media onto the session clock", "seq", seg.seq, "origin", seg.origin)
+		return
+	}
+	seg.data = data
 }
 
 // collectLocked drops init sections and keys no queued or listed segment

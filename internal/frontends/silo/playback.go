@@ -1490,10 +1490,10 @@ func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, b rep
 	}
 	restart := format == frontend.StreamHLS && (audio != currentAudio || burn || wasBurned || qualityChanged || format != snap.format)
 	if restart {
-		req := frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, AudioStream: &audio}
-		if burn {
-			req.SubtitleStream, req.BurnImageSubtitles = &subtitle, true
-		}
+		// Always name the subtitle: without it the restart kept the previous
+		// selection, so a burned PGS track stayed in the picture after
+		// switching to a text track (both showed) or to Off.
+		req := frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, AudioStream: &audio, SubtitleStream: &subtitle, BurnImageSubtitles: burn}
 		if qualityChanged {
 			req.MaxHeight = &height
 		}

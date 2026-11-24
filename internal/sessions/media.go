@@ -277,6 +277,9 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 				return "", core.ErrNotAvailable
 			}
 			options.SubtitleStream = *req.SubtitleStream
+			// A new selection replaces the burned one: switching from a burned
+			// PGS track to a text track or to Off must stop burning it.
+			options.BurnSubtitles = false
 			if req.BurnImageSubtitles {
 				for _, st := range ps.Info.Streams {
 					if st.Type == "subtitle" && st.Index == *req.SubtitleStream && transcode.IsImageSubtitle(st.Codec) {
@@ -291,6 +294,17 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		d, e := b.decideProfile(ps, frontend.PlanRequest{Viewer: viewer, Device: s.public.Device, Protocol: s.public.Protocol, Item: s.public.Item, Caps: s.caps, Intent: frontend.PlayIntent{Options: options, AllowTranscoding: s.allowTranscoding}})
 		if e != nil {
 			return "", e
+		}
+		// The server, not the app, turned off direct play for this restart (and
+		// direct stream when the player refused the copy). Activity must not
+		// read that as "the app's own quality settings".
+		if entry, ok := b.bindings.Get(id); ok {
+			if entry.Requested.Options.DirectPlay {
+				d.Reason = strings.Replace(d.Reason, "direct play not allowed by client", "server stream restarted", 1)
+			}
+			if entry.Requested.Options.DirectStream && reencode {
+				d.Reason = strings.Replace(d.Reason, "direct stream not allowed by client", "player refused the copied stream", 1)
+			}
 		}
 		dec = d
 		s.opts = options

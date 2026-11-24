@@ -946,6 +946,9 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			release = ps.Resolution.Release.ID
 		}
 		s.playIDs.endAdmission(ik, p.mediaID, release, admitted, s.now())
+		if admitted {
+			s.trackRestarts.admitted(ik, p.variantRelease, release, s.now())
+		}
 	}()
 	dec, err := s.openPlexPlan(ctx, pr, p, func(ctx context.Context) (frontend.PlanAdmission, error) {
 		var prepErr error
@@ -1297,7 +1300,9 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	}
 	// Wait for the result instead of converting slow preparation to an error.
 	// A genuine failure is answered now so admission does not repeat the search.
-	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), "", false); err != nil {
+	// A restart after a track change waits for the release being watched.
+	release, exact := s.restartRelease(s.playIdentityFor(pr, p.key), "")
+	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), release, exact); err != nil {
 		return t, err
 	}
 	return nil, nil
@@ -2411,6 +2416,7 @@ func (s *Server) handleTranscodeStop(w http.ResponseWriter, r *http.Request) {
 		// Retire a superseded encoder without releasing that prepared source,
 		// including stops that omit the external playback identifier.
 		superseded := s.playbackOwners.Stale(e.userID, e.clientID, e.key, e.playbackID)
+		s.trackRestarts.stopped(playIdentityKey{userID: e.userID, clientID: e.clientID, key: e.key}, s.liveRelease(e.userID, e.clientID, e.key), s.now())
 		// Another encoder, or a replacement decision, still owns this source.
 		// Broker Stop would release it. The last encoder stops the broker
 		// session that owns the source.
@@ -3264,7 +3270,9 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.observeClientAdmission(pr, caps)
-		ps, err = s.prepareForRelease(ctx, pr.User, key, caps, releaseID)
+		// A restart after a track change keeps the release being watched.
+		prepareRelease, exact := s.restartRelease(s.playIdentityFor(pr, key), releaseID)
+		ps, err = s.prepareForRelease(ctx, pr.User, key, caps, prepareRelease, exact)
 		if err != nil {
 			s.log.Info("direct play failed", "key", key, "reason", playbackMessage(err), "err", err)
 			s.writePartErr(w, r, pr, err)
@@ -3290,6 +3298,9 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			release = ps.Resolution.Release.ID
 		}
 		s.playIDs.admit(s.playIdentityFor(pr, key), media, release, !ok, s.now())
+		if !ok {
+			s.trackRestarts.admitted(s.playIdentityFor(pr, key), releaseID, release, s.now())
+		}
 		s.playbackOwners.Bind(pr.User.ID, pr.ClientID, key, pr.SessionID, ps.ID, false, s.now())
 		sessionID := pr.SessionID
 		if sessionID == "" {
@@ -3484,6 +3495,11 @@ func (s *Server) handlePartSelect(w http.ResponseWriter, r *http.Request) {
 			picked = &sub.Info
 		}
 		s.playIDs.pickSubtitle(s.playIdentityFor(pr, frontend.RatingKey(id)), picked, s.now())
+	}
+	if !key.IsPluginKey() && (audio != nil || audioDefault || sub != nil || clearSub || subDefault) {
+		// The client restarts playback for the new track; that restart
+		// keeps the release being watched (track_restart.go).
+		s.trackRestarts.pin(s.playIdentityFor(pr, key), s.liveRelease(pr.User.ID, pr.ClientID, key), s.now())
 	}
 	s.rememberStreamRequest(r, pr.User, frontend.RatingKey(id))
 	w.WriteHeader(http.StatusOK)

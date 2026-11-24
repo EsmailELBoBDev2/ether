@@ -230,6 +230,10 @@ func (b *brokenCollectionRows) HomeRowsFor(ctx context.Context, _ *core.User, _ 
 	return nil, b.err
 }
 
+func (b *brokenCollectionRows) LayoutRow(context.Context, *core.User, core.HubContext, string) (*core.CollectionRow, error) {
+	return nil, b.err
+}
+
 func TestBrokenCollectionCannotStallOrEmptyHubs(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()

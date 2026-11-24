@@ -56,8 +56,28 @@ func RowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, 
 func readRowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
 	var layout string
 	var favorites, exclusions, rules int64
-	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT document FROM personalize_home_layout WHERE id=1),''), COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0), COALESCE((SELECT revision FROM catalog_viewer_rules WHERE viewer_id=?),0)`, user.ID, user.ID, user.ID).Scan(&layout, &favorites, &exclusions, &rules)
+	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0), COALESCE((SELECT revision FROM catalog_viewer_rules WHERE viewer_id=?),0)`, user.ID, user.ID, user.ID).Scan(&favorites, &exclusions, &rules)
 	if err != nil {
+		return "", err
+	}
+	// Saved Recommendations pages (one row per page, a handful at most).
+	rows, err := db.QueryContext(ctx, `SELECT page, revision FROM personalize_pages ORDER BY page`)
+	if err != nil {
+		return "", err
+	}
+	for rows.Next() {
+		var page string
+		var revision int64
+		if err := rows.Scan(&page, &revision); err != nil {
+			rows.Close()
+			return "", err
+		}
+		layout += page + ":" + strconv.FormatInt(revision, 10) + ","
+	}
+	if err := rows.Close(); err != nil {
+		return "", err
+	}
+	if err := rows.Err(); err != nil {
 		return "", err
 	}
 	b, err := json.Marshal([]any{user.ID, user.IsOwner, user.MaxContentRating, user.AllowedLibraries, layout, favorites, exclusions, rules})

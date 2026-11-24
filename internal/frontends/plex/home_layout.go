@@ -114,12 +114,13 @@ func (s *Server) arrangeHomeRows(ctx context.Context, pr *Request, hc frontend.H
 		}
 		out := make([]model.Hub, 0, len(ordered))
 		for _, row := range ordered {
+			if row.Present.Surface != nil {
+				// A plugin surface row is drawn from the plugin's document;
+				// Plex has no renderer for it.
+				continue
+			}
 			if index, ok := byID[row.ID]; ok {
-				painted := rows[index]
-				painted.PreviewOnFocus = row.PreviewOnFocus
-				painted.RankedTop10 = row.RankedTop10
-				painted = ownerRowPolicy(painted, row)
-				out = append(out, painted)
+				out = append(out, presentHub(rows[index], row))
 			}
 		}
 		return out
@@ -144,27 +145,42 @@ func (s *Server) arrangeHomeRows(ctx context.Context, pr *Request, hc frontend.H
 	return out
 }
 
-// ownerRowPolicy applies the owner's row style and Hide watched to a painted
-// hub. Plex has hub styles shelf and hero; Wide is a shelf of landscape
-// artwork, as preview rows already paint. Watched state is the viewer's own
-// state already painted on each item, so this costs no lookup.
-func ownerRowPolicy(h model.Hub, row frontend.NeutralHomeRow) model.Hub {
-	if row.HideWatched && len(h.Metadata) > 0 {
-		kept, ok := keepHubMetadata(h, func(m model.Metadata) bool { return !plexWatched(m) })
-		if !ok {
-			// Every title was watched: an empty row, which the Home passes drop.
-			kept.Metadata, kept.Size = nil, 0
-		}
-		h = kept
+// presentHub draws a painted hub the way its page row asks (Present).
+// Plex hub styles are shelf and hero: Hero is a hero hub, Wide a shelf of
+// landscape art, Standard, Tiles and Track list a shelf. Numbered paints
+// Top 10 rank art and Trailer on focus landscape art. The card follows the
+// library. Plex rebuilds items itself, so it applies Hide watched from the
+// viewer's state already painted on each item: no lookup.
+func presentHub(h model.Hub, row frontend.NeutralHomeRow) model.Hub {
+	p := row.Present
+	if p.HideWatched {
+		h = hideWatched(h)
 	}
-	h.OwnerStyle = row.Style
-	switch row.Style {
+	h.PreviewOnFocus = p.Trailer
+	h.RankedTop10 = p.Numbered
+	h.Library = int64(p.Library)
+	h.Layout = p.Layout
+	switch h.Layout {
+	case "":
 	case frontend.RowStyleHero:
 		h.Style = "hero"
-	case frontend.RowStyleStandard, frontend.RowStyleWide:
+	default:
 		h.Style = "shelf"
 	}
 	return h
+}
+
+// hideWatched drops the viewer's watched titles. A row with every title
+// watched comes back empty, and the Home passes drop it.
+func hideWatched(h model.Hub) model.Hub {
+	if len(h.Metadata) == 0 {
+		return h
+	}
+	kept, ok := keepHubMetadata(h, func(m model.Metadata) bool { return !plexWatched(m) })
+	if !ok {
+		kept.Metadata, kept.Size = nil, 0
+	}
+	return kept
 }
 
 // plexWatched reports a painted title the viewer has fully watched: a movie
@@ -193,7 +209,7 @@ func stableHomeHubs(pr *Request, rows []model.Hub) []model.Hub {
 			}
 			seen[h.HubIdentifier] = true
 		}
-		if h.PreviewOnFocus || h.OwnerStyle == frontend.RowStyleWide {
+		if h.PreviewOnFocus || h.Layout == frontend.RowStyleWide {
 			h.Metadata = append([]model.Metadata(nil), h.Metadata...)
 			landscapeMetadata(h.Metadata)
 		}
@@ -291,7 +307,7 @@ func heroReadyHomeHubs(rows []model.Hub) []model.Hub {
 		if lead || strings.EqualFold(h.Style, "hero") {
 			painted, ok := paintHeroItems(h)
 			if !ok {
-				if h.OwnerStyle == frontend.RowStyleHero {
+				if h.Layout == frontend.RowStyleHero {
 					h.Style = "shelf"
 					if lead {
 						waiting = append(waiting, h)
@@ -301,7 +317,7 @@ func heroReadyHomeHubs(rows []model.Hub) []model.Hub {
 				}
 				continue
 			}
-			if h.OwnerStyle == "" || h.OwnerStyle == frontend.RowStyleHero {
+			if h.Layout == "" || h.Layout == frontend.RowStyleHero {
 				painted.Style = "hero"
 			}
 			out = append(out, painted)
@@ -320,7 +336,7 @@ func heroReadyHomeHubs(rows []model.Hub) []model.Hub {
 // with hero art, and falls back to a shelf when none has it yet.
 func ownerHeroHubs(rows []model.Hub) []model.Hub {
 	for i, h := range rows {
-		if h.OwnerStyle != frontend.RowStyleHero {
+		if h.Layout != frontend.RowStyleHero {
 			continue
 		}
 		if painted, ok := paintHeroItems(h); ok {

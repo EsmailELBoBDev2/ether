@@ -3,34 +3,28 @@ package plex
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
-	"github.com/braedonsaunders/ether/internal/personalize"
 )
 
-// The owner's row style and Hide watched, set in the Home designer, reach
-// the Plex hubs: Hero rows go out as style=hero (a shelf while no title has
-// hero art), Wide is a landscape shelf, and watched titles leave the row.
+// A page row's Look reaches the Plex hubs: Hero rows go out as style=hero
+// (a shelf while no title has hero art), Wide is a landscape shelf, watched
+// titles leave a Hide watched row, and plugin surface rows are skipped.
 func TestOwnerRowStyleAndHideWatchedReachPlexHubs(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()
-	e, err := personalize.New(personalize.Options{DB: discoveryDB(t), Catalog: f.catalog, State: f.srv.state(), RefreshEvery: -1, FlushEvery: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer e.Close()
-	on := true
-	if _, err := e.SetHomeLayout(context.Background(), core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{
-		{Row: "row.lead", Status: "always", Slot: 1, HideWatched: &on},
-		{Row: "row.hero", Status: "always", Slot: 2, Style: core.RowStyleHero},
-		{Row: "row.cold", Status: "always", Slot: 3, Style: core.RowStyleHero},
-		{Row: "row.wide", Status: "always", Slot: 4, Style: core.RowStyleWide},
-	}}}}); err != nil {
-		t.Fatal(err)
-	}
-	f.srv.setRecommender(e)
+	f.srv.setRecommender(presentLayout{
+		fakeRecommender: &fakeRecommender{},
+		order:           []string{"row.lead", "surface:sports:sports.tonight", "row.hero", "row.cold", "row.wide"},
+		present: map[string]core.RowPresentation{
+			"row.lead":                      {RowID: "rlead0001", HideWatched: true},
+			"surface:sports:sports.tonight": {RowID: "rsurf0001", Surface: &core.RowSurface{Plugin: "sports", Surface: "sports.tonight"}},
+			"row.hero":                      {RowID: "rhero0001", Layout: core.RowStyleHero},
+			"row.cold":                      {RowID: "rcold0001", Layout: core.RowStyleHero},
+			"row.wide":                      {RowID: "rwide0001", Layout: core.RowStyleWide},
+		},
+	})
 
 	art := func(key string) model.Metadata {
 		return model.Metadata{RatingKey: key, Type: "movie", Title: key, Thumb: "/t/" + key, Art: "/a/" + key}

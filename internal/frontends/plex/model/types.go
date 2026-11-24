@@ -542,8 +542,11 @@ type Hub struct {
 	Meta           *Meta `plex:"Meta,object"`
 	RankedTop10    bool  `plex:"-"`
 	PreviewOnFocus bool  `plex:"-"`
-	// OwnerStyle is the owner's row style from the layout ("" = default).
-	OwnerStyle    string `plex:"-"`
+	// Layout is the page row's look (core RowLook style: standard, hero,
+	// wide, tiles, tracks; "" = the app's default).
+	Layout string `plex:"-"`
+	// Library is the library of a one-row-per-library page row (0 = any).
+	Library       int64  `plex:"-"`
 	HubKey        string `plex:"hubKey,omitempty"`
 	UpNext        *bool  `plex:"upNext"`
 	Key           string `plex:"key,omitempty"`

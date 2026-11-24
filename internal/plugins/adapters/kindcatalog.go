@@ -3544,6 +3544,8 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Direction: sh.EffectiveDirection(),
 				Filters:   sh.EffectiveFilters(),
 				TabFilter: sh.EffectiveTabFilter(),
+				Purpose:   frontend.RowPurpose(sh.Purpose),
+				Layout:    sh.Layout,
 			})
 		}
 		return out

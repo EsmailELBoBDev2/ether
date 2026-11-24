@@ -3876,6 +3876,8 @@ class KindLibraryShelf(TypedDict, total=False):
     value: str
     values: List[str]
     filters: Any
+    purpose: Literal["recentContexts", "liked"]
+    layout: Literal["standard", "hero", "wide", "tiles", "tracks"]
 
 
 class KindLibraryTab(TypedDict, total=False):

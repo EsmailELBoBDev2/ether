@@ -115,7 +115,8 @@ unless the owner agrees to replace the library's contents.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
     ```json
     "shelves": [
-      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "purpose": "recentContexts", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "recently-played", "label": "Recently played", "level": "track", "sort": "lastViewed", "layout": "tracks" },
       { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
       { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
       { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
@@ -128,6 +129,8 @@ unless the owner agrees to replace the library's contents.
     - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`, `lastViewed`.
     - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
     - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters` as either a legacy facet map (`{ "<facet>": ["..."] }`, AND across facets, OR within each facet), a `TabFilter` object (`{ match?, rules, exclude? }`), a single rule object, or a list of rules (`[{ "field": "viewer", "value": { "history": true } }]`; omitted `"op"` on `"viewer"` rules defaults to `"is"`). Every referenced field must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`, or `"viewer"`). Viewer history filters and `lastViewed` ordering roll descendant playback up to ancestor containers (so playing a track surfaces its album on an `album`-level `lastViewed` shelf without ever leaking unviewed items).
+    - `purpose` (optional): what the shelf is for, so apps can draw it their own way and keep its titles out of other rows: `recentContexts` (a "Jump back in" of albums, playlists and artists the viewer played) or `liked` (the viewer's liked items, such as Liked songs with `filters: [{ "field": "viewer", "value": { "favorite": true } }]`). Omitted, the shelf is a plain recommendation.
+    - `layout` (optional): the shelf's default look, `standard`, `hero`, `wide`, `tiles` or `tracks` (a track list, for track-level shelves in listening libraries). An owner's look for the row on a Recommendations page wins.
 
 ## The item envelope
 

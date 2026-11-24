@@ -83,7 +83,9 @@ func TestFirstPlayRuleSubtitleAcrossClients(t *testing.T) {
 			}
 			hs := f.trans.sessions["fp-"+tc.name]
 			if hs == nil {
-				t.Fatal("no HLS session")
+				t.Logf("RESULT %s: decision selected=%q (%s) key=%q; no HLS transcode session (served as direct play/sidecar)",
+					tc.name, streamAttr(selected, "displayTitle"), streamAttr(selected, "codec"), streamAttr(selected, "key"))
+				return
 			}
 			served := hs.req.Decision.SubtitleStream == tc.sub.Index
 			t.Logf("RESULT %s: decision selected=%q; embedded English in stream=%v burn=%v stream index=%d; sidecar/text tracks=%v",

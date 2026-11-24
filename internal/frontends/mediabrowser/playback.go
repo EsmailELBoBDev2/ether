@@ -1641,4 +1641,3 @@ func embedsSubtitle(profiles []caps.SubtitleProfile, codec string) bool {
 	}
 	return false
 }
-

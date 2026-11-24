@@ -1604,12 +1604,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "rating",
@@ -1656,12 +1651,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "rating",
@@ -1742,10 +1732,7 @@
           {
             "field": "votes",
             "op": "between",
-            "value": [
-              150,
-              1500
-            ]
+            "value": [150, 1500]
           },
           {
             "field": "released",
@@ -1757,11 +1744,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Documentary",
-              "Music",
-              "TV Movie"
-            ]
+            "value": ["Documentary", "Music", "TV Movie"]
           }
         ],
         "sort": "rating",
@@ -1800,10 +1783,7 @@
           {
             "field": "year",
             "op": "between",
-            "value": [
-              2000,
-              2015
-            ]
+            "value": [2000, 2015]
           },
           {
             "field": "rating",
@@ -2441,12 +2421,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Comedy",
-              "Romance",
-              "Family",
-              "Animation"
-            ]
+            "value": ["Comedy", "Romance", "Family", "Animation"]
           },
           {
             "field": "runtime",
@@ -2468,12 +2443,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Horror",
-              "War",
-              "Crime",
-              "Thriller"
-            ]
+            "value": ["Horror", "War", "Crime", "Thriller"]
           }
         ],
         "sort": "popularity",
@@ -2572,12 +2542,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Comedy",
-              "Family",
-              "Music",
-              "Animation"
-            ]
+            "value": ["Comedy", "Family", "Music", "Animation"]
           },
           {
             "field": "rating",
@@ -2594,12 +2559,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Horror",
-              "War",
-              "Crime",
-              "Thriller"
-            ]
+            "value": ["Horror", "War", "Crime", "Thriller"]
           }
         ],
         "sort": "popularity",
@@ -2656,10 +2616,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Animation",
-              "Family"
-            ]
+            "value": ["Animation", "Family"]
           }
         ],
         "sort": "popularity",
@@ -2945,12 +2902,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -2995,12 +2947,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -3045,12 +2992,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -3095,12 +3037,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -3145,12 +3082,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -3195,12 +3127,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -3250,12 +3177,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "popularity",
@@ -3586,11 +3508,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Family",
-              "Animation",
-              "Comedy"
-            ]
+            "value": ["Family", "Animation", "Comedy"]
           },
           {
             "field": "votes",
@@ -5062,22 +4980,12 @@
           {
             "field": "language",
             "op": "in",
-            "value": [
-              "sv",
-              "da",
-              "no",
-              "is",
-              "fi"
-            ]
+            "value": ["sv", "da", "no", "is", "fi"]
           },
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Crime",
-              "Thriller",
-              "Mystery"
-            ]
+            "value": ["Crime", "Thriller", "Mystery"]
           },
           {
             "field": "votes",
@@ -5220,10 +5128,7 @@
           {
             "field": "genre",
             "op": "is",
-            "value": [
-              "Animation",
-              "Family"
-            ]
+            "value": ["Animation", "Family"]
           },
           {
             "field": "rating",
@@ -5280,12 +5185,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "rating",
@@ -5337,10 +5237,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Animation",
-              "Crime"
-            ]
+            "value": ["Animation", "Crime"]
           }
         ],
         "sort": "popularity",
@@ -5638,12 +5535,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Talk",
-              "News",
-              "Reality",
-              "Soap"
-            ]
+            "value": ["Talk", "News", "Reality", "Soap"]
           }
         ],
         "sort": "personal",
@@ -5678,11 +5570,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Action",
-              "Comedy",
-              "Adventure"
-            ]
+            "value": ["Action", "Comedy", "Adventure"]
           },
           {
             "field": "votes",
@@ -5732,11 +5620,7 @@
           {
             "field": "genre",
             "op": "in",
-            "value": [
-              "Science Fiction",
-              "Fantasy",
-              "Sci-Fi \u0026 Fantasy"
-            ]
+            "value": ["Science Fiction", "Fantasy", "Sci-Fi \u0026 Fantasy"]
           },
           {
             "field": "rating",
@@ -6633,10 +6517,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "Apple TV+",
-              "Apple TV"
-            ]
+            "value": ["Apple TV+", "Apple TV"]
           }
         ],
         "exclude": [],
@@ -6710,10 +6591,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "HBO Max",
-              "Max"
-            ]
+            "value": ["HBO Max", "Max"]
           }
         ],
         "exclude": [],
@@ -7305,10 +7183,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "ITV1",
-              "ITV"
-            ]
+            "value": ["ITV1", "ITV"]
           }
         ],
         "exclude": [],
@@ -7937,10 +7812,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "20th Century Fox",
-              "20th Century Studios"
-            ]
+            "value": ["20th Century Fox", "20th Century Studios"]
           }
         ],
         "exclude": [],
@@ -8014,10 +7886,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "Lucasfilm Ltd.",
-              "Lucasfilm"
-            ]
+            "value": ["Lucasfilm Ltd.", "Lucasfilm"]
           }
         ],
         "exclude": [],
@@ -8091,10 +7960,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "Illumination",
-              "Illumination Entertainment"
-            ]
+            "value": ["Illumination", "Illumination Entertainment"]
           }
         ],
         "exclude": [],
@@ -8242,10 +8108,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "Lionsgate",
-              "Lions Gate Films"
-            ]
+            "value": ["Lionsgate", "Lions Gate Films"]
           }
         ],
         "exclude": [],
@@ -8356,10 +8219,7 @@
           {
             "field": "studio",
             "op": "in",
-            "value": [
-              "Searchlight Pictures",
-              "Fox Searchlight Pictures"
-            ]
+            "value": ["Searchlight Pictures", "Fox Searchlight Pictures"]
           }
         ],
         "exclude": [],

@@ -58,7 +58,15 @@
     "title": "Screens and surfaces",
     "group": "Build features",
     "body": "Give Vela a screen of your own (a sports desk, a news front page) or fill a host slot: a player overlay, an alert toast, a Home row or a title panel. You ship **documents**: JSON files in your package that Vela draws natively on TV, phone and web in the viewer's skin. The full contract is `docs/plugin-screens.md`; the document schema is `schemas/plugin-screen.v1.json`.\n\n## Declare\nAdd the `screens` capability and `contributes.screens: [{id, title, icon, pages: {index: \"screens/x.json\"}, actions?}]` or `contributes.surfaces: [{id, presentation, anchor?, setting?, when?, document}]`. `when` may only name your own feeds and kinds.\n\n## Write a document\n`{schema: 1, kind: \"screen\", renderer: 19, params, sources, strings, tree}`. The tree is Vela's node language. `params` are typed page inputs; `sources` name data Ether resolves per viewer: `liveEvents`, `liveSchedule`, `liveEvent`, `liveTables`, `liveEntities`, `liveLeagues`, `watch`, `viewer` and `plugin`. Arguments may hold `{param.x}`, `{viewer.tz}` and, on surfaces, `{context.event}` style holes; never another source. Documents never contain URLs: write `asset:path` for package files.\n\n## Answer a plugin source\n```ts\np.onScreenSource(\"desk\", \"front\", async ({ args }) => ({\n  value: { lead: record(\"story\", \"s1\") },\n  records: [{ type: \"story\", id: \"s1\", value: { title: \"…\", hero: image(\"https://cdn.example.com/a.jpg\"), url: link(\"https://example.com/s1\") } }],\n  maxAgeSec: 120, nextRefreshSec: 60,\n}));\n```\nWrap images (`image`, `asset`), links (`link`), records (`record`), events (`event`) and entities (`entity`). Ether signs images only on your `permissions.network` hosts and drops bare URL strings. `scope: \"viewer\"` sources receive the viewer like a frontend adapter call.\n\n## Actions\nDeclare typed `actions` on the screen; answer `onScreenAction` with `{records?, sources?, refresh?, toast?, navigate?}`. Ether's own `ether.favorite`, `ether.reveal` and `ether.spoilerFree` need no code.\n\n## Live\nWhile a viewer has a page open, Ether re-reads it on live feed changes, on your `nextRefreshSec`, and when you call `ether.screens.invalidate()`. `ether.screens.putRecords([{type, id, value}])` patches records already on screen. Nobody watching costs nothing.\n\n## Check\n`ether plugin check` compiles every document exactly as install does and reports each problem by file and JSON pointer.",
-    "patterns": ["docs/plugin-screens.md", "internal/plugins/screendoc/", "internal/plugins/manifest_screens.go", "internal/screens/", "schemas/plugin-screen.v1.json", "sdk/typescript/src/screens.ts", "sdk/go/screens.go"]
+    "patterns": [
+      "docs/plugin-screens.md",
+      "internal/plugins/screendoc/",
+      "internal/plugins/manifest_screens.go",
+      "internal/screens/",
+      "schemas/plugin-screen.v1.json",
+      "sdk/typescript/src/screens.ts",
+      "sdk/go/screens.go"
+    ]
   },
   {
     "id": "catalogues",

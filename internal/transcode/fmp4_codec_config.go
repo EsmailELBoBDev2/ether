@@ -26,50 +26,43 @@ import (
 var errNoAudioConfig = errors.New("fMP4 init has no AAC AudioSpecificConfig")
 
 // initCodecConfig checks every sample entry of an fMP4 init. missingAAC
-// reports AAC entries without an AudioSpecificConfig; err an init that is
-// unreadable or whose video configuration is incomplete (unrepairable).
-func initCodecConfig(init []byte) (missingAAC bool, err error) {
+// reports an AAC entry without an AudioSpecificConfig (repairable);
+// video names an avc1/hvc1 entry whose avcC/hvcC lacks a parameter set.
+// FFmpeg derives those from the stream's extradata or its first keyframe,
+// so video is reported for diagnosis only. err is an init this reader
+// cannot walk; it is judged no further.
+func initCodecConfig(init []byte) (missingAAC bool, video string, err error) {
 	entries, err := initSampleEntries(init)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	for _, e := range entries {
 		switch e.box.typ {
 		case "mp4a":
 			esds, ok := e.child(init, "esds")
 			if !ok {
-				return false, errors.New("fMP4 init: mp4a without esds")
+				continue
 			}
-			d, err := parseESDS(esds.payload(init))
-			if err != nil {
-				return false, fmt.Errorf("fMP4 init: %w", err)
-			}
-			if d.needsASC() && d.dsi == nil {
+			if d, err := parseESDS(esds.payload(init)); err == nil && d.needsASC() && d.dsi == nil {
 				missingAAC = true
 			}
 		case "avc1":
-			c, ok := e.child(init, "avcC")
-			if !ok || !avcCComplete(c.payload(init)) {
-				return false, errors.New("fMP4 init: avc1 without a complete avcC (SPS and PPS)")
+			if c, ok := e.child(init, "avcC"); !ok || !avcCComplete(c.payload(init)) {
+				video = "avc1 without a complete avcC (SPS and PPS)"
 			}
 		case "hvc1":
-			c, ok := e.child(init, "hvcC")
-			if !ok || !hvcCComplete(c.payload(init)) {
-				return false, errors.New("fMP4 init: hvc1 without a complete hvcC (VPS, SPS and PPS)")
+			if c, ok := e.child(init, "hvcC"); !ok || !hvcCComplete(c.payload(init)) {
+				video = "hvc1 without a complete hvcC (VPS, SPS and PPS)"
 			}
 		}
 	}
-	return missingAAC, nil
+	return missingAAC, video, nil
 }
 
-// CheckInitCodecConfig reports an fMP4 init that a player could not
-// configure its decoders from.
+// CheckInitCodecConfig reports an fMP4 init whose AAC track a player could
+// not configure its decoder for.
 func CheckInitCodecConfig(init []byte) error {
-	missing, err := initCodecConfig(init)
-	if err != nil {
-		return err
-	}
-	if missing {
+	if missing, _, _ := initCodecConfig(init); missing {
 		return errNoAudioConfig
 	}
 	return nil
@@ -434,16 +427,15 @@ func (s *Session) initCodecConfigLocked(r *run, exited bool) (bool, error) {
 	initPath := filepath.Join(r.spec.Dir, r.spec.InitName)
 	b, err := os.ReadFile(initPath)
 	if err != nil {
-		if exited {
-			return false, fmt.Errorf("transcode: fMP4 init: %w", err)
-		}
-		return false, nil
+		// FFmpeg writes the init before it lists a segment; noteInitLocked
+		// publishes nothing without one.
+		return true, nil
 	}
-	missing, err := initCodecConfig(b)
-	if err != nil {
-		return false, fmt.Errorf("transcode: %w", err)
+	missing, video, err := initCodecConfig(b)
+	if video != "" {
+		s.log.Warn("fMP4 init carries an incomplete video configuration", "run", r.seq, "detail", video)
 	}
-	if !missing {
+	if err != nil || !missing {
 		r.initConfigured = true
 		return true, nil
 	}
@@ -470,7 +462,7 @@ func (s *Session) initCodecConfigLocked(r *run, exited bool) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("transcode: complete fMP4 init: %w", err)
 	}
-	if missing, err := initCodecConfig(fixed); err != nil || missing {
+	if missing, _, err := initCodecConfig(fixed); err != nil || missing {
 		return false, fmt.Errorf("transcode: complete fMP4 init: %w", errors.Join(err, errNoAudioConfig))
 	}
 	if err := writeFileAtomic(initPath, fixed); err != nil {

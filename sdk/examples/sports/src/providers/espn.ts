@@ -1467,10 +1467,16 @@ function buildSummaryTables(
       }
     }
     const rows: string[][] = [];
+    // ESPN can list two stats under one label (a total and an average
+    // both called "Points Against"); show each label once.
+    const seenLabels = new Set<string>();
     for (const s of awayStats.slice(0, 12)) {
       if (!s.name || !s.label) continue;
       const hv = homeByName.get(s.name);
       if (hv === undefined) continue;
+      const label = s.label.trim().toLowerCase();
+      if (seenLabels.has(label)) continue;
+      seenLabels.add(label);
       rows.push([s.label, s.displayValue ?? "-", hv]);
     }
     if (rows.length > 0) {

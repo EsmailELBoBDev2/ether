@@ -483,16 +483,27 @@ func (rc *readCtx) fetchEvents(ctx context.Context, feed, league string, from, t
 	if hub == nil {
 		return nil, core.ErrNotAvailable
 	}
-	var days []time.Time
-	for d := startOfDayUTC(from); d.Before(to); d = d.Add(24 * time.Hour) {
-		days = append(days, d)
-		if len(days) > 14 {
-			break
+	// One or two days: one query per UTC day, shared with every time zone
+	// and the hub's own polling. Longer windows (a week, the schedule
+	// strip): one query for the whole UTC-aligned range, so a cold read is
+	// one plugin call per league rather than one per league per day.
+	type span struct{ from, to time.Time }
+	var spans []span
+	start, end := startOfDayUTC(from), startOfDayUTC(to.Add(-time.Nanosecond)).Add(24*time.Hour)
+	if end.Sub(start) <= 48*time.Hour {
+		for d := start; d.Before(end); d = d.Add(24 * time.Hour) {
+			spans = append(spans, span{d, d.Add(24 * time.Hour)})
 		}
+	} else {
+		if end.Sub(start) > 15*24*time.Hour {
+			end = start.Add(15 * 24 * time.Hour)
+		}
+		spans = append(spans, span{start, end})
 	}
-	fetches := make([]*eventFetch, len(days))
-	for i, d := range days {
-		key := feed + "\x00" + league + "\x00" + d.Format("2006-01-02")
+	fetches := make([]*eventFetch, len(spans))
+	for i, sp := range spans {
+		d, dEnd := sp.from, sp.to
+		key := feed + "\x00" + league + "\x00" + d.Format("2006-01-02") + "\x00" + dEnd.Format("2006-01-02")
 		rc.mu.Lock()
 		ef, ok := rc.events[key]
 		if !ok {
@@ -501,10 +512,10 @@ func (rc *readCtx) fetchEvents(ctx context.Context, feed, league string, from, t
 		}
 		rc.mu.Unlock()
 		if !ok {
-			go func(ef *eventFetch, d time.Time) {
-				ef.events, ef.err = hub.Events(rc.ctx, rc.viewer, EventQuery{PluginID: rc.t.plugin.pluginID, Feed: feed, From: d, To: d.Add(24 * time.Hour), League: league})
+			go func(ef *eventFetch, d, dEnd time.Time) {
+				ef.events, ef.err = hub.Events(rc.ctx, rc.viewer, EventQuery{PluginID: rc.t.plugin.pluginID, Feed: feed, From: d, To: dEnd, League: league})
 				close(ef.done)
-			}(ef, d)
+			}(ef, d, dEnd)
 		}
 		fetches[i] = ef
 	}
@@ -1138,7 +1149,7 @@ func (rc *readCtx) watch(ctx context.Context, src screendoc.Source) (any, error)
 }
 
 func (rc *readCtx) viewerSource(ctx context.Context) (any, error) {
-	out := map[string]any{"spoilerFree": false, "canSetSpoilerFree": rc.viewer != nil && rc.viewer.ID > 0, "locale": "", "favouriteCount": 0}
+	out := map[string]any{"spoilerFree": false, "canSetSpoilerFree": rc.viewer != nil && rc.viewer.ID > 0, "locale": rc.locale(), "favouriteCount": 0}
 	if live, ok := rc.s.hubDeps().(LiveDetails); ok {
 		if sf, err := live.SpoilerFree(ctx, rc.viewer); err == nil {
 			out["spoilerFree"] = sf

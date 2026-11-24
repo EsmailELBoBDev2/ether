@@ -1378,6 +1378,9 @@
                     },
                     "type": "object"
                   },
+                  "lyrics": {
+                    "type": "boolean"
+                  },
                   "match": {
                     "properties": {
                       "thresholdDefault": {

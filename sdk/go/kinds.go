@@ -695,6 +695,27 @@ type ExpandProvider interface {
 	Expand(ctx *Context, req KindExpandRequest) (KindExpandResponse, error)
 }
 
+// KindLyricsRequest asks for one stored playable item's lyrics.
+type KindLyricsRequest struct {
+	Kind string   `json:"kind"`
+	Item KindItem `json:"item"`
+}
+
+// KindLyrics is a lyrics answer: timed LRC lines ("[mm:ss.xx] words"), plain
+// text, or instrumental. Source is shown for attribution.
+type KindLyrics struct {
+	SyncedLyrics string `json:"syncedLyrics,omitempty"`
+	PlainLyrics  string `json:"plainLyrics,omitempty"`
+	Instrumental bool   `json:"instrumental,omitempty"`
+	Source       string `json:"source,omitempty"`
+}
+
+// LyricsProvider serves lyrics for kinds that declare lyrics: true. Return
+// found=false when there are none (Ether answers 404 and remembers the miss).
+type LyricsProvider interface {
+	Lyrics(ctx *Context, req KindLyricsRequest) (lyrics KindLyrics, found bool, err error)
+}
+
 // KindResolver turns a playable item into ordered playable sources.
 type KindResolver interface {
 	Resolve(ctx *Context, req KindResolveRequest) (KindResolveResponse, error)
@@ -1001,6 +1022,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		if res.Job == "" && res.Items == nil {
 			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "lyrics":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		lp, isLyrics := prov.(LyricsProvider)
+		if prov == nil || !isLyrics {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no lyrics.")
+		}
+		var in KindLyricsRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, found, err := lp.Lyrics(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if !found {
+			return errorJSON(http.StatusNotFound, "not_found", "No lyrics for this item.")
 		}
 		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":

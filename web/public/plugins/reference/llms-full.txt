@@ -904,6 +904,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
+| `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
@@ -4457,6 +4458,7 @@ const (
 	ActionJobConcurrency   = 2
 	ResolverJobConcurrency = 4
 	actionJobMinDelay      = 100 * time.Millisecond
+	jobErrorBodyLimit      = 300
 )
 ``````
 
@@ -4752,6 +4754,12 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
 		return fmt.Errorf("invalid job path %q", jobPath)
 	}
+	redact := func(s string) string {
+		if r.m == nil || r.m.store == nil {
+			return logredact.String(s)
+		}
+		return r.m.store.redactKnown(context.Background(), r.pluginID, s)
+	}
 	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 		payload := map[string]json.RawMessage{}
 		_ = json.Unmarshal(initial, &payload)
@@ -4763,7 +4771,7 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 		}
 		encoded, _ := json.Marshal(payload)
 		return r.m.Call(WithBackgroundCall(ctx), r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
-	}, onStep)
+	}, onStep, redact)
 }
 ``````
 
@@ -4991,7 +4999,13 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 		}
 		defer cancel()
 		defer close(j.done)
-		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
+		redact := func(s string) string {
+			if m == nil || m.store == nil {
+				return logredact.String(s)
+			}
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		err := runActionJobWithHook(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 			if !isResolver {
 				if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
 					return Response{}, err
@@ -5011,7 +5025,7 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 				callCtx = WithBackgroundCall(ctx)
 			}
 			return m.Call(callCtx, pluginID, Request{Method: "POST", Path: path, Body: encoded, Foreground: isResolver})
-		})
+		}, nil, redact)
 		if err != nil {
 			state := "error"
 			if ctx.Err() == context.Canceled {
@@ -5052,14 +5066,14 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 // runActionJob treats an absent continuation flag as completion for existing
 // one-call jobs. Explicit failures and non-success HTTP responses always stop.
 func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error)) error {
-	return runActionJobWithHook(ctx, j, attempts, call, nil)
+	return runActionJobWithHook(ctx, j, attempts, call, nil, nil)
 }
 ``````
 
 ## Source: internal/plugins/action_jobs.go#runActionJobWithHook
 
 ``````
-func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error) error {
+func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error, redact func(string) string) error {
 	var token json.RawMessage
 	for n := 0; n < attempts; n++ {
 		if err := ctx.Err(); err != nil {
@@ -5076,7 +5090,7 @@ func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call 
 			return fmt.Errorf("job stopped: %w", err)
 		}
 		if resp.Status < 200 || resp.Status >= 300 {
-			return fmt.Errorf("job returned HTTP %d", resp.Status)
+			return formatJobHTTPError(resp.Status, resp.Body, redact)
 		}
 		var step struct {
 			ContinueInMS *int64          `json:"continueInMs"`
@@ -5128,6 +5142,80 @@ func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call 
 		}
 	}
 	return fmt.Errorf("job reached its limit of %d calls", attempts)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#summarizeJobErrorBody
+
+``````
+// summarizeJobErrorBody extracts a bounded, single-line, secret-redacted
+// summary from a non-2xx plugin job response body (preferring a structured
+// message field when present). Redaction runs before truncation so a secret
+// straddling the truncation boundary is never partially exposed (#768).
+func summarizeJobErrorBody(body json.RawMessage, redact func(string) string) string {
+	raw := unwrapJSONStringBody(body)
+	if len(raw) == 0 {
+		return ""
+	}
+	const maxInspectBytes = 64 << 10
+	if len(raw) > maxInspectBytes {
+		raw = raw[:maxInspectBytes]
+	}
+	var text string
+	var env struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+		Failed  string          `json:"failed"`
+	}
+	if json.Unmarshal(raw, &env) == nil {
+		var errStr string
+		if len(env.Error) > 0 {
+			var errObj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(env.Error, &errObj) == nil && strings.TrimSpace(errObj.Message) != "" {
+				text = errObj.Message
+			} else {
+				_ = json.Unmarshal(env.Error, &errStr)
+			}
+		}
+		if text == "" && strings.TrimSpace(env.Message) != "" {
+			text = env.Message
+		}
+		if text == "" && strings.TrimSpace(env.Failed) != "" {
+			text = env.Failed
+		}
+		if text == "" && strings.TrimSpace(errStr) != "" {
+			text = errStr
+		}
+	}
+	if text == "" {
+		if scrubbed := redactJSON(raw); scrubbed != "" {
+			text = scrubbed
+		} else {
+			text = string(raw)
+		}
+	}
+	if redact != nil {
+		text = redact(text)
+	}
+	text = logredact.String(text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	return truncate(text, jobErrorBodyLimit)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#formatJobHTTPError
+
+``````
+func formatJobHTTPError(status int, body json.RawMessage, redact func(string) string) error {
+	if summary := summarizeJobErrorBody(body, redact); summary != "" {
+		return fmt.Errorf("job returned HTTP %d: %s", status, summary)
+	}
+	return fmt.Errorf("job returned HTTP %d", status)
 }
 ``````
 
@@ -6306,6 +6394,7 @@ type CommandMeta struct {
 | `sync` | `KindSyncDecl` | emitted (validation may require a value) |  |
 | `cache` | `KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `KindMatchDecl` | may be omitted (see validation for conditions) |  |
+| `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics, instrumental, source; 404 when it has none). Ether asks once per item when a viewer opens the lyrics, never ahead of use. |
 
 
 ## Source: internal/plugins/contract.go#MediaKindMeta
@@ -6325,6 +6414,11 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl       `json:"sync"`
 	Cache   KindCacheDecl      `json:"cache,omitempty"`
 	Match   KindMatchDecl      `json:"match,omitempty"`
+	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
+	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
+	// instrumental, source; 404 when it has none). Ether asks once per item
+	// when a viewer opens the lyrics, never ahead of use.
+	Lyrics bool `json:"lyrics,omitempty"`
 }
 ``````
 
@@ -9524,11 +9618,15 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	var jobErr string
 	switch {
 	case err != nil && ctx.Err() == nil:
-		jobErr = err.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, err.Error())
 	case startErr != nil:
-		jobErr = startErr.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, startErr.Error())
 	case err == nil && resp.Status >= 400:
-		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+		redact := func(s string) string {
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		jobErr = formatJobHTTPError(resp.Status, resp.Body, redact).Error()
+		m.log.Warn("plugin schedule: job failed", "plugin", pluginID, "call", callPath, "err", jobErr)
 	}
 	if jobErr != "" {
 		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))
@@ -35651,6 +35749,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].value` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].shelves[].values` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
+| `ether.contributes.mediaKinds[].lyrics` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
 | `ether.contributes.mediaKinds[].media` | `any` | false | {"enum":["video","music","audiobook","book","podcast","photo"]} |
@@ -37186,6 +37285,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                       }
                     },
                     "type": "object"
+                  },
+                  "lyrics": {
+                    "type": "boolean"
                   },
                   "match": {
                     "properties": {
@@ -56372,6 +56474,57 @@ type ExpandProvider interface {
 }
 ``````
 
+## Source: sdk/go/kinds.go#KindLyricsRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `kind` | `string` | emitted (validation may require a value) |  |
+| `item` | `KindItem` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindLyricsRequest
+
+``````
+// KindLyricsRequest asks for one stored playable item's lyrics.
+type KindLyricsRequest struct {
+	Kind string   `json:"kind"`
+	Item KindItem `json:"item"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindLyrics.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `syncedLyrics` | `string` | may be omitted (see validation for conditions) |  |
+| `plainLyrics` | `string` | may be omitted (see validation for conditions) |  |
+| `instrumental` | `bool` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindLyrics
+
+``````
+// KindLyrics is a lyrics answer: timed LRC lines ("[mm:ss.xx] words"), plain
+// text, or instrumental. Source is shown for attribution.
+type KindLyrics struct {
+	SyncedLyrics string `json:"syncedLyrics,omitempty"`
+	PlainLyrics  string `json:"plainLyrics,omitempty"`
+	Instrumental bool   `json:"instrumental,omitempty"`
+	Source       string `json:"source,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#LyricsProvider
+
+``````
+// LyricsProvider serves lyrics for kinds that declare lyrics: true. Return
+// found=false when there are none (Ether answers 404 and remembers the miss).
+type LyricsProvider interface {
+	Lyrics(ctx *Context, req KindLyricsRequest) (lyrics KindLyrics, found bool, err error)
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindResolver
 
 ``````
@@ -56771,6 +56924,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		if res.Job == "" && res.Items == nil {
 			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "lyrics":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		lp, isLyrics := prov.(LyricsProvider)
+		if prov == nil || !isLyrics {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no lyrics.")
+		}
+		var in KindLyricsRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, found, err := lp.Lyrics(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if !found {
+			return errorJSON(http.StatusNotFound, "not_found", "No lyrics for this item.")
 		}
 		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":
@@ -62058,6 +62230,7 @@ type Presentations struct {
 | `sync` | `KindSyncDecl` | emitted (validation may require a value) |  |
 | `cache` | `*KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `*KindMatchDecl` | may be omitted (see validation for conditions) |  |
+| `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics). |
 
 
 ## Source: sdk/go/types.go#MediaKindMeta
@@ -62077,6 +62250,8 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl    `json:"sync"`
 	Cache   *KindCacheDecl  `json:"cache,omitempty"`
 	Match   *KindMatchDecl  `json:"match,omitempty"`
+	// Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics).
+	Lyrics bool `json:"lyrics,omitempty"`
 }
 ``````
 
@@ -66464,6 +66639,15 @@ class PluginInstance:
             if not result.get("job"):
                 result.setdefault("items", [])
             return _ok_response(result)
+        if tail == ["lyrics"]:
+            provider = self._kind_catalog().get(kind)
+            lyrics = getattr(provider, "lyrics", None) if provider else None
+            if not callable(lyrics):
+                return _error_response(501, "not_implemented", "This provider has no lyrics.")
+            result = lyrics(ctx, body)
+            if not result:
+                return _error_response(404, "not_found", "No lyrics for this item.")
+            return _ok_response(dict(result))
         if len(tail) == 2 and tail[0] == "items":
             provider = self._kind_catalog().get(kind)
             if provider is None:
@@ -71145,6 +71329,8 @@ import type {
   KindChangePage,
   KindExpandRequest,
   KindExpandResponse,
+  KindLyrics,
+  KindLyricsRequest,
   KindItem,
   KindLivePage,
   KindLiveRequest,
@@ -71184,6 +71370,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
   /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
   expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
+  /** Optional lyrics for a playable item when the kind declares lyrics; null when there are none. */
+  lyrics?(req: KindLyricsRequest, ctx: PluginContext<S>): MaybePromise<KindLyrics | null>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
@@ -71528,6 +71716,12 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
     if (!result.job) result.items = result.items ?? [];
     return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "lyrics") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.lyrics) return err(501, "not_implemented", "This provider has no lyrics.");
+    const result = await provider.lyrics({ ...body, kind } as unknown as KindLyricsRequest, ctx);
+    return result ? ok({ ...result }) : err(404, "not_found", "No lyrics for this item.");
   }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);
@@ -74680,6 +74874,22 @@ export interface MediaKindMeta {
   sync: { mode: "pull" | "push"; refresh?: string; undo?: "snapshots" | "ids" };
   cache?: { maxBytes?: number; ttl?: string };
   match?: { thresholdDefault?: number };
+  /** The catalogue provider implements lyrics() (POST /ether/v1/kinds/{kind}/lyrics). */
+  lyrics?: boolean;
+}
+
+/** One stored playable item whose lyrics Ether wants. */
+export interface KindLyricsRequest {
+  kind: string;
+  item: KindItem;
+}
+
+/** Timed LRC lines ("[mm:ss.xx] words"), plain text, or instrumental; source for attribution. */
+export interface KindLyrics {
+  syncedLyrics?: string;
+  plainLyrics?: string;
+  instrumental?: boolean;
+  source?: string;
 }
 
 export interface FrontendAdapterMeta {

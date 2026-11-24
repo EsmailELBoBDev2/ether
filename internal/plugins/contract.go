@@ -536,6 +536,11 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl       `json:"sync"`
 	Cache   KindCacheDecl      `json:"cache,omitempty"`
 	Match   KindMatchDecl      `json:"match,omitempty"`
+	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
+	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
+	// instrumental, source; 404 when it has none). Ether asks once per item
+	// when a viewer opens the lyrics, never ahead of use.
+	Lyrics bool `json:"lyrics,omitempty"`
 }
 
 // MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.

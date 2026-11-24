@@ -831,6 +831,14 @@ type PlaylistContents struct {
 	Entries  []PlaylistEntry
 }
 
+// TitleLyrics reads a playable title's lyrics from its source (a kind
+// plugin that declares them). Asked when a viewer opens the lyrics.
+type TitleLyrics interface {
+	TitleLyrics(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (core.Lyrics, error)
+	// LyricsAvailable reports whether any source can answer at all.
+	LyricsAvailable(ctx context.Context) bool
+}
+
 // FavoriteTitles lists a viewer's liked titles of one role (tracks for Liked
 // Songs, albums, artists they follow, movies…) one page at a time, in the
 // viewer's order. A page reads only that viewer's likes of that role.

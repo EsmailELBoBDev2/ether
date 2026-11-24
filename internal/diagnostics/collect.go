@@ -96,6 +96,19 @@ func (r *Recorder) collect(snap finishSnap, uses []secretUse) ([]archived, []Gap
 		c.SecureConnections = redactString(c.SecureConnections, uses)
 		put("connectivity.json", c)
 	}
+	if r.deps.ReleaseSearch == nil {
+		gaps = append(gaps, Gap{Collector: "release-search", Status: "unavailable", Detail: "Release searches were not collected."})
+	} else {
+		q := ReleaseSearchQuery{From: snap.started.Add(-preRoll), Until: snap.finished, DeviceKey: snap.deviceKey}
+		if !snap.viewerAmbiguous {
+			q.ViewerID = snap.viewerID
+		}
+		if in, err := r.deps.ReleaseSearch(q); err != nil {
+			gaps = append(gaps, Gap{Collector: "release-search", Status: "failed", Detail: "Release searches could not be collected."})
+		} else {
+			put("release-search.json", releaseSearchDocument(in, snap.flags[0], uses))
+		}
+	}
 	gaps = append(gaps, Gap{Collector: "logs", Status: "unavailable", Detail: "Rotated logs were not read."})
 	q := logQuery(snap)
 	if (q.DeviceKey == "" && len(q.SessionKeys) == 0 && len(q.AttemptKeys) == 0) || r.deps.LogExtract == nil {

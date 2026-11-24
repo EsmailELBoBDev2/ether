@@ -214,9 +214,6 @@ var tierUntouchedTables = []string{
 	"safety_download_usage",
 	"collections_addon_imports",
 	"state_play_contexts",
-	// Measured loudness is derived from media and re-measured on the next
-	// play-through; it holds no reference a viewer or the owner made.
-	"loudness_sources", "loudness_albums",
 	// Live sports events are keyed by plugin event ids, never catalogue titles.
 	"live_event_reveals", "viewer_push_liveevent_claims",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",

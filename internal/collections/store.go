@@ -650,7 +650,7 @@ func specFromFilter(c core.Collection) core.CollectionSpec {
 		Sources: []core.CollectionSource{{Kind: "catalog"}}, Match: MatchAll,
 		Refresh: RefreshLive, Enabled: true, Sort: string(c.Sort), SortDesc: c.Sort != core.SortTitle,
 		Artwork: core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		BrowseInApps: true,
 	}
 	if f.Topic != "" {
 		sp.Sources[0].Params = map[string]string{"topic": f.Topic}
@@ -666,7 +666,6 @@ func specFromFilter(c core.Collection) core.CollectionSpec {
 		sp.SortDesc = true
 	}
 	if c.OwnerUserID != 0 {
-		sp.Targets.Users = core.UserTargets{IDs: []int64{c.OwnerUserID}}
 	}
 	add := func(field, op string, v any) {
 		b, _ := json.Marshal(v)

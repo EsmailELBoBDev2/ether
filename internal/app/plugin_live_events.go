@@ -562,6 +562,9 @@ func (a *App) handleScreenPublish(w http.ResponseWriter, r *http.Request, plugin
 	}
 	if docs := (surfaceScreens{app: a}).docs(); docs != nil {
 		docs.Bump()
+		if in.Kind == "surface" && *in.Enabled {
+			a.offerHomeRowSurfaces(r.Context(), docs, pluginID)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

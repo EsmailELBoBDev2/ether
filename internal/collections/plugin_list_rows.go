@@ -138,7 +138,7 @@ func (s *Service) pluginListRow(ctx context.Context, user *core.User, id string)
 	case MediaShow:
 		hub.Type = core.TypeShow
 	}
-	return &core.CollectionRow{Hub: hub, CollectionID: sig, HomeRow: true, SectionRow: true}, nil
+	return &core.CollectionRow{Hub: hub, CollectionID: sig}, nil
 }
 
 // readPluginList reads one list in the background and keeps its titles.
@@ -178,4 +178,47 @@ func (c *listRows) evictOldestLocked() {
 	if oldest != "" {
 		delete(c.entries, oldest)
 	}
+}
+
+// purgeSpecs deletes the collections matching where, with their members.
+func (s *Service) purgeSpecs(ctx context.Context, where string, args ...any) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM collections_specs WHERE `+where, args...)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id=?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM collections_specs WHERE id=?`, id); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.forgetRowMemo(ctx)
+	for _, id := range ids {
+		s.changed(id)
+	}
+	return nil
 }

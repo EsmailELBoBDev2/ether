@@ -2,7 +2,6 @@ package collections
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -50,126 +49,15 @@ func rowPageKeys(keys []core.RatingKey, mediaType string) ([]core.RatingKey, boo
 	return out, dropped
 }
 
-// HomeRowsFor returns owner collections promoted to Home or section rows
-// for a user in a context: enabled, targeted at the user, with the user's
-// content-rating limit, personal rules, personal order and rotation
-// applied. Each row says whether it belongs on Home, in section hubs, or
-// both, and carries the collection's schedule, which the caller applies
-// (a viewer's Home override may replace it); Hub.Type tells the caller
-// which section ("" for mixed collections).
-// homeIndexWait bounds how long a home waits for the catalogue index's
-// first build before it skips the live rows that need it.
-const homeIndexWait = 300 * time.Millisecond
-
-// homeRowWait bounds how long a single collection row may block Home or
-// section row assembly before its build finishes in the background.
+// homeRowWait bounds how long a single collection row may block a page's
+// row assembly before its build finishes in the background.
 const homeRowWait = 500 * time.Millisecond
 
-func (s *Service) HomeRowsFor(ctx context.Context, user *core.User, hc core.HubContext) ([]core.CollectionRow, error) {
-	rows, err := s.loadRows(ctx)
-	if err != nil {
-		return nil, err
-	}
-	type pendingRow struct {
-		row     *specRow
-		keys    []core.RatingKey
-		page    []core.RatingKey
-		dropped bool
-	}
-	var pending []pendingRow
-	var allPageKeys []core.RatingKey
-	seenPageKey := map[core.RatingKey]bool{}
-	var indexReady *bool
-	for _, row := range rows {
-		if ctx.Err() != nil {
-			break
-		}
-		sp := row.spec
-		if !visible(row, user) || (!sp.Targets.HomeRow && !sp.Targets.SectionRow) {
-			continue
-		}
-		// A live row is evaluated on request, but a home does not wait out
-		// the catalogue index's first build, which reads the whole
-		// catalogue: past homeIndexWait it skips the row until it is ready.
-		live := false
-		if sp.Refresh == RefreshLive {
-			if indexReady == nil {
-				ready := s.idx.readyWithin(ctx, homeIndexWait) != nil
-				indexReady = &ready
-			}
-			live = *indexReady
-		}
-		rctx, rcancel := context.WithTimeout(ctx, homeRowWait)
-		keys, err := s.serve(rctx, row, user, live)
-		rcancel()
-		if err != nil {
-			if !errors.Is(err, errNotBuilt) {
-				s.log.Debug("collections: row", "id", row.publicID(), "err", err)
-			}
-			continue
-		}
-		if len(keys) == 0 {
-			continue
-		}
-		page, dropped := rowPageKeys(keys, sp.MediaType)
-		pending = append(pending, pendingRow{row: row, keys: keys, page: page, dropped: dropped})
-		for _, k := range page {
-			if !seenPageKey[k] {
-				seenPageKey[k] = true
-				allPageKeys = append(allPageKeys, k)
-			}
-		}
-	}
-	if len(pending) == 0 {
-		return nil, nil
-	}
-	// Hydrate all Home/section collection shelf pages together in one mirror batch
-	// instead of repeating titles, facets, credits and aired counts per row.
-	titles, err := s.mirror.Titles(ctx, allPageKeys)
-	if err != nil {
-		return nil, nil
-	}
-	byKey := make(map[core.RatingKey]core.Title, len(titles))
-	for _, t := range titles {
-		byKey[t.Key] = t
-	}
-	out := make([]core.CollectionRow, 0, len(pending))
-	for _, pr := range pending {
-		items := make([]core.Title, 0, len(pr.page))
-		for _, k := range pr.page {
-			if t, ok := byKey[k]; ok {
-				items = append(items, t)
-			}
-		}
-		if len(items) == 0 {
-			continue
-		}
-		sp := pr.row.spec
-		hub := core.Hub{
-			ID: "collection." + pr.row.publicID(), Title: sp.Name, Style: "shelf", PreviewOnFocus: sp.PreviewOnFocus, RankedTop10: sp.RankedTop10,
-			Promoted: sp.Targets.HomeRow, Items: items, More: pr.dropped || len(pr.keys) > len(items), Key: pr.row.key(),
-		}
-		switch sp.MediaType {
-		case MediaMovie:
-			hub.Type, hub.Context = core.TypeMovie, "hub.movie.collection"
-		case MediaShow:
-			hub.Type, hub.Context = core.TypeShow, "hub.tv.collection"
-		default:
-			hub.Context = "hub.home.collection"
-		}
-		if sp.Targets.HomeRow {
-			hub.Context = "hub.home.collection"
-		}
-		out = append(out, core.CollectionRow{Hub: hub, CollectionID: pr.row.publicID(),
-			HomeRow: sp.Targets.HomeRow, SectionRow: sp.Targets.SectionRow, Schedule: sp.Targets.Schedule})
-	}
-	return out, nil
-}
-
-// LayoutRow serves a row the owner placed on a Recommendations page: a
-// collection (by public id), or a plugin list (core.PluginListRowID),
-// which is read directly with no collection behind it. Private ownership
-// and viewer content limits still apply; the page supplies placement.
+// LayoutRow serves a collection or plugin list a Recommendations page
+// places as a row: a collection by public id, or a plugin list by
+// core.PluginListRowID, read directly with no collection behind it.
+// Private ownership and viewer content limits apply; the page row supplies
+// placement and schedule.
 func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubContext, id string) (*core.CollectionRow, error) {
 	if strings.HasPrefix(strings.TrimSpace(id), "plugin:") {
 		return s.pluginListRow(ctx, user, id)
@@ -203,5 +91,5 @@ func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubCon
 	case MediaShow:
 		hub.Type = core.TypeShow
 	}
-	return &core.CollectionRow{Hub: hub, CollectionID: row.publicID(), HomeRow: true, SectionRow: true, Schedule: row.spec.Targets.Schedule}, nil
+	return &core.CollectionRow{Hub: hub, CollectionID: row.publicID()}, nil
 }

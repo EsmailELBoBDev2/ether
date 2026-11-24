@@ -45,35 +45,17 @@ const (
 // shelf load writes one receipt per title and held the first Latest for seconds.
 var personalHandleDelay = 750 * time.Millisecond
 
-// personalHomeConfig is the owner control for Jellyfin and Emby home rows.
-// Missing keys mean the feature is on, with about four rows of every kind.
+// personalHomeConfig is the owner's "Home rows shown" count for Jellyfin and
+// Emby. Which rows exist, and in what order, is the Home Recommendations page;
+// this only limits how many of them the app lists. Missing means four.
 type personalHomeConfig struct {
-	enabled bool
-	count   int
-	kinds   map[string]bool
+	count int
 }
 
 func personalHomeFrom(settings frontend.Settings) personalHomeConfig {
-	cfg := personalHomeConfig{enabled: true, count: personalRowDefault}
-	if settings == nil {
-		return cfg
-	}
-	if value, ok := settings["homeRows"].(bool); ok {
-		cfg.enabled = value
-	}
+	cfg := personalHomeConfig{count: personalRowDefault}
 	if value, ok := settings["homeRowCount"].(float64); ok && value >= 0 && value <= personalRowMax && value == math.Trunc(value) {
 		cfg.count = int(value)
-	}
-	raw, ok := settings["homeRowKinds"].([]any)
-	if !ok {
-		return cfg
-	}
-	cfg.kinds = map[string]bool{}
-	for _, item := range raw {
-		kind, ok := item.(string)
-		if ok && kind != "" {
-			cfg.kinds[kind] = true
-		}
 	}
 	return cfg
 }
@@ -89,25 +71,10 @@ func validatePersonalSettings(s frontend.Settings) error {
 	for key, value := range s {
 		switch key {
 		case "port", "serverName", "discovery", "quickConnect", "publicViewerPicker":
-		case "homeRows":
-			if _, ok := value.(bool); !ok {
-				return fmt.Errorf("invalid %s", key)
-			}
 		case "homeRowCount":
 			n, ok := value.(float64)
 			if !ok || n < 0 || n > personalRowMax || n != math.Trunc(n) {
 				return fmt.Errorf("invalid %s", key)
-			}
-		case "homeRowKinds":
-			list, ok := value.([]any)
-			if !ok {
-				return fmt.Errorf("invalid %s", key)
-			}
-			for _, item := range list {
-				kind, ok := item.(string)
-				if !ok || kind == "" || len(kind) > 64 {
-					return fmt.Errorf("invalid %s", key)
-				}
 			}
 		default:
 			return fmt.Errorf("unknown setting %s", key)
@@ -194,12 +161,7 @@ func (i *instance) policyGeneration(ctx context.Context) int64 {
 }
 
 func personalCacheKey(protocol string, v *frontend.Viewer, dev frontend.Device, cfg personalHomeConfig) string {
-	kinds := make([]string, 0, len(cfg.kinds))
-	for kind := range cfg.kinds {
-		kinds = append(kinds, kind)
-	}
-	sort.Strings(kinds)
-	return fmt.Sprintf("%s\n%d\n%s\n%t\n%d\n%s", protocol, v.ID, dev.ID, cfg.enabled, cfg.count, strings.Join(kinds, ","))
+	return fmt.Sprintf("%s\n%d\n%s\n%s", protocol, v.ID, dev.ID, personalConfigKey(cfg))
 }
 
 // personalShelves is the cached identity list. It never builds row items and
@@ -207,7 +169,7 @@ func personalCacheKey(protocol string, v *frontend.Viewer, dev frontend.Device, 
 // the last list saved for this viewer, and refreshes in the background.
 func (i *instance) personalShelves(r *http.Request, v *frontend.Viewer) []personalShelf {
 	cfg := i.personalConfig()
-	if !cfg.enabled || cfg.count == 0 || v == nil || i.host.Experience == nil {
+	if cfg.count == 0 || v == nil || i.host.Experience == nil {
 		return nil
 	}
 	dev := device(r)
@@ -295,12 +257,7 @@ func personalSavedKey(protocol string, viewerID int64, cfg personalHomeConfig) s
 }
 
 func personalConfigKey(cfg personalHomeConfig) string {
-	kinds := make([]string, 0, len(cfg.kinds))
-	for kind := range cfg.kinds {
-		kinds = append(kinds, kind)
-	}
-	sort.Strings(kinds)
-	return fmt.Sprintf("%t\n%d\n%s", cfg.enabled, cfg.count, strings.Join(kinds, ","))
+	return "rows\n" + strconv.Itoa(cfg.count)
 }
 
 type storedPersonalShelf struct {
@@ -376,7 +333,7 @@ func (i *instance) PreparePersonalHomes(ctx context.Context) {
 		return
 	}
 	cfg := i.personalConfig()
-	if !cfg.enabled || cfg.count == 0 {
+	if cfg.count == 0 {
 		return
 	}
 	users, err := i.host.PersonalHomes.PersonalHomeViewers(ctx)
@@ -434,7 +391,7 @@ func (i *instance) RefreshPersonalHome(userID int64) {
 
 func (i *instance) loadPersonalShelves(ctx context.Context, v *frontend.Viewer, dev frontend.Device) []personalShelf {
 	cfg := i.personalConfig()
-	if !cfg.enabled || cfg.count == 0 || v == nil || i.host.Experience == nil || dev.ID == "" {
+	if cfg.count == 0 || v == nil || i.host.Experience == nil || dev.ID == "" {
 		return nil
 	}
 	rows, err := i.personalHomeRows(ctx, v, dev)
@@ -449,9 +406,6 @@ func (i *instance) loadPersonalLibraryShelves(ctx context.Context, v *frontend.V
 		return nil, nil
 	}
 	cfg := i.personalConfig()
-	if !cfg.enabled {
-		return []personalShelf{}, nil
-	}
 	if budget > cfg.count {
 		cfg.count = budget
 	}
@@ -489,7 +443,7 @@ func shelvesFromRows(cfg personalHomeConfig, v *frontend.Viewer, rows []frontend
 		}
 		available := nowAvailableExperienceRow(row)
 		always := !available && personalShelfCompatible(row) && row.Layout.Always
-		if !available && !always && (!personalRowAllowed(cfg, row) || optionalUsed >= optionalBudget) {
+		if !available && !always && (!personalShelfCompatible(row) || optionalUsed >= optionalBudget) {
 			continue
 		}
 		titles := personalTitles(row)
@@ -530,29 +484,16 @@ func nowAvailableExperienceRow(row frontend.Row) bool {
 	return row.ID == "watchlist.available" || row.Title == "Now available"
 }
 
+// personalShelfCompatible reports whether a Recommendations row becomes a
+// personal Home folder. Continue, Next Up and Jump back in stay the client's
+// own Resume and Next Up sections, Live stays Live TV, and plugin surface rows
+// have no titles to list.
 func personalShelfCompatible(row frontend.Row) bool {
 	switch row.Purpose {
-	case frontend.RowContinue, frontend.RowNextUp, frontend.RowLive:
+	case frontend.RowContinue, frontend.RowNextUp, frontend.RowLive, frontend.RowRecentContexts:
 		return false
 	}
-	switch row.Kind {
-	case "continue-watching", "up-next":
-		return false
-	}
-	return true
-}
-
-func personalRowAllowed(cfg personalHomeConfig, row frontend.Row) bool {
-	if !personalShelfCompatible(row) {
-		return false
-	}
-	if cfg.kinds == nil {
-		return true
-	}
-	if cfg.kinds[row.Kind] {
-		return true
-	}
-	return strings.HasPrefix(row.Kind, "collection:") && cfg.kinds["collection"]
+	return row.Layout.Present.Surface == nil
 }
 
 func personalTitles(row frontend.Row) []frontend.Title {
@@ -652,7 +593,7 @@ func (i *instance) personalByNumber(r *http.Request, v *frontend.Viewer, number 
 // asks for every view at once; each call used to rebuild and authorize home.
 func (i *instance) loadedPersonalShelves(ctx context.Context, v *frontend.Viewer, dev frontend.Device) []personalShelf {
 	cfg := i.personalConfig()
-	if !cfg.enabled || cfg.count == 0 || v == nil || i.host.Experience == nil || dev.ID == "" {
+	if cfg.count == 0 || v == nil || i.host.Experience == nil || dev.ID == "" {
 		return nil
 	}
 	key := personalCacheKey(string(i.protocol), v, dev, cfg)
@@ -1437,6 +1378,9 @@ func (i *instance) recommendations(w http.ResponseWriter, r *http.Request, want 
 		}
 		if len(titles) == 0 {
 			continue
+		}
+		if shelf.row.RankedTop10 && len(titles) > 10 {
+			titles = titles[:10]
 		}
 		if itemLimit >= 0 && len(titles) > itemLimit {
 			titles = titles[:itemLimit]

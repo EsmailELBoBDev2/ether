@@ -63,7 +63,9 @@ func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
 		}
 		if err := reg.Sync(r, files, text); err != nil {
 			a.log.Warn("plugin screens: documents rejected", "plugin", r.ID, "err", err)
+			return
 		}
+		a.offerHomeRowSurfaces(ctx, reg, r.ID)
 	}
 	mgr.OnSync(sync)
 	mgr.OnRemove(func(_ context.Context, id string) { reg.Remove(id) })
@@ -438,20 +440,6 @@ func (p screenPushes) PutRecords(ctx context.Context, pluginID string, raw json.
 	return p.svc.PutRecords(ctx, pluginID, recs)
 }
 
-func (s surfaceScreens) ScreenHomeRows(ctx context.Context, viewer *frontend.Viewer, c frontend.ScreenClient) (json.RawMessage, error) {
-	docs := s.docs()
-	rows := []map[string]string{}
-	if docs == nil || viewer == nil || c.Renderer <= 0 {
-		return json.Marshal(rows)
-	}
-	for _, t := range docs.Surfaces(ctx, viewer, s.surface) {
-		if t.Meta.Presentation == "homeRow" {
-			rows = append(rows, map[string]string{"kind": "surface", "id": "surface:" + t.PluginID + ":" + t.Meta.ID, "surface": t.WireID})
-		}
-	}
-	return json.Marshal(rows)
-}
-
 func (s surfaceScreens) ScreenPreviewValid(ctx context.Context) bool {
 	return s.docs().IsPreview(ctx)
 }
@@ -516,45 +504,4 @@ func (f screenItemFinder) KindKeys(ctx context.Context, pluginID, kind string, i
 		}
 	}
 	return out, nil
-}
-
-// pageSurfaces implements personalize.Options.PageSurfaces: the plugin
-// Home-row surfaces the Recommendations designer can place, as the owner
-// sees them in Vela (value "<pluginID>:<surfaceID>", plain label). It reads
-// the in-memory surface registry only.
-func (a *App) pageSurfaces(ctx context.Context) []core.ParamOption {
-	docs := (surfaceScreens{app: a}).docs()
-	if docs == nil || a.users == nil {
-		return nil
-	}
-	owner, err := a.users.Owner(ctx)
-	if err != nil || owner == nil {
-		return nil
-	}
-	var out []core.ParamOption
-	for _, t := range docs.Surfaces(ctx, owner, "vela") {
-		if t.Meta.Presentation != "homeRow" {
-			continue
-		}
-		label := strings.TrimSpace(t.Meta.Title)
-		if label == "" {
-			label = t.Meta.ID
-		}
-		if name := a.pluginDisplayName(ctx, t.PluginID); name != "" {
-			label = name + " · " + label
-		}
-		out = append(out, core.ParamOption{Value: t.PluginID + ":" + t.Meta.ID, Label: label})
-	}
-	return out
-}
-
-func (a *App) pluginDisplayName(ctx context.Context, pluginID string) string {
-	if a.pluginsRT == nil || a.pluginsRT.mgr == nil {
-		return ""
-	}
-	rec, err := a.pluginsRT.mgr.Get(ctx, pluginID)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(rec.Name)
 }

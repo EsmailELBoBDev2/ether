@@ -13,7 +13,7 @@ import (
 const (
 	SourceCollection = "collection" // params: collection (public id)
 	SourceShelf      = "shelf"      // params: shelf (a plugin library's declared shelf key)
-	SourceSurface    = "surface"    // params: surface ("<pluginID>:<surfaceID>"), a plugin's Home-row surface (Vela)
+	SourceSurface    = "surface"    // params: surface ("<pluginID>:<surfaceID>"); a stub Vela draws
 	// KindLibraryPlaylists is a library's own playlists: the items of its
 	// playlist level (listen libraries).
 	KindLibraryPlaylists = "library-playlists"
@@ -109,15 +109,15 @@ func builtinSources() []core.RowSourceInfo {
 		{Kind: SourceCollection, Title: "Collection", Description: "One of your collections.",
 			Group: groupYourCollections, Needs: []string{core.CapCatalogue}, Split: true,
 			Params: []core.RowParam{{Key: "collection", Label: "Collection", Type: core.ParamRef, Required: true}}},
+		{Kind: SourceSurface, Title: "Plugin Row", Description: "A row a plugin draws in Vela (Sports Tonight). Only in Vela.",
+			Group: groupPlugins, HomeOnly: true, Apps: []string{"vela"},
+			Params: []core.RowParam{{Key: "surface", Label: "Row", Type: core.ParamRef, Required: true}}},
 		{Kind: SourceShelf, Title: "Plugin Shelf", Description: "A shelf this library's plugin declares.",
 			Group: groupPlugins, Needs: []string{core.CapShelves},
 			Params: []core.RowParam{{Key: "shelf", Label: "Shelf", Type: core.ParamRef, Required: true}}},
 		{Kind: KindLibraryPlaylists, Title: "Playlists", Description: "The library's playlists.",
 			Group: groupKeep, Needs: []string{core.CapRole(core.RolePlaylist)}, Split: true,
 			Look: core.RowLook{Card: "square"}},
-		{Kind: SourceSurface, Title: "Plugin Screen Row", Description: "A row a plugin draws itself, such as tonight's games. Shown in Vela.",
-			Group: groupPlugins, HomeOnly: true, Apps: []string{"vela"},
-			Params: []core.RowParam{{Key: "surface", Label: "Row", Type: core.ParamRef, Required: true}}},
 	}
 	return append(out, extra...)
 }
@@ -247,36 +247,8 @@ func sourceOf(hubID, kind string) (source, param string) {
 // sourceInfo describes a page row source: a built-in, or a runtime source
 // registered with the engine (a plugin list).
 func (e *Engine) sourceInfo(kind string) (core.RowSourceInfo, bool) {
-	for _, s := range builtinSources() {
-		if s.Kind == kind {
-			return s, true
-		}
-	}
-	if k, ok := e.rowKindRegistry().Lookup(kind); ok {
-		if info, ok := k.(RowSourceInfoKind); ok {
-			s := info.SourceInfo()
-			s.Kind, s.Group = kind, groupPlugins
-			return s, true
-		}
-		d := k.Descriptor()
-		return core.RowSourceInfo{Kind: kind, Title: d.Title, Description: d.Description, Group: groupPlugins, Split: true}, true
-	}
-	return core.RowSourceInfo{}, false
+	return e.rowKindRegistry().Source(kind)
 }
 
 // SourceInfos lists every row source: the built-ins, then runtime sources.
-func (e *Engine) SourceInfos() []core.RowSourceInfo {
-	out := builtinSources()
-	seen := map[string]bool{}
-	for _, s := range out {
-		seen[s.Kind] = true
-	}
-	for _, k := range e.rowKindRegistry().Kinds() {
-		if !seen[k.Kind()] {
-			if s, ok := e.sourceInfo(k.Kind()); ok {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}
+func (e *Engine) SourceInfos() []core.RowSourceInfo { return e.rowKindRegistry().Sources() }

@@ -13,8 +13,8 @@ import {
   Layers,
   Puzzle,
   RefreshCw,
+  LayoutList,
   SearchX,
-  Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Artwork } from "../../components/Artwork";
@@ -30,11 +30,11 @@ import {
   describeRule,
   describeSource,
   type SourceDescriptor,
-  describeTargets,
   previewableSpec,
 } from "../../lib/rules";
 import { useRegistry } from "../../lib/extend";
-import { ArtworkPreview, describeSchedule } from "./SettingsPanels";
+import { ArtworkPreview } from "./SettingsPanels";
+import { useCollectionUsage, usedOnSummary } from "./UsedOn";
 
 /** Each sort as it reads mid-sentence ("Sorted by release date"). */
 const SORT_PHRASE = localized<Record<CollectionSort, string>>(() => ({
@@ -67,7 +67,7 @@ export function CollectionDetail({
     [previewKey, spec.lastBuiltAt],
   );
   const items = preview.data?.items ?? [];
-  const targets = describeTargets(spec);
+  const usage = useCollectionUsage(template ? undefined : spec.id);
   const total = preview.data?.total;
   const refresh = REFRESH_OPTIONS.find((r) => r.value === spec.refresh)?.label ?? spec.refresh;
   const sort = SORT_PHRASE[spec.sort] ?? spec.sort;
@@ -124,9 +124,7 @@ export function CollectionDetail({
               <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">
                 {template
                   ? t("{category} template", { category: t(template.category) })
-                  : spec.builtIn
-                    ? t("Managed by Ether")
-                    : t("Collection preview")}
+                  : t("Collection preview")}
               </span>
               {!template ? (
                 <Badge variant={spec.enabled ? "success" : "secondary"}>
@@ -188,9 +186,19 @@ export function CollectionDetail({
         </div>
         <dl className="grid grid-cols-3 border-t border-border bg-surface/60 px-5 py-4 sm:px-6 xl:px-8">
           <Readout
+            icon={<LayoutList size={13} />}
+            label={t("Used on")}
+            value={template ? t("Not on any page") : usedOnSummary(usage.data)}
+            detail={
+              template
+                ? t("Add it to a page once it's saved")
+                : t("Rows are placed in Recommendations")
+            }
+          />
+          <Readout
             icon={<Layers size={13} />}
-            label={t("Appears in")}
-            value={targets.length ? targets.join(" · ") : t("Not placed yet")}
+            label={t("Browse in apps")}
+            value={spec.targets.collectionsTab ? t("On") : t("Off")}
             detail={
               template
                 ? t("Customise before publishing")
@@ -198,20 +206,6 @@ export function CollectionDetail({
                   ? t("Available in apps")
                   : t("Publish to make it visible")
             }
-          />
-          <Readout
-            icon={<Users size={13} />}
-            label={t("Audience")}
-            value={
-              spec.targets.users === "all"
-                ? t("Everyone")
-                : tn(
-                    spec.targets.users.length,
-                    "{count} selected viewer",
-                    "{count} selected viewers",
-                  )
-            }
-            detail={spec.targets.schedule ? describeSchedule(spec) : t("No viewing schedule")}
           />
           <Readout
             icon={<CalendarClock size={13} />}

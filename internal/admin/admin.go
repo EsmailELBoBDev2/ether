@@ -277,18 +277,12 @@ type Deps struct {
 	// DiskUsage overrides free-space reporting (tests). Nil → OS statfs.
 	DiskUsage func(path string) (total, free int64, err error)
 
-	// ---- Personalization engine (viewers, Home Designer, insights) ----
+	// ---- Personalization engine (viewers, Recommendations, insights) ----
 
-	// Personalization backs /api/viewers/*, /api/layout and
-	// /api/insights/* (internal/personalize.Engine). Viewers are listed
-	// from Users.
+	// Personalization backs /api/viewers/*, /api/pages/*,
+	// /api/row-sources/* and /api/insights/* (internal/personalize.Engine).
+	// Viewers are listed from Users.
 	Personalization Personalization
-	// LayoutLibraries lists libraries that have Recommended layouts
-	// ("library:<id>"). Optional.
-	LayoutLibraries func(context.Context) ([]LayoutLibrary, error)
-	// PluginLibraryRows lists candidate row descriptors and live shelves for a
-	// plugin library's Recommended tab. Optional.
-	PluginLibraryRows func(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error)
 
 	// Collections backs /api/collections* (Collection Studio).
 	Collections CollectionStudio

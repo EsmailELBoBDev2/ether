@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/state"
 )
@@ -511,6 +510,3 @@ func TestScoreTitles(t *testing.T) {
 	}
 }
 
-// The engine is what the admin API's viewers, layout and insights
-// endpoints are wired to.
-var _ admin.Personalization = (*Engine)(nil)

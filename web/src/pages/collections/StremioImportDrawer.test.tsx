@@ -131,7 +131,7 @@ describe("StremioImportDrawer", () => {
         refresh: "daily",
         maxItems: 500,
         enabled: true,
-        targets: { collectionsTab: true, homeRow: false, sectionRow: false, users: "all" },
+        targets: { collectionsTab: true },
         catalogCount: 4,
         managedCount: 3,
         removedCount: 0,

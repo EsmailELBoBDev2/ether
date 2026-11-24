@@ -263,3 +263,15 @@ type FacetPick struct {
 	Label string `json:"label"`
 	Count int    `json:"count,omitempty"`
 }
+
+// SurfaceInfo is a plugin Home-row surface the engine can place as a row
+// (source kind "surface", param surface = "<pluginID>:<surfaceID>").
+type SurfaceInfo struct {
+	Plugin     string `json:"plugin"`     // plugin id
+	ID         string `json:"id"`         // the plugin-local surface id
+	WireID     string `json:"wireId"`     // "<pluginShort>.<id>", the document URL id
+	Title      string `json:"title"`      // the surface's console name
+	PluginName string `json:"pluginName"` // the plugin's display name
+	// ContentRating is the surface's declared rating ("" none).
+	ContentRating string `json:"contentRating,omitempty"`
+}

@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "./harness";
 
@@ -13,15 +13,6 @@ describe("Stremio built-ins", () => {
       screen.getByRole("link", { name: "Add a subtitle provider in Plugins" }),
     ).toHaveAttribute("href", expect.stringContaining("/plugins"));
     expect(screen.queryByLabelText("Plugin URL")).not.toBeInTheDocument();
-  });
-
-  it("starts a Stremio Home row by choosing a plugin catalog", async () => {
-    renderApp("/collections/new?source=addonCatalog&draft=new-addon-row");
-    const picker = await screen.findByRole("dialog", { name: "Choose a Stremio plugin catalog" });
-    expect(await within(picker).findByLabelText("Filter catalogues")).toBeInTheDocument();
-    fireEvent.click(within(picker).getByRole("button", { name: "Add a plugin from Stremio" }));
-    const add = await screen.findByRole("dialog", { name: "Add a plugin from Stremio" });
-    expect(within(add).getByText("Install link")).toBeInTheDocument();
   });
 
   it("adds a Live TV plugin through the shared plugin drawer", async () => {

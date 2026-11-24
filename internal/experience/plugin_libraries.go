@@ -242,7 +242,6 @@ var (
 	_ frontend.LibraryFacetCollections    = (*Service)(nil)
 	_ frontend.LibraryFacetPeople         = (*Service)(nil)
 	_ frontend.PluginLibraryRowsReader    = (*Service)(nil)
-	_ frontend.PluginLibraryTabRowsReader = (*Service)(nil)
 )
 
 const maxPluginCursorEntries = 512
@@ -2379,33 +2378,25 @@ func (s *Service) pluginLibraryCandidateRowsForTab(ctx context.Context, v *core.
 }
 
 // PluginLibraryRows implements frontend.PluginLibraryRowsReader: the plugin
-// library's first rows tab.
-func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID string) ([]frontend.Row, error) {
-	return s.PluginLibraryTabRows(ctx, viewer, dev, viewID, "")
-}
-
-// PluginLibraryTabRows implements frontend.PluginLibraryTabRowsReader: the
-// rows of one rows tab of a plugin library, arranged by that tab's
-// Recommendations page ("library:<id>/<tab>") like every other page, with
-// the page's Hide watched applied. The candidates are built from the
-// library's stored items with bounded, indexed queries.
-func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID, tabID string) ([]frontend.Row, error) {
+// library's candidate shelves for tab, arranged by the Recommendations page
+// "library:<id>/<tab>" exactly like a catalogue library's page (Curated or
+// Personalized, length, devices, Look), with the page's Hide watched
+// applied. tab "" is the first rows tab.
+func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID, tab string) ([]frontend.Row, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
 	}
-	rows, declaredShelves, _, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tabID)
+	rows, declaredShelves, isDefaultTab, err := s.pluginLibraryCandidateRowsForTab(ctx, v, dev, viewID, tab)
 	if err != nil {
 		return nil, err
 	}
 	if s.d.Layout == nil {
 		return rows, nil
 	}
-	if tabID == "" {
-		if _, _, p, pErr := s.pluginLibraryByViewID(ctx, v, viewID); pErr == nil {
-			tabID = pluginFirstRecommendedTabID(p.Tabs)
-		}
+	if isDefaultTab {
+		tab = ""
 	}
 	id, _ := strconv.Atoi(viewID)
 	now := time.Now()
@@ -2418,7 +2409,7 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 		Device:    dev,
 		Placement: frontend.PlacementLibrary,
 		ViewID:    viewID,
-		Tab:       tabID,
+		Tab:       strings.TrimSpace(tab),
 	}
 	sit := core.HomeSituation{
 		LibraryID: id,
@@ -2430,6 +2421,9 @@ func (s *Service) PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer,
 		Platform:  dev.Platform,
 		ClientID:  dev.ID,
 	}
+	// The page's own length applies; an unsaved page shows its declared
+	// shelves (Curated) or up to eight automatic rows.
+	sit.DefaultMaxRows = 8
 	if declaredShelves && len(rows) > 0 {
 		sit.DefaultMaxRows = len(rows)
 	}

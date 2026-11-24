@@ -189,11 +189,12 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		// membership — the same filter its All browse runs (#549).
 		LibraryMembers:  a.libraryRecommendationMembers,
 		LibrarySections: librarySections,
-		PageSurfaces:    a.pageSurfaces,
+		LibraryRowsTab:  a.libraryRowsTab,
+		PageLibraries:   a.pageLibraries,
 		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,
-		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {
+		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionLayoutSource, error) {
 			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
 			var err error
 			a.collections, err = collections.New(a.db, a.catalog, log.With("component", "collections"), opts...)
@@ -226,12 +227,10 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	}); err != nil {
 		return fmt.Errorf("personalization: %w", err)
 	}
-	// One-time: Home layout schedules for collection rows move onto their
-	// collections, which own them now.
-	if a.collections != nil {
-		if err := a.collections.AdoptLayoutSchedules(ctx, a.personalize); err != nil {
-			a.log.Warn("collections: could not move Home layout schedules onto collections; retrying next start", "err", err)
-		}
+	// One-time: the Home layout and collection rows become Recommendations
+	// pages (rows-pages-v1).
+	if err := a.migrateRowsPages(ctx); err != nil {
+		a.log.Warn("recommendations: could not move the Home layout onto Recommendations pages; retrying next start", "err", err)
 	}
 	if err := parityWarmPersonalization(ctx, a); err != nil {
 		a.personalize.Close()

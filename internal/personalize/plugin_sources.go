@@ -32,8 +32,17 @@ func (e *Engine) pluginSourceRefs(ctx context.Context, ps *core.PageSource, page
 			}
 		}
 	case SourceSurface:
-		if e.opts.PageSurfaces != nil {
-			ps.Refs = e.opts.PageSurfaces(ctx)
+		if e.opts.Surfaces != nil {
+			for _, sf := range e.opts.Surfaces(ctx) {
+				label := sf.Title
+				if label == "" {
+					label = sf.ID
+				}
+				if sf.PluginName != "" {
+					label = sf.PluginName + " · " + label
+				}
+				ps.Refs = append(ps.Refs, core.ParamOption{Value: sf.Plugin + ":" + sf.ID, Label: label})
+			}
 		}
 		if len(ps.Refs) == 0 {
 			ps.Available, ps.Unavailable = false, "No plugin has a row to place here"

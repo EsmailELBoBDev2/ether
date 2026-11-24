@@ -364,7 +364,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			Genres:        []string{dev},
 		})
 	}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	}
 
 	owner := &core.User{ID: 1, IsOwner: true}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 
 	// With Layout == nil, declared shelves are still not clamped to 8.
 	svc.d.Layout = nil
-	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil || len(rowsNoLayout) != 26 {
 		t.Fatalf("PluginLibraryRows(Layout=nil) len=%d err=%v, want 26", len(rowsNoLayout), err)
 	}
@@ -653,7 +653,7 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	// Hide watched on a plugin library page drops the viewer's played titles.
 	svc.d.Layout = hideWatchedLayout{row: "plugin:12:shelf:latest"}
 	svc.d.State = watchedPluginState{fakeInProgressState: fakeInProgressState{inProgress: []core.WatchStatus{{Key: d2.Key, ViewOffset: 30_000}}}, watched: d1.Key}
-	hidden, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	hidden, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil {
 		t.Fatal(err)
 	}

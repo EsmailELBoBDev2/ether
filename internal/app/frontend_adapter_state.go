@@ -193,9 +193,39 @@ func (s adapterViewerState) Favorites(ctx context.Context, pluginID string, view
 	if err != nil {
 		return nil, err
 	}
-	entries, err := s.app.favorites.List(ctx, viewer, favorites.KindTitle, maxAdapterFavoriteScan)
-	if err != nil {
-		return nil, err
+	var entries []favorites.Entry
+	if q.Level != "" {
+		// Likes are listed by the level's role (track, album, artist), paged
+		// on the viewer's own likes, newest first.
+		rec, err := s.app.pluginsRT.pluginitems.GetKindByLibrary(ctx, lib.ID)
+		if err != nil {
+			return nil, err
+		}
+		lv, _, ok := rec.Decl.Level(q.Level)
+		if !ok {
+			return []plugins.KindFavorite{}, nil
+		}
+		role := lv.Role
+		if role == "" {
+			role = lv.Key
+		}
+		cursor := ""
+		for len(entries) < q.Limit {
+			page, err := s.app.favorites.Page(ctx, viewer, favorites.PageQuery{Kind: favorites.KindTitle, Role: role, Cursor: cursor, Limit: min(favorites.MaxPageLimit, q.Limit-len(entries))})
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, page.Entries...)
+			if page.Next == "" || len(page.Entries) == 0 {
+				break
+			}
+			cursor = page.Next
+		}
+	} else {
+		entries, err = s.app.favorites.List(ctx, viewer, favorites.KindTitle, maxAdapterFavoriteScan)
+		if err != nil {
+			return nil, err
+		}
 	}
 	keys := make([]core.RatingKey, 0, len(entries))
 	added := make(map[core.RatingKey]time.Time, len(entries))

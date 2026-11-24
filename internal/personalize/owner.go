@@ -508,9 +508,19 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 		return "needs_watch_history", "Needs more watch history for this viewer"
 	case isPersonalKind(kind) && conf < minPersonalConfidence:
 		return "needs_watch_history", "Needs more watch history for this viewer"
-	default:
-		return "no_matching_titles", "No matching titles for this viewer"
 	}
+	if m != nil {
+		prefix := sectionPrefix(section)
+		for _, c := range m.rows {
+			if matchRank(pol.Row, prefix+"."+c.id, c.id, c.kind) == 0 {
+				continue
+			}
+			if code, reason, ok := filteredRowReason(c, section, pol.Slot > 0); ok {
+				return code, reason
+			}
+		}
+	}
+	return "no_matching_titles", "No matching titles for this viewer"
 }
 
 func hasRemoteCollectionSource(sources []core.CollectionSource) bool {

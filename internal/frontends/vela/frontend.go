@@ -375,6 +375,14 @@ func (i *instance) failFor(w http.ResponseWriter, v *frontend.Viewer, err error,
 }
 
 func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error, requests ...*http.Request) {
+	if len(requests) > 0 && requests[0] != nil && frontend.SearchWasSuperseded(requests[0].Context()) {
+		// The device's next keystroke replaced this search: an empty,
+		// final answer, never an error a client might retry.
+		var b searchRequest
+		_ = body(requests[0], &b)
+		send(w, http.StatusOK, object{"query": b.Query, "generation": b.Generation, "items": []object{}, "continuation": frontend.ContinuationExhausted, "match": string(frontend.SearchMatchNone), "state": "complete", "retry": object{"allowed": false}})
+		return
+	}
 	var capErr *frontend.ProviderConnectionCapError
 	if errors.As(err, &capErr) {
 		sendProviderConnectionCap(w, capErr)

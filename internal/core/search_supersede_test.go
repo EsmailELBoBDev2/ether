@@ -75,3 +75,19 @@ func TestIsShortSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestEnterSearchGenerationLateKeystrokeDoesNotSupersedeNewer(t *testing.T) {
+	bg := context.Background()
+	newer, leaveNewer := EnterSearchGeneration(bg, 9, "tv", "jame", 4)
+	defer leaveNewer()
+	late, leaveLate := EnterSearchGeneration(bg, 9, "tv", "jam", 3)
+	defer leaveLate()
+	if !SearchWasSuperseded(late) || newer.Err() != nil {
+		t.Fatal("an older generation arriving late must answer superseded, not cancel the newer search")
+	}
+	next, leaveNext := EnterSearchGeneration(bg, 9, "tv", "james", 5)
+	defer leaveNext()
+	if !SearchWasSuperseded(newer) || next.Err() != nil {
+		t.Fatal("a newer generation must supersede the older search")
+	}
+}

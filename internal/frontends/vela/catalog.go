@@ -993,7 +993,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	}
 	// The next keystroke from this device cancels this search, scoped or
 	// not, and drops the remote lookups only it wanted.
-	sctx, leave := frontend.EnterSearch(r.Context(), v.ID, requestDevice(r).ID, b.Query)
+	sctx, leave := frontend.EnterSearchGeneration(r.Context(), v.ID, requestDevice(r).ID, b.Query, int64(b.Generation))
 	defer leave()
 	r = r.WithContext(sctx)
 	var targetView *frontend.View

@@ -202,6 +202,12 @@ func EnterSearch(ctx context.Context, viewerID int64, client, query string) (con
 	return core.EnterSearch(ctx, viewerID, client, query)
 }
 
+// EnterSearchGeneration is EnterSearch for a client that numbers its
+// queries, so an older keystroke arriving late never supersedes a newer one.
+func EnterSearchGeneration(ctx context.Context, viewerID int64, client, query string, generation int64) (context.Context, func()) {
+	return core.EnterSearchGeneration(ctx, viewerID, client, query, generation)
+}
+
 // SearchWasSuperseded reports a search cancelled by a newer one from the
 // same client (core.SearchWasSuperseded); it answers empty, not an error.
 func SearchWasSuperseded(ctx context.Context) bool {

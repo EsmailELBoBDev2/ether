@@ -865,6 +865,7 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
+		assignRowKeys(srcRows)
 		start := min(c.Offset, len(srcRows))
 		end := min(start+pageLimit, len(srcRows))
 		pageRows := srcRows[start:end]

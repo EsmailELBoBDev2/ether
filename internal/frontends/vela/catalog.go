@@ -470,6 +470,11 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 			excludedHeroes = c.Exclude
 		}
 		row, e := i.rowPage(r, v, id, offset, rowItemLimit(r))
+		if errors.Is(e, frontend.ErrNotFound) {
+			// A newer visit replaced or dropped this snapshot: the same
+			// answer as any superseded id, so the client re-reads bootstrap.
+			e = frontend.ErrRowViewStale
+		}
 		if e != nil {
 			return nil, false, e
 		}
@@ -479,6 +484,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		if !found {
 			return nil, false, frontend.ErrRowViewStale
 		}
+		row.Key = meta.Key
 		row.Title = meta.Title
 		row.Purpose = meta.Purpose
 		row.Kind = meta.Kind
@@ -530,6 +536,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 				}
 				return nil, false, e
 			}
+			row.Key = view.Key
 			row.Title = view.Title
 			row.Purpose = view.Purpose
 			row.Kind = view.Kind
@@ -549,6 +556,20 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	if r.PathValue("id") == "" && len(rows) > limit(r) {
 		outerMore = true
 		rows = rows[:limit(r)]
+	}
+	if r.PathValue("id") == "" || !useRowViews {
+		assignRowKeys(rows)
+		if useRowViews {
+			// /rows/{id} answers with the key this listing gave the row.
+			i.rowMu.Lock()
+			for _, row := range rows {
+				if meta, ok := i.rowMeta[row.ID]; ok {
+					meta.Key = row.Key
+					i.rowMeta[row.ID] = meta
+				}
+			}
+			i.rowMu.Unlock()
+		}
 	}
 	if matched != nil {
 		markLandscapeRows(rows, *matched)
@@ -722,6 +743,9 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 		continuation = "unknown"
 	}
 	wire := object{"id": row.ID, "name": row.Title, "purpose": row.Purpose, "receiptToken": row.Handle, "items": entries, "continuation": continuation}
+	if row.Key != "" {
+		wire["key"] = row.Key
+	}
 	presentRow(wire, row)
 	if wire["presentation"] == "ranked" {
 		wire["continuation"] = "exhausted"

@@ -316,8 +316,11 @@ type Row struct {
 	RankedTop10    bool
 	PreviewOnFocus bool
 	// Situation is the server-owned ranking context retained for deferred receipts.
-	Situation    core.HomeSituation
-	ID, Title    string
+	Situation core.HomeSituation
+	ID, Title string
+	// Key is the row's identity across visits when ID is a per-visit
+	// snapshot id; "" means ID is already stable.
+	Key          string
 	Purpose      RowPurpose
 	Kind         string // Stable semantic producer kind, independent of protocol.
 	Layout       RowLayout

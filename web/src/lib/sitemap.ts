@@ -83,10 +83,12 @@ const PAGES = localized<PageDef[]>(() => [
     ),
   },
   {
-    href: "/home",
-    title: t("Home"),
+    href: "/recommendations",
+    title: t("Recommendations"),
     sections: [],
-    keywords: searchTerms(msg("designer rows layout overrides plex home")),
+    keywords: searchTerms(
+      msg("home rows pages designer layout personalized curated library recommended plex"),
+    ),
   },
   {
     href: "/collections",

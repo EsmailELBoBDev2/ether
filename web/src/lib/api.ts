@@ -12,14 +12,6 @@ import type {
   CollectionTemplateBundlePreview,
   FacetName,
   FacetValue,
-  HomeLayout,
-  LayoutDoc,
-  LibraryLayoutDoc,
-  LayoutPage,
-  TargetSchedule,
-  ViewerLibraryPage,
-  LayoutImpactResult,
-  PreviewContext,
   LookupKind,
   LookupResult,
   RankerInsight,
@@ -33,6 +25,19 @@ import type {
   ViewerDetail,
   ViewerHome,
 } from "./contract";
+import type {
+  FacetValueOption,
+  PageDoc,
+  PageImpact,
+  PageKey,
+  PagePreview,
+  PageRow,
+  PageSummary,
+  PreviewRequest,
+  RowPage,
+  RowPreview,
+  SourcesDoc,
+} from "./pages";
 import type {
   Bootstrap,
   ClusterSetupRequest,
@@ -660,28 +665,35 @@ export const api = {
   ) => apiFetch<ViewerHome>(`/viewers/${id}/home${qs(ctx)}`, { signal }),
   refreshViewer: (id: number) => post<null>(`/viewers/${id}/refresh`),
 
-  // ---- Home Designer & Library Recommended rows -------------------------------
-  layout: () => apiFetch<LayoutDoc>("/layout"),
-  putLayout: (layout: HomeLayout) => put<LayoutDoc>("/layout", { layout }),
-  libraryLayout: (id: number, signal?: AbortSignal) =>
-    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { signal }),
-  putLibraryLayout: (
-    id: number,
-    body: {
-      page?: LayoutPage;
-      viewerPages?: ViewerLibraryPage[];
-      collectionSchedules?: Record<string, TargetSchedule | null>;
-    },
-  ) => put<LibraryLayoutDoc>(`/layout/libraries/${id}`, body),
-  deleteLibraryLayout: (id: number) =>
-    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { method: "DELETE" }),
-  /** The Plex Home a viewer (null = the typical viewer) gets with a draft layout (omitted = saved). */
-  previewLayout: (
-    body: PreviewContext & { viewerId: number | null; layout?: HomeLayout; count?: number },
+  // ---- Recommendations: pages of rows ------------------------------------------
+  pages: () => apiFetch<PageSummary[]>("/pages"),
+  page: (key: PageKey, signal?: AbortSignal) =>
+    apiFetch<PageDoc>(`/pages/${encodeURIComponent(key)}`, { signal }),
+  /** Saves the whole page; the server answers 409 when someone else saved it first. */
+  putPage: (page: RowPage) =>
+    apiFetch<PageDoc>(`/pages/${encodeURIComponent(page.key)}`, {
+      method: "PUT",
+      body: JSON.stringify(page),
+      headers: { "If-Match": String(page.revision) },
+    }),
+  resetPage: (key: PageKey) =>
+    apiFetch<PageDoc>(`/pages/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  pageSources: (key: PageKey, signal?: AbortSignal) =>
+    apiFetch<SourcesDoc>(`/pages/${encodeURIComponent(key)}/sources`, { signal }),
+  previewPage: (key: PageKey, body: PreviewRequest, signal?: AbortSignal) =>
+    post<PagePreview>(`/pages/${encodeURIComponent(key)}/preview`, body, signal),
+  previewPageRow: (
+    key: PageKey,
+    body: Omit<PreviewRequest, "page"> & { row: PageRow; limit?: number },
     signal?: AbortSignal,
-  ) => post<ViewerHome>("/layout/preview", body, signal),
-  layoutImpact: (body: PreviewContext & { layout: HomeLayout }, signal?: AbortSignal) =>
-    post<LayoutImpactResult>("/layout/impact", body, signal),
+  ) => post<RowPreview>(`/pages/${encodeURIComponent(key)}/rows/preview`, body, signal),
+  pageImpact: (key: PageKey, page: RowPage, signal?: AbortSignal) =>
+    post<PageImpact>(`/pages/${encodeURIComponent(key)}/impact`, { page }, signal),
+  facetValues: (library: number, facet: string, q: string, signal?: AbortSignal) =>
+    apiFetch<{ values: FacetValueOption[] | null }>(
+      `/row-sources/facets/${library}/${encodeURIComponent(facet)}${qs({ q })}`,
+      { signal },
+    ),
 
   // ---- Insights ---------------------------------------------------------------------
   rowInsights: async () =>

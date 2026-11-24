@@ -76,9 +76,9 @@ func consolePages() []consolePage {
 			Route: "/collections", NavGroup: extend.NavGroupLibrary, InNav: true, Mobile: true,
 			Keywords: T("studio templates rows"),
 		}},
-		{id: "home", label: T("Home"), icon: "LayoutTemplate", order: 30, meta: extend.PageMeta{
-			Route: "/home", NavGroup: extend.NavGroupLibrary, InNav: true,
-			Keywords: T("designer rows layout overrides plex home"),
+		{id: "recommendations", label: T("Recommendations"), icon: "LayoutTemplate", order: 30, meta: extend.PageMeta{
+			Route: "/recommendations", NavGroup: extend.NavGroupLibrary, InNav: true,
+			Keywords: T("home rows pages designer layout personalized curated library recommended plex"),
 		}},
 		{id: "livetv", label: T("Live TV"), icon: "Tv", order: 40, meta: extend.PageMeta{
 			Route: "/livetv", NavGroup: extend.NavGroupLibrary, InNav: true,

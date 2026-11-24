@@ -99,13 +99,10 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Startup, { isStarting } from "./pages/Startup";
 
-const loadDesigner = () => import("./pages/designer/Designer");
+const loadRecommendations = () => import("./pages/recommendations/Recommendations");
 const CollectionsGallery = lazy(() => import("./pages/collections/Gallery"));
 const CollectionEditor = lazy(() => import("./pages/collections/Editor"));
-const Designer = lazy(loadDesigner);
-// Mock-only design prototype (rows-redesign screenshots); absent from real builds.
-const PagesNext =
-  import.meta.env.MODE === "mock" ? lazy(() => import("./pages/pagesnext/PagesNext")) : null;
+const Recommendations = lazy(loadRecommendations);
 const ViewersList = lazy(() => import("./pages/viewers/ViewersList"));
 const ViewerProfile = lazy(() => import("./pages/viewers/ViewerProfile"));
 const settingsPage = <K extends keyof typeof import("./pages/settings/pages")>(name: K) =>
@@ -425,7 +422,7 @@ const BUILTIN_PAGES: Record<
   overview: { element: <Home /> },
   activity: { element: <Activity />, suffix: "/:tab?" },
   viewers: { element: <ViewersList />, extra: [{ suffix: "/:id/:tab?", element: <ViewerById /> }] },
-  home: { element: <Designer /> },
+  recommendations: { element: <Recommendations /> },
   collections: {
     element: <CollectionsLayout />,
     children: (
@@ -670,9 +667,12 @@ function Shell() {
               <Route path="/plugins/studio" element={<Studio />} />
               <Route path="/plugins/:tab?/*" element={<Plugins />} />
               <Route path="/p/:plugin/:page/*" element={<PluginPage />} />
-              {PagesNext ? <Route path="/pages-next" element={<PagesNext />} /> : null}
               {registryLoading && navDescriptors.length === 0 ? (
-                <Route key="home" path="/home" element={BUILTIN_PAGES.home!.element} />
+                <Route
+                  key="recommendations"
+                  path="/recommendations"
+                  element={BUILTIN_PAGES.recommendations!.element}
+                />
               ) : null}
               {navDescriptors
                 .filter((d) => d.kind === "page" && d.owner === BUILTIN && d.meta?.route)
@@ -849,8 +849,8 @@ export default function App() {
     }
   });
   useEffect(() => {
-    if (location.pathname === "/home" || location.pathname.startsWith("/home/")) {
-      void loadDesigner();
+    if (location.pathname === "/recommendations") {
+      void loadRecommendations();
     }
   }, [location.pathname]);
   const onReady = useCallback((enabled?: boolean, version?: string) => {

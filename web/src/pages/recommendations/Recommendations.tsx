@@ -36,10 +36,19 @@ import {
   User,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel } from "../../components/feedback";
+import { SubtabNav } from "../../components/layout";
 import { useViewers, viewerName } from "../../components/pickers";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { Workspace } from "../../components/workspace";
@@ -157,22 +166,28 @@ function InsertGap({
   onAdd,
   active,
   onDrop,
+  dropIndex,
+  dropTarget,
 }: {
   at: number;
   onAdd: (at: number) => void;
   active?: boolean;
   onDrop?: () => void;
+  /** The row a drop here lands before (-1: the end), for touch drags. */
+  dropIndex?: number;
+  dropTarget?: boolean;
 }) {
   const [over, setOver] = useState(false);
   const line = cn(
     "h-px flex-1 transition-colors",
-    active || over
+    active || over || dropTarget
       ? "h-0.5 bg-primary"
       : "bg-border-subtle group-hover/gap:bg-primary/50 group-focus-within/gap:bg-primary/50",
   );
   return (
     <div
       className="group/gap flex h-10 items-center gap-2 px-2"
+      data-drop-index={dropIndex}
       onDragOver={(e) => {
         if (!onDrop) return;
         e.preventDefault();
@@ -278,6 +293,8 @@ function PageRowView({
   onDragStart,
   onDragEnd,
   onDropBefore,
+  onTouchDrag,
+  dropTarget,
 }: {
   item: DisplayRow;
   pageRow: PageRow | undefined;
@@ -299,6 +316,10 @@ function PageRowView({
   onDragStart: () => void;
   onDragEnd: () => void;
   onDropBefore: () => void;
+  /** Touch screens have no HTML drag: the handle drags with the finger. */
+  onTouchDrag: (e: ReactPointerEvent) => void;
+  /** A finger dragging a row is over this one. */
+  dropTarget: boolean;
 }) {
   const r = item.row;
   const [over, setOver] = useState(false);
@@ -317,7 +338,9 @@ function PageRowView({
         ? t("Everyone except {viewers}", { viewers: names(audience.viewers) })
         : "";
   const when = pageRow ? scheduleSummary(pageRow.placement.when, pageRow.placement.devices) : "";
-  const draggable = Boolean(r.rowId) && !r.ghost;
+  // Every row on the page moves, Ether's own rows too: dropping one of
+  // them keeps it on the page, pinned where it landed.
+  const draggable = !r.ghost;
   const misplaced =
     mode === "pinned" &&
     Boolean(pageRow?.placement.position && item.position) &&
@@ -328,6 +351,7 @@ function PageRowView({
         item.position ? t("#{n}: {title}", { n: item.position, title: r.title }) : r.title
       }
       draggable={draggable}
+      data-drop-index={item.index}
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", r.hubId);
@@ -349,7 +373,7 @@ function PageRowView({
         selected && "bg-surface/70 ring-2 ring-primary/70",
         fresh && "border border-dashed border-primary/70 bg-primary-subtle/20",
         r.ghost && "opacity-55",
-        over && "border-t-2 border-primary",
+        (over || dropTarget) && "border-t-2 border-primary",
       )}
     >
       {/* The whole header opens the row's drawer; its own buttons keep their job. */}
@@ -361,9 +385,10 @@ function PageRowView({
       >
         {draggable ? (
           <span
-            className="cursor-grab text-fg-subtle"
+            className="-m-1.5 cursor-grab touch-none p-1.5 text-fg-subtle"
+            onPointerDown={onTouchDrag}
             title={
-              curated && mode !== "pinned"
+              curated && (!r.rowId || mode !== "pinned")
                 ? t("Drag to move")
                 : t("Drag to move; drop to pin it there")
             }
@@ -592,7 +617,7 @@ export default function Recommendations() {
   const [device, setDevice] = useState<Device>("tv");
   const [at, setAt] = useState<Date | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [tuningOpen, setTuningOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"settings" | "tuning">("settings");
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
 
@@ -938,12 +963,16 @@ export default function Recommendations() {
     dragging.current = null;
     if (!hub || !draft) return;
     const dragged = display.find((d) => d.row.hubId === hub)?.row;
-    const rowId = dragged?.rowId;
-    if (!rowId || !rowOf(rowId)) return;
-    const block = display.filter((d) => d.row.rowId === rowId).map((d) => d.row.hubId);
+    if (!dragged || dragged.ghost) return;
+    // One of Ether's rows (no page row yet) moves alone.
+    const rowId = dragged.rowId && rowOf(dragged.rowId) ? dragged.rowId : null;
+    const block = rowId
+      ? display.filter((d) => d.row.rowId === rowId).map((d) => d.row.hubId)
+      : [hub];
     const rest = display.map((d) => d.row.hubId).filter((h) => !block.includes(h));
     const targetHub = targetIndex == null ? null : display[targetIndex]?.row.hubId;
     if (targetHub && block.includes(targetHub)) {
+      if (!rowId) return;
       // Inside a one-row-per-library block: the drop reorders its libraries.
       const pr = rowOf(rowId);
       const from = dragged?.library;
@@ -974,6 +1003,31 @@ export default function Recommendations() {
       }
     }
     const position = order.slice(0, insertAt).filter((h) => !byHub.get(h)?.ghost).length + 1;
+    if (!rowId) {
+      // Dropping one of Ether's rows keeps it on the page, pinned where it landed.
+      const source = sourceByKind.get(dragged.kind);
+      if (!source) return setLocalOrder(null);
+      const row = rowForSource(
+        source,
+        {},
+        {
+          page: draft,
+          position,
+          editingFor: null,
+          libraries: dragged.library && !pageLibrary ? [dragged.library] : undefined,
+        },
+      );
+      keepEtherRow(
+        {
+          ...row,
+          placement: curated
+            ? withMode(row.placement, "show")
+            : withMode(row.placement, "pinned", position),
+        },
+        beforeId,
+      );
+      return;
+    }
     if (curated && effective(rowId)?.placement.mode !== "pinned") {
       // Curated: the list order is the page order. A pinned row keeps its
       // pin and takes the new position, as on a Personalized page.
@@ -988,6 +1042,40 @@ export default function Recommendations() {
     } else {
       update((p) => replaceRow(moveRow(p, rowId, beforeId), { ...row, placement }));
     }
+  };
+
+  // Touch screens have no HTML drag and drop: the row's handle follows the
+  // finger, the row or gap under it lights up, and lifting drops there.
+  const [touchOver, setTouchOver] = useState<number | null>(null);
+  const touchDrag = (e: ReactPointerEvent, hub: string) => {
+    if (e.pointerType === "mouse") return;
+    e.preventDefault();
+    dragging.current = hub;
+    const scroller =
+      (e.currentTarget as HTMLElement).closest<HTMLElement>("[data-workspace-scroll]") ??
+      (document.scrollingElement as HTMLElement | null);
+    let over: number | null = null;
+    const move = (ev: PointerEvent) => {
+      ev.preventDefault();
+      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("[data-drop-index]");
+      over = el ? Number(el.getAttribute("data-drop-index")) : null;
+      setTouchOver(over);
+      if (!scroller) return;
+      const r = scroller.getBoundingClientRect();
+      if (ev.clientY < r.top + 120) scroller.scrollBy(0, -18);
+      else if (ev.clientY > Math.min(r.bottom, window.innerHeight) - 80) scroller.scrollBy(0, 18);
+    };
+    const end = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      setTouchOver(null);
+      if (ev.type === "pointerup" && over != null) dropBefore(over < 0 ? null : over);
+      else dragging.current = null;
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   };
 
   // ---- page settings (Everyone, or the viewer's variant) ----------------------------
@@ -1009,6 +1097,13 @@ export default function Recommendations() {
       });
     } else update((p) => ({ ...p, length: clean }));
   };
+  // One choice: Personalized means Ether adds its picks, Curated means it
+  // adds nothing. A viewer's Personalized version needs the page's picks on
+  // (the engine ignores them on a Curated page).
+  const withPicks = (p: RowPage): RowPage => ({
+    ...p,
+    picks: p.mode !== "curated" || (p.variants ?? []).some((v) => v.mode === "personalized"),
+  });
   const setMode = (m: PageMode) => {
     if (editingFor != null) {
       update((p) => {
@@ -1018,13 +1113,13 @@ export default function Recommendations() {
         const next = { ...base, mode: m === p.mode ? undefined : m };
         if (i >= 0) variants[i] = next;
         else variants.push(next);
-        return { ...p, variants };
+        return withPicks({ ...p, variants });
       });
       return;
     }
     // Rows keep their placement: a Curated page shows them in its order and
     // ignores Pinned/Show/Auto, so switching back restores every pin.
-    update((p) => ({ ...p, mode: m }));
+    update((p) => withPicks({ ...p, mode: m }));
   };
   const [perDevice, setPerDevice] = useState(false);
 
@@ -1147,40 +1242,6 @@ export default function Recommendations() {
   // ---- layout ------------------------------------------------------------------------
   const pageName = summary?.name ?? (pageKey === PAGE_HOME ? t("Home") : t("This page"));
   const viewerChanges = editingFor != null && draft ? changeCount(draft, editingFor) : 0;
-  const counts = preview?.summary;
-  // The configured length and Ether's fill are separate; app-only rows
-  // (plugin rows Vela draws) never count toward the length.
-  const summaryLine = !counts
-    ? ""
-    : [
-        curated
-          ? tn(counts.rows, "{count} row · in your order", "{count} rows · in your order")
-          : counts.picksOn === false || (counts.picksOn == null && !draft?.picks)
-            ? tn(
-                counts.chosen ?? counts.rows,
-                "{count} chosen row · Ether's picks off",
-                "{count} chosen rows · Ether's picks off",
-              )
-            : t(
-                "{rows} rows · length {length} · {pinned} pinned · {shown} shown · {auto} filled in by Ether",
-                {
-                  rows: counts.rows,
-                  length: counts.length,
-                  pinned: counts.pinned,
-                  shown: counts.shown,
-                  auto: counts.auto,
-                },
-              ),
-        counts.appOnly
-          ? tn(
-              counts.appOnly,
-              "+ {count} only in Vela (not counted)",
-              "+ {count} only in Vela (not counted)",
-            )
-          : null,
-      ]
-        .filter(Boolean)
-        .join(" ");
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
@@ -1245,7 +1306,7 @@ export default function Recommendations() {
       label: t("Personalized"),
       line: t("Your rows plus Ether's picks"),
       hint: t(
-        "Your pinned and shown rows always appear. Ether fills the rest from your Auto rows and its picks.",
+        "Each viewer gets their own page: your pinned and shown rows always appear, and Ether fills the rest with rows picked for them.",
       ),
     },
     {
@@ -1253,10 +1314,29 @@ export default function Recommendations() {
       label: t("Curated"),
       line: t("Exactly your rows, in your order"),
       hint: t(
-        "Exactly your rows, in your order. Rows with nothing to show are skipped. Ether adds nothing.",
+        "Every viewer gets the same rows. Ether adds none, and a row with nothing to show is skipped.",
       ),
     },
   ];
+  const tuningBody = draft ? (
+    <div className="space-y-4">
+      {curated ? (
+        <p className="rounded-lg bg-bg-subtle px-3 py-2 text-sm text-fg-muted">
+          {t(
+            "This page is Curated, so Ether adds no rows to it. Switch it to Personalized to tune how Ether picks.",
+          )}
+        </p>
+      ) : null}
+      <TuningPanel
+        tuning={editingFor != null ? undefined : draft.tuning}
+        inherited={editingFor != null ? draft.tuning : undefined}
+        onChange={(tuning) => editingFor == null && update((p) => ({ ...p, tuning }))}
+        pageName={pageName}
+        viewerName={editingViewer ? viewerName(editingViewer) : null}
+        dials={editingFor == null && !curated}
+      />
+    </div>
+  ) : null;
   const settingsBody = draft ? (
     <div className="space-y-5">
       <Section title={t("Mode")}>
@@ -1301,15 +1381,9 @@ export default function Recommendations() {
         <Section title={t("Length")}>
           <Line
             label={t("Up to")}
-            hint={
-              draft.picks
-                ? t(
-                    "Pinned and shown rows always appear, even past this. Ether fills the rest up to this length.",
-                  )
-                : t(
-                    "Pinned and shown rows always appear. With Ether's picks off, the length only limits your Auto rows.",
-                  )
-            }
+            hint={t(
+              "Pinned and shown rows always appear, even past this. Ether fills the rest up to this length.",
+            )}
           >
             <span className="flex items-center gap-2">
               <LengthInput
@@ -1344,17 +1418,6 @@ export default function Recommendations() {
                 </Line>
               ))
             : null}
-          <Line label={t("Let Ether add its picks")} hint={t("Off: only the rows you added.")}>
-            <Switch
-              aria-label={t("Let Ether add its picks")}
-              checked={draft.picks}
-              disabled={editingFor != null}
-              onChange={(e) => {
-                const picks = e.currentTarget.checked;
-                update((p) => ({ ...p, picks }));
-              }}
-            />
-          </Line>
         </Section>
       )}
       {isLibraryPage ? (
@@ -1380,40 +1443,6 @@ export default function Recommendations() {
       <Section title={t("Shown in")}>
         <p className="text-fg-muted">{appsLine(summary?.apps, pageKey === PAGE_HOME)}</p>
       </Section>
-      {curated ? null : (
-        <section aria-label={t("Tuning")} className="space-y-2">
-          <button
-            type="button"
-            aria-expanded={tuningOpen}
-            onClick={() => setTuningOpen(!tuningOpen)}
-            className="flex w-full items-center justify-between gap-3 rounded-xl border border-border bg-surface px-3.5 py-3 text-left hover:border-primary/60"
-          >
-            <span>
-              <span className="block text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-                {t("Tuning")}
-              </span>
-              <span className="mt-0.5 block text-sm text-fg-muted">
-                {t("How Ether picks: the dials, personal touches and how it learns.")}
-              </span>
-            </span>
-            {tuningOpen ? (
-              <ChevronDown size={16} className="shrink-0 text-fg-subtle" />
-            ) : (
-              <ChevronRight size={16} className="shrink-0 text-fg-subtle" />
-            )}
-          </button>
-          {tuningOpen ? (
-            <TuningPanel
-              tuning={editingFor != null ? undefined : draft.tuning}
-              inherited={editingFor != null ? draft.tuning : undefined}
-              onChange={(tuning) => editingFor == null && update((p) => ({ ...p, tuning }))}
-              pageName={pageName}
-              viewerName={editingViewer ? viewerName(editingViewer) : null}
-              dials={editingFor == null}
-            />
-          ) : null}
-        </section>
-      )}
     </div>
   ) : (
     <div className="grid place-items-center p-6">
@@ -1447,31 +1476,11 @@ export default function Recommendations() {
   const openSettings = () => {
     setPending(null);
     setDrawer(null);
+    setSettingsTab("settings");
     setSettingsOpen(true);
   };
 
-  // ---- the toolbar and the summary strip ------------------------------------------------
-  // "4 you placed": rows the owner put on the page that it shows (not hidden).
-  const placed = draft
-    ? draft.rows.filter((r) => effectiveRow(draft, r, editingFor).placement.mode !== "hide").length
-    : 0;
-  const pageLength = length.rows ?? doc.data?.defaultLength;
-  const settingsLine = !draft
-    ? ""
-    : curated
-      ? [t("Curated"), tn(placed, "{count} row · in your order", "{count} rows · in your order")]
-          .filter(Boolean)
-          .join(" · ")
-      : [
-          t("Personalized"),
-          pageLength ? t("up to {count} rows", { count: pageLength }) : null,
-          length.byDevice ? t("per device") : null,
-          tn(placed, "{count} you placed", "{count} you placed"),
-          draft.picks ? t("Ether adds picks") : t("Ether's picks off"),
-        ]
-          .filter(Boolean)
-          .join(" · ");
-
+  // ---- the toolbar ---------------------------------------------------------------------
   const toolbar = (
     <div className="sticky top-0 z-20 border-b border-border bg-bg/95 px-3 py-2 backdrop-blur sm:px-6">
       <div className="flex flex-wrap items-center gap-2">
@@ -1575,10 +1584,13 @@ export default function Recommendations() {
             ) : null}
           </label>
         </div>
+        <span className="order-2 ml-auto flex items-center sm:order-3">
+          {previewing ? <Spinner size={12} label={t("Building the page")} /> : null}
+        </span>
         <Button
           variant="outline"
           size="sm"
-          className="order-2 ml-auto h-8 gap-1.5 sm:order-3"
+          className="order-2 h-8 gap-1.5 sm:order-3"
           onClick={openSettings}
           aria-haspopup="dialog"
         >
@@ -1589,34 +1601,6 @@ export default function Recommendations() {
       </div>
     </div>
   );
-
-  const strip = draft ? (
-    <button
-      type="button"
-      onClick={openSettings}
-      title={t("Open page settings")}
-      className="group/strip mb-3 flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-border bg-surface px-4 py-2.5 text-left text-sm transition-colors hover:border-primary/60"
-    >
-      {curated ? (
-        <Pin size={14} className="shrink-0 text-fg-muted" />
-      ) : (
-        <Sparkles size={14} className="shrink-0 text-primary" />
-      )}
-      <span className="font-medium text-fg">{settingsLine}</span>
-      {editingFor != null ? (
-        <span className="text-xs text-primary">
-          {t("for {viewer}", { viewer: editingViewer ? viewerName(editingViewer) : "" })}
-        </span>
-      ) : null}
-      <span className="ml-auto inline-flex items-center gap-2 text-xs text-fg-muted">
-        {previewing ? <Spinner size={12} /> : null}
-        <span className="hidden md:inline">{curated ? null : summaryLine}</span>
-        <span className="hidden items-center gap-1 font-medium text-primary group-hover/strip:underline sm:inline-flex">
-          <Settings2 size={12} /> {t("Page settings")}
-        </span>
-      </span>
-    </button>
-  ) : null;
 
   const groups: { rowId?: string; label?: string; items: DisplayRow[] }[] = [];
   for (const d of display) {
@@ -1646,32 +1630,31 @@ export default function Recommendations() {
 
   const pageView = (
     <div>
-      {strip}
-      <p
-        className={cn(
-          "mb-3 text-sm",
-          editingFor != null ? "font-medium text-primary" : "text-fg-muted",
-        )}
-      >
-        {editingFor != null
-          ? tn(
-              viewerChanges,
-              "Editing {viewer}'s page only: {count} change from Everyone. Rows you add here are for {viewer} only.",
-              "Editing {viewer}'s page only: {count} changes from Everyone. Rows you add here are for {viewer} only.",
-              { viewer: editingViewer ? viewerName(editingViewer) : "" },
-            )
-          : previewViewer
-            ? t(
-                "Editing everyone's {page}, previewing as {viewer}. Your changes apply to everyone.",
-                {
-                  page: pageName,
-                  viewer: viewerName(previewViewer),
-                },
+      {editingFor != null || previewViewer ? (
+        <p
+          className={cn(
+            "mb-3 text-sm",
+            editingFor != null ? "font-medium text-primary" : "text-fg-muted",
+          )}
+        >
+          {editingFor != null
+            ? tn(
+                viewerChanges,
+                "Editing {viewer}'s page only: {count} change from Everyone. Rows you add here are for {viewer} only.",
+                "Editing {viewer}'s page only: {count} changes from Everyone. Rows you add here are for {viewer} only.",
+                { viewer: editingViewer ? viewerName(editingViewer) : "" },
               )
-            : t(
-                "This is the page. Click a row to change it, drag it to move or pin it, or use + to add a row right there.",
-              )}
-      </p>
+            : previewViewer
+              ? t(
+                  "Editing everyone's {page}, previewing as {viewer}. Your changes apply to everyone.",
+                  {
+                    page: pageName,
+                    viewer: viewerName(previewViewer),
+                  },
+                )
+              : null}
+        </p>
+      ) : null}
       {conflict ? (
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-warning/40 bg-warning-subtle px-4 py-3 text-sm">
           <AlertTriangle size={16} className="text-warning" />
@@ -1732,6 +1715,8 @@ export default function Recommendations() {
             onAdd={openAdd}
             active={drawer?.kind === "add" && drawer.at === 1 && drawer.picking}
             onDrop={() => dropBefore(0)}
+            dropIndex={0}
+            dropTarget={touchOver === 0}
           />
           {display.length === 0 ? (
             <EmptyState
@@ -1783,6 +1768,8 @@ export default function Recommendations() {
                   onDragStart={() => (dragging.current = d.row.hubId)}
                   onDragEnd={() => (dragging.current = null)}
                   onDropBefore={() => dropBefore(d.index)}
+                  onTouchDrag={(e) => touchDrag(e, d.row.hubId)}
+                  dropTarget={touchOver === d.index}
                 />
               );
             });
@@ -1798,6 +1785,8 @@ export default function Recommendations() {
                   onAdd={openAdd}
                   active={drawer?.kind === "add" && drawer.picking && drawer.at === gapAt}
                   onDrop={() => dropBefore(last.index + 1 < display.length ? last.index + 1 : null)}
+                  dropIndex={last.index + 1 < display.length ? last.index + 1 : -1}
+                  dropTarget={touchOver === (last.index + 1 < display.length ? last.index + 1 : -1)}
                 />
               </div>
             );
@@ -1811,13 +1800,9 @@ export default function Recommendations() {
                   "Ether's picks · {count} more row it may choose from",
                   "Ether's picks · {count} more rows it may choose from",
                 )}
-                hint={
-                  draft?.picks
-                    ? t(
-                        "Rows you haven't added that fit this page. Ether uses them to fill up to the page length. Hide any you never want.",
-                      )
-                    : t("Ether's picks are off for this page, so it adds none of these.")
-                }
+                hint={t(
+                  "Rows you haven't added that fit this page. Ether uses them to fill up to the page length. Hide any you never want.",
+                )}
               >
                 {preview.picks!.map((p) => (
                   <div
@@ -2015,7 +2000,18 @@ export default function Recommendations() {
           </div>
         }
       >
-        {settingsBody}
+        <div className="space-y-4">
+          <SubtabNav
+            ariaLabel={t("Page settings")}
+            active={settingsTab}
+            onSelect={(k) => setSettingsTab(k as "settings" | "tuning")}
+            tabs={[
+              { key: "settings", label: t("Settings") },
+              { key: "tuning", label: t("Tuning") },
+            ]}
+          />
+          {settingsTab === "tuning" ? tuningBody : settingsBody}
+        </div>
       </Drawer>
       <RowDrawer
         state={drawer}

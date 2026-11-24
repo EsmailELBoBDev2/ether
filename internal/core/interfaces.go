@@ -530,6 +530,12 @@ type HistoryTopStore interface {
 	HistoryTop(context.Context, HistoryQuery, KeyKind) ([]HistoryCount, error)
 	LifetimeUsers(context.Context, RatingKey, HistoryQuery) ([]HistoryCount, error)
 }
+
+// CompletedHistoryStore lists the distinct keys a viewer completed in
+// [from, to), latest completion first, one entry per key (Year in Review).
+type CompletedHistoryStore interface {
+	CompletedBetween(ctx context.Context, userID int64, from, to time.Time) ([]HistoryEntry, error)
+}
 type HistoryStore interface {
 	QueryHistory(context.Context, HistoryQuery) ([]HistoryEntry, error)
 	HistoryByID(context.Context, int64, int64) (HistoryEntry, error)

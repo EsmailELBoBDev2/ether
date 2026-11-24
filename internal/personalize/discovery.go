@@ -156,7 +156,15 @@ func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit 
 	// film finished on New Year's Eve evening belongs to that year.
 	start := time.Date(year, 1, 1, 0, 0, 0, 0, d.now().Location())
 	end := start.AddDate(1, 0, 0)
-	entries, e := d.state.History(ctx, u.ID, start, 10000)
+	// One entry per key completed inside the year, from an aggregate over
+	// only this viewer's completed rows in it. A newest-first history page
+	// (capped at 500 rows) dropped the start of the year, or all of it, for
+	// active viewers once later and started-only rows filled the page (#799).
+	completed, ok := d.state.(core.CompletedHistoryStore)
+	if !ok {
+		return hub, nil
+	}
+	entries, e := completed.CompletedBetween(ctx, u.ID, start, end)
 	if e != nil {
 		return hub, e
 	}
@@ -167,15 +175,12 @@ func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit 
 		window := entries[startAt:min(startAt+64, len(entries))]
 		keys := make([]core.RatingKey, 0, len(window)*2)
 		for _, h := range window {
-			if h.Completed && !h.ViewedAt.Before(start) && h.ViewedAt.Before(end) && !seen[tasteKey(h.Key)] {
+			if !seen[tasteKey(h.Key)] {
 				keys = append(keys, h.Key, tasteKey(h.Key))
 			}
 		}
 		cached := mirroredTitles(ctx, d.catalog, keys)
 		for _, h := range window {
-			if !h.Completed || h.ViewedAt.Before(start) || !h.ViewedAt.Before(end) {
-				continue
-			}
 			// Episode keys already identify their show. Once that show is in the
 			// row, do not hydrate every remaining watched episode just to discard it.
 			if seen[tasteKey(h.Key)] {

@@ -28,9 +28,13 @@ var errNoAudioConfig = errors.New("fMP4 init has no AAC AudioSpecificConfig")
 // initCodecConfig checks every sample entry of an fMP4 init. missingAAC
 // reports an AAC entry without an AudioSpecificConfig (repairable);
 // video names an avc1/hvc1 entry whose avcC/hvcC lacks a parameter set.
-// FFmpeg derives those from the stream's extradata or its first keyframe,
-// so video is reported for diagnosis only. err is an init this reader
-// cannot walk; it is judged no further.
+// FFmpeg's MP4 muxer writes the record from the stream's extradata and does
+// not rebuild it from length-prefixed packets, so a copy whose source record
+// is empty publishes an empty one. Copies of such sources run the
+// h264_metadata/hevc_metadata filter, which publishes the in-band sets as
+// extradata before the header (see mp4CopyParameterSets, #783); video is
+// reported for diagnosis only. err is an init this reader cannot walk; it is
+// judged no further.
 func initCodecConfig(init []byte) (missingAAC bool, video string, err error) {
 	entries, err := initSampleEntries(init)
 	if err != nil {
@@ -350,69 +354,82 @@ func adtsAudioSpecificConfig(frame []byte) ([]byte, error) {
 // avcCComplete reports an AVCDecoderConfigurationRecord with at least one
 // SPS and one PPS, all within the box.
 func avcCComplete(p []byte) bool {
-	if len(p) < 7 || p[0] != 1 {
-		return false
-	}
-	i := 6
-	nSPS := int(p[5] & 0x1f)
-	for range nSPS {
-		if i+2 > len(p) {
-			return false
-		}
-		n := int(binary.BigEndian.Uint16(p[i:]))
-		i += 2 + n
-		if n == 0 || i > len(p) {
-			return false
-		}
-	}
-	if nSPS == 0 || i >= len(p) {
-		return false
-	}
-	nPPS := int(p[i])
-	i++
-	for range nPPS {
-		if i+2 > len(p) {
-			return false
-		}
-		n := int(binary.BigEndian.Uint16(p[i:]))
-		i += 2 + n
-		if n == 0 || i > len(p) {
-			return false
-		}
-	}
-	return nPPS > 0
+	sps, pps, ok := avcCSets(p)
+	return ok && sps > 0 && pps > 0
 }
 
-// hvcCComplete reports an HEVCDecoderConfigurationRecord carrying a VPS, an
-// SPS and a PPS, all within the box.
-func hvcCComplete(p []byte) bool {
-	if len(p) < 23 || p[0] != 1 {
-		return false
+// avcCSets counts the SPS and PPS entries of an AVCDecoderConfigurationRecord.
+// ok is false for a record that does not parse: another version, an entry
+// running past the box, an empty entry, or no PPS count.
+func avcCSets(p []byte) (sps, pps int, ok bool) {
+	if len(p) < 7 || p[0] != 1 {
+		return 0, 0, false
 	}
-	have := map[byte]bool{}
-	i := 23
-	for range int(p[22]) {
-		if i+3 > len(p) {
-			return false
-		}
-		typ := p[i] & 0x3f
-		count := int(binary.BigEndian.Uint16(p[i+1:]))
-		i += 3
+	i := 6
+	entries := func(count int) bool {
 		for range count {
 			if i+2 > len(p) {
 				return false
 			}
 			n := int(binary.BigEndian.Uint16(p[i:]))
 			i += 2 + n
-			if i > len(p) {
+			if n == 0 || i > len(p) {
 				return false
 			}
+		}
+		return true
+	}
+	sps = int(p[5] & 0x1f)
+	if !entries(sps) || i >= len(p) {
+		return 0, 0, false
+	}
+	pps = int(p[i])
+	i++
+	if !entries(pps) {
+		return 0, 0, false
+	}
+	return sps, pps, true
+}
+
+// hvcCComplete reports an HEVCDecoderConfigurationRecord carrying a VPS, an
+// SPS and a PPS, all within the box.
+func hvcCComplete(p []byte) bool {
+	have, _, ok := hvcCSets(p)
+	return ok && have[32] && have[33] && have[34]
+}
+
+// hvcCSets reads an HEVCDecoderConfigurationRecord: have marks each NAL type
+// with a non-empty entry, nals counts every entry. ok is false for a record
+// that does not parse (another version, an array or entry past the box).
+func hvcCSets(p []byte) (have map[byte]bool, nals int, ok bool) {
+	if len(p) < 23 || p[0] != 1 {
+		return nil, 0, false
+	}
+	have = map[byte]bool{}
+	i := 23
+	for range int(p[22]) {
+		if i+3 > len(p) {
+			return nil, 0, false
+		}
+		typ := p[i] & 0x3f
+		count := int(binary.BigEndian.Uint16(p[i+1:]))
+		i += 3
+		for range count {
+			if i+2 > len(p) {
+				return nil, 0, false
+			}
+			n := int(binary.BigEndian.Uint16(p[i:]))
+			i += 2 + n
+			if i > len(p) {
+				return nil, 0, false
+			}
+			nals++
 			if n > 0 {
 				have[typ] = true
 			}
 		}
 	}
-	return have[32] && have[33] && have[34]
+	return have, nals, true
 }
 
 // initCodecConfigLocked holds run r's fMP4 init, and with it the run's

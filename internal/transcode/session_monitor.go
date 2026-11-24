@@ -658,6 +658,17 @@ func (s *Session) finish(r *run) {
 	if s.cur != r {
 		return
 	}
+	// The in-band parameter set filter parses the source record before the
+	// header. A record it cannot read stops the run at start; copy that
+	// session without the rebuild, as before #783, instead of failing it.
+	if r.produced == 0 && !s.keepSourceRecord && parameterSetFilterFailed(stderr, r.spec.rebuildParameterSets()) {
+		s.keepSourceRecord = true
+		log.Warn("in-band parameter set filter failed to start; copying the source record", "filter", r.spec.rebuildParameterSets())
+		if retryErr := s.startRunForLocked(r.startSeg, r.spec.BigProbe, "parameter set filter fallback"); retryErr != nil {
+			s.failErr = retryErr
+		}
+		return
+	}
 	if !s.liveInput && r.produced == 0 && (deterministicHeaderFailure(stderr) || s.headerFallbackPending == s.input) {
 		if s.recoverHeaderLocked(r) {
 			return
@@ -1131,6 +1142,12 @@ func (s *Session) liveRecoveryDelay(now time.Time, r *run) (time.Duration, bool)
 // Deterministic initialization failures cannot be repaired by probing the same
 // bytes again. Keep this classification narrow: transport outages still use
 // the normal recovery path.
+// parameterSetFilterFailed reports a run whose in-band parameter set filter
+// (filter, "" when the run had none) did not initialize.
+func parameterSetFilterFailed(stderr, filter string) bool {
+	return filter != "" && strings.Contains(strings.ToLower(stderr), "error initializing bitstream filter: "+filter)
+}
+
 func deterministicHeaderFailure(stderr string) bool {
 	l := strings.ToLower(stderr)
 	return strings.Contains(l, "no parameter sets in the extradata") ||

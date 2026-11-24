@@ -28,13 +28,16 @@ type runSpec struct {
 	SilenceAudio     bool
 	// Only a retry of an initial run whose muxer wrote a wrapped tfdt.
 	NormalizeNegativeDTS bool
-	TextSubtitlePaths    map[int]string
-	SoftSubtitlePath     string
-	SoftSubtitleIndex    int
-	LoopInput            bool
-	LiveInput            bool
-	LiveFromBacklog      bool // live HLS input: start at its first listed segment
-	CopyTimestamps       bool
+	// KeepSourceRecord drops the in-band parameter set rebuild after the
+	// filter failed to start on this session's source record.
+	KeepSourceRecord  bool
+	TextSubtitlePaths map[int]string
+	SoftSubtitlePath  string
+	SoftSubtitleIndex int
+	LoopInput         bool
+	LiveInput         bool
+	LiveFromBacklog   bool // live HLS input: start at its first listed segment
+	CopyTimestamps    bool
 	// RTXTimeline preserves the native session's clock and rendition-local
 	// initialization paths when ordinary FFmpeg takes over.
 	RTXTimeline       bool
@@ -376,6 +379,15 @@ func mp4CopyParameterSets(v *core.StreamInfo) string {
 	return ""
 }
 
+// rebuildParameterSets is the filter an fMP4 video-copy run uses to rebuild
+// its source's in-band-only decoder configuration record, or "".
+func (s runSpec) rebuildParameterSets() string {
+	if s.Decision.Container != ContainerFMP4 || s.KeepSourceRecord || !s.Decision.VideoCopy {
+		return ""
+	}
+	return mp4CopyParameterSets(s.Info.Video())
+}
+
 // buildCodecArgs is the input, stream mapping and codec part of a run's
 // command line, shared by HLS and DASH.
 func buildCodecArgs(s runSpec) []string {
@@ -663,15 +675,13 @@ func buildCodecArgs(s runSpec) []string {
 				if ps := matroskaCopyParameterSets(d, v); ps != "" {
 					filter += "," + ps
 				}
-				if container == ContainerFMP4 {
-					if ps := mp4CopyParameterSets(v); ps != "" {
-						filter += "," + ps
-					}
+				if ps := s.rebuildParameterSets(); ps != "" {
+					filter += "," + ps
 				}
 				args = append(args, "-bsf:v", filter)
 			} else if ps := matroskaCopyParameterSets(d, v); ps != "" {
 				args = append(args, "-bsf:v", ps)
-			} else if ps := mp4CopyParameterSets(v); ps != "" && container == ContainerFMP4 {
+			} else if ps := s.rebuildParameterSets(); ps != "" {
 				args = append(args, "-bsf:v", ps)
 			}
 			if container == ContainerFMP4 && v.Codec != "hevc" {

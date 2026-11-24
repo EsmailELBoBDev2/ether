@@ -51,11 +51,17 @@ func TestInBandParameterSetsRecords(t *testing.T) {
 	}{
 		{"avcC complete", "h264", avcc(1, 1), false},
 		{"avcC without SPS/PPS", "h264", avcc(0, 0), true},
-		{"avcC without PPS", "h264", avcc(1, 0), true},
-		{"avcC truncated", "h264", avcc(1, 1)[:9], true},
+		// Partial or truncated records stop the metadata filters at start
+		// ("Failed to read extradata", "VPS id 0 not available"); they keep
+		// the plain copy.
+		{"avcC without PPS", "h264", avcc(1, 0), false},
+		{"avcC truncated", "h264", avcc(1, 1)[:9], false},
+		{"avcC truncated header", "h264", avcc(0, 0)[:6], false},
 		{"hvcC complete", "hevc", hvcc(32, 33, 34), false},
 		{"hvcC without arrays", "hevc", hvcc(), true},
-		{"hvcC without PPS", "hevc", hvcc(32, 33), true},
+		{"hvcC without PPS", "hevc", hvcc(32, 33), false},
+		{"hvcC SPS without VPS", "hevc", hvcc(33, 34), false},
+		{"hvcC truncated", "hevc", hvcc(32, 33, 34)[:30], false},
 		{"Annex B", "hevc", []byte{0, 0, 0, 1, 0x40, 0x01}, false},
 		{"empty", "h264", nil, false},
 		{"other codec", "av1", avcc(0, 0), false},
@@ -78,18 +84,22 @@ func TestMP4CopyRebuildsInBandParameterSets(t *testing.T) {
 		info      core.MediaInfo
 		container string
 		strip     bool
+		keep      bool
 		want      string
 	}{
-		{"hevc fmp4", info("hevc", true), ContainerFMP4, false, "hevc_metadata"},
-		{"hevc fmp4 dv strip", info("hevc", true), ContainerFMP4, true, "dovi_rpu=strip=1,hevc_metadata"},
-		{"h264 fmp4", info("h264", true), ContainerFMP4, false, "h264_metadata"},
-		{"hevc complete", info("hevc", false), ContainerFMP4, false, ""},
-		{"h264 complete", info("h264", false), ContainerFMP4, false, ""},
-		{"hevc mpegts", info("hevc", true), ContainerMPEGTS, false, ""},
-		{"h264 matroska", info("h264", true), ContainerMatroska, false, "h264_mp4toannexb"},
+		{"hevc fmp4", info("hevc", true), ContainerFMP4, false, false, "hevc_metadata"},
+		{"hevc fmp4 dv strip", info("hevc", true), ContainerFMP4, true, false, "dovi_rpu=strip=1,hevc_metadata"},
+		{"h264 fmp4", info("h264", true), ContainerFMP4, false, false, "h264_metadata"},
+		{"hevc complete", info("hevc", false), ContainerFMP4, false, false, ""},
+		{"h264 complete", info("h264", false), ContainerFMP4, false, false, ""},
+		{"hevc mpegts", info("hevc", true), ContainerMPEGTS, false, false, ""},
+		{"h264 matroska", info("h264", true), ContainerMatroska, false, false, "h264_mp4toannexb"},
+		// After the filter failed to start, the session copies the record.
+		{"hevc fmp4 filter failed", info("hevc", true), ContainerFMP4, false, true, ""},
+		{"hevc fmp4 dv strip filter failed", info("hevc", true), ContainerFMP4, true, true, "dovi_rpu=strip=1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := runSpec{Info: tc.info, Input: "http://127.0.0.1/in", Decision: core.Decision{
+			s := runSpec{Info: tc.info, Input: "http://127.0.0.1/in", KeepSourceRecord: tc.keep, Decision: core.Decision{
 				Container: tc.container, VideoCopy: true, AudioCopy: true, AudioStream: 1, StripDolbyVision: tc.strip}}
 			if got := argValue(buildCodecArgs(s), "-bsf:v"); got != tc.want {
 				t.Errorf("-bsf:v = %q, want %q", got, tc.want)

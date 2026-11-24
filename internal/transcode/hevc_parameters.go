@@ -96,49 +96,26 @@ func completeHEVCConfig(data []byte) bool {
 	return len(sets[32]) > 0 && len(sets[33]) > 0 && len(sets[34]) > 0
 }
 
-// completeAVCConfig reports an AVCDecoderConfigurationRecord carrying at
-// least one SPS and one PPS.
-func completeAVCConfig(c []byte) bool {
-	if len(c) < 7 || c[0] != 1 {
-		return false
-	}
-	b := c[5:]
-	for _, mask := range []byte{0x1f, 0xff} { // SPS count, then PPS count
-		if len(b) < 1 {
-			return false
-		}
-		count := int(b[0] & mask)
-		b = b[1:]
-		if count == 0 {
-			return false
-		}
-		for range count {
-			if len(b) < 2 {
-				return false
-			}
-			n := int(binary.BigEndian.Uint16(b))
-			if n == 0 || 2+n > len(b) {
-				return false
-			}
-			b = b[2+n:]
-		}
-	}
-	return true
-}
-
 // inBandParameterSets reports an ISO decoder configuration record (avcC or
-// hvcC, version 1) without the parameter sets a decoder needs. Empty and
-// Annex B extradata are not ISO records and return false: ffmpeg builds the
-// MP4 record from Annex B parameter sets itself.
+// hvcC, version 1) that parses cleanly and carries no NAL units at all: its
+// parameter sets travel only in-band, as in remuxes of DASH avc3/hev1
+// streams. Only such a record is flagged, because the h264_metadata and
+// hevc_metadata filters that rebuild it parse the record first and refuse to
+// start on one that is truncated or partial (an hvcC with an SPS but no VPS
+// fails "VPS id 0 not available"); those copies keep running as before.
+// Empty and Annex B extradata are not ISO records and return false: ffmpeg
+// builds the MP4 record from Annex B parameter sets itself.
 func inBandParameterSets(codec string, record []byte) bool {
 	if len(record) == 0 || record[0] != 1 {
 		return false
 	}
 	switch codec {
 	case "h264":
-		return !completeAVCConfig(record)
+		sps, pps, ok := avcCSets(record)
+		return ok && sps == 0 && pps == 0
 	case "hevc":
-		return !completeHEVCConfig(record)
+		_, nals, ok := hvcCSets(record)
+		return ok && nals == 0
 	}
 	return false
 }

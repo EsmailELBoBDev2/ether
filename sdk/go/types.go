@@ -235,47 +235,70 @@ type Contributes struct {
 	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
 	Screens          []ScreenMeta          `json:"screens,omitempty"`
+	Surfaces         []SurfaceMeta         `json:"surfaces,omitempty"`
 }
 
 // ScreenMeta declares one generic top-level screen contributed by a plugin.
 type ScreenMeta struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Icon      string          `json:"icon,omitempty"`
-	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections"`
-	Frontends []string        `json:"frontends,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Icon      string   `json:"icon,omitempty"`
+	Frontends []string `json:"frontends,omitempty"`
+	// Pages are the screen's documents by page id ("index" first); each is
+	// a package file or a list of renderer variants (docs/plugin-screens.md).
+	Pages         map[string]any          `json:"pages,omitempty"`
+	Placement     string                  `json:"placement,omitempty"` // navigation|hidden
+	ContentRating string                  `json:"contentRating,omitempty"`
+	Default       *bool                   `json:"default,omitempty"`
+	Actions       map[string]ScreenAction `json:"actions,omitempty"`
 }
 
-// ScreenSection declares one generic section inside a contributed screen.
-type ScreenSection struct {
-	ID         string            `json:"id,omitempty"`
-	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
-	Title      string            `json:"title,omitempty"`
-	Feed       string            `json:"feed,omitempty"`
-	League     string            `json:"league,omitempty"`
-	EntityKind string            `json:"entityKind,omitempty"`
-	Limit      int               `json:"limit,omitempty"`
-	Query      *ScreenEventQuery `json:"query,omitempty"`
-	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
+// ScreenAction declares a plugin-handled action documents call.
+type ScreenAction struct {
+	Args    map[string]ScreenActionArg `json:"args,omitempty"`
+	Confirm string                     `json:"confirm,omitempty"`
+	Rate    string                     `json:"rate,omitempty"` // normal|low
 }
 
-// ScreenEventQuery filters live events for an events, hero, or schedule section.
-type ScreenEventQuery struct {
-	Feed      string   `json:"feed,omitempty"`
-	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
-	League    string   `json:"league,omitempty"`
-	Favorites bool     `json:"favorites,omitempty"`
-	Window    string   `json:"window,omitempty"` // today|week|recent
-	Category  string   `json:"category,omitempty"`
+// ScreenActionArg is one typed action argument.
+type ScreenActionArg struct {
+	Type     string   `json:"type"` // string|int|bool|date|ref|strings
+	Max      int      `json:"max,omitempty"`
+	Min      int      `json:"min,omitempty"`
+	Enum     []string `json:"enum,omitempty"`
+	Required bool     `json:"required,omitempty"`
 }
 
-// ScreenLeague optionally declares one static league filter chip on a leagues section.
-type ScreenLeague struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Abbr string `json:"abbr,omitempty"`
-	Logo string `json:"logo,omitempty"`
+// SurfaceMeta declares a document drawn in a host slot.
+type SurfaceMeta struct {
+	ID            string          `json:"id"`
+	Presentation  string          `json:"presentation"` // playerOverlay|toast|homeRow|titlePanel
+	Title         string          `json:"title"`
+	Anchor        string          `json:"anchor,omitempty"`
+	Visibility    string          `json:"visibility,omitempty"`
+	Setting       *SurfaceSetting `json:"setting,omitempty"`
+	When          *SurfaceWhen    `json:"when,omitempty"`
+	TTL           int             `json:"ttl,omitempty"`
+	ContentRating string          `json:"contentRating,omitempty"`
+	Default       *bool           `json:"default,omitempty"`
+	Document      any             `json:"document"`
+	Frontends     []string        `json:"frontends,omitempty"`
+}
+
+// SurfaceSetting is a player overlay's player-menu switch.
+type SurfaceSetting struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+
+// SurfaceWhen limits where a surface applies.
+type SurfaceWhen struct {
+	Event *struct {
+		Feed string `json:"feed"`
+	} `json:"event,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	TitleKind string `json:"titleKind,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the minimum polling interval a live feed may declare.

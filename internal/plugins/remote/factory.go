@@ -652,6 +652,24 @@ func (a HostAdapter) PublishEvent(ctx context.Context, pluginID, key string, pay
 	return mapHostErr(h.PublishEvent(ctx, key, payload, corr))
 }
 
+func (a HostAdapter) ScreensInvalidate(ctx context.Context, pluginID string) (int, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := h.ScreensInvalidate(ctx)
+	return n, mapHostErr(err)
+}
+
+func (a HostAdapter) ScreensPutRecords(ctx context.Context, pluginID string, records json.RawMessage) (int, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := h.ScreensPutRecords(ctx, records)
+	return n, mapHostErr(err)
+}
+
 func (a HostAdapter) AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
 	if viewerToken != "" {
 		if a.ResolveAdapterCallToken == nil {

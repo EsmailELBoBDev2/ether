@@ -67,6 +67,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/remote"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"github.com/braedonsaunders/ether/internal/segcache"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/sessions"
@@ -334,6 +335,7 @@ type App struct {
 	streamRT           *consoleStreamRuntime
 	pluginsRT          *pluginRuntime
 	loudness           *loudness.Service
+	screenPublish      *screens.PublishStore
 	agentRT            *agentRuntime
 	eventBus           *events.Bus
 	eventRegistry      *events.Registry
@@ -341,7 +343,6 @@ type App struct {
 	flowsRT            *flowsRuntime
 	liveEvents         *liveevents.Hub
 	liveWatchMatcher   *liveevents.WatchMatcher
-	liveTicker         *liveevents.TickerService
 	liveAlertEngine    *liveevents.AlertEngine
 	liveAlertScheduler *liveevents.AlertScheduler
 	pluginLiveOnce     sync.Once

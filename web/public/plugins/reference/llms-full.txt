@@ -7182,7 +7182,7 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 		return out
 	}
 	return []KindLibraryTab{
-		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "recommended", Label: "Recommendations", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
 	}
 }
@@ -48415,7 +48415,7 @@ export function handle(req:any) {
  if(req.path==='/ether/test') return ok({ok:true,message:'17 Halloween films; annual October schedule.'});
  if(req.path.startsWith('/catalog/')) return ok({metas:ITEMS});
  if(req.path==='/ether/action/syncShelf') {
-  ether.collections.upsert({id:'october-after-dark',name:'October After Dark',description:'Halloween favourites. Appears every October 1–31, then disappears until next year.',mediaType:'movie',sources:[{kind:'plugin:community.october.halloween/halloween',maxItems:100}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,targets:{collectionsTab:true,homeRow:true,sectionRow:true,users:'all',schedule:{months:[10]}}});
+  ether.collections.upsert({id:'october-after-dark',name:'October After Dark',description:'Halloween favourites. Add it to a Recommendations page with the Halloween schedule.',mediaType:'movie',sources:[{kind:'plugin:community.october.halloween/halloween',maxItems:100}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,browseInApps:true});
   return ok({toast:'October collection published. Its viewer surfaces are hidden outside October.',refresh:true});
  }
  if(req.path==='/ether/view/shelf') return ok({title:'October After Dark',spec:{specVersion:1,layout:'detail',header:[{kind:'page-header',title:{$:'title'},description:{$:'subtitle'}}],body:[{kind:'stat-tile',iconKey:'calendar',accent:'primary',label:'$t:schedule',value:'$t:window'},{kind:'stat-tile',iconKey:'film',accent:'primary',label:'$t:films',value:{$:'count'}},{kind:'panel',title:'$t:manage',blocks:[{kind:'widget',widget:'ether.actionButton',props:{label:'$t:sync',action:'syncShelf'}}]}]},data:{title:'October After Dark',subtitle:'A seasonal collection for movie nights. The collection and Home row appear only in October; this management page stays available all year.',count:String(ITEMS.length)}});
@@ -54292,7 +54292,7 @@ export function handle(req:any){
  if(req.path==='/ether/test'){const s=fetchJSON('/shows/1');return ok({ok:!!s.id,message:'TVmaze public API connected: '+s.name});}
  if(req.path.startsWith('/catalog/')){const list=shows(req.path.includes('/canada')?'canada':'acclaimed');return ok({metas:list.map((s:any)=>({id:'tvmaze:'+s.id,type:'series',name:s.name,poster:s.image?.medium,description:(s.summary||'').replace(/<[^>]*>/g,''),year:Number((s.premiered||'').slice(0,4)),imdb_id:s.externals?.imdb,tvdb_id:s.externals?.thetvdb}))});}
  if(req.path==='/ether/metadata/resolve'){const s=resolve(req.body.id);const title:any={type:'show',title:s.name,ids:{imdb:s.externals?.imdb||'',tvdb:s.externals?.thetvdb||0},summary:(s.summary||'').replace(/<[^>]*>/g,''),year:Number((s.premiered||'').slice(0,4)),genres:s.genres||[],rating:s.rating?.average||0,posterPath:s.image?.original||'',runtime:(s.averageRuntime||s.runtime||0)*60000000000,status:s.status};if(s.premiered)title.released=s.premiered+'T00:00:00Z';return ok({title});}
- if(req.path==='/ether/action/publish'){ether.collections.upsert({id:'tvmaze-acclaimed',name:'TVmaze acclaimed series',description:'A TVmaze-powered shelf. Show data: TVmaze, CC BY-SA. https://www.tvmaze.com',mediaType:'show',sources:[{kind:'plugin:community.tvmaze.catalog/acclaimed',maxItems:Number(ether.settings.get().maxItems||30)}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,targets:{collectionsTab:true,homeRow:true,users:'all'}});return ok({toast:'TVmaze acclaimed series published.',refresh:true});}
+ if(req.path==='/ether/action/publish'){ether.collections.upsert({id:'tvmaze-acclaimed',name:'TVmaze acclaimed series',description:'A TVmaze-powered shelf. Show data: TVmaze, CC BY-SA. https://www.tvmaze.com',mediaType:'show',sources:[{kind:'plugin:community.tvmaze.catalog/acclaimed',maxItems:Number(ether.settings.get().maxItems||30)}],match:'all',rules:[],exclude:[],sort:'source',limit:100,refresh:'daily',enabled:true,browseInApps:true});return ok({toast:'TVmaze acclaimed series published.',refresh:true});}
  if(req.path==='/ether/view/catalog')return ok({title:'TVmaze Native Catalog',spec:{specVersion:1,layout:'detail',header:[{kind:'page-header',title:{$:'title'},description:{$:'subtitle'}}],body:[{kind:'stat-tile',iconKey:'tv',accent:'primary',label:'$t:count',value:{$:'count'}},{kind:'stat-tile',iconKey:'database',accent:'primary',label:'$t:source',value:'$t:provider'},{kind:'panel',title:'$t:publish',blocks:[{kind:'widget',widget:'ether.actionButton',props:{label:'$t:sync',action:'publish'}}]}]},data:{title:'TVmaze Native Catalog',subtitle:'Show data from TVmaze (CC BY-SA, tvmaze.com). Supplies independent metadata plus acclaimed-series and Canadian-airing lists. Ether matches external IDs to its canonical catalogue.',count:String(shows('acclaimed').length)}});
  return {status:404,body:{error:{code:'not_found',message:'Route not found.'}}};
 }

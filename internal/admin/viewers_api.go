@@ -133,11 +133,14 @@ type viewer struct {
 	Plays30d        int             `json:"plays30d"`
 	HoursWatched30d float64         `json:"hoursWatched30d"`
 	Lifecycle       viewerLifecycle `json:"lifecycle"`
+	// AgeLimit is the viewer's content-rating ceiling ("" none).
+	AgeLimit string `json:"ageLimit,omitempty"`
 }
 
 func toViewer(u ViewerRecord, st core.ViewerStats) viewer {
 	v := viewer{ID: u.ID, PlexID: u.PlexID, Username: u.Username, Title: u.Title, Thumb: u.Thumb, IsOwner: u.IsOwner,
-		AccessStatus: u.accessStatus(), Plays30d: st.Plays30d, HoursWatched30d: st.HoursWatched30d, Lifecycle: lifecycleOf(u)}
+		AccessStatus: u.accessStatus(), Plays30d: st.Plays30d, HoursWatched30d: st.HoursWatched30d, Lifecycle: lifecycleOf(u),
+		AgeLimit: u.MaxContentRating}
 	if v.Title == "" {
 		v.Title = u.Username
 	}

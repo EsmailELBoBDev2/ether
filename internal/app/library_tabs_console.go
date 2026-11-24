@@ -17,7 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
-const libraryTabsScopeNote = "Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs."
+const libraryTabsScopeNote = "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page."
 
 var catalogueTabSortOptions = []string{
 	"popularity",

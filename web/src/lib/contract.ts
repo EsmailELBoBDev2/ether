@@ -474,6 +474,8 @@ export interface Viewer {
   lastActive?: string;
   plays30d: number;
   hoursWatched30d: number;
+  /** The viewer's content-rating ceiling ("PG"); absent when there is none. */
+  ageLimit?: string;
 }
 
 interface ViewerActivity {

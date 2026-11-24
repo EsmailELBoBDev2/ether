@@ -28,7 +28,9 @@ describe("Library tabs page", () => {
       await screen.findByRole("switch", { name: "Display Recommendations tab" }, WAIT),
     ).toBeChecked();
     expect(
-      screen.getByText("Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs."),
+      screen.getByText(
+        "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset to default" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Display Library tab" })).toBeChecked();

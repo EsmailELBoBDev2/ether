@@ -858,7 +858,7 @@ export function createPagesMock(deps: Deps) {
       const pos = rows.findIndex((r) => r.rowId && after.includes(r.rowId));
       rows.splice(pos < 0 ? rows.length : pos, 0, g);
     }
-    const counted = rows.filter((r) => !r.ghost);
+    const counted = rows.filter((r) => !r.ghost && !r.present.surface);
     const kidViewer = kid ? deps.viewers().find((v) => v.id === KID) : undefined;
     return {
       summary: {
@@ -868,6 +868,9 @@ export function createPagesMock(deps: Deps) {
         shown: counted.filter((r) => r.mode === "show").length,
         auto: counted.filter((r) => !r.mode || r.mode === "auto").length,
         picks: mode === "curated" ? 0 : 3,
+        picksOn: mode !== "curated" && page.picks,
+        chosen: counted.filter((r) => r.rowId).length,
+        appOnly: rows.filter((r) => !r.ghost && r.present.surface).length,
       },
       rows,
       picks:

@@ -576,6 +576,7 @@ const VIEWERS: Viewer[] = [
     title: "The Kids",
     isOwner: false,
     lastActive: "",
+    ageLimit: "PG",
     plays30d: 58,
     hoursWatched30d: 24.8,
     lifecycle: {

@@ -272,6 +272,7 @@ type Service struct {
 	cursors       *episodeCursors
 	pluginCursors *pluginCursorCache
 	searchGate    *descriptiveGate
+	imports       *importJobs
 }
 
 func (s *Service) ensureSearchGate() *descriptiveGate {

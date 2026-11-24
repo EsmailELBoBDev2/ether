@@ -911,6 +911,8 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/browse` with `level` = a list level | Pull sync, after the main tree | A **list level** (`levels[].members: true`, e.g. role `playlist`) is a root of its own: no parent, never playable, and no level names it as parent. Its items carry `members`: up to 500 external ids of other items of the kind, in order, which become its children. A page of a list level may also return those members and their parents (an album and artist a track needs), parents first, so everything is stored together; members not stored are skipped when the list is read. |
+| `/ether/v1/kinds/{kind}/import` | A viewer imports a playlist link from one of the sites in `import.links` (for example `deezer`, `spotify`) | `{url}` → `{name, description?, tracks: [{title, artist, album?, isrc?, durationSec?}]}`; answer 404 for a link you do not read. At most 500 tracks are used. 10 s deadline. |
+| `/ether/v1/kinds/{kind}/identify` | Ether matches an imported playlist's tracks (from a link or an M3U/CSV file) to your items, in batches, only when `import.identify` is true | `{tracks}` → `{items, matches: [{index, id?, by?, candidates?}]}`. `items` are stored like live-search results (parents first). One match per track you answered: `id` and `by` (`isrc` or `title`), or `candidates` (external ids) when several releases fit equally, or neither when nothing matched. Leave out tracks you ran out of time for; Ether asks for them again (up to three times). Viewers see matched and unmatched tracks honestly and pick a release for ambiguous ones. 10 s deadline. |
 | `/ether/v1/kinds/{kind}/related` | A viewer opens an item (purpose `similar`), or a queue of the kind's items nears its end (purpose `continuation`), only for purposes declared in `related: {similar, continuation}` | `{item, purpose, limit}` → `{label?, items, order?}`. `items` are stored like live-search results (send any parents a playable item needs); `order` names the external ids to show, in order (default: items at the same level for `similar`, playable items for `continuation`). One call per item and purpose at a time; answers are remembered for six hours (empty ones for one). `similar` becomes the item's detail row (Vela `GET /rows?placement=detail`); `continuation` is Vela `GET /titles/{id}/continuation` (autoplay). |
 | `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
@@ -6473,6 +6475,7 @@ type CommandMeta struct {
 | `cache` | `KindCacheDecl` | may be omitted (see validation for conditions) |  |
 | `match` | `KindMatchDecl` | may be omitted (see validation for conditions) |  |
 | `related` | `*KindRelatedDecl` | may be omitted (see validation for conditions) | Related: the plugin serves POST /ether/v1/kinds/{kind}/related for its items ({item, purpose, limit} -> {label?, items: KindItem[]}): "similar" for a detail row (an artist's "Fans also like"), "continuation" for what plays after a queue ends (radio). Items are stored like live search results. Asked when a viewer opens the item or nears a queue's end. |
+| `import` | `*KindImportDecl` | may be omitted (see validation for conditions) | Import: the plugin turns playlist links into track lists (POST /ether/v1/kinds/{kind}/import, for the sites named in links) and finds its own items for described tracks (POST .../identify), so viewers can import playlists from a link or an M3U/CSV file. |
 | `lyrics` | `bool` | may be omitted (see validation for conditions) | Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics, instrumental, source; 404 when it has none). Ether asks once per item when a viewer opens the lyrics, never ahead of use. |
 
 
@@ -6499,6 +6502,11 @@ type MediaKindMeta struct {
 	// plays after a queue ends (radio). Items are stored like live search
 	// results. Asked when a viewer opens the item or nears a queue's end.
 	Related *KindRelatedDecl `json:"related,omitempty"`
+	// Import: the plugin turns playlist links into track lists (POST
+	// /ether/v1/kinds/{kind}/import, for the sites named in links) and finds
+	// its own items for described tracks (POST .../identify), so viewers can
+	// import playlists from a link or an M3U/CSV file.
+	Import *KindImportDecl `json:"import,omitempty"`
 	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
 	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
 	// instrumental, source; 404 when it has none). Ether asks once per item
@@ -7316,6 +7324,27 @@ func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
 		}
 	}
 	return false
+}
+``````
+
+## Source: internal/plugins/contract.go#KindImportDecl.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `links` | `[]string` | may be omitted (see validation for conditions) | Links names the sites whose playlist links the plugin reads (for apps to show, e.g. "deezer", "spotify"); empty when it reads none. |
+| `identify` | `bool` | may be omitted (see validation for conditions) | Identify: the plugin answers /identify, which file imports need. |
+
+
+## Source: internal/plugins/contract.go#KindImportDecl
+
+``````
+// KindImportDecl declares a kind's playlist import support.
+type KindImportDecl struct {
+	// Links names the sites whose playlist links the plugin reads (for apps
+	// to show, e.g. "deezer", "spotify"); empty when it reads none.
+	Links []string `json:"links,omitempty"`
+	// Identify: the plugin answers /identify, which file imports need.
+	Identify bool `json:"identify,omitempty"`
 }
 ``````
 
@@ -25213,6 +25242,13 @@ var kindSorts = map[string]bool{
 }
 ``````
 
+## Source: internal/plugins/manifest_kinds.go#importSiteName
+
+``````
+// importSiteName is a playlist link site a kind reads ("deezer").
+var importSiteName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+``````
+
 ## Source: internal/plugins/manifest_kinds.go#kindLibraryCards
 
 ``````
@@ -25359,6 +25395,19 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
 			add(base+".library.dateDisplay", "must be year or date")
+		}
+		if k.Import != nil {
+			if len(k.Import.Links) > 8 {
+				add(base+".import.links", "at most 8 sites may be named")
+			}
+			for i, site := range k.Import.Links {
+				if !importSiteName.MatchString(site) {
+					add(fmt.Sprintf("%s.import.links[%d]", base, i), "must be a short lowercase site name such as deezer")
+				}
+			}
+			if len(k.Import.Links) > 0 && !k.Import.Identify {
+				add(base+".import.identify", "link imports need identify")
+			}
 		}
 		if k.Library.Experience != "" && !core.ValidLibraryExperience(k.Library.Experience) {
 			add(base+".library.experience", "must be an experience id such as watch, listen, read, gallery or live")
@@ -35997,6 +36046,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.mediaKinds[].fields[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].fields[].type` | `any` | false | {"enum":["string","int","float","bool","date","duration","enum","strings","people"]} |
 | `ether.contributes.mediaKinds[].fields[].values` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].import` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].import.identify` | `boolean` | false | {} |
+| `ether.contributes.mediaKinds[].import.links` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels` | `array` | false | {} |
@@ -36948,6 +37000,20 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                       "type": "object"
                     },
                     "type": "array"
+                  },
+                  "import": {
+                    "properties": {
+                      "identify": {
+                        "type": "boolean"
+                      },
+                      "links": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
                   },
                   "key": {
                     "type": "string"
@@ -56892,6 +56958,126 @@ type LyricsProvider interface {
 }
 ``````
 
+## Source: sdk/go/kinds.go#ImportTrack.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `title` | `string` | emitted (validation may require a value) |  |
+| `artist` | `string` | emitted (validation may require a value) |  |
+| `album` | `string` | may be omitted (see validation for conditions) |  |
+| `isrc` | `string` | may be omitted (see validation for conditions) |  |
+| `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#ImportTrack
+
+``````
+// ImportTrack is one track of a playlist being imported.
+type ImportTrack struct {
+	Title       string  `json:"title"`
+	Artist      string  `json:"artist"`
+	Album       string  `json:"album,omitempty"`
+	ISRC        string  `json:"isrc,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindImportRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `url` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindImportRequest
+
+``````
+// KindImportRequest asks a kind to read a playlist link (POST
+// /ether/v1/kinds/{kind}/import); answer 404 for a link it does not read.
+type KindImportRequest struct {
+	URL string `json:"url"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindImport.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `name` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `tracks` | `[]ImportTrack` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindImport
+
+``````
+// KindImport is a link's playlist: name and tracks in order.
+type KindImport struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Tracks      []ImportTrack `json:"tracks"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindIdentifyRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `tracks` | `[]ImportTrack` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindIdentifyRequest
+
+``````
+// KindIdentifyRequest asks a kind to find its items for tracks (POST
+// /ether/v1/kinds/{kind}/identify).
+type KindIdentifyRequest struct {
+	Tracks []ImportTrack `json:"tracks"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindIdentifyMatch.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `id` | `string` | may be omitted (see validation for conditions) |  |
+| `by` | `string` | may be omitted (see validation for conditions) |  |
+| `candidates` | `[]string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindIdentifyMatch
+
+``````
+// KindIdentifyMatch answers one requested track by index: the matched item's
+// id and how (isrc|title), candidates when several fit, or neither.
+type KindIdentifyMatch struct {
+	Index      int      `json:"index"`
+	ID         string   `json:"id,omitempty"`
+	By         string   `json:"by,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindIdentify.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `items` | `[]KindItem` | emitted (validation may require a value) |  |
+| `matches` | `[]KindIdentifyMatch` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#KindIdentify
+
+``````
+// KindIdentify carries the items the matches need (stored like live-search
+// results) and the matches; tracks left out are asked again.
+type KindIdentify struct {
+	Items   []KindItem          `json:"items"`
+	Matches []KindIdentifyMatch `json:"matches"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindRelatedRequest.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -75386,6 +75572,47 @@ export interface MediaKindMeta {
   lyrics?: boolean;
   /** The catalogue provider implements related() for these purposes (POST /ether/v1/kinds/{kind}/related). */
   related?: { similar?: boolean; continuation?: boolean };
+  /** Playlist import: the catalogue provider reads playlist links from these sites (importLink(), POST /ether/v1/kinds/{kind}/import) and identifies tracks (identify(), POST .../identify; needed for M3U/CSV files). */
+  import?: { links?: string[]; identify?: boolean };
+}
+
+/** One track of a playlist being imported, as the link or file gave it. */
+export interface ImportTrack {
+  title: string;
+  artist: string;
+  album?: string;
+  isrc?: string;
+  durationSec?: number;
+}
+
+/** A playlist link to read (one of the sites the kind declares). Answer 404 for a link you do not read. */
+export interface KindImportRequest {
+  kind: string;
+  url: string;
+}
+
+/** The link's playlist: its name and tracks in order (at most 500 are used). */
+export interface KindImport {
+  name: string;
+  description?: string;
+  tracks: ImportTrack[];
+}
+
+/** Tracks to find among your items (ISRC first, then artist + title + duration). */
+export interface KindIdentifyRequest {
+  kind: string;
+  tracks: ImportTrack[];
+}
+
+/**
+ * Items to store (parents before children, like live-search results) and one match per track you
+ * answered, by its index: the matched item's id and how ("isrc" or "title"), or candidates when
+ * several releases fit equally, or neither when you found nothing. Leave out tracks you ran out of
+ * time for; Ether asks for them again.
+ */
+export interface KindIdentify {
+  items: KindItem[];
+  matches: Array<{ index: number; id?: string; by?: "isrc" | "title"; candidates?: string[] }>;
 }
 
 /** Items related to one stored item: "similar" (a detail row) or "continuation" (what plays after it). */

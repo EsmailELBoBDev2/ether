@@ -713,6 +713,20 @@
                     },
                     "type": "array"
                   },
+                  "import": {
+                    "properties": {
+                      "identify": {
+                        "type": "boolean"
+                      },
+                      "links": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "key": {
                     "type": "string"
                   },

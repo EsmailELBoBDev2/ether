@@ -722,6 +722,50 @@ type LyricsProvider interface {
 	Lyrics(ctx *Context, req KindLyricsRequest) (lyrics KindLyrics, found bool, err error)
 }
 
+// ImportTrack is one track of a playlist being imported.
+type ImportTrack struct {
+	Title       string  `json:"title"`
+	Artist      string  `json:"artist"`
+	Album       string  `json:"album,omitempty"`
+	ISRC        string  `json:"isrc,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+
+// KindImportRequest asks a kind to read a playlist link (POST
+// /ether/v1/kinds/{kind}/import); answer 404 for a link it does not read.
+type KindImportRequest struct {
+	URL string `json:"url"`
+}
+
+// KindImport is a link's playlist: name and tracks in order.
+type KindImport struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Tracks      []ImportTrack `json:"tracks"`
+}
+
+// KindIdentifyRequest asks a kind to find its items for tracks (POST
+// /ether/v1/kinds/{kind}/identify).
+type KindIdentifyRequest struct {
+	Tracks []ImportTrack `json:"tracks"`
+}
+
+// KindIdentifyMatch answers one requested track by index: the matched item's
+// id and how (isrc|title), candidates when several fit, or neither.
+type KindIdentifyMatch struct {
+	Index      int      `json:"index"`
+	ID         string   `json:"id,omitempty"`
+	By         string   `json:"by,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+}
+
+// KindIdentify carries the items the matches need (stored like live-search
+// results) and the matches; tracks left out are asked again.
+type KindIdentify struct {
+	Items   []KindItem          `json:"items"`
+	Matches []KindIdentifyMatch `json:"matches"`
+}
+
 // KindRelatedRequest asks for items related to one stored item: "similar"
 // (a detail row such as an artist's "Fans also like") or "continuation" (what
 // plays after it when a queue ends).

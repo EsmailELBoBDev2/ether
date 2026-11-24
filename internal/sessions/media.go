@@ -415,6 +415,15 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		// This viewer's video is never re-encoded: offer the primary rung only.
 		request.LadderVideoCodecs = []string{}
 	}
+	if s.public.Protocol == "jellyfin" && dec.VideoCopy && !s.live {
+		// Jellyfin apps play a copied original alone, as Jellyfin serves it
+		// (owner decision, 0.3.21). Their Media3 players pick the first
+		// variant by an initial bandwidth guess, so they started on the 360p
+		// rung and, with the original advertised at its true peak, rarely
+		// climbed back to it. Apple players start on the first entry and keep
+		// the encoded fallback rungs on the other surfaces (8a3d68cef).
+		request.LadderVideoCodecs = []string{}
+	}
 	request.TextSubtitleStreams = textSubtitleStreams(string(s.public.Protocol), s.caps, ps.Info)
 	if len(request.TextSubtitleStreams) > 0 {
 		request.TextSubtitleSource = sourceRevision(ps)

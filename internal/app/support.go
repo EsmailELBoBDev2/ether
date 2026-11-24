@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/logfile"
+	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/updater"
 )
 
@@ -54,8 +56,9 @@ func (a *App) supportDeps() diagnostics.Deps {
 			}
 			return fact, nil
 		},
-		Viewer:     a.supportViewer,
-		LogExtract: a.supportLogs,
+		Viewer:        a.supportViewer,
+		LogExtract:    a.supportLogs,
+		ReleaseSearch: a.supportReleaseSearch,
 	}
 }
 
@@ -351,4 +354,62 @@ func (a *App) supportViewer(userID int64) (diagnostics.ViewerFacts, error) {
 	}
 	v.WatchSample, v.InProgress, v.Watched, v.WatchSampleTruncated, err = a.state.WatchSample(ctx, userID, 500)
 	return v, err
+}
+
+// supportReleaseSearch reads the resolver outcomes behind a capture.
+func (a *App) supportReleaseSearch(q diagnostics.ReleaseSearchQuery) (diagnostics.ReleaseSearchInput, error) {
+	var in diagnostics.ReleaseSearchInput
+	if a.resolver == nil {
+		return in, errors.New("resolver unavailable")
+	}
+	for _, ix := range a.cfg.Get().Indexers {
+		in.IndexerNames = append(in.IndexerNames, ix.Name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	traces, err := a.resolver.SupportTraces(ctx, q.From, q.Until, q.ViewerID, q.DeviceKey)
+	if err != nil {
+		return in, err
+	}
+	for _, st := range traces {
+		at := supportResolverAttempt(st.Trace)
+		if st.Earlier != nil {
+			e := supportResolverAttempt(*st.Earlier)
+			at.Earlier = &e
+		}
+		in.Attempts = append(in.Attempts, at)
+	}
+	return in, nil
+}
+
+func supportResolverAttempt(tr resolver.Trace) diagnostics.ResolverAttempt {
+	out := diagnostics.ResolverAttempt{
+		At: tr.At, Title: tr.TitleName, Speculative: tr.Speculative, Profile: tr.Profile,
+		QueriesDropped: tr.QueriesDropped, CandidatesOmitted: tr.Omitted, Error: tr.Err,
+		SearchDuration: tr.SearchDuration, TotalDuration: tr.TotalDuration,
+	}
+	for _, d := range tr.Discovery {
+		label := d.Path
+		if d.Rescue {
+			label += " rescue"
+		}
+		out.Discovery = append(out.Discovery, label+": "+strconv.Itoa(d.Count))
+	}
+	for _, q := range tr.Queries {
+		out.Queries = append(out.Queries, diagnostics.ResolverQuery{
+			Indexer: q.Indexer, Kind: q.IndexerKind, Mode: q.Mode, Query: q.Query, Season: q.Season,
+			Episode: q.Episode, IDs: q.IDs, Results: q.Results, Error: q.Err, Rescue: q.Rescue,
+		})
+	}
+	for _, c := range tr.Candidates {
+		chosen := tr.Winner != "" && c.ReleaseID == tr.Winner
+		if chosen {
+			out.Winner = c.Name
+		}
+		out.Candidates = append(out.Candidates, diagnostics.ResolverCandidate{
+			Name: c.Name, Indexer: c.Indexer, Height: c.Height, Size: c.Size, Rejected: c.Rejected,
+			Reason: c.Reason, Attempted: c.Attempted, Healthy: c.Healthy, Chosen: chosen,
+		})
+	}
+	return out
 }

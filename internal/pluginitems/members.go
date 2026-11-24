@@ -46,6 +46,12 @@ INSERT INTO plugin_item_recording_tally(library_id, recording, cnt)
   SELECT library_id, recording, COUNT(*) FROM plugin_items WHERE recording <> '' GROUP BY library_id, recording;`)
 }
 
+// An expansion remembers the kind declaration it ran under: a newer plugin
+// declaration makes it stale, so the next open expands again.
+func init() {
+	store.Register("pluginitems", 23, `ALTER TABLE plugin_facet_expansions ADD COLUMN decl_hash TEXT NOT NULL DEFAULT '';`)
+}
+
 // applyRecordingTallyDeltaTx adds each recording's change in copies.
 func applyRecordingTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, delta map[string]int64) error {
 	for rec, d := range delta {

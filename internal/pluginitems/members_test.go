@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -128,5 +129,36 @@ func TestRecordingStoredAndProjected(t *testing.T) {
 	// trk-1 is now another recording: no recording has two copies.
 	if groups, total, err := s.Duplicates(ctx, libID, 0, 10); err != nil || total != 0 || len(groups) != 0 {
 		t.Fatalf("after the change: %+v total=%d err=%v", groups, total, err)
+	}
+}
+
+// An expansion made under an earlier declaration of the kind is no longer
+// fresh: a plugin update re-expands containers as they are opened.
+func TestExpansionOutdatedByNewDeclaration(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestService(t, Options{})
+	defer s.Close()
+	const pluginID, kindKey, libID = "test.music", "music", core.LibraryID(94)
+	decl := branchingMusicDecl()
+	if _, err := s.UpsertKind(ctx, pluginID, libID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkFacetExpansionRunning(ctx, pluginID, kindKey, libID, "__container__", "art-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishFacetExpansion(ctx, pluginID, kindKey, libID, "__container__", "art-1", ExpansionStateDone, 3, ""); err != nil {
+		t.Fatal(err)
+	}
+	exp, ok, err := s.GetFacetExpansion(ctx, pluginID, kindKey, "__container__", "art-1")
+	if err != nil || !ok || !exp.IsFresh(s.Now(), time.Hour) {
+		t.Fatalf("fresh expansion: %+v ok=%v err=%v", exp, ok, err)
+	}
+	decl.Label = decl.Label + " (updated)"
+	if _, err := s.UpsertKind(ctx, pluginID, libID, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	exp, _, _ = s.GetFacetExpansion(ctx, pluginID, kindKey, "__container__", "art-1")
+	if !exp.Outdated || exp.IsFresh(s.Now(), time.Hour) {
+		t.Fatalf("an expansion under the old declaration still counts as fresh: %+v", exp)
 	}
 }

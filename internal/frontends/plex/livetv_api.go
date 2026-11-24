@@ -630,6 +630,12 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 		if c, ok := byID[p.ChannelID]; ok {
 			s.applyGuideChannelThumb(r, &md, c)
 		}
+		if chi.URLParam(r, "programme") != "" && liveProgrammeOnAir(p, s.now()) {
+			// Plex for iOS and Apple TV draw the airing page's Watch button
+			// (and tune) only when the Metadata itself is onAir, not just its
+			// Media; Plex Web's can-play check reads the item's onAir too.
+			md.Extra = append(md.Extra, model.A("onAir", true))
+		}
 		out = append(out, md)
 		if captured != nil {
 			*captured = append(*captured, p)

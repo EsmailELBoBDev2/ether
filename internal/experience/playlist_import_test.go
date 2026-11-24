@@ -22,7 +22,7 @@ func (l *importLibraries) Libraries(context.Context) ([]core.Library, error) {
 	return []core.Library{{ID: 9, Source: core.LibraryPlugin}}, nil
 }
 func (l *importLibraries) ImportSupport(context.Context, core.Library) ([]string, bool) {
-	return []string{"deezer", "spotify"}, true
+	return []string{"deezer"}, true
 }
 func (l *importLibraries) ImportLink(context.Context, core.Library, string) (core.KindImportResponse, error) {
 	return core.KindImportResponse{}, core.ErrNotFound
@@ -55,7 +55,7 @@ func TestPlaylistImportMatchesAndReportsHonestly(t *testing.T) {
 	}
 	libs := &importLibraries{recapLibraries: recapLibraries{views: views}}
 	svc := &Service{d: ServiceDeps{Active: func(context.Context, int64) (*core.User, error) { return viewer, nil }, PluginLibraries: libs}}
-	if links, files := svc.PlaylistImportSupport(ctx); !files || len(links) != 2 {
+	if links, files := svc.PlaylistImportSupport(ctx); !files || len(links) != 1 {
 		t.Fatalf("support: %v %v", links, files)
 	}
 	csv := "Track Name,Artist Name(s),ISRC\nOne More Time,Daft Punk,GBDUW0000053\nDigital Love,Daft Punk,\nAerodynamic,Daft Punk,\nUnknown Song,Nobody,\n"

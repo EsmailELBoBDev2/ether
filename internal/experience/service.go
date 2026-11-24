@@ -596,6 +596,13 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, core.ErrNotFound
 		}
 		if lib.Source == core.LibraryPlugin {
+			// A catalogue (TMDB) person is credited on no plugin item: plugin
+			// people carry their own ids. Answer empty instead of the whole
+			// library, which put every audiobook on an actor's page and merged
+			// a plugin movie library into their filmography.
+			if wantsCataloguePerson(q.Filter) {
+				return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+			}
 			return s.pluginLibraryItems(ctx, v, lib, s.sanitizePluginLibraryQuery(ctx, lib, q))
 		}
 		if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
@@ -3770,4 +3777,31 @@ func (s *Service) IssueRowReceipts(ctx context.Context, req frontend.RowRequest,
 	}
 	req.Viewer = v
 	return s.d.Rows.IssueRowReceipts(ctx, req, s.d.Protocol, rows)
+}
+
+// wantsCataloguePerson reports a filter that asks for a catalogue (TMDB)
+// person's works: Filter.Person (Jellyfin, Emby, Vela) or a required credit
+// that names only catalogue people (Plex's /library/people/{id}/media). No
+// plugin item carries such a credit, and a plugin library drops filters it
+// has not declared, so it would otherwise list everything.
+func wantsCataloguePerson(f core.Filter) bool {
+	if f.Person != 0 && !core.IsPluginPersonID(f.Person) {
+		return true
+	}
+	for _, c := range f.Credits {
+		if c.Exclude || len(c.People) == 0 || len(c.Names) > 0 {
+			continue
+		}
+		plugin := false
+		for _, id := range c.People {
+			if core.IsPluginPersonID(id) {
+				plugin = true
+				break
+			}
+		}
+		if !plugin {
+			return true
+		}
+	}
+	return false
 }

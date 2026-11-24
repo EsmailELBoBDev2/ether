@@ -3678,6 +3678,7 @@ class KindLevel(TypedDict, total=False):
     role: str
     playable: bool
     container: bool
+    members: bool
 
 
 class KindLibraryShelf(TypedDict, total=False):

@@ -72,6 +72,7 @@ func resolveLevelPresentation(level string, decl plugins.MediaKindMeta, present 
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
+			Members:   lv.Members,
 		}
 	}
 	res := libraries.ResolveKindPresentations(libraries.KindPresentationInput{

@@ -1184,6 +1184,22 @@ func (s *Service) walkBrowseTreeStream(ctx context.Context, caller Caller, rec K
 		}
 	}
 
+	// List levels (members: true) are roots of their own. A page of one may
+	// carry the lists' members and their parents too; nothing below a list
+	// is walked, its members are what it names.
+	for _, lv := range rec.Decl.ListLevels() {
+		items, retry, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, lv.Key, "", collectAll, onPage)
+		if retry > maxRetry {
+			maxRetry = retry
+		}
+		if err != nil {
+			return nil, maxRetry, err
+		}
+		if collectAll {
+			allItems = append(allItems, items...)
+		}
+	}
+
 	return allItems, maxRetry, nil
 }
 

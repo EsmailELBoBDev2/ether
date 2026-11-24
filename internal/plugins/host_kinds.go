@@ -172,6 +172,9 @@ func ValidExternalID(id string) bool { return externalIDRe.MatchString(id) }
 // check (spec §3.3); this one is shared by the host and the kit so a
 // plugin is told the same thing everywhere. It returns a plain
 // reason, or "" when the item passes.
+// MaxKindItemMembers bounds one list item's members.
+const MaxKindItemMembers = 500
+
 func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	switch {
 	case !ValidExternalID(it.ID):
@@ -196,8 +199,22 @@ func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	if at == 0 && it.ParentID != "" {
 		return "a root-level item cannot name a parent"
 	}
-	if at > 0 && it.ParentID == "" {
+	if lv.Members && it.ParentID != "" {
+		return "a list item (" + it.Level + ") cannot name a parent"
+	}
+	if at > 0 && it.ParentID == "" && !lv.Members {
 		return "a " + it.Level + " item needs a parentId"
+	}
+	if len(it.Members) > 0 && !lv.Members {
+		return "only a list level (members: true) carries members"
+	}
+	if len(it.Members) > MaxKindItemMembers {
+		return "a list carries at most 500 members"
+	}
+	for _, m := range it.Members {
+		if !ValidExternalID(m) || m == it.ID {
+			return "members must be valid external ids of other items"
+		}
 	}
 	if it.Playable && !lv.Playable {
 		return "level " + it.Level + " is not declared playable"

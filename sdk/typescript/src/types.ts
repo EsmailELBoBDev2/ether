@@ -721,6 +721,8 @@ export interface KindLevel {
   role?: MediaRole | (string & {});
   playable?: boolean;
   container?: boolean;
+  /** A list level (a playlist): a root of its own whose items name other items as their ordered children. */
+  members?: boolean;
 }
 
 export interface KindField {
@@ -921,6 +923,8 @@ export interface KindItem {
   art?: Array<{ role: string; url: string; width?: number; height?: number }>;
   fields?: Record<string, unknown>;
   hints?: Record<string, unknown>;
+  /** A list item's ordered children: external ids of other items of the kind (at most 500). Only on a members level. */
+  members?: string[];
   etag?: string;
 }
 

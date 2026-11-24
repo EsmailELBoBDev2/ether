@@ -142,6 +142,7 @@ func consoleKindPresentationInput(decl plugins.MediaKindMeta) libraries.KindPres
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
+			Members:   lv.Members,
 		}
 	}
 	return libraries.KindPresentationInput{

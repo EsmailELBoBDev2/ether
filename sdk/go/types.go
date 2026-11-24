@@ -466,6 +466,9 @@ type KindLevel struct {
 	Role      string `json:"role,omitempty"`   // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
+	// Members: a list level (a playlist): a root of its own whose items name
+	// other items of the kind as their ordered children (KindItem.Members).
+	Members bool `json:"members,omitempty"`
 }
 
 // KindField is one declared item field.

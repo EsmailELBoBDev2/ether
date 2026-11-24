@@ -973,6 +973,13 @@ type KindLevel struct {
 	Role      string `json:"role,omitempty"`      // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
+	// Members: a list level (a playlist, a chart). Its items are roots of
+	// their own (no parent) and carry `members`, an ordered list of other
+	// items of the kind (by external id) that are their children. It is
+	// never playable and no level names it as parent; a browse of it
+	// (level=<key>, no parentId) may return the members and their parents in
+	// the same page so they are stored together.
+	Members bool `json:"members,omitempty"`
 }
 
 // KindField is one declared item field.

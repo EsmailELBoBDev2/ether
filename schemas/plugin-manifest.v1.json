@@ -741,6 +741,9 @@
                             "photo"
                           ]
                         },
+                        "members": {
+                          "type": "boolean"
+                        },
                         "parent": {
                           "type": "string"
                         },

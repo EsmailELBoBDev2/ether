@@ -741,26 +741,25 @@ describe("Settings", () => {
     });
   });
 
-  it("turns personalized Jellyfin home rows off without forgetting the count", async () => {
+  it("saves how many Recommendations Home rows Jellyfin shows", async () => {
     const { fake } = renderApp("/apps/jellyfin", {}, (f) => {
       f.state.config.frontends = { jellyfin: { enabled: true } };
     });
-    const rows = await screen.findByRole("switch", { name: "Personalized rows" }, WAIT);
-    expect(rows).toBeChecked();
-    fireEvent.click(rows);
-    fireEvent.click(screen.getByRole("button", { name: "More options: Home" }));
-    fireEvent.change(await screen.findByRole("spinbutton", { name: "How many rows" }), {
+    fireEvent.change(await screen.findByRole("spinbutton", { name: "Home rows shown" }, WAIT), {
       target: { value: "2" },
     });
+    expect(screen.queryByRole("switch", { name: "Personalized rows" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
     await waitFor(
       () => expect(calls(fake, "PUT", "/frontends/jellyfin/settings")).toHaveLength(1),
       WAIT,
     );
-    expect(calls(fake, "PUT", "/frontends/jellyfin/settings")[0]!.body).toMatchObject({
-      homeRows: false,
-      homeRowCount: 2,
-    });
+    expect(calls(fake, "PUT", "/frontends/jellyfin/settings")[0]!.body).toEqual(
+      expect.objectContaining({ homeRowCount: 2 }),
+    );
+    expect(calls(fake, "PUT", "/frontends/jellyfin/settings")[0]!.body).not.toHaveProperty(
+      "homeRows",
+    );
   });
 
   it("does not keep the old Connectivity URL", async () => {

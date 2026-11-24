@@ -822,6 +822,8 @@ var (
 type PlaylistEntry struct {
 	EntryID string
 	Title   core.Title
+	// AddedAt is when the entry was added; zero when unknown.
+	AddedAt time.Time
 }
 
 // PlaylistContents is a viewer's playlist metadata paired with its visible
@@ -829,6 +831,30 @@ type PlaylistEntry struct {
 type PlaylistContents struct {
 	Playlist core.Playlist
 	Entries  []PlaylistEntry
+}
+
+// PlayContexts remembers what a viewer plays *from* (an album, an artist, a
+// playlist, their liked songs) for Recently played, keeping the newest few.
+type PlayContexts interface {
+	RecordPlayContext(ctx context.Context, viewer *core.Viewer, ref PlayContextRef) error
+	RecentPlayContexts(ctx context.Context, viewer *core.Viewer, limit int) ([]RecentPlayContext, error)
+}
+
+// PlayContextRef names a play context: a title (album, artist, show), a
+// playlist, or a liked list by role ("favorites" with Role "track").
+type PlayContextRef struct {
+	Kind string // "title", "playlist", "favorites"
+	Key  core.RatingKey
+	Role string
+}
+
+// RecentPlayContext is one play context resolved for the viewer.
+type RecentPlayContext struct {
+	Kind     string
+	Title    *Title
+	Playlist *core.Playlist
+	Role     string
+	PlayedAt time.Time
 }
 
 // TitleLyrics reads a playable title's lyrics from its source (a kind
@@ -885,6 +911,12 @@ type PlaylistAvailability interface {
 // ViewerPlaylists exposes viewer-owned playlists with stable entry identities,
 // show/season expansion, rename, and per-title membership lookup. All reads
 // and mutations enforce viewer visibility policy before counting or indexing.
+// ViewerPlaylistEditor edits a viewer-owned playlist's name and description
+// (nil leaves a field as it is).
+type ViewerPlaylistEditor interface {
+	EditViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name, summary *string) (*core.Playlist, error)
+}
+
 type ViewerPlaylists interface {
 	PlaylistLibrary
 	ViewerPlaylistContents(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (PlaylistContents, error)

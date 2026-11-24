@@ -264,3 +264,77 @@ func TestStudioPreviewSwapsDraftDocuments(t *testing.T) {
 		t.Fatal("a draft with a URL compiled")
 	}
 }
+
+type fakeCards struct{ fakeSigner }
+
+func (fakeCards) TitleCards(_ context.Context, keys []core.RatingKey) map[core.RatingKey]any {
+	out := map[core.RatingKey]any{}
+	for _, k := range keys {
+		if k != 2 { // the viewer may not see title 2
+			out[k] = map[string]any{"id": k.String(), "title": "T"}
+		}
+	}
+	return out
+}
+
+func (fakeCards) ChannelCards(_ context.Context, ids []string, _ string) ([]string, map[string]any) {
+	out := map[string]any{}
+	for _, id := range ids {
+		out[id] = map[string]any{"id": id}
+	}
+	return ids, out
+}
+
+type fakeFinder struct{}
+
+func (fakeFinder) KindShelf(context.Context, *core.User, string, ItemsQuery) ([]core.RatingKey, error) {
+	return []core.RatingKey{1, 2, 3}, nil
+}
+
+func (fakeFinder) KindKeys(_ context.Context, _, _ string, ids []string) (map[string]core.RatingKey, error) {
+	out := map[string]core.RatingKey{}
+	for i, id := range ids {
+		out[id] = core.RatingKey(10 + i)
+	}
+	return out, nil
+}
+
+// Library items reach a screen as the frontend's own cards, minus any the
+// viewer may not see, through the items source and the $item envelope.
+func TestItemsSourceAndItemEnvelope(t *testing.T) {
+	ctx := context.Background()
+	files := map[string][]byte{"screens/desk.json": []byte(`{"schema":1,"kind":"screen","renderer":19,
+		"sources":{"shelf":{"from":"items","kind":"clips","limit":5},"front":{"from":"plugin","route":"front"},"news":{"from":"channels","ids":["ch-1"]}},"tree":{"type":"box"}}`)}
+	man := plugins.Manifest{ID: "org.example.desk", Version: "1.0.0", Name: "Desk", Ether: &plugins.EtherBlock{
+		Capabilities: []plugins.Capability{plugins.CapScreens},
+		Contributes: plugins.Contributes{
+			MediaKinds: []plugins.MediaKindMeta{{Key: "clips"}},
+			Screens:    []plugins.ScreenMeta{{ID: "desk", Title: "Desk", Pages: map[string]plugins.DocumentPaths{"index": {"screens/desk.json"}}}},
+		},
+	}}
+	reg := NewDocRegistry(DocRegistryOptions{})
+	if err := reg.Sync(plugins.Record{ID: man.ID, Version: man.Version, Enabled: true, Manifest: man}, files, nil); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(ServiceOptions{Documents: reg, Hub: &fakeHub{}})
+	svc.SetItemFinder(fakeFinder{})
+	svc.SetPluginCaller(&fakeCaller{answer: `{"value":{"lead":{"$item":{"kind":"clips","id":"c1"}},"foreign":{"$item":{"kind":"other","id":"x"}},"live":{"$channel":"ch-9"}}}`})
+	res, err := svc.Data(ctx, &core.User{ID: 3}, DataRequest{Kind: "screen", ID: "desk", Page: "index", Images: fakeCards{}, ClientInfo: ClientInfo{Frontend: "vela", Renderer: 19}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shelf, _ := json.Marshal(res.Sources["shelf"])
+	if string(shelf) != `{"items":[{"$record":"item:1"},{"$record":"item:3"}]}` {
+		t.Fatalf("shelf = %s", shelf)
+	}
+	front, _ := json.Marshal(res.Sources["front"])
+	if !strings.Contains(string(front), `"lead":{"$record":"item:10"}`) || !strings.Contains(string(front), `"foreign":null`) || !strings.Contains(string(front), `"live":{"$record":"channel:ch-9"}`) {
+		t.Fatalf("front = %s", front)
+	}
+	if _, ok := res.Records["item:2"]; ok {
+		t.Fatal("a title the viewer may not see became a record")
+	}
+	if _, ok := res.Records["channel:ch-1"]; !ok {
+		t.Fatalf("channels source records = %v", res.Records)
+	}
+}

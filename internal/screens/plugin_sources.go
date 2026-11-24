@@ -268,7 +268,7 @@ func (rc *readCtx) rewriteAnswer(ctx context.Context, value json.RawMessage, rec
 	if len(records) > maxPluginRecords {
 		return nil, fmt.Errorf("screens: a plugin answer may carry at most %d records", maxPluginRecords)
 	}
-	env := &envelopes{rc: rc, known: map[string]bool{}, events: map[string]bool{}, entities: map[string]entityRef{}}
+	env := &envelopes{rc: rc, known: map[string]bool{}, events: map[string]bool{}, entities: map[string]entityRef{}, items: map[string]string{}, channels: map[string]bool{}}
 	for _, r := range records {
 		if recordTypeRe.MatchString(r.Type) && recordIDRe.MatchString(r.ID) {
 			env.known["p:"+r.Type+":"+r.ID] = true
@@ -282,6 +282,15 @@ func (rc *readCtx) rewriteAnswer(ctx context.Context, value json.RawMessage, rec
 			return nil, err
 		}
 	}
+	// Titles and channels are looked up first, so their envelopes become
+	// references to cards the viewer may see (or vanish).
+	recVals := make([]any, len(records))
+	for i, r := range records {
+		dec := json.NewDecoder(bytes.NewReader(r.Value))
+		dec.UseNumber()
+		_ = dec.Decode(&recVals[i])
+	}
+	env.prepare(ctx, append([]any{v}, recVals...))
 	v = env.walk(v)
 	for _, r := range records {
 		key := "p:" + r.Type + ":" + r.ID
@@ -310,6 +319,80 @@ type envelopes struct {
 	known    map[string]bool
 	events   map[string]bool
 	entities map[string]entityRef
+	// items maps "<kind>\x00<external id>" to an item: record key;
+	// channels holds channel ids with a channel: record.
+	items    map[string]string
+	channels map[string]bool
+}
+
+// prepare finds the $item and $channel envelopes in values and adds the
+// cards the viewer may see as records.
+func (e *envelopes) prepare(ctx context.Context, values []any) {
+	rc := e.rc
+	byKind := map[string][]string{}
+	var chans []string
+	var scan func(any)
+	scan = func(v any) {
+		switch n := v.(type) {
+		case map[string]any:
+			if len(n) == 1 {
+				if inner, ok := n["$item"].(map[string]any); ok {
+					k, _ := inner["kind"].(string)
+					id, _ := inner["id"].(string)
+					if recordTypeRe.MatchString(k) && recordIDRe.MatchString(id) {
+						byKind[k] = append(byKind[k], id)
+					}
+					return
+				}
+				if id, ok := n["$channel"].(string); ok && recordIDRe.MatchString(id) {
+					chans = append(chans, id)
+					return
+				}
+			}
+			for _, c := range n {
+				scan(c)
+			}
+		case []any:
+			for _, c := range n {
+				scan(c)
+			}
+		}
+	}
+	for _, v := range values {
+		scan(v)
+	}
+	if f := rc.s.itemFinder(); f != nil {
+		for kind, ids := range byKind {
+			if !rc.ownsKind(kind) {
+				continue
+			}
+			keys, err := f.KindKeys(ctx, rc.t.plugin.pluginID, kind, ids)
+			if err != nil {
+				continue
+			}
+			list := make([]core.RatingKey, 0, len(keys))
+			for _, k := range keys {
+				list = append(list, k)
+			}
+			rc.titleRecords(ctx, list)
+			rc.mu.Lock()
+			for ext, k := range keys {
+				if _, ok := rc.records["item:"+k.String()]; ok {
+					e.items[kind+"\x00"+ext] = "item:" + k.String()
+				}
+			}
+			rc.mu.Unlock()
+		}
+	}
+	if cards := rc.cards(); cards != nil && len(chans) > 0 {
+		order, got := cards.ChannelCards(ctx, chans, "")
+		for _, id := range order {
+			if card, ok := got[id]; ok {
+				rc.addRecord("channel:"+id, card)
+				e.channels[id] = true
+			}
+		}
+	}
 }
 
 func (e *envelopes) walk(v any) any {
@@ -417,10 +500,31 @@ func (e *envelopes) envelope(kind string, inner any) any {
 		key := pluginID + ":" + feed + ":" + k + ":" + id
 		e.entities[key] = entityRef{feed: feed, kind: k, id: id}
 		return recordRef("entity:" + key)
+	case "$item":
+		m, _ := inner.(map[string]any)
+		k, _ := m["kind"].(string)
+		id, _ := m["id"].(string)
+		if key, ok := e.items[k+"\x00"+id]; ok {
+			return recordRef(key)
+		}
+		return nil
+	case "$channel":
+		id, _ := inner.(string)
+		if e.channels[id] {
+			return recordRef("channel:" + id)
+		}
+		return nil
 	}
-	// $item and $channel arrive with title and channel records; until then
-	// they are dropped, never passed through.
 	return nil
+}
+
+func (rc *readCtx) ownsKind(kind string) bool {
+	for _, k := range rc.t.plugin.contrib.MediaKinds {
+		if k.Key == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // resolve fetches the events and entities an answer referenced and adds them

@@ -434,6 +434,10 @@ func (rc *readCtx) resolve(ctx context.Context, src screendoc.Source) (any, erro
 		return rc.viewerSource(ctx)
 	case screendoc.FromPlugin:
 		return rc.pluginSource(ctx, src)
+	case screendoc.FromItems:
+		return rc.itemsSource(ctx, src)
+	case screendoc.FromChannels:
+		return rc.channelsSource(ctx, src)
 	}
 	if rc.s.extra != nil {
 		return rc.s.extra.Resolve(ctx, rc.viewer, ExtraSource{PluginID: rc.t.plugin.pluginID, From: src.From, Args: src.Args, Fill: rc.b.fill, Record: rc.addRecord})

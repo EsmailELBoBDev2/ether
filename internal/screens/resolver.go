@@ -46,6 +46,7 @@ type Service struct {
 	docs       *DocRegistry
 	live       LiveSubscriber
 	caller     PluginCaller
+	items      ItemFinder
 	answers    *answerCache
 	actionRate rateLimiter
 	pushes     pluginWatch

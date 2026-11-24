@@ -143,7 +143,7 @@ func (s *Service) PutRecords(ctx context.Context, pluginID string, recs []PutRec
 		return 0, ErrNoDocuments
 	}
 	rc := &readCtx{ctx: ctx, s: s, t: target{plugin: e}, records: map[string]any{}, events: map[string]*eventFetch{}, viewer: &core.User{}}
-	env := &envelopes{rc: rc, known: map[string]bool{}, events: map[string]bool{}, entities: map[string]entityRef{}}
+	env := &envelopes{rc: rc, known: map[string]bool{}, events: map[string]bool{}, entities: map[string]entityRef{}, items: map[string]string{}, channels: map[string]bool{}}
 	out := map[string]any{}
 	for _, r := range recs {
 		if !recordTypeRe.MatchString(r.Type) || !recordIDRe.MatchString(r.ID) {

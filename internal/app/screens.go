@@ -34,6 +34,7 @@ func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
 		Documents: a.buildDocRegistry(mgr),
 	})
 	svc.SetPluginCaller(screenPluginCaller{mgr: mgr})
+	svc.SetItemFinder(screenItemFinder{app: a})
 	mgr.SetScreenPush(screenPushes{svc: svc})
 	mgr.OnSync(func(ctx context.Context, r plugins.Record) {
 		reg.Sync(r, func(key string) string {

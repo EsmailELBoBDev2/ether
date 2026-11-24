@@ -2,6 +2,7 @@ package vela
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -25,6 +26,7 @@ type liveImages struct {
 	// response (screen data sources resolve in parallel).
 	mu     sync.Mutex
 	issued map[string]string
+	viewer *frontend.Viewer
 }
 
 func (i *instance) newLiveImages(r *http.Request, token string) *liveImages {
@@ -174,4 +176,97 @@ func objectPlugin(n map[string]any, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// TitleCards and ChannelCards make the signer the screens' card projection:
+// titles and channels in a plugin screen are Vela's own cards, authorized
+// for this viewer (anything the viewer may not see is left out).
+func (s *liveImages) viewerOf() *frontend.Viewer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.viewer == nil {
+		if v, _, err := s.i.viewer(s.r); err == nil {
+			s.viewer = v
+		}
+	}
+	return s.viewer
+}
+
+// TitleCards projects keys into Vela title cards, keyed by rating key.
+func (s *liveImages) TitleCards(ctx context.Context, keys []frontend.RatingKey) map[frontend.RatingKey]any {
+	out := map[frontend.RatingKey]any{}
+	v := s.viewerOf()
+	batch, ok := s.i.host.Experience.(frontend.TitleBatchReader)
+	if v == nil || !ok || len(keys) == 0 {
+		return out
+	}
+	if len(keys) > 50 {
+		keys = keys[:50]
+	}
+	titles, err := batch.BatchTitles(ctx, v, keys)
+	if err != nil || len(titles) == 0 {
+		return out
+	}
+	cards, err := s.i.titles(s.r.WithContext(ctx), v, s.token, titles)
+	if err != nil {
+		return out
+	}
+	for n, t := range titles {
+		if n < len(cards) {
+			out[t.Key] = cards[n]
+		}
+	}
+	return out
+}
+
+// ChannelCards projects the viewer's Live TV channels (by id, or one owner
+// group) into Vela channel cards; order is the request's (or the lineup's
+// for a group).
+func (s *liveImages) ChannelCards(ctx context.Context, ids []string, group string) ([]string, map[string]any) {
+	out := map[string]any{}
+	v := s.viewerOf()
+	if v == nil || s.i.host.LiveTV == nil {
+		return nil, out
+	}
+	channels, err := s.i.host.LiveTV.Channels(ctx, v)
+	if err != nil {
+		return nil, out
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	var order []string
+	memo := newLiveArtCache()
+	for _, c := range channels {
+		inGroup := false
+		if group != "" {
+			for _, g := range c.Groups {
+				inGroup = inGroup || g.ID == group || strings.EqualFold(g.Name, group)
+			}
+			inGroup = inGroup || strings.EqualFold(c.Group, group)
+		}
+		if !want[c.ID] && !inGroup {
+			continue
+		}
+		art, err := s.i.liveArtworkCached(s.r.WithContext(ctx), s.token, 0, c.ID, c.Images, memo)
+		if err != nil {
+			continue
+		}
+		out[c.ID] = object{"id": c.ID, "number": c.Number, "name": c.Name, "kind": c.Kind, "artwork": art, "favorite": c.Favorite}
+		if group != "" {
+			order = append(order, c.ID)
+		}
+		if len(out) >= 50 {
+			break
+		}
+	}
+	if group == "" {
+		for _, id := range ids {
+			if _, ok := out[id]; ok {
+				order = append(order, id)
+			}
+		}
+	}
+	return order, out
 }

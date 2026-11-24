@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/favorites"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/liveevents"
+	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/screens"
 )
@@ -453,3 +454,63 @@ func (s surfaceScreens) ScreenPreviewValid(ctx context.Context) bool {
 }
 
 var _ frontend.PluginScreens = surfaceScreens{}
+
+// screenItemFinder answers items sources and $item envelopes from the
+// plugin's own library (indexed shelf query, bounded; library visibility is
+// enforced again when the frontend projects the cards).
+type screenItemFinder struct{ app *App }
+
+func (f screenItemFinder) KindShelf(ctx context.Context, viewer *core.User, pluginID string, q screens.ItemsQuery) ([]core.RatingKey, error) {
+	if f.app == nil || f.app.pluginsRT == nil || f.app.pluginsRT.pluginitems == nil || viewer == nil {
+		return nil, core.ErrNotAvailable
+	}
+	items := f.app.pluginsRT.pluginitems
+	rec, err := items.GetKind(ctx, pluginID, q.Kind)
+	if err != nil {
+		return nil, core.ErrNotFound
+	}
+	bq := pluginitems.BrowseQuery{
+		LibraryID:        rec.LibraryID,
+		Level:            q.Level,
+		Sort:             q.Sort,
+		Desc:             q.Direction != "asc",
+		NoTotal:          true,
+		ViewerID:         viewer.ID,
+		MaxContentRating: viewer.MaxContentRating,
+		Limit:            min(max(q.Limit, 1), 50),
+	}
+	if q.Facet != "" && len(q.Values) > 0 {
+		bq.Facets = map[string][]string{q.Facet: q.Values}
+	}
+	page, err := items.Browse(ctx, bq)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]core.RatingKey, 0, len(page.Items))
+	for _, it := range page.Items {
+		if it.Key != 0 {
+			keys = append(keys, it.Key)
+		}
+	}
+	return keys, nil
+}
+
+func (f screenItemFinder) KindKeys(ctx context.Context, pluginID, kind string, ids []string) (map[string]core.RatingKey, error) {
+	if f.app == nil || f.app.pluginsRT == nil || f.app.pluginsRT.pluginitems == nil {
+		return nil, core.ErrNotAvailable
+	}
+	if len(ids) > 200 {
+		ids = ids[:200]
+	}
+	items, err := f.app.pluginsRT.pluginitems.KindItemsByID(ctx, pluginID, kind, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]core.RatingKey, len(items))
+	for _, it := range items {
+		if it.Key != 0 {
+			out[it.ID] = it.Key
+		}
+	}
+	return out, nil
+}

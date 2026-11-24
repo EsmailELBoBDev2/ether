@@ -21,6 +21,14 @@ import (
 )
 
 func init() {
+	// v11: per-plugin KV usage, kept with every KV write, so a put checks
+	// its quota from one row instead of summing every value it stored
+	// (each size sits after its value, so the sum walked the overflow
+	// pages of every stored blob while holding the writer).
+	store.Register("plugins", 11, `
+CREATE TABLE plugins_kv_usage(plugin TEXT PRIMARY KEY,byte_count BIGINT NOT NULL DEFAULT 0,key_count BIGINT NOT NULL DEFAULT 0);
+INSERT INTO plugins_kv_usage(plugin,byte_count,key_count) SELECT plugin,COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv GROUP BY plugin;
+`)
 	// v10: sealed derived secrets written by plugins (#660). Kept separate from
 	// plugins_settings.secrets so plugins can never overwrite owner-configured
 	// credentials and derived session tokens stay out of settings UI/caches.
@@ -598,16 +606,17 @@ func (s *storage) allDerivedSecrets(ctx context.Context, plugin string) (map[str
 
 // --- KV ---
 
+// kvUsed and kvUsage read the plugin's running KV tally
+// (plugins_kv_usage), which every put and delete keeps in the same
+// transaction as the value.
 func (s *storage) kvUsed(ctx context.Context, plugin string) (int64, error) {
-	var n sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&n)
-	return n.Int64, err
+	used, _, err := kvTally(ctx, s.db, plugin)
+	return used, err
 }
 
 func (s *storage) kvUsage(ctx context.Context, plugin string) (KVUsage, error) {
-	var used int64
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&used, &count); err != nil {
+	used, count, err := kvTally(ctx, s.db, plugin)
+	if err != nil {
 		return KVUsage{}, err
 	}
 	return KVUsage{
@@ -616,6 +625,29 @@ func (s *storage) kvUsage(ctx context.Context, plugin string) (KVUsage, error) {
 		QuotaBytes: KVQuotaBytes,
 		QuotaKeys:  KVQuotaKeys,
 	}, nil
+}
+
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func kvTally(ctx context.Context, q rowQueryer, plugin string) (used, count int64, err error) {
+	err = q.QueryRowContext(ctx, `SELECT byte_count,key_count FROM plugins_kv_usage WHERE plugin=?`, plugin).Scan(&used, &count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil
+	}
+	return used, count, err
+}
+
+// addKVTally moves the plugin's KV tally by bytes and keys inside tx.
+func addKVTally(ctx context.Context, tx *sql.Tx, plugin string, bytes, keys int64) error {
+	if bytes == 0 && keys == 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO plugins_kv_usage(plugin,byte_count,key_count) VALUES(?,?,?)
+		ON CONFLICT(plugin) DO UPDATE SET byte_count=plugins_kv_usage.byte_count+excluded.byte_count,key_count=plugins_kv_usage.key_count+excluded.key_count`,
+		plugin, bytes, keys)
+	return err
 }
 
 func (s *storage) kvGet(ctx context.Context, plugin, key string) ([]byte, bool, error) {
@@ -654,15 +686,16 @@ func (s *storage) kvPut(ctx context.Context, plugin, key string, value []byte) e
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var used int64
-	var count int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&used, &count); err != nil {
+	used, count, err := kvTally(ctx, tx, plugin)
+	if err != nil {
 		return err
 	}
 	// A fixed key allowance also bounds Unicode keys on SQLite and PostgreSQL.
+	var added int64
 	if !exists {
-		count++
+		added = 1
 	}
+	count += added
 	if count > KVQuotaKeys || used-old+int64(len(value))+count*KVKeyChargeBytes > KVQuotaBytes {
 		return ErrQuotaExceeded
 	}
@@ -670,12 +703,30 @@ func (s *storage) kvPut(ctx context.Context, plugin, key string, value []byte) e
 	if err != nil {
 		return err
 	}
+	if err := addKVTally(ctx, tx, plugin, int64(len(value))-old, added); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (s *storage) kvDelete(ctx context.Context, plugin, key string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM plugins_kv WHERE plugin=? AND kkey=?`, plugin, key)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var size int64
+	err = tx.QueryRowContext(ctx, `DELETE FROM plugins_kv WHERE plugin=? AND kkey=? RETURNING size`, plugin, key).Scan(&size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := addKVTally(ctx, tx, plugin, -size, -1); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // kvListLimit caps one prefix listing.
@@ -1186,6 +1237,7 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM plugins_derived_secrets WHERE plugin=?`,
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
+		`DELETE FROM plugins_kv_usage WHERE plugin=?`,
 		`DELETE FROM plugin_poster_badges WHERE plugin_id=?`,
 		`DELETE FROM plugins_hash_cache WHERE plugin=?`,
 		`DELETE FROM plugins_remote_hashes WHERE plugin=?`,

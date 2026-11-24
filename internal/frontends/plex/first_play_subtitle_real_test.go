@@ -140,7 +140,19 @@ func TestFirstPlaySubtitleRealMedia(t *testing.T) {
 					sidecar = true
 				}
 			}
-			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v; sidecar fetched=%v",
+			// Plex Web reads a converted text track (location="segments-subs")
+			// from the universal subtitles endpoint, as from PMS.
+			if !sidecar && streamAttr(selected, "location") == "segments-subs" {
+				subURL := "/video/:/transcode/universal/subtitles?path=/library/metadata/" + key + "&session=" + session + "&format=ass"
+				for attempt := 0; attempt < 40 && !sidecar; attempt++ {
+					if rec := f.get(t, subURL, tc.hdr...); rec.Code == 200 && strings.Contains(rec.Body.String(), "SUBTITLE TEXT HERE") {
+						sidecar = true
+						break
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+			t.Logf("RESULT %s: decision selected=%q; frame luma max=%d (burned=%v); subtitle stream inside segment=%v; text rendition in playlist=%v; subtitle fetched from its own endpoint=%v",
 				tc.name, streamAttr(selected, "displayTitle"), yMax, burned, muxed, textRendition, sidecar)
 			if !burned && !textRendition && !muxed && !sidecar {
 				t.Logf("DEBUG %s selected tag: %s", tc.name, selected)
